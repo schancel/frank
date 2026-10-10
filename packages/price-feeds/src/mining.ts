@@ -20,7 +20,7 @@ export interface MiningStats {
   chain: string
   /** Whole coins minted per block, averaged over the last 24 hours of blocks. */
   subsidyCoinsPerBlock: number
-  /** The chain's current difficulty. */
+  /** The chain's current difficulty; for Dogecoin its 24-hour equivalent (see MINED_CHAINS). */
   difficulty: number
   /** Expected hashes to find one block at that difficulty. */
   hashesPerBlock: number
@@ -48,6 +48,12 @@ export interface MinedChain {
    * rule is a constant.
    */
   fixedSubsidyCoinsPerBlock?: number
+  /**
+   * The chain's target seconds per block, set where its difficulty is retargeted every
+   * block and swings widely within a day. For such a chain the expected hashes per block
+   * are taken over the last 24 hours: Blockchair's `hashrate_24h` times this.
+   */
+  dailyMeanOverBlockSeconds?: number
 }
 
 export const MINED_CHAINS: Record<string, MinedChain> = {
@@ -55,7 +61,13 @@ export const MINED_CHAINS: Record<string, MinedChain> = {
   'bitcoin-cash': { decimals: 8, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
   ecash: { decimals: 2, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
   litecoin: { decimals: 8, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
-  dogecoin: { decimals: 8, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
+  // Dogecoin retargets every block (DigiShield) and its difficulty moves about 15%
+  // from one hour to the next, so the 24-hour figure is used: one-minute blocks.
+  dogecoin: {
+    decimals: 8,
+    hashesPerDifficulty: HASHES_PER_DIFFICULTY,
+    dailyMeanOverBlockSeconds: 60,
+  },
   // Monero's difficulty is itself the expected number of hashes per block. Its subsidy is
   // the tail emission: FINAL_SUBSIDY_PER_MINUTE = 3e11 atomic units a minute over
   // DIFFICULTY_TARGET_V2 = 120-second blocks, with COIN = 1e12, is 0.6 XMR a block
@@ -90,7 +102,12 @@ export async function fetchMiningStats(
     const subsidyCoinsPerBlock =
       facts.fixedSubsidyCoinsPerBlock ??
       Number(stats?.inflation_24h) / unit / Number(stats?.blocks_24h)
-    const difficulty = Number(stats?.difficulty)
+    // For a chain read over 24 hours, the difficulty reported is the one that would give
+    // those expected hashes per block: hashrate x block time / hashes per difficulty.
+    const difficulty = facts.dailyMeanOverBlockSeconds
+      ? (Number(stats?.hashrate_24h) * facts.dailyMeanOverBlockSeconds) /
+        facts.hashesPerDifficulty
+      : Number(stats?.difficulty)
     const circulatingCoins = Number(stats?.circulation) / unit
     if (
       !(subsidyCoinsPerBlock > 0) ||

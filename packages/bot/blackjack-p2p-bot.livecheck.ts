@@ -216,7 +216,9 @@ export async function main(deps: LauncherDeps = {}) {
   console.log(
     `Blackjack bot funding address: ${(await wallet.getReceiveAddress()).raw}`,
   )
-  if (config.networkTag !== 'MONT' && config.networkTag !== 'MON1')
+  if (config.networkTag !== 'MONT' &&
+    config.networkTag !== 'MON1' &&
+    config.networkTag !== 'MONR')
     throw new Error('The blackjack bot needs a Monad network')
   const stop = new AbortController()
   process.once('SIGINT', () => stop.abort())

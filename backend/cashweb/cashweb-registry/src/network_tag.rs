@@ -57,6 +57,9 @@ pub const MONAD_TESTNET_NETWORK_TAG: &[u8; 4] = b"MONT";
 /// Monad mainnet (see `.env.example`'s `MONAD_MAINNET_HTTP_RPC_URL`).
 pub const MONAD_MAINNET_NETWORK_TAG: &[u8; 4] = b"MON1";
 
+/// Tag of a local Monad network (monad-solonet): chain ID 20143, a network in its own right.
+pub const MONAD_REGTEST_NETWORK_TAG: &[u8; 4] = b"MONR";
+
 /// Longest network tag, in UTF-8 bytes, that an envelope's `networkTag` may carry. Shared by the
 /// relay's envelope validation and the startup check so the two cannot drift.
 pub const MAX_NETWORK_TAG_BYTES: usize = 32;
@@ -94,6 +97,11 @@ pub const MONAD_NETWORKS: &[MonadNetworkDescriptor] = &[
         network_tag: MONAD_MAINNET_NETWORK_TAG,
         cbor_identifier: "monad-mainnet",
         evm_chain_id: 143,
+    },
+    MonadNetworkDescriptor {
+        network_tag: MONAD_REGTEST_NETWORK_TAG,
+        cbor_identifier: "monad-regtest",
+        evm_chain_id: 20_143,
     },
 ];
 
@@ -169,6 +177,8 @@ mod tests {
         assert_eq!(cbor_network_identifier(b"MON1"), Some("monad-mainnet"));
         assert_eq!(monad_network(b"MONT").unwrap().evm_chain_id, 10_143);
         assert_eq!(monad_network(b"MON1").unwrap().evm_chain_id, 143);
+        assert_eq!(cbor_network_identifier(b"MONR"), Some("monad-regtest"));
+        assert_eq!(monad_network(b"MONR").unwrap().evm_chain_id, 20_143);
         for network in MONAD_NETWORKS {
             let bytes = network.cbor_identifier.as_bytes();
             assert!(bytes.len() <= 64 && bytes[0].is_ascii_alphanumeric());

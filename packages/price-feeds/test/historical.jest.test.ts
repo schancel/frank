@@ -134,3 +134,160 @@ describe('bundled Bitcoin mining history (the inputs of AVU_hash)', () => {
     }
   })
 })
+
+import {
+  EFFICIENCY_STEPS,
+  MINED_CHAINS_MONTHLY,
+  MINER_SHARE_STEPS,
+  WHOLESALE_ELECTRICITY,
+  hashesPerKwh,
+} from '../src'
+
+describe('curated hardware efficiency steps', () => {
+  it('cites a source and the date it was read for every step', () => {
+    for (const algorithm of ['scrypt', 'randomx'] as const) {
+      for (const step of EFFICIENCY_STEPS[algorithm].steps) {
+        expect(step.sourceUrl).toMatch(/^https:\/\//)
+        expect(step.retrieved).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+        expect(step.from).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+        expect(step.hashesPerSecond).toBeGreaterThan(0)
+        expect(step.watts).toBeGreaterThan(0)
+      }
+    }
+  })
+
+  it('is a frontier: steps are in date order and each is more efficient than the last', () => {
+    for (const algorithm of ['scrypt', 'randomx'] as const) {
+      const steps = EFFICIENCY_STEPS[algorithm].steps
+      for (let i = 1; i < steps.length; i++) {
+        expect(steps[i].from > steps[i - 1].from).toBe(true)
+        expect(
+          hashesPerKwh(steps[i].hashesPerSecond, steps[i].watts),
+        ).toBeGreaterThan(
+          hashesPerKwh(steps[i - 1].hashesPerSecond, steps[i - 1].watts),
+        )
+      }
+    }
+  })
+
+  it('covers scrypt from before 2020 and RandomX from its activation', () => {
+    expect(EFFICIENCY_STEPS.scrypt.steps[0].from <= '2020-01-01').toBe(true)
+    expect(EFFICIENCY_STEPS.randomx.steps[0].from).toBe('2019-11-30')
+  })
+
+  it('marks the processor steps as estimates and says what their power figure leaves out', () => {
+    const steps = EFFICIENCY_STEPS.randomx.steps
+    const processors = steps.filter(step => /Ryzen/.test(step.hardware))
+    expect(processors.length).toBeGreaterThan(0)
+    for (const step of processors) {
+      expect(step.estimate).toBe(true)
+      expect(step.power).toMatch(/excludes the rest of the system/)
+      expect(step.powerSourceUrl).toMatch(/^https:\/\//)
+    }
+    // No ASIC step is an estimate, and the unshipped Antminer X9 is not a step.
+    expect(steps.filter(step => !step.estimate).map(s => s.hardware)).toEqual([
+      'Bitmain Antminer X5',
+    ])
+  })
+
+  it('turns a hashrate and a power into hashes per kWh', () => {
+    // Antminer L7: 9.5e9 H/s x 3600 s = 3.42e13 hashes an hour on 3.425 kWh
+    // = 9.9854e12 hashes per kWh.
+    expect(hashesPerKwh(9.5e9, 3425)).toBeCloseTo(9.985401459854e12, -3)
+  })
+})
+
+describe('the eCash miner share', () => {
+  it('is the split read from the coinbases, with the block each began at', () => {
+    const steps = MINER_SHARE_STEPS['xec-mainnet']
+    expect(
+      steps.map(step => [step.from, step.fromHeight, step.share]),
+    ).toEqual([
+      ['2020-11-15', 661648, 0.92],
+      ['2023-11-15', 818670, 0.58],
+    ])
+    // The two coinbases the owner named are the evidence of the current split.
+    expect(steps[1].evidence).toContain(
+      '27038d63376fd9ab0dc0fa18bff95f99ab0353b197c97e2578e1e0549ad56d6f',
+    )
+    expect(steps[1].evidence).toContain(
+      'ebded42bd26ccff2c9fcd64547e177964d48e5d3a3b87a308bf05c252cc81a12',
+    )
+    // 1,812,500 of 3,125,000 XEC to the miner in block 970464.
+    expect(1_812_500 / 3_125_000).toBe(0.58)
+  })
+})
+
+describe('bundled monthly history of the other basket chains', () => {
+  it('has, for each chain, months in order with every input positive, and says where they come from', () => {
+    for (const [chain, history] of Object.entries(MINED_CHAINS_MONTHLY)) {
+      expect(chain).toMatch(/^[a-z]+-mainnet$/)
+      expect(history.source.length).toBeGreaterThan(20)
+      expect(history.sourceUrl).toMatch(/^https:\/\//)
+      const months = history.monthly.map(row => row[0])
+      expect(months).toEqual([...months].sort())
+      expect(new Set(months).size).toBe(months.length)
+      for (const row of history.monthly) {
+        expect(row[0]).toMatch(/^\d{4}-\d{2}$/)
+        for (const value of row.slice(1) as number[]) {
+          expect(value).toBeGreaterThan(0)
+        }
+      }
+    }
+  })
+
+  it('covers the five chains of the basket that are not Bitcoin, each back to 2020 or its start', () => {
+    expect(Object.keys(MINED_CHAINS_MONTHLY).sort()).toEqual([
+      'bch-mainnet',
+      'doge-mainnet',
+      'ltc-mainnet',
+      'xec-mainnet',
+      'xmr-mainnet',
+    ])
+    const first = (chain: string) => MINED_CHAINS_MONTHLY[chain].monthly[0][0]
+    expect(first('ltc-mainnet') <= '2020-01').toBe(true)
+    expect(first('doge-mainnet')).toBe('2020-01')
+    expect(first('bch-mainnet')).toBe('2017-09')
+    // eCash began with the chain split of 15 November 2020.
+    expect(first('xec-mainnet')).toBe('2020-12')
+    // RandomX activated on 30 November 2019.
+    expect(first('xmr-mainnet')).toBe('2019-12')
+  })
+
+  it('holds the consensus subsidies the chains really paid', () => {
+    const month = (chain: string, m: string) =>
+      MINED_CHAINS_MONTHLY[chain].monthly.find(row => row[0] === m)
+    // Litecoin halved to 6.25 in August 2023; Dogecoin pays 10,000 a block.
+    expect(month('ltc-mainnet', '2023-06')?.[3]).toBeCloseTo(12.5, 2)
+    expect(month('ltc-mainnet', '2024-01')?.[3]).toBeCloseTo(6.25, 2)
+    expect(month('doge-mainnet', '2024-01')?.[3]).toBe(10_000)
+    // Monero's tail emission of 0.6 XMR began in June 2022.
+    expect(month('xmr-mainnet', '2022-01')?.[3]).toBeGreaterThan(0.6)
+    expect(month('xmr-mainnet', '2023-01')?.[3]).toBe(0.6)
+  })
+})
+
+describe('bundled wholesale electricity prices', () => {
+  it('names each region, its attribution and its source', () => {
+    for (const region of Object.values(WHOLESALE_ELECTRICITY.regions)) {
+      expect(region.label.length).toBeGreaterThan(5)
+      expect(region.attribution.length).toBeGreaterThan(5)
+      expect(region.sourceUrl).toMatch(/^https:\/\//)
+      const days = region.daily.map(day => day[0])
+      expect(days).toEqual([...days].sort())
+    }
+    expect(WHOLESALE_ELECTRICITY.retrieved).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('reaches back to 2020 or earlier in both regions', () => {
+    for (const region of Object.values(WHOLESALE_ELECTRICITY.regions)) {
+      expect(region.daily[0][0] < '2020-01-01').toBe(true)
+    }
+  })
+
+  it('keeps days whose price was zero or negative: they happened', () => {
+    expect(
+      WHOLESALE_ELECTRICITY.regions['de-lu'].daily.some(day => day[1] <= 0),
+    ).toBe(true)
+  })
+})

@@ -11,7 +11,9 @@ a separate capability and protocol contract.
 `allowed_proxy_capabilities` states what the protocol permits for a chain. `GET /chains` reports
 the subset an individual relay actually configured. A relay must additionally probe each upstream:
 
-- EVM: `eth_chainId`, plus the registry-pinned block checkpoint.
+- EVM: `eth_chainId`, plus the registry-pinned block checkpoint. A regtest row
+  (`monad-regtest`) has an operator checkpoint instead: the relay's config row must name a block
+  above genesis and its hash, and the relay checks it on the upstream like a pinned one.
 - Bitcoin-family JSON-RPC: `getblockhash` at the registry-pinned post-fork checkpoint (operator
   checkpoints remain available only for regtest rows).
 - Chronik: `GET /block/<height>` at the same registry-pinned checkpoint.
@@ -139,3 +141,25 @@ The wallet library opens an eCash wallet on `xec-regtest` like on any other netw
 (`openRelayUtxoChain`), given that run's checkpoint. It is refused without one, and a public
 network refuses to take one. The app does not offer `xec-regtest` yet: it chooses a network by
 kind and a testnet-or-mainnet setting, and has no setting that supplies a checkpoint.
+
+### Monad regtest
+
+`monad-regtest` is a local Monad network run by
+[monad-solonet](https://github.com/monad-crypto/monad-solonet): the real consensus and execution
+client as a single validator. Chain ID 20143 (Monad's devnet ID), network tag `MONR`, unit `MONR`.
+Its checkpoint is block 1 of the running chain, read when a stack starts and written into that
+run's relay config; the wallet reaches the chain only through the relay's proxy, which has
+verified it. Contracts are deployed per run (`deploy --chain monad-regtest --out-dir <dir>`; the
+record is never committed) and a wallet is given their addresses in its chain config
+(`EvmChainConfig.contracts`). How to install, start and stop solonet on a Mac is at the top of
+`packages/bot/demo/regtest/monad-regtest.ts`.
+
+```sh
+yarn --cwd packages/bot regtest:monad-check     # relay, contracts, a paid and a free message each way
+yarn --cwd packages/bot regtest:monad-reserve   # the wallet against Monad's reserve balance
+yarn --cwd packages/bot regtest:monad-status
+yarn --cwd packages/bot regtest:monad-stop      # the chain keeps running until this
+```
+
+Monad's gas and reserve-balance rules, with what was observed on this network, are in
+[monad-reserve-balance.md](monad-reserve-balance.md).

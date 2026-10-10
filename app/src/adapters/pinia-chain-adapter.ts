@@ -180,6 +180,7 @@ export async function autoRecoverProfile(wallet: WalletHandle): Promise<void> {
       relayBaseUrl,
       identity,
       profile,
+      network: loadMonadChainConfigFromEnv().rpcChain,
     })
   } catch (err) {
     console.warn('auto-register profile after 401 failed', err)

@@ -58,6 +58,8 @@ export class RelayProfileManager {
     force?: boolean;
     /** When given, the bot's username is claimed on this network before the profile is sent. */
     network?: string;
+    /** Canonical network the profile statement is signed for (Monad testnet when omitted). */
+    statementNetwork?: string;
   }): Promise<void> {
     if (params.network !== undefined) {
       await RelayProfileManager.claimUsername({
@@ -116,6 +118,7 @@ export class RelayProfileManager {
         relayBaseUrl: params.relayBaseUrl,
         identity: params.identity,
         profile: wanted,
+        network: params.statementNetwork,
       });
     } catch (cborErr) {
       console.warn(

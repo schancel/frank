@@ -284,6 +284,36 @@ describe("loadMonadChainConfigFromEnv", () => {
       networkTag: "MON1",
     });
   });
+
+  it("points at the local Monad regtest by its chain identifier, with that run's contracts", () => {
+    process.env.MONAD_RPC_CHAIN = "monad-regtest";
+    process.env.MONAD_CHAIN_ID = "10143";
+    process.env.FRANK_NETWORK_TAG = "MONT";
+    delete process.env.MONAD_NETWORK_ID;
+    process.env.MONAD_REGTEST_HTLC_ADDRESS = "0x" + "11".repeat(20);
+    process.env.MONAD_REGTEST_STATE_CHANNEL_ADDRESS = "0x" + "22".repeat(20);
+    try {
+      const config = loadMonadChainConfigFromEnv();
+      expect(config).toMatchObject({
+        rpcChain: "monad-regtest",
+        networkId: "monad-regtest",
+        chainId: 20143n,
+        networkTag: "MONR",
+      });
+      const chain = createEvmChain(config);
+      expect(chain.chainIdentifier).toBe("monad-regtest");
+      expect(chain.isTestnet).toBe(true);
+      expect(chain.getHtlcAddress?.()).toBe("0x" + "11".repeat(20));
+      expect(chain.getStateChannelAddress?.()).toBe("0x" + "22".repeat(20));
+
+      // Another network never takes contract addresses from this configuration.
+      process.env.MONAD_RPC_CHAIN = "monad-testnet";
+      expect(loadMonadChainConfigFromEnv().contracts).toBeUndefined();
+    } finally {
+      delete process.env.MONAD_REGTEST_HTLC_ADDRESS;
+      delete process.env.MONAD_REGTEST_STATE_CHANNEL_ADDRESS;
+    }
+  });
 });
 
 describe("custom relay configuration", () => {

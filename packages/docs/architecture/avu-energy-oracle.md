@@ -124,51 +124,70 @@ $$\text{AVU\_hash}(t) = \sum_c w_c(t) \times \left(\$/\text{kWh}_c(t)\right)^{-1
 The AVU value of any coin is $\text{price}(t) \times \text{AVU\_hash}(t)$: kWh per coin. That
 is every "≈ N AVU" figure in the app.
 
-**AVU_spot** is kWh per dollar from a published electricity price: $1 \div (\$/\text{kWh})$.
-It depends on whoever publishes that price; AVU_hash does not. The two should roughly agree,
-because miners buy electricity. The Parity tab shows both and the gap between them.
-
 Weights (`basketWeights`). Each entry's weight is its share of the basket's total market
 capitalisation. If Bitcoin's share is above 60% it is set to 60% and the other 40% is divided
 among the other entries in proportion to their market capitalisations. Weights sum to 1.
 Bitcoin alone has weight 1.
 
-The basket (`AVU_HASH_BASKET`) has five entries: BTC, BCH, XEC, merge-mined LTC+DOGE, and
-XMR. Merge-mined chains are one entry: one hash earns on both, so their pay per hash is
-summed and the energy is counted once. An entry whose inputs are not all known is left out
-and the weights are taken over the rest; the app shows how many entries were used and why
-each other one was not. With none, there is no AVU_hash and no AVU value: nothing falls back
-to a fixed rate.
+The basket has five entries: BTC, BCH, XEC, merge-mined LTC+DOGE, and XMR. Merge-mined chains
+are one entry: one hash earns on both, so their pay per hash is summed (each: price × block
+reward ÷ (difficulty × 2³²)), the energy is counted once, and the entry's weight is the sum of
+the two market capitalisations. Monero's expected hashes per block is its difficulty itself
+(no 2³²). An entry whose inputs are not all known at $t$ is left out and the weights are taken
+over the rest; the app shows how many entries were used and why each other one was not. With
+none, there is no AVU_hash and no AVU value: nothing falls back to a fixed rate.
 
-Where each input comes from:
+**AVU_spot** is the inverse of the feed's aggregate wholesale electricity price at $t$. The
+feed builds that price: per region the mean of its daily day-ahead prices in the 30 days ending
+at each day (a region with fewer than 10 of them is left out), then the regions averaged
+equally. Prices are averaged first and the mean inverted; a value that is not positive has no
+AVU_spot.
 
-| Input | Source | Kind |
+### The oracle feed
+
+The relay is the oracle. The app asks its relay for one normalised feed
+(`docs/protocol/oracle/README.md`) and knows nothing about any provider. Every input above is
+a series in that feed, read by one lookup: the latest point at or before a time, never
+interpolated, never extended backwards (`packages/price-feeds/src/timeseries.ts`). Today's
+figures and every point of a chart are the same functions (`avuHashAt`, `avuSpotAt` in
+`packages/wallet/oracle/energy-basket.ts`) evaluated at different times.
+
+The app shell holds the feed for the life of the app (`useAppOracleFeed`): the latest answer is
+asked for every 10 minutes while the window is visible, appended to the local series in
+LevelDB, and the AVU rate of every asset is computed from it once (`current` in
+`app/src/stores/oracle.ts`). Everything on screen reads that. The Parity chart, while on
+screen, asks for a range only for the stretches the local series lack.
+
+Until relays serve the route (a 404), the app fills the same contract itself with
+`packages/price-feeds/src/temporary-direct-feed.ts`: prices are the median of the public
+providers that answer, chain statistics are Blockchair's `/stats` (hourly), and history is the
+bundled files below. That file and what only it uses are to be deleted when the relay serves
+the feed; the bundled files then become the relay's seed data.
+
+| Series | Bundled history (`packages/price-feeds/src/historical`) | Built by |
 | :--- | :--- | :--- |
-| Coin price | `PriceFeedsClient` in `packages/price-feeds`: the median of the providers that answered (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance). The number of providers is kept in `priceSources`. | fetched, every 5 minutes |
-| Coins per block | Blockchair `/stats`: `inflation_24h ÷ blocks_24h`, the subsidy the chain actually minted, so halvings need no schedule. For eCash the miner's 58% is used (consensus sends 32% to the miner fund and 10% to staking rewards). Monero publishes no issuance there; its consensus tail emission of 0.6 XMR is configured in `MINED_CHAINS`. | fetched, every 30 minutes, one source |
-| Hashes per block | Blockchair `/stats` `difficulty` × 2³² (Monero: the difficulty itself). | fetched, every 30 minutes, one source |
-| Market capitalisation | Blockchair `/stats` `circulation` × the oracle's price. | fetched |
-| Hashing efficiency (hashes per kWh) | SHA-256: Cambridge Bitcoin Electricity Consumption Index, best-guess network power demand ÷ network hashrate, by month, bundled in `packages/price-feeds/src/historical/btc-mining-monthly.json`. The latest bundled month is used for the present. | **curated estimate, bundled** |
-| Electricity price (AVU_spot) | US EIA Table 9.8, industrial, bundled in `us-electricity-gold.json`; the latest published month. | bundled |
+| Bitcoin price, difficulty, subsidy, supply; SHA-256 efficiency (Cambridge CBECI fleet estimate) | `btc-mining-monthly.json`, monthly from 2010 | `scripts/build-btc-mining-history.py` |
+| Litecoin, Dogecoin, Bitcoin Cash, eCash, Monero: price, difficulty, subsidy, supply | `mined-chains-monthly.json`, monthly | `scripts/build-mined-chains-history.py` |
+| scrypt and RandomX efficiency (best hardware on sale, dated steps); eCash miner share (dated steps read from coinbases) | `curated-steps.json`, written by hand, every step cited | — |
+| Wholesale electricity, daily, per region and aggregated | `wholesale-electricity-daily.json` | `scripts/build-wholesale-electricity.py` |
+| Gold, yearly (World Bank) | `us-electricity-gold.json` | `scripts/build-historical.py` |
 
-The efficiency series is the one input that is neither a chain reading nor a market price.
-It is Cambridge's model of which machines are running, and its best guess assumes miners pay
-0.05 USD/kWh when deciding which machines are still profitable; the bundle also carries the
-lower and upper bounds. No efficiency series is bundled for scrypt (LTC+DOGE) or RandomX
-(XMR), so those two entries are left out today and AVU_hash is computed over BTC, BCH and XEC.
+Each script's header names its source URLs and the exact command. Every file carries its
+retrieval date.
 
-History. `scripts/build-btc-mining-history.py` builds the monthly Bitcoin inputs (price,
-difficulty, subsidy, efficiency) from blockchain.com's charts API and the Cambridge download,
-from October 2010; `BTC_MONTHLY_AVU_HASH` applies the same formula to them. It is Bitcoin's
-term alone, not the basket. Short-range price lines (24h to 1y) are each price times today's
-AVU_hash, and the chart says so. `scripts/build-historical.py` builds the EIA and World Bank
-figures. Both files carry their source URLs and retrieval date.
+The efficiency series are the inputs that are neither a chain reading nor a market price.
+SHA-256 is Cambridge's model of the machines actually running (its best guess assumes miners
+pay 0.05 USD/kWh when deciding which machines are still profitable). Scrypt and RandomX are
+the most efficient machine on sale at each date: a frontier, which is more efficient than a
+fleet, so those two entries' pay per kWh reads higher than a fleet estimate would give. The
+RandomX steps before the first ASIC (September 2023) are desktop processors rated at their
+package power limit and are marked as estimates.
 
-Staleness. A coin's price that has missed several refreshes (15 minutes) or chain statistics
-older than two hours make AVU_hash stale; every value computed with it then shows the age of
-the oldest input. There are no stand-in prices: a coin whose price was not fetched has no AVU
-value, and a coin no provider prices (the Tempo test dollar) never has one. MON is priced as
-mainnet MON; a testnet MON balance is not valued.
+Staleness. A price that has missed two refreshes, or an AVU_hash whose oldest market or chain
+reading is over two hours old (including a bundled monthly value standing in where nothing
+newer was received), is shown with its age. There are no stand-in prices: a coin the feed has
+no price for has no AVU value. Test-network coins are valued at their main network's price
+and marked "testnet". No dollar figure is shown anywhere in the app.
 
 The tables in the sections above (per-network rates, the $0.084 "composite", the grid
 comparison, the purchasing-power eras) are illustrations written with the original text. No
@@ -178,12 +197,9 @@ code reads them and their figures were not computed from sources.
 
 ## Protocol Architecture
 
-1. **`@frank/wallet/oracle`**:
-   * Pure TypeScript SDK with zero Vue/DOM dependencies.
-   * `convertRawToAvu(rawAmount, asset)`: Converts integer atomic units (wei, satoshis, lamports) to AVU.
-   * `formatAvu(avu)`: Formats amounts with clean rounding and thousands separators.
-   * `calculateSwapParity(sendRaw, sendAsset, receiveRaw, receiveAsset)`: Checks fairness of cross-chain atomic swaps.
-2. **`useOracleStore()` (`app/src/stores/oracle.ts`)**:
-   * Reactive Pinia store with 0ms synchronous reads.
-   * Background polling worker for external oracle feeds.
-   * 7-day rolling historical cache stored in `localStorage` (capped at 168 points) for zero-cost historical tracking.
+1. **`@frank/price-feeds`**: the feed contract's types, parser and fetch (`feed.ts`), the
+   timeseries lookup (`timeseries.ts`), and the temporary direct adapter.
+2. **`@frank/wallet/oracle`**: pure TypeScript, no Vue/DOM. `avuHashAt`, `avuSpotAt`,
+   `computeOracleRates` (every asset's AVU rate at a time), `convertRawToAvu`.
+3. **`useOracleStore()` (`app/src/stores/oracle.ts`)**: the local series, the cached rates,
+   and the one display helper `formatAvuAmount(asset, rawAmount)`: an AVU string or nothing.

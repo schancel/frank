@@ -86,7 +86,7 @@ const mockFetchSolanaTokenAccounts = jest.fn().mockResolvedValue([
     decimals: 6,
     uiAmount: 100.0,
     formatted: '100.00 tUSDC',
-    avuFormatted: '≈ 1,190.5 AVU',
+    avuFormatted: '',
   },
 ])
 
@@ -593,12 +593,12 @@ function mountSolanaViews(pinia: ReturnType<typeof createPinia>) {
 }
 
 describe('native Solana AVU presentation', () => {
-  it('keeps header, asset row and drawer on the reactive oracle snapshot', async () => {
+  it('keeps header, asset row and drawer on the oracle’s cached rate', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const oracle = useOracleStore()
     jest.spyOn(oracle, 'acquire').mockImplementation(() => () => undefined)
-    oracle.snapshot.rates.solana = 37
+    oracle.$patch({ current: { ...oracle.current, rates: { solana: 37 } } })
     await fetchChainBalance('solana', true)
 
     const { detail, drawer } = mountSolanaViews(pinia)
@@ -635,15 +635,12 @@ describe('native Solana AVU presentation', () => {
           `(${expected})`,
         )
       }
-      expectAgreement('≈ 92.50 AVU')
-      oracle.snapshot = {
-        ...oracle.snapshot,
-        rates: { ...oracle.snapshot.rates, solana: 83 },
-      }
+      expectAgreement('≈ 92.5 AVU · testnet')
+      oracle.$patch({ current: { ...oracle.current, rates: { solana: 83 } } })
       await nextTick()
-      expectAgreement('≈ 207.50 AVU')
-      // SPL rows keep their existing independently supplied valuation.
-      expect(getChainTokens('solana')[1].avuFormatted).toBe('≈ 1,190.5 AVU')
+      expectAgreement('≈ 207.5 AVU · testnet')
+      // No oracle prices an SPL token: its row shows the amount alone.
+      expect(getChainTokens('solana')[1].avuFormatted).toBe('')
     } finally {
       detail.unmount()
       drawer.unmount()

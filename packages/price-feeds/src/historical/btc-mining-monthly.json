@@ -10,7 +10,7 @@
   "subsidy": "Bitcoin consensus rule GetBlockSubsidy (50 BTC halved every 210,000 blocks), applied to the supply in the total-bitcoins chart.",
   "efficiency": "Cambridge Bitcoin Electricity Consumption Index (CBECI), daily estimated network power demand, divided by the hash-rate chart: joules drawn per terahash. An estimate of the hardware in use, not a chain reading. Average electricity cost assumption: 0.05 USD/kWh.",
   "efficiencyUrl": "https://ccaf.io/cbeci/api/v1.4.0/download/data?price=0.05",
-  "retrieved": "2026-10-09"
+  "retrieved": "2026-10-10"
  },
  "monthly": [
   {
@@ -18,6 +18,7 @@
    "btcUsd": 0.064,
    "difficulty": 800.702991,
    "subsidyBtc": 50.0,
+   "supplyBtc": 4009545.0,
    "joulesPerTerahash": 14682000.0,
    "joulesPerTerahashLow": 13480000.0,
    "joulesPerTerahashHigh": 16016000.0
@@ -27,6 +28,7 @@
    "btcUsd": 0.113871,
    "difficulty": 1660.95416,
    "subsidyBtc": 50.0,
+   "supplyBtc": 4289082.26,
    "joulesPerTerahash": 14203000.0,
    "joulesPerTerahashLow": 13041000.0,
    "joulesPerTerahashHigh": 15495000.0
@@ -36,6 +38,7 @@
    "btcUsd": 0.282333,
    "difficulty": 5123.71709,
    "subsidyBtc": 50.0,
+   "supplyBtc": 4602276.67,
    "joulesPerTerahash": 8039900.0,
    "joulesPerTerahashLow": 2830800.0,
    "joulesPerTerahashHigh": 15528000.0
@@ -45,6 +48,7 @@
    "btcUsd": 0.25129,
    "difficulty": 11760.3025,
    "subsidyBtc": 50.0,
+   "supplyBtc": 4893140.32,
    "joulesPerTerahash": 8077700.0,
    "joulesPerTerahashLow": 2317100.0,
    "joulesPerTerahashHigh": 16384000.0
@@ -54,6 +58,7 @@
    "btcUsd": 0.376129,
    "difficulty": 17934.5489,
    "subsidyBtc": 50.0,
+   "supplyBtc": 5153032.26,
    "joulesPerTerahash": 8129300.0,
    "joulesPerTerahashLow": 2331900.0,
    "joulesPerTerahashHigh": 16489000.0
@@ -63,6 +68,7 @@
    "btcUsd": 0.956429,
    "difficulty": 30477.9817,
    "subsidyBtc": 50.0,
+   "supplyBtc": 5415944.64,
    "joulesPerTerahash": 7398500.0,
    "joulesPerTerahashLow": 2122300.0,
    "joulesPerTerahashHigh": 15006000.0
@@ -72,6 +78,7 @@
    "btcUsd": 0.883871,
    "difficulty": 69479.2704,
    "subsidyBtc": 50.0,
+   "supplyBtc": 5688746.77,
    "joulesPerTerahash": 4692900.0,
    "joulesPerTerahashLow": 2358000.0,
    "joulesPerTerahashHigh": 8758300.0
@@ -81,6 +88,7 @@
    "btcUsd": 1.21967,
    "difficulty": 85029.2626,
    "subsidyBtc": 50.0,
+   "supplyBtc": 5932085.0,
    "joulesPerTerahash": 4683200.0,
    "joulesPerTerahashLow": 2321400.0,
    "joulesPerTerahashHigh": 7527500.0
@@ -90,6 +98,7 @@
    "btcUsd": 6.48129,
    "difficulty": 210679.482,
    "subsidyBtc": 50.0,
+   "supplyBtc": 6228567.74,
    "joulesPerTerahash": 6666600.0,
    "joulesPerTerahashLow": 2166200.0,
    "joulesPerTerahashHigh": 15162000.0
@@ -99,6 +108,7 @@
    "btcUsd": 19.4423,
    "difficulty": 827558.249,
    "subsidyBtc": 50.0,
+   "supplyBtc": 6558160.0,
    "joulesPerTerahash": 6509000.0,
    "joulesPerTerahashLow": 2118300.0,
    "joulesPerTerahashHigh": 14789000.0
@@ -108,6 +118,7 @@
    "btcUsd": 14.8232,
    "difficulty": 1576944.11,
    "subsidyBtc": 50.0,
+   "supplyBtc": 6832154.84,
    "joulesPerTerahash": 5072800.0,
    "joulesPerTerahashLow": 2389100.0,
    "joulesPerTerahashHigh": 8375000.0
@@ -117,6 +128,7 @@
    "btcUsd": 11.1329,
    "difficulty": 1847683.02,
    "subsidyBtc": 50.0,
+   "supplyBtc": 7064893.55,
    "joulesPerTerahash": 1751700.0,
    "joulesPerTerahashLow": 318810.0,
    "joulesPerTerahashHigh": 3441500.0
@@ -126,6 +138,7 @@
    "btcUsd": 6.53333,
    "difficulty": 1760703.9,
    "subsidyBtc": 50.0,
+   "supplyBtc": 7279201.67,
    "joulesPerTerahash": 1378000.0,
    "joulesPerTerahashLow": 76485.0,
    "joulesPerTerahashHigh": 2914200.0
@@ -135,6 +148,7 @@
    "btcUsd": 3.94645,
    "difficulty": 1568064.64,
    "subsidyBtc": 50.0,
+   "supplyBtc": 7477551.61,
    "joulesPerTerahash": 443880.0,
    "joulesPerTerahashLow": 48023.0,
    "joulesPerTerahashHigh": 1157000.0
@@ -144,6 +158,7 @@
    "btcUsd": 2.83733,
    "difficulty": 1194221.63,
    "subsidyBtc": 50.0,
+   "supplyBtc": 7674786.67,
    "joulesPerTerahash": 64929.0,
    "joulesPerTerahashLow": 43634.0,
    "joulesPerTerahashHigh": 90423.0
@@ -153,6 +168,7 @@
    "btcUsd": 3.55097,
    "difficulty": 1130928.14,
    "subsidyBtc": 50.0,
+   "supplyBtc": 7891380.65,
    "joulesPerTerahash": 264940.0,
    "joulesPerTerahashLow": 43011.0,
    "joulesPerTerahashHigh": 850620.0
@@ -162,6 +178,7 @@
    "btcUsd": 6.41161,
    "difficulty": 1245695.81,
    "subsidyBtc": 50.0,
+   "supplyBtc": 8125203.23,
    "joulesPerTerahash": 788960.0,
    "joulesPerTerahashLow": 42699.0,
    "joulesPerTerahashHigh": 2837600.0
@@ -171,6 +188,7 @@
    "btcUsd": 5.33276,
    "difficulty": 1370938.68,
    "subsidyBtc": 50.0,
+   "supplyBtc": 8349917.24,
    "joulesPerTerahash": 749210.0,
    "joulesPerTerahashLow": 42964.0,
    "joulesPerTerahashHigh": 2855200.0
@@ -180,6 +198,7 @@
    "btcUsd": 5.01194,
    "difficulty": 1506177.09,
    "subsidyBtc": 50.0,
+   "supplyBtc": 8575029.03,
    "joulesPerTerahash": 745740.0,
    "joulesPerTerahashLow": 43062.0,
    "joulesPerTerahashHigh": 2861700.0
@@ -189,6 +208,7 @@
    "btcUsd": 5.05033,
    "difficulty": 1590437.1,
    "subsidyBtc": 50.0,
+   "supplyBtc": 8795551.67,
    "joulesPerTerahash": 752220.0,
    "joulesPerTerahashLow": 43436.0,
    "joulesPerTerahashHigh": 2886600.0
@@ -198,6 +218,7 @@
    "btcUsd": 5.11677,
    "difficulty": 1643147.17,
    "subsidyBtc": 50.0,
+   "supplyBtc": 9019320.97,
    "joulesPerTerahash": 755500.0,
    "joulesPerTerahashLow": 43625.0,
    "joulesPerTerahashHigh": 2899200.0
@@ -207,6 +228,7 @@
    "btcUsd": 6.06133,
    "difficulty": 1637859.61,
    "subsidyBtc": 50.0,
+   "supplyBtc": 9239883.33,
    "joulesPerTerahash": 741500.0,
    "joulesPerTerahashLow": 42817.0,
    "joulesPerTerahashHigh": 2845500.0
@@ -216,6 +238,7 @@
    "btcUsd": 8.04258,
    "difficulty": 1815646.38,
    "subsidyBtc": 50.0,
+   "supplyBtc": 9470353.23,
    "joulesPerTerahash": 735090.0,
    "joulesPerTerahashLow": 42447.0,
    "joulesPerTerahashHigh": 2820800.0
@@ -225,6 +248,7 @@
    "btcUsd": 11.4439,
    "difficulty": 2192552.83,
    "subsidyBtc": 50.0,
+   "supplyBtc": 9712587.1,
    "joulesPerTerahash": 770390.0,
    "joulesPerTerahashLow": 42563.0,
    "joulesPerTerahashHigh": 2828600.0
@@ -234,6 +258,7 @@
    "btcUsd": 11.659,
    "difficulty": 2714181.0,
    "subsidyBtc": 50.0,
+   "supplyBtc": 9952821.67,
    "joulesPerTerahash": 773000.0,
    "joulesPerTerahashLow": 42532.0,
    "joulesPerTerahashHigh": 2826500.0
@@ -243,6 +268,7 @@
    "btcUsd": 12.0152,
    "difficulty": 3065869.73,
    "subsidyBtc": 50.0,
+   "supplyBtc": 10181930.6,
    "joulesPerTerahash": 821340.0,
    "joulesPerTerahashLow": 43041.0,
    "joulesPerTerahashHigh": 2860400.0
@@ -252,6 +278,7 @@
    "btcUsd": 11.586,
    "difficulty": 3356840.17,
    "subsidyBtc": 47.5,
+   "supplyBtc": 10409046.7,
    "joulesPerTerahash": 726000.0,
    "joulesPerTerahashLow": 43140.0,
    "joulesPerTerahashHigh": 2866900.0
@@ -261,6 +288,7 @@
    "btcUsd": 13.4623,
    "difficulty": 3329360.69,
    "subsidyBtc": 25.0,
+   "supplyBtc": 10562129.0,
    "joulesPerTerahash": 376430.0,
    "joulesPerTerahashLow": 43762.0,
    "joulesPerTerahashHigh": 1167600.0
@@ -270,6 +298,7 @@
    "btcUsd": 15.6548,
    "difficulty": 3125200.86,
    "subsidyBtc": 25.0,
+   "supplyBtc": 10671007.3,
    "joulesPerTerahash": 275880.0,
    "joulesPerTerahashLow": 43183.0,
    "joulesPerTerahashHigh": 675150.0
@@ -279,6 +308,7 @@
    "btcUsd": 25.8264,
    "difficulty": 3379188.17,
    "subsidyBtc": 25.0,
+   "supplyBtc": 10783925.0,
    "joulesPerTerahash": 674940.0,
    "joulesPerTerahashLow": 42007.0,
    "joulesPerTerahashHigh": 2654700.0
@@ -288,6 +318,7 @@
    "btcUsd": 55.7687,
    "difficulty": 5123402.25,
    "subsidyBtc": 25.0,
+   "supplyBtc": 10908866.9,
    "joulesPerTerahash": 681460.0,
    "joulesPerTerahashLow": 40718.0,
    "joulesPerTerahashHigh": 2706000.0
@@ -297,6 +328,7 @@
    "btcUsd": 129.015,
    "difficulty": 8186714.84,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11040156.7,
    "joulesPerTerahash": 860520.0,
    "joulesPerTerahashLow": 12422.0,
    "joulesPerTerahashHigh": 4632900.0
@@ -306,6 +338,7 @@
    "btcUsd": 120.218,
    "difficulty": 10975370.5,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11162709.7,
    "joulesPerTerahash": 529780.0,
    "joulesPerTerahashLow": 9685.2,
    "joulesPerTerahashHigh": 2790900.0
@@ -315,6 +348,7 @@
    "btcUsd": 108.935,
    "difficulty": 17020766.6,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11293850.0,
    "joulesPerTerahash": 480100.0,
    "joulesPerTerahashLow": 9527.7,
    "joulesPerTerahashHigh": 2499400.0
@@ -324,6 +358,7 @@
    "btcUsd": 90.2558,
    "difficulty": 26248855.8,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11423252.4,
    "joulesPerTerahash": 167660.0,
    "joulesPerTerahashLow": 9465.1,
    "joulesPerTerahashHigh": 629170.0
@@ -333,6 +368,7 @@
    "btcUsd": 107.033,
    "difficulty": 49075993.3,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11563401.6,
    "joulesPerTerahash": 166860.0,
    "joulesPerTerahashLow": 9135.0,
    "joulesPerTerahashHigh": 607220.0
@@ -342,6 +378,7 @@
    "btcUsd": 125.082,
    "difficulty": 105757135.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11707366.7,
    "joulesPerTerahash": 118630.0,
    "joulesPerTerahashLow": 9278.7,
    "joulesPerTerahashHigh": 409970.0
@@ -351,6 +388,7 @@
    "btcUsd": 154.286,
    "difficulty": 247090120.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11853905.6,
    "joulesPerTerahash": 35920.0,
    "joulesPerTerahashLow": 8940.8,
    "joulesPerTerahashHigh": 80340.0
@@ -360,6 +398,7 @@
    "btcUsd": 516.083,
    "difficulty": 543449326.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 11997633.3,
    "joulesPerTerahash": 39233.0,
    "joulesPerTerahashLow": 9532.1,
    "joulesPerTerahashHigh": 89307.0
@@ -369,6 +408,7 @@
    "btcUsd": 803.144,
    "difficulty": 946731909.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 12132945.2,
    "joulesPerTerahash": 83635.0,
    "joulesPerTerahashLow": 9417.1,
    "joulesPerTerahashHigh": 257950.0
@@ -378,6 +418,7 @@
    "btcUsd": 816.259,
    "difficulty": 1742581220.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 12271178.2,
    "joulesPerTerahash": 27437.0,
    "joulesPerTerahashLow": 2419.6,
    "joulesPerTerahashHigh": 84716.0
@@ -387,6 +428,7 @@
    "btcUsd": 670.233,
    "difficulty": 2802616920.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 12399890.2,
    "joulesPerTerahash": 26790.0,
    "joulesPerTerahashLow": 1910.2,
    "joulesPerTerahashHigh": 85106.0
@@ -396,6 +438,7 @@
    "btcUsd": 597.274,
    "difficulty": 4252881440.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 12523791.9,
    "joulesPerTerahash": 17269.0,
    "joulesPerTerahashLow": 1954.3,
    "joulesPerTerahashHigh": 55924.0
@@ -405,6 +448,7 @@
    "btcUsd": 463.502,
    "difficulty": 6406332730.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 12653125.0,
    "joulesPerTerahash": 7817.7,
    "joulesPerTerahashLow": 1943.5,
    "joulesPerTerahashHigh": 19293.0
@@ -414,6 +458,7 @@
    "btcUsd": 482.311,
    "difficulty": 8964398400.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 12778101.6,
    "joulesPerTerahash": 5864.0,
    "joulesPerTerahashLow": 1951.3,
    "joulesPerTerahashHigh": 11496.0
@@ -423,6 +468,7 @@
    "btcUsd": 612.716,
    "difficulty": 12502750900.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 12904284.2,
    "joulesPerTerahash": 5813.8,
    "joulesPerTerahashLow": 1934.6,
    "joulesPerTerahashHigh": 11397.0
@@ -432,6 +478,7 @@
    "btcUsd": 620.287,
    "difficulty": 17406848600.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13027311.3,
    "joulesPerTerahash": 5956.6,
    "joulesPerTerahashLow": 1982.1,
    "joulesPerTerahashHigh": 11677.0
@@ -441,6 +488,7 @@
    "btcUsd": 540.216,
    "difficulty": 21098286500.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13150093.5,
    "joulesPerTerahash": 5419.8,
    "joulesPerTerahashLow": 1951.2,
    "joulesPerTerahashHigh": 10405.0
@@ -450,6 +498,7 @@
    "btcUsd": 446.9,
    "difficulty": 29594537600.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13274864.2,
    "joulesPerTerahash": 1559.6,
    "joulesPerTerahashLow": 875.09,
    "joulesPerTerahashHigh": 2363.1
@@ -459,6 +508,7 @@
    "btcUsd": 365.827,
    "difficulty": 35199900600.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13391383.9,
    "joulesPerTerahash": 1495.1,
    "joulesPerTerahashLow": 760.14,
    "joulesPerTerahashHigh": 2359.0
@@ -468,6 +518,7 @@
    "btcUsd": 364.609,
    "difficulty": 39399808400.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13506319.2,
    "joulesPerTerahash": 1515.9,
    "joulesPerTerahashLow": 770.68,
    "joulesPerTerahashHigh": 2391.7
@@ -477,6 +528,7 @@
    "btcUsd": 343.904,
    "difficulty": 39825656700.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13615804.0,
    "joulesPerTerahash": 1514.9,
    "joulesPerTerahashLow": 770.19,
    "joulesPerTerahashHigh": 2390.2
@@ -486,6 +538,7 @@
    "btcUsd": 252.628,
    "difficulty": 42441567500.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13731101.6,
    "joulesPerTerahash": 1446.9,
    "joulesPerTerahashLow": 770.0,
    "joulesPerTerahashHigh": 2389.6
@@ -495,6 +548,7 @@
    "btcUsd": 233.325,
    "difficulty": 44023752600.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13839760.7,
    "joulesPerTerahash": 1180.4,
    "joulesPerTerahashLow": 538.13,
    "joulesPerTerahashHigh": 2378.6
@@ -504,6 +558,7 @@
    "btcUsd": 268.894,
    "difficulty": 47052539700.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 13948454.0,
    "joulesPerTerahash": 1157.2,
    "joulesPerTerahashLow": 514.18,
    "joulesPerTerahashHigh": 2391.9
@@ -513,6 +568,7 @@
    "btcUsd": 235.343,
    "difficulty": 48470603200.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14059235.0,
    "joulesPerTerahash": 1041.2,
    "joulesPerTerahashLow": 517.36,
    "joulesPerTerahashHigh": 1967.7
@@ -522,6 +578,7 @@
    "btcUsd": 236.465,
    "difficulty": 48203489600.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14168421.8,
    "joulesPerTerahash": 1129.5,
    "joulesPerTerahashLow": 514.2,
    "joulesPerTerahashHigh": 2293.0
@@ -531,6 +588,7 @@
    "btcUsd": 236.315,
    "difficulty": 48802413500.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14279018.3,
    "joulesPerTerahash": 1158.4,
    "joulesPerTerahashLow": 514.69,
    "joulesPerTerahashHigh": 2394.2
@@ -540,6 +598,7 @@
    "btcUsd": 278.898,
    "difficulty": 50753647100.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14390996.0,
    "joulesPerTerahash": 1154.4,
    "joulesPerTerahashLow": 512.9,
    "joulesPerTerahashHigh": 2385.9
@@ -549,6 +608,7 @@
    "btcUsd": 252.741,
    "difficulty": 53106846200.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14505054.8,
    "joulesPerTerahash": 1067.2,
    "joulesPerTerahashLow": 510.37,
    "joulesPerTerahashHigh": 2083.9
@@ -558,6 +618,7 @@
    "btcUsd": 233.278,
    "difficulty": 57717884500.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14618855.0,
    "joulesPerTerahash": 728.31,
    "joulesPerTerahashLow": 510.57,
    "joulesPerTerahashHigh": 909.29
@@ -567,6 +628,7 @@
    "btcUsd": 262.823,
    "difficulty": 60984536800.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14730946.0,
    "joulesPerTerahash": 732.86,
    "joulesPerTerahashLow": 514.5,
    "joulesPerTerahashHigh": 916.29
@@ -576,6 +638,7 @@
    "btcUsd": 346.494,
    "difficulty": 66254220200.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14846316.7,
    "joulesPerTerahash": 901.94,
    "joulesPerTerahashLow": 293.86,
    "joulesPerTerahashHigh": 2225.0
@@ -585,6 +648,7 @@
    "btcUsd": 422.443,
    "difficulty": 84220311100.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 14968613.7,
    "joulesPerTerahash": 904.81,
    "joulesPerTerahashLow": 267.58,
    "joulesPerTerahashHigh": 2319.0
@@ -594,6 +658,7 @@
    "btcUsd": 412.464,
    "difficulty": 110979678000.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 15091151.6,
    "joulesPerTerahash": 579.57,
    "joulesPerTerahashLow": 268.02,
    "joulesPerTerahashHigh": 983.51
@@ -603,6 +668,7 @@
    "btcUsd": 400.517,
    "difficulty": 146482952000.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 15213362.1,
    "joulesPerTerahash": 559.02,
    "joulesPerTerahashLow": 271.35,
    "joulesPerTerahashHigh": 903.03
@@ -612,6 +678,7 @@
    "btcUsd": 415.774,
    "difficulty": 162436787000.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 15324283.1,
    "joulesPerTerahash": 564.77,
    "joulesPerTerahashLow": 274.4,
    "joulesPerTerahashHigh": 913.19
@@ -621,6 +688,7 @@
    "btcUsd": 432.998,
    "difficulty": 173551687000.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 15437914.2,
    "joulesPerTerahash": 564.15,
    "joulesPerTerahashLow": 274.1,
    "joulesPerTerahashHigh": 912.19
@@ -630,6 +698,7 @@
    "btcUsd": 458.043,
    "difficulty": 190261557000.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 15551821.8,
    "joulesPerTerahash": 563.61,
    "joulesPerTerahashLow": 273.84,
    "joulesPerTerahashHigh": 911.31
@@ -639,6 +708,7 @@
    "btcUsd": 636.451,
    "difficulty": 201191001000.0,
    "subsidyBtc": 25.0,
+   "supplyBtc": 15664031.7,
    "joulesPerTerahash": 559.04,
    "joulesPerTerahashLow": 271.61,
    "joulesPerTerahashHigh": 903.92
@@ -648,6 +718,7 @@
    "btcUsd": 662.134,
    "difficulty": 212932509000.0,
    "subsidyBtc": 15.7258,
+   "supplyBtc": 15760858.1,
    "joulesPerTerahash": 540.35,
    "joulesPerTerahashLow": 276.72,
    "joulesPerTerahashHigh": 847.58
@@ -657,6 +728,7 @@
    "btcUsd": 578.777,
    "difficulty": 210849298000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 15818956.0,
    "joulesPerTerahash": 314.63,
    "joulesPerTerahashLow": 113.63,
    "joulesPerTerahashHigh": 605.09
@@ -666,6 +738,7 @@
    "btcUsd": 602.888,
    "difficulty": 226790707000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 15875855.4,
    "joulesPerTerahash": 301.5,
    "joulesPerTerahashLow": 97.546,
    "joulesPerTerahashHigh": 604.11
@@ -675,6 +748,7 @@
    "btcUsd": 637.299,
    "difficulty": 252904058000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 15932973.0,
    "joulesPerTerahash": 302.93,
    "joulesPerTerahashLow": 98.009,
    "joulesPerTerahashHigh": 606.97
@@ -684,6 +758,7 @@
    "btcUsd": 722.213,
    "difficulty": 265930958000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 15989431.2,
    "joulesPerTerahash": 303.4,
    "joulesPerTerahashLow": 97.819,
    "joulesPerTerahashHigh": 605.79
@@ -693,6 +768,7 @@
    "btcUsd": 816.908,
    "difficulty": 300144417000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16047088.3,
    "joulesPerTerahash": 302.36,
    "joulesPerTerahashLow": 97.446,
    "joulesPerTerahashHigh": 603.49
@@ -702,6 +778,7 @@
    "btcUsd": 910.667,
    "difficulty": 347120363000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16107021.4,
    "joulesPerTerahash": 298.02,
    "joulesPerTerahashLow": 96.046,
    "joulesPerTerahashHigh": 594.82
@@ -711,6 +788,7 @@
    "btcUsd": 1056.73,
    "difficulty": 425050647000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16164423.2,
    "joulesPerTerahash": 282.95,
    "joulesPerTerahashLow": 96.892,
    "joulesPerTerahashHigh": 600.06
@@ -720,6 +798,7 @@
    "btcUsd": 1130.24,
    "difficulty": 467030540000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16219796.0,
    "joulesPerTerahash": 284.37,
    "joulesPerTerahashLow": 98.465,
    "joulesPerTerahashHigh": 605.56
@@ -729,6 +808,7 @@
    "btcUsd": 1203.84,
    "difficulty": 512390535000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16276612.5,
    "joulesPerTerahash": 208.14,
    "joulesPerTerahashLow": 96.963,
    "joulesPerTerahashHigh": 534.7
@@ -738,6 +818,7 @@
    "btcUsd": 1845.51,
    "difficulty": 558840063000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16334318.5,
    "joulesPerTerahash": 237.37,
    "joulesPerTerahashLow": 95.999,
    "joulesPerTerahashHigh": 712.89
@@ -747,6 +828,7 @@
    "btcUsd": 2613.89,
    "difficulty": 683098541000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16393800.8,
    "joulesPerTerahash": 251.83,
    "joulesPerTerahashLow": 97.554,
    "joulesPerTerahashHigh": 913.7
@@ -756,6 +838,7 @@
    "btcUsd": 2496.39,
    "difficulty": 771256981000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16451816.1,
    "joulesPerTerahash": 224.55,
    "joulesPerTerahashLow": 95.699,
    "joulesPerTerahashHigh": 771.85
@@ -765,6 +848,7 @@
    "btcUsd": 3810.51,
    "difficulty": 896901929000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16510139.5,
    "joulesPerTerahash": 233.32,
    "joulesPerTerahashLow": 97.383,
    "joulesPerTerahashHigh": 799.06
@@ -774,6 +858,7 @@
    "btcUsd": 4098.41,
    "difficulty": 992904773000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16568378.3,
    "joulesPerTerahash": 220.41,
    "joulesPerTerahashLow": 95.881,
    "joulesPerTerahashHigh": 898.03
@@ -783,6 +868,7 @@
    "btcUsd": 5283.22,
    "difficulty": 1205232540000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16627952.4,
    "joulesPerTerahash": 209.99,
    "joulesPerTerahashLow": 96.202,
    "joulesPerTerahashHigh": 901.03
@@ -792,6 +878,7 @@
    "btcUsd": 7653.44,
    "difficulty": 1389346260000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16684061.7,
    "joulesPerTerahash": 203.2,
    "joulesPerTerahashLow": 98.513,
    "joulesPerTerahashHigh": 922.69
@@ -801,6 +888,7 @@
    "btcUsd": 14845.9,
    "difficulty": 1668105340000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16745148.4,
    "joulesPerTerahash": 244.27,
    "joulesPerTerahashLow": 94.961,
    "joulesPerTerahashHigh": 1862.3
@@ -810,6 +898,7 @@
    "btcUsd": 13038.7,
    "difficulty": 2189829310000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16807384.3,
    "joulesPerTerahash": 210.77,
    "joulesPerTerahashLow": 95.438,
    "joulesPerTerahashHigh": 1706.8
@@ -819,6 +908,7 @@
    "btcUsd": 9396.76,
    "difficulty": 2857890930000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16866256.7,
    "joulesPerTerahash": 166.49,
    "joulesPerTerahashLow": 95.744,
    "joulesPerTerahashHigh": 719.67
@@ -828,6 +918,7 @@
    "btcUsd": 9107.57,
    "difficulty": 3327262510000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16922936.7,
    "joulesPerTerahash": 158.65,
    "joulesPerTerahashLow": 97.274,
    "joulesPerTerahashHigh": 603.7
@@ -837,6 +928,7 @@
    "btcUsd": 7958.29,
    "difficulty": 3716824710000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 16980715.0,
    "joulesPerTerahash": 141.53,
    "joulesPerTerahashLow": 96.637,
    "joulesPerTerahashHigh": 335.2
@@ -846,6 +938,7 @@
    "btcUsd": 8484.08,
    "difficulty": 4143646640000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17038007.7,
    "joulesPerTerahash": 150.48,
    "joulesPerTerahashLow": 96.291,
    "joulesPerTerahashHigh": 321.98
@@ -855,6 +948,7 @@
    "btcUsd": 6810.04,
    "difficulty": 4891653030000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17097032.1,
    "joulesPerTerahash": 149.63,
    "joulesPerTerahashLow": 95.13,
    "joulesPerTerahashHigh": 324.48
@@ -864,6 +958,7 @@
    "btcUsd": 7089.22,
    "difficulty": 5322630750000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17153765.3,
    "joulesPerTerahash": 137.15,
    "joulesPerTerahashLow": 93.633,
    "joulesPerTerahashHigh": 303.27
@@ -873,6 +968,7 @@
    "btcUsd": 6700.59,
    "difficulty": 6321278500000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17213761.3,
    "joulesPerTerahash": 128.72,
    "joulesPerTerahashLow": 93.44,
    "joulesPerTerahashHigh": 245.23
@@ -882,6 +978,7 @@
    "btcUsd": 6603.38,
    "difficulty": 7004086130000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17270895.4,
    "joulesPerTerahash": 123.53,
    "joulesPerTerahashLow": 94.719,
    "joulesPerTerahashHigh": 198.92
@@ -891,6 +988,7 @@
    "btcUsd": 6487.02,
    "difficulty": 7307780750000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17326015.3,
    "joulesPerTerahash": 122.06,
    "joulesPerTerahashLow": 94.304,
    "joulesPerTerahashHigh": 200.32
@@ -900,6 +998,7 @@
    "btcUsd": 5486.05,
    "difficulty": 6936230050000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17378589.2,
    "joulesPerTerahash": 119.21,
    "joulesPerTerahashLow": 70.306,
    "joulesPerTerahashHigh": 203.87
@@ -909,6 +1008,7 @@
    "btcUsd": 3719.29,
    "difficulty": 5506353320000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17427619.4,
    "joulesPerTerahash": 102.54,
    "joulesPerTerahashLow": 63.593,
    "joulesPerTerahashHigh": 154.3
@@ -918,6 +1018,7 @@
    "btcUsd": 3690.99,
    "difficulty": 5763769390000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17485253.2,
    "joulesPerTerahash": 103.0,
    "joulesPerTerahashLow": 64.122,
    "joulesPerTerahashHigh": 160.42
@@ -927,6 +1028,7 @@
    "btcUsd": 3684.35,
    "difficulty": 5977756320000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17539229.5,
    "joulesPerTerahash": 96.79,
    "joulesPerTerahashLow": 57.931,
    "joulesPerTerahashHigh": 142.76
@@ -936,6 +1038,7 @@
    "btcUsd": 3942.5,
    "difficulty": 6149587040000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17593048.8,
    "joulesPerTerahash": 98.48,
    "joulesPerTerahashLow": 57.495,
    "joulesPerTerahashHigh": 155.68
@@ -945,6 +1048,7 @@
    "btcUsd": 5120.99,
    "difficulty": 6377107260000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17648622.9,
    "joulesPerTerahash": 104.43,
    "joulesPerTerahashLow": 57.261,
    "joulesPerTerahashHigh": 184.79
@@ -954,6 +1058,7 @@
    "btcUsd": 7182.94,
    "difficulty": 6690415300000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17705164.9,
    "joulesPerTerahash": 109.59,
    "joulesPerTerahashLow": 57.093,
    "joulesPerTerahashHigh": 221.29
@@ -963,6 +1068,7 @@
    "btcUsd": 9324.07,
    "difficulty": 7499079540000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17762532.5,
    "joulesPerTerahash": 103.69,
    "joulesPerTerahashLow": 40.822,
    "joulesPerTerahashHigh": 271.02
@@ -972,6 +1078,7 @@
    "btcUsd": 10674.0,
    "difficulty": 8743312440000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17821441.1,
    "joulesPerTerahash": 103.75,
    "joulesPerTerahashLow": 39.287,
    "joulesPerTerahashHigh": 295.57
@@ -981,6 +1088,7 @@
    "btcUsd": 10648.5,
    "difficulty": 9941022660000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17880381.9,
    "joulesPerTerahash": 94.196,
    "joulesPerTerahashLow": 39.52,
    "joulesPerTerahashHigh": 198.13
@@ -990,6 +1098,7 @@
    "btcUsd": 9835.23,
    "difficulty": 11529335200000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17938857.5,
    "joulesPerTerahash": 93.601,
    "joulesPerTerahashLow": 39.477,
    "joulesPerTerahashHigh": 197.83
@@ -999,6 +1108,7 @@
    "btcUsd": 8356.32,
    "difficulty": 13110038200000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 17996178.6,
    "joulesPerTerahash": 85.205,
    "joulesPerTerahashLow": 39.889,
    "joulesPerTerahashHigh": 162.14
@@ -1008,6 +1118,7 @@
    "btcUsd": 8389.16,
    "difficulty": 13024458500000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 18050398.3,
    "joulesPerTerahash": 84.078,
    "joulesPerTerahashLow": 39.953,
    "joulesPerTerahashHigh": 161.03
@@ -1017,6 +1128,7 @@
    "btcUsd": 7257.9,
    "difficulty": 12920122600000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 18105666.5,
    "joulesPerTerahash": 79.565,
    "joulesPerTerahashLow": 39.467,
    "joulesPerTerahashHigh": 125.6
@@ -1026,6 +1138,7 @@
    "btcUsd": 8299.39,
    "difficulty": 14391321100000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 18164593.1,
    "joulesPerTerahash": 77.493,
    "joulesPerTerahashLow": 39.401,
    "joulesPerTerahashHigh": 123.67
@@ -1035,6 +1148,7 @@
    "btcUsd": 9668.46,
    "difficulty": 15508511200000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 18219659.9,
    "joulesPerTerahash": 78.765,
    "joulesPerTerahashLow": 39.94,
    "joulesPerTerahashHigh": 147.69
@@ -1044,6 +1158,7 @@
    "btcUsd": 6943.32,
    "difficulty": 15758872400000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 18273066.9,
    "joulesPerTerahash": 71.881,
    "joulesPerTerahashLow": 40.158,
    "joulesPerTerahashHigh": 120.21
@@ -1053,6 +1168,7 @@
    "btcUsd": 7148.32,
    "difficulty": 14920681100000.0,
    "subsidyBtc": 12.5,
+   "supplyBtc": 18327585.0,
    "joulesPerTerahash": 71.656,
    "joulesPerTerahashLow": 39.602,
    "joulesPerTerahashHigh": 115.12
@@ -1062,6 +1178,7 @@
    "btcUsd": 9232.09,
    "difficulty": 15713352400000.0,
    "subsidyBtc": 8.26613,
+   "supplyBtc": 18377016.7,
    "joulesPerTerahash": 71.723,
    "joulesPerTerahashLow": 40.108,
    "joulesPerTerahashHigh": 115.25
@@ -1071,6 +1188,7 @@
    "btcUsd": 9490.44,
    "difficulty": 14873312000000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18405809.0,
    "joulesPerTerahash": 57.51,
    "joulesPerTerahashLow": 38.23,
    "joulesPerTerahashHigh": 82.064
@@ -1080,6 +1198,7 @@
    "btcUsd": 9526.26,
    "difficulty": 16650894900000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18434460.3,
    "joulesPerTerahash": 51.498,
    "joulesPerTerahashLow": 30.446,
    "joulesPerTerahashHigh": 73.404
@@ -1089,6 +1208,7 @@
    "btcUsd": 11638.0,
    "difficulty": 17066712500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18462673.2,
    "joulesPerTerahash": 56.209,
    "joulesPerTerahashLow": 29.804,
    "joulesPerTerahashHigh": 91.531
@@ -1098,6 +1218,7 @@
    "btcUsd": 10674.7,
    "difficulty": 18108004000000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18490931.0,
    "joulesPerTerahash": 54.325,
    "joulesPerTerahashLow": 29.499,
    "joulesPerTerahashHigh": 81.701
@@ -1107,6 +1228,7 @@
    "btcUsd": 11796.4,
    "difficulty": 19623035900000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18518764.7,
    "joulesPerTerahash": 54.077,
    "joulesPerTerahashLow": 30.576,
    "joulesPerTerahashHigh": 78.898
@@ -1116,6 +1238,7 @@
    "btcUsd": 16474.9,
    "difficulty": 17494373200000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18545068.3,
    "joulesPerTerahash": 63.811,
    "joulesPerTerahashLow": 29.397,
    "joulesPerTerahashHigh": 116.12
@@ -1125,6 +1248,7 @@
    "btcUsd": 21688.2,
    "difficulty": 18864893500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18573096.4,
    "joulesPerTerahash": 65.588,
    "joulesPerTerahashLow": 29.383,
    "joulesPerTerahashHigh": 131.63
@@ -1134,6 +1258,7 @@
    "btcUsd": 34630.8,
    "difficulty": 20109151100000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18602215.5,
    "joulesPerTerahash": 72.337,
    "joulesPerTerahashLow": 29.835,
    "joulesPerTerahashHigh": 196.49
@@ -1143,6 +1268,7 @@
    "btcUsd": 45921.0,
    "difficulty": 21417403500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18629265.8,
    "joulesPerTerahash": 73.544,
    "joulesPerTerahashLow": 29.705,
    "joulesPerTerahashHigh": 233.87
@@ -1152,6 +1278,7 @@
    "btcUsd": 54451.0,
    "difficulty": 21657574000000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18656027.4,
    "joulesPerTerahash": 75.484,
    "joulesPerTerahashLow": 29.671,
    "joulesPerTerahashHigh": 307.97
@@ -1161,6 +1288,7 @@
    "btcUsd": 57126.4,
    "difficulty": 23317562600000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18683602.1,
    "joulesPerTerahash": 74.991,
    "joulesPerTerahashLow": 29.987,
    "joulesPerTerahashHigh": 311.24
@@ -1170,6 +1298,7 @@
    "btcUsd": 47108.0,
    "difficulty": 23094676700000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18710953.0,
    "joulesPerTerahash": 72.66,
    "joulesPerTerahashLow": 30.036,
    "joulesPerTerahashHigh": 282.68
@@ -1179,6 +1308,7 @@
    "btcUsd": 35900.5,
    "difficulty": 20408892700000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18735760.0,
    "joulesPerTerahash": 72.811,
    "joulesPerTerahashLow": 31.408,
    "joulesPerTerahashHigh": 210.48
@@ -1188,6 +1318,7 @@
    "btcUsd": 34225.6,
    "difficulty": 14471974300000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18758661.1,
    "joulesPerTerahash": 67.329,
    "joulesPerTerahashLow": 29.085,
    "joulesPerTerahashHigh": 200.32
@@ -1197,6 +1328,7 @@
    "btcUsd": 45537.1,
    "difficulty": 15565175700000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18788365.7,
    "joulesPerTerahash": 68.974,
    "joulesPerTerahashLow": 29.487,
    "joulesPerTerahashHigh": 303.03
@@ -1206,6 +1338,7 @@
    "btcUsd": 46045.9,
    "difficulty": 18410092300000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18817443.8,
    "joulesPerTerahash": 67.594,
    "joulesPerTerahashLow": 29.442,
    "joulesPerTerahashHigh": 299.04
@@ -1215,6 +1348,7 @@
    "btcUsd": 57352.7,
    "difficulty": 19864683000000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18845945.6,
    "joulesPerTerahash": 64.977,
    "joulesPerTerahashLow": 29.59,
    "joulesPerTerahashHigh": 276.48
@@ -1224,6 +1358,7 @@
    "btcUsd": 60854.6,
    "difficulty": 22196881400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18874641.2,
    "joulesPerTerahash": 65.373,
    "joulesPerTerahashLow": 29.784,
    "joulesPerTerahashHigh": 307.99
@@ -1233,6 +1368,7 @@
    "btcUsd": 49668.6,
    "difficulty": 23588401600000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18902715.3,
    "joulesPerTerahash": 63.566,
    "joulesPerTerahashLow": 29.587,
    "joulesPerTerahashHigh": 232.66
@@ -1242,6 +1378,7 @@
    "btcUsd": 41355.1,
    "difficulty": 25144523100000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18931420.4,
    "joulesPerTerahash": 62.102,
    "joulesPerTerahashLow": 29.415,
    "joulesPerTerahashHigh": 196.49
@@ -1251,6 +1388,7 @@
    "btcUsd": 40588.9,
    "difficulty": 27209428900000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18958733.7,
    "joulesPerTerahash": 60.457,
    "joulesPerTerahashLow": 29.769,
    "joulesPerTerahashHigh": 182.1
@@ -1260,6 +1398,7 @@
    "btcUsd": 41890.7,
    "difficulty": 27569749700000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 18985524.2,
    "joulesPerTerahash": 58.849,
    "joulesPerTerahashLow": 29.74,
    "joulesPerTerahashHigh": 167.28
@@ -1269,6 +1408,7 @@
    "btcUsd": 41681.0,
    "difficulty": 28561641400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19013414.2,
    "joulesPerTerahash": 58.566,
    "joulesPerTerahashLow": 29.501,
    "joulesPerTerahashHigh": 179.36
@@ -1278,6 +1418,7 @@
    "btcUsd": 31871.2,
    "difficulty": 30502528400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19041643.3,
    "joulesPerTerahash": 56.633,
    "joulesPerTerahashLow": 29.317,
    "joulesPerTerahashHigh": 140.56
@@ -1287,6 +1428,7 @@
    "btcUsd": 24756.5,
    "difficulty": 29992443000000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19068792.1,
    "joulesPerTerahash": 51.244,
    "joulesPerTerahashLow": 26.517,
    "joulesPerTerahashHigh": 112.55
@@ -1296,6 +1438,7 @@
    "btcUsd": 21417.3,
    "difficulty": 28752118400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19095629.6,
    "joulesPerTerahash": 46.403,
    "joulesPerTerahashLow": 26.56,
    "joulesPerTerahashHigh": 86.839
@@ -1305,6 +1448,7 @@
    "btcUsd": 22462.6,
    "difficulty": 28259747500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19123683.5,
    "joulesPerTerahash": 46.77,
    "joulesPerTerahashLow": 25.986,
    "joulesPerTerahashHigh": 100.05
@@ -1314,6 +1458,7 @@
    "btcUsd": 19821.5,
    "difficulty": 31520862000000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19152102.5,
    "joulesPerTerahash": 44.565,
    "joulesPerTerahashLow": 22.036,
    "joulesPerTerahashHigh": 81.583
@@ -1323,6 +1468,7 @@
    "btcUsd": 19615.2,
    "difficulty": 34633070500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19181018.3,
    "joulesPerTerahash": 41.842,
    "joulesPerTerahashLow": 21.385,
    "joulesPerTerahashHigh": 72.398
@@ -1332,6 +1478,7 @@
    "btcUsd": 17698.4,
    "difficulty": 36840192900000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19208719.0,
    "joulesPerTerahash": 40.412,
    "joulesPerTerahashLow": 22.005,
    "joulesPerTerahashHigh": 64.671
@@ -1341,6 +1488,7 @@
    "btcUsd": 16962.3,
    "difficulty": 35133054000000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19235466.3,
    "joulesPerTerahash": 37.744,
    "joulesPerTerahashLow": 20.91,
    "joulesPerTerahashHigh": 59.083
@@ -1350,6 +1498,7 @@
    "btcUsd": 20032.5,
    "difficulty": 36154520400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19264124.6,
    "joulesPerTerahash": 38.601,
    "joulesPerTerahashLow": 20.936,
    "joulesPerTerahashHigh": 64.76
@@ -1359,6 +1508,7 @@
    "btcUsd": 23296.6,
    "difficulty": 39784302900000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19291752.5,
    "joulesPerTerahash": 38.972,
    "joulesPerTerahashLow": 20.834,
    "joulesPerTerahashHigh": 73.104
@@ -1368,6 +1518,7 @@
    "btcUsd": 24949.5,
    "difficulty": 44249906400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19319655.2,
    "joulesPerTerahash": 37.825,
    "joulesPerTerahashLow": 20.758,
    "joulesPerTerahashHigh": 70.266
@@ -1377,6 +1528,7 @@
    "btcUsd": 28825.0,
    "difficulty": 47978944300000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19347766.9,
    "joulesPerTerahash": 39.229,
    "joulesPerTerahashLow": 21.007,
    "joulesPerTerahashHigh": 77.666
@@ -1386,6 +1538,7 @@
    "btcUsd": 27563.7,
    "difficulty": 48786288500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19375447.2,
    "joulesPerTerahash": 38.947,
    "joulesPerTerahashLow": 20.806,
    "joulesPerTerahashHigh": 80.305
@@ -1395,6 +1548,7 @@
    "btcUsd": 27652.4,
    "difficulty": 51736188400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19403570.4,
    "joulesPerTerahash": 37.683,
    "joulesPerTerahashLow": 21.081,
    "joulesPerTerahashHigh": 69.551
@@ -1404,6 +1558,7 @@
    "btcUsd": 30095.8,
    "difficulty": 52462896100000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19431164.1,
    "joulesPerTerahash": 36.695,
    "joulesPerTerahashLow": 20.918,
    "joulesPerTerahashHigh": 72.886
@@ -1413,6 +1568,7 @@
    "btcUsd": 27960.3,
    "difficulty": 53350355500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19459353.2,
    "joulesPerTerahash": 35.749,
    "joulesPerTerahashLow": 21.028,
    "joulesPerTerahashHigh": 68.203
@@ -1422,6 +1578,7 @@
    "btcUsd": 26272.6,
    "difficulty": 55544894800000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19487157.3,
    "joulesPerTerahash": 33.964,
    "joulesPerTerahashLow": 20.827,
    "joulesPerTerahashHigh": 60.513
@@ -1431,6 +1588,7 @@
    "btcUsd": 29506.8,
    "difficulty": 59251964500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19515636.9,
    "joulesPerTerahash": 33.382,
    "joulesPerTerahashLow": 20.75,
    "joulesPerTerahashHigh": 60.115
@@ -1440,6 +1598,7 @@
    "btcUsd": 36496.0,
    "difficulty": 64363260300000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19544030.6,
    "joulesPerTerahash": 34.214,
    "joulesPerTerahashLow": 16.64,
    "joulesPerTerahashHigh": 75.341
@@ -1449,6 +1608,7 @@
    "btcUsd": 42354.5,
    "difficulty": 68813730400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19572233.1,
    "joulesPerTerahash": 33.902,
    "joulesPerTerahashLow": 16.012,
    "joulesPerTerahashHigh": 85.209
@@ -1458,6 +1618,7 @@
    "btcUsd": 42905.0,
    "difficulty": 71959513500000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19600586.9,
    "joulesPerTerahash": 32.744,
    "joulesPerTerahashLow": 16.156,
    "joulesPerTerahashHigh": 80.843
@@ -1467,6 +1628,7 @@
    "btcUsd": 49232.1,
    "difficulty": 78290815400000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19628722.4,
    "joulesPerTerahash": 32.112,
    "joulesPerTerahashLow": 16.021,
    "joulesPerTerahashHigh": 77.331
@@ -1476,6 +1638,7 @@
    "btcUsd": 67381.0,
    "difficulty": 81887846600000.0,
    "subsidyBtc": 6.25,
+   "supplyBtc": 19656132.9,
    "joulesPerTerahash": 32.422,
    "joulesPerTerahashLow": 16.074,
    "joulesPerTerahashHigh": 91.045
@@ -1485,6 +1648,7 @@
    "btcUsd": 66247.1,
    "difficulty": 85681862700000.0,
    "subsidyBtc": 5.10417,
+   "supplyBtc": 19683172.4,
    "joulesPerTerahash": 31.45,
    "joulesPerTerahashLow": 16.15,
    "joulesPerTerahashHigh": 95.109
@@ -1494,6 +1658,7 @@
    "btcUsd": 65043.1,
    "difficulty": 84839971800000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19699417.7,
    "joulesPerTerahash": 28.836,
    "joulesPerTerahashLow": 16.238,
    "joulesPerTerahashHigh": 55.23
@@ -1503,6 +1668,7 @@
    "btcUsd": 66057.2,
    "difficulty": 83819982800000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19713023.1,
    "joulesPerTerahash": 28.586,
    "joulesPerTerahashLow": 16.206,
    "joulesPerTerahashHigh": 56.033
@@ -1512,6 +1678,7 @@
    "btcUsd": 62739.0,
    "difficulty": 81326219700000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19726713.1,
    "joulesPerTerahash": 27.473,
    "joulesPerTerahashLow": 15.956,
    "joulesPerTerahashHigh": 47.177
@@ -1521,6 +1688,7 @@
    "btcUsd": 60095.4,
    "difficulty": 88870446300000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19741024.2,
    "joulesPerTerahash": 26.942,
    "joulesPerTerahashLow": 16.163,
    "joulesPerTerahashHigh": 44.824
@@ -1530,6 +1698,7 @@
    "btcUsd": 60212.4,
    "difficulty": 90851271200000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19754824.9,
    "joulesPerTerahash": 25.309,
    "joulesPerTerahashLow": 15.383,
    "joulesPerTerahashHigh": 41.459
@@ -1539,6 +1708,7 @@
    "btcUsd": 65361.6,
    "difficulty": 92160626100000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19768772.5,
    "joulesPerTerahash": 25.728,
    "joulesPerTerahashLow": 14.918,
    "joulesPerTerahashHigh": 46.067
@@ -1548,6 +1718,7 @@
    "btcUsd": 85698.0,
    "difficulty": 101121849000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19783068.3,
    "joulesPerTerahash": 26.613,
    "joulesPerTerahashLow": 13.899,
    "joulesPerTerahashHigh": 51.965
@@ -1557,6 +1728,7 @@
    "btcUsd": 98343.7,
    "difficulty": 106284721000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19797059.8,
    "joulesPerTerahash": 26.573,
    "joulesPerTerahashLow": 13.539,
    "joulesPerTerahashHigh": 61.19
@@ -1566,6 +1738,7 @@
    "btcUsd": 99706.1,
    "difficulty": 109831886000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19811127.3,
    "joulesPerTerahash": 25.5,
    "joulesPerTerahashLow": 12.316,
    "joulesPerTerahashHigh": 55.619
@@ -1575,6 +1748,7 @@
    "btcUsd": 95924.7,
    "difficulty": 111690987000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19824547.5,
    "joulesPerTerahash": 24.869,
    "joulesPerTerahashLow": 12.027,
    "joulesPerTerahashHigh": 54.309
@@ -1584,6 +1758,7 @@
    "btcUsd": 85138.1,
    "difficulty": 112150727000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19837869.1,
    "joulesPerTerahash": 24.059,
    "joulesPerTerahashLow": 12.125,
    "joulesPerTerahashHigh": 47.614
@@ -1593,6 +1768,7 @@
    "btcUsd": 86067.8,
    "difficulty": 120975057000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19851973.8,
    "joulesPerTerahash": 23.216,
    "joulesPerTerahashLow": 12.085,
    "joulesPerTerahashHigh": 44.519
@@ -1602,6 +1778,7 @@
    "btcUsd": 103315.0,
    "difficulty": 120845800000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19865769.0,
    "joulesPerTerahash": 23.19,
    "joulesPerTerahashLow": 11.966,
    "joulesPerTerahashHigh": 48.061
@@ -1611,6 +1788,7 @@
    "btcUsd": 105737.0,
    "difficulty": 126080463000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19879531.9,
    "joulesPerTerahash": 23.527,
    "joulesPerTerahashLow": 12.221,
    "joulesPerTerahashHigh": 50.82
@@ -1620,6 +1798,7 @@
    "btcUsd": 115090.0,
    "difficulty": 123150639000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19893282.9,
    "joulesPerTerahash": 23.332,
    "joulesPerTerahashLow": 12.133,
    "joulesPerTerahashHigh": 51.765
@@ -1629,6 +1808,7 @@
    "btcUsd": 115076.0,
    "difficulty": 129050660000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19907448.4,
    "joulesPerTerahash": 22.839,
    "joulesPerTerahashLow": 12.008,
    "joulesPerTerahashHigh": 49.933
@@ -1638,6 +1818,7 @@
    "btcUsd": 112980.0,
    "difficulty": 137752307000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19921739.9,
    "joulesPerTerahash": 22.63,
    "joulesPerTerahashLow": 11.094,
    "joulesPerTerahashHigh": 49.899
@@ -1647,6 +1828,7 @@
    "btcUsd": 114218.0,
    "difficulty": 149278712000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19935747.2,
    "joulesPerTerahash": 22.499,
    "joulesPerTerahashLow": 11.083,
    "joulesPerTerahashHigh": 48.198
@@ -1656,6 +1838,7 @@
    "btcUsd": 89010.2,
    "difficulty": 148570824000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19963115.8,
    "joulesPerTerahash": 21.738,
    "joulesPerTerahashLow": 11.214,
    "joulesPerTerahashHigh": 36.941
@@ -1665,6 +1848,7 @@
    "btcUsd": 90749.6,
    "difficulty": 145467806000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19976774.1,
    "joulesPerTerahash": 21.813,
    "joulesPerTerahashLow": 11.236,
    "joulesPerTerahashHigh": 37.015
@@ -1674,6 +1858,7 @@
    "btcUsd": 69229.6,
    "difficulty": 135661526000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 19989708.3,
    "joulesPerTerahash": 19.961,
    "joulesPerTerahashLow": 10.939,
    "joulesPerTerahashHigh": 33.894
@@ -1683,6 +1868,7 @@
    "btcUsd": 69447.3,
    "difficulty": 140916546000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 20003102.6,
    "joulesPerTerahash": 18.662,
    "joulesPerTerahashLow": 9.8257,
    "joulesPerTerahashHigh": 30.551
@@ -1692,6 +1878,7 @@
    "btcUsd": 73476.7,
    "difficulty": 137066227000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 20016627.7,
    "joulesPerTerahash": 18.841,
    "joulesPerTerahashLow": 9.6399,
    "joulesPerTerahashHigh": 32.314
@@ -1701,6 +1888,7 @@
    "btcUsd": 78066.5,
    "difficulty": 134948784000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 20030354.2,
    "joulesPerTerahash": 19.19,
    "joulesPerTerahashLow": 9.5314,
    "joulesPerTerahashHigh": 35.969
@@ -1710,6 +1898,7 @@
    "btcUsd": 63502.7,
    "difficulty": 132182455000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 20043769.7,
    "joulesPerTerahash": 18.075,
    "joulesPerTerahashLow": 9.6438,
    "joulesPerTerahashHigh": 31.182
@@ -1719,6 +1908,7 @@
    "btcUsd": 63723.9,
    "difficulty": 129317314000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 20057372.9,
    "joulesPerTerahash": 17.511,
    "joulesPerTerahashLow": 9.6202,
    "joulesPerTerahashHigh": 28.415
@@ -1728,6 +1918,7 @@
    "btcUsd": 68978.2,
    "difficulty": 126678085000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 20071222.4,
    "joulesPerTerahash": 17.961,
    "joulesPerTerahashLow": 9.5771,
    "joulesPerTerahashHigh": 32.013
@@ -1737,6 +1928,7 @@
    "btcUsd": 80308.2,
    "difficulty": 129242778000000.0,
    "subsidyBtc": 3.125,
+   "supplyBtc": 20085123.5,
    "joulesPerTerahash": 18.591,
    "joulesPerTerahashLow": 9.5334,
    "joulesPerTerahashHigh": 35.763

@@ -119,3 +119,54 @@ describe('fetchMiningStats', () => {
     expect(fetchFn).not.toHaveBeenCalled()
   })
 })
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const recorded = require('./fixtures/blockchair-stats-2026-10-10.json')
+
+describe('the scrypt and RandomX chains, against what Blockchair answered on 2026-10-10', () => {
+  it('reads Litecoin: 8 decimals, and difficulty x 2^32 expected hashes per block', async () => {
+    const stats = await fetchMiningStats('litecoin', {
+      fetchFn: statsResponse(recorded.litecoin),
+    })
+    // 3,518.75851979 LTC minted in 563 blocks: 6.25 LTC a block (halved August 2023).
+    expect(stats?.subsidyCoinsPerBlock).toBeCloseTo(6.25, 4)
+    expect(stats?.circulatingCoins).toBeCloseTo(77_700_417.14498554, 3)
+    expect(stats?.hashesPerBlock).toBe(95937773.26992714 * 2 ** 32)
+    // Unit check against the hashrate the same answer reports: expected hashes per block
+    // over the 150-second block time is 2.75e15 H/s; Blockchair says 2.69e15.
+    const impliedHashrate = stats!.hashesPerBlock / 150
+    expect(impliedHashrate / Number(recorded.litecoin.hashrate_24h)).toBeCloseTo(1, 0)
+  })
+
+  it('reads Dogecoin: 8 decimals, 10,000 DOGE a block, the same difficulty rule', async () => {
+    const stats = await fetchMiningStats('dogecoin', {
+      fetchFn: statsResponse(recorded.dogecoin),
+    })
+    expect(stats?.subsidyCoinsPerBlock).toBe(10_000)
+    expect(stats?.circulatingCoins).toBeCloseTo(156_268_596_383.7, 0)
+    // Dogecoin retargets every block, so the 24-hour figure is used, not the difficulty
+    // of the moment (45,261,326 here): 3,085,649,443,549,118 H/s x 60 s
+    // = 1.8514e17 expected hashes per block, a difficulty of 43,106,000.
+    expect(stats?.hashesPerBlock).toBeCloseTo(3085649443549118 * 60, -6)
+    expect(stats?.difficulty).toBeCloseTo((3085649443549118 * 60) / 2 ** 32, 3)
+    expect(stats!.difficulty / 1e6).toBeCloseTo(43.106, 2)
+  })
+
+  it('reads Monero: 12 decimals, and the difficulty itself is the expected hashes per block', async () => {
+    const stats = await fetchMiningStats('monero', {
+      fetchFn: statsResponse(recorded.monero),
+    })
+    // No 2^32 factor.
+    expect(stats?.hashesPerBlock).toBe(735582551412)
+    // Unit check: 735,582,551,412 hashes over the 120-second block time is
+    // 6,129,854,595 H/s, exactly the hashrate the same answer reports.
+    expect(Math.round(stats!.hashesPerBlock / 120)).toBe(
+      recorded.monero.hashrate_24h,
+    )
+    expect(stats?.circulatingCoins).toBeCloseTo(18_815_849.49018812, 3)
+    // Blockchair publishes no issuance for Monero (no inflation_24h, no blocks_24h): the
+    // block reward is the consensus tail emission, 0.6 XMR.
+    expect(recorded.monero.inflation_24h).toBeUndefined()
+    expect(stats?.subsidyCoinsPerBlock).toBe(0.6)
+  })
+})

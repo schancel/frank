@@ -1,0 +1,17 @@
+{
+  "about": "The AVU_hash basket as the oracle feed serves it (docs/protocol/oracle/README.md, `basket`). One entry is one body of hashing and every chain it is paid by; merge-mined chains are one entry. hashesPerDifficulty: Bitcoin-rule chains find a block once per difficulty x 2^32 hashes; Monero's difficulty is itself the expected hashes per block.",
+  "weightCap": { "entry": "bitcoin", "max": 0.6 },
+  "entries": [
+    { "id": "bitcoin", "label": "BTC", "algorithm": "sha256",
+      "chains": [{ "chain": "btc-mainnet", "hashesPerDifficulty": 4294967296 }] },
+    { "id": "bitcoin-cash", "label": "BCH", "algorithm": "sha256",
+      "chains": [{ "chain": "bch-mainnet", "hashesPerDifficulty": 4294967296 }] },
+    { "id": "ecash", "label": "XEC", "algorithm": "sha256",
+      "chains": [{ "chain": "xec-mainnet", "hashesPerDifficulty": 4294967296 }] },
+    { "id": "scrypt", "label": "LTC+DOGE", "algorithm": "scrypt",
+      "chains": [{ "chain": "ltc-mainnet", "hashesPerDifficulty": 4294967296 },
+                 { "chain": "doge-mainnet", "hashesPerDifficulty": 4294967296 }] },
+    { "id": "monero", "label": "XMR", "algorithm": "randomx",
+      "chains": [{ "chain": "xmr-mainnet", "hashesPerDifficulty": 1 }] }
+  ]
+}

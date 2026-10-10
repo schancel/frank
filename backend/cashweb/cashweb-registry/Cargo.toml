@@ -137,3 +137,6 @@ pretty_assertions = "1.2"
 
 # Temporary directories, automatically removed
 tempdir = "0.3"
+
+# Oracle tests write their configuration as the TOML an operator writes.
+toml = "0.5"

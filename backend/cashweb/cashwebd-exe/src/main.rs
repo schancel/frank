@@ -155,6 +155,11 @@ fn read_and_validate_conf_with_env(
         .solana_proxy
         .validate()
         .wrap_err("Invalid registry.solana_proxy configuration")?;
+    if let Some(oracle) = &conf.registry.oracle {
+        oracle
+            .validate()
+            .wrap_err("Invalid registry.oracle configuration")?;
+    }
     conf.registry
         .validate_rpc_resource_limits()
         .wrap_err("Invalid registry RPC resource limits")?;
@@ -447,7 +452,20 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let router = server.into_router_with_directory(directory.clone());
+    // The price and energy oracle is a task of its own: starting it opens its store and
+    // touches no network, and nothing here waits for a provider.
+    let oracle = match conf.registry.oracle.clone() {
+        Some(oracle) => Some(Arc::new(
+            cashweb_registry::oracle::OracleRuntime::start(
+                oracle,
+                &conf.registry.db_path,
+                |name| std::env::var(name).ok(),
+            )
+            .wrap_err("Opening the oracle store")?,
+        )),
+        None => None,
+    };
+    let router = server.into_router_with_services(directory.clone(), oracle);
     info!("Listening on {}", conf.host);
     let server = axum::Server::bind(&conf.host)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>());

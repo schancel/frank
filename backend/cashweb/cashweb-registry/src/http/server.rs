@@ -272,6 +272,7 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
             Cow::Borrowed("/directory/v1/:network/:subject/statements/:t1")
         }
         ["relay", "v1", "info"] => Cow::Borrowed("/relay/v1/info"),
+        ["oracle", "v1", "feed"] => Cow::Borrowed("/oracle/v1/feed"),
         ["directory", "v1", _, "address", _] => {
             Cow::Borrowed("/directory/v1/:network/address/:address")
         }
@@ -421,6 +422,15 @@ impl RegistryServer {
     pub fn into_router_with_directory(
         self,
         directory: Option<Arc<crate::directory_runtime::DirectoryRuntime>>,
+    ) -> Router {
+        self.into_router_with_services(directory, None)
+    }
+
+    /// The router with the directory and the price and energy oracle, each when configured.
+    pub fn into_router_with_services(
+        self,
+        directory: Option<Arc<crate::directory_runtime::DirectoryRuntime>>,
+        oracle: Option<Arc<crate::oracle::OracleRuntime>>,
     ) -> Router {
         let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
         let canonical_enabled = mailbox_enabled
@@ -605,6 +615,9 @@ impl RegistryServer {
             router = router
                 .merge(crate::http::usernames::router(Arc::clone(&runtime)))
                 .merge(crate::http::directory::router(runtime));
+        }
+        if let Some(oracle) = oracle {
+            router = router.merge(crate::http::oracle::router(oracle));
         }
         if let Some(spa_dir) = &self.spa_dir {
             use tower_http::services::{ServeDir, ServeFile};

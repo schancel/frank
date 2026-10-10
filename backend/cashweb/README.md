@@ -142,3 +142,109 @@ federation peers are never inferred to be public. Clients can select independent
 or identical transaction rebroadcast. Bitcoin-family duplicate broadcast is
 normally idempotent. EVM provider behavior varies, so clients reconcile by locally derived
 transaction hash rather than assuming an error proves rejection.
+
+## Price and energy oracle
+
+`GET /oracle/v1/feed` is the one place a client gets prices, chain statistics, mining hardware
+efficiency and electricity prices: the inputs of every AVU figure the app shows. The contract
+(series names, lookup semantics, formulas) is `docs/protocol/oracle/README.md`. The relay serves
+the inputs and does not compute AVU. The feed is for display and valuation, never a quote.
+
+- `?latest` (or no query): one current point per series and the last `electricity_window_days`
+  daily electricity points. Built after each collector round and served from memory; about 6 kB
+  with the shipped configuration. `Cache-Control: public, max-age=600` and an `ETag`
+  (`If-None-Match` answers `304`).
+- `?since=<unixSeconds>&until=<unixSeconds>&step=<seconds>`: history for a chart: per series the
+  point in force at `since`, then the last point of each step. At most 1000 steps per request; a
+  smaller `step` is refused with `400` naming the smallest allowed. Cacheable for a day once
+  `until` has passed.
+
+The route is public and unauthenticated. A request is answered from the relay's own store and
+never causes a request to a provider. The `[registry.oracle]` section turns the oracle on;
+without it there is no collector and the path answers `404`, which is how a client learns a relay has no
+feed. (A relay that also serves the web app from `spa_dir` answers unknown paths with the app's
+page instead; such a relay should keep the oracle on.)
+
+### What the collector does
+
+The collector is a task of its own. Relay startup opens its store and returns; no provider is
+contacted before the relay is listening, and no provider failure reaches message handling. A
+provider that fails (non-2xx, timeout, unreadable answer) is skipped for the round and left
+alone for 10 minutes, doubling with each further failure up to 6 hours. Failures are logged with
+the provider's name and the kind of failure only: never a URL (it may carry a key) and never
+upstream text. A round that is not yet due after a restart is not repeated.
+
+- Prices, every `price_interval_s` (10 minutes): two providers are drawn at random and each is
+  asked once for every asset it lists. Per asset: two answers within `agree_tolerance_bps` (2%)
+  give their mean. If they disagree, one more provider is asked for that asset and the median
+  of three is taken; with nobody left to ask, their mean, unless they are more than
+  `two_source_max_spread_bps` (10%) apart, in which case there is no sample. A sample more
+  than `outlier_threshold_bps` (10%) from the smoothed value, and the first sample of a series
+  or after `long_gap_s` (6 hours), also wants a third provider; when no third can answer, two
+  that agree are taken. An asset only one provider can answer for uses it (its `source` says
+  "single source" when only one lists it), but one provider alone cannot confirm a jump: such
+  a sample is dropped until another provider answers or the long gap has passed.
+  Samples are smoothed with a time-weighted moving average, `alpha = 1 - exp(-dt / ewma_tau_s)`
+  (30 minutes). Upstream cost: at most one request per provider per round, so at most 6 an hour
+  each; a quiet round is two requests in total, plus one to a provider that alone lists an
+  asset the two drawn do not.
+- Chain statistics, every `stats_interval_s` (1 hour): one Blockchair `/stats` request gives
+  every chain's difficulty, coins in existence and the subsidy it paid per block over 24 hours.
+  `blockReward/<chain>` is that subsidy times `miner_share`; `marketCap/<chain>` is coins in
+  existence times the relay's smoothed price.
+- Electricity, every `electricity_interval_s` (1 day): per region one request for day-ahead
+  prices and one for the ECB euro reference rates. Each complete UTC day becomes one point: the
+  mean price in US dollars per kWh. `electricity/aggregate`, the series AVU_spot uses, is the
+  weighted mean (`weight`, default 1) of the regions that have a point for the day, computed
+  when read. Zero and negative days are kept.
+
+Keys stay on the server. A row with `key_env` is used only when that environment variable is
+set; the key is sent to its provider and appears in no log and no answer. The shipped
+configurations name no keyed provider. A US region can be collected from the EIA API v2 once a
+key exists (this adapter has not been run against the live API):
+
+```toml
+[[registry.oracle.electricity]]
+region = "us-pjm-west"
+label = "PJM Western Hub day-ahead"
+attribution = "US Energy Information Administration"
+adapter = "eia"
+api_url = "https://api.eia.gov/v2/<route>/data/?frequency=daily&data[0]=<column>&..."
+key_env = "EIA_API_KEY"
+value_field = "<column>"
+usd_per_kwh_factor = "0.001"    # the column is $/MWh
+```
+
+Identifiers are the mainnet chain identifiers of `docs/protocol/chains/v1.json`: a chain's coin
+is priced under its chain's identifier, and a test network's coin is valued by the client at
+its mainnet price. Identifiers that are priced but are not Frank networks (`ltc-mainnet`,
+`xmr-mainnet`, `usdc`, `usdt`) must be listed in `non_network_ids`; any other unknown identifier
+stops the relay at startup. A provider's `symbols` table maps identifiers to the provider's own
+names; adding an asset is a configuration change. Provider endpoints are `api_url` (not `url`:
+`run-local-monad.sh` rewrites top-of-line `url =` keys).
+
+Adapters: `coinbase` (`/v2/exchange-rates`), `kraken` (`/0/public/Ticker`; symbols are the pair
+names Kraken answers under, e.g. `XXBTZUSD`), `binance` (`/api/v3/ticker/price`, also
+Binance.US), `coingecko` (`/api/v3/simple/price`), `chainlink` (USD feed contracts read with
+`eth_call` in one JSON-RPC batch; a symbol is the feed's address). Pyth Hermes is not included:
+it answers `401` without an API key.
+
+### Storage
+
+Collected data lives in its own RocksDB directory beside the registry database: `db_path` with
+the extension `oracle-v1` (`data/registry.oracle-v1`). It is created the first time a relay
+with the oracle enabled starts. The registry database is not touched, so an existing database
+opens unchanged and a build from before the oracle still opens it. The store holds every
+provider answer (`raw`) and the served series (`series`), at full resolution for
+`full_resolution_days` (14) and thinned to the last point of each UTC day after that, so
+history survives restarts. The smoothed prices are recomputable from the stored answers.
+Deleting the directory loses collected history only.
+
+### Bundled history
+
+History from before a relay started collecting, the curated hardware-efficiency steps and the
+basket definition are compiled into the binary from `docs/protocol/oracle/seed.json`. That file
+is generated: its sources are the JSON files in `packages/price-feeds/src/historical/`, and
+`python3 packages/price-feeds/scripts/build-oracle-seed.py` rebuilds it (`--check` exits 1 when
+it is out of date). For each series the relay serves bundled points up to its first collected
+point and collected points from there on.

@@ -79,6 +79,9 @@ export interface EvmLegacyConsolidatorConfig {
   ) => Promise<T>
   transactionBuilder: EvmTransactionBuilder
   getSources: () => Promise<EvmNativeSource[]>
+  /** Claims the plan's source accounts in the wallet's one claim, synchronously, or throws when
+   * another operation holds one. Returns the release, called once the plan is in the journal. */
+  claimSources?: (sources: readonly EvmNativeSource[]) => () => void
   sign: (
     source: EvmNativeSource,
     unsignedTransaction: string,
@@ -554,7 +557,7 @@ export class EvmLegacyConsolidator {
           : BigInt(account.account.balanceWei) < tx.value + maximumFee
       )
         continue
-      return this.journal(lifetime).prepare({
+      return this.reserve(lifetime, {
         kind,
         recipient,
         intendedValueWei: params.value.toString(),
@@ -618,12 +621,28 @@ export class EvmLegacyConsolidator {
       unsignedTransaction: drain,
       dependencies: members.map((_, i) => i),
     })
-    return this.journal(lifetime).prepare({
+    return this.reserve(lifetime, {
       kind,
       recipient,
       intendedValueWei: params.value.toString(),
       members,
     })
+  }
+  /** Records the plan. Its source accounts are claimed (synchronously, through the wallet's one
+   * claim) from before the journal write until the write is done; from then on the journal row
+   * itself keeps every other spender off them. */
+  private async reserve(
+    lifetime: WalletOperationLifetime | undefined,
+    plan: Parameters<ReturnType<EvmLegacyConsolidator['journal']>['prepare']>[0],
+  ): Promise<EvmNativeOperation> {
+    const release = this.config.claimSources?.(
+      plan.members.map(member => member.source),
+    )
+    try {
+      return await this.journal(lifetime).prepare(plan)
+    } finally {
+      release?.()
+    }
   }
   private async sign(
     row: EvmNativeOperation,

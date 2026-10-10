@@ -16,7 +16,7 @@
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { computeAddress, getBytes } from 'ethers'
+import { computeAddress, getBytes, hexlify } from 'ethers'
 import { toHex } from '@frank/codec'
 import {
   restoreCanonicalRequest,
@@ -78,6 +78,47 @@ const providerStandIns = { enabled: false }
 export function useProviderStandIns(enabled = true) {
   providerStandIns.enabled = enabled
 }
+/**
+ * The offline chain's transactions, shared by the wallet's provider stand-in and the relay
+ * stand-in (a relay broadcasts the payments of a message it stores). `mined` holds what is in a
+ * block: hash -> sender. A test turns the knobs:
+ * - `nodeDown`: every broadcast and every read of a transaction or nonce fails (the node is
+ *   unreachable); balances and fee reads still answer.
+ * - `relayBroadcasts`: whether the relay stand-in broadcasts the payments of a delivered message.
+ * - `walletBroadcasts`: raw transactions the WALLET's provider was asked to broadcast, in order.
+ */
+export const offlineChain = {
+  mined: new Map<string, string>(),
+  nodeDown: false,
+  relayBroadcasts: true,
+  walletBroadcasts: [] as string[],
+  /** What the node answers for `eth_gasPrice`: what a transfer is charged per gas. Zero by
+   * default, so a suite's stamps of a few wei are not below the fee floor; a test of the floor
+   * sets it. The fee CAP (2 x base fee 1 + tip 1 = 3) is separate and unchanged. */
+  gasPrice: 0n,
+  reset() {
+    this.gasPrice = 0n
+    this.mined.clear()
+    this.nodeDown = false
+    this.relayBroadcasts = true
+    this.walletBroadcasts.length = 0
+  },
+  /** Puts a signed transfer in a block, once: moves its value and consumes its nonce. */
+  mine(raw: string): string {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const tx = require('ethers').Transaction.from(raw)
+    if (this.mined.has(tx.hash)) return tx.hash
+    const to = tx.to.toLowerCase(),
+      from = tx.from.toLowerCase()
+    // One nonce, one transaction: a second transaction at a used nonce never lands.
+    if ([...this.mined.values()].filter(a => a === from).length > tx.nonce)
+      throw new Error('nonce too low')
+    mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
+    mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
+    this.mined.set(tx.hash, from)
+    return tx.hash
+  },
+}
 
 export function offlineProviderModule() {
   const actual = jest.requireActual('../monad-provider')
@@ -101,26 +142,52 @@ export function offlineProviderModule() {
         providerRequests.push(request.method)
         if (request.method === 'getBalance')
           return mockBalances.get(request.address!.toLowerCase()) ?? 0n
-        if (
-          providerStandIns.enabled &&
-          request.method === 'broadcastTransaction'
-        ) {
-          const tx = ethers.Transaction.from(
-            (request as unknown as { signedTransaction: string })
-              .signedTransaction,
-          )
-          const to = tx.to.toLowerCase(),
-            from = tx.from.toLowerCase()
-          mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
-          mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
-          providerBroadcasts.push({ from, to, value: tx.value })
+        if (request.method === 'broadcastTransaction') {
+          const raw = (request as unknown as { signedTransaction: string })
+            .signedTransaction
+          const tx = ethers.Transaction.from(raw)
+          offlineChain.walletBroadcasts.push(raw)
+          if (offlineChain.nodeDown) throw new Error('node unreachable')
+          if (offlineChain.mined.has(tx.hash)) throw new Error('already known')
+          offlineChain.mine(raw)
+          providerBroadcasts.push({
+            from: tx.from.toLowerCase(),
+            to: tx.to.toLowerCase(),
+            value: tx.value,
+          })
           return tx.hash
         }
-        if (providerStandIns.enabled && request.method === 'getBlockNumber')
-          return 1
-        if (request.method === 'getTransactionCount') return 0
+        if (request.method === 'getTransactionReceipt') {
+          if (offlineChain.nodeDown) throw new Error('node unreachable')
+          const hash = (request as unknown as { hash: string }).hash
+          const from = offlineChain.mined.get(hash)
+          if (from === undefined) return null
+          return {
+            transactionHash: hash,
+            transactionIndex: '0x0',
+            blockHash: '0x' + '11'.repeat(32),
+            blockNumber: '0x1',
+            from,
+            to: '0x' + '00'.repeat(20),
+            contractAddress: null,
+            cumulativeGasUsed: '0x5208',
+            gasUsed: '0x5208',
+            effectiveGasPrice: '0x2',
+            logs: [],
+            logsBloom: '0x' + '00'.repeat(256),
+            status: '0x1',
+            type: '0x2',
+          }
+        }
+        if (request.method === 'getBlockNumber') return 1
+        if (request.method === 'getTransactionCount') {
+          if (offlineChain.nodeDown) throw new Error('node unreachable')
+          const address = request.address!.toLowerCase()
+          return [...offlineChain.mined.values()].filter(a => a === address)
+            .length
+        }
         if (request.method === 'estimateGas') return 50_000n
-        if (request.method === 'getGasPrice') return 2n
+        if (request.method === 'getGasPrice') return offlineChain.gasPrice
         if (request.method === 'getPriorityFee') return 1n
         if (request.method === 'getBlock')
           return {
@@ -307,6 +374,15 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
       body,
       contentType: init.headers['Content-Type'],
     })
+    // A relay that stores a message broadcasts its payments, once each.
+    if (phase === 'delivered' && offlineChain.relayBroadcasts)
+      for (const raw of restored.parts.transactions) {
+        try {
+          offlineChain.mine(hexlify(raw))
+        } catch {
+          // The relay only logs a broadcast it could not make.
+        }
+      }
     if (phase === 'delivered' && deliverTo)
       deliverTo.push({
         delivery: restored.parts.delivery,
@@ -502,6 +578,7 @@ export class Seat {
 
 /** Two funded wallets that have admitted each other, seated at one table. */
 export async function table() {
+  offlineChain.reset()
   mockBalances.clear()
   mockFunded.length = 0
   mailboxes.clear()

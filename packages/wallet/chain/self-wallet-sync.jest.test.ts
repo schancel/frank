@@ -493,9 +493,28 @@ describe("a wallet's sync note to itself", () => {
       expect(applied).toHaveBeenCalledTimes(1)
     })
 
+    it('a wallet whose only money is at its identity address sends it natively', async () => {
+      minesNativeTransfers(one.alice)
+      const main = (await one.alice.getReceiveAddress()).raw.toLowerCase()
+      const identity = one.alice.identity.address.raw.toLowerCase()
+      mockBalances.set(main, 0n)
+      mockBalances.set(identity, 10n ** 17n)
+      const sent = await send(one)
+      expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
+      const [row] = one.alice.getNativeOperations!()
+      expect(summarizeEvmNativeOperation(row).payment).toBe('included')
+      expect(row.members.map(member => member.source.kind)).toEqual(['identity'])
+      expect(mockBalances.get(main)).toBe(0n)
+    })
+
     it('resolves with the relay down and a paid chat message unresolved; the note is sent on a later flush, and neither holds the other', async () => {
       minesNativeTransfers(one.alice)
-      // A chat message whose delivery is not known: a live attempt in the message journal.
+      // A chat message whose delivery is not known, paid from a funded single-use account. (One
+      // paid from the main account holds that account until the chain shows its payment, and a
+      // native send from it waits for that.)
+      const [stampAccount] = one.alice.pool.ensureSize(1)
+      await one.alice.pool.flush()
+      mockBalances.set(stampAccount.address.toLowerCase(), STAMP + 63_000n)
       one.setMailbox(bobMailbox)
       one.setPhase('fail')
       const chat = await one.chain.directMessages
@@ -539,6 +558,11 @@ describe("a wallet's sync note to itself", () => {
         recipient: one.bob.identity.address,
         items: [{ type: 'text', text: 'again' }],
         stampValue: STAMP,
+      })
+      expect(bobMailbox).toHaveLength(1)
+      await one.chain.directMessages.reconcileAttempts({
+        wallet: one.alice,
+        payloadDigests: [],
       })
       expect(bobMailbox).toHaveLength(2)
       expect(mailbox).toHaveLength(1)

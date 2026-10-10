@@ -233,9 +233,13 @@ describe('two typed wallets play blackjack through stamped messages', () => {
       expect(dealer.paid[dealer.paid.length - 1]).toBe(script.owed > 0n ? script.owed : STAMP)
       // Nothing else the dealer sent carried more than an ordinary stamp.
       expect(dealer.paid.slice(0, -1).every(v => v === STAMP)).toBe(true)
-      // Spendable balances only went down: what a wallet receives as stamps is not spendable.
-      expect(await player.balance()).toBeLessThan(START_BALANCE - totalStakeWei(final))
-      expect(await dealer.balance()).toBeLessThan(START_BALANCE - script.owed)
+      // Spendable balances only went down, by at least what each paid: what a wallet receives
+      // as stamps is not spendable. (A stamp is paid straight from the main account, and the
+      // offline chain charges no gas, so nothing more than the stamps themselves left it.)
+      expect(await player.balance()).toBeLessThanOrEqual(
+        START_BALANCE - totalStakeWei(final),
+      )
+      expect(await dealer.balance()).toBeLessThanOrEqual(START_BALANCE - script.owed)
     })
   })
 

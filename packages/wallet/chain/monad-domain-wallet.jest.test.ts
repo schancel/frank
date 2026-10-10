@@ -297,8 +297,10 @@ test.each([0, 1])(
       const balance = jest
         .spyOn(wallet.provider, 'getBalance')
         .mockResolvedValue(123n)
-      expect(await chain.nativeTransfers.getBalance({ wallet })).toBe(123n)
+      // The balance is the main account's and the identity account's: both are spendable.
+      expect(await chain.nativeTransfers.getBalance({ wallet })).toBe(246n)
       expect(balance).toHaveBeenCalledWith(expected[index].main)
+      expect(balance).toHaveBeenCalledWith(expected[index].auth)
     } finally {
       await wallet.close()
     }

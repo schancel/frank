@@ -250,6 +250,11 @@ export type RecoveredStampPaymentSweepResult =
  * signed payments cannot land: the wallet keeps them and their reserved accounts, and other
  * messages send from other accounts. Never pay again for the same message on any status without
  * the user's explicit say-so. */
+export type DirectMessagePaymentState =
+  | "pending"
+  | "spent"
+  | "reverted"
+  | "failed";
 export type DirectMessageAttemptStatus =
   | "live"
   | "delivered"
@@ -296,6 +301,18 @@ export class DirectMessageArgumentError extends Error {
       `${argument} must be 16 bytes or their lowercase 8-4-4-4-12 hexadecimal form. Nothing was paid or sent.`
     );
     this.name = "DirectMessageArgumentError";
+  }
+}
+
+/** `send` was asked, explicitly, for a paid stamp smaller than what the chain charges to move it
+ * (`floorWei`: one transfer's fee right now). Nothing was paid or sent. Pay at least the floor,
+ * or send the message with no stamp. */
+export class DirectMessageStampBelowFeeError extends Error {
+  constructor(readonly stampValueWei: bigint, readonly floorWei: bigint) {
+    super(
+      `A stamp of ${stampValueWei} wei is less than the ${floorWei} wei the chain charges to move it. Nothing was paid or sent: pay at least ${floorWei} wei, or send without a stamp.`
+    );
+    this.name = "DirectMessageStampBelowFeeError";
   }
 }
 
@@ -448,6 +465,27 @@ export interface DirectMessageClient {
   }): Promise<void>;
   /** Durably marks an attempt as discarded/dead so it stops blocking subsequent sends.
    * Call when the user explicitly discards or deletes a failed/pending message. */
+  /**
+   * What the chain has shown, so far, of each stamp payment of a message this wallet sent, in
+   * payment order; `undefined` for a digest this wallet has no record of. Reads the wallet's own
+   * record and makes no request: `reconcileAttempts` is what looks at the chain.
+   * - `pending`: signed, not yet seen in a block. Its account stays claimed.
+   * - `spent` / `reverted`: in a block. A reverted payment consumed its account all the same.
+   * - `failed`: the account's nonce was consumed by another transaction; this payment can never
+   *   land. It is never paid again.
+   * Delivery (`DirectMessageAttemptStatus`) and payment are separate facts.
+   */
+  paymentsOf?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): DirectMessagePaymentState[] | undefined;
+  /**
+   * The smallest paid stamp this wallet sends right now: what the chain charges for the one
+   * transfer that moves it, from the node's current gas price (cached for a few seconds). A
+   * default or suggested stamp should be at least this; `send` raises its own default to it and
+   * refuses an explicit smaller `stampValue` with {@link DirectMessageStampBelowFeeError}.
+   */
+  minimumStamp?(params: { wallet: WalletHandle }): Promise<bigint>;
   discardAttempt?(params: {
     wallet: WalletHandle;
     payloadDigest: string;

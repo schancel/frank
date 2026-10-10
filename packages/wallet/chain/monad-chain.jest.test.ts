@@ -185,6 +185,7 @@ function makeWallet(identity: MonadIdentity): EvmChainWalletHandle {
         index: 4,
         fundingTxHashes: [],
       }),
+      releaseClaim: jest.fn(),
     } as unknown as EvmChainWalletHandle["pool"],
     leaseManager: {} as EvmChainWalletHandle["leaseManager"],
     provider: {} as EvmChainWalletHandle["provider"],

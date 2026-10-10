@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 import * as durability from '../storage/level-durability'
-import { LevelCanonicalLinkStore } from './monad-canonical-dm'
+import { LevelOutgoingMessageStore } from './monad-canonical-dm'
 
 // The real helpers run; the opener is only wrapped so the suite can see that it was the code path.
 jest.mock('../storage/level-durability', () => {
@@ -17,22 +17,27 @@ jest.mock('../storage/level-durability', () => {
   }
 })
 
-type Row = Parameters<LevelCanonicalLinkStore['put']>[0]
+type Row = Parameters<LevelOutgoingMessageStore['put']>[0]
 
-const NAMESPACE = 'canonical-dm-workflow-links'
+const NAMESPACE = 'outgoing-messages-v1'
 
-function row(attemptRef: string, extra: Partial<Row> = {}): Row {
+function row(id: string, extra: Partial<Row> = {}): Row {
   return {
-    digest: `digest-${attemptRef}`,
-    attemptRef,
-    consumerId: `consumer-${attemptRef}`,
-    prepared: { payload: '0a0b', context: '0c', economicBinding: '0d' },
+    version: 1,
+    consumerId: `frank-dm:${id}`,
+    digest: `digest-${id}`,
+    recipientSubject: '02' + 'ab'.repeat(32),
+    request: { body: '0a0b', contentType: 'multipart/form-data; boundary=x' },
+    payments: [
+      { index: 3, address: '0x' + '0a'.repeat(20), rawTx: '0x02', state: 'pending' },
+    ],
     createdAt: 1_700_000_000_000,
     ...extra,
   }
 }
+const key = (id: string) => `frank-dm:${id}`
 
-function handle(store: LevelCanonicalLinkStore): LevelDB {
+function handle(store: LevelOutgoingMessageStore): LevelDB {
   return (store as unknown as { db: LevelDB }).db
 }
 
@@ -49,23 +54,23 @@ async function rawEntries(location: string): Promise<Array<[string, string]>> {
   return entries
 }
 
-describe('LevelCanonicalLinkStore durability', () => {
+describe('LevelOutgoingMessageStore: the durable record of sent messages', () => {
   let location: string
-  let opened: LevelCanonicalLinkStore[]
+  let opened: LevelOutgoingMessageStore[]
 
-  async function open(): Promise<LevelCanonicalLinkStore> {
-    const store = await LevelCanonicalLinkStore.open(location)
+  async function open(): Promise<LevelOutgoingMessageStore> {
+    const store = await LevelOutgoingMessageStore.open(location)
     opened.push(store)
     return store
   }
 
-  async function close(store: LevelCanonicalLinkStore): Promise<void> {
+  async function close(store: LevelOutgoingMessageStore): Promise<void> {
     opened.splice(opened.indexOf(store), 1)
     await store.close()
   }
 
   beforeEach(() => {
-    location = mkdtempSync(join(tmpdir(), 'frank-canonical-links-'))
+    location = mkdtempSync(join(tmpdir(), 'frank-outgoing-messages-'))
     opened = []
     jest.mocked(durability.openDurableLevel).mockClear()
   })
@@ -87,19 +92,19 @@ describe('LevelCanonicalLinkStore durability', () => {
     )
   })
 
-  it('writes every link with the durable write options', async () => {
+  it('writes every message with the durable write options', async () => {
     const store = await open()
     const put = jest.spyOn(handle(store), 'put')
     const first = row('attempt-a')
 
     await store.put(first)
-    await store.put({ ...first, outcome: 'delivered', acknowledged: true })
+    await store.put({ ...first, outcome: 'delivered', accounted: true })
 
     expect(put.mock.calls).toEqual([
-      ['attempt-a', JSON.stringify(first), { sync: true }],
+      [key('attempt-a'), JSON.stringify(first), { sync: true }],
       [
-        'attempt-a',
-        JSON.stringify({ ...first, outcome: 'delivered', acknowledged: true }),
+        key('attempt-a'),
+        JSON.stringify({ ...first, outcome: 'delivered', accounted: true }),
         { sync: true },
       ],
     ])
@@ -107,38 +112,31 @@ describe('LevelCanonicalLinkStore durability', () => {
       expect(call[2]).toBe(durability.DURABLE_LEVEL_WRITE_OPTIONS)
   })
 
-  it('keeps the stored key and value format unchanged', async () => {
+  it('stores one JSON row per message, keyed by its message identity', async () => {
     const store = await open()
     const link = row('attempt-a', { outcome: 'dead', reason: 'rejected' })
     await store.put(link)
+    expect(store.get(key('attempt-a'))).toEqual(link)
+    expect(store.get(key('attempt-b'))).toBeUndefined()
     await close(store)
 
     expect(await rawEntries(location)).toEqual([
-      ['attempt-a', JSON.stringify(link)],
+      [key('attempt-a'), JSON.stringify(link)],
     ])
   })
 
-  it('opens a store written by the earlier plain Level path and returns identical rows', async () => {
-    const legacyRows = [
-      row('attempt-b', { outcome: 'delivered', accounted: true }),
-      row('attempt-a', { putAttempts: 2, lastPutAttemptAt: 1_700_000_000_500 }),
-      row('attempt-c', { outcome: 'dead', reason: 'relay-rejected' }),
-    ]
-    const legacy = level(join(location, NAMESPACE))
-    for (const legacyRow of legacyRows)
-      await legacy.put(legacyRow.attemptRef, JSON.stringify(legacyRow))
-    await legacy.close()
+  it('refuses a record it does not understand, naming the development reset, and holds no handle', async () => {
+    const old = level(join(location, NAMESPACE))
+    await old.put(key('attempt-a'), JSON.stringify({ ...row('attempt-a'), version: 0 }))
+    await old.close()
 
-    const store = await open()
+    await expect(LevelOutgoingMessageStore.open(location)).rejects.toThrow(
+      /Unsupported sent-message record in outgoing-messages-v1\. Development reset: close the wallet and delete that directory \(it holds no keys\)/,
+    )
 
-    // Rows load in key order, exactly as the earlier open loop produced them.
-    expect(store.all()).toEqual([legacyRows[1], legacyRows[0], legacyRows[2]])
-
-    const updated = { ...legacyRows[0], acknowledged: true }
-    await store.put(updated)
-    await close(store)
-    const reopened = await open()
-    expect(reopened.all()).toEqual([legacyRows[1], updated, legacyRows[2]])
+    // The handle was closed: the directory can be opened (or deleted) again.
+    const again = level(join(location, NAMESPACE))
+    await again.close()
   })
 
   it('returns written rows after close and reopen', async () => {
@@ -218,15 +216,15 @@ describe('LevelCanonicalLinkStore durability', () => {
 
   it('closes the handle when the stored rows cannot be read, so the namespace can reopen', async () => {
     const legacy = level(join(location, NAMESPACE))
-    await legacy.put('attempt-a', 'not-json')
+    await legacy.put(key('attempt-a'), 'not-json')
     await legacy.close()
 
-    await expect(LevelCanonicalLinkStore.open(location)).rejects.toBeInstanceOf(
+    await expect(LevelOutgoingMessageStore.open(location)).rejects.toBeInstanceOf(
       SyntaxError,
     )
 
     const repair = level(join(location, NAMESPACE))
-    await repair.put('attempt-a', JSON.stringify(row('attempt-a')))
+    await repair.put(key('attempt-a'), JSON.stringify(row('attempt-a')))
     await repair.close()
     const store = await open()
     expect(store.all()).toEqual([row('attempt-a')])

@@ -130,6 +130,7 @@ export {
   DirectMessageAlreadyAttemptedError,
   DirectMessageArgumentError,
   DirectMessageAttemptUnlinkedError,
+  DirectMessageStampBelowFeeError,
   NativeTransactionSubmissionError,
   TopicPostOutcomeUnknownError,
 } from "./active-chain";

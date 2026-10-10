@@ -685,7 +685,7 @@ describe('contract calls through the native operation journal', () => {
       ...call,
       gasLimit: 250_000n,
     })
-    expect(journal.get(plain.operationId).record).toBeNull()
+    expect(journal.get(plain.operationId)).not.toHaveProperty('record')
     const transfer = (extra: object) =>
       journal.prepare({
         kind: 'native',

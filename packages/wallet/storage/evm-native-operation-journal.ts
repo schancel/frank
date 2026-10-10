@@ -81,8 +81,7 @@ const MAX_RECORD_BYTES = 8 * 1024
 function validateRecord(
   value: unknown,
   kind: unknown,
-): EvmContractCallRecord | null {
-  if (value === null) return null
+): EvmContractCallRecord {
   if (kind !== 'contract') fail()
   const row = object(value, [
     'kind',
@@ -128,8 +127,13 @@ export interface EvmNativeOperation {
   members: EvmNativeMember[]
   cancelled: boolean
   reservedBytes: number
-  /** A contract call's record, written with the plan and so before anything is signed. */
-  record: EvmContractCallRecord | null
+  /**
+   * A contract call's record, written with the plan and so before anything is signed. Only a
+   * contract call that was given one has the key at all: a row without a record (every native
+   * and legacy send, and every row written before records existed) is the same row it always
+   * was, so adding the field needed no new journal version and no reset.
+   */
+  record?: EvmContractCallRecord
 }
 export interface EvmNativePlan {
   kind: EvmNativeOperationKind
@@ -341,6 +345,8 @@ function validateRow(
   value: unknown,
   binding: EvmNativeBinding,
 ): EvmNativeOperation {
+  const hasRecord =
+    !!value && typeof value === 'object' && 'record' in value
   const row = object(value, [
     'version',
     'operationId',
@@ -352,9 +358,9 @@ function validateRow(
     'members',
     'cancelled',
     'reservedBytes',
-    'record',
+    ...(hasRecord ? ['record'] : []),
   ])
-  validateRecord(row.record, row.kind)
+  if (hasRecord) validateRecord(row.record, row.kind)
   if (
     row.version !== 1 ||
     typeof row.operationId !== 'string' ||
@@ -715,7 +721,7 @@ export class EvmNativeOperationJournal {
         })),
         cancelled: false,
         reservedBytes: 0,
-        record: frozen.record ?? null,
+        ...(frozen.record ? { record: frozen.record } : {}),
       }
       row.reservedBytes = reservation(row)
       const validated = validateRow(row, this.binding)

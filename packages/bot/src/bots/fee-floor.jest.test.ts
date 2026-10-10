@@ -26,7 +26,9 @@ import { VendorBot } from "./vendor-bot";
 
 const FLOOR = 5_000_000_000_000_000n; // 0.005 MON: one transfer's fee, say
 const DUST = 1_000_000_000_000_000n; // below it
-const STAKE = 10_000_000_000_000_000n; // above it
+/** A table's minimum: twice the floor, so a refund survives the fee rising before it is sent. */
+const MINIMUM = 2n * FLOOR;
+const STAKE = 20_000_000_000_000_000n; // above the minimum
 const TARGET = 32768;
 
 const texts = (h: ReturnType<typeof harness>) =>
@@ -60,7 +62,7 @@ async function diceBet(
   };
 }
 
-describe("a table's minimum stake is never below the chain's fee floor", () => {
+describe("a table's minimum stake is never below twice the chain's fee floor", () => {
   test("dice refuses a stake below the floor, rolls nothing, and the refund goes out as text only", async () => {
     const h = harness();
     h.feeFloor(FLOOR);
@@ -92,13 +94,20 @@ describe("a table's minimum stake is never below the chain's fee floor", () => {
     expect(h.paidOut()).toBeGreaterThanOrEqual(FLOOR);
   });
 
-  test("a stake exactly at the floor is taken", async () => {
+  test("a stake exactly at twice the floor is taken; one between the floor and that is refused and returned as money", async () => {
     const h = harness();
     h.feeFloor(FLOOR);
     const bot = new SatoshiDiceBot();
-    const bet = await diceBet(h, bot, FLOOR, "lose");
-    await bot.onMessage(h.message([bet], [h.pay(FLOOR)]), h.ctx);
+    const bet = await diceBet(h, bot, MINIMUM, "lose");
+    await bot.onMessage(h.message([bet], [h.pay(MINIMUM)]), h.ctx);
     expect(h.item("dice")).toMatchObject({ action: "result", isWin: false });
+
+    const between = FLOOR + FLOOR / 2n;
+    const small = await diceBet(h, bot, between, "win");
+    await bot.onMessage(h.message([small], [h.pay(between)]), h.ctx);
+    expect(texts(h)).toContain("The smallest stake at this table is");
+    // Above the floor, so it can be moved: it goes back.
+    expect(h.paidOut()).toBe(between);
   });
 
   test("an operator's own minimum above the floor is the minimum", async () => {
@@ -141,7 +150,7 @@ describe("a table's minimum stake is never below the chain's fee floor", () => {
     expect(texts(h)).toContain("The smallest stake at this table is");
     expect(h.paidOut()).toBe(0n);
 
-    // At the floor the same table plays, and a win pays twice the stake.
+    // At the minimum the same table plays, and a win pays twice the stake.
     await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
     const next = h.item("rps");
     const second = JSON.parse(h.data.get(`match:${next.matchId}`)!);
@@ -156,25 +165,25 @@ describe("a table's minimum stake is never below the chain's fee floor", () => {
             playerMove: (["rock", "paper", "scissors"] as RpsMove[]).find(
               (candidate) => evaluateRps(candidate, second.move) === "win"
             )!,
-            wagerWei: FLOOR.toString(),
+            wagerWei: MINIMUM.toString(),
           },
         ],
-        [h.pay(FLOOR)]
+        [h.pay(MINIMUM)]
       ),
       h.ctx
     );
     expect(h.item("rps")).toMatchObject({ action: "resolve", outcome: "win" });
-    expect(h.paidOut()).toBe(FLOOR * 2n);
+    expect(h.paidOut()).toBe(MINIMUM * 2n);
   });
 
-  test("a raffle round opens at the floor when its configured ticket price is below it", async () => {
+  test("a raffle round opens at twice the floor when its configured ticket price is below that", async () => {
     const h = harness();
     h.feeFloor(FLOOR);
     const bot = new RaffleBot({ entryPriceWei: DUST, maxEntries: 2 });
     const alice = "0x" + "a1".repeat(20);
     await bot.onMessage(h.message([{ type: "text", text: "hello" }], [], alice), h.ctx);
     const announce = h.item("raffle");
-    expect(announce.entryPriceWei).toBe(FLOOR.toString());
+    expect(announce.entryPriceWei).toBe(MINIMUM.toString());
     h.sent.length = 0;
     const enter: RaffleItem = {
       type: "raffle",
@@ -186,11 +195,11 @@ describe("a table's minimum stake is never below the chain's fee floor", () => {
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([]);
     expect(texts(h)).toContain("You are not entered");
     expect(h.paidOut()).toBe(0n);
-    await bot.onMessage(h.message([enter], [h.pay(FLOOR)], alice), h.ctx);
+    await bot.onMessage(h.message([enter], [h.pay(MINIMUM)], alice), h.ctx);
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([alice]);
   });
 
-  test("the shop never sells below the floor: the catalog shows the price in force and a smaller payment buys nothing", async () => {
+  test("the shop never sells below twice the floor: the catalog shows the price in force and a smaller payment buys nothing", async () => {
     const h = harness();
     h.feeFloor(FLOOR);
     const catalog: VendorCatalogItem[] = [
@@ -209,7 +218,9 @@ describe("a table's minimum stake is never below the chain's fee floor", () => {
       itemId: "pic",
     };
     await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
-    expect(JSON.stringify(h.item("digital-goods"))).toContain(FLOOR.toString());
+    expect(JSON.stringify(h.item("digital-goods"))).toContain(
+      MINIMUM.toString()
+    );
     h.sent.length = 0;
     await bot.onMessage(h.message([buy], [h.pay(DUST)]), h.ctx);
     expect(h.sent.some((m) => m.items.some((i) => i.type === "image"))).toBe(
@@ -217,7 +228,7 @@ describe("a table's minimum stake is never below the chain's fee floor", () => {
     );
     expect(texts(h)).toContain("Nothing was sold");
     expect(h.paidOut()).toBe(0n);
-    await bot.onMessage(h.message([buy], [h.pay(FLOOR)]), h.ctx);
+    await bot.onMessage(h.message([buy], [h.pay(MINIMUM)]), h.ctx);
     expect(h.sent.some((m) => m.items.some((i) => i.type === "image"))).toBe(
       true
     );

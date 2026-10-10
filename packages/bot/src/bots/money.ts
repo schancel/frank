@@ -651,13 +651,15 @@ export async function feeFloorWei(ctx: BotContext): Promise<bigint> {
 }
 
 /** A table's smallest stake, or a shop's or raffle's price: what was configured, and never less
- * than the chain's fee floor, so that what is staked or paid can always be paid back. */
+ * than TWICE the chain's fee floor. The floor moves with the gas price between a bet and its
+ * refund or payout; at twice the floor an amount taken now can still be paid back after the
+ * fee has risen by anything short of doubling. */
 export async function tableMinimumWei(
   ctx: BotContext,
   configuredWei: bigint
 ): Promise<bigint> {
-  const floor = await feeFloorWei(ctx);
-  return floor > configuredWei ? floor : configuredWei;
+  const minimum = 2n * (await feeFloorWei(ctx));
+  return minimum > configuredWei ? minimum : configuredWei;
 }
 
 /** A message that did not pay for what it asked: says so at once, and returns what it is

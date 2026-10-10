@@ -362,6 +362,35 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect('conversationName' in opened[1]).toBe(false)
   })
 
+  it('a free message carries the same conversation ID and subject a paid one would', async () => {
+    const unnamed = await attempt({ stampValue: 0n })
+    const named = await attempt({
+      stampValue: 0n,
+      conversationId: CONVERSATION,
+      conversationName: 'Weekend plans',
+    } as Extra)
+    const followUp = await attempt({
+      stampValue: 0n,
+      conversationId: CONVERSATION,
+    })
+    for (const sent of [unnamed, named, followUp])
+      expect(sent.error).toBeUndefined()
+    const opened = await received()
+    // No conversation named: the one this account opens with the recipient, not none at all.
+    const openingId = formatConversationId(
+      allocateOpeningConversationId(
+        conversationIdSaltOf(f.alice)!,
+        f.bob.identity.address.raw.toLowerCase(),
+      ),
+    )
+    expect(opened.map(m => [m.conversationId, m.conversationName])).toEqual([
+      [openingId, undefined],
+      [CONVERSATION, 'Weekend plans'],
+      [CONVERSATION, undefined],
+    ])
+    expect(opened.every(m => m.stampValueWei === 0n)).toBe(true)
+  })
+
   // PIN (A6): a caller that passes no `messageId` behaves as on main.
   it('pin: without a message ID the wallet draws a fresh random one for every send, as before', async () => {
     const journalRead = jest.spyOn(

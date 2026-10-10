@@ -96,6 +96,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
+import { walletSupport } from '../../utils/wallet-support'
 
 export default defineComponent({
   name: 'OfferSwapDialog',
@@ -118,16 +119,23 @@ export default defineComponent({
     return {
       offeredChain: 'monad-testnet',
       offeredAmount: '',
-      requestedChain: 'solana-testnet',
+      requestedChain: 'solana-devnet',
       requestedAmount: '',
     }
   },
   computed: {
     chainOptions() {
-      return Object.values(PROTOCOL_CHAINS).map(chain => ({
-        label: `${chain.name} (${chain.symbol})`,
-        value: chain.id,
-      }))
+      // Only the networks the app has a wallet for, by the rule the Wallet page uses: the
+      // network its kind selects on testnet or on mainnet, when the registry gives it a wallet.
+      return Object.values(PROTOCOL_CHAINS)
+        .filter(chain => {
+          const support = walletSupport(chain.kind, chain.isTestnet)
+          return support.status === 'available' && support.entry.id === chain.id
+        })
+        .map(chain => ({
+          label: `${chain.name} (${chain.symbol})`,
+          value: chain.id,
+        }))
     },
     offeredUnit(): string {
       return PROTOCOL_CHAINS[this.offeredChain]?.symbol || 'MON'

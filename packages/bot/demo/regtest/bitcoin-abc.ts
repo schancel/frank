@@ -75,9 +75,13 @@ export async function ensureBitcoinAbc(
   const cache = resolve(env.FRANK_REGTEST_CACHE_DIR ?? join(REPO_ROOT, '.regtest-cache'))
   const home = join(cache, `bitcoin-abc-${BITCOIN_ABC_VERSION}`)
   const bitcoind = join(home, 'bin', 'bitcoind')
-  // The marker is written only after a verified archive was unpacked completely.
+  // `home` appears only by the rename below, complete and verified, and is never removed here:
+  // another run sharing the cache may be executing the node inside it.
   const marker = join(home, '.verified-sha256')
-  if (!existsSync(marker) || readFileSync(marker, 'utf8').trim() !== archive.sha256) {
+  if (existsSync(home) && readFileSync(marker, 'utf8').trim() !== archive.sha256) {
+    throw new Error(`${home} does not hold the pinned release; remove it and run again`)
+  }
+  if (!existsSync(home)) {
     mkdirSync(cache, { recursive: true })
     const url = `https://download.bitcoinabc.org/${BITCOIN_ABC_VERSION}/${archive.path}`
     const response = await fetch(url)
@@ -87,8 +91,8 @@ export async function ensureBitcoinAbc(
     if (sha256 !== archive.sha256) {
       throw new Error(`${url} has SHA-256 ${sha256}, expected ${archive.sha256}: not unpacked`)
     }
-    // Unpack beside the final place and rename, so two runs starting together cannot share a
-    // half-written directory.
+    // Unpack into a directory of this process and rename it into place in one step, so two
+    // runs starting together never see a half-written directory.
     const staging = join(cache, `unpack-${process.pid}`)
     rmSync(staging, { recursive: true, force: true })
     mkdirSync(staging)
@@ -96,9 +100,14 @@ export async function ensureBitcoinAbc(
     writeFileSync(tarball, bytes)
     execFileSync('tar', ['-xzf', tarball, '-C', staging])
     writeFileSync(join(staging, `bitcoin-abc-${BITCOIN_ABC_VERSION}`, '.verified-sha256'), archive.sha256)
-    rmSync(home, { recursive: true, force: true })
-    renameSync(join(staging, `bitcoin-abc-${BITCOIN_ABC_VERSION}`), home)
-    rmSync(staging, { recursive: true, force: true })
+    try {
+      renameSync(join(staging, `bitcoin-abc-${BITCOIN_ABC_VERSION}`), home)
+    } catch (err) {
+      // Another run put its verified copy there first; use that one.
+      if (!existsSync(marker)) throw err
+    } finally {
+      rmSync(staging, { recursive: true, force: true })
+    }
   }
   checkRuns(bitcoind)
   return bitcoind

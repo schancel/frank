@@ -47,6 +47,11 @@ export async function startEcashRegtest(options: {
   const rpcPort = await freePort()
   const chronikPort = await freePort()
   const supervisor = new Supervisor(env, () => {})
+  // Children run in their own process group, so a signal to this process does not reach the
+  // node. Whatever ends this process, the node goes with it. Prepended so that it runs before
+  // the stack removes the run's directory.
+  const killNow = () => supervisor.killAllNow()
+  process.prependListener('exit', killNow)
   const node = supervisor.start({
     name: 'xec-regtest',
     command: bitcoind,
@@ -99,6 +104,7 @@ export async function startEcashRegtest(options: {
         await Promise.race([node.exited, sleep(15_000)])
       }
       await supervisor.stopAll()
+      process.off('exit', killNow)
       for (const port of [rpcPort, chronikPort]) {
         if (await isListening(port)) throw new Error(`xec-regtest: port ${port} is still open after stop`)
       }

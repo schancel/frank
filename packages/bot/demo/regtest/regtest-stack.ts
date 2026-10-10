@@ -15,6 +15,9 @@
  * the system temporary directory) and is deleted by `stop()` unless FRANK_REGTEST_KEEP=1. Ports are
  * free ones chosen by the system, never 8080, 8098 or 8545.
  *
+ * Ctrl-C (SIGINT), SIGTERM and SIGHUP stop the stack the same way before the process ends, and
+ * however the process ends its children are killed and the run's directory removed.
+ *
  * The relay binary is CASHWEBD_BIN, otherwise this worktree's Cargo build (built first if needed).
  *
  * Networks: `xec-regtest` (eCash, Chronik). A Monad regtest (monad-solonet, chain ID 20143) is to
@@ -119,7 +122,23 @@ export async function startRegtestStack(
   const chains: RegtestChain[] = []
   let relayPort: number | undefined
   let stopped: Promise<void> | undefined
-  const stop = () =>
+  const removeState = () => {
+    if (env.FRANK_REGTEST_KEEP !== '1') rmSync(stateDir, { recursive: true, force: true })
+  }
+  // Children run in their own process group, so the terminal's Ctrl-C reaches only this process.
+  const onExit = () => {
+    supervisor.killAllNow()
+    removeState()
+  }
+  const onSignal = (signal: NodeJS.Signals) => {
+    void stop()
+      .catch(() => undefined)
+      .then(() => process.exit(signal === 'SIGINT' ? 130 : 143))
+  }
+  const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
+  process.on('exit', onExit)
+  for (const signal of signals) process.on(signal, onSignal)
+  const stop = (): Promise<void> =>
     (stopped ??= (async () => {
       await supervisor.stopAll()
       const failures: unknown[] = []
@@ -127,7 +146,9 @@ export async function startRegtestStack(
       if (relayPort !== undefined && (await isListening(relayPort))) {
         failures.push(new Error(`the relay's port ${relayPort} is still open after stop`))
       }
-      if (env.FRANK_REGTEST_KEEP !== '1') rmSync(stateDir, { recursive: true, force: true })
+      removeState()
+      process.off('exit', onExit)
+      for (const signal of signals) process.off(signal, onSignal)
       if (failures.length > 0) throw failures[0]
     })())
 

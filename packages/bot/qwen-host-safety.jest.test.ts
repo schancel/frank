@@ -119,7 +119,9 @@ jest.mock("@frank/wallet/monad-provider", () => {
           return mockBalances.get(request.address!.toLowerCase()) ?? 0n;
         if (request.method === "getTransactionCount") return 0;
         if (request.method === "estimateGas") return 50_000n;
-        if (request.method === "getGasPrice") return 2n;
+        // Zero: this offline chain charges nothing per gas, so the 1-wei reply stamp these tests
+        // use is not below the fee floor (the floor has its own tests in the wallet).
+        if (request.method === "getGasPrice") return 0n;
         if (request.method === "getPriorityFee") return 1n;
         if (request.method === "getBlock")
           return {
@@ -1532,7 +1534,7 @@ describe("with the real canonical wallet", () => {
     // What the throw leaves behind in the wallet: no intent, no link, nothing at the relay.
     expect(rejections.length).toBeGreaterThanOrEqual(2);
     for (const refusal of rejections) {
-      expect(String(refusal)).toMatch(/Insufficient main account balance/);
+      expect(String(refusal)).toMatch(/No funds cover a stamp/);
       // The wallet does not label it "not attempted", although it created nothing.
       expect(isDirectMessageNotAttempted(refusal)).toBe(false);
     }

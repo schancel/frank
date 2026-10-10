@@ -854,8 +854,10 @@ describe("FrankBotHost replies", () => {
         await drain(instance);
         await new Promise((r) => setTimeout(r, 5));
         // The bound has passed for the reply that is waiting, and only for it.
+        // (The waiting second message is not read in this poll, so it is not started under
+        // the shortened bound.)
         (host as any).options.replyGiveUpMs = replyGiveUpMs;
-        await poll(host, [one, two]);
+        await poll(host, [one]);
         await drain(instance);
         (host as any).options.replyGiveUpMs = 60 * 60_000;
         await poll(host, [one, two]);

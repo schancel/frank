@@ -710,7 +710,6 @@ describe("chains-registry", () => {
       const omitted = [
         "btc-regtest",
         "bch-regtest",
-        "xec-regtest",
         "xpi-mainnet",
         "xpi-testnet",
         "xpi-regtest",
@@ -719,6 +718,7 @@ describe("chains-registry", () => {
         "monad-testnet",
         "monad-mainnet",
         "xec-testnet",
+        "xec-regtest",
         "xec-mainnet",
         "solana-devnet",
         "solana-testnet",

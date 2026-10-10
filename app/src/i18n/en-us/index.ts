@@ -1062,14 +1062,11 @@ export default {
     gateways: 'Gateways',
     networkModeTitle: 'Network Environment & Chains',
     testnetMode: 'Testnet Mode',
-    testnetModeLockedHint:
-      'Enforces testnet across Monad and all secondary settlement networks.',
     testnetActiveBanner:
       'Testnet is active across Monad and all secondary settlement networks.',
     mainnetActiveBanner:
       'Mainnet is active. Real assets are used for transactions and settlements.',
-    mainnetLockedBanner:
-      'Mainnet switching is locked for safety during protocol beta.',
+    mainnetLockedBanner: 'Mainnet switching is locked for now.',
     supportedChainsTitle: 'Supported Settlement Networks',
     chainActive: 'Active',
   },

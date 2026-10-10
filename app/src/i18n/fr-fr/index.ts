@@ -1089,14 +1089,12 @@ export default {
     gateways: 'Passerelles',
     networkModeTitle: 'Environnement réseau & Chaînes',
     testnetMode: 'Mode Testnet',
-    testnetModeLockedHint:
-      'Applique le testnet sur Monad et tous les réseaux de règlement secondaires.',
     testnetActiveBanner:
       'Le réseau de test est actif sur Monad et tous les réseaux de règlement secondaires.',
     mainnetActiveBanner:
       'Le réseau principal est actif. De vrais actifs sont utilisés pour les transactions et règlements.',
     mainnetLockedBanner:
-      'Le passage au réseau principal est verrouillé par sécurité pendant la version bêta.',
+      'Le passage au réseau principal est verrouillé pour l’instant.',
     supportedChainsTitle: 'Réseaux de règlement pris en charge',
     chainActive: 'Actif',
   },

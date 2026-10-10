@@ -1,6 +1,8 @@
 /** @jest-environment jsdom */
 
+import { createApp } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
+import { getActiveChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useSettingsStore, saveSettings, restoreSettings } from './settings'
 import { defaultEmailGatewayAddress } from '../utils/constants'
 
@@ -46,16 +48,61 @@ describe('settings store', () => {
     expect(store.emailGatewayAddress).toBe(defaultEmailGatewayAddress)
   })
 
-  it('initializes with testnet networkMode and updates via setNetworkMode', () => {
+  // The app is testnet-only for now. A mainnet choice saved by an earlier build must not swap
+  // the global chain under a wallet that is bound to testnet: every balance, send and message
+  // call would then throw.
+  it('does not change the active chain when a mainnet choice is found in storage', async () => {
+    let storageOptions:
+      | { restore(storage: unknown): Promise<Record<string, unknown>> }
+      | undefined
+    const pinia = createPinia()
+    pinia.use(({ options }) => {
+      storageOptions = options.storage as typeof storageOptions
+    })
+    createApp({}).use(pinia)
+    setActivePinia(pinia)
     const store = useSettingsStore()
-    expect(store.networkMode).toBe('testnet')
-    store.setNetworkMode('mainnet')
-    expect(store.networkMode).toBe('mainnet')
-    store.setNetworkMode('testnet')
-    expect(store.networkMode).toBe('testnet')
+    const before = getActiveChain()
+    const changes = jest.fn()
+    const stop = onActiveChainChange(changes)
+
+    const put = jest.fn(async () => undefined)
+    const restored = await storageOptions!.restore({
+      get: async () =>
+        JSON.stringify({
+          emailGatewayAddress: '0x2222222222222222222222222222222222222222',
+          networkMode: 'mainnet',
+        }),
+      put,
+    })
+    store.$patch(restored)
+    stop()
+
+    expect(getActiveChain()).toBe(before)
+    expect(changes).not.toHaveBeenCalled()
+    expect(store.$state).toEqual({
+      emailGatewayAddress: '0x2222222222222222222222222222222222222222',
+      networkMode: 'testnet',
+    })
+    // The stored record is corrected, keeping the rest of it.
+    expect(put).toHaveBeenCalledWith(
+      'settings',
+      JSON.stringify({
+        emailGatewayAddress: '0x2222222222222222222222222222222222222222',
+        networkMode: 'testnet',
+      }),
+    )
+    expect('setNetworkMode' in store).toBe(false)
   })
 
-  it('saves and restores settings to LevelDB storage including networkMode', async () => {
+  it('keeps the default gateway when the stored one is not an address', async () => {
+    const storage = {
+      get: async () => JSON.stringify({ emailGatewayAddress: 'nope' }),
+    } as any
+    expect(await restoreSettings(storage)).toEqual({})
+  })
+
+  it('saves and restores settings to LevelDB storage', async () => {
     const fakeStore: Record<string, string> = {}
     const mockStorage = {
       put: jest.fn((key: string, val: string) => {
@@ -70,7 +117,7 @@ describe('settings store', () => {
 
     const state = {
       emailGatewayAddress: '0x2222222222222222222222222222222222222222',
-      networkMode: 'mainnet' as const,
+      networkMode: 'testnet' as const,
     }
     await saveSettings(mockStorage, state)
     expect(mockStorage.put).toHaveBeenCalledWith(
@@ -78,10 +125,9 @@ describe('settings store', () => {
       JSON.stringify(state),
     )
 
-    const restored = await restoreSettings(mockStorage)
-    expect(restored.emailGatewayAddress).toBe(
-      '0x2222222222222222222222222222222222222222',
-    )
-    expect(restored.networkMode).toBe('mainnet')
+    expect(await restoreSettings(mockStorage)).toEqual({
+      emailGatewayAddress: state.emailGatewayAddress,
+    })
+    expect(mockStorage.put).toHaveBeenCalledTimes(1)
   })
 })

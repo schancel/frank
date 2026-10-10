@@ -1598,23 +1598,16 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
   expect(rpc.broadcast).toHaveBeenCalledTimes(1)
   expect(rpc.broadcast).toHaveBeenCalledWith(member.signed!.rawTransaction)
   // Stage 1 of #1235 changed these assertions on purpose. They used to pin that the native
-  // callback dispatched its own item to the pool (`processed` called once) and that the item had
-  // no `rawTx`. This device's own record is now written by the local pass inside the send; the
-  // callback only transports, and the item it hands to transport is complete. The debit is still
-  // value plus the fee paid.
+  // callback dispatched its own item to the pool (`processed` called once). This device's own
+  // record is written by the local pass inside the send.
+  //
+  // Changed again, on purpose: the send used to hand a wallet-sync note to the message path
+  // afterwards. A note is a paid message, so the wallet no longer sends one: nothing reaches the
+  // message path, and the member stays not sync-applied.
   expect(processed).not.toHaveBeenCalled()
-  expect(first.transport).toHaveBeenCalledTimes(1)
-  const item = first.transport.mock.calls[0]![0].items[0] as WalletSyncItem
-  expect(first.transport.mock.calls[0]![0].items).toHaveLength(1)
-  expect(item).toMatchObject({
-    type: 'wallet-sync',
-    direction: 'out',
-    chainIdentifier: 'monad-testnet',
-    txHash: member.signed!.transactionHash,
-    rawTx: member.signed!.rawTransaction,
-    spentInputs: [{ address: poolAddress, nonce: 0, valueWei: '121000' }],
-  })
-  return { ...first, rpc, sent, operation, open, item }
+  expect(first.transport).not.toHaveBeenCalled()
+  expect(member.syncApplied).toBe(false)
+  return { ...first, rpc, sent, operation, open }
 }
 
 /** What Stage 1 writes for the helper's send: the member's bytes and hash, the transaction's own
@@ -1665,7 +1658,10 @@ test('a pool-sourced legacy send included in-call leaves a wallet that reopens (
     const snapshot = await second.admission()
     expect(snapshot).toMatchObject({ status: 'ready' })
     expect(wallet.pool.getRecord(0)).toEqual(spentByMember(first.operation))
-    expect(Transaction.from(first.item.rawTx!).value).toBe(100000n)
+    expect(
+      Transaction.from(first.operation.members[0]!.signed!.rawTransaction)
+        .value,
+    ).toBe(100000n)
     if (snapshot.status !== 'ready') throw new Error(snapshot.reason)
     // One authorization: the native member, and one retained pool claim for the same bytes.
     expect(snapshot.obligations.map(claim => claim.provenance)).toEqual([
@@ -1756,14 +1752,11 @@ test('a pool-sourced legacy send included in-call keeps admission ready in the s
   }
 })
 
-// Stage 1 of #1235. This replaces the Stage 0b test "a pool-sourced legacy send still ends in the
-// pending error, now from the refused sync item": between 0b and this stage the callback's own
-// item was refused by the pool (`missing-transaction`), which that test pinned as the pending
-// error's reason, with the row still `available`. The callback no longer dispatches, so the send
-// reaches the transport step again and ends where it ended before 0b: the same error class, from
-// the transport's refusal. What a caller of `sendLegacy` sees is unchanged; the row is now marked.
-// On main 72631f36 this fails at the reason (the pool's refusal) and at the row (`available`).
-test('a pool-sourced legacy send still ends in the pending error, from the transport step, with the row recorded spent; resuming changes nothing and signs nothing (#1235)', async () => {
+// Stage 1 of #1235 pinned that this send ended in the pending error, from the transport step's
+// refusal, with the row recorded spent. The wallet no longer transports a note at all (it is a
+// paid message), so a send whose transfer is included RESOLVES: there is no step left to refuse
+// it. The row is still recorded, and resuming still changes nothing and signs nothing.
+test('a pool-sourced legacy send whose transfer is included resolves, with the row recorded spent and no note sent; resuming changes nothing and signs nothing (#1235)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-pending-'))
   let wallet: EvmChainWalletHandle | undefined
   const unhandled: unknown[] = []
@@ -1772,41 +1765,27 @@ test('a pool-sourced legacy send still ends in the pending error, from the trans
   try {
     const first = await sendLegacyFromProductionFundedPoolRow(dir)
     wallet = first.wallet
-    expect(first.sent.value).toBeUndefined()
-    expect(first.sent.error).toBeInstanceOf(EvmNativeOperationPendingError)
-    const pending = first.sent.error as EvmNativeOperationPendingError
-    expect(pending.name).toBe('EvmNativeOperationPendingError')
-    expect(pending.transaction.txHash).toBe(
-      first.operation.members[0]!.signed!.transactionHash,
-    )
-    expect(pending.operation.operationId).toBe(first.operation.operationId)
-    // Self-sync is still unsupported: the refusal is the transport's, not the pool's.
-    expect(pending.reason).not.toBeInstanceOf(SubAccountSpendRefusedError)
-    await expect(first.transport.mock.results[0]!.value).rejects.toBe(
-      pending.reason,
-    )
+    expect(first.sent.error).toBeUndefined()
+    expect(first.sent.value).toMatchObject({
+      txHash: first.operation.members[0]!.signed!.transactionHash,
+      totalValueSent: 100000n,
+    })
     expect(first.operation.members[0]!.syncApplied).toBe(false)
     expect(await first.admission()).toMatchObject({ status: 'ready' })
     const row = spentByMember(first.operation)
     expect(wallet.pool.getRecord(0)).toEqual(row)
     // Resuming the fulfilled operation, twice: no signature, no broadcast, no pool write, and
-    // the same pending error from the same step.
+    // the same result.
     const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
     const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
     first.rpc.broadcast.mockClear()
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const again = await wallet.resumeLegacySend!(
-        first.operation.operationId,
-      ).then(
-        () => undefined,
-        (error: unknown) => error,
-      )
-      expect(again).toBeInstanceOf(EvmNativeOperationPendingError)
+    for (let attempt = 0; attempt < 2; attempt++)
       expect(
-        (again as EvmNativeOperationPendingError).operation.operationId,
-      ).toBe(first.operation.operationId)
-    }
-    expect(first.transport).toHaveBeenCalledTimes(3)
+        await wallet.resumeLegacySend!(first.operation.operationId),
+      ).toMatchObject({
+        txHash: first.operation.members[0]!.signed!.transactionHash,
+      })
+    expect(first.transport).not.toHaveBeenCalled()
     expect(sign).not.toHaveBeenCalled()
     expect(first.rpc.broadcast).not.toHaveBeenCalled()
     expect(putMany).not.toHaveBeenCalled()
@@ -2077,11 +2056,10 @@ describe('recording a native spend from the journal under the input admission (#
       totalFeePaid: 21000n,
     })
     expect(seen).toEqual([spentByMember(operation!)])
-    // With a transport that accepts, the member is marked sync-applied only after its record.
-    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(true)
-    expect(f.transport.mock.calls[0]![0].items[0]).toMatchObject({
-      rawTx: operation!.members[0]!.signed!.rawTransaction,
-    })
+    // No note is sent after the send, so nothing reaches the message path and the member is
+    // not marked sync-applied.
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
+    expect(f.transport).not.toHaveBeenCalled()
   })
 
   // Contract test 26: restores what Stage 0b's test 10 refused. On main 72631f36 the item is
@@ -2352,7 +2330,8 @@ describe('recording a native spend from the journal under the input admission (#
       })
       const sent = await settled(f.sendFromPool())
       expect(batch).toHaveBeenCalledTimes(1)
-      // The send's own outcome: included, and pending only at the transport step.
+      // The send's own outcome: included, and pending because this session has no local record
+      // of the member (no note is transported either way).
       expect(sent.error).toBeInstanceOf(EvmNativeOperationPendingError)
       const operation = wallet.getNativeOperations!()[0]!
       expect(operation.members[0]!.observation.state).toBe('included-success')

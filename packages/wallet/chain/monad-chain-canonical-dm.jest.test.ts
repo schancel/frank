@@ -2686,7 +2686,7 @@ describe('two typed wallets on the open directory', () => {
   );
 
   it.each(["wallet-sync", "payment-transfer"])(
-    "rejects inert legacy decoded %s even with canonical service installed",
+    "keeps a legacy decoded %s as unsupported with the canonical service installed, and the read does not stop",
     async (type) => {
       await online("alice", f.alice);
       mailboxPage.mockResolvedValueOnce({ records: [] });
@@ -2730,10 +2730,25 @@ describe('two typed wallets on the open directory', () => {
         .mockResolvedValue({});
       const before = f.alice.stampPaymentJournal?.getAll();
       try {
-        await expect(
-          f.chain.directMessages.fetchSince({ wallet: f.alice, sinceMs: 0 })
-        ).rejects.toMatchObject({ code: "unsupported_incoming_wallet_sync" });
-        expect(recovery).not.toHaveBeenCalled();
+        // The legacy mailbox goes through the same receive rule as a canonical message: the
+        // record is not an item, reaches no wallet state, and one peer's message cannot stop
+        // the inbox (the read used to reject as a whole, on every poll).
+        const received = await f.chain.directMessages.fetchSince({
+          wallet: f.alice,
+          sinceMs: 0,
+        });
+        expect(received.map((message) => message.items)).toEqual([
+          [
+            {
+              type: "unsupported",
+              reason: "unknown-type",
+              itemType: type,
+              frame: Buffer.from(JSON.stringify({ type }), "utf8").toString(
+                "hex"
+              ),
+            },
+          ],
+        ]);
         expect(dispatch).not.toHaveBeenCalled();
         expect(f.alice.stampPaymentJournal?.getAll()).toEqual(before);
       } finally {

@@ -37,13 +37,18 @@ import {
   MessageItemBudgetExceededError,
   MessageItemNotCarriedError,
   NOT_CARRIED_ITEM_TYPES,
+  SELF_ONLY_ITEM_TYPES,
   decodeItemFrames,
   encodeItemFrames,
+  MAX_LEGACY_PLAINTEXT_CHARS,
+  boundedLegacyPlaintext,
   itemFrameRule,
+  receiveLegacyItems,
 } from './wire'
 import {
   DEDICATED_SAMPLES,
   GENERIC_SAMPLES,
+  NEVER_FROM_A_PEER_SAMPLES,
   NOT_CARRIED_PROPOSAL_SAMPLES,
 } from './wire-samples.testutil'
 
@@ -111,6 +116,67 @@ describe('the dispatch rule', () => {
       true,
     )
     expect([...NOT_CARRIED_ITEM_TYPES].every(t => registry.has(t))).toBe(true)
+    expect([...SELF_ONLY_ITEM_TYPES].every(t => registry.has(t))).toBe(true)
+  })
+
+  it('carries a self-only type in a message a wallet addresses to itself, and in no other', () => {
+    expect([...SELF_ONLY_ITEM_TYPES]).toEqual(['wallet-sync'])
+    for (const type of SELF_ONLY_ITEM_TYPES) {
+      expect(NOT_CARRIED_ITEM_TYPES.has(type)).toBe(false)
+      expect(itemFrameRule(type)).toEqual({ carried: 'no' })
+      expect(itemFrameRule(type, { selfAddressed: false })).toEqual({
+        carried: 'no',
+      })
+      expect(itemFrameRule(type, { selfAddressed: true })).toEqual({
+        carried: 'generic',
+        frameType: TYPE_PLUGIN_MESSAGE_ITEM,
+      })
+    }
+    // Writing to oneself opens nothing else: a type that is not carried stays not carried.
+    for (const type of NOT_CARRIED_ITEM_TYPES)
+      expect(itemFrameRule(type, { selfAddressed: true })).toEqual({
+        carried: 'no',
+      })
+  })
+
+  it('a self-only item round-trips only when both ends say the message is self-addressed', () => {
+    const note: MessageItem = {
+      type: 'wallet-sync',
+      direction: 'out',
+      chainIdentifier: 'monad-testnet',
+      txHash: '0x' + 'ab'.repeat(32),
+      rawTx: '0x02abcd',
+      spentInputs: [{ address: '0xA', nonce: 3, valueWei: '150' }],
+      createdOutputs: [{ address: '0xB', valueWei: '100' }],
+      timestamp: 1760000000000,
+    }
+    expect(() => encodeItemFrames(registry, [note])).toThrow(
+      MessageItemNotCarriedError,
+    )
+    expect(() =>
+      encodeItemFrames(registry, [note], { selfAddressed: false }),
+    ).toThrow(MessageItemNotCarriedError)
+    const frames = encodeItemFrames(registry, [note], { selfAddressed: true })
+    expect(frames.map(frameType)).toEqual([TYPE_PLUGIN_MESSAGE_ITEM])
+    expect(
+      decodeItemFrames(registry, children(frames), standaloneItemBudget(), {
+        selfAddressed: true,
+      }),
+    ).toEqual([note])
+    // The same bytes in a message from anyone else are not the item.
+    const kept = {
+      type: 'unsupported',
+      reason: 'unknown-type',
+      itemType: 'wallet-sync',
+      frameType: 27,
+      frame: toHex(frames[0]),
+    }
+    expect(receive(frames)).toEqual([kept])
+    expect(
+      decodeItemFrames(registry, children(frames), standaloneItemBudget(), {
+        selfAddressed: false,
+      }),
+    ).toEqual([kept])
   })
 
   it('a type nobody listed travels in the generic frame: a new plugin needs no allocation', () => {
@@ -359,48 +425,11 @@ describe('receiving', () => {
     ])
   })
 
-  it.each([...NOT_CARRIED_ITEM_TYPES])(
+  it.each([...NOT_CARRIED_ITEM_TYPES, ...SELF_ONLY_ITEM_TYPES])(
     'does not interpret a %s item from a peer',
     type => {
-      const sample: Record<string, MessageItem> = {
-        'wallet-sync': {
-          type: 'wallet-sync',
-          direction: 'out',
-          chainIdentifier: 'monad-testnet',
-          txHash: '0x' + 'ab'.repeat(32),
-        },
-        'payment-transfer': {
-          type: 'payment-transfer',
-          direction: 'in',
-          chainIdentifier: 'monad-testnet',
-          txHash: '0x' + 'ab'.repeat(32),
-        },
-        'swap-record': {
-          type: 'swap-record',
-          swapId: '00112233445566778899aabbccddeeff',
-          chain: 'monad-testnet',
-          fromAsset: 'MON',
-          toAsset: 'USDC',
-          fromAmount: '1',
-          toAmount: '2',
-          txHash: '0x' + 'ab'.repeat(32),
-          route: 'direct',
-          feeDisplay: '0.1%',
-          status: 'confirmed',
-          timestamp: 1760000000000,
-        },
-        'device-claim': {
-          type: 'device-claim',
-          instanceId: '123e4567-e89b-42d3-a456-426614174000',
-          claimedAt: 1760000000000,
-        },
-        'p2pkh': {
-          type: 'p2pkh',
-          address: 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi',
-          amount: 5,
-        },
-      }
-      for (const item of NOT_CARRIED_PROPOSAL_SAMPLES) sample[item.type] = item
+      const sample: Record<string, MessageItem> = {}
+      for (const item of NEVER_FROM_A_PEER_SAMPLES) sample[item.type] = item
       // Well-formed bytes of the real plugin: still not interpreted on this path.
       const frame = encodePluginMessageItem({
         itemType: type,
@@ -569,5 +598,191 @@ describe('a swap offer and a legacy blackjack move from a peer', () => {
       itemType: 'blackjack-move',
     })
     expect(blackjackMove.type).toBe('blackjack-move')
+  })
+})
+
+describe('items read from the legacy JSON mailbox', () => {
+  const jsonHex = (value: unknown) =>
+    toHex(new TextEncoder().encode(JSON.stringify(value)))
+  /** What a legacy sender's JSON becomes on the way in. */
+  const arrive = (items: unknown[]) =>
+    receiveLegacyItems(registry, JSON.parse(JSON.stringify(items)))
+
+  it('covers every type that is never interpreted from a peer', () => {
+    expect(NEVER_FROM_A_PEER_SAMPLES.map(item => item.type).sort()).toEqual(
+      [...NOT_CARRIED_ITEM_TYPES, ...SELF_ONLY_ITEM_TYPES].sort(),
+    )
+  })
+
+  it.each(NEVER_FROM_A_PEER_SAMPLES.map(item => [item.type, item] as const))(
+    'a %s item arrives as unsupported, never as the item',
+    (type, item) => {
+      const received = arrive([item, { type: 'text', text: 'beside it' }])
+      expect(received).toEqual([
+        {
+          type: 'unsupported',
+          reason: 'unknown-type',
+          itemType: type,
+          frame: jsonHex(item),
+        },
+        { type: 'text', text: 'beside it' },
+      ])
+      // No field of the item survives for a renderer, a bot or a total to act on.
+      expect(Object.keys(received[0]).sort()).toEqual([
+        'frame',
+        'itemType',
+        'reason',
+        'type',
+      ])
+      expect(registry.tallyValue(received)).toBe(0)
+    },
+  )
+
+  it('an accepted swap offer, the item whose card offers a deposit, is not delivered as an offer', () => {
+    const offer = {
+      ...NEVER_FROM_A_PEER_SAMPLES.find(item => item.type === 'swap-offer')!,
+      status: 'accepted',
+    }
+    expect(arrive([offer]).map(item => item.type)).toEqual(['unsupported'])
+  })
+
+  // JSON has no bytes: an item holding some (a channel update's state) does not survive it.
+  const survivesJson = (item: MessageItem) =>
+    !Object.values(item).some(value => value instanceof Uint8Array)
+
+  it.each(
+    [...DEDICATED_SAMPLES, ...GENERIC_SAMPLES]
+      .filter(survivesJson)
+      .map(item => [item.type, item] as const),
+  )('a carried %s item arrives as what its plugin reads', (_type, item) => {
+    const frames = encodeItemFrames(registry, [item])
+    expect(arrive([item])).toEqual(receive(frames))
+  })
+
+  it('a carried item JSON has mangled arrives as malformed, not as the mangled object', () => {
+    const mangled = [...DEDICATED_SAMPLES, ...GENERIC_SAMPLES].filter(
+      item => !survivesJson(item),
+    )
+    expect(mangled.map(item => item.type)).toEqual(['channel-update'])
+    expect(arrive(mangled)).toEqual([
+      {
+        type: 'unsupported',
+        reason: 'malformed',
+        itemType: 'channel-update',
+        frame: jsonHex(mangled[0]),
+      },
+    ])
+  })
+
+  it('delivers what the plugin read, not the object that arrived', () => {
+    expect(
+      arrive([
+        {
+          type: 'text',
+          text: 'hello',
+          status: 'accepted',
+          amount: 5,
+          recipientAddress: '0x' + '0b'.repeat(20),
+        },
+      ]),
+    ).toEqual([{ type: 'text', text: 'hello' }])
+  })
+
+  it('a known type its plugin refuses arrives as malformed', () => {
+    const bad = { type: 'dice', action: 'cheat' }
+    expect(arrive([bad, { type: 'text' }])).toEqual([
+      {
+        type: 'unsupported',
+        reason: 'malformed',
+        itemType: 'dice',
+        frame: jsonHex(bad),
+      },
+      {
+        type: 'unsupported',
+        reason: 'malformed',
+        itemType: 'text',
+        frame: jsonHex({ type: 'text' }),
+      },
+    ])
+  })
+
+  it('anything that is not an item with a known type arrives as unsupported', () => {
+    const odd = [
+      null,
+      7,
+      'text',
+      [],
+      {},
+      { type: 5 },
+      { type: 'hologram', power: 9000 },
+      { type: 'unsupported', reason: 'unknown-type', frame: '00' },
+    ]
+    const received = arrive(odd)
+    expect(received.map(item => item.type)).toEqual(odd.map(() => 'unsupported'))
+    expect(received[6]).toEqual({
+      type: 'unsupported',
+      reason: 'unknown-type',
+      itemType: 'hologram',
+      frame: jsonHex(odd[6]),
+    })
+    // An item that calls itself unsupported is not taken at its word either.
+    expect(received[7]).toEqual({
+      type: 'unsupported',
+      reason: 'unknown-type',
+      itemType: 'unsupported',
+      frame: jsonHex(odd[7]),
+    })
+  })
+
+  it('reads all items of one message under one budget: items valid alone are refused together', () => {
+    // A plugin whose every item costs about 8,000 containers to read (the canonical test's
+    // liars-dice shape): one is inside a message's limits, five together are not.
+    const players = Array.from(
+      { length: 4000 },
+      (_, i) => `p${String(i).padStart(4, '0')}`,
+    )
+    const heavy = encodeCanonical(
+      new Map<number, Encodable>([
+        [0, '8899aabbccddeeff'],
+        [1, 'showdown'],
+        [17, players.map(key => [key, []] as Encodable)],
+      ]),
+    )
+    const own = createMessageItemRegistry()
+    own.register({
+      type: 'liars-dice',
+      hydrate: raw => raw,
+      previewText: () => '',
+      encode: () => heavy,
+      decode: (bytes, context) => {
+        context.budget.decodeCbor(bytes)
+        return { type: 'liars-dice', tableId: 't', action: 'showdown' }
+      },
+    })
+    const item = { type: 'liars-dice', tableId: 't', action: 'showdown' }
+    expect(receiveLegacyItems(own, [item])).toEqual([item])
+    expect(() =>
+      receiveLegacyItems(own, [item, item, item, item, item]),
+    ).toThrow(MessageItemBudgetExceededError)
+  })
+
+  it('refuses a plaintext too long to parse before parsing it', () => {
+    expect(boundedLegacyPlaintext('[]')).toBe('[]')
+    expect(boundedLegacyPlaintext('x'.repeat(MAX_LEGACY_PLAINTEXT_CHARS))).toHaveLength(
+      MAX_LEGACY_PLAINTEXT_CHARS,
+    )
+    expect(() =>
+      boundedLegacyPlaintext('x'.repeat(MAX_LEGACY_PLAINTEXT_CHARS + 1)),
+    ).toThrow(MessageItemBudgetExceededError)
+  })
+
+  it('does not keep an oversized item it could not read', () => {
+    const [kept] = arrive([{ type: 'hologram', blob: 'x'.repeat(70_000) }])
+    expect(kept).toEqual({
+      type: 'unsupported',
+      reason: 'unknown-type',
+      itemType: 'hologram',
+      frame: '',
+    })
   })
 })

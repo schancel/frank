@@ -488,7 +488,8 @@ export interface UnsupportedItem {
   itemType?: string
   /** The frame type identifier, when the envelope could be read. */
   frameType?: number
-  /** The original complete item frame, lowercase hex. */
+  /** The original complete item frame, lowercase hex. An item read from the legacy JSON mailbox
+   * has no frame: this is then the item's JSON text (UTF-8, hex) and `frameType` is absent. */
   frame: string
 }
 

@@ -194,18 +194,26 @@
                 $t('nativeOperation.block', { block: member.blockNumber })
               }}</span>
             </p>
-            <p data-test="native-operation-sync">
+            <!-- Information, not an outcome: the payment line above is the outcome. -->
+            <p
+              class="text-caption text-grey-7"
+              data-test="native-operation-sync"
+            >
               {{
                 $t(
                   operation.syncCallbackComplete
                     ? 'nativeOperation.syncRecorded'
-                    : 'nativeOperation.syncUnrecorded',
+                    : 'nativeOperation.syncNotShared',
                 )
               }}
             </p>
           </template>
-          <p>{{ $t('nativeOperation.recoveryUnavailable') }}</p>
-          <p>{{ $t('nativeOperation.reviewHeld') }}</p>
+          <template v-if="operation?.payment !== 'included'">
+            <p data-test="native-operation-recovery">
+              {{ $t('nativeOperation.recoveryUnavailable') }}
+            </p>
+            <p>{{ $t('nativeOperation.reviewHeld') }}</p>
+          </template>
         </q-card-section>
         <q-card-actions v-if="dispatched" align="right">
           <q-btn
@@ -496,11 +504,11 @@ export default defineComponent({
           signedTxHash = result.txHash
           if (!(await current())) return
           inspect()
+          // An included payment is a completed send. Whether the wallet's other devices have
+          // been told is information shown with the transfer, never a reason to hold this page.
           if (
             reviewed.binding.wallet.family === 'evm' &&
-            (!operation.value ||
-              operation.value.payment !== 'included' ||
-              !operation.value.syncCallbackComplete)
+            (!operation.value || operation.value.payment !== 'included')
           )
             return
           sentTransactionNotify(result.txHash)

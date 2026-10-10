@@ -201,3 +201,45 @@ export const NOT_CARRIED_PROPOSAL_SAMPLES: MessageItem[] = [
     dealerUpCard: 3,
   },
 ]
+
+/** One well-formed item of every registered type that is never interpreted when it comes from
+ * another person, on any transport: the types not carried at all, and the self-only ones. */
+export const NEVER_FROM_A_PEER_SAMPLES: MessageItem[] = [
+  {
+    type: 'wallet-sync',
+    direction: 'out',
+    chainIdentifier: 'monad-testnet',
+    txHash: '0x' + 'ab'.repeat(32),
+  },
+  {
+    type: 'payment-transfer',
+    direction: 'in',
+    chainIdentifier: 'monad-testnet',
+    txHash: '0x' + 'ab'.repeat(32),
+  },
+  {
+    type: 'swap-record',
+    swapId: '00112233445566778899aabbccddeeff',
+    chain: 'monad-testnet',
+    fromAsset: 'MON',
+    toAsset: 'USDC',
+    fromAmount: '1',
+    toAmount: '2',
+    txHash: '0x' + 'ab'.repeat(32),
+    route: 'direct',
+    feeDisplay: '0.1%',
+    status: 'confirmed',
+    timestamp: 1760000000000,
+  },
+  {
+    type: 'device-claim',
+    instanceId: '123e4567-e89b-42d3-a456-426614174000',
+    claimedAt: 1760000000000,
+  },
+  {
+    type: 'p2pkh',
+    address: 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi',
+    amount: 5,
+  },
+  ...NOT_CARRIED_PROPOSAL_SAMPLES,
+]

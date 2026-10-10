@@ -16,6 +16,8 @@ export function toChainAddress(raw: string): { raw: string } {
 
 export interface BotProfile {
   name: string;
+  /** Unique handle claimed on the relay at startup. Defaults to the bot's id. */
+  username?: string;
   bio?: string;
   avatar?: string | Uint8Array;
   avatarPng?: Uint8Array;

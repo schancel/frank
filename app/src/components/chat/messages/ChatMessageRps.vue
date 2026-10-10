@@ -97,8 +97,7 @@
         class="text-caption text-positive"
         data-testid="rps-verified"
       >
-        Verified: the move and salt the bot revealed match the commitment it
-        sent before you moved.
+        {{ $t('gameFairness.rpsVerified') }}
       </div>
       <q-banner
         v-else
@@ -106,7 +105,8 @@
         class="bg-negative text-white q-my-xs"
         data-testid="rps-not-verified"
       >
-        <strong>NOT VERIFIED.</strong> {{ check.reason }}
+        <strong>{{ $t('gameFairness.notVerified') }}</strong>
+        {{ check.reason }}
       </q-banner>
       <q-separator class="q-my-sm" />
       <q-btn
@@ -218,8 +218,7 @@ export default defineComponent({
       return 'Hidden'
     },
     chooseMove(move: RpsMove) {
-      if (this.submitting || !this.item.matchId || !this.item.commitHash)
-        return
+      if (this.submitting || !this.item.matchId || !this.item.commitHash) return
       const wager = parseWager(this.wagerInput, a =>
         activeChain.fromDisplayAmount(a),
       )

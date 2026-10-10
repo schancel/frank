@@ -792,8 +792,6 @@ async function run() {
       ['Lobby', '/help'],
       ['Satoshi Dice', '/roll 0.01'],
       ['RPS Arena', '/rps'],
-      ['Texas Hold', '/poker create'],
-      ["Liar's Dice", '/table create'],
     ]) {
       await scenario(`8 ${name} "${text}"`, async () => {
         await openConversation(name)

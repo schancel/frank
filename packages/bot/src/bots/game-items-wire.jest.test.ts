@@ -24,8 +24,6 @@ import {
 } from "@frank/wallet/message-item-plugins/wire";
 
 import { harness as botHarness } from "./bot-harness.testutil";
-import { LiarsDiceBot } from "./liars-dice-bot";
-import { PokerBot } from "./poker-bot";
 import { RaffleBot } from "./raffle-bot";
 import { RpsBot } from "./rps-bot";
 import { SatoshiDiceBot } from "./satoshi-dice-bot";
@@ -218,67 +216,6 @@ describe("game bot replies cross the canonical wire", () => {
     await say(bot, ALICE, { ...buy, itemId: "missing" }, priceWei);
     expectCarried(sent, "digital-goods", ["catalog", "fulfill", "error"]);
     expect(sent.flat().some((i) => i.type === "image")).toBe(true);
-  });
-
-  it("poker: create, join, deal, bet, call, check and fold to a settled hand", async () => {
-    jest.useFakeTimers();
-    const bot = new PokerBot();
-    const { sent, say } = harness();
-    await say(bot, ALICE, "/poker create");
-    await say(bot, BOB, "/poker join");
-    await say(bot, ALICE, "/poker start");
-    for (const [who, command] of [
-      [ALICE, "/call"],
-      [BOB, "/check"],
-      [BOB, "/bet 40"],
-      [ALICE, "/raise 80"],
-      [BOB, "/call"],
-      [ALICE, "/status"],
-      [BOB, "/check"],
-      [ALICE, "/check"],
-      [BOB, "/fold"],
-      [ALICE, "/fold"],
-    ] as const)
-      await say(bot, who, command);
-    const actions = new Set(
-      sent
-        .flat()
-        .filter(i => i.type === "poker")
-        .map(i => (i as { action: string }).action)
-    );
-    expect(actions.has("create")).toBe(true);
-    expect(actions.has("action")).toBe(true);
-    for (const items of sent)
-      expect(overTheWire(items)).toEqual(items.map(plain));
-  });
-
-  it("liar's dice: create, join, start, bids and a challenge to the showdown", async () => {
-    jest.useFakeTimers();
-    const bot = new LiarsDiceBot();
-    const { sent, say } = harness();
-    await say(bot, ALICE, "/table create 0.05");
-    await say(bot, BOB, "/table join");
-    await say(bot, ALICE, "/start");
-    for (const [who, command] of [
-      [ALICE, "/bid 1 2"],
-      [BOB, "/bid 2 3"],
-      [ALICE, "/bid 2 3"],
-      [BOB, "/bid 3 3"],
-      [ALICE, "/status"],
-      [ALICE, "/liar"],
-      [BOB, "/liar"],
-    ] as const)
-      await say(bot, who, command);
-    const actions = new Set(
-      sent
-        .flat()
-        .filter(i => i.type === "liars-dice")
-        .map(i => (i as { action: string }).action)
-    );
-    for (const action of ["create", "join", "round_start", "bid", "showdown"])
-      expect(actions.has(action)).toBe(true);
-    for (const items of sent)
-      expect(overTheWire(items)).toEqual(items.map(plain));
   });
 
   it("a swap offer as the app's dialog builds it is not carried: refused before any payment", () => {

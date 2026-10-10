@@ -10,7 +10,15 @@ import {
   dicePayoutWei,
   diceRoll,
 } from '@frank/wallet/message-item-plugins/dice/fair'
+import enUS from '../../../i18n/en-us'
 import ChatMessageDice from './ChatMessageDice.vue'
+
+const t = (key: string, params: Record<string, unknown> = {}) => {
+  const text = key.split('.').reduce<any>((o, k) => o?.[k], enUS) as string
+  return String(text ?? key).replace(/\{(\w+)\}/g, (_, name) =>
+    String(params[name]),
+  )
+}
 
 const store: { activeConversation: { messages: any[] } } = reactive({
   activeConversation: { messages: [] },
@@ -104,7 +112,7 @@ const STAKE = 10n ** 16n
 function mountCard(item: SatoshiDiceItem) {
   return mount(ChatMessageDice, {
     props: { item, address: '0x123' },
-    global: { stubs: quasarStubs },
+    global: { stubs: quasarStubs, mocks: { $t: t } },
   })
 }
 
@@ -140,7 +148,9 @@ function played(seed = 'c3'.repeat(16)) {
   return { bet, result, payout }
 }
 
-function chat(...messages: { outbound: boolean; item: SatoshiDiceItem; paid?: bigint }[]) {
+function chat(
+  ...messages: { outbound: boolean; item: SatoshiDiceItem; paid?: bigint }[]
+) {
   store.activeConversation = {
     messages: messages.map(m => ({
       outbound: m.outbound,
@@ -185,17 +195,25 @@ describe('ChatMessageDice.vue', () => {
 
   test('an honest result of a bet the player made shows as verified', () => {
     const { bet, result, payout } = played()
-    chat({ outbound: true, item: bet, paid: STAKE }, { outbound: false, item: result, paid: payout })
+    chat(
+      { outbound: true, item: bet, paid: STAKE },
+      { outbound: false, item: result, paid: payout },
+    )
     const wrapper = mountCard(result)
     expect(wrapper.find('[data-testid="dice-verified"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="dice-not-verified"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="dice-not-verified"]').exists()).toBe(
+      false,
+    )
     expect(wrapper.text()).toContain(String(result.luckyNumber))
   })
 
   test('a forged reveal shows NOT VERIFIED', () => {
     const { bet, result, payout } = played()
     const forged = { ...result, serverSecret: '7c'.repeat(32) }
-    chat({ outbound: true, item: bet }, { outbound: false, item: forged, paid: payout })
+    chat(
+      { outbound: true, item: bet },
+      { outbound: false, item: forged, paid: payout },
+    )
     const wrapper = mountCard(forged)
     expect(wrapper.find('[data-testid="dice-verified"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="dice-not-verified"]').text()).toContain(
@@ -225,7 +243,10 @@ describe('ChatMessageDice.vue', () => {
 
   test('a payout the message did not carry shows NOT VERIFIED', () => {
     const { bet, result } = played()
-    chat({ outbound: true, item: bet }, { outbound: false, item: result, paid: 0n })
+    chat(
+      { outbound: true, item: bet },
+      { outbound: false, item: result, paid: 0n },
+    )
     expect(
       mountCard(result).find('[data-testid="dice-not-verified"]').text(),
     ).toContain('not paid')

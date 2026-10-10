@@ -111,8 +111,6 @@ describe('resolveDemoConfig', () => {
       'lobby',
       'rps',
       'dice',
-      'liars-dice',
-      'poker',
     ])
     for (const bot of c.bots) {
       for (const [k, v] of Object.entries(bot.env)) {
@@ -314,8 +312,6 @@ describe('resolveDemoConfig', () => {
         'lobby',
         'rps',
         'dice',
-        'liars-dice',
-        'poker',
       ])
     })
 
@@ -333,8 +329,6 @@ describe('resolveDemoConfig', () => {
         'lobby',
         'rps',
         'dice',
-        'liars-dice',
-        'poker',
       ]) {
         expect(c.bots.find(b => b.name === name)!.env.E2E_DEMO_MAIN_WALLET_JSON).toBe(main)
       }

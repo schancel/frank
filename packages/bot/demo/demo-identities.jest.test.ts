@@ -24,8 +24,6 @@ const STATE_DIR_ENV: Record<string, string> = {
   lobby: 'LOBBY_BOT_STATE_DIR',
   rps: 'RPS_BOT_STATE_DIR',
   dice: 'DICE_BOT_STATE_DIR',
-  'liars-dice': 'LIARS_DICE_BOT_STATE_DIR',
-  poker: 'POKER_BOT_STATE_DIR',
 }
 
 let dir: string

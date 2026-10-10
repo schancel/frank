@@ -29,8 +29,6 @@ export type BotKey =
   | 'lobby'
   | 'rps'
   | 'dice'
-  | 'liars-dice'
-  | 'poker'
 
 export interface BotProfileSpec {
   key: BotKey
@@ -124,26 +122,6 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'DICE_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/dice-bot-identity.json',
     accent: [180, 50, 180],
-    accountType: ACCOUNT_TYPE_BOT,
-    botRole: BOT_ROLE_GAME,
-  },
-  {
-    key: 'liars-dice',
-    name: "Liar's Dice (Perudo)",
-    bio: "Multiplayer cryptographic Liar's Dice (Perudo) table game with on-chain escrow.",
-    identityEnv: 'LIARS_DICE_BOT_IDENTITY_JSON',
-    identityDefaultPath: '/tmp/liars-dice-bot-identity.json',
-    accent: [40, 180, 120],
-    accountType: ACCOUNT_TYPE_BOT,
-    botRole: BOT_ROLE_GAME,
-  },
-  {
-    key: 'poker',
-    name: "Texas Hold'em Poker",
-    bio: "Multiplayer Texas Hold'em mental cards poker table with on-chain escrow.",
-    identityEnv: 'POKER_BOT_IDENTITY_JSON',
-    identityDefaultPath: '/tmp/poker-bot-identity.json',
-    accent: [180, 40, 40],
     accountType: ACCOUNT_TYPE_BOT,
     botRole: BOT_ROLE_GAME,
   },

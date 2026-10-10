@@ -1307,7 +1307,7 @@ function indexStealthItemIfRecipient(
  * shared point. The delivery frame is written by the sender, so a member paying any other address
  * is somebody else's money and is never reported as received. Not a chain check: whether a
  * reported transfer was mined is for the caller to look up. */
-function paymentsToSelf<T extends { address: Uint8Array; childIndex: number }>(
+export function paymentsToSelf<T extends { address: Uint8Array; childIndex: number }>(
   network: string,
   self: Current,
   sharedPoint: Uint8Array,

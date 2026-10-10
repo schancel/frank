@@ -55,8 +55,7 @@
           class="text-caption text-positive q-my-xs"
           data-testid="dice-verified"
         >
-          Verified: the secret matches the commitment you bet on, and the
-          number, outcome and payout follow from it and your own random value.
+          {{ $t('gameFairness.diceVerified') }}
         </div>
         <q-banner
           v-else
@@ -64,21 +63,27 @@
           class="bg-negative text-white q-my-xs"
           data-testid="dice-not-verified"
         >
-          <strong>NOT VERIFIED.</strong> {{ check.reason }}
+          <strong>{{ $t('gameFairness.notVerified') }}</strong>
+          {{ check.reason }}
         </q-banner>
         <details
           class="q-my-xs text-caption text-grey-8"
           style="font-size: 11px"
         >
-          <summary>How this was checked</summary>
+          <summary>{{ $t('gameFairness.diceHow') }}</summary>
           <div class="q-pt-xs text-mono" style="word-break: break-all">
-            <div>Commitment (before your bet): {{ item.commitment }}</div>
-            <div>Secret (revealed): {{ item.serverSecret }}</div>
-            <div>Your random value: {{ item.clientSeed }}</div>
             <div>
-              SHA-256(secret) must equal the commitment; the roll is the first
-              16 bits of HMAC-SHA256(secret, your value).
+              {{
+                $t('gameFairness.diceCommitment', { value: item.commitment })
+              }}
             </div>
+            <div>
+              {{ $t('gameFairness.diceSecret', { value: item.serverSecret }) }}
+            </div>
+            <div>
+              {{ $t('gameFairness.diceSeed', { value: item.clientSeed }) }}
+            </div>
+            <div>{{ $t('gameFairness.diceRule') }}</div>
           </div>
         </details>
         <q-separator class="q-my-sm" />
@@ -248,7 +253,9 @@ export default defineComponent({
       if (!checked.ok) return checked
       // A payout shown is a payout only if this message carried it.
       const carried = all.find(
-        entry => !entry.outbound && entry.item.rollId === this.item.rollId &&
+        entry =>
+          !entry.outbound &&
+          entry.item.rollId === this.item.rollId &&
           entry.item.action === 'result',
       )?.stampValueWei
       const owed = BigInt(this.item.payoutWei ?? '0')

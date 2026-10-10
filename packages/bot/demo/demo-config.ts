@@ -378,8 +378,6 @@ export type BotName =
   | 'lobby'
   | 'rps'
   | 'dice'
-  | 'liars-dice'
-  | 'poker'
 
 export interface DemoBot {
   name: BotName
@@ -881,34 +879,6 @@ export function resolveDemoConfig(params: {
         DICE_BOT_IDENTITY_JSON: idPath('dice'),
         DICE_BOT_STATE_DIR: stateOf('dice'),
         BOT_STATE_DIR: stateOf('dice'),
-      },
-    },
-    {
-      name: 'liars-dice',
-      script: 'targets/liars-dice.ts',
-      identityJson: idPath('liars-dice'),
-      hostStateDir: stateOf('liars-dice'),
-      readyLine: /\[liars-dice-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
-      env: {
-        ...common,
-        ...stampWallet,
-        LIARS_DICE_BOT_IDENTITY_JSON: idPath('liars-dice'),
-        LIARS_DICE_BOT_STATE_DIR: stateOf('liars-dice'),
-        BOT_STATE_DIR: stateOf('liars-dice'),
-      },
-    },
-    {
-      name: 'poker',
-      script: 'targets/poker.ts',
-      identityJson: idPath('poker'),
-      hostStateDir: stateOf('poker'),
-      readyLine: /\[poker-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
-      env: {
-        ...common,
-        ...stampWallet,
-        POKER_BOT_IDENTITY_JSON: idPath('poker'),
-        POKER_BOT_STATE_DIR: stateOf('poker'),
-        BOT_STATE_DIR: stateOf('poker'),
       },
     },
   ]

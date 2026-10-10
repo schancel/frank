@@ -60,7 +60,16 @@
           />
         </div>
       </template>
-      <div v-else class="text-caption text-grey-7">You have moved.</div>
+      <div
+        v-else-if="moveFailed"
+        class="text-caption text-negative"
+        data-testid="rps-move-not-sent"
+      >
+        {{ $t('gameFairness.moveNotSent') }}
+      </div>
+      <div v-else class="text-caption text-grey-7" data-testid="rps-moved">
+        You have moved.
+      </div>
     </template>
 
     <!-- The player's own move -->
@@ -74,7 +83,7 @@
       <div
         v-if="waiting"
         class="text-caption"
-        :class="waiting.late ? 'text-negative' : 'text-grey-7'"
+        :class="waiting.late ? 'text-weight-bold' : 'game-waiting-quiet'"
         data-testid="rps-waiting"
       >
         {{
@@ -165,6 +174,7 @@ import {
   BOT_ANSWER_WAIT_MS,
   chatGameItems,
   parseWager,
+  type ChatGameItem,
 } from '../../../utils/chat-game-items'
 import { errorNotify } from '../../../utils/notifications'
 
@@ -214,17 +224,24 @@ export default defineComponent({
       if (this.item.outcome === 'lose') return 'YOU LOSE'
       return 'A TIE'
     },
-    /** The player's own move in this item's match, if one was sent. */
-    mine(): RpsItem | undefined {
+    /** The message carrying the player's own move in this item's match, if there is one. */
+    mineEntry(): ChatGameItem<RpsItem> | undefined {
       return chatGameItems('rps', this.address).find(
         entry =>
           entry.outbound &&
           entry.item.action === 'move' &&
           entry.item.matchId === this.item.matchId,
-      )?.item
+      )
+    },
+    mine(): RpsItem | undefined {
+      return this.mineEntry?.item
     },
     played(): boolean {
       return !!this.mine
+    },
+    /** The move is in the chat but its send failed: the bot has not received it. */
+    moveFailed(): boolean {
+      return !!this.mineEntry?.failed
     },
     /** The game's outcome only: that the bot's revealed move is the one it committed to before
      * the player moved. A match played by typing has no move item of the player's, so it is
@@ -274,9 +291,10 @@ export default defineComponent({
         )
       )
         return null
-      const sentAt =
-        all.find(entry => entry.outbound && entry.item === this.item)?.timeMs ||
-        this.mountedAt
+      const own = all.find(entry => entry.outbound && entry.item === this.item)
+      // A message that failed to send is not being answered: its own line says it failed.
+      if (own?.failed) return null
+      const sentAt = own?.timeMs || this.mountedAt
       const waited = Math.max(0, this.now - sentAt)
       return {
         seconds: Math.floor(waited / 1000),
@@ -319,15 +337,19 @@ export default defineComponent({
       }
       this.$emit('sendFollowUp', {
         items: [mine],
-        // The stake is the value of the move message itself.
-        ...(wager > 0n ? { stampValueWei: wager } : {}),
+        // The stake is the value of the move message itself: a free game carries no stamp.
+        stampValueWei: wager,
         settled: () => {
           this.submitting = false
         },
       })
     },
     playAgain() {
-      this.$emit('sendFollowUp', { items: [{ type: 'text', text: '/rps' }] })
+      // Asking for another match is not a message to a person: it carries no stamp.
+      this.$emit('sendFollowUp', {
+        items: [{ type: 'text', text: '/rps' }],
+        stampValueWei: 0n,
+      })
     },
   },
 })

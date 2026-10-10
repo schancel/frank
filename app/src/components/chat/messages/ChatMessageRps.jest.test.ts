@@ -125,11 +125,17 @@ function mountCard(item: RpsItem) {
 }
 
 function chat(
-  ...messages: { outbound: boolean; item: RpsItem; paid?: bigint }[]
+  ...messages: {
+    outbound: boolean
+    item: RpsItem
+    paid?: bigint
+    status?: string
+  }[]
 ) {
   store.activeConversation = {
     messages: messages.map(m => ({
       outbound: m.outbound,
+      status: m.status ?? 'confirmed',
       items: [m.item],
       stampValueWei: m.paid ?? 0n,
     })),
@@ -162,12 +168,34 @@ describe('ChatMessageRps.vue', () => {
     ])
   })
 
-  test('a free move carries no stake', async () => {
+  test('a free move carries no stake and no stamp', async () => {
     const wrapper = mountCard(start)
     await wrapper.find('[data-testid="rps-rock"]').trigger('click')
     const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]
-    expect(payload.stampValueWei).toBeUndefined()
+    // An explicit zero: left out, the chat's ordinary stamp was charged for a free game.
+    expect(payload.stampValueWei).toBe(0n)
     expect(payload.items[0].wagerWei).toBe('0')
+  })
+
+  test('a move whose send failed is shown as not sent, not as moved or awaited', () => {
+    chat({ outbound: true, item: mine, status: 'error' })
+    const card = mountCard(start)
+    expect(card.find('[data-testid="rps-move-not-sent"]').text()).toBe(
+      enUS.gameFairness.moveNotSent,
+    )
+    expect(card.find('[data-testid="rps-moved"]').exists()).toBe(false)
+    // The failed message is in the chat with its Retry: no second move is offered beside it.
+    expect(card.find('[data-testid="rps-rock"]').exists()).toBe(false)
+    // The move's own bubble does not count seconds for an answer that cannot come.
+    const bubble = mountCard(store.activeConversation.messages[0].items[0])
+    expect(bubble.find('[data-testid="rps-waiting"]').exists()).toBe(false)
+  })
+
+  test('a move that went out reads as moved', () => {
+    chat({ outbound: true, item: mine })
+    const card = mountCard(start)
+    expect(card.find('[data-testid="rps-moved"]').exists()).toBe(true)
+    expect(card.find('[data-testid="rps-move-not-sent"]').exists()).toBe(false)
   })
 
   test('a match already played offers no second move', () => {
@@ -263,7 +291,7 @@ describe('ChatMessageRps.vue', () => {
     late.unmount()
   })
 
-  test('play again asks the bot for a new match', async () => {
+  test('play again asks the bot for a new match, with no stamp', async () => {
     chat(
       { outbound: true, item: mine },
       { outbound: false, item: resolved, paid: STAKE * 2n },
@@ -272,6 +300,7 @@ describe('ChatMessageRps.vue', () => {
     await wrapper.find('[data-testid="rps-play-again"]').trigger('click')
     expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
       items: [{ type: 'text', text: '/rps' }],
+      stampValueWei: 0n,
     })
   })
 })

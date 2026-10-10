@@ -24,7 +24,7 @@
       <div
         v-if="waiting"
         class="text-caption"
-        :class="waiting.late ? 'text-negative' : 'text-grey-7'"
+        :class="waiting.late ? 'text-weight-bold' : 'game-waiting-quiet'"
         data-testid="dice-waiting"
       >
         {{
@@ -183,7 +183,14 @@
           :disable="rolling || played"
           @click="rollDice"
         />
-        <div v-if="played" class="text-caption text-grey-7 q-mt-xs">
+        <div
+          v-if="betFailed"
+          class="text-caption text-negative q-mt-xs"
+          data-testid="dice-bet-not-sent"
+        >
+          {{ $t('gameFairness.moveNotSent') }}
+        </div>
+        <div v-else-if="played" class="text-caption text-grey-7 q-mt-xs">
           You have bet on this roll.
         </div>
       </template>
@@ -206,6 +213,7 @@ import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
   BOT_ANSWER_WAIT_MS,
   chatGameItems,
+  type ChatGameItem,
   parseWager,
   randomHex,
 } from '../../../utils/chat-game-items'
@@ -267,15 +275,23 @@ export default defineComponent({
           : this.item.commitment
       return rollId && commitment ? { rollId, commitment } : undefined
     },
-    /** Whether the player already bet on this card's roll. */
-    played(): boolean {
+    /** The message carrying the player's bet on this card's roll, if there is one. */
+    myBet(): ChatGameItem<SatoshiDiceItem> | undefined {
       const rollId = this.offer?.rollId
-      return chatGameItems('dice', this.address).some(
+      return chatGameItems('dice', this.address).find(
         entry =>
           entry.outbound &&
           entry.item.action === 'roll' &&
           entry.item.rollId === rollId,
       )
+    },
+    /** Whether the player already bet on this card's roll. */
+    played(): boolean {
+      return !!this.myBet
+    },
+    /** The bet is in the chat but its send failed: the bot has not received it. */
+    betFailed(): boolean {
+      return !!this.myBet?.failed
     },
     /** The game's outcome only: that the roll is the one the commitment and the player's own
      * value give. Whether the payout arrived is a separate matter (`payout`). */
@@ -324,9 +340,10 @@ export default defineComponent({
         )
       )
         return null
-      const sentAt =
-        all.find(entry => entry.outbound && entry.item === this.item)?.timeMs ||
-        this.mountedAt
+      const own = all.find(entry => entry.outbound && entry.item === this.item)
+      // A message that failed to send is not being answered: its own line says it failed.
+      if (own?.failed) return null
+      const sentAt = own?.timeMs || this.mountedAt
       const waited = Math.max(0, this.now - sentAt)
       return {
         seconds: Math.floor(waited / 1000),
@@ -373,8 +390,8 @@ export default defineComponent({
       }
       this.$emit('sendFollowUp', {
         items: [bet],
-        // The stake is the value of the bet message itself.
-        ...(wager > 0n ? { stampValueWei: wager } : {}),
+        // The stake is the value of the bet message itself: a free roll carries no stamp.
+        stampValueWei: wager,
         settled: () => {
           this.rolling = false
         },

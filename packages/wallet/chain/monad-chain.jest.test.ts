@@ -3,7 +3,7 @@ import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 /**
  * Unit tests for `monad-chain.ts` (ticket #41): verifies `MonadChain` (via `createEvmChain`)
  * wires the real Monad wallet clients together correctly. Per the ticket's own instructions, this
- * mocks the underlying Monad clients (`MonadStampClient`, `MonadTopicPostClient`,
+ * mocks the underlying Monad clients (`MonadTopicPostClient`,
  * `MonadTopicVoteClient`, `monad-message-feed.ts`, `monad-topic-tally-client.ts`, and
  * `monad-identity.ts`'s HTTP-touching `fetchMonadProfile`) rather than `axios` directly -- those
  * clients already have their own tested HTTP layer (see each client's own `*.jest.test.ts`); this
@@ -76,10 +76,6 @@ jest.mock("../monad-stamp-client", () => {
   const actual = jest.requireActual("../monad-stamp-client");
   return {
     ...actual,
-    MonadStampClient: jest.fn().mockImplementation(() => ({
-      submitStampedMessage: jest.fn(),
-      resumePendingAttempts: jest.fn().mockResolvedValue([]),
-    })),
     quoteMonadStampPaymentGasReserve: jest.fn().mockResolvedValue(100n),
   };
 });
@@ -123,7 +119,6 @@ jest.mock("../monad-account-tx", () => {
 });
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { MonadStampClient } = jest.requireMock("../monad-stamp-client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { MonadTopicPostClient } = jest.requireMock("../monad-topic-post-client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1203,7 +1198,6 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
       })
     ).toThrow("actual installed wallet descriptor");
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
-    expect(MonadStampClient).not.toHaveBeenCalled();
     expect(MonadTopicPostClient).not.toHaveBeenCalled();
     expect(MonadTopicVoteClient).not.toHaveBeenCalled();
     expect(wallet.pool.records()).toEqual(statuses);

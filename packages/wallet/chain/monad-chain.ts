@@ -66,43 +66,11 @@ import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
  * `EvmChainConfig` -- this ticket's own tests build chains against a fixed test config, never
  * against env, and mock every wallet client `MonadChain` composes rather than hitting real HTTP.
  *
- * ## `directMessages`: wiring `monad-message-envelope.ts` for real
+ * ## `directMessages`
  *
- * `send()` resolves the recipient's registered pubkey via `../wallet/monad-identity.ts`'s
- * `fetchMonadProfile` (itself `GET /metadata/:addr` -- see that file's header for the live
- * Lotus-address-only backend gap this inherits), builds a real encrypted envelope
- * (`buildEnvelope`) keyed on both parties' addresses, and submits it via a fresh `MonadStampClient`
- * built from the sending wallet's own `EvmWalletHandle` bundle. `items: MessageItem[]` is
- * JSON-serialized into the envelope's plaintext (`serializeMessageItems` below) -- deliberately
- * only for the item kinds that have a real Monad-side meaning (`text`/`reply`/`image`);
- * `stealth`/`p2pkh` (Lotus on-chain-payment-embedded-in-message kinds) have no Monad equivalent to
- * build here (`PLAN.md`'s own M9 notes: the old `Wallet` class's ~400 lines of UTXO coin-selection
- * this would need "have no Monad equivalent to port -- not a gap, a simplification"), so `send()`
- * throws a clear error if asked to send one rather than silently dropping it.
- *
- * `fetchSince()` reads the wallet's own authenticated mailbox (`monad-message-feed.ts`'s
- * `fetchMonadMessagesSince`, which signs a relay challenge with the identity key; the relay serves
- * only rows addressed to this identity and a relay without the mailbox is a thrown
- * `MonadMailboxUnavailableError`, never an empty inbox), then imports/acks confirmed-prefix
- * recovery obligations (`syncMailboxRecoveries` below), parses every stored
- * message's `encrypted_payload` as a `MonadMessageEnvelope` (`parseEnvelope` -- silently skipping
- * anything that doesn't parse as one, e.g. pre-#9 demo messages with no envelope at all, exactly
- * the behavior that function's own doc comment describes), keeps only envelopes addressed to the
- * wallet's own identity address (`envelope.to`, compared case-insensitively -- EIP-55 checksums
- * differ only in letter case), resolves each sender's pubkey the same way `send()` resolves the
- * recipient's, and decrypts. The decrypted JSON is not delivered as it is: every item goes
- * through the wire module's receive rule (`receiveLegacyItems`), the same one a canonical message's
- * items go through, so a type that path does not carry, or an item its plugin refuses, arrives as
- * an `unsupported` item. The `stampValueWei` of a legacy message is always `0n`: the raw
- * transactions a legacy message carries are its SENDER'S CLAIM. The relay delivers a legacy
- * message to the inbox even while those payments are pending or after they were terminally
- * rejected (`backend/cashweb/cashweb-registry/src/http/monad_message.rs`), and this wallet does
- * not check them against the chain, so nothing here reports them as money received. Its
- * `stampPayments` still list where those transactions pay, because a stamp address is derived
- * from the message and cannot be found again from the seed alone: the list is what lets the
- * funds be swept to a seed-derived address before the message is deleted. The sweep reads the
- * chain for what is really there. Payments to this wallet's derived stamp addresses are also
- * recorded in the stamp-payment journal as `discovered`.
+ * One transport: the relay's account message routes, through `./monad-canonical-dm.ts`. A
+ * wallet without typed persistent custody (a bare mnemonic) has no messaging: `send()` and
+ * `fetchSince()` throw `CanonicalMessagingPendingError`. There is no protobuf envelope path.
  *
  * ## Canonical Forum topics
  *
@@ -191,7 +159,6 @@ import {
   fetchMonadProfile,
 } from "../monad-identity";
 import {
-  MonadStampClient,
   MonadCanonicalStampClient,
   quoteMonadStampPaymentGasReserve,
 } from "../monad-stamp-client";
@@ -4107,9 +4074,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
           if (material.messagingRoot !== undefined) typedWallets.add(wallet);
-          if (material.messagingRoot === undefined) {
-            await new MonadStampClient(wallet).resumePendingAttempts();
-          }
           return wallet;
         } catch (error) {
           try {

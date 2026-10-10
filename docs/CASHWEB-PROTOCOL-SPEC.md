@@ -49,12 +49,10 @@ directory record and wallet cutover enforce it.
 
 ## 2. Current boundary and clean break
 
-**SHIPPED.** The normal direct-message path is protobuf. It encrypts a JSON message-item payload
-with the version-2 Monad envelope, derives payment children from the recipient's registered key,
-and uses the relay's durable outbox and recipient-scoped authenticated inbox. App/production wallet
-composition wires `StampAttemptJournal` and journals the signed payment set before
-`PUT /message/monad`. The reachable Qwen bot composition constructs `MonadStampClient` without that
-journal; it is not crash-safe and MUST NOT be cited as journal-before-PUT evidence. The same
+**SHIPPED.** There is one direct-message path: the canonical CBOR transport on the relay's
+account message routes. The protobuf path (`PUT /message/monad`, the version-2 Monad envelope and
+the wallet's `MonadStampClient`) is deleted from the relay and the wallet; where later sections
+still describe it, they describe history. The same
 long-lived identity key currently serves directory/profile signing, mailbox challenge
 authentication, DM ECDH, and the base for payment children. That is implementation fact, not the
 target key model.
@@ -1053,7 +1051,6 @@ Across every family:
 | Rust codec, other families | Stages 1–9, generalized type-2/type-7 transition verification at stage 10.6, pure hashes and shared vectors | IMPLEMENTED-NOT-WIRED | Target structures and full checks independently cross-checked |
 | Relay / `cashwebd` | Protobuf DM/raw-payment outbox, authenticated bounded inbox; POP/BIP70; legacy/opt-in CBOR topics; explicit CBOR registration | SHIPPED | Destination-sealed FRNK DM, recovery-capacity admission, unified mailbox capability, exact replay/restart/fork/reset/deletion and bounded fenced cutover |
 | Wallet | App composition wires durable attempt/payment journals; deniable v2 envelope; explicit CBOR registration and opt-in topics | SHIPPED | Disjoint hardened `P`/`M`/`P'`, destination-sealed exact order, recovery import/ack, atomic replay and fenced cutover |
-| Bot | Reachable Qwen composition uses `MonadStampClient` without `StampAttemptJournal` and is not crash-safe | SHIPPED | Wire the same durable journals/protocol client as wallet; no private alternative wire |
 | App | Uses `ActiveChain`, recipient-scoped polling, protobuf presentation/read models | SHIPPED | Reachability UX, fork/expiry/status surfacing, scoped reset/deletion, target CBOR read models |
 | Cross-language vectors | Shared TS/Rust/Python/browser codec corpora; account-registration and topic commitments | IMPLEMENTED-NOT-WIRED | Full DM crypto/payment observations, provider/mailbox/status/reset cases, hostile unknown-field retention |
 | Legacy directory/broadcast federation | Legacy protobuf directory catch-up and broadcast forwarding paths are reachable | SHIPPED | Preserve only as historical migration evidence; do not treat their wire as target FRNK |

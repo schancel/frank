@@ -22,25 +22,17 @@
 
 ---
 
-## 3. Usage Example: Deriving Stealth Payment Stamp
+## 3. Usage Example: Sending a Direct Message
+
+Messages go through the chain's `directMessages`, on the relay's one message transport. The
+wallet must be an account with persistent custody; a bare mnemonic wallet has no messaging.
 
 ```typescript
-import { MonadStampClient } from "@frank/wallet/monad-stamp-client";
+import { activeChain } from "@frank/wallet/chain";
 
-const stampClient = new MonadStampClient({
-  walletHandle,
-  provider,
-  networkTag: "monad-testnet",
+const result = await activeChain.directMessages.send({
+  wallet,
+  recipient,
+  items: [{ type: "text", text: "hello" }],
 });
-
-// Construct payment stamp for direct message delivery
-const stamp = await stampClient.createMessageStamp({
-  recipientStampPubkey: bobStampKey,
-  childIndex: 0,
-  amountWei: 1000000000000n,
-});
-
-console.log("Stealth target address:", stamp.stealthAddress);
-console.log("Transaction hash:", stamp.txHash);
-console.log("DLEQ proof:", stamp.dleqProof);
 ```

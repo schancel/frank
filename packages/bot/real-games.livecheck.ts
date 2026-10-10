@@ -53,6 +53,12 @@ const STAKE = 500_000_000_000_000n; // 0.0005
 const only = (process.env.GAMES ?? "dice,rps,vendor,raffle,blackjack").split(
   ","
 );
+const randomHex32 = () =>
+  Array.from({ length: 32 }, () =>
+    Math.floor(Math.random() * 256)
+      .toString(16)
+      .padStart(2, "0")
+  ).join("");
 const say = (...a: unknown[]) =>
   console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -151,12 +157,14 @@ async function main() {
     m.items.find((i: any) => i.type === type);
   const game = async (id: string, run: () => Promise<string>) => {
     if (!only.includes(id)) return;
+    const key =
+      results[id] === undefined ? id : `${id}#${Object.keys(results).length}`;
     try {
-      results[id] = "OK: " + (await run());
+      results[key] = "OK: " + (await run());
     } catch (e) {
-      results[id] = "FAILED: " + (e instanceof Error ? e.message : e);
+      results[key] = "FAILED: " + (e instanceof Error ? e.message : e);
     }
-    say(id, results[id]);
+    say(key, results[key]);
   };
   const onChain = async (m: any) => {
     let total = 0n;
@@ -313,52 +321,88 @@ async function main() {
     return `2 entrants, winner ${draw.winnerAddress}, pot ${draw.potWei}, ${paid} wei confirmed on chain to the winner; draw verified`;
   });
 
-  await game("blackjack", async () => {
-    const SEED = "aa".repeat(32);
-    const events: HandEvent[] = [];
-    const sendHand = async (it: any, stamp?: bigint) => {
-      const digest = await alice.send(at.blackjack, [it], stamp);
-      events.push({
-        item: it,
-        from: alice.address,
-        to: at.blackjack,
-        stampWei: stamp ?? STAMP,
-        digest,
-      });
-    };
-    const next = async (action: string) => {
-      const m = await alice.receive(
-        (x) =>
-          item(x, "blackjack-hand")?.action === action &&
-          !events.some((e) => e.digest === x.payloadDigest),
-        300_000
-      );
-      events.push({
-        item: item(m, "blackjack-hand"),
-        from: at.blackjack,
-        to: alice.address,
-        stampWei: m.stampValueWei,
-        digest: m.payloadDigest,
-      });
-      return m;
-    };
-    await alice.send(at.blackjack, [{ type: "text", text: "deal me in" }]);
-    await next("challenge");
-    await sendHand(buildBet(foldHand(events).state, SEED), STAKE);
-    await next("deal");
-    let state = foldHand(events).state!;
-    if (state.phase === "player_turn") {
-      await sendHand(playerStep(state, "stand", SEED));
-    }
-    const reveal = await next("reveal");
-    state = foldHand(events).state!;
-    if (state.phase !== "resolved")
-      throw new Error("hand not resolved: " + state.phase);
-    const owed = payoutWei(state.outcome!, STAKE, false);
-    const paid = await onChain(reveal);
-    if (paid < owed) throw new Error(`owed ${owed} but ${paid} on chain`);
-    return `outcome ${state.outcome}, owed ${owed}, ${paid} wei confirmed on chain; every card computed from the opened links`;
-  });
+  // BLACKJACK=stand,bust,double plays one hand each way: stand at once, hit until the hand
+  // ends (to see a bust followed by the reveal), or double (a second stake, one card, reveal).
+  const seenHandMessages = new Set<string>();
+  for (const mode of (process.env.BLACKJACK ?? "stand").split(","))
+    await game("blackjack", async () => {
+      const SEED = randomHex32();
+      const events: HandEvent[] = [];
+      const sendHand = async (it: any, stamp?: bigint) => {
+        const digest = await alice.send(at.blackjack, [it], stamp);
+        events.push({
+          item: it,
+          from: alice.address,
+          to: at.blackjack,
+          stampWei: stamp ?? STAMP,
+          digest,
+        });
+      };
+      const next = async (action: string) => {
+        const m = await alice.receive(
+          (x) =>
+            item(x, "blackjack-hand")?.action === action &&
+            !seenHandMessages.has(x.payloadDigest),
+          300_000
+        );
+        seenHandMessages.add(m.payloadDigest);
+        events.push({
+          item: item(m, "blackjack-hand"),
+          from: at.blackjack,
+          to: alice.address,
+          stampWei: m.stampValueWei,
+          digest: m.payloadDigest,
+        });
+        return m;
+      };
+      const state = () => foldHand(events).state!;
+      await alice.send(at.blackjack, [{ type: "text", text: "deal me in" }]);
+      const challenge = await next("challenge");
+      await sendHand(buildBet(state(), SEED), STAKE);
+      const deal = await next("deal");
+      let doubled = false;
+      let moves = "";
+      if (mode === "double" && state().phase === "player_turn") {
+        const double = playerStep(state(), "double", SEED);
+        if (!double) throw new Error("the hand did not allow a double");
+        await sendHand(double, STAKE);
+        doubled = true;
+        moves = "double";
+        await next("card");
+      } else if (mode === "bust") {
+        while (state().phase === "player_turn") {
+          const hit = playerStep(state(), "hit", SEED);
+          if (!hit) {
+            await sendHand(playerStep(state(), "stand", SEED));
+            moves += " stand";
+            break;
+          }
+          await sendHand(hit);
+          moves += " hit";
+          await next("card");
+        }
+      } else if (state().phase === "player_turn") {
+        await sendHand(playerStep(state(), "stand", SEED));
+        moves = "stand";
+      }
+      // No further message from the player: the reveal must come by itself.
+      const reveal = await next("reveal");
+      const end = state();
+      if (end.phase !== "resolved")
+        throw new Error("hand not resolved: " + end.phase);
+      const owed = payoutWei(end.outcome!, STAKE, doubled);
+      const paid = await onChain(reveal);
+      if (paid < owed) throw new Error(`owed ${owed} but ${paid} on chain`);
+      // The dealer pays nothing to talk: only a payout carries value.
+      const talk = [challenge, deal].map((m) => m.stampValueWei.toString());
+      return `[${mode}:${moves.trim()}] player ${end.playerCards.join(
+        ","
+      )} outcome ${
+        end.outcome
+      }, owed ${owed}, ${paid} wei confirmed on chain; challenge and deal carried ${talk.join(
+        " and "
+      )} wei`;
+    });
 
   await host.stop().catch(() => undefined);
   // What the players have left goes back to the funding wallet.

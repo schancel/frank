@@ -1309,7 +1309,8 @@ export default {
       'The full licence text, including its conditions and disclaimer, as published by Silence Laboratories (English only):',
   },
   swap: {
-    venue: 'Uniswap v4',
+    venueChoice: 'Exchange',
+    interfaceFee: 'Frank fee ({rate})',
     venueNote: 'Testnet deployment run by {maintainer}, not by Uniswap Labs',
     pay: 'You pay',
     payToken: 'Token you pay with',

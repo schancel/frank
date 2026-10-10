@@ -4,13 +4,15 @@
  * Both ask the chain. The quote is the swap deployment's quoter contract answering for the exact
  * amount, the gas figure is `eth_estimateGas` on the built transaction, and nothing is printed
  * when the node cannot be reached. Neither command signs or sends anything; the app's swap view
- * executes swaps through the wallet. There is no interface fee.
+ * executes swaps through the wallet. An interface fee is printed when the venue has one; none
+ * does today.
  */
 
 import { JsonRpcProvider, formatUnits, getAddress, parseUnits } from 'ethers'
 import {
   getEvmDexDeployment,
   listEvmDexDeploymentChains,
+  listEvmSwapVenues,
   type UniswapV4Deployment,
 } from '@frank/wallet/chain/dex-deployments'
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
@@ -26,6 +28,8 @@ import { outputError, outputResult } from '../util'
 
 export interface SwapQuoteOptions {
   chain?: string
+  /** Which of the chain's venues; its first when omitted. */
+  venue?: string
   rpcUrl?: string
   slippage?: string | number
   /** `build` only: the account that would send the swap. */
@@ -47,7 +51,15 @@ export const swapNetwork = {
   async open(options: SwapQuoteOptions): Promise<SwapTarget> {
     const chainIdentifier = options.chain ?? DEFAULT_CHAIN
     const entry = PROTOCOL_CHAINS[chainIdentifier]
-    const deployment = getEvmDexDeployment(chainIdentifier)
+    const deployment = getEvmDexDeployment(chainIdentifier, options.venue)
+    if (entry && !deployment && options.venue)
+      throw new Error(
+        `${chainIdentifier} has no venue "${options.venue}". Venues: ${
+          listEvmSwapVenues(chainIdentifier)
+            .map(venue => venue.id)
+            .join(', ') || 'none'
+        }`,
+      )
     if (!entry || !deployment)
       throw new Error(
         `No swap is available on ${chainIdentifier}. Available: ${listEvmDexDeploymentChains().join(
@@ -127,7 +139,8 @@ export async function swapQuoteCommand(
     const minimumAmountOut = minimumOutput(quote.amountOut, slippageBps)
     const result = {
       chain: target.chainIdentifier,
-      exchange: 'Uniswap v4',
+      exchange: target.deployment.displayName,
+      venue: target.deployment.id,
       officialUniswapDeployment: target.deployment.officialUniswapDeployment,
       maintainer: target.deployment.maintainer,
       from: tokenIn.symbol,
@@ -138,7 +151,11 @@ export async function swapQuoteCommand(
       slippageBps,
       poolFee: percent(quote.lpFeePpm),
       priceImpact: percent(quote.priceImpactPpm),
-      interfaceFee: 'none',
+      interfaceFee: quote.interfaceFee
+        ? `${formatUnits(quote.interfaceFee.amount, tokenOut.decimals)} ${
+            tokenOut.symbol
+          } (${quote.interfaceFee.bps / 100}%)`
+        : 'none',
     }
     outputResult(
       result,
@@ -155,7 +172,7 @@ export async function swapQuoteCommand(
         )
         console.log(`  Pool fee:         ${result.poolFee}`)
         console.log(`  Price impact:     ${result.priceImpact}`)
-        console.log('  Interface fee:    none')
+        console.log(`  Interface fee:    ${result.interfaceFee}`)
       },
       options.json,
     )

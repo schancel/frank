@@ -64,7 +64,6 @@ const SAME_IN_FRENCH = new Set([
   'walletPanel.zeroTdoge',
   'walletPanel.avuDrawerHeader',
   'walletPanel.chartTokenAvu',
-  'swap.venue',
   'swap.max',
   'SettingPanel.contacts',
   'contactBookDialog.contacts',

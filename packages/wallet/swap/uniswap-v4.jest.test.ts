@@ -1,7 +1,10 @@
 import { getAddress } from 'ethers'
 import {
+  assertInterfaceFee,
   getEvmDexDeployment,
   listEvmDexDeploymentChains,
+  listEvmSwapVenues,
+  MAX_INTERFACE_FEE_BPS,
   NATIVE_CURRENCY,
 } from '../chain/dex-deployments'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
@@ -21,6 +24,7 @@ import {
   classifySwapRevert,
   encodeSwap,
   findToken,
+  interfaceFeeAmount,
   minimumOutput,
   outputAtMidPrice,
   PERMIT2_ALLOWANCE_SECONDS,
@@ -528,5 +532,165 @@ describe('quote, at the node seam', () => {
       maxFeePerGas: 5n,
       maximumFeeWei: 1_200_000n,
     })
+  })
+})
+
+describe('venues', () => {
+  it('lists a chain’s venues in order, and nothing for a chain without one', () => {
+    expect(
+      listEvmSwapVenues('monad-testnet').map(venue => ({
+        id: venue.id,
+        protocol: venue.protocol,
+        displayName: venue.displayName,
+        maintainer: venue.maintainer,
+      })),
+    ).toEqual([
+      {
+        id: 'uniswap-v4',
+        protocol: 'uniswap-v4',
+        displayName: 'Uniswap v4',
+        maintainer: 'Monad',
+      },
+    ])
+    for (const none of ['monad-mainnet', 'solana-devnet', 'constructor'])
+      expect(listEvmSwapVenues(none)).toEqual([])
+  })
+
+  it('finds a venue by id, the first by default, and never another in place of a missing one', () => {
+    expect(getEvmDexDeployment('monad-testnet', 'uniswap-v4')).toBe(deployment)
+    expect(getEvmDexDeployment('monad-testnet')).toBe(deployment)
+    expect(getEvmDexDeployment('monad-testnet', 'orca')).toBeUndefined()
+  })
+
+  it('charges no interface fee anywhere today', () => {
+    for (const chain of listEvmDexDeploymentChains())
+      for (const venue of listEvmSwapVenues(chain))
+        expect(venue.interfaceFee).toBeUndefined()
+  })
+})
+
+describe('interface fee', () => {
+  const fee = vectors.swapNativeInWithFee
+  const withFee = {
+    ...deployment,
+    interfaceFee: { bps: fee.feeBps, recipient: fee.feeRecipient },
+  }
+
+  it('refuses a rate that is not 1 to 100 whole basis points, or a missing recipient', () => {
+    const recipient = fee.feeRecipient
+    expect(MAX_INTERFACE_FEE_BPS).toBe(100)
+    for (const bps of [0, -1, 101, 8.75, Number.NaN])
+      expect(() => assertInterfaceFee({ bps, recipient })).toThrow(RangeError)
+    for (const bad of ['', '0x1234', NATIVE_CURRENCY])
+      expect(() => assertInterfaceFee({ bps: 25, recipient: bad })).toThrow(
+        RangeError,
+      )
+    expect(() => assertInterfaceFee({ bps: 100, recipient })).not.toThrow()
+    expect(() =>
+      encodeSwap({
+        deployment: { ...deployment, interfaceFee: { bps: 500, recipient } },
+        route: monUsdc,
+        amountIn: 1n,
+        minimumAmountOut: 1n,
+        deadline: 1,
+      }),
+    ).toThrow(RangeError)
+  })
+
+  it('encodes the fee as its own action, byte for byte as the real router executed it', () => {
+    const call = encodeSwap({
+      deployment: withFee,
+      route: monUsdc,
+      amountIn: 10_000_000_000_000_000n,
+      minimumAmountOut: 9_899n,
+      deadline: 1791616424,
+    })
+    expect(call.data).toBe(fee.data)
+    expect(call.value.toString()).toBe(fee.value)
+  })
+
+  it('encodes nothing about a fee when the venue has none', () => {
+    const plain = encodeSwap({
+      deployment,
+      route: monUsdc,
+      amountIn: 10_000_000_000_000_000n,
+      minimumAmountOut: 9_899n,
+      deadline: 1791616424,
+    })
+    expect(plain.data).not.toBe(fee.data)
+    expect(plain.data).not.toContain(fee.feeRecipient.slice(2).toLowerCase())
+    // swap, settle, take: three actions, no fourth.
+    expect(plain.data).toContain('3060c0f'.padEnd(64, '0'))
+    expect(fee.data).toContain('4060c100f'.padEnd(64, '0'))
+  })
+
+  it('rounds the fee down, as the router does', () => {
+    expect(interfaceFeeAmount(9_998n, 50)).toBe(49n)
+    expect(interfaceFeeAmount(199n, 50)).toBe(0n)
+    expect(interfaceFeeAmount(10_000n, 100)).toBe(100n)
+  })
+
+  it('reads what the account received from the real receipt: the pool’s output less the fee', () => {
+    // The pool paid 9,998; 49 went to the fee recipient; the account received 9,949.
+    expect(
+      readSwapOutcome({
+        deployment: withFee,
+        route: monUsdc,
+        account,
+        logs: fee.logs,
+      }),
+    ).toEqual({ amountIn: 10_000_000_000_000_000n, amountOut: 9_949n })
+  })
+
+  it('takes the fee off a native output too, where no transfer log exists', () => {
+    expect(
+      readSwapOutcome({
+        deployment: {
+          ...withFee,
+          interfaceFee: { ...withFee.interfaceFee, bps: 100 },
+        },
+        route: usdcMon,
+        account,
+        logs: vectors.swapTokenIn.logs,
+      }),
+    ).toEqual({
+      amountIn: 15_000n,
+      amountOut: 14_988_096_860_619_966n - 149_880_968_606_199n,
+    })
+  })
+
+  it('shows the fee in the quote, separate from the pool fee, and floors the minimum on the net', async () => {
+    const canned = cannedNode(withFee)
+    canned.node.pools.set(poolId(monUsdc.key).toLowerCase(), {
+      sqrtPriceX96: 2n ** 96n,
+      liquidity: 10n ** 18n,
+      lpFee: 500,
+      quote: () => 10_000n,
+    })
+    const quote = await fetchSwapQuote(canned.reader, withFee, {
+      tokenIn: MON,
+      tokenOut: USDC,
+      amountIn: 10_000n,
+    })
+    expect(quote).toMatchObject({
+      poolAmountOut: 10_000n,
+      interfaceFee: { bps: 50, amount: 50n },
+      amountOut: 9_950n,
+      lpFeePpm: 500,
+    })
+    const plan = await planSwap(canned.reader, withFee, {
+      quote,
+      slippageBps: 100,
+      account,
+    })
+    expect(plan.minimumAmountOut).toBe(9_850n)
+
+    const none = await fetchSwapQuote(canned.reader, deployment, {
+      tokenIn: MON,
+      tokenOut: USDC,
+      amountIn: 10_000n,
+    })
+    expect(none.interfaceFee).toBeUndefined()
+    expect(none.amountOut).toBe(none.poolAmountOut)
   })
 })

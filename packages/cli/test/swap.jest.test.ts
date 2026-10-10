@@ -67,6 +67,7 @@ describe('signet swap', () => {
     expect(json()).toEqual({
       chain: 'monad-testnet',
       exchange: 'Uniswap v4',
+      venue: 'uniswap-v4',
       officialUniswapDeployment: false,
       maintainer: 'Monad',
       from: 'MON',

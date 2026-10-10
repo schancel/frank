@@ -45,8 +45,19 @@ async function main(): Promise<void> {
     throw new Error(
       'Usage: SWAP_LIVECHECK_ACCOUNT_JSON=… tsx swap-real.livecheck.ts <FROM> <TO> <amount> [slippageBps]',
     )
-  const deployment = getEvmDexDeployment(chainIdentifier)
-  if (!deployment) throw new Error(`No swap deployment for ${chainIdentifier}`)
+  const configured = getEvmDexDeployment(chainIdentifier)
+  if (!configured) throw new Error(`No swap deployment for ${chainIdentifier}`)
+  // To exercise the interface-fee action for real before any venue is configured with one:
+  // SWAP_LIVECHECK_FEE_BPS and SWAP_LIVECHECK_FEE_RECIPIENT (an address you control).
+  const deployment = process.env.SWAP_LIVECHECK_FEE_BPS
+    ? {
+        ...configured,
+        interfaceFee: {
+          bps: Number(process.env.SWAP_LIVECHECK_FEE_BPS),
+          recipient: process.env.SWAP_LIVECHECK_FEE_RECIPIENT ?? '',
+        },
+      }
+    : configured
   const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 })
   if (
     String((await provider.getNetwork()).chainId) !==
@@ -139,6 +150,15 @@ async function main(): Promise<void> {
       slippageBps: Number(slippage),
       account,
     })
+    if (quote.interfaceFee)
+      console.log(
+        `interface fee ${quote.interfaceFee.bps} bps = ${formatUnits(
+          quote.interfaceFee.amount,
+          tokenOut.decimals,
+        )} ${tokenOut.symbol} to ${
+          deployment.interfaceFee!.recipient
+        } (pool pays ${formatUnits(quote.poolAmountOut, tokenOut.decimals)})`,
+      )
     console.log(
       `quote: ${amount} ${tokenIn.symbol} -> ${formatUnits(
         quote.amountOut,

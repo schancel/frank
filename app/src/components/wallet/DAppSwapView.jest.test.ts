@@ -15,13 +15,17 @@ jest.mock('src/utils/native-transfer', () => ({
   nativeSendChainIdentifier: (wallet: string, isTestnet: boolean) =>
     mockChainFor(wallet, isTestnet),
 }))
+const mockExtraVenues: { id: string; protocol: string; displayName: string }[] =
+  []
 jest.mock('src/swap/evm-swap-session', () => {
-  const { getEvmDexDeployment } = jest.requireActual(
+  const { listEvmSwapVenues } = jest.requireActual(
     '@frank/wallet/chain/dex-deployments',
   )
   return {
-    evmSwapDeployment: (id: string | undefined) =>
-      id ? getEvmDexDeployment(id) : undefined,
+    evmSwapVenues: (id: string | undefined) => {
+      const configured = id ? listEvmSwapVenues(id) : []
+      return configured.length ? [...configured, ...mockExtraVenues] : []
+    },
   }
 })
 
@@ -51,7 +55,15 @@ function mountShell(
     global: {
       mocks: { $t: translate(options.locale ?? en) },
       stubs: {
-        EvmSwapPanel: panel('evm-panel', ['chainIdentifier', 'walletId']),
+        EvmSwapPanel: panel('evm-panel', [
+          'chainIdentifier',
+          'walletId',
+          'venueId',
+        ]),
+        QBtn: {
+          props: ['label'],
+          template: '<button>{{ label }}</button>',
+        },
         SolanaSwapPanel: panel('solana-panel', []),
         QCard: { template: '<div><slot /></div>' },
         QCardSection: { template: '<div><slot /></div>' },
@@ -63,6 +75,7 @@ const has = (view: ReturnType<typeof mountShell>, id: string) =>
   view.find(`[data-testid="${id}"]`).exists()
 
 beforeEach(() => {
+  mockExtraVenues.length = 0
   mockChainFor.mockReset()
   mockChainFor.mockImplementation((wallet, isTestnet) =>
     wallet === 'monad'
@@ -81,7 +94,10 @@ describe('the swap shell', () => {
     expect(JSON.parse(view.get('[data-testid="evm-panel"]').text())).toEqual({
       chainIdentifier: 'monad-testnet',
       walletId: 'monad',
+      venueId: 'uniswap-v4',
     })
+    // One venue: nothing to choose.
+    expect(has(view, 'swap-venue-choice')).toBe(false)
     expect(has(view, 'solana-panel')).toBe(false)
     expect(has(view, 'swap-unavailable')).toBe(false)
   })
@@ -114,6 +130,7 @@ describe('the swap shell', () => {
     expect(view.text()).toContain(en.walletPanel.swapUnavailable)
     expect(view.text()).toContain(en.swap.unavailableNetwork)
     expect(view.find('button').exists()).toBe(false)
+    expect(has(view, 'swap-venue-choice')).toBe(false)
   })
 
   it('says it in French too', () => {
@@ -130,5 +147,28 @@ describe('the swap shell', () => {
     await view.setProps({ selectedWallet: 'solana' })
     expect(has(view, 'solana-panel')).toBe(true)
     expect(has(view, 'evm-panel')).toBe(false)
+  })
+
+  it('lets the user pick when a chain has more than one venue, and opens on the first', async () => {
+    // A second venue of the same protocol, as configuration would list it.
+    mockExtraVenues.push({
+      id: 'second',
+      protocol: 'uniswap-v4',
+      displayName: 'Second venue',
+    })
+    const view = mountShell('monad')
+    expect(view.get('[data-testid="swap-venue-choice"]').text()).toContain(
+      'Uniswap v4',
+    )
+    expect(
+      JSON.parse(view.get('[data-testid="evm-panel"]').text()).venueId,
+    ).toBe('uniswap-v4')
+    await view.get('[data-testid="swap-venue-second"]').trigger('click')
+    expect(
+      JSON.parse(view.get('[data-testid="evm-panel"]').text()).venueId,
+    ).toBe('second')
+    // Another wallet starts from its own first venue, not from this choice.
+    await view.setProps({ selectedWallet: 'ecash' })
+    expect(has(view, 'swap-venue-choice')).toBe(false)
   })
 })

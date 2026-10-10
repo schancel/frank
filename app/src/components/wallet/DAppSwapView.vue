@@ -1,12 +1,38 @@
 <template>
   <div class="q-py-sm" data-testid="dapp-swap-view">
     <!-- One panel per chain family. The shell only decides which one the wallet gets. -->
-    <evm-swap-panel
-      v-if="panel === 'evm' && chainIdentifier"
-      :key="chainIdentifier"
-      :chain-identifier="chainIdentifier"
-      :wallet-id="selectedWallet"
-    />
+    <template v-if="panel === 'evm' && chainIdentifier && venue">
+      <!-- A chain with several venues lets the user pick; with one, it is simply named. -->
+      <div
+        v-if="venues.length > 1"
+        class="row items-center q-gutter-x-sm q-px-xs q-pb-sm"
+        data-testid="swap-venue-choice"
+      >
+        <span class="text-caption text-grey-7">{{
+          $t('swap.venueChoice')
+        }}</span>
+        <q-btn
+          v-for="option in venues"
+          :key="option.id"
+          dense
+          no-caps
+          unelevated
+          size="sm"
+          :outline="option.id !== venue.id"
+          :color="option.id === venue.id ? 'primary' : 'grey-7'"
+          :label="option.displayName"
+          :data-testid="`swap-venue-${option.id}`"
+          @click="chosenVenueId = option.id"
+        />
+      </div>
+      <component
+        :is="venuePanels[venue.protocol]"
+        :key="`${chainIdentifier}:${venue.id}`"
+        :chain-identifier="chainIdentifier"
+        :wallet-id="selectedWallet"
+        :venue-id="venue.id"
+      />
+    </template>
     <solana-swap-panel v-else-if="panel === 'solana'" />
     <q-card v-else flat bordered>
       <q-card-section role="status" data-testid="swap-unavailable">
@@ -22,12 +48,12 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent } from 'vue'
+import { computed, defineComponent, ref, watch } from 'vue'
 import {
   getChainRegistryEntry,
   resolveNetworkId,
 } from '@frank/wallet/chain/chains-registry'
-import { evmSwapDeployment } from 'src/swap/evm-swap-session'
+import { evmSwapVenues } from 'src/swap/evm-swap-session'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import EvmSwapPanel from './EvmSwapPanel.vue'
 import SolanaSwapPanel from './SolanaSwapPanel.vue'
@@ -57,13 +83,33 @@ export default defineComponent({
     const chainIdentifier = computed(() =>
       nativeSendChainIdentifier(props.selectedWallet, props.isTestnet),
     )
+    /** The chain's venues, from configuration. A chain with none says so plainly. */
+    const venues = computed(() =>
+      family.value === 'evm' ? evmSwapVenues(chainIdentifier.value) : [],
+    )
+    const chosenVenueId = ref<string>()
+    watch(chainIdentifier, () => {
+      chosenVenueId.value = undefined
+    })
+    const venue = computed(
+      () =>
+        venues.value.find(option => option.id === chosenVenueId.value) ??
+        venues.value[0],
+    )
     const panel = computed<'evm' | 'solana' | 'none'>(() => {
       if (family.value === 'solana') return 'solana'
-      if (family.value === 'evm' && evmSwapDeployment(chainIdentifier.value))
-        return 'evm'
-      return 'none'
+      return venue.value ? 'evm' : 'none'
     })
-    return { chainIdentifier, panel }
+    return {
+      chainIdentifier,
+      panel,
+      venues,
+      venue,
+      chosenVenueId,
+      // One panel per protocol. Each takes the chain, the wallet and the venue id, and does
+      // its own quoting, planning and execution behind that.
+      venuePanels: { 'uniswap-v4': EvmSwapPanel },
+    }
   },
 })
 </script>

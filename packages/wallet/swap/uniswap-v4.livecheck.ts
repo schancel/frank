@@ -168,6 +168,58 @@ async function main(): Promise<void> {
       )
     }
   }
+  if (from) {
+    // The interface fee action, against the real router, with a fee no venue is configured
+    // with: 50 bps to the simulating account itself. Nothing is sent.
+    console.log('interface fee action (simulated only)')
+    const withFee = {
+      ...deployment,
+      interfaceFee: { bps: 50, recipient: from },
+    }
+    const target = deployment.tokens.find(token => token.address !== null)!
+    const amountIn = parseUnits('0.02', native.decimals)
+    const quote = await fetchSwapQuote(provider, withFee, {
+      tokenIn: native,
+      tokenOut: target,
+      amountIn,
+    })
+    ok(
+      quote.interfaceFee !== undefined &&
+        quote.amountOut + quote.interfaceFee.amount === quote.poolAmountOut,
+      `quote: pool pays ${quote.poolAmountOut}, fee ${quote.interfaceFee?.amount}, caller receives ${quote.amountOut}`,
+    )
+    const deadline = Math.floor(Date.now() / 1000) + 600
+    const exact = encodeSwap({
+      deployment: withFee,
+      route: quote.route,
+      amountIn,
+      minimumAmountOut: quote.amountOut,
+      deadline,
+    })
+    ok(
+      (await estimateCallFee(provider, exact, from)).gasLimit > 0n,
+      'with the fee taken, the caller still receives at least the quoted net amount',
+    )
+    let reason: string | undefined
+    try {
+      await provider.call({
+        ...encodeSwap({
+          deployment: withFee,
+          route: quote.route,
+          amountIn,
+          minimumAmountOut: quote.amountOut + 1n,
+          deadline,
+        }),
+        from,
+      })
+    } catch (error) {
+      reason = swapRevertReasonOf(error)
+    }
+    ok(
+      reason === 'slippage',
+      'and no more than it: the fee is exactly the configured portion',
+    )
+  }
   if (!from)
     console.log(
       '  (no fromAddress given: swaps were not simulated, only quoted)',

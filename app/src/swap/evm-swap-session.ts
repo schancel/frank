@@ -5,6 +5,7 @@
  */
 import {
   getEvmDexDeployment,
+  listEvmSwapVenues,
   type UniswapV4Deployment,
 } from '@frank/wallet/chain/dex-deployments'
 import type {
@@ -39,10 +40,18 @@ export function evmSwapDeployment(
   return chainIdentifier ? getEvmDexDeployment(chainIdentifier) : undefined
 }
 
+/** The venues a chain's EVM wallet can swap on, in order; empty when it has none. */
+export function evmSwapVenues(
+  chainIdentifier: string | undefined,
+): readonly UniswapV4Deployment[] {
+  return chainIdentifier ? listEvmSwapVenues(chainIdentifier) : []
+}
+
 export async function openEvmSwapSession(
   chainIdentifier: string,
+  venueId?: string,
 ): Promise<EvmSwapSession> {
-  const deployment = getEvmDexDeployment(chainIdentifier)
+  const deployment = getEvmDexDeployment(chainIdentifier, venueId)
   if (!deployment) throw new EvmSwapUnavailableError('no-deployment')
   const wallet = await accountSession.getWallet()
   const { account: signedIn, revision } = accountSession.state

@@ -36,6 +36,8 @@ export interface SwapRecord {
 
 export interface SwapRecovery {
   operationId: string
+  /** The venue the swap was made on; it is finished there and nowhere else. */
+  venueId: string
   account: string
   pool: {
     currency0: string

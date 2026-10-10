@@ -104,8 +104,22 @@ const stubs = {
 }
 
 function scene(
-  options: { mainBalance?: bigint; usdc?: bigint; other?: bigint } = {},
+  options: {
+    mainBalance?: bigint
+    usdc?: bigint
+    other?: bigint
+    feeBps?: number
+  } = {},
 ) {
+  const venue = options.feeBps
+    ? {
+        ...deployment,
+        interfaceFee: {
+          bps: options.feeBps,
+          recipient: '0x1A63C39618d00e386B8872BF390DBCfEB6619Db5',
+        },
+      }
+    : deployment
   const canned = cannedNode(deployment)
   canned.node.nativeBalance = options.mainBalance ?? E18
   canned.node.tokenBalance.set(
@@ -158,7 +172,7 @@ function scene(
   let current = true
   mockOpen.mockResolvedValue({
     chainIdentifier: 'monad-testnet',
-    deployment,
+    deployment: venue,
     account,
     reader: {
       ...canned.reader,
@@ -185,7 +199,11 @@ function scene(
 
 async function mountPanel(locale: typeof en | typeof fr = en) {
   const view = mount(EvmSwapPanel, {
-    props: { chainIdentifier: 'monad-testnet', walletId: 'monad' },
+    props: {
+      chainIdentifier: 'monad-testnet',
+      walletId: 'monad',
+      venueId: 'uniswap-v4',
+    },
     global: { mocks: { $t: translate(locale) }, stubs },
   })
   await flushPromises()
@@ -427,7 +445,12 @@ describe('confirming and executing', () => {
       toAsset: 'USDC',
       fromAmount: '0.05',
       txHash: '0xhash1',
-      recovery: { operationId: 'op-1', account, zeroForOne: true },
+      recovery: {
+        operationId: 'op-1',
+        venueId: 'uniswap-v4',
+        account,
+        zeroForOne: true,
+      },
     })
     expect(mockSaved[1]).toMatchObject({
       id: mockSaved[0]!.id,
@@ -564,6 +587,7 @@ describe('confirming and executing', () => {
         status: 'pending',
         recovery: {
           operationId: 'op-old',
+          venueId: 'uniswap-v4',
           account,
           pool: { ...route.key },
           zeroForOne: true,
@@ -734,6 +758,29 @@ describe('how much the form asks of the network', () => {
     await view.get('[data-testid="evm-swap-panel"]').trigger('pointerdown')
     await flushPromises()
     expect(quoterCalls(s)).toBe(1)
+  })
+})
+
+describe('interface fee', () => {
+  it('shows no fee line when the venue charges none', async () => {
+    scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    expect(view.find('[data-testid="swap-interface-fee"]').exists()).toBe(false)
+    expect(view.text()).not.toMatch(/Frank fee/)
+  })
+
+  it('shows Frank’s fee as its own line and the amount received after it', async () => {
+    // The quoter answers 19,996 units; 50 bps of that is 99.
+    scene({ feeBps: 50 })
+    const view = await mountPanel()
+    await type(view, '0.02')
+    expect(text(view, 'swap-interface-fee')).toBe('0.000099 USDC')
+    expect(view.text()).toContain('Frank fee (0.5%)')
+    expect(text(view, 'swap-receive-amount')).toBe('0.019897')
+    expect(text(view, 'swap-pool-fee')).toBe('0.05%')
+    // 0.5% slippage on what the user receives, not on what the pool pays.
+    expect(text(view, 'swap-minimum-received')).toBe('0.019797 USDC')
   })
 })
 

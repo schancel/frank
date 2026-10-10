@@ -41,7 +41,55 @@ export interface UniswapV4PoolKey {
   readonly hooks: string
 }
 
-export interface UniswapV4Deployment {
+/**
+ * A place a swap can be made on one chain. A chain lists zero or more; the first is the one a
+ * form opens on and the user may pick another. Every venue, on any chain family, has these
+ * fields; what a protocol needs beyond them (contracts, pools, programs) is in its own type.
+ */
+export interface SwapVenue {
+  /** Stable within its chain; stored with a swap so it is finished on the venue it was made on. */
+  readonly id: string
+  /** Decides which adapter and panel serve it. */
+  readonly protocol: string
+  /** What the user sees, e.g. "Uniswap v4". */
+  readonly displayName: string
+  /** Who runs this deployment, when it is not the protocol's own. */
+  readonly maintainer: string
+  /**
+   * Frank's own fee on this venue, taken from what the swap returns. Absent means no fee: the
+   * transaction encodes nothing about one and the form shows none. No venue has one today
+   * (no collecting wallet exists yet; ticket #1375).
+   */
+  readonly interfaceFee?: InterfaceFee
+}
+
+export interface InterfaceFee {
+  /** Whole basis points of the output, 1 to `MAX_INTERFACE_FEE_BPS`. */
+  readonly bps: number
+  readonly recipient: string
+}
+
+/** A configured fee above this is a mistake, and is refused when the configuration loads. */
+export const MAX_INTERFACE_FEE_BPS = 100
+
+/** Throws unless the fee is a whole number of basis points in range, paid to a real address. */
+export function assertInterfaceFee(fee: InterfaceFee): void {
+  if (
+    !Number.isInteger(fee.bps) ||
+    fee.bps < 1 ||
+    fee.bps > MAX_INTERFACE_FEE_BPS
+  )
+    throw new RangeError(
+      `Interface fee must be 1 to ${MAX_INTERFACE_FEE_BPS} whole basis points`,
+    )
+  if (
+    !/^0x[0-9a-fA-F]{40}$/.test(fee.recipient) ||
+    /^0x0{40}$/.test(fee.recipient)
+  )
+    throw new RangeError('Interface fee needs a recipient address')
+}
+
+export interface UniswapV4Deployment extends SwapVenue {
   readonly protocol: 'uniswap-v4'
   /** False when the contracts are Uniswap's but someone else deployed and maintains them. */
   readonly officialUniswapDeployment: boolean
@@ -62,68 +110,93 @@ export const NATIVE_CURRENCY = '0x0000000000000000000000000000000000000000'
 const MONAD_TESTNET_USDC = '0x534b2f3A21130d7a60830c2Df862319e593943A3'
 const MONAD_TESTNET_CHOMP = '0x130556848511554b181e645309754F265522F3c2'
 
-const DEPLOYMENTS: Readonly<Record<string, UniswapV4Deployment>> =
+const VENUES: Readonly<Record<string, readonly UniswapV4Deployment[]>> =
   Object.freeze({
-    'monad-testnet': Object.freeze({
-      protocol: 'uniswap-v4',
-      officialUniswapDeployment: false,
-      maintainer: 'Monad',
-      source:
-        'https://github.com/monad-crypto/protocols/blob/main/testnet/uniswap_v4.jsonc',
-      poolManager: '0x451D64ab3b650040d2aE1886602b97ed6eDc643d',
-      quoter: '0x869834d127b230283fe63E0d0A9bEB67216a94C7',
-      stateView: '0xB639209539c61BaF67AC04876315786F8D0b153c',
-      universalRouter: '0x1b7bFCd2870329B987191910D85c22C7287f3c22',
-      permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
-      tokens: Object.freeze([
-        Object.freeze({
-          symbol: 'MON',
-          name: 'Monad',
-          decimals: 18,
-          address: null,
-        }),
-        Object.freeze({
-          symbol: 'USDC',
-          name: 'USD Coin (Circle testnet)',
-          decimals: 6,
-          address: MONAD_TESTNET_USDC,
-        }),
-        Object.freeze({
-          symbol: 'CHOMP',
-          name: 'Monad Pet Chomp (test token)',
-          decimals: 18,
-          address: MONAD_TESTNET_CHOMP,
-          testToken: true,
-        }),
-      ]),
-      pools: Object.freeze([
-        Object.freeze({
-          currency0: NATIVE_CURRENCY,
-          currency1: MONAD_TESTNET_USDC,
-          fee: 500,
-          tickSpacing: 10,
-          hooks: NATIVE_CURRENCY,
-        }),
-        Object.freeze({
-          currency0: NATIVE_CURRENCY,
-          currency1: MONAD_TESTNET_CHOMP,
-          fee: 3000,
-          tickSpacing: 60,
-          hooks: NATIVE_CURRENCY,
-        }),
-      ]),
-    }),
+    'monad-testnet': Object.freeze([
+      Object.freeze({
+        id: 'uniswap-v4',
+        displayName: 'Uniswap v4',
+        protocol: 'uniswap-v4',
+        officialUniswapDeployment: false,
+        maintainer: 'Monad',
+        source:
+          'https://github.com/monad-crypto/protocols/blob/main/testnet/uniswap_v4.jsonc',
+        poolManager: '0x451D64ab3b650040d2aE1886602b97ed6eDc643d',
+        quoter: '0x869834d127b230283fe63E0d0A9bEB67216a94C7',
+        stateView: '0xB639209539c61BaF67AC04876315786F8D0b153c',
+        universalRouter: '0x1b7bFCd2870329B987191910D85c22C7287f3c22',
+        permit2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+        tokens: Object.freeze([
+          Object.freeze({
+            symbol: 'MON',
+            name: 'Monad',
+            decimals: 18,
+            address: null,
+          }),
+          Object.freeze({
+            symbol: 'USDC',
+            name: 'USD Coin (Circle testnet)',
+            decimals: 6,
+            address: MONAD_TESTNET_USDC,
+          }),
+          Object.freeze({
+            symbol: 'CHOMP',
+            name: 'Monad Pet Chomp (test token)',
+            decimals: 18,
+            address: MONAD_TESTNET_CHOMP,
+            testToken: true,
+          }),
+        ]),
+        pools: Object.freeze([
+          Object.freeze({
+            currency0: NATIVE_CURRENCY,
+            currency1: MONAD_TESTNET_USDC,
+            fee: 500,
+            tickSpacing: 10,
+            hooks: NATIVE_CURRENCY,
+          }),
+          Object.freeze({
+            currency0: NATIVE_CURRENCY,
+            currency1: MONAD_TESTNET_CHOMP,
+            fee: 3000,
+            tickSpacing: 60,
+            hooks: NATIVE_CURRENCY,
+          }),
+        ]),
+      }),
+    ]),
   } as const)
 
-/** The swap deployment for a canonical chain identifier, or undefined: there is no default. */
+for (const venues of Object.values(VENUES)) {
+  if (new Set(venues.map(venue => venue.id)).size !== venues.length)
+    throw new Error('Swap venue ids must be unique within a chain')
+  for (const venue of venues)
+    if (venue.interfaceFee) assertInterfaceFee(venue.interfaceFee)
+}
+
+/** The venues configured for a canonical chain identifier, in order. Empty when there are none. */
+export function listEvmSwapVenues(
+  chainIdentifier: string,
+): readonly UniswapV4Deployment[] {
+  return Object.prototype.hasOwnProperty.call(VENUES, chainIdentifier)
+    ? VENUES[chainIdentifier]!
+    : []
+}
+
+/**
+ * One venue of a chain: the named one, or the chain's first when none is named. Undefined for a
+ * chain with no venue or a name it does not have: there is no default chain and no fallback.
+ */
 export function getEvmDexDeployment(
   chainIdentifier: string,
+  venueId?: string,
 ): UniswapV4Deployment | undefined {
-  return Object.prototype.hasOwnProperty.call(DEPLOYMENTS, chainIdentifier)
-    ? DEPLOYMENTS[chainIdentifier]
-    : undefined
+  const venues = listEvmSwapVenues(chainIdentifier)
+  return venueId === undefined
+    ? venues[0]
+    : venues.find(venue => venue.id === venueId)
 }
 
 export function listEvmDexDeploymentChains(): string[] {
-  return Object.keys(DEPLOYMENTS)
+  return Object.keys(VENUES)
 }

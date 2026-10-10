@@ -13,6 +13,7 @@ import {
   encodeQuoteCall,
   encodeSwap,
   erc20Interface,
+  interfaceFeeAmount,
   minimumOutput,
   outputAtMidPrice,
   permit2Interface,
@@ -67,8 +68,12 @@ export interface SwapQuote {
   readonly tokenIn: EvmDexToken
   readonly tokenOut: EvmDexToken
   readonly amountIn: bigint
-  /** The quoter contract's answer for exactly `amountIn`. */
+  /** What the caller receives: the quoter's answer less any interface fee. */
   readonly amountOut: bigint
+  /** The quoter contract's answer for exactly `amountIn`, before any interface fee. */
+  readonly poolAmountOut: bigint
+  /** Frank's fee on this swap, in the output token. Absent when the venue has none. */
+  readonly interfaceFee?: { bps: number; amount: bigint }
   readonly route: PoolRoute
   /** The pool's LP fee as read from its state, in parts per million of the input. */
   readonly lpFeePpm: number
@@ -170,11 +175,16 @@ export async function fetchSwapQuote(
     }
     if (amountOut <= 0n) continue
     const lpFeePpm = Number(lpFee)
+    const fee = deployment.interfaceFee
+    const feeAmount = fee ? interfaceFeeAmount(amountOut, fee.bps) : 0n
+    if (amountOut - feeAmount <= 0n) continue
     const quote: SwapQuote = {
       tokenIn: params.tokenIn,
       tokenOut: params.tokenOut,
       amountIn: params.amountIn,
-      amountOut,
+      amountOut: amountOut - feeAmount,
+      poolAmountOut: amountOut,
+      ...(fee ? { interfaceFee: { bps: fee.bps, amount: feeAmount } } : {}),
       route,
       lpFeePpm,
       midPriceAmountOut: outputAtMidPrice(

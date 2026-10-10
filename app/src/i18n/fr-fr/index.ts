@@ -1347,7 +1347,8 @@ export default {
       'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
   },
   swap: {
-    venue: 'Uniswap v4',
+    venueChoice: 'Plateforme',
+    interfaceFee: 'Frais Frank ({rate})',
     venueNote:
       'Déploiement de test géré par {maintainer}, et non par Uniswap Labs',
     pay: 'Vous payez',

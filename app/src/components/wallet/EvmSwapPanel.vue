@@ -24,7 +24,7 @@
             class="text-subtitle2 text-weight-bold"
             data-testid="swap-venue"
           >
-            {{ $t('swap.venue') }}
+            {{ venueName }}
           </span>
         </div>
         <span class="text-caption text-grey-7" data-testid="swap-venue-note">
@@ -279,6 +279,14 @@
                     })
                   : $t('swap.networkFeeLater')
               }}
+            </span>
+          </div>
+          <div v-if="interfaceFeeText" class="swap-row">
+            <span class="text-grey-7">
+              {{ $t('swap.interfaceFee', { rate: interfaceFeeRate }) }}
+            </span>
+            <span class="text-weight-medium" data-testid="swap-interface-fee">
+              {{ interfaceFeeText }} {{ receiveToken.symbol }}
             </span>
           </div>
           <div
@@ -549,6 +557,8 @@ export default defineComponent({
     chainIdentifier: { type: String, required: true },
     /** The wallet page's name for this wallet; swap history is listed under it. */
     walletId: { type: String, required: true },
+    /** Which of the chain's venues this panel swaps on. */
+    venueId: { type: String, required: true },
   },
   setup(props) {
     const history = useSwapHistory()
@@ -995,7 +1005,7 @@ export default defineComponent({
         toAsset: q.tokenOut.symbol,
         fromAmount: exactTokenAmount(q.amountIn, q.tokenIn.decimals),
         txHash: result.txHash,
-        route: 'Uniswap v4',
+        route: current.deployment.displayName,
         destinationAddress: current.account,
       }
       const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
@@ -1031,6 +1041,7 @@ export default defineComponent({
         status: 'pending',
         recovery: {
           operationId: result.operationId,
+          venueId: current.deployment.id,
           account: current.account,
           pool: { ...q.route.key },
           zeroForOne: q.route.zeroForOne,
@@ -1174,6 +1185,7 @@ export default defineComponent({
           record =>
             record.status === 'pending' &&
             record.recovery &&
+            record.recovery.venueId === current.deployment.id &&
             record.chainIdentifier === props.chainIdentifier &&
             record.recovery.account.toLowerCase() ===
               current.account.toLowerCase(),
@@ -1233,7 +1245,10 @@ export default defineComponent({
 
     onMounted(async () => {
       try {
-        const opened = await openEvmSwapSession(props.chainIdentifier)
+        const opened = await openEvmSwapSession(
+          props.chainIdentifier,
+          props.venueId,
+        )
         if (!alive) return
         session.value = opened
         const usdc = opened.deployment.tokens.findIndex(
@@ -1299,6 +1314,20 @@ export default defineComponent({
     )
 
     return {
+      venueName: computed(() => session.value?.deployment.displayName ?? ''),
+      interfaceFeeText: computed(() =>
+        quote.value?.interfaceFee
+          ? readableTokenAmount(
+              quote.value.interfaceFee.amount,
+              quote.value.tokenOut.decimals,
+            )
+          : '',
+      ),
+      interfaceFeeRate: computed(() =>
+        quote.value?.interfaceFee
+          ? `${quote.value.interfaceFee.bps / 100}%`
+          : '',
+      ),
       root,
       touched,
       quoteStale,

@@ -321,6 +321,7 @@ export function createProgram(): Command {
       "Ask the swap deployment's quoter contract what the amount buys now",
     )
     .option('--chain <id>', 'Canonical chain identifier (default: monad-testnet)')
+    .option('--venue <id>', "One of the chain's swap venues (default: its first)")
     .option('--rpc-url <url>', 'JSON-RPC endpoint for that chain')
     .option('--slippage <bps>', 'Slippage in basis points (default: 50)')
     .action(async (fromAsset, toAsset, amount, opts, cmd) => {
@@ -339,6 +340,7 @@ export function createProgram(): Command {
     )
     .requiredOption('--account <address>', 'The account that would swap')
     .option('--chain <id>', 'Canonical chain identifier (default: monad-testnet)')
+    .option('--venue <id>', "One of the chain's swap venues (default: its first)")
     .option('--rpc-url <url>', 'JSON-RPC endpoint for that chain')
     .option('--slippage <bps>', 'Slippage in basis points (default: 50)')
     .action(async (fromAsset, toAsset, amount, opts, cmd) => {

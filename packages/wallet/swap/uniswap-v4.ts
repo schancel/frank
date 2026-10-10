@@ -9,6 +9,7 @@
 
 import { AbiCoder, getAddress, Interface, keccak256 } from 'ethers'
 import {
+  assertInterfaceFee,
   NATIVE_CURRENCY,
   type EvmDexToken,
   type UniswapV4Deployment,
@@ -24,6 +25,7 @@ export const V4_ACTIONS = {
   SWAP_EXACT_IN_SINGLE: 0x06,
   SETTLE_ALL: 0x0c,
   TAKE_ALL: 0x0f,
+  TAKE_PORTION: 0x10,
 } as const
 
 export const universalRouterInterface = new Interface([
@@ -203,11 +205,22 @@ export interface EncodedCall {
   readonly value: bigint
 }
 
-/** The swap transaction: exact input, a floor on the output, a deadline, no interface fee. */
+/** The interface fee on an output amount: whole basis points, rounded down as the router does. */
+export function interfaceFeeAmount(amountOut: bigint, bps: number): bigint {
+  return (amountOut * BigInt(bps)) / 10_000n
+}
+
+/**
+ * The swap transaction: exact input, a floor on what the caller receives, a deadline. When the
+ * venue has an interface fee it is one explicit action of its own: a portion of the output goes
+ * to the fee recipient before the rest is taken to the caller. With no fee configured, nothing
+ * about a fee is encoded at all.
+ */
 export function encodeSwap(params: {
   deployment: UniswapV4Deployment
   route: PoolRoute
   amountIn: bigint
+  /** The least the caller may receive, after any interface fee. */
   minimumAmountOut: bigint
   /** Unix seconds after which the router refuses the swap. */
   deadline: number
@@ -220,11 +233,14 @@ export function encodeSwap(params: {
   const { key, zeroForOne } = params.route
   const input = getAddress(zeroForOne ? key.currency0 : key.currency1)
   const output = getAddress(zeroForOne ? key.currency1 : key.currency0)
+  const fee = params.deployment.interfaceFee
+  if (fee) assertInterfaceFee(fee)
   const actions =
     '0x' +
     [
       V4_ACTIONS.SWAP_EXACT_IN_SINGLE,
       V4_ACTIONS.SETTLE_ALL,
+      ...(fee ? [V4_ACTIONS.TAKE_PORTION] : []),
       V4_ACTIONS.TAKE_ALL,
     ]
       .map(action => action.toString(16).padStart(2, '0'))
@@ -246,9 +262,17 @@ export function encodeSwap(params: {
     ['address', 'uint256'],
     [output, params.minimumAmountOut],
   )
+  const portion = fee
+    ? [
+        coder.encode(
+          ['address', 'address', 'uint256'],
+          [output, getAddress(fee.recipient), BigInt(fee.bps)],
+        ),
+      ]
+    : []
   const v4Input = coder.encode(
     ['bytes', 'bytes[]'],
-    [actions, [swap, settle, take]],
+    [actions, [swap, settle, ...portion, take]],
   )
   return {
     to: getAddress(params.deployment.universalRouter),
@@ -374,6 +398,10 @@ export function readSwapOutcome(params: {
     amountOut = (amountOut ?? 0n) + received
   }
   if (amountIn === undefined || amountOut === undefined) return undefined
+  // The event reports what the pool paid out. The caller received that less the interface
+  // fee, which the router takes with the same rounding.
+  const fee = params.deployment.interfaceFee
+  if (fee) amountOut -= interfaceFeeAmount(amountOut, fee.bps)
   const output = (
     params.route.zeroForOne
       ? params.route.key.currency1

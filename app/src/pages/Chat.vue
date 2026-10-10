@@ -35,7 +35,8 @@
                   :index="index"
                   :message="msg"
                   :address="recipientAddress"
-                  :name="getContact(msg.outbound)?.name ?? 'unknown'"
+                  :name="messageSenderName(msg, index)"
+                  :attribution="attributions[index]"
                   :chat-width="chatWidth"
                   :payload-digest="msg.payloadDigest"
                   :style="messageScrollMarginStyle"
@@ -47,6 +48,7 @@
                   @replyDivClick="scrollToMessage"
                   @sendFollowUp="sendFollowUpItems"
                   @playAgain="blackjackDialog = true"
+                  @senderClicked="openSenderProfile"
                 />
               </template>
             </div>
@@ -107,6 +109,20 @@
             <chat-message-reply :payload-digest="replyDigest" />
           </div>
         </div>
+      </div>
+      <!-- Others have posted into this conversation, but what is sent from here still goes to
+      its one peer. Say so, so a reply is not taken for a message to everyone. -->
+      <div
+        v-if="isGroup"
+        class="q-px-md q-pt-xs text-caption chat-group-recipient"
+        data-testid="chat-group-recipient"
+        role="note"
+      >
+        <q-icon name="info" size="14px" class="q-mr-xs" />{{
+          recipientIsSelf
+            ? $t('chat.groupRecipientNoticeSelf')
+            : $t('chat.groupRecipientNotice', { name: recipientName })
+        }}
       </div>
       <!-- Message box -->
       <chat-input
@@ -177,7 +193,16 @@ import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
-import { openChat } from '../utils/routes'
+import { openChat, openContactProfile } from '../utils/routes'
+import {
+  attributeMessages,
+  conversationSenders,
+  isGroupConversation,
+  senderOf,
+  type BubbleAttribution,
+  type SenderIdentity,
+} from '../utils/chat-attribution'
+import { shortAddress } from '../utils/short-address'
 import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
@@ -201,6 +226,7 @@ import {
 import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
 } from '../utils/own-address'
 import {
   buildChallenge,
@@ -292,6 +318,8 @@ export default defineComponent({
       getStampAmount: chats.getStampAmount,
       setStampAmount: chats.setStampAmount,
       getContactVuex: contacts.getContact,
+      contactStore: contacts,
+      ownAddress: useReactiveOwnCanonicalAddress(),
       getProfile: myProfile,
       getMessageByPayload: chats.getMessageByPayload,
       sendDirectMessage: chats.sendMessage,
@@ -840,7 +868,7 @@ export default defineComponent({
               stampWei: stampValue,
               own,
               peer,
-              memory: this.messages,
+              memory: this.peerMessages,
               stored: () => storedOutgoingMessages(peer),
             }))
         } finally {
@@ -931,7 +959,7 @@ export default defineComponent({
     async runBlackjackDealer() {
       if (this.sendingMessage || this.resumingHand) return
       if (
-        !this.messages?.some(m =>
+        !this.peerMessages.some(m =>
           m.items?.some(it => it.type === 'blackjack-hand'),
         )
       ) {
@@ -958,7 +986,7 @@ export default defineComponent({
           wallet,
           address: peer,
           own,
-          messages: this.messages,
+          messages: this.peerMessages,
           attempted: this.blackjackAttempted,
           ordinaryStampWei: activeChain.fromDisplayAmount(this.stampAmount),
         })
@@ -969,20 +997,24 @@ export default defineComponent({
         void this.runBlackjackDealer()
         return
       }
-      const step = automaticDealerSteps(this.messages, own, peer).find(
+      const step = automaticDealerSteps(this.peerMessages, own, peer).find(
         candidate => !this.blackjackAttempted.has(candidate.key),
       )
       if (!step || this.sendingMessage || this.resumingHand) return
       this.blackjackAttempted.add(step.key)
       await this.sendFollowUpItems({ items: [step.item] })
     },
-    getContact(outbound: boolean) {
-      if (outbound) {
-        return this.getProfile.profile
-      } else {
-        const peer = this.recipientAddress || this.address
-        return this.getContactVuex(peer)?.profile
-      }
+    /** The name of whoever sent this message: this user, or the message's own sender. */
+    messageSenderName(msg: ChatMessage, index: number): string {
+      if (msg.outbound) return this.getProfile.profile?.name ?? 'unknown'
+      return (
+        this.attributions[index]?.sender.label ??
+        this.getContactVuex(msg.senderAddress)?.profile?.name ??
+        'unknown'
+      )
+    },
+    openSenderProfile(address: string) {
+      if (this.$router) void openContactProfile(this.$router, address)
     },
     setReply(payloadDigest: string | null) {
       this.replyDigest = payloadDigest
@@ -1052,7 +1084,8 @@ export default defineComponent({
       if (this.conversation?.kind === 'email') {
         return true
       }
-      return this.messages.some(m => m.items?.some(i => i.type === 'email'))
+      // An email item makes this an email thread only when we or the peer sent it.
+      return this.peerMessages.some(m => m.items?.some(i => i.type === 'email'))
     },
     bannerClearanceStyle(): { paddingTop: string } | undefined {
       return this.bannerClearance > 0
@@ -1104,6 +1137,48 @@ export default defineComponent({
     },
     messages(): ChatMessage[] {
       return this.conversation?.messages ?? []
+    },
+    /** What this user and the conversation's peer sent. A game is between those two; what
+     * anyone else posted into the conversation is not one of its moves. */
+    peerMessages(): ChatMessage[] {
+      const peer = this.recipientAddress || this.address
+      return this.messages.filter(
+        message =>
+          message.outbound || sameCanonicalAddress(message.senderAddress, peer),
+      )
+    },
+    /** More than two people are in this conversation, so each message must say who sent it. */
+    isGroup(): boolean {
+      return isGroupConversation(
+        this.conversation?.participants,
+        this.ownAddress,
+        this.conversation?.address,
+      )
+    },
+    senders(): Map<string, SenderIdentity> {
+      if (!this.isGroup) return new Map()
+      return conversationSenders(
+        this.conversation,
+        this.ownAddress,
+        this.contactStore,
+        this.chunkedMessages,
+      )
+    },
+    /** One entry per shown message; all empty in a two-person chat. */
+    attributions(): Array<BubbleAttribution | undefined> {
+      if (!this.isGroup) return []
+      return attributeMessages(this.chunkedMessages, this.senders)
+    },
+    /** These are this user's own notes: what is sent from here goes to nobody else. */
+    recipientIsSelf(): boolean {
+      return sameCanonicalAddress(this.recipientAddress, this.ownAddress)
+    },
+    /** Who a message sent from here goes to. */
+    recipientName(): string {
+      return (
+        senderOf(this.senders, this.recipientAddress)?.label ??
+        shortAddress(this.recipientAddress)
+      )
     },
     chunkedMessages() {
       // TODO: Improve stacking logic e.g. long durations between messages prevent stacking
@@ -1260,6 +1335,12 @@ export default defineComponent({
 }
 .chat-banner-overlay {
   z-index: 1;
+}
+
+.chat-group-recipient {
+  display: flex;
+  align-items: center;
+  opacity: 0.85;
 }
 
 .chat-footer,

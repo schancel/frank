@@ -64,23 +64,52 @@
             :aria-label="$t('a11y.openNavigation')"
             :aria-expanded="myDrawerOpen"
           />
-          <q-avatar rounded :style="contactColorStyle">
+          <!-- Several people: no one person's picture or key colour stands for all of them. -->
+          <q-avatar
+            v-if="isGroup"
+            rounded
+            color="white"
+            text-color="primary"
+            icon="group"
+            data-testid="chat-header-group-avatar"
+          />
+          <q-avatar v-else rounded :style="contactColorStyle">
             <img
               :src="profileAvatar(presentedAvatar, effectiveAddress || address)"
             />
           </q-avatar>
-          <q-toolbar-title
-            class="h6 row items-center no-wrap"
-            :style="contactNameColorStyle"
-          >
-            <span>{{ contactName }}</span>
-            <account-badge
-              v-if="effectiveAddress && !activeConversation?.topic"
-              :address="effectiveAddress"
-              :account-type="targetProfile?.accountType"
-              :bot-role="targetProfile?.botRole"
-              :is-bot="targetProfile?.isBot"
-            />
+          <q-toolbar-title class="h6 chat-header-title">
+            <div
+              class="row items-center no-wrap"
+              :style="contactNameColorStyle"
+            >
+              <span class="ellipsis" data-testid="chat-header-name">{{
+                contactName
+              }}</span>
+              <account-badge
+                v-if="
+                  effectiveAddress && !activeConversation?.topic && !isGroup
+                "
+                :address="effectiveAddress"
+                :account-type="targetProfile?.accountType"
+                :bot-role="targetProfile?.botRole"
+                :is-bot="targetProfile?.isBot"
+              />
+            </div>
+            <!-- Under the name: how many people (only when more than two) and the subject of
+            this conversation. Neither, no line. -->
+            <div
+              v-if="subject || isGroup"
+              class="text-caption ellipsis chat-header-subject"
+            >
+              <span v-if="isGroup" data-testid="chat-header-participants">{{
+                $t('chatLayout.participantCount', { count: participantCount })
+              }}</span>
+              <span v-if="isGroup && subject"> · </span>
+              <span v-if="subject" data-testid="chat-header-subject">{{
+                subject
+              }}</span>
+            </div>
           </q-toolbar-title>
           <q-space />
           <q-btn
@@ -194,7 +223,6 @@
           <q-btn
             color="primary"
             :label="$t('chatLayout.saveSubject')"
-            :disable="!subjectDraft.trim()"
             data-testid="conversation-subject-save"
             @click="saveSubject"
           />
@@ -203,12 +231,12 @@
     </q-dialog>
 
     <q-dialog v-model="confirmClearOpen">
-      <clear-history-dialog :address="address" :name="contactName" />
+      <clear-history-dialog :address="address" :name="conversationLabel" />
     </q-dialog>
     <q-dialog v-model="confirmDeleteOpen">
       <delete-chat-dialog
         :address="address"
-        :name="contactName"
+        :name="conversationLabel"
         @deleted="onChatDeleted"
       />
     </q-dialog>
@@ -246,6 +274,11 @@ import { pubKeyToColor } from 'src/utils/formatting'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { profileAvatar } from 'src/utils/avatar'
 import {
+  conversationSenders,
+  isGroupConversation,
+  otherParticipants,
+} from 'src/utils/chat-attribution'
+import {
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
 } from 'src/utils/own-address'
@@ -276,6 +309,7 @@ export default defineComponent({
     return {
       myDrawerOpen: useMyDrawerOpen(),
       getContact: contactStore.getContact,
+      contactStore,
       setNotify: contactStore.setNotify,
       getNotify: contactStore.getNotify,
       myProfile,
@@ -336,12 +370,7 @@ export default defineComponent({
     saveSubject() {
       const id = this.subjectEditorId
       const subject = this.subjectDraft.trim()
-      if (
-        !this.subjectEditorOpen ||
-        !id ||
-        id !== this.activeConversation?.id ||
-        !subject
-      )
+      if (!this.subjectEditorOpen || !id || id !== this.activeConversation?.id)
         return
       useChatStore().renameConversation(id, subject)
       this.cancelSubjectEditor()
@@ -420,9 +449,11 @@ export default defineComponent({
         return ''
       }
       const conv = this.activeConversation
-      if (conv?.name) return conv.name
+      // An email thread is titled by its subject. Any other conversation is titled by its peer,
+      // and its subject is shown under the name (see `subject`).
       if (conv?.kind === 'email') {
         return (
+          conv.name ||
           conv.emailRecipient ||
           conv.topic ||
           this.contactProfile?.name ||
@@ -430,9 +461,51 @@ export default defineComponent({
           this.address
         )
       }
+      if (this.isGroup) {
+        // In this user's own notes the others are listed after "You", never instead of it.
+        const names = Array.from(
+          conversationSenders(
+            conv,
+            this.ownAddress,
+            this.contactStore,
+          ).values(),
+        ).map(sender => sender.label)
+        if (sameCanonicalAddress(this.effectiveAddress, this.ownAddress))
+          names.unshift(this.$t('selfChat.you'))
+        return names.join(', ')
+      }
+      // With no peer to name, the subject is the title itself.
+      if (conv?.name && !isChainAddress(this.effectiveAddress)) return conv.name
       return sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
         ? this.$t('selfChat.you')
         : this.contactProfile?.name ?? (this.effectiveAddress || this.address)
+    },
+    /** Everyone in the conversation, this user included. */
+    participantCount(): number {
+      return (
+        otherParticipants(
+          this.activeConversation?.participants,
+          this.ownAddress,
+        ).length + 1
+      )
+    },
+    isGroup(): boolean {
+      return isGroupConversation(
+        this.activeConversation?.participants,
+        this.ownAddress,
+        this.activeConversation?.address,
+      )
+    },
+    subject(): string {
+      const conv = this.activeConversation
+      if (!conv || conv.kind === 'email') return ''
+      if (!isChainAddress(this.effectiveAddress)) return ''
+      return (conv.name || conv.topic || '').trim()
+    },
+    conversationLabel(): string {
+      return this.subject
+        ? `${this.contactName} \u2014 ${this.subject}`
+        : this.contactName
     },
     presentedAvatar(): string | undefined {
       if (!this.effectiveAddress) {
@@ -472,7 +545,7 @@ export default defineComponent({
     // "no pubkey yet" -> no color fallback as `contactColorStyle` above.
     contactNameColorStyle() {
       const pubKey = this.contactProfile?.pubKey
-      if (!pubKey) {
+      if (!pubKey || this.isGroup) {
         return {}
       }
       return { color: pubKeyToColor(pubKey.toBuffer()) }
@@ -482,6 +555,14 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
+.chat-header-title {
+  line-height: 1.2;
+}
+.chat-header-subject {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
 .reply {
   padding: 5px 0;
   color: var(--q-color-text);

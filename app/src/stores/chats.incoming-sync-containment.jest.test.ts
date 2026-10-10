@@ -97,57 +97,53 @@ beforeEach(async () => {
   mockOwnAddress.mockResolvedValue(ME)
 })
 
+// The wallet's receive rule keeps these item types from reaching the store as such. If one does,
+// that row alone is refused, uninterpreted: it must not stop the rows around it.
 it.each(['wallet-sync', 'payment-transfer'])(
-  'rejects inert incoming %s batches before custody, writes or receipt work',
+  'skips an incoming %s row without interpreting or saving it, and delivers the row beside it',
   async type => {
     const chats = useChatStore()
+    useContactStore().addContact({
+      address: PEER,
+      contact: {
+        profile: { name: 'Fixture', bio: '', avatar: '', pubKey: null },
+      },
+    })
     const batch = [
-      wrapper('ordinary', [{ type: 'text', text: 'ordinary' }]),
-      wrapper('unsupported', [{ type } as unknown as MessageItem]),
+      wrapper(`ordinary-${type}`, [{ type: 'text', text: 'ordinary' }]),
+      wrapper(`unsupported-${type}`, [{ type } as unknown as MessageItem]),
     ]
-    const state = JSON.stringify(chats.$state)
-    const retained = [...database.retained]
-    const notify = new Set(['ordinary', 'unsupported'])
-    for (let repeat = 0; repeat < 2; repeat++) {
-      await expect(
-        chats.storeReceivedMessages(batch, notify),
-      ).rejects.toMatchObject({ code: 'unsupported_incoming_wallet_sync' })
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {
+      /* the refused row is reported here */
+    })
+    try {
+      for (let repeat = 0; repeat < 2; repeat++) {
+        await chats.storeReceivedMessagesExclusive(
+          batch,
+          new Set([`ordinary-${type}`, `unsupported-${type}`]),
+          ME,
+        )
+      }
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
     }
-    expect(mockOwnAddress).not.toHaveBeenCalled()
     expect(mockRoute).not.toHaveBeenCalled()
     expect(mockResolve).not.toHaveBeenCalled()
-    expect(database.saveMessage).not.toHaveBeenCalled()
-    expect(database.deleteMessage).not.toHaveBeenCalled()
-    expect(database.suppressedRelayReceipts).not.toHaveBeenCalled()
-    expect(database.quarantineRelayReceipts).not.toHaveBeenCalled()
-    expect(database.suppressAndDelete).not.toHaveBeenCalled()
-    expect(database.relayCursor).not.toHaveBeenCalled()
-    expect([...database.retained]).toEqual(retained)
-    expect(JSON.stringify(chats.$state)).toBe(state)
-    expect([...notify]).toEqual(['ordinary', 'unsupported'])
-  },
-)
-
-it.each(['wallet-sync', 'payment-transfer'])(
-  'rechecks %s inside serialized ingestion before suppression or any mutation',
-  async type => {
-    const chats = useChatStore()
-    database.suppressedRelayReceipts.mockResolvedValueOnce(
-      new Set(['unsupported']),
+    expect(
+      database.saveMessage.mock.calls.map(([row]) => row.index),
+    ).not.toContain(`unsupported-${type}`)
+    expect(database.saveMessage.mock.calls[0][0].index).toBe(`ordinary-${type}`)
+    expect(chats.messages[`ordinary-${type}`]).toBeDefined()
+    expect(chats.messages[`unsupported-${type}`]).toBeUndefined()
+    expect(database.quarantineRelayReceipts).toHaveBeenCalledTimes(1)
+    expect(database.quarantineRelayReceipts).toHaveBeenCalledWith(ME, [
+      { payloadDigest: `unsupported-${type}`, receivedTime: 20 },
+    ])
+    expect(database.retained.get('retained-operation')).toBe(
+      'original pending operation bytes',
     )
-    const notify = new Set(['unsupported'])
-    await expect(
-      chats.storeReceivedMessagesExclusive(
-        [wrapper('unsupported', [{ type } as unknown as MessageItem])],
-        notify,
-        ME,
-      ),
-    ).rejects.toMatchObject({ code: 'unsupported_incoming_wallet_sync' })
-    expect(database.suppressedRelayReceipts).not.toHaveBeenCalled()
-    expect(database.saveMessage).not.toHaveBeenCalled()
-    expect(mockRoute).not.toHaveBeenCalled()
-    expect(mockResolve).not.toHaveBeenCalled()
-    expect([...notify]).toEqual(['unsupported'])
+    expect(database.retained.has(`unsupported-${type}`)).toBe(false)
   },
 )
 
@@ -158,7 +154,10 @@ it('preserves the exclusive cancellation exit without interpreting abandoned ite
     ME,
     { isCancelled: () => true },
   )
-  expect(result).toEqual({ suppressedReceipts: [], cancelled: true })
+  expect(result).toEqual({
+    suppressedReceipts: [],
+    cancelled: true,
+  })
   expect(database.saveMessage).not.toHaveBeenCalled()
   expect(mockRoute).not.toHaveBeenCalled()
 })

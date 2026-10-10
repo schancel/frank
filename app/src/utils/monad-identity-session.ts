@@ -304,6 +304,8 @@ export { messagingState }
 export type { MessagingReason, MessagingState }
 
 let deps: MessagingDeps | undefined
+/** The account whose conversation-ID salt is installed in the chat store. */
+let saltAccount: unknown
 let live: Live | undefined
 /** Identity of the attempt in flight; anything older must publish no result. */
 let attempt: object | undefined
@@ -416,7 +418,11 @@ export async function startMessaging(): Promise<void> {
   let wallet: NativeWalletHandle | undefined
   try {
     if (d.session.state.status !== 'ready') throw new Error('no account')
+    // One account's salt never serves another: on a switch straight from one ready account to
+    // the next, the old salt goes before the new wallet opens.
+    if (saltAccount !== account) setConversationIdSalt(null)
     wallet = await d.session.getWallet()
+    saltAccount = account
     // The chat store allocates conversation IDs from this account's private salt. It is
     // installed as soon as the wallet is at hand, before the relay is asked anything, and
     // stays through every messaging restart: it belongs to the account, not to the connection.

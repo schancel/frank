@@ -3839,8 +3839,10 @@ describe('stores/chats.ts (ticket #42)', () => {
     it('keeps two email threads through one gateway apart, also with equal subjects, and answers each under its own ID', async () => {
       const chats = useChatStore()
       mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
-      const THREAD_ONE = '11111111-1111-4111-8111-111111111111'
-      const THREAD_TWO = '22222222-2222-4222-8222-222222222222'
+      // The gateway cuts its thread IDs from a hash, so some look like a UUIDv5. An email
+      // thread is still never the gateway's opening thread.
+      const THREAD_ONE = '11111111-1111-5111-8111-111111111111'
+      const THREAD_TWO = '22222222-2222-5222-8222-222222222222'
       let serial = 0
       const mail = (conversationId: string, textBody: string) => {
         const index = `gateway-thread-${++serial}`
@@ -4747,6 +4749,59 @@ describe('stores/chats.ts (ticket #42)', () => {
           )
           expect(conversation.name).toBe('Email subject')
         })
+      })
+
+      it('a message of ours the relay has not timed yet does not decide the peer thread', async () => {
+        const chats = useChatStore()
+        const ours = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        // Still pending, stamped with this device's clock, far earlier than anything real.
+        chats.sendMessageLocal({
+          address: RECIPIENT_ADDRESS,
+          conversationId: ours.id,
+          senderAddress: SENDER_ADDRESS,
+          index: 'pending-local-1',
+          items: [{ type: 'text', text: 'not sent yet' }],
+          outpoints: [],
+          stampValueWei: 10n,
+          status: 'pending',
+          previousHash: null,
+          timestamp: 1,
+        })
+        await receive(chats, incoming('their first', THEIR_ID))
+        // Another device of this account sees only the peer's message; so does the rule here.
+        expect(chats.chats[RECIPIENT_ADDRESS].id).toBe(THEIR_ID)
+        // Our thread holds a message, so it is kept: it is simply not the peer's thread.
+        expect(chats.conversations[ours.id].messages).toHaveLength(1)
+      })
+
+      it('leads a dialog or a view still holding a dropped thread to the one that replaced it', async () => {
+        const chats = useChatStore()
+        const ours = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        const droppedId = ours.id
+        await receive(chats, incoming('their first', THEIR_ID))
+        expect(chats.conversations[droppedId]).toBeUndefined()
+        // A subject edit that was open on the dropped thread saves onto its replacement.
+        chats.renameConversation(droppedId, 'Renamed while it changed')
+        expect(chats.conversations[THEIR_ID].name).toBe(
+          'Renamed while it changed',
+        )
+        // So does a route or a click that still names it.
+        chats.setActiveConversation(null)
+        chats.setActiveConversation(droppedId)
+        expect(chats.activeConversationId).toBe(THEIR_ID)
+        expect(() => chats.setActiveConversation('no-such-id')).toThrow(
+          /Unknown conversation/,
+        )
+      })
+
+      it('a peer thread read before the salt arrived is read again when it does', () => {
+        const chats = useChatStore()
+        const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        // The same store as a view sees it before the account's wallet is at hand.
+        setConversationIdSalt(null)
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
+        setConversationIdSalt(TEST_SALT)
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBe(opened)
       })
 
       it('a thread opened here and never used yields to the conversation the peer started', async () => {

@@ -258,7 +258,15 @@ type Persistence = {
   ) => Promise<RestorableState>
 }
 
+// What the previous case opened. Thousands of cases run in one process: each lets go of its
+// store, its spy and what the silenced console recorded before the next one starts.
+let release: (() => void) | undefined
+
 async function openStore() {
+  release?.()
+  // Every mock here records its calls with their arguments (the silenced console, the
+  // notification and profile stand-ins): forget them, keeping what the mocks do.
+  jest.clearAllMocks()
   mockDisk.rows.clear()
   mockDisk.suppressed.clear()
   const pinia = createPinia()
@@ -273,7 +281,15 @@ async function openStore() {
   // it for the sender.
   setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x11)))
   const chats = useChatStore()
-  jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+  const contacts = useContactStore()
+  // Replaced outright rather than spied on: the runner keeps every spy's target until the file
+  // ends, and with it the whole store of every case.
+  Object.assign(contacts, { refresh: async () => undefined })
+  release = () => {
+    chats.$dispose()
+    contacts.$dispose()
+    release = undefined
+  }
   chats.createConversation({
     participants: [ME, PEER_1],
     address: PEER_1,
@@ -442,7 +458,12 @@ describe('a reload shows what the session showed, whatever was received', () => 
       ),
       messages: Object.fromEntries(
         Object.values(chats.conversations)
-          .flatMap(c => c.messages.map(m => [m.payloadDigest, c.id] as const))
+          .flatMap(c =>
+            c.messages
+              // What the relay holds; a message still pending on one device is that device's.
+              .filter(m => !m.outbound || m.status === 'confirmed')
+              .map(m => [m.payloadDigest, c.id] as const),
+          )
           .sort(([a], [b]) => (a < b ? -1 : 1)),
       ),
     })
@@ -491,8 +512,23 @@ describe('a reload shows what the session showed, whatever was received', () => 
 
           const second = (await openStore()).chats
           // This device had opened both chats before anything arrived.
-          second.openDirectConversation(PEER_1)
+          const opened = second.openDirectConversation(PEER_1)
           second.openDirectConversation(PEER_2)
+          // And it has a message of its own still pending there, stamped with its own clock,
+          // earlier than anything the relay timed: no other device sees it, so it decides
+          // nothing.
+          second.sendMessageLocal({
+            address: PEER_1,
+            conversationId: opened.id,
+            senderAddress: ME,
+            index: `case${seed}-pending`,
+            items: [{ type: 'text', text: 'not sent yet' }],
+            outpoints: [],
+            stampValueWei: 0n,
+            status: 'pending',
+            previousHash: null,
+            timestamp: 0,
+          })
           for (const row of shuffled) await second.receiveMessages([row], ME)
           expect(filing(second)).toEqual(one)
         } catch (error) {

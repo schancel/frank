@@ -1,5 +1,6 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
+import { shallowRef } from 'vue'
 
 import {
   defaultEmailGatewayAddress,
@@ -850,11 +851,20 @@ export type RestorableState = {
   lastReceived: number | null
 }
 
-/** A conversation's earliest message: relay time, then payload hash. */
+/**
+ * A conversation's earliest message that the relay has timed: relay time, then payload hash.
+ * A message of ours that is still pending or failed carries this device's clock, which no other
+ * device sees, so it does not count until the relay has it. `messages` is kept in relay order,
+ * so the first timed one is the earliest; only rows of the same time are compared by hash.
+ */
 function earliestMessage(conversation: Conversation): ChatMessage | undefined {
   let first: ChatMessage | undefined
-  for (const message of conversation.messages)
-    if (!first || byRelayTime(message, first) < 0) first = message
+  for (const message of conversation.messages) {
+    if (message.outbound && message.status !== 'confirmed') continue
+    if (!first) first = message
+    else if (message.serverTime > first.serverTime) break
+    else if (byRelayTime(message, first) < 0) first = message
+  }
   return first
 }
 
@@ -862,7 +872,7 @@ function earliestMessage(conversation: Conversation): ChatMessage | undefined {
  * The peer's thread: the one conversation Contacts opens for `peer`.
  *
  * It is derived from facts every device of the account sees, never from which device opened
- * what first: of the conversations with this peer that carry an opening ID (a UUIDv5, what an
+ * what first: of the conversations with this peer (email threads aside) that carry an opening ID (a UUIDv5, what an
  * account allocates when it opens a chat; an explicitly created further conversation is a
  * UUIDv4 and never becomes the peer's thread) and that the peer or this account started (their
  * earliest message is from one of the two, not from a third party), the one whose earliest
@@ -882,6 +892,9 @@ export function peerThread(
     if (
       !conversation ||
       conversation.kind === 'group' ||
+      // An email thread's ID is the gateway's own; it is never anybody's opening thread,
+      // whatever its bytes happen to look like.
+      conversation.kind === 'email' ||
       !isOpeningConversationId(conversation.id) ||
       !sameCanonicalAddress(conversation.address, peer)
     )
@@ -900,7 +913,7 @@ export function peerThread(
       threadStart = start
     }
   }
-  if (thread || !conversationIdSalt) return thread
+  if (thread || !conversationIdSalt.value) return thread
   const opened = conversations[allocateOpeningConversationIdFor(peer)]
   return opened && sameCanonicalAddress(opened.address, peer)
     ? opened
@@ -1009,17 +1022,36 @@ function canonicalConversationId(value: string): string {
 }
 
 /** The active account's private conversation-ID salt. Installed by the host when a wallet
- * becomes active and cleared when it goes ({@link setConversationIdSalt}); never persisted. */
-let conversationIdSalt: Uint8Array | null = null
+ * becomes active and cleared when it goes ({@link setConversationIdSalt}); never persisted, so
+ * it is not store state. It is reactive: a peer's thread read before the salt arrived is read
+ * again when it does. */
+const conversationIdSalt = shallowRef<Uint8Array | null>(null)
 
 /** Whether the active account's conversation-ID salt is installed: a chat can be opened. */
 export function hasConversationIdSalt(): boolean {
-  return conversationIdSalt !== null
+  return conversationIdSalt.value !== null
 }
 
 /** Installs (or, with nothing, removes) the active account's conversation-ID salt. */
 export function setConversationIdSalt(salt?: Uint8Array | null): void {
-  conversationIdSalt = salt ? Uint8Array.from(salt) : null
+  conversationIdSalt.value = salt ? Uint8Array.from(salt) : null
+}
+
+/** Threads dropped this session because the peer's own conversation replaced them, and what
+ * replaced each: a view, a dialog or a route still holding the old ID is led to the new one. */
+const replacedConversations = new Map<string, string>()
+
+/** The conversation `id` names, or the one that replaced it if it was dropped. */
+export function resolveConversation(
+  conversations: Record<string, Conversation | undefined>,
+  id: string,
+): Conversation | undefined {
+  if (Object.prototype.hasOwnProperty.call(conversations, id))
+    return conversations[id]
+  const replacement = replacedConversations.get(id)
+  return replacement === undefined
+    ? undefined
+    : resolveConversation(conversations, replacement)
 }
 
 /**
@@ -1032,12 +1064,13 @@ export function setConversationIdSalt(salt?: Uint8Array | null): void {
  * refused: a random ID here would differ on every device, for good.
  */
 function allocateOpeningConversationIdFor(peer: string): string {
-  if (!conversationIdSalt)
+  const salt = conversationIdSalt.value
+  if (!salt)
     throw new Error(
       'No conversation-ID salt is installed: a chat can be opened only once the account is active',
     )
   return formatConversationId(
-    allocateOpeningConversationId(conversationIdSalt, peer.toLowerCase()),
+    allocateOpeningConversationId(salt, peer.toLowerCase()),
   )
 }
 
@@ -3417,12 +3450,8 @@ export const useChatStore = defineStore('chats', {
       return this.conversations[id]
     },
     renameConversation(id: string, subject: string): void {
-      const conversation = Object.prototype.hasOwnProperty.call(
-        this.conversations,
-        id,
-      )
-        ? this.conversations[id]
-        : undefined
+      // A thread dropped while its subject was being edited: the one that replaced it.
+      const conversation = resolveConversation(this.conversations, id)
       if (!conversation) throw new Error(`Unknown conversation ${id}`)
       // An empty subject clears it: the conversation is shown by its peer alone again.
       conversation.name = subject.trim() || undefined
@@ -3517,7 +3546,7 @@ export const useChatStore = defineStore('chats', {
         return this.setActiveChat(conversationId)
       }
       const conv = conversationId
-        ? this.conversations[conversationId]
+        ? resolveConversation(this.conversations, conversationId)
         : undefined
       if (conversationId && !conv)
         throw new Error(`Unknown conversation ${conversationId}`)
@@ -3752,7 +3781,7 @@ export const useChatStore = defineStore('chats', {
         // same conversation, whatever else has arrived and in whatever order.
         let conv = id
           ? preparedConversations[id]
-          : conversationIdSalt
+          : conversationIdSalt.value
           ? preparedConversations[allocateOpeningConversationIdFor(peer)]
           : undefined
         // Only our own messages are bound to the conversation's peer. An inbound message is
@@ -4144,7 +4173,7 @@ export const useChatStore = defineStore('chats', {
       // A thread opened here and never used yields to the peer's own conversation once that
       // is the peer's thread: it is dropped rather than left as a second, empty thread, and
       // whoever had it open is shown the peer's thread instead.
-      if (conversationIdSalt) {
+      if (conversationIdSalt.value) {
         for (const peer of new Set(
           [...receivedConversations.values()].map(c => c.address),
         )) {
@@ -4161,6 +4190,7 @@ export const useChatStore = defineStore('chats', {
             !opened.deletedAt
           ) {
             delete this.conversations[opened.id]
+            replacedConversations.set(opened.id, thread.id)
             if (this.activeConversationId === opened.id)
               this.activeConversationId = thread.id
           }

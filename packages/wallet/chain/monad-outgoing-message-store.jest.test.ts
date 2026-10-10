@@ -158,20 +158,20 @@ describe('LevelOutgoingMessageStore: the durable record of sent messages', () =>
       recipientSubject: '02ff',
       boundary: 'frank-' + '0a'.repeat(24),
     }
-    const first = await LevelCanonicalLinkStore.open(location)
+    const first = await LevelOutgoingMessageStore.open(location)
     await first.put(row('a'))
     await first.setUnpaid('00112233', envelope)
     await first.close()
 
-    const second = await LevelCanonicalLinkStore.open(location)
+    const second = await LevelOutgoingMessageStore.open(location)
     expect(second.unpaid('00112233')).toEqual(envelope)
     expect(second.unpaid('other')).toBeUndefined()
-    // Not a link: the payment workflow never sees it.
-    expect(second.all().map(r => r.attemptRef)).toEqual(['a'])
+    // Not a sent-message record: the payment workflow never sees it.
+    expect(second.all().map(r => r.consumerId)).toEqual([key('a')])
     await second.setUnpaid('00112233', undefined)
     await second.close()
 
-    const third = await LevelCanonicalLinkStore.open(location)
+    const third = await LevelOutgoingMessageStore.open(location)
     expect(third.unpaid('00112233')).toBeUndefined()
     expect(third.all()).toHaveLength(1)
     await third.close()

@@ -599,7 +599,7 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(current.sign).not.toHaveBeenCalled()
     expect(state.raws).toEqual([])
   })
-  it('keeps sync failure tied to the fulfilled original operation without another payment', async () => {
+  it('a failed sync transport fails nothing: the member stays unmarked and a later flush sends it, without another payment', async () => {
     const state = chain([200000n])
     // #1235 Stage C changed this fixture on purpose. With neither local callback configured the
     // test expected `sync` to be attempted twice and the member to end sync-applied: that held
@@ -612,12 +612,24 @@ describe('wallet-lifetime EVM native operations', () => {
     })
     const row = journal.list()[0]!
     current.sync.mockRejectedValueOnce(new Error('sync transport unavailable'))
-    await expect(
-      current.executor.flushSync(row.operationId),
-    ).rejects.toMatchObject({ operation: { operationId: row.operationId } })
-    expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(false)
-    await current.executor.resumeLegacySend(row.operationId)
     await current.executor.flushSync(row.operationId)
+    expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(false)
+    expect(current.executor.syncTransportFailed(row.operationId)).toBe(true)
+    await current.executor.resumeLegacySend(row.operationId)
+    // Not waited for: the flush that starts a transport resolves before it has settled.
+    let release!: () => void
+    current.sync.mockImplementationOnce(
+      () => new Promise<void>(resolve => (release = resolve)),
+    )
+    const started = await current.executor.startSync(row.operationId)
+    expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(false)
+    // A flush while it is under way does not send it a second time.
+    const again = current.executor.flushSync(row.operationId)
+    release()
+    await started.transported
+    await again
+    expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(true)
+    expect(current.executor.syncTransportFailed(row.operationId)).toBe(false)
     await current.executor.flushSync(row.operationId)
     expect(current.sync).toHaveBeenCalledTimes(2)
     expect(state.raws).toHaveLength(1)

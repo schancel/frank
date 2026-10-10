@@ -959,8 +959,9 @@ export default {
     feeunknown: 'Observed network fees unavailable.',
     block: 'Block {block}',
     syncNotShared: 'Not yet shared with your other devices.',
-    syncRecorded:
-      'Sync callback completion recorded. This does not confirm synchronization on other devices.',
+    syncShared: 'Sent to your other devices.',
+    syncFailed:
+      'Could not be sent to your other devices yet. It will be tried again; your payment is not affected.',
     recoveryUnavailable: 'Recovery is currently unavailable.',
     reviewHeld: 'This review cannot send another payment.',
     unsupported: 'Native transfer history is unavailable for this wallet.',

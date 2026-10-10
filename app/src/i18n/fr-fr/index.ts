@@ -981,8 +981,9 @@ export default {
     feeunknown: 'Frais de réseau observés indisponibles.',
     block: 'Bloc {block}',
     syncNotShared: 'Pas encore partagé avec vos autres appareils.',
-    syncRecorded:
-      'Exécution du rappel de synchronisation enregistrée. Cela ne confirme pas la synchronisation sur les autres appareils.',
+    syncShared: 'Envoyé à vos autres appareils.',
+    syncFailed:
+      'L’envoi à vos autres appareils n’a pas encore abouti. Il sera retenté ; votre paiement n’est pas concerné.',
     recoveryUnavailable: 'La reprise est actuellement indisponible.',
     reviewHeld: 'Cette vérification ne permet pas d’envoyer un autre paiement.',
     unsupported:

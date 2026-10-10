@@ -28,13 +28,18 @@ export interface EvmNativeOperationStatus {
   }[];
   readonly observedFeeWei: string;
   readonly feeCoverage: "complete" | "partial" | "unknown";
-  /** Records callback completion only, never local or all-device synchronization. */
-  readonly syncCallbackComplete: boolean;
+  /** The note that tells the account's other devices about this operation: `shared` once the
+   * relay took it for every member, `failed` when this session's last attempt did not get through
+   * (it is tried again), `not-shared` otherwise. Information only, never the payment's outcome,
+   * and not a confirmation that another device applied it. */
+  readonly sharing: "shared" | "not-shared" | "failed";
 }
 
 /** Pure projection of validated owner rows; never exposes signing bytes or derivation material. */
 export function summarizeEvmNativeOperation(
-  row: EvmNativeOperation
+  row: EvmNativeOperation,
+  /** From the wallet handle's `nativeOperationSyncFailed`; session memory, not a journal fact. */
+  syncFailed = false
 ): EvmNativeOperationStatus {
   const final = row.members[row.members.length - 1];
   if (!final) throw new Error("Native operation has no recipient member");
@@ -93,7 +98,11 @@ export function summarizeEvmNativeOperation(
         : observed.length
         ? "partial"
         : "unknown",
-    syncCallbackComplete: row.members.every((member) => member.syncApplied),
+    sharing: row.members.every((member) => member.syncApplied)
+      ? "shared"
+      : syncFailed
+      ? "failed"
+      : "not-shared",
   };
 }
 

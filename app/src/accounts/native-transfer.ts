@@ -44,7 +44,12 @@ export function inspectNativeTransferOperations(
       return { status: 'unavailable' }
     return {
       status: 'available',
-      operations: rows.map(summarizeEvmNativeOperation),
+      operations: rows.map(row =>
+        summarizeEvmNativeOperation(
+          row,
+          wallet.nativeOperationSyncFailed?.(row.operationId) ?? false,
+        ),
+      ),
     }
   } catch {
     return { status: 'unavailable' }

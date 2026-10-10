@@ -99,7 +99,9 @@ import {
   getAddress,
   getBytes,
   hexlify,
+  keccak256,
   parseEther,
+  toUtf8Bytes,
 } from "ethers";
 
 import {
@@ -664,6 +666,11 @@ function nativeOperationOwner(
   const owner = nativeOperationOwners.get(wallet);
   if (!owner) throw new Error("Wallet has no durable native-operation owner");
   return owner;
+}
+/** Sends again the notes of earlier operations whose transport failed or never ran: every send
+ * and resume is also a retry for them. Not waited for, and nothing it meets is this call's error. */
+function retryEarlierNotes(owner: EvmLegacyConsolidator): void {
+  void owner.flushSync().catch(() => undefined);
 }
 async function reconcileNativeAdmission(
   admission: MainAccountAdmission
@@ -2091,6 +2098,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             getNativeOperations() {
               return nativeOperationOwner(wallet).listOperations();
             },
+            nativeOperationSyncFailed(operationId) {
+              return nativeOperationOwner(wallet).syncTransportFailed(
+                operationId
+              );
+            },
             async resumeNativeOperation(operationId) {
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>
@@ -2098,8 +2110,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   owner.resumeOperation(operationId, admission)
                 )
               );
-              if (!closedWallets.has(wallet))
-                await owner.flushSync(operationId);
+              // The note to this account's other devices is started, not waited for: a native
+              // send or resume never waits on the relay or on a message being sent.
+              if (!closedWallets.has(wallet)) {
+                await owner.startSync(operationId);
+                retryEarlierNotes(owner);
+              }
               return result;
             },
             async cancelUnsignedNativeOperation(operationId) {
@@ -2175,8 +2191,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
               );
               primaryBalanceCache = undefined;
-              if (!closedWallets.has(wallet))
-                await owner.flushSync(
+              if (!closedWallets.has(wallet)) {
+                await owner.startSync(
                   owner
                     .listOperations()
                     .find(
@@ -2185,6 +2201,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                           ?.transactionHash === result.txHash
                     )!.operationId
                 );
+                retryEarlierNotes(owner);
+              }
               return result;
             },
             async sendLegacy(params) {
@@ -2196,8 +2214,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
               );
               primaryBalanceCache = undefined;
-              if (!closedWallets.has(wallet))
-                await owner.flushSync(
+              if (!closedWallets.has(wallet)) {
+                await owner.startSync(
                   owner
                     .listOperations()
                     .find(
@@ -2206,6 +2224,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                           ?.transactionHash === result.txHash
                     )!.operationId
                 );
+                retryEarlierNotes(owner);
+              }
               return result;
             },
             estimateLegacyFee: (params) =>
@@ -2223,8 +2243,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
               );
               primaryBalanceCache = undefined;
-              if (!closedWallets.has(wallet))
-                await owner.flushSync(operationId);
+              if (!closedWallets.has(wallet)) {
+                await owner.startSync(operationId);
+                retryEarlierNotes(owner);
+              }
               return result;
             },
             pool,
@@ -2461,15 +2483,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   lifetime
                 ).classifyMember(row, memberIndex);
               },
-              // No `onSyncTransaction`: after a native send this wallet does NOT send the
-              // account's other devices a wallet-sync note. A note is a paid message: it would
-              // pay a stamp to this wallet's own stamp key (which nothing spends) on every member,
-              // wait behind, and hold, the one-pending-message gate, and make a send whose
-              // transfer is already included end in an error. The consolidator treats a missing
-              // callback as "not transported": the send resolves, and the operation's members
-              // stay `syncApplied: false`, which hosts show as information, not as a failure.
-              // A note that does arrive from this wallet's own key (another client, a later
-              // version) is still applied: see `consumeSelfNotes`.
+              // After a native send, the account's other devices are told through a note this
+              // wallet writes to itself: a FREE message (no stamp), carrying only the sync item.
+              // It creates no payment attempt, funds and reserves nothing, and is not held by a
+              // pending paid message. Its message identity is fixed by the transaction it
+              // reports, so a repeat is the same message; applying it twice changes nothing.
+              // Best effort: a failure leaves the member not sync-applied and a later flush
+              // sends it again. The other devices apply it in `consumeSelfNotes`.
+              onSyncTransaction: async (item) => {
+                await directMessages.send({
+                  wallet,
+                  recipient: toChainAddress(identity.address.raw),
+                  items: [item],
+                  stampValue: 0n,
+                  messageId: getBytes(
+                    keccak256(
+                      toUtf8Bytes(
+                        `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`
+                      )
+                    )
+                  ).slice(0, 16),
+                });
+              },
             })
           );
           // Wallet open, native operations. Local only: nothing in this block may make a network

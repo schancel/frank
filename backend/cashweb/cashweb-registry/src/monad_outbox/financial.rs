@@ -112,6 +112,23 @@ impl CanonicalPaymentInput {
     }
 }
 
+#[cfg(test)]
+impl CanonicalPaymentInput {
+    /// Test seam for storing many messages quickly: skips the directory lookups, which were
+    /// already made for `policy`. Every check that reads only the request bytes still runs.
+    pub(crate) fn without_directory(
+        request: crate::http::monad_message_cbor::ExactRequest,
+        policy: crate::store::monad_dm_cbor::FrozenCanonicalPolicy,
+    ) -> crate::http::monad_message_cbor::Result<Self> {
+        let payments = canonical_signed_set(&request, &policy)?;
+        Ok(Self {
+            request,
+            policy,
+            payments,
+        })
+    }
+}
+
 /// New admission consumes genuine facade snapshots, never a decoded statement as Current.
 pub(crate) fn validate_canonical_payment_set(
     request: crate::http::monad_message_cbor::ExactRequest,

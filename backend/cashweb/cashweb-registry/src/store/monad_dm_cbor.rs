@@ -96,10 +96,6 @@ pub(crate) struct Claim {
     pub(crate) reserved_charge: u64,
 }
 
-const MAX_RETAINED_OWNERS: u64 = 4096;
-const MAX_RETAINED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_RECIPIENT_OWNERS: u64 = 128;
-const MAX_RECIPIENT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_AUTH_NONCES: usize = 4096;
 
 /// Binary CBOR metadata and every possible bounded lifecycle index/member.
@@ -201,7 +197,6 @@ impl Owner {
             options.create_if_missing(create);
             let opened =
                 rocksdb::DB::open(&options, &self.path).map_err(|_| CanonicalError::Unavailable)?;
-            audit_retained_usage(&opened)?;
             *guard = Some(opened);
         }
         if !self.path.join("CURRENT").is_file() {
@@ -227,8 +222,8 @@ impl Owner {
             .map(|usage| usage.unwrap_or_default())
     }
     /// Store a checked message in the recipient's inbox, in one durable write. An exact repeat
-    /// returns what is already stored. Refusals (a payment already used for another message, a
-    /// full mailbox) leave nothing behind.
+    /// returns what is already stored. A refusal (a payment already used for another message)
+    /// leaves nothing behind. The number of messages already stored never refuses one.
     pub(crate) fn claim(&self, input: CanonicalPaymentInput, now: i64) -> Result<Claim> {
         let candidate = input.into_claim(now)?;
         let (claim, stored) = self
@@ -260,7 +255,6 @@ impl Owner {
                     }
                 }
                 let mut batch = WriteBatch::default();
-                reserve_retained_owner(db, &mut batch, &candidate)?;
                 append_owner(&mut batch, &candidate.policy.payload_hash, &candidate)?;
                 for member in &candidate.members {
                     batch.put(
@@ -564,15 +558,10 @@ impl Owner {
     ) -> Result<Vec<Claim>> {
         self.with(false, |db| {
             let mut result = Vec::new();
-            let mut inspected = 0u64;
             for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
                 let (key, header) = item.map_err(|_| CanonicalError::Unavailable)?;
                 #[cfg(test)]
                 record_read(&key, &header);
-                inspected += 1;
-                if inspected > MAX_RETAINED_OWNERS {
-                    return Err(CanonicalError::Unavailable);
-                }
                 if key.first() != Some(&b'J') {
                     continue;
                 }
@@ -763,7 +752,6 @@ fn financial_usage_locked(
     recipient: Address,
 ) -> Result<crate::monad_outbox::financial::AdmissionUsage> {
     let mut usage = crate::monad_outbox::financial::AdmissionUsage::default();
-    let mut inspected = 0u64;
     for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
         let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
         #[cfg(test)]
@@ -771,8 +759,7 @@ fn financial_usage_locked(
         if key.first() != Some(&b'J') {
             continue;
         }
-        inspected += 1;
-        if inspected > MAX_RETAINED_OWNERS || key.len() != 33 || value.len() > 128 {
+        if key.len() != 33 || value.len() > 128 {
             return Err(CanonicalError::Unavailable);
         }
         let UsageHeader {
@@ -1159,114 +1146,6 @@ fn decode_member(raw: &[u8]) -> Result<MonadOutboxMember> {
         last_error: text(&a[9])?.into(),
     })
 }
-fn retained_usage(db: &rocksdb::DB, key: &[u8]) -> Result<(u64, u64)> {
-    let Some(value) = db.get(key).map_err(|_| CanonicalError::Unavailable)? else {
-        return Ok((0, 0));
-    };
-    let value = decode_canonical(&value).map_err(|_| CanonicalError::Unavailable)?;
-    let [count, bytes] = array(&value)? else {
-        return Err(CanonicalError::Unavailable);
-    };
-    Ok((convert(count)?, convert(bytes)?))
-}
-
-/// Reopen checks the actual durable owner/index set, never an estimated counter.
-/// One row is staged at a time under the fixed owner/byte bounds.
-fn audit_retained_usage(db: &rocksdb::DB) -> Result<()> {
-    let mut global = (0u64, 0u64);
-    let mut recipients = std::collections::BTreeMap::<[u8; 20], (u64, u64)>::new();
-    let mut headers = 0u64;
-    let mut nonces = 0usize;
-    for item in db.iterator(IteratorMode::Start) {
-        let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
-        match key.first() {
-            Some(b'R') => {
-                global.0 = global.0.checked_add(1).ok_or(CanonicalError::Unavailable)?;
-                if global.0 > MAX_RETAINED_OWNERS
-                    || key.len() != 33
-                    || value.len() > crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192
-                {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let hash: [u8; 32] = key[1..]
-                    .try_into()
-                    .map_err(|_| CanonicalError::Unavailable)?;
-                let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
-                global.1 = global
-                    .1
-                    .checked_add(claim.reserved_charge)
-                    .ok_or(CanonicalError::Unavailable)?;
-                if global.1 > MAX_RETAINED_BYTES {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let recipient = recipients.entry(claim.policy.recipient()?.0).or_default();
-                recipient.0 = recipient
-                    .0
-                    .checked_add(1)
-                    .ok_or(CanonicalError::Unavailable)?;
-                recipient.1 = recipient
-                    .1
-                    .checked_add(claim.reserved_charge)
-                    .ok_or(CanonicalError::Unavailable)?;
-                if recipient.0 > MAX_RECIPIENT_OWNERS || recipient.1 > MAX_RECIPIENT_BYTES {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            Some(b'J') => {
-                headers += 1;
-                if headers > MAX_RETAINED_OWNERS || key.len() != 33 || value.len() > 128 {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let hash: [u8; 32] = key[1..]
-                    .try_into()
-                    .map_err(|_| CanonicalError::Unavailable)?;
-                if db
-                    .get_pinned(row_key(&hash))
-                    .map_err(|_| CanonicalError::Unavailable)?
-                    .is_none()
-                {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            Some(b'N') => {
-                nonces += 1;
-                if nonces > MAX_AUTH_NONCES || key.len() != 85 || value.len() != 8 {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            Some(b'T') => {
-                if key.len() != 33 || value.len() != 32 {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            _ => {}
-        }
-    }
-    if headers != global.0 || retained_usage(db, b"Q")? != global {
-        return Err(CanonicalError::Unavailable);
-    }
-    for item in db.iterator(IteratorMode::Start) {
-        let (key, _) = item.map_err(|_| CanonicalError::Unavailable)?;
-        if key.first() != Some(&b'q') {
-            continue;
-        }
-        let recipient: [u8; 20] = key
-            .get(1..)
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(CanonicalError::Unavailable)?;
-        let expected = recipients
-            .remove(&recipient)
-            .ok_or(CanonicalError::Unavailable)?;
-        if retained_usage(db, &key)? != expected {
-            return Err(CanonicalError::Unavailable);
-        }
-    }
-    if !recipients.is_empty() {
-        return Err(CanonicalError::Unavailable);
-    }
-    Ok(())
-}
-
 fn identity_key(request: &ExactRequest) -> Vec<u8> {
     let mut key = b"S".to_vec();
     key.extend_from_slice(&request.submission_identity());
@@ -1287,30 +1166,6 @@ fn publish(batch: &mut WriteBatch, claim: &Claim, now: i64) -> Result<()> {
     batch.put(mailbox_key(b'I', recipient, now, hash), hash);
     if sender != recipient {
         batch.put(mailbox_key(b'O', sender, now, hash), hash);
-    }
-    Ok(())
-}
-
-fn reserve_retained_owner(db: &rocksdb::DB, batch: &mut WriteBatch, claim: &Claim) -> Result<()> {
-    let mut recipient_key = b"q".to_vec();
-    recipient_key.extend_from_slice(&claim.policy.recipient()?.0);
-    for (key, count_limit, byte_limit) in [
-        (b"Q".as_slice(), MAX_RETAINED_OWNERS, MAX_RETAINED_BYTES),
-        (
-            recipient_key.as_slice(),
-            MAX_RECIPIENT_OWNERS,
-            MAX_RECIPIENT_BYTES,
-        ),
-    ] {
-        let (count, bytes) = retained_usage(db, key)?;
-        let count = count.checked_add(1).ok_or(CanonicalError::Capacity)?;
-        let bytes = bytes
-            .checked_add(claim.reserved_charge)
-            .ok_or(CanonicalError::Capacity)?;
-        if count > count_limit || bytes > byte_limit {
-            return Err(CanonicalError::Capacity);
-        }
-        batch.put(key, encode(CborValue::Array(vec![int(count), int(bytes)]))?);
     }
     Ok(())
 }

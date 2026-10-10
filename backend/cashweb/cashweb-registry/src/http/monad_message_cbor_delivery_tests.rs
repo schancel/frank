@@ -330,7 +330,7 @@ impl Relay {
     /// Payload hashes in the recipient's inbox, as its inbox read returns them.
     fn inbox(&self) -> Vec<[u8; 32]> {
         self.owner()
-            .inbox(self.recipient(), 0, None, 5000)
+            .inbox(self.recipient(), 0, None, 100_000)
             .unwrap()
             .iter()
             .map(|claim| claim.policy.payload_hash)
@@ -339,7 +339,7 @@ impl Relay {
     /// Payload hashes and directions in one account's mailbox, as its mailbox read returns them.
     fn mailbox(&self, account: Address) -> Vec<([u8; 32], MailboxDirection)> {
         self.owner()
-            .mailbox(account, 0, None, 5000)
+            .mailbox(account, 0, None, 100_000)
             .unwrap()
             .iter()
             .map(|(claim, direction)| (claim.policy.payload_hash, *direction))
@@ -748,6 +748,58 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     http_task.await.unwrap();
     rpc_stop.send(()).unwrap();
     rpc_task.await.unwrap();
+    fixture.stop().await;
+}
+
+/// The relay used to stop at 128 messages per recipient and 4,096 in all, for ever. Nothing
+/// counts stored messages now, so nothing refuses one for how many there are.
+#[tokio::test]
+async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
+    const MESSAGES: u32 = 5000;
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    // The first message goes through every check, directory included.
+    let first = message(100_000, 2);
+    delivered(&relay.put(&first).await, &first);
+    let policy = relay
+        .owner()
+        .get(&payload_hash(&first))
+        .unwrap()
+        .unwrap()
+        .policy;
+    // The rest are stored directly: same parties, so the directory has nothing new to say.
+    for tag in 1..MESSAGES {
+        let request = message(100_000 + tag, 0);
+        let mut policy = policy.clone();
+        policy.payload_hash = payload_hash(&request);
+        let input = crate::monad_outbox::financial::CanonicalPaymentInput::without_directory(
+            request, policy,
+        )
+        .unwrap();
+        relay.owner().claim(input, now_ms()).unwrap();
+    }
+    assert_eq!(relay.inbox().len(), MESSAGES as usize);
+    assert_eq!(relay.mailbox(relay.sender()).len(), MESSAGES as usize);
+    // One more over HTTP, paid, is delivered and broadcast like the first.
+    let last = message(200_000, 2);
+    delivered(&relay.put(&last).await, &last);
+    assert_eq!(relay.broadcasts().len(), 4);
+    assert_eq!(relay.inbox().len(), MESSAGES as usize + 1);
+
+    // A restart finds them all and takes the next one.
+    let fixture = relay.shut_down().await.reopen().await;
+    let owner = fixture.registry.canonical_dm();
+    let recipient = address(&hex::decode(&fixture.accounts[1].subject).unwrap());
+    assert_eq!(
+        owner.inbox(recipient, 0, None, 10_000).unwrap().len(),
+        MESSAGES as usize + 1
+    );
+    let after = message(300_000, 0);
+    let mut policy = policy;
+    policy.payload_hash = payload_hash(&after);
+    let input =
+        crate::monad_outbox::financial::CanonicalPaymentInput::without_directory(after, policy)
+            .unwrap();
+    owner.claim(input, now_ms()).unwrap();
     fixture.stop().await;
 }
 

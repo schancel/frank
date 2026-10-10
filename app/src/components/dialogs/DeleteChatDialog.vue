@@ -27,7 +27,6 @@
 
 <script lang="ts">
 import { useChatStore } from 'src/stores/chats'
-import { notifyDeleteFailure } from 'src/utils/sweep-on-delete'
 import { defineComponent } from 'vue'
 
 export default defineComponent({
@@ -52,13 +51,7 @@ export default defineComponent({
   emits: ['deleted'],
   methods: {
     async onDelete() {
-      try {
-        await this.deleteChat(this.address)
-      } catch (err) {
-        // Messages whose money could not be moved to the wallet stay, so the chat stays.
-        notifyDeleteFailure(err)
-        return
-      }
+      await this.deleteChat(this.address)
       this.$emit('deleted')
     },
   },

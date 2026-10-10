@@ -7,8 +7,11 @@
  * seen, or none at all; some carrying a subject (a first message or a rename); with message IDs that are fresh, reused
  * within and across conversations, or equal to another message's derived ID; relay times before
  * and after a deletion; replays of earlier rows; delivered in one batch or over several polls;
- * with deletions in between. After each sequence the store is saved and restored through its own
- * persistence, and everything a user can see must be the same.
+ * with deletions in between: of a conversation, of one message, of every message of a
+ * conversation (clear), of messages that brought money. After each sequence the store is saved
+ * and restored through its own persistence, and everything a user can see must be the same; and
+ * no message the user deleted is shown again, in the session or after the reload, however often
+ * the relay hands its row back.
  *
  * A failure prints its seed. Replay one with `PROPERTY_SEED=<seed>`; change the number of cases
  * with `PROPERTY_CASES`.
@@ -126,6 +129,10 @@ function generator(seed: number) {
 type Step =
   | { kind: 'receive'; batch: ReceivedMessageWrapper[] }
   | { kind: 'delete'; conversationId: string; deletedAt: number }
+  /** One message is deleted: a tombstone is left for it. */
+  | { kind: 'delete-message'; index: string }
+  /** Every message the conversation holds is deleted; the conversation stays. */
+  | { kind: 'clear'; conversationId: string }
 
 function sequence(seed: number): Step[] {
   const random = generator(seed)
@@ -148,7 +155,16 @@ function sequence(seed: number): Step[] {
       })
       continue
     }
-    if (sent.length > 0 && random.chance(0.1)) {
+    if (sent.length > 0 && random.chance(0.15)) {
+      flush()
+      steps.push(
+        random.chance(0.7)
+          ? { kind: 'delete-message', index: random.pick(sent).index }
+          : { kind: 'clear', conversationId: random.pick(CONVERSATIONS) },
+      )
+      continue
+    }
+    if (sent.length > 0 && random.chance(0.2)) {
       // The relay hands an earlier row back.
       batch.push(random.pick(sent))
     } else {
@@ -179,6 +195,8 @@ function sequence(seed: number): Step[] {
           : // The ID another message of this sequence would be re-filed under.
             collidedMessageId(named, digest(random.int(count)))
       const time = 1 + random.int(100)
+      // Some received messages brought money: a stamp, a payment to a one-time account.
+      const paid = !outbound && random.chance(0.3)
       const wrapper = {
         ...(conversationId === undefined ? {} : { conversationId }),
         outbound,
@@ -194,10 +212,33 @@ function sequence(seed: number): Step[] {
           status: 'confirmed',
           senderAddress: sender,
           destinationAddress: outbound ? coparty : ME,
-          items: [{ type: 'text', text: digest(n) }],
+          items: [
+            { type: 'text', text: digest(n) },
+            ...(paid && random.chance(0.5)
+              ? [
+                  {
+                    type: 'stealth',
+                    amount: 5,
+                    ephemeralPubKey: '02' + 'ab'.repeat(32),
+                    transactions: ['cd'.repeat(32)],
+                  },
+                ]
+              : []),
+          ],
           serverTime: time,
           receivedTime: time,
           outpoints: [],
+          ...(paid
+            ? {
+                stampPayments: [
+                  {
+                    txHash: '0x' + 'ef'.repeat(32),
+                    destinationAddress: '0x' + 'c1'.repeat(20),
+                    valueWei: '1000',
+                  },
+                ],
+              }
+            : {}),
           ...(messageId === undefined ? {} : { logicalMessageId: messageId }),
         },
       } as unknown as ReceivedMessageWrapper
@@ -318,26 +359,53 @@ async function openStore() {
   return { chats, reload }
 }
 
+/** Applies the steps; returns the payload hashes of every message the user deleted. */
 async function apply(
   chats: ReturnType<typeof useChatStore>,
   steps: readonly Step[],
-) {
+): Promise<Set<string>> {
+  const deleted = new Set<string>()
+  const shown = (conversationId: string) =>
+    (chats.conversations[conversationId]?.messages ?? []).map(
+      m => m.payloadDigest,
+    )
   for (const step of steps) {
     if (step.kind === 'receive') await chats.receiveMessages(step.batch, ME)
-    else if (chats.conversations[step.conversationId])
-      await chats.deleteConversation(step.conversationId, step.deletedAt)
+    else if (step.kind === 'delete-message') {
+      const holder = Object.values(chats.conversations).find(c =>
+        c.messages.some(m => m.payloadDigest === step.index),
+      )
+      // Not shown (refused, never filed, deleted already): there is nothing to delete.
+      if (!holder) continue
+      await chats.deleteMessage({
+        address: holder.address,
+        payloadDigest: step.index,
+      })
+      deleted.add(step.index)
+    } else if (chats.conversations[step.conversationId]) {
+      for (const digest of shown(step.conversationId)) deleted.add(digest)
+      if (step.kind === 'clear')
+        await chats.clearConversation(step.conversationId)
+      else await chats.deleteConversation(step.conversationId, step.deletedAt)
+    }
   }
+  return deleted
 }
 
-/** The session, a reload of it, and a reload of that reload all show the same. */
+const digestsShown = (state: ReturnType<typeof visible>) =>
+  state.conversations.flatMap(c => c.messages.map(m => m.digest))
+
+/** The session, a reload of it, and a reload of that reload all show the same, and none of
+ * them shows a message the user deleted. */
 async function expectReloadShowsTheSession(steps: readonly Step[]) {
   const { chats, reload } = await openStore()
-  await apply(chats, steps)
+  const deleted = await apply(chats, steps)
   const session = visible(chats.$state)
+  expect(digestsShown(session).filter(d => deleted.has(d))).toEqual([])
   const reloaded = await reload(chats.$state)
   expect(visible(reloaded as never)).toEqual(session)
   expect(visible((await reload(reloaded)) as never)).toEqual(session)
-  return { chats, session }
+  return { chats, session, reload }
 }
 
 /** The row a received message is kept as on disk. */
@@ -405,6 +473,10 @@ const describeSteps = (steps: readonly Step[]) =>
     .map(step =>
       step.kind === 'delete'
         ? `delete ${step.conversationId} at ${step.deletedAt}`
+        : step.kind === 'delete-message'
+        ? `delete message ${step.index}`
+        : step.kind === 'clear'
+        ? `clear ${step.conversationId}`
         : `receive ${step.batch
             .map(
               w =>
@@ -558,6 +630,7 @@ describe('a reload shows what the session showed, whatever was received', () => 
             if (conversation) conversation.deletedAt = step.deletedAt
             continue
           }
+          if (step.kind !== 'receive') continue
           for (const wrapper of step.batch) {
             // Our own rows are our own outbox; only those to the conversation's peer are a
             // state other people can bring about.
@@ -704,6 +777,118 @@ describe('the sequences this was written for', () => {
       expect(reopened?.deletedAt).toBeUndefined()
       expect(reopened?.messages.map(m => m.digest)).toEqual(['reopen-new'])
       expect(reopened?.participants).not.toContain(STRANGER)
+    })
+  })
+})
+
+describe('a deleted message leaves a tombstone', () => {
+  /** A received message that brought money: a stamp and a payment to a one-time account. */
+  const paid = (index: string, sender: string, conversationId: string) => {
+    const wrapper = message(index, sender, conversationId, 300)
+    Object.assign(wrapper.message, {
+      stampPayments: [
+        {
+          txHash: '0x' + 'ef'.repeat(32),
+          destinationAddress: '0x' + 'c1'.repeat(20),
+          valueWei: '1000',
+        },
+      ],
+      items: [
+        { type: 'text', text: index },
+        {
+          type: 'stealth',
+          amount: 5,
+          ephemeralPubKey: '02' + 'ab'.repeat(32),
+          transactions: ['cd'.repeat(32)],
+        },
+      ],
+    })
+    return wrapper
+  }
+
+  it('one deleted message, received or sent, with or without money, stays deleted when the relay hands its row back; its content is off the disk', async () => {
+    await quietly(async () => {
+      const rows = [
+        paid('tomb-paid', PEER_1, WITH_PEER_1),
+        message('tomb-plain', PEER_1, WITH_PEER_1, 310),
+        // Our own message, read back from our own mailbox.
+        message('tomb-sent', ME, WITH_PEER_1, 320),
+        message('tomb-kept', PEER_1, WITH_PEER_1, 330),
+      ]
+      const { session } = await expectReloadShowsTheSession([
+        { kind: 'receive', batch: rows },
+        { kind: 'delete-message', index: 'tomb-paid' },
+        { kind: 'delete-message', index: 'tomb-plain' },
+        { kind: 'delete-message', index: 'tomb-sent' },
+        // A poll that starts over: the relay still has all four.
+        { kind: 'receive', batch: rows },
+        { kind: 'receive', batch: [rows[2]] },
+      ])
+      expect(
+        session.conversations
+          .find(c => c.id === WITH_PEER_1)
+          ?.messages.map(m => m.digest),
+      ).toEqual(['tomb-kept'])
+      // Nothing of the deleted messages is on the disk: not text, not items. Only that they
+      // are deleted.
+      expect([...mockDisk.rows.keys()]).toEqual(['tomb-kept'])
+      expect([...mockDisk.suppressed].sort()).toEqual([
+        'tomb-paid',
+        'tomb-plain',
+        'tomb-sent',
+      ])
+    })
+  })
+
+  // The owner's own use: clear everything to start fresh, and keep the money. Deleting asks the
+  // wallet nothing (this store has no wallet at all here, and no chain), so there is nothing a
+  // delete could move; that the coins are still spent from afterwards, and found by a second
+  // wallet of the account, is shown with real wallets in
+  // packages/wallet/chain/received-payments.anvil.integration.ts.
+  it('every chat cleared: every conversation is empty and stays empty when the relay hands the whole mailbox back, in the session and after a reload', async () => {
+    await quietly(async () => {
+      const mailbox = [
+        paid('fresh-1', PEER_1, WITH_PEER_1),
+        message('fresh-2', ME, WITH_PEER_1, 305),
+        paid('fresh-3', PEER_2, WITH_PEER_2),
+        message('fresh-4', PEER_2, WITH_PEER_2, 315),
+        message('fresh-5', ME, WITH_PEER_2, 320),
+        paid('fresh-6', STRANGER, UNKNOWN),
+      ]
+      const { chats, reload } = await openStore()
+      await chats.receiveMessages(mailbox, ME)
+      expect(
+        Object.values(chats.conversations).flatMap(c => c.messages),
+      ).toHaveLength(mailbox.length)
+
+      for (const conversation of Object.values(chats.conversations))
+        await chats.clearConversation(conversation.id)
+      const empty = visible(chats.$state)
+      expect(digestsShown(empty)).toEqual([])
+      expect(empty.conversations.every(c => c.unread === 0)).toBe(true)
+      // The conversations themselves are still there: cleared, not deleted.
+      expect(empty.conversations.map(c => c.id)).toEqual(
+        expect.arrayContaining([WITH_PEER_1, WITH_PEER_2]),
+      )
+      expect(mockDisk.rows.size).toBe(0)
+
+      // The relay hands everything back, twice (a poll from the start, a second frontend's
+      // cursor reset): nothing returns.
+      await chats.receiveMessages(mailbox, ME)
+      await chats.receiveMessages([...mailbox].reverse(), ME)
+      expect(visible(chats.$state)).toEqual(empty)
+      expect(mockDisk.rows.size).toBe(0)
+
+      const reloaded = await reload(chats.$state)
+      expect(visible(reloaded as never)).toEqual(empty)
+      expect(visible((await reload(reloaded)) as never)).toEqual(empty)
+
+      // Starting fresh works: a new message is shown, alone.
+      await chats.receiveMessages(
+        [message('fresh-new', PEER_1, WITH_PEER_1, 400)],
+        ME,
+      )
+      expect(digestsShown(visible(chats.$state))).toEqual(['fresh-new'])
     })
   })
 })

@@ -5,7 +5,12 @@
  * A coin is money that arrived at a one-time account this wallet can spend from but cannot find
  * again from its seed alone: the account's key is derived from a message (a stealth payment's
  * ephemeral key, a stamp's shared point). The coin is therefore recorded WITH its private key, in
- * this one store, when the message is read, and it stays here whatever happens to the message.
+ * this one store, when the message is read, and it stays here whatever happens to the message:
+ * deleting a message never touches its coins.
+ *
+ * So that the account's other devices, and a wallet restored from the seed, find the coin without
+ * the message, the wallet writes what the key is derived from in a note to itself, once per coin
+ * (`receivedCoinNoteOf`, `notedAtMs`). The note holds no key.
  *
  * `amountWei` is what the chain last reported at the address, never what a sender wrote. A coin is
  * `pending` until the chain shows the transfer its message named included successfully, `unspent`
@@ -17,6 +22,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
+import type { ReceivedCoinItem } from '@frank/cashweb/types/messages'
 import { durableDelete, durablePut, openDurableLevel } from './level-durability'
 
 export type EvmCoinOrigin = 'stealth' | 'stamp'
@@ -47,7 +53,50 @@ export interface EvmCoin {
   readonly ephemeralPubKey?: string
   /** A stamp coin: which of the message's payments this is. */
   readonly childIndex?: number
+  /** A stamp coin: the public shared point of its message, bare lower-case hex. With
+   * `childIndex` it is what the account's key is derived from. Absent on a coin found through
+   * the legacy JSON mailbox, whose key is derived another way. */
+  readonly stampSharedPoint?: string
+  /** When the account's own mailbox was known to hold the note that says how this coin's key is
+   * derived: this wallet sent it, or read it. Absent: not written yet. */
+  readonly notedAtMs?: number
   readonly discoveredAtMs: number
+}
+
+/** The note to self for a coin: the chain, the account, and what its key is derived from. No key
+ * and nothing else of the message. Undefined for a coin that holds no derivation data (one found
+ * through the legacy JSON mailbox): such a coin is found again only from its message. */
+export function receivedCoinNoteOf(
+  coin: EvmCoin,
+  chainIdentifier: string,
+): ReceivedCoinItem | undefined {
+  const derivation =
+    coin.origin === 'stealth'
+      ? coin.ephemeralPubKey === undefined
+        ? undefined
+        : { ephemeralPubKey: coin.ephemeralPubKey }
+      : coin.stampSharedPoint === undefined || coin.childIndex === undefined
+      ? undefined
+      : {
+          stampSharedPoint: coin.stampSharedPoint,
+          childIndex: coin.childIndex,
+        }
+  if (derivation === undefined) return undefined
+  return {
+    type: 'received-coin',
+    chainIdentifier,
+    address: coin.address,
+    origin: coin.origin,
+    ...derivation,
+    claimedAmountWei: coin.claimedAmountWei,
+    ...(coin.transactions.length > 0
+      ? { transactions: [...coin.transactions] }
+      : {}),
+    ...(coin.payloadDigest === undefined
+      ? {}
+      : { payloadDigest: coin.payloadDigest }),
+    timestamp: coin.discoveredAtMs,
+  }
 }
 
 /** A one-time payment to a contact this wallet has made: the signed transfer and what the message

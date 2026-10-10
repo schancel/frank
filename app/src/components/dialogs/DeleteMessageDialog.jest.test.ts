@@ -3,7 +3,7 @@
  */
 import { shallowMount } from '@vue/test-utils'
 import DeleteMessageDialog from './DeleteMessageDialog.vue'
-import { notifyDeleteFailure } from 'src/utils/sweep-on-delete'
+import { errorNotify } from 'src/utils/notifications'
 
 const mockDeleteMessage = jest.fn()
 const mockMessages: Record<string, unknown> = {
@@ -20,8 +20,8 @@ jest.mock('src/stores/chats', () => ({
     messages: mockMessages,
   }),
 }))
-jest.mock('src/utils/sweep-on-delete', () => ({
-  notifyDeleteFailure: jest.fn(),
+jest.mock('src/utils/notifications', () => ({
+  errorNotify: jest.fn(),
 }))
 
 const mountDialog = (payloadDigest = '0xmsg1') =>
@@ -36,7 +36,7 @@ describe('DeleteMessageDialog.vue', () => {
     mockDeleteMessage.mockResolvedValue(undefined)
   })
 
-  it('deletes through the store, which is what sweeps the message money first', async () => {
+  it('deletes through the store, and asks nothing else of anyone', async () => {
     const wrapper = mountDialog()
     await (
       wrapper.vm as unknown as { deleteMessageBoth(): Promise<void> }
@@ -47,16 +47,16 @@ describe('DeleteMessageDialog.vue', () => {
       payloadDigest: '0xmsg1',
       attemptDigest: '0xattempt1',
     })
-    expect(notifyDeleteFailure).not.toHaveBeenCalled()
+    expect(errorNotify).not.toHaveBeenCalled()
   })
 
-  it('shows why when the store kept the message because its money could not be moved', async () => {
-    const refusal = new Error('The message was not deleted: node unreachable')
+  it('shows an error when the store could not delete the message', async () => {
+    const refusal = new Error('the message store is closed')
     mockDeleteMessage.mockRejectedValueOnce(refusal)
     const wrapper = mountDialog()
     await (
       wrapper.vm as unknown as { deleteMessageBoth(): Promise<void> }
     ).deleteMessageBoth()
-    expect(notifyDeleteFailure).toHaveBeenCalledWith(refusal)
+    expect(errorNotify).toHaveBeenCalledWith(refusal)
   })
 })

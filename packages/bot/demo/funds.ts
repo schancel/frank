@@ -19,11 +19,18 @@
  * Keys are used to sign and are never printed. One transfer per account, one at a time, each
  * waited for: on Monad a second transfer from a small account within a few blocks reverts. An
  * account holding less than twice the transfer fee is left alone (dust). A sweep refuses a
- * directory a running process has open, and a demo state directory unless `--demo` is given (the
- * bots are meant to stay funded between runs).
+ * directory a running process has open (checked again just before sending; when `lsof` cannot
+ * answer the directory counts as in use), and a demo state directory unless `--demo` is given
+ * (the bots are meant to stay funded between runs).
+ *
+ * A state that will be used again stays usable: by default a sweep takes the main and identity
+ * accounts, change accounts and the sender accounts the wallet's records call spent or retired
+ * (or do not name), and LEAVES sender accounts the records call funded for a coming message,
+ * because emptying those would leave records that say they hold money. `--abandoned` takes
+ * everything, for a state that will never be opened again (`yarn demo:sweep` passes it).
  */
 import { execFileSync } from 'child_process'
-import { appendFileSync, cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { basename, dirname, join, resolve } from 'path'
 
@@ -51,6 +58,9 @@ export interface FoundAccount {
   address: string
   /** Absent when only the address is known (records without their key file). */
   privateKey?: string
+  /** A sender account the wallet's records hold ready for a coming message: emptying it would
+   * leave those records wrong, so only a sweep of an abandoned state takes it. */
+  heldByRecords?: boolean
 }
 
 export interface FoundWallet {
@@ -58,8 +68,10 @@ export interface FoundWallet {
   path: string
   kind: 'account root' | 'roots.json' | 'identity file' | 'pool seed' | 'wallet file' | 'records without a key'
   accounts: FoundAccount[]
-  /** Why nothing could be derived, when that is the case. */
+  /** Why nothing could be derived, when that is the case. Never quotes the file. */
   problem?: string
+  /** Something the reader must know about how complete this is. */
+  note?: string
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -72,6 +84,7 @@ export interface Holding {
   address: string
   balanceWei: bigint
   hasKey: boolean
+  heldByRecords?: boolean
 }
 
 export interface Move extends Holding {
@@ -99,7 +112,12 @@ export interface SweepPlan {
 /** Decides, for balances already read, what a sweep moves. One transfer per address; an address
  * that appears in several wallets (a bot's exported identity file) is counted once; `never`
  * (the destination and the wallets that fund tests) is not a source. */
-export function planSweep(holdings: Holding[], gasPriceWei: bigint, never: string[] = []): SweepPlan {
+export function planSweep(
+  holdings: Holding[],
+  gasPriceWei: bigint,
+  never: string[] = [],
+  options: { abandoned?: boolean } = {},
+): SweepPlan {
   const transferCostWei = gasPriceWei * TRANSFER_GAS
   const excluded = new Set(never.filter(Boolean).map(a => a.toLowerCase()))
   const seen = new Map<string, Holding>()
@@ -117,6 +135,8 @@ export function planSweep(holdings: Holding[], gasPriceWei: bigint, never: strin
     } else if (!holding.hasKey) {
       plan.noKeyWei += holding.balanceWei
       plan.skipped.push({ ...holding, reason: 'its key was not found' })
+    } else if (holding.heldByRecords && !options.abandoned) {
+      plan.skipped.push({ ...holding, reason: "kept: the wallet's records hold it ready for a coming message (--abandoned takes it, for a state that will not be used again)" })
     } else if (holding.balanceWei < transferCostWei * 2n) {
       plan.dustWei += holding.balanceWei
       plan.skipped.push({ ...holding, reason: `dust: under twice the transfer fee of ${formatEther(transferCostWei)} MON` })
@@ -145,7 +165,7 @@ interface PoolRecords {
 }
 
 /** Reads a wallet's `level` records from a temporary copy, so the state directory is untouched. */
-async function readLevelCopy(dbDir: string): Promise<PoolRecords | undefined> {
+async function readLevelCopy(dbDir: string): Promise<PoolRecords | 'unreadable' | undefined> {
   if (!existsSync(dbDir)) return undefined
   const copy = mkdtempSync(join(tmpdir(), 'frank-funds-read-'))
   const records: PoolRecords = { nextIndex: 0, status: new Map(), addresses: new Map() }
@@ -177,7 +197,7 @@ async function readLevelCopy(dbDir: string): Promise<PoolRecords | undefined> {
     }
     return records
   } catch {
-    return undefined
+    return 'unreadable'
   } finally {
     rmSync(copy, { recursive: true, force: true })
   }
@@ -196,39 +216,58 @@ function walk(root: string, visit: (dir: string, names: string[]) => void, depth
     if (SKIP_DIRS.has(name) || STORAGE_DIR.test(name)) continue
     const path = join(root, name)
     try {
-      if (statSync(path).isDirectory()) walk(path, visit, depth + 1)
+      // A symbolic link is never followed: it could lead out of the state directory.
+      if (lstatSync(path).isDirectory()) walk(path, visit, depth + 1)
     } catch {
-      /* a broken link */
+      /* gone meanwhile */
     }
   }
 }
 
 const hexBytes = (text: string) => Uint8Array.from(Buffer.from(text.trim(), 'hex'))
 
+const READY = new Set(['available', 'in-use', 'funding', 'unfunded'])
+
 async function poolAccounts(
   keyring: { deriveSubAccount(index: number): { address: string; privateKey: string } },
   changeKeyring: { deriveSubAccount(index: number): { address: string; privateKey: string } },
   storageDirs: string[],
-): Promise<FoundAccount[]> {
+): Promise<{ accounts: FoundAccount[]; note?: string }> {
   const accounts: FoundAccount[] = []
-  let senders: PoolRecords = { nextIndex: 0, status: new Map(), addresses: new Map() }
-  let change: PoolRecords = { nextIndex: 0, status: new Map(), addresses: new Map() }
+  const empty = (): PoolRecords => ({ nextIndex: 0, status: new Map(), addresses: new Map() })
+  let senders = empty()
+  let change = empty()
+  const notes: string[] = []
+  if (storageDirs.length === 0) notes.push('no wallet records were found beside the key')
   for (const dir of storageDirs) {
     const s = await readLevelCopy(join(dir, 'sub-account-pool'))
-    if (s && s.nextIndex >= senders.nextIndex) senders = s
+    if (s === 'unreadable') notes.push(`the sender-account records in ${dir} could not be read`)
+    else if (s && s.nextIndex >= senders.nextIndex) senders = s
     const c = await readLevelCopy(join(dir, 'change-pool'))
-    if (c && c.nextIndex >= change.nextIndex) change = c
+    if (c === 'unreadable') notes.push(`the change-account records in ${dir} could not be read`)
+    else if (c && c.nextIndex >= change.nextIndex) change = c
   }
   for (let i = 0; i < senders.nextIndex + INDEX_MARGIN; i += 1) {
     const { address, privateKey } = keyring.deriveSubAccount(i)
     const status = senders.status.get(i)
-    accounts.push({ role: `sender ${i}${status ? ` (${status})` : ''}`, address, privateKey })
+    accounts.push({
+      role: `sender ${i}${status ? ` (${status})` : ''}`,
+      address,
+      privateKey,
+      ...(status && READY.has(status) ? { heldByRecords: true } : {}),
+    })
   }
   for (let i = 0; i < change.nextIndex + INDEX_MARGIN; i += 1) {
     const { address, privateKey } = changeKeyring.deriveSubAccount(i)
     accounts.push({ role: `change ${i}`, address, privateKey })
   }
-  return accounts
+  return {
+    accounts,
+    // Said, not hidden: without records only the first few indexes are looked at.
+    note: notes.length
+      ? `${notes.join('; ')}: only sender and change accounts 0-${INDEX_MARGIN - 1} were looked at, so money on a later one would be missed`
+      : undefined,
+  }
 }
 
 /** Every wallet whose key file is under `root` (or `root` itself, when it is a wallet file). */
@@ -260,6 +299,8 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
     keyDirs.push({ dir, names })
   })
   const claimed = new Set<string>()
+  const UNREADABLE = 'its key file is malformed or in a format the current code cannot open; skipped'
+
   const typed = async (path: string, kind: FoundWallet['kind'], roots: () => MonadRootBundle) => {
     try {
       const material = createMonadWalletMaterial(roots())
@@ -267,20 +308,23 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
         const main = material.mainAccount.address
         const dirs = storage.get(main.toLowerCase()) ?? []
         claimed.add(main.toLowerCase())
+        const pool = await poolAccounts(material.keyring, material.changeKeyring, dirs)
         found.push({
           path,
           kind,
           accounts: [
             { role: 'main', address: main, privateKey: material.mainAccount.privateKey },
             { role: 'identity', address: material.identity.address.raw, privateKey: `0x${material.identity.toPrivateKeyHex().replace(/^0x/, '')}` },
-            ...(await poolAccounts(material.keyring, material.changeKeyring, dirs)),
+            ...pool.accounts,
           ],
+          note: pool.note,
         })
       } finally {
         material.dispose()
       }
-    } catch (err) {
-      found.push({ path, kind, accounts: [], problem: `cannot be opened by the current code (${err instanceof Error ? err.message : 'error'})` })
+    } catch {
+      // The reason is not repeated: a parser's message can quote the file, which holds a key.
+      found.push({ path, kind, accounts: [], problem: UNREADABLE })
     }
   }
   for (const { dir, names } of keyDirs) {
@@ -299,7 +343,14 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
       })
     }
     if (names.includes('roots.json')) {
-      const stored = JSON.parse(readFileSync(join(dir, 'roots.json'), 'utf8')) as Record<string, string>
+      let stored: Record<string, string> = {}
+      try {
+        stored = JSON.parse(readFileSync(join(dir, 'roots.json'), 'utf8')) as Record<string, string>
+        if (stored === null || typeof stored !== 'object') throw new Error('not an object')
+      } catch {
+        stored = {}
+        found.push({ path: join(dir, 'roots.json'), kind: 'roots.json', accounts: [], problem: UNREADABLE })
+      }
       // The Solana swap livecheck keeps a `roots.json` too; only one with an EVM root is ours.
       if (typeof stored['evm-wallet'] === 'string') {
         await typed(dir, 'roots.json', () => {
@@ -315,13 +366,10 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
     if (names.includes('stamp-pool-seed.json')) {
       try {
         const { mnemonic } = JSON.parse(readFileSync(join(dir, 'stamp-pool-seed.json'), 'utf8')) as { mnemonic: string }
-        found.push({
-          path: dir,
-          kind: 'pool seed',
-          accounts: await poolAccounts(MonadHdKeyring.fromMnemonic(mnemonic), MonadChangeKeyring.fromMnemonic(mnemonic), [dir]),
-        })
-      } catch (err) {
-        found.push({ path: dir, kind: 'pool seed', accounts: [], problem: `cannot be opened by the current code (${err instanceof Error ? err.message : 'error'})` })
+        const pool = await poolAccounts(MonadHdKeyring.fromMnemonic(mnemonic), MonadChangeKeyring.fromMnemonic(mnemonic), [dir])
+        found.push({ path: dir, kind: 'pool seed', accounts: pool.accounts, note: pool.note })
+      } catch {
+        found.push({ path: join(dir, 'stamp-pool-seed.json'), kind: 'pool seed', accounts: [], problem: UNREADABLE })
       }
     }
     for (const name of names) {
@@ -346,11 +394,13 @@ export async function findWallets(root: string): Promise<FoundWallet[]> {
     const accounts: FoundAccount[] = [{ role: 'main', address: getAddress(main) }]
     for (const dir of dirs) {
       const senders = await readLevelCopy(join(dir, 'sub-account-pool'))
-      for (const [index, address] of senders?.addresses ?? []) {
-        accounts.push({ role: `sender ${index}${senders?.status.get(index) ? ` (${senders.status.get(index)})` : ''}`, address })
+      if (senders && senders !== 'unreadable') {
+        for (const [index, address] of senders.addresses) {
+          accounts.push({ role: `sender ${index}${senders.status.get(index) ? ` (${senders.status.get(index)})` : ''}`, address })
+        }
       }
       const change = await readLevelCopy(join(dir, 'change-pool'))
-      for (const [index, address] of change?.addresses ?? []) accounts.push({ role: `change ${index}`, address })
+      if (change && change !== 'unreadable') for (const [index, address] of change.addresses) accounts.push({ role: `change ${index}`, address })
     }
     found.push({ path: dirs[0], kind: 'records without a key', accounts })
   }
@@ -376,8 +426,14 @@ export function knownLocations(env: Record<string, string | undefined> = process
   return [...new Set(all)]
 }
 
-/** Process ids that have a file under `dir` open, or a live demo launcher's lock on it. */
-export function usersOf(dir: string): string[] {
+/** Who has `dir` in use: a live demo launcher's lock on it, or a process with a file under it
+ * open. When that cannot be established (`lsof` is missing or fails) the answer says so, and
+ * the directory counts as in use: money is never moved out from under a run on a guess. */
+export function usersOf(
+  dir: string,
+  listOpenFiles: () => string = () =>
+    execFileSync('lsof', ['-Fpn'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }),
+): string[] {
   const users = new Set<string>()
   try {
     const lock = JSON.parse(readFileSync(lockPath(dir), 'utf8')) as { pid?: number }
@@ -385,16 +441,28 @@ export function usersOf(dir: string): string[] {
   } catch {
     /* no lock */
   }
+  let out: string
   try {
-    const real = realpathSync(dir)
-    const out = execFileSync('lsof', ['-Fpn'], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
-    let pid = ''
-    for (const line of out.split('\n')) {
-      if (line.startsWith('p')) pid = line.slice(1)
-      else if (line.startsWith('n') && (line.slice(1) === real || line.slice(1).startsWith(`${real}/`))) users.add(`pid ${pid}`)
+    out = listOpenFiles()
+  } catch (err) {
+    // lsof exits non-zero when it could not read some process, but still lists the others.
+    const partial = (err as { stdout?: unknown }).stdout
+    if (typeof partial !== 'string' || partial.length === 0) {
+      users.add('unknown (lsof could not be run, so whether a process has it open is not known)')
+      return [...users]
     }
+    out = partial
+  }
+  let real = dir
+  try {
+    real = realpathSync(dir)
   } catch {
-    /* lsof answers non-zero when some process could not be read; what it printed was used */
+    /* compared as given */
+  }
+  let pid = ''
+  for (const line of out.split('\n')) {
+    if (line.startsWith('p')) pid = line.slice(1)
+    else if (line.startsWith('n') && (line.slice(1) === real || line.slice(1).startsWith(`${real}/`))) users.add(`pid ${pid}`)
   }
   return [...users]
 }
@@ -519,16 +587,33 @@ export interface FundsRun {
   dirs: string[]
   send: boolean
   demo: boolean
+  /** Take everything, including sender accounts the records hold ready: the state is finished with. */
+  abandoned: boolean
+  help: boolean
   logPath?: string
 }
 
+export const USAGE = [
+  'funds:report [dir ...]                   what every wallet found there holds on chain (read-only; no dir: the known places)',
+  'funds:sweep <dir ...>                    dry run: what a sweep would send to the funding wallet',
+  'funds:sweep <dir ...> --send             sends it, one transfer per account, and logs every transfer',
+  '  --abandoned    also take sender accounts the wallet records hold ready for a coming message:',
+  '                 only for a state that will never be opened again',
+  '  --demo         allow a demo state directory (yarn demo:sweep passes --demo --abandoned)',
+  '  --log <file>   where --send appends one JSON line per transfer (default: a file in the temp directory)',
+  '  --help         this text',
+  'A directory a process has open is never swept. Keys are never printed. Testnet MON only.',
+].join('\n')
+
 export function parseArgs(argv: string[]): FundsRun {
   const [mode, ...rest] = argv
-  if (mode !== 'report' && mode !== 'sweep') throw new Error('Usage: funds.ts report [dir ...] | funds.ts sweep <dir ...> [--send] [--demo] [--log <file>]')
-  const run: FundsRun = { mode, dirs: [], send: false, demo: false }
+  if (argv.includes('--help') || argv.includes('-h')) return { mode: 'report', dirs: [], send: false, demo: false, abandoned: false, help: true }
+  if (mode !== 'report' && mode !== 'sweep') throw new Error(`Usage:\n${USAGE}`)
+  const run: FundsRun = { mode, dirs: [], send: false, demo: false, abandoned: false, help: false }
   for (let i = 0; i < rest.length; i += 1) {
     if (rest[i] === '--send') run.send = true
     else if (rest[i] === '--demo') run.demo = true
+    else if (rest[i] === '--abandoned') run.abandoned = true
     else if (rest[i] === '--log') run.logPath = resolve(rest[(i += 1)] ?? '')
     else if (rest[i].startsWith('--')) throw new Error(`unknown option ${rest[i]}`)
     else run.dirs.push(resolve(rest[i]))
@@ -542,6 +627,10 @@ export function parseArgs(argv: string[]): FundsRun {
 
 export async function main(argv: string[], print: (line: string) => void = console.log): Promise<number> {
   const run = parseArgs(argv)
+  if (run.help) {
+    print(USAGE)
+    return 0
+  }
   const env = realStackEnv()
   const rpcUrl = env.MONAD_TESTNET_HTTP_RPC_URL
   if (!rpcUrl) throw new Error('MONAD_TESTNET_HTTP_RPC_URL is required (environment or .env)')
@@ -564,7 +653,7 @@ export async function main(argv: string[], print: (line: string) => void = conso
   if (destination) print(`funding wallet ${destination}`)
 
   const keys = new Map<string, string>()
-  const toSend: Move[] = []
+  const toSend: { dir: string; moves: Move[] }[] = []
   const total = { held: 0n, recoverable: 0n, dust: 0n, noKey: 0n, moves: 0 }
   for (const dir of dirs) {
     if (!existsSync(dir)) {
@@ -587,10 +676,11 @@ export async function main(argv: string[], print: (line: string) => void = conso
           address: account.address,
           balanceWei: balances.get(account.address.toLowerCase()) ?? 0n,
           hasKey: account.privateKey !== undefined,
+          heldByRecords: account.heldByRecords,
         })
       }
     }
-    const plan = planSweep(holdings, gasPrice, never)
+    const plan = planSweep(holdings, gasPrice, never, { abandoned: run.abandoned })
     const held = plan.recoverableWei + plan.feesWei + plan.dustWei + plan.noKeyWei
     const users = usersOf(dir)
     const demo = isDemoState(dir)
@@ -603,11 +693,18 @@ export async function main(argv: string[], print: (line: string) => void = conso
     print(
       `  ${wallets.length} wallets, ${new Set(holdings.map(h => h.address.toLowerCase())).size} accounts; holds ${mon(held)} MON: ${mon(plan.recoverableWei)} recoverable in ${plan.moves.length} transfers, ${mon(plan.dustWei)} dust, ${mon(plan.noKeyWei)} without a key`,
     )
-    for (const wallet of wallets) if (wallet.problem) print(`  SKIPPED ${short(wallet.path)}: ${wallet.problem}`)
+    for (const wallet of wallets) {
+      if (wallet.problem) print(`  SKIPPED ${short(wallet.path)}: ${wallet.problem}`)
+      if (wallet.note) print(`  NOTE ${short(wallet.path)}: ${wallet.note}`)
+    }
+    const kept = plan.skipped.filter(s => s.reason.startsWith('kept'))
+    if (kept.length > 0) {
+      print(`  ${mon(kept.reduce((sum, s) => sum + s.balanceWei, 0n))} MON in ${kept.length} sender accounts stays: the wallet's records hold them ready for coming messages (--abandoned takes them)`)
+    }
     for (const move of plan.moves) {
       print(`  ${mon(move.balanceWei).padStart(22)} MON  ${move.address}  ${move.role.padEnd(22)} ${short(move.wallet).slice(short(dir).length) || basename(dirname(move.wallet))}`)
     }
-    for (const skip of plan.skipped.filter(s => !s.reason.startsWith('dust'))) {
+    for (const skip of plan.skipped.filter(s => !s.reason.startsWith('dust') && !s.reason.startsWith('kept'))) {
       print(`  ${mon(skip.balanceWei).padStart(22)} MON  ${skip.address}  ${skip.role}: NOT MOVED, ${skip.reason}`)
     }
     total.held += held
@@ -622,7 +719,7 @@ export async function main(argv: string[], print: (line: string) => void = conso
         print('  NOT SWEPT: this is a demo state directory, whose bots stay funded between runs. To empty it: yarn demo:sweep <dir> --send')
         continue
       }
-      toSend.push(...plan.moves)
+      toSend.push({ dir, moves: plan.moves })
     }
     total.recoverable += plan.recoverableWei
     total.moves += plan.moves.length
@@ -632,19 +729,32 @@ export async function main(argv: string[], print: (line: string) => void = conso
   )
   if (run.mode === 'report') return 0
 
-  const sendWei = toSend.reduce((sum, move) => sum + move.valueWei, 0n)
+  const allMoves = toSend.flatMap(group => group.moves)
+  const sendWei = allMoves.reduce((sum, move) => sum + move.valueWei, 0n)
   if (!run.send) {
-    print(`DRY RUN: --send would move ${mon(sendWei)} MON in ${toSend.length} transfers to ${destination}. Nothing was sent.`)
+    print(`DRY RUN: --send would move ${mon(sendWei)} MON in ${allMoves.length} transfers to ${destination}. Nothing was sent.`)
     return 0
   }
   const logPath = run.logPath ?? join(tmpdir(), `frank-funds-sweep-${Date.now()}.jsonl`)
-  print(`sending ${mon(sendWei)} MON in ${toSend.length} transfers to ${destination}; log ${logPath}`)
-  const results = await sendSweep({ rpcUrl, destination: destination as string, moves: toSend, keys, logPath, print })
+  print(`sending ${mon(sendWei)} MON in ${allMoves.length} transfers to ${destination}; log ${logPath}`)
+  const results: SweepResult[] = []
+  let refused = 0
+  for (const group of toSend) {
+    if (group.moves.length === 0) continue
+    // Asked again at the moment of sending: reading the balances above took a while.
+    const users = usersOf(group.dir)
+    if (users.length > 0) {
+      refused += 1
+      print(`  NOT SWEPT ${short(group.dir)}: in use since the check above (${users.slice(0, 3).join(', ')})`)
+      continue
+    }
+    results.push(...(await sendSweep({ rpcUrl, destination: destination as string, moves: group.moves, keys, logPath, print })))
+  }
   const mined = results.filter(r => r.status === 'mined')
   const failed = results.filter(r => r.status !== 'mined')
   print(`\nRETURNED ${mon(mined.reduce((sum, r) => sum + r.valueWei, 0n))} MON in ${mined.length} transfers to ${destination}; log ${logPath}`)
   for (const result of failed) print(`  NOT RETURNED from ${result.address} (${result.role}): ${result.status}`)
-  return failed.length === 0 ? 0 : 1
+  return failed.length === 0 && refused === 0 ? 0 : 1
 }
 
 if (require.main === module) {

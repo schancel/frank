@@ -16,6 +16,7 @@
  * Exit code 0 only if every check passes, every bot started funded, and the supervised processes
  * stayed up until shutdown.
  */
+import { existsSync } from 'fs'
 import { dirname, join, resolve } from 'path'
 
 import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
@@ -23,6 +24,7 @@ import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
 import { resolveDemoConfig } from './demo-config'
 import { DemoHandle, redact, startDemo } from './demo'
 import { readEnvFile } from './env-file'
+import { main as sweepFunds } from './funds'
 import type { RealWallet } from './real-stack'
 import { runSmokeChecks, SmokeCheck } from './smoke-checks'
 
@@ -56,6 +58,7 @@ export async function checkProtectedRelayRpc(handle: DemoHandle, user: RealWalle
 
 export async function runSmoke(env: Record<string, string | undefined>): Promise<boolean> {
   let handle: DemoHandle | undefined
+  let createdState: string | undefined
   let ok = false
   const reportError = (phase: string, err: unknown) =>
     console.error(`FAIL  smoke ${phase}: ${redact(err instanceof Error ? err.message : 'unknown error', [])}`)
@@ -70,6 +73,10 @@ export async function runSmoke(env: Record<string, string | undefined>): Promise
       cwd: env.INIT_CWD ?? process.cwd(),
       allowDrawFlag: process.argv.includes('--allow-draw'),
     })
+    // A state directory this run creates is this run's to return: everything it places there
+    // (the bots' accounts included) goes back when the run ends. A standing demo state, whose
+    // bots stay funded between runs, is never swept: only the test user's top-up is returned.
+    createdState = !existsSync(config.botProcess.hostStateDir) ? config.stateDir : undefined
     handle = await startDemo(config, { env, print: l => console.log(l) })
     // The proxy check runs as the same test user, while that user's wallet is open.
     const started = handle
@@ -106,6 +113,16 @@ export async function runSmoke(env: Record<string, string | undefined>): Promise
       console.log(`FAIL  supervised children exited unexpectedly: ${unhealthy.join(', ')}`)
     }
     if (handle) console.log(`\nstate and logs: ${handle.config.stateDir}`)
+    if (createdState && existsSync(createdState)) {
+      console.log(`[funds] this run created the demo state ${createdState}: returning everything in it to the funding wallet`)
+      try {
+        // After the demo has stopped: nothing has the state open any more.
+        const code = await sweepFunds(['sweep', '--demo', '--abandoned', '--send', createdState], l => console.log(l))
+        if (code !== 0) console.log(`[funds] not everything in ${createdState} was returned (see above); its keys are kept there`)
+      } catch (err) {
+        console.log(`[funds] the state ${createdState} was NOT returned (${redact(err instanceof Error ? err.message : 'error', [])}); its keys are kept there`)
+      }
+    }
   }
   console.log(ok ? '\nSMOKE OK' : '\nSMOKE FAILED')
   return ok

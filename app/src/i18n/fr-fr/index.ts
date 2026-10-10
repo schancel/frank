@@ -705,8 +705,6 @@ export default {
     sentTransaction: 'Transaction envoyée',
     unexpectedError: 'Une erreur s’est produite. Veuillez réessayer.',
     viewAction: 'Voir',
-    messagesKeptForFunds:
-      'Non supprimé : l’argent apporté par ces messages n’a pas encore pu être déplacé vers votre portefeuille. Réessayez dans un instant.',
   },
   chatRightDrawer: {
     stampPrice: 'Prix du timbre',

@@ -40,7 +40,6 @@ import {
   type HandEvent,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
 import {
-  describeSweep,
   realStackEnv,
   startRealStack,
   type RealWallet,
@@ -87,18 +86,7 @@ async function main() {
   cleanup = () =>
     (cleaned ??= (async () => {
       await stopHost?.().catch(() => undefined);
-      const lines = await stack.sweep().then(
-        (outcome) => describeSweep(outcome, stack.fundingAddress),
-        (e) => [
-          `players' leftovers NOT returned (${
-            e instanceof Error ? e.message : e
-          }); their keys are under ${
-            stack.stateDir
-          }: yarn --cwd packages/bot funds:sweep ${stack.stateDir} --send`,
-        ]
-      );
-      for (const line of lines) say(line);
-      await stack.stop();
+      await stack.finish();
     })());
   const before = await stack.provider.getBalance(stack.fundingAddress);
   const botDir = process.env.FUNDED_BOT_HOST_DIR;

@@ -18,7 +18,7 @@ import { formatEther, type JsonRpcProvider } from 'ethers'
 import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain'
 
 import { redact } from './demo'
-import { RealStack, RealWallet, describeSweep, startRealStack } from './real-stack'
+import { RealStack, RealWallet, startRealStack } from './real-stack'
 
 const FUND_WEI = 12_000_000_000_000_000n // 0.012 MON each
 const REUSE_MIN_WEI = 2_000_000_000_000_000n // 0.002 MON
@@ -119,15 +119,9 @@ export async function runTwoWallets(env: Record<string, string | undefined> = pr
   } catch (err) {
     checks.push({ name: 'setup', ok: false, detail: redact(err instanceof Error ? err.message : String(err), []) })
   } finally {
-    // Whatever happened above, what the two accounts still hold goes back to the test wallet.
-    if (stack) {
-      const lines = await stack.sweep().then(
-        outcome => describeSweep(outcome, stack!.fundingAddress),
-        err => [`funds NOT returned (${redact(err instanceof Error ? err.message : String(err), [])}); the keys are under ${stack!.stateDir}: yarn --cwd packages/bot funds:sweep ${stack!.stateDir} --send`],
-      )
-      for (const line of lines) console.log(`[two-wallets] ${line}`)
-    }
-    await stack?.stop().catch(err => checks.push({ name: 'teardown', ok: false, detail: String(err) }))
+    // Whatever happened above (Ctrl-C included, see the harness): what the two accounts hold
+    // above their float goes back to the test wallet, and one line says funded, returned, left.
+    await stack?.finish().catch(err => checks.push({ name: 'teardown', ok: false, detail: String(err) }))
   }
   for (const check of checks) console.log(`${check.ok ? 'PASS' : 'FAIL'}  ${check.name}: ${check.detail}`)
   const ok = checks.length > 0 && checks.every(c => c.ok)

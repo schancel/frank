@@ -41,6 +41,8 @@ export interface Sent {
   /** True when the bot named no stamp, so the host would put its own (paid) stamp on it. A
    * bot's own messages must never be: they carry a payout, a refund, or nothing. */
   hostStamp: boolean;
+  /** The bot marked the amount as money it owes (paid whatever its size). */
+  settlement: boolean;
 }
 
 export const BOT = "0x" + "b0".repeat(20);
@@ -91,6 +93,7 @@ export function harness(data = new Map<string, string>()) {
       messageId: id,
       digest: payloadDigest,
       hostStamp: options?.stampValueWei === undefined,
+      settlement: options?.settlement === true,
     };
     if (mode !== "deliver") {
       if (id) attempts.set(id, { digest: payloadDigest, status: mode, message });
@@ -208,6 +211,9 @@ export function harness(data = new Map<string, string>()) {
           ),
       };
     },
+    /** The amounts of the messages the bot sent as settlements of owed money, in order. */
+    settlements: () =>
+      sent.filter((message) => message.settlement).map((message) => message.valueWei),
     /** Wei the bot has paid out, over every message it sent. */
     paidOut: () => sent.reduce((sum, message) => sum + message.valueWei, 0n),
     item<T extends MessageItem["type"]>(

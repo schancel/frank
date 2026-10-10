@@ -1387,6 +1387,8 @@ export class FrankBotHost {
       stampValue: bigint;
       /** The handler named the amount (a payout or refund), as opposed to the reply stamp. */
       namedAmount: boolean;
+      /** The amount is money the bot owes: paid whatever its size. */
+      settlement?: boolean;
       messageId?: string;
       items: MessageItem[];
     },
@@ -1400,7 +1402,11 @@ export class FrankBotHost {
           captured.recipient,
           captured.items,
           captured.conversationId,
-          { stampValueWei: captured.stampValue, messageId: captured.messageId },
+          {
+            stampValueWei: captured.stampValue,
+            messageId: captured.messageId,
+            ...(captured.settlement ? { settlement: true } : {}),
+          },
           () => {
             reported = true;
             return linked();
@@ -1997,6 +2003,7 @@ export class FrankBotHost {
           stampValue:
             options?.stampValueWei ?? this.replyStampWei(paidWei),
           namedAmount: options?.stampValueWei !== undefined,
+          ...(options?.settlement ? { settlement: true } : {}),
           messageId: options?.messageId,
           items: structuredClone(items),
         },
@@ -2118,18 +2125,14 @@ export class FrankBotHost {
     if (!instance || this.closing)
       throw new Error("Bot send admission unavailable");
     instance.operations.assertOpen();
+    void namedAmount;
     const wanted = options?.stampValueWei ?? this.options.stampValueWei;
-    const stampValue = await this.atLeastTheFloor(wallet, wanted);
-    // An amount the bot named (a payout, a refund) that costs more to move than it is: the
-    // message goes out unpaid and says so.
-    if (stampValue === 0n && wanted > 0n && options?.stampValueWei !== undefined && namedAmount)
-      items = [
-        ...items,
-        {
-          type: "text",
-          text: `(The amount this message was to carry, ${wanted} wei, is too small to send: moving it would cost more than it is. It is not returned.)`,
-        },
-      ];
+    // Money the bot owes (the outbox settling a payout or a refund) is paid whatever its size.
+    // Anything else below the chain's fee floor (a reply stamp) goes out with no stamp.
+    const settlement = options?.settlement === true && wanted > 0n;
+    const stampValue = settlement
+      ? wanted
+      : await this.atLeastTheFloor(wallet, wanted);
     return this.chain.directMessages.send({
       wallet,
       recipient: toChainAddress(recipientAddress),
@@ -2139,6 +2142,7 @@ export class FrankBotHost {
           ? undefined
           : conversationIdentity(conversationId),
       stampValue,
+      ...(settlement ? { settlement: true } : {}),
       ...(options?.messageId ? { messageId: options.messageId } : {}),
       onAttemptCreated,
     });

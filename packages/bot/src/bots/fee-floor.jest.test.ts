@@ -63,7 +63,7 @@ async function diceBet(
 }
 
 describe("a table's minimum stake is never below twice the chain's fee floor", () => {
-  test("dice refuses a stake below the floor, rolls nothing, and the refund goes out as text only", async () => {
+  test("dice refuses a stake below the minimum, rolls nothing, and still returns what was paid, as a settlement, though it is below the floor", async () => {
     const h = harness();
     h.feeFloor(FLOOR);
     const bot = new SatoshiDiceBot();
@@ -76,11 +76,11 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
     ).toBe(false);
     expect(texts(h)).toContain("The smallest stake at this table is");
     expect(texts(h)).toContain("No roll was made");
-    // Returning it would cost more than it is: no money moves, and the message says so.
-    expect(h.paidOut()).toBe(0n);
-    expect(h.sent.every((m) => m.valueWei === 0n && !m.hostStamp)).toBe(true);
-    expect(texts(h)).toContain("too small to send back");
-    expect(texts(h)).not.toContain("is returned with this message");
+    // The player's money is owed back whatever its size: the floor is for stamps a user
+    // chooses, not for a debt. It goes out as a payment marked as a settlement.
+    expect(h.paidOut()).toBe(DUST);
+    expect(texts(h)).toContain("is returned with this message");
+    expect(h.settlements()).toEqual([DUST]);
   });
 
   test("dice at or above the floor: a winning roll's payout is paid", async () => {
@@ -148,7 +148,8 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
         .some((i) => i.type === "rps" && i.action === "resolve")
     ).toBe(false);
     expect(texts(h)).toContain("The smallest stake at this table is");
-    expect(h.paidOut()).toBe(0n);
+    // Refused, and what was paid is returned (owed money is paid whatever its size).
+    expect(h.paidOut()).toBe(DUST);
 
     // At the minimum the same table plays, and a win pays twice the stake.
     await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
@@ -194,7 +195,8 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
     await bot.onMessage(h.message([enter], [h.pay(DUST)], alice), h.ctx);
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([]);
     expect(texts(h)).toContain("You are not entered");
-    expect(h.paidOut()).toBe(0n);
+    // Refused, and what was paid is returned (owed money is paid whatever its size).
+    expect(h.paidOut()).toBe(DUST);
     await bot.onMessage(h.message([enter], [h.pay(MINIMUM)], alice), h.ctx);
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([alice]);
   });
@@ -227,7 +229,8 @@ describe("a table's minimum stake is never below twice the chain's fee floor", (
       false
     );
     expect(texts(h)).toContain("Nothing was sold");
-    expect(h.paidOut()).toBe(0n);
+    // Refused, and what was paid is returned (owed money is paid whatever its size).
+    expect(h.paidOut()).toBe(DUST);
     await bot.onMessage(h.message([buy], [h.pay(MINIMUM)]), h.ctx);
     expect(h.sent.some((m) => m.items.some((i) => i.type === "image"))).toBe(
       true

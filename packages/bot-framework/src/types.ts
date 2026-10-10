@@ -21,6 +21,9 @@ export type {
 export interface BotSendOptions {
   stampValueWei?: bigint;
   messageId?: string;
+  /** `stampValueWei` is money the bot owes (a payout, a refund): it is paid whatever its size,
+   * also below the chain's fee floor. Set by the bot outbox and by nothing else. */
+  settlement?: boolean;
 }
 
 export function toChainAddress(raw: string): { raw: string } {

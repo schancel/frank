@@ -1572,36 +1572,32 @@ describe("with the real canonical wallet", () => {
     expect(new Set(submitted).size).toBe(1);
   });
 
-  // The fee floor, on the real wallet: what the host does with an amount a bot's handler names.
-  it("sends an amount below the chain's fee floor as text only, saying so, and pays one at or above it", async () => {
+  // The fee floor, on the real wallet: money a bot OWES is paid whatever its size; anything
+  // else below the floor is not.
+  it("pays an owed amount below the chain's fee floor as a settlement, and refuses the same amount when it is not one", async () => {
     const { chain, botWallet, prompt } = await setUp(true);
     const floor = await chain.directMessages.minimumStamp!({
       wallet: botWallet,
     });
     expect(floor).toBe(42_000n);
     const to = prompt.senderAddress.raw;
-    const say = (stampValueWei: bigint) =>
+    const say = (stampValueWei: bigint, settlement: boolean) =>
       qwen().context.sendMessage(to, [{ type: "text", text: "yours" }], undefined, {
         stampValueWei,
+        ...(settlement ? { settlement: true } : {}),
       });
 
-    // A refund of 10 wei: moving it would cost 42,000. No payment is made; the text says why.
-    const dust = await say(10n);
-    expect(dust.stampValueWei).toBe(0n);
-    expect(dust.stampPayments).toEqual([]);
-    const unpaid = mockSend.mock.calls[mockSend.mock.calls.length - 1][0] as Send;
-    expect(unpaid.stampValue).toBe(0n);
-    expect(JSON.stringify(unpaid.items)).toContain("too small to send");
-
-    // A payout exactly at the floor is paid, in one transfer of that amount, with no such line.
-    const paid = await say(floor);
-    expect(paid.stampValueWei).toBe(floor);
-    expect(paid.stampPayments.map((payment) => payment.valueWei)).toEqual([
-      floor,
-    ]);
+    // A refund of 10 wei the bot owes: paid, in one transfer of 10 wei.
+    const owed = await say(10n, true);
+    expect(owed.stampValueWei).toBe(10n);
+    expect(owed.stampPayments.map((payment) => payment.valueWei)).toEqual([10n]);
     const sent = mockSend.mock.calls[mockSend.mock.calls.length - 1][0] as Send;
-    expect(sent.stampValue).toBe(floor);
-    expect(JSON.stringify(sent.items)).not.toContain("too small to send");
+    expect(sent).toMatchObject({ stampValue: 10n, settlement: true });
+
+    // The same amount named without being a settlement goes out with no stamp.
+    const named = await say(10n, false);
+    expect(named.stampValueWei).toBe(0n);
+    expect(named.stampPayments).toEqual([]);
   });
 
   // Restart recovery of a PAID reply on the real wallet (stubbed RPC and relay HTTP; no real

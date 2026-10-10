@@ -1027,6 +1027,7 @@ async function repayReverted(
       const claim = await payer.claim({
         holder,
         stampValueWei: reverted.value,
+        allowBelowFee: true,
         whileBusy: busyHolder => {
           owner.payer()
           return settleHolder(owner, busyHolder)
@@ -1412,7 +1413,7 @@ async function send(
       try {
         stampValueWei = requestedWei
         const floorWei = await owner.lifetime(() => payer.minimumPaymentWei())
-        if (stampValueWei < floorWei) {
+        if (stampValueWei < floorWei && params.settlement !== true) {
           if (params.stampValue !== undefined)
             throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
           stampValueWei = floorWei
@@ -1427,6 +1428,7 @@ async function send(
             holder,
             stampValueWei: wanted,
             signal: params.signal,
+            allowBelowFee: params.settlement === true,
             // The only coin that could pay is spent by an earlier payment: this send waits
             // its turn, and meanwhile asks the chain about that one payment (never the relay).
             whileBusy: busyHolder => {

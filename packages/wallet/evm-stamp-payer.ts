@@ -331,6 +331,9 @@ export class EvmStampPayer {
     /** Ends the wait: the claim rejects with {@link ChainWaitCancelledError}, nothing claimed,
      * nothing signed. */
     signal?: AbortSignal
+    /** The value is owed, not chosen: a payment smaller than its own transfer's fee is made
+     * all the same (a settlement, or the repeat of a reverted payment). */
+    allowBelowFee?: boolean
   }): Promise<StampClaim> {
     const { pool, provider } = this.config
     const allowed = (source: StampCoinSource) =>
@@ -356,6 +359,7 @@ export class EvmStampPayer {
           // No payment smaller than its own transfer's fee: a split that would make one is
           // not used, and the stamp is paid in one piece instead.
           const dust =
+            input.allowBelowFee !== true &&
             selected?.some(
               account =>
                 account.paymentValueWei <

@@ -614,6 +614,8 @@ export class Outbox {
             // What it pays, or no stamp at all. A bot's own messages are never paid for:
             // value leaves it only as a payout or a refund of confirmed money.
             stampValueWei: value,
+            // Owed money is paid whatever its size, also below the chain's fee floor.
+            ...(value > 0n ? { settlement: true } : {}),
             messageId: messageIdFor(this.botId, id, owed.tries),
           }
         );
@@ -675,14 +677,8 @@ export async function refuse(
   items: MessageItem[] = []
 ): Promise<void> {
   const late = received.unconfirmed.length > 0;
-  // What was paid is returned unless moving it back would cost more than it is: then the
-  // refusal goes out as text only, and says so.
-  const dust =
-    received.confirmedWei > 0n && received.confirmedWei < (await feeFloorWei(ctx));
   const back =
-    (dust
-      ? " What you paid is too small to send back: returning it would cost more than it is."
-      : received.confirmedWei > 0n
+    (received.confirmedWei > 0n
       ? " What you paid is returned with this message."
       : "") +
     (late
@@ -697,7 +693,7 @@ export async function refuse(
         to: message.peerAddress,
         conversationId: message.conversationId,
         items: [...items, { type: "text", text: text + back }],
-        valueWei: dust ? 0n : received.confirmedWei,
+        valueWei: received.confirmedWei,
       },
     ],
   ];

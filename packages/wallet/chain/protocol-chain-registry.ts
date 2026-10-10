@@ -43,7 +43,7 @@ const clientKeys = new Set([
   "explorerUrl",
   "contracts",
   "exchange",
-  "electrumServers",
+  "wallet",
 ]);
 const capabilities = new Set(["json-rpc", "chronik", "electrum"]);
 function invalid(detail: string): never {
@@ -181,6 +181,13 @@ export function projectProtocolChains<T extends object>(
       invalid(`unknown client extension field for ${id}`);
     const row = facts.get(id);
     if (!row) invalid(`unsupported client reference ${id}`);
+    // A client wallet may read only through a capability the protocol permits for the chain.
+    const wallet = metadata.wallet;
+    if (wallet !== undefined) {
+      const indexer = object(wallet).indexer;
+      if (!row.allowedProxyCapabilities.includes(indexer as ProxyCapability))
+        invalid(`wallet indexer not permitted for ${id}`);
+    }
     entries[id] = immutableCopy({ ...extension, ...row });
   }
   return Object.freeze(entries);

@@ -16,15 +16,6 @@ export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
 export type { EcashChainConfig } from "./ecash-chain";
 export {
-  fetchEcashBalance,
-  getEcashChronikUrls,
-  DEFAULT_CHRONIK_UPSTREAMS,
-} from "./ecash-balance";
-export type {
-  FetchEcashBalanceOptions,
-  EcashBalanceResult,
-} from "./ecash-balance";
-export {
   canonicalEcashNetworkId,
   ECASH_CHECKPOINTS,
   ECASH_MAINNET_CHECKPOINT_HEIGHT,
@@ -138,6 +129,7 @@ export {
 } from "./chains-registry";
 export type {
   ChainRegistryEntry,
+  ChainWalletSupport,
   ChainExchangeConfig,
   ExchangeAdapterType,
   SupportedChainFamily,
@@ -246,6 +238,8 @@ export type {
 
 export { electrumIndexer, relayElectrumUrl } from "./electrum-indexer";
 export { createUtxoChain } from "./utxo-chain";
+export { openRelayUtxoChain } from "./utxo-family";
+export type { RelayUtxoChain } from "./utxo-family";
 export type { UtxoChain, UtxoChainConfig } from "./utxo-chain";
 
 export {

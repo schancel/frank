@@ -99,7 +99,6 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
       directMessages: false,
       topics: false,
       stealthPayments: false,
-      legacyConsolidation: "utxo-atomic",
     },
     toDisplayAmount: (raw) => formatBaseUnit(raw, 2),
     fromDisplayAmount: (display) => parseBaseUnit(display, 2),
@@ -180,36 +179,6 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
           );
         }
         return getEcashTransactionStatus(config, transaction);
-      },
-      async sendLegacy({ wallet, recipient, value, onProgress, onSigned }) {
-        if (wallet.family !== "bitcoin") {
-          throw new Error(
-            `Expected a Bitcoin/eCash wallet, got ${wallet.family}`
-          );
-        }
-        onProgress?.({ status: { stage: "broadcasting" } });
-        const canonicalRecipient = parseEcashAddress(config, recipient.raw);
-        if (canonicalRecipient === undefined) {
-          throw new Error("Invalid eCash recipient for the configured network");
-        }
-        const result = await wallet.sendNative({
-          recipient: canonicalRecipient,
-          value,
-          onSigned,
-        });
-        onProgress?.({ status: { stage: "confirmed", txHash: result.txHash } });
-        return {
-          txHash: result.txHash,
-          totalValueSent: value,
-          totalFeePaid: 500n,
-        };
-      },
-      async estimateLegacyFee() {
-        return {
-          totalFee: 500n,
-          inputCount: 1,
-          deliveryFee: 500n,
-        };
       },
     },
   };

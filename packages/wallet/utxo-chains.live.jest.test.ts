@@ -16,7 +16,6 @@ import { execFileSync } from "child_process";
 import path from "path";
 import { ChronikClient } from "chronik-client";
 import { parseTransaction } from "@frank/nakamoto";
-import { fetchEcashBalance } from "./chain/ecash-balance";
 import { ElectrumClient } from "./chain/electrum-client";
 import { electrumIndexer, relayElectrumUrl } from "./chain/electrum-indexer";
 import { createUtxoChain } from "./chain/utxo-chain";
@@ -25,7 +24,6 @@ import {
   UTXO_NETWORKS,
   UtxoBroadcastRefused,
 } from "./utxo-wallet";
-import { encodeCashAddress } from "ecashaddrjs";
 
 const relay = process.env.FRANK_LIVE_RELAY_URL?.replace(/\/+$/, "");
 const live = relay ? describe : describe.skip;
@@ -72,25 +70,31 @@ live("eCash testnet through the relay's Chronik proxy", () => {
   });
 
   it("reads the real unspent outputs of a funded address", async () => {
-    // Find a paid script on the real chain directly, then read it through the relay.
+    // Find a paid script on the real chain directly, then read it through the relay. A busy
+    // miner's script can hold more outputs than the relay forwards in one answer; try the
+    // other coinbase outputs and earlier blocks.
     const direct = new ChronikClient(["https://chronik-testnet.fabien.cash"]);
     const tip = (await direct.blockchainInfo()).tipHeight;
-    const coinbase = (await direct.blockTxs(tip - 1)).txs[0];
-    const paid = coinbase.outputs.find((output) =>
-      /^76a914[0-9a-f]{40}88ac$/.test(output.outputScript)
-    );
-    if (!paid) throw new Error("coinbase has no P2PKH output");
-    const address = encodeCashAddress(
-      "ectest",
-      "p2pkh",
-      paid.outputScript.slice(6, 46)
-    );
-    const result = await fetchEcashBalance({
-      address,
-      networkId: "xec-testnet",
-      relayBaseUrl: relay,
-    });
-    expect(result.sats).toBeGreaterThanOrEqual(BigInt(paid.sats));
+    let found: string | undefined;
+    for (let height = tip - 1; height > tip - 6 && !found; height--) {
+      const coinbase = (await direct.blockTxs(height)).txs[0];
+      for (const paid of coinbase.outputs) {
+        if (!/^76a914[0-9a-f]{40}88ac$/.test(paid.outputScript)) continue;
+        const read = await chronik()
+          .script("p2pkh", paid.outputScript.slice(6, 46))
+          .utxos()
+          .catch(() => undefined);
+        const utxo = read?.utxos.find(
+          (candidate) => candidate.outpoint.txid === coinbase.txid
+        );
+        if (!utxo) continue;
+        expect(BigInt(utxo.sats)).toBe(BigInt(paid.sats));
+        found = `${coinbase.txid} pays ${paid.sats} sats to ${paid.outputScript}`;
+        break;
+      }
+    }
+    console.info(`xec-testnet near tip ${tip}: ${found}`);
+    expect(found).toBeDefined();
   });
 
   it("gets an explicit refusal for a transaction the node cannot accept", async () => {
@@ -120,19 +124,27 @@ live.each([
       "blockchain.headers.subscribe"
     );
     expect(await indexer.hasTransaction("00".repeat(32))).toBe(false);
-    // Look through the newest block for an output nobody has spent yet. Scripts with a very
-    // long history (busy miners) are refused by public servers; skip those.
+    // Look through the newest blocks for an output nobody has spent yet. Scripts with a very
+    // long history (busy miners) are refused by public servers, and testnet blocks are often
+    // empty; skip those.
     let found: string | undefined;
-    for (let position = 0; position < 8 && !found; position++) {
+    const positions = Array.from({ length: 10 }, (_, back) => tip.height - back).flatMap(
+      (height) => Array.from({ length: 6 }, (_, position) => ({ height, position }))
+    );
+    const emptyAbove = new Map<number, number>();
+    for (const { height, position } of positions) {
+      if (found) break;
+      if (position >= (emptyAbove.get(height) ?? Infinity)) continue;
       let txid: string;
       try {
         txid = await client.request<string>(
           "blockchain.transaction.id_from_pos",
-          tip.height,
+          height,
           position
         );
       } catch {
-        break;
+        emptyAbove.set(height, position);
+        continue;
       }
       expect(await indexer.hasTransaction(txid)).toBe(true);
       const raw = await client.request<string>("blockchain.transaction.get", txid);
@@ -143,13 +155,13 @@ live.each([
         const unspent = await indexer.listUnspent(paid.scriptPubKey).catch(() => []);
         const coin = unspent.find((c) => c.txid === txid && c.vout === vout);
         if (!coin) continue;
-        expect(coin).toEqual({ txid, vout, amount: paid.value, height: tip.height });
+        expect(coin).toEqual({ txid, vout, amount: paid.value, height });
         expect(await indexer.hasHistory(paid.scriptPubKey)).toBe(true);
         found = `${txid}:${vout} pays ${paid.value} to ${hex(paid.scriptPubKey)}`;
         break;
       }
     }
-    console.info(`${chainIdentifier} tip ${tip.height}: ${found}`);
+    console.info(`${chainIdentifier} near tip ${tip.height}: ${found}`);
     expect(found).toBeDefined();
   });
 

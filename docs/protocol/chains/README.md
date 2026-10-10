@@ -5,7 +5,7 @@ is the stable value used in `/chain-rpc/:chain/...` paths and signed request sco
 chain IDs and CAIP-2 names are aliases and identity evidence; they are not Frank identifiers.
 
 `family` controls dispatch. `evm` chains may expose JSON-RPC. `bitcoin` chains may expose node
-JSON-RPC and Chronik. Chronik is not an EVM indexer; a future contract-specific EVM indexer needs
+JSON-RPC and one of two indexers: Chronik (eCash) or Electrum (Bitcoin, Bitcoin Cash, Dogecoin). Chronik is not an EVM indexer; a future contract-specific EVM indexer needs
 a separate capability and protocol contract.
 
 `allowed_proxy_capabilities` states what the protocol permits for a chain. `GET /chains` reports
@@ -15,6 +15,15 @@ the subset an individual relay actually configured. A relay must additionally pr
 - Bitcoin-family JSON-RPC: `getblockhash` at the registry-pinned post-fork checkpoint (operator
   checkpoints remain available only for regtest rows).
 - Chronik: `GET /block/<height>` at the same registry-pinned checkpoint.
+- Electrum: `blockchain.block.header` at the operator's configured checkpoint, asked of every
+  upstream connection before it carries a client frame (`http/electrum_proxy.rs`). The genesis
+  hash from `server.features` is not used: Bitcoin testnet and Bitcoin Cash testnet share one.
+  Because this probe runs per connection, an Electrum upstream that is down or wrong makes that
+  chain unavailable; it never stops the relay.
+
+Electrum routes: `GET /chain-rpc/<chain>/electrum` is a public WebSocket (per-address quotas, as
+the public Chronik routes); `GET /chain-rpc/<chain>/cap/<capability>/ws` is the same for a
+capability holder. Upstreams may be `tcp://`, `ssl://`, `ws://` or `wss://`.
 
 Forks can share genesis blocks and numeric IDs can be reused. For that reason a native ID or CAIP-2
 alias never substitutes for the required checkpoint probe. Public-network checkpoints are protocol
@@ -59,6 +68,23 @@ yarn --cwd packages/contracts htlc-round --chain <chainIdentifier> --rpc <url> -
 ```
 
 The Solana rows still carry placeholder program IDs; no Solana program is deployed.
+
+`wallet` in a client extension says what the app's own wallet does on a network: which proxy
+capability it reads through (`json-rpc`, `chronik` or `electrum`; the projection rejects one the
+protocol does not permit for that chain) and whether Send is offered. The app's balance reader,
+Send routing, wallet list and Settings all read this one setting. A network without it shows no
+deposit address. `send: false` means receive only; set it to `true` for a chain only after a
+confirmed send has been seen on that network, for example with a funded test wallet:
+
+```sh
+# against a running relay (backend/cashweb/run-local-monad.sh)
+FRANK_LIVE_RELAY_URL=http://127.0.0.1:8098 FRANK_LIVE_UTXO_SEED_HEX=<64 hex> FRANK_LIVE_SEND=1 \
+  yarn --cwd packages/wallet test --runInBand --runTestsByPath utxo-chains.live.jest.test.ts
+```
+
+The first run prints each wallet's testnet address to fund. Client extensions no longer list
+Electrum servers: the app reaches Electrum only through its relay, whose operator configures the
+upstreams (`backend/cashweb/cashwebd.local.toml`).
 
 Operator-specific or credential-bearing endpoints do not belong in public defaults. There is
 no generated identity copy and no generator or regeneration command. Checks cover all three

@@ -192,7 +192,7 @@ export interface Conversation {
   /** What the account's own mailbox is known to say about this conversation: the facts this
    * device has noted to the account's other devices, or read from a note of theirs. A fact
    * beyond these is noted by the next pass of `noteConversationStates`. */
-  noted?: { clearedBefore?: number }
+  noted?: { clearedBefore?: number; readUpTo?: number }
   verifiedGateway?: boolean
 }
 
@@ -776,7 +776,29 @@ function conversationStateToNote(
     cleared > (conversation.noted?.clearedBefore ?? -1)
   )
     note.clearedBefore = Math.trunc(cleared)
-  return note.clearedBefore === undefined ? undefined : note
+  const read = readUpTo(conversation)
+  if (read > (conversation.noted?.readUpTo ?? 0)) note.readUpTo = read
+  return note.clearedBefore === undefined && note.readUpTo === undefined
+    ? undefined
+    : note
+}
+
+/**
+ * How far this device has read a conversation, as every device of the account can state it: the
+ * relay time of the newest message from someone else that has been read here. (Our own messages
+ * are never unread, and one still on its way carries this device's clock, so `lastRead` itself
+ * is not a time the other devices share.) Zero when nothing of the peer's has been read.
+ */
+function readUpTo(conversation: Conversation): number {
+  let read = 0
+  for (const message of conversation.messages)
+    if (
+      !isOwnMessage(message) &&
+      message.serverTime <= conversation.lastRead &&
+      message.serverTime > read
+    )
+      read = message.serverTime
+  return read
 }
 
 /** A note's facts are now in the account's mailbox (this device sent it, or read it there). */
@@ -790,6 +812,8 @@ function recordNoted(
       noted.clearedBefore ?? -1,
       note.clearedBefore,
     )
+  if (note.readUpTo !== undefined)
+    noted.readUpTo = Math.max(noted.readUpTo ?? 0, note.readUpTo)
   conversation.noted = noted
 }
 
@@ -800,7 +824,7 @@ function conversationNoteId(note: ConversationStateItem): Uint8Array {
     new Uint8Array(16),
     `frank-conversation-state:${note.conversationId}:${
       note.clearedBefore ?? ''
-    }`,
+    }:${note.readUpTo ?? ''}`,
   )
 }
 
@@ -2165,6 +2189,8 @@ export const useChatStore = defineStore('chats', {
       }
       chat.totalUnreadMessages = 0
       chat.totalUnreadValue = 0
+      // The account's other devices show it read too.
+      void this.noteConversationStates()
     },
     reset() {
       this.conversations = Object.fromEntries(
@@ -3764,6 +3790,11 @@ export const useChatStore = defineStore('chats', {
       }
       if (note.clearedBefore !== undefined)
         await this.applyClearedBeforeExclusive(conv, note.clearedBefore)
+      // Read on another device: the highest mark wins, and what is unread is counted again.
+      if (note.readUpTo !== undefined && note.readUpTo > conv.lastRead) {
+        conv.lastRead = note.readUpTo
+        recomputeChatAccounting(conv, this.activeConversationId)
+      }
       recordNoted(conv, note)
     },
     /**
@@ -3803,7 +3834,8 @@ export const useChatStore = defineStore('chats', {
     },
     /**
      * Notes to the account's own mailbox what this device knows about its conversations and
-     * the mailbox does not say yet: a free message to self per conversation, read by the
+     * the mailbox does not say yet (deleted up to when, read up to when): a free message to
+     * self per conversation, read by the
      * account's other devices and by one restored later from the seed. A note that could not
      * be sent is sent by a later pass (the mailbox poll starts one every time the relay
      * answers). Nothing is paid, and nothing is sent when there is nothing to say.

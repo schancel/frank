@@ -1,7 +1,7 @@
 /**
  * Two frontends of one account end with the same conversation list.
  *
- * What one device does to a conversation (deletes it) is noted to the account's own mailbox as a
+ * What one device does to a conversation (deletes it, reads it) is noted to the account's own mailbox as a
  * free message to self carrying a `conversation-state` item. The account's other devices read
  * the note, and so does a device restored later from the seed, which replays the whole mailbox.
  *
@@ -260,6 +260,7 @@ function shown(target: Device) {
         deleted: c.deletedAt !== undefined,
         // Messages no newer than this never come back.
         goneUpTo: Math.max(c.clearedBefore ?? -1, c.deletedAt ?? -1),
+        unread: c.totalUnreadMessages,
         messages: c.messages.map(m => m.payloadDigest),
       })),
     onDisk: [...target.disk.rows.keys()].sort(),
@@ -500,5 +501,195 @@ describe('a conversation deleted on one device', () => {
     await deliver(two, note)
     expect(shown(two).listed).toEqual([WITH_PEER])
     expect(shown(two).conversations[0].messages).toEqual(['pending:1'])
+  })
+})
+
+describe('a conversation read on one device', () => {
+  const readNote = (rows: ReceivedMessageWrapper[]) =>
+    rows.map(each => each.message.items[0] as ConversationStateItem)
+
+  /** Device one holds the conversation, opens it (which reads it) and leaves it again. */
+  async function readOnDeviceOne() {
+    const one = device('one')
+    await deliver(one, HISTORY)
+    expect(shown(one).conversations[0].unread).toBe(2)
+    await on(one, chats => {
+      chats.setActiveConversation(WITH_PEER)
+      chats.setActiveConversation(null)
+    })
+    const note = await notes(one)
+    expect(shown(one).conversations[0].unread).toBe(0)
+    return { one, note }
+  }
+
+  it('is noted to self once, as one mark: the relay time of the newest message read', async () => {
+    const { one, note } = await readOnDeviceOne()
+    expect(readNote(note)).toEqual([
+      {
+        type: 'conversation-state',
+        conversationId: WITH_PEER,
+        peer: PEER,
+        readUpTo: 2000,
+      },
+    ])
+    // Opening it again with nothing new, and reading the note back, sends nothing.
+    await on(one, chats => {
+      chats.setActiveConversation(WITH_PEER)
+      chats.setActiveConversation(null)
+    })
+    expect(await notes(one)).toEqual([])
+    await deliver(one, note)
+    expect(await notes(one)).toEqual([])
+    expect(shown(one).conversations[0].unread).toBe(0)
+  })
+
+  it('is read on a device that was online, and on one restored later', async () => {
+    const two = device('two')
+    await deliver(two, HISTORY)
+    expect(shown(two).conversations[0].unread).toBe(2)
+    const { one, note } = await readOnDeviceOne()
+
+    await deliver(two, note)
+    expect(shown(two)).toEqual(shown(one))
+    expect(await notes(two)).toEqual([])
+
+    const restored = device('restored')
+    await deliver(restored, [...HISTORY, ...note])
+    expect(shown(restored)).toEqual(shown(one))
+    expect(await notes(restored)).toEqual([])
+  })
+
+  it('is read whatever order the mark and the messages arrive in, and however often', async () => {
+    const { one, note } = await readOnDeviceOne()
+    const orders: ReceivedMessageWrapper[][][] = [
+      [note, HISTORY],
+      [HISTORY, note, note, HISTORY],
+      [[HISTORY[2]], note, [HISTORY[0], HISTORY[1]], note],
+      [[...note, ...HISTORY]],
+      ...HISTORY.map((_, i) => [HISTORY.slice(0, i), note, HISTORY.slice(i)]),
+    ]
+    for (const [n, batches] of orders.entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+    }
+  })
+
+  it('a message after the mark is unread on every device', async () => {
+    const { one, note } = await readOnDeviceOne()
+    const newer = row({ digest: 'peer-3', time: 3000 })
+    await deliver(one, [newer])
+    expect(shown(one).conversations[0].unread).toBe(1)
+    for (const [n, batches] of [
+      [HISTORY, note, [newer]],
+      [[...HISTORY, newer], note],
+      [note, [newer], HISTORY],
+    ].entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+      // It has read nothing itself: it has nothing to note.
+      expect(await notes(other)).toEqual([])
+    }
+  })
+
+  it('two marks: the higher one decides, in either order', async () => {
+    const { one, note: first } = await readOnDeviceOne()
+    const newer = [
+      row({ digest: 'peer-3', time: 3000 }),
+      row({ digest: 'peer-4', time: 4000 }),
+    ]
+    await deliver(one, [newer[0]])
+    await on(one, chats => {
+      chats.setActiveConversation(WITH_PEER)
+      chats.setActiveConversation(null)
+    })
+    const second = await notes(one)
+    expect(readNote(second).map(each => each.readUpTo)).toEqual([3000])
+    await deliver(one, [newer[1]])
+    expect(shown(one).conversations[0].unread).toBe(1)
+
+    const everything = [...HISTORY, ...newer]
+    for (const [n, batches] of [
+      [everything, first, second],
+      [everything, second, first],
+      [second, everything, first],
+      [first, second, everything],
+    ].entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+    }
+  })
+
+  it('a message read as it arrives in the open conversation is noted by the next pass', async () => {
+    const one = device('one')
+    await deliver(one, HISTORY)
+    await on(one, chats => chats.setActiveConversation(WITH_PEER))
+    await notes(one)
+    await deliver(one, [row({ digest: 'peer-3', time: 3000 })])
+    const note = await notes(one)
+    expect(readNote(note).map(each => each.readUpTo)).toEqual([3000])
+
+    const two = device('two')
+    await deliver(two, [...HISTORY, row({ digest: 'peer-3', time: 3000 })])
+    expect(shown(two).conversations[0].unread).toBe(3)
+    await deliver(two, note)
+    expect(shown(two).conversations[0].unread).toBe(0)
+  })
+
+  it('the mark is a relay time: a message of ours on its way does not move it', async () => {
+    const one = device('one')
+    await deliver(one, HISTORY)
+    // Our own message, timed by this device's clock, far ahead of the relay's.
+    await on(one, chats =>
+      chats.sendMessageLocal({
+        address: PEER,
+        conversationId: WITH_PEER,
+        senderAddress: ME,
+        index: 'pending:1',
+        items: [{ type: 'text', text: 'on its way' }],
+        outpoints: [],
+        status: 'pending',
+        previousHash: null,
+        timestamp: 9_000_000,
+      }),
+    )
+    await on(one, chats => {
+      chats.setActiveConversation(WITH_PEER)
+      chats.setActiveConversation(null)
+    })
+    const note = await notes(one)
+    expect(readNote(note).map(each => each.readUpTo)).toEqual([2000])
+
+    // On another device a later message from the peer is unread, as it is here.
+    const later = row({ digest: 'peer-3', time: 3000 })
+    const two = device('two')
+    await deliver(two, HISTORY, note, [later])
+    expect(shown(two).conversations[0].unread).toBe(1)
+  })
+
+  it('reading and deleting are noted together and applied together', async () => {
+    const { one } = await readOnDeviceOne()
+    await on(one, chats => chats.deleteConversation(WITH_PEER, 5000))
+    const deletion = await notes(one)
+    const after = row({ digest: 'peer-3', time: 6000 })
+    await deliver(one, [after])
+    expect(shown(one).conversations[0]).toMatchObject({
+      messages: ['peer-3'],
+      unread: 1,
+    })
+    const mailbox = [...HISTORY, ...sent.map(entry => entry.row), after]
+    expect(deletion).toHaveLength(1)
+    for (const [n, batches] of [
+      [mailbox],
+      [[...mailbox].reverse()],
+      mailbox.map(each => [each]),
+      [...mailbox].reverse().map(each => [each]),
+    ].entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+    }
   })
 })

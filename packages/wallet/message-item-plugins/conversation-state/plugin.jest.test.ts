@@ -25,6 +25,15 @@ describePluginContract({
       },
       preview: 'Conversation state',
     },
+    {
+      item: {
+        type: 'conversation-state',
+        conversationId: CONVERSATION,
+        peer: PEER,
+        readUpTo: 1760000000001,
+      },
+      preview: 'Conversation state',
+    },
   ],
 })
 

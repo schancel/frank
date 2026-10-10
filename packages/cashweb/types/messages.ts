@@ -323,6 +323,8 @@ export interface ReceivedCoinItem {
  * - `clearedBefore`: the conversation was deleted with everything up to this relay time (ms).
  *   The latest wins. Messages no newer than it are gone; a newer message from the peer or from
  *   this account brings the conversation back without them.
+ * - `readUpTo`: the peer's messages up to this relay time (ms) have been read. The highest wins.
+ *   One mark per conversation, not one per message.
  *
  * `peer` is the conversation's peer address, so a frontend that has not seen the conversation
  * yet can record the fact for it.
@@ -333,6 +335,7 @@ export interface ConversationStateItem {
   conversationId: string
   peer: string
   clearedBefore?: number
+  readUpTo?: number
 }
 
 export interface DeviceClaimItem {

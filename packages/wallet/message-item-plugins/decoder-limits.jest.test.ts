@@ -481,6 +481,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       conversationId: '123e4567-e89b-52d3-a456-426614174000',
       peer: A,
       clearedBefore: 1760000000000,
+      readUpTo: 1760000000001,
     },
     cases: [
       ...each(
@@ -496,6 +497,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ),
       ...each('peer', [1], BAD_CHAIN_ADDRESSES),
       ...each('clearedBefore', [2], BAD_TIMESTAMPS),
+      ...each('readUpTo', [3], BAD_TIMESTAMPS),
     ],
   },
   {

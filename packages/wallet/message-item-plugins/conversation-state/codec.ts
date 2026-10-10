@@ -21,10 +21,11 @@ const fields = cborItemCodec<ConversationStateItem>('conversation-state', {
   conversationId: req(0, conversationId),
   peer: req(1, chainAddress),
   clearedBefore: opt(2, timestampMs),
+  readUpTo: opt(3, timestampMs),
 })
 
 /** The facts one note may state. A note that states none says nothing and is refused. */
-const FACTS = ['clearedBefore'] as const
+const FACTS = ['clearedBefore', 'readUpTo'] as const
 
 function statesAFact(item: ConversationStateItem): boolean {
   return FACTS.some(fact => item[fact] !== undefined)

@@ -269,6 +269,7 @@ live('two devices of one account, through the real relay', () => {
           peer: c.address,
           deleted: c.deletedAt !== undefined,
           goneUpTo: Math.max(c.clearedBefore ?? -1, c.deletedAt ?? -1),
+          unread: c.totalUnreadMessages,
           messages: c.messages.map(m => m.payloadDigest),
         })),
     }
@@ -357,5 +358,53 @@ live('two devices of one account, through the real relay', () => {
     const four = await openDevice('device-four')
     await sync(four)
     expect(shown(four)).toEqual(shown(one))
+  }, 600_000)
+
+  it('a conversation read on one device is read on the online devices and on one restored later', async () => {
+    await peerSays('unread one')
+    await peerSays('unread two')
+    for (const each of devices) await sync(each)
+    const [conversationId] = shown(one).listed
+    const unread = (target: Device) =>
+      shown(target).conversations.find(c => c.id === conversationId)?.unread
+    // Nobody has opened it since it came back: three messages from the peer, all unread.
+    expect(unread(one)).toBe(3)
+    for (const each of devices) expect(shown(each)).toEqual(shown(one))
+
+    // Device one opens the conversation and leaves it; its read mark goes to the mailbox.
+    const notedBefore = one.notes.length
+    await on(one, chats => {
+      chats.setActiveConversation(conversationId)
+      chats.setActiveConversation(null)
+    })
+    await on(one, chats =>
+      chats.noteConversationStates(one.wallet.handle as never),
+    )
+    expect(one.notes).toHaveLength(notedBefore + 1)
+    const mark = one.notes[notedBefore]
+    expect(mark.items).toMatchObject([
+      { type: 'conversation-state', conversationId },
+    ])
+    expect((mark.items[0] as { readUpTo?: number }).readUpTo).toBeGreaterThan(0)
+    expect(mark.result.stampValueWei).toBe(0n)
+    expect(mark.result.stampPayments).toEqual([])
+    expect(unread(one)).toBe(0)
+
+    for (const each of devices.slice(1)) {
+      await sync(each)
+      expect(shown(each)).toEqual(shown(one))
+      expect(each.notes).toEqual([])
+    }
+    const restored = await openDevice('device-five')
+    await sync(restored)
+    expect(shown(restored)).toEqual(shown(one))
+    expect(unread(restored)).toBe(0)
+
+    // A newer message is unread everywhere, also after reading the mailbox again.
+    await peerSays('newer')
+    for (const each of [...devices, ...devices]) await sync(each)
+    expect(unread(one)).toBe(1)
+    for (const each of devices) expect(shown(each)).toEqual(shown(one))
+    expect(one.notes).toHaveLength(notedBefore + 1)
   }, 600_000)
 })

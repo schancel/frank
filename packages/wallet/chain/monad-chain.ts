@@ -190,7 +190,7 @@ import {
   type CanonicalMessagingOwner,
   type OutgoingMessageStore,
 } from "./monad-canonical-dm";
-import { EvmStampPayer } from "../evm-stamp-payer";
+import { EvmStampPayer, waitForSpendSpacing } from "../evm-stamp-payer";
 export {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
@@ -402,6 +402,8 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     defaultStampValueWei: BigInt(
       readEnv("FRANK_DM_DEFAULT_STAMP_VALUE_WEI") ?? "10000000000000000"
     ),
+    // Monad's reserve-balance delay: see `EvmChainConfig.spendSpacingBlocks`.
+    spendSpacingBlocks: 3,
     defaultTopicVoteValueWei: BigInt(
       readEnv("FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI") ??
         readEnv("CASHWEB_STAMP_MIN_BURN_VALUE_WEI") ??
@@ -1140,6 +1142,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (held.length === 0 && own().length === 0) {
         for (const address of addresses)
           pool.restoreAccountClaim(holder, address);
+        // Held now, so nothing else can sign from them: wait out the chain's spacing rule
+        // after whatever last spent each (a message payment just mined, say).
+        try {
+          for (const address of addresses)
+            await waitForSpendSpacing(
+              wallet.provider,
+              address,
+              config.spendSpacingBlocks
+            );
+        } catch (error) {
+          await releaseSettledMainAccounts(wallet, false);
+          throw error;
+        }
         return;
       }
       if (!waiting) {
@@ -4377,6 +4392,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               pool,
               provider,
               httpClient,
+              spendSpacingBlocks: config.spendSpacingBlocks,
               // A message took funded accounts: the next fund-ahead call looks again.
               onPoolCoinsClaimed: () => fundAheadBackoffs.delete(wallet),
               accounts: [

@@ -24,6 +24,15 @@ export interface EvmChainConfig {
   stampBurnAddress: string;
   /** Default aggregate value, in wei, `directMessages.send` pays per Stamp message. */
   defaultStampValueWei: bigint;
+  /**
+   * How many blocks must pass after an account's last transaction before a value transfer from
+   * it is safe. Monad: 3. Its reserve-balance rule reverts (and still charges gas for) a
+   * transfer that takes an account below its reserve (10 MON, so nearly every transfer of a
+   * small wallet) unless the account sent nothing in the previous 3 blocks. Seen on testnet: a
+   * stamp payment mined two blocks after the previous one from the same account reverted, and
+   * its message was delivered unpaid. Default 0: no spacing.
+   */
+  spendSpacingBlocks?: number;
   /** Default value, in wei, burned for a topic post or vote. */
   defaultTopicVoteValueWei: bigint;
   /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */

@@ -73,10 +73,45 @@ const FEE_TTL_MS = 6_000
  * that holds it at most this often. */
 export const BUSY_LOOK_MS = 1_000
 
+/**
+ * Resolves once `address` has sent no transaction in the last `blocks` blocks, so a value
+ * transfer signed now is not one the chain's spacing rule reverts (Monad's reserve balance:
+ * see `EvmChainConfig.spendSpacingBlocks`). The caller holds the account's claim, so nothing of
+ * this wallet signs from it meanwhile. Two reads a look, a look every 400 ms; rejects, having
+ * signed nothing, when the chain cannot be read for 20 s. `blocks` 0 or absent: no wait.
+ */
+export async function waitForSpendSpacing(
+  provider: Provider,
+  address: string,
+  blocks: number | undefined,
+): Promise<void> {
+  if (!blocks || blocks <= 0) return
+  let failingSince: number | undefined
+  for (;;) {
+    try {
+      const head = await provider.getBlockNumber()
+      if (head < blocks) return
+      const [now, before] = await Promise.all([
+        provider.getTransactionCount(address, head),
+        provider.getTransactionCount(address, head - blocks),
+      ])
+      if (now === before) return
+      failingSince = undefined
+    } catch (error) {
+      failingSince ??= Date.now()
+      if (Date.now() - failingSince > 20_000) throw error
+    }
+    await new Promise(resolve => setTimeout(resolve, 400))
+  }
+}
+
 export interface EvmStampPayerConfig {
   pool: MonadSubAccountPool
   provider: Provider
   httpClient: MonadTxSubmitter
+  /** See `EvmChainConfig.spendSpacingBlocks`. Applies to the main and identity accounts; a
+   * single-use sub-account sends one transaction ever. */
+  spendSpacingBlocks?: number
   /** The wallet's own accounts a stamp is paid from when no funded sub-account covers it, in
    * the order they are tried. Each is one coin at its current nonce. */
   accounts: readonly {
@@ -216,7 +251,15 @@ export class EvmStampPayer {
           ])
           if (balanceWei < input.stampValueWei + feeReserveWei) continue
           // Synchronous: free, and not spent by anyone since the nonce above was read.
-          if (pool.claimAccount(input.holder, account.address, generation))
+          if (pool.claimAccount(input.holder, account.address, generation)) {
+            // Claimed: nothing else signs from it. The payment before this one may have been
+            // mined a block ago; the chain's spacing rule is waited out before this one is
+            // signed (a rejection releases the claim below).
+            await waitForSpendSpacing(
+              provider,
+              account.address,
+              this.config.spendSpacingBlocks,
+            )
             return {
               holder: input.holder,
               fee,
@@ -229,6 +272,7 @@ export class EvmStampPayer {
                 },
               ],
             }
+          }
           busy ??= account.address
         }
         if (busy === undefined)

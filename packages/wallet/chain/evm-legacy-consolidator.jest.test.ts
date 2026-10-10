@@ -2821,4 +2821,79 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(journal.list()).toHaveLength(0)
     expect(state.raws).toHaveLength(0)
   })
+
+  // Seen in Chrome on Monad testnet: a send that needed more than one account never completed.
+  // The transfer funding the paying account was mined; the payment out of it, offered to the
+  // node at once, was refused (the node admits a transaction against the balance of a few
+  // blocks ago) and was never sent: "unknown to the node" eight minutes later.
+  it('the payment out of an account this operation has just funded is handed to the network only once that funding is old enough for the node to count it', async () => {
+    const state = chain([80000n, 70000n])
+    let head = 10
+    let fundedAt: number | undefined
+    const leader = wallets[0]!.address.toLowerCase()
+    const offeredAt: { to: string; head: number }[] = []
+    const provider = state.provider as unknown as Record<string, unknown>
+    provider.getBlockNumber = jest.fn(async () => head)
+    const latest = state.provider.getBalance.getMockImplementation()!
+    state.provider.getBalance.mockImplementation((async (
+      address: string,
+      block?: number,
+    ) =>
+      // Before its funding the paying account held only its own 80,000.
+      block !== undefined &&
+      fundedAt !== undefined &&
+      block < fundedAt &&
+      address.toLowerCase() === leader
+        ? 80000n
+        : latest(address)) as never)
+    const broadcast = state.provider.broadcastTransaction.getMockImplementation()!
+    state.provider.broadcastTransaction.mockImplementation(async (raw: string) => {
+      const tx = Transaction.from(raw)
+      offeredAt.push({ to: tx.to!.toLowerCase(), head })
+      if (tx.to!.toLowerCase() === leader) fundedAt = head
+      return broadcast(raw)
+    })
+    const nextLook = jest.fn(async () => void head++)
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider as unknown as Provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      getSources: async () => sources().slice(0, 2),
+      sign: async (source, raw) =>
+        wallets
+          .find(w => w.address.toLowerCase() === source.address)!
+          .signTransaction(Transaction.from(raw)),
+      nextLook,
+      fundsSettleBlocks: 4,
+    })
+    const result = await executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 100000n,
+    })
+    expect(result.intermediateTxHashes).toHaveLength(1)
+    expect(offeredAt.map(offer => offer.to)).toEqual([leader, recipient])
+    // The funding went out at once; the payment waited until block fundedAt + 4.
+    expect(offeredAt[0]!.head).toBe(10)
+    expect(offeredAt[1]!.head).toBe(14)
+    expect(state.balances.get(recipient)).toBe(100000n)
+    expect(state.raws).toHaveLength(2)
+  })
+  it('the fee quoted for a transfer is what it will be charged (the node\'s price times the gas limit), not the fee cap', async () => {
+    const state = chain([10_000_000n])
+    // Monad testnet's shape: the cap is about twice what is charged.
+    state.provider.getFeeData.mockResolvedValue({
+      gasPrice: 102n,
+      maxFeePerGas: 202n,
+      maxPriorityFeePerGas: 2n,
+    } as never)
+    const { executor } = owner(state, { sources: sources().slice(0, 1) })
+    expect(
+      await executor.estimateLegacyFee({ raw: recipient }, 1000n),
+    ).toMatchObject({
+      inputCount: 1,
+      deliveryFee: 21000n * 102n,
+      consolidationFee: 0n,
+      totalFee: 21000n * 102n,
+    })
+  })
 })

@@ -131,6 +131,11 @@ export interface EvmLegacyConsolidatorConfig {
    * the transfer stays in the journal, holding its account, and is watched from outside
    * (`lookAtOperation`). */
   inclusionWaitMs?: number
+  /** How many blocks back the node looks for the balance a transaction spends (Monad: the
+   * spacing + 1, measured: a transfer offered sooner after its account was funded is refused,
+   * and those bytes stay refused). With `nextLook`, a member is not handed to the network until
+   * its account held what it spends that many blocks ago. Absent or 0: no such rule. */
+  fundsSettleBlocks?: number
 }
 /**
  * The id every frontend of the account derives for a swap: from its chain and the transaction
@@ -857,6 +862,7 @@ export class EvmLegacyConsolidator {
           new Error('Original native prerequisites are pending'),
         )
       if (member.observation.state !== 'included-success') {
+        await this.untilFundsSettled(member)
         await journal.markExposed(id, i)
         try {
           const response = await provider.broadcastTransaction(
@@ -883,6 +889,39 @@ export class EvmLegacyConsolidator {
       }
     }
     return journal.get(id)
+  }
+  /**
+   * Before a member is handed to the network: waits, at the block watcher's looks, until its
+   * account already held what the member spends `fundsSettleBlocks` blocks ago. The transfer
+   * that pays the recipient out of an account this same operation has just funded is the case:
+   * offered at once it was refused by the node and never sent (seen on Monad testnet: the
+   * funding transfer mined, the payment unknown to the node eight minutes later). Gives up
+   * waiting after 30 looks and hands it over as it is. Never throws.
+   */
+  private async untilFundsSettled(member: {
+    source: EvmNativeSource
+    unsignedTransaction: string
+  }): Promise<void> {
+    const { nextLook, fundsSettleBlocks, provider } = this.config
+    if (!nextLook || !fundsSettleBlocks) return
+    try {
+      const tx = Transaction.from(member.unsignedTransaction)
+      const needed = tx.value + nativeMaximumFee(tx)
+      for (let looks = 0; looks < 30 && !this.reobserveStopped; looks++) {
+        const head = await provider.getBlockNumber()
+        if (head < fundsSettleBlocks) return
+        if (
+          (await provider.getBalance(
+            member.source.address,
+            head - fundsSettleBlocks,
+          )) >= needed
+        )
+          return
+        await nextLook()
+      }
+    } catch {
+      /* A node that cannot answer for an earlier block is not waited on. */
+    }
   }
   /**
    * After a member was handed to the network: looks at it now and at each look of the wallet's
@@ -2036,19 +2075,25 @@ export class EvmLegacyConsolidator {
     const fees = await this.config.provider.getFeeData()
     const price = fees.maxFeePerGas ?? fees.gasPrice
     if (price == null) throw new Error('Native fee quote unavailable')
+    // What a transaction must be able to pay (the fee CAP) decides how many accounts are needed.
     const fee = 21000n * price
+    // What it is charged is the node's current price (base fee plus tip), times the gas limit:
+    // that is the fee quoted. (The cap, about twice that, was quoted before: 0.004242 MON for a
+    // transfer that was charged 0.002142.)
+    const charged = fees.gasPrice ?? price
     accounts.sort((a, b) => (a.spendableValue > b.spendableValue ? -1 : 1))
     // The transfer to the recipient is charged its gas LIMIT, which is the node's estimate for
     // that address (it may have code). The review shows that, not a flat 21,000. An estimate
     // that cannot be made here is made again, and decides, when the transfer is planned.
-    const deliveryFee =
+    const deliveryGas =
       accounts.length > 0
-        ? (await this.recipientGasLimit(
+        ? await this.recipientGasLimit(
             accounts[0]!.source.address,
             getAddress(_recipient.raw),
             value,
-          ).catch(() => 21000n)) * price
-        : fee
+          ).catch(() => 21000n)
+        : 21000n
+    const deliveryFee = deliveryGas * price
     let balance = 0n
     let count = 0
     for (const a of accounts) {
@@ -2064,9 +2109,9 @@ export class EvmLegacyConsolidator {
       throw new RangeError('Insufficient native funds')
     return {
       inputCount: count,
-      deliveryFee,
-      consolidationFee: BigInt(count - 1) * fee,
-      totalFee: deliveryFee + BigInt(count - 1) * fee,
+      deliveryFee: deliveryGas * charged,
+      consolidationFee: BigInt(count - 1) * 21000n * charged,
+      totalFee: (deliveryGas + BigInt(count - 1) * 21000n) * charged,
     }
   }
 }

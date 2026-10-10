@@ -67,6 +67,41 @@ a call with 64 bytes of data writes a value to a slot.
   confirmed was refused at submission with "Signer had insufficient balance". Five blocks
   later the same account sent normally.
 
+## Money that has just arrived
+
+Measured on 2026-10-10 on the local network (monad-solonet, client v0.16.4). A new account was
+given 0.052437 MON by a transfer mined in block F, and a transfer of 0.002142 MON from it
+(gas limit 21,000, fee cap 202 gwei: it needs 0.006384 MON) was offered to the node
+(`eth_sendRawTransaction`) when the node's head was F + n.
+
+| n (blocks after the funding block) | Result |
+| ---------------------------------- | ------ |
+| 0, 1, 2 | refused: "Signer had insufficient balance" (5 of 5) |
+| 3 | refused 4 times, accepted 3 times |
+| 4, 5, 6 | accepted (18 of 18) |
+| 7 to 13 | accepted (24 of 24) |
+
+In every accepted case at n >= 4 the balance was visible at `head - 4`
+(`eth_getBalance(account, head - 4)`); in the mixed cases at n = 3 it was visible at `head - 3`
+and not at `head - 4`. An account funded with 5 MON was refused in the same way at n = 0.
+
+- So the node admits a transaction against the sender's balance as it was a few blocks back,
+  not the latest one: money is spendable once it is four blocks old.
+- **A refused transaction stays refused.** The same signed bytes were offered again 10, 21, 51
+  and 151 blocks later and refused each time with the same message, while a different
+  transaction of the same account at the same nonce (the fee cap one wei higher) was accepted
+  at once. In one run the refused bytes were finally taken about 2,500 blocks (fifteen minutes)
+  after the first refusal. Through the relay's JSON-RPC proxy the node's message arrives as
+  "upstream RPC error".
+- Seen from outside this is "the relay could not broadcast the payment, the message is
+  delivered" followed, much later, by the payment being mined.
+
+What it means for the wallet: it signs a transfer only against the balance the account already
+had `spendSpacingBlocks + 1` blocks ago and waits those blocks otherwise; a transfer that pays
+out of an account the same operation has just funded waits in the same way; and a payment the
+node keeps refusing is signed again at the same nonce (other fee fields), which can never pay
+twice because a nonce is consumed once.
+
 ## The reserve balance
 
 Sources:

@@ -3199,6 +3199,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 blockWatchers.get(wallet)?.next() ??
                 new Promise((resolve) => setTimeout(resolve, 500)),
               inclusionWaitMs: config.nativeInclusionWaitMs,
+              // The node admits a transaction against the balance of spacing + 1 blocks ago.
+              fundsSettleBlocks:
+                config.spendSpacingBlocks === undefined
+                  ? undefined
+                  : config.spendSpacingBlocks + 1,
               transactionBuilder,
               getSources,
               sourceHeld: (source) =>

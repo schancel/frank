@@ -113,6 +113,9 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
    * `docs/protocol/chains/monad-reserve-balance.md`. A wallet waits that many blocks after an
    * account's last transaction before the next transfer from it, unless the transfer leaves
    * the account at or above `reserveBalanceWei`. Absent: the network has no such rule.
+   * The same delay governs incoming money: the node admits a transaction against the sender's
+   * balance of `spendSpacingBlocks + 1` blocks ago, so funds newer than that are not signed
+   * against (same document, "Money that has just arrived").
    */
   /** Decimal wei (a string: the registry is plain data). */
   readonly reserveBalanceWei?: string;
@@ -173,6 +176,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "MONR",
       networkTag: "MONR",
       gasChargedOn: "limit",
+      reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
+      spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
     }),
     "monad-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,

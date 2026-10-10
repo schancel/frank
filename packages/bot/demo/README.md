@@ -16,32 +16,32 @@ directory simulates a chain or a relay.
 ```ts
 import { startRealStack } from '@frank/bot/demo/real-stack'   // or a relative path
 
-const stack = await startRealStack()             // real relay on a free port; RPC and wallet from .env
-const alice = await stack.openWallet('alice')    // fresh keys, directory entry and profile published
+const stack = await startRealStack()             // real relay on port 28098; RPC and test wallet from .env
+const alice = await stack.openWallet('alice')    // keys (reused between runs), directory entry, profile
 const bob = await stack.openWallet('bob')
-await stack.fund(alice.mainAccount, 12_000_000_000_000_000n)   // from the funding wallet, confirmed
+await stack.fund(alice.mainAccount, 12_000_000_000_000_000n)   // from the TEST wallet, confirmed
 const digest = await alice.send(bob.address, [{ type: 'text', text: 'hi' }], 1_000_000_000_000n)
 const got = await bob.receive(m => m.payloadDigest === digest)
 // stack.provider is an ethers provider on the same chain, for on-chain assertions
-await stack.stop()                               // returns what is left, stops the relay
+await stack.stop()                               // closes the wallets, stops the relay
 ```
 
 Settings (process environment first, then `<repo>/.env` or `FRANK_DEMO_ENV_FILE`):
-`MONAD_TESTNET_HTTP_RPC_URL` (required), `FRANK_TEST_WALLET_JSON` (the wallet `fund` spends from;
-`E2E_DEMO_MAIN_WALLET_JSON` is used when it is unset, which is only safe while no demo is running:
-the demo's bot host counts that wallet's nonces in memory and its next payment fails if anyone else
-sends from it),
-`CASHWEBD_BIN` (a prebuilt relay; otherwise this checkout's Cargo build), `FRANK_REAL_STACK_RELAY_PORT`
-(default: a free port), `FRANK_REAL_STACK_DIR` (default: a new temp directory; every wallet's
-account root is kept there, mode 0600, so its funds can be recovered). Pass `relayUrl` to
-`startRealStack` to use a relay that is already running instead of starting one.
+`MONAD_TESTNET_HTTP_RPC_URL` (required); `FRANK_TEST_WALLET_JSON` (required to fund: a funded
+testnet wallet used only by tests, never the demo's `E2E_DEMO_MAIN_WALLET_JSON`, and there is no
+fallback to it); `FRANK_TEST_MAX_FUND_WEI` (the most one `fund` call sends, default 0.5 MON);
+`CASHWEBD_BIN` (a prebuilt relay; otherwise this checkout's Cargo build);
+`FRANK_REAL_STACK_RELAY_PORT` (default 28098); `FRANK_REAL_STACK_DIR` (default
+`~/.frank-real-stack`). Pass `relayUrl` to `startRealStack` to use a relay that is already running.
 
-It spends real testnet funds: what `fund` is asked for plus gas. Funding transfers from the one
-wallet are serialised across processes by a lock directory beside the wallet file, each sent with
-the next pending nonce and waited for, so parallel test runs cannot collide. A wallet's first
-message also moves about 0.008 MON from its main account into the stamp account it prepares; that
-stays with the wallet. In a git worktree, point `FRANK_DEMO_ENV_FILE` at the `.env` of the main
-checkout.
+State is persistent and wallets are reused: `openWallet('alice')` against the same relay opens the
+same account on every run, with whatever it still holds, so fund an account only when it has run
+dry (`wallet.reused` says whether it existed). Nothing is stranded between runs. `stack.sweep()`
+returns what the opened wallets' main and identity accounts hold to the test wallet; what sits in
+a wallet's prepared stamp accounts (about 0.008 MON each) stays with the wallet and pays for its
+next messages. Funding transfers are serialised across processes by a lock directory beside the
+wallet file, each sent with the next pending nonce and waited for. In a git worktree, point
+`FRANK_DEMO_ENV_FILE` at the `.env` of the main checkout.
 
 ## Explicit directory admission integration
 

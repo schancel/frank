@@ -4,12 +4,13 @@
  *
  *   yarn test:two-wallets            (from the repo root; needs .env, see real-stack.ts)
  *
- * Two fresh accounts are created and each is given 0.012 testnet MON from the funding wallet.
- * Alice sends Bob a stamped message, Bob reads it and answers, Alice reads the answer. For every
- * stamp payment a message reports, the transaction must be mined successfully on chain, pay the
- * address and amount the wallet reported from another account, the destination must hold it, and
- * the amounts must add up to the stamp. What is left in the two main accounts is sent back to
- * the funding wallet. Exit code 0 only if every check passes.
+ * The two accounts (alice, bob) are kept in the harness's persistent state directory and reused:
+ * an account is given 0.012 testnet MON from the TEST wallet (FRANK_TEST_WALLET_JSON) only when
+ * it cannot pay for a transfer. Alice sends Bob a stamped message, Bob reads it and answers,
+ * Alice reads the answer. For every stamp payment a message reports, the transaction must be
+ * mined successfully on chain, pay the address and amount the wallet reported from another
+ * account, the destination must hold it, and the amounts must add up to the stamp. Exit code 0
+ * only if every check passes.
  */
 import { formatEther, type JsonRpcProvider } from 'ethers'
 
@@ -96,8 +97,8 @@ export async function runTwoWallets(env: Record<string, string | undefined> = pr
     const alice = await stack.openWallet('alice', { stampValueWei: STAMP_WEI })
     const bob = await stack.openWallet('bob', { stampValueWei: STAMP_WEI })
     for (const wallet of [alice, bob]) {
-      // A reused state directory (FRANK_REAL_STACK_DIR) keeps its accounts and what they hold;
-      // only an account that cannot pay for a transfer is funded.
+      // The accounts persist between runs with what they hold; only one that cannot pay for a
+      // transfer is funded.
       const held = await stack.provider.getBalance(wallet.mainAccount)
       if (held >= REUSE_MIN_WEI) {
         checks.push({ name: `fund ${wallet.label}`, ok: true, detail: `${wallet.mainAccount} already holds ${formatEther(held)} MON; not funded again` })

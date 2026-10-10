@@ -12,7 +12,7 @@ import type { MessageItem } from '@frank/cashweb/types/messages'
 
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { DemoHandle } from './demo'
-import { RealStack, startRealStack } from './real-stack'
+import { RealStack, RealWallet, startRealStack } from './real-stack'
 
 export interface SmokeCheck {
   name: string
@@ -219,13 +219,20 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-/** What the smoke user's account is given: enough for the four prompts' stamps and the accounts
- * the wallet prepares to pay them from. What is left goes back to the funding wallet. */
+/** What the smoke user's account is given when it holds less than the refill mark: enough for
+ * several runs of the four prompts' stamps and the accounts the wallet prepares to pay them from.
+ * It stays with the (persistent) test user for the next run. */
 export const SMOKE_USER_FUND_WEI = 50_000_000_000_000_000n // 0.05 MON
+export const SMOKE_USER_REFILL_BELOW_WEI = 20_000_000_000_000_000n // 0.02 MON
 
 export async function runSmokeChecks(
   handle: DemoHandle,
-  options: { timeoutMs: number; env?: Record<string, string | undefined> },
+  options: {
+    timeoutMs: number
+    env?: Record<string, string | undefined>
+    /** Called with the test user once it is open (the smoke reuses it for its proxy check). */
+    onUser?: (user: RealWallet) => void | Promise<void>
+  },
 ): Promise<SmokeCheck[]> {
   const { config, relayUrl } = handle
   const checks: SmokeCheck[] = []
@@ -250,14 +257,19 @@ export async function runSmokeChecks(
     stack = await startRealStack({
       env: { ...options.env, MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl, FRANK_TEST_WALLET_JSON: config.testWalletJson },
       relayUrl,
-      stateDir: `${config.stateDir}/smoke-${Date.now()}`,
+      // Kept with the demo's own state: the test user lives on the demo's relay.
+      stateDir: `${config.stateDir}/checks`,
     })
-    // A new human profile, registered AFTER the bots started: the faucet pays its address.
     if (stack.fundingAddress.toLowerCase() === handle.fundingAddress.toLowerCase()) {
       throw new Error('FRANK_TEST_WALLET_JSON is the same wallet as E2E_DEMO_MAIN_WALLET_JSON; it must be a different one')
     }
+    // ONE fixed test user, reused on every run: a new profile each time would take a faucet
+    // grant per run. It is funded only when it has run dry.
     const user = await stack.openWallet('smoke-user', { stampValueWei })
-    await stack.fund(user.mainAccount, SMOKE_USER_FUND_WEI)
+    await options.onUser?.(user)
+    if ((await stack.provider.getBalance(user.mainAccount)) < SMOKE_USER_REFILL_BELOW_WEI) {
+      await stack.fund(user.mainAccount, SMOKE_USER_FUND_WEI)
+    }
 
     for (const [bot, items] of Object.entries(PROMPTS)) {
       if (!handle.addresses[bot]) continue
@@ -294,8 +306,14 @@ export async function runSmokeChecks(
       } while (balance < wanted && Date.now() < deadline)
       checks.push(
         balance >= wanted
-          ? { name: 'faucet', ok: true, detail: `the new profile ${user.address} holds ${formatEther(balance)} MON on chain` }
-          : { name: 'faucet', ok: false, detail: `the new profile ${user.address} holds ${formatEther(balance)} MON on chain, the faucet should have sent ${formatEther(wanted)}` },
+          ? {
+              name: 'faucet',
+              ok: true,
+              detail: user.reused
+                ? `the test profile ${user.address} holds ${formatEther(balance)} MON on chain from the faucet's grant on an earlier run (one grant per profile: this run did not exercise the faucet)`
+                : `the new profile ${user.address} holds ${formatEther(balance)} MON on chain`,
+            }
+          : { name: 'faucet', ok: false, detail: `the profile ${user.address} holds ${formatEther(balance)} MON on chain, the faucet should have sent ${formatEther(wanted)}` },
       )
     }
     checks.push(await checkCors(handle))

@@ -68,7 +68,7 @@ export async function prepareBotIdentities(config: DemoConfig): Promise<BotIdent
       throw new DemoConfigError([
         `the ${bot.name} bot's saved profile cannot be reused: ${err instanceof Error ? err.message : String(err)}`,
         `  Its files are ${profileDir} and ${bot.identityJson}. They were written by an older version or by an interrupted first start, and the bot refuses to start on a profile it did not create itself.`,
-        `  No key or saved message state was changed. Start with a new FRANK_DEMO_STATE_DIR, or move ${config.stateDir} away if nothing in it is needed.`,
+        `  No key or saved message state was changed. These files hold the bot's key and so whatever its accounts hold on chain: do not delete them. To keep the other bots and their funds, move only ${profileDir} and ${bot.identityJson} aside; the bot then gets a new identity, which the funding wallet has to fund again.`,
       ])
     }
     // The exported copy of the identity, for tools that read it. Written only after the profile

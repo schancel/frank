@@ -45,13 +45,19 @@ export const DEMO_FAUCET_AMOUNT_WEI = '50000000000000000' // 0.05 MON
 /** A bot account below this is not funded (0.1 MON, ten default stamps): the launcher checks
  * every bot account against it on chain after the bots have started. */
 export const DEMO_MIN_BOT_BALANCE_WEI = 100_000_000_000_000_000n
-/** What the bot host is told for the account a bot pays transfers and payouts from: refill it to
- * 0.6 MON when it holds less than 0.3 (`FRANK_BOT_TOP_UP_BELOW_WEI` / `FRANK_BOT_TOP_UP_TO_WEI`).
- * 0.3 MON covers the largest game payout (about 0.25 MON). */
-export const DEMO_BOT_TOP_UP_BELOW_WEI = 300_000_000_000_000_000n
-export const DEMO_BOT_TOP_UP_TO_WEI = 600_000_000_000_000_000n
-/** The host's own rule for the account a bot pays stamps from: 0.5 MON when it holds less than 0.1. */
-export const DEMO_STAMP_ACCOUNT_TOP_UP_WEI = 500_000_000_000_000_000n
+/** The bot host's own funding rules (`packages/bot-framework/src/bot-host.ts`), repeated here only
+ * to work out, before anything starts, what a start will draw from the funding wallet:
+ * a bot's transfer account is refilled to 0.5 MON when under 0.3 (`FRANK_BOT_TOP_UP_TO_WEI` /
+ * `FRANK_BOT_TOP_UP_BELOW_WEI`), its stamp account to 0.5 MON when under 0.1, and the host never
+ * takes the wallet below a reserve (`FAUCET_MIN_RESERVE_WEI`, 0.1 MON when unset). */
+export const HOST_TOP_UP_BELOW_WEI = 300_000_000_000_000_000n
+export const HOST_TOP_UP_TO_WEI = 500_000_000_000_000_000n
+export const HOST_STAMP_TOP_UP_BELOW_WEI = 100_000_000_000_000_000n
+export const HOST_STAMP_TOP_UP_TO_WEI = 500_000_000_000_000_000n
+export const HOST_FUNDING_RESERVE_WEI = 100_000_000_000_000_000n
+/** The most a start may draw from the funding wallet unless the operator allows more
+ * (`FRANK_DEMO_MAX_START_DRAW_WEI`, or `--allow-draw`): 1 MON. */
+export const DEMO_MAX_START_DRAW_WEI = 1_000_000_000_000_000_000n
 /** The raffle round size the demo uses (the bot's own default is unchanged). */
 export const DEMO_RAFFLE_MAX_ENTRIES = '5'
 /** Least a funded profile needs for one minimum-bet blackjack hand: the table minimum, the default
@@ -305,15 +311,22 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'FRANK_BOT_TOP_UP_BELOW_WEI',
     scope: 'bots',
-    default: DEMO_BOT_TOP_UP_BELOW_WEI.toString(),
+    default: `host default (${HOST_TOP_UP_BELOW_WEI}, 0.3 MON)`,
     description:
-      'The bot host refills the account a bot pays transfers and payouts from when it holds less than this (0.3 MON).',
+      'The bot host refills the account a bot pays transfers and payouts from when it holds less than this. Passed on only when set.',
   },
   {
     name: 'FRANK_BOT_TOP_UP_TO_WEI',
     scope: 'bots',
-    default: DEMO_BOT_TOP_UP_TO_WEI.toString(),
-    description: 'What that account is refilled to (0.6 MON), from the funding wallet.',
+    default: `host default (${HOST_TOP_UP_TO_WEI}, 0.5 MON)`,
+    description: 'What that account is refilled to, from the funding wallet. Passed on only when set.',
+  },
+  {
+    name: 'FRANK_DEMO_MAX_START_DRAW_WEI',
+    scope: 'launcher',
+    default: `${DEMO_MAX_START_DRAW_WEI} (1 MON)`,
+    description:
+      'The most one start may draw from the funding wallet to fund bot accounts (their refills plus gas), worked out from chain balances before anything starts. A start that would draw more is refused with the exact amount. Raise it, or pass --allow-draw, to permit a first start on a new state directory (which funds every bot from nothing).',
   },
   {
     name: 'RAFFLE_BOT_ENTRY_PRICE_WEI',
@@ -427,6 +440,8 @@ const PASSTHROUGH = [
   'QWEN_MODEL_TRIES',
   'QWEN_ENABLE_THINKING',
   'QWEN_SYSTEM_PROMPT',
+  'FRANK_BOT_TOP_UP_BELOW_WEI',
+  'FRANK_BOT_TOP_UP_TO_WEI',
 ] as const
 
 export const TOOLCHAIN_VARS = ['PROTOC', 'CARGO', 'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN'] as const
@@ -487,6 +502,10 @@ export interface DemoConfig {
   /** Port the app's dev server serves on (fixed by app/quasar.config.js). */
   appPort: number
   mainWalletJson: string
+  /** The most this start may draw from the funding wallet; undefined: the operator allowed any amount. */
+  maxStartDrawWei?: bigint
+  /** The bot host's funding rules as this run configures them (for the draw estimate). */
+  funding: { topUpBelowWei: bigint; topUpToWei: bigint; reserveWei: bigint }
   /** A second wallet for the checks that run beside the demo (never the bots'). */
   testWalletJson?: string
   cashwebdBin?: string
@@ -626,6 +645,8 @@ export function resolveDemoConfig(params: {
   env: Record<string, string | undefined>
   envFile: Record<string, string>
   ngrokFlag?: boolean
+  /** `--allow-draw`: this start may draw whatever funding the bots need. */
+  allowDrawFlag?: boolean
   /** Used to place the default state dir and resolve relative paths. */
   home?: string
   cwd?: string
@@ -730,6 +751,18 @@ export function resolveDemoConfig(params: {
     problems.push(`RAFFLE_BOT_MAX_ENTRIES must be an integer >= 2, got "${raffleMax}"`)
   }
 
+  const maxStartDraw = wei(
+    'FRANK_DEMO_MAX_START_DRAW_WEI',
+    merged.FRANK_DEMO_MAX_START_DRAW_WEI,
+    DEMO_MAX_START_DRAW_WEI.toString(),
+    problems,
+  )
+  const funding = {
+    topUpBelowWei: BigInt(wei('FRANK_BOT_TOP_UP_BELOW_WEI', merged.FRANK_BOT_TOP_UP_BELOW_WEI, HOST_TOP_UP_BELOW_WEI.toString(), problems)),
+    topUpToWei: BigInt(wei('FRANK_BOT_TOP_UP_TO_WEI', merged.FRANK_BOT_TOP_UP_TO_WEI, HOST_TOP_UP_TO_WEI.toString(), problems)),
+    reserveWei: BigInt(wei('FAUCET_MIN_RESERVE_WEI', merged.FAUCET_MIN_RESERVE_WEI, HOST_FUNDING_RESERVE_WEI.toString(), problems)),
+  }
+
   if (problems.length > 0) throw new DemoConfigError(problems)
 
   const relayUrl = `http://127.0.0.1:${relayPort}`
@@ -760,8 +793,6 @@ export function resolveDemoConfig(params: {
             ? { QWEN_OPENAI_COMPATIBLE_ENDPOINT: merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT }
             : {}),
         }),
-    FRANK_BOT_TOP_UP_BELOW_WEI: wei('FRANK_BOT_TOP_UP_BELOW_WEI', merged.FRANK_BOT_TOP_UP_BELOW_WEI, DEMO_BOT_TOP_UP_BELOW_WEI.toString(), []),
-    FRANK_BOT_TOP_UP_TO_WEI: wei('FRANK_BOT_TOP_UP_TO_WEI', merged.FRANK_BOT_TOP_UP_TO_WEI, DEMO_BOT_TOP_UP_TO_WEI.toString(), []),
     ...(noFaucet ? {} : { FAUCET_AMOUNT_WEI: faucetAmountWei, FAUCET_MAX_PER_RUN: '1000' }),
   }
   for (const name of names) {
@@ -807,6 +838,8 @@ export function resolveDemoConfig(params: {
     faucetAmountWei: noFaucet ? undefined : faucetAmountWei,
     appPort: APP_DEV_PORT,
     mainWalletJson,
+    maxStartDrawWei: params.allowDrawFlag ? undefined : BigInt(maxStartDraw),
+    funding,
     testWalletJson: merged.FRANK_TEST_WALLET_JSON ? resolve(cwd, merged.FRANK_TEST_WALLET_JSON) : undefined,
     cashwebdBin: merged.CASHWEBD_BIN || undefined,
     toolchainEnv: Object.fromEntries(

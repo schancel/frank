@@ -2,34 +2,40 @@
  * The real test harness: the real relay binary against the real chain (Monad testnet), real
  * wallets, real transfers. Nothing here simulates a chain or a relay.
  *
- *   const stack = await startRealStack()                  // relay on a free port, testnet RPC from .env
- *   const alice = await stack.openWallet('alice')         // fresh account, directory entry published
- *   await stack.fund(alice.mainAccount, 20_000_000_000_000_000n)   // from the funding wallet, confirmed
+ *   const stack = await startRealStack()                  // relay on port 28098, testnet RPC from .env
+ *   const alice = await stack.openWallet('alice')         // an account: keys, directory entry, profile
+ *   await stack.fund(alice.mainAccount, 12_000_000_000_000_000n)   // from the TEST wallet, confirmed
  *   const digest = await alice.send(bob.address, [{ type: 'text', text: 'hi' }], 1_000_000_000_000n)
  *   const got = await bob.receive(m => m.payloadDigest === digest)
- *   await stack.stop()                                    // sweeps what is left back, stops the relay
+ *   await stack.stop()                                    // closes the wallets, stops the relay
  *
  * Configuration comes from the process environment, then the repo's `.env`:
  *   MONAD_TESTNET_HTTP_RPC_URL   required (may be a comma-separated list)
- *   FRANK_TEST_WALLET_JSON       {"address","privateKey"} of a funded testnet wallet that `fund`
- *                                spends from. Use it whenever a demo is running: the demo's bot
- *                                host is the only user of E2E_DEMO_MAIN_WALLET_JSON and counts its
- *                                nonces in memory, so a transfer sent from that wallet by anyone
- *                                else makes the host's next payment fail.
- *   E2E_DEMO_MAIN_WALLET_JSON    what `fund` spends from when FRANK_TEST_WALLET_JSON is unset
- *                                (fine while no demo is running)
+ *   FRANK_TEST_WALLET_JSON       required for `fund`: {"address","privateKey"} of a funded testnet
+ *                                wallet used ONLY by tests. Never the demo's funding wallet
+ *                                (E2E_DEMO_MAIN_WALLET_JSON): the demo's bot host counts that
+ *                                wallet's nonces in memory, so a transfer sent from it by anyone
+ *                                else makes the host's next payment fail. There is no fallback.
+ *   FRANK_TEST_MAX_FUND_WEI      the most one `fund` call may send (default 0.5 MON)
  *   CASHWEBD_BIN                 a prebuilt relay; otherwise this worktree's Cargo build is used
- *   FRANK_REAL_STACK_RELAY_PORT  relay port (default: a free port)
- *   FRANK_REAL_STACK_DIR         where state and logs go (default: a new temp directory)
+ *   FRANK_REAL_STACK_RELAY_PORT  port of the relay this starts (default 28098)
+ *   FRANK_REAL_STACK_DIR         where state lives (default ~/.frank-real-stack)
  *
- * It spends real testnet funds: only what `fund` is asked for plus gas. Funding transfers from
- * the one funding wallet are serialised across processes by a lock file beside the wallet file,
- * each with the next pending nonce and waited for, so parallel test runs cannot collide.
+ * State is PERSISTENT and wallets are reused: `openWallet('alice')` against the same relay opens
+ * the same account every run (its keys are in `<dir>/<relay>/wallets/alice`, mode 0600), with
+ * whatever it still holds, so a run funds an account only when it has run dry and nothing is
+ * stranded between runs. `stack.sweep()` sends what the opened wallets' main and identity
+ * accounts hold back to the test wallet; money in a wallet's prepared stamp accounts stays with
+ * the wallet and is spent by its next messages.
+ *
+ * It spends real testnet funds: only what `fund` is asked for plus gas. Transfers from the test
+ * wallet are serialised across processes by a lock directory beside the wallet file, each with
+ * the next pending nonce and waited for, so parallel test runs cannot collide.
  */
 import { randomBytes } from 'crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from 'fs'
 import { createServer } from 'net'
-import { tmpdir } from 'os'
+import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
 
 import { JsonRpcProvider, Wallet, formatEther } from 'ethers'
@@ -53,6 +59,9 @@ import { Supervisor } from './supervisor'
 const REPO_ROOT = resolve(__dirname, '..', '..', '..')
 const RELAY_SCRIPT = join(REPO_ROOT, 'backend', 'cashweb', 'run-local-monad.sh')
 const MONAD_TESTNET_CHAIN_ID = 10143n
+/** The most one `fund` call sends unless the caller or FRANK_TEST_MAX_FUND_WEI says otherwise. */
+export const DEFAULT_MAX_FUND_WEI = 500_000_000_000_000_000n
+const DEFAULT_RELAY_PORT = 28098
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 export async function freePort(): Promise<number> {
@@ -87,14 +96,14 @@ export interface RealRelay {
  * relay itself checks its upstream's chain id and genesis block against the chain registry. */
 export async function startRealRelay(options: {
   env?: Record<string, string | undefined>
-  port?: number
+  port: number
   stateDir: string
   timeoutS?: number
 }): Promise<RealRelay> {
   const env = options.env ?? realStackEnv()
   const rpcUrl = env.MONAD_TESTNET_HTTP_RPC_URL
   if (!rpcUrl) throw new Error('MONAD_TESTNET_HTTP_RPC_URL is required (environment or .env)')
-  const port = options.port ?? (env.FRANK_REAL_STACK_RELAY_PORT ? Number(env.FRANK_REAL_STACK_RELAY_PORT) : await freePort())
+  const port = options.port
   const url = `http://127.0.0.1:${port}`
   const logPath = join(options.stateDir, 'logs', 'relay.log')
   const supervisor = new Supervisor(env, () => {})
@@ -141,14 +150,22 @@ export async function startRealRelay(options: {
   return { url, logPath, stop }
 }
 
-/** Sends `valueWei` from the funding wallet to `to` and waits for it to confirm. One transfer at
- * a time across every process using the same wallet file (a lock directory beside it). */
+/** Sends `valueWei` from the test wallet to `to` and waits for it to confirm. One transfer at a
+ * time across every process using the same wallet file (a lock directory beside it). Refuses an
+ * amount above `maxWei` (default 0.5 MON): a larger transfer has to be asked for on purpose. */
 export async function fundFromWallet(params: {
   rpcUrl: string
   walletJsonPath: string
   to: string
   valueWei: bigint
+  maxWei?: bigint
 }): Promise<{ txHash: string; from: string }> {
+  const maxWei = params.maxWei ?? DEFAULT_MAX_FUND_WEI
+  if (params.valueWei > maxWei) {
+    throw new Error(
+      `refusing to send ${formatEther(params.valueWei)} MON in one funding transfer: the limit is ${formatEther(maxWei)} MON (pass a higher maxWei, or set FRANK_TEST_MAX_FUND_WEI, to allow it)`,
+    )
+  }
   const lock = `${params.walletJsonPath}.funding-lock`
   const lockDeadline = Date.now() + 10 * 60_000
   for (;;) {
@@ -167,7 +184,7 @@ export async function fundFromWallet(params: {
     const balance = await provider.getBalance(wallet.address)
     if (balance <= params.valueWei) {
       throw new Error(
-        `the funding wallet ${wallet.address} holds ${formatEther(balance)} MON, not enough to send ${formatEther(params.valueWei)} MON`,
+        `the test wallet ${wallet.address} holds ${formatEther(balance)} MON, not enough to send ${formatEther(params.valueWei)} MON`,
       )
     }
     const nonce = await provider.getTransactionCount(wallet.address, 'pending')
@@ -183,6 +200,8 @@ export async function fundFromWallet(params: {
 
 export interface RealWallet {
   label: string
+  /** True when this account already existed in the state directory (its keys were reused). */
+  reused: boolean
   /** The address other accounts message. */
   address: string
   /** The account that holds this wallet's money and pays its stamps. */
@@ -198,8 +217,9 @@ export interface RealWallet {
   close(): Promise<void>
 }
 
-/** A fresh account on the real relay: new keys, a published directory entry and a profile, the
- * same steps the app and the bot host take. It holds no money until it is funded. */
+/** An account on the real relay: keys (made on first use, reused afterwards), a published
+ * directory entry and a profile, the same steps the app and the bot host take. A new account
+ * holds no money until it is funded. */
 export async function openRealWallet(params: {
   label: string
   relayUrl: string
@@ -211,7 +231,8 @@ export async function openRealWallet(params: {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   // The account root is kept (0600) so the money in the account can be recovered after a crash.
   const rootFile = join(dir, 'account-root.hex')
-  if (!existsSync(rootFile)) writeFileSync(rootFile, randomBytes(32).toString('hex'), { mode: 0o600 })
+  const reused = existsSync(rootFile)
+  if (!reused) writeFileSync(rootFile, randomBytes(32).toString('hex'), { mode: 0o600 })
   const accountRoot = Uint8Array.from(Buffer.from(readFileSync(rootFile, 'utf8').trim(), 'hex'))
   const roots = {
     evm: deriveDomainRoot(accountRoot, 'evm-wallet'),
@@ -247,6 +268,7 @@ export async function openRealWallet(params: {
   })
   return {
     label: params.label,
+    reused,
     address: handle.identity.address.raw,
     mainAccount: (await handle.getReceiveAddress()).raw,
     handle,
@@ -305,16 +327,19 @@ export interface RealStack {
   rpcUrl: string
   stateDir: string
   provider: JsonRpcProvider
-  /** Address of the funding wallet. */
+  /** Address of the test wallet `fund` spends from ('' when FRANK_TEST_WALLET_JSON is unset). */
   fundingAddress: string
   openWallet(label: string, options?: { stampValueWei?: bigint }): Promise<RealWallet>
-  fund(to: string, valueWei: bigint): Promise<string>
-  /** Closes the wallets, sends what their main accounts still hold back to the funding wallet,
-   * and stops the relay. Safe to call more than once. */
+  /** Sends from the test wallet; refuses above the per-call limit unless `maxWei` raises it. */
+  fund(to: string, valueWei: bigint, options?: { maxWei?: bigint }): Promise<string>
+  /** Sends what the opened wallets' main and identity accounts hold back to the test wallet,
+   * where it is worth the fee. Returns the wei returned. Not needed between runs: wallets persist. */
+  sweep(): Promise<bigint>
+  /** Closes the wallets and stops the relay (if this started one). Safe to call more than once. */
   stop(): Promise<void>
 }
 
-/** Relay + chain + funding wallet, ready for wallets. `relayUrl` uses a relay that is already
+/** Relay + chain + test wallet, ready for wallets. `relayUrl` uses a relay that is already
  * running (for example the demo's) instead of starting one. */
 export async function startRealStack(options: {
   env?: Record<string, string | undefined>
@@ -329,31 +354,32 @@ export async function startRealStack(options: {
   if (id !== MONAD_TESTNET_CHAIN_ID) {
     throw new Error(`MONAD_TESTNET_HTTP_RPC_URL answers chain id ${id}, not Monad testnet (${MONAD_TESTNET_CHAIN_ID})`)
   }
-  const walletJson = env.FRANK_TEST_WALLET_JSON || env.E2E_DEMO_MAIN_WALLET_JSON
-  const walletJsonPath = walletJson ? resolve(REPO_ROOT, walletJson) : undefined
+  // The test wallet only. The demo's funding wallet is never used here: see the header.
+  const walletJsonPath = env.FRANK_TEST_WALLET_JSON ? resolve(REPO_ROOT, env.FRANK_TEST_WALLET_JSON) : undefined
   const fundingAddress = walletJsonPath
     ? (JSON.parse(readFileSync(walletJsonPath, 'utf8')) as { address: string }).address
     : ''
-  const stateDir = options.stateDir ?? env.FRANK_REAL_STACK_DIR ?? mkdtempSync(join(tmpdir(), 'frank-real-stack-'))
+  const maxFundWei = env.FRANK_TEST_MAX_FUND_WEI ? BigInt(env.FRANK_TEST_MAX_FUND_WEI) : DEFAULT_MAX_FUND_WEI
+  const baseDir = options.stateDir ?? env.FRANK_REAL_STACK_DIR ?? join(homedir(), '.frank-real-stack')
+  const port = options.relayPort ?? (env.FRANK_REAL_STACK_RELAY_PORT ? Number(env.FRANK_REAL_STACK_RELAY_PORT) : DEFAULT_RELAY_PORT)
+  const relayUrlWanted = options.relayUrl ?? `http://127.0.0.1:${port}`
+  // An account's directory entry lives on one relay, so state is kept per relay.
+  const stateDir = join(baseDir, relayUrlWanted.replace(/^https?:\/\//, '').replace(/[^A-Za-z0-9.-]+/g, '_'))
   mkdirSync(stateDir, { recursive: true, mode: 0o700 })
-  const relay = options.relayUrl
-    ? undefined
-    : await startRealRelay({ env, port: options.relayPort, stateDir })
-  const relayUrl = options.relayUrl ?? (relay as RealRelay).url
+  const relay = options.relayUrl ? undefined : await startRealRelay({ env, port, stateDir })
+  const relayUrl = relayUrlWanted
   const provider = new JsonRpcProvider(rpcUrlList(rpcUrl)[0], MONAD_TESTNET_CHAIN_ID, { staticNetwork: true })
   const wallets: RealWallet[] = []
   let stopped: Promise<void> | undefined
 
-  const sweep = async (wallet: RealWallet) => {
-    if (!fundingAddress) return
-    const key = wallet.handle.mainPrivateKey
-    if (!key) return
-    const signer = new Wallet(key, provider)
+  const sweepKey = async (privateKey: string): Promise<bigint> => {
+    const signer = new Wallet(privateKey, provider)
     const balance = await provider.getBalance(signer.address)
-    // A plain transfer at the node's gas price costs exactly 21000 x that price.
+    // A plain transfer at the node's gas price costs exactly 21000 x that price. Not worth
+    // sending unless it returns at least as much as it costs.
     const gasPrice = BigInt(await provider.send('eth_gasPrice', []))
     const cost = gasPrice * 21_000n
-    if (balance <= cost) return
+    if (balance < cost * 2n) return 0n
     const tx = await signer.sendTransaction({
       type: 0,
       to: fundingAddress,
@@ -362,6 +388,7 @@ export async function startRealStack(options: {
       gasPrice,
     })
     await tx.wait(1, 120_000)
+    return balance - cost
   }
 
   return {
@@ -381,22 +408,33 @@ export async function startRealStack(options: {
       wallets.push(wallet)
       return wallet
     },
-    async fund(to, valueWei) {
-      if (!walletJsonPath) throw new Error('FRANK_TEST_WALLET_JSON (or E2E_DEMO_MAIN_WALLET_JSON) is required to fund a wallet')
-      return (await fundFromWallet({ rpcUrl, walletJsonPath, to, valueWei })).txHash
+    async fund(to, valueWei, fundOptions) {
+      if (!walletJsonPath) {
+        throw new Error(
+          'FRANK_TEST_WALLET_JSON is required to fund a wallet: a funded testnet wallet used only by tests (never E2E_DEMO_MAIN_WALLET_JSON, which belongs to the demo\'s bot host)',
+        )
+      }
+      return (await fundFromWallet({ rpcUrl, walletJsonPath, to, valueWei, maxWei: fundOptions?.maxWei ?? maxFundWei })).txHash
+    },
+    async sweep() {
+      if (!fundingAddress) return 0n
+      let returned = 0n
+      for (const wallet of wallets) {
+        for (const key of [wallet.handle.mainPrivateKey, wallet.handle.identity.toPrivateKeyHex()]) {
+          if (!key) continue
+          returned += await sweepKey(key).catch(err => {
+            console.error(
+              `[real-stack] could not return funds of ${wallet.label}: ${err instanceof Error ? err.message : String(err)}`,
+            )
+            return 0n
+          })
+        }
+      }
+      return returned
     },
     stop: () =>
       (stopped ??= (async () => {
-        for (const wallet of wallets) {
-          await sweep(wallet).catch(err =>
-            console.error(
-              `[real-stack] could not return ${wallet.label}'s funds (its key is in ${join(stateDir, 'wallets', wallet.label)}): ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            ),
-          )
-          await wallet.close().catch(() => undefined)
-        }
+        for (const wallet of wallets) await wallet.close().catch(() => undefined)
         provider.destroy()
         await relay?.stop()
       })()),

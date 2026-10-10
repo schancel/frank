@@ -165,6 +165,7 @@ process.stdin.on('end', () => {
     env: { PATH: process.env.PATH, HOME: dir } as Record<string, string | undefined>,
     pollMs: 50,
     getBalance: async () => 10n ** 21n,
+    getGasPrice: async () => 10n ** 11n,
   }
 
   describe('redact', () => {
@@ -568,35 +569,73 @@ process.stdin.on('end', () => {
   })
 
   describe('the funding wallet is checked before anything is started', () => {
-    it('refuses to start, naming the wallet and the shortfall, when it cannot fund the bots', async () => {
-      const { fundingNeed, fundingShortfall } = await import('./demo')
+    it('works out the draw by the host\'s rules, with gas, and refuses above the limit or when the wallet cannot cover draw plus reserve', async () => {
+      const { fundingNeed, fundingRefusal } = await import('./demo')
       const c = await config()
       const bots = [{ name: 'rps' as const, identityJson: 'x' }, { name: 'faucet' as const, identityJson: 'y' }]
-      const balances: Record<string, bigint> = { '0xfund': 2n * 10n ** 17n }
+      const balances: Record<string, bigint> = {}
+      const MON = 10n ** 18n
       const params = {
         addresses: { rps: '0xrps', faucet: '0xfaucet' },
         mainAccounts: { rps: '0xrpsmain', faucet: '0xfaucetmain' },
-        fundingAddress: '0xfund',
         getBalance: async (a: string) => balances[a] ?? 0n,
+        gasPriceWei: 100n * 10n ** 9n, // 100 gwei: 0.0021 MON a transfer, doubled as margin
       }
-      // Three accounts need funding (the faucet's identity address does not). With the host's
-      // defaults that is 0.5 MON each: 1.5 MON, and the wallet holds 0.2.
-      const short = await fundingShortfall({ ...c, bots }, params)
-      expect(short![0]).toMatch(/funding wallet 0xfund holds 0\.2 testnet MON, but 3 bot accounts need funding and the bot host will draw about 1\.5 MON/)
-      expect(short!.join('\n')).toContain('Nothing was started and nothing was spent')
-      expect(short!.join('\n')).toContain('rps identity address, rps stamp account, faucet stamp account')
-      // With the launcher's refill settings: rps's transfer account to 0.6, two stamp accounts 0.5 each.
-      const tuned = { ...c, bots, botProcess: { ...c.botProcess, env: { FRANK_BOT_TOP_UP_BELOW_WEI: '300000000000000000', FRANK_BOT_TOP_UP_TO_WEI: '600000000000000000' } } }
-      expect((await fundingNeed(tuned, params)).neededWei).toBe(16n * 10n ** 17n)
-      // Enough in the wallet, or bots already funded: nothing to report.
-      balances['0xfund'] = 15n * 10n ** 17n
-      expect(await fundingShortfall({ ...c, bots }, params)).toBeUndefined()
-      balances['0xfund'] = 0n
-      for (const a of ['0xrps', '0xrpsmain', '0xfaucetmain']) balances[a] = 10n ** 17n
-      expect(await fundingShortfall({ ...c, bots }, params)).toBeUndefined()
-      // A transfer account between 0.1 and the 0.3 refill mark is refilled by the difference only.
-      expect(await fundingNeed(tuned, params)).toEqual({ neededWei: 5n * 10n ** 17n, low: ['rps identity address'] })
+      // Fresh bots: three accounts to 0.5 MON each (the faucet's identity address is not funded).
+      const fresh = await fundingNeed({ ...c, bots }, params)
+      expect(fresh.low).toEqual(['rps identity address', 'rps stamp account', 'faucet stamp account'])
+      expect(fresh.transfersWei).toBe(15n * MON / 10n)
+      expect(fresh.gasWei).toBe(3n * 21_000n * 100n * 10n ** 9n * 2n)
+      expect(fresh.drawWei).toBe(fresh.transfersWei + fresh.gasWei)
+
+      // Over the default 1 MON limit: refused, with the exact amount, the address and the way to allow it.
+      const over = await fundingRefusal({ ...c, bots }, fresh, '0xfund', 100n * MON)
+      expect(over![0]).toMatch(/3 bot accounts need funding: starting would draw 1\.5126 testnet MON \(1\.5 in transfers, up to 0\.0126 gas\) from the funding wallet 0xfund, more than the 1\.0 MON one start may draw/)
+      expect(over![1]).toContain('--allow-draw')
+      expect(over![1]).toContain(`FRANK_DEMO_MAX_START_DRAW_WEI to at least ${fresh.drawWei}`)
+      expect(over!.join('\n')).toContain('Nothing was started and nothing was spent')
+      expect(over!.join('\n')).not.toMatch(/new FRANK_DEMO_STATE_DIR/)
+
+      // Allowed (the flag): the wallet must hold the draw AND the host's 0.1 MON reserve.
+      const allowed = { ...c, bots, maxStartDrawWei: undefined }
+      expect(await fundingRefusal(allowed, fresh, '0xfund', fresh.drawWei + MON / 10n)).toBeUndefined()
+      const short = await fundingRefusal(allowed, fresh, '0xfund', fresh.drawWei + MON / 10n - 1n)
+      expect(short![0]).toMatch(/keeps 0\.1 MON in it as a reserve: it needs 1\.6126 MON and holds 1\.6125999/)
+      expect(short![1]).toMatch(/Send testnet MON to 0xfund/)
+
+      // A transfer account between 0.1 and the 0.3 refill mark is topped up by the difference only;
+      // funded accounts draw nothing, and then nothing is refused even with an empty wallet.
+      balances['0xrps'] = 2n * MON / 10n
+      balances['0xrpsmain'] = MON / 10n
+      balances['0xfaucetmain'] = MON / 10n
+      const partial = await fundingNeed({ ...c, bots }, params)
+      expect(partial.low).toEqual(['rps identity address'])
+      expect(partial.transfersWei).toBe(3n * MON / 10n)
+      expect(await fundingRefusal({ ...c, bots }, partial, '0xfund', MON)).toBeUndefined()
+      balances['0xrps'] = 3n * MON / 10n
+      const none = await fundingNeed({ ...c, bots }, params)
+      expect(none).toMatchObject({ low: [], drawWei: 0n })
+      expect(await fundingRefusal({ ...c, bots }, none, '0xfund', 0n)).toBeUndefined()
     })
+
+    it('a start that would fund fresh bots is refused before the relay starts, unless the draw is allowed', async () => {
+      const full = resolveDemoConfig({
+        env: { FRANK_DEMO_STATE_DIR: join(dir, 'state'), MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:9', E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'wallet.json') },
+        envFile: {},
+        home: dir,
+        cwd: dir,
+      })
+      const c = { ...(await config({ CASHWEBD_BIN: relayStub('http') })), bots: full.bots.filter(b => b.name === 'rps' || b.name === 'dice') }
+      // Every balance reads zero: two fresh bots, four accounts, 2 MON.
+      const err = await startDemo(c, { ...opts, getBalance: async () => 0n }).then(
+        () => undefined,
+        e => e,
+      )
+      expect(err).toBeInstanceOf(DemoConfigError)
+      expect((err as DemoConfigError).message).toMatch(/4 bot accounts need funding: starting would draw 2\.0\d* testnet MON/)
+      expect((err as DemoConfigError).message).toContain('--allow-draw')
+      expect(existsSync(pidFile)).toBe(false) // the relay was never started
+    }, 30000)
 
     it('a missing wallet file stops the start before the relay is started', async () => {
       const c = await config({ CASHWEBD_BIN: relayStub('http'), E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'missing-wallet.json') })

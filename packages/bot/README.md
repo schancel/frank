@@ -52,12 +52,16 @@ example), or holds less than 0.1 MON in either account,
 is printed as an error naming the bot (`DEMO BOT ERRORS`, repeated in the summary), and the other
 bots keep running. `all N bots funded and registered` is printed only when every one is.
 
-**What a start costs.** The host refills a bot's transfer account to 0.6 MON when it holds less
-than 0.3 (`FRANK_BOT_TOP_UP_BELOW_WEI` / `FRANK_BOT_TOP_UP_TO_WEI`, set by the launcher) and gives
-its stamp account 0.5 MON when it holds less than 0.1. A first start with ten bots therefore draws
-about 10.4 testnet MON (9 transfer accounts x 0.6 + 10 stamp accounts x 0.5); later starts on the
-same state directory draw only what the bots have spent. The launcher prints the amount, read from
-the chain, before it starts anything, and refuses if the wallet holds less.
+**What a start costs, and the limit on it.** The bot host refills a bot's transfer account to
+0.5 MON when it holds less than 0.3 and its stamp account to 0.5 MON when it holds less than 0.1
+(the faucet has no transfer account to fund), so a first start on a new state directory draws close
+to 1 MON per bot from the funding wallet; later starts on the same state directory draw only what
+the bots have spent. Before anything starts the launcher works the draw out from chain balances
+(transfers plus gas) and **refuses a start that would draw more than 1 MON**
+(`FRANK_DEMO_MAX_START_DRAW_WEI`), saying exactly how much and from which address. Pass
+`--allow-draw` (or raise the variable) to permit it. It also refuses when the wallet cannot cover
+the draw plus the 0.1 MON reserve the host keeps in it. A bot's key, and so whatever its accounts
+hold, lives in the state directory: do not start on a new one, or delete one, as a quick fix.
 
 Source builds also need a usable native `protoc` (libprotoc 3+ with proto3 support). The relay
 launcher validates `PROTOC` when set; otherwise it searches PATH, then the installed `protoc`
@@ -200,18 +204,21 @@ printed.
 failure, and spends real testnet funds from `FRANK_TEST_WALLET_JSON`, a second funded testnet
 wallet; nothing but the bot host may send from `E2E_DEMO_MAIN_WALLET_JSON` while a demo runs):
 
-- `yarn test:two-wallets`: starts the real relay binary on a free port, creates two fresh wallets,
-  gives each 0.012 MON, sends a stamped message each way and checks every reported stamp payment
-  on chain (mined, right destination and amount). What is left in the main accounts is returned.
-  Needs only the RPC URL and the funding wallet; about 0.02 MON per run stays in the wallets'
-  prepared stamp accounts. `FRANK_REAL_STACK_RELAY_URL` uses a relay that is already running.
-- `yarn demo:smoke`: starts exactly what `yarn demo` starts (same `.env` and state directory, so
-  bots funded earlier are not funded again; stop a running demo first), then a new user with a
-  real wallet messages Qwen, the picture shop, the raffle and the dealer and each reply is checked
-  for its content; the faucet's payment to the new profile is read from the chain; the relay's
-  proxied chain RPC and its CORS headers are checked. The user is lent 0.05 MON.
+- `yarn test:two-wallets`: starts the real relay binary, opens two wallets (kept and reused
+  between runs in `~/.frank-real-stack`; each is given 0.012 MON only when it has run dry), sends
+  a stamped message each way and checks every reported stamp payment on chain (mined, right
+  destination and amount). `FRANK_REAL_STACK_RELAY_URL` uses a relay that is already running.
+- `yarn demo:smoke`: starts exactly what `yarn demo` starts (same `.env`, state directory and
+  draw limit; stop a running demo first), then one persistent test user with a real wallet
+  messages Qwen, the picture shop, the raffle and the dealer and each reply is checked for its
+  content; the faucet's payment to that profile is read from the chain; the relay's proxied chain
+  RPC and its CORS headers are checked. The user is given 0.05 MON when it has run dry.
 - `node app/test/autonomous-fullstack-e2e.mjs`: the browser run, against a running `yarn demo`
-  (see the header of that file).
+  (see the header of that file). It gives a throwaway browser account 0.2 MON that does not come
+  back.
+
+Every one of these refuses to fund anything without `FRANK_TEST_WALLET_JSON`, and one funding
+transfer is at most 0.5 MON (`FRANK_TEST_MAX_FUND_WEI`).
 
 The harness these use is `packages/bot/demo/real-stack.ts` (`startRealStack`, `openWallet`, `fund`,
 `stop`): real relay, real chain, real wallets, for any other test that needs them.
@@ -257,8 +264,9 @@ The harness these use is `packages/bot/demo/real-stack.ts` (`startRealStack`, `o
 | `QWEN_MODEL_TRIES`                    | qwen             | 3                                                  | Model calls tried for one message before the user is told it failed.                                                                                                                                                                                                                                                                                              |
 | `QWEN_ENABLE_THINKING`                | qwen             | 0                                                  | Set to 1 to turn the model's thinking on (slower replies).                                                                                                                                                                                                                                                                                                        |
 | `QWEN_SYSTEM_PROMPT`                  | qwen             | the bot's own                                      | Replaces the system prompt the bot sends the model.                                                                                                                                                                                                                                                                                                               |
-| `FRANK_BOT_TOP_UP_BELOW_WEI`          | bots             | 300000000000000000                                 | The bot host refills the account a bot pays transfers and payouts from when it holds less than this (0.3 MON).                                                                                                                                                                                                                                                    |
-| `FRANK_BOT_TOP_UP_TO_WEI`             | bots             | 600000000000000000                                 | What that account is refilled to (0.6 MON), from the funding wallet.                                                                                                                                                                                                                                                                                              |
+| `FRANK_BOT_TOP_UP_BELOW_WEI`          | bots             | host default (300000000000000000, 0.3 MON)         | The bot host refills the account a bot pays transfers and payouts from when it holds less than this. Passed on only when set.                                                                                                                                                                                                                                     |
+| `FRANK_BOT_TOP_UP_TO_WEI`             | bots             | host default (500000000000000000, 0.5 MON)         | What that account is refilled to, from the funding wallet. Passed on only when set.                                                                                                                                                                                                                                                                               |
+| `FRANK_DEMO_MAX_START_DRAW_WEI`       | launcher         | 1000000000000000000 (1 MON)                        | The most one start may draw from the funding wallet to fund bot accounts (their refills plus gas), worked out from chain balances before anything starts. A start that would draw more is refused with the exact amount. Raise it, or pass --allow-draw, to permit a first start on a new state directory (which funds every bot from nothing).                   |
 | `RAFFLE_BOT_ENTRY_PRICE_WEI`          | raffle           | 20000000000000000                                  | Raffle entry price (0.02 MON).                                                                                                                                                                                                                                                                                                                                    |
 | `RAFFLE_BOT_MAX_TOPUP_WEI`            | raffle           | 50000000000000000                                  | Most the stamp wallet may top up the raffle identity per round to cover swept-entry gas and payout gas; beyond it the draw is held and logged (0.05 MON).                                                                                                                                                                                                         |
 | `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI`    | raffle           | 250000000000000000                                 | Most the stamp wallet may top up the raffle identity per trailing 24 hours (0.25 MON).                                                                                                                                                                                                                                                                            |

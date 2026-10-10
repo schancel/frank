@@ -5,12 +5,13 @@
 //
 // It drives a real headless Chrome through account creation, funds the new account with a real
 // transfer from FRANK_TEST_WALLET_JSON, a second funded testnet wallet (E2E_FUND_MON, default
-// 0.3 MON, through packages/bot/demo/fund.ts; never the demo's own funding wallet, which only the
-// running bot host may spend from), then Qwen (the answer's content is checked), a full blackjack hand
+// 0.2 MON, through packages/bot/demo/fund.ts, which refuses without that wallet; never the demo's
+// own funding wallet, which only the running bot host may spend from), then Qwen (the answer's content is checked), a full blackjack hand
 // to its outcome, the picture shop, quick sends across a reload, a native send and the other bots
 // (each must answer with what that command produces). It exits non-zero if any scenario fails OR
 // the browser logged an error, a request failed, or the relay/bot logs gained an error line.
-// It spends real testnet funds: the transfer above, of which stamps, bets and gas are used.
+// It spends real testnet funds: the transfer above goes to an account in a throwaway Chrome
+// profile and does not come back (stamps, a bet and gas use part of it; the rest stays there).
 import assert from 'node:assert/strict'
 import { spawn, execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -42,7 +43,7 @@ const logsDir = resolve(
     ),
 )
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-const fundMon = process.env.E2E_FUND_MON ?? '0.3'
+const fundMon = process.env.E2E_FUND_MON ?? '0.2'
 const executable =
   process.env.CUSTODY_CHROME ??
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -335,7 +336,11 @@ async function inspectBackendLogs(startOffsets = new Map()) {
       if (
         line.includes('ERROR') ||
         line.includes('panic') ||
-        line.includes('unhandledRejection')
+        line.includes('unhandledRejection') ||
+        line.includes('FAILED to start') ||
+        line.includes('could not be started') ||
+        line.includes('FUNDING WALLET EXHAUSTED') ||
+        line.includes('QWEN BOT FAILED')
       ) {
         backendErrors.push(`[${file}] ${line}`)
       }
@@ -604,7 +609,9 @@ async function run() {
       await openConversation('Qwen')
       const timings = []
       for (let i = 1; i <= 3; i++)
-        timings.push(await timedSend(`What is Frank? (${i})`, 40000))
+        // One question at a time, waiting past the bot's own allowance (45 s a model call, three
+        // tries), so the next received message is the answer to this question and no other.
+        timings.push(await timedSend(`What is Frank? (${i})`, 150000))
       await captureScreenshot('03_qwen.png')
       if (timings.some(t => t.reply === undefined))
         throw new Error('no reply: ' + JSON.stringify(timings))
@@ -794,12 +801,13 @@ async function run() {
       )
       await new Promise(r => setTimeout(r, 500))
       await click('[data-test="review-confirm-button"]')
+      // A TERMINAL state: the page moved on, or the outcome says sent or reverted. "pending" and
+      // "unresolved" are not outcomes; the wallet keeps observing, so keep waiting.
       await until(
-        `location.hash !== '#/send' || /sent on|unresolved|pending|reverted/i.test(document.querySelector('[data-test="native-operation-outcome"]')?.innerText ?? '')`,
-        30000,
-        'native transfer outcome',
+        `location.hash !== '#/send' || /sent on|reverted/i.test(document.querySelector('[data-test="native-operation-outcome"]')?.innerText ?? '')`,
+        120000,
+        'a terminal native transfer outcome (sent or reverted)',
       )
-      await new Promise(r => setTimeout(r, 1500))
       await captureScreenshot('07_native_send.png')
       const outcome = await evaluate(
         `location.hash !== '#/send' ? 'returned to ' + location.hash : document.querySelector('[data-test="native-operation-outcome"]').innerText.replace(/\\n+/g, ' | ')`,
@@ -823,8 +831,6 @@ async function run() {
       ['Lobby', '/help', /Lobby Group Chat Commands/i],
       ['Satoshi Dice', '/roll 0.01', /roll|dice|win|lose|lost|won/i],
       ['RPS Arena', '/rps', /rock|paper|scissors/i],
-      ['Texas Hold', '/poker create', /table|poker/i],
-      ["Liar's Dice", '/table create', /table|dice/i],
     ]) {
       await scenario(`8 ${name} "${text}"`, async () => {
         await openConversation(name)

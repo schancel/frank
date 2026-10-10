@@ -24,8 +24,8 @@ import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
 import { ensurePrivateDir } from '../stamp-pool-seed'
 import { renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { prepareBotIdentities } from './demo-identities'
-import { chainBalanceWei } from './chain-rpc'
-import { DEMO_MIN_BOT_BALANCE_WEI, DEMO_STAMP_ACCOUNT_TOP_UP_WEI, DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig, resolveDirectoryDemoConfig } from './demo-config'
+import { chainBalanceWei, rpcCall } from './chain-rpc'
+import { DEMO_MIN_BOT_BALANCE_WEI, HOST_STAMP_TOP_UP_BELOW_WEI, HOST_STAMP_TOP_UP_TO_WEI, DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig, resolveDirectoryDemoConfig } from './demo-config'
 import { EnvFileError, readEnvFile } from './env-file'
 import {
   acquireLock,
@@ -98,6 +98,8 @@ export interface StartOptions {
   startApp?: boolean
   /** Reads an address's balance from the chain (tests replace it; the default asks the RPC). */
   getBalance?: (address: string) => Promise<bigint>
+  /** Reads the chain's gas price in wei (tests replace it; the default asks the RPC). */
+  getGasPrice?: () => Promise<bigint>
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -280,56 +282,79 @@ export function fundingTargets(
   ]
 }
 
-/** What the bot host will draw from the funding wallet when the bots start, read from the chain:
- * each transfer account below the refill mark is refilled to the refill amount, each stamp account
- * below 0.1 MON gets 0.5 MON. Reads balances only; nothing is sent. */
+export interface FundingNeed {
+  /** What the bot host will send to bot accounts. */
+  transfersWei: bigint
+  /** Gas for those transfers, with a margin. */
+  gasWei: bigint
+  /** transfersWei + gasWei: what this start draws from the funding wallet. */
+  drawWei: bigint
+  /** The accounts that will be funded, `<bot> <which account>`. */
+  low: string[]
+}
+
+/** What the bot host will draw from the funding wallet when the bots start, read from the chain
+ * and worked out by the host's own rules: a transfer account under its refill mark is brought up
+ * to the refill amount, a stamp account under 0.1 MON to 0.5; each is one plain transfer. Reads
+ * balances only; nothing is sent. */
 export async function fundingNeed(
   config: DemoConfig,
   params: {
     addresses: Record<string, string>
     mainAccounts: Record<string, string>
     getBalance: (address: string) => Promise<bigint>
+    gasPriceWei: bigint
   },
-): Promise<{ neededWei: bigint; low: string[] }> {
-  const below = BigInt(config.botProcess.env.FRANK_BOT_TOP_UP_BELOW_WEI ?? DEMO_MIN_BOT_BALANCE_WEI)
-  const to = BigInt(config.botProcess.env.FRANK_BOT_TOP_UP_TO_WEI ?? DEMO_STAMP_ACCOUNT_TOP_UP_WEI)
-  let neededWei = 0n
+): Promise<FundingNeed> {
+  let transfersWei = 0n
   const low: string[] = []
   for (const bot of config.bots) {
     for (const target of fundingTargets(bot.name, params.addresses, params.mainAccounts)) {
       const balance = await params.getBalance(target.address)
       const stamp = target.label === 'stamp account'
-      if (balance >= (stamp ? DEMO_MIN_BOT_BALANCE_WEI : below)) continue
-      neededWei += stamp ? DEMO_STAMP_ACCOUNT_TOP_UP_WEI : to - balance
+      const below = stamp ? HOST_STAMP_TOP_UP_BELOW_WEI : config.funding.topUpBelowWei
+      const to = stamp ? HOST_STAMP_TOP_UP_TO_WEI : config.funding.topUpToWei
+      if (balance >= below) continue
+      transfersWei += to - balance
       low.push(`${bot.name} ${target.label}`)
     }
   }
-  return { neededWei, low }
+  // A plain transfer costs 21000 x the gas price; twice that, in case the price moves.
+  const gasWei = BigInt(low.length) * 21_000n * params.gasPriceWei * 2n
+  return { transfersWei, gasWei, drawWei: transfersWei + gasWei, low }
 }
 
-/** Lines explaining why the funding wallet cannot fund this run's bots, or undefined when it can
- * (or nothing needs funding). */
-export async function fundingShortfall(
+/** Lines explaining why this start may not go ahead, or undefined when it may: either the start
+ * would draw more than the operator allowed, or the funding wallet cannot cover the draw and the
+ * reserve the host keeps in it. Nothing has been started or spent when this speaks. */
+export async function fundingRefusal(
   config: DemoConfig,
-  params: {
-    addresses: Record<string, string>
-    mainAccounts: Record<string, string>
-    fundingAddress: string
-    getBalance: (address: string) => Promise<bigint>
-  },
+  need: FundingNeed,
+  fundingAddress: string,
+  fundingBalanceWei: bigint,
 ): Promise<string[] | undefined> {
-  const { neededWei, low } = await fundingNeed(config, params)
-  if (low.length === 0) return undefined
-  const balance = await params.getBalance(params.fundingAddress)
-  if (balance >= neededWei) return undefined
-  return [
-    `the funding wallet ${params.fundingAddress} holds ${formatEther(balance)} testnet MON, but ${low.length} bot accounts need funding and the bot host will draw about ${formatEther(neededWei)} MON for them.`,
-    `  Send testnet MON to ${params.fundingAddress} (E2E_DEMO_MAIN_WALLET_JSON) and start again. Nothing was started and nothing was spent.`,
-    `  Unfunded: ${low.join(', ')}`,
-  ]
+  if (need.low.length === 0) return undefined
+  const what = `${need.low.length} bot accounts need funding: starting would draw ${formatEther(need.drawWei)} testnet MON (${formatEther(need.transfersWei)} in transfers, up to ${formatEther(need.gasWei)} gas) from the funding wallet ${fundingAddress}`
+  if (config.maxStartDrawWei !== undefined && need.drawWei > config.maxStartDrawWei) {
+    return [
+      `${what}, more than the ${formatEther(config.maxStartDrawWei)} MON one start may draw.`,
+      `  To allow it, run with --allow-draw (or set FRANK_DEMO_MAX_START_DRAW_WEI to at least ${need.drawWei}). Nothing was started and nothing was spent.`,
+      `  A state directory whose bots are already funded draws nothing: check that FRANK_DEMO_STATE_DIR (${config.stateDir}) is the one you meant.`,
+      `  Unfunded: ${need.low.join(', ')}`,
+    ]
+  }
+  const required = need.drawWei + config.funding.reserveWei
+  if (fundingBalanceWei < required) {
+    return [
+      `${what}, and the host keeps ${formatEther(config.funding.reserveWei)} MON in it as a reserve: it needs ${formatEther(required)} MON and holds ${formatEther(fundingBalanceWei)}.`,
+      `  Send testnet MON to ${fundingAddress} (E2E_DEMO_MAIN_WALLET_JSON) and start again. Nothing was started and nothing was spent.`,
+      `  Unfunded: ${need.low.join(', ')}`,
+    ]
+  }
+  return undefined
 }
 
-const KNOWN_FLAGS = new Set(['--ngrok', '--app', '--no-app'])
+const KNOWN_FLAGS = new Set(['--ngrok', '--app', '--no-app', '--allow-draw'])
 
 export async function startDemo(config: DemoConfig, options: StartOptions = {}): Promise<DemoHandle> {
   const print = options.print ?? ((line: string) => console.log(line))
@@ -346,6 +371,8 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
   const done = new Promise<number>(r => (resolveDone = r))
 
   const getBalance = options.getBalance ?? ((address: string) => chainBalanceWei(config.rpcUrl, address))
+  const getGasPrice =
+    options.getGasPrice ?? (async () => BigInt(await rpcCall<string>(config.rpcUrl, 'eth_gasPrice', [])))
 
   const supervisor: Supervisor = new Supervisor(baseEnv, print, (child: SupervisedChild) => {
     unhealthy.push(child.name)
@@ -463,13 +490,13 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
 
     // Before anything is started or spent: can the one funding wallet fund the bots at all?
     const fundingAddress = `0x${walletAddress(config.mainWalletJson) as string}`
-    const short = await fundingShortfall(config, { addresses, mainAccounts, fundingAddress, getBalance })
-    if (short) throw new DemoConfigError(short)
-    const need = await fundingNeed(config, { addresses, mainAccounts, getBalance })
+    const need = await fundingNeed(config, { addresses, mainAccounts, getBalance, gasPriceWei: await getGasPrice() })
+    const refusal = await fundingRefusal(config, need, fundingAddress, await getBalance(fundingAddress))
+    if (refusal) throw new DemoConfigError(refusal)
     print(
       need.low.length === 0
         ? '[demo] every bot account is already funded: this start draws nothing from the funding wallet'
-        : `[demo] ${need.low.length} bot accounts need funding: this start draws about ${formatEther(need.neededWei)} testnet MON from ${fundingAddress}`,
+        : `[demo] ${need.low.length} bot accounts need funding: this start DRAWS ${formatEther(need.drawWei)} testnet MON from ${fundingAddress} (allowed${config.maxStartDrawWei === undefined ? ' by --allow-draw' : `: the limit is ${formatEther(config.maxStartDrawWei)} MON`})`,
     )
     abortIfStopping()
 
@@ -502,10 +529,12 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
 
     // The shipped relay config carries the directory section; only the curated defaults are extra.
     //
-    // RESERVED USERNAMES GO HERE: when the relay accepts `reserved_usernames` (name -> the one key
-    // allowed to claim it, branch `usernames`), append a `[registry.directory.reserved_usernames]`
-    // table built from the bots' identities (`addresses` above; the usernames work provides the
-    // helper) to this extra TOML, so nobody can claim a bot's name before the bot does.
+    // RESERVED USERNAMES GO HERE (PR #1374, not on main when this was written): for each bot call
+    // `reservedUsernamesTomlLine([{ username, compressedPubKey }])` from
+    // `packages/bot-framework/src/reserved-usernames.ts` with its identity's compressed public key
+    // and `getProfile().username ?? id`. The returned line belongs INSIDE `[registry.directory]`,
+    // which is in the shipped base config, not in this appended file: pass it to
+    // run-local-monad.sh through a new override (as FRANK_RELAY_ID is) rather than appending it.
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
     writeFileSync(curatedPath, renderCuratedDefaultsToml(curated), { mode: 0o600 })
     abortIfStopping()
@@ -883,7 +912,7 @@ export async function main(argv: string[], env: Record<string, string | undefine
     const unknown = argv.filter(arg => !KNOWN_FLAGS.has(arg))
     if (unknown.length > 0) {
       throw new DemoConfigError([
-        `unknown argument(s): ${unknown.join(' ')}. The demo runs on Monad testnet; its options are --ngrok, --app and --no-app.`,
+        `unknown argument(s): ${unknown.join(' ')}. The demo runs on Monad testnet; its options are --ngrok, --app, --no-app and --allow-draw.`,
       ])
     }
     const envFilePath = env.FRANK_DEMO_ENV_FILE
@@ -893,6 +922,7 @@ export async function main(argv: string[], env: Record<string, string | undefine
       env,
       envFile: readEnvFile(envFilePath),
       ngrokFlag: argv.includes('--ngrok'),
+      allowDrawFlag: argv.includes('--allow-draw'),
       // `yarn demo` runs inside packages/bot; relative paths mean relative to where the user typed it.
       cwd: env.INIT_CWD ?? process.cwd(),
     })

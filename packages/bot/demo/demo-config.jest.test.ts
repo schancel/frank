@@ -197,12 +197,21 @@ describe('resolveDemoConfig', () => {
     })
   })
 
-  it('tells the bot host a modest refill for transfer accounts (0.6 MON below 0.3), overridable', () => {
-    expect(REAL().botProcess.env).toMatchObject({
-      FRANK_BOT_TOP_UP_BELOW_WEI: '300000000000000000',
-      FRANK_BOT_TOP_UP_TO_WEI: '600000000000000000',
-    })
-    expect(REAL({ FRANK_BOT_TOP_UP_TO_WEI: '7' }).botProcess.env.FRANK_BOT_TOP_UP_TO_WEI).toBe('7')
+  it('leaves the bot host its own refill amounts unless the operator sets them', () => {
+    expect(REAL().botProcess.env).not.toHaveProperty('FRANK_BOT_TOP_UP_TO_WEI')
+    expect(REAL().funding).toEqual({ topUpBelowWei: 3n * 10n ** 17n, topUpToWei: 5n * 10n ** 17n, reserveWei: 10n ** 17n })
+    const set = REAL({ FRANK_BOT_TOP_UP_TO_WEI: '7', FRANK_BOT_TOP_UP_BELOW_WEI: '3', FAUCET_MIN_RESERVE_WEI: '9' })
+    expect(set.botProcess.env).toMatchObject({ FRANK_BOT_TOP_UP_TO_WEI: '7', FRANK_BOT_TOP_UP_BELOW_WEI: '3' })
+    expect(set.funding).toEqual({ topUpBelowWei: 3n, topUpToWei: 7n, reserveWei: 9n })
+  })
+
+  it('one start may draw at most 1 MON unless the operator raises the limit or passes --allow-draw', () => {
+    expect(REAL().maxStartDrawWei).toBe(10n ** 18n)
+    expect(REAL({ FRANK_DEMO_MAX_START_DRAW_WEI: '5' }).maxStartDrawWei).toBe(5n)
+    expect(
+      resolveDemoConfig({ env: REAL_ENV, envFile: {}, allowDrawFlag: true, home: HOME, cwd: '/work' }).maxStartDrawWei,
+    ).toBeUndefined()
+    expect(problemsOf(() => REAL({ FRANK_DEMO_MAX_START_DRAW_WEI: 'lots' }))[0]).toMatch(/positive integer/)
   })
 
   it('validates ports, wei amounts and the raffle size', () => {

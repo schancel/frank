@@ -1,4 +1,5 @@
 import {
+  AccountBackupUnavailableError,
   accountSession,
   createAccountSession,
   importBip39Wallet,
@@ -370,19 +371,32 @@ test('an unchanged account keeps its published identity across wallet acquisitio
   expect(f.session.state.account?.receipt.context.accountId).toBe('b')
 })
 
-test('getActiveWalletRoot and backupCodex32 split active wallet root into 2-of-3 shares', async () => {
+test('backupCodex32 splits only the stored account root and never falls back to a derived root', async () => {
   const f = fixture()
   await f.session.initialize()
-  const root = await f.session.getActiveWalletRoot()
-  expect(root).toBeInstanceOf(Uint8Array)
-  expect(root.length).toBe(32)
+  const exportAccountRoot = jest.fn()
+  Object.assign(f.custody, { exportAccountRoot })
 
-  const shares = await f.session.backupCodex32(2, 3)
-  expect(shares).toHaveLength(3)
-  for (const share of shares) {
-    expect(share.startsWith('ms12frnk')).toBe(true)
-    expect(share.length).toBe(127)
-  }
+  // An account stored before roots were kept: an honest refusal, no shares.
+  exportAccountRoot.mockResolvedValue({ account: f.account, accountRoot: null })
+  await expect(f.session.backupCodex32(2, 3)).rejects.toBeInstanceOf(
+    AccountBackupUnavailableError,
+  )
+  expect(f.capability.takeRoots).toHaveBeenCalledTimes(1)
+
+  // Custody answering for another account is a conflict, whatever it holds.
+  exportAccountRoot.mockResolvedValue({
+    account: { ...f.account, receipt: { context: { accountId: 'other' } } },
+    accountRoot: new Uint8Array(32).fill(7),
+  })
+  await expect(f.session.backupCodex32(2, 3)).rejects.toMatchObject({
+    code: 'conflict',
+  })
+
+  // The removed derived-root shortcut is gone from the session.
+  expect('getActiveWalletRoot' in f.session).toBe(false)
+  // The domain roots are not read again for a backup.
+  expect(f.capability.takeRoots).toHaveBeenCalledTimes(1)
 })
 
 test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash and solana', async () => {
@@ -914,7 +928,7 @@ test.each(['close', 'refresh replacement', 'invalidation'] as const)(
 test('initial root and secp256k1 requests survive initialization and current wallet errors propagate', async () => {
   const f = fixture()
   const [root, key, duplicate] = await Promise.all([
-    f.session.getActiveWalletRoot(),
+    f.session.getActiveDomainRoot('evm-wallet'),
     f.session.getCurvePublicKey('secp256k1'),
     f.session.getCurvePublicKey('secp256k1'),
   ])

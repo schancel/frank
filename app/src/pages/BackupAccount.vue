@@ -37,7 +37,10 @@
               <div class="text-h6">
                 {{ $t('accountRecovery.backup_account_codex32') }}
               </div>
-              <div class="row items-center q-gutter-xs">
+              <div
+                v-if="!backupUnavailable"
+                class="row items-center q-gutter-xs"
+              >
                 <q-btn
                   outline
                   no-caps
@@ -65,18 +68,23 @@
                 </q-btn>
               </div>
             </div>
-            <div class="text-caption text-grey-8 q-mt-xs">
+            <div
+              v-if="!backupUnavailable"
+              class="text-caption text-grey-8 q-mt-xs"
+              data-test="backup-explainer"
+            >
               {{
                 $t('accountRecovery.codex32_threshold_explainer', {
                   threshold,
                   count,
                 })
               }}
+              {{ $t('accountRecovery.codex32_backup_sets_do_not_mix') }}
             </div>
           </q-card-section>
 
           <q-card-section
-            v-if="showCustomConfig"
+            v-if="showCustomConfig && !backupUnavailable"
             class="q-py-none"
             data-test="custom-scheme-section"
           >
@@ -135,6 +143,14 @@
               <div class="q-mt-md text-body2">
                 {{ $t('accountRecovery.generating_codex32_backup_shares') }}
               </div>
+            </div>
+            <div
+              v-else-if="backupUnavailable"
+              role="alert"
+              class="text-body2 q-pa-sm"
+              data-test="backup-unavailable"
+            >
+              {{ $t('accountRecovery.codex32_backup_unavailable_for_account') }}
             </div>
             <div
               v-else-if="backupError"
@@ -225,6 +241,7 @@ const router = useRouter()
 const {
   backupLoading,
   backupError,
+  backupUnavailable,
   backupShares,
   threshold,
   count,

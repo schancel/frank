@@ -540,6 +540,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-native-tls",
  "tokio-tungstenite",
  "tower",
  "tower-http",

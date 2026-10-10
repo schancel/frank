@@ -7,6 +7,7 @@
 
 import type { UniswapV4Deployment } from '../chain/dex-deployments'
 import {
+  chargedGasPrice,
   estimateCallFee,
   swapRevertReasonOf,
   type NetworkFeeEstimate,
@@ -53,6 +54,11 @@ export interface SwapWallet {
     mainBusy: boolean
   }>
   fundMainAccount?(params: { value: bigint }): Promise<unknown>
+  /** How many transfers a consolidation of `value` into the main account takes. */
+  estimateLegacyFee?(params: {
+    recipient: { raw: string }
+    value: bigint
+  }): Promise<{ inputCount: number }>
   resumeLegacySend?(operationId: string): Promise<unknown>
   /** Re-submits the same signed bytes of a recorded operation, then observes it. */
   resumeNativeOperation?(operationId: string): Promise<unknown>
@@ -89,7 +95,10 @@ export type SwapResult =
       /** From the receipt's logs. Undefined when the logs did not contain the swap. */
       amountIn?: bigint
       amountOut?: bigint
+      /** Charged for the swap transaction itself, from its receipt. */
       feeWei: bigint
+      /** Charged for every transaction this swap needed: consolidation, approvals, the swap. */
+      totalFeeWei: bigint
     }
   | {
       status: 'reverted'
@@ -97,6 +106,7 @@ export type SwapResult =
       operationId: string
       reason?: SwapRevertReason
       feeWei: bigint
+      totalFeeWei: bigint
     }
   /** Handed to the network and not yet seen in a block. It may still land. */
   | { status: 'pending'; txHash: string; operationId: string }
@@ -257,14 +267,119 @@ export async function consolidationNeeded(params: {
   return { moveWei, possible: moveWei <= funds.otherBalance }
 }
 
+/** The network fee a finished consolidation reports, when it reports one. */
+const feePaid = (result: unknown): bigint => {
+  const fee = (result as { totalFeePaid?: unknown } | null)?.totalFeePaid
+  return typeof fee === 'bigint' ? fee : 0n
+}
+
+export interface SwapCostLine {
+  readonly kind: 'consolidation' | 'approval' | 'swap'
+  /** What the network will charge for it; undefined when it cannot be known yet. */
+  readonly feeWei?: bigint
+}
+
+export interface SwapCost {
+  /** Every transaction the swap needs, in the order they are sent. */
+  readonly transactions: readonly SwapCostLine[]
+  /** The sum of the fees that are known. */
+  readonly networkFeeWei: bigint
+  /**
+   * False when a fee is not known yet: a token swap cannot be gas-estimated until its approvals
+   * have confirmed. The total is then a floor, and the form says so instead of guessing.
+   */
+  readonly complete: boolean
+  /** The swap transaction's own estimate, when it could be made. */
+  readonly swapFee?: NetworkFeeEstimate
+}
+
+/**
+ * What the whole swap will cost in network fees: the transfer(s) of a consolidation, each
+ * approval, and the swap, each at its gas limit times the price charged now. Monad charges the
+ * limit, so this is what leaves the account, not an upper bound.
+ */
+export async function estimateSwapCost(params: {
+  reader: SwapChainReader
+  wallet: Pick<SwapWallet, 'estimateLegacyFee'>
+  plan: SwapPlan
+  account: string
+  /** What `consolidationNeeded` said must be moved in first. */
+  moveWei?: bigint
+}): Promise<SwapCost> {
+  const { reader, plan, account } = params
+  const transactions: SwapCostLine[] = []
+  let complete = true
+  if (params.moveWei && params.moveWei > 0n) {
+    let feeWei: bigint | undefined
+    try {
+      const [{ inputCount }, price] = await Promise.all([
+        params.wallet.estimateLegacyFee!({
+          recipient: { raw: account },
+          value: params.moveWei,
+        }),
+        chargedGasPrice(reader),
+      ])
+      feeWei = 21_000n * BigInt(inputCount) * price.chargedPerGas
+    } catch {
+      complete = false
+    }
+    transactions.push({ kind: 'consolidation', feeWei })
+  }
+  for (const { call } of plan.approvals) {
+    const fee = await estimateCallFee(reader, call, account).catch(
+      () => undefined,
+    )
+    if (!fee) complete = false
+    transactions.push({ kind: 'approval', feeWei: fee?.chargedFeeWei })
+  }
+  // The swap pulls the token through the allowance, so until that exists it cannot be estimated.
+  const swapFee =
+    plan.approvals.length === 0
+      ? await estimateCallFee(reader, plan.swap, account).catch(() => undefined)
+      : undefined
+  if (!swapFee) complete = false
+  transactions.push({ kind: 'swap', feeWei: swapFee?.chargedFeeWei })
+  return {
+    transactions,
+    networkFeeWei: transactions.reduce((sum, t) => sum + (t.feeWei ?? 0n), 0n),
+    complete,
+    swapFee,
+  }
+}
+
+/**
+ * How large the network fee is beside the amount being swapped, in percent, when the two are in
+ * the same asset (the native coin is paid in, or paid out). Undefined otherwise: no conversion
+ * between assets is invented.
+ */
+export function networkFeeShare(params: {
+  networkFeeWei: bigint
+  quote: {
+    tokenIn: { address: string | null }
+    tokenOut: { address: string | null }
+    amountIn: bigint
+    amountOut: bigint
+  }
+}): number | undefined {
+  const { quote } = params
+  const amount =
+    quote.tokenIn.address === null
+      ? quote.amountIn
+      : quote.tokenOut.address === null
+      ? quote.amountOut
+      : undefined
+  if (amount === undefined || amount <= 0n) return undefined
+  return Number((params.networkFeeWei * 10_000n) / amount) / 100
+}
+
 async function consolidate(
   wallet: SwapWallet,
   value: bigint,
   timing: SwapTiming,
-): Promise<void> {
+): Promise<bigint> {
   if (!wallet.fundMainAccount) throw insufficient()
   try {
-    await wallet.fundMainAccount({ value })
+    return feePaid(await wallet.fundMainAccount({ value }))
   } catch (error) {
     // The consolidation was signed and submitted but not yet seen included: finish that same
     // operation, never start another.
@@ -273,8 +388,7 @@ async function consolidate(
     for (let waited = 0; ; waited += timing.pollMs) {
       await timing.sleep(timing.pollMs)
       try {
-        await wallet.resumeLegacySend(pending.operationId)
-        break
+        return feePaid(await wallet.resumeLegacySend(pending.operationId))
       } catch (again) {
         if (!submittedHandle(again) || waited >= timing.inclusionTimeoutMs)
           throw again
@@ -328,9 +442,12 @@ export async function readSwapResult(params: {
   swap: EncodedCall
   handle: Handle
   receipt: SwapReceipt
+  /** Fees already charged for this swap's earlier transactions. */
+  earlierFeesWei?: bigint
 }): Promise<SwapResult> {
   const { receipt, handle } = params
   const feeWei = receipt.gasUsed * receipt.gasPrice
+  const totalFeeWei = feeWei + (params.earlierFeesWei ?? 0n)
   if (receipt.status === 1) {
     const outcome = readSwapOutcome({
       deployment: params.deployment,
@@ -338,7 +455,7 @@ export async function readSwapResult(params: {
       account: params.account,
       logs: receipt.logs,
     })
-    return { status: 'confirmed', ...handle, ...outcome, feeWei }
+    return { status: 'confirmed', ...handle, ...outcome, feeWei, totalFeeWei }
   }
   // The receipt carries no revert data: ask the node what the same call does at the block it
   // failed in (that block's time and prices). Asked later, at the latest block, every expired
@@ -353,7 +470,7 @@ export async function readSwapResult(params: {
   } catch (error) {
     reason = swapRevertReasonOf(error)
   }
-  return { status: 'reverted', ...handle, reason, feeWei }
+  return { status: 'reverted', ...handle, reason, feeWei, totalFeeWei }
 }
 
 /**
@@ -382,10 +499,11 @@ export async function executeSwap(params: {
   // each call is planned, is what refuses a call the main account cannot pay for.
   const funds = await readyFunds(reader, wallet, account, timing, onProgress)
   const move = params.consolidateWei ?? 0n
+  let earlierFeesWei = 0n
   if (move > 0n) {
     if (funds.otherBalance < move) throw insufficient()
     onProgress?.({ stage: 'consolidating' })
-    await consolidate(wallet, move, timing)
+    earlierFeesWei += await consolidate(wallet, move, timing)
   }
 
   for (let i = 0; i < plan.approvals.length; i++) {
@@ -401,6 +519,7 @@ export async function executeSwap(params: {
     })
     const receipt = await settle(reader, wallet, handle, timing)
     await wallet.reobserveNativeOperations?.()
+    if (receipt) earlierFeesWei += receipt.gasUsed * receipt.gasPrice
     if (receipt?.status !== 1)
       throw new SwapRefusedError(
         'approval-failed',
@@ -425,6 +544,7 @@ export async function executeSwap(params: {
     swap: plan.swap,
     handle,
     receipt,
+    earlierFeesWei,
   })
 }
 

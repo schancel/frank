@@ -204,7 +204,7 @@ describe('contract calls through the native operation journal', () => {
     const state = node({ main: 10_000_000n })
     const { executor } = owner(state)
     await executor.sendContractCall(call)
-    expect(Transaction.from(state.raws[0]!).gasLimit).toBe(120_000n)
+    expect(Transaction.from(state.raws[0]!).gasLimit).toBe(115_000n)
     expect(state.estimateGas).toHaveBeenCalledWith(
       expect.objectContaining({
         from: main.address.toLowerCase(),

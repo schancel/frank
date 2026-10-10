@@ -39,14 +39,8 @@ export interface SwapRecovery {
   /** The venue the swap was made on; it is finished there and nowhere else. */
   venueId: string
   account: string
-  pool: {
-    currency0: string
-    currency1: string
-    fee: number
-    tickSpacing: number
-    hooks: string
-  }
-  zeroForOne: boolean
+  /** The venue's own description of the route, as its quote gave it. */
+  route: unknown
   call: { to: string; data: string; value: string }
   toDecimals: number
 }

@@ -15,8 +15,13 @@ jest.mock('src/utils/native-transfer', () => ({
   nativeSendChainIdentifier: (wallet: string, isTestnet: boolean) =>
     mockChainFor(wallet, isTestnet),
 }))
-const mockExtraVenues: { id: string; protocol: string; displayName: string }[] =
-  []
+const mockExtraVenues: {
+  id: string
+  protocol: string
+  displayName: string
+  maintainer: string
+  officialUniswapDeployment: boolean
+}[] = []
 jest.mock('src/swap/evm-swap-session', () => {
   const { listEvmSwapVenues } = jest.requireActual(
     '@frank/wallet/chain/dex-deployments',
@@ -29,23 +34,41 @@ jest.mock('src/swap/evm-swap-session', () => {
   }
 })
 
+jest.mock('src/components/wallet/EvmSwapPanel.vue', () => ({
+  __esModule: true,
+  default: {
+    name: 'EvmSwapPanel',
+    props: ['chainIdentifier', 'walletId', 'venueId'],
+    template: '<div data-testid="evm-panel">{{ JSON.stringify($props) }}</div>',
+  },
+}))
+jest.mock('src/components/wallet/SolanaSwapPanel.vue', () => ({
+  __esModule: true,
+  default: {
+    name: 'SolanaSwapPanel',
+    template:
+      '<div data-testid="solana-panel">{{ JSON.stringify($props) }}</div>',
+  },
+}))
+
 import DAppSwapView from './DAppSwapView.vue'
 
-const translate = (locale: typeof en | typeof fr) => (key: string) =>
-  key
-    .split('.')
-    .reduce<unknown>(
-      (value, part) =>
-        value && typeof value === 'object'
-          ? (value as Record<string, unknown>)[part]
-          : undefined,
-      locale,
-    ) ?? key
-const panel = (name: string, props: string[]) => ({
-  name,
-  props,
-  template: `<div data-testid="${name}">{{ JSON.stringify($props) }}</div>`,
-})
+const translate =
+  (locale: typeof en | typeof fr) =>
+  (key: string, params: Record<string, unknown> = {}) => {
+    const text = key
+      .split('.')
+      .reduce<unknown>(
+        (value, part) =>
+          value && typeof value === 'object'
+            ? (value as Record<string, unknown>)[part]
+            : undefined,
+        locale,
+      )
+    return typeof text === 'string'
+      ? text.replace(/\{(\w+)\}/g, (_all, name) => String(params[name] ?? ''))
+      : key
+  }
 function mountShell(
   wallet: string,
   options: { isTestnet?: boolean; locale?: typeof en | typeof fr } = {},
@@ -55,16 +78,11 @@ function mountShell(
     global: {
       mocks: { $t: translate(options.locale ?? en) },
       stubs: {
-        EvmSwapPanel: panel('evm-panel', [
-          'chainIdentifier',
-          'walletId',
-          'venueId',
-        ]),
+        QIcon: true,
         QBtn: {
           props: ['label'],
           template: '<button>{{ label }}</button>',
         },
-        SolanaSwapPanel: panel('solana-panel', []),
         QCard: { template: '<div><slot /></div>' },
         QCardSection: { template: '<div><slot /></div>' },
       },
@@ -96,8 +114,12 @@ describe('the swap shell', () => {
       walletId: 'monad',
       venueId: 'uniswap-v4',
     })
-    // One venue: nothing to choose.
-    expect(has(view, 'swap-venue-choice')).toBe(false)
+    // The shell names the venue and who runs it; with one venue there is nothing to choose.
+    expect(view.get('[data-testid="swap-venue"]').text()).toBe('Uniswap v4')
+    expect(view.get('[data-testid="swap-venue-note"]').text()).toBe(
+      'Testnet deployment run by Monad, not by Uniswap Labs',
+    )
+    expect(has(view, 'swap-venue-uniswap-v4')).toBe(false)
     expect(has(view, 'solana-panel')).toBe(false)
     expect(has(view, 'swap-unavailable')).toBe(false)
   })
@@ -130,7 +152,7 @@ describe('the swap shell', () => {
     expect(view.text()).toContain(en.walletPanel.swapUnavailable)
     expect(view.text()).toContain(en.swap.unavailableNetwork)
     expect(view.find('button').exists()).toBe(false)
-    expect(has(view, 'swap-venue-choice')).toBe(false)
+    expect(has(view, 'swap-venue')).toBe(false)
   })
 
   it('says it in French too', () => {
@@ -155,9 +177,11 @@ describe('the swap shell', () => {
       id: 'second',
       protocol: 'uniswap-v4',
       displayName: 'Second venue',
+      maintainer: 'Someone',
+      officialUniswapDeployment: true,
     })
     const view = mountShell('monad')
-    expect(view.get('[data-testid="swap-venue-choice"]').text()).toContain(
+    expect(view.get('[data-testid="swap-venue-uniswap-v4"]').text()).toBe(
       'Uniswap v4',
     )
     expect(
@@ -168,7 +192,9 @@ describe('the swap shell', () => {
       JSON.parse(view.get('[data-testid="evm-panel"]').text()).venueId,
     ).toBe('second')
     // Another wallet starts from its own first venue, not from this choice.
+    // A deployment the protocol's own team runs carries no note.
+    expect(has(view, 'swap-venue-note')).toBe(false)
     await view.setProps({ selectedWallet: 'ecash' })
-    expect(has(view, 'swap-venue-choice')).toBe(false)
+    expect(has(view, 'swap-venue-second')).toBe(false)
   })
 })

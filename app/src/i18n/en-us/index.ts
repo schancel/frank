@@ -1309,7 +1309,6 @@ export default {
       'The full licence text, including its conditions and disclaimer, as published by Silence Laboratories (English only):',
   },
   swap: {
-    venueChoice: 'Exchange',
     interfaceFee: 'Frank fee ({rate})',
     venueNote: 'Testnet deployment run by {maintainer}, not by Uniswap Labs',
     pay: 'You pay',
@@ -1332,7 +1331,27 @@ export default {
     poolFee: 'Pool fee',
     minimumReceived: 'Minimum received',
     networkFee: 'Network fee',
-    networkFeeUpTo: 'up to {fee} {unit}',
+    networkFeeKnown: '{fee} {unit}',
+    networkFeePartial:
+      '{fee} {unit} for the approvals; the swap’s own fee is known once they confirm',
+    reviewPaySame:
+      'You pay {amount} {asset} + {fee} {unit} network fee = {total} {unit}.',
+    reviewPayOther: 'You pay {amount} {asset} + {fee} {unit} network fee.',
+    reviewPayPartial:
+      'You pay {amount} {asset} + {fee} {unit} network fee for the approvals, plus the swap’s own network fee, shown once they confirm.',
+    reviewPayNoFee:
+      'You pay {amount} {asset}, plus a network fee that could not be estimated yet.',
+    reviewReceive:
+      'You receive about {receive} {asset}. If you would get less than {minimum} {asset}, the swap is cancelled and you keep what you were paying with.',
+    resultPaidSame:
+      'You paid {amount} {asset} + {fee} {unit} network fee = {total} {unit}.',
+    resultPaidOther: 'You paid {amount} {asset} + {fee} {unit} network fee.',
+    resultPaidFeeOnly:
+      'You paid {fee} {unit} in network fees and nothing else.',
+    warnFeeLarger:
+      'The network fee is larger than the amount you are swapping.',
+    warnFeeShare:
+      'The network fee is about {percent}% of the amount you are swapping.',
     networkFeeLater: 'estimated once approved',
     approval: 'Approval',
     approvalNeeded:
@@ -1342,8 +1361,6 @@ export default {
     enterAmount: 'Enter an amount',
     review: 'Review swap',
     reviewTitle: 'Confirm this swap',
-    reviewSummary:
-      'Pay {pay} {payAsset} and receive about {receive} {receiveAsset}. If you would get less than {minimum} {receiveAsset}, the swap is cancelled and you keep your {payAsset}.',
     reviewNote:
       'The price is checked again when you confirm. The swap expires {seconds} seconds after signing.',
     back: 'Back',
@@ -1369,7 +1386,6 @@ export default {
     resultPending: 'Submitted, not confirmed yet',
     resultPendingDetail:
       'The network has not confirmed this swap yet. It may still complete; its status updates in Recent Activity. Do not send it again.',
-    resultFee: 'Network fee paid: {fee} {unit}',
     unavailableNetwork: 'No swap is available for this wallet on this network.',
     unavailableSolana: 'Swaps for this Solana wallet are not available yet.',
     unavailableWallet: 'This wallet cannot swap yet. Open it and try again.',

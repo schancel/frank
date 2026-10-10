@@ -8,6 +8,7 @@ import {
   listEvmSwapVenues,
   type UniswapV4Deployment,
 } from '@frank/wallet/chain/dex-deployments'
+import { evmSwapVenue, type EvmSwapVenue } from '@frank/wallet/swap/evm-venue'
 import type {
   SwapExecutionReader,
   SwapWallet,
@@ -16,7 +17,8 @@ import { accountSession } from 'src/accounts/session'
 
 export interface EvmSwapSession {
   readonly chainIdentifier: string
-  readonly deployment: UniswapV4Deployment
+  /** The venue this session swaps on, behind the EVM venue interface. */
+  readonly venue: EvmSwapVenue
   /** The main account: it swaps, and the tokens it receives stay on it. */
   readonly account: string
   readonly reader: SwapExecutionReader
@@ -51,8 +53,8 @@ export async function openEvmSwapSession(
   chainIdentifier: string,
   venueId?: string,
 ): Promise<EvmSwapSession> {
-  const deployment = getEvmDexDeployment(chainIdentifier, venueId)
-  if (!deployment) throw new EvmSwapUnavailableError('no-deployment')
+  const venue = evmSwapVenue(chainIdentifier, venueId)
+  if (!venue) throw new EvmSwapUnavailableError('no-deployment')
   const wallet = await accountSession.getWallet()
   const { account: signedIn, revision } = accountSession.state
   if (wallet.family !== 'evm' || wallet.chainIdentifier !== chainIdentifier)
@@ -62,7 +64,7 @@ export async function openEvmSwapSession(
     throw new EvmSwapUnavailableError('no-wallet')
   return {
     chainIdentifier,
-    deployment,
+    venue,
     // The EVM handle's receive address is its main account; execution checks it again against
     // the account the wallet actually signs from.
     account: (await wallet.getReceiveAddress()).raw,
@@ -70,6 +72,9 @@ export async function openEvmSwapSession(
     wallet: {
       sendContractCall: params => wallet.sendContractCall!(params),
       getContractCallFunds: () => wallet.getContractCallFunds!(),
+      estimateLegacyFee: wallet.estimateLegacyFee
+        ? params => wallet.estimateLegacyFee!(params)
+        : undefined,
       fundMainAccount: wallet.fundMainAccount
         ? params => wallet.fundMainAccount!(params)
         : undefined,

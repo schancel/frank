@@ -139,7 +139,7 @@ describe('signet swap', () => {
     expect(built.approvals).toEqual([])
     expect(built.swap.to).toBe(deployment.universalRouter)
     expect(built.swap.value).toBe('20000000000000000')
-    expect(built.gasLimit).toBe('240000')
+    expect(built.gasLimit).toBe('230000')
     expect(built.deadline).toBeGreaterThanOrEqual(before + 120)
     expect(built.deadline).toBeLessThanOrEqual(before + 125)
     const [, , deadline] = universalRouterInterface.decodeFunctionData(

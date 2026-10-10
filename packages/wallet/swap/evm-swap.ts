@@ -48,7 +48,10 @@ export interface SwapChainReader {
   getFeeData(): Promise<{
     maxFeePerGas: bigint | null
     gasPrice: bigint | null
+    maxPriorityFeePerGas?: bigint | null
   }>
+  /** The latest block's base fee, for what a transaction will actually be charged. */
+  getBlock?(tag: 'latest'): Promise<{ baseFeePerGas: bigint | null } | null>
 }
 
 export class SwapNoRouteError extends Error {
@@ -87,7 +90,10 @@ export interface SwapQuote {
 /** A quote older than this is fetched again before the user may confirm it. */
 export const QUOTE_MAX_AGE_MS = 8_000
 
-export function quoteIsFresh(quote: SwapQuote, nowMs: number): boolean {
+export function quoteIsFresh(
+  quote: { readonly quotedAtMs: number },
+  nowMs: number,
+): boolean {
   return (
     nowMs - quote.quotedAtMs >= 0 && nowMs - quote.quotedAtMs < QUOTE_MAX_AGE_MS
   )
@@ -307,11 +313,45 @@ export async function planSwap(
 }
 
 export interface NetworkFeeEstimate {
-  /** `eth_estimateGas` for the call from the account, plus a fifth so a moving pool still fits. */
+  /** `eth_estimateGas` for the call from the account, plus `GAS_MARGIN_PERCENT`. */
   readonly gasLimit: bigint
   readonly maxFeePerGas: bigint
-  /** The most the call can cost: gas limit times the fee cap. */
+  /** The most the call can cost: gas limit times the fee cap. The account must hold this. */
   readonly maximumFeeWei: bigint
+  /**
+   * What the network will charge: the whole gas limit (Monad charges the limit a transaction
+   * reserves, not the gas it uses) at the current base fee plus tip. This is what leaves the
+   * account, and what the form shows.
+   */
+  readonly chargedFeeWei: bigint
+}
+
+/**
+ * Headroom added to the node's gas estimate. On Monad every unit of the limit is paid for, so
+ * it is kept small; it exists because the pool can move between the estimate and inclusion, and
+ * a swap that runs out of gas costs its whole fee and swaps nothing. With it a single-pool swap
+ * reserves about 207,000 gas (0.021 MON at the testnet's 102 gwei).
+ */
+export const GAS_MARGIN_PERCENT = 15n
+
+/** Gas price a transaction is charged now: base fee plus tip, never above the cap. */
+export async function chargedGasPrice(
+  reader: SwapChainReader,
+  fees?: Awaited<ReturnType<SwapChainReader['getFeeData']>>,
+): Promise<{ maxFeePerGas: bigint; chargedPerGas: bigint }> {
+  const [data, block] = await Promise.all([
+    fees ?? reader.getFeeData(),
+    reader.getBlock ? reader.getBlock('latest').catch(() => null) : null,
+  ])
+  const maxFeePerGas = data.maxFeePerGas ?? data.gasPrice
+  if (maxFeePerGas == null) throw new Error('Network fee quote unavailable')
+  const base = block?.baseFeePerGas
+  if (base == null) return { maxFeePerGas, chargedPerGas: maxFeePerGas }
+  const charged = base + (data.maxPriorityFeePerGas ?? 0n)
+  return {
+    maxFeePerGas,
+    chargedPerGas: charged < maxFeePerGas ? charged : maxFeePerGas,
+  }
 }
 
 /** `eth_estimateGas` on the built call. Throws the node's revert when the call would fail. */
@@ -320,19 +360,22 @@ export async function estimateCallFee(
   call: EncodedCall,
   account: string,
 ): Promise<NetworkFeeEstimate> {
-  const [estimate, fees] = await Promise.all([
+  const [estimate, price] = await Promise.all([
     reader.estimateGas({
       to: call.to,
       data: call.data,
       value: call.value,
       from: getAddress(account),
     }),
-    reader.getFeeData(),
+    chargedGasPrice(reader),
   ])
-  const maxFeePerGas = fees.maxFeePerGas ?? fees.gasPrice
-  if (maxFeePerGas == null) throw new Error('Network fee quote unavailable')
-  const gasLimit = (estimate * 12n) / 10n
-  return { gasLimit, maxFeePerGas, maximumFeeWei: gasLimit * maxFeePerGas }
+  const gasLimit = (estimate * (100n + GAS_MARGIN_PERCENT)) / 100n
+  return {
+    gasLimit,
+    maxFeePerGas: price.maxFeePerGas,
+    maximumFeeWei: gasLimit * price.maxFeePerGas,
+    chargedFeeWei: gasLimit * price.chargedPerGas,
+  }
 }
 
 /** Revert data carried by an ethers call or gas-estimate error, when the node returned any. */

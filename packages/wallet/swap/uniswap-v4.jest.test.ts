@@ -521,6 +521,9 @@ describe('quote, at the node seam', () => {
     const { reader, node } = withPool()
     node.gasEstimate = 200_000n
     node.maxFeePerGas = 5n
+    // Charged: the whole limit, at the base fee plus the tip, not at the cap.
+    node.baseFeePerGas = 2n
+    node.maxPriorityFeePerGas = 1n
     expect(
       await estimateCallFee(
         reader,
@@ -528,9 +531,10 @@ describe('quote, at the node seam', () => {
         account,
       ),
     ).toEqual({
-      gasLimit: 240_000n,
+      gasLimit: 230_000n,
       maxFeePerGas: 5n,
-      maximumFeeWei: 1_200_000n,
+      maximumFeeWei: 1_150_000n,
+      chargedFeeWei: 690_000n,
     })
   })
 })

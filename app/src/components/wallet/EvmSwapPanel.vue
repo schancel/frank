@@ -17,21 +17,6 @@
     </div>
 
     <div v-else class="column q-gutter-y-sm">
-      <div class="row items-center justify-between q-px-xs">
-        <div class="row items-center q-gutter-x-xs">
-          <q-icon name="swap_horiz" color="primary" size="18px" />
-          <span
-            class="text-subtitle2 text-weight-bold"
-            data-testid="swap-venue"
-          >
-            {{ venueName }}
-          </span>
-        </div>
-        <span class="text-caption text-grey-7" data-testid="swap-venue-note">
-          {{ $t('swap.venueNote', { maintainer }) }}
-        </span>
-      </div>
-
       <!-- Result of the last swap -->
       <q-card
         v-if="phase === 'done' && outcome"
@@ -60,11 +45,11 @@
           {{ $t(resultDetailKey, resultDetailParams) }}
         </div>
         <div
-          v-if="outcome.fee"
-          class="text-caption text-grey-7 q-mt-xs"
-          data-testid="swap-result-fee"
+          v-if="outcome.paid"
+          class="text-body2 q-mt-xs"
+          data-testid="swap-result-paid"
         >
-          {{ $t('swap.resultFee', { fee: outcome.fee, unit: nativeSymbol }) }}
+          {{ $t(outcome.paid.key, outcome.paid.params) }}
         </div>
         <div class="row items-center justify-between q-mt-sm">
           <a
@@ -271,14 +256,7 @@
           <div class="swap-row">
             <span class="text-grey-7">{{ $t('swap.networkFee') }}</span>
             <span class="text-weight-medium" data-testid="swap-network-fee">
-              {{
-                networkFeeText
-                  ? $t('swap.networkFeeUpTo', {
-                      fee: networkFeeText,
-                      unit: nativeSymbol,
-                    })
-                  : $t('swap.networkFeeLater')
-              }}
+              {{ $t(feeLine.key, feeLine.params) }}
             </span>
           </div>
           <div v-if="interfaceFeeText" class="swap-row">
@@ -362,13 +340,15 @@
           <div class="text-subtitle2 text-weight-bold q-mb-xs">
             {{ $t('swap.reviewTitle') }}
           </div>
-          <div class="text-body2" data-testid="swap-review-summary">
+          <!-- The swap as a whole: everything that leaves the wallet, and what arrives. -->
+          <div class="text-body2" data-testid="swap-review-pay">
+            {{ $t(payLine.key, payLine.params) }}
+          </div>
+          <div class="text-body2" data-testid="swap-review-receive">
             {{
-              $t('swap.reviewSummary', {
-                pay: payExact,
-                payAsset: payToken.symbol,
+              $t('swap.reviewReceive', {
                 receive: receiveText,
-                receiveAsset: receiveToken.symbol,
+                asset: receiveToken.symbol,
                 minimum: minimumText,
               })
             }}
@@ -472,23 +452,18 @@ import {
   watch,
 } from 'vue'
 import {
-  estimateCallFee,
-  fetchSwapQuote,
-  planSwap,
   quoteIsFresh,
   readTokenBalance,
   SwapNoLiquidityError,
   SwapNoRouteError,
   swapRevertReasonOf,
   SWAP_DEADLINE_SECONDS,
-  type NetworkFeeEstimate,
-  type SwapQuote,
 } from '@frank/wallet/swap/evm-swap'
+import type { EvmVenueQuote } from '@frank/wallet/swap/evm-venue'
 import {
-  consolidationNeeded,
-  executeSwap,
-  reconcileSwap,
+  networkFeeShare,
   SwapRefusedError,
+  type SwapCost,
   type SwapFailure,
   type SwapProgress,
   type SwapResult,
@@ -525,7 +500,8 @@ interface Outcome {
   toSymbol: string
   received?: string
   receivedExact?: string
-  fee?: string
+  /** What left the wallet for this swap, from the receipts. */
+  paid?: { key: string; params: Record<string, unknown> }
   reason?: string
   explorerUrl?: string
 }
@@ -539,6 +515,8 @@ const SLIPPAGE_OPTIONS = [10, 50, 100]
 /** Price impact, in parts per million, from which the figure is shown as a warning or as bad. */
 const IMPACT_WARN_PPM = 10_000
 const IMPACT_BAD_PPM = 50_000
+/** The network fee as a share of the amount, in percent, from which the form says so. */
+const FEE_SHARE_WARN_PERCENT = 10
 
 const FAILURE_KEYS: Record<SwapFailure, string> = {
   'slippage': 'swap.errorPriceMoved',
@@ -579,8 +557,10 @@ export default defineComponent({
     const slippageBps = ref(50)
     const customSlippage = ref('')
 
-    const quote = shallowRef<SwapQuote>()
-    const fee = shallowRef<NetworkFeeEstimate>()
+    const quote = shallowRef<EvmVenueQuote>()
+    /** The network fee of every transaction the quoted swap needs, as it will be charged. */
+    const cost = shallowRef<SwapCost>()
+    const fee = computed(() => cost.value?.swapFee)
     const approvalsNeeded = ref(0)
     const quoteState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
     const quoteProblem = ref<Problem>()
@@ -589,11 +569,11 @@ export default defineComponent({
     const phase = ref<'form' | 'review' | 'working' | 'done'>('form')
     const reviewing = ref(false)
     const confirming = ref(false)
-    const reviewed = shallowRef<SwapQuote>()
+    const reviewed = shallowRef<EvmVenueQuote>()
     const progress = ref<SwapProgress>()
     const outcome = shallowRef<Outcome>()
 
-    const tokens = computed(() => session.value?.deployment.tokens ?? [])
+    const tokens = computed(() => session.value?.venue.tokens ?? [])
     const payToken = computed(() => tokens.value[payIndex.value]!)
     const receiveToken = computed(() => tokens.value[receiveIndex.value]!)
     const nativeIndex = computed(() =>
@@ -609,9 +589,6 @@ export default defineComponent({
           : token.symbol,
         value,
       }))
-    const maintainer = computed(
-      () => session.value?.deployment.maintainer ?? '',
-    )
     const locked = computed(
       () => phase.value === 'working' || phase.value === 'review',
     )
@@ -670,8 +647,93 @@ export default defineComponent({
       if (quoteProblem.value) return quoteProblem.value
       if (quote.value && quote.value.priceImpactPpm >= IMPACT_BAD_PPM)
         return { key: 'swap.warnHighImpact', blocking: false }
+      // The network fee beside the amount, when both are the native coin.
+      const share =
+        quote.value && cost.value
+          ? networkFeeShare({
+              networkFeeWei: cost.value.networkFeeWei,
+              quote: quote.value,
+            })
+          : undefined
+      if (share !== undefined && share > 100)
+        return { key: 'swap.warnFeeLarger', blocking: false }
+      if (share !== undefined && share > FEE_SHARE_WARN_PERCENT)
+        return {
+          key: 'swap.warnFeeShare',
+          params: { percent: Math.round(share) },
+          blocking: false,
+        }
       return undefined
     })
+
+    const nativeAmount = (wei: bigint) =>
+      readableTokenAmount(wei, tokens.value[nativeIndex.value]?.decimals ?? 18)
+    /** The "Network fee" row: what will be charged, for every transaction that can be priced. */
+    const feeLine = computed(() => {
+      const c = cost.value
+      if (!c || (c.networkFeeWei === 0n && !c.complete))
+        return { key: 'swap.networkFeeLater', params: {} }
+      return {
+        key: c.complete ? 'swap.networkFeeKnown' : 'swap.networkFeePartial',
+        params: {
+          fee: nativeAmount(c.networkFeeWei),
+          unit: nativeSymbol.value,
+        },
+      }
+    })
+    /** One line for everything that leaves the wallet. Assets are never converted. */
+    const payLine = computed(() => {
+      const q = quote.value
+      const c = cost.value
+      if (!q) return { key: 'swap.reviewPayNoFee', params: {} }
+      const params = {
+        amount: exactTokenAmount(q.amountIn, q.tokenIn.decimals),
+        asset: q.tokenIn.symbol,
+        fee: c ? nativeAmount(c.networkFeeWei) : '',
+        unit: nativeSymbol.value,
+        total: c ? nativeAmount(q.amountIn + c.networkFeeWei) : '',
+      }
+      if (!c || (c.networkFeeWei === 0n && !c.complete))
+        return { key: 'swap.reviewPayNoFee', params }
+      if (!c.complete) return { key: 'swap.reviewPayPartial', params }
+      return {
+        key:
+          q.tokenIn.address === null
+            ? 'swap.reviewPaySame'
+            : 'swap.reviewPayOther',
+        params,
+      }
+    })
+    /** After the swap: what was actually charged, from the receipts. */
+    const paidLine = (
+      q: EvmVenueQuote,
+      totalFeeWei: bigint,
+      nativeDecimals: number,
+      result: SwapResult,
+    ) => {
+      const amountIn =
+        result.status === 'reverted'
+          ? 0n
+          : (result.status === 'confirmed' ? result.amountIn : undefined) ??
+            q.amountIn
+      const fee = readableTokenAmount(totalFeeWei, nativeDecimals)
+      const params = {
+        amount: exactTokenAmount(amountIn, q.tokenIn.decimals),
+        asset: q.tokenIn.symbol,
+        fee,
+        unit: nativeSymbol.value,
+        total: readableTokenAmount(amountIn + totalFeeWei, nativeDecimals),
+      }
+      return {
+        key:
+          result.status === 'reverted'
+            ? 'swap.resultPaidFeeOnly'
+            : q.tokenIn.address === null
+            ? 'swap.resultPaidSame'
+            : 'swap.resultPaidOther',
+        params,
+      }
+    }
 
     const minimum = computed(() =>
       quote.value
@@ -731,7 +793,7 @@ export default defineComponent({
           indices.map(index =>
             readTokenBalance(
               current.reader,
-              current.deployment.tokens[index]!,
+              current.venue.tokens[index]!,
               current.account,
             ),
           ),
@@ -788,13 +850,13 @@ export default defineComponent({
     }
 
     /** Reads a quote for exactly what is typed. Returns it only if it is still the latest. */
-    async function refreshQuote(): Promise<SwapQuote | undefined> {
+    async function refreshQuote(): Promise<EvmVenueQuote | undefined> {
       const current = session.value
       const amountIn = amount.value
       const sequence = ++quoteSequence
       if (!current || amountIn === undefined) {
         quote.value = undefined
-        fee.value = undefined
+        cost.value = undefined
         approvalsNeeded.value = 0
         quoteProblem.value = undefined
         quoteState.value = 'idle'
@@ -808,37 +870,28 @@ export default defineComponent({
       }
       quoteState.value = 'loading'
       try {
-        const next = await fetchSwapQuote(current.reader, current.deployment, {
+        const next = await current.venue.quote(current.reader, {
           tokenIn: payToken.value,
           tokenOut: receiveToken.value,
           amountIn,
         })
-        const plan = await planSwap(current.reader, current.deployment, {
+        const plan = await current.venue.plan(current.reader, {
           quote: next,
           slippageBps: slippageBps.value,
           account: current.account,
         })
-        let nextFee: NetworkFeeEstimate | undefined
-        let nextProblem: Problem | undefined
-        // Only a swap that needs no approval can be gas-estimated before it is approved.
-        if (plan.approvals.length === 0) {
-          try {
-            nextFee = await estimateCallFee(
-              current.reader,
-              plan.swap,
-              current.account,
-            )
-          } catch (error) {
-            // The account cannot pay for this call as it stands: the balance check says so.
-            if (swapRevertReasonOf(error))
-              nextProblem = problemOf(error, 'swap.errorQuote')
-          }
-        }
+        const nextCost = await current.venue.cost({
+          reader: current.reader,
+          wallet: current.wallet,
+          plan,
+          account: current.account,
+          moveWei: phase.value === 'review' ? moveWei.value : 0n,
+        })
         if (!alive || sequence !== quoteSequence) return undefined
         quote.value = next
-        fee.value = nextFee
+        cost.value = nextCost
         approvalsNeeded.value = plan.approvals.length
-        quoteProblem.value = nextProblem
+        quoteProblem.value = undefined
         quoteState.value = 'ready'
         quoteStale.value = false
         return next
@@ -852,7 +905,7 @@ export default defineComponent({
           return undefined
         }
         quote.value = undefined
-        fee.value = undefined
+        cost.value = undefined
         approvalsNeeded.value = 0
         quoteProblem.value = problemOf(error, 'swap.errorQuote')
         quoteState.value = 'error'
@@ -863,7 +916,7 @@ export default defineComponent({
     function scheduleQuote(): void {
       // What is on screen was quoted for a different input: never show it beside the new one.
       quote.value = undefined
-      fee.value = undefined
+      cost.value = undefined
       quoteProblem.value = undefined
       flowProblem.value = undefined
       quoteSequence++
@@ -948,14 +1001,15 @@ export default defineComponent({
         // amount on the review card and confirms it with the swap.
         const current = session.value
         if (!current) return
-        const need = await consolidationNeeded({
+        const reviewPlan = await current.venue.plan(current.reader, {
+          quote: fresh,
+          slippageBps: slippageBps.value,
+          account: current.account,
+        })
+        const need = await current.venue.consolidation({
           reader: current.reader,
           wallet: current.wallet,
-          plan: await planSwap(current.reader, current.deployment, {
-            quote: fresh,
-            slippageBps: slippageBps.value,
-            account: current.account,
-          }),
+          plan: reviewPlan,
           swapFee: fee.value,
         })
         if (!need.possible) {
@@ -966,6 +1020,14 @@ export default defineComponent({
           return
         }
         moveWei.value = need.moveWei
+        // With the move known, the total includes its transfer fee as well.
+        cost.value = await current.venue.cost({
+          reader: current.reader,
+          wallet: current.wallet,
+          plan: reviewPlan,
+          account: current.account,
+          moveWei: need.moveWei,
+        })
         reviewed.value = fresh
         quoteStale.value = false
         phase.value = 'review'
@@ -991,7 +1053,7 @@ export default defineComponent({
     function recordOf(
       id: string,
       timestamp: number,
-      q: SwapQuote,
+      q: EvmVenueQuote,
       minimumOut: bigint,
       result: SwapResult,
       swapCall: { to: string; data: string; value: bigint },
@@ -1006,13 +1068,13 @@ export default defineComponent({
         toAsset: q.tokenOut.symbol,
         fromAmount: exactTokenAmount(q.amountIn, q.tokenIn.decimals),
         txHash: result.txHash,
-        route: current.deployment.displayName,
+        route: current.venue.venue.displayName,
         destinationAddress: current.account,
       }
       const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
       const feeDisplay =
-        'feeWei' in result
-          ? `${readableTokenAmount(result.feeWei, nativeDecimals)} ${
+        'totalFeeWei' in result
+          ? `${readableTokenAmount(result.totalFeeWei, nativeDecimals)} ${
               nativeSymbol.value
             }`
           : ''
@@ -1042,10 +1104,9 @@ export default defineComponent({
         status: 'pending',
         recovery: {
           operationId: result.operationId,
-          venueId: current.deployment.id,
+          venueId: current.venue.venue.id,
           account: current.account,
-          pool: { ...q.route.key },
-          zeroForOne: q.route.zeroForOne,
+          route: q.route,
           call: {
             to: swapCall.to,
             data: swapCall.data,
@@ -1056,7 +1117,7 @@ export default defineComponent({
       }
     }
 
-    function outcomeOf(result: SwapResult, q: SwapQuote): Outcome {
+    function outcomeOf(result: SwapResult, q: EvmVenueQuote): Outcome {
       const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
       return {
         status: result.status,
@@ -1075,8 +1136,8 @@ export default defineComponent({
               ),
             }
           : {}),
-        ...('feeWei' in result
-          ? { fee: readableTokenAmount(result.feeWei, nativeDecimals) }
+        ...('totalFeeWei' in result
+          ? { paid: paidLine(q, result.totalFeeWei, nativeDecimals, result) }
           : {}),
         ...(result.status === 'reverted' ? { reason: result.reason } : {}),
       }
@@ -1109,7 +1170,7 @@ export default defineComponent({
           flowProblem.value = { key: 'swap.errorPriceMoved', blocking: false }
           return
         }
-        const plan = await planSwap(current.reader, current.deployment, {
+        const plan = await current.venue.plan(current.reader, {
           quote: q,
           slippageBps: slippageBps.value,
           account: current.account,
@@ -1120,10 +1181,9 @@ export default defineComponent({
         const timestamp = Date.now()
         phase.value = 'working'
         progress.value = undefined
-        const result = await executeSwap({
+        const result = await current.venue.execute({
           reader: current.reader,
           wallet: current.wallet,
-          deployment: current.deployment,
           plan,
           account: current.account,
           consolidateWei: moveWei.value,
@@ -1186,7 +1246,7 @@ export default defineComponent({
           record =>
             record.status === 'pending' &&
             record.recovery &&
-            record.recovery.venueId === current.deployment.id &&
+            record.recovery.venueId === current.venue.venue.id &&
             record.chainIdentifier === props.chainIdentifier &&
             record.recovery.account.toLowerCase() ===
               current.account.toLowerCase(),
@@ -1194,11 +1254,10 @@ export default defineComponent({
       for (const record of pending) {
         const recovery = record.recovery!
         try {
-          const result = await reconcileSwap({
+          const result = await current.venue.reconcile({
             reader: current.reader,
             wallet: current.wallet,
-            deployment: current.deployment,
-            route: { key: recovery.pool, zeroForOne: recovery.zeroForOne },
+            route: recovery.route,
             account: recovery.account,
             swap: {
               to: recovery.call.to,
@@ -1252,10 +1311,10 @@ export default defineComponent({
         )
         if (!alive) return
         session.value = opened
-        const usdc = opened.deployment.tokens.findIndex(
+        const usdc = opened.venue.tokens.findIndex(
           token => token.address !== null,
         )
-        payIndex.value = opened.deployment.tokens.findIndex(
+        payIndex.value = opened.venue.tokens.findIndex(
           token => token.address === null,
         )
         if (payIndex.value < 0) payIndex.value = 0
@@ -1315,7 +1374,6 @@ export default defineComponent({
     )
 
     return {
-      venueName: computed(() => session.value?.deployment.displayName ?? ''),
       interfaceFeeText: computed(() =>
         quote.value?.interfaceFee
           ? readableTokenAmount(
@@ -1349,7 +1407,6 @@ export default defineComponent({
           ? 'swap.unavailableWallet'
           : 'swap.unavailableNetwork',
       ),
-      maintainer,
       phase,
       outcome,
       resultIcon: computed(() =>
@@ -1455,14 +1512,8 @@ export default defineComponent({
           ? exactTokenAmount(minimum.value, quote.value.tokenOut.decimals)
           : '',
       ),
-      networkFeeText: computed(() =>
-        fee.value
-          ? readableTokenAmount(
-              fee.value.maximumFeeWei,
-              tokens.value[nativeIndex.value]?.decimals ?? 18,
-            )
-          : '',
-      ),
+      feeLine,
+      payLine,
       approvalsNeeded,
       slippageBps,
       slippageOptions: SLIPPAGE_OPTIONS,

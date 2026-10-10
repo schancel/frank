@@ -30,6 +30,9 @@ export interface CannedNode {
   permit2Allowance: { amount: bigint; expiration: number }
   gasEstimate: bigint | Error
   maxFeePerGas: bigint
+  /** The latest block's base fee and the tip; unset means the node gives neither. */
+  baseFeePerGas?: bigint
+  maxPriorityFeePerGas?: bigint
   calls: { to: string; selector: string }[]
 }
 
@@ -124,7 +127,14 @@ export function cannedNode(
       return node.nativeBalance
     },
     async getFeeData() {
-      return { maxFeePerGas: node.maxFeePerGas, gasPrice: null }
+      return {
+        maxFeePerGas: node.maxFeePerGas,
+        gasPrice: null,
+        maxPriorityFeePerGas: node.maxPriorityFeePerGas ?? null,
+      }
+    },
+    async getBlock() {
+      return { baseFeePerGas: node.baseFeePerGas ?? null }
     },
   }
   return { node, reader }

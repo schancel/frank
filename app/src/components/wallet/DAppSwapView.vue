@@ -1,39 +1,50 @@
 <template>
   <div class="q-py-sm" data-testid="dapp-swap-view">
-    <!-- One panel per chain family. The shell only decides which one the wallet gets. -->
-    <template v-if="panel === 'evm' && chainIdentifier && venue">
-      <!-- A chain with several venues lets the user pick; with one, it is simply named. -->
+    <template v-if="venue">
+      <!-- Which venue is in use, and a choice when the chain has more than one. -->
       <div
-        v-if="venues.length > 1"
-        class="row items-center q-gutter-x-sm q-px-xs q-pb-sm"
-        data-testid="swap-venue-choice"
+        v-if="venue.label"
+        class="row items-center justify-between q-px-xs q-pb-sm"
       >
-        <span class="text-caption text-grey-7">{{
-          $t('swap.venueChoice')
-        }}</span>
-        <q-btn
-          v-for="option in venues"
-          :key="option.id"
-          dense
-          no-caps
-          unelevated
-          size="sm"
-          :outline="option.id !== venue.id"
-          :color="option.id === venue.id ? 'primary' : 'grey-7'"
-          :label="option.displayName"
-          :data-testid="`swap-venue-${option.id}`"
-          @click="chosenVenueId = option.id"
-        />
+        <div class="row items-center q-gutter-x-xs">
+          <q-icon name="swap_horiz" color="primary" size="18px" />
+          <template v-if="venues.length > 1">
+            <q-btn
+              v-for="option in venues"
+              :key="option.id"
+              dense
+              no-caps
+              unelevated
+              size="sm"
+              :outline="option.id !== venue.id"
+              :color="option.id === venue.id ? 'primary' : 'grey-7'"
+              :label="option.label"
+              :data-testid="`swap-venue-${option.id}`"
+              @click="chosenVenueId = option.id"
+            />
+          </template>
+          <span
+            v-else
+            class="text-subtitle2 text-weight-bold"
+            data-testid="swap-venue"
+          >
+            {{ venue.label }}
+          </span>
+        </div>
+        <span
+          v-if="venue.note"
+          class="text-caption text-grey-7"
+          data-testid="swap-venue-note"
+        >
+          {{ $t(venue.note.key, venue.note.params ?? {}) }}
+        </span>
       </div>
       <component
-        :is="venuePanels[venue.protocol]"
-        :key="`${chainIdentifier}:${venue.id}`"
-        :chain-identifier="chainIdentifier"
-        :wallet-id="selectedWallet"
-        :venue-id="venue.id"
+        :is="venue.panel"
+        :key="`${selectedWallet}:${venue.id}`"
+        v-bind="venue.panelProps"
       />
     </template>
-    <solana-swap-panel v-else-if="panel === 'solana'" />
     <q-card v-else flat bordered>
       <q-card-section role="status" data-testid="swap-unavailable">
         <div class="text-subtitle1 text-weight-medium">
@@ -49,18 +60,15 @@
 
 <script lang="ts">
 import { computed, defineComponent, ref, watch } from 'vue'
-import {
-  getChainRegistryEntry,
-  resolveNetworkId,
-} from '@frank/wallet/chain/chains-registry'
-import { evmSwapVenues } from 'src/swap/evm-swap-session'
-import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
-import EvmSwapPanel from './EvmSwapPanel.vue'
-import SolanaSwapPanel from './SolanaSwapPanel.vue'
+import { swapVenuesForWallet } from 'src/swap/venues'
 
+/**
+ * The swap shell. It knows a wallet's venues only through `SwapVenuePresentation` (an id, a
+ * label, a note, a panel): it names the venue in use, offers a choice when there are several,
+ * and mounts that venue's panel. What a swap is on any chain family is the panel's business.
+ */
 export default defineComponent({
   name: 'DAppSwapView',
-  components: { EvmSwapPanel, SolanaSwapPanel },
   props: {
     selectedWallet: {
       type: String,
@@ -72,44 +80,22 @@ export default defineComponent({
     },
   },
   setup(props) {
-    /** The wallet's family, from the registry entry of the network it is on. */
-    const family = computed(
-      () =>
-        getChainRegistryEntry(
-          resolveNetworkId(props.selectedWallet, props.isTestnet),
-        )?.family,
-    )
-    /** The canonical chain this wallet can sign for now, when it has one. */
-    const chainIdentifier = computed(() =>
-      nativeSendChainIdentifier(props.selectedWallet, props.isTestnet),
-    )
-    /** The chain's venues, from configuration. A chain with none says so plainly. */
     const venues = computed(() =>
-      family.value === 'evm' ? evmSwapVenues(chainIdentifier.value) : [],
+      swapVenuesForWallet(props.selectedWallet, props.isTestnet),
     )
     const chosenVenueId = ref<string>()
-    watch(chainIdentifier, () => {
-      chosenVenueId.value = undefined
-    })
+    watch(
+      () => [props.selectedWallet, props.isTestnet],
+      () => {
+        chosenVenueId.value = undefined
+      },
+    )
     const venue = computed(
       () =>
         venues.value.find(option => option.id === chosenVenueId.value) ??
         venues.value[0],
     )
-    const panel = computed<'evm' | 'solana' | 'none'>(() => {
-      if (family.value === 'solana') return 'solana'
-      return venue.value ? 'evm' : 'none'
-    })
-    return {
-      chainIdentifier,
-      panel,
-      venues,
-      venue,
-      chosenVenueId,
-      // One panel per protocol. Each takes the chain, the wallet and the venue id, and does
-      // its own quoting, planning and execution behind that.
-      venuePanels: { 'uniswap-v4': EvmSwapPanel },
-    }
+    return { venues, venue, chosenVenueId }
   },
 })
 </script>

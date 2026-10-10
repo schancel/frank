@@ -7,6 +7,7 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { getEvmDexDeployment } from '@frank/wallet/chain/dex-deployments'
+import { uniswapV4Venue } from '@frank/wallet/swap/evm-venue'
 import {
   callRevert,
   cannedNode,
@@ -164,6 +165,7 @@ function scene(
       mainBusy: false,
     })),
     fundMainAccount: jest.fn(),
+    estimateLegacyFee: jest.fn(async () => ({ inputCount: 1 })),
     resumeNativeOperation: jest.fn(),
     getUnresolvedContractCalls: jest.fn(
       () => [] as { operationId: string; txHash: string }[],
@@ -173,7 +175,7 @@ function scene(
   let current = true
   mockOpen.mockResolvedValue({
     chainIdentifier: 'monad-testnet',
-    deployment: venue,
+    venue: uniswapV4Venue(venue),
     account,
     reader: {
       ...canned.reader,
@@ -251,13 +253,9 @@ afterEach(() => {
 })
 
 describe('the swap form', () => {
-  it('names the venue honestly and shows balances read from the chain', async () => {
+  it('shows balances read from the chain and asks for an amount', async () => {
     scene()
     const view = await mountPanel()
-    expect(text(view, 'swap-venue')).toBe('Uniswap v4')
-    expect(text(view, 'swap-venue-note')).toBe(
-      'Testnet deployment run by Monad, not by Uniswap Labs',
-    )
     expect(text(view, 'swap-pay-balance')).toBe('Available: 1 MON')
     expect(text(view, 'swap-receive-balance')).toBe('Balance: 5 USDC')
     expect(view.find('[data-testid="swap-details"]').exists()).toBe(false)
@@ -277,8 +275,8 @@ describe('the swap form', () => {
     expect(text(view, 'swap-price-impact')).toBe('0.02%')
     expect(text(view, 'swap-pool-fee')).toBe('0.05%')
     expect(text(view, 'swap-minimum-received')).toBe('0.019896 USDC')
-    // 200,000 gas estimated, plus a fifth, at a 100 gwei fee cap.
-    expect(text(view, 'swap-network-fee')).toBe('up to 0.024 MON')
+    // 200,000 gas estimated plus 15%, all of it charged, at 100 gwei.
+    expect(text(view, 'swap-network-fee')).toBe('0.023 MON')
     expect(text(view, 'swap-review-btn')).toBe('Review swap')
   })
 
@@ -347,7 +345,13 @@ describe('the swap form', () => {
     const view = await mountPanel()
     await type(view, '0.02')
     expect(text(view, 'swap-other-accounts')).toContain('1 MON more')
-    expect(view.find('[data-testid="swap-problem"]').exists()).toBe(false)
+    // Nothing blocks the swap; the only remark is about the size of the fee.
+    expect(text(view, 'swap-problem')).toBe(
+      'The network fee is larger than the amount you are swapping.',
+    )
+    expect(
+      view.get('[data-testid="swap-review-btn"]').attributes('disabled'),
+    ).toBeUndefined()
   })
 
   it('says plainly when the pool cannot fill the amount or the pair has no pool', async () => {
@@ -379,7 +383,10 @@ describe('the swap form', () => {
     expect(text(view, 'swap-approval-needed')).toContain(
       '2 approval transaction(s) first, for exactly this USDC amount',
     )
-    expect(text(view, 'swap-network-fee')).toBe('estimated once approved')
+    // Each approval is priced; the swap cannot be until they confirm.
+    expect(text(view, 'swap-network-fee')).toBe(
+      '0.046 MON for the approvals; the swap’s own fee is known once they confirm',
+    )
   })
 
   it('reports a quote the node could not give without inventing one', async () => {
@@ -398,7 +405,7 @@ describe('the swap form', () => {
     const view = await mountPanel(fr)
     await type(view, '0.02')
     expect(text(view, 'swap-review-btn')).toBe('Vérifier l’échange')
-    expect(text(view, 'swap-network-fee')).toBe('jusqu’à 0.024 MON')
+    expect(text(view, 'swap-network-fee')).toBe('0.023 MON')
   })
 
   it('says so when the wallet cannot swap', async () => {
@@ -417,8 +424,12 @@ describe('confirming and executing', () => {
     const view = await mountPanel()
     await type(view, '0.02')
     await click(view, 'swap-review-btn')
-    expect(text(view, 'swap-review-summary')).toBe(
-      'Pay 0.02 MON and receive about 0.019996 USDC. If you would get less than 0.019896 USDC, the swap is cancelled and you keep your MON.',
+    // The swap as a whole: what leaves the wallet, and what arrives.
+    expect(text(view, 'swap-review-pay')).toBe(
+      'You pay 0.02 MON + 0.023 MON network fee = 0.043 MON.',
+    )
+    expect(text(view, 'swap-review-receive')).toBe(
+      'You receive about 0.019996 USDC. If you would get less than 0.019896 USDC, the swap is cancelled and you keep what you were paying with.',
     )
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
     await click(view, 'swap-back-btn')
@@ -450,7 +461,7 @@ describe('confirming and executing', () => {
         operationId: 'op-1',
         venueId: 'uniswap-v4',
         account,
-        zeroForOne: true,
+        route: { zeroForOne: true },
       },
     })
     expect(mockSaved[1]).toMatchObject({
@@ -462,7 +473,10 @@ describe('confirming and executing', () => {
     expect(mockSaved[1]!.recovery).toBeUndefined()
     expect(text(view, 'swap-result')).toContain('Swap complete')
     expect(text(view, 'swap-result-received')).toBe('0.019996 USDC')
-    expect(text(view, 'swap-result-fee')).toBe('Network fee paid: 0.02652 MON')
+    // What was actually charged and paid, from the receipt: 0.02 MON in, 0.02652 MON fee.
+    expect(text(view, 'swap-result-paid')).toBe(
+      'You paid 0.02 MON + 0.02652 MON network fee = 0.04652 MON.',
+    )
     expect(
       view.get('[data-testid="swap-result-explorer"]').attributes('href'),
     ).toBe('https://explorer.test/monad-testnet/tx/0xhash1')
@@ -501,7 +515,7 @@ describe('confirming and executing', () => {
     expect(text(view, 'swap-problem')).toBe(
       'The price moved beyond your slippage tolerance. Review the new amount.',
     )
-    expect(text(view, 'swap-review-summary')).toContain('about 0.018 USDC')
+    expect(text(view, 'swap-review-receive')).toContain('about 0.018 USDC')
   })
 
   it('does not sign when the node says the swap would fail on its minimum', async () => {
@@ -590,8 +604,7 @@ describe('confirming and executing', () => {
           operationId: 'op-old',
           venueId: 'uniswap-v4',
           account,
-          pool: { ...route.key },
-          zeroForOne: true,
+          route: { key: { ...route.key }, zeroForOne: true },
           call: { to: deployment.universalRouter, data: '0x00', value: '1' },
           toDecimals: 6,
         },
@@ -634,15 +647,15 @@ describe('confirming and executing', () => {
     await type(view, '0.02')
     expect(s.wallet.fundMainAccount).not.toHaveBeenCalled()
     await click(view, 'swap-review-btn')
-    // 0.02 MON plus 240,000 gas at 100 gwei, less the 0.01 MON already there.
+    // 0.02 MON plus 230,000 gas at 100 gwei, less the 0.01 MON already there.
     expect(text(view, 'swap-review-move')).toBe(
-      '0.034 MON will first be moved from your other accounts into your main account, which makes the swap.',
+      '0.033 MON will first be moved from your other accounts into your main account, which makes the swap.',
     )
     expect(s.wallet.fundMainAccount).not.toHaveBeenCalled()
     await click(view, 'swap-confirm-btn')
     expect(s.wallet.fundMainAccount).toHaveBeenCalledTimes(1)
     expect(s.wallet.fundMainAccount).toHaveBeenCalledWith({
-      value: 34n * 10n ** 15n,
+      value: 33n * 10n ** 15n,
     })
     expect(text(view, 'swap-result')).toContain('Swap complete')
   })
@@ -667,7 +680,7 @@ describe('reviewing while the network is unreliable', () => {
     jest.advanceTimersByTime(6_000)
     await flushPromises()
     expect(view.find('[data-testid="swap-review"]').exists()).toBe(true)
-    expect(text(view, 'swap-review-summary')).toContain('about 0.019996 USDC')
+    expect(text(view, 'swap-review-receive')).toContain('about 0.019996 USDC')
     expect(text(view, 'swap-review-stale')).toContain(
       'The price could not be refreshed',
     )
@@ -759,6 +772,55 @@ describe('how much the form asks of the network', () => {
     await view.get('[data-testid="evm-swap-panel"]').trigger('pointerdown')
     await flushPromises()
     expect(quoterCalls(s)).toBe(1)
+  })
+})
+
+describe('the cost of the swap as a whole', () => {
+  it('warns when the network fee is a large share of the amount, and says nothing when it is small', async () => {
+    scene()
+    const view = await mountPanel()
+    // Fee 0.023 MON on 0.1 MON: 23%.
+    await type(view, '0.1')
+    expect(text(view, 'swap-problem')).toBe(
+      'The network fee is about 23% of the amount you are swapping.',
+    )
+    // On 0.5 MON it is under a tenth.
+    await type(view, '0.5')
+    expect(view.find('[data-testid="swap-problem"]').exists()).toBe(false)
+  })
+
+  it('shows a token payment and its network fee each in its own asset, and says what is not known yet', async () => {
+    scene()
+    const view = await mountPanel()
+    await click(view, 'swap-flip-btn')
+    await type(view, '0.015')
+    await click(view, 'swap-review-btn')
+    expect(text(view, 'swap-review-pay')).toBe(
+      'You pay 0.015 USDC + 0.046 MON network fee for the approvals, plus the swap’s own network fee, shown once they confirm.',
+    )
+  })
+
+  it('counts the transfer that moves funds into the main account', async () => {
+    scene({ mainBalance: 10n ** 16n, other: 10n ** 18n })
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    // The swap's 0.023 MON plus one 21,000 gas transfer at 100 gwei.
+    expect(text(view, 'swap-review-pay')).toBe(
+      'You pay 0.02 MON + 0.0251 MON network fee = 0.0451 MON.',
+    )
+  })
+
+  it('after a reverted swap, says only the fee was paid', async () => {
+    const s = scene()
+    s.receipts.set('0xhash1', receipt({ logs: [] }, 0))
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    await click(view, 'swap-confirm-btn')
+    expect(text(view, 'swap-result-paid')).toBe(
+      'You paid 0.02652 MON in network fees and nothing else.',
+    )
   })
 })
 

@@ -1347,7 +1347,6 @@ export default {
       'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
   },
   swap: {
-    venueChoice: 'Plateforme',
     interfaceFee: 'Frais Frank ({rate})',
     venueNote:
       'Déploiement de test géré par {maintainer}, et non par Uniswap Labs',
@@ -1373,7 +1372,29 @@ export default {
     poolFee: 'Frais du pool',
     minimumReceived: 'Minimum reçu',
     networkFee: 'Frais de réseau',
-    networkFeeUpTo: 'jusqu’à {fee} {unit}',
+    networkFeeKnown: '{fee} {unit}',
+    networkFeePartial:
+      '{fee} {unit} pour les approbations ; les frais de l’échange lui-même seront connus après leur confirmation',
+    reviewPaySame:
+      'Vous payez {amount} {asset} + {fee} {unit} de frais de réseau = {total} {unit}.',
+    reviewPayOther:
+      'Vous payez {amount} {asset} + {fee} {unit} de frais de réseau.',
+    reviewPayPartial:
+      'Vous payez {amount} {asset} + {fee} {unit} de frais de réseau pour les approbations, plus les frais de réseau de l’échange lui-même, affichés après leur confirmation.',
+    reviewPayNoFee:
+      'Vous payez {amount} {asset}, plus des frais de réseau qui n’ont pas encore pu être estimés.',
+    reviewReceive:
+      'Vous recevez environ {receive} {asset}. Si vous deviez recevoir moins de {minimum} {asset}, l’échange est annulé et vous gardez ce avec quoi vous payiez.',
+    resultPaidSame:
+      'Vous avez payé {amount} {asset} + {fee} {unit} de frais de réseau = {total} {unit}.',
+    resultPaidOther:
+      'Vous avez payé {amount} {asset} + {fee} {unit} de frais de réseau.',
+    resultPaidFeeOnly:
+      'Vous avez payé {fee} {unit} de frais de réseau et rien d’autre.',
+    warnFeeLarger:
+      'Les frais de réseau sont supérieurs au montant que vous échangez.',
+    warnFeeShare:
+      'Les frais de réseau représentent environ {percent} % du montant que vous échangez.',
     networkFeeLater: 'estimés après l’approbation',
     approval: 'Approbation',
     approvalNeeded:
@@ -1383,8 +1404,6 @@ export default {
     enterAmount: 'Saisissez un montant',
     review: 'Vérifier l’échange',
     reviewTitle: 'Confirmer cet échange',
-    reviewSummary:
-      'Payer {pay} {payAsset} et recevoir environ {receive} {receiveAsset}. Si vous deviez recevoir moins de {minimum} {receiveAsset}, l’échange est annulé et vous gardez vos {payAsset}.',
     reviewNote:
       'Le prix est vérifié à nouveau à la confirmation. L’échange expire {seconds} secondes après la signature.',
     back: 'Retour',
@@ -1411,7 +1430,6 @@ export default {
     resultPending: 'Envoyé, pas encore confirmé',
     resultPendingDetail:
       'Le réseau n’a pas encore confirmé cet échange. Il peut encore aboutir ; son état est mis à jour dans l’activité récente. Ne le renvoyez pas.',
-    resultFee: 'Frais de réseau payés : {fee} {unit}',
     unavailableNetwork:
       'Aucun échange n’est disponible pour ce portefeuille sur ce réseau.',
     unavailableSolana:

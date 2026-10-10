@@ -2,7 +2,9 @@ import { getEvmDexDeployment } from '../chain/dex-deployments'
 import { fetchSwapQuote, planSwap, type SwapPlan } from './evm-swap'
 import {
   consolidationNeeded,
+  estimateSwapCost,
   executeSwap,
+  networkFeeShare,
   reconcileSwap,
   UNESTIMATED_APPROVAL_GAS,
   UNESTIMATED_SWAP_GAS,
@@ -141,6 +143,7 @@ describe('executing a swap', () => {
       amountIn: 20_000_000_000_000_000n,
       amountOut: 19_996n,
       feeWei: 600_000n,
+      totalFeeWei: 600_000n,
     })
     // The gas limit signed is the one estimated for the fee shown: 200,000 plus a fifth.
     expect(s.wallet.sendContractCall).toHaveBeenCalledWith(
@@ -148,7 +151,7 @@ describe('executing a swap', () => {
         to: { raw: plan.swap.to },
         data: plan.swap.data,
         value: 1_000n,
-        gasLimit: 240_000n,
+        gasLimit: 230_000n,
       }),
     )
     expect(s.wallet.reobserveNativeOperations).toHaveBeenCalled()
@@ -471,9 +474,110 @@ describe('executing a swap', () => {
       txHash: '0xhash1',
       reason: 'slippage',
       feeWei: 600_000n,
+      totalFeeWei: 600_000n,
     })
     // Asked at the block the swap failed in, not at whatever block is latest by then.
     expect(replay).toHaveBeenCalledWith(1)
+  })
+})
+
+describe('what the whole swap costs', () => {
+  it('prices a native swap as its one transaction, at the limit times the price charged', async () => {
+    const s = setup()
+    s.node.gasEstimate = 200_000n
+    s.node.maxFeePerGas = 202n
+    s.node.baseFeePerGas = 100n
+    s.node.maxPriorityFeePerGas = 2n
+    const cost = await estimateSwapCost({
+      reader: s.reader,
+      wallet: s.wallet,
+      plan: await s.plan('native-in'),
+      account,
+    })
+    // 230,000 gas reserved at 102, not at the 202 cap and not at the gas used.
+    expect(cost.transactions).toEqual([{ kind: 'swap', feeWei: 23_460_000n }])
+    expect(cost.networkFeeWei).toBe(23_460_000n)
+    expect(cost.complete).toBe(true)
+    expect(cost.swapFee?.maximumFeeWei).toBe(46_460_000n)
+  })
+
+  it('prices each approval, and says the total is incomplete until the swap can be estimated', async () => {
+    const s = setup()
+    s.node.gasEstimate = 100_000n
+    s.node.maxFeePerGas = 10n
+    const cost = await estimateSwapCost({
+      reader: s.reader,
+      wallet: s.wallet,
+      plan: await s.plan('token-in'),
+      account,
+    })
+    expect(cost.transactions).toEqual([
+      { kind: 'approval', feeWei: 1_150_000n },
+      { kind: 'approval', feeWei: 1_150_000n },
+      { kind: 'swap', feeWei: undefined },
+    ])
+    expect(cost.networkFeeWei).toBe(2_300_000n)
+    expect(cost.complete).toBe(false)
+  })
+
+  it('counts the transfers of a consolidation', async () => {
+    const s = setup()
+    s.node.gasEstimate = 100_000n
+    s.node.maxFeePerGas = 10n
+    const cost = await estimateSwapCost({
+      reader: s.reader,
+      wallet: { estimateLegacyFee: async () => ({ inputCount: 2 }) },
+      plan: await s.plan('native-in'),
+      account,
+      moveWei: 5n,
+    })
+    expect(cost.transactions).toEqual([
+      { kind: 'consolidation', feeWei: 420_000n },
+      { kind: 'swap', feeWei: 1_150_000n },
+    ])
+    expect(cost.complete).toBe(true)
+  })
+
+  it('compares the fee with the amount only when both are the native coin', async () => {
+    const s = setup()
+    const native = (await s.plan('native-in', 1_000n)).quote
+    const token = (await s.plan('token-in', 1_000n)).quote
+    expect(networkFeeShare({ networkFeeWei: 1_330n, quote: native })).toBe(133)
+    expect(networkFeeShare({ networkFeeWei: 50n, quote: native })).toBe(5)
+    // Paid in a token, received in the native coin: compared with what is received.
+    expect(networkFeeShare({ networkFeeWei: 500n, quote: token })).toBe(50)
+    expect(
+      networkFeeShare({
+        networkFeeWei: 500n,
+        quote: { ...token, tokenOut: token.tokenIn },
+      }),
+    ).toBeUndefined()
+  })
+
+  it('reports the fees of every transaction the swap needed, from their receipts', async () => {
+    const s = setup({ funds: { mainBalance: 400n, otherBalance: 10n ** 18n } })
+    const plan = await s.plan('token-in')
+    s.wallet.fundMainAccount.mockImplementation(async () => ({
+      totalFeePaid: 21_000n,
+    }))
+    for (const hash of ['0xhash1', '0xhash2'])
+      s.receipts.set(hash, receiptOf({ logs: [] }))
+    s.receipts.set('0xhash3', receiptOf(vectors.swapTokenIn))
+    const result = await executeSwap({
+      reader: s.reader,
+      wallet: s.wallet,
+      deployment,
+      plan,
+      account,
+      consolidateWei: 5n,
+      timing,
+    })
+    // One transfer, two approvals and the swap: 21,000 + 3 x 600,000.
+    expect(result).toMatchObject({
+      status: 'confirmed',
+      feeWei: 600_000n,
+      totalFeeWei: 1_821_000n,
+    })
   })
 })
 

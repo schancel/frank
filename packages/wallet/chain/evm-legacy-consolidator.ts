@@ -1414,8 +1414,8 @@ export class EvmLegacyConsolidator {
         data,
         value: params.value,
       })) *
-        12n) /
-        10n
+        115n) /
+        100n
     if (
       BigInt(source.account.balanceWei) <
       params.value + gasLimit * maxFeePerGas

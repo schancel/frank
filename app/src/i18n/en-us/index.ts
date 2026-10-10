@@ -146,6 +146,13 @@ export default {
       'SHA-256(secret) must equal the commitment; the roll is the first 16 bits of HMAC-SHA256(secret, your value).',
     rpsVerified:
       'Verified: the move and salt the bot revealed match the commitment it sent before you moved.',
+    payoutClaimed:
+      'Payout: {amount}. The bot says this message carries it; that is not yet verified on chain.',
+    payoutMissing:
+      'Payout: {amount}, but this message carried {carried}. You have not been paid in full.',
+    awaiting: 'Waiting for the bot to reveal ({seconds} s).',
+    noAnswer:
+      'The bot has not answered after {seconds} s. Your stake is with the bot and nothing has been revealed.',
   },
   raffleDraw: {
     verified: 'Draw matches the seed commitment',

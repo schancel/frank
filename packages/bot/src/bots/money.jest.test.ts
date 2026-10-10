@@ -150,3 +150,165 @@ describe("Outbox", () => {
     expect(h.sent.map((m) => m.valueWei)).toEqual([4n, 0n]);
   });
 });
+
+describe("a transfer is credited only once it is confirmed", () => {
+  test("naming somebody else's transfer with another address takes nothing from its payer", async () => {
+    const h = harness();
+    const real = h.pay(5n);
+    const thief = h.message(
+      [],
+      [{ ...real, destinationAddress: "0x" + "77".repeat(20) }]
+    );
+    expect((await confirmReceived(thief, h.ctx, 0)).confirmedWei).toBe(0n);
+    expect((await confirmReceived(h.message([], [real]), h.ctx, 0)).confirmedWei).toBe(5n);
+  });
+
+  test("naming a transfer that is not mined yet does not take it either", async () => {
+    const h = harness();
+    const real = h.pay(5n, { mined: false });
+    await confirmReceived(h.message([], [real]), h.ctx, 0);
+    h.chain.get(real.txHash)!.mined = true;
+    expect((await confirmReceived(h.message([], [real]), h.ctx, 0)).confirmedWei).toBe(5n);
+  });
+});
+
+describe("Outbox: an attempt the wallet holds is not a delivery", () => {
+  const owed = { to: PLAYER, items: [{ type: "text" as const, text: "paid" }] };
+
+  test("an attempt still on its way stays owed until the wallet says delivered", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    await outbox.owe(h.ctx, "a", { ...owed, valueWei: 9n });
+    h.wallet("live");
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    expect(await outbox.sent(h.ctx, "a")).toBe(false);
+    expect((await outbox.list(h.ctx)).owed.map((e) => e.id)).toEqual(["a"]);
+    h.deliverLive();
+    await outbox.settle(h.ctx);
+    expect(await outbox.sent(h.ctx, "a")).toBe(true);
+    expect(h.paidOut()).toBe(9n);
+  });
+
+  test("an attempt the relay ended is FAILED: never sent, reported, listed, and resent only on an operator's retry", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    await outbox.owe(h.ctx, "a", { ...owed, valueWei: 9n });
+    h.wallet("dead");
+    await outbox.settle(h.ctx);
+    h.wallet("deliver");
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    expect(await outbox.sent(h.ctx, "a")).toBe(false);
+    expect(h.sent).toHaveLength(0);
+    expect(errors.mock.calls.flat().join(" ")).toMatch(/FAILED.*a.*9 wei/);
+    const listed = await outbox.list(h.ctx);
+    expect(listed.failed.map((e) => e.id)).toEqual(["a"]);
+    expect(listed.owed).toEqual([]);
+    // Owing the same thing again does not bring it back.
+    await outbox.owe(h.ctx, "a", { ...owed, valueWei: 9n });
+    await outbox.settle(h.ctx);
+    expect(h.sent).toHaveLength(0);
+
+    expect(await outbox.retry(h.ctx, "a")).toBe(true);
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    expect(h.paidOut()).toBe(9n);
+    expect(await outbox.sent(h.ctx, "a")).toBe(true);
+    errors.mockRestore();
+  });
+});
+
+describe("Outbox.handle: a paid message is written down before anything else", () => {
+  const settleTwice = async (outbox: Outbox, h: ReturnType<typeof harness>) => {
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+  };
+
+  test("a handler that throws: the confirmed payment is refunded exactly once", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const message = h.message([], [h.pay(7n)]);
+    await expect(
+      outbox.handle(message, h.ctx, async () => {
+        throw new Error("boom");
+      }, 0)
+    ).rejects.toThrow("boom");
+    await settleTwice(outbox, h);
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent.map((m) => [m.to, m.valueWei])).toEqual([[PLAYER, 7n]]);
+  });
+
+  test("a crash while the payment is being confirmed: refunded once after restart", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(7n)]);
+    // The process dies inside the handler: it never returns and nothing more is written.
+    void new Outbox("test").handle(message, h.ctx, () => new Promise(() => undefined), 0);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect((await new Outbox("test").list(h.ctx)).pending).toHaveLength(1);
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([7n]);
+  });
+
+  test("a message still being handled is not refunded by the timer", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const message = h.message([], [h.pay(7n)]);
+    let finish!: () => void;
+    const handling = outbox.handle(
+      message,
+      h.ctx,
+      () => new Promise<void>((resolve) => (finish = resolve)),
+      0
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    await settleTwice(outbox, h);
+    expect(h.sent).toHaveLength(0);
+    finish();
+    await handling;
+  });
+
+  test("a crash after the result is owed: the result is sent and nothing is refunded", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(7n)]);
+    const outbox = new Outbox("test");
+    await outbox.handle(message, h.ctx, async () => {
+      await outbox.owe(
+        h.ctx,
+        "result",
+        { to: PLAYER, items: [{ type: "text", text: "you win" }], valueWei: 14n },
+        { digest: message.payloadDigest }
+      );
+    }, 0);
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([14n]);
+  });
+
+  test("money the game keeps is neither refunded nor left unsettled", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(7n)]);
+    const outbox = new Outbox("test");
+    await outbox.handle(message, h.ctx, () =>
+      outbox.keep(h.ctx, message.payloadDigest, [
+        { type: "put", key: "game", value: "has it" },
+      ]), 0);
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent).toHaveLength(0);
+    expect(h.data.get("game")).toBe("has it");
+    expect((await outbox.list(h.ctx)).pending).toEqual([]);
+  });
+
+  test("a left-over message whose payment never landed owes nothing", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(7n, { status: 0 })]);
+    await expect(
+      new Outbox("test").handle(message, h.ctx, async () => {
+        throw new Error("boom");
+      }, 0)
+    ).rejects.toThrow();
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent).toHaveLength(0);
+  });
+});

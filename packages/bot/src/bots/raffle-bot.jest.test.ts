@@ -163,7 +163,7 @@ describe("RaffleBot", () => {
     roundAtCrash.entryTxHashes = [paidTx[0], paidTx[1]];
     roundAtCrash.conversations = [full.conversations[0], full.conversations[0]];
     // The process dies after the wallet took the payment and before the bot recorded it.
-    for (const key of [...h.data.keys()]) if (key.startsWith("outbox/")) h.data.delete(key);
+    for (const key of [...h.data.keys()]) if (key.startsWith("outbox:")) h.data.delete(key);
     h.data.set("current_round", JSON.stringify(roundAtCrash));
 
     const restarted = new RaffleBot({ maxEntries: 2 });
@@ -180,5 +180,57 @@ describe("RaffleBot", () => {
       new RaffleBot().onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx)
     ).rejects.toThrow();
     expect(h.data.get("current_round")).toBe("{not json");
+  });
+
+  test("a winner's payment the relay ended is never announced; the round waits for the operator", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const h = harness();
+    const bot = new RaffleBot({ maxEntries: 2 });
+    const { raffleId } = await open(h, bot);
+    await enter(h, bot, raffleId, ALICE);
+    h.sent.length = 0;
+    h.wallet("dead");
+    await enter(h, bot, raffleId, BOB);
+    h.wallet("deliver");
+    for (let i = 0; i < 3; i++)
+      for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    // Nobody was told of a draw, nothing was paid, and no new round opened.
+    expect(h.sent.some((m) => h.item("raffle", m)?.action === "draw")).toBe(false);
+    expect(h.paidOut()).toBe(0n);
+    expect(JSON.parse(h.data.get("current_round")!)).toMatchObject({ raffleId, status: "drawing" });
+    expect(errors.mock.calls.flat().join(" ")).toMatch(/FAILED.*draw:/);
+    errors.mockRestore();
+  });
+
+  test("a winner's payment still on its way is not announced until the wallet says it arrived", async () => {
+    const h = harness();
+    const bot = new RaffleBot({ maxEntries: 2 });
+    const { raffleId } = await open(h, bot);
+    await enter(h, bot, raffleId, ALICE);
+    h.sent.length = 0;
+    h.wallet("live");
+    await enter(h, bot, raffleId, BOB);
+    for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    expect(h.sent.some((m) => h.item("raffle", m)?.action === "draw")).toBe(false);
+    h.deliverLive();
+    h.wallet("deliver");
+    for (let i = 0; i < 2; i++)
+      for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    expect(h.sent.filter((m) => h.item("raffle", m)?.action === "draw")).toHaveLength(2);
+    expect(h.sent.filter((m) => m.valueWei === PRICE * 2n)).toHaveLength(1);
+    expect(JSON.parse(h.data.get("current_round")!).status).toBe("open");
+  });
+
+  test("an entry that paid more than the price is counted and the excess returned; counted entries are never refunded after a restart", async () => {
+    const h = harness();
+    const bot = new RaffleBot({ maxEntries: 3 });
+    const { raffleId } = await open(h, bot);
+    await enter(h, bot, raffleId, ALICE, PRICE + 9n);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].valueWei).toBe(9n);
+    const restarted = new RaffleBot({ maxEntries: 3 });
+    for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    expect(h.paidOut()).toBe(9n);
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([ALICE]);
   });
 });

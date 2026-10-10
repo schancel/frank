@@ -22,10 +22,12 @@ import {
   isDiceTarget,
 } from "@frank/wallet/message-item-plugins/dice/fair";
 import { generateAvatarPng } from "../../bot-directory";
-import { confirmReceived, Outbox, refuse } from "./money";
+import { Outbox, refuse, type Received } from "./money";
 
 /** The most one roll pays, stake included: the table limit. */
 export const DICE_DEFAULT_MAX_PAYOUT_WEI = 250_000_000_000_000_000n; // 0.25 MON
+/** Kept back from the bank's balance when it checks that it can cover a bet. */
+export const BANK_RESERVE_WEI = 20_000_000_000_000_000n; // 0.02 MON
 
 const HELP = `Satoshi Dice: pick a target, and you win if the number rolled (0 to 65,535) is below it. 1.9% house edge.
 
@@ -95,7 +97,10 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       (item): item is SatoshiDiceItem =>
         item.type === "dice" && item.action === "roll"
     );
-    if (bet) return this.roll(bet, msgCtx, ctx);
+    if (bet)
+      return this.outbox.handle(msgCtx, ctx, (received) =>
+        this.roll(bet, msgCtx, ctx, received)
+      );
     // Anything else, including an amount typed in chat: the next roll on offer. Nothing typed
     // is ever a stake.
     await msgCtx.reply([
@@ -107,10 +112,10 @@ export class SatoshiDiceBot implements FrankBotDefinition {
   private async roll(
     bet: SatoshiDiceItem,
     msgCtx: BotMessageContext,
-    ctx: BotContext
+    ctx: BotContext,
+    received: Received
   ): Promise<void> {
     const peer = msgCtx.peerAddress.toLowerCase();
-    const received = await confirmReceived(msgCtx, ctx);
     const refused = async (why: string) =>
       refuse(this.outbox, msgCtx, ctx, received, why, [
         await this.offer(ctx, peer),
@@ -162,6 +167,19 @@ export class SatoshiDiceBot implements FrankBotDefinition {
         )} is confirmed as paid with it. No roll was made.`
       );
 
+    // The bank must hold the most this roll can pay before the bet is taken.
+    if (
+      wagerWei > 0n &&
+      (await ctx.getBalance().catch(() => 0n)) <
+        dicePayoutWei(wagerWei, target) + BANK_RESERVE_WEI
+    )
+      return refused(
+        "The bank cannot cover that bet right now. No roll was made."
+      );
+    // Anything paid above a stated stake goes back with the result. (A free roll states no
+    // stake: what its message paid is the price of the message.)
+    const excessWei = wagerWei > 0n ? received.confirmedWei - wagerWei : 0n;
+
     const luckyNumber = diceRoll(offered.secret, clientSeed);
     const isWin = luckyNumber < target;
     const payoutWei = isWin ? dicePayoutWei(wagerWei, target) : 0n;
@@ -189,17 +207,27 @@ export class SatoshiDiceBot implements FrankBotDefinition {
         ? " Free roll, nothing staked."
         : isWin
         ? ` This message pays you ${formatMon(payoutWei)}.`
-        : ` Your stake of ${formatMon(wagerWei)} is lost.`);
+        : ` Your stake of ${formatMon(wagerWei)} is lost.`) +
+      (excessWei > 0n
+        ? ` You paid ${formatMon(excessWei)} more than your stake; it is returned with this message.`
+        : "");
     const items: MessageItem[] = [result, { type: "text", text }];
     // The result, with its payout, is written down before the secret is given up and before
     // anything is sent; it is then sent until it has gone, once.
-    await this.outbox.owe(ctx, `roll:${rollId}`, {
-      to: msgCtx.peerAddress,
-      conversationId: msgCtx.conversationId,
-      items,
-      valueWei: payoutWei,
-    });
-    await ctx.state.del(`roll:${rollId}`);
+    await this.outbox.owe(
+      ctx,
+      `roll:${rollId}`,
+      {
+        to: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+        items,
+        valueWei: payoutWei + excessWei,
+      },
+      {
+        digest: msgCtx.payloadDigest,
+        writes: [{ type: "del", key: `roll:${rollId}` }],
+      }
+    );
     await this.outbox.settle(ctx);
   }
 }

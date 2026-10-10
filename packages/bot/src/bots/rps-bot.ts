@@ -18,7 +18,8 @@ import {
   type RpsMove,
 } from "@frank/wallet/message-item-plugins/rps/fair";
 import { generateAvatarPng } from "../../bot-directory";
-import { confirmReceived, Outbox, refuse } from "./money";
+import { Outbox, refuse, type Received } from "./money";
+import { BANK_RESERVE_WEI } from "./satoshi-dice-bot";
 
 /** The most one match can be played for: the table limit. */
 export const RPS_DEFAULT_MAX_WAGER_WEI = 100_000_000_000_000_000n; // 0.1 MON
@@ -95,7 +96,10 @@ export class RpsBot implements FrankBotDefinition {
     const played = msgCtx.items.find(
       (item): item is RpsItem => item.type === "rps" && item.action === "move"
     );
-    if (played) return this.resolve(played, msgCtx, ctx);
+    if (played)
+      return this.outbox.handle(msgCtx, ctx, (received) =>
+        this.resolve(played, msgCtx, ctx, received)
+      );
 
     const text = msgCtx.items
       .flatMap((item) => (item.type === "text" ? [item.text] : []))
@@ -110,6 +114,7 @@ export class RpsBot implements FrankBotDefinition {
     const raw = open ? await ctx.state.get(`match:${open}`) : undefined;
     if (typed && open && raw) {
       const match = JSON.parse(raw) as Match;
+      // Free: nothing the message paid is a stake, so nothing is looked up or held.
       return this.resolve(
         {
           type: "rps",
@@ -119,7 +124,8 @@ export class RpsBot implements FrankBotDefinition {
           playerMove: typed,
         },
         msgCtx,
-        ctx
+        ctx,
+        { confirmedWei: 0n, confirmed: [], unconfirmed: [] }
       );
     }
     await msgCtx.reply([
@@ -131,10 +137,10 @@ export class RpsBot implements FrankBotDefinition {
   private async resolve(
     played: RpsItem,
     msgCtx: BotMessageContext,
-    ctx: BotContext
+    ctx: BotContext,
+    received: Received
   ): Promise<void> {
     const peer = msgCtx.peerAddress.toLowerCase();
-    const received = await confirmReceived(msgCtx, ctx);
     const refused = async (why: string) =>
       refuse(this.outbox, msgCtx, ctx, received, why, [
         await this.start(ctx, peer),
@@ -181,6 +187,17 @@ export class RpsBot implements FrankBotDefinition {
         )} is confirmed as paid with it. Nothing was played.`
       );
 
+    // The bank must hold the most this match can pay before the stake is taken.
+    if (
+      wagerWei > 0n &&
+      (await ctx.getBalance().catch(() => 0n)) < wagerWei * 2n + BANK_RESERVE_WEI
+    )
+      return refused(
+        "The bank cannot cover that stake right now. Nothing was played."
+      );
+    // Anything paid above a stated stake goes back with the result.
+    const excessWei = wagerWei > 0n ? received.confirmedWei - wagerWei : 0n;
+
     const outcome = evaluateRps(playerMove, match.move);
     const payoutWei = rpsPayoutWei(wagerWei, outcome);
     const result: RpsItem = {
@@ -201,20 +218,30 @@ export class RpsBot implements FrankBotDefinition {
         ? " Nothing was staked."
         : payoutWei > 0n
         ? ` This message pays you ${formatMon(payoutWei)}.`
-        : ` Your stake of ${formatMon(wagerWei)} is lost.`);
+        : ` Your stake of ${formatMon(wagerWei)} is lost.`) +
+      (excessWei > 0n
+        ? ` You paid ${formatMon(excessWei)} more than your stake; it is returned with this message.`
+        : "");
     const items: MessageItem[] = [result, { type: "text", text }];
     // The result, with its payout, is written down before the move is given up and before
     // anything is sent; it is then sent until it has gone, once.
-    await this.outbox.owe(ctx, `match:${matchId}`, {
-      to: msgCtx.peerAddress,
-      conversationId: msgCtx.conversationId,
-      items,
-      valueWei: payoutWei,
-    });
-    await ctx.state.batch([
-      { type: "del", key: `match:${matchId}` },
-      { type: "del", key: `open:${peer}` },
-    ]);
+    await this.outbox.owe(
+      ctx,
+      `match:${matchId}`,
+      {
+        to: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+        items,
+        valueWei: payoutWei + excessWei,
+      },
+      {
+        digest: msgCtx.payloadDigest,
+        writes: [
+          { type: "del", key: `match:${matchId}` },
+          { type: "del", key: `open:${peer}` },
+        ],
+      }
+    );
     await this.outbox.settle(ctx);
   }
 }

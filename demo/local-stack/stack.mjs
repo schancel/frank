@@ -318,7 +318,7 @@ async function fund(address, amount = '5') {
 // Two ordinary accounts on relay-a. Each signs and publishes its own directory entry at start;
 // nothing about them is installed anywhere. Their secrets are disposable and generated here.
 const BOT_NAMES = { qwen: 'Qwen (chat bot)', blackjack: 'Blackjack (bot)' }
-const BOT_SCRIPTS = { qwen: 'qwen-bot.livecheck.ts', blackjack: 'blackjack-p2p-bot.livecheck.ts' }
+const BOT_SCRIPTS = { qwen: 'qwen-bot.livecheck.ts', blackjack: 'targets/blackjack.ts' }
 const TSX = join(REPO, 'node_modules', '.bin', 'tsx')
 const BOT_CWD = join(REPO, 'packages', 'bot')
 const STAMP_WEI = '10000000000000000' // 0.01 MON, the app's default stamp

@@ -651,6 +651,14 @@ export class FrankBotHost {
           return this.provider.waitForTransaction(txHash, 1, timeoutMs);
         },
 
+        attemptStatus: async (payloadDigest: string) =>
+          (
+            await this.chain.directMessages.reconcileAttempts({
+              wallet,
+              payloadDigests: [payloadDigest],
+            })
+          )[payloadDigest] ?? "unknown",
+
         getBalance: async (address?: string): Promise<bigint> => {
           if (address) {
             return this.provider.getBalance(address);

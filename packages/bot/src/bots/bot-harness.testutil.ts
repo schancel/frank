@@ -46,14 +46,22 @@ let counter = 0;
 const hash = () => "0x" + (++counter).toString(16).padStart(64, "0");
 
 export function harness(data = new Map<string, string>()) {
+  /** Messages the wallet delivered, in order. */
   const sent: Sent[] = [];
-  /** message ID -> digest: the wallet's own record of attempts, which outlives a bot restart. */
-  const attempts = new Map<string, string>();
+  /** message ID -> the wallet's own record of its attempt, which outlives a bot restart. */
+  const attempts = new Map<
+    string,
+    { digest: string; status: "live" | "delivered" | "dead"; message: Sent }
+  >();
   const chain = new Map<
     string,
     { to: string; value: bigint; status: number; mined: boolean }
   >();
-  let sendFails: Error | undefined;
+  /** What the wallet does with the next sends. `refuse`: rejects before any attempt exists.
+   * `live`: makes its attempt, then rejects with the message still on its way. `dead`: makes
+   * its attempt, and the relay ends it. */
+  let mode: "deliver" | "refuse" | "live" | "dead" = "deliver";
+  let refusal = new Error("refused");
 
   const sendMessage = async (
     to: string,
@@ -61,23 +69,32 @@ export function harness(data = new Map<string, string>()) {
     conversationId?: string,
     options?: BotSendOptions
   ) => {
-    if (sendFails) throw sendFails;
     const id = options?.messageId;
-    if (id && attempts.has(id))
+    const earlier = id ? attempts.get(id) : undefined;
+    if (id && earlier)
       throw Object.assign(new Error("already attempted"), {
         name: "DirectMessageAlreadyAttemptedError",
-        payloadDigest: attempts.get(id),
+        payloadDigest: earlier.digest,
       });
+    if (mode === "refuse") throw refusal;
     const payloadDigest = hash().slice(2);
-    if (id) attempts.set(id, payloadDigest);
-    sent.push({
+    const message: Sent = {
       to,
       items: structuredClone(items),
       conversationId,
       valueWei: options?.stampValueWei ?? 0n,
       messageId: id,
       digest: payloadDigest,
-    });
+    };
+    if (mode !== "deliver") {
+      if (id) attempts.set(id, { digest: payloadDigest, status: mode, message });
+      throw new Error(
+        mode === "live" ? "payment pending" : "the relay ended this payment set"
+      );
+    }
+    if (id)
+      attempts.set(id, { digest: payloadDigest, status: "delivered", message });
+    sent.push(message);
     return { payloadDigest, stampValueWei: options?.stampValueWei ?? 0n } as any;
   };
 
@@ -113,6 +130,9 @@ export function harness(data = new Map<string, string>()) {
     },
     waitForReceipt: async () => null,
     getBalance: async () => 10n ** 18n,
+    attemptStatus: async (digest: string) =>
+      [...attempts.values()].find((attempt) => attempt.digest === digest)
+        ?.status ?? "unknown",
   } as unknown as BotContext;
 
   return {
@@ -120,9 +140,23 @@ export function harness(data = new Map<string, string>()) {
     data,
     sent,
     chain,
-    /** Makes every send fail with `error` until called with nothing. */
+    /** Makes every send be refused before any attempt exists, with `error`, until called with
+     * nothing. */
     failSends(error?: Error) {
-      sendFails = error;
+      mode = error ? "refuse" : "deliver";
+      if (error) refusal = error;
+    },
+    /** How the wallet treats sends from now on; see `mode` above. */
+    wallet(next: "deliver" | "refuse" | "live" | "dead") {
+      mode = next;
+    },
+    /** The wallet's attempts still on their way arrive. */
+    deliverLive() {
+      for (const attempt of attempts.values())
+        if (attempt.status === "live") {
+          attempt.status = "delivered";
+          sent.push(attempt.message);
+        }
     },
     /** A transfer to this bot. `mined: false`: broadcast but not in a block. */
     pay(

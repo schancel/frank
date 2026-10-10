@@ -160,6 +160,12 @@ export interface BotContext {
     timeoutMs?: number
   ): Promise<TransactionReceipt | null>;
   getBalance(address?: string): Promise<bigint>;
+  /** What the wallet knows of one of this bot's own outgoing messages, by payload digest:
+   * `delivered`, `live` (still being delivered), `dead` (the relay ended it: it never arrives by
+   * that attempt) or `unknown`. A message is only known to have arrived on `delivered`. */
+  attemptStatus(
+    payloadDigest: string
+  ): Promise<"live" | "delivered" | "dead" | "unknown">;
 
   // --- Topic & Forum Broadcasting ---
   publishTopicMessage?(params: {

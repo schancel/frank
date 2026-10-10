@@ -25,7 +25,7 @@ import {
   type HandEvent,
   type HandItem,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
-import { confirmReceived, Outbox, refuse } from "./money";
+import { Outbox, refuse, type Received } from "./money";
 
 /** Kept back from the dealer's balance when it works out the largest bet it can cover. */
 const RESERVE_WEI = 20_000_000_000_000_000n;
@@ -262,31 +262,37 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       return this.serial(() =>
         this.challenge(ctx, msgCtx.peerAddress, msgCtx.conversationId)
       );
-    // What the message paid, on chain; looked up before taking the turn, since it can wait.
-    const received = await confirmReceived(msgCtx, ctx);
-    await this.serial(async () => {
-      const hand: Hand = {
-        gameId: handItem.gameId,
-        peer: msgCtx.peerAddress,
-        conversationId: msgCtx.conversationId,
-      };
-      const { events } = await this.events(ctx, hand);
-      if (!events.some((event) => event.digest === msgCtx.payloadDigest)) {
-        events.push({
-          item: handItem,
-          from: msgCtx.peerAddress,
-          to: ctx.address,
-          // The money of a message is what the chain confirms it paid, never what the wallet
-          // or the message says.
-          stampWei: received.confirmedWei,
-          digest: msgCtx.payloadDigest,
-        });
-        // In the record before anything is answered: a restart folds the same hand.
-        await ctx.state.put(`events:${hand.gameId}`, serializeEvents(events));
-      }
-      const known = await this.advance(ctx, hand);
+    // Written down, then what it paid is looked up on chain, before the turn is taken.
+    await this.outbox.handle(msgCtx, ctx, (received) =>
+      this.serial(() => this.play(handItem, msgCtx, ctx, received))
+    );
+  }
+
+  private async play(
+    handItem: HandItem,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
+    received: Received
+  ): Promise<void> {
+    const hand: Hand = {
+      gameId: handItem.gameId,
+      peer: msgCtx.peerAddress,
+      conversationId: msgCtx.conversationId,
+    };
+    // Money that is not on chain yet is not a bet and is not lost either: the message is not
+    // played, and what it paid goes back once it lands.
+    if (received.unconfirmed.length > 0)
+      return refuse(
+        this.outbox,
+        msgCtx,
+        ctx,
+        received,
+        "Your payment was not confirmed on chain in time, so this message was not played. Send it again."
+      );
+    const { events } = await this.events(ctx, hand);
+    if (!foldHand(events).state && handItem.action !== "challenge") {
       // Not a message of any hand this dealer holds: whatever it paid goes back.
-      if (!known && (received.confirmedWei > 0n || received.unconfirmed.length > 0))
+      if (received.confirmedWei > 0n)
         await refuse(
           this.outbox,
           msgCtx,
@@ -294,7 +300,29 @@ export class BlackjackDealerBot implements FrankBotDefinition {
           received,
           "That is not a hand at this table. Nothing was played."
         );
-    });
+      return;
+    }
+    if (!events.some((event) => event.digest === msgCtx.payloadDigest)) {
+      events.push({
+        item: handItem,
+        from: msgCtx.peerAddress,
+        to: ctx.address,
+        // The money of a message is what the chain confirms it paid, never what the wallet
+        // or the message says.
+        stampWei: received.confirmedWei,
+        digest: msgCtx.payloadDigest,
+      });
+      // In the hand's record before anything is answered, and from here the hand accounts for
+      // the money (a bet it does not accept is a refund the hand owes): one write.
+      await this.outbox.keep(ctx, msgCtx.payloadDigest, [
+        {
+          type: "put",
+          key: `events:${hand.gameId}`,
+          value: serializeEvents(events),
+        },
+      ]);
+    }
+    await this.advance(ctx, hand);
   }
 
   /** Sends the dealer's next message of a hand, if one is due and the last one has gone out.

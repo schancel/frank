@@ -212,4 +212,45 @@ describe("BlackjackDealerBot", () => {
   test("the profile makes no fairness claim beyond what the app checks", () => {
     expect(new BlackjackDealerBot().getProfile().bio).not.toMatch(/provably/i);
   });
+
+  test("a bet not mined in time is not played, and is refunded when it lands later", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    const bet = buildBet(t.state(), SEED)!;
+    const late = h.pay(BET, { mined: false });
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick"] });
+    const handling = bot.onMessage(h.message([bet as any], [late]), h.ctx);
+    await jest.advanceTimersByTimeAsync(61_000);
+    await handling;
+    jest.useRealTimers();
+    const before = h.sent.length;
+    expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
+    h.chain.get(late.txHash)!.mined = true;
+    for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    expect(h.sent).toHaveLength(before + 1);
+    expect(h.sent[before].valueWei).toBe(BET);
+  });
+
+  test("a reveal the relay ended is not folded into the hand or counted as paid", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(BET);
+    const game = (h.item("blackjack-hand") as HandItem).gameId;
+    const recorded = JSON.parse(h.data.get(`events:${game}`)!).length;
+    h.wallet("dead");
+    await t.stand();
+    h.wallet("deliver");
+    for (let i = 0; i < 2; i++)
+      for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    // The stand is recorded; the dealer's reveal, which never arrived, is not.
+    expect(JSON.parse(h.data.get(`events:${game}`)!)).toHaveLength(recorded + 1);
+    expect(h.paidOut()).toBe(0n);
+    expect(errors.mock.calls.flat().join(" ")).toContain("FAILED");
+    errors.mockRestore();
+  });
 });

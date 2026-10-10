@@ -203,14 +203,60 @@ describe('ChatMessageRps.vue', () => {
     ).toBe(true)
   })
 
-  test('a win the message did not pay shows NOT VERIFIED', () => {
+  test('a win is verified as an outcome; its payout is shown as claimed, or as short, never as verified', () => {
+    chat(
+      { outbound: true, item: mine },
+      { outbound: false, item: resolved, paid: STAKE * 2n },
+    )
+    const paid = mountCard(resolved)
+    expect(paid.find('[data-testid="rps-verified"]').exists()).toBe(true)
+    expect(paid.find('[data-testid="rps-payout"]').text()).toContain(
+      'not yet verified on chain',
+    )
     chat(
       { outbound: true, item: mine },
       { outbound: false, item: resolved, paid: STAKE },
     )
+    const short = mountCard(resolved)
+    expect(short.find('[data-testid="rps-verified"]').exists()).toBe(true)
+    expect(short.find('[data-testid="rps-payout"]').text()).toContain(
+      'not been paid in full',
+    )
+  })
+
+  test('a free match played by typing is checked against the commitment the bot sent first', () => {
+    const typed: RpsItem = { ...resolved, wagerWei: '0' }
+    chat({ outbound: false, item: start }, { outbound: false, item: typed })
+    const wrapper = mountCard(typed)
+    expect(wrapper.find('[data-testid="rps-verified"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="rps-not-verified"]').exists()).toBe(
+      false,
+    )
+    // A typed match whose reveal does not open that commitment is still caught.
+    const forged: RpsItem = { ...typed, botMove: 'paper', outcome: 'lose' }
+    chat({ outbound: false, item: start }, { outbound: false, item: forged })
     expect(
-      mountCard(resolved).find('[data-testid="rps-not-verified"]').text(),
-    ).toContain('not paid')
+      mountCard(forged).find('[data-testid="rps-not-verified"]').exists(),
+    ).toBe(true)
+  })
+
+  test('a move shows that it is waiting for the reveal, then that the bot has not answered', () => {
+    store.activeConversation = {
+      messages: [
+        { outbound: true, items: [mine], serverTime: Date.now() - 3_000 },
+      ],
+    }
+    const fresh = mountCard(store.activeConversation.messages[0].items[0])
+    expect(fresh.find('[data-testid="rps-waiting"]').text()).toContain(
+      'Waiting for the bot',
+    )
+    fresh.unmount()
+    store.activeConversation.messages[0].serverTime = Date.now() - 200_000
+    const late = mountCard(store.activeConversation.messages[0].items[0])
+    expect(late.find('[data-testid="rps-waiting"]').text()).toContain(
+      'has not answered',
+    )
+    late.unmount()
   })
 
   test('play again asks the bot for a new match', async () => {

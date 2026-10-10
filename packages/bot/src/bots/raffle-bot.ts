@@ -16,7 +16,7 @@ import {
 import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
-import { confirmReceived, Outbox, refuse } from "./money";
+import { Outbox, refuse, type Received } from "./money";
 
 export const RAFFLE_DEFAULT_ENTRY_PRICE_WEI = 20_000_000_000_000_000n; // 0.02 MON
 export const RAFFLE_DEFAULT_MAX_ENTRIES = 5;
@@ -169,15 +169,16 @@ export class RaffleBot implements FrankBotDefinition {
       return;
     }
     // What the entry paid, on chain; looked up before taking the round's turn, since it can wait.
-    const received = await confirmReceived(msgCtx, ctx);
-    await this.serial(() => this.enter(entry, msgCtx, ctx, received));
+    await this.outbox.handle(msgCtx, ctx, (received) =>
+      this.serial(() => this.enter(entry, msgCtx, ctx, received))
+    );
   }
 
   private async enter(
     entry: RaffleItem | undefined,
     msgCtx: BotMessageContext,
     ctx: BotContext,
-    received: Awaited<ReturnType<typeof confirmReceived>>
+    received: Received
   ): Promise<void> {
     const round = await this.round(ctx);
     const peer = msgCtx.peerAddress.toLowerCase();
@@ -206,18 +207,36 @@ export class RaffleBot implements FrankBotDefinition {
     round.entryTxHashes.push(received.confirmed[0].txHash);
     round.conversations.push(msgCtx.conversationId ?? null);
     if (round.entrants.length >= round.maxEntries) round.status = "drawing";
-    await ctx.state.put(ROUND, JSON.stringify(round));
-    if (round.status === "open") {
-      await msgCtx.reply([
-        this.status(round, "joined"),
-        {
-          type: "text",
-          text: `You are entered: ${round.entrants.length} of ${round.maxEntries}. The draw happens when the round is full.`,
-        },
-      ]);
-      return;
-    }
-    await this.finish(ctx);
+    // Anything paid above the entry price goes back with the confirmation. The entry and the
+    // confirmation owed for it are written together, with the message taken off the unsettled
+    // list: an entry is never both counted and refunded.
+    const excessWei = received.confirmedWei - price;
+    await this.outbox.owe(
+      ctx,
+      `joined:${msgCtx.payloadDigest}`,
+      {
+        to: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+        items: [
+          this.status(round, "joined"),
+          {
+            type: "text",
+            text:
+              `You are entered: ${round.entrants.length} of ${round.maxEntries}. The draw happens when the round is full.` +
+              (excessWei > 0n
+                ? ` You paid ${formatMon(excessWei)} more than the entry price; it is returned with this message.`
+                : ""),
+          },
+        ],
+        valueWei: excessWei,
+      },
+      {
+        digest: msgCtx.payloadDigest,
+        writes: [{ type: "put", key: ROUND, value: JSON.stringify(round) }],
+      }
+    );
+    await this.outbox.settle(ctx);
+    if (round.status === "drawing") await this.finish(ctx);
   }
 
   /** Pays the winner of a full round, and only once that payment has gone out tells the other

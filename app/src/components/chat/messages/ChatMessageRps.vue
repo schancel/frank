@@ -71,6 +71,18 @@
           for {{ displayWager(item.wagerWei) }}</span
         >.
       </div>
+      <div
+        v-if="waiting"
+        class="text-caption"
+        :class="waiting.late ? 'text-negative' : 'text-grey-7'"
+        data-testid="rps-waiting"
+      >
+        {{
+          $t(waiting.late ? 'gameFairness.noAnswer' : 'gameFairness.awaiting', {
+            seconds: waiting.seconds,
+          })
+        }}
+      </div>
     </template>
 
     <template v-else-if="item.action === 'resolve'">
@@ -91,6 +103,21 @@
         }"
       >
         {{ outcomeHeadline }}
+      </div>
+      <div
+        v-if="payout"
+        class="text-caption q-mb-xs"
+        :class="payout.short ? 'text-negative' : 'text-grey-8'"
+        data-testid="rps-payout"
+      >
+        {{
+          $t(
+            payout.short
+              ? 'gameFairness.payoutMissing'
+              : 'gameFairness.payoutClaimed',
+            payout,
+          )
+        }}
       </div>
       <div
         v-if="check.ok"
@@ -130,10 +157,15 @@ import {
   RPS_MOVES,
   rpsPayoutWei,
   verifyRpsResult,
+  verifyRpsTypedResult,
   type RpsMove,
 } from '@frank/wallet/message-item-plugins/rps/fair'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
-import { chatGameItems, parseWager } from '../../../utils/chat-game-items'
+import {
+  BOT_ANSWER_WAIT_MS,
+  chatGameItems,
+  parseWager,
+} from '../../../utils/chat-game-items'
 import { errorNotify } from '../../../utils/notifications'
 
 export default defineComponent({
@@ -149,9 +181,20 @@ export default defineComponent({
     },
   },
   emits: ['sendFollowUp'],
+  mounted() {
+    // Only a card that is waiting for the bot keeps time.
+    if (this.item.action === 'move')
+      this.timer = setInterval(() => (this.now = Date.now()), 1000)
+  },
+  beforeUnmount() {
+    if (this.timer) clearInterval(this.timer)
+  },
   data() {
     return {
       submitting: false,
+      now: Date.now(),
+      mountedAt: Date.now(),
+      timer: undefined as ReturnType<typeof setInterval> | undefined,
       wagerInput: '',
       moves: RPS_MOVES,
       wagerChips: [
@@ -173,7 +216,7 @@ export default defineComponent({
     },
     /** The player's own move in this item's match, if one was sent. */
     mine(): RpsItem | undefined {
-      return chatGameItems('rps').find(
+      return chatGameItems('rps', this.address).find(
         entry =>
           entry.outbound &&
           entry.item.action === 'move' &&
@@ -183,24 +226,62 @@ export default defineComponent({
     played(): boolean {
       return !!this.mine
     },
+    /** The game's outcome only: that the bot's revealed move is the one it committed to before
+     * the player moved. A match played by typing has no move item of the player's, so it is
+     * checked against the commitment the bot sent first. */
     check(): FairCheck {
-      const checked = verifyRpsResult(this.item, this.mine)
-      if (!checked.ok || !this.item.outcome) return checked
-      // A payout is a payout only if this message carried it.
+      if (this.mine) return verifyRpsResult(this.item, this.mine)
+      const start = chatGameItems('rps', this.address).find(
+        entry =>
+          !entry.outbound &&
+          entry.item.action === 'start' &&
+          entry.item.matchId === this.item.matchId,
+      )?.item
+      return verifyRpsTypedResult(this.item, start)
+    },
+    /** What the result pays, and what the wallet reports its message carried: never shown as
+     * verified, since the wallet's figure is not a chain check. */
+    payout(): { amount: string; carried: string; short: boolean } | null {
+      if (this.item.action !== 'resolve' || !this.item.outcome) return null
       const owed = rpsPayoutWei(
         BigInt(this.item.wagerWei ?? '0'),
         this.item.outcome,
       )
+      if (owed <= 0n) return null
       const carried =
-        chatGameItems('rps').find(
+        chatGameItems('rps', this.address).find(
           entry =>
             !entry.outbound &&
             entry.item.action === 'resolve' &&
             entry.item.matchId === this.item.matchId,
         )?.stampValueWei ?? 0n
-      return owed > 0n && carried < owed
-        ? { ok: false, reason: 'What you won was not paid with this message.' }
-        : checked
+      return {
+        amount: formatDisplayAmount(activeChain, owed),
+        carried: formatDisplayAmount(activeChain, carried),
+        short: carried < owed,
+      }
+    },
+    /** The player's own move, while the bot has not answered it: how long it has waited. */
+    waiting(): { seconds: number; late: boolean } | null {
+      if (this.item.action !== 'move') return null
+      const all = chatGameItems('rps', this.address)
+      if (
+        all.some(
+          entry =>
+            !entry.outbound &&
+            entry.item.action === 'resolve' &&
+            entry.item.matchId === this.item.matchId,
+        )
+      )
+        return null
+      const sentAt =
+        all.find(entry => entry.outbound && entry.item === this.item)?.timeMs ||
+        this.mountedAt
+      const waited = Math.max(0, this.now - sentAt)
+      return {
+        seconds: Math.floor(waited / 1000),
+        late: waited >= BOT_ANSWER_WAIT_MS,
+      }
     },
   },
   methods: {

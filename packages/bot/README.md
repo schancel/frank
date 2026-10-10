@@ -112,6 +112,19 @@ One rule for dice, rock-paper-scissors, raffle and the picture shop (`src/bots/m
   message ID for good and the wallet never makes a second attempt for an ID, so a retry or a restart
   does not pay twice. What could not be sent is tried again every 10 seconds and at start.
 
+- **Sent means delivered.** An owed message counts as sent only when the wallet says it was
+  delivered. One the wallet is still delivering stays owed. One the relay ended is kept as FAILED,
+  logged at error level with the bot, recipient and amount, and never announced.
+- **A paid message is written down first.** Before its payment is even looked up, a message that
+  came with money is recorded; the record goes only with the write that settles it. One left over
+  (a crash or an error while handling it) is refunded at the next start or within seconds.
+- **Paying too much.** Anything paid above a stated stake, the entry price or the item price comes
+  back with the bot's answer. Dice and rock-paper-scissors refuse (and refund) a bet the bank
+  cannot cover.
+- **Operator tool.** With the bot stopped: `yarn tsx outbox-admin.livecheck.ts <host state dir>
+  <bot id> list` shows what is owed, pending and failed; `... retry <id> --i-checked-the-chain`
+  sends a failed message again as a new one.
+
 **Raffle.** An entry is a confirmed payment of the entry price; the entry "transaction" in the draw
 is that payment's hash. When the round fills the winner is fixed and owed the pot (`entry price x
 entrants`); the other entrants are told, and the next round opens, only once the winner's message

@@ -90,4 +90,12 @@ describe("VendorBot", () => {
     expect(delivered(h)).toBe(true);
     expect(h.sent).toHaveLength(1);
   });
+
+  test("paying more than the price returns the excess with the picture", async () => {
+    const h = harness();
+    const bot = new VendorBot({ catalogItems: catalog });
+    await bot.onMessage(h.message([BUY], [h.pay(PRICE + 4n)]), h.ctx);
+    expect(delivered(h)).toBe(true);
+    expect(h.sent[0].valueWei).toBe(4n);
+  });
 });

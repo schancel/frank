@@ -241,15 +241,71 @@ describe('ChatMessageDice.vue', () => {
     ).toContain('more than one roll')
   })
 
-  test('a payout the message did not carry shows NOT VERIFIED', () => {
+  test('the outcome is verified separately from the payout, which is never shown as verified', () => {
+    const { bet, result, payout } = played()
+    chat(
+      { outbound: true, item: bet },
+      { outbound: false, item: result, paid: payout },
+    )
+    const wrapper = mountCard(result)
+    expect(wrapper.find('[data-testid="dice-verified"]').exists()).toBe(true)
+    const line = wrapper.find('[data-testid="dice-payout"]')
+    expect(line.text()).toContain('not yet verified on chain')
+    expect(line.classes()).not.toContain('text-positive')
+  })
+
+  test('a payout the message did not carry is shown as not paid, whatever the outcome check says', () => {
     const { bet, result } = played()
     chat(
       { outbound: true, item: bet },
       { outbound: false, item: result, paid: 0n },
     )
-    expect(
-      mountCard(result).find('[data-testid="dice-not-verified"]').text(),
-    ).toContain('not paid')
+    const wrapper = mountCard(result)
+    const line = wrapper.find('[data-testid="dice-payout"]')
+    expect(line.text()).toContain('not been paid in full')
+    expect(line.classes()).toContain('text-negative')
+  })
+
+  test("another member's message cannot stand in for the bot's", () => {
+    const { bet, result, payout } = played()
+    store.activeConversation = {
+      messages: [
+        { outbound: true, items: [bet], senderAddress: '0xme' },
+        {
+          outbound: false,
+          items: [result],
+          stampValueWei: payout,
+          senderAddress: '0xSomeoneElse',
+        },
+      ],
+    }
+    const wrapper = mountCard(bet)
+    // The bet is still waiting: the result in the chat is not from the bot (0x123).
+    expect(wrapper.find('[data-testid="dice-waiting"]').exists()).toBe(true)
+    store.activeConversation.messages[1].senderAddress = '0x123'
+    expect(mountCard(bet).find('[data-testid="dice-waiting"]').exists()).toBe(
+      false,
+    )
+  })
+
+  test('a bet shows that it is waiting for the reveal, and says plainly when the bot has not answered', () => {
+    const { bet } = played()
+    store.activeConversation = {
+      messages: [
+        { outbound: true, items: [bet], serverTime: Date.now() - 5_000 },
+      ],
+    }
+    const fresh = mountCard(store.activeConversation.messages[0].items[0])
+    expect(fresh.find('[data-testid="dice-waiting"]').text()).toMatch(
+      /Waiting for the bot to reveal \(5 s\)/,
+    )
+    fresh.unmount()
+    store.activeConversation.messages[0].serverTime = Date.now() - 200_000
+    const late = mountCard(store.activeConversation.messages[0].items[0])
+    expect(late.find('[data-testid="dice-waiting"]').text()).toContain(
+      'has not answered',
+    )
+    late.unmount()
   })
 
   test('a roll already bet on cannot be bet on again from the card', () => {

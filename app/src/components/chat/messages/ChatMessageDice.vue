@@ -21,6 +21,18 @@
         <strong>{{ item.target }}</strong
         >.
       </div>
+      <div
+        v-if="waiting"
+        class="text-caption"
+        :class="waiting.late ? 'text-negative' : 'text-grey-7'"
+        data-testid="dice-waiting"
+      >
+        {{
+          $t(waiting.late ? 'gameFairness.noAnswer' : 'gameFairness.awaiting', {
+            seconds: waiting.seconds,
+          })
+        }}
+      </div>
     </template>
 
     <template v-else>
@@ -43,10 +55,19 @@
         </div>
 
         <div
-          v-if="item.payoutWei && item.payoutWei !== '0'"
+          v-if="payout"
           class="text-caption q-mb-xs"
+          :class="payout.short ? 'text-negative' : 'text-grey-8'"
+          data-testid="dice-payout"
         >
-          Payout: <strong>{{ displayMon(item.payoutWei) }}</strong>
+          {{
+            $t(
+              payout.short
+                ? 'gameFairness.payoutMissing'
+                : 'gameFairness.payoutClaimed',
+              payout,
+            )
+          }}
         </div>
 
         <!-- Fairness: checked here, from the messages alone. -->
@@ -177,6 +198,7 @@ import {
 } from '@frank/wallet/message-item-plugins/dice/fair'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
+  BOT_ANSWER_WAIT_MS,
   chatGameItems,
   parseWager,
   randomHex,
@@ -196,9 +218,20 @@ export default defineComponent({
     },
   },
   emits: ['sendFollowUp'],
+  mounted() {
+    // Only a card that is waiting for the bot keeps time.
+    if (this.item.action === 'roll')
+      this.timer = setInterval(() => (this.now = Date.now()), 1000)
+  },
+  beforeUnmount() {
+    if (this.timer) clearInterval(this.timer)
+  },
   data() {
     return {
       rolling: false,
+      now: Date.now(),
+      mountedAt: Date.now(),
+      timer: undefined as ReturnType<typeof setInterval> | undefined,
       target: DICE_DEFAULT_TARGET,
       wagerInput: '0.01',
       wagerChips: [
@@ -231,15 +264,17 @@ export default defineComponent({
     /** Whether the player already bet on this card's roll. */
     played(): boolean {
       const rollId = this.offer?.rollId
-      return chatGameItems('dice').some(
+      return chatGameItems('dice', this.address).some(
         entry =>
           entry.outbound &&
           entry.item.action === 'roll' &&
           entry.item.rollId === rollId,
       )
     },
+    /** The game's outcome only: that the roll is the one the commitment and the player's own
+     * value give. Whether the payout arrived is a separate matter (`payout`). */
     check(): FairCheck {
-      const all = chatGameItems('dice')
+      const all = chatGameItems('dice', this.address)
       const bet = all.find(
         entry =>
           entry.outbound &&
@@ -249,22 +284,48 @@ export default defineComponent({
       const results = all
         .filter(entry => !entry.outbound && entry.item.action === 'result')
         .map(entry => entry.item)
-      const checked = verifyDiceResult(this.item, bet, results)
-      if (!checked.ok) return checked
-      // A payout shown is a payout only if this message carried it.
-      const carried = all.find(
-        entry =>
-          !entry.outbound &&
-          entry.item.rollId === this.item.rollId &&
-          entry.item.action === 'result',
-      )?.stampValueWei
+      return verifyDiceResult(this.item, bet, results)
+    },
+    /** What the result says it pays, and what the wallet reports its message carried. The
+     * wallet's figure is not a chain check, so a payout is never shown as verified here: it is
+     * either short, or claimed. */
+    payout(): { amount: string; carried: string; short: boolean } | null {
       const owed = BigInt(this.item.payoutWei ?? '0')
-      if (owed > 0n && (carried ?? 0n) < owed)
-        return {
-          ok: false,
-          reason: 'The payout shown was not paid with this message.',
-        }
-      return checked
+      if (this.item.action !== 'result' || owed <= 0n) return null
+      const carried =
+        chatGameItems('dice', this.address).find(
+          entry =>
+            !entry.outbound &&
+            entry.item.action === 'result' &&
+            entry.item.rollId === this.item.rollId,
+        )?.stampValueWei ?? 0n
+      return {
+        amount: formatDisplayAmount(activeChain, owed),
+        carried: formatDisplayAmount(activeChain, carried),
+        short: carried < owed,
+      }
+    },
+    /** The player's own bet, while the bot has not answered it: how long it has waited. */
+    waiting(): { seconds: number; late: boolean } | null {
+      if (this.item.action !== 'roll') return null
+      const all = chatGameItems('dice', this.address)
+      if (
+        all.some(
+          entry =>
+            !entry.outbound &&
+            entry.item.action === 'result' &&
+            entry.item.rollId === this.item.rollId,
+        )
+      )
+        return null
+      const sentAt =
+        all.find(entry => entry.outbound && entry.item === this.item)?.timeMs ||
+        this.mountedAt
+      const waited = Math.max(0, this.now - sentAt)
+      return {
+        seconds: Math.floor(waited / 1000),
+        late: waited >= BOT_ANSWER_WAIT_MS,
+      }
     },
     estimatedPayout(): string {
       const wager = parseWager(this.wagerInput, a =>

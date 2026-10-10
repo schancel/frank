@@ -180,4 +180,68 @@ describe("SatoshiDiceBot", () => {
   test("the profile and help make no fairness claim beyond what the app checks", () => {
     expect(new SatoshiDiceBot().getProfile().bio).not.toMatch(/provably/i);
   });
+
+  test("a result the relay ended is not counted as sent, and a pending one is sent when it arrives", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const h = harness();
+    const bot = new SatoshiDiceBot();
+    const { bet } = await table(h, bot, "win");
+    h.wallet("live");
+    await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.sent).toHaveLength(0);
+    h.deliverLive();
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.paidOut()).toBe(dicePayoutWei(STAKE, TARGET));
+
+    h.wallet("deliver");
+    const second = await table(h, bot, "win");
+    h.wallet("dead");
+    await bot.onMessage(h.message([second.bet], [h.pay(STAKE)]), h.ctx);
+    h.wallet("deliver");
+    await bot.schedules[0].handler(h.ctx);
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.sent).toHaveLength(0);
+    expect(errors.mock.calls.flat().join(" ")).toContain("FAILED");
+    errors.mockRestore();
+  });
+
+  test("a bet that paid more than its stake gets the excess back with the result", async () => {
+    const h = harness();
+    const bot = new SatoshiDiceBot();
+    const { bet } = await table(h, bot, "lose");
+    await bot.onMessage(h.message([bet], [h.pay(STAKE + 5n)]), h.ctx);
+    expect(h.item("dice").isWin).toBe(false);
+    expect(h.sent[0].valueWei).toBe(5n);
+  });
+
+  test("a bet the bank cannot cover is refused and refunded before any roll", async () => {
+    const h = harness();
+    (h.ctx as any).getBalance = async () => dicePayoutWei(STAKE, TARGET);
+    const bot = new SatoshiDiceBot();
+    const { bet } = await table(h, bot, "win");
+    await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(STAKE);
+    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+  });
+
+  test("an error or a crash after the stake arrived and before a result is written refunds the stake once", async () => {
+    const h = harness();
+    const bot = new SatoshiDiceBot();
+    const { bet } = await table(h, bot, "win");
+    const get = h.ctx.state.get;
+    (h.ctx.state as any).get = async (key: string) => {
+      if (key.startsWith("roll:")) throw new Error("disk");
+      return get(key);
+    };
+    await expect(
+      bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx)
+    ).rejects.toThrow("disk");
+    (h.ctx.state as any).get = get;
+    const restarted = new SatoshiDiceBot();
+    await restarted.schedules[0].handler(h.ctx);
+    await restarted.schedules[0].handler(h.ctx);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([STAKE]);
+    expect(h.sent[0].items.some((i) => i.type === "dice")).toBe(false);
+  });
 });

@@ -10,7 +10,7 @@ import type { DigitalGoodsItem, MessageItem } from "@frank/cashweb/types/message
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_MERCHANT } from "@frank/codec";
 import { formatMon } from "@frank/wallet/monad-amount";
 import { generateAvatarPng } from "../../bot-directory";
-import { confirmReceived, Outbox, refuse } from "./money";
+import { Outbox, refuse, type Received } from "./money";
 import {
   buildFulfillItems,
   catalogItem,
@@ -86,7 +86,17 @@ export class VendorBot implements FrankBotDefinition {
     }
 
     // What the purchase paid, on chain. The price is never taken on trust.
-    const received = await confirmReceived(msgCtx, ctx);
+    return this.outbox.handle(msgCtx, ctx, (received) =>
+      this.sell(request, msgCtx, ctx, received)
+    );
+  }
+
+  private async sell(
+    request: DigitalGoodsItem,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
+    received: Received
+  ): Promise<void> {
     const refused = (why: string) =>
       refuse(this.outbox, msgCtx, ctx, received, why, [
         { type: "digital-goods", action: "error", message: why },
@@ -104,14 +114,29 @@ export class VendorBot implements FrankBotDefinition {
       );
 
     // Paid for: the delivery is written down before it is sent, and sent until it has gone.
-    await this.outbox.owe(ctx, `sale:${msgCtx.payloadDigest}`, {
-      to: msgCtx.peerAddress,
-      conversationId: msgCtx.conversationId,
-      items: [
-        ...buildFulfillItems(item),
-        { type: "text", text: `Thank you. Here is "${item.itemId}".` },
-      ],
-    });
+    // Anything paid above the price goes back with the picture.
+    const excessWei = received.confirmedWei - item.priceWei;
+    await this.outbox.owe(
+      ctx,
+      `sale:${msgCtx.payloadDigest}`,
+      {
+        to: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+        items: [
+          ...buildFulfillItems(item),
+          {
+            type: "text",
+            text:
+              `Thank you. Here is "${item.itemId}".` +
+              (excessWei > 0n
+                ? ` You paid ${formatMon(excessWei)} more than the price; it is returned with this message.`
+                : ""),
+          },
+        ],
+        valueWei: excessWei,
+      },
+      { digest: msgCtx.payloadDigest }
+    );
     await this.outbox.settle(ctx);
   }
 }

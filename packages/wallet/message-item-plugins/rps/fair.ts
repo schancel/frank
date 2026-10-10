@@ -41,6 +41,28 @@ export function rpsPayoutWei(
   return outcome === 'win' ? wagerWei * 2n : outcome === 'tie' ? wagerWei : 0n
 }
 
+/** Checks a `resolve` of a match the player played by typing its move (so for nothing, and with
+ * no `move` item of its own) against the bot's own earlier `start`: the revealed move and salt
+ * must open the commitment the bot sent first, and the outcome must follow. */
+export function verifyRpsTypedResult(
+  result: RpsItem,
+  start: RpsItem | undefined,
+): FairCheck {
+  if (!start || start.action !== 'start' || !start.matchId || start.matchId !== result.matchId)
+    return no('The bot sent no commitment for this match before its result.')
+  if (BigInt(result.wagerWei ?? '0') !== 0n)
+    return no('No move of yours matches this result.')
+  if (!start.commitHash || !result.commitHash || strip(result.commitHash) !== strip(start.commitHash))
+    return no('The result is for a different commitment than the bot sent first.')
+  if (!result.botMove || !result.secretSalt || !result.playerMove)
+    return no('The bot did not reveal its move and salt.')
+  if (rpsCommitment(result.botMove, result.secretSalt) !== strip(start.commitHash))
+    return no('The revealed move does not match the commitment.')
+  if (result.outcome !== evaluateRps(result.playerMove, result.botMove))
+    return no('The outcome shown is not what the moves give.')
+  return { ok: true }
+}
+
 /** Checks a `resolve` against the player's own `move` item for that match: the revealed move and
  * salt must open the commitment the player answered, and the outcome must follow. */
 export function verifyRpsResult(

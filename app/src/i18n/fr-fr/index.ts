@@ -149,6 +149,13 @@ export default {
       'SHA-256(secret) doit être égal à l’engagement ; le tirage correspond aux 16 premiers bits de HMAC-SHA256(secret, votre valeur).',
     rpsVerified:
       'Vérifié : le coup et le sel révélés par le bot correspondent à l’engagement envoyé avant votre coup.',
+    payoutClaimed:
+      'Gain : {amount}. Le bot indique que ce message le transporte ; ce n’est pas encore vérifié sur la chaîne.',
+    payoutMissing:
+      'Gain : {amount}, mais ce message transportait {carried}. Vous n’avez pas été payé en totalité.',
+    awaiting: 'En attente de la révélation du bot ({seconds} s).',
+    noAnswer:
+      'Le bot n’a pas répondu après {seconds} s. Votre mise est chez le bot et rien n’a été révélé.',
   },
   raffleDraw: {
     verified: "Le tirage correspond à l'engagement de la graine",

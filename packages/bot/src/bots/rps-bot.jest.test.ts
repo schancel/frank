@@ -127,4 +127,42 @@ describe("RpsBot", () => {
   test("the profile makes no fairness claim beyond what the app checks", () => {
     expect(new RpsBot().getProfile().bio).not.toMatch(/provably/i);
   });
+
+  test("a result the relay ended is not counted as sent; a pending one is sent when it arrives", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const h = harness();
+    const bot = new RpsBot();
+    const first = await match(h, bot, "win");
+    h.wallet("live");
+    await bot.onMessage(h.message([first.mine], [h.pay(STAKE)]), h.ctx);
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.sent).toHaveLength(0);
+    h.deliverLive();
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.paidOut()).toBe(STAKE * 2n);
+
+    h.wallet("deliver");
+    const second = await match(h, bot, "win");
+    h.wallet("dead");
+    await bot.onMessage(h.message([second.mine], [h.pay(STAKE)]), h.ctx);
+    h.wallet("deliver");
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.sent).toHaveLength(0);
+    expect(errors.mock.calls.flat().join(" ")).toContain("FAILED");
+    errors.mockRestore();
+  });
+
+  test("excess over the stake comes back with the result, and a stake the bank cannot cover is refunded", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const lost = await match(h, bot, "lose");
+    await bot.onMessage(h.message([lost.mine], [h.pay(STAKE + 3n)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(3n);
+
+    (h.ctx as any).getBalance = async () => STAKE;
+    const refused = await match(h, bot, "win");
+    await bot.onMessage(h.message([refused.mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(STAKE);
+    expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "resolve")).toBe(false);
+  });
 });

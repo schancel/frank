@@ -71,6 +71,8 @@ export async function createNativeTransferContext(
     chain = primaryChain
   } else if (
     entry.family === 'solana' &&
+    entry.wallet?.send &&
+    // The Solana adapter's own network type; the registry decides whether Send is offered.
     (chainIdentifier === 'solana-devnet' ||
       chainIdentifier === 'solana-mainnet')
   ) {
@@ -116,6 +118,13 @@ export async function createNativeTransferContext(
         root.fill(0)
       }
     }
+  } else if (entry.family === 'bitcoin' && entry.wallet?.send) {
+    // eCash on Chronik, Bitcoin and Bitcoin Cash on Electrum: one wallet per chain for the
+    // session, shared with the balance reader.
+    const { openUtxoWallet } = await import('./utxo-wallets')
+    const open = await openUtxoWallet(chainIdentifier)
+    chain = open.chain as NativeAssetChain
+    createWallet = async () => (await openUtxoWallet(chainIdentifier)).wallet
   } else {
     throw new Error(`Native Send is unavailable for ${chainIdentifier}`)
   }

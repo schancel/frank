@@ -147,10 +147,19 @@
                         </q-item-label>
                       </q-item-section>
                       <q-item-section side>
+                        <!-- What the app can actually do on each network now, from the
+                        chain registry. -->
                         <q-badge
-                          :color="isTestnetMode ? 'warning' : 'primary'"
+                          :color="
+                            chainStatus(chain) === 'send'
+                              ? isTestnetMode
+                                ? 'warning'
+                                : 'primary'
+                              : 'grey-7'
+                          "
                           outline
-                          :label="$t('settings.chainActive')"
+                          :label="$t(chainStatusKey(chain))"
+                          :data-test="`settings-chain-${chain.id}-status`"
                         />
                       </q-item-section>
                     </q-item>
@@ -304,6 +313,7 @@ import { useSettingsStore } from 'src/stores/settings'
 import { storeToRefs } from 'pinia'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
+import { walletSupport } from 'src/utils/wallet-support'
 const msToMinutes = 60000
 
 export default defineComponent({
@@ -370,6 +380,8 @@ export default defineComponent({
       emailGatewayInput.value = settingsStore.emailGatewayAddress
     }
 
+    const chainStatus = (chain: { id: string }) =>
+      walletSupport(chain.id, isTestnetMode.value).status
     const isTestnetMode = computed({
       get: () => settingsStore.networkMode === 'testnet',
       set: (val: boolean) => {
@@ -400,6 +412,13 @@ export default defineComponent({
       resetEmailGateway,
       getWalletNetworkLabel,
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
+      chainStatus,
+      chainStatusKey: (chain: { id: string }) =>
+        ({
+          'send': 'settings.chainSendReceive',
+          'receive-only': 'settings.chainReceiveOnly',
+          'unsupported': 'settings.chainUnsupported',
+        }[chainStatus(chain)]),
     }
   },
   data() {

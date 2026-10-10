@@ -9,7 +9,17 @@ it.each([
   ['solana', false, 'solana-mainnet'],
   ['solana-devnet', false, 'solana-devnet'],
   ['unknown', true, undefined],
+  ['monad', true, 'monad-testnet'],
+  // Receive only: the registry offers a wallet but not Send.
   ['ecash', true, undefined],
+  ['bitcoin', true, undefined],
+  ['bitcoincash', true, undefined],
+  // No wallet at all.
+  ['dogecoin', true, undefined],
+  ['ethereum', true, undefined],
+  ['tempo', true, undefined],
+  ['hyperliquid', true, undefined],
+  ['bitcoin', false, undefined],
 ])(
   'resolves the selected native Send network %s (%s)',
   (wallet, testnet, expected) => {

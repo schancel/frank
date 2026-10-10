@@ -6,18 +6,21 @@ import {
   type ChainAddress,
 } from '@frank/wallet/chain'
 
-/** Resolve wallet-page aliases once; Send's route carries only canonical identifiers. */
+/**
+ * The canonical chain a wallet row can send on, or undefined when Send is not offered there.
+ * Decided by the registry's wallet setting, not by a list of names. Wallet-page aliases are
+ * resolved here once; Send's route carries only canonical identifiers.
+ */
 export function nativeSendChainIdentifier(
   wallet: string,
   isTestnet: boolean,
 ): string | undefined {
-  const id = resolveNetworkId(wallet, isTestnet)
-  if (!getChainRegistryEntry(id)) return undefined
-  return id === activeChain.chainIdentifier ||
-    id === 'solana-devnet' ||
-    id === 'solana-mainnet'
-    ? id
-    : undefined
+  const entry = getChainRegistryEntry(resolveNetworkId(wallet, isTestnet))
+  if (!entry?.wallet?.send) return undefined
+  // The only EVM wallet the app builds is the active chain's.
+  if (entry.family === 'evm' && entry.id !== activeChain.chainIdentifier)
+    return undefined
+  return entry.id
 }
 
 export interface ParsedNativeTransfer {

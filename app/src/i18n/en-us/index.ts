@@ -376,6 +376,12 @@ export default {
     balanceLoading: 'Loading balance…',
     balanceUnavailable: 'Balance unavailable.',
     balanceUnsupported: 'Balance not shown for this network yet.',
+    walletUnsupported:
+      'This network is not supported yet. No address is shown because the app could not see money sent to it.',
+    receiveOnly: 'Receive only',
+    receiveOnlyTooltip:
+      'You can receive and see your balance here. Sending is not available on this network yet.',
+    notSupported: 'Not supported',
     cordoned: '{amount} cordoned',
     cordonedTooltip:
       'Received at your profile address. The wallet watches these funds but does not spend them.',
@@ -418,9 +424,7 @@ export default {
     zeroTbch: '0 tBCH',
     zeroDoge: '0 DOGE',
     zeroTdoge: '0 tDOGE',
-    sendXec: 'Send XEC',
     receiveXec: 'Receive XEC',
-    sendTxec: 'Send tXEC',
     receiveTxec: 'Receive tXEC',
     sendAsset: 'Send {unit}',
     sendSol: 'Send SOL',
@@ -1071,7 +1075,9 @@ export default {
     mainnetLockedBanner:
       'Mainnet switching is locked for safety during protocol beta.',
     supportedChainsTitle: 'Supported Settlement Networks',
-    chainActive: 'Active',
+    chainSendReceive: 'Send and receive',
+    chainReceiveOnly: 'Receive only',
+    chainUnsupported: 'Not supported',
   },
   profile: {
     name: "Character's Public Name",

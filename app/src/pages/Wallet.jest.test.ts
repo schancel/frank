@@ -20,6 +20,27 @@ const mockGetChainAddress = jest.fn(async (chain: string) => {
 
 const mockGetCachedChainAddress = jest.fn(() => undefined)
 
+// The session's Bitcoin-family wallets hand out their own next unused receive address.
+const UTXO_ADDRESSES: Record<string, string> = {
+  'xec-testnet': 'ectest:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9',
+  'btc-testnet': 'tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl',
+}
+const mockUtxoReceiveAddress = jest.fn(
+  async (chainIdentifier: string) => UTXO_ADDRESSES[chainIdentifier],
+)
+const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => ({
+  chain: { chainIdentifier },
+  wallet: {
+    getReceiveAddress: async () => ({
+      raw: await mockUtxoReceiveAddress(chainIdentifier),
+    }),
+  },
+}))
+jest.mock('src/accounts/utxo-wallets', () => ({
+  openUtxoWallet: (chainIdentifier: string) =>
+    mockOpenUtxoWallet(chainIdentifier),
+}))
+
 jest.mock('../accounts/session', () => ({
   accountStatus: jest
     .requireActual('vue')
@@ -214,6 +235,8 @@ describe('Wallet detail page (#570)', () => {
     mockUseActiveWallet.mockResolvedValue(mockWallet)
     mockGetCachedChainAddress.mockReset()
     mockGetCachedChainAddress.mockReturnValue(undefined)
+    mockOpenUtxoWallet.mockClear()
+    mockGetChainAddress.mockClear()
     jest.mocked(addressCopiedNotify).mockClear()
     jest.mocked(errorNotify).mockClear()
   })
@@ -432,16 +455,23 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
       'walletPanel.balanceLoading',
     )
+    // The address is the wallet's own next unused one, not a fixed derived address.
+    expect(mockOpenUtxoWallet).toHaveBeenCalledWith('xec-testnet')
+    expect(mockGetChainAddress).not.toHaveBeenCalledWith('ecash')
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
-    ).toBe('ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9')
+    ).toBe('ectest:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9')
     expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
-      'ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9',
+      'ectest:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9',
     )
 
-    const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
-    expect(sendBtn.text()).toBe('walletPanel.sendTxec')
-    expect(sendBtn.attributes('disabled')).toBeDefined()
+    // Receive only: no Send button is offered, and the page says so.
+    expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="wallet-receive-only"]').exists()).toBe(
+      true,
+    )
 
     wrapper.unmount()
   })
@@ -592,10 +622,7 @@ describe('Wallet detail page (#570)', () => {
     const pendingAddress = new Promise<string>(resolve => {
       resolveAddress = resolve
     })
-    mockGetChainAddress.mockImplementation(async (chain: string) => {
-      if (chain === 'ecash') return pendingAddress
-      return '0xabc'
-    })
+    mockUtxoReceiveAddress.mockImplementationOnce(() => pendingAddress)
 
     mockRoute.value = {
       query: {},
@@ -624,15 +651,61 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
+  it.each(['dogecoin', 'ethereum', 'tempo', 'hyperliquid'])(
+    'shows no address for %s, which the app cannot read, and says it is unsupported',
+    async chain => {
+      mockRoute.value = { query: { chain }, path: '/wallet' }
+      const wrapper = mountWallet()
+      await flush()
+
+      expect(wrapper.find('[data-testid="wallet-unsupported"]').exists()).toBe(
+        true,
+      )
+      expect(wrapper.find('[data-testid="wallet-qr"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="wallet-qr-container"]').exists()).toBe(
+        false,
+      )
+      expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
+        false,
+      )
+      expect(
+        (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
+      ).toBe('')
+      // Nothing is derived for it either.
+      expect(mockGetChainAddress).not.toHaveBeenCalledWith(chain)
+      expect(mockOpenUtxoWallet).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
+  it('shows the Bitcoin testnet wallet address as receive only', async () => {
+    mockRoute.value = { query: { chain: 'bitcoin' }, path: '/wallet' }
+    const wrapper = mountWallet()
+    await flush()
+
+    expect(mockOpenUtxoWallet).toHaveBeenCalledWith('btc-testnet')
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      'tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl',
+    )
+    expect(wrapper.find('[data-testid="wallet-receive-only"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
+      false,
+    )
+    wrapper.unmount()
+  })
+
   it('renders QR code synchronously when address is cached', () => {
+    // Solana has one fixed address; Bitcoin-family addresses rotate and are never cached.
     mockGetCachedChainAddress.mockReturnValue(
       'ecash:cached_immediate_address_123',
     )
     mockRoute.value = {
       query: {},
-      path: '/wallet/ecash',
+      path: '/wallet/solana',
       // @ts-expect-error mock params
-      params: { wallet: 'ecash' },
+      params: { wallet: 'solana' },
     }
     const wrapper = mountWallet()
 

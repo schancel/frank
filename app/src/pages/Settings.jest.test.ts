@@ -519,5 +519,30 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
 
       wrapper.unmount()
     })
+
+    it('does not call a network active that the app cannot use', async () => {
+      mockSettingsStore.networkMode = 'testnet'
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+      const vm = wrapper.vm as any
+      const status = Object.fromEntries(
+        vm.supportedChains.map((chain: { id: string }) => [
+          chain.id,
+          vm.chainStatusKey(chain),
+        ]),
+      )
+      expect(status).toEqual({
+        monad: 'settings.chainSendReceive',
+        solana: 'settings.chainSendReceive',
+        ecash: 'settings.chainReceiveOnly',
+        bitcoin: 'settings.chainReceiveOnly',
+        bitcoincash: 'settings.chainReceiveOnly',
+        dogecoin: 'settings.chainUnsupported',
+        tempo: 'settings.chainUnsupported',
+        ethereum: 'settings.chainUnsupported',
+        hyperliquid: 'settings.chainUnsupported',
+      })
+      wrapper.unmount()
+    })
   })
 })

@@ -144,6 +144,18 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       gasChargedOn: "limit",
       dex: MONAD_TESTNET_DEX,
     }),
+    // A local Monad network (monad-solonet, packages/bot/demo/regtest). Each run is a new
+    // chain: no public endpoint, and its contracts are deployed by whoever started it.
+    "monad-regtest": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "monad",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Monad Regtest",
+      unit: "MONR",
+      networkTag: "MONR",
+      gasChargedOn: "limit",
+    }),
     "monad-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
       kind: "monad",

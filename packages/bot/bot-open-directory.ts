@@ -38,7 +38,7 @@ export function openBotDirectory(params: {
   handle: EvmChainWalletHandle
   /** The wallet's compressed signing key, when the caller already holds it. */
   subject?: string
-  networkTag: 'MONT' | 'MON1'
+  networkTag: 'MONT' | 'MON1' | 'MONR'
   /** The relay this bot lives on. Its entry is published to and peers are read from it. */
   relayBaseUrl: string
   /** Durable directory root, separate from wallet and bot state. */

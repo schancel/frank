@@ -357,6 +357,8 @@ function publicRecovery(
       ? 10143n
       : request.identity.network === 'monad-mainnet'
       ? 143n
+      : request.identity.network === 'monad-regtest'
+      ? 20143n
       : 0n
   if (
     !chain ||

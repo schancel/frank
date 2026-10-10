@@ -31,6 +31,8 @@ export function normalizeChainId(chainId: string | number): string {
     case '10143':
     case 'monad':
     case 'monad-testnet':
+    case '20143':
+    case 'monad-regtest':
       return 'monad'
     case 'solana':
     case 'solana-mainnet':

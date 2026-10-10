@@ -27,6 +27,11 @@
     "regtest:fetch": "node --import tsx demo/regtest/bitcoin-abc.ts",
     "regtest:check": "node --import tsx demo/regtest/regtest-stack.livecheck.ts",
     "regtest:ecash-send": "node --import tsx demo/regtest/ecash-send.livecheck.ts",
+    "regtest:monad-check": "node --import tsx demo/regtest/monad-check.livecheck.ts",
+    "regtest:monad-reserve": "node --import tsx demo/regtest/monad-reserve.livecheck.ts",
+    "regtest:monad-status": "node --import tsx demo/regtest/monad-regtest.ts status",
+    "regtest:monad-start": "node --import tsx demo/regtest/monad-regtest.ts start",
+    "regtest:monad-stop": "node --import tsx demo/regtest/monad-regtest.ts stop",
     "demo:directory-browser": "node demo/directory-trust/check-admission-browser.cjs",
     "test": "jest"
   },

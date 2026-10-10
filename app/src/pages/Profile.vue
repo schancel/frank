@@ -277,6 +277,7 @@ export default defineComponent({
               cfg.relayBaseUrl,
             identity: wallet.identity as MonadIdentity,
             profile: this.relayData.profile,
+            network: cfg.rpcChain,
           })
         }
       } catch (err: unknown) {

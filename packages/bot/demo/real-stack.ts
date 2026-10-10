@@ -51,6 +51,7 @@ import type { ActiveChain, DirectMessageReceived, DirectMessageSendResult } from
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
 import { createEvmChain, installCanonicalDirectory, loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
+import { monadProtocolIdentity } from '@frank/wallet/monad-provider'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
 
@@ -264,7 +265,20 @@ export async function openRealWallet(params: {
   stateDir: string
   stampValueWei?: bigint
   burnAddress?: string
+  /** The Monad network the relay runs on (default Monad testnet). The regtest stack passes
+   * `monad-regtest` / `MONR`. */
+  network?: {
+    rpcChain: string
+    networkTag: 'MONT' | 'MON1' | 'MONR'
+    /** Addresses of contracts deployed for this run (a regtest chain has no committed record). */
+    contracts?: { stateChannel?: string; htlc?: string }
+  }
 }): Promise<RealWallet> {
+  const network = params.network ?? { rpcChain: 'monad-testnet', networkTag: 'MONT' as const }
+  const identity = monadProtocolIdentity(network.rpcChain)
+  if (!identity || identity.networkTag !== network.networkTag) {
+    throw new Error(`${network.rpcChain} / ${network.networkTag} is not a Monad network the wallet knows`)
+  }
   const dir = join(params.stateDir, 'wallets', params.label)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   // The account root is kept (0600) so the money in the account can be recovered after a crash.
@@ -281,8 +295,12 @@ export async function openRealWallet(params: {
   const startedAt = Date.now()
   const chain = createEvmChain({
     ...loadMonadChainConfigFromEnv({ isTestnet: true }),
+    networkId: network.rpcChain,
+    rpcChain: network.rpcChain,
+    chainId: identity.chainId,
     relayBaseUrl: params.relayUrl,
-    networkTag: 'MONT',
+    networkTag: network.networkTag,
+    ...(network.contracts ? { contracts: network.contracts } : {}),
     stampBurnAddress: params.burnAddress ?? DEMO_DEFAULT_BURN_ADDRESS,
     walletStorageLocation: join(dir, 'chain-storage'),
     subAccountPoolSize: 1,
@@ -291,7 +309,7 @@ export async function openRealWallet(params: {
   const handle = (await chain.createWallet(roots)) as EvmChainWalletHandle
   const directory = DirectoryManager.create({
     handle,
-    networkTag: 'MONT',
+    networkTag: network.networkTag,
     relayBaseUrl: params.relayUrl,
     location: join(dir, 'directory'),
   })
@@ -303,6 +321,7 @@ export async function openRealWallet(params: {
     identity: handle.identity,
     label: params.label,
     profile: { name: params.label, bot: false },
+    statementNetwork: network.rpcChain,
   })
   return {
     label: params.label,

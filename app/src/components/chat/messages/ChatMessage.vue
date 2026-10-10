@@ -1,5 +1,5 @@
 <template>
-  <div style="width: 100%">
+  <div style="width: 100%" v-bind="runAttrs">
     <!-- Transaction Dialog -->
     <q-dialog v-model="transactionDialog">
       <!-- Switch to outpoints -->
@@ -27,8 +27,52 @@
         :text-color="textColor"
         v-touch-swipe.touch.right="swipeRight"
       >
+        <!-- With more than two people in the conversation, a message that is not ours says
+        who sent it: the avatar beside the last bubble of a run, the name in the first. -->
+        <template v-if="attribution" #avatar>
+          <button
+            v-if="attribution.showAvatar"
+            type="button"
+            class="chat-sender-avatar"
+            data-testid="chat-sender-avatar"
+            :aria-label="
+              $t('chatMessage.openSender', { name: attribution.sender.label })
+            "
+            @click="senderClicked"
+          >
+            <q-avatar rounded size="32px" :style="senderRingStyle">
+              <img :src="senderAvatar" alt="" />
+            </q-avatar>
+          </button>
+          <div
+            v-else
+            class="chat-sender-avatar chat-sender-avatar--spacer"
+            data-testid="chat-sender-avatar-spacer"
+            aria-hidden="true"
+          />
+        </template>
         <!-- Wrap a div around the template to keep all items within 1 QChatMessasge -->
         <div data-testid="chat-message-body" class="chat-message-body">
+          <div
+            v-if="attribution && attribution.showName"
+            class="chat-sender-name"
+            data-testid="chat-sender-name"
+          >
+            <button
+              type="button"
+              class="chat-sender-name__label"
+              :style="senderNameStyle"
+              @click="senderClicked"
+            >
+              {{ attribution.sender.label }}
+            </button>
+            <span
+              v-if="!attribution.sender.inContacts"
+              class="chat-sender-name__unknown"
+              data-testid="chat-sender-unknown"
+              >{{ $t('chatMessage.notInContacts') }}</span
+            >
+          </div>
           <chat-message-menu
             :address="address"
             :message="message"
@@ -210,6 +254,8 @@ import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
 import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
 import { messageItems } from '../../../utils/message-items'
+import { profileAvatar } from '../../../utils/avatar'
+import type { BubbleAttribution } from '../../../utils/chat-attribution'
 
 export default defineComponent({
   name: 'ChatMessage',
@@ -238,6 +284,7 @@ export default defineComponent({
     'replyDivClick',
     'sendFollowUp',
     'playAgain',
+    'senderClicked',
   ],
   data() {
     return {
@@ -272,6 +319,13 @@ export default defineComponent({
     chatWidth: {
       type: Number,
       required: true,
+    },
+    /** Who sent this message, given only in a conversation with more than two people and only
+     * for a message that is not ours. Without it the bubble is drawn as in a two-person chat. */
+    attribution: {
+      type: Object as PropType<BubbleAttribution>,
+      required: false,
+      default: undefined,
     },
     // Payload digest and index are not passed when nested in a reply
     payloadDigest: {
@@ -449,11 +503,36 @@ export default defineComponent({
     replyClicked(args: { address: string; payloadDigest: string }) {
       this.$emit('replyClicked', args)
     },
+    senderClicked() {
+      if (this.attribution)
+        this.$emit('senderClicked', this.attribution.sender.address)
+    },
     forwardClicked(args: { address: string; payloadDigest: string }) {
       this.$emit('forwardClicked', args)
     },
   },
   computed: {
+    /** Not the last bubble of its sender's run: it sits closer to the next one. Nothing at
+     * all in a two-person chat, so that markup stays as it was. */
+    runAttrs(): { class?: string } {
+      return this.attribution && !this.attribution.showAvatar
+        ? { class: 'chat-message--in-run' }
+        : {}
+    },
+    senderAvatar(): string {
+      const sender = this.attribution?.sender
+      return sender ? profileAvatar(sender.avatar, sender.address) : ''
+    },
+    // The same key colour, in the same two places (ring and name), as the chat header and the
+    // contact list. No key known, no colour.
+    senderRingStyle(): Record<string, string> {
+      const color = this.attribution?.sender.color
+      return color ? { boxShadow: `0 0 0 2px ${color}` } : {}
+    },
+    senderNameStyle(): Record<string, string> {
+      const color = this.attribution?.sender.color
+      return color ? { color } : {}
+    },
     paymentState(): string {
       const delivery = this.message.delivery
       if (delivery?.attemptDigest === undefined) return 'queued'

@@ -12,6 +12,8 @@ export default {
   accountRecovery,
   agree: 'Agree',
   chat: {
+    groupRecipientNotice:
+      'Your messages here go to {name} only, not to everyone in this conversation.',
     sendMessage: 'Send message',
     stampPreparationChecking: 'Checking private stamp accounts…',
     stampPreparationFunding:
@@ -74,6 +76,7 @@ export default {
     },
   },
   chatLayout: {
+    participantCount: '{count} participants',
     editSubject: 'Edit subject',
     subject: 'Subject',
     saveSubject: 'Save',
@@ -524,6 +527,7 @@ export default {
     energyCost: 'Energy Cost',
   },
   chatList: {
+    senderPrefix: '{name}: {text}',
     noContactMessage: 'Add contacts from the drawer above...',
     youPrefix: 'You: {text}',
     themPrefix: 'Them: {text}',
@@ -594,6 +598,8 @@ export default {
     unauthorized: 'The server rejected your messaging login. Retrying.',
   },
   chatMessage: {
+    notInContacts: 'Not in your contacts',
+    openSender: "Open {name}'s profile",
     noPayloadFound: 'Unable to find message payload',
     failedToSend: 'Failed to send',
     showActions: 'Show message actions',

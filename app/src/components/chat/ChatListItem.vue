@@ -1,8 +1,16 @@
 <template>
   <q-item :active="isActive" active-class="active-chat-list-item" clickable>
     <q-item-section avatar v-if="$status.setup" side>
-      <q-avatar rounded>
-        <img :src="profileAvatar(presentedAvatar, effectiveAddress)" />
+      <q-avatar
+        rounded
+        :color="isGroup ? 'primary' : undefined"
+        :text-color="isGroup ? 'white' : undefined"
+        :icon="isGroup ? 'group' : undefined"
+      >
+        <img
+          v-if="!isGroup"
+          :src="profileAvatar(presentedAvatar, effectiveAddress)"
+        />
         <q-badge
           v-show="compact"
           v-if="!!effectiveNumUnread"
@@ -49,7 +57,7 @@
           >{{ titleName }}</q-item-label
         >
         <account-badge
-          v-if="effectiveAddress && !conversation?.topic"
+          v-if="effectiveAddress && !conversation?.topic && !isGroup"
           :address="effectiveAddress"
           :name="titleName"
           :account-type="targetProfile?.accountType"
@@ -65,26 +73,6 @@
         data-testid="chat-list-subject"
         >{{ subject }}</q-item-label
       >
-      <div
-        class="row items-center q-gutter-xs q-my-none participant-badges"
-        v-if="displayParticipants.length > 0"
-      >
-        <q-badge
-          v-for="p in displayParticipants"
-          :key="p"
-          outline
-          color="primary"
-          class="text-caption participant-badge"
-          :label="formatParticipant(p)"
-        />
-        <q-badge
-          v-if="remainingParticipantsCount > 0"
-          outline
-          color="grey-6"
-          class="text-caption remaining-badge"
-          :label="`+${remainingParticipantsCount}`"
-        />
-      </div>
       <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
     </q-item-section>
     <q-item-section
@@ -198,6 +186,12 @@ import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { openChat, openContactProfile } from 'src/utils/routes'
 import { addressCopiedNotify } from 'src/utils/notifications'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
+import {
+  conversationSenders,
+  isGroupConversation,
+  senderOf,
+  type SenderIdentity,
+} from 'src/utils/chat-attribution'
 import DeleteChatDialog from '../dialogs/DeleteChatDialog.vue'
 
 export default defineComponent({
@@ -261,27 +255,6 @@ export default defineComponent({
         this.$router.push('/chat')
       }
     },
-    formatParticipant(address: string): string {
-      if (sameCanonicalAddress(address, this.ownAddress)) {
-        return this.$t('selfChat.you')
-      }
-      const profile = this.getContactProfile(address)
-      if (profile?.name && profile.name !== 'Loading...') {
-        return profile.name
-      }
-      try {
-        const display = toChainDisplayAddress(address)
-        if (display.length > 12) {
-          return `${display.slice(0, 6)}...${display.slice(-4)}`
-        }
-        return display
-      } catch {
-        if (address.length > 12) {
-          return `${address.slice(0, 6)}...${address.slice(-4)}`
-        }
-        return address
-      }
-    },
   },
   computed: {
     isMuted(): boolean {
@@ -324,37 +297,21 @@ export default defineComponent({
         ''
       )
     },
-    effectiveParticipants(): string[] {
-      if (
-        this.conversation?.participants &&
-        this.conversation.participants.length > 0
-      ) {
-        return this.conversation.participants
-      }
-      if (this.participants && this.participants.length > 0) {
-        return this.participants
-      }
-      if (this.effectiveAddress) {
-        return [this.effectiveAddress]
-      }
-      return []
-    },
-    otherParticipants(): string[] {
-      return this.effectiveParticipants.filter(
-        p => !sameCanonicalAddress(p, this.ownAddress),
+    /** More than two people: the row names them all and says who wrote the last message. */
+    isGroup(): boolean {
+      return isGroupConversation(
+        this.conversation?.participants ?? this.participants,
+        this.ownAddress,
       )
     },
-    displayParticipants(): string[] {
-      if (this.otherParticipants.length <= 1) {
-        return []
-      }
-      return this.otherParticipants.slice(0, 3)
-    },
-    remainingParticipantsCount(): number {
-      if (this.otherParticipants.length <= 1) {
-        return 0
-      }
-      return Math.max(0, this.otherParticipants.length - 3)
+    /** Everyone but this user, as they are named in the chat itself. */
+    senders(): Map<string, SenderIdentity> {
+      if (!this.isGroup) return new Map()
+      return conversationSenders(
+        this.conversation ?? { participants: this.participants },
+        this.ownAddress,
+        this.contacts,
+      )
     },
     effectiveNumUnread(): number {
       return this.numUnread || this.conversation?.totalUnreadMessages || 0
@@ -376,6 +333,11 @@ export default defineComponent({
      * peer, with the subject (if it has one) on its own line under the name. */
     titleName(): string {
       if (this.subjectIsTitle && this.effectiveName) return this.effectiveName
+      if (this.isGroup) {
+        return Array.from(this.senders.values())
+          .map(sender => sender.label)
+          .join(', ')
+      }
       return this.contactName
     },
     /** With no peer to name (or an email thread), the subject is the title itself. */
@@ -401,10 +363,19 @@ export default defineComponent({
         .split(' ')
         .map(word => word.slice(0, 15))
         .join(' ')
-      return this.$t(
-        info.outbound ? 'chatList.youPrefix' : 'chatList.themPrefix',
-        { text: slicedText },
-      )
+      if (info.outbound) {
+        return this.$t('chatList.youPrefix', { text: slicedText })
+      }
+      // With several people, "them" does not say who.
+      const sender = this.isGroup
+        ? senderOf(this.senders, info.senderAddress ?? '')
+        : undefined
+      return sender
+        ? this.$t('chatList.senderPrefix', {
+            name: sender.label,
+            text: slicedText,
+          })
+        : this.$t('chatList.themPrefix', { text: slicedText })
     },
     contact() {
       return this.effectiveAddress

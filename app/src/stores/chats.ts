@@ -73,6 +73,7 @@ import {
   sameCanonicalAddress,
 } from '../utils/own-address'
 import { sweepMessageFundsOnDelete } from '../utils/sweep-on-delete'
+import { shortAddress } from '../utils/short-address'
 
 export type ChatMessage = {
   outbound: boolean
@@ -114,6 +115,9 @@ export interface ConversationMember {
   role?: ConversationRole
   joinedAt?: number
   alias?: string
+  /** Hex of the key this member's first message here was verified against. It gives someone
+   * who is not a contact the same colour a contact gets from their key. */
+  pubKeyHex?: string
 }
 
 export interface ConversationEpoch {
@@ -754,6 +758,43 @@ function assertConversationPeer(
   }
 }
 
+/** What we sent and what the conversation's own peer sent. Our replies go to that peer only,
+ * so what anyone else posted here says nothing about the price of reaching them. */
+function messagesWithPeer(
+  conversation: Conversation | undefined,
+): ChatMessage[] {
+  if (!conversation) return []
+  if (!isChainAddress(conversation.address)) return conversation.messages
+  return conversation.messages.filter(
+    message =>
+      message.outbound ||
+      sameCanonicalAddress(message.senderAddress, conversation.address),
+  )
+}
+
+/** Whoever posts into a conversation is one of its participants from then on. A message is
+ * filed under the conversation ID it carries, so this can be someone other than the peer the
+ * conversation was opened with; recording them is what lets the chat show who said what. */
+function addParticipant(
+  conversation: Conversation,
+  address: string,
+  pubKeyHex?: string,
+): void {
+  const member = safeChainDisplayAddress(address) || address
+  if (conversation.participants.some(p => sameCanonicalAddress(p, member)))
+    return
+  conversation.participants = [...conversation.participants, member].sort()
+  conversation.members = {
+    ...conversation.members,
+    [member]: {
+      address: member,
+      role: 'member',
+      joinedAt: Date.now(),
+      pubKeyHex,
+    },
+  }
+}
+
 function newConversation({
   id,
   participants,
@@ -956,7 +997,9 @@ export async function rehydateChat(
     // Internal records never reconstruct a chat or dispatch item effects. Check any explicit
     // owner reference below, after all conversational owners have been prepared.
     if (internal) continue
-    if (existing) assertConversationPeer(existing, peer)
+    // Only our own messages are bound to the conversation's peer. An inbound message is filed
+    // under the ID it carries, whoever sent it.
+    if (existing && message.outbound) assertConversationPeer(existing, peer)
     const id = conversationId!
     conversations[id] ??= newConversation({
       id,
@@ -1082,6 +1125,7 @@ export async function rehydateChat(
     if (!conv.messages.some(m => m.payloadDigest === message.payloadDigest)) {
       conv.messages.push(message)
     }
+    if (!message.outbound) addParticipant(conv, message.senderAddress)
     if (emailItem) {
       conv.kind = 'email'
       if (!conv.name && emailItem.subject) {
@@ -1257,8 +1301,7 @@ export const useChatStore = defineStore('chats', {
             // ignore
           }
         }
-        const messages = chat?.messages ?? []
-        const metrics = derivePeerStampMetrics(messages)
+        const metrics = derivePeerStampMetrics(messagesWithPeer(chat))
         return computeGeometricStampSuggestion({
           lastSentWei: metrics.lastSentWei,
           lastReceivedWei: metrics.lastReceivedWei,
@@ -1280,7 +1323,7 @@ export const useChatStore = defineStore('chats', {
             // ignore
           }
         }
-        return derivePeerStampMetrics(chat?.messages ?? [])
+        return derivePeerStampMetrics(messagesWithPeer(chat))
       },
     getStampOverrideWei:
       state =>
@@ -1345,6 +1388,7 @@ export const useChatStore = defineStore('chats', {
 
       return {
         outbound: lastMessage.outbound,
+        senderAddress: lastMessage.senderAddress,
         text: messageItems.previewText(lastItem),
       }
     },
@@ -3295,7 +3339,11 @@ export const useChatStore = defineStore('chats', {
         let conv = id
           ? preparedConversations[id]
           : defaultChats(preparedConversations)[peer]
-        if (conv) assertConversationPeer(conv, peer)
+        // Only our own messages are bound to the conversation's peer. An inbound message is
+        // filed under the ID it carries, whoever sent it; its sender joins the participants
+        // when the message is stored below.
+        if (conv && (loopback || wrapper.outbound))
+          assertConversationPeer(conv, peer)
         const existing = this.messages[wrapper.index]
         if (
           existing?.conversationId &&
@@ -3582,6 +3630,18 @@ export const useChatStore = defineStore('chats', {
               (b.serverTime ?? b.receivedTime ?? 0),
           )
         }
+        if (!message.outbound) {
+          const key = wrapper.copartyPubKey?.toBuffer?.()
+          addParticipant(
+            conv,
+            message.senderAddress,
+            key
+              ? Array.from(key, byte =>
+                  byte.toString(16).padStart(2, '0'),
+                ).join('')
+              : undefined,
+          )
+        }
 
         if (emailItem) {
           conv.kind = 'email'
@@ -3595,6 +3655,7 @@ export const useChatStore = defineStore('chats', {
 
         const messageValue = accountedMessageValue(message)
         if (
+          !message.outbound &&
           conv.id !== this.activeConversationId &&
           conv.lastRead < message.serverTime
         ) {
@@ -3655,7 +3716,14 @@ export const useChatStore = defineStore('chats', {
         if (lease?.isCancelled()) return
 
         const contacts = useContactStore()
-        if (!contacts.isContact(copartyAddress)) {
+        // The peer of a conversation becomes a contact when they write. Someone else who posts
+        // into that conversation does not: they stay marked as not in the contacts.
+        const conversation = this.conversations[stored.conversationId ?? '']
+        const isPeer =
+          !conversation ||
+          !isChainAddress(conversation.address) ||
+          sameCanonicalAddress(conversation.address, copartyAddress)
+        if (isPeer && !contacts.isContact(copartyAddress)) {
           contacts.addLoadingContact({
             address: copartyAddress,
             pubKey: copartyPubKey,
@@ -3674,6 +3742,9 @@ export const useChatStore = defineStore('chats', {
         }
 
         const contact = contacts.getContact(copartyAddress)
+        const senderName = contacts.isContact(copartyAddress)
+          ? contact.profile.name ?? 'Unknown'
+          : shortAddress(copartyAddress)
         const textItem: TextItem = (newMsg.items.find(
           item => item.type === 'text',
         ) as TextItem) ?? { text: '' }
@@ -3691,7 +3762,7 @@ export const useChatStore = defineStore('chats', {
         body += textItem.text
         if (contact?.notify) {
           desktopNotify(
-            contact.profile.name ?? 'Unknown',
+            senderName,
             body,
             contact.profile.avatar ?? '',
             async () => this.setActiveConversation(stored.conversationId!),

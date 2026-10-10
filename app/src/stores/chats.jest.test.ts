@@ -2182,19 +2182,157 @@ describe('stores/chats.ts (ticket #42)', () => {
       ).toHaveLength(2)
     })
 
-    it('rejects a conversation ID belonging to another peer before durable receipt or mutation', async () => {
-      const chats = useChatStore()
-      const foreign = chats.createConversation({
-        participants: [SENDER_ADDRESS, THIRD_ADDRESS],
-        address: THIRD_ADDRESS,
-        conversationId: firstId,
+    describe('who sent each message', () => {
+      // A message is filed under the conversation ID it carries. Whoever sent it, the stored
+      // message names that sender; it is never taken to be from the conversation's peer.
+      const fromThird = (index: string, time: number, stampValueWei = 0n) => {
+        const wrapper = incoming(firstId, index, time)
+        wrapper.senderAddress = THIRD_ADDRESS
+        wrapper.copartyAddress = THIRD_ADDRESS
+        wrapper.copartyPubKey = {
+          toBuffer: () => new Uint8Array(33).fill(7),
+        } as never
+        wrapper.message.senderAddress = THIRD_ADDRESS
+        wrapper.message.stampValueWei = stampValueWei
+        return wrapper
+      }
+      const withPeer = () => {
+        const chats = useChatStore()
+        const conversation = chats.createConversation({
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+          address: RECIPIENT_ADDRESS,
+          conversationId: firstId,
+        })
+        return { chats, conversation }
+      }
+
+      it("two people: a received message is its sender's, and nobody joins", async () => {
+        const { chats, conversation } = withPeer()
+        await chats.receiveMessages([incoming(firstId, 'from-peer', 100)])
+        expect(conversation.messages).toHaveLength(1)
+        expect(conversation.messages[0].outbound).toBe(false)
+        expect(conversation.messages[0].senderAddress).toBe(RECIPIENT_ADDRESS)
+        expect(conversation.participants).toEqual(
+          [SENDER_ADDRESS, RECIPIENT_ADDRESS].sort(),
+        )
+        expect(chats.getLatestMessage(firstId)?.senderAddress).toBe(
+          RECIPIENT_ADDRESS,
+        )
       })
-      await expect(
-        chats.receiveMessages([incoming(firstId, 'foreign-id', 100)]),
-      ).rejects.toThrow(/conversation.*(peer|recipient|participant)/i)
-      expect(foreign.messages).toHaveLength(0)
-      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
-      expect(chats.messages['foreign-id']).toBeUndefined()
+
+      it('a third person who sends with the conversation ID lands in it as themselves and becomes a participant', async () => {
+        const { chats, conversation } = withPeer()
+        await chats.receiveMessages([
+          incoming(firstId, 'from-peer', 100),
+          fromThird('from-third', 200),
+        ])
+        expect(conversation.messages.map(m => m.payloadDigest)).toEqual([
+          'from-peer',
+          'from-third',
+        ])
+        expect(conversation.messages.map(m => m.senderAddress)).toEqual([
+          RECIPIENT_ADDRESS,
+          THIRD_ADDRESS,
+        ])
+        // Still the conversation it was: same ID, same peer for what we send.
+        expect(conversation.id).toBe(firstId)
+        expect(conversation.address).toBe(RECIPIENT_ADDRESS)
+        expect(conversation.participants).toEqual(
+          [SENDER_ADDRESS, RECIPIENT_ADDRESS, THIRD_ADDRESS].sort(),
+        )
+        expect(conversation.members?.[THIRD_ADDRESS]).toMatchObject({
+          address: THIRD_ADDRESS,
+          pubKeyHex: '07'.repeat(33),
+        })
+        expect(chats.getLatestMessage(firstId)?.senderAddress).toBe(
+          THIRD_ADDRESS,
+        )
+        // Posting into someone else's conversation does not make them a contact.
+        expect(useContactStore().isContact(THIRD_ADDRESS)).toBe(false)
+        expect(useContactStore().isContact(RECIPIENT_ADDRESS)).toBe(true)
+
+        // The same after a reload from what was saved.
+        const rows = mockMessageStore.saveMessage.mock.calls.map(([row]) => row)
+        mockMessageStore.getIterator.mockResolvedValueOnce(rows)
+        const reopened = await rehydrateState(chats.$state)
+        expect(
+          reopened.conversations[firstId].messages.map(m => m.senderAddress),
+        ).toEqual([RECIPIENT_ADDRESS, THIRD_ADDRESS])
+        expect(reopened.conversations[firstId].participants).toEqual(
+          [SENDER_ADDRESS, RECIPIENT_ADDRESS, THIRD_ADDRESS].sort(),
+        )
+        expect(reopened.conversations[firstId].address).toBe(RECIPIENT_ADDRESS)
+      })
+
+      it('a reload files a saved third-person message even when the participant list was not saved', async () => {
+        const { chats } = withPeer()
+        // The conversation as it was saved before the third person wrote.
+        const before = {
+          ...chats.$state,
+          conversations: {
+            [firstId]: {
+              ...chats.conversations[firstId],
+              participants: [...chats.conversations[firstId].participants],
+              members: { ...chats.conversations[firstId].members },
+              messages: [],
+            },
+          },
+        }
+        await chats.receiveMessages([fromThird('from-third', 200)])
+        const rows = mockMessageStore.saveMessage.mock.calls.map(([row]) => row)
+        mockMessageStore.getIterator.mockResolvedValueOnce(rows)
+        const reopened = await rehydrateState(before)
+        expect(reopened.conversations[firstId].messages).toHaveLength(1)
+        expect(reopened.conversations[firstId].participants).toContain(
+          THIRD_ADDRESS,
+        )
+      })
+
+      it("our own message read back from the mailbox is ours, not the peer's and not a new participant", async () => {
+        const { chats, conversation } = withPeer()
+        const own = incoming(firstId, 'own-copy', 100)
+        own.outbound = true
+        own.senderAddress = SENDER_ADDRESS
+        own.message.outbound = true
+        own.message.senderAddress = SENDER_ADDRESS
+        await chats.receiveMessages([own])
+        expect(conversation.messages).toHaveLength(1)
+        expect(conversation.messages[0].outbound).toBe(true)
+        expect(conversation.messages[0].senderAddress).toBe(SENDER_ADDRESS)
+        expect(conversation.participants).toEqual(
+          [SENDER_ADDRESS, RECIPIENT_ADDRESS].sort(),
+        )
+        expect(conversation.totalUnreadMessages).toBe(0)
+      })
+
+      it('still refuses our own message into a conversation with a different peer', async () => {
+        const chats = useChatStore()
+        const foreign = chats.createConversation({
+          participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+          address: THIRD_ADDRESS,
+          conversationId: firstId,
+        })
+        const own = incoming(firstId, 'own-misfiled', 100)
+        own.outbound = true
+        own.senderAddress = SENDER_ADDRESS
+        own.message.outbound = true
+        own.message.senderAddress = SENDER_ADDRESS
+        await expect(chats.receiveMessages([own])).rejects.toThrow(
+          /conversation.*(peer|recipient|participant)/i,
+        )
+        expect(foreign.messages).toHaveLength(0)
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      })
+
+      it('what a third person paid does not move the price suggested for the peer', async () => {
+        const { chats } = withPeer()
+        const before = chats.getPeerStampSuggestion(firstId)
+        await chats.receiveMessages([fromThird('rich-third', 200, 10n ** 18n)])
+        expect(chats.getPeerStampSuggestion(firstId)).toBe(before)
+        expect(chats.getPeerStampMetrics(firstId)).toEqual(
+          chats.getPeerStampMetrics(secondId),
+        )
+      })
     })
   })
 

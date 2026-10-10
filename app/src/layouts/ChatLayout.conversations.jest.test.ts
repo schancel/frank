@@ -365,6 +365,67 @@ it('shows the peer and the subject in the title and in each list row, and neithe
   }
 })
 
+it('shows the participants and their number in the title once a third person has posted, and only then', async () => {
+  const app = await mountedConversations()
+  try {
+    const id = await app.create(PEER, 'Project plan')
+    const header = (part: string) =>
+      app.root
+        .getComponent(ChatLayout)
+        .find(`[data-testid="chat-header-${part}"]`)
+    const receive = (sender: string, index: string) =>
+      app.chats.receiveMessages([
+        {
+          index,
+          conversationId: id,
+          outbound: false,
+          senderAddress: sender,
+          copartyAddress: sender,
+          copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+          stampValue: 0,
+          message: {
+            conversationId: id,
+            outbound: false,
+            senderAddress: sender,
+            status: 'confirmed',
+            receivedTime: 100,
+            serverTime: 100,
+            outpoints: [],
+            items: [{ type: 'text', text: index }],
+          },
+        },
+      ] as never)
+    await receive(PEER, 'from-peer')
+    await settle()
+    expect(header('name').text()).toBe('Alice')
+    expect(header('participants').exists()).toBe(false)
+    expect(header('group-avatar').exists()).toBe(false)
+
+    await receive(OTHER, 'from-other')
+    await settle()
+    expect(header('name').text()).toBe('Alice, Other peer')
+    // The translator of this file does not fill in the number.
+    expect(header('participants').text()).toBe('{count} participants')
+    expect(
+      (app.root.getComponent(ChatLayout).vm as { participantCount: number })
+        .participantCount,
+    ).toBe(3)
+    expect(header('subject').text()).toBe('Project plan')
+    expect(header('group-avatar').exists()).toBe(true)
+    const row = app.root
+      .findAllComponents(ChatListItem)
+      .find(item => item.props('conversationId') === id)!
+    expect(row.get('[data-testid="chat-list-title"]').text()).toBe(
+      'Alice, Other peer',
+    )
+    expect(row.get('[data-testid="chat-list-subject"]').text()).toBe(
+      'Project plan',
+    )
+  } finally {
+    app.root.unmount()
+  }
+})
+
 it.each([false, true])(
   'keeps equal subjects, edits and recovered attempts independent (bot: %s)',
   async bot => {

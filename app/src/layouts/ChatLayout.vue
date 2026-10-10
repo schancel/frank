@@ -64,7 +64,16 @@
             :aria-label="$t('a11y.openNavigation')"
             :aria-expanded="myDrawerOpen"
           />
-          <q-avatar rounded :style="contactColorStyle">
+          <!-- Several people: no one person's picture or key colour stands for all of them. -->
+          <q-avatar
+            v-if="isGroup"
+            rounded
+            color="white"
+            text-color="primary"
+            icon="group"
+            data-testid="chat-header-group-avatar"
+          />
+          <q-avatar v-else rounded :style="contactColorStyle">
             <img
               :src="profileAvatar(presentedAvatar, effectiveAddress || address)"
             />
@@ -78,20 +87,28 @@
                 contactName
               }}</span>
               <account-badge
-                v-if="effectiveAddress && !activeConversation?.topic"
+                v-if="
+                  effectiveAddress && !activeConversation?.topic && !isGroup
+                "
                 :address="effectiveAddress"
                 :account-type="targetProfile?.accountType"
                 :bot-role="targetProfile?.botRole"
                 :is-bot="targetProfile?.isBot"
               />
             </div>
-            <!-- The subject of this conversation, under the peer; none, no line. -->
+            <!-- Under the name: how many people (only when more than two) and the subject of
+            this conversation. Neither, no line. -->
             <div
-              v-if="subject"
+              v-if="subject || isGroup"
               class="text-caption ellipsis chat-header-subject"
-              data-testid="chat-header-subject"
             >
-              {{ subject }}
+              <span v-if="isGroup" data-testid="chat-header-participants">{{
+                $t('chatLayout.participantCount', { count: participantCount })
+              }}</span>
+              <span v-if="isGroup && subject"> · </span>
+              <span v-if="subject" data-testid="chat-header-subject">{{
+                subject
+              }}</span>
             </div>
           </q-toolbar-title>
           <q-space />
@@ -258,6 +275,10 @@ import { pubKeyToColor } from 'src/utils/formatting'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { profileAvatar } from 'src/utils/avatar'
 import {
+  conversationSenders,
+  otherParticipants,
+} from 'src/utils/chat-attribution'
+import {
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
 } from 'src/utils/own-address'
@@ -288,6 +309,7 @@ export default defineComponent({
     return {
       myDrawerOpen: useMyDrawerOpen(),
       getContact: contactStore.getContact,
+      contactStore,
       setNotify: contactStore.setNotify,
       getNotify: contactStore.getNotify,
       myProfile,
@@ -444,11 +466,34 @@ export default defineComponent({
           this.address
         )
       }
+      if (this.isGroup) {
+        return Array.from(
+          conversationSenders(
+            conv,
+            this.ownAddress,
+            this.contactStore,
+          ).values(),
+        )
+          .map(sender => sender.label)
+          .join(', ')
+      }
       // With no peer to name, the subject is the title itself.
       if (conv?.name && !isChainAddress(this.effectiveAddress)) return conv.name
       return sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
         ? this.$t('selfChat.you')
         : this.contactProfile?.name ?? (this.effectiveAddress || this.address)
+    },
+    /** Everyone in the conversation, this user included. */
+    participantCount(): number {
+      return (
+        otherParticipants(
+          this.activeConversation?.participants,
+          this.ownAddress,
+        ).length + 1
+      )
+    },
+    isGroup(): boolean {
+      return this.participantCount > 2
     },
     subject(): string {
       const conv = this.activeConversation
@@ -499,7 +544,7 @@ export default defineComponent({
     // "no pubkey yet" -> no color fallback as `contactColorStyle` above.
     contactNameColorStyle() {
       const pubKey = this.contactProfile?.pubKey
-      if (!pubKey) {
+      if (!pubKey || this.isGroup) {
         return {}
       }
       return { color: pubKeyToColor(pubKey.toBuffer()) }

@@ -322,14 +322,14 @@ export class FrankBotHost {
       });
 
       // 6. Fund bot identity if shared funding wallet is present
-      if (
-        this.fundingWallet &&
-        this.nonceSequencer &&
-        definition.id !== "faucet"
-      ) {
+      if (this.fundingWallet && this.nonceSequencer) {
         const receiveAddress = (await wallet.getReceiveAddress()).raw;
+        // The faucet sends its grants straight from the funding wallet, so its identity address
+        // needs nothing; its messages are still paid from its own receive address.
         const targets = [
-          { addr: botAddress, label: "Identity address" },
+          ...(definition.id === "faucet"
+            ? []
+            : [{ addr: botAddress, label: "Identity address" }]),
           { addr: receiveAddress, label: "EVM main account" },
         ];
         for (const target of targets) {

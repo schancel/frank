@@ -731,6 +731,54 @@ describe("FrankBotHost Reliability Features", () => {
     });
   });
 
+  describe("Faucet messaging account funding", () => {
+    // The faucet pays grants straight from the funding wallet, but its welcome message is paid
+    // like any bot's: from stamp accounts funded by its own receive address.
+    it("funds the faucet's receive address so its welcome message can be paid, and nothing else", async () => {
+      const faucet: FrankBotDefinition = {
+        id: "faucet",
+        getProfile: () => ({ name: "Faucet", bot: true }),
+        onMessage: async () => [],
+      };
+      const receive = "0x8888888888888888888888888888888888888888";
+      mockGetReceiveAddress.mockResolvedValue({ raw: receive });
+      const mockSendTransaction = jest.fn().mockResolvedValue({
+        wait: jest.fn().mockResolvedValue({}),
+      });
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/faucet-fund-test`,
+        fundingPrivateKeyHex: "0x" + "22".repeat(32),
+      });
+      (host as any).provider = {
+        getBalance: jest.fn((addr: string) =>
+          Promise.resolve(
+            addr === "0x1111111111111111111111111111111111111111"
+              ? 5_000_000_000_000_000_000n
+              : 0n
+          )
+        ),
+      };
+      (host as any).fundingWallet = {
+        address: "0x1111111111111111111111111111111111111111",
+        sendTransaction: mockSendTransaction,
+      };
+      (host as any).nonceSequencer = {
+        withNonce: (run: (nonce: number) => Promise<void>) => run(0),
+      };
+      await host.register(faucet);
+
+      expect(mockSendTransaction).toHaveBeenCalledTimes(1);
+      expect(mockSendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: receive,
+          value: 500_000_000_000_000_000n,
+        })
+      );
+      await host.stop();
+    });
+  });
+
   describe("Interrupted handler admission", () => {
     it("holds a failed handler across every subsequent poll without marking it processed", async () => {
       let callCount = 0;

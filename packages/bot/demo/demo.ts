@@ -96,6 +96,11 @@ export interface StartOptions {
    * Whether to launch the Quasar dev server. Default false in startDemo options unless explicitly passed.
    */
   startApp?: boolean
+  /**
+   * Whether the relay's oracle asks its price and energy providers. Default false: a relay
+   * started for a check serves its bundled history and contacts nobody. `yarn demo` passes true.
+   */
+  oracleCollect?: boolean
   /** Reads an address's balance from the chain (tests replace it; the default asks the RPC). */
   getBalance?: (address: string) => Promise<bigint>
   /** Reads the chain's gas price in wei (tests replace it; the default asks the RPC). */
@@ -579,6 +584,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         FRANK_RELAY_LISTEN: `127.0.0.1:${config.relayPort}`,
         FRANK_RELAY_DB_PATH: relayDb,
         FRANK_RELAY_EXTRA_TOML: curatedPath,
+        FRANK_RELAY_ORACLE_COLLECT: options.oracleCollect ? 'true' : 'false',
         ...(publicRelayUrl ? { FRANK_RELAY_PUBLIC_URL: publicRelayUrl.replace(/\/+$/, '') } : {}),
         FRANK_RUN_LOCAL_SKIP_DOTENV: '1',
         ...(effectiveCashwebdBin ? { CASHWEBD_BIN: effectiveCashwebdBin } : {}),
@@ -952,6 +958,8 @@ export async function main(argv: string[], env: Record<string, string | undefine
       print,
       env,
       startApp,
+      // The owner's demo shows live prices; the checks that start a demo do not ask providers.
+      oracleCollect: true,
       // Started by `yarn demo`: stop the stack if yarn is killed without forwarding the signal.
       watchParent: env.npm_lifecycle_event ? { pid: process.ppid } : undefined,
     })

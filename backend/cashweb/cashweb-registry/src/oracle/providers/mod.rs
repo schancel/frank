@@ -217,6 +217,17 @@ mod tests {
             let high = quotes.iter().map(|(_, p)| *p).fold(0.0, f64::max);
             assert!(high / low < 1.01, "{asset}: {quotes:?}");
         }
+        // Coinbase's `MON` and `HYPE` are Monad and Hyperliquid: its recorded figures match
+        // Kraken's MONUSD and HYPEUSD and CoinGecko's `monad` and `hyperliquid`.
+        for asset in ["monad-mainnet", "hyperliquid-mainnet"] {
+            let coinbase = price(asset, "coinbase");
+            for other in ["kraken", "coingecko"] {
+                assert!(
+                    (coinbase / price(asset, other) - 1.0).abs() < 0.002,
+                    "{asset} {other}"
+                );
+            }
+        }
         // Every asset the feed prices is listed by someone, and the basket coins by two.
         for asset in [
             "btc-mainnet",

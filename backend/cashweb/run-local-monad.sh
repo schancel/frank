@@ -141,6 +141,13 @@ if [[ -n "${FRANK_RELAY_IDENTITY:-}" && ! "${FRANK_RELAY_IDENTITY}" =~ ^0[23][0-
     echo "run-local-monad: FRANK_RELAY_IDENTITY must be a compressed public key (66 lowercase hex characters)" >&2
     exit 64
 fi
+case "${FRANK_RELAY_ORACLE_COLLECT:-false}" in
+    true | false) ;;
+    *)
+        echo "run-local-monad: FRANK_RELAY_ORACLE_COLLECT must be true or false" >&2
+        exit 64
+        ;;
+esac
 case "${FRANK_RELAY_PUBLIC_URL:-}" in
     '' | http://* | https://*) ;;
     *)
@@ -295,6 +302,15 @@ if [[ -n "${FRANK_RELAY_DB_PATH:-}" ]]; then
         { print }
     ')"
 fi
+# The oracle's providers are public APIs with small free allowances, and this launcher starts
+# relays for development, tests and demos, often several at once. A relay it starts therefore
+# asks no provider: it writes `collect = false` into [registry.oracle], and the relay serves its
+# bundled history at /oracle/v1/feed, so the app still shows values. The one run that wants live
+# prices says so: FRANK_RELAY_ORACLE_COLLECT=true (`yarn demo` sets it).
+runtime_config="$(printf '%s\n' "$runtime_config" | ORACLE_COLLECT="${FRANK_RELAY_ORACLE_COLLECT:-false}" awk '
+    /^\[registry\.oracle\]$/ { print; print "collect = " ENVIRON["ORACLE_COLLECT"]; next }
+    { print }
+')"
 if [[ -n "${FRANK_RELAY_EXTRA_TOML:-}" ]]; then
     runtime_config="$runtime_config"$'\n'"$(cat -- "$FRANK_RELAY_EXTRA_TOML")"
 fi

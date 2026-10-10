@@ -170,8 +170,9 @@ contacted before the relay is listening, and no provider failure reaches message
 provider that fails (non-2xx, timeout, unreadable answer) is skipped for the round and left
 alone for 10 minutes, doubling with each further failure up to 6 hours. Failures are logged with
 the provider's name and the kind of failure only: never a URL (it may carry a key) and never
-upstream text. A round in which a provider failed comes round again after 10 minutes (resting
-providers are not asked), so a daily source that was down is asked again the same day. A round
+upstream text. While one of a round's providers is resting, the round stays due and
+comes round again when the rest ends (resting providers are not asked), so a daily source that
+was down is asked again the same day. A round
 that is not yet due after a restart is not repeated.
 
 - Prices, every `price_interval_s` (10 minutes): two providers are drawn at random and each is
@@ -186,8 +187,11 @@ that is not yet due after a restart is not repeated.
   a sample is dropped until another provider answers or the long gap has passed.
   Samples are smoothed with a time-weighted moving average, `alpha = 1 - exp(-dt / ewma_tau_s)`
   (30 minutes). Upstream cost: at most one request per provider per round, so at most 6 an hour
-  each; a quiet round is two requests in total, plus one to a provider that alone lists an
-  asset the two drawn do not.
+  each. A round is two requests only when the two providers drawn list every asset between
+  them and agree; otherwise each asset still short of two agreeing answers brings in one more
+  provider that lists it. With the shipped tables that is usually three or four requests a
+  round (XEC and XMR are listed by few providers), and five or six on the first round or
+  after a long gap, when every series wants three answers.
 - Chain statistics, every `stats_interval_s` (1 hour): one Blockchair `/stats` request gives
   every chain's difficulty, coins in existence and the subsidy it paid per block over 24 hours.
   `blockReward/<chain>` is that subsidy times the miner's share in force (eCash: 0.58, from
@@ -205,6 +209,18 @@ that is not yet due after a restart is not repeated.
   `electricity_min_days` (10) prices in that window is left out, and the series ends at the
   latest day any region has a price for. The feed's `electricity` block names each region,
   its attribution and the last day it counted.
+
+`collect = false` under `[registry.oracle]` turns the collector off: no provider is ever
+asked, and the feed serves the bundled history and whatever the store already holds (live
+series are then marked `stale`). `run-local-monad.sh` writes it into every relay it starts, so
+development, test and demo relays do not spend the providers' free allowances;
+`FRANK_RELAY_ORACLE_COLLECT=true` turns collection on for a run (`yarn demo` sets it; the
+checks that start a demo do not). A relay started from a shipped configuration directly, or in
+Docker, collects.
+
+A store that cannot be opened does not stop the relay: it is logged, the relay runs without the
+feed and the path answers `404`. If the collector task ever ends or panics it is logged and
+started again after a minute.
 
 Keys stay on the server. A row with `key_env` is used only when that environment variable is
 set; the key is sent to its provider and appears in no log and no answer. The shipped

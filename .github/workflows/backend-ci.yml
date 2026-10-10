@@ -10,6 +10,9 @@ on:
       - "**/*_pb.d.ts"
       - "docs/protocol/check-protobuf-inventory.sh"
       - "docs/protocol/protobuf-inventory.snapshot"
+      - "docs/protocol/oracle/seed.json"
+      - "packages/price-feeds/src/historical/**"
+      - "packages/price-feeds/scripts/build-oracle-seed.py"
       - ".github/workflows/backend-ci.yml"
   pull_request:
     branches: [main]
@@ -20,6 +23,9 @@ on:
       - "**/*_pb.d.ts"
       - "docs/protocol/check-protobuf-inventory.sh"
       - "docs/protocol/protobuf-inventory.snapshot"
+      - "docs/protocol/oracle/seed.json"
+      - "packages/price-feeds/src/historical/**"
+      - "packages/price-feeds/scripts/build-oracle-seed.py"
       - ".github/workflows/backend-ci.yml"
 
 # NOTE: adapted from the pre-fork `cashweb` repo's own ci.yml, which checked out `cashweb` and
@@ -104,6 +110,12 @@ jobs:
 
     - name: Check protobuf source and generated-binding inventory
       run: ./docs/protocol/check-protobuf-inventory.sh --check
+      shell: bash
+
+    # The relay compiles docs/protocol/oracle/seed.json in; it is generated from the bundled
+    # history under packages/price-feeds/src/historical and must not drift from it.
+    - name: Check the oracle seed is what its generator gives
+      run: python3 packages/price-feeds/scripts/build-oracle-seed.py --check
       shell: bash
 
 

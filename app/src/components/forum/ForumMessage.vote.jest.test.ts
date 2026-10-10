@@ -123,6 +123,15 @@ const messages: Record<string, string> = {
   'chat.stampPreparationReady': 'READY_SENDING',
 }
 
+// Every card reads the shared reactive mocks above (profile, own address). A card left mounted
+// re-renders when a later test changes one, and that render can run after the file has finished.
+const mountedCards: ReturnType<typeof shallowMount>[] = []
+afterEach(() => {
+  for (const card of mountedCards.splice(0)) {
+    if (!card.vm.$.isUnmounted) card.unmount()
+  }
+})
+
 function mountCard(
   overrides: {
     payloadDigest?: string
@@ -140,7 +149,7 @@ function mountCard(
       voteWeightWei: initialWeight,
     }
   }
-  return shallowMount(ForumMessage, {
+  const card = shallowMount(ForumMessage, {
     props: {
       message: {
         poster: 'poster' in overrides ? overrides.poster : '0x1',
@@ -167,6 +176,8 @@ function mountCard(
       },
     },
   })
+  mountedCards.push(card)
+  return card
 }
 
 async function vote(wrapper: ReturnType<typeof mountCard>) {

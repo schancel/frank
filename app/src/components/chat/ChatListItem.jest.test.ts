@@ -1,9 +1,13 @@
 /** @jest-environment jsdom */
 
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, shallowMount } from '@vue/test-utils'
 import { messages } from 'src/i18n'
 import { ref } from 'vue'
 import ChatListItem from './ChatListItem.vue'
+
+// Every row reads the shared `mockOwnAddress` ref below. A row left mounted re-renders when a
+// later test's `beforeEach` sets that ref, and that render can run after the file has finished.
+enableAutoUnmount(afterEach)
 
 let latest: {
   text: string

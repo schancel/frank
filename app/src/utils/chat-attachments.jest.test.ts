@@ -4,6 +4,8 @@ import {
   composeChatItems,
   fitsOneMessage,
   inlinePositions,
+  picturePreview,
+  picturePreviewText,
   prepareChatImage,
   sentMessageBytes,
   shownAttachments,
@@ -162,5 +164,34 @@ describe('the pictures of a received message', () => {
 
   it('are inline only when referenced and shown: not the refused one, not a missing one', () => {
     expect([...inlinePositions(items, shownAttachments(items))]).toEqual([2])
+  })
+})
+
+describe('the preview of a message with pictures', () => {
+  const t = (key: string, params?: Record<string, unknown>) =>
+    key === 'chatImage.onePhoto' ? 'Photo' : `${params?.count} photos`
+
+  it('counts the pictures and drops the attachment references from the text', () => {
+    const preview = picturePreview([
+      {
+        type: 'text',
+        text: 'before ![a](attachment:1)\nafter ![b](attachment:2)',
+      },
+      { type: 'image', image: png(2, 2) },
+      { type: 'image', image: gif(3, 3) },
+    ])
+    expect(preview).toEqual({ photos: 2, text: 'before after' })
+    expect(picturePreviewText(preview!, t)).toBe('2 photos before after')
+  })
+
+  it('is the count alone for pictures with no text', () => {
+    const preview = picturePreview([{ type: 'image', image: png(2, 2) }])
+    expect(picturePreviewText(preview!, t)).toBe('Photo')
+  })
+
+  it('is absent for a message with no picture, whose text is left as written', () => {
+    expect(
+      picturePreview([{ type: 'text', text: '![a](attachment:1)' }]),
+    ).toBeUndefined()
   })
 })

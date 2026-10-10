@@ -146,3 +146,34 @@ export function inlinePositions(
   }
   return inline
 }
+
+/**
+ * What a chat list row or a notification says about a message that carries pictures: how many,
+ * and its text without the attachment references. Undefined for a message with no picture,
+ * whose preview is its last item's as before.
+ */
+export function picturePreview(
+  items: readonly MessageItem[],
+): { photos: number; text: string } | undefined {
+  const photos = items.filter(item => item.type === 'image').length
+  if (photos === 0) return undefined
+  const text = items
+    .flatMap(item => (item.type === 'text' ? [item.text] : []))
+    .map(t => replaceAttachmentReferences(t, () => ''))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return { photos, text }
+}
+
+/** "📷 Photo" or "📷 3 photos", then the text. `t` is the app's translate function. */
+export function picturePreviewText(
+  preview: { photos: number; text: string },
+  t: (key: string, params?: Record<string, unknown>) => string,
+): string {
+  const label =
+    preview.photos === 1
+      ? t('chatImage.onePhoto')
+      : t('chatImage.manyPhotos', { count: preview.photos })
+  return preview.text ? `${label} ${preview.text}` : label
+}

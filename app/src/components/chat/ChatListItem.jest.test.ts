@@ -9,6 +9,7 @@ let latest: {
   text: string
   outbound: boolean
   senderAddress?: string
+  photos?: number
 } | null = null
 // Addresses (lower case) that are not contacts, and names of those that are.
 const mockStrangers = new Set<string>()
@@ -85,6 +86,16 @@ describe('ChatListItem message preview (ticket #274)', () => {
   ])('%s outbound=%s reads %j', (locale, outbound, expected) => {
     latest = { text: 'after recovery', outbound }
     expect(preview(locale)).toBe(expected)
+  })
+
+  // The text of a message with pictures carries `![name](attachment:1)`; the row shows a count.
+  it.each([
+    [1, 'look at this', 'Them: 📷 Photo look at this'],
+    [3, '', 'Them: 📷 3 photos'],
+  ])('a message with %i picture(s) reads %j', (photos, text, expected) => {
+    latest = { text, outbound: false, photos }
+    expect(preview('en-us')).toBe(expected)
+    expect(preview('en-us')).not.toContain('attachment:')
   })
 
   it('stays empty when there is no message yet', () => {

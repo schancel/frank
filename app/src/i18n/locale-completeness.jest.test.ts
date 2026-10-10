@@ -68,6 +68,8 @@ const SAME_IN_FRENCH = new Set([
   'chatRightDrawer.notifications',
   'transactionDialog.txType',
   'sendStealthDialog.amountPlaceholder',
+  'chatImage.onePhoto',
+  'chatImage.manyPhotos',
   'profile.linkTypeX',
   'profile.linkTypeGithub',
   'profile.linkTypeNostr',

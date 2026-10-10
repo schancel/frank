@@ -126,6 +126,8 @@ export default {
     fulfilled: "Here's your purchase ({itemId}):",
   },
   chatImage: {
+    onePhoto: '📷 Photo',
+    manyPhotos: '📷 {count} photos',
     notShown: 'Image not shown ({reason})',
     reasonNotAnImage: 'not an image',
     reasonTooLarge: 'too large',

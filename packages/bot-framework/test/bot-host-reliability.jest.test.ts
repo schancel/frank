@@ -31,6 +31,8 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
       directMessages: {
         fetchSince: mockDirectMessagesFetchSince,
         send: mockDirectMessagesSend,
+        // A wallet with no payment attempts: asked about none, it has nothing to report.
+        reconcileAttempts: async () => ({}),
       },
       topics: {
         post: jest.fn(),
@@ -1097,6 +1099,139 @@ describe("FrankBotHost Reliability Features", () => {
       expect((host as any).chain.directMessages.fundAhead).toBeUndefined();
       await expect((host as any).pollAllBots()).resolves.toBeUndefined();
       expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
+    });
+  });
+  // #1236 Q3. On main 1715ec7c `pollOnce` asks the wallet only about replies an incomplete row
+  // still points at: with no such row the wallet is never asked, so the first and fourth tests
+  // fail there (zero calls). The others are pins and pass there.
+  describe("The whole wallet is retried at the poll", () => {
+    const bot: FrankBotDefinition = {
+      id: "whole-wallet-bot",
+      getProfile: () => ({ name: "WholeWalletBot", bot: true }),
+      onMessage: async () => undefined,
+    };
+    const registered = async (name: string, reconcileAttempts: jest.Mock) => {
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/whole-wallet-${name}`,
+      });
+      // Installed before registration, so a call made while registering would be seen.
+      (host as any).chain.directMessages.reconcileAttempts = reconcileAttempts;
+      await host.register(bot);
+      const instance = (host as any).instances.get("whole-wallet-bot");
+      mockDirectMessagesFetchSince.mockResolvedValue([]);
+      return { host, instance };
+    };
+    const linkedRow = {
+      digest: "aa".repeat(32),
+      replies: [{ digest: "bb".repeat(32), observation: "unknown" }],
+    };
+
+    it("never during registration; once per poll, about no reply in particular, before funding ahead and the mailbox fetch", async () => {
+      const order: string[] = [];
+      const reconcileAttempts = jest.fn(async () => {
+        order.push("wallet asked");
+        return {};
+      });
+      const { host, instance } = await registered("order", reconcileAttempts);
+      expect(reconcileAttempts).not.toHaveBeenCalled();
+      (host as any).chain.directMessages.fundAhead = jest.fn(async () => {
+        order.push("fund ahead");
+        return { outcome: "ready", fundingTxHashes: [] };
+      });
+      instance.wallet.reobserveNativeOperations = jest.fn(async () => {
+        order.push("reobserve");
+      });
+      mockDirectMessagesFetchSince.mockImplementation(async () => {
+        order.push("fetch");
+        return [];
+      });
+      await (host as any).pollAllBots();
+      expect(order).toEqual(["wallet asked", "reobserve", "fund ahead", "fetch"]);
+      expect(reconcileAttempts.mock.calls).toEqual([
+        [{ wallet: instance.wallet, payloadDigests: [] }],
+      ]);
+      await (host as any).pollAllBots();
+      expect(reconcileAttempts).toHaveBeenCalledTimes(2);
+    });
+
+    it("pin: a row that points at a reply is the one question of its poll", async () => {
+      const reconcileAttempts = jest.fn(async () => ({}));
+      const { host, instance } = await registered("linked", reconcileAttempts);
+      jest
+        .spyOn(instance.operations, "listIncomplete")
+        .mockReturnValue([linkedRow]);
+      jest
+        .spyOn(instance.operations, "observe")
+        .mockImplementation(async () => undefined);
+      await (host as any).pollAllBots();
+      expect(reconcileAttempts.mock.calls).toEqual([
+        [{ wallet: instance.wallet, payloadDigests: ["bb".repeat(32)] }],
+      ]);
+    });
+
+    it("pin: not while a handler is sending, whose own send settles the wallet first", async () => {
+      const reconcileAttempts = jest.fn(async () => ({}));
+      const { host, instance } = await registered("in-flight", reconcileAttempts);
+      jest
+        .spyOn(instance.operations, "listIncomplete")
+        .mockReturnValue([linkedRow]);
+      instance.inFlightDigests.add(linkedRow.digest);
+      await (host as any).pollAllBots();
+      expect(reconcileAttempts).not.toHaveBeenCalled();
+      expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
+      instance.inFlightDigests.clear();
+    });
+
+    it("survives its failure: the poll goes on to fetch but funds nothing ahead, nothing goes unhandled, and it is logged once until it works again", async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        const reconcileAttempts = jest
+          .fn()
+          .mockRejectedValueOnce(new Error("fixture: wallet held"))
+          .mockImplementationOnce(() => {
+            throw new Error("fixture: wallet closed");
+          })
+          .mockResolvedValueOnce({})
+          .mockRejectedValue(new Error("fixture: held again"));
+        const { host } = await registered("failure", reconcileAttempts);
+        const fundAhead = jest.fn(async () => ({
+          outcome: "ready",
+          fundingTxHashes: [],
+        }));
+        (host as any).chain.directMessages.fundAhead = fundAhead;
+        const warned = () =>
+          warn.mock.calls.filter(([line]) =>
+            String(line).includes("could not be retried")
+          ).length;
+        for (let poll = 0; poll < 2; poll++)
+          await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+        expect(warned()).toBe(1);
+        for (let poll = 0; poll < 3; poll++)
+          await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(warned()).toBe(2);
+        expect(reconcileAttempts).toHaveBeenCalledTimes(5);
+        expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(5);
+        // Only the poll whose question the wallet answered funds the next reply ahead.
+        expect(fundAhead).toHaveBeenCalledTimes(1);
+        expect(unhandled).toEqual([]);
+      } finally {
+        warn.mockRestore();
+        process.off("unhandledRejection", onUnhandled);
+      }
+    });
+
+    it("pin: not while closing", async () => {
+      const reconcileAttempts = jest.fn(async () => ({}));
+      const { host } = await registered("closing", reconcileAttempts);
+      (host as any).closing = true;
+      await (host as any).pollAllBots();
+      expect(reconcileAttempts).not.toHaveBeenCalled();
+      (host as any).closing = false;
     });
   });
   // A launcher that must publish a bot's address before the bot runs creates the profile through

@@ -129,6 +129,8 @@ export class FrankBotHost {
   private readonly instances = new Map<string, ActiveBotInstance>();
   /** Bots whose fund-ahead failure was already logged. */
   private readonly fundAheadWarned = new Set<string>();
+  /** Bots whose wallet-wide retry is failing; warned when it starts failing, not every poll. */
+  private readonly walletRetryWarned = new Set<string>();
   private readonly registrationListeners = new Set<
     (user: NewUserEvent) => void | Promise<void>
   >();
@@ -753,6 +755,9 @@ export class FrankBotHost {
         if (this.closing) return;
         instance.operations.assertOpen();
         // Independently recover already linked operations, including rows behind the mailbox cursor.
+        let asked = false;
+        // Whether a question to the wallet failed in this poll: then nothing is funded ahead.
+        let held = false;
         for (const row of instance.operations.listIncomplete()) {
           if (this.closing) return;
           if (instance.inFlightDigests.has(row.digest)) continue;
@@ -760,6 +765,7 @@ export class FrankBotHost {
             call.digest ? [call.digest] : []
           );
           if (!payloadDigests.length) continue;
+          asked = true;
           try {
             const observations =
               await this.chain.directMessages.reconcileAttempts({
@@ -777,6 +783,7 @@ export class FrankBotHost {
                 );
             }
           } catch {
+            held = true;
             instance.operations.assertOpen(); // a failed journal write faults admission, not just recovery
             console.warn(
               `[bot-host] [${id}] Original reply recovery held; preserve state`
@@ -784,6 +791,31 @@ export class FrankBotHost {
           }
         }
         if (this.closing) return;
+        // A paid reply this host has no incomplete row for any more is still the wallet's to
+        // finish. The wallet retries every unresolved payment it holds whichever ones it is asked
+        // about, so when no row asked, ask about none: the same exact bytes are sent again, never
+        // a new payment, and with nothing unresolved the wallet makes no request. Not while a
+        // handler is sending: its send settles the wallet's earlier payments first, and this
+        // poll would only wait behind it. Never at registration.
+        if (!asked && instance.inFlightDigests.size === 0) {
+          try {
+            await this.chain.directMessages.reconcileAttempts({
+              wallet: instance.wallet,
+              payloadDigests: [],
+            });
+            this.walletRetryWarned.delete(id);
+          } catch (error) {
+            held = true;
+            if (!this.walletRetryWarned.has(id)) {
+              this.walletRetryWarned.add(id);
+              console.warn(
+                `[bot-host] [${id}] Earlier reply payments could not be retried; preserve state:`,
+                error instanceof Error ? error.message : error
+              );
+            }
+          }
+          if (this.closing) return;
+        }
         // A prepared reply observed delivered commits its plugin value and completes.
         for (const row of instance.operations.listIncomplete())
           if (row.prepared && row.replies[0]?.observation === "delivered")
@@ -802,8 +834,9 @@ export class FrankBotHost {
         }
         // Sender accounts for the next reply, funded between polls so that reply does not wait
         // for its own funding (#1235). Here, after this poll's recovery, and never at
-        // registration: the wallet moves nothing by being opened.
-        this.fundAhead(id, instance);
+        // registration: the wallet moves nothing by being opened. Not in a poll whose recovery
+        // failed: until the wallet's earlier payments have been looked at, nothing new is funded.
+        if (!held) this.fundAhead(id, instance);
         const messages = await this.chain.directMessages.fetchSince({
           wallet: instance.wallet,
           sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),

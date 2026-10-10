@@ -1195,11 +1195,14 @@ describe("Qwen answers every message", () => {
   });
 
   it("stops at once when the model call is still running: the call is aborted and the user gets the failure reply after the restart", async () => {
-    let calls = 0;
+    // The poll pass ends before the handler it started reaches the model: the journal writes
+    // and history reads in between take as long as the disk takes. Wait for the call itself.
+    let called!: () => void;
+    const modelCalled = new Promise<void>((resolve) => (called = resolve));
     reply.mockImplementation(
       (_history: unknown, options: { signal: AbortSignal }) =>
         new Promise((_resolve, reject) => {
-          calls++;
+          called();
           options.signal.addEventListener("abort", () =>
             reject(new Error("aborted"))
           );
@@ -1207,9 +1210,8 @@ describe("Qwen answers every message", () => {
     );
     await open();
     await pollAllBots();
-    for (let i = 0; i < 200 && !calls; i++)
-      await new Promise((resolve) => setImmediate(resolve));
-    expect(calls).toBe(1);
+    await modelCalled;
+    expect(reply).toHaveBeenCalledTimes(1);
     const started = Date.now();
     await host.stop();
     expect(Date.now() - started).toBeLessThan(2_000);
@@ -1218,7 +1220,8 @@ describe("Qwen answers every message", () => {
     await open();
     mockFetch.mockImplementation(async () => []);
     await pass(2);
-    expect(calls).toBe(1);
+    // The interrupted handler is not run again: the model is not asked a second time.
+    expect(reply).toHaveBeenCalledTimes(1);
     expect(delivered()).toEqual([MODEL_FAILED_TEXT]);
   });
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -118,5 +118,12 @@ describe('Supervisor', () => {
     await stopping
     expect(unexpected).toHaveBeenCalledTimes(1)
     expect(unexpected).toHaveBeenCalledWith(child, 'error')
+    // The supervisor opens the child's log file asynchronously and, for a command that never
+    // started, never closes it. If the directory is removed (afterEach) before that open has
+    // happened, the stream fails with ENOENT, nothing listens for its error, and the whole
+    // jest process dies. Wait for the file so the open has completed.
+    const logPath = join(dir, 'missing.log')
+    for (let i = 0; i < 200 && !existsSync(logPath); i++) await sleep(5)
+    expect(existsSync(logPath)).toBe(true)
   })
 })

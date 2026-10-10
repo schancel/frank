@@ -132,6 +132,27 @@ it("keeps its profile and newsletter, and answers a subscription command or an e
   expect(await bot.sendDailyNewsletter(ctx)).toEqual({ sent: 1, failed: 0 });
 });
 
+// On 16218e9f a model failure sent every subscriber a hardcoded "Gas is nominal, network
+// finality is sub-second..." digest as if it were today's.
+it("sends no digest when the model cannot write one, and says why in the log", async () => {
+  const error = jest.spyOn(console, "error").mockImplementation(() => {});
+  jest.spyOn(console, "log").mockImplementation(() => {});
+  for (const failure of [
+    () => Promise.reject(new Error("Request failed with status code 503")),
+    async () => ({ content: "  " }),
+  ]) {
+    generator.mockImplementationOnce(failure as never);
+    expect(await bot.sendDailyNewsletter(ctx)).toEqual({ sent: 0, failed: 0 });
+  }
+  expect(ctx.subscriptions.broadcast).not.toHaveBeenCalled();
+  expect(error).toHaveBeenCalledTimes(2);
+  expect(String(error.mock.calls[0][0])).toContain("Daily digest not sent");
+  expect(await bot.sendDailyNewsletter(ctx)).toEqual({ sent: 1, failed: 0 });
+  expect(
+    (ctx.subscriptions.broadcast as jest.Mock).mock.calls[0][0][0].text
+  ).toContain("answer");
+});
+
 it("returns the model's answer and remembers the turn, keeping the latest ten pairs", async () => {
   expect(await bot.onMessage(msg, ctx)).toEqual(text("answer"));
   expect(generator).toHaveBeenCalledWith(

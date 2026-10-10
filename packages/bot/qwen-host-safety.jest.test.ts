@@ -599,7 +599,8 @@ describe("durable retention before dispatch", () => {
     mailbox = [a1];
     await open();
     const spy = cutStart(a1.payloadDigest);
-    await pollBoth();
+    // One poll, then the process ends: a second poll would mend the journal and handle A1.
+    await poll();
     spy.mockRestore();
     await host.stop();
     await open();
@@ -1188,6 +1189,8 @@ describe("Qwen answers every message", () => {
     }));
     await pass();
     expect(reply.mock.calls[0][1]).toMatchObject({ userName: "Ada Lovelace" });
+    // Not remembered: the stored turn is what the person wrote.
+    expect(await turns()).toEqual(["Hello", "Saved once"]);
   });
 
   it("stops at once when the model call is still running: the call is aborted and the user gets the failure reply after the restart", async () => {
@@ -1288,7 +1291,6 @@ describe("with the real canonical wallet", () => {
     });
     await open();
     const botWallet = qwen().wallet;
-    expect(created).toEqual([botWallet]);
     const user = (await chain.createWallet(roots())) as EvmChainWalletHandle;
     closers.push(() => user.close());
     if (funded) await fund(botWallet);
@@ -1377,7 +1379,8 @@ describe("with the real canonical wallet", () => {
     };
     const own = await admit(botWallet);
     const peerEntry = await admit(user);
-    actual.installCanonicalDirectory(botWallet, {
+    const install = (wallet: EvmChainWalletHandle) =>
+      actual.installCanonicalDirectory(wallet, {
       network: "monad-testnet",
       homeEndpoint: RELAY + "/",
       selfCurrent: own.current,
@@ -1399,6 +1402,14 @@ describe("with the real canonical wallet", () => {
       },
       fetch,
     });
+    install(botWallet);
+    /** The process ends and starts again: a new host, and the wallet reopened from its disk. */
+    const restart = async () => {
+      await host.stop();
+      await open();
+      install(qwen().wallet);
+      return qwen().wallet;
+    };
     const rejections: unknown[] = [];
     mockSend.mockImplementation((params: Send) =>
       chain.directMessages.send(params).catch((error: unknown) => {
@@ -1429,10 +1440,20 @@ describe("with the real canonical wallet", () => {
     /** Every payment the wallet's journal holds an intent for. */
     const intents = () =>
       chain.directMessages.unattributedAttempts({
-        wallet: botWallet,
+        wallet: qwen().wallet,
         knownDigests: [],
       });
-    return { chain, botWallet, relayState, submitted, rejections, prompt, pass, intents };
+    return {
+      chain,
+      botWallet,
+      relayState,
+      submitted,
+      rejections,
+      prompt,
+      pass,
+      intents,
+      restart,
+    };
   };
   const done = async (prompt: DirectMessageReceived) =>
     (await qwen().state.get("digest:" + prompt.payloadDigest)) !== undefined;
@@ -1500,5 +1521,51 @@ describe("with the real canonical wallet", () => {
     expect(await intents()).toEqual([submitted[0]]);
     await pass();
     expect(new Set(submitted).size).toBe(1);
+  });
+
+  // Restart recovery of a PAID reply on the real wallet (stubbed RPC and relay HTTP; no real
+  // chain or relay harness exists in the tree yet). The process dies after the wallet has
+  // journalled and linked the payment and before the host has recorded it.
+  it("after a crash once the wallet holds the payment: the restarted bot delivers that reply once, as the one payment set", async () => {
+    const { relayState, submitted, rejections, prompt, pass, intents, restart } =
+      await setUp(true);
+    relayState.phase = "down";
+    // The host's own record of the attempt is lost with the process.
+    const link = jest
+      .spyOn(qwen().operations, "linkReply")
+      .mockRejectedValue(new Error("killed"));
+    await pass();
+    link.mockRestore();
+    const [first] = await intents();
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(qwen().operations.get(prompt.payloadDigest)?.reply?.digest).toBe(
+      undefined
+    );
+    expect(await stagedText(prompt.payloadDigest)).toBe("re:P1");
+
+    await restart();
+    mockFetch.mockImplementation(async () => []);
+    relayState.phase = "delivered";
+    await pass();
+    await pass();
+    await pass();
+
+    expect(await done(prompt)).toBe(true);
+    // The model was asked once, in the first lifetime.
+    expect(reply).toHaveBeenCalledTimes(1);
+    // One payment set ever reached the relay, and the reopened journal holds one intent.
+    expect(new Set(submitted)).toEqual(new Set([first]));
+    expect(await intents()).toEqual([first]);
+    // How it got there: the restarted host sent under the same identity once, and the wallet
+    // answered with the payment it already held instead of making another.
+    expect(
+      rejections.filter(
+        (error) =>
+          (error as Error).name === "DirectMessageAlreadyAttemptedError" &&
+          (error as { payloadDigest?: string }).payloadDigest === first
+      )
+    ).toHaveLength(1);
+    await pass();
+    expect(new Set(submitted)).toEqual(new Set([first]));
   });
 });

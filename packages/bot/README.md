@@ -540,7 +540,7 @@ Start a local relay exactly as in ticket #8's runbook
 set -a; source ../../.env; set +a   # needs QWEN_API_KEY, QWEN_OPENAI_COMPATIBLE_ENDPOINT too
 export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
 export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
-yarn bot   # keeps running; set QWEN_BOT_MAX_REPLIES=<n> to exit after n replies
+yarn bot   # keeps running until stopped
 ```
 
 ### How the Qwen bot answers

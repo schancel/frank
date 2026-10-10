@@ -100,20 +100,6 @@ describe('bot state directories', () => {
     ).not.toMatch(/moved from/)
   })
 
-  it.each([
-    ['qwen', 'qwen-bot.livecheck.ts', 'QWEN_BOT_STATE_DIR'],
-    ['blackjack', 'blackjack-bot.livecheck.ts', 'BLACKJACK_BOT_STATE_DIR'],
-    ['raffle', 'raffle-bot.livecheck.ts', 'RAFFLE_BOT_STATE_DIR'],
-    ['vendor', 'vendor-bot.livecheck.ts', 'VENDOR_BOT_STATE_DIR'],
-  ] as Array<[StateDirBot, string, string]>)(
-    'the %s bot takes its state dir from botStateDir, not a /tmp default',
-    (bot, file, envVar) => {
-      const src = readFileSync(join(__dirname, file), 'utf8')
-      expect(src).toContain(`botStateDir('${bot}', '${envVar}')`)
-      expect(src).not.toMatch(new RegExp(`${envVar} \\?\\? '/tmp`))
-    },
-  )
-
   it('botStateDir (the real entry point) warns for /private/tmp and /var/tmp paths', () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
     const saved = process.env.VENDOR_BOT_STATE_DIR

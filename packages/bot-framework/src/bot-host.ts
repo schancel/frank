@@ -50,6 +50,7 @@ import {
   type NewUserEvent,
   type PreparedReply,
 } from "./types";
+import { claimTransfer } from "./claims";
 import { EVMNonceSequencer } from "./nonce-sequencer";
 import { LevelBotStateStore } from "./state-store";
 import {
@@ -1252,7 +1253,17 @@ export class FrankBotHost {
             // What a reply may carry is settled before the handler starts and kept with the
             // row, so a reply owed after a restart is stamped the same.
             const paidWei = await this.confirmedPaidWei(instance, match);
-            if (!(await instance.operations.start(match.identity, paidWei)))
+            if (
+              !(await instance.operations.start(
+                match.identity,
+                paidWei,
+                match.stampPayments.map((payment) => ({
+                  txHash: payment.txHash,
+                  destinationAddress: payment.destinationAddress,
+                  valueWei: payment.valueWei.toString(),
+                }))
+              ))
+            )
               return;
             instance.confirmedPaid.delete(row.digest);
             // The retained identity, not this fetch's relay time, is the invocation's.
@@ -1509,14 +1520,15 @@ export class FrankBotHost {
         )
           return 0n;
       }
-      for (const payment of message.stampPayments) {
-        const key = `received:${payment.txHash.toLowerCase()}`;
-        const creditedTo = await instance.state.get(key);
-        if (creditedTo !== undefined && creditedTo !== message.identity.digest)
+      for (const payment of message.stampPayments)
+        if (
+          !(await claimTransfer(
+            instance.state,
+            payment.txHash,
+            message.identity.digest
+          ))
+        )
           return 0n;
-        if (creditedTo === undefined)
-          await instance.state.put(key, message.identity.digest);
-      }
     } catch {
       return 0n;
     }
@@ -1673,6 +1685,24 @@ export class FrankBotHost {
     console.error(
       `[bot-host] [${instance.definition.id}] Handling of message ${row.messageId} from ${row.peerAddress} was interrupted`
     );
+    // The bot is told, with the transfers the message came with: its handler may have died
+    // before it wrote anything down, and money that came with the message must not stay with
+    // the bot unaccounted. What the bot does with it (a refund, or nothing because it already
+    // settled the message) is the bot's own, written-down decision.
+    if (instance.definition.onInterrupted)
+      await instance.definition.onInterrupted(
+        {
+          payloadDigest: row.digest,
+          peerAddress: row.peerAddress,
+          conversationId: row.conversationId,
+          stampPayments: (row.payments ?? []).map((payment) => ({
+            txHash: payment.txHash,
+            destinationAddress: payment.destinationAddress,
+            valueWei: BigInt(payment.valueWei),
+          })),
+        },
+        instance.context
+      );
     if (row.replied) await this.finish(instance, digest, false);
     else
       await this.owe(instance, digest, FAILED_REPLY_TEXT, BigInt(row.paid ?? "0"));

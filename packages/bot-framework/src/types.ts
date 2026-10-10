@@ -88,6 +88,11 @@ export interface BotMessageContext {
   ): Promise<DirectMessageSendResult>;
 }
 
+export type InterruptedMessage = Pick<
+  BotMessageContext,
+  "payloadDigest" | "peerAddress" | "conversationId" | "stampPayments"
+>;
+
 export interface BotScheduleDefinition {
   readonly id: string;
   readonly intervalMs?: number;
@@ -206,6 +211,11 @@ export interface FrankBotDefinition {
     ctx: BotContext
   ): Promise<MessageItem[] | PreparedReply | void>;
   onNewUser?(user: NewUserEvent, ctx: BotContext): Promise<void>;
+  /** A message whose handler was started and never finished (the process died), handed back
+   * once after restart with the transfers it came with. The handler is not run again. A bot
+   * that takes money with messages uses this to account for what the message paid: it may have
+   * died before writing anything down. */
+  onInterrupted?(message: InterruptedMessage, ctx: BotContext): Promise<void>;
 }
 
 export interface BotHostOptions {

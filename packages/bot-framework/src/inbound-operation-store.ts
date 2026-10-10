@@ -45,6 +45,10 @@ export interface InboundDispatch extends InboundIdentity {
   /** Wei the message paid, as far as the host could confirm when it started the handler: what
    * a reply to it may carry. Absent: nothing, or not confirmed. */
   paid?: string;
+  /** The transfers the message came with, as the wallet reported them (wei as decimal text).
+   * Kept from the moment the handler is started so that a message whose handler was
+   * interrupted can be handed back to its bot with them. */
+  payments?: { txHash: string; destinationAddress: string; valueWei: string }[];
   reply?: StagedReply;
 }
 /** Handling order. The wallet sorts a fetch by time only, so equal times are tied by digest. */
@@ -185,6 +189,7 @@ function validateRow(value: unknown): InboundDispatch {
       "receivedTime",
       "replied",
       "paid",
+      "payments",
       "reply",
     ]) ||
     r.version !== 2 ||
@@ -201,8 +206,30 @@ function validateRow(value: unknown): InboundDispatch {
     Number(r.receivedTime) >= Number.MAX_SAFE_INTEGER ||
     (r.replied !== undefined && r.replied !== true) ||
     (r.paid !== undefined && !stamp(r.paid)) ||
+    (r.payments !== undefined &&
+      !(
+        Array.isArray(r.payments) &&
+        r.payments.length <= 256 &&
+        r.payments.every((payment) => {
+          const p = payment as Record<string, unknown> | null;
+          return (
+            typeof p === "object" &&
+            p !== null &&
+            keys(p, ["txHash", "destinationAddress", "valueWei"]) &&
+            typeof p.txHash === "string" &&
+            /^0x[0-9a-fA-F]{64}$/.test(p.txHash) &&
+            typeof p.destinationAddress === "string" &&
+            /^0x[0-9a-fA-F]{40}$/.test(p.destinationAddress) &&
+            typeof p.valueWei === "string" &&
+            /^(0|[1-9][0-9]{0,77})$/.test(p.valueWei)
+          );
+        })
+      )) ||
     (r.phase === "deferred" &&
-      (r.replied || r.reply !== undefined || r.paid !== undefined))
+      (r.replied ||
+        r.reply !== undefined ||
+        r.paid !== undefined ||
+        r.payments !== undefined))
   )
     return hold();
   if (r.reply !== undefined) {
@@ -463,7 +490,11 @@ export class InboundOperationStore {
    * with the row, in the same write. Replies to one
    * conversation go out in order: a row waits for every earlier unfinished message of its own
    * conversation, and for nothing else. */
-  start(input: InboundIdentity, paidWei = 0n): Promise<boolean> {
+  start(
+    input: InboundIdentity,
+    paidWei = 0n,
+    payments: NonNullable<InboundDispatch["payments"]> = []
+  ): Promise<boolean> {
     return this.mutate(async () => {
       const existing = this.known(input);
       if (!existing) return hold();
@@ -478,6 +509,7 @@ export class InboundOperationStore {
       const row = copy(existing);
       row.phase = "started";
       if (paidWei > 0n) row.paid = paidWei.toString();
+      if (payments.length) row.payments = payments;
       await this.save(row);
       return true;
     });

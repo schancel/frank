@@ -2433,7 +2433,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       ['undeliverable', CanonicalRecipientUndeliverableError],
       ['sender_unpublished', CanonicalSenderUnpublishedError],
     ] as const)(
-      'when the relay answers "%s" it is an error to the caller and nothing is kept to retry',
+      'when the relay answers "%s" it is an error to the caller, no payment record is kept, and the named message sent again is the same bytes unless the relay ended it',
       async (phase, error) => {
         await directories()
         f.setPhase(phase)
@@ -2473,6 +2473,35 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         })
         expect(again.stampPayments).toEqual([])
         expect(f.requests).toHaveLength(requests + 1)
+        const last = f.requests[f.requests.length - 1]
+        expect(restoreCanonicalRequest(last).identity.payload_hash).toBe(
+          again.payloadDigest,
+        )
+        if (phase === 'retained') {
+          // The relay already held the first copy: the repeat is byte for byte the same
+          // request, so both copies have one payload digest.
+          expect(requests).toBe(1)
+          const first = restoreCanonicalRequest(f.requests[0])
+          const repeat = restoreCanonicalRequest(last)
+          expect(toHex(repeat.parts.delivery)).toBe(toHex(first.parts.delivery))
+          expect(toHex(repeat.parts.context)).toBe(toHex(first.parts.context))
+          expect(repeat.identity.payload_hash).toBe(first.identity.payload_hash)
+        }
+        if (phase === 'undeliverable' || phase === 'sender_unpublished') {
+          // The relay ended the first: what is sent afterwards is a new message.
+          expect(restoreCanonicalRequest(last).identity.payload_hash).not.toBe(
+            restoreCanonicalRequest(f.requests[0]).identity.payload_hash,
+          )
+        }
+        // Delivered: nothing is kept, and the same name later is a fresh envelope.
+        const later = await f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('unpaid, refused'),
+          stampValue: 0n,
+          messageId,
+        })
+        expect(later.payloadDigest).not.toBe(again.payloadDigest)
       },
     )
   })

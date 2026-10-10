@@ -90,7 +90,11 @@ import {
   type MonadCanonicalStampClient,
 } from '../monad-stamp-client'
 import type { MonadCanonicalRoleOwner } from '../monad-wallet-material'
-import { durablePut, openDurableLevel } from '../storage/level-durability'
+import {
+  durableDelete,
+  durablePut,
+  openDurableLevel,
+} from '../storage/level-durability'
 import { deriveEvmStealthPrivateKey } from '../monad-stealth'
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import type { NativeWalletHandle, WalletHandle } from './active-chain'
@@ -259,6 +263,20 @@ export interface CanonicalLinkStore {
   all(): StoredLink[]
   put(row: StoredLink): Promise<void>
   close(): Promise<void>
+  /** The sealed envelope of an unpaid message that was handed to the relay and is not known to
+   * have been delivered, by message ID. Kept so that sending the same message again sends the
+   * same bytes: one digest, however many copies the relay ends up holding. Not a link and not
+   * in `all()`: it stands for no payment. */
+  unpaid(messageId: string): UnpaidEnvelope | undefined
+  /** `undefined` drops the record. */
+  setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined): Promise<void>
+}
+/** Hex throughout. `recipientSubject`: whom the envelope is sealed to. */
+export interface UnpaidEnvelope {
+  digest: string
+  delivery: string
+  context: string
+  recipientSubject: string
 }
 export class MemoryCanonicalLinkStore implements CanonicalLinkStore {
   private readonly rows = new Map<string, StoredLink>()
@@ -271,7 +289,16 @@ export class MemoryCanonicalLinkStore implements CanonicalLinkStore {
   async close(): Promise<void> {
     return undefined
   }
+  private readonly envelopes = new Map<string, UnpaidEnvelope>()
+  unpaid(messageId: string): UnpaidEnvelope | undefined {
+    return this.envelopes.get(messageId)
+  }
+  async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
+    if (envelope) this.envelopes.set(messageId, { ...envelope })
+    else this.envelopes.delete(messageId)
+  }
 }
+const UNPAID_PREFIX = 'unpaid-envelope:'
 const CANONICAL_LINK_NAMESPACE = 'canonical-dm-workflow-links'
 /** The link ties a durable payment intent to the message it pays for, so it is a wallet authority
  * record: it opens and writes through the durable Level helpers, and an awaited `put` means the
@@ -285,9 +312,16 @@ export class LevelCanonicalLinkStore implements CanonicalLinkStore {
       await openDurableLevel(database, location, CANONICAL_LINK_NAMESPACE)
       const store = new LevelCanonicalLinkStore(database)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      for await (const [, value] of store.db.iterator({}) as any) {
-        const row = JSON.parse(value) as StoredLink
-        store.rows.set(row.attemptRef, row)
+      for await (const [key, value] of store.db.iterator({}) as any) {
+        if (String(key).startsWith(UNPAID_PREFIX))
+          store.envelopes.set(
+            String(key).slice(UNPAID_PREFIX.length),
+            JSON.parse(value) as UnpaidEnvelope,
+          )
+        else {
+          const row = JSON.parse(value) as StoredLink
+          store.rows.set(row.attemptRef, row)
+        }
       }
       return store
     } catch (error) {
@@ -301,6 +335,19 @@ export class LevelCanonicalLinkStore implements CanonicalLinkStore {
   async put(row: StoredLink): Promise<void> {
     await durablePut(this.db, row.attemptRef, JSON.stringify(row))
     this.rows.set(row.attemptRef, { ...row })
+  }
+  private readonly envelopes = new Map<string, UnpaidEnvelope>()
+  unpaid(messageId: string): UnpaidEnvelope | undefined {
+    return this.envelopes.get(messageId)
+  }
+  async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
+    if (envelope) {
+      await durablePut(this.db, UNPAID_PREFIX + messageId, JSON.stringify(envelope))
+      this.envelopes.set(messageId, { ...envelope })
+    } else if (this.envelopes.has(messageId)) {
+      await durableDelete(this.db, UNPAID_PREFIX + messageId)
+      this.envelopes.delete(messageId)
+    }
   }
   async close(): Promise<void> {
     await this.db.close()
@@ -735,6 +782,8 @@ function sealUnpaid(
   )
   return {
     digest: toHex(digest),
+    delivery,
+    context: sealed.context,
     request: freezeCanonicalRequest({
       delivery,
       context: sealed.context,
@@ -841,36 +890,68 @@ async function send(
         peer.endpoint,
       )
     if (stampValueWei === 0n) {
-      // No stamp: the message is sealed and handed to the relay, and that is all. No account is
-      // funded or reserved, nothing is written to a journal or the link store, and earlier paid
+      // No stamp: the message is sealed and handed to the relay. No account is funded or
+      // reserved, nothing is written to the payment journal or the links, and earlier paid
       // attempts are neither waited for nor touched.
-      const unpaid = sealUnpaid(owner, directory, {
-        senderCurrent: await directory.selfCurrent(),
-        recipientCurrent: peer.current,
-        messageId: suppliedMessageId ?? randomBytes(16),
-        conversationId: conversationIdBytes,
-        items,
-      })
+      //
+      // A caller that names the message (`messageId`) may send it again after any failure, and
+      // the relay may already hold the first copy. So the sealed envelope is kept, durably,
+      // from before it is handed over until the relay says what became of it, and a repeat
+      // sends those same bytes: every copy has the one payload digest.
+      const name = suppliedMessageId ? toHex(suppliedMessageId) : undefined
+      const kept = name ? owner.links.unpaid(name) : undefined
+      if (kept && kept.recipientSubject !== peer.subject)
+        throw new DirectMessageArgumentError('messageId')
+      let request: ReturnType<typeof freezeCanonicalRequest>
+      let digest: string
+      if (kept) {
+        digest = kept.digest
+        request = freezeCanonicalRequest({
+          delivery: fromHex(kept.delivery),
+          context: fromHex(kept.context),
+          transactions: [],
+        })
+      } else {
+        const unpaid = sealUnpaid(owner, directory, {
+          senderCurrent: await directory.selfCurrent(),
+          recipientCurrent: peer.current,
+          messageId: suppliedMessageId ?? randomBytes(16),
+          conversationId: conversationIdBytes,
+          items,
+        })
+        digest = unpaid.digest
+        request = unpaid.request
+        if (name)
+          await owner.links.setUnpaid(name, {
+            digest,
+            delivery: toHex(unpaid.delivery),
+            context: toHex(unpaid.context),
+            recipientSubject: peer.subject,
+          })
+      }
       // From here the relay may hold the message, whatever this call learns of it.
       attempted = true
       const accepted = await submitCanonicalRequest({
         installedRelayOrigin: owner.relayBaseUrl,
         expectedNetworkTag: owner.installedNetworkTag,
-        request: unpaid.request,
+        request,
         fetch: directory.fetch,
       })
       if (accepted.phase === 'dead') {
+        // The relay ended it: this envelope never arrives. A later send is a new message.
+        if (name) await owner.links.setUnpaid(name, undefined)
         if (accepted.reason === 'undeliverable')
           throw new CanonicalRecipientUndeliverableError()
         if (accepted.reason === 'sender_unpublished')
           throw new CanonicalSenderUnpublishedError()
         throw new UnpaidDirectMessageNotDeliveredError(accepted.reason)
       }
-      // Nothing is kept to finish later: anything but delivered is the caller's error to act on.
+      // Anything but delivered is the caller's error to act on; the envelope stays for its repeat.
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
+      if (name) await owner.links.setUnpaid(name, undefined)
       return {
-        payloadDigest: unpaid.digest,
+        payloadDigest: digest,
         stampValueWei: 0n,
         stampPayments: [],
         paymentTransfers: [],

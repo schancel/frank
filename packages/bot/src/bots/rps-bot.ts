@@ -4,6 +4,7 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
+  InterruptedMessage,
   NewUserEvent,
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
@@ -89,6 +90,11 @@ export class RpsBot implements FrankBotDefinition {
       matchId,
       commitHash: rpsCommitment(match.move, match.salt),
     };
+  }
+
+  /** A message cut off by a crash: what it paid is accounted for (see `Outbox.interrupted`). */
+  onInterrupted(message: InterruptedMessage, ctx: BotContext): Promise<void> {
+    return this.outbox.interrupted(ctx, message);
   }
 
   async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {

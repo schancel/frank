@@ -46,10 +46,12 @@ export interface FeedBasket {
 export interface FeedElectricity {
   /** AVU_spot is taken over the mean daily price of this many days. */
   windowDays: number
-  regions: Array<{ id: string; label: string }>
-  /** The regions the headline AVU_spot is the mean of. */
-  headline: string[]
+  /** The regional sources behind `electricity/aggregate`, with the credit each asks for. */
+  regions: Array<{ id: string; label: string; attribution: string }>
 }
+
+/** The series AVU_spot is computed from. */
+export const ELECTRICITY_AGGREGATE = 'electricity/aggregate'
 
 export interface OracleFeed {
   version: 1
@@ -181,13 +183,12 @@ export function parseOracleFeed(value: unknown): OracleFeed | undefined {
     !Number.isInteger(electricity.windowDays) ||
     !((electricity.windowDays as number) >= 1) ||
     !Array.isArray(electricity.regions) ||
-    !Array.isArray(electricity.headline) ||
-    !electricity.headline.every(id => typeof id === 'string') ||
     !electricity.regions.every(
       region =>
         isRecord(region) &&
         typeof region.id === 'string' &&
-        typeof region.label === 'string',
+        typeof region.label === 'string' &&
+        typeof region.attribution === 'string',
     )
   ) {
     return undefined
@@ -205,9 +206,12 @@ export function parseOracleFeed(value: unknown): OracleFeed | undefined {
     electricity: {
       windowDays: electricity.windowDays as number,
       regions: (
-        electricity.regions as Array<{ id: string; label: string }>
-      ).map(region => ({ id: region.id, label: region.label })),
-      headline: electricity.headline as string[],
+        electricity.regions as FeedElectricity['regions']
+      ).map(region => ({
+        id: region.id,
+        label: region.label,
+        attribution: region.attribution,
+      })),
     },
     series: parsed,
   }

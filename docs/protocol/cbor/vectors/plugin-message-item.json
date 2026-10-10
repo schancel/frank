@@ -1,0 +1,244 @@
+{
+  "format": "plugin-message-item-v1",
+  "status": "active type 27 container corpus (README section 6, direct-message.cddl plugin-message-item)",
+  "allocation": {
+    "typeId": 27,
+    "schemaVersion": 1,
+    "minReaderVersion": 1,
+    "maximumTypeBytes": 64,
+    "maximumDataBytes": 524288,
+    "typePattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+  },
+  "provenance": "TypeScript-origin (packages/frank-codec encodePluginMessageItem and the generic frame encoder). All data bytes are public fixtures.",
+  "context": "default typed context: reader_version 2, every known type at its highest schema, opaque root retention off",
+  "frames": [
+    {
+      "id": "plugin-cbor-bytes",
+      "note": "the plugin wrote one canonical CBOR map",
+      "frameHex": "46524e4b010000001aa400181b010102010350a20064646963650147a10064726f6c6c",
+      "operation": "typed",
+      "expected": {
+        "result": "parsed"
+      },
+      "application": {
+        "itemType": "dice",
+        "dataHex": "a10064726f6c6c"
+      }
+    },
+    {
+      "id": "plugin-non-cbor-bytes",
+      "note": "the bytes are not CBOR at all; the container is still valid (E3)",
+      "frameHex": "46524e4b010000001da400181b010102010353a2006a6c696172732d646963650144ff001337",
+      "operation": "typed",
+      "expected": {
+        "result": "parsed"
+      },
+      "application": {
+        "itemType": "liars-dice",
+        "dataHex": "ff001337"
+      }
+    },
+    {
+      "id": "plugin-empty-bytes",
+      "note": "zero bytes are allowed; whether they are an item is the plugin's decision",
+      "frameHex": "46524e4b0100000010a400181b010102010346a20061780140",
+      "operation": "typed",
+      "expected": {
+        "result": "parsed"
+      },
+      "application": {
+        "itemType": "x",
+        "dataHex": ""
+      }
+    },
+    {
+      "id": "plugin-longest-type",
+      "note": "a 64-character identifier",
+      "frameHex": "46524e4b0100000052a400181b01010201035847a200784061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161014100",
+      "operation": "typed",
+      "expected": {
+        "result": "parsed"
+      },
+      "application": {
+        "itemType": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "dataHex": "00"
+      }
+    },
+    {
+      "id": "reject-uppercase-type",
+      "note": "identifier has an uppercase letter",
+      "frameHex": "46524e4b0100000014a400181b01010201034aa2006444696365014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-underscore-type",
+      "note": "identifier has an underscore",
+      "frameHex": "46524e4b010000001aa400181b010102010350a2006a6c696172735f64696365014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-leading-hyphen",
+      "note": "identifier starts with a hyphen",
+      "frameHex": "46524e4b0100000015a400181b01010201034ba200652d64696365014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-trailing-hyphen",
+      "note": "identifier ends with a hyphen",
+      "frameHex": "46524e4b0100000015a400181b01010201034ba20065646963652d014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-double-hyphen",
+      "note": "identifier has an empty group",
+      "frameHex": "46524e4b010000001ba400181b010102010351a2006b6c696172732d2d64696365014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-empty-type",
+      "note": "identifier is empty",
+      "frameHex": "46524e4b0100000010a400181b010102010346a20060014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-65-character-type",
+      "note": "identifier is one character too long",
+      "frameHex": "46524e4b0100000053a400181b01010201035848a20078416161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-non-ascii-type",
+      "note": "identifier has a non-ASCII letter",
+      "frameHex": "46524e4b0100000015a400181b01010201034ba2006564c3af6365014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-numeric-type",
+      "note": "identifier is an integer, not text",
+      "frameHex": "46524e4b0100000011a400181b010102010347a200181b014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-text-bytes",
+      "note": "field 1 is text, not a byte string",
+      "frameHex": "46524e4b0100000017a400181b01010201034da20064646963650164726f6c6c",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-missing-bytes",
+      "note": "field 1 is absent",
+      "frameHex": "46524e4b0100000011a400181b010102010347a1006464696365",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-missing-type",
+      "note": "field 0 is absent",
+      "frameHex": "46524e4b010000000ea400181b010102010344a1014100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-undeclared-key",
+      "note": "an undeclared key at the exact schema (C12)",
+      "frameHex": "46524e4b0100000016a400181b01010201034ca30064646963650141000200",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "reject-array-payload",
+      "note": "the payload is an array, not a map",
+      "frameHex": "46524e4b0100000012a400181b0101020103488264646963654100",
+      "operation": "typed",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      }
+    },
+    {
+      "id": "newer-schema-extra-key",
+      "note": "schema 2 written for reader 1: the extra key is retained as an unknown field (V6.3)",
+      "frameHex": "46524e4b0100000016a400181b01020201034ca30064646963650141000200",
+      "operation": "typed",
+      "expected": {
+        "result": "parsed"
+      },
+      "application": {
+        "itemType": "dice",
+        "dataHex": "00"
+      }
+    },
+    {
+      "id": "revision-with-text-and-plugin-item",
+      "note": "a type-8 revision holding a text item and a plugin item",
+      "frameHex": "46524e4b010000004ba4000801010201035841a200656672616e6b01825746524e4b010000000ea40011010102010345a100626869581d46524e4b0100000014a400181b01010201034aa2006464696365014100",
+      "operation": "typed",
+      "expected": {
+        "result": "parsed"
+      }
+    }
+  ]
+}

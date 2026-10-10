@@ -120,10 +120,17 @@ describe('opaque DM structural continuation', () => {
   it('matches ordinary typed results for actual type1 and standalone type5; retains opaque items', () => {
     for (const r of [root(), encrypted()]) {
       const c = content()
-      expect(finish(r, c)).toEqual({
+      const finished = finish(r, c)
+      expect({ root: finished.root, content: finished.content }).toEqual({
         root: parseFrame(r),
         content: parseFrame(c),
       })
+      // The continuation also hands back the operation's budget for the items' opaque bytes.
+      expect(Object.keys(finished).sort()).toEqual([
+        'content',
+        'itemBudget',
+        'root',
+      ])
       const parsed = finish(r, c).content
       if (
         parsed.typed?.type !== 6 ||

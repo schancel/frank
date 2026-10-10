@@ -24,6 +24,7 @@ import {
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_PLUGIN_MESSAGE_ITEM,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -115,6 +116,7 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
   TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_PLUGIN_MESSAGE_ITEM,
 ]
 
 export function defaultContext(
@@ -820,6 +822,58 @@ function validateRoot(
 }
 
 /**
+ * The validation budget of one operation, continued into bytes that an opened message item
+ * carries opaquely (a type-27 plugin item's bytes). Whatever is decoded through it is charged to
+ * the SAME aggregate counters as the enclosing frames (R1: containers, items, nesting depth) and
+ * the same R2 count of opened message items, so many items that are each within the limits cannot
+ * together exceed what one operation may cost. It never starts a fresh budget.
+ */
+export interface NestedItemBudget {
+  /** Exactly one restricted-CBOR item (section 3) from `bytes`. Throws {@link FrankCodecError}. */
+  decodeCbor(bytes: Uint8Array, location?: string): FrankValue
+  /** `bytes` as one nested open message-item frame, through stage 9. An unknown type or
+   * unsupported version is returned retained, exactly as an open item field returns it. */
+  openFrame(bytes: Uint8Array, location?: string): ChildFrame
+}
+
+/**
+ * Nesting depth of the bytes inside a top-level message item's payload map when the message is a
+ * production type-1 delivery: type 1 -> type 5 -> (decrypted) type 6 -> type 8 -> item array ->
+ * item envelope -> item payload map.
+ */
+export const DIRECT_MESSAGE_ITEM_CONTENT_DEPTH = 11
+
+function nestedItemBudget(sh: Shared, depth: number): NestedItemBudget {
+  return {
+    decodeCbor: (bytes, location = 'item') =>
+      decodeSingleItem(bytes, { stage: '8.4', location }, sh.counters, depth),
+    openFrame: (bytes, location = 'item') =>
+      openItems([new Uint8Array(bytes)], depth, sh, location)[0],
+  }
+}
+
+/**
+ * A budget for a caller that holds ONE message item outside any message (a test, a tool). It is
+ * a whole operation's budget at the depth an item's content has in a real delivery. A reader of
+ * a received message must use the budget its validation session returns instead.
+ */
+export function standaloneItemBudget(
+  ctx: ValidationContext = defaultContext(),
+): NestedItemBudget {
+  return nestedItemBudget(
+    {
+      ctx,
+      supported: new Map(
+        ctx.supportedSchemas.map(s => [s.typeId, s.schemaVersion]),
+      ),
+      counters: newCounters(),
+      itemsOpened: 0,
+    },
+    DIRECT_MESSAGE_ITEM_CONTENT_DEPTH,
+  )
+}
+
+/**
  * Structural continuation only: the caller MUST authenticate the plaintext before completion.
  * This API does not perform S8/T1a, stamp, DLEQ, payment, or full stage-10 verification.
  * Completion (including failure) and abort are terminal; payload access then fails too.
@@ -830,6 +884,9 @@ export interface DirectMessageValidationSession {
   completeAuthenticatedContent(type6Frame: Uint8Array): {
     readonly root: ParsedFrame
     readonly content: ParsedFrame
+    /** This operation's budget, continued into the opaque bytes of the message's top-level
+     * items. Every item of the message must be decoded through this one object. */
+    readonly itemBudget: NestedItemBudget
   }
   abort(): void
 }
@@ -931,7 +988,12 @@ export function beginDirectMessageValidation(
         state.sh,
         state.location,
       )
-      return { root: state.root, content }
+      return {
+        root: state.root,
+        content,
+        // type 6 -> type 8 -> item array -> item envelope -> item payload map: seven levels.
+        itemBudget: nestedItemBudget(state.sh, state.depth + 7),
+      }
     },
     abort() {
       take()

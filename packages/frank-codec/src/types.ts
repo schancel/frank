@@ -581,6 +581,17 @@ export interface EmailAttachment {
   unknownFields?: UnknownFields
 }
 
+/**
+ * Type 27: one application item whose encoding belongs to the plugin named by `itemType`. The
+ * codec validates the container only; `data` is opaque here and is never interpreted.
+ */
+export interface PluginMessageItem {
+  type: 27
+  itemType: string
+  data: Uint8Array
+  unknownFields: UnknownFields
+}
+
 export interface EmailMessageItem {
   type: 26
   messageId: string
@@ -728,6 +739,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | ChannelUpdateItem
   | ForwardingDeliveryEnvelope<F>
   | EmailMessageItem
+  | PluginMessageItem
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

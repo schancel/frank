@@ -20,16 +20,20 @@ export * from './channel'
 export * from './forwarding'
 export * from './token-transfer'
 export * from './email'
+export * from './plugin-item'
 export * from './directory-preview'
 export type {
   DirectMessageValidationSession,
+  NestedItemBudget,
   Operation,
   SupportedSchema,
   ValidationContext,
 } from './validate'
 export {
+  DIRECT_MESSAGE_ITEM_CONTENT_DEPTH,
   KNOWN_TYPES,
   defaultContext,
+  standaloneItemBudget,
   beginDirectMessageValidation,
   parseFrame,
   validateFrame,

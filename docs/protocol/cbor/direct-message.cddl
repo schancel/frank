@@ -251,6 +251,15 @@ email-attachment = {
   * uint => frank-value,
 }
 
+; Active type 27 / schema 1 / min-reader 1: generic plugin message item. The container for an
+; application item that has no dedicated frame. Field 1 is opaque to this profile: the plugin
+; registered for the identifier in field 0 owns its encoding (deterministic CBOR, protobuf, ...).
+plugin-message-item = {
+  0: plugin-item-type,                  ; application item type identifier, e.g. "dice"
+  1: bstr .size (0..524288),            ; the owning plugin's bytes, never interpreted here
+  * uint => frank-value,                ; forward-compatible extensible fields
+}
 
-
+; Lowercase ASCII letters and digits in groups separated by single hyphens, 1..64 characters.
+plugin-item-type = tstr .size (1..64) .regexp "[a-z0-9]+(-[a-z0-9]+)*"
 

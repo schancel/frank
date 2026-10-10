@@ -203,9 +203,12 @@ E5. Type identifiers are never reused. Version 1 reserves:
 |         15 | Forum operation status                      | [topic.cddl](topic.cddl)                   |
 |         16 | Container message item                      | [direct-message.cddl](direct-message.cddl) |
 |         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl) |
+|         18 | Blackjack message item                      | [blackjack.cddl](../proposals/blackjack-items/blackjack.cddl) |
 |         19 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl) |
 |         24 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl) |
 |         25 | Relay forwarding delivery envelope          | [direct-message.cddl](direct-message.cddl) |
+|         26 | Email bridge message item                   | [direct-message.cddl](direct-message.cddl) |
+|         27 | Generic plugin message item                 | [direct-message.cddl](direct-message.cddl) |
 | 0xffff0001 | Proof-only unknown future message item      | Opaque fixture payload                     |
 
 The CDDL rule for each type's payload is: 1 `direct-message-delivery`; 2
@@ -217,7 +220,9 @@ profile of section 11, is `directory-statement-v3`); 5
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
 `topic-vote-submission`; 12 `forum-single-view`; 13 `forum-topic-page`;
 14 `forum-discovery-page`; 15 `forum-operation-status`; 16 `container-message-item`;
-17 `text-message-item`; 19 `stealth-message-item`; 24 `channel-update-item`; 25 `forwarding-delivery-envelope`.
+17 `text-message-item`; 19 `stealth-message-item`; 24 `channel-update-item`; 25 `forwarding-delivery-envelope`;
+26 `email-message-item`; 27 `plugin-message-item`. Type 18's closed payload shapes are specified with its
+vectors (`vectors/blackjack-items.json`, `vectors/blackjack-hand.json`, `vectors/blackjack-hand-v3.json`).
 Type 9 schema 2/min-reader 2 opens field 3 as
 `forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
@@ -765,6 +770,29 @@ proof fixture MUST contain at least two levels and the permanently reserved
 proof-only unknown type `0xffff0001`.
 
 Type 19 (`stealth-message-item`) delivers stealth payment announcements and ephemeral keys directly to the recipient over the secure channel.
+
+Type 27 (`plugin-message-item`) is the one generic container for an application
+message item that has no frame of its own. Its payload names the item's type
+with a text identifier (field 0) and carries the bytes written by the plugin
+that owns that type (field 1). The identifier is 1 to 64 characters of
+lowercase ASCII letters and digits in groups separated by single hyphens
+(`[a-z0-9]+(-[a-z0-9]+)*`); anything else is a `schema` error. The bytes are
+opaque to this profile: a plugin may write deterministic CBOR, protobuf, or any
+other encoding, and E3 is satisfied by the container, whose payload is one
+restricted-CBOR map. A new application item type therefore needs no type
+identifier allocation. Field 1 is at most 524,288 bytes (R2's encrypted-payload
+bound; exceeding it is a `resource` error at 8.1), and its length is already
+charged to the enclosing frame. A reader that decodes field 1 as CBOR, or opens
+it as a nested frame, MUST charge that work to the same operation's counters
+and depth (R1) and MUST NOT start a fresh budget per item. A reader with no
+plugin for the identifier, or whose plugin rejects the bytes, MUST keep the
+original complete frame, show the item as unsupported, and MUST NOT interpret
+or execute it; the other items of the message are unaffected. Items that have
+a dedicated frame (17 text, 18 blackjack, 19 stealth, 24 channel update, 26
+email) MUST be written in that frame and MUST NOT be wrapped in type 27; a
+type-27 frame naming one of them is treated as unsupported. Type 27 appears
+only inside encrypted message content, so a relay never sees it.
+`vectors/plugin-message-item.json` pins the container bytes and its rejections.
 
 Type 24 (`channel-update-item`) provides universal peer-to-peer state execution for interactive turns, atomic swaps, and multi-network balance allocations across Monad, eCash, and Solana without gas friction. State updates are signed over the state digest and folded client-side.
 

@@ -40,6 +40,9 @@ import {
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
   MAX_FORWARDING_DELIVERY_FRAME_BYTES,
   TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_PLUGIN_MESSAGE_ITEM,
+  MAX_PLUGIN_ITEM_PAYLOAD_BYTES,
+  MAX_PLUGIN_ITEM_TYPE_BYTES,
   MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES,
   MAX_EMAIL_RECIPIENTS,
   MAX_EMAIL_ATTACHMENTS,
@@ -312,6 +315,19 @@ function timestamp(v: FrankValue | undefined, path: string): Timestamp {
 // ---------------------------------------------------------------------------------------------
 // Stage 8.1
 // ---------------------------------------------------------------------------------------------
+
+const PLUGIN_ITEM_TYPE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** Whether `value` may name a plugin item type in a type-27 frame: 1..64 characters of lowercase
+ * ASCII letters and digits, in groups separated by single hyphens. */
+export function isPluginItemType(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length >= 1 &&
+    value.length <= MAX_PLUGIN_ITEM_TYPE_BYTES &&
+    PLUGIN_ITEM_TYPE.test(value)
+  )
+}
 
 /** Root frame length limits of R2 and R3. Only a root frame is charged. */
 export function checkRootFrameLimit(
@@ -714,6 +730,15 @@ export function checkTypeLimits(
         over('app state')
       if (tooMany(f(3), MAX_CHANNEL_ALLOCATIONS)) over('chain allocations')
       if (tooMany(f(5), MAX_CHANNEL_SIGNATURES)) over('channel signatures')
+      break
+    }
+    case TYPE_PLUGIN_MESSAGE_ITEM: {
+      const data = f(1)
+      if (
+        data instanceof Uint8Array &&
+        data.length > MAX_PLUGIN_ITEM_PAYLOAD_BYTES
+      )
+        over('plugin item bytes')
       break
     }
     case TYPE_EMAIL_MESSAGE_ITEM: {
@@ -1693,6 +1718,21 @@ export function parseDraft(
         res.replyTo = emailParty(m.get(10), `${P}.10`, allow)
       }
       return res
+    }
+    case TYPE_PLUGIN_MESSAGE_ITEM: {
+      const m = fields(payload, P, [0, 1], [], true, allow)
+      const itemType = tstr(m.get(0), `${P}.0`, 1, MAX_PLUGIN_ITEM_TYPE_BYTES)
+      if (!isPluginItemType(itemType))
+        throw bad(
+          `${P}.0`,
+          'a plugin item type is lowercase letters and digits in hyphen-separated groups',
+        )
+      return {
+        type: 27,
+        itemType,
+        data: bstr(m.get(1), `${P}.1`, 0, MAX_PLUGIN_ITEM_PAYLOAD_BYTES),
+        unknownFields: m.unknown,
+      }
     }
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)

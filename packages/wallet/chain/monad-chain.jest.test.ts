@@ -854,16 +854,47 @@ describe("createEvmChain: directMessages", () => {
       expect(dispatch).not.toHaveBeenCalled();
     });
 
-    it("with no message item registry installed nothing is read from it", async () => {
-      legacyInbox(JSON.stringify([{ type: "text", text: "ordinary" }]));
-      await expect(read(makeWallet(alice))).rejects.toThrow(
-        "No message item registry is installed for this wallet"
+    it("an untyped wallet with no registry installed still reads, and every item is unsupported, never raw", async () => {
+      const items = [
+        { type: "text", text: "ordinary" },
+        { type: "swap-offer", status: "accepted" },
+      ];
+      legacyInbox(JSON.stringify(items));
+      const received = await read(makeWallet(alice));
+      expect(received[0].items).toEqual(
+        items.map((item) => ({
+          type: "unsupported",
+          reason: "unknown-type",
+          itemType: item.type,
+          frame: jsonHex(item),
+        }))
       );
-      expect(mockedFetchMonadMessagesSince).not.toHaveBeenCalled();
+    });
+
+    it("a legacy message too long to parse is refused as a whole and reported so the cursor passes", async () => {
+      legacyInbox(
+        JSON.stringify([{ type: "text", text: "x".repeat(1024 * 1024) }])
+      );
+      const parse = jest.spyOn(JSON, "parse");
+      const passed: [number, string][] = [];
+      try {
+        const received = await createEvmChain(
+          TEST_CONFIG
+        ).directMessages.fetchSince({
+          wallet: withItems(makeWallet(alice)),
+          sinceMs: 0,
+          onQuarantinedTimestamp: (time, digest) => passed.push([time, digest]),
+        });
+        expect(received).toEqual([]);
+        expect(passed).toEqual([[10, "00".repeat(32)]]);
+        expect(parse).not.toHaveBeenCalled();
+      } finally {
+        parse.mockRestore();
+      }
     });
   });
 
-  it("processes direct messages with multiple stamp payments calculating stampValueWei and stampPayments in a single pass", async () => {
+  it("reports no stamp value for a legacy message, whatever payments it claims", async () => {
     const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX);
@@ -922,35 +953,18 @@ describe("createEvmChain: directMessages", () => {
       pubKey: getBytes(bob.compressedPubKey),
     } as any);
 
-    const txFromSpy = jest.spyOn(Transaction, "from");
-    txFromSpy.mockClear();
-
     const received = await chain.directMessages.fetchSince({
       wallet,
       sinceMs: 0,
     });
 
+    // The transactions a legacy message carries are its sender's claim: the relay delivers the
+    // message whether or not they confirm, and these two do not even pay this wallet. Nothing is
+    // reported as paid. (This test used to pin their sum, 80235 wei, as the stamp value.)
     expect(received).toHaveLength(1);
-    expect(received[0].stampValueWei).toBe(12345n + 67890n);
-    expect(received[0].stampPayments).toEqual([
-      {
-        txHash: parsedTx1.hash,
-        destinationAddress: parsedTx1.to,
-        valueWei: 12345n,
-      },
-      {
-        txHash: parsedTx2.hash,
-        destinationAddress: parsedTx2.to,
-        valueWei: 67890n,
-      },
-    ]);
-    // Verifies single-pass transaction parsing: exactly 1 top-level Transaction.from(hex) call per payment (2 total),
-    // rather than 2 per payment (4 total) in the previous two-pass reduce + flatMap implementation.
-    const stringCalls = txFromSpy.mock.calls.filter(
-      (call) => typeof call[0] === "string"
-    );
-    expect(stringCalls).toHaveLength(2);
-    expect(txFromSpy).toHaveBeenCalledTimes(4); // 2 top-level + 2 internal ethers delegates
+    expect(parsedTx1.value + parsedTx2.value).toBe(80235n);
+    expect(received[0].stampValueWei).toBe(0n);
+    expect(received[0].stampPayments).toEqual([]);
 
     expect(received[0].items).toEqual([{ type: "text", text: "hello alice" }]);
     expect(received[0].senderAddress.raw.toLowerCase()).toBe(
@@ -961,8 +975,6 @@ describe("createEvmChain: directMessages", () => {
     );
     expect(received[0].payloadDigest).toBe("11".repeat(32));
     expect(received[0].receivedTime).toBe(1600000000000);
-
-    txFromSpy.mockRestore();
   });
 });
 

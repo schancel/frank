@@ -40,6 +40,8 @@ import {
   SELF_ONLY_ITEM_TYPES,
   decodeItemFrames,
   encodeItemFrames,
+  MAX_LEGACY_PLAINTEXT_CHARS,
+  boundedLegacyPlaintext,
   itemFrameRule,
   receiveLegacyItems,
 } from './wire'
@@ -730,6 +732,48 @@ describe('items read from the legacy JSON mailbox', () => {
       itemType: 'unsupported',
       frame: jsonHex(odd[7]),
     })
+  })
+
+  it('reads all items of one message under one budget: items valid alone are refused together', () => {
+    // A plugin whose every item costs about 8,000 containers to read (the canonical test's
+    // liars-dice shape): one is inside a message's limits, five together are not.
+    const players = Array.from(
+      { length: 4000 },
+      (_, i) => `p${String(i).padStart(4, '0')}`,
+    )
+    const heavy = encodeCanonical(
+      new Map<number, Encodable>([
+        [0, '8899aabbccddeeff'],
+        [1, 'showdown'],
+        [17, players.map(key => [key, []] as Encodable)],
+      ]),
+    )
+    const own = createMessageItemRegistry()
+    own.register({
+      type: 'liars-dice',
+      hydrate: raw => raw,
+      previewText: () => '',
+      encode: () => heavy,
+      decode: (bytes, context) => {
+        context.budget.decodeCbor(bytes)
+        return { type: 'liars-dice', tableId: 't', action: 'showdown' }
+      },
+    })
+    const item = { type: 'liars-dice', tableId: 't', action: 'showdown' }
+    expect(receiveLegacyItems(own, [item])).toEqual([item])
+    expect(() =>
+      receiveLegacyItems(own, [item, item, item, item, item]),
+    ).toThrow(MessageItemBudgetExceededError)
+  })
+
+  it('refuses a plaintext too long to parse before parsing it', () => {
+    expect(boundedLegacyPlaintext('[]')).toBe('[]')
+    expect(boundedLegacyPlaintext('x'.repeat(MAX_LEGACY_PLAINTEXT_CHARS))).toHaveLength(
+      MAX_LEGACY_PLAINTEXT_CHARS,
+    )
+    expect(() =>
+      boundedLegacyPlaintext('x'.repeat(MAX_LEGACY_PLAINTEXT_CHARS + 1)),
+    ).toThrow(MessageItemBudgetExceededError)
   })
 
   it('does not keep an oversized item it could not read', () => {

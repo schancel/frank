@@ -96,10 +96,11 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  * Registered types carried only in a message a wallet addresses to itself: the notes one device
  * of an account leaves for the account's other devices.
  *
- * - `wallet-sync`: after a native transfer the sending device tells the others which account it
- *   spent, with the signed transaction as proof. A receiver hands it to `applyWalletSyncItem`,
- *   which checks chain and wallet affinity before anything changes; it is never shown as a chat
- *   message.
+ * - `wallet-sync`: one device's record of an account it spent, with the signed transaction as
+ *   proof. A receiver hands it to `applyWalletSyncItem`, which checks chain and wallet affinity
+ *   before anything changes; it is never shown as a chat message. This wallet does not send one
+ *   after a native transfer today (a note is a paid message); the rule is what makes receiving
+ *   one safe.
  *
  * Sending one to anyone else is refused before anything is paid. One that arrives in a message
  * whose authenticated sender is not the receiving wallet's own identity is kept as an unsupported
@@ -397,6 +398,19 @@ export function decodeItemFrames(
 /** Longest item kept from the legacy mailbox, as JSON text. A longer one is kept as its type only. */
 const MAX_LEGACY_RAW_ITEM_CHARS = 64 * 1024
 
+/** Longest legacy message plaintext that is parsed at all. */
+export const MAX_LEGACY_PLAINTEXT_CHARS = 1024 * 1024
+
+/** `plaintext`, when it is short enough to parse. A longer one is refused as a whole, before
+ * `JSON.parse` sees it, with {@link MessageItemBudgetExceededError}. */
+export function boundedLegacyPlaintext(plaintext: string): string {
+  if (plaintext.length > MAX_LEGACY_PLAINTEXT_CHARS)
+    throw new MessageItemBudgetExceededError(
+      `a legacy message of ${plaintext.length} characters`,
+    )
+  return plaintext
+}
+
 /**
  * The items of one message read from the legacy JSON mailbox (`PUT /message/monad`), under the
  * same receive rule as a canonical message. That transport delivers whatever JSON its sender
@@ -410,13 +424,16 @@ const MAX_LEGACY_RAW_ITEM_CHARS = 64 * 1024
  *   arrived. One the plugin refuses either way becomes an `unsupported`, `malformed` item.
  *
  * An unsupported item keeps what arrived as JSON text (hex, in `frame`); it has no frame type.
- * Never throws for an item.
+ * Never throws for one item. All items of the message are read under ONE budget, as a canonical
+ * message's are: when together they exceed a message's limits this throws
+ * {@link MessageItemBudgetExceededError} and no item is returned.
  */
 export function receiveLegacyItems(
   registry: MessageItemRegistry,
   raw: readonly unknown[],
 ): MessageItem[] {
-  return raw.map((value): MessageItem => {
+  const watched = watch(standaloneItemBudget())
+  const items = raw.map((value): MessageItem => {
     const type = (value as { type?: unknown } | null)?.type
     const itemType = typeof type === 'string' ? type : undefined
     const kept = (reason: UnsupportedItem['reason']): UnsupportedItem => {
@@ -447,16 +464,16 @@ export function receiveLegacyItems(
         NOT_SELF_ADDRESSED,
       )
       const [child] = openAsMessageItems([frame])
-      const read = readItemFrame(
-        registry,
-        child,
-        watch(standaloneItemBudget()),
-        NOT_SELF_ADDRESSED,
-      )
+      const read = readItemFrame(registry, child, watched, NOT_SELF_ADDRESSED)
       if (read.type === 'unsupported') return kept('malformed')
       return read
-    } catch {
+    } catch (error) {
+      if (error instanceof MessageItemBudgetExceededError) throw error
       return kept('malformed')
     }
   })
+  // A plugin that swallowed a refused budget still fails the message.
+  const exceeded = watched.exceeded()
+  if (exceeded !== undefined) throw new MessageItemBudgetExceededError(exceeded)
+  return items
 }

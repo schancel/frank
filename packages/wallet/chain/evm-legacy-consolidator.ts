@@ -69,7 +69,9 @@ export interface EvmLegacyConsolidatorConfig {
     memberIndex: number,
     lifetime?: WalletOperationLifetime,
   ) => PoolSpendMemberClass
-  /** Transport only. The item carries the member's complete signed transaction. */
+  /** Transport only. The item carries the member's complete signed transaction. When composition
+   * wires none, nothing is transported: a locally recorded member stays not sync-applied and the
+   * send is not failed for it. */
   onSyncTransaction?: (item: WalletSyncItem) => Promise<void>
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
@@ -1066,7 +1068,8 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<void> {
     const journal = this.journal(lifetime)
-    if (!this.config.onSyncTransaction) return
+    // With no local callback there is no local record to wait for and nothing to transport.
+    if (!this.config.onSyncTransaction && !this.config.applyLocalMember) return
     // The first operation, in journal order, with a member the local pass has not applied.
     let unapplied: string | undefined
     for (const row of journal
@@ -1081,13 +1084,15 @@ export class EvmLegacyConsolidator {
           !row.cancelled &&
           member.signed &&
           member.observation.state === 'included-success' &&
-          !member.syncApplied &&
-          this.config.onSyncTransaction
+          !member.syncApplied
         ) {
           if (this.localResults.get(`${id}:${i}`) !== 'applied') {
             unapplied ??= id
             continue
           }
+          // Not transported: composition wired no transport. The member's local record stands
+          // and it stays not sync-applied; that is an outcome, not a failure of the send.
+          if (!this.config.onSyncTransaction) continue
           const tx = Transaction.from(member.signed!.rawTransaction)
           const observation = member.observation
           if (observation.state === 'included-success') {

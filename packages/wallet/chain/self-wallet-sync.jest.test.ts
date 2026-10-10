@@ -1,9 +1,11 @@
 /**
- * A wallet's note to itself after a native transfer, across the real canonical path.
+ * A wallet's sync note to itself, across the real canonical path, and what a native send does
+ * (and does not) send.
  *
  * Two handles of the SAME account stand for two devices: separate storage, one identity, one relay
- * mailbox. Device one sends a native transfer; the wallet writes a `wallet-sync` note to its own
- * mailbox; device two reads it and hands it to the wallet sync boundary. One process may hold an
+ * mailbox. A `wallet-sync` note addressed to the account's own mailbox is read by device two and
+ * handed to the wallet sync boundary; from anyone else it is unsupported. The wallet itself sends
+ * no such note after a native transfer (a note is a paid message). One process may hold an
  * account open once, so device one is closed before device two is opened. Real typed custody, real
  * journals, real sealing and opening; only the chain RPC and the relay's HTTP surface are
  * stand-ins (`canonical-two-wallets.testutil.ts`).
@@ -37,9 +39,10 @@ import {
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
-import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
-import { installCanonicalDirectory } from './monad-chain'
+import { SELF_NOTE_RETRY_MS, installCanonicalDirectory } from './monad-chain'
+import { EvmInputAdmissionError } from '../evm-input-admission'
+import { SubAccountSpendRefusedError } from '../monad-account-pool'
 
 jest.mock('../monad-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
@@ -284,8 +287,125 @@ describe("a wallet's sync note to itself", () => {
     expect(applied).not.toHaveBeenCalled()
   })
 
+  describe('a received note that cannot be applied', () => {
+    /** One note in the account's mailbox, and the account opened on the other device. */
+    async function delivered() {
+      one.setMailbox(mailbox)
+      const sent = await one.chain.directMessages.send({
+        wallet: one.alice,
+        recipient: one.alice.identity.address,
+        items: [note()],
+      })
+      one.setMailbox(undefined)
+      const other = await otherDevice()
+      return { other, row: [mailbox[0].timestampMs, sent.payloadDigest] }
+    }
+    let warn: jest.SpyInstance
+    beforeEach(() => {
+      warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    })
+    const warnings = () =>
+      warn.mock.calls.filter(([text]) => String(text).includes('[wallet-sync]'))
+
+    it.each([
+      [
+        'another chain',
+        () =>
+          new syncDispatch.WalletSyncItemRejectedError(
+            'chain-mismatch',
+            'monad-testnet',
+            'ethereum-sepolia',
+          ),
+      ],
+      [
+        'a row of which only its terminal checkpoint remains',
+        () =>
+          new SubAccountSpendRefusedError(
+            'held',
+            0,
+            'only a compacted terminal checkpoint remains',
+          ),
+      ],
+      [
+        'a row that already carries another spend',
+        () =>
+          new SubAccountSpendRefusedError(
+            'held',
+            0,
+            'row is spent with another spend checkpoint',
+          ),
+      ],
+      [
+        'a transaction that does not agree with the note',
+        () => new SubAccountSpendRefusedError('inconsistent-item', 0, 'x'),
+      ],
+      [
+        'a transaction that is not this wallet\'s to record',
+        () => new EvmInputAdmissionError('invalid-provenance'),
+      ],
+    ])(
+      'refused for good (%s): passed at once with one warning, and not tried again',
+      async (_why, refusal) => {
+        const { other, row } = await delivered()
+        applied.mockRejectedValue(refusal())
+        for (let pass = 0; pass < 3; pass++) {
+          const result = await read(other, other.alice)
+          expect(result.messages).toEqual([])
+          expect(result.held).toEqual([])
+          expect(result.passed).toEqual([row])
+        }
+        expect(applied).toHaveBeenCalledTimes(1)
+        expect(warnings()).toHaveLength(1)
+      },
+    )
+
+    it('held for now: kept in the replay window and tried again, applied when it can be', async () => {
+      const { other, row } = await delivered()
+      applied.mockRejectedValueOnce(
+        new SubAccountSpendRefusedError('held', 0, 'row is in-use'),
+      )
+      applied.mockRejectedValueOnce(
+        new EvmInputAdmissionError('conflicting-authorization'),
+      )
+      for (let pass = 0; pass < 2; pass++) {
+        const waiting = await read(other, other.alice)
+        expect(waiting.messages).toEqual([])
+        expect(waiting.passed).toEqual([])
+        expect(waiting.held).toEqual([row[0]])
+      }
+      const done = await read(other, other.alice)
+      expect(done.held).toEqual([])
+      expect(done.passed).toEqual([row])
+      expect(applied).toHaveBeenCalledTimes(3)
+      expect(warnings()).toHaveLength(0)
+    })
+
+    it('still failing after the retry window: passed, with one warning, so the cursor is not held for good', async () => {
+      const { other, row } = await delivered()
+      applied.mockRejectedValue(
+        new SubAccountSpendRefusedError('held', 0, 'row is in-use'),
+      )
+      const started = Date.now()
+      const now = jest.spyOn(Date, 'now').mockReturnValue(started)
+      expect((await read(other, other.alice)).held).toEqual([row[0]])
+      now.mockReturnValue(started + SELF_NOTE_RETRY_MS - 1)
+      expect((await read(other, other.alice)).held).toEqual([row[0]])
+      expect(warnings()).toHaveLength(0)
+      now.mockReturnValue(started + SELF_NOTE_RETRY_MS)
+      for (let pass = 0; pass < 2; pass++) {
+        const result = await read(other, other.alice)
+        expect(result.held).toEqual([])
+        expect(result.passed).toEqual([row])
+      }
+      expect(applied).toHaveBeenCalledTimes(3)
+      expect(warnings()).toHaveLength(1)
+    })
+  })
+
   // The app's Send page sends through `nativeTransfers.sendLegacy`, which waits to see the
-  // transfer included and then hands the note to transport, all in the one call.
+  // transfer included. The wallet sends no note afterwards: a note is a paid message, it would
+  // pay a stamp to the wallet's own stamp key that nothing spends, and it would wait behind (and
+  // hold) the one-pending-message gate.
   describe('after a native send', () => {
     const send = (f: Fixture) =>
       f.chain.nativeTransfers.sendLegacy!({
@@ -293,106 +413,79 @@ describe("a wallet's sync note to itself", () => {
         recipient: f.bob.identity.address,
         value: 1_000n,
       })
-    const operation = (wallet: EvmChainWalletHandle) => {
-      const rows = wallet.getNativeOperations!()
-      expect(rows).toHaveLength(1)
-      // What the app's Wallet and Send pages read for each operation
-      // (`inspectNativeTransferOperations`).
-      return { row: rows[0], shown: summarizeEvmNativeOperation(rows[0]) }
-    }
-
-    it('the note is delivered and the operation is recorded as synchronized', async () => {
-      minesNativeTransfers(one.alice)
-      one.setMailbox(mailbox)
-      const sent = await send(one)
-      one.setMailbox(undefined)
-      const { row, shown } = operation(one.alice)
-      expect(shown).toMatchObject({
-        payment: 'included',
-        finalTransactionHash: sent.txHash,
-        syncCallbackComplete: true,
-      })
-      expect(row.members.every(member => member.syncApplied)).toBe(true)
-      expect(mailbox).toHaveLength(1)
-      // The wallet accounts for its own note: no host is asked about a payment with no message.
-      expect(
-        await one.chain.directMessages.unattributedAttempts({
-          wallet: one.alice,
-          knownDigests: [],
-        }),
-      ).toEqual([])
-
-      // This device reads its own note back. It already recorded the spend: nothing changes.
-      const pool = JSON.stringify(one.alice.pool.records())
-      const own = await read(one, one.alice)
-      expect(own.messages).toEqual([])
-      expect(own.passed).toHaveLength(1)
-      expect(applied).toHaveBeenCalledTimes(1)
-      await expect(applied.mock.results[0].value).resolves.toEqual({})
-      expect(JSON.stringify(one.alice.pool.records())).toBe(pool)
-      expect(operation(one.alice).row).toEqual(row)
-
-      // The account's other device gets the member's own signed transaction.
-      const signed = row.members[row.members.length - 1].signed!
-      const other = await otherDevice()
-      applied.mockClear()
-      const there = await read(other, other.alice)
-      expect(there.messages).toEqual([])
-      expect(applied).toHaveBeenCalledTimes(1)
-      expect(applied.mock.calls[0][0]).toBe(other.alice)
-      expect(applied.mock.calls[0][1]).toMatchObject({
-        type: 'wallet-sync',
-        direction: 'out',
-        chainIdentifier: 'monad-testnet',
-        txHash: signed.transactionHash,
-        rawTx: signed.rawTransaction,
-      })
-      await expect(applied.mock.results[0].value).resolves.toEqual({})
-    })
-
-    it('a note the relay did not take leaves the transfer included, and asking again delivers the same note without paying twice', async () => {
-      minesNativeTransfers(one.alice)
-      one.setMailbox(mailbox)
-      one.setPhase('fail')
-      const failed = await send(one).then(
-        () => undefined,
-        (e: unknown) => e,
-      )
-      expect(failed).toBeInstanceOf(EvmNativeOperationPendingError)
-      const before = operation(one.alice)
-      expect(before.shown).toMatchObject({
+    const nothingWasSent = async () => {
+      const [row, ...more] = one.alice.getNativeOperations!()
+      expect(more).toEqual([])
+      // What the app's Wallet and Send pages read (`inspectNativeTransferOperations`).
+      expect(summarizeEvmNativeOperation(row)).toMatchObject({
         payment: 'included',
         syncCallbackComplete: false,
       })
-      expect(providerBroadcasts).toHaveLength(1)
+      // No paid message: nothing reached the relay, no sender account was funded, no stamp was
+      // paid to the wallet's own key, and the message journal holds no attempt.
+      expect(one.requests).toHaveLength(0)
       expect(mailbox).toHaveLength(0)
-      // The note was paid for and is the wallet's to deliver: its accounts are funded.
-      const funded = mockFunded.length
-      expect(funded).toBe(2)
-
-      // Asked again with the relay back, twice: the transfer is not sent again, and the note is
-      // the one already paid for. The same bytes go to the relay and no new account is funded.
-      one.setPhase('delivered')
-      for (let attempt = 0; attempt < 2; attempt++)
-        await one.alice.resumeLegacySend!(before.row.operationId)
-      const after = operation(one.alice)
-      expect(after.shown).toMatchObject({
-        payment: 'included',
-        finalTransactionHash: before.shown.finalTransactionHash,
-        syncCallbackComplete: true,
-      })
+      expect(mockFunded).toHaveLength(0)
       expect(providerBroadcasts).toHaveLength(1)
-      expect(mailbox).toHaveLength(1)
-      expect(mockFunded).toHaveLength(funded)
-      expect(one.requests.length).toBeGreaterThan(0)
-      for (const request of one.requests)
-        expect(toHex(request.body)).toBe(toHex(one.requests[0].body))
       expect(
         await one.chain.directMessages.unattributedAttempts({
           wallet: one.alice,
           knownDigests: [],
         }),
       ).toEqual([])
+      expect(applied).not.toHaveBeenCalled()
+      return row
+    }
+
+    it('the send resolves once the transfer is included, and no paid message is created', async () => {
+      minesNativeTransfers(one.alice)
+      const messages = jest.spyOn(one.chain.directMessages, 'send')
+      one.setMailbox(mailbox)
+      const sent = await send(one)
+      const row = await nothingWasSent()
+      expect(sent.txHash).toBe(
+        row.members[row.members.length - 1].signed!.transactionHash,
+      )
+      expect(messages).not.toHaveBeenCalled()
+      // Asking again changes nothing and still sends nothing.
+      await one.alice.resumeLegacySend!(row.operationId)
+      await nothingWasSent()
+      expect(messages).not.toHaveBeenCalled()
+    })
+
+    it('resolves while the relay is unreachable and while a chat message is still unresolved, and does not hold the next message', async () => {
+      minesNativeTransfers(one.alice)
+      // A chat message whose delivery is not known: a live attempt in the message journal.
+      one.setMailbox(bobMailbox)
+      one.setPhase('fail')
+      const chat = await one.chain.directMessages
+        .send({
+          wallet: one.alice,
+          recipient: one.bob.identity.address,
+          items: [{ type: 'text', text: 'hello' }],
+          stampValue: STAMP,
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+      expect(chat).toBeInstanceOf(Error)
+      const funded = mockFunded.length
+      const sent = await send(one)
+      expect(sent.txHash).toMatch(/^0x[0-9a-f]{64}$/)
+      const [row] = one.alice.getNativeOperations!()
+      expect(summarizeEvmNativeOperation(row).payment).toBe('included')
+      expect(mockFunded).toHaveLength(funded)
+      // The unresolved chat message is delivered as it was; the send added nothing to wait for.
+      one.setPhase('delivered')
+      await one.chain.directMessages.send({
+        wallet: one.alice,
+        recipient: one.bob.identity.address,
+        items: [{ type: 'text', text: 'again' }],
+        stampValue: STAMP,
+      })
+      expect(bobMailbox).toHaveLength(2)
+      expect(mailbox).toHaveLength(0)
     })
   })
 })

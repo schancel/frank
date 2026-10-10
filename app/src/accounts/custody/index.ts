@@ -3,6 +3,10 @@ import {
   VaultError,
   type PreviewVault,
 } from '@frank/account-vault'
+import {
+  decodeRecoveryDescriptor,
+  isAccountRootOf,
+} from '@frank/account-recovery'
 import type { DomainRoot } from '@frank/domain-roots'
 import {
   capture,
@@ -21,6 +25,7 @@ import {
   type ActiveCustody,
   type CustodySnapshot,
   type PendingChange,
+  type PublicAccount,
 } from './types'
 
 export { CustodyError } from './types'
@@ -121,6 +126,20 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       throw new CustodyError('conflict')
     return state.pending
   }
+  /** A stored account root must be the root of the account its record names. */
+  const accountRootIntact = async (
+    account: PublicAccount,
+  ): Promise<boolean> => {
+    const stored = await vault.openAccountRoot(account.receipt)
+    try {
+      return (
+        stored !== null &&
+        isAccountRootOf(stored, decodeRecoveryDescriptor(account.descriptor))
+      )
+    } finally {
+      stored?.fill(0)
+    }
+  }
   const authenticated = async (pending: PendingChange): Promise<void> => {
     const roots = await vault.open(pending.account.receipt)
     try {
@@ -128,6 +147,9 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
     } finally {
       wipe(roots)
     }
+    // Staged material that cannot reproduce its account is never ready to activate.
+    if (!(await accountRootIntact(pending.account)))
+      throw new CustodyError('conflict')
   }
   const discard = async (pending: PendingChange): Promise<CustodySnapshot> => {
     await vault.discardIntent(writeIntent(pending.account))
@@ -200,6 +222,10 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           } finally {
             wipe(opened)
           }
+          // Read the account root back as well: a record that cannot reproduce this
+          // account must surface now, not at the first backup.
+          if (!(await accountRootIntact(account)))
+            throw new CustodyError('conflict')
           const latest = await read()
           if (!same(latest.pending, pending)) throw new CustodyError('conflict')
           return latest

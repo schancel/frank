@@ -174,6 +174,36 @@ async function storage(
     db.close()
   }
 }
+/** Replace a committed vault record's plaintext, sealed with its own stored key and receipt. */
+async function reseal(
+  namespace: string,
+  receipt: Parameters<typeof aad>[0],
+  plaintext: Uint8Array<ArrayBuffer>,
+) {
+  const id = receipt.context.creationId
+  let key: CryptoKey | undefined
+  await storage(namespace, true, ['keys'], tx => {
+    const request = tx.objectStore('keys').get(id)
+    request.onsuccess = () => {
+      key = request.result.key
+    }
+  })
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv, additionalData: aad(receipt), tagLength: 128 },
+      key!,
+      plaintext,
+    ),
+  )
+  await storage(namespace, true, ['records'], tx => {
+    const store = tx.objectStore('records'),
+      request = store.get(id)
+    request.onsuccess = () => {
+      store.put({ ...request.result, iv, ciphertext }, id)
+    }
+  })
+}
 async function test(name: string, work: () => Promise<void>) {
   await work()
   cases.push(name)
@@ -500,6 +530,31 @@ async function regressions() {
     equal(mixed, 'inconsistent-share', 'shares of two backups do not combine')
   })
 
+  await test('staging reads the stored account root back and refuses a record that cannot reproduce the account', async () => {
+    const api = await open('stage-readback'),
+      input = fixture('stage-readback', undefined, 23)
+    const staged = await api.stage(input)
+    const receipt = staged.pending!.account.receipt
+    // The same typed roots, but a different account root, as a bad write would leave.
+    const bad = new Uint8Array(2 + input.roots.length * 33 + 32)
+    bad[0] = 2
+    bad[1] = input.roots.length
+    input.roots.forEach((root, i) => {
+      bad[2 + i * 33] = DOMAIN_PURPOSES.indexOf(root.purpose) + 1
+      bad.set(root.bytes, 3 + i * 33)
+    })
+    bad.set(new Uint8Array(32).fill(77), 2 + input.roots.length * 33)
+    await reseal('stage-readback', receipt, bad)
+    await rejects(() => api.stage(input), 'conflict')
+    await rejects(() => api.reconcile(input.attemptId), 'conflict')
+    await rejects(
+      () => api.activate(input.attemptId, input.expectedActive),
+      'conflict',
+    )
+    equal((await api.snapshot()).active, null, 'nothing was activated')
+    erase(input)
+  })
+
   await test('an account stored before account roots were kept reports that it has none', async () => {
     const api = await open('backup-older'),
       input = fixture('backup-older', undefined, 22)
@@ -516,28 +571,7 @@ async function regressions() {
       older.set(root.bytes, 3 + i * 33)
     })
     erase(input)
-    let key: CryptoKey | undefined
-    await storage('backup-older', true, ['keys'], tx => {
-      const request = tx.objectStore('keys').get(input.attemptId)
-      request.onsuccess = () => {
-        key = request.result.key
-      }
-    })
-    const iv = crypto.getRandomValues(new Uint8Array(12))
-    const ciphertext = new Uint8Array(
-      await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: aad(receipt), tagLength: 128 },
-        key!,
-        older,
-      ),
-    )
-    await storage('backup-older', true, ['records'], tx => {
-      const store = tx.objectStore('records'),
-        request = store.get(input.attemptId)
-      request.onsuccess = () => {
-        store.put({ ...request.result, iv, ciphertext }, input.attemptId)
-      }
-    })
+    await reseal('backup-older', receipt, older)
     const exported = await api.exportAccountRoot()
     equal(exported.accountRoot, null, 'no account root, and none is invented')
     const capability = await api.openActive()

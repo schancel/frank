@@ -28,7 +28,7 @@ const result = await build({
 })
 const inputs = Object.keys(result.metafile.inputs)
 const leaf =
-  /(?:^|\/)nakamoto\/dist\/(?:bech32|base32|convert-bits|encoding-error)\.js$/
+  /(?:^|\/)nakamoto\/(?:dist|src)\/(?:bech32|base32|convert-bits|encoding-error)\.[jt]s$/
 for (const input of inputs) {
   assert.ok(
     input.startsWith('src/') ||

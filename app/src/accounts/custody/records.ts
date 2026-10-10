@@ -5,12 +5,7 @@ import {
   isAccountRootOf,
 } from '@frank/account-recovery'
 import { createVaultWriteIntent } from '@frank/account-vault'
-import {
-  DERIVATION_REGISTRY_ID,
-  DOMAIN_PURPOSES,
-  deriveDomainRoot,
-  type DomainRoot,
-} from '@frank/domain-roots'
+import { DOMAIN_PURPOSES, type DomainRoot } from '@frank/domain-roots'
 import {
   CustodyError,
   type CustodySnapshot,
@@ -109,10 +104,8 @@ export function wipe(roots: readonly DomainRoot[]): void {
 export function capture(input: StageAccount): {
   account: PublicAccount
   expectedActive: ExpectedActive
-  roots: readonly DomainRoot[]
   accountRoot: Uint8Array
 } {
-  const roots: DomainRoot[] = []
   let accountRoot: Uint8Array | undefined
   try {
     const attemptId = id(input.attemptId),
@@ -128,30 +121,10 @@ export function capture(input: StageAccount): {
     )
     const masterRetirementId = hex(metadata.masterRetirementId)
     const recoveryIdentityCommitment = hex(metadata.recoveryIdentityCommitment)
-    const source = input.roots
-    if (!Array.isArray(source)) invalid()
-    const count = source.length
-    if (count < 1 || count > DOMAIN_PURPOSES.length) invalid()
-    let last = -1
-    for (let i = 0; i < count; i++) {
-      const root = source[i],
-        registry = root.registry,
-        purpose = root.purpose
-      const index = DOMAIN_PURPOSES.indexOf(purpose)
-      if (registry !== DERIVATION_REGISTRY_ID || index <= last) invalid()
-      last = index
-      roots.push(Object.freeze({ registry, purpose, bytes: bytes(root.bytes) }))
-    }
-    // What is stored for later backups must be this account's root, and the roots the
-    // wallet will run on must be the ones it derives. Anything else is refused here.
+    // What is stored must be this account's root: everything the account runs on, and every
+    // backup issued later, is derived from it.
     accountRoot = bytes(input.accountRoot)
     if (!isAccountRootOf(accountRoot, decoded)) invalid()
-    for (const root of roots) {
-      const derived = deriveDomainRoot(accountRoot, root.purpose)
-      const matches = derived.bytes.every((byte, i) => byte === root.bytes[i])
-      derived.bytes.fill(0)
-      if (!matches) invalid()
-    }
     const intent = createVaultWriteIntent({
       expected: null,
       operationId: attemptId,
@@ -161,7 +134,9 @@ export function capture(input: StageAccount): {
         custodyEpoch,
         recoveryFormat: decoded.recoveryFormat,
         registry: decoded.registry,
-        purposes: roots.map(root => root.purpose),
+        // The registry as it was when the account was staged. Opening derives every purpose
+        // the registry has at that time, so this is a record, not a limit.
+        purposes: [...DOMAIN_PURPOSES],
         recoveryFingerprint: fingerprint,
         retirementContext: masterRetirementId,
       },
@@ -176,11 +151,9 @@ export function capture(input: StageAccount): {
         receipt: intent.receipt,
       }),
       expectedActive,
-      roots: Object.freeze(roots),
       accountRoot,
     }
   } catch {
-    wipe(roots)
     accountRoot?.fill(0)
     throw new CustodyError('invalid-input')
   }

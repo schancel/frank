@@ -2,12 +2,13 @@ import {
   beginCodex32Signup,
   decodeRecoveryDescriptor,
   exportCodex32Backup,
+  destroyRecoveredAccount,
   recoverCodex32Shares,
   type RecoveryPublicMetadata,
 } from '@frank/account-recovery'
 import { createVaultWriteIntent, openPreviewVault } from '@frank/account-vault'
 import { aad } from '../../../../../packages/account-vault/src/encoding'
-import { DOMAIN_PURPOSES } from '@frank/domain-roots'
+import { DOMAIN_PURPOSES, type DomainRoot } from '@frank/domain-roots'
 import {
   openAccountCustody,
   CustodyError,
@@ -16,6 +17,9 @@ import {
   type ExpectedActive,
   type StageAccount,
 } from '../index'
+
+/** What staging takes, plus the roots that account root derives, for expectations only. */
+type Fixture = StageAccount & { roots: readonly DomainRoot[] }
 
 let assertions = 0
 const cases: string[] = []
@@ -50,7 +54,7 @@ function fixture(
   attemptId: string,
   expectedActive: ExpectedActive = { revision: 0, accountId: null },
   byte = 0,
-): StageAccount {
+): Fixture {
   const ceremony = beginCodex32Signup({
     threshold: 2,
     identifier: 'frnk',
@@ -69,7 +73,7 @@ function fixture(
     accountRoot: recovered.accountRoot,
   }
 }
-function erase(input: StageAccount) {
+function erase(input: Fixture) {
   for (const root of input.roots) root.bytes.fill(0)
   input.accountRoot.fill(0)
 }
@@ -79,7 +83,7 @@ function current(state: CustodySnapshot): ExpectedActive {
     accountId: state.active?.receipt.context.accountId ?? null,
   }
 }
-async function assertActive(api: AccountCustody, input: StageAccount) {
+async function assertActive(api: AccountCustody, input: Fixture) {
   const capability = await api.openActive()
   const serialized = JSON.stringify(capability)
   assert(
@@ -173,6 +177,36 @@ async function storage(
   } finally {
     db.close()
   }
+}
+/** Replace a committed vault record's plaintext, sealed with its own stored key and receipt. */
+async function reseal(
+  namespace: string,
+  receipt: Parameters<typeof aad>[0],
+  plaintext: Uint8Array<ArrayBuffer>,
+) {
+  const id = receipt.context.creationId
+  let key: CryptoKey | undefined
+  await storage(namespace, true, ['keys'], tx => {
+    const request = tx.objectStore('keys').get(id)
+    request.onsuccess = () => {
+      key = request.result.key
+    }
+  })
+  const iv = crypto.getRandomValues(new Uint8Array(12))
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv, additionalData: aad(receipt), tagLength: 128 },
+      key!,
+      plaintext,
+    ),
+  )
+  await storage(namespace, true, ['records'], tx => {
+    const store = tx.objectStore('records'),
+      request = store.get(id)
+    request.onsuccess = () => {
+      store.put({ ...request.result, iv, ciphertext }, id)
+    }
+  })
 }
 async function test(name: string, work: () => Promise<void>) {
   await work()
@@ -359,9 +393,6 @@ async function regressions() {
       { displayName: String.fromCharCode(0) },
       { custodyEpoch: -1 },
       { attemptId: 'space forbidden' },
-      { roots: input.roots.slice().reverse() },
-      { roots: [input.roots[0], input.roots[0]] },
-      { roots: [{ ...input.roots[0], bytes: new Uint8Array(31) }] },
     ])
       await rejects(() => api.stage({ ...input, ...update }), 'invalid-input')
     await rejects(
@@ -379,26 +410,10 @@ async function regressions() {
       null,
       'validation precedes all public writes',
     )
-    await api.stage(input)
-    const altered = {
-      ...input,
-      roots: input.roots.map(root => ({
-        ...root,
-        bytes: new Uint8Array(32).fill(99),
-      })),
-    }
-    // Roots that the account root does not derive are refused outright.
-    await rejects(() => api.stage(altered), 'invalid-input')
-    equal(
-      await api.reconcile(input.attemptId),
-      'ready',
-      'same receipt retry cannot substitute different roots',
-    )
     erase(input)
-    erase(altered)
   })
 
-  await test('only the account root of the staged account is accepted for later backups', async () => {
+  await test('only the account root of the staged account is accepted', async () => {
     const api = await open('account-root-input'),
       input = fixture('account-root-input'),
       other = fixture('account-root-other', undefined, 5)
@@ -466,7 +481,6 @@ async function regressions() {
         expectedActive: { revision: 0, accountId: null },
         custodyEpoch: 1,
         metadata: recovered.metadata,
-        roots: DOMAIN_PURPOSES.map(purpose => recovered.roots[purpose]),
         accountRoot: recovered.accountRoot,
       }
       const pending = await restored.stage(input)
@@ -476,7 +490,7 @@ async function regressions() {
         'restored account has the original public descriptor',
       )
       await restored.activate(input.attemptId, input.expectedActive)
-      erase(input)
+      destroyRecoveredAccount(recovered)
       const capability = await restored.openActive()
       const roots = capability.takeRoots()
       equal(
@@ -500,14 +514,28 @@ async function regressions() {
     equal(mixed, 'inconsistent-share', 'shares of two backups do not combine')
   })
 
-  await test('an account stored before account roots were kept reports that it has none', async () => {
-    const api = await open('backup-older'),
-      input = fixture('backup-older', undefined, 22)
-    const expectedRoots = input.roots.map(root => Array.from(root.bytes))
+  await test('staging reads the stored account root back and refuses a record that cannot reproduce the account', async () => {
+    const api = await open('stage-readback'),
+      input = fixture('stage-readback', undefined, 23)
     const staged = await api.stage(input)
     const receipt = staged.pending!.account.receipt
-    await api.activate(input.attemptId, input.expectedActive)
-    // Rewrite the vault record in the framing used before this change: typed roots only.
+    // A different account root, as a bad write would leave.
+    const bad = Uint8Array.of(3, ...new Uint8Array(32).fill(77))
+    await reseal('stage-readback', receipt, bad)
+    await rejects(() => api.stage(input), 'conflict')
+    await rejects(() => api.reconcile(input.attemptId), 'conflict')
+    await rejects(
+      () => api.activate(input.attemptId, input.expectedActive),
+      'conflict',
+    )
+    equal((await api.snapshot()).active, null, 'nothing was activated')
+    erase(input)
+  })
+
+  await test('an attempt staged before account roots were kept cannot be activated, only cancelled', async () => {
+    const api = await open('outdated-attempt'),
+      input = fixture('outdated-attempt', undefined, 24)
+    const staged = await api.stage(input)
     const older = new Uint8Array(2 + input.roots.length * 33)
     older[0] = 1
     older[1] = input.roots.length
@@ -515,40 +543,65 @@ async function regressions() {
       older[2 + i * 33] = DOMAIN_PURPOSES.indexOf(root.purpose) + 1
       older.set(root.bytes, 3 + i * 33)
     })
-    erase(input)
-    let key: CryptoKey | undefined
-    await storage('backup-older', true, ['keys'], tx => {
-      const request = tx.objectStore('keys').get(input.attemptId)
-      request.onsuccess = () => {
-        key = request.result.key
-      }
-    })
-    const iv = crypto.getRandomValues(new Uint8Array(12))
-    const ciphertext = new Uint8Array(
-      await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: aad(receipt), tagLength: 128 },
-        key!,
-        older,
-      ),
+    await reseal('outdated-attempt', staged.pending!.account.receipt, older)
+    await rejects(() => api.reconcile(input.attemptId), 'outdated-attempt')
+    await rejects(
+      () => api.activate(input.attemptId, input.expectedActive),
+      'outdated-attempt',
     )
-    await storage('backup-older', true, ['records'], tx => {
-      const store = tx.objectStore('records'),
-        request = store.get(input.attemptId)
-      request.onsuccess = () => {
-        store.put({ ...request.result, iv, ciphertext }, input.attemptId)
-      }
+    const cancelled = await api.cancel(input.attemptId)
+    equal(cancelled.pending, null, 'the outdated attempt can be cancelled')
+    equal(cancelled.active, null, 'and nothing was activated')
+    erase(input)
+  })
+
+  await test('an account stored before account roots were kept reports that it has none', async () => {
+    const api = await open('backup-older'),
+      input = fixture('backup-older', undefined, 22)
+    const staged = await api.stage(input)
+    const receipt = staged.pending!.account.receipt
+    await api.activate(input.attemptId, input.expectedActive)
+    // Rewrite the vault record in the framing used before this change: typed roots only.
+    const older = new Uint8Array(2 + input.roots.length * 33)
+    older[0] = 1
+    older[1] = input.roots.length
+    // Stored roots that are deliberately not what any account root here derives: an older
+    // account runs on exactly what its record holds.
+    const expectedRoots = input.roots.map(root =>
+      Array.from(root.bytes, byte => byte ^ 0x5a),
+    )
+    input.roots.forEach((root, i) => {
+      older[2 + i * 33] = DOMAIN_PURPOSES.indexOf(root.purpose) + 1
+      older.set(expectedRoots[i], 3 + i * 33)
     })
-    const exported = await api.exportAccountRoot()
+    erase(input)
+    await reseal('backup-older', receipt, older)
+    const record = async () => {
+      let row: { iv: Uint8Array; ciphertext: Uint8Array } | undefined
+      await storage('backup-older', true, ['records'], tx => {
+        const request = tx.objectStore('records').get(input.attemptId)
+        request.onsuccess = () => {
+          row = request.result
+        }
+      })
+      return [Array.from(row!.iv), Array.from(row!.ciphertext)]
+    }
+    const before = await record()
+    // A later session: reopen custody and use the account.
+    api.close()
+    const later = await open('backup-older')
+    const exported = await later.exportAccountRoot()
     equal(exported.accountRoot, null, 'no account root, and none is invented')
-    const capability = await api.openActive()
+    const capability = await later.openActive()
     const roots = capability.takeRoots()
     equal(
       roots.map(root => Array.from(root.bytes)),
       expectedRoots,
-      'the older account still opens with its own roots',
+      'the older account still opens with exactly its stored roots',
     )
     roots.forEach(root => root.bytes.fill(0))
     capability.close()
+    equal(await record(), before, 'opening an older account rewrites nothing')
   })
 
   await test('intent abort and crash after intent keep account incomplete; stable same-input retry', async () => {
@@ -807,7 +860,6 @@ async function regressions() {
               context: receipt.context,
               operationId: 'foreign',
             }),
-            input.roots,
             input.accountRoot,
           )
         vault.close()

@@ -1,4 +1,6 @@
 export const en = {
+  pending_outdated_cancel_and_redo:
+    'This attempt was saved by an earlier version of Frank and cannot be activated. Cancel it, then create or restore the account again. The shares you wrote down still restore the account.',
   pending_retry:
     'Pending account cleanup could not finish. Your active account is unchanged. Retry or cancel this attempt before starting another.',
   balance_loading: 'Loading balance…',
@@ -18,6 +20,10 @@ export const en = {
   a_saved_account_attempt_is_pending_it:
     'A saved account attempt is pending. It is not active until you choose Activate account.',
   activate_account: 'Activate',
+  pending_identity_address:
+    'This is the account these shares restore. Activating opens the account with this identity address:',
+  pending_identity_stop_if_unexpected:
+    'If you are restoring an account and this is not the address you expect, stop: do not activate. Cancel the attempt instead.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
     'The attempt is incomplete or awaiting cleanup. Cancel it explicitly before starting another account.',
   cancel_pending_attempt: 'Cancel',
@@ -67,8 +73,22 @@ export const en = {
   re_enter_exactly: 'Re-enter exactly',
   saved_frank_account_backup_shares_we_reconstruct:
     'saved Frank account backup shares. We reconstruct and compare the complete account before staging.',
-  enter_exactly_the_threshold_number_printed_in:
-    'Enter exactly the threshold number printed in your consistent backup family, one share per line. Too few, extra, duplicate, inconsistent or damaged shares are rejected.',
+  enter_at_least_the_threshold_number_of_shares:
+    'Enter at least the threshold number printed in your backup, one share per line. Extra shares from the same backup let the app detect a wrong one and tell you which.',
+  share_report_title: 'What the app found in the shares you entered:',
+  share_report_supports: 'Share {n} (index {index}): used.',
+  share_report_inconsistent:
+    'Share {n} (index {index}): does not belong to this backup. It is wrong or damaged.',
+  share_report_different_set:
+    'Share {n} (set {identifier}): from a different backup set.',
+  share_report_duplicate: 'Share {n}: entered more than once.',
+  share_report_invalid:
+    'Share {n}: could not be read. Check it for a typing error.',
+  restore_choose_explained:
+    'These shares contain complete backups of more than one account. Frank will not choose for you. If you did not expect this, someone may have given you shares of an account they control. Restore only the address you recognise.',
+  restore_choose_identity: 'Account with this identity address:',
+  restore_choose_shares: 'Built from shares {shares}.',
+  restore_choose_pick: 'Restore this account',
   expected_account: 'Expected account:',
   saved_codex32_shares_one_per_line: 'Saved Codex32 shares, one per line',
   display_name: 'Display name',
@@ -102,6 +122,11 @@ export const en = {
     'Write down each paper share. Any {threshold} of these {count} shares restore this account: the same identity, addresses and funds.',
   codex32_backup_sets_do_not_mix:
     'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
+  codex32_earlier_settings_shares_invalid:
+    'Recovery shares copied from this Settings page before this update do NOT restore this account. Destroy them. Shares shown when the account was created are not affected.',
+  show_recovery_shares: 'Show recovery shares',
+  show_recovery_shares_warning:
+    'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
   codex32_backup_unavailable_for_account:
     'This account was created before Frank could issue new backup shares. Only the shares shown when the account was created can restore it, so no shares are shown here.',
   configure_scheme: 'Configure threshold and shares',
@@ -131,6 +156,8 @@ export const en = {
 }
 
 export const fr = {
+  pending_outdated_cancel_and_redo:
+    'Cette tentative a été enregistrée par une version antérieure de Frank et ne peut pas être activée. Annulez-la, puis créez ou restaurez le compte à nouveau. Les parts que vous avez notées restaurent toujours le compte.',
   pending_retry:
     'Le nettoyage du compte en attente a échoué. Le compte actif est inchangé. Réessayez ou annulez cette tentative avant d’en commencer une autre.',
   balance_loading: 'Chargement du solde…',
@@ -150,6 +177,10 @@ export const fr = {
   a_saved_account_attempt_is_pending_it:
     'Une tentative de création enregistrée est en attente. Le compte ne sera actif qu’après avoir choisi Activer le compte.',
   activate_account: 'Activer',
+  pending_identity_address:
+    'Voici le compte que ces parts restaurent. L’activation ouvre le compte ayant cette adresse d’identité :',
+  pending_identity_stop_if_unexpected:
+    'Si vous restaurez un compte et que ce n’est pas l’adresse attendue, arrêtez : n’activez pas. Annulez plutôt la tentative.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
     'La tentative est incomplète ou en attente de nettoyage. Annulez-la explicitement avant de créer un autre compte.',
   cancel_pending_attempt: 'Annuler',
@@ -200,8 +231,22 @@ export const fr = {
   re_enter_exactly: 'Saisissez à nouveau exactement',
   saved_frank_account_backup_shares_we_reconstruct:
     'parts de sauvegarde enregistrées du compte Frank. Le compte complet est reconstruit et comparé avant sa préparation.',
-  enter_exactly_the_threshold_number_printed_in:
-    'Saisissez exactement le nombre de parts indiqué par le seuil de votre famille de sauvegardes, une par ligne. Les parts insuffisantes, supplémentaires, dupliquées, incohérentes ou endommagées sont rejetées.',
+  enter_at_least_the_threshold_number_of_shares:
+    'Saisissez au moins le nombre seuil indiqué sur votre sauvegarde, une part par ligne. Des parts supplémentaires de la même sauvegarde permettent à l’application de détecter une part erronée et de vous dire laquelle.',
+  share_report_title: 'Ce que l’application a trouvé dans les parts saisies :',
+  share_report_supports: 'Part {n} (index {index}) : utilisée.',
+  share_report_inconsistent:
+    'Part {n} (index {index}) : n’appartient pas à cette sauvegarde. Elle est erronée ou endommagée.',
+  share_report_different_set:
+    'Part {n} (jeu {identifier}) : provient d’un autre jeu de sauvegarde.',
+  share_report_duplicate: 'Part {n} : saisie plusieurs fois.',
+  share_report_invalid:
+    'Part {n} : illisible. Vérifiez qu’elle ne contient pas de faute de frappe.',
+  restore_choose_explained:
+    'Ces parts contiennent les sauvegardes complètes de plusieurs comptes. Frank ne choisira pas à votre place. Si vous ne vous y attendiez pas, quelqu’un vous a peut-être remis des parts d’un compte qu’il contrôle. Ne restaurez que l’adresse que vous reconnaissez.',
+  restore_choose_identity: 'Compte ayant cette adresse d’identité :',
+  restore_choose_shares: 'Construit à partir des parts {shares}.',
+  restore_choose_pick: 'Restaurer ce compte',
   expected_account: 'Compte attendu :',
   saved_codex32_shares_one_per_line:
     'Parts Codex32 enregistrées, une par ligne',
@@ -237,6 +282,11 @@ export const fr = {
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
     'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
+  codex32_earlier_settings_shares_invalid:
+    'Les parts de récupération copiées depuis cette page des réglages avant cette mise à jour ne restaurent PAS ce compte. Détruisez-les. Les parts affichées à la création du compte ne sont pas concernées.',
+  show_recovery_shares: 'Afficher les parts de récupération',
+  show_recovery_shares_warning:
+    'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',
   codex32_backup_unavailable_for_account:
     'Ce compte a été créé avant que Frank puisse émettre de nouvelles parts de sauvegarde. Seules les parts affichées à la création du compte peuvent le restaurer ; aucune part n’est donc affichée ici.',
   configure_scheme: 'Configurer le seuil et les parts',

@@ -30,6 +30,26 @@ describe('frank-domain-roots-v1', () => {
     ).toBe(5)
   })
 
+  it('never renumbers or relabels a purpose: codes and labels are written into records and derivations', () => {
+    // Append-only. Add a purpose with the next unused code; never change these lines.
+    expect(
+      DOMAIN_PURPOSES.map(purpose => {
+        const entry = registryEntry(purpose)
+        return [entry.code, entry.purpose, entry.label]
+      }).slice(0, 5),
+    ).toEqual([
+      [1, 'ecash-bch-wallet', 'frank/domain-root/v1/ecash-bch-wallet'],
+      [2, 'evm-wallet', 'frank/domain-root/v1/evm-wallet'],
+      [3, 'solana-wallet', 'frank/domain-root/v1/solana-wallet'],
+      [4, 'messaging-encryption', 'frank/domain-root/v1/messaging-encryption'],
+      [
+        5,
+        'identity-authentication',
+        'frank/domain-root/v1/identity-authentication',
+      ],
+    ])
+  })
+
   it.each([
     {
       root: '00'.repeat(32),

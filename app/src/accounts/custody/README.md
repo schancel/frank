@@ -25,8 +25,8 @@ await custody.stage({
   displayName,
   custodyEpoch: 1,
   metadata: confirmed.metadata,
-  roots: DOMAIN_PURPOSES.map(purpose => confirmed.roots[purpose]),
-  // Must be this account's root and derive exactly those roots, or staging is refused.
+  // The only secret stored. Must reproduce this account's fingerprint, or staging is
+  // refused. Every purpose root is derived from it each time the account is opened.
   accountRoot: confirmed.accountRoot,
 })
 // Success above means only staged material. Activation is a separate user decision.

@@ -17,6 +17,7 @@ jest.mock('../accounts/session', () => ({
     account: null,
     pending: null,
     pendingReady: false,
+    pendingIdentityAddress: null,
     pendingError: null,
   }),
   accountSession: {
@@ -44,6 +45,11 @@ const mockConfirm = jest.fn(
   }),
 )
 
+const mockChoose = jest.fn(async (_index: number, _name: string) => ({
+  isRestore: true,
+  discoveredRelayUrl: undefined,
+}))
+
 jest.mock('../accounts/ceremony', () => ({
   createAccountCeremony: () => ({
     cancel: mockCancelCeremony,
@@ -51,6 +57,7 @@ jest.mock('../accounts/ceremony', () => ({
     share: mockShare,
     beginRestore: mockBeginRestore,
     confirm: mockConfirm,
+    choose: mockChoose,
   }),
   recoveryErrorMessage: (err: unknown) =>
     (err as Error)?.message ?? 'Account operation failed',
@@ -263,6 +270,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,
@@ -316,6 +324,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,
@@ -366,6 +375,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,
@@ -414,6 +424,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,
@@ -477,6 +488,168 @@ describe('Setup page advanced relay configuration', () => {
     expect(mockPush).not.toHaveBeenCalled()
 
     probeSpy.mockRestore()
+    view.unmount()
+  })
+})
+
+describe('Setup page restore from more shares than the threshold', () => {
+  const verdict = (
+    position: number,
+    status: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    position,
+    identifier: 'abcd',
+    index: 'qpzry9'[position],
+    status,
+    candidates: status === 'supports' ? [0] : [],
+    code: null,
+    ...extra,
+  })
+  const pendingAccount = {
+    status: 'fresh',
+    pending: {
+      status: 'staging',
+      account: { displayName: 'Restored', descriptor: 'PUBLIC-DESC' },
+      expectedActive: { revision: 0, accountId: null },
+    },
+    pendingReady: true,
+    pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
+  }
+  beforeEach(async () => {
+    setActivePinia(createPinia())
+    Object.assign(mockAccount, {
+      status: 'fresh',
+      revision: 0,
+      account: null,
+      pending: null,
+      pendingReady: false,
+      pendingIdentityAddress: null,
+      pendingError: null,
+    })
+    await inspectLegacyWallet({
+      get: async () => {
+        throw { notFound: true }
+      },
+    })
+    mockConfirm.mockClear()
+    mockChoose.mockClear()
+  })
+  async function enterShares(lines: string) {
+    const view = render()
+    await view.get('[data-test="restore-account"]').trigger('click')
+    await flushPromises()
+    expect(view.text()).toContain(
+      en.accountRecovery.enter_at_least_the_threshold_number_of_shares,
+    )
+    await view.get('[data-test="confirm-shares"] input').setValue(lines)
+    await view.get('[data-test="display-name"] input').setValue('Restored')
+    await view.get('form').trigger('submit')
+    await flushPromises()
+    return view
+  }
+
+  test('accepts extra shares and says which were used and which were not, and why', async () => {
+    mockConfirm.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, pendingAccount)
+      return {
+        isRestore: true,
+        discoveredRelayUrl: undefined,
+        report: [
+          verdict(0, 'supports'),
+          verdict(1, 'inconsistent'),
+          verdict(2, 'different-set', { identifier: 'wxyz' }),
+          verdict(3, 'duplicate'),
+          verdict(4, 'invalid', { identifier: null, index: null }),
+          verdict(5, 'supports'),
+        ],
+      } as never
+    })
+    const view = await enterShares('a\nb\nc\nd\ne\nf')
+    const report = view.get('[data-test="share-report"]').text()
+    expect(report).toContain('Share 1 (index q): used.')
+    expect(report).toContain(
+      'Share 2 (index p): does not belong to this backup',
+    )
+    expect(report).toContain('Share 3 (set wxyz): from a different backup set.')
+    expect(report).toContain('Share 4: entered more than once.')
+    expect(report).toContain('Share 5: could not be read.')
+    expect(report).toContain('Share 6 (index 9): used.')
+    // The pending screen still shows whose account this is before Activate.
+    expect(view.get('[data-test="pending-identity-address"]').text()).toBe(
+      pendingAccount.pendingIdentityAddress,
+    )
+    view.unmount()
+  })
+
+  test('complete backups of two accounts: shows both addresses and stages only the one the user picks', async () => {
+    mockConfirm.mockImplementationOnce(
+      async () =>
+        ({
+          isRestore: true,
+          report: [0, 1, 2, 3].map(position => ({
+            ...verdict(position, 'supports'),
+            candidates: [position % 2],
+          })),
+          candidates: [
+            { address: '0xAAAA', descriptor: 'desc-a', supporting: [0, 2] },
+            { address: '0xBBBB', descriptor: 'desc-b', supporting: [1, 3] },
+          ],
+        } as never),
+    )
+    const view = await enterShares('a\nb\nc\nd')
+    expect(view.get('[data-test="restore-choose-warning"]').text()).toBe(
+      en.accountRecovery.restore_choose_explained,
+    )
+    const candidates = view.findAll('[data-test="restore-candidate"]')
+    expect(
+      candidates.map(c =>
+        c.get('[data-test="restore-candidate-address"]').text(),
+      ),
+    ).toEqual(['0xAAAA', '0xBBBB'])
+    expect(
+      candidates.map(c =>
+        c.get('[data-test="restore-candidate-shares"]').text(),
+      ),
+    ).toEqual(['Built from shares 1, 3.', 'Built from shares 2, 4.'])
+    // Nothing is staged or offered for activation until the user picks.
+    expect(mockChoose).not.toHaveBeenCalled()
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(false)
+
+    mockChoose.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, pendingAccount)
+      return { isRestore: true, discoveredRelayUrl: undefined }
+    })
+    await candidates[1]
+      .get('[data-test="restore-candidate-pick"]')
+      .trigger('click')
+    await flushPromises()
+    expect(mockChoose).toHaveBeenCalledWith(1, 'Restored')
+    const report = view.get('[data-test="share-report"]').text()
+    expect(report).toContain('Share 2 (index p): used.')
+    expect(report).toContain(
+      'Share 1 (index q): does not belong to this backup',
+    )
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+    view.unmount()
+  })
+
+  test('a refused restore still says which share was wrong', async () => {
+    mockConfirm.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('refused'), {
+        code: 'bad-checksum',
+        shares: [
+          verdict(0, 'invalid', { index: null }),
+          verdict(1, 'inconsistent'),
+        ],
+      })
+    })
+    const view = await enterShares('a\nb')
+    expect(view.get('[data-test="account-error"]').text()).toBe('refused')
+    expect(view.get('[data-test="share-report"]').text()).toContain(
+      'Share 1: could not be read.',
+    )
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(false)
     view.unmount()
   })
 })

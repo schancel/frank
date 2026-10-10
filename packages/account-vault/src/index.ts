@@ -76,10 +76,10 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
     } finally { bytes?.fill(0) }
   }
   return Object.freeze({
-    async stage(input, roots: readonly DomainRoot[], accountRoot: Uint8Array) {
+    async stage(input, accountRoot: Uint8Array) {
       active()
       const snapshot = validate(() => intent(input))
-      const bytes = validate(() => plaintext(roots, accountRoot, snapshot.receipt.context))
+      const bytes = validate(() => plaintext(accountRoot))
       try {
         const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
         const iv = crypto.getRandomValues(new Uint8Array(12))

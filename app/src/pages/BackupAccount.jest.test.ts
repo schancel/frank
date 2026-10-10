@@ -30,6 +30,8 @@ jest.mock('vue-router', () => ({
  * and vault storage is in accounts/backup-roundtrip.jest.test.ts and the Chrome custody suite.
  */
 let mockSession: ReturnType<typeof createAccountSession> | undefined
+/** How many times anything asked custody for the account root. */
+let mockRootReads = 0
 jest.mock('../accounts/session', () => ({
   ...jest.requireActual('../accounts/session'),
   get accountSession() {
@@ -87,11 +89,16 @@ async function device(options: { keepsAccountRoot?: boolean } = {}) {
         })),
       close: () => undefined,
     }),
-    exportAccountRoot: async () => ({
-      account,
-      accountRoot:
-        options.keepsAccountRoot === false ? null : created.accountRoot.slice(),
-    }),
+    exportAccountRoot: async () => (
+      mockRootReads++,
+      {
+        account,
+        accountRoot:
+          options.keepsAccountRoot === false
+            ? null
+            : created.accountRoot.slice(),
+      }
+    ),
     close: () => undefined,
   } as unknown as AccountCustody
   mockSession = createAccountSession({
@@ -100,12 +107,14 @@ async function device(options: { keepsAccountRoot?: boolean } = {}) {
       ({ close: async () => undefined } as unknown as RuntimeWallet),
   })
   await mockSession.initialize()
+  mockRootReads = 0
   return { signupShares, original: identityOf(created) }
 }
 
 type Mounted = ReturnType<typeof mountPage>
 /** Wait for the page to finish issuing a set, then read the shares it shows. */
 async function shownShares(wrapper: Mounted, count: number) {
+  await wrapper.find('[data-test="show-recovery-shares"]').trigger('click')
   for (let i = 0; i < 200; i++) {
     await flushPromises()
     await new Promise(resolve => setTimeout(resolve, 5))
@@ -173,6 +182,41 @@ describe('BackupAccount page', () => {
         writeText: jest.fn().mockResolvedValue(undefined),
       },
     })
+  })
+
+  it('reads nothing secret until the user asks, and drops it when they leave', async () => {
+    await device()
+    const wrapper = mountPage()
+    await settled(wrapper)
+    expect(mockRootReads).toBe(0)
+    expect(wrapper.findAll('[data-test="codex32-share"]')).toHaveLength(0)
+    expect(wrapper.text()).not.toMatch(/ms1[0-9]/)
+    expect(wrapper.find('[data-test="backup-reveal-warning"]').text()).toBe(
+      'accountRecovery.show_recovery_shares_warning',
+    )
+    expect(
+      wrapper.find('[data-test="backup-earlier-shares-warning"]').text(),
+    ).toBe('accountRecovery.codex32_earlier_settings_shares_invalid')
+
+    // Choosing a scheme is not asking for shares.
+    await wrapper.find('[data-test="codex32-scheme-btn"]').trigger('click')
+    await settled(wrapper)
+    expect(mockRootReads).toBe(0)
+
+    await shownShares(wrapper, 5)
+    expect(mockRootReads).toBe(1)
+
+    // Another scheme hides the set that was shown and waits to be asked again.
+    await wrapper.find('[data-test="codex32-scheme-btn"]').trigger('click')
+    await settled(wrapper)
+    expect(wrapper.findAll('[data-test="codex32-share"]')).toHaveLength(0)
+    expect(mockRootReads).toBe(1)
+
+    await shownShares(wrapper, 10)
+    const state = wrapper.vm.$.setupState as { backupShares: string[] }
+    expect(state.backupShares).toHaveLength(10)
+    wrapper.unmount()
+    expect(state.backupShares).toHaveLength(0)
   })
 
   it('shows shares that restore the same account', async () => {
@@ -244,6 +288,11 @@ describe('BackupAccount page', () => {
 
     const wrapper = mountPage()
     await settled(wrapper)
+    expect(wrapper.find('[data-test="backup-unavailable"]').exists()).toBe(
+      false,
+    )
+    await wrapper.find('[data-test="show-recovery-shares"]').trigger('click')
+    await settled(wrapper)
     expect(wrapper.find('[data-test="backup-unavailable"]').text()).toBe(
       'accountRecovery.codex32_backup_unavailable_for_account',
     )
@@ -254,6 +303,9 @@ describe('BackupAccount page', () => {
     expect(wrapper.find('[data-test="codex32-scheme-btn"]').exists()).toBe(
       false,
     )
+    expect(
+      wrapper.find('[data-test="backup-earlier-shares-warning"]').text(),
+    ).toBe('accountRecovery.codex32_earlier_settings_shares_invalid')
   })
 
   it("shows an error and no shares when the stored root is not this account's", async () => {
@@ -265,6 +317,7 @@ describe('BackupAccount page', () => {
     ;(custody.active as { descriptor: string }).descriptor = original.descriptor
 
     const wrapper = mountPage()
+    await wrapper.find('[data-test="show-recovery-shares"]').trigger('click')
     await settled(wrapper)
     expect(wrapper.find('[data-test="backup-error"]').text()).toMatch(
       /descriptor-mismatch/,

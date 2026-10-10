@@ -1,3 +1,4 @@
+import * as codex32 from './index.js'
 import {
   codex32SecretPayloadSymbols,
   createMasterPayload,
@@ -522,5 +523,71 @@ describe('Codex32 standard-checksum core', () => {
         randomBytes: () => new Uint8Array(1),
       }),
     ).toEqual({ ok: false, error: { code: 'rng-failed' } })
+  })
+})
+
+describe('interpolating at an arbitrary index', () => {
+  const split = (threshold: 2 | 3 | 4) => {
+    const secret = Uint8Array.from({ length: 64 }, (_, i) => (i * 7 + 3) & 255)
+    let counter = 0
+    const result = codex32.splitCodex32({
+      threshold,
+      identifier: 'test',
+      indices: ['q', 'p', 'z', 'r', 'y', '9'],
+      secret,
+      randomBytes: length =>
+        Uint8Array.from(
+          { length },
+          () => (counter = (counter * 73 + 41) & 255),
+        ),
+    })
+    if (!result.ok) throw new Error(result.error.code)
+    const shares = result.value.map(text => {
+      const decoded = codex32.decodeCodex32(text)
+      if (!decoded.ok) throw new Error(decoded.error.code)
+      return decoded.value
+    })
+    return { secret, shares }
+  }
+
+  it.each([2, 3, 4] as const)(
+    'reproduces every other share and the secret of a %i-of-6 split',
+    threshold => {
+      const { secret, shares } = split(threshold)
+      const subset = shares.slice(1, 1 + threshold)
+      for (const share of shares) {
+        const derived = codex32.interpolateCodex32Symbols(subset, share.index)
+        expect(derived).toEqual({ ok: true, value: share.payload })
+      }
+      const symbols = codex32.interpolateCodex32Symbols(subset, 's')
+      if (!symbols.ok) throw new Error(symbols.error.code)
+      expect(codex32.codex32SymbolsToBytes(symbols.value)).toEqual({
+        ok: true,
+        value: secret,
+      })
+    },
+  )
+
+  it('rejects repeated indices, bad targets, ragged payloads and wrong counts', () => {
+    const { shares } = split(2)
+    const code = (result: { ok: boolean; error?: { code: string } }) =>
+      result.ok ? 'ok' : result.error?.code
+    expect(
+      code(codex32.interpolateCodex32Symbols([shares[0]!, shares[0]!], 's')),
+    ).toBe('duplicate-share')
+    expect(
+      code(codex32.interpolateCodex32Symbols(shares.slice(0, 2), 'b')),
+    ).toBe('invalid-index')
+    expect(
+      code(
+        codex32.interpolateCodex32Symbols(
+          [shares[0]!, { index: 'p', payload: new Uint8Array(3) }],
+          's',
+        ),
+      ),
+    ).toBe('inconsistent-share')
+    expect(code(codex32.interpolateCodex32Symbols([shares[0]!], 's'))).toBe(
+      'wrong-share-count',
+    )
   })
 })

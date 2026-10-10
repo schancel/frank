@@ -10,6 +10,8 @@ export type CustodyErrorCode =
   | 'storage-failed'
   | 'closed'
   | 'capacity'
+  /** A staged attempt saved before account roots were kept: it can only be cancelled and redone. */
+  | 'outdated-attempt'
 
 export class CustodyError extends Error {
   constructor(readonly code: CustodyErrorCode) {
@@ -54,11 +56,10 @@ export interface StageAccount {
   readonly displayName: string
   readonly custodyEpoch: number
   readonly metadata: RecoveryPublicMetadata
-  readonly roots: readonly DomainRoot[]
   /**
-   * The 32-byte account root the roots were derived from. Custody keeps it beside them so
-   * a later backup splits the account itself; staging refuses a root that is not this
-   * account's.
+   * The 32-byte account root. It is the only secret custody stores for an account: every
+   * purpose root is derived from it each time the account is opened. Staging refuses a
+   * root that does not reproduce the account's public fingerprint.
    */
   readonly accountRoot: Uint8Array
 }
@@ -82,6 +83,11 @@ export interface AccountCustody {
   ): Promise<CustodySnapshot>
   cancel(attemptId: string): Promise<CustodySnapshot>
   openActive(): Promise<ActiveCustody>
+  /**
+   * Caller-owned roots of a staged, not yet active account, so the user can be shown which
+   * identity an attempt would activate before choosing to. Changes nothing.
+   */
+  openPending(attemptId: string): Promise<readonly DomainRoot[]>
   /**
    * The active account and a caller-owned copy of its account root, for issuing backup
    * shares. `accountRoot` is null for an account stored before roots were kept: no backup

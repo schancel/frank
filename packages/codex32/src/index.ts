@@ -506,6 +506,67 @@ function interpolateAt(
 }
 
 /**
+ * Interpolate the payload symbols at any index from decoded shares. With exactly the
+ * threshold number of shares of one split this yields the share (or, at `s`, the secret)
+ * that split has at that index, so it also answers whether a further share belongs to the
+ * same split. The caller supplies shares of one header; indices must be distinct.
+ */
+export function interpolateCodex32Symbols(
+  shares: readonly Pick<Codex32Share, 'index' | 'payload'>[],
+  targetIndex: string,
+): Codex32Result<Uint8Array> {
+  let xs: number[]
+  let rows: Uint8Array[]
+  try {
+    if (!Array.isArray(shares) || shares.length < 2 || shares.length > 9) {
+      return fail('wrong-share-count')
+    }
+    xs = shares.map(share => valueOf(String(share.index)))
+    rows = shares.map(share => share.payload)
+  } catch {
+    return fail('bad-format')
+  }
+  if (typeof targetIndex !== 'string' || !validIndex(targetIndex)) {
+    return fail('invalid-index')
+  }
+  const length = rows[0]?.length ?? 0
+  if (xs.some(x => x < 0)) return fail('invalid-index')
+  if (new Set(xs).size !== xs.length) return fail('duplicate-share')
+  if (rows.some(row => !(row instanceof Uint8Array) || row.length !== length)) {
+    return fail('inconsistent-share')
+  }
+  const target = valueOf(targetIndex)
+  // Lagrange weights depend only on the indices: compute them once for all columns.
+  const weights = xs.map((x, current) => {
+    let numerator = 1
+    let denominator = 1
+    for (let other = 0; other < xs.length; other += 1) {
+      if (other === current) continue
+      numerator = multiply(numerator, target ^ (xs[other] ?? 0))
+      denominator = multiply(denominator, x ^ (xs[other] ?? 0))
+    }
+    return multiply(numerator, inverse(denominator))
+  })
+  const output = new Uint8Array(length)
+  for (let column = 0; column < length; column += 1) {
+    let value = 0
+    for (let row = 0; row < rows.length; row += 1) {
+      value ^= multiply(rows[row]?.[column] ?? 0, weights[row] ?? 0)
+    }
+    output[column] = value
+  }
+  return { ok: true, value: output }
+}
+
+/** Convert interpolated secret-index payload symbols to seed bytes. */
+export function codex32SymbolsToBytes(
+  symbols: Uint8Array,
+): Codex32Result<Uint8Array> {
+  if (!(symbols instanceof Uint8Array)) return fail('bad-format')
+  return groupsToBytes(Array.from(symbols))
+}
+
+/**
  * Split seed bytes with BIP-93's GF(32) threshold construction. This is not a
  * generic Shamir API: identifiers, indices, encoding, and field are Codex32.
  */

@@ -4,9 +4,11 @@ import {
   convertRawToAvu,
   formatAvu,
   calculateSwapParity,
-  getDefaultOracleSnapshot,
+  unavailableOracleSnapshot,
+  miningDollarsPerKwh,
+  ASSET_FEED_SYMBOLS,
   fetchOracleSnapshot,
-  PYTH_FEED_IDS,
+  PriceFeedsClient,
   calculatePoWEnergyCost,
   POW_BASELINE_DOLLARS_PER_KWH,
   AVU_PER_DOLLAR,
@@ -88,175 +90,153 @@ describe('PoW Thermodynamic Energy Standard & Price Oracle (@frank/wallet/oracle
   })
 
   describe('convertRawToAvu', () => {
-    it('converts Monad 18 decimals correctly', () => {
-      // 1 MON = $3.50. At 11.90476 AVU/$, 1 MON ≈ 41.67 AVU
-      const oneMon = 1_000_000_000_000_000_000n
-      expect(convertRawToAvu(oneMon, 'monad')).toBeCloseTo(
-        3.5 * AVU_PER_DOLLAR,
-        2,
-      )
+    const oneMon = 1_000_000_000_000_000_000n
 
-      // 5 MON ≈ 208.33 AVU
-      expect(convertRawToAvu(5n * oneMon, 'monad')).toBeCloseTo(
-        5 * 3.5 * AVU_PER_DOLLAR,
-        2,
-      )
+    it('converts base units at the given rate for each decimal scale', () => {
+      expect(convertRawToAvu(5n * oneMon, 'monad', 0.3)).toBeCloseTo(1.5, 6)
+      expect(convertRawToAvu(100_000_000n, 'ecash', 0.0001)).toBeCloseTo(100, 6)
+      expect(convertRawToAvu(2_500_000_000n, 'solana', 37)).toBeCloseTo(92.5, 6)
     })
 
-    it('converts eCash 2 decimals correctly', () => {
-      // 1 XEC = 100 satoshis. Default spot = $0.000035
-      // 1,000,000 XEC = $35 -> 35 * 11.90476 ≈ 416.67 AVU
-      const oneMillionXecSat = 100_000_000n
-      expect(convertRawToAvu(oneMillionXecSat, 'ecash')).toBeCloseTo(
-        35.0 * AVU_PER_DOLLAR,
-        2,
-      )
+    it('has no value when there is no rate: an unknown price is not zero and not a default', () => {
+      expect(convertRawToAvu(oneMon, 'monad')).toBeUndefined()
+      expect(convertRawToAvu(oneMon, 'tempo', undefined)).toBeUndefined()
     })
 
-    it('converts Solana 9 decimals correctly', () => {
-      // 1 SOL = $150. 150 * 11.90476 ≈ 1,785.71 AVU
-      const oneSol = 1_000_000_000n
-      expect(convertRawToAvu(oneSol, 'solana')).toBeCloseTo(
-        150.0 * AVU_PER_DOLLAR,
-        2,
-      )
-      expect(convertRawToAvu(oneSol / 2n, 'solana')).toBeCloseTo(
-        75.0 * AVU_PER_DOLLAR,
-        2,
-      )
-    })
-
-    it('converts Tempo USD 6 decimals correctly', () => {
-      // 1 USD = 10^6 micro-dollars. $10 * 11.90476 ≈ 119.05 AVU
-      const tenUsd = 10_000_000n
-      expect(convertRawToAvu(tenUsd, 'tempo')).toBeCloseTo(
-        10.0 * AVU_PER_DOLLAR,
-        2,
-      )
-    })
-
-    it('converts Ethereum 18 decimals correctly', () => {
-      // 1 ETH = $2600. 2600 * 11.90476 ≈ 30,952.38 AVU
-      const oneEth = 1_000_000_000_000_000_000n
-      expect(convertRawToAvu(oneEth, 'ethereum')).toBeCloseTo(
-        2600.0 * AVU_PER_DOLLAR,
-        2,
-      )
-    })
-
-    it('returns 0 for null, undefined, or 0n amounts', () => {
-      expect(convertRawToAvu(null, 'monad')).toBe(0)
-      expect(convertRawToAvu(undefined, 'solana')).toBe(0)
-      expect(convertRawToAvu(0n, 'ethereum')).toBe(0)
+    it('is zero for an empty balance', () => {
+      expect(convertRawToAvu(0n, 'monad', 0.3)).toBe(0)
+      expect(convertRawToAvu(null, 'monad', 0.3)).toBe(0)
     })
   })
 
   describe('formatAvu', () => {
-    it('formats 0 and negatives cleanly', () => {
+    it('formats for display', () => {
       expect(formatAvu(0)).toBe('0 AVU')
-      expect(formatAvu(-5)).toBe('0 AVU')
-    })
-
-    it('formats small fractions below 0.01 as < 0.01 AVU', () => {
-      expect(formatAvu(0.004)).toBe('< 0.01 AVU')
-    })
-
-    it('formats ordinary values with 2 decimals', () => {
-      expect(formatAvu(42.856)).toBe('42.86 AVU')
-      expect(formatAvu(3.1)).toBe('3.10 AVU')
-    })
-
-    it('formats large values with thousands separators', () => {
-      expect(formatAvu(1250.4)).toBe('1,250.4 AVU')
+      expect(formatAvu(0.001)).toBe('< 0.01 AVU')
+      expect(formatAvu(41.666)).toBe('41.67 AVU')
+      expect(formatAvu(30952.38)).toBe('30,952.4 AVU')
     })
   })
 
   describe('calculateSwapParity', () => {
-    it('returns fair for equal value swaps', () => {
-      // Send 10 MON ($35 = ~416.7 AVU) and receive 1M XEC ($35 = ~416.7 AVU)
-      const tenMon = 10n * 10n ** 18n
-      const oneMillionXec = 100_000_000n
+    const rates = { monad: 0.3, solana: 1300 }
+    const oneMon = 1_000_000_000_000_000_000n
 
-      const res = calculateSwapParity(tenMon, 'monad', oneMillionXec, 'ecash')
-      expect(res.status).toBe('fair')
-      expect(res.parityPercent).toBeCloseTo(0, 1)
-    })
-
-    it('returns premium when receiving more value than sending', () => {
-      const tenMon = 10n * 10n ** 18n // $35
-      const onePointTwoMillionXec = 120_000_000n // $42 (+20%)
-
-      const res = calculateSwapParity(
-        tenMon,
+    it('compares two coins through their AVU rates', () => {
+      // 1300 / 0.3 MON is worth exactly 1 SOL
+      const fair = calculateSwapParity(
+        4333n * oneMon,
         'monad',
-        onePointTwoMillionXec,
-        'ecash',
+        1_000_000_000n,
+        'solana',
+        rates,
       )
-      expect(res.status).toBe('premium')
-      expect(res.parityPercent).toBeCloseTo(20.0, 1)
+      expect(fair?.status).toBe('fair')
+      const bad = calculateSwapParity(
+        4333n * oneMon,
+        'monad',
+        500_000_000n,
+        'solana',
+        rates,
+      )
+      expect(bad?.status).toBe('warning')
+      expect(bad?.parityPercent).toBeCloseTo(-50, 0)
     })
 
-    it('returns discount when receiving slightly less value', () => {
-      const tenMon = 10n * 10n ** 18n // $35
-      const nineHundredK = 90_000_000n // $31.50 (-10%)
-
-      const res = calculateSwapParity(tenMon, 'monad', nineHundredK, 'ecash')
-      expect(res.status).toBe('discount')
-      expect(res.parityPercent).toBeCloseTo(-10.0, 1)
+    it('states no parity when either coin has no fetched price', () => {
+      expect(
+        calculateSwapParity(oneMon, 'monad', 1_000_000n, 'tempo', rates),
+      ).toBeUndefined()
     })
+  })
 
-    it('returns warning when receiving significantly less value (> 20% disparity)', () => {
-      const tenMon = 10n * 10n ** 18n // $35
-      const halfMillionXec = 50_000_000n // $17.50 (-50%)
-
-      const res = calculateSwapParity(tenMon, 'monad', halfMillionXec, 'ecash')
-      expect(res.status).toBe('warning')
-      expect(res.parityPercent).toBeCloseTo(-50.0, 1)
+  describe('miningDollarsPerKwh', () => {
+    it('turns dollars per hash into dollars per kWh at the stated joules per hash', () => {
+      // 1e-6 $ per hash at 1 J per hash is 1e-6 $/J = 3.6 $/kWh
+      expect(miningDollarsPerKwh(1e-6, 1)).toBeCloseTo(3.6, 6)
+    })
+    it('has no answer without real inputs', () => {
+      expect(miningDollarsPerKwh(0, 17.5e-12)).toBeUndefined()
     })
   })
 
   describe('fetchOracleSnapshot', () => {
-    it('parses valid Pyth Hermes response into OracleSnapshot', async () => {
-      const mockFetch: any = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          parsed: [
-            {
-              id: PYTH_FEED_IDS.gold,
-              price: { price: '270000000000', expo: -8 }, // 2700.00
-            },
-            {
-              id: PYTH_FEED_IDS.brent,
-              price: { price: '8000000000', expo: -8 }, // 80.00
-            },
-            {
-              id: PYTH_FEED_IDS.solana,
-              price: { price: '16000000000', expo: -8 }, // 160.00
-            },
-            {
-              id: PYTH_FEED_IDS.ethereum,
-              price: { price: '280000000000', expo: -8 }, // 2800.00
-            },
-          ],
-        }),
-      })
+    function clientReturning(prices: Record<string, number>) {
+      return {
+        getSnapshot: jest.fn(async (symbols: string[]) =>
+          Object.fromEntries(
+            symbols.map(symbol => [symbol, { price: prices[symbol] ?? 0 }]),
+          ),
+        ),
+      } as unknown as PriceFeedsClient
+    }
 
-      const snapshot = await fetchOracleSnapshot(mockFetch)
-      expect(snapshot.rates.solana).toBeGreaterThan(0)
-      expect(snapshot.rates.ethereum).toBeGreaterThan(0)
-      expect(snapshot.basketIndex).toBeGreaterThan(0)
-      expect(snapshot.epoch).toBe('pow-energy-standard-v1')
+    it('asks for a market price for every asset in the table, including MON, HYPE, BTC, BCH and DOGE', async () => {
+      const client = clientReturning({})
+      await fetchOracleSnapshot(undefined, 1000, client)
+      const asked = (client.getSnapshot as jest.Mock).mock.calls[0][0]
+      expect(asked.sort()).toEqual(
+        ['BCH', 'BTC', 'DOGE', 'ETH', 'HYPE', 'MON', 'SOL', 'XEC'].sort(),
+      )
+      expect(ASSET_FEED_SYMBOLS.tempo).toBeUndefined()
     })
 
-    it('falls back gracefully to default snapshot when fetch fails', async () => {
-      const mockFailFetch: any = jest
-        .fn()
-        .mockRejectedValue(new Error('Network error'))
-      const snapshot = await fetchOracleSnapshot(mockFailFetch)
-      const def = getDefaultOracleSnapshot()
-      expect(snapshot.epoch).toBe(def.epoch)
-      expect(snapshot.rates.monad).toBeCloseTo(def.rates.monad, 4)
-      expect(snapshot.rates.solana).toBeCloseTo(def.rates.solana, 4)
+    it('states each fetched price in AVU by dividing by the one AVU rate', async () => {
+      const snapshot = await fetchOracleSnapshot(
+        undefined,
+        1000,
+        clientReturning({ SOL: 110, MON: 0.025, BTC: 82000 }),
+      )
+      expect(snapshot.prices).toEqual({
+        solana: 110,
+        monad: 0.025,
+        bitcoin: 82000,
+      })
+      expect(snapshot.rates.solana).toBeCloseTo(
+        110 / POW_BASELINE_DOLLARS_PER_KWH,
+        6,
+      )
+      expect(snapshot.rates.monad).toBeCloseTo(
+        0.025 / POW_BASELINE_DOLLARS_PER_KWH,
+        6,
+      )
+      expect(snapshot.fetchedAt.solana).toBe(snapshot.timestamp)
+      // Any two coins compare through the unit: the ratio of rates is the ratio of prices.
+      expect(snapshot.rates.bitcoin! / snapshot.rates.solana!).toBeCloseTo(
+        82000 / 110,
+        6,
+      )
+    })
+
+    it('gives an asset whose price did not come back no rate at all', async () => {
+      const snapshot = await fetchOracleSnapshot(
+        undefined,
+        1000,
+        clientReturning({ SOL: 110 }),
+      )
+      expect(Object.keys(snapshot.rates)).toEqual(['solana'])
+      expect(snapshot.rates.monad).toBeUndefined()
+      expect(snapshot.prices.ethereum).toBeUndefined()
+    })
+
+    it('has no prices when the fetch fails: a failure is never a default price', async () => {
+      const failing = {
+        getSnapshot: jest.fn().mockRejectedValue(new Error('offline')),
+      } as unknown as PriceFeedsClient
+      const snapshot = await fetchOracleSnapshot(undefined, 1000, failing)
+      expect(snapshot).toMatchObject(unavailableOracleSnapshot())
+      expect(snapshot.rates).toEqual({})
+    })
+
+    it('has no prices when every provider request fails over HTTP', async () => {
+      const fetchFn = jest.fn().mockRejectedValue(new Error('network down'))
+      const snapshot = await fetchOracleSnapshot(
+        fetchFn as unknown as typeof fetch,
+        500,
+      )
+      expect(fetchFn).toHaveBeenCalled()
+      expect(snapshot.prices).toEqual({})
+      expect(snapshot.rates).toEqual({})
     })
   })
 })

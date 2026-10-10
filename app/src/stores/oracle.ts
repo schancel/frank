@@ -1,98 +1,169 @@
 import { defineStore, getActivePinia } from 'pinia'
 import {
+  type AvuRates,
+  type HistoryRange,
+  type MiningStats,
   type OracleSnapshot,
+  type PriceHistoryPoint,
+  type PriceProviderId,
   type SupportedAsset,
-  getDefaultOracleSnapshot,
-  fetchOracleSnapshot,
+  type UsdPrices,
+  ASSET_FEED_SYMBOLS,
+  HISTORY_RANGES,
+  calculateAvuRate,
   convertRawToAvu,
+  fetchMiningStats,
+  fetchOracleSnapshot,
+  fetchPriceHistory,
   formatAvu,
-  DEFAULT_AVU_RATES,
+  unavailableOracleSnapshot,
 } from '@frank/wallet/oracle'
+import { translateMessage } from 'src/i18n'
+import { UNIT_RATE_ASSET_METRICS } from 'src/utils/avu-units'
+import { useSettingsStore } from './settings'
 
-export interface PriceHistoryPoint {
+/** One hourly record of the prices the oracle itself fetched. */
+export interface PriceObservation {
   timestamp: number
-  rates: Record<SupportedAsset, number>
+  prices: UsdPrices
+}
+
+/** A price line for one asset over one range, and where every point came from. */
+export interface AssetHistory {
+  /**
+   * The provider whose candles these are; 'observed' when no provider had history and
+   * the points are this app's own past fetches; null when there is nothing at all.
+   */
+  source: PriceProviderId | 'observed' | null
+  points: PriceHistoryPoint[]
+  fetchedAt: number
 }
 
 export interface OracleState {
   snapshot: OracleSnapshot
-  history: PriceHistoryPoint[]
+  observations: PriceObservation[]
+  histories: Record<string, AssetHistory>
+  mining: Record<string, MiningStats>
   lastFetched: number
   isRefreshing: boolean
 }
 
-const STORAGE_KEY_SNAPSHOT = 'frank_oracle_snapshot_v1'
-const STORAGE_KEY_HISTORY = 'frank_oracle_history_v1'
-const MAX_HISTORY_POINTS = 168 // 7 days of hourly points
+// v2: the v1 records could hold prices that were typed-in constants, so they are never read.
+const STORAGE_KEY_SNAPSHOT = 'frank_oracle_snapshot_v2'
+const STORAGE_KEY_OBSERVATIONS = 'frank_oracle_observations_v2'
+const HOUR_MS = 60 * 60 * 1000
+/** A year of hourly records is the longest range the chart draws. */
+const OBSERVATION_RETENTION_MS = 366 * 24 * HOUR_MS
+/** Prices are refetched every five minutes; one this old has missed several refreshes. */
+export const STALE_AFTER_MS = 15 * 60 * 1000
+const HISTORY_TTL_MS: Record<HistoryRange, number> = {
+  '24h': 10 * 60 * 1000,
+  '7d': 30 * 60 * 1000,
+  '30d': 6 * HOUR_MS,
+  '1y': 6 * HOUR_MS,
+}
+const MINING_TTL_MS = 30 * 60 * 1000
+/** The proof-of-work chains whose mining pay is compared. All three use SHA-256. */
+export const MINING_CHAINS = ['bitcoin', 'bitcoin-cash', 'ecash'] as const
 
-function loadStoredSnapshot(): OracleSnapshot {
+/**
+ * Assets whose wallet here holds test-network coins while the fetched price is the
+ * mainnet coin's. The unit rate is shown labelled as mainnet; a balance gets no value.
+ */
+const MAINNET_PRICE_ONLY_ON_TESTNET: readonly SupportedAsset[] = ['monad']
+
+function readJson(key: string): unknown {
   try {
-    if (typeof localStorage !== 'undefined') {
-      const stored = localStorage.getItem(STORAGE_KEY_SNAPSHOT)
-      if (stored) {
-        const parsed = JSON.parse(stored)
-        if (parsed?.rates && typeof parsed?.basketIndex === 'number') {
-          return parsed
-        }
-      }
-    }
+    if (typeof localStorage === 'undefined') return null
+    const stored = localStorage.getItem(key)
+    return stored ? JSON.parse(stored) : null
   } catch {
-    // Ignore storage parsing errors and use default
+    return null
   }
-  return getDefaultOracleSnapshot()
 }
 
-function loadStoredHistory(): PriceHistoryPoint[] {
+function writeJson(key: string, value: unknown): void {
   try {
     if (typeof localStorage !== 'undefined') {
-      const stored = localStorage.getItem(STORAGE_KEY_HISTORY)
-      if (stored) {
-        const parsed = JSON.parse(stored)
-        if (Array.isArray(parsed)) {
-          return parsed
-        }
-      }
+      localStorage.setItem(key, JSON.stringify(value))
     }
   } catch {
-    // Ignore storage parsing errors
+    // Storage full or disabled: the value stays in memory only.
   }
-  return []
 }
 
-export const UNIT_RATE_ASSET_METRICS: Record<
-  SupportedAsset,
-  { symbol: string; multiplier: number }
-> = {
-  monad: { symbol: '1 MON', multiplier: 1 },
-  solana: { symbol: '1 SOL', multiplier: 1 },
-  ethereum: { symbol: '1 ETH', multiplier: 1 },
-  hyperliquid: { symbol: '1 HYPE', multiplier: 1 },
-  tempo: { symbol: '1 TUSD', multiplier: 1 },
-  ecash: { symbol: '1M XEC', multiplier: 1_000_000 },
-  bitcoin: { symbol: '1 BTC', multiplier: 1 },
-  bitcoincash: { symbol: '1 BCH', multiplier: 1 },
-  dogecoin: { symbol: '1 DOGE', multiplier: 1 },
+function isPositive(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
 /**
- * Returns formatted 1-unit physical compute AVU equivalent string for an asset,
- * e.g. "1 MON ≈ 41.67 AVU" or "1M XEC ≈ 416.67 AVU".
+ * Keeps only what a real fetch can have written: an asset needs a positive price and the
+ * time it was fetched. The AVU rate is recomputed from the price, never read back.
  */
-export function formatUnitRate(
-  asset: SupportedAsset,
-  customRate?: number,
-): string {
+function loadStoredSnapshot(): OracleSnapshot {
+  const snapshot = unavailableOracleSnapshot()
+  const stored = readJson(
+    STORAGE_KEY_SNAPSHOT,
+  ) as Partial<OracleSnapshot> | null
+  if (!stored?.prices || !stored.fetchedAt) return snapshot
+  for (const asset of Object.keys(ASSET_FEED_SYMBOLS) as SupportedAsset[]) {
+    const price = stored.prices[asset]
+    const fetchedAt = stored.fetchedAt[asset]
+    if (isPositive(price) && isPositive(fetchedAt)) {
+      snapshot.prices[asset] = price
+      snapshot.rates[asset] = calculateAvuRate(price)
+      snapshot.fetchedAt[asset] = fetchedAt
+    }
+  }
+  snapshot.timestamp = isPositive(stored.timestamp) ? stored.timestamp : 0
+  return snapshot
+}
+
+function loadStoredObservations(): PriceObservation[] {
+  const stored = readJson(STORAGE_KEY_OBSERVATIONS)
+  if (!Array.isArray(stored)) return []
+  return stored.filter(
+    (o): o is PriceObservation =>
+      isPositive(o?.timestamp) && typeof o?.prices === 'object' && o.prices,
+  )
+}
+
+/**
+ * "1 SOL ≈ 1,309.52 AVU" for a fetched rate. Empty when there is no rate: an asset
+ * without a real price has no AVU value to state.
+ */
+export function formatUnitRate(asset: SupportedAsset, rate?: number): string {
+  if (!isPositive(rate)) return ''
   const metric = UNIT_RATE_ASSET_METRICS[asset] ?? {
     symbol: `1 ${asset.toUpperCase()}`,
     multiplier: 1,
   }
-  const rate = customRate ?? DEFAULT_AVU_RATES[asset] ?? 0
-  const avu = rate * metric.multiplier
-  const formatted = avu.toLocaleString('en-US', {
+  const formatted = (rate * metric.multiplier).toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })
   return `${metric.symbol} ≈ ${formatted} AVU`
+}
+
+/** "12 min", "3 h", "2 d": how old a price is. */
+export function formatAge(ageMs: number): string {
+  const minutes = Math.max(1, Math.round(ageMs / 60_000))
+  if (minutes < 60) return `${minutes} min`
+  const hours = Math.round(minutes / 60)
+  if (hours < 48) return `${hours} h`
+  return `${Math.round(hours / 24)} d`
+}
+
+function translate(key: string, params: Record<string, string>): string {
+  let message = translateMessage(key)
+  for (const [name, value] of Object.entries(params)) {
+    message = message.replaceAll(`{${name}}`, value)
+  }
+  return message
+}
+
+function historyKey(asset: SupportedAsset, range: HistoryRange): string {
+  return `${asset}:${range}`
 }
 
 let workerIntervalId: ReturnType<typeof setInterval> | null = null
@@ -100,100 +171,184 @@ let workerIntervalId: ReturnType<typeof setInterval> | null = null
 export const useOracleStore = defineStore('oracle', {
   state: (): OracleState => ({
     snapshot: loadStoredSnapshot(),
-    history: loadStoredHistory(),
+    observations: loadStoredObservations(),
+    histories: {},
+    mining: {},
     lastFetched: 0,
     isRefreshing: false,
   }),
 
   getters: {
-    rates(state): Record<SupportedAsset, number> {
+    rates(state): AvuRates {
       return state.snapshot.rates
     },
 
+    /** How old an asset's price is, or undefined when it has none. */
+    priceAgeMs(state) {
+      return (asset: SupportedAsset, now = Date.now()): number | undefined => {
+        const fetchedAt = state.snapshot.fetchedAt[asset]
+        return isPositive(fetchedAt) && isPositive(state.snapshot.rates[asset])
+          ? Math.max(0, now - fetchedAt)
+          : undefined
+      }
+    },
+
+    /**
+     * Whether a balance of this asset has a market value here. A testnet coin has none
+     * even when its mainnet namesake has a price.
+     */
+    balanceHasMarketValue() {
+      return (asset: SupportedAsset): boolean =>
+        !(
+          useSettingsStore().networkMode === 'testnet' &&
+          MAINNET_PRICE_ONLY_ON_TESTNET.includes(asset)
+        )
+    },
+
+    /** AVU value of a balance; 0 when the asset has no real price to value it with. */
     getAvu(state) {
       return (
         asset: SupportedAsset,
         rawAmount: bigint | null | undefined,
       ): number => {
-        return convertRawToAvu(rawAmount, asset, state.snapshot.rates[asset])
+        if (!this.balanceHasMarketValue(asset)) return 0
+        return (
+          convertRawToAvu(rawAmount, asset, state.snapshot.rates[asset]) ?? 0
+        )
       }
     },
 
-    formatAvuAmount(state) {
+    /** "≈ 92.50 AVU", or empty when there is no real price or nothing to value. */
+    formatAvuAmount() {
       return (
         asset: SupportedAsset,
         rawAmount: bigint | null | undefined,
       ): string => {
-        const avu = convertRawToAvu(
-          rawAmount,
-          asset,
-          state.snapshot.rates[asset],
-        )
-        if (avu <= 0) return ''
-        return `≈ ${formatAvu(avu)}`
+        const avu = this.getAvu(asset, rawAmount)
+        return avu > 0 ? `≈ ${formatAvu(avu)}` : ''
       }
     },
 
+    /**
+     * The unit rate line. Empty with no price; marked with the price's age once stale;
+     * marked as the mainnet coin's price where the wallet holds testnet coins.
+     */
     formatUnitRate(state) {
       return (asset: SupportedAsset): string => {
-        return formatUnitRate(asset, state.snapshot.rates[asset])
+        let line = formatUnitRate(asset, state.snapshot.rates[asset])
+        if (!line) return ''
+        if (!this.balanceHasMarketValue(asset)) {
+          line = translate('walletPanel.avuMainnetPrice', { rate: line })
+        }
+        const age = this.priceAgeMs(asset)
+        if (age !== undefined && age > STALE_AFTER_MS) {
+          line = translate('walletPanel.avuStalePrice', {
+            rate: line,
+            age: formatAge(age),
+          })
+        }
+        return line
       }
     },
 
-    historicalTrend(state): PriceHistoryPoint[] {
-      return state.history
+    /**
+     * The price line to draw for an asset and range: the provider's candles when it has
+     * any, otherwise this app's own hourly records inside the range, otherwise nothing.
+     */
+    historyFor(state) {
+      return (
+        asset: SupportedAsset,
+        range: HistoryRange,
+        now = Date.now(),
+      ): AssetHistory => {
+        const fetched = state.histories[historyKey(asset, range)]
+        if (fetched && fetched.points.length > 0) return fetched
+        const oldest = now - HISTORY_RANGES[range].spanSeconds * 1000
+        const points = state.observations.flatMap(o => {
+          const price = o.prices[asset]
+          return o.timestamp >= oldest && isPositive(price)
+            ? [{ timestamp: o.timestamp, price }]
+            : []
+        })
+        return {
+          source: points.length > 0 ? 'observed' : null,
+          points,
+          fetchedAt: fetched?.fetchedAt ?? 0,
+        }
+      }
     },
   },
 
   actions: {
+    /**
+     * Fetches prices. An asset whose price came back is replaced; one that did not keeps
+     * its last fetched price and that price's own time, so it shows as stale, never fresh.
+     */
     async refresh(): Promise<void> {
       if (this.isRefreshing) return
       this.isRefreshing = true
 
       try {
-        const newSnapshot = await fetchOracleSnapshot()
-        this.snapshot = newSnapshot
-        this.lastFetched = Date.now()
+        const fetched = await fetchOracleSnapshot()
+        if (Object.keys(fetched.prices).length === 0) return
 
-        // Persist latest snapshot to local storage for instant cold-starts
-        try {
-          if (typeof localStorage !== 'undefined') {
-            localStorage.setItem(
-              STORAGE_KEY_SNAPSHOT,
-              JSON.stringify(newSnapshot),
-            )
-          }
-        } catch {
-          // Storage quota exceeded or disabled
+        this.snapshot = {
+          ...fetched,
+          prices: { ...this.snapshot.prices, ...fetched.prices },
+          rates: { ...this.snapshot.rates, ...fetched.rates },
+          fetchedAt: { ...this.snapshot.fetchedAt, ...fetched.fetchedAt },
         }
+        this.lastFetched = fetched.timestamp
+        writeJson(STORAGE_KEY_SNAPSHOT, this.snapshot)
 
-        // Rolling hourly history compaction (max 168 points = 7 days)
-        const lastPoint = this.history[this.history.length - 1]
-        const ONE_HOUR_MS = 60 * 60 * 1000
-        if (!lastPoint || Date.now() - lastPoint.timestamp >= ONE_HOUR_MS) {
-          this.history.push({
-            timestamp: Date.now(),
-            rates: { ...newSnapshot.rates },
-          })
-          if (this.history.length > MAX_HISTORY_POINTS) {
-            this.history.shift()
-          }
-          try {
-            if (typeof localStorage !== 'undefined') {
-              localStorage.setItem(
-                STORAGE_KEY_HISTORY,
-                JSON.stringify(this.history),
-              )
-            }
-          } catch {
-            // Storage quota exceeded or disabled
-          }
+        // One record an hour, of the prices this fetch returned and nothing else.
+        const last = this.observations[this.observations.length - 1]
+        if (!last || fetched.timestamp - last.timestamp >= HOUR_MS) {
+          const oldest = fetched.timestamp - OBSERVATION_RETENTION_MS
+          this.observations = [
+            ...this.observations.filter(o => o.timestamp >= oldest),
+            { timestamp: fetched.timestamp, prices: { ...fetched.prices } },
+          ]
+          writeJson(STORAGE_KEY_OBSERVATIONS, this.observations)
         }
       } catch {
-        // Fall back gracefully to existing in-memory snapshot
+        // Keep what was last fetched; its age shows it is no longer current.
       } finally {
         this.isRefreshing = false
       }
+    },
+
+    /** Loads an asset's price history from the providers, at most once per TTL. */
+    async loadHistory(
+      asset: SupportedAsset,
+      range: HistoryRange,
+    ): Promise<void> {
+      const symbol = ASSET_FEED_SYMBOLS[asset]
+      if (!symbol) return
+      const key = historyKey(asset, range)
+      const cached = this.histories[key]
+      if (cached && Date.now() - cached.fetchedAt < HISTORY_TTL_MS[range])
+        return
+      const history = await fetchPriceHistory(symbol, range)
+      // A failed reload keeps the candles already fetched; it never blanks or invents them.
+      if (history.points.length === 0 && cached) return
+      this.histories[key] = {
+        source: history.provider,
+        points: history.points,
+        fetchedAt: Date.now(),
+      }
+    },
+
+    /** Loads the proof-of-work chains' issuance and hashrate, at most once per TTL. */
+    async loadMiningStats(): Promise<void> {
+      await Promise.all(
+        MINING_CHAINS.map(async chain => {
+          const cached = this.mining[chain]
+          if (cached && Date.now() - cached.fetchedAt < MINING_TTL_MS) return
+          const stats = await fetchMiningStats(chain)
+          if (stats) this.mining[chain] = stats
+        }),
+      )
     },
 
     startBackgroundWorker(intervalMs = 300000): void {
@@ -217,7 +372,13 @@ export const useOracleStore = defineStore('oracle', {
   },
 })
 
-export function useSafeOracleStore() {
+export type OracleStore = ReturnType<typeof useOracleStore>
+
+/**
+ * The oracle store, or, where no Pinia is active, a stand-in that knows no prices: every
+ * value it reports is "none", never a default.
+ */
+export function useSafeOracleStore(): OracleStore {
   try {
     if (typeof getActivePinia === 'function' && getActivePinia()) {
       return useOracleStore()
@@ -225,31 +386,25 @@ export function useSafeOracleStore() {
   } catch {
     // Pinia not active or uninitialized
   }
+  const none: AssetHistory = { source: null, points: [], fetchedAt: 0 }
   return {
-    snapshot: getDefaultOracleSnapshot(),
-    history: [],
+    snapshot: unavailableOracleSnapshot(),
+    observations: [],
+    histories: {},
+    mining: {},
     lastFetched: 0,
     isRefreshing: false,
-    rates: DEFAULT_AVU_RATES,
-    getAvu: (asset: SupportedAsset, rawAmount: bigint | null | undefined) =>
-      convertRawToAvu(rawAmount, asset),
-    formatAvuAmount: (
-      asset: SupportedAsset,
-      rawAmount: bigint | null | undefined,
-    ) => {
-      const avu = convertRawToAvu(rawAmount, asset)
-      return avu > 0 ? `≈ ${formatAvu(avu)}` : ''
-    },
-    formatUnitRate: (asset: SupportedAsset) => formatUnitRate(asset),
-    historicalTrend: [],
-    refresh: async () => {
-      // no-op in safe fallback
-    },
-    startBackgroundWorker: () => {
-      // no-op in safe fallback
-    },
-    stopBackgroundWorker: () => {
-      // no-op in safe fallback
-    },
-  }
+    rates: {},
+    priceAgeMs: () => undefined,
+    balanceHasMarketValue: () => false,
+    getAvu: () => 0,
+    formatAvuAmount: () => '',
+    formatUnitRate: () => '',
+    historyFor: () => none,
+    refresh: async () => undefined,
+    loadHistory: async () => undefined,
+    loadMiningStats: async () => undefined,
+    startBackgroundWorker: () => undefined,
+    stopBackgroundWorker: () => undefined,
+  } as unknown as OracleStore
 }

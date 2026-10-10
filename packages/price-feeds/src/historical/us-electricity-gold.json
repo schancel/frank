@@ -1,0 +1,2451 @@
+{
+ "sources": {
+  "centsPerKwh": "US EIA Monthly Energy Review Table 9.8, series ESICUUS: average price of electricity to industrial customers, nominal cents per kWh",
+  "goldUsd": "World Bank Commodity Price Data (Pink Sheet), annual prices, nominal US dollars per troy ounce. Updated on January 03, 2025"
+ },
+ "annual": [
+  {
+   "year": 1960,
+   "centsPerKwh": 1.1,
+   "goldUsd": 35.27
+  },
+  {
+   "year": 1961,
+   "centsPerKwh": 1.1,
+   "goldUsd": 35.25
+  },
+  {
+   "year": 1962,
+   "centsPerKwh": 1.1,
+   "goldUsd": 35.23
+  },
+  {
+   "year": 1963,
+   "centsPerKwh": 1.0,
+   "goldUsd": 35.09
+  },
+  {
+   "year": 1964,
+   "centsPerKwh": 1.0,
+   "goldUsd": 35.1
+  },
+  {
+   "year": 1965,
+   "centsPerKwh": 1.0,
+   "goldUsd": 35.12
+  },
+  {
+   "year": 1966,
+   "centsPerKwh": 1.0,
+   "goldUsd": 35.13
+  },
+  {
+   "year": 1967,
+   "centsPerKwh": 1.0,
+   "goldUsd": 34.95
+  },
+  {
+   "year": 1968,
+   "centsPerKwh": 1.0,
+   "goldUsd": 38.92
+  },
+  {
+   "year": 1969,
+   "centsPerKwh": 1.0,
+   "goldUsd": 41.08
+  },
+  {
+   "year": 1970,
+   "centsPerKwh": 1.0,
+   "goldUsd": 35.94
+  },
+  {
+   "year": 1971,
+   "centsPerKwh": 1.1,
+   "goldUsd": 40.8
+  },
+  {
+   "year": 1972,
+   "centsPerKwh": 1.2,
+   "goldUsd": 58.16
+  },
+  {
+   "year": 1973,
+   "centsPerKwh": 1.3,
+   "goldUsd": 97.33
+  },
+  {
+   "year": 1974,
+   "centsPerKwh": 1.7,
+   "goldUsd": 159.25
+  },
+  {
+   "year": 1975,
+   "centsPerKwh": 2.1,
+   "goldUsd": 161.03
+  },
+  {
+   "year": 1976,
+   "centsPerKwh": 2.2,
+   "goldUsd": 124.82
+  },
+  {
+   "year": 1977,
+   "centsPerKwh": 2.5,
+   "goldUsd": 147.72
+  },
+  {
+   "year": 1978,
+   "centsPerKwh": 2.8,
+   "goldUsd": 193.24
+  },
+  {
+   "year": 1979,
+   "centsPerKwh": 3.1,
+   "goldUsd": 306.67
+  },
+  {
+   "year": 1980,
+   "centsPerKwh": 3.7,
+   "goldUsd": 607.86
+  },
+  {
+   "year": 1981,
+   "centsPerKwh": 4.3,
+   "goldUsd": 459.75
+  },
+  {
+   "year": 1982,
+   "centsPerKwh": 5.0,
+   "goldUsd": 375.8
+  },
+  {
+   "year": 1983,
+   "centsPerKwh": 5.0,
+   "goldUsd": 422.53
+  },
+  {
+   "year": 1984,
+   "centsPerKwh": 4.83,
+   "goldUsd": 360.48
+  },
+  {
+   "year": 1985,
+   "centsPerKwh": 4.97,
+   "goldUsd": 317.91
+  },
+  {
+   "year": 1986,
+   "centsPerKwh": 4.93,
+   "goldUsd": 367.69
+  },
+  {
+   "year": 1987,
+   "centsPerKwh": 4.77,
+   "goldUsd": 446.47
+  },
+  {
+   "year": 1988,
+   "centsPerKwh": 4.7,
+   "goldUsd": 437.05
+  },
+  {
+   "year": 1989,
+   "centsPerKwh": 4.72,
+   "goldUsd": 381.43
+  },
+  {
+   "year": 1990,
+   "centsPerKwh": 4.74,
+   "goldUsd": 383.47
+  },
+  {
+   "year": 1991,
+   "centsPerKwh": 4.83,
+   "goldUsd": 362.18
+  },
+  {
+   "year": 1992,
+   "centsPerKwh": 4.83,
+   "goldUsd": 343.73
+  },
+  {
+   "year": 1993,
+   "centsPerKwh": 4.85,
+   "goldUsd": 359.77
+  },
+  {
+   "year": 1994,
+   "centsPerKwh": 4.77,
+   "goldUsd": 384.01
+  },
+  {
+   "year": 1995,
+   "centsPerKwh": 4.66,
+   "goldUsd": 384.16
+  },
+  {
+   "year": 1996,
+   "centsPerKwh": 4.6,
+   "goldUsd": 387.7
+  },
+  {
+   "year": 1997,
+   "centsPerKwh": 4.53,
+   "goldUsd": 331.1
+  },
+  {
+   "year": 1998,
+   "centsPerKwh": 4.48,
+   "goldUsd": 294.16
+  },
+  {
+   "year": 1999,
+   "centsPerKwh": 4.43,
+   "goldUsd": 278.77
+  },
+  {
+   "year": 2000,
+   "centsPerKwh": 4.64,
+   "goldUsd": 279.03
+  },
+  {
+   "year": 2001,
+   "centsPerKwh": 5.05,
+   "goldUsd": 270.99
+  },
+  {
+   "year": 2002,
+   "centsPerKwh": 4.88,
+   "goldUsd": 309.97
+  },
+  {
+   "year": 2003,
+   "centsPerKwh": 5.11,
+   "goldUsd": 363.51
+  },
+  {
+   "year": 2004,
+   "centsPerKwh": 5.25,
+   "goldUsd": 409.21
+  },
+  {
+   "year": 2005,
+   "centsPerKwh": 5.73,
+   "goldUsd": 444.84
+  },
+  {
+   "year": 2006,
+   "centsPerKwh": 6.16,
+   "goldUsd": 604.34
+  },
+  {
+   "year": 2007,
+   "centsPerKwh": 6.39,
+   "goldUsd": 696.72
+  },
+  {
+   "year": 2008,
+   "centsPerKwh": 6.96,
+   "goldUsd": 871.71
+  },
+  {
+   "year": 2009,
+   "centsPerKwh": 6.83,
+   "goldUsd": 972.97
+  },
+  {
+   "year": 2010,
+   "centsPerKwh": 6.77,
+   "goldUsd": 1224.66
+  },
+  {
+   "year": 2011,
+   "centsPerKwh": 6.82,
+   "goldUsd": 1569.21
+  },
+  {
+   "year": 2012,
+   "centsPerKwh": 6.67,
+   "goldUsd": 1669.52
+  },
+  {
+   "year": 2013,
+   "centsPerKwh": 6.89,
+   "goldUsd": 1411.46
+  },
+  {
+   "year": 2014,
+   "centsPerKwh": 7.1,
+   "goldUsd": 1265.58
+  },
+  {
+   "year": 2015,
+   "centsPerKwh": 6.91,
+   "goldUsd": 1160.66
+  },
+  {
+   "year": 2016,
+   "centsPerKwh": 6.76,
+   "goldUsd": 1248.99
+  },
+  {
+   "year": 2017,
+   "centsPerKwh": 6.88,
+   "goldUsd": 1257.56
+  },
+  {
+   "year": 2018,
+   "centsPerKwh": 6.92,
+   "goldUsd": 1269.23
+  },
+  {
+   "year": 2019,
+   "centsPerKwh": 6.81,
+   "goldUsd": 1392.5
+  },
+  {
+   "year": 2020,
+   "centsPerKwh": 6.67,
+   "goldUsd": 1770.25
+  },
+  {
+   "year": 2021,
+   "centsPerKwh": 7.18,
+   "goldUsd": 1799.63
+  },
+  {
+   "year": 2022,
+   "centsPerKwh": 8.32,
+   "goldUsd": 1800.6
+  },
+  {
+   "year": 2023,
+   "centsPerKwh": 8.04,
+   "goldUsd": 1942.67
+  },
+  {
+   "year": 2024,
+   "centsPerKwh": 8.13,
+   "goldUsd": 2387.7
+  },
+  {
+   "year": 2025,
+   "centsPerKwh": 8.62
+  }
+ ],
+ "monthlyCentsPerKwh": [
+  {
+   "month": "1976-07",
+   "centsPerKwh": 2.3
+  },
+  {
+   "month": "1976-08",
+   "centsPerKwh": 2.2
+  },
+  {
+   "month": "1976-09",
+   "centsPerKwh": 2.2
+  },
+  {
+   "month": "1976-10",
+   "centsPerKwh": 2.2
+  },
+  {
+   "month": "1976-11",
+   "centsPerKwh": 2.2
+  },
+  {
+   "month": "1976-12",
+   "centsPerKwh": 2.3
+  },
+  {
+   "month": "1977-01",
+   "centsPerKwh": 2.4
+  },
+  {
+   "month": "1977-02",
+   "centsPerKwh": 2.4
+  },
+  {
+   "month": "1977-03",
+   "centsPerKwh": 2.4
+  },
+  {
+   "month": "1977-04",
+   "centsPerKwh": 2.4
+  },
+  {
+   "month": "1977-05",
+   "centsPerKwh": 2.5
+  },
+  {
+   "month": "1977-06",
+   "centsPerKwh": 2.5
+  },
+  {
+   "month": "1977-07",
+   "centsPerKwh": 2.6
+  },
+  {
+   "month": "1977-08",
+   "centsPerKwh": 2.6
+  },
+  {
+   "month": "1977-09",
+   "centsPerKwh": 2.6
+  },
+  {
+   "month": "1977-10",
+   "centsPerKwh": 2.6
+  },
+  {
+   "month": "1977-11",
+   "centsPerKwh": 2.6
+  },
+  {
+   "month": "1977-12",
+   "centsPerKwh": 2.5
+  },
+  {
+   "month": "1978-01",
+   "centsPerKwh": 2.6
+  },
+  {
+   "month": "1978-02",
+   "centsPerKwh": 2.7
+  },
+  {
+   "month": "1978-03",
+   "centsPerKwh": 2.9
+  },
+  {
+   "month": "1978-04",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-05",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-06",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-07",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-08",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-09",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-10",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-11",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1978-12",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1979-01",
+   "centsPerKwh": 2.8
+  },
+  {
+   "month": "1979-02",
+   "centsPerKwh": 2.9
+  },
+  {
+   "month": "1979-03",
+   "centsPerKwh": 2.9
+  },
+  {
+   "month": "1979-04",
+   "centsPerKwh": 2.9
+  },
+  {
+   "month": "1979-05",
+   "centsPerKwh": 3.0
+  },
+  {
+   "month": "1979-06",
+   "centsPerKwh": 3.0
+  },
+  {
+   "month": "1979-07",
+   "centsPerKwh": 3.1
+  },
+  {
+   "month": "1979-08",
+   "centsPerKwh": 3.1
+  },
+  {
+   "month": "1979-09",
+   "centsPerKwh": 3.2
+  },
+  {
+   "month": "1979-10",
+   "centsPerKwh": 3.2
+  },
+  {
+   "month": "1979-11",
+   "centsPerKwh": 3.2
+  },
+  {
+   "month": "1979-12",
+   "centsPerKwh": 3.3
+  },
+  {
+   "month": "1980-01",
+   "centsPerKwh": 3.3
+  },
+  {
+   "month": "1980-02",
+   "centsPerKwh": 3.3
+  },
+  {
+   "month": "1980-03",
+   "centsPerKwh": 3.5
+  },
+  {
+   "month": "1980-04",
+   "centsPerKwh": 3.5
+  },
+  {
+   "month": "1980-05",
+   "centsPerKwh": 3.6
+  },
+  {
+   "month": "1980-06",
+   "centsPerKwh": 3.8
+  },
+  {
+   "month": "1980-07",
+   "centsPerKwh": 3.9
+  },
+  {
+   "month": "1980-08",
+   "centsPerKwh": 3.9
+  },
+  {
+   "month": "1980-09",
+   "centsPerKwh": 3.9
+  },
+  {
+   "month": "1980-10",
+   "centsPerKwh": 3.8
+  },
+  {
+   "month": "1980-11",
+   "centsPerKwh": 3.9
+  },
+  {
+   "month": "1980-12",
+   "centsPerKwh": 3.9
+  },
+  {
+   "month": "1981-01",
+   "centsPerKwh": 3.9
+  },
+  {
+   "month": "1981-02",
+   "centsPerKwh": 4.0
+  },
+  {
+   "month": "1981-03",
+   "centsPerKwh": 4.0
+  },
+  {
+   "month": "1981-04",
+   "centsPerKwh": 4.1
+  },
+  {
+   "month": "1981-05",
+   "centsPerKwh": 4.2
+  },
+  {
+   "month": "1981-06",
+   "centsPerKwh": 4.4
+  },
+  {
+   "month": "1981-07",
+   "centsPerKwh": 4.5
+  },
+  {
+   "month": "1981-08",
+   "centsPerKwh": 4.5
+  },
+  {
+   "month": "1981-09",
+   "centsPerKwh": 4.5
+  },
+  {
+   "month": "1981-10",
+   "centsPerKwh": 4.4
+  },
+  {
+   "month": "1981-11",
+   "centsPerKwh": 4.5
+  },
+  {
+   "month": "1981-12",
+   "centsPerKwh": 4.6
+  },
+  {
+   "month": "1982-01",
+   "centsPerKwh": 4.7
+  },
+  {
+   "month": "1982-02",
+   "centsPerKwh": 4.7
+  },
+  {
+   "month": "1982-03",
+   "centsPerKwh": 4.8
+  },
+  {
+   "month": "1982-04",
+   "centsPerKwh": 4.8
+  },
+  {
+   "month": "1982-05",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1982-06",
+   "centsPerKwh": 4.9
+  },
+  {
+   "month": "1982-07",
+   "centsPerKwh": 5.1
+  },
+  {
+   "month": "1982-08",
+   "centsPerKwh": 5.2
+  },
+  {
+   "month": "1982-09",
+   "centsPerKwh": 5.3
+  },
+  {
+   "month": "1982-10",
+   "centsPerKwh": 5.1
+  },
+  {
+   "month": "1982-11",
+   "centsPerKwh": 4.9
+  },
+  {
+   "month": "1982-12",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-01",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-02",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-03",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-04",
+   "centsPerKwh": 4.9
+  },
+  {
+   "month": "1983-05",
+   "centsPerKwh": 4.9
+  },
+  {
+   "month": "1983-06",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-07",
+   "centsPerKwh": 5.1
+  },
+  {
+   "month": "1983-08",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-09",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-10",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "1983-11",
+   "centsPerKwh": 4.8
+  },
+  {
+   "month": "1983-12",
+   "centsPerKwh": 4.8
+  },
+  {
+   "month": "1990-01",
+   "centsPerKwh": 4.59
+  },
+  {
+   "month": "1990-02",
+   "centsPerKwh": 4.59
+  },
+  {
+   "month": "1990-03",
+   "centsPerKwh": 4.6
+  },
+  {
+   "month": "1990-04",
+   "centsPerKwh": 4.56
+  },
+  {
+   "month": "1990-05",
+   "centsPerKwh": 4.62
+  },
+  {
+   "month": "1990-06",
+   "centsPerKwh": 4.82
+  },
+  {
+   "month": "1990-07",
+   "centsPerKwh": 5.04
+  },
+  {
+   "month": "1990-08",
+   "centsPerKwh": 4.98
+  },
+  {
+   "month": "1990-09",
+   "centsPerKwh": 4.97
+  },
+  {
+   "month": "1990-10",
+   "centsPerKwh": 4.82
+  },
+  {
+   "month": "1990-11",
+   "centsPerKwh": 4.64
+  },
+  {
+   "month": "1990-12",
+   "centsPerKwh": 4.63
+  },
+  {
+   "month": "1991-01",
+   "centsPerKwh": 4.63
+  },
+  {
+   "month": "1991-02",
+   "centsPerKwh": 4.72
+  },
+  {
+   "month": "1991-03",
+   "centsPerKwh": 4.71
+  },
+  {
+   "month": "1991-04",
+   "centsPerKwh": 4.66
+  },
+  {
+   "month": "1991-05",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "1991-06",
+   "centsPerKwh": 4.96
+  },
+  {
+   "month": "1991-07",
+   "centsPerKwh": 5.1
+  },
+  {
+   "month": "1991-08",
+   "centsPerKwh": 5.08
+  },
+  {
+   "month": "1991-09",
+   "centsPerKwh": 5.04
+  },
+  {
+   "month": "1991-10",
+   "centsPerKwh": 4.92
+  },
+  {
+   "month": "1991-11",
+   "centsPerKwh": 4.69
+  },
+  {
+   "month": "1991-12",
+   "centsPerKwh": 4.68
+  },
+  {
+   "month": "1992-01",
+   "centsPerKwh": 4.67
+  },
+  {
+   "month": "1992-02",
+   "centsPerKwh": 4.7
+  },
+  {
+   "month": "1992-03",
+   "centsPerKwh": 4.68
+  },
+  {
+   "month": "1992-04",
+   "centsPerKwh": 4.68
+  },
+  {
+   "month": "1992-05",
+   "centsPerKwh": 4.74
+  },
+  {
+   "month": "1992-06",
+   "centsPerKwh": 4.92
+  },
+  {
+   "month": "1992-07",
+   "centsPerKwh": 5.13
+  },
+  {
+   "month": "1992-08",
+   "centsPerKwh": 5.04
+  },
+  {
+   "month": "1992-09",
+   "centsPerKwh": 5.09
+  },
+  {
+   "month": "1992-10",
+   "centsPerKwh": 4.88
+  },
+  {
+   "month": "1992-11",
+   "centsPerKwh": 4.67
+  },
+  {
+   "month": "1992-12",
+   "centsPerKwh": 4.71
+  },
+  {
+   "month": "1993-01",
+   "centsPerKwh": 4.64
+  },
+  {
+   "month": "1993-02",
+   "centsPerKwh": 4.65
+  },
+  {
+   "month": "1993-03",
+   "centsPerKwh": 4.66
+  },
+  {
+   "month": "1993-04",
+   "centsPerKwh": 4.6
+  },
+  {
+   "month": "1993-05",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "1993-06",
+   "centsPerKwh": 4.96
+  },
+  {
+   "month": "1993-07",
+   "centsPerKwh": 5.16
+  },
+  {
+   "month": "1993-08",
+   "centsPerKwh": 5.16
+  },
+  {
+   "month": "1993-09",
+   "centsPerKwh": 5.12
+  },
+  {
+   "month": "1993-10",
+   "centsPerKwh": 5.01
+  },
+  {
+   "month": "1993-11",
+   "centsPerKwh": 4.69
+  },
+  {
+   "month": "1993-12",
+   "centsPerKwh": 4.69
+  },
+  {
+   "month": "1994-01",
+   "centsPerKwh": 4.68
+  },
+  {
+   "month": "1994-02",
+   "centsPerKwh": 4.72
+  },
+  {
+   "month": "1994-03",
+   "centsPerKwh": 4.66
+  },
+  {
+   "month": "1994-04",
+   "centsPerKwh": 4.66
+  },
+  {
+   "month": "1994-05",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "1994-06",
+   "centsPerKwh": 4.94
+  },
+  {
+   "month": "1994-07",
+   "centsPerKwh": 5.05
+  },
+  {
+   "month": "1994-08",
+   "centsPerKwh": 4.93
+  },
+  {
+   "month": "1994-09",
+   "centsPerKwh": 4.93
+  },
+  {
+   "month": "1994-10",
+   "centsPerKwh": 4.71
+  },
+  {
+   "month": "1994-11",
+   "centsPerKwh": 4.59
+  },
+  {
+   "month": "1994-12",
+   "centsPerKwh": 4.57
+  },
+  {
+   "month": "1995-01",
+   "centsPerKwh": 4.48
+  },
+  {
+   "month": "1995-02",
+   "centsPerKwh": 4.55
+  },
+  {
+   "month": "1995-03",
+   "centsPerKwh": 4.53
+  },
+  {
+   "month": "1995-04",
+   "centsPerKwh": 4.51
+  },
+  {
+   "month": "1995-05",
+   "centsPerKwh": 4.54
+  },
+  {
+   "month": "1995-06",
+   "centsPerKwh": 4.82
+  },
+  {
+   "month": "1995-07",
+   "centsPerKwh": 4.95
+  },
+  {
+   "month": "1995-08",
+   "centsPerKwh": 4.97
+  },
+  {
+   "month": "1995-09",
+   "centsPerKwh": 4.79
+  },
+  {
+   "month": "1995-10",
+   "centsPerKwh": 4.71
+  },
+  {
+   "month": "1995-11",
+   "centsPerKwh": 4.51
+  },
+  {
+   "month": "1995-12",
+   "centsPerKwh": 4.48
+  },
+  {
+   "month": "1996-01",
+   "centsPerKwh": 4.47
+  },
+  {
+   "month": "1996-02",
+   "centsPerKwh": 4.5
+  },
+  {
+   "month": "1996-03",
+   "centsPerKwh": 4.49
+  },
+  {
+   "month": "1996-04",
+   "centsPerKwh": 4.46
+  },
+  {
+   "month": "1996-05",
+   "centsPerKwh": 4.54
+  },
+  {
+   "month": "1996-06",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "1996-07",
+   "centsPerKwh": 4.88
+  },
+  {
+   "month": "1996-08",
+   "centsPerKwh": 4.84
+  },
+  {
+   "month": "1996-09",
+   "centsPerKwh": 4.78
+  },
+  {
+   "month": "1996-10",
+   "centsPerKwh": 4.61
+  },
+  {
+   "month": "1996-11",
+   "centsPerKwh": 4.45
+  },
+  {
+   "month": "1996-12",
+   "centsPerKwh": 4.38
+  },
+  {
+   "month": "1997-01",
+   "centsPerKwh": 4.41
+  },
+  {
+   "month": "1997-02",
+   "centsPerKwh": 4.41
+  },
+  {
+   "month": "1997-03",
+   "centsPerKwh": 4.41
+  },
+  {
+   "month": "1997-04",
+   "centsPerKwh": 4.33
+  },
+  {
+   "month": "1997-05",
+   "centsPerKwh": 4.39
+  },
+  {
+   "month": "1997-06",
+   "centsPerKwh": 4.61
+  },
+  {
+   "month": "1997-07",
+   "centsPerKwh": 4.82
+  },
+  {
+   "month": "1997-08",
+   "centsPerKwh": 4.76
+  },
+  {
+   "month": "1997-09",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "1997-10",
+   "centsPerKwh": 4.61
+  },
+  {
+   "month": "1997-11",
+   "centsPerKwh": 4.45
+  },
+  {
+   "month": "1997-12",
+   "centsPerKwh": 4.36
+  },
+  {
+   "month": "1998-01",
+   "centsPerKwh": 4.36
+  },
+  {
+   "month": "1998-02",
+   "centsPerKwh": 4.31
+  },
+  {
+   "month": "1998-03",
+   "centsPerKwh": 4.33
+  },
+  {
+   "month": "1998-04",
+   "centsPerKwh": 4.3
+  },
+  {
+   "month": "1998-05",
+   "centsPerKwh": 4.41
+  },
+  {
+   "month": "1998-06",
+   "centsPerKwh": 4.65
+  },
+  {
+   "month": "1998-07",
+   "centsPerKwh": 4.85
+  },
+  {
+   "month": "1998-08",
+   "centsPerKwh": 4.78
+  },
+  {
+   "month": "1998-09",
+   "centsPerKwh": 4.62
+  },
+  {
+   "month": "1998-10",
+   "centsPerKwh": 4.42
+  },
+  {
+   "month": "1998-11",
+   "centsPerKwh": 4.32
+  },
+  {
+   "month": "1998-12",
+   "centsPerKwh": 4.3
+  },
+  {
+   "month": "1999-01",
+   "centsPerKwh": 4.28
+  },
+  {
+   "month": "1999-02",
+   "centsPerKwh": 4.32
+  },
+  {
+   "month": "1999-03",
+   "centsPerKwh": 4.19
+  },
+  {
+   "month": "1999-04",
+   "centsPerKwh": 4.24
+  },
+  {
+   "month": "1999-05",
+   "centsPerKwh": 4.3
+  },
+  {
+   "month": "1999-06",
+   "centsPerKwh": 4.54
+  },
+  {
+   "month": "1999-07",
+   "centsPerKwh": 4.8
+  },
+  {
+   "month": "1999-08",
+   "centsPerKwh": 4.87
+  },
+  {
+   "month": "1999-09",
+   "centsPerKwh": 4.57
+  },
+  {
+   "month": "1999-10",
+   "centsPerKwh": 4.47
+  },
+  {
+   "month": "1999-11",
+   "centsPerKwh": 4.27
+  },
+  {
+   "month": "1999-12",
+   "centsPerKwh": 4.19
+  },
+  {
+   "month": "2000-01",
+   "centsPerKwh": 4.31
+  },
+  {
+   "month": "2000-02",
+   "centsPerKwh": 4.32
+  },
+  {
+   "month": "2000-03",
+   "centsPerKwh": 4.31
+  },
+  {
+   "month": "2000-04",
+   "centsPerKwh": 4.32
+  },
+  {
+   "month": "2000-05",
+   "centsPerKwh": 4.51
+  },
+  {
+   "month": "2000-06",
+   "centsPerKwh": 4.75
+  },
+  {
+   "month": "2000-07",
+   "centsPerKwh": 4.95
+  },
+  {
+   "month": "2000-08",
+   "centsPerKwh": 5.07
+  },
+  {
+   "month": "2000-09",
+   "centsPerKwh": 4.84
+  },
+  {
+   "month": "2000-10",
+   "centsPerKwh": 4.74
+  },
+  {
+   "month": "2000-11",
+   "centsPerKwh": 4.59
+  },
+  {
+   "month": "2000-12",
+   "centsPerKwh": 4.88
+  },
+  {
+   "month": "2001-01",
+   "centsPerKwh": 4.75
+  },
+  {
+   "month": "2001-02",
+   "centsPerKwh": 4.81
+  },
+  {
+   "month": "2001-03",
+   "centsPerKwh": 4.87
+  },
+  {
+   "month": "2001-04",
+   "centsPerKwh": 4.87
+  },
+  {
+   "month": "2001-05",
+   "centsPerKwh": 5.0
+  },
+  {
+   "month": "2001-06",
+   "centsPerKwh": 5.23
+  },
+  {
+   "month": "2001-07",
+   "centsPerKwh": 5.56
+  },
+  {
+   "month": "2001-08",
+   "centsPerKwh": 5.49
+  },
+  {
+   "month": "2001-09",
+   "centsPerKwh": 5.3
+  },
+  {
+   "month": "2001-10",
+   "centsPerKwh": 5.06
+  },
+  {
+   "month": "2001-11",
+   "centsPerKwh": 4.78
+  },
+  {
+   "month": "2001-12",
+   "centsPerKwh": 4.78
+  },
+  {
+   "month": "2002-01",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "2002-02",
+   "centsPerKwh": 4.76
+  },
+  {
+   "month": "2002-03",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "2002-04",
+   "centsPerKwh": 4.73
+  },
+  {
+   "month": "2002-05",
+   "centsPerKwh": 4.78
+  },
+  {
+   "month": "2002-06",
+   "centsPerKwh": 5.03
+  },
+  {
+   "month": "2002-07",
+   "centsPerKwh": 5.27
+  },
+  {
+   "month": "2002-08",
+   "centsPerKwh": 5.15
+  },
+  {
+   "month": "2002-09",
+   "centsPerKwh": 4.98
+  },
+  {
+   "month": "2002-10",
+   "centsPerKwh": 4.91
+  },
+  {
+   "month": "2002-11",
+   "centsPerKwh": 4.71
+  },
+  {
+   "month": "2002-12",
+   "centsPerKwh": 4.72
+  },
+  {
+   "month": "2003-01",
+   "centsPerKwh": 4.92
+  },
+  {
+   "month": "2003-02",
+   "centsPerKwh": 4.99
+  },
+  {
+   "month": "2003-03",
+   "centsPerKwh": 5.02
+  },
+  {
+   "month": "2003-04",
+   "centsPerKwh": 4.99
+  },
+  {
+   "month": "2003-05",
+   "centsPerKwh": 5.06
+  },
+  {
+   "month": "2003-06",
+   "centsPerKwh": 5.28
+  },
+  {
+   "month": "2003-07",
+   "centsPerKwh": 5.54
+  },
+  {
+   "month": "2003-08",
+   "centsPerKwh": 5.48
+  },
+  {
+   "month": "2003-09",
+   "centsPerKwh": 5.19
+  },
+  {
+   "month": "2003-10",
+   "centsPerKwh": 5.07
+  },
+  {
+   "month": "2003-11",
+   "centsPerKwh": 4.86
+  },
+  {
+   "month": "2003-12",
+   "centsPerKwh": 4.87
+  },
+  {
+   "month": "2004-01",
+   "centsPerKwh": 5.01
+  },
+  {
+   "month": "2004-02",
+   "centsPerKwh": 5.04
+  },
+  {
+   "month": "2004-03",
+   "centsPerKwh": 5.04
+  },
+  {
+   "month": "2004-04",
+   "centsPerKwh": 5.09
+  },
+  {
+   "month": "2004-05",
+   "centsPerKwh": 5.18
+  },
+  {
+   "month": "2004-06",
+   "centsPerKwh": 5.46
+  },
+  {
+   "month": "2004-07",
+   "centsPerKwh": 5.63
+  },
+  {
+   "month": "2004-08",
+   "centsPerKwh": 5.65
+  },
+  {
+   "month": "2004-09",
+   "centsPerKwh": 5.41
+  },
+  {
+   "month": "2004-10",
+   "centsPerKwh": 5.25
+  },
+  {
+   "month": "2004-11",
+   "centsPerKwh": 5.09
+  },
+  {
+   "month": "2004-12",
+   "centsPerKwh": 5.14
+  },
+  {
+   "month": "2005-01",
+   "centsPerKwh": 5.23
+  },
+  {
+   "month": "2005-02",
+   "centsPerKwh": 5.26
+  },
+  {
+   "month": "2005-03",
+   "centsPerKwh": 5.3
+  },
+  {
+   "month": "2005-04",
+   "centsPerKwh": 5.31
+  },
+  {
+   "month": "2005-05",
+   "centsPerKwh": 5.42
+  },
+  {
+   "month": "2005-06",
+   "centsPerKwh": 5.86
+  },
+  {
+   "month": "2005-07",
+   "centsPerKwh": 6.14
+  },
+  {
+   "month": "2005-08",
+   "centsPerKwh": 6.2
+  },
+  {
+   "month": "2005-09",
+   "centsPerKwh": 6.17
+  },
+  {
+   "month": "2005-10",
+   "centsPerKwh": 6.03
+  },
+  {
+   "month": "2005-11",
+   "centsPerKwh": 5.83
+  },
+  {
+   "month": "2005-12",
+   "centsPerKwh": 5.94
+  },
+  {
+   "month": "2006-01",
+   "centsPerKwh": 5.78
+  },
+  {
+   "month": "2006-02",
+   "centsPerKwh": 5.98
+  },
+  {
+   "month": "2006-03",
+   "centsPerKwh": 5.88
+  },
+  {
+   "month": "2006-04",
+   "centsPerKwh": 5.93
+  },
+  {
+   "month": "2006-05",
+   "centsPerKwh": 6.0
+  },
+  {
+   "month": "2006-06",
+   "centsPerKwh": 6.41
+  },
+  {
+   "month": "2006-07",
+   "centsPerKwh": 6.61
+  },
+  {
+   "month": "2006-08",
+   "centsPerKwh": 6.65
+  },
+  {
+   "month": "2006-09",
+   "centsPerKwh": 6.37
+  },
+  {
+   "month": "2006-10",
+   "centsPerKwh": 6.16
+  },
+  {
+   "month": "2006-11",
+   "centsPerKwh": 6.04
+  },
+  {
+   "month": "2006-12",
+   "centsPerKwh": 6.0
+  },
+  {
+   "month": "2007-01",
+   "centsPerKwh": 6.13
+  },
+  {
+   "month": "2007-02",
+   "centsPerKwh": 6.16
+  },
+  {
+   "month": "2007-03",
+   "centsPerKwh": 6.22
+  },
+  {
+   "month": "2007-04",
+   "centsPerKwh": 6.19
+  },
+  {
+   "month": "2007-05",
+   "centsPerKwh": 6.27
+  },
+  {
+   "month": "2007-06",
+   "centsPerKwh": 6.59
+  },
+  {
+   "month": "2007-07",
+   "centsPerKwh": 6.71
+  },
+  {
+   "month": "2007-08",
+   "centsPerKwh": 6.84
+  },
+  {
+   "month": "2007-09",
+   "centsPerKwh": 6.52
+  },
+  {
+   "month": "2007-10",
+   "centsPerKwh": 6.46
+  },
+  {
+   "month": "2007-11",
+   "centsPerKwh": 6.28
+  },
+  {
+   "month": "2007-12",
+   "centsPerKwh": 6.26
+  },
+  {
+   "month": "2008-01",
+   "centsPerKwh": 6.33
+  },
+  {
+   "month": "2008-02",
+   "centsPerKwh": 6.34
+  },
+  {
+   "month": "2008-03",
+   "centsPerKwh": 6.46
+  },
+  {
+   "month": "2008-04",
+   "centsPerKwh": 6.64
+  },
+  {
+   "month": "2008-05",
+   "centsPerKwh": 6.75
+  },
+  {
+   "month": "2008-06",
+   "centsPerKwh": 7.35
+  },
+  {
+   "month": "2008-07",
+   "centsPerKwh": 7.72
+  },
+  {
+   "month": "2008-08",
+   "centsPerKwh": 7.55
+  },
+  {
+   "month": "2008-09",
+   "centsPerKwh": 7.31
+  },
+  {
+   "month": "2008-10",
+   "centsPerKwh": 7.19
+  },
+  {
+   "month": "2008-11",
+   "centsPerKwh": 6.93
+  },
+  {
+   "month": "2008-12",
+   "centsPerKwh": 6.79
+  },
+  {
+   "month": "2009-01",
+   "centsPerKwh": 6.92
+  },
+  {
+   "month": "2009-02",
+   "centsPerKwh": 6.9
+  },
+  {
+   "month": "2009-03",
+   "centsPerKwh": 6.81
+  },
+  {
+   "month": "2009-04",
+   "centsPerKwh": 6.75
+  },
+  {
+   "month": "2009-05",
+   "centsPerKwh": 6.77
+  },
+  {
+   "month": "2009-06",
+   "centsPerKwh": 7.09
+  },
+  {
+   "month": "2009-07",
+   "centsPerKwh": 7.1
+  },
+  {
+   "month": "2009-08",
+   "centsPerKwh": 7.1
+  },
+  {
+   "month": "2009-09",
+   "centsPerKwh": 6.89
+  },
+  {
+   "month": "2009-10",
+   "centsPerKwh": 6.7
+  },
+  {
+   "month": "2009-11",
+   "centsPerKwh": 6.4
+  },
+  {
+   "month": "2009-12",
+   "centsPerKwh": 6.54
+  },
+  {
+   "month": "2010-01",
+   "centsPerKwh": 6.5
+  },
+  {
+   "month": "2010-02",
+   "centsPerKwh": 6.55
+  },
+  {
+   "month": "2010-03",
+   "centsPerKwh": 6.53
+  },
+  {
+   "month": "2010-04",
+   "centsPerKwh": 6.55
+  },
+  {
+   "month": "2010-05",
+   "centsPerKwh": 6.64
+  },
+  {
+   "month": "2010-06",
+   "centsPerKwh": 6.97
+  },
+  {
+   "month": "2010-07",
+   "centsPerKwh": 7.23
+  },
+  {
+   "month": "2010-08",
+   "centsPerKwh": 7.22
+  },
+  {
+   "month": "2010-09",
+   "centsPerKwh": 7.0
+  },
+  {
+   "month": "2010-10",
+   "centsPerKwh": 6.8
+  },
+  {
+   "month": "2010-11",
+   "centsPerKwh": 6.56
+  },
+  {
+   "month": "2010-12",
+   "centsPerKwh": 6.6
+  },
+  {
+   "month": "2011-01",
+   "centsPerKwh": 6.53
+  },
+  {
+   "month": "2011-02",
+   "centsPerKwh": 6.63
+  },
+  {
+   "month": "2011-03",
+   "centsPerKwh": 6.53
+  },
+  {
+   "month": "2011-04",
+   "centsPerKwh": 6.53
+  },
+  {
+   "month": "2011-05",
+   "centsPerKwh": 6.68
+  },
+  {
+   "month": "2011-06",
+   "centsPerKwh": 7.14
+  },
+  {
+   "month": "2011-07",
+   "centsPerKwh": 7.32
+  },
+  {
+   "month": "2011-08",
+   "centsPerKwh": 7.39
+  },
+  {
+   "month": "2011-09",
+   "centsPerKwh": 7.15
+  },
+  {
+   "month": "2011-10",
+   "centsPerKwh": 6.77
+  },
+  {
+   "month": "2011-11",
+   "centsPerKwh": 6.53
+  },
+  {
+   "month": "2011-12",
+   "centsPerKwh": 6.51
+  },
+  {
+   "month": "2012-01",
+   "centsPerKwh": 6.44
+  },
+  {
+   "month": "2012-02",
+   "centsPerKwh": 6.45
+  },
+  {
+   "month": "2012-03",
+   "centsPerKwh": 6.46
+  },
+  {
+   "month": "2012-04",
+   "centsPerKwh": 6.38
+  },
+  {
+   "month": "2012-05",
+   "centsPerKwh": 6.53
+  },
+  {
+   "month": "2012-06",
+   "centsPerKwh": 6.89
+  },
+  {
+   "month": "2012-07",
+   "centsPerKwh": 7.13
+  },
+  {
+   "month": "2012-08",
+   "centsPerKwh": 7.08
+  },
+  {
+   "month": "2012-09",
+   "centsPerKwh": 6.97
+  },
+  {
+   "month": "2012-10",
+   "centsPerKwh": 6.62
+  },
+  {
+   "month": "2012-11",
+   "centsPerKwh": 6.5
+  },
+  {
+   "month": "2012-12",
+   "centsPerKwh": 6.52
+  },
+  {
+   "month": "2013-01",
+   "centsPerKwh": 6.5
+  },
+  {
+   "month": "2013-02",
+   "centsPerKwh": 6.66
+  },
+  {
+   "month": "2013-03",
+   "centsPerKwh": 6.64
+  },
+  {
+   "month": "2013-04",
+   "centsPerKwh": 6.58
+  },
+  {
+   "month": "2013-05",
+   "centsPerKwh": 6.75
+  },
+  {
+   "month": "2013-06",
+   "centsPerKwh": 7.25
+  },
+  {
+   "month": "2013-07",
+   "centsPerKwh": 7.45
+  },
+  {
+   "month": "2013-08",
+   "centsPerKwh": 7.37
+  },
+  {
+   "month": "2013-09",
+   "centsPerKwh": 7.22
+  },
+  {
+   "month": "2013-10",
+   "centsPerKwh": 6.87
+  },
+  {
+   "month": "2013-11",
+   "centsPerKwh": 6.65
+  },
+  {
+   "month": "2013-12",
+   "centsPerKwh": 6.66
+  },
+  {
+   "month": "2014-01",
+   "centsPerKwh": 6.98
+  },
+  {
+   "month": "2014-02",
+   "centsPerKwh": 7.12
+  },
+  {
+   "month": "2014-03",
+   "centsPerKwh": 6.99
+  },
+  {
+   "month": "2014-04",
+   "centsPerKwh": 6.77
+  },
+  {
+   "month": "2014-05",
+   "centsPerKwh": 6.83
+  },
+  {
+   "month": "2014-06",
+   "centsPerKwh": 7.39
+  },
+  {
+   "month": "2014-07",
+   "centsPerKwh": 7.62
+  },
+  {
+   "month": "2014-08",
+   "centsPerKwh": 7.51
+  },
+  {
+   "month": "2014-09",
+   "centsPerKwh": 7.37
+  },
+  {
+   "month": "2014-10",
+   "centsPerKwh": 7.07
+  },
+  {
+   "month": "2014-11",
+   "centsPerKwh": 6.75
+  },
+  {
+   "month": "2014-12",
+   "centsPerKwh": 6.7
+  },
+  {
+   "month": "2015-01",
+   "centsPerKwh": 6.67
+  },
+  {
+   "month": "2015-02",
+   "centsPerKwh": 6.88
+  },
+  {
+   "month": "2015-03",
+   "centsPerKwh": 6.83
+  },
+  {
+   "month": "2015-04",
+   "centsPerKwh": 6.61
+  },
+  {
+   "month": "2015-05",
+   "centsPerKwh": 6.74
+  },
+  {
+   "month": "2015-06",
+   "centsPerKwh": 7.11
+  },
+  {
+   "month": "2015-07",
+   "centsPerKwh": 7.45
+  },
+  {
+   "month": "2015-08",
+   "centsPerKwh": 7.35
+  },
+  {
+   "month": "2015-09",
+   "centsPerKwh": 7.21
+  },
+  {
+   "month": "2015-10",
+   "centsPerKwh": 6.88
+  },
+  {
+   "month": "2015-11",
+   "centsPerKwh": 6.61
+  },
+  {
+   "month": "2015-12",
+   "centsPerKwh": 6.45
+  },
+  {
+   "month": "2016-01",
+   "centsPerKwh": 6.44
+  },
+  {
+   "month": "2016-02",
+   "centsPerKwh": 6.42
+  },
+  {
+   "month": "2016-03",
+   "centsPerKwh": 6.46
+  },
+  {
+   "month": "2016-04",
+   "centsPerKwh": 6.44
+  },
+  {
+   "month": "2016-05",
+   "centsPerKwh": 6.57
+  },
+  {
+   "month": "2016-06",
+   "centsPerKwh": 7.03
+  },
+  {
+   "month": "2016-07",
+   "centsPerKwh": 7.23
+  },
+  {
+   "month": "2016-08",
+   "centsPerKwh": 7.23
+  },
+  {
+   "month": "2016-09",
+   "centsPerKwh": 7.14
+  },
+  {
+   "month": "2016-10",
+   "centsPerKwh": 6.73
+  },
+  {
+   "month": "2016-11",
+   "centsPerKwh": 6.66
+  },
+  {
+   "month": "2016-12",
+   "centsPerKwh": 6.67
+  },
+  {
+   "month": "2017-01",
+   "centsPerKwh": 6.59
+  },
+  {
+   "month": "2017-02",
+   "centsPerKwh": 6.63
+  },
+  {
+   "month": "2017-03",
+   "centsPerKwh": 6.71
+  },
+  {
+   "month": "2017-04",
+   "centsPerKwh": 6.6
+  },
+  {
+   "month": "2017-05",
+   "centsPerKwh": 6.78
+  },
+  {
+   "month": "2017-06",
+   "centsPerKwh": 7.19
+  },
+  {
+   "month": "2017-07",
+   "centsPerKwh": 7.31
+  },
+  {
+   "month": "2017-08",
+   "centsPerKwh": 7.22
+  },
+  {
+   "month": "2017-09",
+   "centsPerKwh": 7.17
+  },
+  {
+   "month": "2017-10",
+   "centsPerKwh": 6.91
+  },
+  {
+   "month": "2017-11",
+   "centsPerKwh": 6.73
+  },
+  {
+   "month": "2017-12",
+   "centsPerKwh": 6.54
+  },
+  {
+   "month": "2018-01",
+   "centsPerKwh": 6.94
+  },
+  {
+   "month": "2018-02",
+   "centsPerKwh": 6.78
+  },
+  {
+   "month": "2018-03",
+   "centsPerKwh": 6.63
+  },
+  {
+   "month": "2018-04",
+   "centsPerKwh": 6.57
+  },
+  {
+   "month": "2018-05",
+   "centsPerKwh": 6.79
+  },
+  {
+   "month": "2018-06",
+   "centsPerKwh": 7.17
+  },
+  {
+   "month": "2018-07",
+   "centsPerKwh": 7.32
+  },
+  {
+   "month": "2018-08",
+   "centsPerKwh": 7.25
+  },
+  {
+   "month": "2018-09",
+   "centsPerKwh": 7.05
+  },
+  {
+   "month": "2018-10",
+   "centsPerKwh": 6.87
+  },
+  {
+   "month": "2018-11",
+   "centsPerKwh": 6.85
+  },
+  {
+   "month": "2018-12",
+   "centsPerKwh": 6.67
+  },
+  {
+   "month": "2019-01",
+   "centsPerKwh": 6.58
+  },
+  {
+   "month": "2019-02",
+   "centsPerKwh": 6.69
+  },
+  {
+   "month": "2019-03",
+   "centsPerKwh": 6.73
+  },
+  {
+   "month": "2019-04",
+   "centsPerKwh": 6.51
+  },
+  {
+   "month": "2019-05",
+   "centsPerKwh": 6.69
+  },
+  {
+   "month": "2019-06",
+   "centsPerKwh": 6.87
+  },
+  {
+   "month": "2019-07",
+   "centsPerKwh": 7.14
+  },
+  {
+   "month": "2019-08",
+   "centsPerKwh": 7.4
+  },
+  {
+   "month": "2019-09",
+   "centsPerKwh": 7.06
+  },
+  {
+   "month": "2019-10",
+   "centsPerKwh": 6.84
+  },
+  {
+   "month": "2019-11",
+   "centsPerKwh": 6.72
+  },
+  {
+   "month": "2019-12",
+   "centsPerKwh": 6.38
+  },
+  {
+   "month": "2020-01",
+   "centsPerKwh": 6.37
+  },
+  {
+   "month": "2020-02",
+   "centsPerKwh": 6.44
+  },
+  {
+   "month": "2020-03",
+   "centsPerKwh": 6.39
+  },
+  {
+   "month": "2020-04",
+   "centsPerKwh": 6.39
+  },
+  {
+   "month": "2020-05",
+   "centsPerKwh": 6.54
+  },
+  {
+   "month": "2020-06",
+   "centsPerKwh": 6.94
+  },
+  {
+   "month": "2020-07",
+   "centsPerKwh": 7.16
+  },
+  {
+   "month": "2020-08",
+   "centsPerKwh": 7.07
+  },
+  {
+   "month": "2020-09",
+   "centsPerKwh": 7.0
+  },
+  {
+   "month": "2020-10",
+   "centsPerKwh": 6.72
+  },
+  {
+   "month": "2020-11",
+   "centsPerKwh": 6.49
+  },
+  {
+   "month": "2020-12",
+   "centsPerKwh": 6.41
+  },
+  {
+   "month": "2021-01",
+   "centsPerKwh": 6.32
+  },
+  {
+   "month": "2021-02",
+   "centsPerKwh": 7.75
+  },
+  {
+   "month": "2021-03",
+   "centsPerKwh": 6.98
+  },
+  {
+   "month": "2021-04",
+   "centsPerKwh": 6.7
+  },
+  {
+   "month": "2021-05",
+   "centsPerKwh": 6.65
+  },
+  {
+   "month": "2021-06",
+   "centsPerKwh": 7.22
+  },
+  {
+   "month": "2021-07",
+   "centsPerKwh": 7.42
+  },
+  {
+   "month": "2021-08",
+   "centsPerKwh": 7.54
+  },
+  {
+   "month": "2021-09",
+   "centsPerKwh": 7.61
+  },
+  {
+   "month": "2021-10",
+   "centsPerKwh": 7.44
+  },
+  {
+   "month": "2021-11",
+   "centsPerKwh": 7.37
+  },
+  {
+   "month": "2021-12",
+   "centsPerKwh": 7.06
+  },
+  {
+   "month": "2022-01",
+   "centsPerKwh": 7.19
+  },
+  {
+   "month": "2022-02",
+   "centsPerKwh": 7.28
+  },
+  {
+   "month": "2022-03",
+   "centsPerKwh": 7.37
+  },
+  {
+   "month": "2022-04",
+   "centsPerKwh": 7.7
+  },
+  {
+   "month": "2022-05",
+   "centsPerKwh": 8.25
+  },
+  {
+   "month": "2022-06",
+   "centsPerKwh": 8.85
+  },
+  {
+   "month": "2022-07",
+   "centsPerKwh": 9.31
+  },
+  {
+   "month": "2022-08",
+   "centsPerKwh": 9.38
+  },
+  {
+   "month": "2022-09",
+   "centsPerKwh": 9.06
+  },
+  {
+   "month": "2022-10",
+   "centsPerKwh": 8.45
+  },
+  {
+   "month": "2022-11",
+   "centsPerKwh": 8.14
+  },
+  {
+   "month": "2022-12",
+   "centsPerKwh": 8.5
+  },
+  {
+   "month": "2023-01",
+   "centsPerKwh": 8.18
+  },
+  {
+   "month": "2023-02",
+   "centsPerKwh": 8.01
+  },
+  {
+   "month": "2023-03",
+   "centsPerKwh": 7.8
+  },
+  {
+   "month": "2023-04",
+   "centsPerKwh": 7.51
+  },
+  {
+   "month": "2023-05",
+   "centsPerKwh": 7.64
+  },
+  {
+   "month": "2023-06",
+   "centsPerKwh": 8.11
+  },
+  {
+   "month": "2023-07",
+   "centsPerKwh": 8.36
+  },
+  {
+   "month": "2023-08",
+   "centsPerKwh": 8.9
+  },
+  {
+   "month": "2023-09",
+   "centsPerKwh": 8.43
+  },
+  {
+   "month": "2023-10",
+   "centsPerKwh": 8.01
+  },
+  {
+   "month": "2023-11",
+   "centsPerKwh": 7.79
+  },
+  {
+   "month": "2023-12",
+   "centsPerKwh": 7.61
+  },
+  {
+   "month": "2024-01",
+   "centsPerKwh": 8.07
+  },
+  {
+   "month": "2024-02",
+   "centsPerKwh": 7.76
+  },
+  {
+   "month": "2024-03",
+   "centsPerKwh": 7.68
+  },
+  {
+   "month": "2024-04",
+   "centsPerKwh": 7.79
+  },
+  {
+   "month": "2024-05",
+   "centsPerKwh": 7.87
+  },
+  {
+   "month": "2024-06",
+   "centsPerKwh": 8.41
+  },
+  {
+   "month": "2024-07",
+   "centsPerKwh": 8.73
+  },
+  {
+   "month": "2024-08",
+   "centsPerKwh": 8.67
+  },
+  {
+   "month": "2024-09",
+   "centsPerKwh": 8.45
+  },
+  {
+   "month": "2024-10",
+   "centsPerKwh": 8.11
+  },
+  {
+   "month": "2024-11",
+   "centsPerKwh": 7.85
+  },
+  {
+   "month": "2024-12",
+   "centsPerKwh": 7.96
+  },
+  {
+   "month": "2025-01",
+   "centsPerKwh": 8.34
+  },
+  {
+   "month": "2025-02",
+   "centsPerKwh": 8.24
+  },
+  {
+   "month": "2025-03",
+   "centsPerKwh": 8.26
+  },
+  {
+   "month": "2025-04",
+   "centsPerKwh": 8.21
+  },
+  {
+   "month": "2025-05",
+   "centsPerKwh": 8.29
+  },
+  {
+   "month": "2025-06",
+   "centsPerKwh": 8.9
+  },
+  {
+   "month": "2025-07",
+   "centsPerKwh": 9.33
+  },
+  {
+   "month": "2025-08",
+   "centsPerKwh": 9.08
+  },
+  {
+   "month": "2025-09",
+   "centsPerKwh": 9.02
+  },
+  {
+   "month": "2025-10",
+   "centsPerKwh": 8.65
+  },
+  {
+   "month": "2025-11",
+   "centsPerKwh": 8.44
+  },
+  {
+   "month": "2025-12",
+   "centsPerKwh": 8.53
+  },
+  {
+   "month": "2026-01",
+   "centsPerKwh": 9.29
+  },
+  {
+   "month": "2026-02",
+   "centsPerKwh": 8.95
+  },
+  {
+   "month": "2026-03",
+   "centsPerKwh": 8.58
+  },
+  {
+   "month": "2026-04",
+   "centsPerKwh": 8.66
+  },
+  {
+   "month": "2026-05",
+   "centsPerKwh": 8.71
+  },
+  {
+   "month": "2026-06",
+   "centsPerKwh": 9.17
+  }
+ ]
+}

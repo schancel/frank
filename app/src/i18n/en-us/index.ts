@@ -435,7 +435,7 @@ export default {
     avuDialogTitle: 'Arbitrary Value Unit (AVU)',
     avuDialogSubtitle: '1 AVU ≡ 1 Kilowatt-Hour (kWh) of Physical Compute',
     avuDialogDesc:
-      'Frank eliminates fiat currencies from the core interface. Balances are measured in AVUs, where 1 AVU represents 1 kWh of physical work derived directly from global Proof-of-Work mining networks.',
+      'Frank keeps fiat currencies out of the core interface. Balances are compared in AVU, a unit of account: 1 AVU is a fixed conversion number worth $0.084, the price of 1 kWh of electricity it was set to. It is not a coin or token; it lets any two coins be compared through one number.',
     avuMemeHeading: 'Refusing the USD Meme',
     avuMemeDesc:
       'The US Dollar is a social meme sustained by software defaults and central bank decree. Refusing to display USD in self-custodial wallets breaks that psychological monopoly and weakens the meme, re-anchoring wealth in the invariant laws of thermodynamics.',
@@ -444,13 +444,13 @@ export default {
       'Every physical good—food, clean water, housing, semiconductors, and transportation—is fundamentally organized energy. By denominating value in physical energy, purchasing power is measured against the root cost of physical reality.',
     avuCpiHeading: 'Bypassing the CPI to Reveal the Real Worth of the Dollar',
     avuCpiDesc:
-      'Government Consumer Price Index (CPI) metrics obscure inflation through substitution bias and hedonic tweaks. A $100 bill still says "$100", masking its decay. In the 1930s, $1 bought ~143 kWh; today it buys only ~12 kWh. Tracking AVU over time exposes the true, unvarnished rate of fiat currency debasement.',
+      'Government Consumer Price Index (CPI) metrics obscure inflation through substitution bias and hedonic tweaks. A $100 bill still says "$100", masking its decay. In 1960, $1 bought about 91 kWh of US industrial electricity; in 2025 it bought about 12 kWh (EIA). Tracking energy over time exposes the rate of fiat currency debasement.',
     avuOracleLessHeading: 'Truly "Oracle-Less"',
     avuOracleLessDesc:
       'Unlike traditional DeFi oracles that rely on trusted third-party feeds, Proof-of-Work difficulty and emission schedules are verified directly on-chain by full nodes and anchored by competitive thermodynamics.',
     avuDialogClose: 'Close',
     avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
-    avuRatesTitle: 'Live Physical Compute Equivalencies',
+    avuRatesTitle: 'Fetched market prices in AVU',
     avuRatesAsset: 'Asset',
     avuRatesRate: 'Physical Compute (AVU / kWh)',
     avuRatesRefUsd: 'USD Reference',
@@ -485,51 +485,64 @@ export default {
     viewInExplorer: 'View in Explorer',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute. An unforgeable thermodynamic standard of real purchasing power.',
-    avuHashLabel: 'AVU (Hash-Derived)',
-    avuSpotLabel: 'AVU (Grid Spot)',
-    tpiLabel: 'Thermodynamic Parity Index (TPI)',
-    macroHistory: 'Historical Macro (1930 - Present)',
-    networkComparison: 'Mined Coins Arbitrage',
-    arbitrageMargin: 'Mining Arbitrage Spread',
-    macroTab: 'Historical Macro',
-    networksTab: 'Network Parity',
-    chartUsdKwh: 'USD Purchasing Power (kWh/$)',
-    chartGoldAvu: 'Gold Ore Depletion (AVU/oz)',
-    chartPowEmergence: 'PoW Emergence',
-    chartHashCost: 'Implied Energy Cost ($/kWh)',
-    chartArbitrageYield: 'Yield Premium',
-    chartHardwareEff: 'Hardware Efficiency',
+    avuHashLabel: 'Bitcoin mining energy price',
+    avuHashNote:
+      'New bitcoin issued per kWh of mining, inverted. Assumes miners use {efficiency}; fees not counted.',
+    avuSpotLabel: 'US grid electricity',
+    avuSpotNote: 'US industrial average, {cents}¢/kWh, {month} (EIA).',
+    avuUnitLabel: 'AVU unit of account',
+    avuUnitNote:
+      'A fixed conversion number for comparing coins. Not a coin or token.',
+    avuUnavailable: 'Unavailable',
+    avuNoPriceSource: 'No provider publishes a market price for this coin.',
+    avuPriceNotFetched: 'The price could not be fetched.',
+    avuPriceFreshNote: 'Market price {usd}, fetched {age} ago.',
+    avuPriceStaleNote: 'Stale: last market price {usd}, fetched {age} ago.',
+    avuMainnetPrice:
+      '{rate} (mainnet price; testnet coins have no market value)',
+    avuStalePrice: '{rate} (price {age} old)',
+    arbitrageMargin: 'eCash vs Bitcoin mining pay',
+    arbitrageNote:
+      'New coins issued per hash, eCash over Bitcoin, last 24 h. Whole block subsidy; fees not counted.',
+    miningBaseline: 'Baseline',
+    chartUsdKwh: 'USD purchasing power (kWh/$)',
+    chartGoldAvu: 'Gold in grid energy (kWh/oz)',
     rangeAll: 'ALL',
     range5Y: '5Y',
     range1Y: '1Y',
     range30D: '30D',
     range7D: '7D',
     range24H: '24H',
-    rangePow: 'PoW Era (2009-Present)',
-    rangeAsic: 'Modern ASIC (2020-Present)',
-    rangeRecent: 'Recent (24h / Finer)',
     rangeNetworks: 'Networks',
-    resetZoom: 'Reset Zoom',
+    chartNoteAnnual:
+      'Yearly published figures, {from} to {to}: kWh a dollar bought at the US industrial electricity price, and an ounce of gold priced in that energy. Years a source does not cover are left out.',
+    chartNoteProvider:
+      '{count} market prices published by {provider}, from {first}. Each point is a real price divided by the AVU rate.',
+    chartNoteObserved:
+      'No provider has history for this coin. {count} prices this app fetched itself, from {first}; that is all the history there is.',
+    chartNoteNoHistory:
+      'No price history could be fetched for {symbol}, so no line is drawn.',
+    chartNoteNoSource:
+      'No provider publishes a market price for {symbol}, so there is nothing to draw.',
+    chartNoteMainnetPrice:
+      'This is the mainnet coin’s market price; testnet coins have no market value.',
+    chartNoteNetworks:
+      'Dollars of new coins issued per kWh of mining over the last 24 h, from each chain’s published issuance, hashrate and price. Assumes miners use {efficiency}. Percentages compare issuance per hash with Bitcoin.',
+    chartNoteNetworksUnavailable:
+      'Mining statistics could not be fetched, so nothing is drawn.',
     sourcesTitle: 'Methodology & Data Sources',
+    sourceUnit:
+      'AVU: a unit of account, fixed at {usd} per AVU (the price of one kWh of electricity it was set to). Every AVU value is a fetched market price divided by this one number.',
     sourceFeeds:
-      'Live Oracle Feeds: Real-time market spot prices streamed from CoinGecko & Pyth Network public APIs for active cryptocurrencies (ETH, SOL, XEC); testnet and emerging networks (MON, HYPE, TUSD) anchored to protocol testnet parity indices.',
+      'Prices: fetched from Coinbase, Kraken, CoinGecko, Binance and Chainlink; the middle value is used. A coin with no fetched price shows no value.',
     sourceHistorical:
-      'Historical & Intraday Resolution: Intraday 24h hourly points for fine-grained recent analysis, plus multi-year bundled archives (1930–present) from St. Louis FRED, CoinGecko, and blockchain genesis records.',
-    sourceGrid:
-      'Grid Benchmark: US Energy Information Administration (EIA) Electric Power Monthly published industrial tariff tables ($0.082/kWh benchmark).',
+      'Price history: the candles one provider published for the range (Coinbase, Kraken, Binance.US or CoinGecko). Nothing is interpolated.',
+    sourceGrid: 'Long-range data, bundled: {electricity}. {gold}',
     sourceHash:
-      'PoW Baseline: Derived from consensus halving schedules and CBECI hardware fleet specifications ($0.084/kWh empirical anchor).',
-    sourceHardware:
-      'Hardware Efficiency: Cambridge Bitcoin Electricity Consumption Index (CBECI) & Bitmain/MicroBT hardware spec sheets.',
-    hardwareMilestones: 'Hardware Efficiency Milestones',
-    chartTokenAvu: 'AVU / kWh',
-    activeTokenCardTitle: '{name} ({symbol}) Parity',
+      'Mining: 24 h issuance, hashrate and price from Blockchair’s public chain statistics. The {efficiency} efficiency is an assumption.',
+    activeTokenCardTitle: '{symbol} in AVU',
     inspectingDate: 'Inspecting',
     latestValue: 'Latest',
-    hoverChartHint: 'Hover chart to inspect historical dates',
-    hoverActiveHint: 'Inspecting historical values across assets',
-    networkSelected: 'Network / Coin',
-    energyCost: 'Energy Cost',
   },
   chatList: {
     senderPrefix: '{name}: {text}',

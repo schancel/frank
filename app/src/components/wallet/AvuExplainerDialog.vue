@@ -147,9 +147,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useSafeOracleStore } from '../../stores/oracle'
+import { UNIT_RATE_ASSET_METRICS } from '../../utils/avu-units'
+import { useTranslate } from '../../composables/useTranslate'
 import {
+  ASSET_FEED_SYMBOLS,
   AVU_PER_DOLLAR,
-  DEFAULT_ANCHOR_SPOT_PRICES,
   type SupportedAsset,
 } from '@frank/wallet/oracle'
 
@@ -162,6 +164,7 @@ defineEmits<{
 }>()
 
 const oracle = useSafeOracleStore()
+const t = useTranslate()
 
 interface EquivalencyRow {
   asset: string
@@ -170,74 +173,37 @@ interface EquivalencyRow {
   usdFormatted: string
 }
 
+/**
+ * One row per coin that has a price source, showing the price that was fetched. A coin
+ * whose price has not been fetched says so; nothing stands in for it. The last row is the
+ * unit itself: AVU is a fixed number of dollars, not a coin.
+ */
 const equivalencyRows = computed<EquivalencyRow[]>(() => {
-  const currentRates = oracle.rates ?? {}
-  const rows: EquivalencyRow[] = [
-    {
-      asset: 'monad',
-      label: '1 MON',
-      rateFormatted: oracle.formatUnitRate
-        ? oracle.formatUnitRate('monad')
-        : '1 MON ≈ 41.67 AVU',
-      usdFormatted: `$${DEFAULT_ANCHOR_SPOT_PRICES.monad.toFixed(2)}`,
+  const rows = (Object.keys(ASSET_FEED_SYMBOLS) as SupportedAsset[]).map(
+    asset => {
+      const metric = UNIT_RATE_ASSET_METRICS[asset]
+      const price = oracle.snapshot?.prices?.[asset]
+      const rate = oracle.formatUnitRate?.(asset) ?? ''
+      return {
+        asset,
+        label: metric.symbol,
+        rateFormatted: rate || t('walletPanel.avuUnavailable'),
+        usdFormatted:
+          rate && price !== undefined
+            ? `$${(price * metric.multiplier).toPrecision(6)}`
+            : '\u2014',
+      }
     },
-    {
-      asset: 'solana',
-      label: '1 SOL',
-      rateFormatted: oracle.formatUnitRate
-        ? oracle.formatUnitRate('solana')
-        : '1 SOL ≈ 1,785.71 AVU',
-      usdFormatted: `$${DEFAULT_ANCHOR_SPOT_PRICES.solana.toFixed(2)}`,
-    },
-    {
-      asset: 'ethereum',
-      label: '1 ETH',
-      rateFormatted: oracle.formatUnitRate
-        ? oracle.formatUnitRate('ethereum')
-        : '1 ETH ≈ 30,952.38 AVU',
-      usdFormatted: `$${DEFAULT_ANCHOR_SPOT_PRICES.ethereum.toLocaleString(
-        'en-US',
-        { minimumFractionDigits: 2 },
-      )}`,
-    },
-    {
-      asset: 'hyperliquid',
-      label: '1 HYPE',
-      rateFormatted: oracle.formatUnitRate
-        ? oracle.formatUnitRate('hyperliquid')
-        : '1 HYPE ≈ 476.19 AVU',
-      usdFormatted: `$${DEFAULT_ANCHOR_SPOT_PRICES.hyperliquid.toFixed(2)}`,
-    },
-    {
-      asset: 'tempo',
-      label: '1 TUSD',
-      rateFormatted: oracle.formatUnitRate
-        ? oracle.formatUnitRate('tempo')
-        : '1 TUSD ≈ 11.90 AVU',
-      usdFormatted: `$${DEFAULT_ANCHOR_SPOT_PRICES.tempo.toFixed(2)}`,
-    },
-    {
-      asset: 'ecash',
-      label: '1M XEC',
-      rateFormatted: oracle.formatUnitRate
-        ? oracle.formatUnitRate('ecash')
-        : '1M XEC ≈ 416.67 AVU',
-      usdFormatted: `$${(DEFAULT_ANCHOR_SPOT_PRICES.ecash * 1_000_000).toFixed(
-        2,
-      )}`,
-    },
-    {
-      asset: 'usd',
-      label: '1 USD',
-      rateFormatted: `1 USD ≈ ${(
-        currentRates.tempo ?? AVU_PER_DOLLAR
-      ).toLocaleString('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      })} AVU`,
-      usdFormatted: '$1.00',
-    },
-  ]
+  )
+  rows.push({
+    asset: 'usd' as SupportedAsset,
+    label: '1 USD',
+    rateFormatted: `1 USD = ${AVU_PER_DOLLAR.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} AVU`,
+    usdFormatted: '$1.00',
+  })
   return rows
 })
 </script>

@@ -443,7 +443,7 @@ export default {
     avuDialogTitle: 'Unité de Valeur Arbitraire (AVU)',
     avuDialogSubtitle: '1 AVU ≡ 1 Kilowattheure (kWh) d’énergie physique',
     avuDialogDesc:
-      'Frank élimine les monnaies fiduciaires de son interface principale. Les soldes sont mesurés en AVU, où 1 AVU représente 1 kWh de travail physique calculé directement à partir des réseaux de minage en preuve de travail (Proof-of-Work).',
+      'Frank écarte les monnaies fiduciaires de son interface principale. Les soldes sont comparés en AVU, une unité de compte : 1 AVU est un nombre de conversion fixe valant 0,084 $, le prix d’1 kWh d’électricité retenu à sa définition. Ce n’est ni une crypto ni un jeton ; il permet de comparer deux cryptos quelconques par un seul nombre.',
     avuMemeHeading: 'Refuser le mème du dollar (USD)',
     avuMemeDesc:
       'Le dollar américain est un mème social entretenu par les logiciels par défaut et les décrets des banques centrales. Refuser d’afficher l’USD dans les portefeuilles auto-détenus brise ce monopole psychologique et affaiblit ce mème, réancrant la valeur dans les lois invariantes de la thermodynamique.',
@@ -452,13 +452,13 @@ export default {
       'Chaque bien physique — nourriture, eau potable, logement, semi-conducteurs et transport — est fondamentalement de l’énergie organisée. En libellant la valeur en énergie physique, le pouvoir d’achat est mesuré par rapport au coût fondamental de la réalité physique.',
     avuCpiHeading: 'Contourner l’IPC pour révéler la valeur réelle du dollar',
     avuCpiDesc:
-      'L’indice des prix à la consommation (IPC) gouvernemental masque l’inflation par le biais de biais de substitution et d’ajustements hédoniques. Un billet de 100 $ affiche toujours « 100 $ », dissimulant son érosion. Dans les années 1930, 1 $ achetait environ 143 kWh ; aujourd’hui, il n’en achète qu’environ 12 kWh. Suivre l’AVU au fil du temps expose le taux réel de dépréciation de la monnaie fiduciaire.',
+      'L’indice des prix à la consommation (IPC) gouvernemental masque l’inflation par le biais de biais de substitution et d’ajustements hédoniques. Un billet de 100 $ affiche toujours « 100 $ », dissimulant son érosion. En 1960, 1 $ achetait environ 91 kWh d’électricité industrielle américaine ; en 2025, environ 12 kWh (EIA). Suivre l’énergie au fil du temps expose le taux de dépréciation de la monnaie fiduciaire.',
     avuOracleLessHeading: 'Véritablement « sans oracle »',
     avuOracleLessDesc:
       'Contrairement aux oracles DeFi traditionnels qui dépendent de flux tiers de confiance, la difficulté de minage et les calendriers d’émission du Proof-of-Work sont vérifiés directement sur la chaîne par les nœuds complets et ancrés dans la thermodynamique concurrentielle.',
     avuDialogClose: 'Fermer',
     avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
-    avuRatesTitle: 'Équivalences de calcul physique en direct',
+    avuRatesTitle: 'Prix de marché récupérés, en AVU',
     avuRatesAsset: 'Actif',
     avuRatesRate: 'Calcul physique (AVU / kWh)',
     avuRatesRefUsd: 'Référence USD',
@@ -493,51 +493,67 @@ export default {
     viewInExplorer: 'Voir dans l’explorateur',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3,6 MJ) d’énergie physique. Un étalon thermodynamique infalsifiable de pouvoir d’achat réel.',
-    avuHashLabel: 'AVU (Réseau PoW)',
-    avuSpotLabel: 'AVU (Réseau électrique)',
-    tpiLabel: 'Indice de parité thermodynamique (TPI)',
-    macroHistory: 'Macro historique (1930 - Aujourd’hui)',
-    networkComparison: 'Arbitrage des cryptos minées',
-    arbitrageMargin: 'Marge d’arbitrage minier',
-    macroTab: 'Macro historique',
-    networksTab: 'Parité des réseaux',
+    avuHashLabel: 'Prix de l’énergie du minage Bitcoin',
+    avuHashNote:
+      'Bitcoins émis par kWh de minage, inversé. Suppose des mineurs à {efficiency} ; frais non comptés.',
+    avuSpotLabel: 'Électricité du réseau américain',
+    avuSpotNote:
+      'Moyenne industrielle américaine, {cents} ¢/kWh, {month} (EIA).',
+    avuUnitLabel: 'AVU, unité de compte',
+    avuUnitNote:
+      'Un nombre de conversion fixe pour comparer les cryptos. Ni une crypto ni un jeton.',
+    avuUnavailable: 'Indisponible',
+    avuNoPriceSource:
+      'Aucun fournisseur ne publie de prix de marché pour cette crypto.',
+    avuPriceNotFetched: 'Le prix n’a pas pu être récupéré.',
+    avuPriceFreshNote: 'Prix de marché {usd}, récupéré il y a {age}.',
+    avuPriceStaleNote:
+      'Périmé : dernier prix de marché {usd}, récupéré il y a {age}.',
+    avuMainnetPrice:
+      '{rate} (prix mainnet ; les cryptos de testnet n’ont pas de valeur de marché)',
+    avuStalePrice: '{rate} (prix vieux de {age})',
+    arbitrageMargin: 'Rémunération du minage eCash vs Bitcoin',
+    arbitrageNote:
+      'Nouvelles pièces émises par hash, eCash rapporté à Bitcoin, sur 24 h. Subvention de bloc entière ; frais non comptés.',
+    miningBaseline: 'Référence',
     chartUsdKwh: 'Pouvoir d’achat USD (kWh/$)',
-    chartGoldAvu: 'Épuisement du minerai d’or (AVU/oz)',
-    chartPowEmergence: 'Émergence du PoW',
-    chartHashCost: 'Coût énergétique implicite ($/kWh)',
-    chartArbitrageYield: 'Prime de rendement',
-    chartHardwareEff: 'Efficacité matérielle',
+    chartGoldAvu: 'Or en énergie du réseau (kWh/oz)',
     rangeAll: 'Tout',
     range5Y: '5 ans',
     range1Y: '1 an',
     range30D: '30 j',
     range7D: '7 j',
     range24H: '24 h',
-    rangePow: 'Ère PoW (2009 - Aujourd’hui)',
-    rangeAsic: 'ASIC Moderne (2020 - Aujourd’hui)',
-    rangeRecent: '24h récent (Détaillé)',
     rangeNetworks: 'Réseaux',
-    resetZoom: 'Réinitialiser le zoom',
+    chartNoteAnnual:
+      'Chiffres annuels publiés, de {from} à {to} : kWh qu’un dollar achetait au prix industriel américain de l’électricité, et une once d’or exprimée dans cette énergie. Les années qu’une source ne couvre pas sont omises.',
+    chartNoteProvider:
+      '{count} prix de marché publiés par {provider}, depuis {first}. Chaque point est un prix réel divisé par le taux AVU.',
+    chartNoteObserved:
+      'Aucun fournisseur n’a d’historique pour cette crypto. {count} prix récupérés par cette application, depuis {first} ; c’est tout l’historique existant.',
+    chartNoteNoHistory:
+      'Aucun historique de prix n’a pu être récupéré pour {symbol} : aucune courbe n’est tracée.',
+    chartNoteNoSource:
+      'Aucun fournisseur ne publie de prix de marché pour {symbol} : il n’y a rien à tracer.',
+    chartNoteMainnetPrice:
+      'C’est le prix de marché de la crypto mainnet ; les cryptos de testnet n’ont pas de valeur de marché.',
+    chartNoteNetworks:
+      'Dollars de nouvelles pièces émises par kWh de minage sur 24 h, d’après l’émission, le taux de hachage et le prix publiés de chaque chaîne. Suppose des mineurs à {efficiency}. Les pourcentages comparent l’émission par hash à Bitcoin.',
+    chartNoteNetworksUnavailable:
+      'Les statistiques de minage n’ont pas pu être récupérées : rien n’est tracé.',
     sourcesTitle: 'Méthodologie et sources de données',
+    sourceUnit:
+      'AVU : une unité de compte, fixée à {usd} par AVU (le prix d’un kWh d’électricité retenu à sa définition). Chaque valeur en AVU est un prix de marché récupéré, divisé par ce seul nombre.',
     sourceFeeds:
-      'Flux d’oracles en direct : Prix au comptant en temps réel issus des API publiques CoinGecko et Pyth Network pour les cryptomonnaies actives (ETH, SOL, XEC) ; réseaux testnet et émergents (MON, HYPE, TUSD) ancrés aux indices de parité testnet.',
+      'Prix : récupérés auprès de Coinbase, Kraken, CoinGecko, Binance et Chainlink ; la valeur médiane est retenue. Une crypto sans prix récupéré n’affiche aucune valeur.',
     sourceHistorical:
-      'Résolution historique et intrajournalière : Points horaires sur 24h pour une analyse récente détaillée, et séries pluriannuelles (1930 à aujourd’hui) issues de St. Louis FRED, CoinGecko et de la genèse blockchain.',
-    sourceGrid:
-      'Énergie de référence : Tableaux tarifaires industriels publiés par l’US Energy Information Administration (EIA) Electric Power Monthly (référence à 0,082 $/kWh).',
+      'Historique des prix : les chandeliers publiés par un seul fournisseur pour la période (Coinbase, Kraken, Binance.US ou CoinGecko). Rien n’est interpolé.',
+    sourceGrid: 'Données de long terme, intégrées : {electricity}. {gold}',
     sourceHash:
-      'Référence PoW : Dérivée des calendriers de halving et des spécifications CBECI du parc matériel (ancre empirique à 0,084 $/kWh).',
-    sourceHardware:
-      'Efficacité matérielle : Cambridge Bitcoin Electricity Consumption Index (CBECI) et fiches techniques Bitmain/MicroBT.',
-    hardwareMilestones: 'Jalons d’efficacité matérielle',
-    chartTokenAvu: 'AVU / kWh',
-    activeTokenCardTitle: 'Parité {name} ({symbol})',
+      'Minage : émission sur 24 h, taux de hachage et prix issus des statistiques publiques de Blockchair. L’efficacité de {efficiency} est une hypothèse.',
+    activeTokenCardTitle: '{symbol} en AVU',
     inspectingDate: 'Inspection',
     latestValue: 'Dernière valeur',
-    hoverChartHint: 'Survolez le graphique pour inspecter l’historique',
-    hoverActiveHint: 'Inspection des valeurs historiques des actifs',
-    networkSelected: 'Réseau / Crypto',
-    energyCost: 'Coût énergétique',
   },
   chatList: {
     senderPrefix: '{name} : {text}',

@@ -61,7 +61,7 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  * one is refused before anything is paid, as it always was; one that arrives is kept as an
  * unsupported item and is not interpreted.
  *
- * Each is a record a wallet writes for itself, and none has a safe receiver on this path yet:
+ * None has a safe receiver on this path yet. Five are records a wallet writes for itself:
  * - `wallet-sync`, `payment-transfer`: must enter through `applyWalletSyncItem` with wallet and
  *   chain affinity checked. The app refuses a whole received batch that holds one, so a single such
  *   item from any peer would stop its inbox.
@@ -70,6 +70,12 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  * - `device-claim`: the app sends one to itself on every leadership claim; carrying it would turn
  *   each claim into a paid message.
  * - `p2pkh`: a UTXO-era item whose self-reported amount counts toward a conversation's value.
+ * Two more are a peer's proposal that today's receivers would act on without checking it:
+ * - `swap-offer`: receiving one enables an unconfirmed deposit; carried once the swap flow
+ *   validates the offer and asks for confirmation.
+ * - `blackjack-move`: the legacy dealer-bot move. Its wager is a transaction hash a receiver must
+ *   verify, and no receiver on this path does; blackjack is played with `blackjack-hand` items.
+ *   The type remains registered so stored messages still render.
  * Carrying any of them is a separate decision with its own receiver.
  */
 export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
@@ -78,6 +84,8 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
   'swap-record',
   'device-claim',
   'p2pkh',
+  'swap-offer',
+  'blackjack-move',
 ])
 
 export type ItemFrameRule =

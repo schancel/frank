@@ -35,12 +35,17 @@ import {
 import {
   DEDICATED_ITEM_FRAMES,
   MessageItemBudgetExceededError,
+  MessageItemNotCarriedError,
   NOT_CARRIED_ITEM_TYPES,
   decodeItemFrames,
   encodeItemFrames,
   itemFrameRule,
 } from './wire'
-import { DEDICATED_SAMPLES, GENERIC_SAMPLES } from './wire-samples.testutil'
+import {
+  DEDICATED_SAMPLES,
+  GENERIC_SAMPLES,
+  NOT_CARRIED_PROPOSAL_SAMPLES,
+} from './wire-samples.testutil'
 
 const registry = createDefaultMessageItemRegistry(
   pluginCapabilitiesNotYetAvailable,
@@ -88,10 +93,8 @@ describe('the dispatch rule', () => {
       'email': 'dedicated:26',
       'image': 'generic:27',
       'reply': 'generic:27',
-      'swap-offer': 'generic:27',
       'digital-goods': 'generic:27',
       'raffle': 'generic:27',
-      'blackjack-move': 'generic:27',
       'rps': 'generic:27',
       'dice': 'generic:27',
       'liars-dice': 'generic:27',
@@ -101,6 +104,8 @@ describe('the dispatch rule', () => {
       'swap-record': 'no',
       'device-claim': 'no',
       'p2pkh': 'no',
+      'swap-offer': 'no',
+      'blackjack-move': 'no',
     })
     expect([...DEDICATED_ITEM_FRAMES.keys()].every(t => registry.has(t))).toBe(
       true,
@@ -395,11 +400,18 @@ describe('receiving', () => {
           amount: 5,
         },
       }
+      for (const item of NOT_CARRIED_PROPOSAL_SAMPLES) sample[item.type] = item
       // Well-formed bytes of the real plugin: still not interpreted on this path.
       const frame = encodePluginMessageItem({
         itemType: type,
         data: registry.encodeItem(sample[type]).bytes,
       })
+      // Sending the same well-formed item is refused before anything is paid.
+      expect(() => encodeItemFrames(registry, [sample[type]])).toThrow(
+        MessageItemNotCarriedError,
+      )
+      // What arrives is not the item: its self-reported value reaches no total.
+      expect(registry.tallyValue(receive([frame]))).toBe(0)
       expect(receive([frame])).toEqual([
         {
           type: 'unsupported',
@@ -491,3 +503,71 @@ function validateHeavy(frame: Uint8Array): Uint8Array {
     throw new Error('expected a plugin item')
   return parsed.typed.data
 }
+
+describe('a swap offer and a legacy blackjack move from a peer', () => {
+  const [swapOffer, blackjackMove] = NOT_CARRIED_PROPOSAL_SAMPLES
+
+  it('the samples are well formed: their own plugins read them', () => {
+    for (const item of NOT_CARRIED_PROPOSAL_SAMPLES) {
+      const { bytes } = registry.encodeItem(item)
+      expect(
+        registry.decodeItem(item.type, bytes, {
+          budget: standaloneItemBudget(),
+        }),
+      ).toEqual({ kind: 'item', item })
+    }
+    // A swap offer's own plugin would count its offered amount.
+    expect(registry.tallyValue([swapOffer])).toBe(0.5)
+  })
+
+  it('an accepted swap offer naming the peer own hash lock arrives as unsupported, with no value', () => {
+    const hostile = {
+      ...swapOffer,
+      status: 'accepted',
+      hashLock: 'ab'.repeat(32),
+      offeredAmount: '1000000',
+    } as MessageItem
+    const frame = encodePluginMessageItem({
+      itemType: 'swap-offer',
+      data: registry.encodeItem(hostile).bytes,
+    })
+    const [arrived] = receive([frame])
+    expect(arrived).toEqual({
+      type: 'unsupported',
+      reason: 'unknown-type',
+      itemType: 'swap-offer',
+      frameType: 27,
+      frame: toHex(frame),
+    })
+    // Nothing of the offer survives for a renderer to act on, and nothing is tallied.
+    expect(arrived).not.toHaveProperty('status')
+    expect(arrived).not.toHaveProperty('hashLock')
+    expect(registry.tallyValue([arrived])).toBe(0)
+  })
+
+  it('a blackjack-move bet arrives as unsupported in the generic frame and in a bare type-18 frame', () => {
+    const bet = {
+      type: 'blackjack-move',
+      gameId: 'g',
+      action: 'bet',
+      wagerTxHash: '0x' + 'cd'.repeat(32),
+    } as MessageItem
+    const bytes = registry.encodeItem(bet).bytes
+    const generic = encodePluginMessageItem({
+      itemType: 'blackjack-move',
+      data: bytes,
+    })
+    // Its bytes are a type-18 schema-1 frame; sent bare, it is not a blackjack hand either.
+    for (const frame of [generic, bytes]) {
+      const [arrived] = receive([frame])
+      expect(arrived.type).toBe('unsupported')
+      expect(arrived).not.toHaveProperty('action')
+      expect(arrived).not.toHaveProperty('wagerTxHash')
+    }
+    expect(receive([generic])[0]).toMatchObject({
+      reason: 'unknown-type',
+      itemType: 'blackjack-move',
+    })
+    expect(blackjackMove.type).toBe('blackjack-move')
+  })
+})

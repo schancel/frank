@@ -22,9 +22,11 @@ import {
   createMessageItemRegistry,
   pluginCapabilitiesNotYetAvailable,
 } from '../message-item-plugins/registry'
+import * as wire from '../message-item-plugins/wire'
 import {
   DEDICATED_SAMPLES,
   GENERIC_SAMPLES,
+  NOT_CARRIED_PROPOSAL_SAMPLES,
 } from '../message-item-plugins/wire-samples.testutil'
 import { isDirectMessageNotAttempted } from './active-chain'
 import {
@@ -228,6 +230,81 @@ describe('message items across the canonical path, two wallets', () => {
         ).rejects.toBeInstanceOf(CanonicalMessageItemsNotInstalledError)
       } finally {
         removeAlice = installMessageItemRegistry(alice.wallet, registry)
+      }
+    })
+  })
+
+  describe.each(
+    NOT_CARRIED_PROPOSAL_SAMPLES.map(item => [item.type, item] as const),
+  )('%s is not carried', (type, item) => {
+    it('is refused on send before anything is paid', async () => {
+      const requests = f.requests.length
+      const broadcasts = providerBroadcasts.length
+      sealed.mockClear()
+      f.setMailbox(bob.mailbox)
+      const error = await f.chain.directMessages
+        .send({
+          wallet: alice.wallet,
+          recipient: bob.wallet.identity.address,
+          items: [item],
+          stampValue: STAMP,
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+      f.setMailbox(undefined)
+      expect(error).toBeInstanceOf(wire.MessageItemNotCarriedError)
+      expect((error as Error).message).toBe(
+        `Canonical direct messages cannot carry '${type}' items yet; nothing was paid or sent.`,
+      )
+      expect(isDirectMessageNotAttempted(error)).toBe(true)
+      expect(sealed).not.toHaveBeenCalled()
+      expect(f.requests.length).toBe(requests)
+      expect(providerBroadcasts.length).toBe(broadcasts)
+    })
+
+    it('one a peer delivers anyway, in well-formed bytes, arrives as unsupported and adds no value', async () => {
+      // A peer running other code: its sender writes the frame this wallet's sender refuses.
+      const forged = encodePluginMessageItem({
+        itemType: type,
+        data: registry.encodeItem(item).bytes,
+      })
+      const peer = jest
+        .spyOn(wire, 'encodeItemFrames')
+        .mockReturnValueOnce([
+          forged,
+          canonicalDm.directMessageText('look at this'),
+        ])
+      try {
+        const { message, frames } = await roundTrip([
+          { type: 'text', text: 'placeholder' },
+        ])
+        expect(frames.map(toHex)).toEqual([
+          toHex(forged),
+          toHex(canonicalDm.directMessageText('look at this')),
+        ])
+        expect(message.items).toEqual([
+          {
+            type: 'unsupported',
+            reason: 'unknown-type',
+            itemType: type,
+            frameType: 27,
+            frame: toHex(forged),
+          },
+          { type: 'text', text: 'look at this' },
+        ])
+        // No field of the item survives for a renderer or a bot to act on.
+        expect(Object.keys(message.items[0]).sort()).toEqual([
+          'frame',
+          'frameType',
+          'itemType',
+          'reason',
+          'type',
+        ])
+        expect(registry.tallyValue(message.items)).toBe(0)
+      } finally {
+        peer.mockRestore()
       }
     })
   })

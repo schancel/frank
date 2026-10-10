@@ -14,6 +14,7 @@ import type { MessageItem } from "@frank/cashweb/types/messages";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
 import {
+  MessageItemNotCarriedError,
   decodeItemFrames,
   encodeItemFrames,
 } from "@frank/wallet/message-item-plugins/wire";
@@ -281,7 +282,7 @@ describe("game bot replies cross the canonical wire", () => {
       expect(overTheWire(items)).toEqual(items.map(plain));
   });
 
-  it("a swap offer as the app's dialog builds it", () => {
+  it("a swap offer as the app's dialog builds it is not carried: refused before any payment", () => {
     const offer: MessageItem = {
       type: "swap-offer",
       swapId: "00112233445566778899aabbccddeeff",
@@ -295,6 +296,6 @@ describe("game bot replies cross the canonical wire", () => {
       recipientAddress: "0xA1B2c3D4e5F6a1b2C3d4E5f6A1B2c3d4E5F6a1b2",
       createdAt: 1_760_000_000_000,
     };
-    expect(overTheWire([offer])).toEqual([offer]);
+    expect(() => overTheWire([offer])).toThrow(MessageItemNotCarriedError);
   });
 });

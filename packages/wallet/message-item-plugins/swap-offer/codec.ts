@@ -1,3 +1,8 @@
+/**
+ * A swap offer as bytes. Not carried on the canonical direct message path yet
+ * (`NOT_CARRIED_ITEM_TYPES` in `../wire.ts`): receiving one enables an unconfirmed deposit, so it
+ * is carried once the swap flow validates the offer and asks for confirmation.
+ */
 import type { SwapOfferItem } from '@frank/cashweb/types/messages'
 
 import {

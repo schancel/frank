@@ -160,19 +160,6 @@ export const GENERIC_SAMPLES: MessageItem[] = [
     potWei: '100000000000000000',
   },
   {
-    type: 'swap-offer',
-    swapId: '00112233445566778899aabbccddeeff',
-    offeredChain: 'monad-testnet',
-    offeredAsset: 'MON',
-    offeredAmount: '0.5',
-    requestedChain: 'solana-testnet',
-    requestedAsset: 'SOL',
-    requestedAmount: '0.01',
-    status: 'pending',
-    recipientAddress: BOB,
-    createdAt: 1760000000000,
-  },
-  {
     type: 'digital-goods',
     action: 'catalog',
     catalog: [
@@ -187,8 +174,24 @@ export const GENERIC_SAMPLES: MessageItem[] = [
   { type: 'digital-goods', action: 'request', itemId: 'sticker_1' },
   { type: 'image', image: 'data:image/png;base64,AAAA' },
   { type: 'reply', payloadDigest: HASH },
-  // Its bytes are themselves a type-18 frame, nested in the generic frame and opened under the
-  // same budget.
+]
+
+/** Well-formed items of two registered types this path does not carry: a peer's proposal that
+ * today's receivers would act on without checking it. */
+export const NOT_CARRIED_PROPOSAL_SAMPLES: MessageItem[] = [
+  {
+    type: 'swap-offer',
+    swapId: '00112233445566778899aabbccddeeff',
+    offeredChain: 'monad-testnet',
+    offeredAsset: 'MON',
+    offeredAmount: '0.5',
+    requestedChain: 'solana-testnet',
+    requestedAsset: 'SOL',
+    requestedAmount: '0.01',
+    status: 'pending',
+    recipientAddress: BOB,
+    createdAt: 1760000000000,
+  },
   {
     type: 'blackjack-move',
     gameId: 'g',

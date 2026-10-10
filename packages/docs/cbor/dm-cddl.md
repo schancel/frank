@@ -15,9 +15,12 @@
 - Type 8: **Message Content Revision** (`message-content-revision`)
 - Type 16: **Container Message Item** (`container-message-item`)
 - Type 17: **Text Message Item** (`text-message-item`)
+- Type 18: **Blackjack Message Item** (closed shapes; `docs/protocol/proposals/blackjack-items/blackjack.cddl`)
 - Type 19: **Stealth Payment Item** (`stealth-message-item`)
 - Type 24: **Universal State Channel Update** (`channel-update-item`)
 - Type 25: **Forwarding Delivery Envelope** (`forwarding-delivery-envelope`)
+- Type 26: **Email Bridge Message Item** (`email-message-item`)
+- Type 27: **Generic Plugin Message Item** (`plugin-message-item`)
 
 ---
 

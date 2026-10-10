@@ -250,3 +250,31 @@ body.body--dark {
     display: none !important;
   }
 }
+
+/* A name with its account badge, in a narrow list row. The name keeps its line; a badge that does
+   not fit beside it moves under it instead of running over the row's buttons. */
+.name-with-badge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  min-width: 0;
+  max-width: 100%;
+
+  > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  > .q-badge {
+    margin-left: 0;
+    margin-right: 0;
+    overflow: hidden;
+  }
+}
+
+/* A game card's "waiting for the bot" line. It sits in the sender's own bubble, so it takes the
+   bubble's text colour (a fixed grey or red cannot be read on a coloured bubble). */
+.game-waiting-quiet {
+  opacity: 0.85;
+}

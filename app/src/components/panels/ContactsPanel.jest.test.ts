@@ -106,6 +106,7 @@ describe('ContactsPanel navigation', () => {
           QSpace: passthrough,
           QAvatar: passthrough,
           QInput: defineComponent({
+            name: 'QInput',
             props: ['modelValue'],
             emits: ['update:modelValue'],
             setup(props, { emit }) {
@@ -223,6 +224,43 @@ describe('ContactsPanel navigation', () => {
     expect((wrapper.vm as any).showMyQrDialog).toBe(false)
     await qrBtn.trigger('click')
     expect((wrapper.vm as any).showMyQrDialog).toBe(true)
+  })
+
+  it('the clear button (which sets the box to null) brings the whole list back without an error', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.find('input').setValue('ali')
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="contact-list-row"]')).toHaveLength(1)
+    // What Quasar's clearable control emits.
+    wrapper
+      .findComponent({ name: 'QInput' })
+      .vm.$emit('update:modelValue', null)
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="contact-list-row"]')).toHaveLength(2)
+  })
+
+  it('finds a saved contact by its username, with or without the @', async () => {
+    const saved = mockContacts.value
+    mockContacts.value = {
+      ...saved,
+      '0x3333333333333333333333333333333333333333': {
+        profile: { name: 'Carol Example', avatar: '', username: 'carol99' },
+      },
+    }
+    try {
+      const wrapper = mountPanel()
+      await flushPromises()
+      for (const typed of ['carol99', '@carol', 'CAROL99']) {
+        await wrapper.find('input').setValue(typed)
+        await flushPromises()
+        const rows = wrapper.findAll('[data-test="contact-list-row"]')
+        expect(rows).toHaveLength(1)
+        expect(rows[0].text()).toContain('Carol Example')
+      }
+    } finally {
+      mockContacts.value = saved
+    }
   })
 
   it('displays compact address instead of Loading... when a contact is pending resolution and triggers refresh', async () => {

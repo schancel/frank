@@ -249,6 +249,9 @@ export class FrankBotHost {
         options.stampValueWei ??
         envConfig.defaultStampValueWei ??
         10_000_000_000_000_000n,
+      minStampValueWei:
+        options.minStampValueWei ??
+        BigInt(process.env.CASHWEB_STAMP_MIN_BURN_VALUE_WEI || "1000000000000"),
       pollIntervalMs: options.pollIntervalMs ?? 3000,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30 * 60 * 1000,
       watchRegistrations: options.watchRegistrations ?? true,
@@ -1249,7 +1252,8 @@ export class FrankBotHost {
           text: `Slow down: you have had ${limit} replies from me in the last hour, which is my limit for one account. Messages you send now may go unanswered. Please try again later.`,
         },
       ],
-      identity.conversationId
+      identity.conversationId,
+      { stampValueWei: this.replyStampWei(0n) }
     ).then(
       () => undefined,
       () =>
@@ -1290,14 +1294,34 @@ export class FrankBotHost {
     return task;
   }
 
-  /** Stores the one text reply the host owes for a message and sends it. A text the store
-   * refuses (empty, too long, not well-formed) is replaced by the failure text. */
+  /** The stamp a bot puts on what it sends in answer to a message, when the handler names no
+   * amount: what the sender paid with that message, and never more, so answering can never pay
+   * out more than came in. Never above the bot's configured stamp either.
+   *
+   * `paidWei` is what the delivery STATES was paid (`DirectMessageReceived.stampValueWei`); it is
+   * not proof the payment landed. SWITCH HERE to the wallet's chain-verified amount once that
+   * call exists.
+   *
+   * A message that paid nothing, or less than the relay accepts for a paid message, is answered
+   * at the relay's minimum. SWITCH HERE to 0n (no stamp at all) once the wallet's unpaid send
+   * has landed. */
+  private replyStampWei(paidWei: bigint): bigint {
+    const { stampValueWei, minStampValueWei } = this.options;
+    if (paidWei < minStampValueWei)
+      return minStampValueWei < stampValueWei ? minStampValueWei : stampValueWei;
+    return paidWei < stampValueWei ? paidWei : stampValueWei;
+  }
+
+  /** Stores the one text reply the host owes for a message and sends it, stamped by
+   * `replyStampWei` of what the message paid. A text the store refuses (empty, too long, not
+   * well-formed) is replaced by the failure text. */
   private async owe(
     instance: ActiveBotInstance,
     digest: string,
-    text: string
+    text: string,
+    paidWei: bigint
   ): Promise<void> {
-    const stamp = this.options.stampValueWei.toString();
+    const stamp = this.replyStampWei(paidWei).toString();
     try {
       await instance.operations.stageReply(digest, text, stamp, Date.now());
     } catch {
@@ -1415,7 +1439,8 @@ export class FrankBotHost {
       `[bot-host] [${instance.definition.id}] Handling of message ${row.messageId} from ${row.peerAddress} was interrupted`
     );
     if (row.replied) await this.finish(instance, digest, false);
-    else await this.owe(instance, digest, FAILED_REPLY_TEXT);
+    // What the message paid is not kept across a restart: answered as if it paid nothing.
+    else await this.owe(instance, digest, FAILED_REPLY_TEXT, 0n);
   }
 
   /** Sends stored replies that are not with the wallet yet. One tracked pass at a time, in
@@ -1652,7 +1677,10 @@ export class FrankBotHost {
             conversationId === undefined
               ? undefined
               : conversationIdentity(conversationId),
-          stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+          // An amount the handler names (a payout) is the handler's. Anything else it sends
+          // while answering this message carries the reply stamp.
+          stampValue:
+            options?.stampValueWei ?? this.replyStampWei(stampValueWei),
           items: structuredClone(items),
         },
         async () => {
@@ -1733,9 +1761,15 @@ export class FrankBotHost {
     // A handler is run once. One that failed having sent nothing leaves the peer a plain
     // failure reply, stored and delivered like any other; one that sent something is finished,
     // and the wallet completes what it sent.
-    if (prepared) return this.owe(instance, identity.digest, prepared.text);
+    if (prepared)
+      return this.owe(instance, identity.digest, prepared.text, stampValueWei);
     if (threw && !linked)
-      return this.owe(instance, identity.digest, FAILED_REPLY_TEXT);
+      return this.owe(
+        instance,
+        identity.digest,
+        FAILED_REPLY_TEXT,
+        stampValueWei
+      );
     await this.finish(instance, identity.digest, false);
   }
 

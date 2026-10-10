@@ -306,6 +306,82 @@ describe("FrankBotHost replies", () => {
     });
   });
 
+  // On 16218e9f every reply carried the bot's default stamp (0.01 MON) whatever the sender had
+  // paid, so each message, paid or not, drew 0.01 MON out of the bot, refilled from the shared
+  // funding wallet.
+  describe("the stamp on a reply", () => {
+    const MIN = 1_000_000_000_000n;
+    const stampsSent = (): bigint[] =>
+      mockSend.mock.calls.map(([params]) => params.stampValue);
+
+    it.each([
+      ["what the sender paid, when that is less than the bot's own stamp", 4_000_000_000_000_000n, 4_000_000_000_000_000n],
+      ["the bot's own stamp at most, however much the sender paid", 5_000_000_000_000_000_000n, STAMP],
+      ["the relay's minimum for a message that paid nothing", 0n, MIN],
+      ["the relay's minimum for a message whose payment the wallet did not report", undefined, MIN],
+      ["the relay's minimum for a message that paid less than a paid message may", MIN - 1n, MIN],
+    ])("is %s", async (_label, paid, expected) => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      const { host, instance } = await start(
+        bot("stamp-reply-bot", async (message, ctx) => {
+          const said = (message.items[0] as { text: string }).text;
+          if (said === "return") return [{ type: "text", text: "returned" }];
+          if (said === "stored")
+            return { kind: "prepared-reply", text: "stored" };
+          if (said === "throw") throw new Error("a check failed");
+          // Anything sent while answering, to anyone, is covered: not only `reply()`.
+          await message.reply([{ type: "text", text: "replied" }]);
+          await ctx.sendMessage(otherPeer.address, [
+            { type: "text", text: "to a table mate" },
+          ]);
+        })
+      );
+      for (const said of ["return", "stored", "throw", "send"]) {
+        await poll(host, [inbound(said, { stampValueWei: paid })]);
+        await drain(instance);
+      }
+      expect(textsSent()).toEqual([
+        "returned",
+        "stored",
+        FAILED_REPLY_TEXT,
+        "replied",
+        "to a table mate",
+      ]);
+      expect(stampsSent()).toEqual(Array(5).fill(expected));
+    });
+
+    it("is the amount a handler names, when it names one: a payout is the handler's", async () => {
+      const { host, instance } = await start(
+        bot("payout-bot", async (message) => {
+          await message.reply([{ type: "text", text: "you won" }], {
+            stampValueWei: 70_000_000_000_000_000n,
+          });
+        })
+      );
+      await poll(host, [inbound("roll", { stampValueWei: 0n })]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([70_000_000_000_000_000n]);
+    });
+
+    it("is the relay's minimum for the failure reply of a message whose handling was interrupted: what it paid is not kept", async () => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      const { host, instance } = await start(bot("cut-bot", async () => {}));
+      // The handler ran and the write that finishes its message was lost.
+      const complete = jest
+        .spyOn(instance.operations, "complete")
+        .mockRejectedValueOnce(new Error("killed"));
+      const message = inbound("hello", { stampValueWei: STAMP });
+      await poll(host, [message]);
+      await drain(instance);
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(mockSend).not.toHaveBeenCalled();
+      await poll(host, [message]);
+      await drain(instance);
+      expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
+      expect(stampsSent()).toEqual([MIN]);
+    });
+  });
+
   // On 21a868a2 the first refusal fails the handler: the wallet is called once, the row stays
   // started for good and the message is never answered.
   describe("a reply a handler sends itself", () => {

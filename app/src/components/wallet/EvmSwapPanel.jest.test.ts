@@ -271,7 +271,7 @@ describe('the swap form', () => {
   it('shows balances read from the chain and asks for an amount', async () => {
     scene()
     const view = await mountPanel()
-    expect(text(view, 'swap-pay-balance')).toBe('Available: 1 MON')
+    expect(text(view, 'swap-pay-balance')).toBe('Available: 1 MONT')
     expect(text(view, 'swap-receive-balance')).toBe('Balance: 5 USDC')
     expect(view.find('[data-testid="swap-details"]').exists()).toBe(false)
     expect(text(view, 'swap-review-btn')).toBe('Enter an amount')
@@ -286,12 +286,12 @@ describe('the swap form', () => {
     const view = await mountPanel()
     await type(view, '0.02')
     expect(text(view, 'swap-receive-amount')).toBe('0.019996')
-    expect(text(view, 'swap-rate')).toBe('1 MON ≈ 0.9998 USDC')
+    expect(text(view, 'swap-rate')).toBe('1 MONT ≈ 0.9998 USDC')
     expect(text(view, 'swap-price-impact')).toBe('0.02%')
     expect(text(view, 'swap-pool-fee')).toBe('0.05%')
     expect(text(view, 'swap-minimum-received')).toBe('0.019896 USDC')
     // 200,000 gas estimated plus 15%, all of it charged, at 100 gwei.
-    expect(text(view, 'swap-network-fee')).toBe('0.023 MON')
+    expect(text(view, 'swap-network-fee')).toBe('0.023 MONT')
     expect(text(view, 'swap-review-btn')).toBe('Review swap')
   })
 
@@ -339,8 +339,8 @@ describe('the swap form', () => {
     scene({ mainBalance: 10n ** 16n })
     const view = await mountPanel()
     await type(view, '0.02')
-    expect(text(view, 'swap-problem')).toBe('Not enough MON')
-    expect(text(view, 'swap-review-btn')).toBe('Not enough MON')
+    expect(text(view, 'swap-problem')).toBe('Not enough MONT')
+    expect(text(view, 'swap-review-btn')).toBe('Not enough MONT')
     expect(
       view.get('[data-testid="swap-review-btn"]').attributes('disabled'),
     ).toBeDefined()
@@ -351,7 +351,7 @@ describe('the swap form', () => {
     const view = await mountPanel()
     await type(view, '0.02')
     expect(text(view, 'swap-problem')).toBe(
-      'Not enough MON for this amount plus the network fee',
+      'Not enough MONT for this amount plus the network fee',
     )
   })
 
@@ -359,7 +359,7 @@ describe('the swap form', () => {
     scene({ mainBalance: 10n ** 16n, other: E18 })
     const view = await mountPanel()
     await type(view, '0.02')
-    expect(text(view, 'swap-other-accounts')).toContain('1 MON more')
+    expect(text(view, 'swap-other-accounts')).toContain('1 MONT more')
     // Nothing blocks the swap; the only remark is about the size of the fee.
     expect(text(view, 'swap-problem')).toBe(
       'The network fee is larger than the amount you are swapping.',
@@ -400,7 +400,7 @@ describe('the swap form', () => {
     )
     // Each approval is priced; the swap cannot be until they confirm.
     expect(text(view, 'swap-network-fee')).toBe(
-      '0.046 MON for the approvals; the swap’s own fee is known once they confirm',
+      '0.046 MONT for the approvals; the swap’s own fee is known once they confirm',
     )
   })
 
@@ -420,7 +420,7 @@ describe('the swap form', () => {
     const view = await mountPanel(fr)
     await type(view, '0.02')
     expect(text(view, 'swap-review-btn')).toBe('Vérifier l’échange')
-    expect(text(view, 'swap-network-fee')).toBe('0.023 MON')
+    expect(text(view, 'swap-network-fee')).toBe('0.023 MONT')
   })
 
   it('says so when the wallet cannot swap', async () => {
@@ -441,7 +441,7 @@ describe('confirming and executing', () => {
     await click(view, 'swap-review-btn')
     // The swap as a whole: what leaves the wallet, and what arrives.
     expect(text(view, 'swap-review-pay')).toBe(
-      'You pay 0.02 MON + 0.023 MON network fee = 0.043 MON.',
+      'You pay 0.02 MONT + 0.023 MONT network fee = 0.043 MONT.',
     )
     expect(text(view, 'swap-review-receive')).toBe(
       'You receive about 0.019996 USDC. If you would get less than 0.019896 USDC, the swap is cancelled and you keep what you were paying with.',
@@ -493,7 +493,7 @@ describe('confirming and executing', () => {
     expect(text(view, 'swap-result-received')).toBe('0.019996 USDC')
     // What was actually charged and paid, from the receipt: 0.02 MON in, 0.02652 MON fee.
     expect(text(view, 'swap-result-paid')).toBe(
-      'You paid 0.02 MON + 0.02652 MON network fee = 0.04652 MON.',
+      'You paid 0.02 MONT + 0.02652 MONT network fee = 0.04652 MONT.',
     )
     expect(
       view.get('[data-testid="swap-result-explorer"]').attributes('href'),
@@ -689,7 +689,7 @@ describe('confirming and executing', () => {
     await click(view, 'swap-review-btn')
     // 0.02 MON plus 230,000 gas at 100 gwei, less the 0.01 MON already there.
     expect(text(view, 'swap-review-move')).toBe(
-      '0.033 MON will first be moved from your other accounts into your main account, which makes the swap.',
+      '0.033 MONT will first be moved from your other accounts into your main account, which makes the swap.',
     )
     expect(s.wallet.fundMainAccount).not.toHaveBeenCalled()
     await click(view, 'swap-confirm-btn')
@@ -836,7 +836,7 @@ describe('the cost of the swap as a whole', () => {
     await type(view, '0.015')
     await click(view, 'swap-review-btn')
     expect(text(view, 'swap-review-pay')).toBe(
-      'You pay 0.015 USDC + 0.046 MON network fee for the approvals, plus the swap’s own network fee, shown once they confirm.',
+      'You pay 0.015 USDC + 0.046 MONT network fee for the approvals, plus the swap’s own network fee, shown once they confirm.',
     )
   })
 
@@ -847,7 +847,7 @@ describe('the cost of the swap as a whole', () => {
     await click(view, 'swap-review-btn')
     // The swap's 0.023 MON plus one 21,000 gas transfer at 100 gwei.
     expect(text(view, 'swap-review-pay')).toBe(
-      'You pay 0.02 MON + 0.0251 MON network fee = 0.0451 MON.',
+      'You pay 0.02 MONT + 0.0251 MONT network fee = 0.0451 MONT.',
     )
   })
 
@@ -859,7 +859,7 @@ describe('the cost of the swap as a whole', () => {
     await click(view, 'swap-review-btn')
     await click(view, 'swap-confirm-btn')
     expect(text(view, 'swap-result-paid')).toBe(
-      'You paid 0.02652 MON in network fees and nothing else.',
+      'You paid 0.02652 MONT in network fees and nothing else.',
     )
   })
 })
@@ -895,7 +895,7 @@ describe('tokens', () => {
       .get('[data-testid="swap-receive-token"]')
       .findAll('option')
       .map(option => option.text())
-    expect(options).toEqual(['MON', 'USDC', 'CHOMP · test token'])
+    expect(options).toEqual(['MONT', 'USDC', 'CHOMP · test token'])
   })
 
   it('on opening, hands back to the network a contract call that was signed and never landed', async () => {

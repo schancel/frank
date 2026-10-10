@@ -104,8 +104,8 @@ describe('ChatMessageDigitalGoods catalog thumbnails', () => {
         { itemId: 'a', description: 'Alpha', priceWei: bad },
         { itemId: 'b', description: 'Beta', priceWei: '1000000000000000000' },
       ])
-      expect(w.text()).toContain('Alpha -- price unavailable')
-      expect(w.text()).toContain('Beta -- 1 MON')
+      expect(w.text()).toContain('Alpha price unavailable')
+      expect(w.text()).toContain('Beta 1 MON')
     },
   )
 

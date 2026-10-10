@@ -1,5 +1,6 @@
 import { Notify, openURL } from 'quasar'
 import { transactionExplorerUrl } from './explorer'
+import { markdownPlainText } from './markdown-plain-text'
 import { translateMessage } from 'src/i18n'
 
 const $t = (key: string) => translateMessage(key)
@@ -107,8 +108,9 @@ export function desktopNotify(
   // same message never shows twice on a device even when two tabs or windows each notify for it.
   tag?: string,
 ) {
+  // A notification shows text as it is: the message's words, without its Markdown syntax.
   const notify = new Notification(title, {
-    body,
+    body: markdownPlainText(body),
     icon,
     ...(tag === undefined ? {} : { tag }),
   })

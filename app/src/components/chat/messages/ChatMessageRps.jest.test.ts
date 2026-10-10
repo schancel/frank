@@ -141,7 +141,11 @@ describe('ChatMessageRps.vue', () => {
 
   test('a move answers the commitment the bot sent and carries the stake as its value', async () => {
     const wrapper = mountCard(start)
-    expect(wrapper.text()).toContain(commitHash)
+    // The commitment is a long hash: it is not printed on the card, and is there on hover.
+    expect(wrapper.text()).not.toContain(commitHash)
+    expect(
+      wrapper.get('[data-testid="rps-committed"]').attributes('title'),
+    ).toBe(commitHash)
     await wrapper.find('[data-testid="rps-chip-0.05"]').trigger('click')
     await wrapper.find('[data-testid="rps-paper"]').trigger('click')
     const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]

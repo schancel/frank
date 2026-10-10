@@ -186,3 +186,64 @@ describe('ChatLayout info mode with ?info=true query', () => {
     expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(false)
   })
 })
+
+describe('ChatLayout header name', () => {
+  afterEach(() => {
+    mockContact.profile.pubKey = null
+  })
+
+  it('is in the header’s own text colour; the per-key colour is only the avatar ring', async () => {
+    ;(mockContact.profile as { pubKey: unknown }).pubKey = {
+      toBuffer: () => new Uint8Array(33).fill(7),
+    }
+    const wrapper = mount(ChatLayout, {
+      global: {
+        mocks: {
+          $route: {
+            params: { address: '0x1111111111111111111111111111111111111111' },
+            query: {},
+          },
+          $router: { push: jest.fn(), replace: jest.fn() },
+          $t: (key: string) => key,
+        },
+        stubs: {
+          QHeader: passthrough,
+          QToolbar: passthrough,
+          QToolbarTitle: passthrough,
+          QAvatar: {
+            template: '<div data-testid="header-avatar"><slot /></div>',
+          },
+          QBtn: passthrough,
+          QSpace: passthrough,
+          QMenu: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QIcon: passthrough,
+          QSeparator: passthrough,
+          QDialog: true,
+          AccountBadge: true,
+          RouterView: { template: '<div data-testid="chat-view" />' },
+          ClearHistoryDialog: true,
+          DeleteChatDialog: true,
+        },
+      },
+    })
+    await flushPromises()
+
+    const name = wrapper.find('[data-testid="chat-header-name"]')
+    expect(name.text()).toBe('Alice')
+    // Nothing from the name up to the header sets a text colour inline.
+    for (
+      let el: Element | null = name.element;
+      el && el !== wrapper.element;
+      el = el.parentElement
+    )
+      expect((el as HTMLElement).style.color).toBe('')
+    // The key colour is still shown, as the ring around the avatar.
+    expect(
+      wrapper.find<HTMLElement>('[data-testid="header-avatar"]').element.style
+        .boxShadow,
+    ).toContain('hsl(')
+  })
+})

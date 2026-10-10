@@ -109,8 +109,14 @@ export default {
     stampMultiplierValue: '{multiplier}× default ({amount})',
     suggestedStamp: 'Suggested: {amount}',
     resetToSuggested: 'Reset to suggested',
-    convergedPill: 'Converged',
-    overridePill: 'Override',
+    convergedPill: 'Suggested',
+    overridePill: 'Your choice',
+    stampChip: 'Stamp: {amount}',
+    stampChipMultiple: 'Stamp: {amount}, {multiplier}× the minimum',
+    stampWhat:
+      'A stamp is a small payment sent with your message to the person you are writing to. It pays for their attention.',
+    stampWhy:
+      'The suggested stamp for this chat sits midway (the geometric mean) between the last stamp you paid them and the last one they paid you. It never goes below the minimum, and it rises above your last stamp only as far as they have paid you more than you paid them.',
   },
   digitalGoods: {
     catalog: 'Catalog',
@@ -404,9 +410,6 @@ export default {
     walletUnsupported:
       'This network is not supported yet. No address is shown because the app could not see money sent to it.',
     notSupported: 'Not supported',
-    cordoned: '{amount} cordoned',
-    cordonedTooltip:
-      'Received at your profile address. The wallet watches these funds but does not spend them.',
     tokenBalancesLoading: 'Loading token balances…',
     tokenBalancesUnavailable: 'Token balances unavailable.',
     tokenBalancesStale:
@@ -587,6 +590,7 @@ export default {
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
     composeEmail: 'Compose Email',
+    openingConversation: 'Opening conversation…',
     selectChatOrAddContact:
       'Select a conversation or add a contact to start messaging.',
   },
@@ -749,6 +753,23 @@ export default {
     statusRefunded: 'Refunded',
     statusExpired: 'Expired',
     processing: 'Processing...',
+  },
+  balanceBreakdown: {
+    open: 'Where this balance is',
+    main: 'Main account',
+    mainNote: 'Your deposit address: the one shown below.',
+    profile: 'Profile address',
+    profileNote: 'Sent to the address on your profile.',
+    received: 'Received payments ({count})',
+    receivedNote:
+      'Payments and stamps people sent you, each at its own one-time address, confirmed on the network.',
+    other: 'Sending accounts',
+    otherNote:
+      'Kept by the wallet in its own accounts to pay for your messages, and change from earlier payments. Not counted in the balance above.',
+    total: 'Total in this wallet',
+    yours:
+      'Every one of these accounts belongs to this wallet and comes back from your recovery phrase.',
+    unavailable: 'The accounts could not be read just now.',
   },
   heldContactPayments: {
     title: 'Payments to contacts in progress',
@@ -1055,7 +1076,7 @@ export default {
   sendAddressDialog: {
     sendToAddress: 'Send to Address',
     enterBitcoinCashAddress: 'Enter address (0x...)',
-    enterAmount: 'Enter Amount (MON)',
+    enterAmount: 'Enter Amount ({unit})',
     cancel: 'Cancel',
     send: 'Send',
     review: 'Review',

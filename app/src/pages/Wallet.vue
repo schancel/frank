@@ -132,21 +132,28 @@
                                 : 'walletPanel.balanceUnavailable',
                             )
                       }}
-                      <span
-                        v-if="balanceObservation && balanceObservation.cordoned"
-                        class="text-weight-regular text-grey-7 wallet-balance-bracket"
-                        data-testid="wallet-balance-cordoned"
-                      >
-                        ({{
-                          $t('walletPanel.cordoned', {
-                            amount: balanceObservation.cordoned.formattedAmount,
-                          })
-                        }})
-                        <q-tooltip>{{
-                          $t('walletPanel.cordonedTooltip')
-                        }}</q-tooltip>
-                      </span>
                     </div>
+                    <!-- Opens where the balance is: which accounts hold it. -->
+                    <div v-if="canBreakDownBalance" class="text-center">
+                      <q-btn
+                        flat
+                        dense
+                        no-caps
+                        size="sm"
+                        color="primary"
+                        :label="$t('balanceBreakdown.open')"
+                        :icon-right="
+                          showBreakdown ? 'expand_less' : 'expand_more'
+                        "
+                        :aria-expanded="showBreakdown"
+                        data-testid="wallet-balance-breakdown-toggle"
+                        @click="showBreakdown = !showBreakdown"
+                      />
+                    </div>
+                    <balance-breakdown
+                      v-if="canBreakDownBalance && showBreakdown"
+                      class="q-mt-xs q-mb-sm"
+                    />
                     <div
                       class="text-caption text-primary cursor-pointer flex items-center justify-center q-gutter-xs q-mt-xs"
                       data-testid="wallet-unit-rate-avu"
@@ -612,6 +619,7 @@ import { useRoute, useRouter } from 'vue-router'
 import QrcodeVue from 'qrcode.vue'
 import AvuExplainerDialog from 'src/components/wallet/AvuExplainerDialog.vue'
 import AvuParityChart from 'src/components/wallet/AvuParityChart.vue'
+import BalanceBreakdown from 'src/components/wallet/BalanceBreakdown.vue'
 import DAppSwapView from 'src/components/wallet/DAppSwapView.vue'
 import HeldContactPayments from 'src/components/wallet/HeldContactPayments.vue'
 import { copyToClipboard } from 'quasar'
@@ -647,6 +655,7 @@ export default defineComponent({
     AvuParityChart,
     DAppSwapView,
     HeldContactPayments,
+    BalanceBreakdown,
   },
   emits: ['toggleMyDrawerOpen'],
   setup() {
@@ -714,8 +723,14 @@ export default defineComponent({
       tokenObservation,
       refreshCordoned,
     } = useChainBalance(selectedWallet)
-    // The cordoned amount is otherwise read at a slow cadence; opening this page shows it fresh.
+    // The profile address is otherwise read at a slow cadence; opening this page shows it fresh.
     onMounted(() => void refreshCordoned?.())
+    // The breakdown reads the active (Monad) wallet's accounts; it is opened from the balance.
+    const showBreakdown = ref(false)
+    const canBreakDownBalance = computed(
+      () => selectedWallet.value === 'monad' && !!balanceObservation.value,
+    )
+    watch(selectedWallet, () => (showBreakdown.value = false))
     const tokenStatusKey = computed(() => {
       const observation = tokenObservation.value
       if (!observation || observation.status === 'available') return ''
@@ -913,6 +928,8 @@ export default defineComponent({
       balancePresentation,
       balanceObservation,
       balanceTitle,
+      showBreakdown,
+      canBreakDownBalance,
       balanceUnsupported,
       currentWalletHasError,
       currentWalletAvu,

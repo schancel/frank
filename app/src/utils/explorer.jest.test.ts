@@ -156,7 +156,7 @@ describe('standard Monad wallet labels', () => {
     expect(frFr.SettingPanel.sendMonad).toBe('Envoyer des MON')
     expect(frFr.SettingPanel.receiveMonad).toBe('Recevoir des MON')
     expect(frFr.sendAddressDialog.enterAmount).toBe(
-      'Saisissez le montant (MON)',
+      'Saisissez le montant ({unit})',
     )
   })
 })

@@ -22,6 +22,7 @@
  */
 import DOMPurify from 'dompurify'
 import { renderMarkdown, purify, clearMarkdownCache } from './markdown'
+import { markdownPlainText } from './markdown-plain-text'
 
 jest.mock('quasar', () => ({
   colors: {
@@ -340,5 +341,35 @@ describe('content that may fetch nothing (a direct message)', () => {
     const html = renderMarkdown('![x](https://a.example/x.png)', false)
     expect(html).toContain('src="https://a.example/x.png"')
     expect(purify('<img src="https://a.example/x.png">')).toContain('<img')
+  })
+})
+
+describe('markdownPlainText (the chat list preview and notifications)', () => {
+  it('keeps the words and drops the syntax', () => {
+    expect(
+      markdownPlainText(
+        '# Rooms\n**bold** *it* ~~gone~~ `code` [link](https://x.example)\n\n- one\n- two\n\n> quoted',
+      ),
+    ).toBe('Rooms bold it gone code link one two quoted')
+  })
+
+  it('names a picture by the label it is given, else by its alt text', () => {
+    expect(markdownPlainText('a ![cat](attachment:1) b', 'Photo')).toBe(
+      'a Photo b',
+    )
+    expect(markdownPlainText('a ![cat](attachment:1) b')).toBe('a cat b')
+  })
+
+  it('returns text, not markup: tags are dropped and characters are not entity-escaped', () => {
+    expect(markdownPlainText('<script>x()</script> 1 < 2 & "q"')).toBe(
+      'x() 1 < 2 & "q"',
+    )
+  })
+
+  it('leaves ordinary text as it was', () => {
+    expect(markdownPlainText('5 * 3 * 2 is 30, a_b_c too')).toBe(
+      '5 * 3 * 2 is 30, a_b_c too',
+    )
+    expect(markdownPlainText('')).toBe('')
   })
 })

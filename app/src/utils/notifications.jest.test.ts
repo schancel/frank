@@ -186,6 +186,17 @@ describe('desktopNotify', () => {
     ;(global as { Notification?: unknown }).Notification = original
   })
 
+  it('shows the message as plain text, without its Markdown syntax', () => {
+    desktopNotify(
+      'Lobby',
+      '**Lobby** [rooms](https://x.example)',
+      '',
+      () => undefined,
+    )
+
+    expect(constructed[0].options.body).toBe('Lobby rooms')
+  })
+
   it('passes the tag so the browser replaces a repeat of the same message (#412)', () => {
     desktopNotify('Qwen', 'hi', 'icon.png', () => undefined, 'digest-1')
 

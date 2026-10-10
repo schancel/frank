@@ -237,7 +237,7 @@ import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { useOracleFeed } from '../../composables/useOracleFeed'
 import { formatAvu } from '@frank/wallet/oracle'
-import { formatCompactCryptoBalance } from '../../utils/formatting'
+import { compactAmountText } from '../../utils/chain-amount'
 import {
   WALLET_CONFIGS,
   WalletItemConfig,
@@ -295,7 +295,7 @@ function getWalletBalance(wallet: WalletItemConfig): string {
       ? presentation.lastKnown
       : undefined
   return observation
-    ? formatCompactCryptoBalance(observation.formattedBalance)
+    ? compactAmountText(observation.formattedBalance)
     : getTranslation(
         presentation.status === 'loading'
           ? 'walletPanel.balanceLoading'
@@ -453,6 +453,13 @@ function openBackup() {
 /* Quieter than its neighbour in both modes; a fixed grey was unreadable on the dark drawer. */
 .wallet-muted {
   opacity: 0.75;
+}
+
+/* The network name and the balance under a wallet's name: Quasar's caption colour is a fixed
+   dark grey, which could not be read on the dark drawer. */
+.wallet-list-item :deep(.q-item__label--caption) {
+  color: inherit;
+  opacity: 0.7;
 }
 
 .wallet-header-row {

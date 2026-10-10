@@ -579,6 +579,24 @@ export class EvmStampPayer {
           }
           busy ??= account.address
         }
+        // No one coin covers the stamp: several of them together, each paying a part.
+        if (busy === undefined) {
+          const several = await this.claimSeveral(
+            input,
+            candidates.filter(
+              account =>
+                allowed(account.source) &&
+                !this.config.accountHeld?.(account.address),
+            ),
+            fee,
+            blocks => {
+              waiting = true
+              input.onWaiting?.(blocks)
+            },
+          )
+          if (several === 'again') continue
+          if (several !== undefined) return several
+        }
         if (busy === undefined && heldElsewhere && this.config.heldRefusal)
           throw this.config.heldRefusal()
         if (busy === undefined)
@@ -618,6 +636,125 @@ export class EvmStampPayer {
       }
     } catch (error) {
       pool.releaseClaim(input.holder)
+      throw error
+    }
+  }
+
+  /**
+   * The stamp paid from SEVERAL of the wallet's coins (the main account, the identity account,
+   * received coins) when no one of them covers it: the largest first, each paying what it can
+   * after its own fee, no part smaller than a transfer's fee. A message carries one payment
+   * per coin, as it does when several funded sub-accounts pay. Money a wallet holds in several
+   * places is spendable; before this a send failed "not enough funds" while the wallet held
+   * more than enough across its coins.
+   *
+   * `undefined`: the coins together do not cover it (nothing stays claimed). `'again'`: a coin
+   * changed while it was being taken; the caller looks again.
+   */
+  private async claimSeveral(
+    input: {
+      holder: string
+      stampValueWei: bigint
+      signal?: AbortSignal
+      allowBelowFee?: boolean
+    },
+    candidates: readonly {
+      source: 'main' | 'identity' | 'coin'
+      address: string
+    }[],
+    fee: StampFee,
+    onWaiting: (blocksRemaining?: number) => void,
+  ): Promise<StampClaim | 'again' | undefined> {
+    const { pool, provider } = this.config
+    const feeReserveWei = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
+    const smallest = input.allowBelowFee
+      ? 1n
+      : STAMP_GAS_LIMIT * fee.chargedPerGas
+    const funded: {
+      account: (typeof candidates)[number]
+      generation: number
+      capacityWei: bigint
+    }[] = []
+    for (const account of candidates) {
+      if (pool.accountClaimedBy(account.address) !== undefined) continue
+      const generation = pool.accountGeneration(account.address)
+      const balanceWei = await this.read(() =>
+        provider.getBalance(account.address),
+      )
+      if (balanceWei >= feeReserveWei + smallest)
+        funded.push({
+          account,
+          generation,
+          capacityWei: balanceWei - feeReserveWei,
+        })
+    }
+    funded.sort((a, b) => (a.capacityWei > b.capacityWei ? -1 : 1))
+    const parts: { coin: (typeof funded)[number]; valueWei: bigint }[] = []
+    let remaining = input.stampValueWei
+    for (const coin of funded) {
+      if (remaining === 0n) break
+      let valueWei = coin.capacityWei < remaining ? coin.capacityWei : remaining
+      // Never leave a last part too small to be worth its own transfer.
+      if (remaining - valueWei > 0n && remaining - valueWei < smallest)
+        valueWei = remaining - smallest
+      if (valueWei < smallest) continue
+      parts.push({ coin, valueWei })
+      remaining -= valueWei
+    }
+    if (remaining > 0n || parts.length < 2) return undefined
+    // Synchronous: every coin is free and unspent since its balance was read, or none is taken.
+    const taken: string[] = []
+    const letGo = () => {
+      for (const address of taken)
+        pool.releaseAccountClaim(input.holder, address)
+    }
+    for (const { coin } of parts) {
+      if (
+        !pool.claimAccount(input.holder, coin.account.address, coin.generation)
+      ) {
+        letGo()
+        return 'again'
+      }
+      taken.push(coin.account.address)
+    }
+    try {
+      const accounts: ClaimedStampCoin[] = []
+      for (const { coin, valueWei } of parts) {
+        const { address, source } = coin.account
+        const at = await this.coinOf(address, input.signal)
+        const head = this.watcher.latest() ?? at.notBeforeBlock
+        const aboveReserve =
+          this.config.reserveBalanceWei !== undefined &&
+          coin.capacityWei - valueWei >= this.config.reserveBalanceWei
+        if (at.notBeforeBlock > head && !aboveReserve) {
+          onWaiting(at.notBeforeBlock - head)
+          await this.watcher.until(at.notBeforeBlock, input.signal)
+        }
+        await this.untilFundsSettled(
+          address,
+          valueWei + feeReserveWei,
+          input.signal,
+          onWaiting,
+        )
+        if (
+          (await this.read(() => provider.getBalance(address))) <
+            valueWei + feeReserveWei ||
+          this.config.accountHeld?.(address)
+        ) {
+          letGo()
+          return 'again'
+        }
+        if (source === 'coin') this.config.onCoinClaimed?.(address)
+        accounts.push({
+          source,
+          address: address.toLowerCase(),
+          nonce: at.nonce,
+          paymentValueWei: valueWei,
+        })
+      }
+      return { holder: input.holder, fee, accounts }
+    } catch (error) {
+      letGo()
       throw error
     }
   }

@@ -461,7 +461,7 @@ export default {
     avuDialogTitle: 'Arbitrary Value Unit (AVU)',
     avuDialogSubtitle: '1 AVU ≡ 1 Kilowatt-Hour (kWh) of Physical Compute',
     avuDialogDesc:
-      'Frank keeps fiat currencies out of the core interface. Balances are compared in AVU, a unit of account: 1 AVU is 1 kWh of energy. How many kWh a dollar is worth is read off proof-of-work mining (the coin price, block subsidy, difficulty and mining hardware efficiency of a basket of mined coins), and a coin’s AVU value is its price times that number. It is not a coin or token; it lets any two coins be compared through one number.',
+      'Frank keeps fiat currencies out of the interface. Balances are compared in AVU, a unit of account: 1 AVU is 1 kWh of energy. How much energy a unit of value is worth is read off proof-of-work mining (the price, block reward, difficulty and mining hardware efficiency of a basket of mined coins), and a coin’s AVU value is its price times that number. It is not a coin or token; it lets any two coins be compared through one number.',
     avuMemeHeading: 'Refusing the USD Meme',
     avuMemeDesc:
       'The US Dollar is a social meme sustained by software defaults and central bank decree. Refusing to display USD in self-custodial wallets breaks that psychological monopoly and weakens the meme, re-anchoring wealth in the invariant laws of thermodynamics.',
@@ -476,10 +476,9 @@ export default {
       'Unlike traditional DeFi oracles that rely on trusted third-party feeds, Proof-of-Work difficulty and emission schedules are verified directly on-chain by full nodes and anchored by competitive thermodynamics.',
     avuDialogClose: 'Close',
     avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
-    avuRatesTitle: 'Fetched market prices in AVU',
+    avuRatesTitle: 'What one coin is worth in AVU',
     avuRatesAsset: 'Asset',
     avuRatesRate: 'Physical Compute (AVU / kWh)',
-    avuRatesRefUsd: 'USD Reference',
     tabBalance: 'Balance & Transfer',
     tabParity: 'Thermodynamic Parity',
     tabSwap: 'Instant Swap',
@@ -497,51 +496,34 @@ export default {
     viewInExplorer: 'View in Explorer',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute. An unforgeable thermodynamic standard of real purchasing power.',
-    avuHashLabel: 'AVU_hash: kWh per dollar, from mining',
+    avuHashLabel: 'AVU_hash: energy per unit of value, from mining',
     avuHashNote:
-      'Market-cap-weighted average over {used} of {total} basket entries, Bitcoin capped at 60%: {weights}. Hardware efficiency: Cambridge estimate for {month}, a curated figure; everything else is fetched.',
-    avuSpotLabel: 'AVU_spot: kWh per dollar, from the grid',
+      'Average over the basket of mined coins, weighted by market capitalisation with Bitcoin capped at 60%: {weights}. Litecoin and Dogecoin are mined together and count as one entry. Hardware efficiency is curated: Cambridge’s estimate of the machines actually running for SHA-256, the best machine on sale for scrypt and RandomX. The best machine is more efficient than a fleet, so those two entries read higher per kWh than a like-for-like fleet figure would.',
+    avuSpotLabel:
+      'AVU_spot: wholesale electricity, valued as mining values energy',
     avuSpotNote:
-      'US industrial average, {cents}¢/kWh, {month} (EIA). Depends on a published price; AVU_hash does not.',
-    avuUnitLabel: '1 AVU = 1 kWh',
+      'At 1 AVU the grid and mining agree. Price: each region’s mean day-ahead price over the {window} days to {latest}, regions weighted equally: {regions}.',
+    avuUnitLabel: 'The unit',
     avuUnitNote:
-      'One kWh in dollars as mining prices it: 1 ÷ AVU_hash. A unit of account, not a coin or token.',
+      'A unit of account, not a coin or token: nothing is held or swapped in AVU.',
     avuUnavailable: 'Unavailable',
     sourceEfficiency:
-      'Hardware efficiency (curated, not a live reading): {efficiency} Retrieved {retrieved}.',
-    chartNoteNoHash:
-      'AVU_hash is unavailable, so prices cannot be stated in AVU and no line is drawn.',
-    chartNoteCurrentHash:
-      'Each point is that price times today’s AVU_hash ({rate} kWh/$); AVU_hash is not recomputed along the line.',
-    chartNoteAnnualHash:
-      'AVU_hash is drawn for {from} to {to}, each year the mean of twelve monthly values computed from Bitcoin’s price, subsidy, difficulty and Cambridge’s efficiency estimate. Bitcoin only: no other coin’s history is bundled.',
-    chartHashKwh: 'AVU_hash, Bitcoin only (kWh/$)',
-    avuPriceSingleSource: 'One provider only.',
-    avuPriceSources: 'Median of {count} providers.',
+      'Hardware efficiency (curated, not a live reading): {sources}.',
     avuHashVsSpotNote:
-      'How far the mining reading is above (+) or below (−) the grid reading. The two should roughly agree.',
-    avuHashVsSpotLabel: 'AVU_hash against AVU_spot',
-    avuHashStale: 'Stale: oldest input fetched {age} ago.',
-    avuHashLeftOutEfficiency: 'no hardware efficiency data',
-    avuHashLeftOutPrice: 'no fetched price',
+      'What a kWh of mining earns against what a kWh costs at wholesale. The two should roughly agree.',
+    avuHashVsSpotLabel: 'Mining pay against the grid price',
+    avuHashStale: 'Stale: oldest input is {age} old.',
+    avuHashLeftOutEfficiency: 'no hardware efficiency figure',
+    avuHashLeftOutPrice: 'no price',
     avuHashLeftOutChain: 'no chain statistics',
     avuHashLeftOut: 'Left out: {coins}.',
     avuHashUnavailableNote:
-      'AVU_hash could not be computed: no mined coin in the basket has a fetched price and chain statistics. No AVU value is shown until one does.',
-    avuNoPriceSource: 'No provider publishes a market price for this coin.',
-    avuPriceNotFetched: 'The price could not be fetched.',
-    avuPriceFreshNote: 'Market price {usd}, fetched {age} ago.',
-    avuPriceStaleNote: 'Stale: last market price {usd}, fetched {age} ago.',
-    avuMainnetPrice:
-      '{rate} (mainnet price; testnet coins have no market value)',
+      'AVU_hash could not be computed: no mined coin in the basket has a price and chain statistics. No AVU value is shown until one does.',
+    avuPriceFreshNote: 'Price received {age} ago.',
+    avuPriceStaleNote: 'Stale: last price received {age} ago.',
     avuStalePrice: '{rate} ({age} old)',
     resetZoom: 'Reset zoom',
-    arbitrageMargin: 'eCash vs Bitcoin mining pay',
-    arbitrageNote:
-      'Dollars a kWh of mining earns on eCash over Bitcoin, from each chain’s price, subsidy and difficulty. eCash miners receive 58% of the subsidy; fees not counted.',
-    miningBaseline: 'Baseline',
-    chartUsdKwh: 'AVU_spot (kWh/$)',
-    chartGoldAvu: 'Gold at AVU_spot (kWh/oz)',
+    chartGoldAvu: 'Gold (AVU per ounce)',
     rangeAll: 'ALL',
     range5Y: '5Y',
     range1Y: '1Y',
@@ -549,34 +531,51 @@ export default {
     range7D: '7D',
     range24H: '24H',
     rangeNetworks: 'Networks',
-    chartNoteAnnual:
-      'Yearly published figures, {from} to {to}: AVU_spot, the kWh a dollar bought at the US industrial electricity price, and an ounce of gold priced in that energy. Years a source does not cover are left out.',
-    chartNoteProvider:
-      '{count} market prices published by {provider}, from {first}.',
-    chartNoteJoined:
-      '{count} market prices from {first}: {recorded} fetched and recorded by this app, the rest published by {provider}.',
-    chartNoteObserved:
-      '{count} prices this app fetched and recorded itself, from {first}; no provider’s history is drawn with them.',
     chartNoteNoHistory:
-      'No price history could be fetched for {symbol}, so no line is drawn.',
-    chartNoteNoSource:
-      'No provider publishes a market price for {symbol}, so there is nothing to draw.',
-    chartNoteMainnetPrice:
-      'This is the mainnet coin’s market price; testnet coins have no market value.',
+      'There is no history for this range yet, so no line is drawn.',
     chartNoteNetworks:
-      'Dollars a kWh of mining earns on each basket entry: price × miner’s subsidy ÷ hashes per block × hashes per kWh, with its weight in AVU_hash. Hardware efficiency is Cambridge’s estimate for {month}. Percentages compare with Bitcoin.',
+      'What a kWh of mining earns on each basket entry, in AVU, with the entry’s weight: price × miner’s block reward ÷ expected hashes per block × hashes per kWh, valued by the basket. The percentage compares it with the basket as a whole (1 AVU per kWh).',
     chartNoteNetworksUnavailable:
       'AVU_hash could not be computed, so nothing is drawn.',
     sourcesTitle: 'Methodology & Data Sources',
     sourceUnit:
-      'AVU: 1 AVU = 1 kWh. AVU_hash is the kWh a dollar is worth, averaged over a basket of mined coins by market capitalisation with Bitcoin capped at 60%; for each, dollars per kWh = price × subsidy ÷ hashes per block × hashes per kWh. Every AVU value is a fetched price times AVU_hash.',
-    sourceFeeds:
-      'Prices: fetched from Coinbase, Kraken, CoinGecko, Binance (Binance.US where Binance does not answer), Pyth and Chainlink (read through the public Arbitrum RPC); the middle value is used, and two sources that disagree widely give no price. A coin with no fetched price shows no value.',
-    sourceHistorical:
-      'Price history: the candles one provider published for the range (Coinbase, Kraken, Binance.US or CoinGecko). Nothing is interpolated.',
-    sourceGrid: 'Long-range data, bundled: {electricity}. {gold}',
-    sourceHash:
-      'Mining, live: subsidy, difficulty and supply from Blockchair’s public chain statistics (one source), prices from the feeds above. Mining, history: {chain} {subsidy}',
+      'AVU: 1 AVU = 1 kWh. AVU_hash is the energy a unit of value is worth, averaged over a basket of mined coins by market capitalisation with Bitcoin capped at 60%; for each entry, pay per kWh = price × miner’s block reward ÷ expected hashes per block × hashes per kWh. Every AVU value is a price times AVU_hash.',
+    avuHashValue: '{used} of {total} basket entries',
+    avuHashEstimated: 'An entry rests on an estimated hardware figure.',
+    avuSpotValue: 'A wholesale kWh costs {avu} AVU',
+    avuSpotStale: 'Not refreshed: latest price is {age} old.',
+    avuSpotNotPositive:
+      'The mean wholesale price is not above zero, so it has no inverse.',
+    avuSpotNoData: 'No wholesale electricity price has been received.',
+    avuUnitValue: '1 AVU = 1 kWh',
+    avuNoPrice:
+      'The oracle has no price for this coin, so it has no AVU value.',
+    avuTestnetValue: '{rate} · testnet',
+    chartGridAvu: 'A kWh of wholesale electricity (AVU)',
+    chartNoteLines:
+      '{count} points from {first}. Each is computed for its own date by the same formula as today’s figures, from the prices, chain statistics, hardware efficiency and electricity price in force then. Where an input is missing there is no point.',
+    chartNoteNoTokenPrice:
+      'There is no price history for {symbol} in this range.',
+    chartNoteEstimated:
+      'Monero’s hardware efficiency before the first ASIC (September 2023) is an estimate: a desktop processor at its package power limit, which leaves out the rest of the computer.',
+    chartNoteTestnet: 'Testnet coins are valued at the mainnet coin’s price.',
+    chartNoteNoFeed:
+      'Nothing has been received from the oracle yet, so nothing is drawn.',
+    sourcePrices: 'Prices: {sources}.',
+    sourceChains:
+      'Difficulty, block reward and supply: {sources}. Dogecoin’s difficulty is its 24-hour figure.',
+    sourceElectricity: 'Wholesale electricity: {sources}.',
+    sourceGold:
+      'Gold: World Bank Commodity Price Data (Pink Sheet), yearly, valued at AVU_hash of the middle of the year.',
+    avuSpotRegionsLeftOut:
+      'Not in this figure, too few recent prices: {regions}.',
+    avuSpotRegionLast: '{region} (last counted {day})',
+    avuHashVsSpotLess:
+      'Mining pays {percent}% less per kWh than the grid charges.',
+    avuHashVsSpotMore:
+      'Mining pays {percent}% more per kWh than the grid charges.',
+    sourceEcashShare:
+      'eCash miners receive {share} of the block reward since {since} ({previous} before), read from the chain.',
     activeTokenCardTitle: '{symbol} in AVU',
     inspectingDate: 'Inspecting',
     latestValue: 'Latest',

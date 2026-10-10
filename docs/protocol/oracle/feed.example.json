@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "generatedAt": 1791650000,
+  "basket": {
+    "weightCap": {
+      "entry": "bitcoin",
+      "max": 0.6
+    },
+    "entries": [
+      {
+        "id": "bitcoin",
+        "label": "BTC",
+        "algorithm": "sha256",
+        "chains": [
+          {
+            "chain": "btc-mainnet",
+            "hashesPerDifficulty": 4294967296
+          }
+        ]
+      },
+      {
+        "id": "monero",
+        "label": "XMR",
+        "algorithm": "randomx",
+        "chains": [
+          {
+            "chain": "xmr-mainnet",
+            "hashesPerDifficulty": 1
+          }
+        ]
+      }
+    ]
+  },
+  "electricity": {
+    "windowDays": 30,
+    "regions": [
+      {
+        "id": "de-lu",
+        "label": "Germany-Luxembourg day-ahead",
+        "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0",
+        "lastContributed": 1791590400
+      }
+    ],
+    "minDays": 10
+  },
+  "series": {
+    "price/btc-mainnet": {
+      "unit": "USD",
+      "source": "relay, smoothed over several providers",
+      "asOf": 1791649800,
+      "stale": false,
+      "points": [
+        [
+          1791649200,
+          82900.5
+        ],
+        [
+          1791649800,
+          82934.2
+        ]
+      ]
+    },
+    "marketCap/btc-mainnet": {
+      "unit": "USD",
+      "source": "price x coins in existence",
+      "asOf": 1791649800,
+      "stale": false,
+      "points": [
+        [
+          1791649800,
+          1650000000000
+        ]
+      ]
+    },
+    "difficulty/btc-mainnet": {
+      "unit": "difficulty",
+      "source": "chain statistics",
+      "asOf": 1791648000,
+      "stale": false,
+      "points": [
+        [
+          1791648000,
+          129242778000000
+        ]
+      ]
+    },
+    "blockReward/btc-mainnet": {
+      "unit": "coins per block to the miner",
+      "source": "chain statistics",
+      "asOf": 1791648000,
+      "stale": false,
+      "points": [
+        [
+          1713571200,
+          3.125
+        ]
+      ]
+    },
+    "efficiency/sha256": {
+      "unit": "hashes/kWh",
+      "source": "Cambridge CBECI, curated",
+      "asOf": 1791504000,
+      "stale": false,
+      "points": [
+        [
+          1788220800,
+          193642085000000000
+        ]
+      ]
+    },
+    "electricity/de-lu": {
+      "unit": "USD/kWh",
+      "source": "day-ahead auction, daily mean",
+      "asOf": 1791590400,
+      "stale": false,
+      "points": [
+        [
+          1791504000,
+          0.1021
+        ],
+        [
+          1791590400,
+          -0.0004
+        ]
+      ]
+    },
+    "electricity/aggregate": {
+      "unit": "USD/kWh",
+      "source": "day-ahead wholesale, 30-day mean of regions",
+      "asOf": 1791590400,
+      "stale": false,
+      "points": [
+        [
+          1791504000,
+          0.1021
+        ],
+        [
+          1791590400,
+          0.1019
+        ]
+      ]
+    }
+  }
+}

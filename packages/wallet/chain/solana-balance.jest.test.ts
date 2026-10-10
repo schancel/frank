@@ -299,7 +299,7 @@ describe('solana-balance', () => {
   })
 
   describe('fetchSolanaTokenAccounts', () => {
-    it('parses devnet tUSDC token accounts and calculates AVU equivalent', async () => {
+    it('parses devnet tUSDC token accounts, and gives a token no AVU value: nothing prices it', async () => {
       const mockFetch = jest.fn().mockResolvedValue({
         ok: true,
         status: 200,
@@ -343,7 +343,7 @@ describe('solana-balance', () => {
       expect(tokens[0].uiAmount).toBe(100.0)
       expect(tokens[0].balanceRaw).toBe(100000000n)
       expect(tokens[0].formatted).toBe('100.00 tUSDC')
-      expect(tokens[0].avuFormatted).toContain('1,190.5 AVU')
+      expect(tokens[0].avuFormatted).toBe('')
       expect(tokens[0].tokenAccountAddress).toBe('TokenAccountPubkey123')
     })
 

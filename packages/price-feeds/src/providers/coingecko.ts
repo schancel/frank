@@ -8,6 +8,8 @@ export const COINGECKO_IDS: Record<string, string> = {
   BTC: 'bitcoin',
   BCH: 'bitcoin-cash',
   DOGE: 'dogecoin',
+  LTC: 'litecoin',
+  XMR: 'monero',
   HYPE: 'hyperliquid',
   MON: 'monad',
 }

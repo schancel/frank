@@ -107,9 +107,6 @@
               <tr class="text-left text-grey-8">
                 <th>{{ $t('walletPanel.avuRatesAsset') }}</th>
                 <th>{{ $t('walletPanel.avuRatesRate') }}</th>
-                <th class="text-right">
-                  {{ $t('walletPanel.avuRatesRefUsd') }}
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -123,7 +120,6 @@
                   {{ row.rateFormatted }}
                   <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
                 </td>
-                <td class="text-right text-grey-7">{{ row.usdFormatted }}</td>
               </tr>
             </tbody>
           </q-markup-table>
@@ -149,7 +145,7 @@ import { computed } from 'vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { UNIT_RATE_ASSET_METRICS } from '../../utils/avu-units'
 import { useTranslate } from '../../composables/useTranslate'
-import { ASSET_FEED_SYMBOLS, type SupportedAsset } from '@frank/wallet/oracle'
+import { SUPPORTED_ASSETS } from '@frank/wallet/oracle'
 
 defineProps<{
   modelValue: boolean
@@ -166,42 +162,19 @@ interface EquivalencyRow {
   asset: string
   label: string
   rateFormatted: string
-  usdFormatted: string
 }
 
 /**
- * One row per coin that has a price source, showing the price that was fetched. A coin
- * whose price has not been fetched says so; nothing stands in for it. The last row is
- * AVU_hash itself: the kWh one dollar is worth as mining prices it, or "Unavailable".
+ * One row per coin: what one unit of it is worth in AVU, by the rate the oracle store
+ * computed. A coin with no rate says so; nothing stands in for it. No dollar figure is
+ * shown: prices are an input of the rate, not something this app displays.
  */
-const equivalencyRows = computed<EquivalencyRow[]>(() => {
-  const rows = (Object.keys(ASSET_FEED_SYMBOLS) as SupportedAsset[]).map(
-    asset => {
-      const metric = UNIT_RATE_ASSET_METRICS[asset]
-      const price = oracle.snapshot?.prices?.[asset]
-      const rate = oracle.formatUnitRate?.(asset) ?? ''
-      return {
-        asset,
-        label: metric.symbol,
-        rateFormatted: rate || t('walletPanel.avuUnavailable'),
-        usdFormatted:
-          rate && price !== undefined
-            ? `$${(price * metric.multiplier).toPrecision(6)}`
-            : '\u2014',
-      }
-    },
-  )
-  rows.push({
-    asset: 'usd' as SupportedAsset,
-    label: '1 USD',
-    rateFormatted: oracle.snapshot?.avuHash
-      ? `1 USD = ${oracle.snapshot.avuHash.kwhPerDollar.toLocaleString(
-          'en-US',
-          { minimumFractionDigits: 2, maximumFractionDigits: 2 },
-        )} AVU`
-      : t('walletPanel.avuUnavailable'),
-    usdFormatted: '$1.00',
-  })
-  return rows
-})
+const equivalencyRows = computed<EquivalencyRow[]>(() =>
+  SUPPORTED_ASSETS.map(asset => ({
+    asset,
+    label: UNIT_RATE_ASSET_METRICS[asset].symbol,
+    rateFormatted:
+      oracle.formatUnitRate?.(asset) || t('walletPanel.avuUnavailable'),
+  })),
+)
 </script>

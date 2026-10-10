@@ -1,0 +1,35 @@
+{
+  "about": "Curated, dated steps: figures a person chose and cited, not readings of a chain or a market. Each step holds from its date until the next. Edit by hand; every step needs a source URL and the date it was read. Checked by test/historical.jest.test.ts.",
+  "efficiency": {
+    "rule": "The most energy-efficient mining hardware on general sale for the algorithm at each date. A step is added only when a machine with a better efficiency than the step in force went on sale. Hydro-cooled machines are left out (they need a cooling plant). Efficiency is hashrate divided by power.",
+    "scrypt": {
+      "note": "Litecoin and Dogecoin. Dates are the release month given by the listing; none was checked against a delivery record.",
+      "steps": [
+        { "from": "2017-06-01", "hardware": "Bitmain Antminer L3+", "hashesPerSecond": 504000000, "watts": 800, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/en/miners/bitmain/antminer-l3-504mh", "retrieved": "2026-10-10" },
+        { "from": "2021-11-01", "hardware": "Bitmain Antminer L7 (9.5 Gh/s)", "hashesPerSecond": 9500000000, "watts": 3425, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/en/miners/bitmain/antminer-l7-9-5gh", "retrieved": "2026-10-10" },
+        { "from": "2024-05-01", "hardware": "Bitmain Antminer L9 (16 Gh/s)", "hashesPerSecond": 16000000000, "watts": 3360, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/en/miners/bitmain/antminer-l9-16gh", "retrieved": "2026-10-10" },
+        { "from": "2025-07-01", "hardware": "ElphaPex DG2+ (20.5 Gh/s)", "hashesPerSecond": 20500000000, "watts": 3900, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/efficiency/scrypt", "retrieved": "2026-10-10" },
+        { "from": "2025-08-01", "hardware": "VolcMiner D1 Pro (20 Gh/s)", "hashesPerSecond": 20000000000, "watts": 3700, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/efficiency/scrypt", "retrieved": "2026-10-10" },
+        { "from": "2025-09-01", "hardware": "Bitmain Antminer L11 Pro (21 Gh/s)", "hashesPerSecond": 21000000000, "watts": 3612, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/efficiency/scrypt", "retrieved": "2026-10-10" },
+        { "from": "2026-05-01", "hardware": "Bitdeer SealMiner DL1 Air (25 Gh/s)", "hashesPerSecond": 25000000000, "watts": 3725, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/efficiency/scrypt", "retrieved": "2026-10-10" }
+      ]
+    },
+    "randomx": {
+      "note": "Monero, from RandomX's activation (block 1978433, 30 November 2019). Before the first ASIC the steps are desktop processors and are estimates: the hashrate is the median of the all-thread results XMRig's public benchmark page lists for the processor (it lists the fastest thousand or so submissions), and the power is AMD's package power limit (PPT) for the part, which leaves out the rest of the computer, so the efficiency is an upper bound. The Ryzen 9 7950X (median 23,666 H/s of 1,069 results, 230 W limit) is less efficient at its limit than the 5950X and is not a step. The Bitmain Antminer X9 (1 MH/s, 2,472 W; announced December 2025, deliveries scheduled for July 2026) is left out: no report of a delivered unit was found by 2026-10-10.",
+      "steps": [
+        { "from": "2019-11-30", "hardware": "AMD Ryzen 9 3950X", "hashesPerSecond": 18379, "watts": 142, "estimate": true, "power": "CPU package power limit; excludes the rest of the system", "sourceUrl": "https://xmrig.com/benchmark?cpu=AMD+Ryzen+9+3950X+16-Core+Processor", "sourceNote": "median of 1,066 single-processor 32-thread results listed", "powerSourceUrl": "https://www.computerbase.de/artikel/prozessoren/amd-ryzen-7950x-7900x-7700x-7600x-test.81670/seite-2", "powerSourceNote": "105 W TDP parts have a 142 W PPT", "retrieved": "2026-10-10" },
+        { "from": "2020-11-05", "hardware": "AMD Ryzen 9 5950X", "hashesPerSecond": 19794, "watts": 142, "estimate": true, "power": "CPU package power limit; excludes the rest of the system", "sourceUrl": "https://xmrig.com/benchmark?cpu=AMD+Ryzen+9+5950X+16-Core+Processor", "sourceNote": "median of 1,124 single-processor 32-thread results listed", "powerSourceUrl": "https://www.computerbase.de/artikel/prozessoren/amd-ryzen-7950x-7900x-7700x-7600x-test.81670/seite-2", "powerSourceNote": "105 W TDP parts have a 142 W PPT", "retrieved": "2026-10-10" },
+        { "from": "2023-09-01", "hardware": "Bitmain Antminer X5", "hashesPerSecond": 212000, "watts": 1350, "power": "wall, manufacturer rating", "sourceUrl": "https://www.asicminervalue.com/en/miners/bitmain/antminer-x5", "retrieved": "2026-10-10" }
+      ]
+    }
+  },
+  "minerShare": {
+    "rule": "The part of the block subsidy consensus pays to the miner. Read from coinbase transactions through Chronik (https://chronik.e.cash/block-txs/<height>?page=0&page_size=1): the outputs as shares of their total.",
+    "xec-mainnet": {
+      "steps": [
+        { "from": "2020-11-15", "fromHeight": 661648, "share": 0.92, "split": "miner 92%, infrastructure fund 8%", "evidence": "block 661647 (2020-11-15 14:13 UTC) pays one output; block 661648 (15:55 UTC) pays 91.94% and 8.06% (the fund is 8% of subsidy plus fees); blocks 700000, 780000, 800000 and 818669 pay 92% / 8%", "retrieved": "2026-10-10" },
+        { "from": "2023-11-15", "fromHeight": 818670, "share": 0.58, "split": "miner 58%, infrastructure fund 32%, staking reward 10%", "evidence": "block 818669 (2023-11-15 12:12 UTC) pays 92% / 8%; block 818670 (12:26 UTC) pays 58% / 32% / 10%; so do 850000, 900000, and the two coinbases the owner named: 27038d63376fd9ab0dc0fa18bff95f99ab0353b197c97e2578e1e0549ad56d6f (block 970464: 1,812,500.00 + 1,000,000.00 + 312,500.00 XEC of 3,125,000.00) and ebded42bd26ccff2c9fcd64547e177964d48e5d3a3b87a308bf05c252cc81a12 (block 970465: the miner's 58% is paid as 1,794,375.00 + 18,125.00 XEC)", "retrieved": "2026-10-10" }
+      ]
+    }
+  }
+}

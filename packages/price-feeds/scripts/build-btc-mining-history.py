@@ -19,6 +19,8 @@ Sources (download them first, no key needed):
        https://ccaf.io/cbeci/api/v1.4.0/download/data?price=0.05
 
 What is derived, and how:
+  - supplyBtc: the mean of the total-bitcoins chart over the month (coins in existence;
+    times the price it is the market capitalisation the basket is weighted by).
   - subsidyBtc: the consensus rule GetBlockSubsidy (Bitcoin Core src/validation.cpp:
     50 BTC, halved every nSubsidyHalvingInterval = 210,000 blocks), applied to the supply
     the total-bitcoins chart reports. The supply at which each halving happens follows
@@ -139,6 +141,7 @@ def main():
             'btcUsd': significant(mean([price[d] for d in days])),
             'difficulty': significant(mean([difficulty[d] for d in days]), 9),
             'subsidyBtc': significant(mean([subsidy_at_supply(supply[d]) for d in days])),
+            'supplyBtc': significant(mean([supply[d] for d in days]), 9),
             'joulesPerTerahash': joules_per_terahash('guess'),
             'joulesPerTerahashLow': joules_per_terahash('min'),
             'joulesPerTerahashHigh': joules_per_terahash('max'),

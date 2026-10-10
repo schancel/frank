@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frank.invalid/protocol/oracle/feed.schema.json",
+  "title": "Oracle feed v1",
+  "type": "object",
+  "required": [
+    "version",
+    "generatedAt",
+    "basket",
+    "electricity",
+    "series"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "generatedAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "basket": {
+      "type": "object",
+      "required": [
+        "weightCap",
+        "entries"
+      ],
+      "properties": {
+        "weightCap": {
+          "type": "object",
+          "required": [
+            "entry",
+            "max"
+          ],
+          "properties": {
+            "entry": {
+              "type": "string"
+            },
+            "max": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "algorithm",
+              "chains"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "algorithm": {
+                "enum": [
+                  "sha256",
+                  "scrypt",
+                  "randomx"
+                ]
+              },
+              "chains": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "chain",
+                    "hashesPerDifficulty"
+                  ],
+                  "properties": {
+                    "chain": {
+                      "type": "string"
+                    },
+                    "hashesPerDifficulty": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "electricity": {
+      "type": "object",
+      "required": [
+        "windowDays",
+        "minDays",
+        "regions"
+      ],
+      "properties": {
+        "windowDays": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "label",
+              "attribution"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "attribution": {
+                "type": "string"
+              },
+              "lastContributed": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "minDays": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "series": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^(price|marketCap|difficulty|blockReward|efficiency|electricity)/[a-z0-9-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "unit",
+          "source",
+          "asOf",
+          "stale",
+          "points"
+        ],
+        "properties": {
+          "unit": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "asOf": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "points": {
+            "type": "array",
+            "description": "Oldest first, strictly increasing times.",
+            "items": {
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "estimatedBefore": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

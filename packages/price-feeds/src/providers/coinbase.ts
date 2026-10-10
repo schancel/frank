@@ -7,6 +7,7 @@ export const COINBASE_PAIRS: Record<string, string> = {
   BTC: 'BTC-USD',
   BCH: 'BCH-USD',
   DOGE: 'DOGE-USD',
+  LTC: 'LTC-USD',
   HYPE: 'HYPE-USD',
   MON: 'MON-USD',
 }

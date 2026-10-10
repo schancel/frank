@@ -7,6 +7,8 @@ export const KRAKEN_PAIRS: Record<string, string> = {
   BTC: 'XBTUSD',
   BCH: 'BCHUSD',
   DOGE: 'XDGUSD',
+  LTC: 'LTCUSD',
+  XMR: 'XMRUSD',
   HYPE: 'HYPEUSD',
   MON: 'MONUSD',
 }

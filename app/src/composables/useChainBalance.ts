@@ -48,8 +48,11 @@ export interface ChainBalanceState {
 }
 
 export interface BalanceObservation {
+  /** Spendable balance: the only amount a send may be compared against. */
   balance: bigint
   formattedBalance: string
+  /** Present only while funds sit at the profile address: watched, never spent. */
+  cordoned?: { formattedAmount: string; formattedTotal: string }
 }
 
 export type BalancePresentation =
@@ -78,7 +81,13 @@ function getBalancePresentation(
   monad: ReturnType<typeof useBalance>,
 ): BalancePresentation {
   let state: ChainBalanceState
+  let cordoned: BalanceObservation['cordoned']
   if (chain === 'monad') {
+    if ((monad.cordoned?.value ?? 0n) > 0n)
+      cordoned = {
+        formattedAmount: monad.formattedCordoned.value,
+        formattedTotal: monad.formattedTotal.value,
+      }
     state = {
       balance: monad.balance.value,
       formattedBalance: monad.formattedBalance.value,
@@ -91,7 +100,11 @@ function getBalancePresentation(
 
   const observation =
     state.loaded && state.balance !== null
-      ? { balance: state.balance, formattedBalance: state.formattedBalance }
+      ? {
+          balance: state.balance,
+          formattedBalance: state.formattedBalance,
+          ...(cordoned ? { cordoned } : {}),
+        }
       : undefined
   if (state.hasError) {
     return {

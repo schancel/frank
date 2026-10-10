@@ -9,6 +9,7 @@ import {
   BALANCE_BACKOFF_MAX_MS,
   BALANCE_POLL_MS,
   nextBalanceDelay,
+  readCordonedBalance,
   useBalance,
 } from './useBalance'
 
@@ -535,6 +536,70 @@ describe('useBalance', () => {
     expect(loadedNow()).toBe(true)
     expect(newWrapper.text()).toBe('100 MON')
     newWrapper.unmount()
+  })
+
+  describe('funds at the profile address (cordoned)', () => {
+    const typed = (profileBalance: bigint | Error) => ({
+      identity: { address: { raw: '0xAAAA' } },
+      getReceiveAddress: async () => ({ raw: '0xbbbb' }),
+      provider: {
+        getBalance: jest.fn(async (address: string) => {
+          if (profileBalance instanceof Error) throw profileBalance
+          return address === '0xAAAA' ? profileBalance : 999n
+        }),
+      },
+    })
+
+    it('reads the profile address only when it is not the receive address', async () => {
+      expect(await readCordonedBalance(typed(25n))).toBe(25n)
+      const same = {
+        ...typed(25n),
+        getReceiveAddress: async () => ({ raw: '0xaaaa' }),
+      }
+      expect(await readCordonedBalance(same)).toBe(0n)
+      expect(same.provider.getBalance).not.toHaveBeenCalled()
+      expect(await readCordonedBalance({ seed: 'a' })).toBe(0n)
+    })
+
+    it('reports them beside the balance without adding them to the spendable amount', async () => {
+      mockSeed = 'cordoned'
+      mockWallets.cordoned = Promise.resolve(typed(25n))
+      mockGetBalance.mockResolvedValue(100n)
+      let api!: ReturnType<typeof useBalance>
+      mount(
+        defineComponent({
+          setup() {
+            api = useBalance()
+            return () => h('span')
+          },
+        }),
+      )
+      await advance(0)
+      expect(api.balance.value).toBe(100n) // what a send may be compared against
+      expect(api.formattedBalance.value).toBe('100 MON')
+      expect(api.cordoned.value).toBe(25n)
+      expect(api.formattedCordoned.value).toBe('25 MON')
+      expect(api.formattedTotal.value).toBe('125 MON')
+    })
+
+    it('a failed read of the profile address does not fail the balance', async () => {
+      mockSeed = 'cordoned-fail'
+      mockWallets['cordoned-fail'] = Promise.resolve(typed(new Error('rpc')))
+      mockGetBalance.mockResolvedValue(100n)
+      let api!: ReturnType<typeof useBalance>
+      mount(
+        defineComponent({
+          setup() {
+            api = useBalance()
+            return () => h('span')
+          },
+        }),
+      )
+      await advance(0)
+      expect(api.balance.value).toBe(100n)
+      expect(api.hasError.value).toBe(false)
+      expect(api.cordoned.value).toBe(0n)
+    })
   })
 
   it('allows useBalance().refresh() to be invoked outside an active component instance', async () => {

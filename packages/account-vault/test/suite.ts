@@ -312,10 +312,16 @@ export async function run(phase: string) {
       { name: 'AES-GCM', iv, additionalData: aad(older.receipt), tagLength: 128 }, olderKey, plain))
     await change(ns, 'records', 'before-account-root', r => ({ ...r, iv, ciphertext }))
   }
-  // Framing 2 carried both: the account root is the truth, the roots beside it are ignored.
-  await reseal(Uint8Array.of(2, ...version1.subarray(1), ...accountRoot(71)))
+  // Framing 2 carried both the roots and the account root they derive from.
+  const agreeing = new Uint8Array(version1)
+  roots(71).forEach((root, i) => agreeing.set(root.bytes, 3 + i * 33))
+  await reseal(Uint8Array.of(2, ...agreeing.subarray(1), ...accountRoot(71)))
   equalRoots(await vault.open(older.receipt), roots(71))
   equalBytes(await vault.openAccountRoot(older.receipt), accountRoot(71), 'framing 2 account root')
+  // Stored roots that the account root does not derive: neither side is trusted.
+  await reseal(Uint8Array.of(2, ...version1.subarray(1), ...accountRoot(71)))
+  await fails(() => vault.open(older.receipt), 'corrupt')
+  await fails(() => vault.openAccountRoot(older.receipt), 'corrupt')
   // No framing accepts another's length, and unknown versions stay corrupt.
   for (const forged of [Uint8Array.of(2, ...version1.subarray(1)), Uint8Array.of(1, ...version1.subarray(1), ...accountRoot(71)),
     Uint8Array.of(3, ...version1.subarray(1)), Uint8Array.of(3, ...version1.subarray(1), ...accountRoot(71)),

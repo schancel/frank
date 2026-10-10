@@ -140,7 +140,8 @@ replacement does not consume another slot. A slot holds a
 33-byte plaintext and a 49-byte ciphertext including its 128-bit tag (framing 3:
 the account root). Framing 1 records (five typed roots, 167/183 bytes) and the
 short-lived framing 2 (typed roots then the account root, 199/215 bytes) still
-open; framing 2 is read from its account root and the roots beside it are ignored.
+open; framing 2 is read from its account root, and is refused as corrupt if the roots
+stored beside it are not the ones that root derives.
 Nothing rewrites an existing record on open. Public
 strings contain at most 128 printable ASCII characters. All strings are nonempty
 except retirement context, which may be empty. Revisions/epochs are bounded to
@@ -166,8 +167,8 @@ numbers are u32 big-endian except the purpose count, which is a single byte:
 Recovery format is `codex32-master-v1`; registry is `frank-domain-roots-v1`.
 Purposes form a nonempty ordered subset of the frozen registry order.
 Plaintext is byte `3` followed by the 32-byte account root. Framing `1` is a
-one-byte purpose count, then for each purpose a one-byte registry code (`1..5` in
-frozen registry order) and exactly 32 root bytes; framing `2` is framing 1 followed
+one-byte purpose count, then for each purpose its one-byte registry code (the
+purpose's own permanent code, `1..5` today) and exactly 32 root bytes; framing `2` is framing 1 followed
 by the account root. Plaintext length, version, count and every code must match
 before anything is returned. The context's purpose list records the registry at
 staging time; for framings 2 and 3 it does not limit what `open` derives. Every field in the receipt is authenticated; IV/ciphertext/tag changes

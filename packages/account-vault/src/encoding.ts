@@ -1,4 +1,4 @@
-import { DERIVATION_REGISTRY_ID, DOMAIN_PURPOSES, RECOVERY_FORMAT_ID, deriveDomainRoot, type DomainRoot } from '@frank/domain-roots'
+import { DERIVATION_REGISTRY_ID, DOMAIN_PURPOSES, RECOVERY_FORMAT_ID, deriveDomainRoot, registryEntry, type DomainRoot } from '@frank/domain-roots'
 import { VaultError, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export const POLICY = 'browser-preview-aes-gcm-v1'
@@ -103,7 +103,7 @@ export function plaintext(accountRoot: Uint8Array): Uint8Array<ArrayBuffer> {
 
 /**
  * Framing 3: the account root alone. Framing 2 (written briefly before 3): typed roots, then
- * the account root; the stored roots are ignored. Framing 1 (before the account root was
+ * the account root; the two must agree or the record is refused. Framing 1 (before the account root was
  * kept): typed roots only. Returns the offset of the account root, or -1 for framing 1.
  */
 function accountRootOffset(bytes: Uint8Array, c: VaultContext): number {
@@ -116,9 +116,21 @@ function accountRootOffset(bytes: Uint8Array, c: VaultContext): number {
   if ((version !== 1 && version !== 2) || bytes.length !== roots + (version === 2 ? 32 : 0) || bytes[1] !== c.purposes.length) throw new VaultError('corrupt')
   // Validate the whole payload before publishing any independently owned secret.
   for (let i = 0; i < c.purposes.length; i++) {
-    if (bytes[2 + i * 33] !== DOMAIN_PURPOSES.indexOf(c.purposes[i]) + 1) throw new VaultError('corrupt')
+    // The purpose's own registry code, not its position: codes are permanent, positions are not.
+    if (bytes[2 + i * 33] !== registryEntry(c.purposes[i]).code) throw new VaultError('corrupt')
   }
-  return version === 2 ? roots : -1
+  if (version !== 2) return -1
+  // Framing 2 holds the same roots twice over: stored, and implied by the account root. They
+  // were written together and must agree. If they do not, a writer was wrong, and choosing
+  // either side silently could open the wrong keys: refuse.
+  for (let i = 0; i < c.purposes.length; i++) {
+    const derived = deriveDomainRoot(bytes.subarray(roots, roots + 32), c.purposes[i])
+    let difference = 0
+    for (let j = 0; j < 32; j++) difference |= (derived.bytes[j] ?? 0) ^ (bytes[3 + i * 33 + j] ?? 0)
+    derived.bytes.fill(0)
+    if (difference !== 0) throw new VaultError('corrupt')
+  }
+  return roots
 }
 
 /**

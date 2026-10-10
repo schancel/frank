@@ -643,6 +643,23 @@ export class Outbox {
   }
 }
 
+/** What the chain charges, right now, to move one stamp (the wallet's `minimumStamp`, through
+ * `BotContext.minimumStampWei`). An amount below it is not worth sending: moving it costs more
+ * than it is. Zero when it cannot be read; the host and the wallet still refuse a dust stamp. */
+export async function feeFloorWei(ctx: BotContext): Promise<bigint> {
+  return (await ctx.minimumStampWei?.().catch(() => 0n)) ?? 0n;
+}
+
+/** A table's smallest stake, or a shop's or raffle's price: what was configured, and never less
+ * than the chain's fee floor, so that what is staked or paid can always be paid back. */
+export async function tableMinimumWei(
+  ctx: BotContext,
+  configuredWei: bigint
+): Promise<bigint> {
+  const floor = await feeFloorWei(ctx);
+  return floor > configuredWei ? floor : configuredWei;
+}
+
 /** A message that did not pay for what it asked: says so at once, and returns what it is
  * confirmed to have paid with that same message. Transfers that are not mined yet are returned by
  * a second message if and when they land; they are never kept. Both are owed like any payout, so
@@ -656,8 +673,14 @@ export async function refuse(
   items: MessageItem[] = []
 ): Promise<void> {
   const late = received.unconfirmed.length > 0;
+  // What was paid is returned unless moving it back would cost more than it is: then the
+  // refusal goes out as text only, and says so.
+  const dust =
+    received.confirmedWei > 0n && received.confirmedWei < (await feeFloorWei(ctx));
   const back =
-    (received.confirmedWei > 0n
+    (dust
+      ? " What you paid is too small to send back: returning it would cost more than it is."
+      : received.confirmedWei > 0n
       ? " What you paid is returned with this message."
       : "") +
     (late
@@ -672,7 +695,7 @@ export async function refuse(
         to: message.peerAddress,
         conversationId: message.conversationId,
         items: [...items, { type: "text", text: text + back }],
-        valueWei: received.confirmedWei,
+        valueWei: dust ? 0n : received.confirmedWei,
       },
     ],
   ];

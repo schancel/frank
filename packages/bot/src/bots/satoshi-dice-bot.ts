@@ -23,7 +23,14 @@ import {
   isDiceTarget,
 } from "@frank/wallet/message-item-plugins/dice/fair";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
+import {
+  Outbox,
+  refuse,
+  type Received,
+  replyFree,
+  sendFree,
+  tableMinimumWei,
+} from "./money";
 
 /** The most one roll pays, stake included: the table limit. */
 export const DICE_DEFAULT_MAX_PAYOUT_WEI = 250_000_000_000_000_000n; // 0.25 MON
@@ -57,9 +64,13 @@ export class SatoshiDiceBot implements FrankBotDefinition {
   readonly schedules = [this.outbox.schedule];
   /** The table limit: also what the host sizes this bot's funding against. */
   readonly maxPayoutWei: bigint;
+  /** The smallest stake the operator set. The table's minimum is this or the chain's fee
+   * floor, whichever is larger. A roll with no stake is always free. */
+  private readonly minWagerWei: bigint;
 
-  constructor(options?: { maxPayoutWei?: bigint }) {
+  constructor(options?: { maxPayoutWei?: bigint; minWagerWei?: bigint }) {
     this.maxPayoutWei = options?.maxPayoutWei ?? DICE_DEFAULT_MAX_PAYOUT_WEI;
+    this.minWagerWei = options?.minWagerWei ?? 0n;
   }
 
   getProfile(): BotProfile {
@@ -164,6 +175,17 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       wagerWei = -1n;
     }
     if (wagerWei < 0n) return refused("That stake is not an amount. No roll was made.");
+    // A stake, and what it can win, must be worth moving: never below the chain's fee floor.
+    const minWagerWei = await tableMinimumWei(ctx, this.minWagerWei);
+    if (
+      wagerWei > 0n &&
+      (wagerWei < minWagerWei || dicePayoutWei(wagerWei, target) < minWagerWei)
+    )
+      return refused(
+        `The smallest stake at this table is ${formatMon(
+          minWagerWei
+        )}, and a win must pay at least that. No roll was made.`
+      );
     if (dicePayoutWei(wagerWei, target) > this.maxPayoutWei)
       return refused(
         `That stake could win more than the table limit of ${formatMon(

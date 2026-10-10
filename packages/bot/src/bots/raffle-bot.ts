@@ -17,7 +17,14 @@ import {
 import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
+import {
+  Outbox,
+  refuse,
+  type Received,
+  replyFree,
+  sendFree,
+  tableMinimumWei,
+} from "./money";
 
 export const RAFFLE_DEFAULT_ENTRY_PRICE_WEI = 20_000_000_000_000_000n; // 0.02 MON
 export const RAFFLE_DEFAULT_MAX_ENTRIES = 5;
@@ -98,7 +105,9 @@ export class RaffleBot implements FrankBotDefinition {
     const serverSeed = randomBytes(32).toString("hex");
     const round: RaffleRoundState = {
       raffleId: randomBytes(16).toString("hex"),
-      entryPriceWei: this.entryPriceWei.toString(),
+      // A round's price is fixed when it opens: what was configured, and never less than the
+      // chain's fee floor then, so an entry can always be paid back and the pot paid out.
+      entryPriceWei: (await tableMinimumWei(ctx, this.entryPriceWei)).toString(),
       maxEntries: this.maxEntries,
       serverSeed,
       serverSeedHash: sha256Hex(serverSeed),

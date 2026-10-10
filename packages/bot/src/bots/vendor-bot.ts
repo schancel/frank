@@ -11,7 +11,14 @@ import type { DigitalGoodsItem, MessageItem } from "@frank/cashweb/types/message
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_MERCHANT } from "@frank/codec";
 import { formatMon } from "@frank/wallet/monad-amount";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
+import {
+  Outbox,
+  refuse,
+  type Received,
+  replyFree,
+  sendFree,
+  tableMinimumWei,
+} from "./money";
 import {
   buildFulfillItems,
   catalogItem,
@@ -55,11 +62,20 @@ export class VendorBot implements FrankBotDefinition {
     };
   }
 
+  /** The catalog at the prices in force now: each the configured price, and never less than
+   * the chain's fee floor, so a price is always an amount that can be paid and paid back. */
+  private async priced(ctx: BotContext): Promise<VendorCatalogItem[]> {
+    const floor = await tableMinimumWei(ctx, 0n);
+    return this.catalog.map((item) =>
+      item.priceWei < floor ? { ...item, priceWei: floor } : item
+    );
+  }
+
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     console.log(`[vendor] Proactively presenting catalog to new user ${user.address}`);
     try {
       await sendFree(ctx, user.address, [
-        catalogItem(this.catalog) as MessageItem,
+        catalogItem(await this.priced(ctx)) as MessageItem,
         {
           type: "text",
           text: "Welcome to the Picture Shop. The price of a picture is paid with your purchase message: use Buy on the catalog.",
@@ -82,7 +98,7 @@ export class VendorBot implements FrankBotDefinition {
     );
     if (!request) {
       await replyFree(msgCtx, [
-        catalogItem(this.catalog) as MessageItem,
+        catalogItem(await this.priced(ctx)) as MessageItem,
         {
           type: "text",
           text: `${this.catalog.length} pictures for sale. The price is paid with your purchase message: use Buy on the catalog.`,
@@ -107,7 +123,7 @@ export class VendorBot implements FrankBotDefinition {
       refuse(this.outbox, msgCtx, ctx, received, why, [
         { type: "digital-goods", action: "error", message: why },
       ]);
-    const item = this.catalog.find(
+    const item = (await this.priced(ctx)).find(
       (candidate) => candidate.itemId === request.itemId
     );
     if (!item)

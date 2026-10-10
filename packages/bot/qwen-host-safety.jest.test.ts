@@ -58,6 +58,9 @@ jest.mock("axios", () => {
 const mockSend = jest.fn();
 const mockFetch = jest.fn();
 const mockReconcile = jest.fn();
+/** The wallet's fee floor for a stamp, as the host reads it. Zero (nothing is dust) unless a
+ * test wires the real wallet's answer in. */
+const mockMinimumStamp = jest.fn(async (_params: unknown) => 0n);
 const mockPublish = jest.fn();
 const mockCreate = jest.fn();
 jest.mock("../bot-framework/src/relay-profile-manager", () => ({
@@ -85,6 +88,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
         send: mockSend,
         fetchSince: mockFetch,
         reconcileAttempts: mockReconcile,
+        minimumStamp: (params: unknown) => mockMinimumStamp(params),
       },
       createWallet: mockCreate,
     }),
@@ -119,9 +123,9 @@ jest.mock("@frank/wallet/monad-provider", () => {
           return mockBalances.get(request.address!.toLowerCase()) ?? 0n;
         if (request.method === "getTransactionCount") return 0;
         if (request.method === "estimateGas") return 50_000n;
-        // Zero: this offline chain charges nothing per gas, so the 1-wei reply stamp these tests
-        // use is not below the fee floor (the floor has its own tests in the wallet).
-        if (request.method === "getGasPrice") return 0n;
+        // A real, nonzero price per gas: the fee floor of a stamp here is 21,000 x 2 = 42,000
+        // wei, and the tests on the real wallet pay a reply stamp above it (`REPLY_STAMP_WEI`).
+        if (request.method === "getGasPrice") return 2n;
         if (request.method === "getPriorityFee") return 1n;
         if (request.method === "getBlock")
           return {
@@ -265,12 +269,14 @@ async function open(
   bot: QwenBot = new QwenBot({
     generator: { mode: "stub", describe: () => "fixture", reply },
     retryDelayMs: 1,
-  })
+  }),
+  hostOptions: { stampValueWei?: bigint } = {}
 ) {
   host = new FrankBotHost({
     stateDir: root,
     relayBaseUrl: "http://localhost.invalid",
     watchRegistrations: false,
+    ...hostOptions,
   });
   Object.defineProperty(bot, "defaultIdentityPath", {
     value: join(root, "new-identity.json"),
@@ -1259,6 +1265,10 @@ describe("with the real canonical wallet", () => {
     };
   };
   const closers: (() => Promise<unknown>)[] = [];
+  /** The bot's reply stamp in these tests: above the chain's fee floor for a stamp (42,000 wei
+   * at this node's gas price of 2), so the reply is a PAID message, as on a real chain. */
+  const REPLY_STAMP_WEI = 100_000n;
+  const openPaying = () => open(undefined, { stampValueWei: REPLY_STAMP_WEI });
   beforeEach(() => {
     jest.spyOn(console, "warn").mockImplementation(() => {});
     jest.spyOn(console, "error").mockImplementation(() => {});
@@ -1267,6 +1277,7 @@ describe("with the real canonical wallet", () => {
     await host?.stop();
     for (const close of closers.splice(0)) await close().catch(() => undefined);
     mockBalances.clear();
+    mockMinimumStamp.mockImplementation(async () => 0n);
   });
   /** Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded. */
   const fund = async (wallet: EvmChainWalletHandle) => {
@@ -1295,7 +1306,7 @@ describe("with the real canonical wallet", () => {
       local = wallet.identity;
       return wallet;
     });
-    await open();
+    await openPaying();
     const botWallet = qwen().wallet;
     const user = (await chain.createWallet(roots())) as EvmChainWalletHandle;
     closers.push(() => user.close());
@@ -1426,7 +1437,7 @@ describe("with the real canonical wallet", () => {
     /** The process ends and starts again: a new host, and the wallet reopened from its disk. */
     const restart = async () => {
       await host.stop();
-      await open();
+      await openPaying();
       confirmPayments();
       install(qwen().wallet);
       return qwen().wallet;
@@ -1441,6 +1452,12 @@ describe("with the real canonical wallet", () => {
     mockReconcile.mockImplementation(
       (params: Parameters<DirectMessageClient["reconcileAttempts"]>[0]) =>
         chain.directMessages.reconcileAttempts(params)
+    );
+    // The host reads the fee floor from the real wallet, as it does in production.
+    mockMinimumStamp.mockImplementation((params: unknown) =>
+      chain.directMessages.minimumStamp!(
+        params as Parameters<NonNullable<DirectMessageClient["minimumStamp"]>>[0]
+      )
     );
 
     // A PAID prompt, its payment confirmed: the reply to it is a paid message, which is what
@@ -1553,6 +1570,38 @@ describe("with the real canonical wallet", () => {
     expect(await intents()).toEqual([submitted[0]]);
     await pass();
     expect(new Set(submitted).size).toBe(1);
+  });
+
+  // The fee floor, on the real wallet: what the host does with an amount a bot's handler names.
+  it("sends an amount below the chain's fee floor as text only, saying so, and pays one at or above it", async () => {
+    const { chain, botWallet, prompt } = await setUp(true);
+    const floor = await chain.directMessages.minimumStamp!({
+      wallet: botWallet,
+    });
+    expect(floor).toBe(42_000n);
+    const to = prompt.senderAddress.raw;
+    const say = (stampValueWei: bigint) =>
+      qwen().context.sendMessage(to, [{ type: "text", text: "yours" }], undefined, {
+        stampValueWei,
+      });
+
+    // A refund of 10 wei: moving it would cost 42,000. No payment is made; the text says why.
+    const dust = await say(10n);
+    expect(dust.stampValueWei).toBe(0n);
+    expect(dust.stampPayments).toEqual([]);
+    const unpaid = mockSend.mock.calls[mockSend.mock.calls.length - 1][0] as Send;
+    expect(unpaid.stampValue).toBe(0n);
+    expect(JSON.stringify(unpaid.items)).toContain("too small to send");
+
+    // A payout exactly at the floor is paid, in one transfer of that amount, with no such line.
+    const paid = await say(floor);
+    expect(paid.stampValueWei).toBe(floor);
+    expect(paid.stampPayments.map((payment) => payment.valueWei)).toEqual([
+      floor,
+    ]);
+    const sent = mockSend.mock.calls[mockSend.mock.calls.length - 1][0] as Send;
+    expect(sent.stampValue).toBe(floor);
+    expect(JSON.stringify(sent.items)).not.toContain("too small to send");
   });
 
   // Restart recovery of a PAID reply on the real wallet (stubbed RPC and relay HTTP; no real

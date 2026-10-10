@@ -19,7 +19,14 @@ import {
   type RpsMove,
 } from "@frank/wallet/message-item-plugins/rps/fair";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
+import {
+  Outbox,
+  refuse,
+  type Received,
+  replyFree,
+  sendFree,
+  tableMinimumWei,
+} from "./money";
 import { BANK_RESERVE_WEI } from "./satoshi-dice-bot";
 
 /** The most one match can be played for: the table limit. */
@@ -50,9 +57,13 @@ export class RpsBot implements FrankBotDefinition {
   private readonly outbox = new Outbox("rps");
   readonly schedules = [this.outbox.schedule];
   private readonly maxWagerWei: bigint;
+  /** The smallest stake the operator set. The table's minimum is this or the chain's fee
+   * floor, whichever is larger. A match with no stake is always free. */
+  private readonly minWagerWei: bigint;
 
-  constructor(options?: { maxWagerWei?: bigint }) {
+  constructor(options?: { maxWagerWei?: bigint; minWagerWei?: bigint }) {
     this.maxWagerWei = options?.maxWagerWei ?? RPS_DEFAULT_MAX_WAGER_WEI;
+    this.minWagerWei = options?.minWagerWei ?? 0n;
   }
 
   getProfile(): BotProfile {
@@ -183,6 +194,14 @@ export class RpsBot implements FrankBotDefinition {
       wagerWei = -1n;
     }
     if (wagerWei < 0n) return refused("That stake is not an amount. Nothing was played.");
+    // A stake must be worth moving back: never below the chain's fee floor.
+    const minWagerWei = await tableMinimumWei(ctx, this.minWagerWei);
+    if (wagerWei > 0n && wagerWei < minWagerWei)
+      return refused(
+        `The smallest stake at this table is ${formatMon(
+          minWagerWei
+        )}. Nothing was played.`
+      );
     if (wagerWei > this.maxWagerWei)
       return refused(
         `That stake is over the table limit of ${formatMon(

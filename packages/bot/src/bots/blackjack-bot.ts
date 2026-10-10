@@ -27,7 +27,7 @@ import {
   type HandItem,
   type HandState,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
-import { Outbox, refuse, type Received } from "./money";
+import { Outbox, refuse, tableMinimumWei, type Received } from "./money";
 
 /** Kept back from the dealer's balance when it works out the largest bet it can cover. */
 const RESERVE_WEI = 20_000_000_000_000_000n;
@@ -128,11 +128,10 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     const cover = free / DEALER_COVER_MULTIPLE;
     // The table minimum is never below what the chain charges to move a stamp, so a real
     // bet's payout or refund always clears the fee floor.
-    const floor = (await ctx.minimumStampWei?.().catch(() => 0n)) ?? 0n;
     return {
       balance,
       maxBet: cover > this.maxWagerWei ? this.maxWagerWei : cover,
-      minBet: floor > this.minWagerWei ? floor : this.minWagerWei,
+      minBet: await tableMinimumWei(ctx, this.minWagerWei),
     };
   }
 

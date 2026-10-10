@@ -63,6 +63,8 @@ export function harness(data = new Map<string, string>()) {
   /** What the wallet does with the next sends. `refuse`: rejects before any attempt exists.
    * `live`: makes its attempt, then rejects with the message still on its way. `dead`: makes
    * its attempt, and the relay ends it. */
+  /** What the chain charges to move a stamp, as the wallet reports it. Zero: nothing is dust. */
+  let floorWei = 0n;
   let mode: "deliver" | "refuse" | "live" | "dead" = "deliver";
   let refusal = new Error("refused");
 
@@ -134,6 +136,7 @@ export function harness(data = new Map<string, string>()) {
     },
     waitForReceipt: async () => null,
     getBalance: async () => 10n ** 18n,
+    minimumStampWei: async () => floorWei,
     attemptStatus: async (digest: string) =>
       [...attempts.values()].find((attempt) => attempt.digest === digest)
         ?.status ?? "unknown",
@@ -149,6 +152,10 @@ export function harness(data = new Map<string, string>()) {
     failSends(error?: Error) {
       mode = error ? "refuse" : "deliver";
       if (error) refusal = error;
+    },
+    /** Sets the chain's fee floor for a stamp, as `BotContext.minimumStampWei` reports it. */
+    feeFloor(wei: bigint) {
+      floorWei = wei;
     },
     /** How the wallet treats sends from now on; see `mode` above. */
     wallet(next: "deliver" | "refuse" | "live" | "dead") {

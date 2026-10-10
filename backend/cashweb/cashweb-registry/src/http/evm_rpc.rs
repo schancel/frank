@@ -2545,6 +2545,9 @@ pub const RPC_CORS_HEADERS: [&str; 6] = [
     RPC_SIGNATURE_HEADER,
 ];
 
+/// Request header the Solana JavaScript client adds to every JSON-RPC call.
+pub const SOLANA_CLIENT_CORS_HEADER: &str = "solana-client";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3258,6 +3261,10 @@ mod tests {
         for name in RPC_CORS_HEADERS {
             assert!(allowed_headers.contains(name), "missing {name}");
         }
+        assert!(
+            allowed_headers.contains(SOLANA_CLIENT_CORS_HEADER),
+            "a browser Solana client on another origin must pass the preflight"
+        );
         assert_eq!(upstream_calls.load(Ordering::SeqCst), 2);
 
         let unauthorized = router

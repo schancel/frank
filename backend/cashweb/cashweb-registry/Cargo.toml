@@ -54,9 +54,6 @@ reqwest = { version = "0.11", features = ["gzip", "brotli", "deflate", "stream"]
 # Fast embedded key-value database
 rocksdb = "0.19"
 
-# Redis RESP protocol client (for Apache Kvrocks / Redis-XC CAS)
-redis = "0.23"
-
 # For Deserialize
 serde = { version = "1.0.147", features = ["derive"] }
 

@@ -221,17 +221,25 @@ pub struct VerifiedMonadProfile {
     pub profile: proto::MonadProfile,
 }
 
-/// Verify that `signed` is a validly-signed Monad profile registration for `claimed_address` (see
-/// this module's docs for the full rationale): `sig_scheme` must be `ECDSA`, `burn_txs` must be
-/// empty, `payload_hash` (if set) must match `SHA256(payload)`, `sig` must be a valid ECDSA
-/// signature by `pubkey` over that hash, and the Ethereum-style address derived from `pubkey` must
-/// equal `claimed_address`. Returns the decoded [`proto::MonadProfile`] and its verified
-/// `payload_hash` on success.
-pub fn verify_monad_profile(
+/// Who signed a `SignedPayload` envelope, once [`verify_signed_payload`] has checked it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedSigner {
+    /// The compressed secp256k1 key that signed the payload.
+    pub pubkey: [u8; PUBKEY_LENGTH],
+    /// The Ethereum-style address of that key.
+    pub address: Address,
+    /// `SHA256(payload)`, the digest that was signed.
+    pub payload_hash: Sha256,
+}
+
+/// Verify the envelope shared by everything an account signs with its identity key outside a
+/// CBOR frame (profiles and username claims): `sig_scheme` must be `ECDSA`, `burn_txs` must be
+/// empty, `payload_hash` (if set) must match `SHA256(payload)`, and `sig` must be a valid ECDSA
+/// signature by `pubkey` over that hash. Says nothing about what the payload means.
+pub fn verify_signed_payload(
     ecc: &EccSecp256k1,
-    claimed_address: Address,
     signed: &cashweb_payload::proto::SignedPayload,
-) -> Result<VerifiedMonadProfile> {
+) -> Result<VerifiedSigner> {
     if !signed.burn_txs.is_empty() {
         return Err(UnexpectedBurnTxs(signed.burn_txs.len()).into());
     }
@@ -270,11 +278,27 @@ pub fn verify_monad_profile(
         .map_err(InvalidSignature)?;
 
     let uncompressed = ecc.serialize_pubkey_uncompressed(&pubkey);
-    let derived_address = address_from_uncompressed_pubkey(&uncompressed);
-    if derived_address != claimed_address {
+    Ok(VerifiedSigner {
+        pubkey: pubkey_arr,
+        address: address_from_uncompressed_pubkey(&uncompressed),
+        payload_hash,
+    })
+}
+
+/// Verify that `signed` is a validly-signed Monad profile registration for `claimed_address` (see
+/// this module's docs for the full rationale): the envelope must pass [`verify_signed_payload`]
+/// and the Ethereum-style address derived from `pubkey` must equal `claimed_address`. Returns the
+/// decoded [`proto::MonadProfile`] and its verified `payload_hash` on success.
+pub fn verify_monad_profile(
+    ecc: &EccSecp256k1,
+    claimed_address: Address,
+    signed: &cashweb_payload::proto::SignedPayload,
+) -> Result<VerifiedMonadProfile> {
+    let signer = verify_signed_payload(ecc, signed)?;
+    if signer.address != claimed_address {
         return Err(AddressMismatch {
             expected: claimed_address,
-            actual: derived_address,
+            actual: signer.address,
         }
         .into());
     }
@@ -284,7 +308,7 @@ pub fn verify_monad_profile(
     validate_display_names(&profile)?;
 
     Ok(VerifiedMonadProfile {
-        payload_hash,
+        payload_hash: signer.payload_hash,
         profile,
     })
 }

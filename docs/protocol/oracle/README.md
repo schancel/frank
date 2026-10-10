@@ -86,6 +86,10 @@ Values are JSON numbers. Times are whole seconds.
 coins are not Frank networks and have no registry row; in this feed, and only here, they are
 `ltc-mainnet` and `xmr-mainnet`. They are oracle inputs, not supported networks.
 
+A token that lives on several chains is not a chain's native coin and is priced once, under
+its own asset id: `price/usdc` and `price/usdt` (US dollars per whole token). These two are the
+token ids of this version; they have `price/` series only.
+
 `algorithm` is `sha256`, `scrypt` or `randomx`.
 
 A series the relay cannot provide is absent. An absent series, or a lookup before a series' first

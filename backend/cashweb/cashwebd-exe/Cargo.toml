@@ -24,3 +24,7 @@ thiserror = "1.0"
 tokio = { version = "1.17", features = ["full"] }
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
+
+[dev-dependencies]
+# Temporary directories, automatically removed
+tempdir = "0.3"

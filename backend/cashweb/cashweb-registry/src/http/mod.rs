@@ -11,6 +11,7 @@ pub(crate) mod json_rpc;
 pub(crate) mod monad_message_cbor;
 pub mod monad_profile;
 pub mod monad_topics;
+pub mod oracle;
 pub mod pop_protection;
 pub mod server;
 pub mod solana_proxy;

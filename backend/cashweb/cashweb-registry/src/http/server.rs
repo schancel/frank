@@ -272,6 +272,7 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
             Cow::Borrowed("/directory/v1/:network/:subject/statements/:t1")
         }
         ["relay", "v1", "info"] => Cow::Borrowed("/relay/v1/info"),
+        ["oracle", "v1", "feed"] => Cow::Borrowed("/oracle/v1/feed"),
         ["directory", "v1", _, "address", _] => {
             Cow::Borrowed("/directory/v1/:network/address/:address")
         }
@@ -421,6 +422,15 @@ impl RegistryServer {
     pub fn into_router_with_directory(
         self,
         directory: Option<Arc<crate::directory_runtime::DirectoryRuntime>>,
+    ) -> Router {
+        self.into_router_with_services(directory, None)
+    }
+
+    /// The router with the directory and the price and energy oracle, each when configured.
+    pub fn into_router_with_services(
+        self,
+        directory: Option<Arc<crate::directory_runtime::DirectoryRuntime>>,
+        oracle: Option<Arc<crate::oracle::OracleRuntime>>,
     ) -> Router {
         let mailbox_enabled = self.monad_mailbox.as_enabled().is_some();
         let canonical_enabled = mailbox_enabled
@@ -606,6 +616,15 @@ impl RegistryServer {
                 .merge(crate::http::usernames::router(Arc::clone(&runtime)))
                 .merge(crate::http::directory::router(runtime));
         }
+        router = match oracle {
+            Some(oracle) => router.merge(crate::http::oracle::router(oracle)),
+            // A relay without the oracle answers 404 here even when it serves the web app for
+            // unknown paths: 404 is how a client learns the relay has no feed.
+            None => router.route(
+                "/oracle/v1/feed",
+                routing::any(|| async { StatusCode::NOT_FOUND }),
+            ),
+        };
         if let Some(spa_dir) = &self.spa_dir {
             use tower_http::services::{ServeDir, ServeFile};
             let index_file = spa_dir.join("index.html");
@@ -1176,6 +1195,18 @@ mod spa_tests {
 
         let (_db_dir, server) = test_server(Some(spa_dir.path().to_path_buf()));
         let router = server.into_router();
+
+        // A relay without the oracle says so with 404, not with the app's page.
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/oracle/v1/feed?latest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         // 1. API routes take precedence and are not shadowed
         let response = router

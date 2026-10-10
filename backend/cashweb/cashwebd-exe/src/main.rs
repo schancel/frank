@@ -155,6 +155,11 @@ fn read_and_validate_conf_with_env(
         .solana_proxy
         .validate()
         .wrap_err("Invalid registry.solana_proxy configuration")?;
+    if let Some(oracle) = &conf.registry.oracle {
+        oracle
+            .validate()
+            .wrap_err("Invalid registry.oracle configuration")?;
+    }
     conf.registry
         .validate_rpc_resource_limits()
         .wrap_err("Invalid registry RPC resource limits")?;
@@ -447,7 +452,30 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let router = server.into_router_with_directory(directory.clone());
+    // The price and energy oracle is a task of its own: starting it opens its store and
+    // touches no network, and nothing here waits for a provider. A store that cannot be opened
+    // costs the feed, never the relay: messages are served and the feed path answers 404.
+    let oracle = conf.registry.oracle.clone().and_then(|oracle| {
+        let started = cashweb_registry::oracle::OracleRuntime::start(
+            oracle,
+            &conf.registry.db_path,
+            |name| std::env::var(name).ok(),
+        );
+        match started {
+            Ok(runtime) => Some(Arc::new(runtime)),
+            Err(error) => {
+                tracing::error!(
+                    store = %conf.registry.db_path.with_extension("oracle-v1").display(),
+                    error = %format!("{error:#}"),
+                    "The oracle store could not be opened: this relay runs WITHOUT the price \
+                     and energy feed (GET /oracle/v1/feed answers 404). Move the store aside \
+                     or fix its permissions and restart"
+                );
+                None
+            }
+        }
+    });
+    let router = server.into_router_with_services(directory.clone(), oracle);
     info!("Listening on {}", conf.host);
     let server = axum::Server::bind(&conf.host)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>());

@@ -61,6 +61,12 @@ export interface FeedElectricity {
   }>
 }
 
+/**
+ * Asset ids of tokens, which are priced once whatever chain they are held on
+ * (`price/usdc`, `price/usdt`). A chain's native coin is priced under its chain id.
+ */
+export const TOKEN_ASSET_IDS = ['usdc', 'usdt'] as const
+
 /** The series AVU_spot is read from: already windowed and averaged over regions. */
 export const ELECTRICITY_AGGREGATE = 'electricity/aggregate'
 

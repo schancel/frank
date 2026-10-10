@@ -41,6 +41,16 @@ grep -q '^enabled = true$' "$work/out/run.toml" || fail "mailbox not enabled"
 cmp -s "$work/out/run.toml" "$work/out/check.toml" || fail "checked config differs from the served one"
 grep -q 'rpc=http://127.0.0.1:9 tag=MONT' "$work/out/env.txt" || fail "daemon env not passed"
 
+# 1a. A relay this launcher starts asks no price or energy provider unless the run says so; the
+# providers' own addresses are left as shipped (only the relay's own url lines are rewritten).
+grep -A1 '^\[registry.oracle\]$' "$work/out/run.toml" | grep -q '^collect = false$' || fail "oracle collection is not off by default"
+grep -q '^api_url = "https://api.kraken.com/0/public/Ticker"$' "$work/out/run.toml" || fail "an oracle provider address was rewritten"
+rm -f "$work/out/"*
+run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
+    FRANK_RELAY_ORACLE_COLLECT=true
+grep -A1 '^\[registry.oracle\]$' "$work/out/run.toml" | grep -q '^collect = true$' || fail "FRANK_RELAY_ORACLE_COLLECT=true did not turn collection on"
+[ "$(grep -c '^collect = ' "$work/out/run.toml")" = 1 ] || fail "collect written more than once"
+
 # 1b. A second relay beside the first gets its own id, identity and public endpoint.
 rm -f "$work/out/"*
 run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
@@ -74,7 +84,7 @@ grep -q 'tag=MON1' "$work/out/env.txt" || fail ".env not honoured by default"
 rm "$work/repo/.env"
 
 # 4. Bad override values are rejected with one clear message (exit 64), before anything starts.
-for bad in "FRANK_RELAY_LISTEN=not-a-port" "FRANK_RELAY_DB_PATH=a\"b" "FRANK_RELAY_EXTRA_TOML=$work/missing.toml" "FRANK_RELAY_PUBLIC_URL=relay.example" "FRANK_RELAY_ID=xyz" "FRANK_RELAY_IDENTITY=04abcd"; do
+for bad in "FRANK_RELAY_ORACLE_COLLECT=yes" "FRANK_RELAY_LISTEN=not-a-port" "FRANK_RELAY_DB_PATH=a\"b" "FRANK_RELAY_EXTRA_TOML=$work/missing.toml" "FRANK_RELAY_PUBLIC_URL=relay.example" "FRANK_RELAY_ID=xyz" "FRANK_RELAY_IDENTITY=04abcd"; do
     if run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" "$bad"; then
         fail "$bad was accepted"
     fi

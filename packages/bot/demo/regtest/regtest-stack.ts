@@ -129,6 +129,10 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     'min_value_wei = "0"',
     '',
     ...(bitcoin.length > 0 ? ['[registry.bitcoin_proxy]', 'enabled = true', '', ...bitcoin] : []),
+    // The price and energy feed from the relay's bundled history; a test relay asks no provider.
+    '[registry.oracle]',
+    'collect = false',
+    '',
   ].join('\n')
 }
 

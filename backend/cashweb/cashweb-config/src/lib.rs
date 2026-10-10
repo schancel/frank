@@ -16,6 +16,9 @@ use bitcoinsuite_core::Net;
 use bitcoinsuite_error::Result;
 use serde::{Deserialize, Serialize};
 
+mod oracle;
+pub use oracle::*;
+
 const PROTOCOL_CHAIN_REGISTRY_V1: &str = include_str!("../../../../docs/protocol/chains/v1.json");
 
 /// Versioned protocol registry used by clients and relay family dispatch.
@@ -325,6 +328,9 @@ pub struct RegistryConf {
     /// Cluster configuration for high-availability multi-node deployments (ticket #981 / #982 / Track C).
     #[serde(default)]
     pub cluster: Option<ClusterConf>,
+    /// Price and energy oracle (`GET /oracle/v1/feed`). Omitted means no collector and no route.
+    #[serde(default)]
+    pub oracle: Option<OracleConf>,
 }
 
 /// Clustered relay configuration for multi-node deployments.
@@ -1963,6 +1969,7 @@ continuity_file = "/var/lib/frank/continuity"
                     curated_defaults: vec![],
                     spa_dir: None,
                     cluster: None,
+                    oracle: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2043,6 +2050,7 @@ continuity_file = "/var/lib/frank/continuity"
                     curated_defaults: vec![],
                     spa_dir: None,
                     cluster: None,
+                    oracle: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),

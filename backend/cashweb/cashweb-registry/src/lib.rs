@@ -32,6 +32,7 @@ pub mod monad_topic_relay;
 pub mod monad_topic_verify;
 pub mod monad_ws;
 pub mod network_tag;
+pub mod oracle;
 pub mod p2p;
 pub mod registry;
 pub mod store;

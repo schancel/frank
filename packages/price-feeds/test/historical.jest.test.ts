@@ -24,6 +24,12 @@ describe('bundled long-range history', () => {
   it('names the published source of each column', () => {
     expect(HISTORICAL_SOURCES.centsPerKwh).toMatch(/EIA.*Table 9\.8.*ESICUUS/)
     expect(HISTORICAL_SOURCES.goldUsd).toMatch(/World Bank.*Pink Sheet/)
+    // The file says where each source was downloaded from and on what date.
+    expect(HISTORICAL_SOURCES.centsPerKwhUrl).toMatch(/^https:\/\/www\.eia\.gov\//)
+    expect(HISTORICAL_SOURCES.goldUsdUrl).toMatch(
+      /^https:\/\/thedocs\.worldbank\.org\//,
+    )
+    expect(HISTORICAL_SOURCES.retrieved).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
   it('holds the values the sources publish (spot checks against the source files)', () => {

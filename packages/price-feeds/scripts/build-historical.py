@@ -16,7 +16,7 @@ Sources (download them first, no key needed):
 
 Regenerate (from packages/price-feeds):
   python3 -I scripts/build-historical.py <T09.08.csv> <CMO-Historical-Data-Annual.xlsx> \
-    > src/historical/us-electricity-gold.json
+    <YYYY-MM-DD the files were downloaded> > src/historical/us-electricity-gold.json
 Check: yarn jest --runInBand historical
 """
 import csv
@@ -26,6 +26,8 @@ import sys
 import zipfile
 import xml.etree.ElementTree as ET
 
+EIA_URL = 'https://www.eia.gov/totalenergy/data/browser/csv.php?tbl=T09.08'
+WORLD_BANK_URL = 'https://thedocs.worldbank.org/en/doc/5d903e848db1d1b83e0ec8f744e55570-0350012021/related/CMO-Historical-Data-Annual.xlsx'
 NS = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 SHEET = 'Annual Prices (Nominal)'
 
@@ -83,6 +85,9 @@ def pink_sheet_gold(path):
 def main():
     annual_cents, monthly_cents = eia_industrial(sys.argv[1])
     gold, edition = pink_sheet_gold(sys.argv[2])
+    retrieved = sys.argv[3]
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', retrieved):
+        sys.exit('third argument: the date the source files were downloaded, YYYY-MM-DD')
     annual = []
     for year in sorted(annual_cents):
         point = {'year': year, 'centsPerKwh': annual_cents[year]}
@@ -93,7 +98,10 @@ def main():
         {
             'sources': {
                 'centsPerKwh': 'US EIA Monthly Energy Review Table 9.8, series ESICUUS: average price of electricity to industrial customers, nominal cents per kWh',
+                'centsPerKwhUrl': EIA_URL,
                 'goldUsd': 'World Bank Commodity Price Data (Pink Sheet), annual prices, nominal US dollars per troy ounce. %s' % edition,
+                'goldUsdUrl': WORLD_BANK_URL,
+                'retrieved': retrieved,
             },
             'annual': annual,
             'monthlyCentsPerKwh': [

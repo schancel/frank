@@ -514,6 +514,7 @@ export default {
     avuMainnetPrice:
       '{rate} (prix mainnet ; les cryptos de testnet n’ont pas de valeur de marché)',
     avuStalePrice: '{rate} (prix vieux de {age})',
+    resetZoom: 'Réinitialiser le zoom',
     arbitrageMargin: 'Rémunération du minage eCash vs Bitcoin',
     arbitrageNote:
       'Nouvelles pièces émises par hash, eCash rapporté à Bitcoin, sur 24 h. Subvention de bloc entière ; frais non comptés.',

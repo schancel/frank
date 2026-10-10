@@ -20,8 +20,14 @@ export interface MonthlyElectricityPoint {
   centsPerKwh: number
 }
 
-export const HISTORICAL_SOURCES: { centsPerKwh: string; goldUsd: string } =
-  data.sources
+/** What each column is, where its file was downloaded from, and on what date. */
+export const HISTORICAL_SOURCES: {
+  centsPerKwh: string
+  centsPerKwhUrl: string
+  goldUsd: string
+  goldUsdUrl: string
+  retrieved: string
+} = data.sources
 
 export const US_ANNUAL_ELECTRICITY_AND_GOLD: readonly AnnualEnergyPoint[] =
   data.annual

@@ -124,6 +124,11 @@ describe('useOracleStore', () => {
       '1 SOL ≈ 1,310.24 AVU (price 3 h old)',
     )
     expect(store.formatUnitRate('ethereum')).toBe('1 ETH ≈ 29,761.90 AVU')
+    // A balance valued at the stale price says so too; one at a fresh price does not.
+    expect(store.formatAvuAmount('solana', ONE_SOL)).toBe(
+      '≈ 1,310.2 AVU (price 3 h old)',
+    )
+    expect(store.formatAvuAmount('ethereum', 10n ** 18n)).toBe('≈ 29,761.9 AVU')
 
     // Then nothing comes back: both remain, both aged, neither replaced by a default.
     fetchOracleSnapshot.mockResolvedValue(oracleSdk.unavailableOracleSnapshot())

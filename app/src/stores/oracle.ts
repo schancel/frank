@@ -218,14 +218,25 @@ export const useOracleStore = defineStore('oracle', {
       }
     },
 
-    /** "≈ 92.50 AVU", or empty when there is no real price or nothing to value. */
+    /**
+     * "≈ 92.50 AVU", or empty when there is no real price or nothing to value. Valued at a
+     * price that has gone stale, it says how old the price is, as the unit rate line does.
+     */
     formatAvuAmount() {
       return (
         asset: SupportedAsset,
         rawAmount: bigint | null | undefined,
       ): string => {
         const avu = this.getAvu(asset, rawAmount)
-        return avu > 0 ? `≈ ${formatAvu(avu)}` : ''
+        if (!(avu > 0)) return ''
+        const amount = `≈ ${formatAvu(avu)}`
+        const age = this.priceAgeMs(asset)
+        return age !== undefined && age > STALE_AFTER_MS
+          ? translate('walletPanel.avuStalePrice', {
+              rate: amount,
+              age: formatAge(age),
+            })
+          : amount
       }
     },
 

@@ -56,6 +56,18 @@
             data-test="view-toggle"
           />
         </div>
+        <q-btn
+          v-if="zoom"
+          dense
+          no-caps
+          rounded
+          unelevated
+          color="primary"
+          icon="zoom_out_map"
+          :label="$t('walletPanel.resetZoom')"
+          data-test="reset-zoom-btn"
+          @click="zoom = null"
+        />
       </div>
 
       <div
@@ -143,7 +155,7 @@
           viewBox="0 0 680 290"
           preserveAspectRatio="xMidYMid meet"
           data-test="macro-chart-svg"
-          @mouseleave="hovered = null"
+          @mouseleave="leaveChart"
         >
           <g class="grid-lines" opacity="0.3">
             <line
@@ -229,6 +241,19 @@
             style="pointer-events: none"
           />
 
+          <!-- The stretch being dragged over; releasing zooms the chart to it -->
+          <rect
+            v-if="dragSelection"
+            :x="dragSelection.x"
+            y="20"
+            :width="dragSelection.width"
+            height="210"
+            :fill="themeColors.axis"
+            fill-opacity="0.2"
+            style="pointer-events: none"
+            data-test="zoom-selection"
+          />
+
           <!-- One hover column per plotted position -->
           <g
             v-for="column in columns"
@@ -236,6 +261,8 @@
             data-test="chart-hover-point"
             @mouseenter="hovered = column"
             @click="hovered = column"
+            @mousedown.prevent="dragFrom = column"
+            @mouseup="finishDrag(column)"
           >
             <rect
               :x="column.x - columnHitWidth / 2"
@@ -489,10 +516,19 @@ const MINING_CHAIN_NAMES: Record<(typeof MINING_CHAINS)[number], string> = {
   'ecash': 'XEC',
 }
 
+/** Mining statistics older than this are not shown as current: the figure reads unavailable. */
+const MINING_STATS_MAX_AGE_MS = 2 * 60 * 60 * 1000
+
 const miningRows = computed(() => {
-  const bitcoin = oracle.mining?.bitcoin
-  return MINING_CHAINS.flatMap(chain => {
+  const current = (chain: (typeof MINING_CHAINS)[number]) => {
     const stats = oracle.mining?.[chain]
+    return stats && Date.now() - stats.fetchedAt <= MINING_STATS_MAX_AGE_MS
+      ? stats
+      : undefined
+  }
+  const bitcoin = current('bitcoin')
+  return MINING_CHAINS.flatMap(chain => {
+    const stats = current(chain)
     const dollarsPerKwh = stats
       ? miningDollarsPerKwh(stats.usdPerHash, SHA256_JOULES_PER_HASH)
       : undefined
@@ -663,7 +699,7 @@ const tokenHistory = computed(() =>
     : null,
 )
 
-const series = computed<Series[]>(() => {
+const rangeSeries = computed<Series[]>(() => {
   if (selectedRange.value === 'networks') return []
 
   if (!fetchedRange.value) {
@@ -696,7 +732,32 @@ const series = computed<Series[]>(() => {
     ]
   }
 
+  // The bundled monthly electricity prices reach into the last year; no shorter range has
+  // any. Gold has no history here finer than a year, so it has no line on these ranges.
+  const oldest = Date.now() - 366 * 24 * 3_600_000
+  const monthlyGrid =
+    fetchedRange.value === '1y'
+      ? US_MONTHLY_INDUSTRIAL_ELECTRICITY.flatMap(m => {
+          const at = Date.UTC(
+            Number(m.month.slice(0, 4)),
+            Number(m.month.slice(5, 7)) - 1,
+            15,
+          )
+          return at >= oldest
+            ? [{ at, value: kwhPerDollar(m.centsPerKwh) }]
+            : []
+        })
+      : []
+
   return [
+    {
+      id: 'usd' as const,
+      label: t('walletPanel.chartUsdKwh'),
+      color: themeColors.value.usd,
+      axis: 'right' as const,
+      format: (value: number) => `${formatNumber(value, 1)} kWh/$`,
+      points: monthlyGrid,
+    },
     {
       id: 'token',
       label: `${unit.value.symbol} (AVU)`,
@@ -710,6 +771,17 @@ const series = computed<Series[]>(() => {
       })),
     },
   ]
+})
+
+// Drag across the chart to zoom to that stretch. Zooming only hides points outside it.
+const zoom = ref<{ min: number; max: number } | null>(null)
+const series = computed<Series[]>(() => {
+  const window = zoom.value
+  if (!window) return rangeSeries.value
+  return rangeSeries.value.map(s => ({
+    ...s,
+    points: s.points.filter(p => p.at >= window.min && p.at <= window.max),
+  }))
 })
 
 const legend = computed(() => series.value.filter(s => s.points.length > 0))
@@ -811,9 +883,35 @@ const columnHitWidth = computed(() =>
 )
 
 const hovered = ref<Column | null>(null)
+const dragFrom = ref<Column | null>(null)
 watch([selectedRange, asset], () => {
   hovered.value = null
+  dragFrom.value = null
+  zoom.value = null
 })
+
+const dragSelection = computed(() => {
+  const from = dragFrom.value
+  const to = hovered.value
+  if (!from || !to || from.key === to.key) return null
+  return { x: Math.min(from.x, to.x), width: Math.abs(to.x - from.x) }
+})
+
+function finishDrag(column: Column) {
+  const from = dragFrom.value
+  dragFrom.value = null
+  if (!from || from.key === column.key) return
+  zoom.value = {
+    min: Math.min(from.key, column.key),
+    max: Math.max(from.key, column.key),
+  }
+  hovered.value = null
+}
+
+function leaveChart() {
+  hovered.value = null
+  dragFrom.value = null
+}
 
 const inspected = computed<Column | null>(
   () => hovered.value ?? columns.value[columns.value.length - 1] ?? null,

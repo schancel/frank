@@ -503,6 +503,7 @@ export default {
     avuMainnetPrice:
       '{rate} (mainnet price; testnet coins have no market value)',
     avuStalePrice: '{rate} (price {age} old)',
+    resetZoom: 'Reset zoom',
     arbitrageMargin: 'eCash vs Bitcoin mining pay',
     arbitrageNote:
       'New coins issued per hash, eCash over Bitcoin, last 24 h. Whole block subsidy; fees not counted.',

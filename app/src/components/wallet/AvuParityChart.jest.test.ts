@@ -221,6 +221,68 @@ describe('the drawn lines are data, never a formula', () => {
   })
 })
 
+describe('dragging across the chart zooms to that stretch', () => {
+  it('keeps only the published points inside the dragged stretch, and Reset shows all again', async () => {
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'coinbase',
+      points: [5, 4, 3, 2, 1].map(h => ({
+        timestamp: NOW - h * HOUR,
+        price: 100 + h,
+      })),
+    })
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(columns).toHaveLength(5)
+    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+
+    await columns[1].trigger('mousedown')
+    await columns[3].trigger('mouseenter')
+    expect(wrapper.find('[data-test="zoom-selection"]').exists()).toBe(true)
+    await columns[3].trigger('mouseup')
+
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(3)
+    expect(wrapper.find('[data-test="zoom-selection"]').exists()).toBe(false)
+
+    await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(5)
+  })
+
+  it('a click without a drag does not zoom', async () => {
+    const wrapper = mountChart()
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    await columns[2].trigger('mousedown')
+    await columns[2].trigger('mouseup')
+    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="chart-hover-point"]')).toHaveLength(
+      columns.length,
+    )
+  })
+})
+
+describe('the one-year view also draws the bundled monthly electricity prices', () => {
+  it('shows only the published months that fall inside the last year, and none on shorter ranges', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '1y')
+    const yearAgo = NOW - 366 * 24 * HOUR
+    const published = oracleSdk.US_MONTHLY_INDUSTRIAL_ELECTRICITY.filter(
+      m =>
+        Date.UTC(
+          Number(m.month.slice(0, 4)),
+          Number(m.month.slice(5, 7)) - 1,
+          15,
+        ) >= yearAgo,
+    )
+    expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(
+      published.length,
+    )
+    await openRange(wrapper, '30d')
+    expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(0)
+  })
+})
+
 describe('bundled long-range data is loaded as data', () => {
   it('draws one point per published year, straight from the bundled table', async () => {
     const wrapper = mountChart()
@@ -384,6 +446,19 @@ describe('mining pay comes from fetched chain statistics', () => {
     expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
       'Mining statistics could not be fetched',
     )
+  })
+
+  it('shows statistics fetched hours ago as unavailable, not as current figures', async () => {
+    fetchMiningStats.mockImplementation(async (chain: string) => ({
+      ...stats(chain, 4.5e-19),
+      fetchedAt: Date.now() - 3 * HOUR,
+    }))
+    const wrapper = mountChart()
+    await openRange(wrapper, 'networks')
+    expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
+      'Unavailable',
+    )
+    expect(wrapper.findAll('[data-test="chart-hover-bar"]')).toHaveLength(0)
   })
 
   it('computes the eCash spread from the two chains’ fetched dollars per hash', async () => {

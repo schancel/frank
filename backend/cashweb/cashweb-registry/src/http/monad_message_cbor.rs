@@ -154,10 +154,13 @@ const BROADCAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 /// Hand every payment of a delivered message to the node once, all at the same time. The
 /// results are logged and nothing else: a payment the node refused, or one that could not be
 /// sent in time, is simply not sent. A resend of the same message sends them again.
+///
+/// Returns what was logged for each payment: the outcome of one that went out, or the reason
+/// one did not.
 async fn broadcast_payments(
     runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
     claim: &crate::store::monad_dm_cbor::Claim,
-) {
+) -> Vec<std::result::Result<&'static str, String>> {
     let client = crate::monad_http::MonadHttpClient::with_transport(runtime.transport().clone());
     let wait = runtime.reconcile().rpc_timeout.min(BROADCAST_TIMEOUT);
     let payload_hash = hex::encode(claim.policy.payload_hash);
@@ -178,7 +181,7 @@ async fn broadcast_payments(
                         Ok(Err(error)) => Err(format!("could not be sent: {error}")),
                         Err(_) => Err("no answer from the node in time".to_owned()),
                     };
-                match result {
+                match &result {
                     Ok(outcome) => tracing::event!(
                         tracing::Level::DEBUG,
                         payload_hash = %payload_hash,
@@ -194,9 +197,10 @@ async fn broadcast_payments(
                         "Direct-message payment not broadcast; the message is delivered"
                     ),
                 }
+                result
             }
         });
-    futures::future::join_all(sends).await;
+    futures::future::join_all(sends).await
 }
 
 fn now_ms() -> i64 {

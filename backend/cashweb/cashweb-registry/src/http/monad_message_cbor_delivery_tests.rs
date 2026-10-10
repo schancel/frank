@@ -578,6 +578,55 @@ async fn with_the_monad_rpc_down_at_startup_a_paid_message_is_still_delivered() 
     fixture.stop().await;
 }
 
+/// The node's URL holds the provider's API key. A failed broadcast is logged, and neither the
+/// log line nor the answer may contain the URL.
+#[tokio::test]
+async fn a_failed_broadcast_never_puts_the_node_url_in_a_log_line_or_the_answer() {
+    const KEY: &str = "sentinel-api-key";
+    let fixture = NativeDirectoryFixture::new().await;
+    // Nothing listens here, so every send is a transport failure naming this URL.
+    let node = format!("http://127.0.0.1:1/v2/{KEY}");
+    let server = server_with(&fixture, &node, 1, Duration::from_secs(10));
+    let (url, stop, task) = serve_http(
+        server
+            .clone()
+            .into_router_with_directory(Some(fixture.directory.clone())),
+    )
+    .await;
+    let request = message(60, 2);
+    let response = reqwest::Client::new()
+        .put(format!("{url}/message/monad/cbor"))
+        .header("content-type", request.content_type())
+        .body(request.body().to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let answer = String::from_utf8(response.bytes().await.unwrap().to_vec()).unwrap();
+    assert!(answer.contains("\"delivered\""));
+    assert!(!answer.contains(KEY) && !answer.contains("127.0.0.1:1"));
+
+    // What the handler logs for each payment is exactly what this returns.
+    let claim = fixture
+        .registry
+        .canonical_dm()
+        .get(&payload_hash(&request))
+        .unwrap()
+        .unwrap();
+    let logged = broadcast_payments(server.monad_mailbox.as_enabled().unwrap(), &claim).await;
+    assert_eq!(logged.len(), 2);
+    for line in logged {
+        let reason = line.expect_err("nothing is listening, so nothing was sent");
+        assert!(reason.starts_with("could not be sent"), "{reason}");
+        assert!(!reason.contains(KEY), "{reason}");
+        assert!(!reason.contains("127.0.0.1"), "{reason}");
+        assert!(!reason.contains("for url"), "{reason}");
+    }
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    fixture.stop().await;
+}
+
 #[tokio::test]
 async fn a_node_that_never_answers_holds_the_answer_no_longer_than_one_call_timeout() {
     let relay = Relay::start_with(

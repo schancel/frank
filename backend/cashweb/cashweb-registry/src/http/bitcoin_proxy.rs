@@ -47,6 +47,12 @@ use crate::{
 
 const PROXY_METHOD_HEADER: &str = "x-frank-proxy-method";
 const MAX_STARTUP_RESPONSE_BYTES: usize = 1024 * 1024;
+/// How often an upstream that has not yet proved its identity is asked again.
+const IDENTITY_RETRY: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(30)
+};
 
 #[derive(Clone)]
 struct Chain {
@@ -56,6 +62,9 @@ struct Chain {
     electrum_urls: Vec<Url>,
     checkpoint_height: u64,
     checkpoint_hash: String,
+    /// The chain's upstreams have proved they are the configured chain. Until they do, nothing
+    /// is forwarded to them.
+    verified: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct UpstreamResponse {
@@ -261,6 +270,7 @@ impl BitcoinProxyRuntime {
                     )?,
                     checkpoint_height: row.checkpoint_height,
                     checkpoint_hash: row.checkpoint_hash.to_ascii_lowercase(),
+                    verified: Default::default(),
                 },
             );
         }
@@ -284,7 +294,11 @@ impl BitcoinProxyRuntime {
             cooldowns: UpstreamCooldownTracker::default(),
             customer_quota: Arc::new(FixedHourQuota::new(10_000)),
         });
-        runtime.verify_checkpoints().await?;
+        // Only a bad configuration stops the relay. An upstream that is down or is the wrong
+        // chain leaves that chain unserved.
+        if !runtime.verify_unverified_chains().await {
+            runtime.keep_verifying();
+        }
         Ok(Some(runtime))
     }
 
@@ -295,8 +309,8 @@ impl BitcoinProxyRuntime {
             .unwrap_or(false)
     }
 
-    async fn verify_checkpoints(&self) -> Result<(), BitcoinProxyStartError> {
-        for chain in self.chains.values() {
+    async fn verify_checkpoint(&self, chain: &Chain) -> Result<(), BitcoinProxyStartError> {
+        {
             for url in &chain.rpc_urls {
                 if matches!(url.scheme(), "http" | "https") {
                     let body = json!({"jsonrpc":"1.0","id":"startup","method":"getblockhash","params":[chain.checkpoint_height]});
@@ -361,6 +375,71 @@ impl BitcoinProxyRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Check the identity of every chain not yet verified. A chain whose upstream cannot be
+    /// reached, or answers as a different chain, stays unserved and is reported; the relay
+    /// and its other chains carry on. Returns whether every chain is now verified.
+    async fn verify_unverified_chains(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let checks = self
+            .chains
+            .values()
+            .filter(|chain| !chain.verified.load(Ordering::Relaxed))
+            .map(|chain| async move {
+                match self.verify_checkpoint(chain).await {
+                    Ok(()) => {
+                        chain.verified.store(true, Ordering::Relaxed);
+                        true
+                    }
+                    Err(error) => {
+                        tracing::event!(
+                            tracing::Level::ERROR,
+                            chain = %chain.id,
+                            error = %error,
+                            "Bitcoin-family proxy chain is NOT being served: its upstream did not pass \
+                             the checkpoint check. Requests for it answer unavailable; the check \
+                             is repeated until it passes"
+                        );
+                        false
+                    }
+                }
+            });
+        futures::future::join_all(checks)
+            .await
+            .into_iter()
+            .all(|verified| verified)
+    }
+
+    /// Keep checking in the background until every chain is verified or the relay stops.
+    fn keep_verifying(self: &Arc<Self>) {
+        let runtime = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(IDENTITY_RETRY).await;
+                let Some(runtime) = runtime.upgrade() else {
+                    return;
+                };
+                if runtime.verify_unverified_chains().await {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// Refuse a request for a chain whose upstream has not proved its identity.
+    fn require_verified(
+        &self,
+        verified: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), RpcRejection> {
+        if verified.load(std::sync::atomic::Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(rpc_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rpc_upstream_unavailable",
+            ))
+        }
     }
 
     async fn simple_request_with_limit(
@@ -764,6 +843,9 @@ async fn proxy_rpc_inner(
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let (_units, send_only, contains_broadcast, version, is_electrum) =
         validate_rpc(&body, runtime.max_request_bytes)?;
+    runtime
+        .require_verified(&chain.verified)
+        .map_err(|error| preflight_broadcast_error(error, contains_broadcast))?;
     let target_upstreams = if is_electrum {
         if !chain.electrum_urls.is_empty() {
             &chain.electrum_urls
@@ -1393,6 +1475,9 @@ async fn proxy_chronik_inner(
     let path = canonical_chronik_path(&path)?;
     let (public, broadcast) = chronik_policy(&method, &path)
         .ok_or_else(|| rpc_error(StatusCode::FORBIDDEN, "indexer_endpoint_denied"))?;
+    runtime
+        .require_verified(&chain.verified)
+        .map_err(|error| preflight_broadcast_error(error, broadcast))?;
     if body.len() > runtime.max_request_bytes {
         return Err(preflight_broadcast_error(
             rpc_error(StatusCode::PAYLOAD_TOO_LARGE, "rpc_request_too_large"),
@@ -1672,6 +1757,7 @@ pub(crate) async fn handle_proxy_ws(
         .filter(|runtime| runtime.has_chain(&chain_id))
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let chain = runtime.chains.get(&chain_id).expect("chain checked above");
+    runtime.require_verified(&chain.verified)?;
     if chain.electrum_urls.is_empty() {
         return Err(rpc_error(StatusCode::NOT_FOUND, "rpc_ws_disabled"));
     }
@@ -2287,6 +2373,7 @@ mod tests {
             electrum_urls: vec![],
             checkpoint_height: 1,
             checkpoint_hash: "00".repeat(32),
+            verified: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         };
         let mut response = json!({
             "error": "https://user:secret@rpc.example/key rejected secret"
@@ -2319,7 +2406,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_verifies_chronik_checkpoint_and_fails_closed_on_mismatch() {
+    async fn startup_verifies_chronik_checkpoint_and_does_not_serve_a_chain_that_fails_it() {
         let mut conventional_hash = (0u8..32).collect::<Vec<_>>();
         let mut chronik_hash = conventional_hash.clone();
         chronik_hash.reverse();
@@ -2361,18 +2448,26 @@ mod tests {
             ..BitcoinProxyConf::default()
         };
         let url = format!("http://{address}");
-        assert!(
+        let verified = |runtime: Arc<BitcoinProxyRuntime>| {
+            runtime.chains["xec-regtest"]
+                .verified
+                .load(Ordering::Relaxed)
+        };
+        assert!(verified(
             BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone()))
                 .await
                 .unwrap()
-                .is_some()
-        );
+                .unwrap()
+        ));
 
+        // The relay starts either way; a chain that fails its check is simply not served.
         conventional_hash[0] ^= 1;
         conf.chains[0].checkpoint_hash = hex::encode(&conventional_hash);
-        assert!(matches!(
-            BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone())).await,
-            Err(BitcoinProxyStartError::CheckpointMismatch { .. })
+        assert!(!verified(
+            BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone()))
+                .await
+                .unwrap()
+                .unwrap()
         ));
 
         conventional_hash[0] ^= 1;
@@ -2398,15 +2493,189 @@ mod tests {
                 .serve(duplicate_rpc.into_make_service()),
         );
         let rpc_url = format!("http://{rpc_address}");
-        assert!(matches!(
+        assert!(!verified(
             BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |name| match name {
                 "RPC_URL" => Some(rpc_url.clone()),
                 "CHRONIK_URL" => Some(url.clone()),
                 _ => None,
             })
-            .await,
-            Err(BitcoinProxyStartError::UpstreamUnavailable(_))
+            .await
+            .unwrap()
+            .unwrap()
         ));
+    }
+
+    /// An indexer upstream answering as the chain whose checkpoint block hash is `hash`.
+    /// `forwarded` counts every request other than the identity check.
+    fn chronik_upstream(hash: [u8; 32], forwarded: Arc<AtomicUsize>) -> Router {
+        let mut reversed = hash.to_vec();
+        reversed.reverse();
+        let block = proto::Block {
+            block_info: Some(proto::BlockInfo {
+                hash: reversed,
+                ..Default::default()
+            }),
+        }
+        .encode_to_vec();
+        Router::new().route(
+            "/block/:id",
+            routing::get(move |Path(id): Path<String>| {
+                if id != "42" {
+                    forwarded.fetch_add(1, Ordering::SeqCst);
+                }
+                let block = block.clone();
+                async move { block }
+            }),
+        )
+    }
+    fn serve(listener: std::net::TcpListener, router: Router) {
+        listener.set_nonblocking(true).unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(router.into_make_service()),
+        );
+    }
+    fn chronik_chain(id: &str, env: &str, hash: [u8; 32]) -> BitcoinProxyChainConf {
+        BitcoinProxyChainConf {
+            id: id.to_string(),
+            rpc_upstream_env: None,
+            rpc_upstream_envs: vec![],
+            chronik_upstream_env: Some(env.to_string()),
+            chronik_upstream_envs: vec![],
+            electrum_upstream_env: None,
+            electrum_upstream_envs: vec![],
+            checkpoint_height: 42,
+            checkpoint_hash: hex::encode(hash),
+        }
+    }
+    /// A relay with this proxy and nothing else, and a way to ask it for a block of `chain`.
+    fn relay_with(runtime: Arc<BitcoinProxyRuntime>) -> (Router, impl Fn(&str) -> Request<Body>) {
+        let tempdir = TempDir::new("cashweb-registry--bitcoin-startup").unwrap();
+        let registry = Registry::new(
+            Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
+            Arc::new(DisabledChainAdapter),
+            Net::Regtest,
+        );
+        let event_bus = registry.event_bus().clone();
+        let auth = Arc::clone(&runtime);
+        let router = RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
+            curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: Some(runtime),
+            solana_proxy: None,
+            spa_dir: None,
+            event_bus,
+        }
+        .into_router();
+        let block = move |chain: &str| {
+            let _keep = &tempdir;
+            let (capability, _) =
+                auth.auth
+                    .issue_capability(Address([7; 20]), chain, now_ms(), 60 * 60 * 1000);
+            Request::get(format!(
+                "/chain-rpc/{chain}/cap/{capability}/chronik/block/abc"
+            ))
+            .body(Body::empty())
+            .unwrap()
+        };
+        (router, block)
+    }
+    async fn error_code(response: Response) -> Value {
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        serde_json::from_slice::<Value>(&body).unwrap()["error"].clone()
+    }
+
+    #[tokio::test]
+    async fn an_upstream_down_at_startup_leaves_only_its_chain_unserved_until_it_answers() {
+        let (up_hash, down_hash) = ([1u8; 32], [2u8; 32]);
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let up = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_url = format!("http://{}", up.local_addr().unwrap());
+        serve(up, chronik_upstream(up_hash, Arc::clone(&forwarded)));
+        // Nothing listens at the second chain's upstream yet.
+        let down = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let down_address = down.local_addr().unwrap();
+        drop(down);
+        let down_url = format!("http://{down_address}");
+        let conf = BitcoinProxyConf {
+            enabled: true,
+            chains: vec![
+                chronik_chain("xec-regtest", "UP", up_hash),
+                chronik_chain("bch-regtest", "DOWN", down_hash),
+            ],
+            ..BitcoinProxyConf::default()
+        };
+        // The relay starts.
+        let runtime = BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |name| {
+            Some(if name == "UP" {
+                up_url.clone()
+            } else {
+                down_url.clone()
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let (router, block) = relay_with(runtime);
+        // The chain whose upstream answers is served; the other answers unavailable.
+        let served = router.clone().oneshot(block("xec-regtest")).await.unwrap();
+        assert_eq!(served.status(), StatusCode::OK);
+        let unserved = router.clone().oneshot(block("bch-regtest")).await.unwrap();
+        assert_eq!(unserved.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_code(unserved).await, "rpc_upstream_unavailable");
+        assert_eq!(forwarded.load(Ordering::SeqCst), 1);
+
+        // Its upstream comes up; the repeated check finds it and the chain is served.
+        serve(
+            std::net::TcpListener::bind(down_address).unwrap(),
+            chronik_upstream(down_hash, Arc::clone(&forwarded)),
+        );
+        let mut status = StatusCode::SERVICE_UNAVAILABLE;
+        for _ in 0..100 {
+            status = router
+                .clone()
+                .oneshot(block("bch-regtest"))
+                .await
+                .unwrap()
+                .status();
+            if status == StatusCode::OK {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_upstream_that_is_another_chain_is_never_forwarded_to() {
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        // The upstream answers, as a chain with a different checkpoint block.
+        serve(listener, chronik_upstream([9; 32], Arc::clone(&forwarded)));
+        let conf = BitcoinProxyConf {
+            enabled: true,
+            chains: vec![chronik_chain("xec-regtest", "URL", [1; 32])],
+            ..BitcoinProxyConf::default()
+        };
+        let runtime = BitcoinProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        let (router, block) = relay_with(runtime);
+        // Refused now, and still refused after the check has been repeated several times.
+        for _ in 0..2 {
+            let refused = router.clone().oneshot(block("xec-regtest")).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(error_code(refused).await, "rpc_upstream_unavailable");
+            tokio::time::sleep(IDENTITY_RETRY * 5).await;
+        }
+        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -2489,6 +2758,7 @@ mod tests {
                         electrum_urls: vec![],
                         checkpoint_height: 1,
                         checkpoint_hash: "00".repeat(32),
+                        verified: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     },
                 ),
                 (
@@ -2500,6 +2770,7 @@ mod tests {
                         electrum_urls: vec![],
                         checkpoint_height: 1,
                         checkpoint_hash: "00".repeat(32),
+                        verified: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     },
                 ),
             ]),
@@ -2732,6 +3003,7 @@ mod tests {
                     electrum_urls: vec![],
                     checkpoint_height: 1,
                     checkpoint_hash: "00".repeat(32),
+                    verified: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 },
             )]),
             client: reqwest::Client::new(),

@@ -109,7 +109,10 @@ forwarded only when their IDs match an outstanding call or active subscription.
 Bitcoin-family configuration names optional node JSON-RPC and Chronik upstream environment
 variables plus the registry-pinned checkpoint height/hash (regtest rows use an operator
 checkpoint). Startup checks `getblockhash` and Chronik's
-`GET /block/<height>` before readiness. Anonymous Chronik wallet-bootstrap reads use a high,
+`GET /block/<height>`. The relay starts whatever the answer: a chain whose upstream is unreachable
+or reports a different block is logged, answers `503 rpc_upstream_unavailable`, and is checked
+again every 30 seconds until it passes; nothing is forwarded to it before then. The Solana proxy
+treats `getGenesisHash` the same way. Anonymous Chronik wallet-bootstrap reads use a high,
 burstable fixed-hour IP quota; anonymous `sendrawtransaction`, `broadcast-tx`, and bounded
 `broadcast-txs` use a separate small fixed-hour broadcast quota. Other node RPC and indexer
 operations require the same registered-customer challenge as EVM calls. Anonymous history queries

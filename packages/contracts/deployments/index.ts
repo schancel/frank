@@ -8,6 +8,8 @@
  *
  * This file is imported by the browser bundle: keep it free of Node-only imports.
  */
+import monadTestnet from './monad-testnet.json'
+
 export type DeployedContractName = 'GenericHTLC' | 'StateChannel'
 
 export interface ContractDeployment {
@@ -37,4 +39,6 @@ export interface DeploymentRecord {
 }
 
 export const DEPLOYMENTS: Readonly<Record<string, DeploymentRecord>> =
-  Object.freeze({})
+  Object.freeze({
+    'monad-testnet': monadTestnet as DeploymentRecord,
+  })

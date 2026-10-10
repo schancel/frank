@@ -102,6 +102,8 @@ export const en = {
     'Write down each paper share. Any {threshold} of these {count} shares restore this account: the same identity, addresses and funds.',
   codex32_backup_sets_do_not_mix:
     'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
+  codex32_earlier_settings_shares_invalid:
+    'Recovery shares copied from this Settings page before this update do NOT restore this account. Destroy them. Shares shown when the account was created are not affected.',
   show_recovery_shares: 'Show recovery shares',
   show_recovery_shares_warning:
     'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
@@ -240,6 +242,8 @@ export const fr = {
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
     'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
+  codex32_earlier_settings_shares_invalid:
+    'Les parts de récupération copiées depuis cette page des réglages avant cette mise à jour ne restaurent PAS ce compte. Détruisez-les. Les parts affichées à la création du compte ne sont pas concernées.',
   show_recovery_shares: 'Afficher les parts de récupération',
   show_recovery_shares_warning:
     'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',

@@ -81,6 +81,14 @@
               }}
               {{ $t('accountRecovery.codex32_backup_sets_do_not_mix') }}
             </div>
+            <div
+              class="text-caption text-negative q-mt-xs"
+              data-test="backup-earlier-shares-warning"
+            >
+              {{
+                $t('accountRecovery.codex32_earlier_settings_shares_invalid')
+              }}
+            </div>
           </q-card-section>
 
           <q-card-section

@@ -120,7 +120,7 @@ describe('the dispatch rule', () => {
   })
 
   it('carries a self-only type in a message a wallet addresses to itself, and in no other', () => {
-    expect([...SELF_ONLY_ITEM_TYPES]).toEqual(['wallet-sync'])
+    expect([...SELF_ONLY_ITEM_TYPES]).toEqual(['wallet-sync', 'swap-record'])
     for (const type of SELF_ONLY_ITEM_TYPES) {
       expect(NOT_CARRIED_ITEM_TYPES.has(type)).toBe(false)
       expect(itemFrameRule(type)).toEqual({ carried: 'no' })

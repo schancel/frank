@@ -1,261 +1,123 @@
 import { defineStore } from 'pinia'
-import {
-  cborMap,
-  decodeCanonical,
-  encodeCanonical,
-  fromHex,
-  toHex,
-} from '@frank/codec'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
-import { useChatStore } from './chats'
-
-export interface SwapRecord {
-  id: string
-  timestamp: number
-  chain: string
-  fromAsset: string
-  toAsset: string
-  fromAmount: string
-  toAmount: string
-  txHash: string
-  route: string
-  feeDisplay: string
-  destinationAddress?: string
-  status: 'confirmed' | 'pending' | 'failed'
-  cborPayload?: string
-}
-
-export const SWAP_STORAGE_KEY = 'frank_swap_history'
 
 /**
- * Encodes a swap record into canonical CBOR map bytes.
- * Keys:
- * 0: id (string)
- * 1: chain (string)
- * 2: fromAsset (string)
- * 3: toAsset (string)
- * 4: fromAmount (string)
- * 5: toAmount (string)
- * 6: txHash (string)
- * 7: route (string)
- * 8: feeDisplay (string)
- * 9: timestamp (uint)
- * 10: status (string)
- * 11: destinationAddress (string)
+ * The account's swap history, as its own notes say it.
+ *
+ * A swap is recorded by the wallet: the record is journaled with the swap's transaction and,
+ * once that is included, sent in a free note from the account to itself. This store is the fold
+ * of those notes as the mailbox delivers them (`handleSwapItem`, called for every `swap-record`
+ * item of a self message), so a reload or another device rebuilds the same list. On the device
+ * that made a swap the wallet's own journal supplies the same record at once.
+ *
+ * What a swap did is not part of its record: it is read from the chain by its transaction.
+ * `outcomes` only remembers what was read, so the chain is not asked again on every display.
+ * Both are caches in localStorage; losing them loses nothing.
  */
-export function encodeSwapRecord(record: SwapRecord): Uint8Array {
-  return encodeCanonical(
-    cborMap([
-      [0, record.id],
-      [1, record.chain.toLowerCase()],
-      [2, record.fromAsset],
-      [3, record.toAsset],
-      [4, record.fromAmount],
-      [5, record.toAmount],
-      [6, record.txHash],
-      [7, record.route],
-      [8, record.feeDisplay],
-      [9, BigInt(record.timestamp)],
-      [10, record.status],
-      [11, record.destinationAddress || ''],
-    ]),
-  )
+export type SwapRecord = Omit<SwapRecordItem, 'type'>
+
+export interface SwapOutcome {
+  /** `foreign`: the chain says the recorded transaction is not this account's swap on the
+   * recorded exchange. Such a record is never shown. */
+  status: 'confirmed' | 'failed' | 'foreign'
+  /** What arrived, in the output asset's smallest unit; absent when the receipt did not show it. */
+  amountOut?: string
+  /** Network fees charged, in the native coin's smallest unit. */
+  feeWei?: string
+  /** Why a failed swap failed, as a short code the view translates. */
+  reason?: string
 }
 
-export function decodeSwapRecord(bytes: Uint8Array): Partial<SwapRecord> {
-  const map = decodeCanonical(bytes) as Map<number | bigint, any>
-  return {
-    id: map.get(0n) ?? map.get(0),
-    chain: map.get(1n) ?? map.get(1),
-    fromAsset: map.get(2n) ?? map.get(2),
-    toAsset: map.get(3n) ?? map.get(3),
-    fromAmount: map.get(4n) ?? map.get(4),
-    toAmount: map.get(5n) ?? map.get(5),
-    txHash: map.get(6n) ?? map.get(6),
-    route: map.get(7n) ?? map.get(7),
-    feeDisplay: map.get(8n) ?? map.get(8),
-    timestamp: Number(map.get(9n) ?? map.get(9) ?? Date.now()),
-    status: (map.get(10n) ??
-      map.get(10) ??
-      'confirmed') as SwapRecord['status'],
-    destinationAddress: map.get(11n) ?? map.get(11) ?? undefined,
+export const SWAP_STORAGE_KEY = 'frank_swap_records'
+const MAX_RECORDS = 500
+
+interface Stored {
+  records: SwapRecord[]
+  outcomes: Record<string, SwapOutcome>
+}
+
+function load(): Stored {
+  try {
+    const raw =
+      typeof window !== 'undefined'
+        ? window.localStorage?.getItem(SWAP_STORAGE_KEY)
+        : null
+    const parsed = raw ? (JSON.parse(raw) as Partial<Stored>) : {}
+    return {
+      records: Array.isArray(parsed.records) ? parsed.records : [],
+      outcomes:
+        parsed.outcomes && typeof parsed.outcomes === 'object'
+          ? parsed.outcomes
+          : {},
+    }
+  } catch {
+    return { records: [], outcomes: {} }
   }
 }
 
 export const useSwapStore = defineStore('swaps', {
-  state: () => {
-    let initialSwaps: SwapRecord[] = []
-    if (typeof window !== 'undefined' && window.localStorage) {
-      try {
-        const raw = window.localStorage.getItem(SWAP_STORAGE_KEY)
-        if (raw) {
-          initialSwaps = JSON.parse(raw)
-        }
-      } catch {
-        // Ignore storage parse errors
-      }
-    }
-    return {
-      swaps: initialSwaps as SwapRecord[],
-    }
-  },
+  state: (): Stored => load(),
 
   getters: {
-    allSwaps: state => {
-      return [...state.swaps].sort((a, b) => b.timestamp - a.timestamp)
-    },
-
-    getSwapsForChain: state => (chainName: string) => {
-      const c = chainName.toLowerCase()
-      return state.swaps.filter(
-        s => s.chain === c || (c === 'solana' && s.chain.includes('solana')),
-      )
-    },
+    /**
+     * The swaps one account made on one canonical chain, newest first. The cache holds every
+     * account this device has signed in as; a list is always one account's, and with no account
+     * named it is empty.
+     */
+    getSwaps:
+      state =>
+      (chainIdentifier: string | undefined, account: string | undefined) =>
+        account
+          ? state.records
+              .filter(
+                record =>
+                  record.chainIdentifier === chainIdentifier &&
+                  record.account.toLowerCase() === account.toLowerCase() &&
+                  state.outcomes[record.swapId]?.status !== 'foreign',
+              )
+              .sort((a, b) => b.timestamp - a.timestamp)
+          : [],
   },
 
   actions: {
     saveToStorage() {
-      if (typeof window === 'undefined' || !window.localStorage) return
       try {
-        window.localStorage.setItem(
+        window.localStorage?.setItem(
           SWAP_STORAGE_KEY,
-          JSON.stringify(this.swaps.slice(0, 100)),
+          JSON.stringify({
+            records: this.records.slice(0, MAX_RECORDS),
+            outcomes: this.outcomes,
+          }),
         )
       } catch {
-        // Ignore write error
+        // A cache that cannot be written is rebuilt from the mailbox and the chain.
       }
     },
 
-    async recordSwap(
-      params: Omit<SwapRecord, 'id' | 'timestamp' | 'status'> & {
-        id?: string
-        timestamp?: number
-        status?: 'confirmed' | 'pending' | 'failed'
-      },
-    ): Promise<SwapRecord> {
-      const id =
-        params.id ||
-        'swap-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7)
-      const timestamp = params.timestamp || Date.now()
-      const status = params.status || 'confirmed'
-
-      const record: SwapRecord = {
-        id,
-        timestamp,
-        chain: params.chain.toLowerCase(),
-        fromAsset: params.fromAsset,
-        toAsset: params.toAsset,
-        fromAmount: params.fromAmount,
-        toAmount: params.toAmount,
-        txHash: params.txHash,
-        route: params.route,
-        feeDisplay: params.feeDisplay,
-        destinationAddress: params.destinationAddress,
-        status,
-      }
-
-      // Encode typed canonical CBOR payload
-      let cborBytes: Uint8Array | undefined
-      try {
-        cborBytes = encodeSwapRecord(record)
-        record.cborPayload = toHex(cborBytes)
-      } catch (err) {
-        console.warn('[useSwapStore] Failed to encode CBOR swap payload:', err)
-      }
-
-      // Prepend to reactive state (deduplicating by id and txHash)
-      const existingIdx = this.swaps.findIndex(
-        s => s.id === record.id || (s.txHash && s.txHash === record.txHash),
-      )
-      if (existingIdx >= 0) {
-        this.swaps[existingIdx] = record
-      } else {
-        this.swaps = [record, ...this.swaps.slice(0, 99)]
-      }
-      this.saveToStorage()
-
-      // Self-send typed CBOR swap message (NO text item, avoiding chat inbox pollution)
-      try {
-        const chats = useChatStore()
-        if (typeof chats?.selfSendMessage === 'function') {
-          const swapItem: SwapRecordItem = {
-            type: 'swap-record',
-            swapId: record.id,
-            chain: record.chain,
-            fromAsset: record.fromAsset,
-            toAsset: record.toAsset,
-            fromAmount: record.fromAmount,
-            toAmount: record.toAmount,
-            txHash: record.txHash,
-            route: record.route,
-            feeDisplay: record.feeDisplay,
-            destinationAddress: record.destinationAddress,
-            status: record.status,
-            timestamp: record.timestamp,
-            cborPayload: record.cborPayload,
-          }
-
-          await chats.selfSendMessage({
-            items: [swapItem],
-            type: 'swap',
-            meta: {
-              swapId: record.id,
-              chain: record.chain,
-              txHash: record.txHash,
-            },
-          })
-        }
-      } catch (err) {
-        console.warn('[useSwapStore] Failed to self-send typed CBOR swap:', err)
-      }
-
-      return record
-    },
-
-    /**
-     * Message handler for incoming or self-sent swap items.
-     * Extracts swap record, decodes CBOR if available, and reactively updates state.
-     */
+    /** One swap record, from a note to self or from this device's wallet journal. Idempotent. */
     handleSwapItem(item: SwapRecordItem): void {
-      if (!item || item.type !== 'swap-record') return
-
-      let record: SwapRecord = {
-        id: item.swapId,
-        timestamp: item.timestamp || Date.now(),
-        chain: (item.chain || 'solana').toLowerCase(),
-        fromAsset: item.fromAsset,
-        toAsset: item.toAsset,
-        fromAmount: item.fromAmount,
-        toAmount: item.toAmount,
-        txHash: item.txHash,
-        route: item.route,
-        feeDisplay: item.feeDisplay,
-        destinationAddress: item.destinationAddress,
-        status: item.status || 'confirmed',
-        cborPayload: item.cborPayload,
-      }
-
-      // If cborPayload is present, decode to ensure consistency
-      if (item.cborPayload) {
-        try {
-          const decoded = decodeSwapRecord(fromHex(item.cborPayload))
-          record = { ...record, ...decoded }
-        } catch {
-          // Keep raw fields if decode fails
-        }
-      }
-
-      const existingIdx = this.swaps.findIndex(
-        s => s.id === record.id || (s.txHash && s.txHash === record.txHash),
+      if (
+        !item ||
+        item.type !== 'swap-record' ||
+        !item.swapId ||
+        typeof item.account !== 'string'
       )
-      if (existingIdx >= 0) {
-        this.swaps[existingIdx] = {
-          ...this.swaps[existingIdx],
+        return
+      const { type: _type, ...record } = item
+      const index = this.records.findIndex(r => r.swapId === record.swapId)
+      if (index >= 0)
+        // The same swap again: keep the time it was first seen, so the order is stable.
+        this.records[index] = {
           ...record,
+          timestamp: Math.min(this.records[index].timestamp, record.timestamp),
         }
-      } else {
-        this.swaps = [record, ...this.swaps.slice(0, 99)]
-      }
+      else this.records = [record, ...this.records]
+      this.saveToStorage()
+    },
+
+    /** Remembers what the chain said a swap did. */
+    cacheOutcome(swapId: string, outcome: SwapOutcome): void {
+      this.outcomes = { ...this.outcomes, [swapId]: outcome }
       this.saveToStorage()
     },
   },

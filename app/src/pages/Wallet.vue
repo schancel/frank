@@ -281,7 +281,14 @@
                               network: operation.chainIdentifier,
                             })
                           }}
-                          — {{ $t('nativeOperation.viewTransfer') }}
+                          —
+                          {{
+                            $t(
+                              operation.kind === 'contract'
+                                ? 'nativeOperation.contractCall'
+                                : 'nativeOperation.viewTransfer',
+                            )
+                          }}
                         </summary>
                         <p>{{ operation.operationId }}</p>
                         <p>
@@ -422,7 +429,55 @@
                             </q-item-label>
                           </q-item-section>
                         </q-item>
+                        <!-- ERC-20s on the same account, read from the chain. -->
+                        <q-item
+                          v-for="token in evmTokens"
+                          :key="token.address"
+                          class="q-px-none q-py-sm"
+                          :data-testid="`wallet-token-item-${token.symbol.toLowerCase()}`"
+                        >
+                          <q-item-section avatar top>
+                            <q-avatar
+                              size="36px"
+                              color="deep-purple"
+                              text-color="white"
+                              icon="generating_tokens"
+                            />
+                          </q-item-section>
+                          <q-item-section>
+                            <q-item-label class="text-weight-bold">
+                              {{ token.symbol }}
+                              <span
+                                class="text-caption text-grey-7 font-weight-normal q-ml-xs"
+                              >
+                                · {{ token.name }}
+                              </span>
+                            </q-item-label>
+                            <q-item-label caption class="ellipsis text-grey-6">
+                              {{ $t('walletPanel.tokenContract') }}:
+                              {{ token.address.slice(0, 8) }}...{{
+                                token.address.slice(-6)
+                              }}
+                            </q-item-label>
+                          </q-item-section>
+                          <q-item-section side>
+                            <q-item-label
+                              class="text-weight-bolder text-right"
+                              :title="token.exact"
+                            >
+                              {{ token.balance }}
+                            </q-item-label>
+                          </q-item-section>
+                        </q-item>
                       </q-list>
+                      <p
+                        v-if="evmTokenStatus === 'unavailable'"
+                        role="status"
+                        class="text-caption text-grey-7 q-mt-sm q-mb-none"
+                        data-testid="wallet-evm-token-status"
+                      >
+                        {{ $t('walletPanel.tokenBalancesUnavailable') }}
+                      </p>
                     </q-card>
                   </div>
 
@@ -480,7 +535,8 @@
                           <q-item-section>
                             <q-item-label class="text-weight-bold">
                               {{ swap.fromAmount }} {{ swap.fromAsset }} →
-                              {{ swap.toAmount }} {{ swap.toAsset }}
+                              {{ swap.status === 'pending' ? '≥' : ''
+                              }}{{ swap.toAmount }} {{ swap.toAsset }}
                             </q-item-label>
                             <q-item-label caption class="text-grey-7">
                               {{ swap.route }} ·
@@ -488,8 +544,19 @@
                             </q-item-label>
                           </q-item-section>
                           <q-item-section side>
-                            <q-badge color="positive" outline class="text-bold">
-                              {{ swap.status.toUpperCase() }}
+                            <q-badge
+                              :color="
+                                swap.status === 'confirmed'
+                                  ? 'positive'
+                                  : swap.status === 'pending'
+                                  ? 'warning'
+                                  : 'negative'
+                              "
+                              outline
+                              class="text-bold"
+                              data-testid="wallet-activity-status"
+                            >
+                              {{ $t(`swap.status.${swap.status}`) }}
                             </q-badge>
                             <a
                               v-if="getExplorerLink(swap)"
@@ -509,7 +576,10 @@
                 </q-tab-panel>
 
                 <q-tab-panel name="swap" class="q-pa-none">
-                  <d-app-swap-view :selected-wallet="selectedWallet" />
+                  <d-app-swap-view
+                    :selected-wallet="selectedWallet"
+                    :is-testnet="isTestnet"
+                  />
                 </q-tab-panel>
 
                 <q-tab-panel name="parity" class="q-pa-none">
@@ -557,9 +627,9 @@ import {
 import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useOracleFeed } from 'src/composables/useOracleFeed'
-import { useSwapHistory } from 'src/composables/useSwapHistory'
+import { useSwapActivity, type SwapActivityRow } from 'src/swap/useSwapActivity'
+import { useEvmTokenBalances } from 'src/composables/useEvmTokenBalances'
 import { getExplorerUrl } from 'src/utils/explorer'
-import type { SwapRecord } from 'src/stores/swaps'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import { walletSupport } from 'src/utils/wallet-support'
@@ -593,7 +663,7 @@ export default defineComponent({
     const oracle = useSafeOracleStore()
     useOracleFeed()
     const showAvuDialog = ref(false)
-    const activeTab = ref<'balance' | 'parity'>('balance')
+    const activeTab = ref<'balance' | 'swap' | 'parity'>('balance')
 
     const selectedWallet = computed<string>(() => {
       const parts = (route?.path || '').toLowerCase().split('/').filter(Boolean)
@@ -698,10 +768,19 @@ export default defineComponent({
       )
     })
 
-    const swapHistory = useSwapHistory()
-    const recentSwaps = computed(() => {
-      return swapHistory.getSwapsForChain(selectedWallet.value).value
+    const {
+      rows: evmTokens,
+      status: evmTokenStatus,
+      refresh: refreshEvmTokens,
+    } = useEvmTokenBalances(sendChainIdentifier)
+    // Coming back from the swap tab, the token balances are read again at once.
+    watch(activeTab, tab => {
+      if (tab === 'balance') void refreshEvmTokens()
     })
+
+    // The account's swaps on this network, as its own notes record them, with what each did
+    // read from the chain.
+    const { rows: recentSwaps } = useSwapActivity(sendChainIdentifier)
 
     const formatSwapTime = (timestamp: number) => {
       try {
@@ -715,9 +794,10 @@ export default defineComponent({
       }
     }
 
-    const getExplorerLink = (swap: SwapRecord) => {
+    const getExplorerLink = (swap: SwapActivityRow) => {
       if (!swap.txHash) return undefined
-      return getExplorerUrl(swap.txHash, swap.chain, {
+      // A swap that names its network links to that network's explorer.
+      return getExplorerUrl(swap.txHash, swap.chainIdentifier, {
         isTestnet: isTestnet.value,
       })
     }
@@ -857,6 +937,8 @@ export default defineComponent({
         openPage(router, '/wallet')
       },
       activeTokens,
+      evmTokens,
+      evmTokenStatus,
       tokenStatusKey,
       recentSwaps,
       formatSwapTime,

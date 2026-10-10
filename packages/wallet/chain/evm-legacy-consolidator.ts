@@ -11,6 +11,8 @@ import {
 import {
   getAddress,
   hexlify,
+  keccak256,
+  toUtf8Bytes,
   resolveAddress,
   Transaction,
   type Provider,
@@ -25,9 +27,13 @@ import type {
 } from './chain-wallet'
 import { NativeTransactionSubmissionError } from './chain-wallet'
 import type { EvmTransactionBuilder } from './evm-transaction-builder'
-import type { WalletSyncItem } from '@frank/cashweb/types/messages'
+import type {
+  SwapRecordItem,
+  WalletSyncItem,
+} from '@frank/cashweb/types/messages'
 import {
   EvmNativeOperationJournal,
+  type EvmContractCallRecord,
   nativeMaximumFee,
   type EvmNativeSource,
   type EvmNativeMemberPlan,
@@ -41,6 +47,28 @@ export interface SendLegacyParams {
   value: bigint
   onProgress?: (progress: LegacySendProgress) => void
   onSigned?: (signed: ChainTransaction) => Promise<void>
+}
+/** One call to a contract from the main account, recorded and recovered like a native send. */
+export interface ContractCallParams {
+  to: ChainAddress
+  /** ABI-encoded calldata. A call without calldata is a transfer: use `sendNative`. */
+  data: string
+  /** Native value sent with the call; zero for a call that only moves tokens. */
+  value: bigint
+  /** The gas limit the caller quoted to the user. Estimated here when omitted. */
+  gasLimit?: bigint
+  /**
+   * What this call is (a swap's record). It is written to the journal with the plan, so before
+   * anything is signed or broadcast, and once the call is included the sync event carries it:
+   * composition sends it in the account's note to itself. The caller records nothing itself.
+   */
+  record?: EvmContractCallRecord
+  /** After signing and before broadcast, so the caller can record the exact operation first. */
+  onSigned?: (signed: ContractCallResult) => Promise<void>
+}
+export interface ContractCallResult {
+  operationId: string
+  txHash: string
 }
 export interface EvmLegacyConsolidatorConfig {
   provider: Provider
@@ -73,11 +101,54 @@ export interface EvmLegacyConsolidatorConfig {
    * wires none, nothing is transported: a locally recorded member stays not sync-applied and the
    * send is not failed for it. A transport that rejects does not fail anything either: the member
    * stays not sync-applied and a later flush sends it again. */
-  onSyncTransaction?: (item: WalletSyncItem) => Promise<void>
+  onSyncTransaction?: (
+    item: WalletSyncItem,
+    /** The swap this transaction made, when its contract call carried a record. */
+    record?: SwapRecordItem,
+  ) => Promise<void>
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
   now?: () => number
 }
+/** The id every frontend of the account derives for a swap: from its chain and transaction. */
+export function swapRecordId(chainIdentifier: string, txHash: string): string {
+  return keccak256(
+    toUtf8Bytes(`frank-swap:${chainIdentifier}:${txHash.toLowerCase()}`),
+  ).slice(2)
+}
+
+/** The swap-record item of an included contract call that carried a record, else undefined. */
+export function swapRecordItemOf(
+  row: EvmNativeOperation,
+): SwapRecordItem | undefined {
+  const signed = row.members[0]?.signed
+  const { record } = row
+  if (row.kind !== 'contract' || !record || !signed) return undefined
+  const asset = (a: EvmContractCallRecord['assetIn']) => ({
+    symbol: a.symbol,
+    ...(a.address === null ? {} : { address: a.address }),
+    decimals: a.decimals,
+  })
+  const route = JSON.stringify(record.route)
+  return {
+    type: 'swap-record',
+    swapId: swapRecordId(row.binding.chainIdentifier, signed.transactionHash),
+    chainIdentifier: row.binding.chainIdentifier,
+    venueId: record.venueId,
+    txHash: signed.transactionHash,
+    account: record.account,
+    assetIn: asset(record.assetIn),
+    amountIn: record.amountIn,
+    assetOut: asset(record.assetOut),
+    quotedAmountOut: record.quotedAmountOut,
+    minimumAmountOut: record.minimumAmountOut,
+    interfaceFee: record.interfaceFeeAmount,
+    networkFee: record.networkFeeWei,
+    ...(route !== undefined && route.length <= 1024 ? { route } : {}),
+    timestamp: Date.now(),
+  }
+}
+
 export class EvmNativeOperationPendingError extends NativeTransactionSubmissionError {
   constructor(readonly operation: EvmNativeOperation, reason: unknown) {
     const signed = operation.members.flatMap(m =>
@@ -431,6 +502,8 @@ export class EvmLegacyConsolidator {
     params: SendLegacyParams,
     kind: 'native' | 'legacy',
     lifetime?: WalletOperationLifetime,
+    /** An address that must not pay: the account a consolidation is funding. */
+    excludedSource?: string,
   ): Promise<EvmNativeOperation> {
     const recipient = getAddress(params.recipient.raw).toLowerCase()
     if (params.value <= 0n)
@@ -440,7 +513,9 @@ export class EvmLegacyConsolidator {
       this.config.transactionBuilder.supportsNativeConsolidation !== true
     )
       throw new Error('Builder does not support native consolidation')
-    const accounts = await this.sources(lifetime)
+    const accounts = (await this.sources(lifetime)).filter(
+      account => account.source.address !== excludedSource,
+    )
     const fee = await this.config.provider.getFeeData()
     const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
     if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
@@ -611,7 +686,9 @@ export class EvmLegacyConsolidator {
         } catch (reason) {
           throw new EvmNativeOperationPendingError(journal.get(id), reason)
         }
-        if (row.kind === 'native') return journal.get(id)
+        // A transfer or a contract call is one transaction: once handed to the network the
+        // journal holds it, and the caller watches for its inclusion.
+        if (row.kind !== 'legacy') return journal.get(id)
         await this.observe(id, i, lifetime)
         row = journal.get(id)
         member = row.members[i]!
@@ -662,11 +739,7 @@ export class EvmLegacyConsolidator {
         })
       }
       const stillHeld = (hold: RememberedHold | undefined, basis: string) => {
-        if (
-          !hold ||
-          hold.basis !== basis ||
-          hold.skipped >= HELD_RETRY_PASSES
-        )
+        if (!hold || hold.basis !== basis || hold.skipped >= HELD_RETRY_PASSES)
           return false
         hold.skipped++
         return true
@@ -752,16 +825,41 @@ export class EvmLegacyConsolidator {
       /* Left as it was: the next wallet open cancels it. */
     }
   }
+  /** Ends a contract call that was signed and never exposed. Never throws. */
+  private async discardIfUnexposed(
+    operationId: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    try {
+      const row = this.config.journal.get(operationId)
+      if (
+        row.kind === 'contract' &&
+        !row.cancelled &&
+        row.members.some(m => m.signed) &&
+        !row.members.some(m => m.exposed)
+      )
+        await this.journal(lifetime).discardUnexposed(operationId)
+    } catch {
+      /* Left as it was: the next wallet open ends it. */
+    }
+  }
   /**
    * Wallet open: cancels every operation no member of which was ever signed or exposed (a crash
-   * or failure between `prepare` and the first signature). Local only: it reads and writes the
+   * or failure between `prepare` and the first signature), and ends every contract call that was
+   * signed but never exposed (a crash between the signature and the broadcast: its record may
+   * not have been kept, so it must not be sent later). Local only: it reads and writes the
    * journal, makes no network request, asks for no signature, and never throws.
    */
   cancelUnsignedOperations(lifetime?: WalletOperationLifetime): Promise<void> {
     return this.run(async () => {
       try {
-        for (const row of this.config.journal.list())
-          await this.cancelIfNeverSigned(() => row, lifetime)
+        for (const row of this.config.journal.list()) {
+          await this.discardIfUnexposed(row.operationId, lifetime)
+          await this.cancelIfNeverSigned(
+            () => this.config.journal.get(row.operationId),
+            lifetime,
+          )
+        }
       } catch {
         /* An unreadable journal cancels nothing. */
       }
@@ -1123,24 +1221,31 @@ export class EvmLegacyConsolidator {
           // and it stays not sync-applied; that is an outcome, not a failure of the send.
           if (!this.config.onSyncTransaction) continue
           const tx = Transaction.from(member.signed!.rawTransaction)
-          this.transport(id, i, {
-            type: 'wallet-sync',
-            direction: 'out',
-            chainIdentifier: journal.binding.chainIdentifier,
-            txHash: member.signed!.transactionHash,
-            rawTx: member.signed!.rawTransaction,
-            spentInputs: [
-              {
-                address: member.source.address,
-                nonce: tx.nonce,
-                valueWei: (
-                  tx.value + BigInt(member.observation.feeWei)
-                ).toString(),
-              },
-            ],
-            createdOutputs: [{ address: tx.to!, valueWei: tx.value.toString() }],
-            timestamp: Date.now(),
-          })
+          this.transport(
+            id,
+            i,
+            {
+              type: 'wallet-sync',
+              direction: 'out',
+              chainIdentifier: journal.binding.chainIdentifier,
+              txHash: member.signed!.transactionHash,
+              rawTx: member.signed!.rawTransaction,
+              spentInputs: [
+                {
+                  address: member.source.address,
+                  nonce: tx.nonce,
+                  valueWei: (
+                    tx.value + BigInt(member.observation.feeWei)
+                  ).toString(),
+                },
+              ],
+              createdOutputs: [
+                { address: tx.to!, valueWei: tx.value.toString() },
+              ],
+              timestamp: Date.now(),
+            },
+            swapRecordItemOf(row),
+          )
         }
       }
     if (unapplied !== undefined)
@@ -1157,6 +1262,7 @@ export class EvmLegacyConsolidator {
     operationId: string,
     memberIndex: number,
     item: WalletSyncItem,
+    record?: SwapRecordItem,
   ): void {
     const key = `${operationId}:${memberIndex}`
     if (this.transporting.has(key)) return
@@ -1165,7 +1271,7 @@ export class EvmLegacyConsolidator {
       this.journal(lifetime).markSyncApplied(operationId, memberIndex)
     this.transportTail = this.transportTail
       .then(async () => {
-        await this.config.onSyncTransaction!(item)
+        await this.config.onSyncTransaction!(item, record)
         await (this.config.runLifetime
           ? this.config.runLifetime(lifetime => mark(lifetime))
           : mark())
@@ -1258,6 +1364,248 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<LegacySendResult> {
     return this.legacyResult(await this.resumeOperation(operationId, lifetime))
+  }
+  private contractResendAt = new Map<string, { at: number; waitMs: number }>()
+  /**
+   * Drives an exposed contract call that is not yet in a block. Each due call is first looked
+   * at once (`observe`: recorded `missing` when the node knows neither the transaction nor a
+   * receipt, `pending` when it holds it, included when it landed). One recorded `missing` is
+   * then handed back to the network: the same signed bytes, never a new transaction. Without
+   * this a call whose broadcast was lost, or that the node dropped, would hold its account's
+   * nonce with nothing driving it to an end.
+   *
+   * Bounds: one invocation handles at most `REOBSERVE_MAX_PROBES` calls, and a given call is
+   * handled at most once per wait, which starts at `REOBSERVE_MIN_INTERVAL_MS` and doubles to
+   * `REOBSERVE_MAX_BACKOFF_MS`. There is no limit on how many times in total a call is re-sent:
+   * it is re-sent, ever more rarely, until the chain shows it. Never rejects.
+   */
+  async resendMissingContractCalls(): Promise<void> {
+    const pass = async (lifetime?: WalletOperationLifetime) => {
+      const now = this.now()
+      let handled = 0
+      for (const listed of this.config.journal.list()) {
+        if (this.reobserveStopped || handled >= REOBSERVE_MAX_PROBES) return
+        const key = listed.operationId
+        const unresolved = (row: EvmNativeOperation) =>
+          row.kind === 'contract' &&
+          !row.cancelled &&
+          row.members[0]!.signed !== null &&
+          row.members[0]!.exposed &&
+          !('transactionHash' in row.members[0]!.observation)
+        if (!unresolved(listed)) {
+          this.contractResendAt.delete(key)
+          continue
+        }
+        const last = this.contractResendAt.get(key)
+        if (last && now >= last.at && now - last.at < last.waitMs) continue
+        handled++
+        this.contractResendAt.set(key, {
+          at: now,
+          waitMs: last
+            ? Math.min(last.waitMs * 2, REOBSERVE_MAX_BACKOFF_MS)
+            : REOBSERVE_MIN_INTERVAL_MS,
+        })
+        await this.observe(key, 0, lifetime, () => !this.reobserveStopped)
+        const member = this.config.journal.get(key).members[0]!
+        if (member.observation.state === 'missing' && member.signed)
+          await this.config.provider
+            .broadcastTransaction(member.signed.rawTransaction)
+            .catch(() => undefined)
+      }
+    }
+    try {
+      if (this.reobserveStopped) return
+      await (this.config.runLifetime ? this.config.runLifetime(pass) : pass())
+    } catch {
+      /* A closed journal or an ended lifetime ends the pass. */
+    }
+  }
+  /** Contract calls that were broadcast and are not yet seen in a block, oldest first. */
+  unresolvedContractCalls(): ContractCallResult[] {
+    return this.listOperations().flatMap(row =>
+      row.kind === 'contract' &&
+      !row.cancelled &&
+      row.members[0]!.signed &&
+      // Only a call that was handed to the network: one that never was is ended, not resumed.
+      row.members[0]!.exposed &&
+      !('transactionHash' in row.members[0]!.observation)
+        ? [
+            {
+              operationId: row.operationId,
+              txHash: row.members[0]!.signed.transactionHash,
+            },
+          ]
+        : [],
+    )
+  }
+  /** The main account: it makes contract calls and holds the tokens they move. */
+  private async mainSource(): Promise<EvmNativeSource> {
+    const main = (await this.config.getSources()).find(
+      source => source.kind === 'main',
+    )
+    if (!main) throw new Error('Wallet has no main account')
+    return main
+  }
+  /**
+   * Native value a contract call can use: what the main account can spend now, and what the
+   * wallet's other accounts could move into it first (`fundMainAccount`). `mainBusy` is true
+   * while an earlier transaction from the main account has not been seen included.
+   */
+  async contractCallFunds(lifetime?: WalletOperationLifetime): Promise<{
+    mainAddress: string
+    mainBalance: bigint
+    otherBalance: bigint
+    mainBusy: boolean
+  }> {
+    if (this.config.inputAdmission && !lifetime) {
+      if (!this.config.runLifetime)
+        throw new Error('Native lifetime owner unavailable')
+      return this.config.runLifetime(token => this.contractCallFunds(token))
+    }
+    const main = await this.mainSource()
+    const accounts = await this.sources(lifetime)
+    const own = accounts.find(a => a.source.address === main.address)
+    const mainAccount = own?.account ?? (await this.account(main.address))
+    return {
+      mainAddress: main.address,
+      mainBalance: BigInt(mainAccount.balanceWei),
+      otherBalance: accounts
+        .filter(a => a.source.address !== main.address)
+        .reduce((sum, a) => sum + a.spendableValue, 0n),
+      mainBusy: !this.journal(lifetime).canSelect(
+        main.address,
+        mainAccount.nonce,
+      ),
+    }
+  }
+  private async planContractCall(
+    params: ContractCallParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<EvmNativeOperation> {
+    const to = getAddress(params.to.raw).toLowerCase()
+    if (params.value < 0n)
+      throw new RangeError('Call value must not be negative')
+    if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(params.data))
+      throw new Error('A contract call needs calldata')
+    if (this.config.transactionBuilder.supportsNativeConsolidation !== true)
+      throw new Error('Contract calls are unavailable on this network')
+    const main = await this.mainSource()
+    const source = (await this.sources(lifetime)).find(
+      a => a.source.address === main.address,
+    )
+    // Absent when it holds nothing, or while an earlier transaction of its own is unresolved.
+    if (!source) throw new RangeError('Insufficient unreserved native funds')
+    const fee = await this.config.provider.getFeeData()
+    const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
+    if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
+    const maxPriorityFeePerGas = fee.maxPriorityFeePerGas ?? maxFeePerGas
+    if (maxPriorityFeePerGas > maxFeePerGas)
+      throw new Error('Invalid native fee quote')
+    const data = params.data.toLowerCase()
+    const gasLimit =
+      params.gasLimit ??
+      ((await this.config.provider.estimateGas({
+        from: source.source.address,
+        to,
+        data,
+        value: params.value,
+      })) *
+        115n) /
+        100n
+    if (
+      BigInt(source.account.balanceWei) <
+      params.value + gasLimit * maxFeePerGas
+    )
+      throw new RangeError('Insufficient unreserved native funds')
+    return this.journal(lifetime).prepare({
+      kind: 'contract',
+      recipient: to,
+      intendedValueWei: params.value.toString(),
+      ...(params.record ? { record: params.record } : {}),
+      members: [
+        {
+          source: source.source,
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            to,
+            chainId: BigInt(this.config.journal.binding.nativeChainId),
+            nonce: source.account.nonce,
+            value: params.value,
+            data,
+            gasLimit,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
+          }).unsignedSerialized,
+          dependencies: [],
+        },
+      ],
+    })
+  }
+  /**
+   * Signs and submits one contract call from the main account through the same journal a native
+   * send uses: the operation is written before it is signed, the signed bytes before they are
+   * broadcast, and `resumeOperation` re-submits those same bytes. It returns once the call is
+   * handed to the network; inclusion (or a revert) is observed afterwards.
+   */
+  sendContractCall(
+    params: ContractCallParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<ContractCallResult> {
+    params = { ...params, to: { ...params.to } }
+    return this.runWithLocalPass(lifetime, async planned => {
+      const row = await this.planContractCall(params, lifetime)
+      planned(row.operationId)
+      let done: EvmNativeOperation
+      try {
+        done = await this.execute(
+          row.operationId,
+          signed =>
+            params.onSigned?.({
+              operationId: row.operationId,
+              txHash: signed.txHash,
+            }) ?? Promise.resolve(),
+          lifetime,
+        )
+      } catch (error) {
+        // Signed but never handed to the network (the caller could not record it, or signing
+        // itself stopped): the call is ended here, so it can never be sent later without its
+        // record, and the account is free at once.
+        await this.discardIfUnexposed(row.operationId, lifetime)
+        throw error
+      }
+      return {
+        operationId: row.operationId,
+        txHash: done.members[0]!.signed!.transactionHash,
+      }
+    })
+  }
+  /**
+   * Moves `value` from the wallet's other accounts into the main account, as one recorded
+   * consolidation, so a contract call that needs more than the main account holds can follow.
+   * The main account never pays into itself.
+   */
+  fundMainAccount(
+    params: Omit<SendLegacyParams, 'recipient'>,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<LegacySendResult> {
+    return this.runWithLocalPass(lifetime, async planned => {
+      const main = await this.mainSource()
+      params.onProgress?.({ status: { stage: 'planning' } })
+      const row = await this.plan(
+        { ...params, recipient: { raw: main.address } },
+        'legacy',
+        lifetime,
+        main.address,
+      )
+      planned(row.operationId)
+      const result = this.legacyResult(
+        await this.execute(row.operationId, params.onSigned, lifetime),
+      )
+      params.onProgress?.({
+        status: { stage: 'confirmed', txHash: result.txHash },
+      })
+      return result
+    })
   }
   async estimateLegacyFee(
     _recipient: ChainAddress,

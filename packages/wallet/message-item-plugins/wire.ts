@@ -70,8 +70,6 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  *   `applyWalletSyncItem` with wallet and chain affinity checked. Nothing sends one, and the app
  *   refuses a whole received batch that holds one, so a single such item from any peer would stop
  *   its inbox.
- * - `swap-record`: the app writes a received one into the local swap history without checking who
- *   sent it.
  * - `device-claim`: the app sends one to itself on every leadership claim; carrying it would turn
  *   each claim into a paid message.
  * - `p2pkh`: a UTXO-era item whose self-reported amount counts toward a conversation's value.
@@ -85,7 +83,6 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  */
 export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
   'payment-transfer',
-  'swap-record',
   'device-claim',
   'p2pkh',
   'swap-offer',
@@ -101,6 +98,10 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   before anything changes; it is never shown as a chat message. This wallet does not send one
  *   after a native transfer today (a note is a paid message); the rule is what makes receiving
  *   one safe.
+ * - `swap-record`: the record of a swap this account made, which rides in the same note as the
+ *   swap's `wallet-sync` item. A host adds it to the account's swap history; it carries no
+ *   outcome, which is read from the chain. Because it is carried only here, a record another
+ *   person sends is never written into that history.
  *
  * Sending one to anyone else is refused before anything is paid. One that arrives in a message
  * whose authenticated sender is not the receiving wallet's own identity is kept as an unsupported
@@ -108,7 +109,10 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  * own spending. The caller says who the message is between ({@link ItemAddressing}); this module
  * does not know identities.
  */
-export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set(['wallet-sync'])
+export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set([
+  'wallet-sync',
+  'swap-record',
+])
 
 /** Who one message is between, as far as the item rule needs to know. */
 export interface ItemAddressing {

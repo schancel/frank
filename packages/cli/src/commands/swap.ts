@@ -1,415 +1,262 @@
 /**
- * dApp Swap and Plugin Commands for Signet CLI (Tickets #1154, #1155).
+ * `signet swap quote` and `signet swap build`.
  *
- * Provides:
- * - signet swap plugins: List registered dApp plugins (Uniswap Universal Router, Jupiter Aggregator, Prediction Escrow)
- * - signet swap quote: Fetch swap quote with exact 8.75 bps (0.0875%) protocol fee breakdown
- * - signet swap build: Construct swap transaction settling into a recoverable HD change address (m/44'/60'/0'/1/i or m/44'/501'/0'/1'/i')
+ * Both ask the chain. The quote is the swap deployment's quoter contract answering for the exact
+ * amount, the gas figure is `eth_estimateGas` on the built transaction, and nothing is printed
+ * when the node cannot be reached. Neither command signs or sends anything; the app's swap view
+ * executes swaps through the wallet. An interface fee is printed when the venue has one; none
+ * does today.
  */
 
-import { formatUnits, parseUnits } from 'ethers'
+import { JsonRpcProvider, formatUnits, getAddress, parseUnits } from "ethers";
 import {
-  createStandardPluginRegistry,
-  DEFAULT_PROTOCOL_FEE_BPS,
-  type DAppPlugin,
-  type DAppQuoteResponse,
-  KNOWN_EVM_TOKENS,
-  KNOWN_SOLANA_TOKENS,
-  UniswapDAppPlugin,
-} from '@frank/wallet/plugins'
-import { EvmChangeKeyring } from '@frank/wallet/secp256k1-hd-keyring'
+  getEvmDexDeployment,
+  listEvmDexDeploymentChains,
+  listEvmSwapVenues,
+  type UniswapV4Deployment,
+} from "@frank/wallet/chain/dex-deployments";
+import { PROTOCOL_CHAINS } from "@frank/wallet/chain/chains-registry";
 import {
-  SolanaChangeKeyring,
-  SolanaHdKeyring,
-} from '@frank/wallet/ed25519-hd-keyring'
+  estimateCallFee,
+  fetchSwapQuote,
+  planSwap,
+  type SwapChainReader,
+} from "@frank/wallet/swap/evm-swap";
+import { findToken, minimumOutput } from "@frank/wallet/swap/uniswap-v4";
 
-import { loadIdentity, resolveDataDir } from '../config'
-import { outputError, outputResult } from '../util'
-
-export interface SwapPluginsOptions {
-  json?: boolean
-}
+import { outputError, outputResult } from "../util";
 
 export interface SwapQuoteOptions {
-  plugin?: string
-  feeBps?: string | number
-  slippageBps?: string | number
-  json?: boolean
+  chain?: string;
+  /** Which of the chain's venues; its first when omitted. */
+  venue?: string;
+  rpcUrl?: string;
+  slippage?: string | number;
+  /** `build` only: the account that would send the swap. */
+  account?: string;
+  json?: boolean;
 }
 
-export interface SwapBuildOptions {
-  plugin?: string
-  destination?: string
-  changeIndex?: string | number
-  feeBps?: string | number
-  slippageBps?: string | number
-  dataDir?: string
-  password?: string
-  json?: boolean
+const DEFAULT_SLIPPAGE_BPS = 50;
+
+interface SwapTarget {
+  chainIdentifier: string;
+  deployment: UniswapV4Deployment;
+  reader: SwapChainReader;
 }
 
-function resolveTokenDecimals(
-  tokenSymbol: string,
-  chainType: 'evm' | 'solana',
-): number {
-  const upper = tokenSymbol.toUpperCase()
-  if (chainType === 'solana') {
-    if (KNOWN_SOLANA_TOKENS[upper]) return KNOWN_SOLANA_TOKENS[upper].decimals
-    return 6
-  } else {
-    if (KNOWN_EVM_TOKENS[upper]) return KNOWN_EVM_TOKENS[upper].decimals
-    return 18
-  }
+/** Tests replace this to answer the node calls; production always builds a JSON-RPC provider. */
+export const swapNetwork = {
+  async open(options: SwapQuoteOptions): Promise<SwapTarget> {
+    const chainIdentifier = options.chain;
+    if (!chainIdentifier)
+      throw new Error(
+        `Name the chain with --chain. Swaps are available on: ${listEvmDexDeploymentChains().join(
+          ", "
+        )}`
+      );
+    const entry = PROTOCOL_CHAINS[chainIdentifier];
+    const deployment = getEvmDexDeployment(chainIdentifier, options.venue);
+    if (entry && !deployment && options.venue)
+      throw new Error(
+        `${chainIdentifier} has no venue "${options.venue}". Venues: ${
+          listEvmSwapVenues(chainIdentifier)
+            .map((venue) => venue.id)
+            .join(", ") || "none"
+        }`
+      );
+    if (!entry || !deployment)
+      throw new Error(
+        `No swap is available on ${chainIdentifier}. Available: ${listEvmDexDeploymentChains().join(
+          ", "
+        )}`
+      );
+    const url = options.rpcUrl ?? process.env.FRANK_SWAP_RPC_URL;
+    if (!url)
+      throw new Error(
+        "A swap quote is read from the chain: pass --rpc-url (or set FRANK_SWAP_RPC_URL)"
+      );
+    const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 });
+    const { chainId } = await provider.getNetwork();
+    if (chainId.toString() !== String(entry.nativeChainId))
+      throw new Error(
+        `The RPC endpoint is chain ${chainId}, not ${chainIdentifier}`
+      );
+    return { chainIdentifier, deployment, reader: provider };
+  },
+};
+
+function slippageOf(options: SwapQuoteOptions): number {
+  const bps =
+    options.slippage === undefined
+      ? DEFAULT_SLIPPAGE_BPS
+      : Number(options.slippage);
+  if (!Number.isInteger(bps))
+    throw new Error("--slippage is whole basis points");
+  return bps;
 }
 
-function selectPluginForTokens(
+async function quoteFor(
+  target: SwapTarget,
   fromAsset: string,
   toAsset: string,
-  requestedPluginId?: string,
-): DAppPlugin {
-  const registry = createStandardPluginRegistry()
-  if (requestedPluginId) {
-    return registry.require(requestedPluginId)
-  }
-
-  const solanaSymbols = new Set(['SOL', 'WSOL', 'JUP'])
-  const fromUpper = fromAsset.toUpperCase()
-  const toUpper = toAsset.toUpperCase()
-
-  if (solanaSymbols.has(fromUpper) || solanaSymbols.has(toUpper)) {
-    return registry.require('jupiter-aggregator')
-  }
-
-  return registry.require('uniswap-universal-router')
+  amount: string
+) {
+  const tokenIn = findToken(target.deployment, fromAsset);
+  const tokenOut = findToken(target.deployment, toAsset);
+  if (!tokenIn || !tokenOut)
+    throw new Error(
+      `Unknown asset. ${
+        target.chainIdentifier
+      } swaps: ${target.deployment.tokens
+        .map((token) => token.symbol)
+        .join(", ")}`
+    );
+  const quote = await fetchSwapQuote(target.reader, target.deployment, {
+    tokenIn,
+    tokenOut,
+    amountIn: parseUnits(amount.trim(), tokenIn.decimals),
+  });
+  return { tokenIn, tokenOut, quote };
 }
 
-/**
- * Lists available dApp plugins in the plugin registry.
- */
-export async function swapPluginsCommand(
-  options: SwapPluginsOptions = {},
-): Promise<void> {
-  try {
-    const registry = createStandardPluginRegistry()
-    const plugins = registry.list()
+const percent = (ppm: number) => `${(ppm / 10_000).toFixed(4)}%`;
 
-    const result = {
-      count: plugins.length,
-      plugins: plugins.map(p => p.getMetadata()),
-    }
-
-    outputResult(
-      result,
-      () => {
-        console.log(`Registered dApp Plugins (${plugins.length}):`)
-        console.log(
-          '-------------------------------------------------------------------------------------------------',
-        )
-        console.log(
-          `${'ID'.padEnd(28)} ${'NAME'.padEnd(28)} ${'CHAIN'.padEnd(
-            10,
-          )} ${'DESCRIPTION'}`,
-        )
-        console.log(
-          '-------------------------------------------------------------------------------------------------',
-        )
-        for (const meta of result.plugins) {
-          console.log(
-            `${meta.id.padEnd(28)} ${meta.name.padEnd(
-              28,
-            )} ${meta.chainType.padEnd(10)} ${meta.description}`,
-          )
-        }
-        console.log(
-          '-------------------------------------------------------------------------------------------------',
-        )
-      },
-      options.json,
-    )
-  } catch (err) {
-    outputError(err, options.json)
-  }
-}
-
-/**
- * Queries a swap quote with protocol fee and minimum output breakdown.
- */
 export async function swapQuoteCommand(
   fromAsset: string,
   toAsset: string,
-  amountStr: string,
-  options: SwapQuoteOptions = {},
+  amount: string,
+  options: SwapQuoteOptions = {}
 ): Promise<void> {
   try {
-    const plugin = selectPluginForTokens(fromAsset, toAsset, options.plugin)
-    const chainType = plugin.chainType === 'solana' ? 'solana' : 'evm'
-    const inDecimals = resolveTokenDecimals(fromAsset, chainType)
-    const outDecimals = resolveTokenDecimals(toAsset, chainType)
-
-    const inputAmount = parseUnits(amountStr.trim(), inDecimals)
-    const feeBps = options.feeBps
-      ? Number(options.feeBps)
-      : DEFAULT_PROTOCOL_FEE_BPS
-    const slippageBps = options.slippageBps ? Number(options.slippageBps) : 50
-
-    const quote: DAppQuoteResponse = await plugin.getQuote({
-      inputToken: fromAsset.toUpperCase(),
-      outputToken: toAsset.toUpperCase(),
-      inputAmount,
-      feeBps,
-      slippageBps,
-    })
-
-    const netInput = quote.inputAmount - quote.feeAmount
-    const feePercentStr = (feeBps / 100).toFixed(4) // e.g. 0.0875%
-
+    const target = await swapNetwork.open(options);
+    const { tokenIn, tokenOut, quote } = await quoteFor(
+      target,
+      fromAsset,
+      toAsset,
+      amount
+    );
+    const slippageBps = slippageOf(options);
+    const minimumAmountOut = minimumOutput(quote.amountOut, slippageBps);
     const result = {
-      pluginId: plugin.id,
-      chainType: plugin.chainType,
-      inputToken: quote.inputToken,
-      outputToken: quote.outputToken,
-      inputAmount: quote.inputAmount.toString(),
-      inputAmountFormatted: `${formatUnits(quote.inputAmount, inDecimals)} ${
-        quote.inputToken
-      }`,
-      feeAmount: quote.feeAmount.toString(),
-      feeAmountFormatted: `${formatUnits(quote.feeAmount, inDecimals)} ${
-        quote.inputToken
-      }`,
-      feeBps: quote.feeBps,
-      feePercentage: `${feePercentStr}%`,
-      feeRecipient: quote.feeRecipient,
-      netInputAmount: netInput.toString(),
-      netInputAmountFormatted: `${formatUnits(netInput, inDecimals)} ${
-        quote.inputToken
-      }`,
-      expectedOutputAmount: quote.expectedOutputAmount.toString(),
-      expectedOutputFormatted: `${formatUnits(
-        quote.expectedOutputAmount,
-        outDecimals,
-      )} ${quote.outputToken}`,
-      minOutputAmount: quote.minOutputAmount.toString(),
-      minOutputFormatted: `${formatUnits(quote.minOutputAmount, outDecimals)} ${
-        quote.outputToken
-      }`,
+      chain: target.chainIdentifier,
+      exchange: target.deployment.displayName,
+      venue: target.deployment.id,
+      officialUniswapDeployment: target.deployment.officialUniswapDeployment,
+      maintainer: target.deployment.maintainer,
+      from: tokenIn.symbol,
+      to: tokenOut.symbol,
+      amountIn: formatUnits(quote.amountIn, tokenIn.decimals),
+      amountOut: formatUnits(quote.amountOut, tokenOut.decimals),
+      minimumAmountOut: formatUnits(minimumAmountOut, tokenOut.decimals),
       slippageBps,
-      priceImpact: quote.priceImpact,
-      estimatedGas:
-        quote.estimatedGas !== undefined
-          ? quote.estimatedGas.toString()
-          : undefined,
-    }
-
+      poolFee: percent(quote.lpFeePpm),
+      priceImpact: percent(quote.priceImpactPpm),
+      interfaceFee: quote.interfaceFee
+        ? `${formatUnits(quote.interfaceFee.amount, tokenOut.decimals)} ${
+            tokenOut.symbol
+          } (${quote.interfaceFee.bps / 100}%)`
+        : "none",
+    };
     outputResult(
       result,
       () => {
-        console.log(`Swap Quote via ${plugin.name}:`)
         console.log(
-          `  Input:                ${result.inputAmountFormatted} (${result.inputAmount} base units)`,
-        )
+          `Quote from the Uniswap v4 quoter on ${result.chain} (deployment maintained by ${result.maintainer}):`
+        );
+        console.log(`  Pay:              ${result.amountIn} ${result.from}`);
+        console.log(`  Receive:          ${result.amountOut} ${result.to}`);
         console.log(
-          `  Protocol Fee (8.75 bps): -${result.feeAmountFormatted} (${
-            result.feePercentage
-          } to ${result.feeRecipient ?? 'default'})`,
-        )
-        console.log(
-          `  Net Swapped Amount:    ${result.netInputAmountFormatted}`,
-        )
-        console.log(
-          `  Expected Output:      ~${result.expectedOutputFormatted}`,
-        )
-        console.log(
-          `  Guaranteed Minimum:    ${result.minOutputFormatted} (with ${slippageBps} bps slippage)`,
-        )
-        if (quote.priceImpact !== undefined) {
-          console.log(
-            `  Price Impact:          ${(quote.priceImpact * 100).toFixed(2)}%`,
-          )
-        }
-        if (result.estimatedGas) {
-          console.log(
-            `  Estimated Gas / CUs:   ${
-              result.estimatedGas
-            } (${plugin.chainType.toUpperCase()})`,
-          )
-        }
-        console.log(
-          "\nRun 'signet swap build' to construct the transaction settling to your HD change address.",
-        )
+          `  Minimum received: ${result.minimumAmountOut} ${
+            result.to
+          } (slippage ${result.slippageBps / 100}%)`
+        );
+        console.log(`  Pool fee:         ${result.poolFee}`);
+        console.log(`  Price impact:     ${result.priceImpact}`);
+        console.log(`  Interface fee:    ${result.interfaceFee}`);
       },
-      options.json,
-    )
+      options.json
+    );
   } catch (err) {
-    outputError(err, options.json)
+    outputError(err, options.json);
   }
 }
 
-/**
- * Builds the swap transaction with outputs routing directly into a recoverable HD change address.
- */
+/** Prints the unsigned transactions a swap from `--account` needs. Signs and sends nothing. */
 export async function swapBuildCommand(
   fromAsset: string,
   toAsset: string,
-  amountStr: string,
-  options: SwapBuildOptions = {},
+  amount: string,
+  options: SwapQuoteOptions = {}
 ): Promise<void> {
   try {
-    const dataDir = resolveDataDir(options.dataDir)
-    const { identity, mnemonic } = await loadIdentity(
-      dataDir,
-      undefined,
-      options.password,
-    )
-
-    const plugin = selectPluginForTokens(fromAsset, toAsset, options.plugin)
-    const chainType = plugin.chainType === 'solana' ? 'solana' : 'evm'
-    const inDecimals = resolveTokenDecimals(fromAsset, chainType)
-    const outDecimals = resolveTokenDecimals(toAsset, chainType)
-
-    const inputAmount = parseUnits(amountStr.trim(), inDecimals)
-    const feeBps = options.feeBps
-      ? Number(options.feeBps)
-      : DEFAULT_PROTOCOL_FEE_BPS
-    const slippageBps = options.slippageBps ? Number(options.slippageBps) : 50
-
-    const quote = await plugin.getQuote({
-      inputToken: fromAsset.toUpperCase(),
-      outputToken: toAsset.toUpperCase(),
-      inputAmount,
-      feeBps,
-      slippageBps,
-    })
-
-    const changeIndex = options.changeIndex ? Number(options.changeIndex) : 0
-
-    // Derive HD change address settlement destination
-    let userAddress = identity.displayAddress
-    let destinationAddress: string
-    let derivationPath: string
-
-    if (chainType === 'solana') {
-      const solanaSpendKeyring = await SolanaHdKeyring.fromMnemonic(mnemonic)
-      const solanaSpendAccount = await solanaSpendKeyring.deriveSubAccount(0)
-      userAddress = solanaSpendAccount.address
-
-      if (options.destination) {
-        destinationAddress = options.destination.trim()
-        derivationPath = 'custom-destination'
-      } else {
-        const changeKeyring = await SolanaChangeKeyring.fromMnemonic(mnemonic)
-        const changeAccount = await changeKeyring.deriveChangeAccount(
-          changeIndex,
-        )
-        destinationAddress = changeAccount.address
-        derivationPath = changeAccount.path
-      }
-    } else {
-      if (options.destination) {
-        destinationAddress = options.destination.trim()
-        derivationPath = 'custom-destination'
-      } else {
-        const changeKeyring = EvmChangeKeyring.fromMnemonic(mnemonic)
-        const changeAccount = changeKeyring.deriveChangeAccount(changeIndex)
-        destinationAddress = changeAccount.address
-        derivationPath = changeKeyring.subAccountPath(changeAccount.index)
-      }
-    }
-
-    const preparedTx = await plugin.buildTransaction({
+    if (!options.account)
+      throw new Error(
+        "--account <address> is required: the account that swaps"
+      );
+    const account = getAddress(options.account);
+    const target = await swapNetwork.open(options);
+    const { tokenIn, tokenOut, quote } = await quoteFor(
+      target,
+      fromAsset,
+      toAsset,
+      amount
+    );
+    const plan = await planSwap(target.reader, target.deployment, {
       quote,
-      destinationAddress,
-      userAddress,
-    })
-
-    // If Uniswap EVM, decode calldata to verify settlement address matches
-    let decodedRecipient: string | undefined
-    if (plugin instanceof UniswapDAppPlugin && preparedTx.data) {
-      const decoded = plugin.decodeExecuteCalldata(preparedTx.data)
-      decodedRecipient = decoded.swapRecipient
-      if (
-        decodedRecipient?.toLowerCase() !== destinationAddress.toLowerCase()
-      ) {
-        throw new Error(
-          `Security invariant failure: swapRecipient (${decodedRecipient}) does not match destinationChangeAddress (${destinationAddress})!`,
-        )
-      }
-    }
-
+      slippageBps: slippageOf(options),
+      account,
+    });
+    // An unapproved token swap cannot be gas-estimated yet; that is said, not guessed.
+    const fee =
+      plan.approvals.length === 0
+        ? await estimateCallFee(target.reader, plan.swap, account)
+        : undefined;
     const result = {
-      pluginId: plugin.id,
-      chainType: plugin.chainType,
-      userAddress: identity.displayAddress,
-      destinationChangeAddress: destinationAddress,
-      derivationPath,
+      chain: target.chainIdentifier,
+      account,
+      from: tokenIn.symbol,
+      to: tokenOut.symbol,
+      amountIn: formatUnits(quote.amountIn, tokenIn.decimals),
+      quotedAmountOut: formatUnits(quote.amountOut, tokenOut.decimals),
+      minimumAmountOut: formatUnits(plan.minimumAmountOut, tokenOut.decimals),
+      deadline: plan.deadline,
+      approvals: plan.approvals.map((step) => ({
+        kind: step.kind,
+        to: step.call.to,
+        data: step.call.data,
+      })),
       swap: {
-        from: quote.inputToken,
-        to: quote.outputToken,
-        inputAmount: quote.inputAmount.toString(),
-        inputFormatted: `${formatUnits(quote.inputAmount, inDecimals)} ${
-          quote.inputToken
-        }`,
-        feeAmount: quote.feeAmount.toString(),
-        feeFormatted: `${formatUnits(quote.feeAmount, inDecimals)} ${
-          quote.inputToken
-        }`,
-        minOutputAmount: quote.minOutputAmount.toString(),
-        minOutputFormatted: `${formatUnits(
-          quote.minOutputAmount,
-          outDecimals,
-        )} ${quote.outputToken}`,
+        to: plan.swap.to,
+        value: plan.swap.value.toString(),
+        data: plan.swap.data,
       },
-      transaction: {
-        to: preparedTx.to,
-        recipient: preparedTx.recipient,
-        value: preparedTx.value?.toString(),
-        data: preparedTx.data,
-        instructionCount: preparedTx.instructions?.length,
-        chainId: preparedTx.chainId,
-        verifiedRecipientInCalldata: decodedRecipient,
-      },
-    }
-
+      gasLimit: fee?.gasLimit.toString() ?? null,
+      maximumNetworkFeeWei: fee?.maximumFeeWei.toString() ?? null,
+    };
     outputResult(
       result,
       () => {
-        console.log(`Swap Transaction Prepared via ${plugin.name}:`)
+        console.log(`Unsigned swap for ${account} on ${result.chain}:`);
+        console.log(`  Pay:              ${result.amountIn} ${result.from}`);
         console.log(
-          `  Settlement Destination: ${result.destinationChangeAddress}`,
-        )
-        console.log(`  HD Derivation Path:     ${result.derivationPath}`)
+          `  Minimum received: ${result.minimumAmountOut} ${result.to} (quoted ${result.quotedAmountOut})`
+        );
+        console.log(`  Deadline:         ${result.deadline} (unix seconds)`);
+        for (const approval of result.approvals)
+          console.log(`  Approval first:   ${approval.kind} -> ${approval.to}`);
+        console.log(`  To:               ${result.swap.to}`);
+        console.log(`  Value (wei):      ${result.swap.value}`);
+        console.log(`  Data:             ${result.swap.data}`);
         console.log(
-          `  Swap Route:             ${result.swap.inputFormatted} -> min ${result.swap.minOutputFormatted}`,
-        )
-        console.log(
-          `  Convenience Fee:        ${result.swap.feeFormatted} (8.75 bps)`,
-        )
-        if (preparedTx.to) {
-          console.log(`  Target Router Address:  ${preparedTx.to}`)
-        }
-        if (preparedTx.value && preparedTx.value > 0n) {
-          console.log(
-            `  Native Value Sent:      ${preparedTx.value.toString()} wei`,
-          )
-        }
-        if (preparedTx.data) {
-          console.log(
-            `  Calldata:               ${preparedTx.data.slice(0, 66)}... (${
-              preparedTx.data.length
-            } hex chars)`,
-          )
-        }
-        if (preparedTx.instructions) {
-          console.log(
-            `  Instructions:           ${preparedTx.instructions.length} Solana instruction(s) generated`,
-          )
-        }
-        console.log(
-          `\nOutput funds will settle into recoverable HD change address ${result.destinationChangeAddress}.`,
-        )
+          result.gasLimit
+            ? `  Gas limit:        ${result.gasLimit} (max fee ${result.maximumNetworkFeeWei} wei)`
+            : "  Gas limit:        not estimated until the approvals above confirm"
+        );
       },
-      options.json,
-    )
+      options.json
+    );
   } catch (err) {
-    outputError(err, options.json)
+    outputError(err, options.json);
   }
 }

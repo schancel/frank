@@ -920,6 +920,7 @@ export type NativeExecutionJournal = NativeJournalReader &
     | 'markExposed'
     | 'markSyncApplied'
     | 'cancelUnsigned'
+    | 'discardUnexposed'
     | 'beginCapture'
     | 'recordObservation'
   >
@@ -955,6 +956,7 @@ export function nativeAdmissionJournal(
     markSyncApplied: (id, index) =>
       mutation(() => journal.markSyncApplied(id, index)),
     cancelUnsigned: id => mutation(() => journal.cancelUnsigned(id)),
+    discardUnexposed: id => mutation(() => journal.discardUnexposed(id)),
     beginCapture: (id, index) => {
       owner.owners.assertLifetime(lifetime)
       return journal.beginCapture(id, index)

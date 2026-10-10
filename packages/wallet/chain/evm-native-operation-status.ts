@@ -5,6 +5,8 @@ import type { EvmNativeOperation } from "../storage/evm-native-operation-journal
 export interface EvmNativeOperationStatus {
   readonly operationId: string;
   readonly chainIdentifier: string;
+  /** `contract`: the recipient is a contract and the value is what the call carried, if any. */
+  readonly kind: EvmNativeOperation["kind"];
   readonly recipient: string;
   readonly intendedValueWei: string;
   readonly payment:
@@ -48,7 +50,7 @@ export function summarizeEvmNativeOperation(
     transaction.to?.toLowerCase() !== row.recipient.toLowerCase() ||
     transaction.value.toString() !== row.intendedValueWei ||
     transaction.chainId.toString() !== row.binding.nativeChainId ||
-    transaction.data !== "0x"
+    (transaction.data !== "0x") !== (row.kind === "contract")
   )
     throw new Error("Native operation recipient evidence does not match");
   const members = row.members.map((member) => {
@@ -84,6 +86,7 @@ export function summarizeEvmNativeOperation(
   return {
     operationId: row.operationId,
     chainIdentifier: row.binding.chainIdentifier,
+    kind: row.kind,
     recipient: row.recipient,
     intendedValueWei: row.intendedValueWei,
     payment,

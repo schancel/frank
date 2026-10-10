@@ -488,28 +488,14 @@ export default {
     tabBalance: 'Solde & Transfert',
     tabParity: 'Parité thermodynamique',
     tabSwap: 'Échange instantané',
-    swapPay: 'Vous payez',
-    swapReceive: 'Vous recevez (estimé)',
-    swapAvailable: 'Disponible',
-    swapFeeLabel: 'Frais de protocole (8,75 bps)',
-    swapFeeSavingsBadge: '10x moins cher que MetaMask',
-    swapRouting: 'Itinéraire d’exécution',
-    swapDestinationChange:
-      'Règlement direct sur une adresse furtive privée (récupérable par graine, aucun lien avec l’identité)',
-    swapSelectDifferent: 'Sélectionnez des actifs différents à échanger',
-    swapEnterAmount: 'Saisissez un montant à échanger',
-    swapInsufficientBalance: 'Solde insuffisant en {asset}',
-    swapMaxBtn: 'MAX',
     swapUnavailable: 'Échange instantané indisponible',
     swapUnavailableDescription:
       'Les échanges ne sont pas encore pris en charge. Aucun devis ni aucune transaction ne sont disponibles.',
-    swapExecute: 'Échanger maintenant',
-    swapSuccess:
-      'Échange exécuté avec succès ! Fonds versés sur votre adresse furtive privée.',
     assetsAndTokens: 'Actifs & Jetons',
     nativeCoin: 'Pièce native',
     splToken: 'Jeton SPL',
     tokenMint: 'Adresse de contrat (Mint)',
+    tokenContract: 'Contrat du jeton',
     recentActivity: 'Activité récente',
     noRecentActivity: 'Aucune transaction récente sur cette chaîne.',
     swapAction: 'Échanger',
@@ -1050,6 +1036,7 @@ export default {
     unavailable: 'Les informations du transfert natif sont indisponibles.',
     empty: 'Aucun transfert natif conservé.',
     viewTransfer: 'Voir le transfert',
+    contractCall: 'Appel de contrat (un échange ou son approbation)',
     back: 'Retour',
     stale:
       'Le compte ou la page a changé. Consultez le transfert initial depuis son portefeuille.',
@@ -1358,6 +1345,129 @@ export default {
     licenseHeading: 'Licence de la bibliothèque DKLs23',
     licenseIntro:
       'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
+  },
+  swap: {
+    interfaceFee: 'Frais Frank ({rate})',
+    venueNote:
+      'Déploiement de test géré par {maintainer}, et non par Uniswap Labs',
+    pay: 'Vous payez',
+    payToken: 'Jeton utilisé pour payer',
+    receive: 'Vous recevez',
+    receiveToken: 'Jeton reçu',
+    switchTokens: 'Inverser les deux jetons',
+    available: 'Disponible',
+    balance: 'Solde',
+    max: 'MAX',
+    otherAccounts:
+      '{amount} de plus dans les autres comptes de ce portefeuille',
+    testToken: 'jeton de test',
+    reviewMove:
+      '{amount} {unit} seront d’abord déplacés de vos autres comptes vers votre compte principal, qui effectue l’échange.',
+    reviewStale:
+      'Le prix n’a pas pu être actualisé. Nouvel essai en cours ; vous pourrez confirmer une fois le prix à jour.',
+    progressRecovering:
+      'Finalisation d’une transaction précédente de ce portefeuille…',
+    rate: 'Taux',
+    priceImpact: 'Impact sur le prix',
+    poolFee: 'Frais du pool',
+    minimumReceived: 'Minimum reçu',
+    networkFee: 'Frais de réseau',
+    networkFeeKnown: '{fee} {unit}',
+    networkFeePartial:
+      '{fee} {unit} pour les approbations ; les frais de l’échange lui-même seront connus après leur confirmation',
+    reviewPaySame:
+      'Vous payez {amount} {asset} + {fee} {unit} de frais de réseau = {total} {unit}.',
+    reviewPayOther:
+      'Vous payez {amount} {asset} + {fee} {unit} de frais de réseau.',
+    reviewPayPartial:
+      'Vous payez {amount} {asset} + {fee} {unit} de frais de réseau pour les approbations, plus les frais de réseau de l’échange lui-même, affichés après leur confirmation.',
+    reviewPayNoFee:
+      'Vous payez {amount} {asset}, plus des frais de réseau qui n’ont pas encore pu être estimés.',
+    reviewReceive:
+      'Vous recevez environ {receive} {asset}. Si vous deviez recevoir moins de {minimum} {asset}, l’échange est annulé et vous gardez ce avec quoi vous payiez.',
+    resultPaidSame:
+      'Vous avez payé {amount} {asset} + {fee} {unit} de frais de réseau = {total} {unit}.',
+    resultPaidOther:
+      'Vous avez payé {amount} {asset} + {fee} {unit} de frais de réseau.',
+    resultPaidFeeOnly:
+      'Vous avez payé {fee} {unit} de frais de réseau et rien d’autre.',
+    warnFeeLarger:
+      'Les frais de réseau sont supérieurs au montant que vous échangez.',
+    warnFeeShare:
+      'Les frais de réseau représentent environ {percent} % du montant que vous échangez.',
+    networkFeeLater: 'estimés après l’approbation',
+    approval: 'Approbation',
+    approvalNeeded:
+      'D’abord {count} transaction(s) d’approbation, pour exactement ce montant de {asset}',
+    slippage: 'Tolérance de glissement',
+    slippageCustom: 'Glissement personnalisé, en pourcentage',
+    enterAmount: 'Saisissez un montant',
+    review: 'Vérifier l’échange',
+    reviewTitle: 'Confirmer cet échange',
+    reviewNote:
+      'Le prix est vérifié à nouveau à la confirmation. L’échange expire {seconds} secondes après la signature.',
+    back: 'Retour',
+    confirm: 'Confirmer l’échange',
+    newSwap: 'Nouvel échange',
+    progressConsolidating: 'Transfert des fonds vers le compte d’échange…',
+    progressApproving: 'Approbation du montant exact ({step} sur {of})…',
+    progressSigning: 'Signature de l’échange…',
+    progressSubmitted: 'Envoyé. En attente de la confirmation du réseau…',
+    progressKeepOpen:
+      'Vous pouvez quitter cette page : l’échange est enregistré et apparaît dans l’activité récente.',
+    resultConfirmed: 'Échange terminé',
+    resultConfirmedDetail:
+      'Reçu dans votre portefeuille, tel qu’enregistré sur la chaîne.',
+    resultConfirmedUnknown:
+      'L’échange est confirmé. Le montant reçu n’a pas pu être lu dans le reçu ; votre solde ci-dessous est à jour.',
+    resultReverted: 'Échange non réalisé',
+    resultRevertedSlippage:
+      'Le prix a dépassé votre tolérance de glissement : l’échange a été annulé. Vous gardez vos fonds et n’avez payé que les frais de réseau.',
+    resultRevertedDeadline:
+      'L’échange est arrivé sur le réseau après son expiration : il a été annulé. Vous gardez vos fonds et n’avez payé que les frais de réseau.',
+    resultRevertedOther:
+      'Le réseau a rejeté l’échange. Vous gardez vos fonds et n’avez payé que les frais de réseau.',
+    resultPending: 'Envoyé, pas encore confirmé',
+    resultPendingDetail:
+      'Le réseau n’a pas encore confirmé cet échange. Il peut encore aboutir ; son état est mis à jour dans l’activité récente. Ne le renvoyez pas.',
+    unavailableNetwork:
+      'Aucun échange n’est disponible pour ce portefeuille sur ce réseau.',
+    unavailableSolana:
+      'Les échanges pour ce portefeuille Solana ne sont pas encore disponibles.',
+    unavailableWallet:
+      'Ce portefeuille ne peut pas encore échanger. Ouvrez-le et réessayez.',
+    unavailableError:
+      'L’échange n’a pas pu être chargé. Vérifiez votre connexion.',
+    errorSameAsset: 'Choisissez deux jetons différents.',
+    errorInsufficientBalance: 'Pas assez de {asset}',
+    errorInsufficientForFee:
+      'Pas assez de {asset} pour ce montant plus les frais de réseau',
+    errorInsufficientNative:
+      'Pas assez de la monnaie du réseau pour payer cet échange et ses frais.',
+    errorNoRoute: 'Ces deux jetons ne peuvent pas être échangés ici.',
+    errorNoLiquidity:
+      'Le pool ne peut pas fournir ce montant. Essayez un montant plus petit.',
+    errorPriceMoved:
+      'Le prix a dépassé votre tolérance de glissement. Vérifiez le nouveau montant.',
+    errorExpired:
+      'L’échange a expiré avant d’être envoyé. Vérifiez-le à nouveau.',
+    errorAllowance:
+      'L’approbation pour ce montant est absente ou a expiré. Réessayez.',
+    errorAccountBusy:
+      'Une transaction précédente de ce portefeuille n’est pas encore confirmée. Réessayez dans un instant.',
+    errorApprovalFailed:
+      'L’approbation n’a pas été confirmée : rien n’a été échangé. Réessayez.',
+    errorAccountChanged: 'Le compte a changé. Vérifiez à nouveau l’échange.',
+    errorQuote: 'Impossible d’obtenir un prix du réseau. Réessayez.',
+    errorExecution:
+      'L’échange n’a pas été envoyé. Rien n’a été échangé ; consultez l’activité récente avant de réessayer.',
+    warnHighImpact:
+      'Ce montant est important pour ce pool : vous recevez nettement moins que le taux du marché.',
+    status: {
+      confirmed: 'Confirmé',
+      pending: 'En attente',
+      failed: 'Non réalisé',
+    },
   },
   close: 'Fermer',
 }

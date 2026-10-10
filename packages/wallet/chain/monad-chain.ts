@@ -126,7 +126,6 @@ import { applyWalletSyncItem } from "../sync-dispatcher";
 import { createMessageItemRegistry } from "../message-item-plugins/registry";
 import {
   MessageItemBudgetExceededError,
-  SELF_ONLY_ITEM_TYPES,
   boundedLegacyPlaintext,
   receiveLegacyItems,
 } from "../message-item-plugins/wire";
@@ -1038,13 +1037,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       message.recipientAddress.raw.toLowerCase() !== own
     )
       return { kind: "none" };
-    const notes = message.items.filter((item) =>
-      SELF_ONLY_ITEM_TYPES.has(item.type)
-    );
+    // Of the items carried only in a note to self, the wallet consumes the transaction records.
+    // A swap's record in the same note is the host's: it goes on with the rest of the message.
+    const notes = message.items.filter((item) => item.type === "wallet-sync");
     if (notes.length === 0) return { kind: "none" };
-    const others = message.items.filter(
-      (item) => !SELF_ONLY_ITEM_TYPES.has(item.type)
-    );
+    const others = message.items.filter((item) => item.type !== "wallet-sync");
     const rest = others.length > 0 ? { ...message, items: others } : undefined;
     const digest = message.payloadDigest;
     let settled = settledSelfNotes.get(wallet);
@@ -2107,11 +2104,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             reobserveNativeOperations() {
               const owner = nativeOperationOwners.get(wallet);
               if (!owner || closedWallets.has(wallet)) return Promise.resolve();
-              return owner.reobservePending(() =>
-                runWalletExclusive(wallet, (admission) =>
-                  owner.applyRecordedEvidence(admission)
+              // A contract call the node was seen not to know is handed to it again (the same
+              // signed bytes), so a lost broadcast cannot hold the main account for good.
+              return owner
+                .reobservePending(() =>
+                  runWalletExclusive(wallet, (admission) =>
+                    owner.applyRecordedEvidence(admission)
+                  )
                 )
-              );
+                .then(() => owner.resendMissingContractCalls());
             },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
@@ -2195,6 +2196,47 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                           ?.transactionHash === result.txHash
                     )!.operationId
                 );
+                retryEarlierNotes(owner);
+              }
+              return result;
+            },
+            // Contract calls (a swap and its approvals). Same queues, journal and recovery as a
+            // native send; see `EvmLegacyConsolidator.sendContractCall`.
+            async sendContractCall(params) {
+              params = { ...params, to: { ...params.to } };
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, (admission) =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.sendContractCall(params, admission)
+                )
+              );
+              primaryBalanceCache = undefined;
+              return result;
+            },
+            getContractCallFunds: () =>
+              nativeOperationOwner(wallet).contractCallFunds(),
+            getUnresolvedContractCalls: () =>
+              nativeOperationOwner(wallet).unresolvedContractCalls(),
+            evmReader: provider,
+            async fundMainAccount(params) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, (admission) =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.fundMainAccount({ ...params }, admission)
+                )
+              );
+              primaryBalanceCache = undefined;
+              // The move is an ordinary legacy send to one of this wallet's own accounts: it
+              // notes itself to the account's other devices exactly as `sendLegacy` does.
+              if (!closedWallets.has(wallet)) {
+                const operation = owner
+                  .listOperations()
+                  .find(
+                    (row) =>
+                      row.members[row.members.length - 1]?.signed
+                        ?.transactionHash === result.txHash
+                  );
+                if (operation) await owner.startSync(operation.operationId);
                 retryEarlierNotes(owner);
               }
               return result;
@@ -2461,11 +2503,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // reports, so a repeat is the same message; applying it twice changes nothing.
               // Best effort: a failure leaves the member not sync-applied and a later flush
               // sends it again. The other devices apply it in `consumeSelfNotes`.
-              onSyncTransaction: async (item) => {
+              onSyncTransaction: async (item, swapRecord) => {
                 await directMessages.send({
                   wallet,
                   recipient: toChainAddress(identity.address.raw),
-                  items: [item],
+                  // A swap's record rides in the same note as its transaction: one free
+                  // message, the same identity, sent and retried the same way.
+                  items: swapRecord ? [item, swapRecord] : [item],
                   stampValue: 0n,
                   messageId: getBytes(
                     keccak256(

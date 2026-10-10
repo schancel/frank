@@ -115,25 +115,7 @@ export const WHITELISTED_TOKENS: TokenDefinition[] = [
     standard: 'spl',
   },
 
-  // 3. AVU (Monad, Ethereum)
-  {
-    symbol: 'AVU',
-    name: 'Arbitrary Value Unit',
-    contractAddress: '0x0000000000000000000000000000000000000A70',
-    chainId: 'monad',
-    decimals: 18,
-    hasPermit: true,
-    standard: 'erc20',
-  },
-  {
-    symbol: 'AVU',
-    name: 'Arbitrary Value Unit',
-    contractAddress: '0x0000000000000000000000000000000000000A70',
-    chainId: 'ethereum',
-    decimals: 18,
-    hasPermit: true,
-    standard: 'erc20',
-  },
+  // AVU is a unit of account for comparing coins, not a token: it has no entry here.
 
   // 4. Native Coins: MON, SOL, ETH, XEC
   {

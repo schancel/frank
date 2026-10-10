@@ -70,14 +70,14 @@ describe('CLI Token Commands & Local LevelDB UTXO Integration', () => {
         expect.stringContaining('Supported Whitelisted Tokens'),
       )
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('USDC'))
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('AVU'))
+      expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining('AVU'))
 
       await tokenListCommand({ json: true })
       const lastCall = logSpy.mock.calls[logSpy.mock.calls.length - 1][0]
       const parsed = JSON.parse(lastCall)
-      expect(parsed.count).toBeGreaterThanOrEqual(10)
+      expect(parsed.count).toBeGreaterThanOrEqual(8)
       expect(parsed.tokens.some((t: any) => t.symbol === 'USDC')).toBe(true)
-      expect(parsed.tokens.some((t: any) => t.symbol === 'AVU')).toBe(true)
+      expect(parsed.tokens.some((t: any) => t.symbol === 'AVU')).toBe(false)
     })
 
     it('filters tokens by chain identifier', async () => {
@@ -244,7 +244,7 @@ describe('CLI Token Commands & Local LevelDB UTXO Integration', () => {
         'token',
         'record',
         '42',
-        'AVU',
+        'USDT',
         '--data-dir',
         testDataDir,
         '--json',
@@ -256,7 +256,7 @@ describe('CLI Token Commands & Local LevelDB UTXO Integration', () => {
         'token',
         'balance',
         '--token',
-        'AVU',
+        'USDT',
         '--data-dir',
         testDataDir,
         '--json',
@@ -264,7 +264,7 @@ describe('CLI Token Commands & Local LevelDB UTXO Integration', () => {
 
       const lastCall = logSpy.mock.calls[logSpy.mock.calls.length - 1][0]
       const parsed = JSON.parse(lastCall)
-      expect(parsed.symbol).toBe('AVU')
+      expect(parsed.symbol).toBe('USDT')
       expect(parsed.balanceFormatted).toBe('42.0')
       expect(parsed.unspentCount).toBe(1)
     })

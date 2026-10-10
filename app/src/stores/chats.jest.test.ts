@@ -4231,4 +4231,76 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(healed.totalValue).toBe(10_000_000_000_000_000)
     })
   })
+  describe('a received note that carries only a swap record', () => {
+    const record = (account: string) => ({
+      type: 'swap-record' as const,
+      swapId: 'a'.repeat(64),
+      chainIdentifier: 'monad-testnet',
+      venueId: 'uniswap-v4',
+      txHash: '0x' + 'ab'.repeat(32),
+      account,
+      assetIn: { symbol: 'MON', decimals: 18 },
+      amountIn: '5000000000000000',
+      assetOut: { symbol: 'USDC', address: '0xusdc', decimals: 6 },
+      quotedAmountOut: '4997',
+      minimumAmountOut: '4947',
+      interfaceFee: '0',
+      networkFee: '21131544000000000',
+      route: '{}',
+      timestamp: 2_000,
+    })
+    const note = (
+      index: string,
+      sender: string,
+      recipient: string,
+    ): ReceivedMessageWrapper =>
+      ({
+        outbound: false,
+        senderAddress: sender,
+        copartyAddress: sender,
+        copartyPubKey: {},
+        index,
+        stampValue: 0,
+        message: {
+          outbound: false,
+          status: 'confirmed',
+          items: [record(sender)],
+          serverTime: 5_000,
+          receivedTime: 5_000,
+          outpoints: [],
+          senderAddress: sender,
+          destinationAddress: recipient,
+        },
+      } as unknown as ReceivedMessageWrapper)
+
+    it('reaches the swaps store and no conversation, is not saved as a message and does not notify', async () => {
+      const chats = useChatStore()
+      const { useSwapStore } = await import('./swaps')
+      await chats.receiveMessages(
+        [note('swap-note', SENDER_ADDRESS, SENDER_ADDRESS)],
+        SENDER_ADDRESS,
+      )
+      expect(useSwapStore().records.map(r => r.swapId)).toEqual([
+        'a'.repeat(64),
+      ])
+      expect(chats.conversations).toEqual({})
+      expect(chats.messages).toEqual({})
+      expect(chats.logicalMessages).toEqual({})
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      expect(desktopNotify).not.toHaveBeenCalled()
+    })
+
+    it("is not believed from anyone else: a peer's row of swap records reaches neither the swaps store nor a conversation", async () => {
+      const chats = useChatStore()
+      const { useSwapStore } = await import('./swaps')
+      await chats.receiveMessages(
+        [note('peer-swap-note', RECIPIENT_ADDRESS, SENDER_ADDRESS)],
+        SENDER_ADDRESS,
+      )
+      expect(useSwapStore().records).toEqual([])
+      expect(chats.conversations).toEqual({})
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      expect(desktopNotify).not.toHaveBeenCalled()
+    })
+  })
 })

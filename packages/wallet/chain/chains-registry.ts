@@ -5,6 +5,8 @@ import {
   type ProtocolChainFacts,
 } from "./protocol-chain-registry";
 
+import { MONAD_TESTNET_DEX, type EvmDexEntry } from "./dex-entries";
+
 export type SupportedChainFamily = "evm" | "bitcoin" | "solana";
 export type SupportedNetwork = "mainnet" | "testnet" | "regtest";
 export type SupportedChainKind =
@@ -85,6 +87,19 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   readonly rpcUrls?: readonly string[];
   readonly explorerUrl?: string;
   readonly contracts?: ChainContracts;
+  /**
+   * The exchanges this network's wallet can swap on, in order: facts only (addresses, pools,
+   * which adapter speaks to it, enabled or not). An absent or empty list, or only disabled
+   * entries, means no swap on this network. EVM rows only today; see `dex-entries.ts`.
+   */
+  readonly dex?: readonly EvmDexEntry[];
+  /**
+   * What an EVM network charges a transaction's gas price on: the gas it `used` (the usual
+   * rule, and the default), or the whole gas `limit` it reserved. Monad charges the limit, so
+   * there every unit of headroom above the estimate is paid for and a fee shown to the user is
+   * limit times price, not an upper bound.
+   */
+  readonly gasChargedOn?: "used" | "limit";
   readonly exchange?: ChainExchangeConfig;
   /** What the app's own wallet does on this network. Absent: nothing, and no address is shown. */
   readonly wallet?: ChainWalletSupport;
@@ -120,17 +135,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "MONT",
       networkTag: "MONT",
       ...deployedContracts("monad-testnet"),
-      exchange: Object.freeze({
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: Object.freeze({
-          from: "MON",
-          to: "USDC",
-          defaultAmount: "100",
-        }),
-        supportedAssets: Object.freeze(["MON", "USDC", "USDT", "AVU"]),
-      }),
+      gasChargedOn: "limit",
+      dex: MONAD_TESTNET_DEX,
     }),
     "monad-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -141,17 +147,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "MON",
       networkTag: "MON1",
       ...deployedContracts("monad-mainnet"),
-      exchange: Object.freeze({
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: Object.freeze({
-          from: "MON",
-          to: "USDC",
-          defaultAmount: "100",
-        }),
-        supportedAssets: Object.freeze(["MON", "USDC", "USDT", "AVU"]),
-      }),
+      gasChargedOn: "limit",
     }),
     "xec-testnet": Object.freeze({
       // The eCash SDK wallet on the relay's Chronik proxy.
@@ -163,17 +159,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "tXEC",
       addressPrefix: "ectest",
       networkTag: "XECT",
-      exchange: Object.freeze({
-        pluginId: "ecash-atomic-swap",
-        routerName: "eCash Atomic Swap Router",
-        adapterType: "atomic-swap",
-        defaultPair: Object.freeze({
-          from: "XEC",
-          to: "USDC",
-          defaultAmount: "1000000",
-        }),
-        supportedAssets: Object.freeze(["XEC", "USDC", "USDT", "AVU"]),
-      }),
     }),
     // A local eCash node in regtest mode (packages/bot/demo/regtest). Each run is a new chain, so
     // there are no public endpoints and the checkpoint block is given by whoever started it.
@@ -195,17 +180,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "XEC",
       addressPrefix: "ecash",
       networkTag: "XEC1",
-      exchange: Object.freeze({
-        pluginId: "ecash-atomic-swap",
-        routerName: "eCash Atomic Swap Router",
-        adapterType: "atomic-swap",
-        defaultPair: Object.freeze({
-          from: "XEC",
-          to: "USDC",
-          defaultAmount: "1000000",
-        }),
-        supportedAssets: Object.freeze(["XEC", "USDC", "USDT", "AVU"]),
-      }),
     }),
     "solana-devnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -225,7 +199,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
           to: "USDC",
           defaultAmount: "1",
         }),
-        supportedAssets: Object.freeze(["SOL", "USDC", "USDT", "AVU"]),
+        supportedAssets: Object.freeze(["SOL", "USDC", "USDT"]),
       }),
     }),
     "solana-testnet": Object.freeze({
@@ -245,7 +219,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
           to: "USDC",
           defaultAmount: "1",
         }),
-        supportedAssets: Object.freeze(["SOL", "USDC", "USDT", "AVU"]),
+        supportedAssets: Object.freeze(["SOL", "USDC", "USDT"]),
       }),
     }),
     "solana-mainnet": Object.freeze({
@@ -266,7 +240,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
           to: "USDC",
           defaultAmount: "1",
         }),
-        supportedAssets: Object.freeze(["SOL", "USDC", "USDT", "AVU"]),
+        supportedAssets: Object.freeze(["SOL", "USDC", "USDT"]),
       }),
     }),
     "ethereum-sepolia": Object.freeze({
@@ -281,17 +255,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
         "https://rpc.sepolia.org",
       ]),
       ...deployedContracts("ethereum-sepolia"),
-      exchange: Object.freeze({
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: Object.freeze({
-          from: "ETH",
-          to: "USDC",
-          defaultAmount: "0.1",
-        }),
-        supportedAssets: Object.freeze(["ETH", "USDC", "USDT", "AVU"]),
-      }),
     }),
     "ethereum-mainnet": Object.freeze({
       kind: "ethereum",
@@ -301,17 +264,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "ETH",
       networkTag: "ETH1",
       ...deployedContracts("ethereum-mainnet"),
-      exchange: Object.freeze({
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: Object.freeze({
-          from: "ETH",
-          to: "USDC",
-          defaultAmount: "0.1",
-        }),
-        supportedAssets: Object.freeze(["ETH", "USDC", "USDT", "AVU"]),
-      }),
     }),
     "hyperliquid-mainnet": Object.freeze({
       kind: "hyperliquid",
@@ -321,17 +273,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "HYPE",
       networkTag: "HYPE",
       ...deployedContracts("hyperliquid-mainnet"),
-      exchange: Object.freeze({
-        pluginId: "hyperliquid-l1",
-        routerName: "Hyperliquid L1 Orderbook Router",
-        adapterType: "clob-orderbook",
-        defaultPair: Object.freeze({
-          from: "HYPE",
-          to: "USDC",
-          defaultAmount: "10",
-        }),
-        supportedAssets: Object.freeze(["HYPE", "USDC", "USDT", "AVU"]),
-      }),
     }),
     "hyperliquid-testnet": Object.freeze({
       kind: "hyperliquid",
@@ -341,17 +282,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "tHYPE",
       networkTag: "HYPT",
       ...deployedContracts("hyperliquid-testnet"),
-      exchange: Object.freeze({
-        pluginId: "hyperliquid-l1",
-        routerName: "Hyperliquid L1 Orderbook Router",
-        adapterType: "clob-orderbook",
-        defaultPair: Object.freeze({
-          from: "HYPE",
-          to: "USDC",
-          defaultAmount: "10",
-        }),
-        supportedAssets: Object.freeze(["HYPE", "USDC", "USDT", "AVU"]),
-      }),
     }),
     "tempo-mainnet": Object.freeze({
       kind: "tempo",
@@ -361,17 +291,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "USD",
       networkTag: "TMPO",
       ...deployedContracts("tempo-mainnet"),
-      exchange: Object.freeze({
-        pluginId: "tempo-router",
-        routerName: "Tempo Settlement Engine",
-        adapterType: "settlement-engine",
-        defaultPair: Object.freeze({
-          from: "USD",
-          to: "USDC",
-          defaultAmount: "100",
-        }),
-        supportedAssets: Object.freeze(["USD", "USDC", "USDT", "AVU"]),
-      }),
     }),
     "tempo-testnet": Object.freeze({
       kind: "tempo",
@@ -381,17 +300,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "tUSD",
       networkTag: "TMPT",
       ...deployedContracts("tempo-testnet"),
-      exchange: Object.freeze({
-        pluginId: "tempo-router",
-        routerName: "Tempo Settlement Engine",
-        adapterType: "settlement-engine",
-        defaultPair: Object.freeze({
-          from: "USD",
-          to: "USDC",
-          defaultAmount: "100",
-        }),
-        supportedAssets: Object.freeze(["USD", "USDC", "USDT", "AVU"]),
-      }),
     }),
     "btc-mainnet": Object.freeze({
       kind: "bitcoin",

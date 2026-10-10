@@ -78,13 +78,6 @@ describe("chains-registry", () => {
       caip2: "eip155:10143",
       nativeChainId: 10143,
       networkTag: "MONT",
-      exchange: {
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: { from: "MON", to: "USDC", defaultAmount: "100" },
-        supportedAssets: ["MON", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["monad-mainnet"]).toMatchObject({
@@ -100,13 +93,6 @@ describe("chains-registry", () => {
       caip2: "eip155:143",
       nativeChainId: 143,
       networkTag: "MON1",
-      exchange: {
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: { from: "MON", to: "USDC", defaultAmount: "100" },
-        supportedAssets: ["MON", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["xec-testnet"]).toMatchObject({
@@ -121,13 +107,6 @@ describe("chains-registry", () => {
       unit: "tXEC",
       addressPrefix: "ectest",
       networkTag: "XECT",
-      exchange: {
-        pluginId: "ecash-atomic-swap",
-        routerName: "eCash Atomic Swap Router",
-        adapterType: "atomic-swap",
-        defaultPair: { from: "XEC", to: "USDC", defaultAmount: "1000000" },
-        supportedAssets: ["XEC", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["xec-mainnet"]).toMatchObject({
@@ -142,13 +121,6 @@ describe("chains-registry", () => {
       unit: "XEC",
       addressPrefix: "ecash",
       networkTag: "XEC1",
-      exchange: {
-        pluginId: "ecash-atomic-swap",
-        routerName: "eCash Atomic Swap Router",
-        adapterType: "atomic-swap",
-        defaultPair: { from: "XEC", to: "USDC", defaultAmount: "1000000" },
-        supportedAssets: ["XEC", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["solana-devnet"]).toMatchObject({
@@ -169,7 +141,7 @@ describe("chains-registry", () => {
         routerName: "Jupiter Aggregator v6",
         adapterType: "dex-aggregator",
         defaultPair: { from: "SOL", to: "USDC", defaultAmount: "1" },
-        supportedAssets: ["SOL", "USDC", "USDT", "AVU"],
+        supportedAssets: ["SOL", "USDC", "USDT"],
       },
     });
 
@@ -191,7 +163,7 @@ describe("chains-registry", () => {
         routerName: "Jupiter Aggregator v6",
         adapterType: "dex-aggregator",
         defaultPair: { from: "SOL", to: "USDC", defaultAmount: "1" },
-        supportedAssets: ["SOL", "USDC", "USDT", "AVU"],
+        supportedAssets: ["SOL", "USDC", "USDT"],
       },
     });
 
@@ -213,7 +185,7 @@ describe("chains-registry", () => {
         routerName: "Jupiter Aggregator v6",
         adapterType: "dex-aggregator",
         defaultPair: { from: "SOL", to: "USDC", defaultAmount: "1" },
-        supportedAssets: ["SOL", "USDC", "USDT", "AVU"],
+        supportedAssets: ["SOL", "USDC", "USDT"],
       },
     });
 
@@ -234,13 +206,6 @@ describe("chains-registry", () => {
         "https://ethereum-sepolia-rpc.publicnode.com",
         "https://rpc.sepolia.org",
       ],
-      exchange: {
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: { from: "ETH", to: "USDC", defaultAmount: "0.1" },
-        supportedAssets: ["ETH", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["ethereum-mainnet"]).toMatchObject({
@@ -256,13 +221,6 @@ describe("chains-registry", () => {
       caip2: "eip155:1",
       nativeChainId: 1,
       networkTag: "ETH1",
-      exchange: {
-        pluginId: "uniswap-universal-router",
-        routerName: "Uniswap Universal Router",
-        adapterType: "dex-router",
-        defaultPair: { from: "ETH", to: "USDC", defaultAmount: "0.1" },
-        supportedAssets: ["ETH", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["hyperliquid-mainnet"]).toMatchObject({
@@ -278,13 +236,6 @@ describe("chains-registry", () => {
       caip2: "eip155:999",
       nativeChainId: 999,
       networkTag: "HYPE",
-      exchange: {
-        pluginId: "hyperliquid-l1",
-        routerName: "Hyperliquid L1 Orderbook Router",
-        adapterType: "clob-orderbook",
-        defaultPair: { from: "HYPE", to: "USDC", defaultAmount: "10" },
-        supportedAssets: ["HYPE", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["hyperliquid-testnet"]).toMatchObject({
@@ -300,13 +251,6 @@ describe("chains-registry", () => {
       caip2: "eip155:998",
       nativeChainId: 998,
       networkTag: "HYPT",
-      exchange: {
-        pluginId: "hyperliquid-l1",
-        routerName: "Hyperliquid L1 Orderbook Router",
-        adapterType: "clob-orderbook",
-        defaultPair: { from: "HYPE", to: "USDC", defaultAmount: "10" },
-        supportedAssets: ["HYPE", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["tempo-mainnet"]).toMatchObject({
@@ -322,13 +266,6 @@ describe("chains-registry", () => {
       caip2: "eip155:4217",
       nativeChainId: 4217,
       networkTag: "TMPO",
-      exchange: {
-        pluginId: "tempo-router",
-        routerName: "Tempo Settlement Engine",
-        adapterType: "settlement-engine",
-        defaultPair: { from: "USD", to: "USDC", defaultAmount: "100" },
-        supportedAssets: ["USD", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["tempo-testnet"]).toMatchObject({
@@ -344,13 +281,6 @@ describe("chains-registry", () => {
       caip2: "eip155:42431",
       nativeChainId: 42431,
       networkTag: "TMPT",
-      exchange: {
-        pluginId: "tempo-router",
-        routerName: "Tempo Settlement Engine",
-        adapterType: "settlement-engine",
-        defaultPair: { from: "USD", to: "USDC", defaultAmount: "100" },
-        supportedAssets: ["USD", "USDC", "USDT", "AVU"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["btc-mainnet"]).toMatchObject({
@@ -449,34 +379,15 @@ describe("chains-registry", () => {
     });
   });
 
-  it("resolves exchange router configuration via getChainExchangeConfig", () => {
-    expect(getChainExchangeConfig("monad")?.routerName).toBe(
-      "Uniswap Universal Router"
-    );
-    expect(getChainExchangeConfig("ecash")?.routerName).toBe(
-      "eCash Atomic Swap Router"
-    );
-    expect(getChainExchangeConfig("ecash")?.pluginId).toBe("ecash-atomic-swap");
-    expect(getChainExchangeConfig("xec-mainnet")?.adapterType).toBe(
-      "atomic-swap"
-    );
-    expect(getChainExchangeConfig("solana")?.routerName).toBe(
-      "Jupiter Aggregator v6"
-    );
+  it("lists an exchange only where one was not computed from constants, and never the AVU unit as an asset", () => {
+    for (const kind of ["monad", "ecash", "ethereum", "hyperliquid", "tempo"])
+      expect(getChainExchangeConfig(kind)).toBeUndefined();
     expect(getChainExchangeConfig("solana")?.pluginId).toBe(
       "jupiter-aggregator"
     );
-    expect(getChainExchangeConfig("ethereum")?.routerName).toBe(
-      "Uniswap Universal Router"
-    );
-    expect(getChainExchangeConfig("hyperliquid")?.routerName).toBe(
-      "Hyperliquid L1 Orderbook Router"
-    );
-    expect(getChainExchangeConfig("tempo")?.routerName).toBe(
-      "Tempo Settlement Engine"
-    );
+    for (const entry of Object.values(PROTOCOL_CHAINS))
+      expect(entry.exchange?.supportedAssets ?? []).not.toContain("AVU");
   });
-
   it("resolves entries by id and by kind + isTestnet", () => {
     expect(getChainRegistryEntry("monad-testnet")?.unit).toBe("MONT");
     expect(getChainRegistryEntry("monad-mainnet")?.unit).toBe("MON");

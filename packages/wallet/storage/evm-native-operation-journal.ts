@@ -38,6 +38,12 @@ export type EvmNativeObservation =
       transactionIndex: number
       feeWei: string
     }
+/**
+ * `native`: one transfer from one account. `legacy`: fan-in transfers into one account, then one
+ * transfer out of it. `contract`: one call with calldata from the main account, which holds the
+ * tokens the call moves; the call may carry no value (an approval, or a swap that pays a token).
+ */
+export type EvmNativeOperationKind = 'native' | 'legacy' | 'contract'
 export interface EvmNativeMemberPlan {
   source: EvmNativeSource
   unsignedTransaction: string
@@ -50,23 +56,91 @@ export interface EvmNativeMember extends EvmNativeMemberPlan {
   account: EvmNativeAccountObservation | null
   syncApplied: boolean
 }
+/**
+ * What a contract call is, kept with its signed transaction: the record a swap carries. Plain
+ * JSON, amounts as decimal strings in each asset's smallest unit. The chain is the journal's
+ * binding. The wallet's sync event turns it into the note the account sends itself.
+ */
+export interface EvmContractCallRecord {
+  kind: 'swap'
+  venueId: string
+  account: string
+  assetIn: { symbol: string; address: string | null; decimals: number }
+  amountIn: string
+  assetOut: { symbol: string; address: string | null; decimals: number }
+  quotedAmountOut: string
+  minimumAmountOut: string
+  /** Frank's fee, in the output asset; "0" when the exchange has none. */
+  interfaceFeeAmount: string
+  /** The network fee the transaction reserves, in the native coin. */
+  networkFeeWei: string
+  /** The exchange's own description of the route; needed to read the outcome later. */
+  route: unknown
+}
+const MAX_RECORD_BYTES = 8 * 1024
+function validateRecord(
+  value: unknown,
+  kind: unknown,
+): EvmContractCallRecord {
+  if (kind !== 'contract') fail()
+  const row = object(value, [
+    'kind',
+    'venueId',
+    'account',
+    'assetIn',
+    'amountIn',
+    'assetOut',
+    'quotedAmountOut',
+    'minimumAmountOut',
+    'interfaceFeeAmount',
+    'networkFeeWei',
+    'route',
+  ])
+  if (row.kind !== 'swap' || typeof row.venueId !== 'string' || !row.venueId)
+    fail()
+  if (typeof row.account !== 'string') fail()
+  for (const asset of [row.assetIn, row.assetOut]) {
+    const a = object(asset, ['symbol', 'address', 'decimals'])
+    if (typeof a.symbol !== 'string' || !a.symbol) fail()
+    if (a.address !== null && typeof a.address !== 'string') fail()
+    integer(a.decimals)
+  }
+  for (const amount of [
+    row.amountIn,
+    row.quotedAmountOut,
+    row.minimumAmountOut,
+    row.interfaceFeeAmount,
+    row.networkFeeWei,
+  ])
+    uint(amount)
+  if (encodedBytes(value) > MAX_RECORD_BYTES) fail('capacity')
+  return clone(value) as EvmContractCallRecord
+}
 export interface EvmNativeOperation {
   version: 1
   operationId: string
   binding: EvmNativeBinding
-  kind: 'native' | 'legacy'
+  kind: EvmNativeOperationKind
   recipient: string
   intendedValueWei: string
   maximumFeeWei: string
   members: EvmNativeMember[]
   cancelled: boolean
   reservedBytes: number
+  /**
+   * A contract call's record, written with the plan and so before anything is signed. Only a
+   * contract call that was given one has the key at all: a row without a record (every native
+   * and legacy send, and every row written before records existed) is the same row it always
+   * was, so adding the field needed no new journal version and no reset.
+   */
+  record?: EvmContractCallRecord
 }
 export interface EvmNativePlan {
-  kind: 'native' | 'legacy'
+  kind: EvmNativeOperationKind
   recipient: string
   intendedValueWei: string
   members: EvmNativeMemberPlan[]
+  record?: EvmContractCallRecord | null
 }
 export class EvmNativeJournalError extends Error {
   constructor(
@@ -271,6 +345,8 @@ function validateRow(
   value: unknown,
   binding: EvmNativeBinding,
 ): EvmNativeOperation {
+  const hasRecord =
+    !!value && typeof value === 'object' && 'record' in value
   const row = object(value, [
     'version',
     'operationId',
@@ -282,7 +358,9 @@ function validateRow(
     'members',
     'cancelled',
     'reservedBytes',
+    ...(hasRecord ? ['record'] : []),
   ])
+  if (hasRecord) validateRecord(row.record, row.kind)
   if (
     row.version !== 1 ||
     typeof row.operationId !== 'string' ||
@@ -291,9 +369,10 @@ function validateRow(
     fail()
   if (JSON.stringify(validateBinding(row.binding)) !== JSON.stringify(binding))
     fail('binding')
-  if (row.kind !== 'native' && row.kind !== 'legacy') fail()
+  if (row.kind !== 'native' && row.kind !== 'legacy' && row.kind !== 'contract')
+    fail()
   address(row.recipient)
-  if (uint(row.intendedValueWei) === 0n) fail()
+  if (uint(row.intendedValueWei) === 0n && row.kind !== 'contract') fail()
   uint(row.maximumFeeWei)
   integer(row.reservedBytes)
   if (
@@ -303,7 +382,7 @@ function validateRow(
     row.members.length > MAX_MEMBERS
   )
     fail()
-  if (row.kind === 'native' && row.members.length !== 1) fail()
+  if (row.kind !== 'legacy' && row.members.length !== 1) fail()
   let fee = 0n
   const sourceAddresses = new Set<string>()
   const claims = new Set<string>()
@@ -376,6 +455,17 @@ function validateRow(
   }
   if (fee.toString() !== row.maximumFeeWei) fail()
   if (fee + uint(row.intendedValueWei) > UINT_MAX) fail()
+  if (row.kind === 'contract') {
+    const call = (row.members as EvmNativeMember[])[0]!
+    const tx = Transaction.from(call.unsignedTransaction)
+    if (
+      call.source.kind !== 'main' ||
+      tx.to?.toLowerCase() !== row.recipient ||
+      tx.value.toString() !== row.intendedValueWei ||
+      tx.data === '0x'
+    )
+      fail()
+  }
   if (row.kind === 'legacy') {
     const members = row.members as EvmNativeMember[]
     const drain = members[members.length - 1]!
@@ -631,6 +721,7 @@ export class EvmNativeOperationJournal {
         })),
         cancelled: false,
         reservedBytes: 0,
+        ...(frozen.record ? { record: frozen.record } : {}),
       }
       row.reservedBytes = reservation(row)
       const validated = validateRow(row, this.binding)
@@ -738,6 +829,22 @@ export class EvmNativeOperationJournal {
       row.cancelled = true
     })
   }
+  /**
+   * Ends an operation none of whose members was ever handed to the network: its signed bytes are
+   * dropped and it is cancelled. Bytes that never left this device cannot land, so nothing is
+   * left to reconcile; an exposed member refuses this.
+   */
+  discardUnexposed(id: string): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      if (row.members.some(m => m.exposed)) fail('conflict')
+      for (const m of row.members) {
+        m.signed = null
+        m.observation = { state: 'unknown' }
+        m.account = null
+      }
+      row.cancelled = true
+    })
+  }
   beginCapture(operationId: string, memberIndex: number): EvmNativeCapture {
     if (this.closing) fail('closed')
     const row = this.get(operationId)
@@ -758,6 +865,15 @@ export class EvmNativeOperationJournal {
     await this.mutate(capture.operationId, row => {
       if (this.captures.get(key) !== capture.token) return false
       const m = row.members[capture.memberIndex]!
+      // `unknown` is the absence of an answer (a failed or inconsistent read), not evidence.
+      // It never replaces what the chain has already been seen to say: a member recorded
+      // included stays included, and one recorded missing or pending stays so, until a read
+      // that did answer says otherwise.
+      if (
+        frozenObservation.state === 'unknown' &&
+        m.observation.state !== 'unknown'
+      )
+        return false
       m.observation = frozenObservation
       m.account = frozenAccount
       if (frozenObservation.state !== 'included-success') m.syncApplied = false

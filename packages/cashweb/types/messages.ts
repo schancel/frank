@@ -240,21 +240,42 @@ export interface SwapOfferItem {
   originInstanceId?: string
 }
 
+/**
+ * The record of one swap this account made, carried in the note the account sends itself
+ * when the swap's transaction is included. It says what was signed: where, on which exchange,
+ * which transaction, what went in, what was quoted and the least that could come out, and the
+ * fees. It does not say what the swap did: that is read from the chain by `txHash`.
+ * Amounts are in each asset's smallest unit.
+ */
 export interface SwapRecordItem {
   type: 'swap-record'
+  /** Derived from `chainIdentifier` and `txHash`, so every frontend computes the same one. */
   swapId: string
-  chain: string
-  fromAsset: string
-  toAsset: string
-  fromAmount: string
-  toAmount: string
+  chainIdentifier: string
+  /** The exchange's id in that chain's `dex` list. */
+  venueId: string
   txHash: string
-  route: string
-  feeDisplay: string
-  destinationAddress?: string
-  status: 'confirmed' | 'pending' | 'failed'
+  /** The account that swapped. */
+  account: string
+  assetIn: SwapRecordAsset
+  amountIn: string
+  assetOut: SwapRecordAsset
+  quotedAmountOut: string
+  minimumAmountOut: string
+  /** Frank's own fee, in the output asset; "0" when the exchange has none. */
+  interfaceFee: string
+  /** The network fee the transaction reserved, in the chain's native coin. */
+  networkFee: string
+  /** The exchange's own description of the route, as JSON; needed to read the outcome. */
+  route?: string
   timestamp: number
-  cborPayload?: string
+}
+
+export interface SwapRecordAsset {
+  symbol: string
+  /** Absent for the chain's native coin. */
+  address?: string
+  decimals: number
 }
 
 export interface DeviceClaimItem {

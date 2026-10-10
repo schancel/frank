@@ -286,10 +286,87 @@ export interface NativeWalletHandle {
   /**
    * Looks again, within a hard request bound the wallet enforces, for this wallet's own broadcast
    * transfers whose inclusion nothing has observed. Safe to call on every poll tick: it makes no
-   * request when nothing is pending, never signs or submits anything, and never rejects. Absent
+   * request when nothing is pending, never signs anything, and never rejects. The one thing it
+   * may submit is a contract call this wallet already broadcast and the node no longer knows:
+   * the same signed bytes again, on a backoff. Absent
    * on a handle with nothing to look up; callers treat absence as nothing to do.
    */
   reobserveNativeOperations?(): Promise<void>;
+  /**
+   * One call to a contract from the wallet's main account (which holds the tokens such a call
+   * moves), recorded before it is signed and re-submitted byte-for-byte by
+   * `resumeNativeOperation`. Resolves once the call is handed to the network; the caller watches
+   * for inclusion or a revert. Absent where the family has no contract calls.
+   */
+  sendContractCall?(params: {
+    to: ChainAddress;
+    data: string;
+    value: bigint;
+    gasLimit?: bigint;
+    /** What the call is (a swap's record): journaled with it and carried by its note to self. */
+    record?: import("../storage/evm-native-operation-journal").EvmContractCallRecord;
+    onSigned?: (signed: ContractCallHandle) => Promise<void>;
+  }): Promise<ContractCallHandle>;
+  /** What a contract call can spend: the main account's balance and what could be moved into it. */
+  getContractCallFunds?(): Promise<{
+    mainAddress: string;
+    mainBalance: bigint;
+    otherBalance: bigint;
+    mainBusy: boolean;
+  }>;
+  /** Contract calls signed by this wallet and not yet seen in a block; resume each by its id. */
+  getUnresolvedContractCalls?(): ContractCallHandle[];
+  /** Read-only node access for this handle's own EVM chain. It cannot sign or submit. */
+  readonly evmReader?: EvmChainReader;
+  /** Consolidates `value` from the wallet's other accounts into the main account. */
+  fundMainAccount?(params: {
+    value: bigint;
+    onProgress?: (progress: LegacySendProgress) => void;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<LegacySendResult>;
+}
+
+/** The reads a contract interaction needs: a call, a gas estimate, a balance, a receipt. */
+export interface EvmChainReader {
+  call(tx: {
+    to: string;
+    data: string;
+    from?: string;
+    value?: bigint;
+    blockTag?: number;
+  }): Promise<string>;
+  estimateGas(tx: {
+    to: string;
+    data: string;
+    value: bigint;
+    from: string;
+  }): Promise<bigint>;
+  getBalance(address: string): Promise<bigint>;
+  getFeeData(): Promise<{
+    maxFeePerGas: bigint | null;
+    gasPrice: bigint | null;
+    maxPriorityFeePerGas?: bigint | null;
+  }>;
+  getBlock(tag: "latest"): Promise<{ baseFeePerGas: bigint | null } | null>;
+  getTransactionReceipt(hash: string): Promise<{
+    readonly from?: string;
+    readonly to?: string | null;
+    readonly status: number | null;
+    readonly blockNumber: number;
+    readonly gasUsed: bigint;
+    readonly gasPrice: bigint;
+    readonly logs: ReadonlyArray<{
+      readonly address: string;
+      readonly topics: ReadonlyArray<string>;
+      readonly data: string;
+    }>;
+  } | null>;
+  getTransaction(hash: string): Promise<unknown | null>;
+}
+
+export interface ContractCallHandle {
+  readonly operationId: string;
+  readonly txHash: string;
 }
 
 export type LegacySendStage =

@@ -7,7 +7,6 @@ import { mailSendCommand } from './commands/mail'
 import { sendCommand } from './commands/send'
 import {
   swapBuildCommand,
-  swapPluginsCommand,
   swapQuoteCommand,
 } from './commands/swap'
 import {
@@ -313,25 +312,17 @@ export function createProgram(): Command {
   const swap = program
     .command('swap')
     .description(
-      'dApp DEX swaps with 8.75 bps partner fee sharing and HD change address settlement',
+      'Swap quotes read from the chain named by --chain; no interface fee',
     )
-
-  swap
-    .command('plugins')
-    .description(
-      'List registered dApp plugins (Uniswap, Jupiter, Prediction Escrow)',
-    )
-    .action(async (opts, cmd) => {
-      await swapPluginsCommand(mergeOptions(opts, cmd))
-    })
 
   swap
     .command('quote <fromAsset> <toAsset> <amount>')
     .description(
-      'Query swap quote with 8.75 bps protocol convenience fee breakdown',
+      "Ask the swap deployment's quoter contract what the amount buys now",
     )
-    .option('-p, --plugin <id>', 'Specific dApp plugin ID')
-    .option('--fee-bps <bps>', 'Protocol fee in basis points (default: 8.75)')
+    .option('--chain <id>', 'Canonical chain identifier (required)')
+    .option('--venue <id>', "One of the chain's swap venues (default: its first)")
+    .option('--rpc-url <url>', 'JSON-RPC endpoint for that chain')
     .option('--slippage <bps>', 'Slippage in basis points (default: 50)')
     .action(async (fromAsset, toAsset, amount, opts, cmd) => {
       await swapQuoteCommand(
@@ -345,20 +336,13 @@ export function createProgram(): Command {
   swap
     .command('build <fromAsset> <toAsset> <amount>')
     .description(
-      'Build swap transaction settling into a recoverable HD change address (m/44/60/0/1/i or m/44/501/0/1/i)',
+      'Print the unsigned transactions for a swap from --account (signs and sends nothing)',
     )
-    .option('-p, --plugin <id>', 'Specific dApp plugin ID')
-    .option(
-      '--destination <address>',
-      'Custom destination address (defaults to next HD change address)',
-    )
-    .option(
-      '--change-index <n>',
-      'HD change address derivation index (default: 0)',
-    )
-    .option('--fee-bps <bps>', 'Protocol fee in basis points (default: 8.75)')
+    .requiredOption('--account <address>', 'The account that would swap')
+    .option('--chain <id>', 'Canonical chain identifier (required)')
+    .option('--venue <id>', "One of the chain's swap venues (default: its first)")
+    .option('--rpc-url <url>', 'JSON-RPC endpoint for that chain')
     .option('--slippage <bps>', 'Slippage in basis points (default: 50)')
-    .option('--password <password>', 'Password if keystore is encrypted')
     .action(async (fromAsset, toAsset, amount, opts, cmd) => {
       await swapBuildCommand(
         fromAsset,

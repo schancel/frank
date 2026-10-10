@@ -8,21 +8,16 @@ import {
   DAppPluginRegistry,
   defaultPluginRegistry,
   createStandardPluginRegistry,
-  UniswapDAppPlugin,
   JupiterDAppPlugin,
   PredictionEscrowDAppPlugin,
-  EcashSwapPlugin,
-  TempoDAppPlugin,
-  HyperliquidDAppPlugin,
   findAssociatedTokenAddress,
-  DEFAULT_UNISWAP_FEE_RECIPIENT,
-  DEFAULT_UNISWAP_ROUTER_ADDRESS,
   JUPITER_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
   DEFAULT_JUPITER_FEE_ACCOUNT,
   DEFAULT_PREDICTION_ESCROW_DOMAIN,
   type PredictionOrder,
+  type DAppPlugin,
   type DAppQuoteRequest,
 } from './plugins'
 import { EvmChangeKeyring } from './secp256k1-hd-keyring'
@@ -34,71 +29,82 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
 
   describe('DAppPluginRegistry Host', () => {
     let registry: DAppPluginRegistry
+    // The registry host is tested with a stand-in: it is not a swap and quotes nothing.
+    const evmStub = (): DAppPlugin => ({
+      id: 'evm-stub',
+      name: 'EVM stub',
+      chainType: 'evm',
+      getMetadata: () => ({
+        id: 'evm-stub',
+        name: 'EVM stub',
+        version: '0',
+        description: 'registry test stand-in',
+        chainType: 'evm',
+      }),
+      getQuote: () => Promise.reject(new Error('stub')),
+      buildTransaction: () => Promise.reject(new Error('stub')),
+    })
 
     beforeEach(() => {
       registry = new DAppPluginRegistry()
     })
 
     it('registers, looks up, and lists plugins', () => {
-      const uniswap = new UniswapDAppPlugin()
+      const evm = evmStub()
       const jupiter = new JupiterDAppPlugin()
       const prediction = new PredictionEscrowDAppPlugin()
 
-      registry.register(uniswap)
+      registry.register(evm)
       registry.register(jupiter)
       registry.register(prediction)
 
-      expect(registry.has(uniswap.id)).toBe(true)
+      expect(registry.has(evm.id)).toBe(true)
       expect(registry.has(jupiter.id)).toBe(true)
       expect(registry.has(prediction.id)).toBe(true)
-      expect(registry.get(uniswap.id)).toBe(uniswap)
+      expect(registry.get(evm.id)).toBe(evm)
       expect(registry.require(jupiter.id)).toBe(jupiter)
       expect(registry.list()).toHaveLength(3)
     })
 
     it('rejects duplicate plugin registration with clear error', () => {
-      const uniswap1 = new UniswapDAppPlugin()
-      const uniswap2 = new UniswapDAppPlugin()
+      const first = evmStub()
+      const second = evmStub()
 
-      registry.register(uniswap1)
-      expect(() => registry.register(uniswap2)).toThrow(/already registered/)
+      registry.register(first)
+      expect(() => registry.register(second)).toThrow(/already registered/)
     })
 
     it('unregisters plugins cleanly', () => {
-      const uniswap = new UniswapDAppPlugin()
-      registry.register(uniswap)
-      expect(registry.has(uniswap.id)).toBe(true)
+      const evm = evmStub()
+      registry.register(evm)
+      expect(registry.has(evm.id)).toBe(true)
 
-      const removed = registry.unregister(uniswap.id)
+      const removed = registry.unregister(evm.id)
       expect(removed).toBe(true)
-      expect(registry.has(uniswap.id)).toBe(false)
-      expect(registry.get(uniswap.id)).toBeUndefined()
-      expect(() => registry.require(uniswap.id)).toThrow(/not found/)
+      expect(registry.has(evm.id)).toBe(false)
+      expect(registry.get(evm.id)).toBeUndefined()
+      expect(() => registry.require(evm.id)).toThrow(/not found/)
     })
 
     it('filters plugins by chain type', () => {
-      const uniswap = new UniswapDAppPlugin() // evm
+      const evm = evmStub() // evm
       const jupiter = new JupiterDAppPlugin() // solana
       const prediction = new PredictionEscrowDAppPlugin() // evm
 
-      registry.register(uniswap)
+      registry.register(evm)
       registry.register(jupiter)
       registry.register(prediction)
 
       const evmPlugins = registry.getByChainType('evm')
-      expect(evmPlugins.map(p => p.id)).toEqual([uniswap.id, prediction.id])
+      expect(evmPlugins.map(p => p.id)).toEqual([evm.id, prediction.id])
 
       const solanaPlugins = registry.getByChainType('solana')
       expect(solanaPlugins.map(p => p.id)).toEqual([jupiter.id])
     })
 
     it('provides valid metadata for each plugin', () => {
-      const uniswap = new UniswapDAppPlugin()
       const jupiter = new JupiterDAppPlugin()
       const prediction = new PredictionEscrowDAppPlugin()
-
-      expect(uniswap.getMetadata().chainType).toBe('evm')
-      expect(uniswap.getMetadata().id).toBe('uniswap-universal-router')
 
       expect(jupiter.getMetadata().chainType).toBe('solana')
       expect(jupiter.getMetadata().id).toBe('jupiter-aggregator')
@@ -107,127 +113,19 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
       expect(prediction.getMetadata().id).toBe('prediction-escrow')
     })
 
-    it('instantiates standard plugin registry with all reference plugins pre-registered', () => {
-      const registry = createStandardPluginRegistry()
-      expect(registry.list().length).toBe(6)
-      expect(registry.has('uniswap-universal-router')).toBe(true)
-      expect(registry.has('jupiter-aggregator')).toBe(true)
-      expect(registry.has('ecash-atomic-swap')).toBe(true)
-      expect(registry.has('prediction-escrow')).toBe(true)
-      expect(registry.has('tempo-router')).toBe(true)
-      expect(registry.has('hyperliquid-l1')).toBe(true)
-    })
-    it('populates defaultPluginRegistry singleton with standard plugins', () => {
-      expect(defaultPluginRegistry.has('uniswap-universal-router')).toBe(true)
-      expect(defaultPluginRegistry.has('jupiter-aggregator')).toBe(true)
-      expect(defaultPluginRegistry.has('ecash-atomic-swap')).toBe(true)
-      expect(defaultPluginRegistry.get('ecash-atomic-swap')?.name).toBe(
-        'eCash Atomic Swap Router',
-      )
-    })
-  })
-
-  describe('Uniswap Universal Router Reference Plugin', () => {
-    const plugin = new UniswapDAppPlugin()
-    let evmChangeKeyring: EvmChangeKeyring
-
-    beforeAll(() => {
-      evmChangeKeyring = EvmChangeKeyring.fromMnemonic(TEST_MNEMONIC)
-    })
-
-    it('calculates quote with 8.75 bps protocol convenience fee deduction for USDC -> MON', async () => {
-      // 1,000,000 micro-USDC = 1.0 USDC
-      const inputAmount = 1_000_000n
-      const quote = await plugin.getQuote({
-        inputToken: 'USDC',
-        outputToken: 'MON',
-        inputAmount,
-      })
-
-      // 8.75 bps = 875 / 1,000,000
-      // Expected fee on 1,000,000 units is exactly 875 units
-      expect(quote.feeAmount).toBe(875n)
-      expect(quote.feeBps).toBe(8.75)
-      expect(quote.feeRecipient).toBe(DEFAULT_UNISWAP_FEE_RECIPIENT)
-
-      // Net input: 999,125 units ($0.999125)
-      // At $3.50 / MON, 0.999125 / 3.5 = ~0.285464 MON (~2.85464e17 wei)
-      expect(quote.expectedOutputAmount).toBeGreaterThan(0n)
-      expect(quote.minOutputAmount).toBeLessThan(quote.expectedOutputAmount)
-      // Default 50 bps slippage: min is 99.5% of expected
-      expect(quote.minOutputAmount).toBe(
-        (quote.expectedOutputAmount * 9950n) / 10000n,
-      )
-    })
-
-    it('calculates quote for USDC -> AVU (energy anchor equivalent)', async () => {
-      // 10,000,000 micro-USDC = 10.0 USDC
-      const inputAmount = 10_000_000n
-      const quote = await plugin.getQuote({
-        inputToken: 'USDC',
-        outputToken: 'AVU',
-        inputAmount,
-      })
-
-      // Fee: (10,000,000 * 875) / 1,000,000 = 8,750 micro-USDC
-      expect(quote.feeAmount).toBe(8_750n)
-      // 1 AVU = $0.084. Net ~$9.99125 -> ~118.94 AVU (18 decimals)
-      expect(quote.expectedOutputAmount).toBeGreaterThan(118n * 10n ** 18n)
-      expect(quote.expectedOutputAmount).toBeLessThan(120n * 10n ** 18n)
-    })
-
-    it('builds transaction settling directly to derived HD change address m/44/60/0/1/0', async () => {
-      // Derive fresh HD change address from EvmChangeKeyring (m/44'/60'/0'/1/0)
-      const changeAccount = evmChangeKeyring.deriveChangeAccount(0)
-      expect(changeAccount.index).toBe(0)
-      const destinationChangeAddress = changeAccount.address
-
-      const quote = await plugin.getQuote({
-        inputToken: 'USDC',
-        outputToken: 'MON',
-        inputAmount: 5_000_000n,
-      })
-
-      const preparedTx = await plugin.buildTransaction({
-        quote,
-        userAddress: '0x1111111111111111111111111111111111111111',
-        destinationAddress: destinationChangeAddress,
-        deadline: 1800000000,
-      })
-
-      expect(preparedTx.chainType).toBe('evm')
-      expect(preparedTx.to).toBe(DEFAULT_UNISWAP_ROUTER_ADDRESS)
-      expect(preparedTx.recipient).toBe(destinationChangeAddress)
-      expect(preparedTx.data).toBeDefined()
-
-      // Decode and verify the calldata commands and recipient parameter
-      const decoded = plugin.decodeExecuteCalldata(preparedTx.data!)
-      expect(decoded.commands).toBe('0x0600') // 0x06 PAY_PORTION, 0x00 V3_SWAP_EXACT_IN
-      expect(decoded.feeRecipient?.toLowerCase()).toBe(
-        DEFAULT_UNISWAP_FEE_RECIPIENT.toLowerCase(),
-      )
-      expect(decoded.feeBps).toBe(8.75)
-      expect(decoded.swapRecipient?.toLowerCase()).toBe(
-        destinationChangeAddress.toLowerCase(),
-      )
-      expect(decoded.amountIn).toBe(5_000_000n - quote.feeAmount)
-      expect(decoded.amountOutMin).toBe(quote.minOutputAmount)
-      expect(decoded.payerIsUser).toBe(true)
-    })
-
-    it('refuses to build transaction when destination change address is missing', async () => {
-      const quote = await plugin.getQuote({
-        inputToken: 'USDC',
-        outputToken: 'MON',
-        inputAmount: 1_000_000n,
-      })
-
-      await expect(
-        plugin.buildTransaction({
-          quote,
-          userAddress: '0x1111111111111111111111111111111111111111',
-        }),
-      ).rejects.toThrow(/destinationAddress/)
+    it('registers no plugin whose answers were computed from constants', () => {
+      for (const registry of [
+        createStandardPluginRegistry(),
+        defaultPluginRegistry,
+      ])
+        for (const removed of [
+          'uniswap-universal-router',
+          'ecash-atomic-swap',
+          'tempo-router',
+          'hyperliquid-l1',
+          'prediction-escrow',
+        ])
+          expect(registry.has(removed)).toBe(false)
     })
   })
 
@@ -490,117 +388,6 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
     })
   })
 
-  describe('eCash Atomic Swap Reference Plugin', () => {
-    const plugin = new EcashSwapPlugin()
-
-    it('provides valid metadata for eCash atomic swap adaptor', () => {
-      const meta = plugin.getMetadata()
-      expect(meta.id).toBe('ecash-atomic-swap')
-      expect(meta.name).toBe('eCash Atomic Swap Router')
-      expect(meta.chainType).toBe('ecash')
-    })
-
-    it('calculates quote with 8.75 bps protocol fee deduction for XEC -> USDC', async () => {
-      // 1,000,000 XEC = 100,000,000 satoshis (2 decimals)
-      // 1,000,000 * 0.000041 = $41.00 gross
-      // Net after 8.75 bps = $40.964125 -> ~40,964,125 micro-USDC
-      const inputAmount = 100_000_000n
-      const quote = await plugin.getQuote({
-        inputToken: 'XEC',
-        outputToken: 'USDC',
-        inputAmount,
-      })
-
-      expect(quote.pluginId).toBe('ecash-atomic-swap')
-      expect(quote.inputToken).toBe('XEC')
-      expect(quote.outputToken).toBe('USDC')
-      expect(quote.inputAmount).toBe(inputAmount)
-      expect(quote.feeBps).toBe(8.75)
-      expect(quote.expectedOutputAmount).toBeGreaterThan(40_000_000n)
-      expect(quote.expectedOutputAmount).toBeLessThan(42_000_000n)
-      expect(quote.route).toEqual(
-        expect.objectContaining({
-          type: 'htlc-atomic-swap',
-          router: 'eCash Atomic Swap Router',
-        }),
-      )
-    })
-
-    it('calculates quote for XEC -> AVU (energy anchor equivalent)', async () => {
-      const inputAmount = 100_000_000n // 1,000,000 XEC
-      const quote = await plugin.getQuote({
-        inputToken: 'XEC',
-        outputToken: 'AVU',
-        inputAmount,
-      })
-
-      expect(quote.outputToken).toBe('AVU')
-      expect(quote.expectedOutputAmount).toBeGreaterThan(0n)
-    })
-
-    it('builds prepared transaction settling directly to recipient cashaddress', async () => {
-      const quote = await plugin.getQuote({
-        inputToken: 'XEC',
-        outputToken: 'USDC',
-        inputAmount: 100_000_000n,
-      })
-
-      const destinationAddress =
-        'ecash:qp3wjpa3tjlj042z2wv7hahsldgwhwy0rq9sywjpyy'
-      const preparedTx = await plugin.buildTransaction({
-        quote,
-        userAddress: 'ecash:qz0k2n44k6c2x5f8q3h6p8z0z4q2p8q4k6c2x5f8q3',
-        destinationAddress,
-      })
-
-      expect(preparedTx.pluginId).toBe('ecash-atomic-swap')
-      expect(preparedTx.chainType).toBe('ecash')
-      expect(preparedTx.recipient).toBe(destinationAddress)
-      expect(preparedTx.metadata).toEqual(
-        expect.objectContaining({
-          swapType: 'ecash-atomic-swap',
-          router: 'eCash Atomic Swap Router',
-          inputToken: 'XEC',
-          outputToken: 'USDC',
-          recipientAddress: destinationAddress,
-        }),
-      )
-    })
-
-    it('refuses to build transaction when destinationAddress is missing', async () => {
-      const quote = await plugin.getQuote({
-        inputToken: 'XEC',
-        outputToken: 'USDC',
-        inputAmount: 100_000_000n,
-      })
-
-      await expect(
-        plugin.buildTransaction({
-          quote,
-          userAddress: 'ecash:qz0k2n44k6c2x5f8q3h6p8z0z4q2p8q4k6c2x5f8q3',
-        }),
-      ).rejects.toThrow(/destinationAddress/)
-    })
-
-    it('rejects zero or negative input amount with RangeError', async () => {
-      await expect(
-        plugin.getQuote({
-          inputToken: 'XEC',
-          outputToken: 'USDC',
-          inputAmount: 0n,
-        }),
-      ).rejects.toThrow(RangeError)
-
-      await expect(
-        plugin.getQuote({
-          inputToken: 'XEC',
-          outputToken: 'USDC',
-          inputAmount: -100n,
-        }),
-      ).rejects.toThrow(RangeError)
-    })
-  })
-
   describe('Edge cases and multi-chain plugins', () => {
     it('supports multi-chain plugins in DAppPluginRegistry', () => {
       const registry = new DAppPluginRegistry()
@@ -629,38 +416,8 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
       expect(registry.list()).toHaveLength(0)
     })
 
-    it('sets native value when swapping native input token (MON -> USDC)', async () => {
-      const plugin = new UniswapDAppPlugin()
-      const quote = await plugin.getQuote({
-        inputToken: 'MON',
-        outputToken: 'USDC',
-        inputAmount: 2_000_000_000_000_000_000n, // 2 MON
-      })
-
-      const preparedTx = await plugin.buildTransaction({
-        quote,
-        userAddress: '0x1111111111111111111111111111111111111111',
-        destinationAddress: '0x2222222222222222222222222222222222222222',
-      })
-
-      expect(preparedTx.value).toBe(quote.inputAmount)
-    })
-
-    it('rejects invalid paths or zero amounts in Uniswap and Jupiter', async () => {
-      const uniswap = new UniswapDAppPlugin()
+    it('rejects zero amounts in Jupiter', async () => {
       const jupiter = new JupiterDAppPlugin()
-
-      await expect(
-        uniswap.getQuote({
-          inputToken: 'USDC',
-          outputToken: 'MON',
-          inputAmount: 0n,
-        }),
-      ).rejects.toThrow(RangeError)
-
-      expect(() =>
-        uniswap.encodeV3Path(['0x1111111111111111111111111111111111111111']),
-      ).toThrow(/Path must contain at least 2 tokens/)
 
       await expect(
         jupiter.getQuote({

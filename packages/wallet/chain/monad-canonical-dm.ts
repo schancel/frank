@@ -278,6 +278,12 @@ export interface UnpaidEnvelope {
   delivery: string
   context: string
   recipientSubject: string
+  /** The multipart boundary of the request as first sent. The relay recognises a repeat by the
+   * request's exact bytes (content type and body): the same envelope under another boundary is
+   * answered 409, not `delivered`, so a repeat is framed with this one. The boundary is the only
+   * part of the request that is not fixed by the envelope. A record without it, written by
+   * earlier code, cannot be repeated exactly and is not used: the message is sealed again. */
+  boundary: string
 }
 export class MemoryCanonicalLinkStore implements CanonicalLinkStore {
   private readonly rows = new Map<string, StoredLink>()
@@ -786,15 +792,16 @@ function sealUnpaid(
       [6, payload.typed.dleqProof],
     ]),
   )
+  const boundary = `frank-${toHex(randomBytes(24))}`
   return {
     digest: toHex(digest),
     delivery,
     context: sealed.context,
-    request: freezeCanonicalRequest({
-      delivery,
-      context: sealed.context,
-      transactions: [],
-    }),
+    boundary,
+    request: freezeCanonicalRequest(
+      { delivery, context: sealed.context, transactions: [] },
+      boundary,
+    ),
   }
 }
 
@@ -917,18 +924,22 @@ async function send(
       // from before it is handed over until the relay says what became of it, and a repeat
       // sends those same bytes: every copy has the one payload digest.
       const name = suppliedMessageId ? toHex(suppliedMessageId) : undefined
-      const kept = name ? owner.links.unpaid(name) : undefined
+      const stored = name ? owner.links.unpaid(name) : undefined
+      const kept = stored?.boundary ? stored : undefined
       if (kept && kept.recipientSubject !== peer.subject)
         throw new DirectMessageArgumentError('messageId')
       let request: ReturnType<typeof freezeCanonicalRequest>
       let digest: string
       if (kept) {
         digest = kept.digest
-        request = freezeCanonicalRequest({
-          delivery: fromHex(kept.delivery),
-          context: fromHex(kept.context),
-          transactions: [],
-        })
+        request = freezeCanonicalRequest(
+          {
+            delivery: fromHex(kept.delivery),
+            context: fromHex(kept.context),
+            transactions: [],
+          },
+          kept.boundary,
+        )
       } else {
         const unpaid = sealUnpaid(owner, directory, {
           senderCurrent: await directory.selfCurrent(),
@@ -948,6 +959,7 @@ async function send(
             delivery: toHex(unpaid.delivery),
             context: toHex(unpaid.context),
             recipientSubject: peer.subject,
+            boundary: unpaid.boundary,
           })
       }
       // From here the relay may hold the message, whatever this call learns of it.

@@ -88,6 +88,7 @@ import {
   CanonicalSenderUnpublishedError,
   LevelCanonicalLinkStore,
   UnpaidDirectMessageNotDeliveredError,
+  type UnpaidEnvelope,
 } from './monad-canonical-dm'
 import {
   isDirectMessageNotAttempted,
@@ -2549,6 +2550,94 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       expect(toHex(repeat.parts.context)).toBe(toHex(first.parts.context))
       expect(repeat.identity.payload_hash).toBe(again.payloadDigest)
       sealing.mockRestore()
+    })
+
+    it('an unpaid named message whose answer was lost is repeated as the very same request body, byte for byte, also after a restart', async () => {
+      // The relay recognises a repeat by the whole request: content type and body. The same
+      // envelope under another multipart boundary is answered 409, never `delivered`.
+      const directory = await f.directoryFor('alice', f.alice, f.bob)
+      installCanonicalDirectory(f.alice, directory)
+      const unpaid = (wallet: EvmChainWalletHandle) =>
+        f.chain.directMessages.send({
+          wallet,
+          recipient: f.bob.identity.address,
+          items: text('unpaid, answer lost'),
+          stampValue: 0n,
+          messageId: '00000000-0000-4000-8000-0000000000ac',
+        })
+      // What the transport handed to fetch, as the relay would compare it.
+      const handed = () =>
+        f.requests.map(r => ({ contentType: r.contentType, body: toHex(r.body) }))
+      // The relay stores the message and its answer never arrives.
+      f.setPhase('lost')
+      await expect(unpaid(f.alice)).rejects.toThrow('outcome is unknown')
+      await expect(unpaid(f.alice)).rejects.toThrow('outcome is unknown')
+      expect(handed()).toHaveLength(2)
+      expect(handed()[1]).toEqual(handed()[0])
+      // The kept envelope carries its boundary across a restart.
+      await f.alice.close()
+      const wallet = (await f.chain.createWallet(
+        roots(0),
+      )) as EvmChainWalletHandle
+      f.alice = wallet
+      installCanonicalDirectory(wallet, directory)
+      f.setPhase('delivered')
+      const sent = await unpaid(wallet)
+      expect(sent.stampPayments).toEqual([])
+      expect(handed()).toHaveLength(3)
+      expect(handed()[2]).toEqual(handed()[0])
+      expect(handed()[0].contentType).toMatch(
+        /^multipart\/form-data; boundary=frank-[0-9a-f]{48}$/,
+      )
+    })
+
+    it('an unpaid envelope kept by earlier code, without its boundary, is not used: the message is sealed again', async () => {
+      const address = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+      const storageLocation = `${join(f.root, 'wallet')}-evm-${address}`
+      const directory = await f.directoryFor('alice', f.alice, f.bob)
+      installCanonicalDirectory(f.alice, directory)
+      const messageId = '00000000-0000-4000-8000-0000000000ad'
+      const unpaid = (wallet: EvmChainWalletHandle) =>
+        f.chain.directMessages.send({
+          wallet,
+          recipient: f.bob.identity.address,
+          items: text('unpaid, kept by earlier code'),
+          stampValue: 0n,
+          messageId,
+        })
+      f.setPhase('lost')
+      await expect(unpaid(f.alice)).rejects.toThrow('outcome is unknown')
+      await f.alice.close()
+      // The record as the earlier code wrote it: the same fields, no boundary.
+      const name = messageId.replace(/-/g, '')
+      const store = await LevelCanonicalLinkStore.open(storageLocation)
+      const kept = store.unpaid(name)!
+      expect(kept.digest).toMatch(/^[0-9a-f]{64}$/)
+      await store.setUnpaid(name, {
+        digest: kept.digest,
+        delivery: kept.delivery,
+        context: kept.context,
+        recipientSubject: kept.recipientSubject,
+      } as UnpaidEnvelope)
+      await store.close()
+      const wallet = (await f.chain.createWallet(
+        roots(0),
+      )) as EvmChainWalletHandle
+      f.alice = wallet
+      installCanonicalDirectory(wallet, directory)
+      // Its request cannot be rebuilt, so it is a new envelope with a new digest; the relay
+      // may then hold two copies of this one message.
+      await expect(unpaid(wallet)).rejects.toThrow('outcome is unknown')
+      const [first, second] = f.requests.map(
+        r => restoreCanonicalRequest(r).identity.payload_hash,
+      )
+      expect(second).not.toBe(first)
+      // The new envelope replaced the old record and is repeated exactly.
+      f.setPhase('delivered')
+      await unpaid(wallet)
+      expect(f.requests).toHaveLength(3)
+      expect(toHex(f.requests[2].body)).toBe(toHex(f.requests[1].body))
+      expect(f.requests[2].contentType).toBe(f.requests[1].contentType)
     })
   })
 

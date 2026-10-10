@@ -15,6 +15,7 @@ import {
 } from 'src/stores/chats'
 import { isChainAddress } from 'src/utils/chain-address'
 import { accountSession, accountStatus } from '../accounts/session'
+import { notePendingChatRoute, takeInterruptedChatRoute } from './pending-chat'
 
 async function ensureChatState(
   address: string | undefined,
@@ -103,8 +104,33 @@ export default () => {
       process.env.MODE === 'ssr' ? undefined : process.env.VUE_ROUTER_BASE,
     ),
   })
+  // Read before the first navigation starts: a chat that was being opened when the page was
+  // reloaded (see `./pending-chat`).
+  const interrupted = takeInterruptedChatRoute()
+  let latest: RouteLocationNormalized | undefined
+  Router.beforeEach((to, from) => {
+    latest = to
+    notePendingChatRoute(
+      to.path.startsWith('/chat/') ? to.fullPath : null,
+      from.fullPath,
+    )
+  })
   Router.beforeEach(redirectIfNoProfile)
+  // A navigation that ended in an error (the page's code could not be loaded) is over too.
+  Router.onError(() => notePendingChatRoute(null))
+  if (interrupted) {
+    void Router.isReady()
+      .then(() => {
+        // Only from where the click was made; the user may have gone elsewhere on purpose.
+        if (Router.currentRoute.value.fullPath === interrupted.from)
+          return Router.push(interrupted.to)
+      })
+      .catch(() => undefined)
+  }
   Router.afterEach((to, _from, failure) => {
+    // The navigation the user asked for last has ended (committed, or refused): nothing is
+    // pending. One that a later navigation replaced ends without touching the later one's note.
+    if (to === latest) notePendingChatRoute(null)
     // Only a committed route owns selection/read state. Publishing from beforeEach lets
     // selection observers replace in-flight query navigation or mark canceled targets read.
     if (failure || startupRestoration.value.phase !== 'restored') return

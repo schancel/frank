@@ -10,6 +10,7 @@ jest.mock('vue-router', () => ({
       mockGuard = guard
     },
     afterEach: jest.fn(),
+    onError: jest.fn(),
   }),
   createMemoryHistory: jest.fn(),
   createWebHistory: jest.fn(),

@@ -590,6 +590,7 @@ export default {
     balanceStale: '(last known)',
     directMessages: 'Direct Messages',
     composeEmail: 'Compose Email',
+    openingConversation: 'Opening conversation…',
     selectChatOrAddContact:
       'Select a conversation or add a contact to start messaging.',
   },

@@ -600,6 +600,7 @@ export default {
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
     composeEmail: 'Rédiger un e-mail',
+    openingConversation: 'Ouverture de la conversation…',
     selectChatOrAddContact:
       'Sélectionnez une conversation ou ajoutez un contact pour commencer à échanger.',
   },

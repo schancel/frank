@@ -601,9 +601,11 @@ fn validate_call(call: &Value) -> Result<CallCost, RpcRejection> {
             anonymous: false,
             broadcast: false,
         },
+        // Anonymous like sendTransaction, at the same cost: a wallet simulates a transaction
+        // before it sends it, and a swap's expected output is read from a simulation.
         "simulateTransaction" => CallCost {
             units: 20,
-            anonymous: false,
+            anonymous: true,
             broadcast: false,
         },
         "sendTransaction" => CallCost {
@@ -1370,6 +1372,18 @@ mod tests {
         let cost = validate_call(&send_tx).unwrap();
         assert!(cost.broadcast);
         assert!(cost.anonymous);
+
+        // Simulation is anonymous at the same cost as a send, and is not a broadcast
+        let simulate = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "simulateTransaction",
+            "params": ["dGVzdA==", { "sigVerify": false }]
+        });
+        let cost = validate_call(&simulate).unwrap();
+        assert!(cost.anonymous);
+        assert!(!cost.broadcast);
+        assert_eq!(cost.units, 20);
 
         // Heavy getBlock requires authentication (anonymous: false)
         let get_block = json!({

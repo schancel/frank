@@ -247,6 +247,8 @@ import {
   ContactPaymentFailedError,
   ContactPaymentPendingError,
   ContactPaymentReleasedError,
+  ContactPaymentTooLargeError,
+  MAX_STEALTH_ITEM_AMOUNT,
   type ContactSendParams,
   type ContactSendResult,
   type PreparedContactPayment,
@@ -671,9 +673,6 @@ const mainAccountAdmissions = new WeakMap<
   EvmChainWalletHandle,
   MainAccountAdmission
 >();
-/** The largest amount a stealth message item can state (its wire field is an unsigned 64-bit
- * integer): about 18.4 units of an 18-decimal coin. */
-export const MAX_STEALTH_ITEM_AMOUNT = 2n ** 64n - 1n;
 /** The most pending coins one background pass asks the chain about. */
 export const PENDING_COIN_PROBES_PER_PASS = 8;
 /** How long the wallet waits before asking the chain a second time whether a received payment's
@@ -712,6 +711,10 @@ interface ReceivedCoinOwner {
     ephemeralPubKeys: readonly string[],
     payloadDigest: string
   ): Promise<void>;
+  /** Start of a send whose message carries these stealth items. Rejects, before the send does
+   * anything, if one of them is a released payment. Otherwise the items are in flight (never
+   * released) until the returned function is called. */
+  beginContactSend(ephemeralPubKeys: readonly string[]): Promise<() => void>;
   /** Releases the payments among these of which no byte ever left the device. True if any. */
   releaseUnsentContactPayments(
     ephemeralPubKeys: readonly string[]
@@ -1226,20 +1229,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       );
       if (coinOwner === undefined || carried.length === 0)
         return canonical.send(params);
+      // (1) A message carrying a released payment is refused here, before the send writes or
+      // submits anything. (2) While the send runs its payments are in flight and cannot be
+      // released. (3) The payment learns the message's digest before anything durable exists
+      // from which those bytes could be submitted, and before a free message is handed over:
+      // from that moment "no digest" no longer holds, and the payment is never released.
+      const endSend = await coinOwner.beginContactSend(carried);
       let result: DirectMessageSendResult;
       try {
         result = await canonical.send({
           ...params,
-          onAttemptCreated: async (payloadDigest) => {
+          onBeforeExposure: async (payloadDigest) => {
             await coinOwner.contactMessageAttempted(carried, payloadDigest);
-            await params.onAttemptCreated?.(payloadDigest);
+            await params.onBeforeExposure?.(payloadDigest);
           },
         });
       } catch (error) {
+        endSend();
         // The message could not even be paid for because its own stamp funding needs the
-        // account the payment's signed transfer is held on. Nothing of it left the device: the
-        // payment is released (its transfer cancelled, its source free) instead of waiting on
-        // itself for ever, and the caller makes the payment again.
+        // account the payment's signed transfer is held on. That is refused before the message
+        // is sealed, so nothing of it exists: the payment is released (its transfer cancelled,
+        // its source free) instead of waiting on itself for ever, and the caller makes the
+        // payment again.
         if (
           error instanceof Error &&
           error.message === SOURCE_HELD_FOR_CONTACT_PAYMENT &&
@@ -1247,10 +1258,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         )
           throw new ContactPaymentReleasedError();
         throw error;
+      } finally {
+        endSend();
       }
-      // A free message has no payment attempt, so `onAttemptCreated` never ran: the payment
-      // learns its message here, before it is told that the relay has it.
-      await coinOwner.contactMessageAttempted(carried, result.payloadDigest);
       void coinOwner.contactMessageDelivered(result.payloadDigest);
       return result;
     },
@@ -3064,24 +3074,52 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           // Its record is marked first, so a send that starts now is refused; then the journal
           // cancels the signed, unexposed operation and its source is free. Nothing was sent,
           // nothing can land.
+          /** Message items (by ephemeral key) a send is carrying right now. Such a payment is
+           * never released: its bytes may be on their way out. */
+          const inFlight = new Map<string, number>();
+          /** Cancels the journalled transfer of a released payment and drops its signed bytes.
+           * Repeatable: a stop between marking a payment released and this is finished by the
+           * next pass. */
+          const cancelReleasedTransfer = async (
+            payment: ContactPayment
+          ): Promise<void> => {
+            const row =
+              (payment.operationId === undefined
+                ? undefined
+                : topicOwner!
+                    .nativeJournal!.list()
+                    .find((r) => r.operationId === payment.operationId)) ??
+              // Stopped around signing: the journal may hold a signed row the record never
+              // learned of.
+              signedTransferTo(payment.stealthAddress);
+            if (row === undefined || row.cancelled) return;
+            await runWalletExclusive(wallet, (admission) =>
+              nativeOwner.releaseUnexposed(row.operationId, admission)
+            );
+          };
           const releaseContactPayment = (stealthAddress: string): Promise<boolean> =>
             exposureExclusive(async () => {
               const payment = paymentStore.get(stealthAddress);
               if (
                 payment === undefined ||
                 (payment.state !== "prepared" && payment.state !== "planned") ||
-                payment.payloadDigest !== undefined
+                payment.payloadDigest !== undefined ||
+                inFlight.has(payment.ephemeralPubKey)
               )
                 return false;
-              await paymentStore.put(stealthAddress, {
-                ...payment,
+              // Marked first, without its signed bytes: from here a message carrying its item is
+              // refused, and nothing on this device can send the transfer.
+              const {
+                rawTransaction: _raw,
+                txHash: _hash,
+                ...withoutBytes
+              } = payment;
+              const released: ContactPayment = {
+                ...withoutBytes,
                 state: "released",
-              });
-              const operationId = payment.operationId;
-              if (operationId !== undefined)
-                await runWalletExclusive(wallet, (admission) =>
-                  nativeOwner.releaseUnexposed(operationId, admission)
-                );
+              };
+              await paymentStore.put(stealthAddress, released);
+              await cancelReleasedTransfer(payment);
               return true;
             });
           const broadcastContactTransfer = async (
@@ -3255,8 +3293,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // The message item states the amount in an unsigned 64-bit field. A larger payment
             // could be signed and then never described to the contact, so it is refused here.
             if (params.value > MAX_STEALTH_ITEM_AMOUNT)
-              throw new RangeError(
-                "A payment to a contact cannot exceed 2^64-1 base units: the message item cannot state a larger amount"
+              throw new ContactPaymentTooLargeError(
+                `This payment is larger than a single contact payment can carry (about ${formatEther(
+                  MAX_STEALTH_ITEM_AMOUNT
+                ).slice(0, 4)} ${unit}); send it in parts`
               );
             const recipientAddress = getAddress(
               params.recipient.raw
@@ -3401,6 +3441,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               for (const listed of paymentStore.all()) {
                 if (closedWallets.has(wallet)) return;
                 let payment = listed;
+                // Released, and the app stopped before the journal cancelled its transfer:
+                // finished here (local, no request), so its source is not left held.
+                if (payment.state === "released") {
+                  await cancelReleasedTransfer(payment).catch(() => undefined);
+                  continue;
+                }
                 if (
                   payment.state !== "planned" &&
                   payment.state !== "prepared" &&
@@ -3745,6 +3791,29 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             mailboxScan: () =>
               scanState.get("scan") ?? { complete: false, sinceMs: 0 },
             recordMailboxScan: (progress) => scanState.put("scan", progress),
+            beginContactSend: (ephemeralPubKeys) =>
+              exposureExclusive(async () => {
+                // Refused here, before the send does anything durable: a released payment's
+                // transfer is cancelled, and a message carrying it must never exist.
+                for (const payment of paymentStore.all())
+                  if (
+                    payment.state === "released" &&
+                    ephemeralPubKeys.includes(payment.ephemeralPubKey)
+                  )
+                    throw new ContactPaymentReleasedError();
+                for (const key of ephemeralPubKeys)
+                  inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
+                let ended = false;
+                return () => {
+                  if (ended) return;
+                  ended = true;
+                  for (const key of ephemeralPubKeys) {
+                    const left = (inFlight.get(key) ?? 1) - 1;
+                    if (left > 0) inFlight.set(key, left);
+                    else inFlight.delete(key);
+                  }
+                };
+              }),
             contactMessageAttempted: (ephemeralPubKeys, payloadDigest) =>
               exposureExclusive(async () => {
                 for (const payment of paymentStore.all()) {

@@ -715,6 +715,8 @@ export default {
     notSent: 'The payment could not be made. Nothing was sent.',
     messageEnded:
       'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
+    tooLarge:
+      'This payment is larger than a single contact payment can carry (about {max} {unit}); send it in parts.',
   },
   offerSwapDialog: {
     title: 'Offer Atomic Swap to',
@@ -1106,6 +1108,8 @@ export default {
     notSent: 'The payment could not be made. Nothing was sent.',
     messageEnded:
       'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
+    tooLarge:
+      'This payment is larger than a single contact payment can carry (about {max} {unit}); send it in parts.',
   },
   contactBookDialog: {
     contacts: 'Contacts',

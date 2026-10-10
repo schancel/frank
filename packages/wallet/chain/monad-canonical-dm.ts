@@ -929,6 +929,9 @@ async function send(
             recipientSubject: peer.subject,
           })
       }
+      // The caller learns the message's digest, durably on its side, BEFORE the relay is handed
+      // a byte: a free message has no payment attempt to announce it.
+      await params.onBeforeExposure?.(digest)
       // From here the relay may hold the message, whatever this call learns of it.
       attempted = true
       const accepted = await submitCanonicalRequest({
@@ -1003,6 +1006,9 @@ async function send(
       stampValueWei,
       economicBinding: messageId,
     })
+    // Before the intent (and so before any durable record from which these bytes could later be
+    // submitted): the caller learns the digest of what is about to become sendable.
+    await params.onBeforeExposure?.(digest)
     let own: CanonicalWorkflowLink | undefined
     await client.prepareIntent({
       prepared,

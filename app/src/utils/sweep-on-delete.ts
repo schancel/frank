@@ -106,6 +106,18 @@ export async function settleOutgoingPayments(
   }
 }
 
+/**
+ * A message whose payment the wallet released keeps the bubble and loses the signed transfer:
+ * the stealth items stay (amount, memo) with no transaction in them. Such an item cannot be
+ * encoded, so the message can never be sent again, by a retry or otherwise; the only copies of a
+ * released transfer are then ones that never existed outside this device.
+ */
+export function stripReleasedPayments(message: ChatMessage): void {
+  message.items = message.items.map(item =>
+    item.type === 'stealth' ? { ...item, transactions: [] } : item,
+  )
+}
+
 /** Shows why a delete left messages in place. The wallet's own reason goes to the console (it can
  * be a node's wording); the user gets the app's sentence. */
 export function notifyDeleteFailure(error: unknown): void {

@@ -118,4 +118,18 @@ describe('SendStealthDialog', () => {
       2_500_000_000_000_000_000n,
     )
   })
+
+  it('says before sending that an amount is more than one contact payment can carry', async () => {
+    const wrapper = mountDialog()
+    await wrapper.setData({ amount: '18' })
+    expect((wrapper.vm as any).canSend).toBe(true)
+    await wrapper.setData({ amount: '19' })
+    expect((wrapper.vm as any).tooLarge).toBe(true)
+    expect((wrapper.vm as any).canSend).toBe(false)
+    expect(wrapper.text()).toContain(
+      `This payment is larger than a single contact payment can carry (about 18.4 ${activeChain.unit}); send it in parts.`,
+    )
+    ;(wrapper.vm as any).sendStealth()
+    expect(wrapper.emitted('send')).toBeUndefined()
+  })
 })

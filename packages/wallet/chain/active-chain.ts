@@ -108,6 +108,8 @@ export {
   ContactPaymentPendingError,
   ContactPaymentFailedError,
   ContactPaymentReleasedError,
+  ContactPaymentTooLargeError,
+  MAX_STEALTH_ITEM_AMOUNT,
 } from "./chain-wallet";
 
 /** Canonical string form of an on-chain address, for storage keys, API calls, and equality checks.
@@ -404,6 +406,12 @@ export interface DirectMessageClient {
      * the relay, with its `payloadDigest` (the eventual `DirectMessageSendResult.payloadDigest`).
      * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
     onAttemptCreated?: (payloadDigest: string) => void | Promise<void>;
+    /** Called with the message's `payloadDigest` once it is sealed and BEFORE anything durable is
+     * written from which its bytes could be submitted (the payment intent of a paid message) and
+     * before any byte is handed to the relay (a free message). Awaited; if it rejects, nothing was
+     * recorded or sent. After it resolves the message may leave at any time, also after a restart:
+     * a caller that must know "no byte of this ever left the device" records the digest here. */
+    onBeforeExposure?: (payloadDigest: string) => void | Promise<void>;
   }): Promise<DirectMessageSendResult>;
   /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
    * relay answers 200 for an already-delivered set, and 503 while it is pending), then reports

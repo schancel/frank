@@ -185,6 +185,8 @@ export {
   ContactPaymentPendingError,
   ContactPaymentFailedError,
   ContactPaymentReleasedError,
+  ContactPaymentTooLargeError,
+  MAX_STEALTH_ITEM_AMOUNT,
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";

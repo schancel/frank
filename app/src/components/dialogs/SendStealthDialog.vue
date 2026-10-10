@@ -39,6 +39,8 @@
         dense
         :suffix="currentUnit"
         :hint="$t('sendStealthDialog.amountHint')"
+        :error="tooLarge"
+        :error-message="tooLargeMessage"
         :placeholder="$t('sendStealthDialog.amountPlaceholder')"
         data-testid="stealth-amount-input"
         ref="amountInput"
@@ -79,7 +81,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, MAX_STEALTH_ITEM_AMOUNT } from '@frank/wallet/chain'
 import { useBalance } from '../../composables/useBalance'
 
 /**
@@ -136,13 +138,23 @@ export default defineComponent({
         return undefined
       }
     },
+    /** More than one contact payment can carry: said before anything is prepared. */
+    tooLarge(): boolean {
+      return this.value !== undefined && this.value > MAX_STEALTH_ITEM_AMOUNT
+    },
+    tooLargeMessage(): string {
+      return this.$t('sendStealthDialog.tooLarge', {
+        max: activeChain.toDisplayAmount(MAX_STEALTH_ITEM_AMOUNT).slice(0, 4),
+        unit: activeChain.unit,
+      }) as string
+    },
     canSend(): boolean {
-      return this.value !== undefined
+      return this.value !== undefined && !this.tooLarge
     },
   },
   methods: {
     sendStealth() {
-      if (this.value === undefined) return
+      if (this.value === undefined || this.tooLarge) return
       this.$emit('send', {
         address: this.address,
         value: this.value,

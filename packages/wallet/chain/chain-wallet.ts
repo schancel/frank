@@ -563,6 +563,19 @@ export class ContactPaymentReleasedError extends Error {
   }
 }
 
+/** The largest amount a stealth message item can state (its wire field is an unsigned 64-bit
+ * integer): about 18.4 units of an 18-decimal coin. A host checks an amount against it before
+ * review. */
+export const MAX_STEALTH_ITEM_AMOUNT = 2n ** 64n - 1n;
+
+/** Refused before anything is signed: the amount is more than one contact payment can carry. */
+export class ContactPaymentTooLargeError extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ContactPaymentTooLargeError";
+  }
+}
+
 /** A payment to a contact as a host may show it. */
 export interface ContactPaymentInfo {
   messageId: string;

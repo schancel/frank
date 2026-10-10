@@ -16,6 +16,7 @@ import { useChatStore, type ChatMessage, type Conversation } from './chats'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
 import { MessageFundsNotSweptError } from '../utils/sweep-on-delete'
+import { activeChain, ContactPaymentReleasedError } from '@frank/wallet/chain'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -230,5 +231,38 @@ describe('deleting messages that brought money', () => {
     chats.messages.ee = outgoing
     await chats.deleteMessage({ address: PEER, payloadDigest: 'ee' })
     expect(mockSettled).toEqual(['ee'])
+  })
+
+  it('a message whose payment the wallet released is saved without its signed transfer and cannot go out on a retry', async () => {
+    const wallet = {
+      identity: { address: { raw: OWN }, displayAddress: OWN },
+    } as never
+    const item = {
+      type: 'stealth',
+      amount: 5,
+      ephemeralPubKey: '02ab',
+      transactions: ['02f8signedtransfer'],
+    }
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockRejectedValue(new ContactPaymentReleasedError())
+    const outcome = await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: [item as never],
+    })
+    expect(outcome.state).toBe('failed')
+    const saved = conv.messages.find(m => m.outbound)!
+    expect(saved.status).toBe('error')
+    expect(saved.items).toEqual([{ ...item, transactions: [] }])
+    expect(JSON.stringify(saved.items)).not.toContain('signedtransfer')
+    // What a retry would hand the wallet no longer contains the transfer.
+    send.mockClear()
+    await chats
+      .retryMessage?.({ wallet, address: PEER, id: saved.payloadDigest })
+      .catch(() => undefined)
+    for (const call of send.mock.calls)
+      expect(JSON.stringify(call[0].items)).not.toContain('signedtransfer')
+    send.mockRestore()
   })
 })

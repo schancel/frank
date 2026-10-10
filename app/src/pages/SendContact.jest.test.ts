@@ -31,6 +31,7 @@ jest.mock('src/stores/chats', () => ({
 }))
 
 jest.mock('@frank/wallet/chain', () => ({
+  MAX_STEALTH_ITEM_AMOUNT: 2n ** 64n - 1n,
   activeChain: {
     name: 'monad',
     unit: 'MON',
@@ -343,5 +344,25 @@ describe('SendContact.vue (dual-send model)', () => {
       fallbackKey: 'sendContactDialog.notSent',
     })
     expect(navigateBack).not.toHaveBeenCalled()
+  })
+
+  it('an amount larger than one contact payment can carry is refused before review, in plain words', async () => {
+    const wrapper = mountSendContact()
+    await flushPromises()
+    await wrapper.find('[data-test="contact-item"]').trigger('click')
+    await wrapper.find('[data-test="send-contact-amount-input"]').setValue('19')
+    await wrapper
+      .find('[data-test="send-contact-review-button"]')
+      .trigger('click')
+    await flushPromises()
+
+    // Said under the amount, and the review cannot be opened.
+    expect(wrapper.find('[data-test="send-contact-too-large"]').text()).toBe(
+      'This payment is larger than a single contact payment can carry (about 18.4 MON); send it in parts.',
+    )
+    expect(wrapper.find('[data-test="review-confirm-button"]').exists()).toBe(
+      false,
+    )
+    expect(mockPrepare).not.toHaveBeenCalled()
   })
 })

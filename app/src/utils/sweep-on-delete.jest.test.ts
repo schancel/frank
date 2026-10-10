@@ -2,6 +2,7 @@ import type { NativeWalletHandle, ReceivedCoinSweep } from '@frank/wallet/chain'
 import {
   MessageFundsNotSweptError,
   settleOutgoingPayments,
+  stripReleasedPayments,
   sweepBeforeDelete,
 } from './sweep-on-delete'
 import type { ChatMessage } from '../stores/chats'
@@ -181,5 +182,36 @@ describe('settleOutgoingPayments', () => {
     ).resolves.toBeUndefined()
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
+  })
+})
+
+describe('stripReleasedPayments', () => {
+  it('keeps the bubble and removes the signed transfer, leaving an item that cannot be sent', () => {
+    const released = message({
+      payloadDigest: 'pending:1',
+      outbound: true,
+      items: [
+        { type: 'text', text: 'for lunch' },
+        {
+          type: 'stealth',
+          amount: 5,
+          memo: 'lunch',
+          ephemeralPubKey: '02aa',
+          transactions: ['02f8signedtransfer'],
+        },
+      ] as never,
+    })
+    stripReleasedPayments(released)
+    expect(released.items).toEqual([
+      { type: 'text', text: 'for lunch' },
+      {
+        type: 'stealth',
+        amount: 5,
+        memo: 'lunch',
+        ephemeralPubKey: '02aa',
+        transactions: [],
+      },
+    ])
+    expect(JSON.stringify(released.items)).not.toContain('signedtransfer')
   })
 })

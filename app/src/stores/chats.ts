@@ -29,6 +29,7 @@ import {
 import {
   CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
+  ContactPaymentReleasedError,
   type DirectMessageAttemptStatus,
   type DirectMessagePreparationProgress,
   type DirectMessageSendResult,
@@ -75,6 +76,7 @@ import {
   MessageFundsNotSweptError,
   mayHoldCoins,
   settleOutgoingPayments,
+  stripReleasedPayments,
   sweepBeforeDelete,
 } from '../utils/sweep-on-delete'
 import { shortAddress } from '../utils/short-address'
@@ -2941,6 +2943,11 @@ export const useChatStore = defineStore('chats', {
           }
 
           console.error('[sendDirectMessage error]:', error)
+          // The wallet released the payment this message carried (nothing of it was ever
+          // sent): the saved message must not keep a sendable copy of its signed transfer. The
+          // row is saved by the state change just below.
+          if (error instanceof ContactPaymentReleasedError && this.messages[id])
+            stripReleasedPayments(this.messages[id])
           const failure = classifySendFailure(error, ownDigest)
           await this.setOutgoingState(address, id, 'error', {
             ...(failure.keepDigest === undefined

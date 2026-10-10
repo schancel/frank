@@ -731,6 +731,8 @@ export default {
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
     messageEnded:
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
+    tooLarge:
+      'Ce paiement dépasse ce qu’un seul paiement à un contact peut transporter (environ {max} {unit}) ; envoyez-le en plusieurs fois.',
   },
   offerSwapDialog: {
     title: 'Proposer un échange atomique à',
@@ -1134,6 +1136,8 @@ export default {
     notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
     messageEnded:
       'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
+    tooLarge:
+      'Ce paiement dépasse ce qu’un seul paiement à un contact peut transporter (environ {max} {unit}) ; envoyez-le en plusieurs fois.',
   },
   contactBookDialog: {
     close: 'Fermer',

@@ -39,6 +39,11 @@ import {
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
 import { deriveEvmStealthPrivateKey } from '../monad-stealth'
+import {
+  CONTACT_PAYMENT_NAMESPACE,
+  LevelRecordStore,
+  type ContactPayment,
+} from '../storage/evm-coin-store'
 import { createEvmChain, installCanonicalDirectory } from './monad-chain'
 
 jest.mock('../monad-provider', () =>
@@ -650,6 +655,225 @@ describe('a payment to a contact', () => {
       }
     })
 
+    it('a released payment never reaches the contact: its item is refused before anything durable, and a later message does not carry it out', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      const key = prepared.item.ephemeralPubKey!
+      expect(await alice.settleContactPayment!(key)).toBe('released')
+      // Nothing takes the released transfer's nonce here: if its bytes ever left, it would land.
+      const requests = f.requests.length
+      const refused = await hostSends(prepared.item).catch(error => error)
+      expect(refused).toBeInstanceOf(ContactPaymentReleasedError)
+      // The Retry of the same message, and a reconcile, fare no better.
+      await expect(hostSends(prepared.item)).rejects.toBeInstanceOf(
+        ContactPaymentReleasedError,
+      )
+      expect(f.requests).toHaveLength(requests)
+
+      // An ordinary message from the same wallet settles earlier attempts first: there is no
+      // attempt of the released message to submit.
+      await f.chain.directMessages.send({
+        wallet: alice,
+        recipient: bob.identity.address,
+        items: [{ type: 'text', text: 'hello' }],
+      })
+      expect(f.requests).toHaveLength(requests + 1)
+      const received = await poll(bob)
+      expect(received.map(message => message.items)).toEqual([
+        [{ type: 'text', text: 'hello' }],
+      ])
+      await settle(bob)
+      expect(coinsOf(bob)).toEqual([])
+      expect(toOneTimeAddresses()).toEqual([])
+      expect(mockBalances.get(prepared.stealthAddress.toLowerCase()) ?? 0n).toBe(0n)
+      // The wallet keeps no copy of the signed transfer: not on the payment, not in the journal.
+      expect(alice.getContactPayments!()[0].txHash).toBeUndefined()
+      expect(
+        alice
+          .getNativeOperations!()
+          .filter(row => row.recipient === prepared.stealthAddress.toLowerCase())
+          .map(row => ({ cancelled: row.cancelled, signed: row.members[0]!.signed })),
+      ).toEqual([{ cancelled: true, signed: null }])
+    })
+
+    it('reopen: released at the first pass, then the host retries its saved message and an ordinary message goes out: nothing of the payment leaves', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      await alice.close()
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        installCanonicalDirectory(
+          reopened,
+          await f.directoryFor('alice-reopened-2', reopened, bob),
+        )
+        await reopened.resumeContactPayments!()
+        expect(reopened.getContactPayments!()[0].state).toBe('released')
+        const requests = f.requests.length
+        // The chat store's automatic retry of the message it had saved.
+        await expect(
+          f.chain.directMessages.send({
+            wallet: reopened,
+            recipient: bob.identity.address,
+            items: [prepared.item],
+          }),
+        ).rejects.toBeInstanceOf(ContactPaymentReleasedError)
+        await f.chain.directMessages.send({
+          wallet: reopened,
+          recipient: bob.identity.address,
+          items: [{ type: 'text', text: 'later' }],
+        })
+        expect(f.requests).toHaveLength(requests + 1)
+        const received = await poll(bob)
+        expect(received.flatMap(message => message.items.map(item => item.type))).toEqual([
+          'text',
+        ])
+        await settle(bob)
+        expect(coinsOf(bob)).toEqual([])
+        expect(toOneTimeAddresses()).toEqual([])
+      } finally {
+        await reopened.close()
+      }
+    })
+
+    it('a payment whose message is being sent cannot be released, and a free message in flight counts as sent', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: 0n,
+      })
+      const key = prepared.item.ephemeralPubKey!
+      // The free message is handed to the relay and the relay has not answered.
+      const hold = f.holdNextRelayRequest()
+      const sending = hostSends(prepared.item, { stampValue: 0n })
+      await hold.entered
+      // Its digest was recorded before the relay was handed a byte, and it is in flight:
+      // asked to settle now, the payment is NOT released.
+      expect(alice.getContactPayments!()[0]).toMatchObject({
+        state: 'prepared',
+        holdsFunds: true,
+      })
+      const settling = alice.settleContactPayment!(key)
+      // The request dies with no answer (the app stops here).
+      hold.release('fail')
+      await sending.catch(() => undefined)
+      expect(await settling).not.toBe('released')
+      expect(alice.getContactPayments!()[0].state).not.toBe('released')
+      await alice.close()
+
+      // After the restart it is still not released: the relay may hold the message. The wallet
+      // finishes it instead, with the same transfer.
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        installCanonicalDirectory(
+          reopened,
+          await f.directoryFor('alice-reopened-3', reopened, bob),
+        )
+        f.setPhase('delivered')
+        for (let i = 0; i < 3; i++) await reopened.resumeContactPayments!()
+        expect(reopened.getContactPayments!()).toEqual([
+          expect.objectContaining({ state: 'paid', holdsFunds: false }),
+        ])
+        expect(toOneTimeAddresses()).toEqual([
+          expect.objectContaining({ hash: prepared.txHash }),
+        ])
+      } finally {
+        await reopened.close()
+      }
+    })
+
+    it('a stop between marking a payment released and cancelling its transfer is finished at the next pass', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      const aliceMain = await mainOf(alice)
+      await alice.close()
+      // What such a stop leaves on disk: the record says released, the journal still holds
+      // the signed transfer and with it the account.
+      const location = `${f.config.walletStorageLocation}-evm-${aliceMain}`
+      const store = await LevelRecordStore.open<ContactPayment>(
+        location,
+        CONTACT_PAYMENT_NAMESPACE,
+      )
+      const [saved] = store.all()
+      await store.put(saved.stealthAddress, { ...saved, state: 'released' })
+      await store.close()
+
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        installCanonicalDirectory(
+          reopened,
+          await f.directoryFor('alice-reopened-4', reopened, bob),
+        )
+        await expect(
+          reopened.sendNative({ recipient: { raw: '0x' + 'c8'.repeat(20) }, value: big }),
+        ).rejects.toThrow('Insufficient unreserved native funds')
+        await reopened.resumeContactPayments!()
+        const spent = await reopened.sendNative({
+          recipient: { raw: '0x' + 'c8'.repeat(20) },
+          value: big,
+        })
+        expect(node.broadcasts).toEqual([
+          expect.objectContaining({ from: aliceMain, hash: spent.txHash }),
+        ])
+        expect(mockBalances.get(prepared.stealthAddress.toLowerCase()) ?? 0n).toBe(0n)
+      } finally {
+        await reopened.close()
+      }
+    })
+
+    it('settling a payment that stopped around signing cancels the signed transfer the journal holds', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      const aliceMain = await mainOf(alice)
+      await alice.close()
+      // What a stop between the signature and the record's update leaves: a planned record
+      // that never learned of the signed row.
+      const location = `${f.config.walletStorageLocation}-evm-${aliceMain}`
+      const store = await LevelRecordStore.open<ContactPayment>(
+        location,
+        CONTACT_PAYMENT_NAMESPACE,
+      )
+      const [saved] = store.all()
+      const { operationId: _op, rawTransaction: _raw, txHash: _hash, ...planned } = saved
+      await store.put(saved.stealthAddress, { ...planned, state: 'planned' })
+      await store.close()
+
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        installCanonicalDirectory(
+          reopened,
+          await f.directoryFor('alice-reopened-5', reopened, bob),
+        )
+        expect(
+          await reopened.settleContactPayment!(prepared.item.ephemeralPubKey!),
+        ).toBe('released')
+        expect(
+          reopened
+            .getNativeOperations!()
+            .filter(row => row.recipient === prepared.stealthAddress.toLowerCase())
+            .map(row => row.cancelled),
+        ).toEqual([true])
+        await reopened.sendNative({
+          recipient: { raw: '0x' + 'c9'.repeat(20) },
+          value: big,
+        })
+        expect(node.broadcasts.map(tx => tx.from)).toEqual([aliceMain])
+      } finally {
+        await reopened.close()
+      }
+    })
+
     it('the outgoing message is deleted before anything was sent: settle releases it', async () => {
       const prepared = await alice.prepareContactPayment!({
         recipient: bob.identity.address,
@@ -1063,7 +1287,9 @@ describe('a payment to a contact', () => {
     // More than the message item can state (its amount is an unsigned 64-bit field).
     await expect(
       alice.sendToContact!({ recipient: bob.identity.address, value: 2n ** 64n }),
-    ).rejects.toThrow('cannot exceed 2^64-1')
+    ).rejects.toThrow(
+      'This payment is larger than a single contact payment can carry (about 18.4 MONT); send it in parts',
+    )
     expect(alice.getContactPayments!()).toEqual([])
     expect(alice.getNativeOperations!()).toEqual([])
     expect(node.broadcasts).toEqual([])

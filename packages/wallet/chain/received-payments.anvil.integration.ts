@@ -545,6 +545,54 @@ describe('payments between two wallets on a real EVM node', () => {
     expect(bobMailbox).toHaveLength(0)
   })
 
+  it('a released payment never reaches the contact, even with its nonce still free: its message is refused, and later messages carry nothing of it', async () => {
+    const aliceMain = await mainOf(alice)
+    const prepared = await alice.prepareContactPayment!({
+      recipient: bob.identity.address,
+      value: VALUE,
+    })
+    const signed = Transaction.from('0x' + prepared.item.transactions![0])
+    expect(await alice.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe(
+      'released',
+    )
+    // The nonce is NOT consumed here: if those bytes left the device they would land.
+    expect(await node.getTransactionCount(aliceMain)).toBe(signed.nonce)
+    const requests = f.requests.length
+    for (let attempt = 0; attempt < 2; attempt++)
+      await expect(
+        f.chain.directMessages.send({
+          wallet: alice,
+          recipient: bob.identity.address,
+          items: [prepared.item],
+        }),
+      ).rejects.toThrow('cancelled before anything was sent')
+    expect(f.requests).toHaveLength(requests)
+    // An ordinary message (which first settles every earlier attempt of this wallet).
+    await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: bob.identity.address,
+      items: [{ type: 'text', text: 'hello' }],
+    })
+    const received = await poll(bob)
+    expect(received.flatMap(message => message.items.map(item => item.type))).toEqual([
+      'text',
+    ])
+    await settled(bob)
+    expect(stealthOf(bob)).toEqual([])
+    expect(await node.getTransaction(signed.hash!)).toBeNull()
+    expect(await node.getBalance(prepared.stealthAddress)).toBe(0n)
+    expect(await node.getTransactionCount(aliceMain)).toBeGreaterThanOrEqual(signed.nonce)
+    // The wallet no longer holds the signed bytes anywhere.
+    expect(alice.getContactPayments!()[0]).toMatchObject({ state: 'released' })
+    expect(alice.getContactPayments!()[0].txHash).toBeUndefined()
+    expect(
+      alice
+        .getNativeOperations!()
+        .filter(row => row.recipient === prepared.stealthAddress.toLowerCase())
+        .map(row => row.members[0]!.signed),
+    ).toEqual([null])
+  })
+
   it('a free message carries a payment too: the sender is told it was delivered, pays, and holds nothing', async () => {
     const prepared = await alice.prepareContactPayment!({
       recipient: bob.identity.address,

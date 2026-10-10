@@ -130,6 +130,14 @@
             data-test="send-contact-amount-input"
             :placeholder="$t('sendContactDialog.enterAmount', { unit })"
           />
+          <div
+            v-if="tooLarge"
+            class="text-negative text-caption q-mt-xs"
+            role="alert"
+            data-test="send-contact-too-large"
+          >
+            {{ tooLargeText }}
+          </div>
         </q-card-section>
 
         <q-card-section class="q-pt-none">
@@ -245,7 +253,7 @@
 <script lang="ts">
 import { computed, defineComponent, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, MAX_STEALTH_ITEM_AMOUNT } from '@frank/wallet/chain'
 import { useChatStore } from 'src/stores/chats'
 import { useMonadWallet } from 'src/utils/clients'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -325,11 +333,24 @@ export default defineComponent({
       }
     })
 
+    /** More than one contact payment can carry: said before review. */
+    const tooLarge = computed(
+      () =>
+        parsedValue.value !== undefined &&
+        parsedValue.value > MAX_STEALTH_ITEM_AMOUNT,
+    )
+    const tooLargeText = computed(() =>
+      $t('sendContactDialog.tooLarge', {
+        max: activeChain.toDisplayAmount(MAX_STEALTH_ITEM_AMOUNT).slice(0, 4),
+        unit: activeChain.unit,
+      }),
+    )
     const isValid = computed(() => {
       return (
         Boolean(selectedContactAddress.value) &&
         parsedValue.value !== undefined &&
-        parsedValue.value > 0n
+        parsedValue.value > 0n &&
+        !tooLarge.value
       )
     })
 
@@ -346,6 +367,8 @@ export default defineComponent({
       unit,
       filteredContacts,
       isValid,
+      tooLarge,
+      tooLargeText,
       shortAddress,
       selectContact(addr: string) {
         selectedContactAddress.value = addr
@@ -357,6 +380,12 @@ export default defineComponent({
         navigateBack(router)
       },
       reviewTransfer() {
+        if (tooLarge.value) {
+          errorNotify(new Error(tooLargeText.value), {
+            safeMessage: tooLargeText.value,
+          })
+          return
+        }
         if (!isValid.value) {
           errorNotify(new Error('Invalid transfer details'), {
             fallbackKey: 'sendContactDialog.invalidAmount',

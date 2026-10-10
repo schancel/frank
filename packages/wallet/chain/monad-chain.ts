@@ -2199,6 +2199,31 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
               return result;
             },
+            // Contract calls (a swap and its approvals). Same queues, journal and recovery as a
+            // native send; see `EvmLegacyConsolidator.sendContractCall`.
+            async sendContractCall(params) {
+              params = { ...params, to: { ...params.to } };
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, (admission) =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.sendContractCall(params, admission)
+                )
+              );
+              primaryBalanceCache = undefined;
+              return result;
+            },
+            getContractCallFunds: () =>
+              nativeOperationOwner(wallet).contractCallFunds(),
+            async fundMainAccount(params) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, (admission) =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.fundMainAccount({ ...params }, admission)
+                )
+              );
+              primaryBalanceCache = undefined;
+              return result;
+            },
             estimateLegacyFee: (params) =>
               nativeOperationOwner(wallet).estimateLegacyFee(
                 params.recipient,

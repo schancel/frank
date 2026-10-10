@@ -42,6 +42,22 @@ export interface SendLegacyParams {
   onProgress?: (progress: LegacySendProgress) => void
   onSigned?: (signed: ChainTransaction) => Promise<void>
 }
+/** One call to a contract from the main account, recorded and recovered like a native send. */
+export interface ContractCallParams {
+  to: ChainAddress
+  /** ABI-encoded calldata. A call without calldata is a transfer: use `sendNative`. */
+  data: string
+  /** Native value sent with the call; zero for a call that only moves tokens. */
+  value: bigint
+  /** The gas limit the caller quoted to the user. Estimated here when omitted. */
+  gasLimit?: bigint
+  /** After signing and before broadcast, so the caller can record the exact operation first. */
+  onSigned?: (signed: ContractCallResult) => Promise<void>
+}
+export interface ContractCallResult {
+  operationId: string
+  txHash: string
+}
 export interface EvmLegacyConsolidatorConfig {
   provider: Provider
   journal: NativeJournalReader | EvmNativeOperationJournal
@@ -431,6 +447,8 @@ export class EvmLegacyConsolidator {
     params: SendLegacyParams,
     kind: 'native' | 'legacy',
     lifetime?: WalletOperationLifetime,
+    /** An address that must not pay: the account a consolidation is funding. */
+    excludedSource?: string,
   ): Promise<EvmNativeOperation> {
     const recipient = getAddress(params.recipient.raw).toLowerCase()
     if (params.value <= 0n)
@@ -440,7 +458,9 @@ export class EvmLegacyConsolidator {
       this.config.transactionBuilder.supportsNativeConsolidation !== true
     )
       throw new Error('Builder does not support native consolidation')
-    const accounts = await this.sources(lifetime)
+    const accounts = (await this.sources(lifetime)).filter(
+      account => account.source.address !== excludedSource,
+    )
     const fee = await this.config.provider.getFeeData()
     const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
     if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
@@ -611,7 +631,9 @@ export class EvmLegacyConsolidator {
         } catch (reason) {
           throw new EvmNativeOperationPendingError(journal.get(id), reason)
         }
-        if (row.kind === 'native') return journal.get(id)
+        // A transfer or a contract call is one transaction: once handed to the network the
+        // journal holds it, and the caller watches for its inclusion.
+        if (row.kind !== 'legacy') return journal.get(id)
         await this.observe(id, i, lifetime)
         row = journal.get(id)
         member = row.members[i]!
@@ -1258,6 +1280,166 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<LegacySendResult> {
     return this.legacyResult(await this.resumeOperation(operationId, lifetime))
+  }
+  /** The main account: it makes contract calls and holds the tokens they move. */
+  private async mainSource(): Promise<EvmNativeSource> {
+    const main = (await this.config.getSources()).find(
+      source => source.kind === 'main',
+    )
+    if (!main) throw new Error('Wallet has no main account')
+    return main
+  }
+  /**
+   * Native value a contract call can use: what the main account can spend now, and what the
+   * wallet's other accounts could move into it first (`fundMainAccount`). `mainBusy` is true
+   * while an earlier transaction from the main account has not been seen included.
+   */
+  async contractCallFunds(
+    lifetime?: WalletOperationLifetime,
+  ): Promise<{
+    mainAddress: string
+    mainBalance: bigint
+    otherBalance: bigint
+    mainBusy: boolean
+  }> {
+    if (this.config.inputAdmission && !lifetime) {
+      if (!this.config.runLifetime)
+        throw new Error('Native lifetime owner unavailable')
+      return this.config.runLifetime(token => this.contractCallFunds(token))
+    }
+    const main = await this.mainSource()
+    const accounts = await this.sources(lifetime)
+    const own = accounts.find(a => a.source.address === main.address)
+    const mainAccount = own?.account ?? (await this.account(main.address))
+    return {
+      mainAddress: main.address,
+      mainBalance: BigInt(mainAccount.balanceWei),
+      otherBalance: accounts
+        .filter(a => a.source.address !== main.address)
+        .reduce((sum, a) => sum + a.spendableValue, 0n),
+      mainBusy: !this.journal(lifetime).canSelect(
+        main.address,
+        mainAccount.nonce,
+      ),
+    }
+  }
+  private async planContractCall(
+    params: ContractCallParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<EvmNativeOperation> {
+    const to = getAddress(params.to.raw).toLowerCase()
+    if (params.value < 0n) throw new RangeError('Call value must not be negative')
+    if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(params.data))
+      throw new Error('A contract call needs calldata')
+    if (this.config.transactionBuilder.supportsNativeConsolidation !== true)
+      throw new Error('Contract calls are unavailable on this network')
+    const main = await this.mainSource()
+    const source = (await this.sources(lifetime)).find(
+      a => a.source.address === main.address,
+    )
+    // Absent when it holds nothing, or while an earlier transaction of its own is unresolved.
+    if (!source) throw new RangeError('Insufficient unreserved native funds')
+    const fee = await this.config.provider.getFeeData()
+    const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
+    if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
+    const maxPriorityFeePerGas = fee.maxPriorityFeePerGas ?? maxFeePerGas
+    if (maxPriorityFeePerGas > maxFeePerGas)
+      throw new Error('Invalid native fee quote')
+    const data = params.data.toLowerCase()
+    const gasLimit =
+      params.gasLimit ??
+      ((await this.config.provider.estimateGas({
+        from: source.source.address,
+        to,
+        data,
+        value: params.value,
+      })) *
+        12n) /
+        10n
+    if (
+      BigInt(source.account.balanceWei) <
+      params.value + gasLimit * maxFeePerGas
+    )
+      throw new RangeError('Insufficient unreserved native funds')
+    return this.journal(lifetime).prepare({
+      kind: 'contract',
+      recipient: to,
+      intendedValueWei: params.value.toString(),
+      members: [
+        {
+          source: source.source,
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            to,
+            chainId: BigInt(this.config.journal.binding.nativeChainId),
+            nonce: source.account.nonce,
+            value: params.value,
+            data,
+            gasLimit,
+            maxFeePerGas,
+            maxPriorityFeePerGas,
+          }).unsignedSerialized,
+          dependencies: [],
+        },
+      ],
+    })
+  }
+  /**
+   * Signs and submits one contract call from the main account through the same journal a native
+   * send uses: the operation is written before it is signed, the signed bytes before they are
+   * broadcast, and `resumeOperation` re-submits those same bytes. It returns once the call is
+   * handed to the network; inclusion (or a revert) is observed afterwards.
+   */
+  sendContractCall(
+    params: ContractCallParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<ContractCallResult> {
+    params = { ...params, to: { ...params.to } }
+    return this.runWithLocalPass(lifetime, async planned => {
+      const row = await this.planContractCall(params, lifetime)
+      planned(row.operationId)
+      const done = await this.execute(
+        row.operationId,
+        signed =>
+          params.onSigned?.({
+            operationId: row.operationId,
+            txHash: signed.txHash,
+          }) ?? Promise.resolve(),
+        lifetime,
+      )
+      return {
+        operationId: row.operationId,
+        txHash: done.members[0]!.signed!.transactionHash,
+      }
+    })
+  }
+  /**
+   * Moves `value` from the wallet's other accounts into the main account, as one recorded
+   * consolidation, so a contract call that needs more than the main account holds can follow.
+   * The main account never pays into itself.
+   */
+  fundMainAccount(
+    params: Omit<SendLegacyParams, 'recipient'>,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<LegacySendResult> {
+    return this.runWithLocalPass(lifetime, async planned => {
+      const main = await this.mainSource()
+      params.onProgress?.({ status: { stage: 'planning' } })
+      const row = await this.plan(
+        { ...params, recipient: { raw: main.address } },
+        'legacy',
+        lifetime,
+        main.address,
+      )
+      planned(row.operationId)
+      const result = this.legacyResult(
+        await this.execute(row.operationId, params.onSigned, lifetime),
+      )
+      params.onProgress?.({
+        status: { stage: 'confirmed', txHash: result.txHash },
+      })
+      return result
+    })
   }
   async estimateLegacyFee(
     _recipient: ChainAddress,

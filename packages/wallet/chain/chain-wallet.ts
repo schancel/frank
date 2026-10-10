@@ -290,6 +290,37 @@ export interface NativeWalletHandle {
    * on a handle with nothing to look up; callers treat absence as nothing to do.
    */
   reobserveNativeOperations?(): Promise<void>;
+  /**
+   * One call to a contract from the wallet's main account (which holds the tokens such a call
+   * moves), recorded before it is signed and re-submitted byte-for-byte by
+   * `resumeNativeOperation`. Resolves once the call is handed to the network; the caller watches
+   * for inclusion or a revert. Absent where the family has no contract calls.
+   */
+  sendContractCall?(params: {
+    to: ChainAddress;
+    data: string;
+    value: bigint;
+    gasLimit?: bigint;
+    onSigned?: (signed: ContractCallHandle) => Promise<void>;
+  }): Promise<ContractCallHandle>;
+  /** What a contract call can spend: the main account's balance and what could be moved into it. */
+  getContractCallFunds?(): Promise<{
+    mainAddress: string;
+    mainBalance: bigint;
+    otherBalance: bigint;
+    mainBusy: boolean;
+  }>;
+  /** Consolidates `value` from the wallet's other accounts into the main account. */
+  fundMainAccount?(params: {
+    value: bigint;
+    onProgress?: (progress: LegacySendProgress) => void;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }): Promise<LegacySendResult>;
+}
+
+export interface ContractCallHandle {
+  readonly operationId: string;
+  readonly txHash: string;
 }
 
 export type LegacySendStage =

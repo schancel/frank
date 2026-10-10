@@ -38,6 +38,12 @@ export type EvmNativeObservation =
       transactionIndex: number
       feeWei: string
     }
+/**
+ * `native`: one transfer from one account. `legacy`: fan-in transfers into one account, then one
+ * transfer out of it. `contract`: one call with calldata from the main account, which holds the
+ * tokens the call moves; the call may carry no value (an approval, or a swap that pays a token).
+ */
+export type EvmNativeOperationKind = 'native' | 'legacy' | 'contract'
 export interface EvmNativeMemberPlan {
   source: EvmNativeSource
   unsignedTransaction: string
@@ -54,7 +60,7 @@ export interface EvmNativeOperation {
   version: 1
   operationId: string
   binding: EvmNativeBinding
-  kind: 'native' | 'legacy'
+  kind: EvmNativeOperationKind
   recipient: string
   intendedValueWei: string
   maximumFeeWei: string
@@ -63,7 +69,7 @@ export interface EvmNativeOperation {
   reservedBytes: number
 }
 export interface EvmNativePlan {
-  kind: 'native' | 'legacy'
+  kind: EvmNativeOperationKind
   recipient: string
   intendedValueWei: string
   members: EvmNativeMemberPlan[]
@@ -291,9 +297,10 @@ function validateRow(
     fail()
   if (JSON.stringify(validateBinding(row.binding)) !== JSON.stringify(binding))
     fail('binding')
-  if (row.kind !== 'native' && row.kind !== 'legacy') fail()
+  if (row.kind !== 'native' && row.kind !== 'legacy' && row.kind !== 'contract')
+    fail()
   address(row.recipient)
-  if (uint(row.intendedValueWei) === 0n) fail()
+  if (uint(row.intendedValueWei) === 0n && row.kind !== 'contract') fail()
   uint(row.maximumFeeWei)
   integer(row.reservedBytes)
   if (
@@ -303,7 +310,7 @@ function validateRow(
     row.members.length > MAX_MEMBERS
   )
     fail()
-  if (row.kind === 'native' && row.members.length !== 1) fail()
+  if (row.kind !== 'legacy' && row.members.length !== 1) fail()
   let fee = 0n
   const sourceAddresses = new Set<string>()
   const claims = new Set<string>()
@@ -376,6 +383,17 @@ function validateRow(
   }
   if (fee.toString() !== row.maximumFeeWei) fail()
   if (fee + uint(row.intendedValueWei) > UINT_MAX) fail()
+  if (row.kind === 'contract') {
+    const call = (row.members as EvmNativeMember[])[0]!
+    const tx = Transaction.from(call.unsignedTransaction)
+    if (
+      call.source.kind !== 'main' ||
+      tx.to?.toLowerCase() !== row.recipient ||
+      tx.value.toString() !== row.intendedValueWei ||
+      tx.data === '0x'
+    )
+      fail()
+  }
   if (row.kind === 'legacy') {
     const members = row.members as EvmNativeMember[]
     const drain = members[members.length - 1]!

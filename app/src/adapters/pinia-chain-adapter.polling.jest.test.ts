@@ -40,6 +40,8 @@ import {
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import { mailboxAuthFor } from '@frank/wallet/monad-identity'
 import { activeChain, type WalletHandle } from '@frank/wallet/chain'
+import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+import { messageItems } from '../utils/message-items'
 
 jest.mock('axios', () => ({ __esModule: true, default: jest.fn() }))
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
@@ -86,6 +88,8 @@ function setup(
     relayBaseUrl: BASE,
     stampPaymentJournal: new InMemoryStampPaymentJournal(),
   } as unknown as WalletHandle
+  // As the app's session does for every wallet: without a registry nothing is read.
+  installMessageItemRegistry(wallet, messageItems)
   return { relay, identity, wallet }
 }
 

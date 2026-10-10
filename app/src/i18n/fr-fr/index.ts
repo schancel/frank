@@ -978,7 +978,7 @@ export default {
     listTitle: 'Transferts natifs',
     intendedAmount: 'Montant prévu pour le destinataire',
     processing: 'Vérification du résultat du transfert initial…',
-    included: 'Paiement inclus sur {network}.',
+    included: 'Envoyé sur {network}.',
     reverted:
       'La transaction du destinataire a été annulée par le réseau {network}. Des frais de réseau peuvent avoir été payés.',
     partial:
@@ -991,8 +991,7 @@ export default {
     feepartial: 'Frais observés à ce stade (partiels) : {amount} {unit}',
     feeunknown: 'Frais de réseau observés indisponibles.',
     block: 'Bloc {block}',
-    syncUnrecorded:
-      'La synchronisation du portefeuille n’est pas enregistrée comme terminée.',
+    syncNotShared: 'Pas encore partagé avec vos autres appareils.',
     syncRecorded:
       'Exécution du rappel de synchronisation enregistrée. Cela ne confirme pas la synchronisation sur les autres appareils.',
     recoveryUnavailable: 'La reprise est actuellement indisponible.',

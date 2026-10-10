@@ -32,8 +32,9 @@ export interface RaffleRoundState {
   entrants: string[];
   /** The hash of each entrant's own confirmed entry payment, in the order they joined. */
   entryTxHashes: string[];
-  /** The conversation each entrant entered in: where they are told the draw. */
-  conversations: string[];
+  /** The conversation each entrant entered in (null: the default thread): where they are told
+   * the draw. */
+  conversations: (string | null)[];
   status: "open" | "drawing";
 }
 
@@ -203,7 +204,7 @@ export class RaffleBot implements FrankBotDefinition {
 
     round.entrants.push(peer);
     round.entryTxHashes.push(received.confirmed[0].txHash);
-    round.conversations.push(msgCtx.conversationId);
+    round.conversations.push(msgCtx.conversationId ?? null);
     if (round.entrants.length >= round.maxEntries) round.status = "drawing";
     await ctx.state.put(ROUND, JSON.stringify(round));
     if (round.status === "open") {
@@ -237,7 +238,7 @@ export class RaffleBot implements FrankBotDefinition {
     const pot = BigInt(draw.potWei);
     const paid = `draw:${round.raffleId}`;
     const conversationOf = (entrant: string) =>
-      round.conversations[round.entrants.indexOf(entrant)];
+      round.conversations[round.entrants.indexOf(entrant)] ?? undefined;
     await this.outbox.owe(ctx, paid, {
       to: draw.winnerAddress,
       conversationId: conversationOf(draw.winnerAddress),

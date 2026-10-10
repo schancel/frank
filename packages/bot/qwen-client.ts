@@ -2,12 +2,16 @@
  * Minimal client for Qwen 3.8 Max's OpenAI-compatible chat-completions endpoint (Alibaba Cloud
  * Model Studio), for ticket #9's headless bot demo.
  *
- * **Must pass `stream: true` and `enable_thinking: true`** -- confirmed live (this ticket's own
- * scoping): a plain, non-streaming request to this endpoint is rejected, but a streaming request
- * with `enable_thinking: true` returns a real SSE stream of `data: {...}` chunks (both
- * `reasoning_content` and `content` delta fields) ending in the literal line `data: [DONE]`. No
- * `openai` (or any other LLM SDK) dependency exists in this app already, so this hand-parses the
- * SSE stream itself via axios' Node `responseType: 'stream'` rather than adding one.
+ * **Must pass `stream: true`** -- confirmed live (this ticket's own scoping): a plain,
+ * non-streaming request to this endpoint is rejected, but a streaming request returns a real SSE
+ * stream of `data: {...}` chunks (`content` and, with thinking on, `reasoning_content` delta
+ * fields) ending in the literal line `data: [DONE]`. No `openai` (or any other LLM SDK)
+ * dependency exists in this app already, so this hand-parses the SSE stream itself via axios'
+ * Node `responseType: 'stream'` rather than adding one.
+ *
+ * One call has one time limit for the whole answer, connection and stream together, and can be
+ * aborted by the caller. `enable_thinking` is sent as configured (off unless asked for): with it
+ * on the model streams its reasoning before the answer, which is most of the wait.
  */
 import axios from 'axios'
 
@@ -31,6 +35,10 @@ export interface QwenClientOptions {
    * trailing slash; `/chat/completions` is appended). */
   endpoint: string
   model?: string
+  /** Limit for one whole call, in milliseconds. Unset: no limit. */
+  timeoutMs?: number
+  /** Sent as `enable_thinking`. Default off. */
+  thinking?: boolean
 }
 
 interface QwenStreamChunk {
@@ -46,16 +54,66 @@ export class QwenClient {
   private readonly apiKey: string
   private readonly endpoint: string
   private readonly model: string
+  private readonly timeoutMs: number
+  private readonly thinking: boolean
 
   constructor(options: QwenClientOptions) {
     this.apiKey = options.apiKey
     this.endpoint = options.endpoint.replace(/\/+$/, '')
     this.model = options.model ?? 'qwen3.8-max'
+    this.timeoutMs = options.timeoutMs ?? 0
+    this.thinking = options.thinking ?? false
   }
 
   /** Sends `messages` as one chat-completions turn and resolves once the stream ends, having
-   * concatenated every `content`/`reasoning_content` delta chunk (see this file's header). */
-  async chat(messages: QwenChatMessage[]): Promise<QwenChatResult> {
+   * concatenated every `content`/`reasoning_content` delta chunk (see this file's header).
+   * Rejects when the whole call has taken `timeoutMs`, or when `signal` aborts; either way the
+   * request and its stream are torn down, so nothing is left waiting. */
+  async chat(
+    messages: QwenChatMessage[],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<QwenChatResult> {
+    const controller = new AbortController()
+    let stream: (NodeJS.ReadableStream & { destroy?: (error?: Error) => void }) | undefined
+    let end: (error: Error) => void = () => undefined
+    const ended = new Promise<never>((_, reject) => {
+      end = error => {
+        reject(error)
+        controller.abort()
+        stream?.destroy?.(error)
+      }
+    })
+    ended.catch(() => undefined)
+    const timer =
+      this.timeoutMs > 0
+        ? setTimeout(
+            () => end(new Error(`Qwen model call timed out after ${this.timeoutMs} ms`)),
+            this.timeoutMs,
+          )
+        : undefined
+    const aborted = () => end(new Error('Qwen model call aborted'))
+    if (options.signal?.aborted) aborted()
+    else options.signal?.addEventListener('abort', aborted, { once: true })
+    try {
+      return await Promise.race([
+        ended,
+        this.stream(messages, controller.signal, opened => {
+          stream = opened
+          // The limit passed while the response was arriving: nothing reads this stream.
+          if (controller.signal.aborted) stream.destroy?.()
+        }),
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+      options.signal?.removeEventListener('abort', aborted)
+    }
+  }
+
+  private async stream(
+    messages: QwenChatMessage[],
+    signal: AbortSignal,
+    opened: (stream: NodeJS.ReadableStream) => void,
+  ): Promise<QwenChatResult> {
     const response = await axios({
       method: 'post',
       url: `${this.endpoint}/chat/completions`,
@@ -67,10 +125,12 @@ export class QwenClient {
         model: this.model,
         messages,
         stream: true,
-        enable_thinking: true,
+        enable_thinking: this.thinking,
       },
       responseType: 'stream',
+      signal,
     })
+    opened(response.data as NodeJS.ReadableStream)
 
     return new Promise<QwenChatResult>((resolve, reject) => {
       let buffer = ''

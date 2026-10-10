@@ -55,6 +55,12 @@ export interface StageAccount {
   readonly custodyEpoch: number
   readonly metadata: RecoveryPublicMetadata
   readonly roots: readonly DomainRoot[]
+  /**
+   * The 32-byte account root the roots were derived from. Custody keeps it beside them so
+   * a later backup splits the account itself; staging refuses a root that is not this
+   * account's.
+   */
+  readonly accountRoot: Uint8Array
 }
 
 /** Roots remain outside enumerable state. takeRoots transfers ownership exactly once. */
@@ -76,6 +82,15 @@ export interface AccountCustody {
   ): Promise<CustodySnapshot>
   cancel(attemptId: string): Promise<CustodySnapshot>
   openActive(): Promise<ActiveCustody>
+  /**
+   * The active account and a caller-owned copy of its account root, for issuing backup
+   * shares. `accountRoot` is null for an account stored before roots were kept: no backup
+   * can be issued for it, and callers must say so rather than split something else.
+   */
+  exportAccountRoot(): Promise<{
+    readonly account: PublicAccount
+    readonly accountRoot: Uint8Array | null
+  }>
   close(): void
 }
 

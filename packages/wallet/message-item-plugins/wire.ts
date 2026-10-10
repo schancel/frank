@@ -6,6 +6,10 @@
  *   docs/protocol/cbor), which names the type and carries the plugin's opaque bytes. A new plugin
  *   needs no protocol allocation and no entry here.
  * - A few types are not carried at all yet (see {@link NOT_CARRIED_ITEM_TYPES}).
+ * - A wallet's notes to its own other devices are carried only in a message it addresses to
+ *   itself (see {@link SELF_ONLY_ITEM_TYPES}).
+ * - Items read from the legacy JSON mailbox go through the same rule
+ *   ({@link receiveLegacyItems}); nothing from it is delivered as it arrived.
  *
  * The send and receive code calls {@link encodeItemFrames} and {@link decodeItemFrames} and names
  * no item type. Frame type identifiers are protocol allocations and stay in this one table; a
@@ -61,10 +65,11 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  * one is refused before anything is paid, as it always was; one that arrives is kept as an
  * unsupported item and is not interpreted.
  *
- * None has a safe receiver on this path yet. Five are records a wallet writes for itself:
- * - `wallet-sync`, `payment-transfer`: must enter through `applyWalletSyncItem` with wallet and
- *   chain affinity checked. The app refuses a whole received batch that holds one, so a single such
- *   item from any peer would stop its inbox.
+ * None has a safe receiver on this path yet. Four are records a wallet writes for itself:
+ * - `payment-transfer`: the shape of a wallet sync record, which must enter through
+ *   `applyWalletSyncItem` with wallet and chain affinity checked. Nothing sends one, and the app
+ *   refuses a whole received batch that holds one, so a single such item from any peer would stop
+ *   its inbox.
  * - `swap-record`: the app writes a received one into the local swap history without checking who
  *   sent it.
  * - `device-claim`: the app sends one to itself on every leadership claim; carrying it would turn
@@ -79,7 +84,6 @@ const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
  * Carrying any of them is a separate decision with its own receiver.
  */
 export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
-  'wallet-sync',
   'payment-transfer',
   'swap-record',
   'device-claim',
@@ -88,21 +92,54 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
   'blackjack-move',
 ])
 
+/**
+ * Registered types carried only in a message a wallet addresses to itself: the notes one device
+ * of an account leaves for the account's other devices.
+ *
+ * - `wallet-sync`: one device's record of an account it spent, with the signed transaction as
+ *   proof. A receiver hands it to `applyWalletSyncItem`, which checks chain and wallet affinity
+ *   before anything changes; it is never shown as a chat message. This wallet does not send one
+ *   after a native transfer today (a note is a paid message); the rule is what makes receiving
+ *   one safe.
+ *
+ * Sending one to anyone else is refused before anything is paid. One that arrives in a message
+ * whose authenticated sender is not the receiving wallet's own identity is kept as an unsupported
+ * item and is not interpreted: another person must not be able to hand a wallet a record of its
+ * own spending. The caller says who the message is between ({@link ItemAddressing}); this module
+ * does not know identities.
+ */
+export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set(['wallet-sync'])
+
+/** Who one message is between, as far as the item rule needs to know. */
+export interface ItemAddressing {
+  /** The message's sender and recipient are the same identity, and it is this wallet's own. On
+   * receive this is the AUTHENTICATED sender, never a field of the message's content. */
+  selfAddressed: boolean
+}
+
+const NOT_SELF_ADDRESSED: ItemAddressing = { selfAddressed: false }
+
 export type ItemFrameRule =
   | { carried: 'dedicated'; frameType: number }
   | { carried: 'generic'; frameType: typeof TYPE_PLUGIN_MESSAGE_ITEM }
   | { carried: 'no' }
 
 /** The one dispatch rule. */
-export function itemFrameRule(type: string): ItemFrameRule {
+export function itemFrameRule(
+  type: string,
+  addressing: ItemAddressing = NOT_SELF_ADDRESSED,
+): ItemFrameRule {
   if (NOT_CARRIED_ITEM_TYPES.has(type)) return { carried: 'no' }
+  if (SELF_ONLY_ITEM_TYPES.has(type) && !addressing.selfAddressed)
+    return { carried: 'no' }
   const frameType = DEDICATED_ITEM_FRAMES.get(type)
   if (frameType !== undefined) return { carried: 'dedicated', frameType }
   return { carried: 'generic', frameType: TYPE_PLUGIN_MESSAGE_ITEM }
 }
 
 /** The canonical direct message path was asked to send an item it cannot carry: its type has no
- * plugin, or is one of {@link NOT_CARRIED_ITEM_TYPES}. Nothing was encoded, paid or sent. */
+ * plugin, is one of {@link NOT_CARRIED_ITEM_TYPES}, or is one of {@link SELF_ONLY_ITEM_TYPES} in a
+ * message to someone else. Nothing was encoded, paid or sent. */
 export class MessageItemNotCarriedError extends MessageItemUnsupportedError {
   constructor(type: string) {
     super(type)
@@ -169,58 +206,71 @@ function frameTypeOf(bytes: Uint8Array): number | undefined {
  * The item frames of one outgoing message, in order. Pure: nothing is funded, reserved or sent.
  *
  * Throws {@link MessageItemNotCarriedError} for a type with no plugin or one this path does not
- * carry, and {@link MessageItemEncodeError} for an item its plugin refuses, an item whose own
+ * carry between these two parties (`addressing`; a message to anyone but oneself by default), and {@link MessageItemEncodeError} for an item its plugin refuses, an item whose own
  * bytes its plugin would not read back, or a set of items a reader would refuse as a whole. A
  * caller must do this before it pays for anything.
  */
+/** One item's frame, by the dispatch rule. */
+function itemFrame(
+  registry: MessageItemRegistry,
+  item: MessageItem,
+  addressing: ItemAddressing,
+): { type: string; frame: Uint8Array } {
+  const type = (item as { type?: unknown } | null)?.type
+  if (typeof type !== 'string')
+    throw new MessageItemNotCarriedError(String(type))
+  const rule = itemFrameRule(type, addressing)
+  if (rule.carried === 'no' || !registry.has(type))
+    throw new MessageItemNotCarriedError(type)
+  const { bytes } = registry.encodeItem(item)
+  if (rule.carried === 'dedicated') {
+    if (frameTypeOf(bytes) !== rule.frameType)
+      throw new MessageItemEncodeError(
+        type,
+        `its plugin did not write a type-${rule.frameType} frame`,
+      )
+    return { type, frame: bytes }
+  }
+  try {
+    return {
+      type,
+      frame: encodePluginMessageItem({ itemType: type, data: bytes }),
+    }
+  } catch (error) {
+    throw new MessageItemEncodeError(type, detailOf(error))
+  }
+}
+
+/** The frames opened the way a reader opens one message's items. */
+function openAsMessageItems(frames: readonly Uint8Array[]): ChildFrame[] {
+  const revision = validateFrame(
+    encodeFrame(
+      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      new Map<number, string | Uint8Array[]>([
+        [0, 'frank'],
+        [1, [...frames]],
+      ]),
+    ),
+  )
+  if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+    throw new Error('the items do not form a message revision')
+  return revision.typed.items
+}
+
 export function encodeItemFrames(
   registry: MessageItemRegistry,
   items: readonly MessageItem[],
+  addressing: ItemAddressing = NOT_SELF_ADDRESSED,
 ): Uint8Array[] {
   if (items.length === 0) throw new Error('A direct message needs content')
   const watched = watch(standaloneItemBudget())
-  const frames = items.map(item => {
-    const type = (item as { type?: unknown } | null)?.type
-    if (typeof type !== 'string')
-      throw new MessageItemNotCarriedError(String(type))
-    const rule = itemFrameRule(type)
-    if (rule.carried === 'no' || !registry.has(type))
-      throw new MessageItemNotCarriedError(type)
-    const { bytes } = registry.encodeItem(item)
-    let frame: Uint8Array
-    if (rule.carried === 'dedicated') {
-      if (frameTypeOf(bytes) !== rule.frameType)
-        throw new MessageItemEncodeError(
-          type,
-          `its plugin did not write a type-${rule.frameType} frame`,
-        )
-      frame = bytes
-    } else {
-      try {
-        frame = encodePluginMessageItem({ itemType: type, data: bytes })
-      } catch (error) {
-        throw new MessageItemEncodeError(type, detailOf(error))
-      }
-    }
-    return { type, frame }
-  })
+  const frames = items.map(item => itemFrame(registry, item, addressing))
   // What a reader will do with these frames, done here first: the frames are opened as one
   // message's items and each item is read back by its plugin under one shared budget. A message
   // the recipient would refuse or show as unsupported is never paid for.
   let children: ChildFrame[]
   try {
-    const revision = validateFrame(
-      encodeFrame(
-        { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
-        new Map<number, string | Uint8Array[]>([
-          [0, 'frank'],
-          [1, frames.map(f => f.frame)],
-        ]),
-      ),
-    )
-    if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
-      throw new Error('the items do not form a message revision')
-    children = revision.typed.items
+    children = openAsMessageItems(frames.map(f => f.frame))
   } catch (error) {
     throw new MessageItemEncodeError(frames[0].type, detailOf(error))
   }
@@ -228,7 +278,7 @@ export function encodeItemFrames(
     const { type } = frames[index]
     let read: ReadItem
     try {
-      read = readItemFrame(registry, child, watched)
+      read = readItemFrame(registry, child, watched, addressing)
     } catch (error) {
       // Together the items cost more than one message may: a reader would refuse them all.
       throw new MessageItemEncodeError(type, detailOf(error))
@@ -266,6 +316,7 @@ function readItemFrame(
   registry: MessageItemRegistry,
   child: ChildFrame,
   watched: WatchedBudget,
+  addressing: ItemAddressing,
 ): ReadItem {
   // A frame type or version this reader does not know: kept exactly, never interpreted.
   if (child.kind !== 'parsed') return unsupported(child, 'unknown-type')
@@ -290,7 +341,7 @@ function readItemFrame(
     bytes = child.frame
     frame = child
   }
-  if (NOT_CARRIED_ITEM_TYPES.has(type) || !registry.has(type))
+  if (itemFrameRule(type, addressing).carried === 'no' || !registry.has(type))
     return unsupported(child, 'unknown-type', type)
   try {
     const decoded = registry.decodeItem(type, bytes, {
@@ -316,7 +367,8 @@ function readItemFrame(
 /**
  * The items of one received message, in order, from the child frames its validation opened.
  * `budget` is that validation's own budget (`OpenedDirectMessage.itemBudget`); every item is
- * decoded under it.
+ * decoded under it. `addressing` says whether the message's authenticated sender is this wallet
+ * itself; by default it is someone else.
  *
  * Never throws for one bad item: an unknown type, an unknown frame, or bytes a plugin refuses
  * becomes an `unsupported` item holding the original frame, and the other items are unaffected.
@@ -327,14 +379,98 @@ export function decodeItemFrames(
   registry: MessageItemRegistry,
   children: readonly ChildFrame[],
   budget: NestedItemBudget,
+  addressing: ItemAddressing = NOT_SELF_ADDRESSED,
 ): MessageItem[] {
   const watched = watch(budget)
   const items = children.map((child): MessageItem => {
-    const read = readItemFrame(registry, child, watched)
+    const read = readItemFrame(registry, child, watched, addressing)
     if (read.type !== 'unsupported') return read
     const item = { ...read } as UnsupportedItem & { detail?: string }
     delete item.detail
     return item
+  })
+  // A plugin that swallowed a refused budget still fails the message.
+  const exceeded = watched.exceeded()
+  if (exceeded !== undefined) throw new MessageItemBudgetExceededError(exceeded)
+  return items
+}
+
+/** Longest item kept from the legacy mailbox, as JSON text. A longer one is kept as its type only. */
+const MAX_LEGACY_RAW_ITEM_CHARS = 64 * 1024
+
+/** Longest legacy message plaintext that is parsed at all. */
+export const MAX_LEGACY_PLAINTEXT_CHARS = 1024 * 1024
+
+/** `plaintext`, when it is short enough to parse. A longer one is refused as a whole, before
+ * `JSON.parse` sees it, with {@link MessageItemBudgetExceededError}. */
+export function boundedLegacyPlaintext(plaintext: string): string {
+  if (plaintext.length > MAX_LEGACY_PLAINTEXT_CHARS)
+    throw new MessageItemBudgetExceededError(
+      `a legacy message of ${plaintext.length} characters`,
+    )
+  return plaintext
+}
+
+/**
+ * The items of one message read from the legacy JSON mailbox (`PUT /message/monad`), under the
+ * same receive rule as a canonical message. That transport delivers whatever JSON its sender
+ * wrote, so nothing from it is an item until a plugin has read it:
+ *
+ * - A type that is not carried between these two parties, or has no plugin, becomes an
+ *   `unsupported` item naming the type. A legacy message is never self-addressed: that transport
+ *   does not authenticate its sender the way the rule requires.
+ * - A carried, registered type is written by its plugin and read back from those bytes, exactly
+ *   as a sender's own check does. What is returned is what the plugin read, never the object that
+ *   arrived. One the plugin refuses either way becomes an `unsupported`, `malformed` item.
+ *
+ * An unsupported item keeps what arrived as JSON text (hex, in `frame`); it has no frame type.
+ * Never throws for one item. All items of the message are read under ONE budget, as a canonical
+ * message's are: when together they exceed a message's limits this throws
+ * {@link MessageItemBudgetExceededError} and no item is returned.
+ */
+export function receiveLegacyItems(
+  registry: MessageItemRegistry,
+  raw: readonly unknown[],
+): MessageItem[] {
+  const watched = watch(standaloneItemBudget())
+  const items = raw.map((value): MessageItem => {
+    const type = (value as { type?: unknown } | null)?.type
+    const itemType = typeof type === 'string' ? type : undefined
+    const kept = (reason: UnsupportedItem['reason']): UnsupportedItem => {
+      let text = ''
+      try {
+        text = JSON.stringify(value) ?? ''
+      } catch {
+        // Not serialisable: nothing of it is kept.
+      }
+      if (text.length > MAX_LEGACY_RAW_ITEM_CHARS) text = ''
+      return {
+        type: 'unsupported',
+        reason,
+        ...(itemType === undefined ? {} : { itemType }),
+        frame: toHex(new TextEncoder().encode(text)),
+      }
+    }
+    if (
+      itemType === undefined ||
+      itemFrameRule(itemType).carried === 'no' ||
+      !registry.has(itemType)
+    )
+      return kept('unknown-type')
+    try {
+      const { frame } = itemFrame(
+        registry,
+        value as MessageItem,
+        NOT_SELF_ADDRESSED,
+      )
+      const [child] = openAsMessageItems([frame])
+      const read = readItemFrame(registry, child, watched, NOT_SELF_ADDRESSED)
+      if (read.type === 'unsupported') return kept('malformed')
+      return read
+    } catch (error) {
+      if (error instanceof MessageItemBudgetExceededError) throw error
+      return kept('malformed')
+    }
   })
   // A plugin that swallowed a refused budget still fails the message.
   const exceeded = watched.exceeded()

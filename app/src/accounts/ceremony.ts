@@ -3,7 +3,8 @@ import {
   beginCodex32Restore,
   decodeRecoveryDescriptor,
   encodeRecoveryDescriptor,
-  destroyAccountDomainRoots,
+  destroyRecoveredAccount,
+  randomCodex32Identifier,
   type PendingCodex32Signup,
   type PendingCodex32Restore,
   type RecoveredCodex32Account,
@@ -73,16 +74,18 @@ export function createAccountCeremony() {
       )
         throw new Error('Select a backup policy')
       const randomBuffers: Uint8Array[] = []
+      const randomBytes = (length: number) => {
+        const bytes = crypto.getRandomValues(new Uint8Array(length))
+        randomBuffers.push(bytes)
+        return bytes
+      }
       try {
         signup = beginCodex32Signup({
           threshold,
-          identifier: 'frnk',
+          // Each share set names itself, so sets from different backups are not combined.
+          identifier: randomCodex32Identifier(randomBytes),
           indices: ['q', 'p', 'z', 'r', 'y'].slice(0, count),
-          randomBytes: length => {
-            const bytes = crypto.getRandomValues(new Uint8Array(length))
-            randomBuffers.push(bytes)
-            return bytes
-          },
+          randomBytes,
         })
       } finally {
         randomBuffers.forEach(bytes => bytes.fill(0))
@@ -145,6 +148,7 @@ export function createAccountCeremony() {
           custodyEpoch: 1,
           metadata: recovered.metadata,
           roots: DOMAIN_PURPOSES.map(purpose => roots[purpose]),
+          accountRoot: recovered.accountRoot,
         })
         if (token !== epoch)
           await accountSession.cancelPending(captured.attemptId)
@@ -159,7 +163,7 @@ export function createAccountCeremony() {
         cancel()
         throw error
       } finally {
-        if (recovered) destroyAccountDomainRoots(recovered.roots)
+        if (recovered) destroyRecoveredAccount(recovered)
       }
     },
   }
@@ -172,10 +176,12 @@ export function recoveryErrorMessage(error: unknown): string {
       'These shares belong to a different account. Start again with your independently saved descriptor.',
     'confirmation-mismatch':
       'These shares do not reconstruct the account you just backed up. Start again.',
+    'not-account-backup':
+      'These shares do not contain a Frank account, so nothing was restored. They may come from different backups, or from something that is not an account backup. Enter shares from one backup set.',
     'duplicate-share': 'Each backup share must have a different index.',
     'wrong-share-count': 'Enter exactly the required number of backup shares.',
     'inconsistent-share':
-      'These backup shares are inconsistent. Start again with a matching set.',
+      'These shares come from different backup sets and cannot be combined. Start again with shares from one set.',
     'wrong-ceremony-family':
       'These shares do not match the selected backup family. Start again.',
     'bad-format':

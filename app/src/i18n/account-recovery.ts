@@ -98,10 +98,12 @@ export const en = {
     'Frank account backup shares were verified before activation. Keep your independent shares and public descriptor. They cannot be reconstructed from this device.',
   import_bip39_seed: 'Import BIP39 seed',
   backup_account_codex32: 'Backup account (Codex32)',
-  write_down_each_paper_share:
-    'Write down each paper share. Any 2 of these 3 shares can restore your account.',
   codex32_threshold_explainer:
-    'Write down each paper share. Any {threshold} of these {count} shares can restore your account.',
+    'Write down each paper share. Any {threshold} of these {count} shares restore this account: the same identity, addresses and funds.',
+  codex32_backup_sets_do_not_mix:
+    'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
+  codex32_backup_unavailable_for_account:
+    'This account was created before Frank could issue new backup shares. Only the shares shown when the account was created can restore it, so no shares are shown here.',
   configure_scheme: 'Configure threshold and shares',
   custom_threshold_shares: 'Custom threshold and shares',
   threshold: 'Threshold',
@@ -231,10 +233,12 @@ export const fr = {
     'Les parts de sauvegarde du compte Frank ont été vérifiées avant l’activation. Conservez vos parts indépendantes et votre descripteur public. Cet appareil ne permet pas de les reconstruire.',
   import_bip39_seed: 'Importer la graine BIP39',
   backup_account_codex32: 'Sauvegarder le compte (Codex32)',
-  write_down_each_paper_share:
-    'Notez chaque part papier. N’importe quelles 2 de ces 3 parts permettent de restaurer votre compte.',
   codex32_threshold_explainer:
-    'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts permettent de restaurer votre compte.',
+    'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
+  codex32_backup_sets_do_not_mix:
+    'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
+  codex32_backup_unavailable_for_account:
+    'Ce compte a été créé avant que Frank puisse émettre de nouvelles parts de sauvegarde. Seules les parts affichées à la création du compte peuvent le restaurer ; aucune part n’est donc affichée ici.',
   configure_scheme: 'Configurer le seuil et les parts',
   custom_threshold_shares: 'Seuil et parts personnalisés',
   threshold: 'Seuil',

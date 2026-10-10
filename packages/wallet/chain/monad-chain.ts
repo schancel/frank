@@ -4,6 +4,7 @@ import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
 import {
+  EvmInputAdmissionError,
   nativeAdmissionJournal,
   poolSpendAdmission,
 } from "../evm-input-admission";
@@ -71,10 +72,19 @@ import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
  * the behavior that function's own doc comment describes), keeps only envelopes addressed to the
  * wallet's own identity address (`envelope.to`, compared case-insensitively -- EIP-55 checksums
  * differ only in letter case), resolves each sender's pubkey the same way `send()` resolves the
- * recipient's, and decrypts. The `stampValueWei` field on the returned
- * `DirectMessageReceived` is summed from the message's own signed stamp transactions
- * (`ethers.Transaction.from(...).value`), not merely echoed from config -- it is the actual
- * recipient-payment value, even if it ever diverges from `defaultStampValueWei`.
+ * recipient's, and decrypts. The decrypted JSON is not delivered as it is: every item goes
+ * through the wire module's receive rule (`receiveLegacyItems`), the same one a canonical message's
+ * items go through, so a type that path does not carry, or an item its plugin refuses, arrives as
+ * an `unsupported` item. The `stampValueWei` of a legacy message is always `0n`: the raw
+ * transactions a legacy message carries are its SENDER'S CLAIM. The relay delivers a legacy
+ * message to the inbox even while those payments are pending or after they were terminally
+ * rejected (`backend/cashweb/cashweb-registry/src/http/monad_message.rs`), and this wallet does
+ * not check them against the chain, so nothing here reports them as money received. Its
+ * `stampPayments` still list where those transactions pay, because a stamp address is derived
+ * from the message and cannot be found again from the seed alone: the list is what lets the
+ * funds be swept to a seed-derived address before the message is deleted. The sweep reads the
+ * chain for what is really there. Payments to this wallet's derived stamp addresses are also
+ * recorded in the stamp-payment journal as `discovered`.
  *
  * ## Canonical Forum topics
  *
@@ -108,7 +118,16 @@ import {
   NativeWalletHandle,
   WalletHandle,
 } from "./active-chain";
-import { MessageItem } from "@frank/cashweb/types/messages";
+import { MessageItem, WalletSyncItem } from "@frank/cashweb/types/messages";
+import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
+import { applyWalletSyncItem } from "../sync-dispatcher";
+import { createMessageItemRegistry } from "../message-item-plugins/registry";
+import {
+  MessageItemBudgetExceededError,
+  SELF_ONLY_ITEM_TYPES,
+  boundedLegacyPlaintext,
+  receiveLegacyItems,
+} from "../message-item-plugins/wire";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
@@ -127,6 +146,7 @@ import {
   FundAheadRefusedError,
   MonadSubAccountPool,
   STAMP_PAIR_TRANSFERS,
+  SubAccountSpendRefusedError,
 } from "../monad-account-pool";
 import { ChainUtxoPool } from "../chain-utxo-pool";
 import {
@@ -759,6 +779,12 @@ async function boundedSync(sync: Promise<void>): Promise<void> {
 /** @deprecated Recovery endpoint is retired; stamp discovery is unified through mailbox. */
 export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000;
 
+/** How long a received note from this wallet's own key that could not be applied is tried again
+ * (and so kept in the reader's replay window) before it is passed. In memory: it starts over when
+ * the wallet is reopened. */
+export const SELF_NOTE_RETRY_MS = 10 * 60_000;
+const MAX_WAITING_SELF_NOTES = 256;
+
 /** JSON-serializes `items` for use as a direct message's plaintext.
  * Throws only on `'p2pkh'` items, which are legacy Lotus-only script items.
  * Stealth items are supported across chains (Monad, Solana, eCash). */
@@ -774,16 +800,10 @@ export function serializeMessageItems(items: MessageItem[]): string {
   return JSON.stringify(items);
 }
 
-class UnsupportedIncomingWalletSyncError extends Error {
-  readonly code = "unsupported_incoming_wallet_sync";
-  constructor() {
-    super("Unsupported incoming wallet sync; preserve retained records");
-    this.name = "UnsupportedIncomingWalletSyncError";
-  }
-}
-
 /** Inverse of {@link serializeMessageItems}. Throws if `plaintext` doesn't decode to a JSON
- * array. */
+ * array. What it returns is whatever JSON the sender wrote, typed as items but checked by
+ * nothing: a wallet's own read passes it through `receiveLegacyItems` before anything is
+ * delivered, and any other reader must treat every field as the sender's claim. */
 export function deserializeMessageItems(plaintext: string): MessageItem[] {
   const parsed: unknown = JSON.parse(plaintext);
   if (!Array.isArray(parsed)) {
@@ -972,6 +992,95 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       throw new TopicBurnPreparationError(reason, { cause: err });
     }
   };
+  // The wallet sync boundary for a note this account wrote to itself from another device: the
+  // items the wire rule carries only in a self-addressed message. They are decoded as real items
+  // only when the message's authenticated sender is this wallet, and they are consumed here,
+  // through `applyWalletSyncItem` (chain affinity first, then the pool's own checks of the
+  // signed transaction), never handed to a host as a chat message.
+  //
+  // Runs outside the wallet's operation queue, as `applyWalletSyncItem` requires. Applying a note
+  // twice changes nothing; a digest settled in this session is not applied again.
+  //
+  // A note that cannot be applied never holds the reader's cursor for good. A refusal that would
+  // be repeated word for word is final at once. Anything else is tried again on later reads, for
+  // at most `SELF_NOTE_RETRY_MS` from the first failure in this session, and is then passed too.
+  // Either way the note changed nothing, and one warning says so.
+  const settledSelfNotes = new WeakMap<object, Set<string>>();
+  const waitingSelfNotes = new WeakMap<object, Map<string, number>>();
+  const selfNoteRefusalIsFinal = (error: unknown): boolean => {
+    // Another chain's note.
+    if (error instanceof WalletSyncItemRejectedError) return true;
+    if (error instanceof SubAccountSpendRefusedError) {
+      // No applier yet: the wallet is not fully composed. A held row is usually another
+      // operation's and is released; two kinds of hold are not: the row is gone but for its
+      // terminal checkpoint, or it already carries a different spend.
+      if (error.code === "no-applier") return false;
+      if (error.code !== "held") return true;
+      return /compacted terminal checkpoint|another spend checkpoint/.test(
+        error.message
+      );
+    }
+    // The note's transaction cannot be this wallet's to record. (`conflicting-authorization` is
+    // not final: this device's own journal holds the pair while its member is pending.)
+    return (
+      error instanceof EvmInputAdmissionError &&
+      error.reason === "invalid-provenance"
+    );
+  };
+  const consumeSelfNotes = async (
+    wallet: EvmChainWalletHandle,
+    message: DirectMessageReceived
+  ): Promise<
+    | { kind: "none" }
+    | { kind: "consumed"; rest: DirectMessageReceived | undefined }
+    | { kind: "retry" }
+  > => {
+    const own = wallet.identity.address.raw.toLowerCase();
+    if (
+      message.senderAddress.raw.toLowerCase() !== own ||
+      message.recipientAddress.raw.toLowerCase() !== own
+    )
+      return { kind: "none" };
+    const notes = message.items.filter((item) =>
+      SELF_ONLY_ITEM_TYPES.has(item.type)
+    );
+    if (notes.length === 0) return { kind: "none" };
+    const others = message.items.filter(
+      (item) => !SELF_ONLY_ITEM_TYPES.has(item.type)
+    );
+    const rest = others.length > 0 ? { ...message, items: others } : undefined;
+    const digest = message.payloadDigest;
+    let settled = settledSelfNotes.get(wallet);
+    if (settled === undefined)
+      settledSelfNotes.set(wallet, (settled = new Set()));
+    if (settled.has(digest)) return { kind: "consumed", rest };
+    let waiting = waitingSelfNotes.get(wallet);
+    if (waiting === undefined)
+      waitingSelfNotes.set(wallet, (waiting = new Map()));
+    try {
+      for (const note of notes)
+        await applyWalletSyncItem(wallet, note as WalletSyncItem);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const since = waiting.get(digest) ?? Date.now();
+      const final = selfNoteRefusalIsFinal(error);
+      if (!final && Date.now() - since < SELF_NOTE_RETRY_MS) {
+        // Bounded: the oldest remembered failure is forgotten first (and starts over if seen).
+        if (!waiting.has(digest) && waiting.size >= MAX_WAITING_SELF_NOTES)
+          waiting.delete(waiting.keys().next().value as string);
+        waiting.set(digest, since);
+        return { kind: "retry" };
+      }
+      console.warn(
+        `[wallet-sync] a note this wallet wrote to itself was not applied and is passed (${digest}; ${
+          final ? "refused" : "still failing after the retry window"
+        }): ${detail}`
+      );
+    }
+    waiting.delete(digest);
+    settled.add(digest);
+    return { kind: "consumed", rest };
+  };
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
@@ -1044,11 +1153,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           if (digest) {
             seenDigests.add(digest);
           }
-          received.push(msg);
+          const taken = await consumeSelfNotes(wallet, msg);
+          if (taken.kind === "none") received.push(msg);
+          else if (taken.kind === "retry")
+            params.onIncompleteTimestamp?.(msg.receivedTime);
+          else if (taken.rest !== undefined) received.push(taken.rest);
+          // Nothing of the row is a message: the caller's cursor may pass it.
+          else
+            params.onQuarantinedTimestamp?.(
+              msg.receivedTime,
+              msg.payloadDigest
+            );
         }
       }
 
       try {
+        // The legacy JSON mailbox (`PUT /message/monad`): still written by the command-line
+        // client and by scripts, and a relay that enables it accepts it from anyone. Its items
+        // go through the same receive rule as a canonical message's. An untyped wallet whose
+        // host installed no registry (the canonical read above refuses outright without one)
+        // still gets its messages, with every item unsupported: nothing is ever delivered raw.
+        const registry =
+          installedMessageItemRegistry(wallet) ?? createMessageItemRegistry();
         const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
         const stored = await fetchMonadMessagesSince({
           ...mailbox,
@@ -1078,27 +1204,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
         let items: MessageItem[];
         try {
-          items = deserializeMessageItems(
-            decryptEnvelope({
-              envelope,
-              myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
-              senderPubKey: Buffer.from(senderProfile.pubKey),
-            })
+          // Nothing the sender wrote is an item until a plugin has read it: a type this path
+          // does not carry, or one its plugin refuses, arrives as an unsupported item. A legacy
+          // message is never self-addressed, so a wallet sync record is among them and reaches
+          // no wallet state.
+          items = receiveLegacyItems(
+            registry,
+            deserializeMessageItems(
+              boundedLegacyPlaintext(
+                decryptEnvelope({
+                  envelope,
+                  myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
+                  senderPubKey: Buffer.from(senderProfile.pubKey),
+                })
+              )
+            )
           );
-        } catch {
+        } catch (error) {
+          // Too large to parse, or its items together cost more than one message may: refused
+          // as a whole and for good, as on the canonical path. Anything else is not a message.
+          if (error instanceof MessageItemBudgetExceededError)
+            params.onQuarantinedTimestamp?.(record.timestamp, payloadHashHex);
           continue;
-        }
-
-        // Decoded legacy items have no supported financial-sync authority. Refuse the
-        // containing read before stamp discovery or any wallet bookkeeping mutation.
-        if (
-          items.some(
-            (item) =>
-              item &&
-              (item.type === "wallet-sync" || item.type === "payment-transfer")
-          )
-        ) {
-          throw new UnsupportedIncomingWalletSyncError();
         }
 
         if (wallet.stampPaymentJournal !== undefined) {
@@ -1123,11 +1250,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
         }
 
-        let stampValueWei = 0n;
+        // Where the carried transactions pay, kept so the funds can be swept before the message
+        // is deleted (see this file's header). Not an amount received.
         const stampPayments: StampPaymentInfo[] = [];
         for (const payment of record.message.stampPayments) {
           const tx = Transaction.from(hexlify(payment.rawTx));
-          stampValueWei += tx.value;
           if (tx.hash !== null && tx.to !== null) {
             stampPayments.push({
               txHash: tx.hash,
@@ -1142,13 +1269,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           recipientAddress: toChainAddress(envelope.to),
           items,
           payloadDigest: payloadHashHex,
-          stampValueWei,
+          // Unverified on this transport, so not reported as received: the transactions a legacy
+          // message carries are its sender's claim. Nothing was shown to have been paid.
+          stampValueWei: 0n,
           stampPayments,
           receivedTime: record.timestamp,
         });
       }
       } catch (err) {
-        if (err instanceof UnsupportedIncomingWalletSyncError || !canonical) {
+        if (!canonical) {
           throw err;
         }
         // Standard mailbox read is best-effort fallback alongside canonical messaging
@@ -1173,7 +1302,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
       if (canonical?.subscribeMailboxStream) {
-        return canonical.subscribeMailboxStream(params);
+        return canonical.subscribeMailboxStream({
+          ...params,
+          // The same boundary as a polled read. A note not applied yet is left to the poll.
+          onRecord: (record) => {
+            void consumeSelfNotes(wallet, record).then(
+              (taken) => {
+                if (taken.kind === "none") params.onRecord(record);
+                else if (taken.kind === "consumed" && taken.rest !== undefined)
+                  params.onRecord(taken.rest);
+              },
+              (error) =>
+                params.onError?.(
+                  error instanceof Error ? error : new Error(String(error))
+                )
+            );
+          },
+        });
       }
       return () => {};
     },
@@ -2310,18 +2455,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   lifetime
                 ).classifyMember(row, memberIndex);
               },
-              // Transport only. The item now carries the member's signed transaction, so it is
-              // NOT dispatched locally here: that would commit through caller B, outside the send's
-              // queue hold. This device's own record is caller A's, above.
-              onSyncTransaction: async (item) => {
-                // This callback runs outside the native financial queue. Failure remains retryable.
-                await directMessages.send({
-                  wallet,
-                  recipient: toChainAddress(identity.address.raw),
-                  items: [item],
-                  stampValue: 0n
-                });
-              }
+              // No `onSyncTransaction`: after a native send this wallet does NOT send the
+              // account's other devices a wallet-sync note. A note is a paid message: it would
+              // pay a stamp to this wallet's own stamp key (which nothing spends) on every member,
+              // wait behind, and hold, the one-pending-message gate, and make a send whose
+              // transfer is already included end in an error. The consolidator treats a missing
+              // callback as "not transported": the send resolves, and the operation's members
+              // stay `syncApplied: false`, which hosts show as information, not as a failure.
+              // A note that does arrive from this wallet's own key (another client, a later
+              // version) is still applied: see `consumeSelfNotes`.
             })
           );
           // Wallet open, native operations. Local only: nothing in this block may make a network

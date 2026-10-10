@@ -13,8 +13,19 @@ that reconstructs the complete canonical 103-symbol payload generated for that
 ceremony. It never creates or exposes an encoded Codex32 `s` secret.
 
 `pending.publicDescriptor` is available during transient signup for independent
-backup. `pending.confirmWithMetadata(shares)` returns `{ roots, metadata }` after
-exact recovery verification. The metadata contains the public descriptor,
+backup. `pending.confirmWithMetadata(shares)` returns `{ roots, metadata,
+accountRoot }` after exact recovery verification; restore returns the same shape.
+`accountRoot` is an owned copy of R for custody to store, wiped with
+`destroyRecoveredAccount`.
+
+`exportCodex32Backup({ accountRoot, expected, threshold, shareCount, randomBytes })`
+issues a new share set for an existing account. It wraps R as the same master
+`R || V` that signup splits, refuses with `descriptor-mismatch` unless that master
+reproduces the account's recorded public fingerprint (so a derived domain root or
+another account's root cannot be split), reads the new shares back, and gives the
+set a fresh random identifier. Share sets are independent: shares from two sets
+fail recovery with `inconsistent-share`. `isAccountRootOf(accountRoot, descriptor)`
+is the same fingerprint check for custody to run before it stores a root. The metadata contains the public descriptor,
 `masterRetirementId`, and `recoveryIdentityCommitment`, computed using the frozen
 preimages in recovery-spec sections 7.2 and 12. It contains no family threshold,
 identifier, shares, master or root secret. `deriveRecoveryPublicMetadata(M)`
@@ -53,8 +64,10 @@ or a self-comparison cannot establish that trust.
 
 Malformed descriptors/fingerprints raise `AccountRecoveryError` with stable
 `invalid-descriptor` / `invalid-fingerprint` codes; unknown format or registry
-uses `wrong-recovery-format` / `wrong-registry`. Invalid masters retain
-`bad-format`; consumed ceremonies use `ceremony-consumed`. Errors do not include
+uses `wrong-recovery-format` / `wrong-registry`. A consistent share set whose
+payload is not a valid master `R || V` (any other secret, or shares of two sets
+that happen to share an identifier) fails with `not-account-backup`; no roots are
+derived from it. Consumed ceremonies use `ceremony-consumed`. Errors do not include
 input text, bytes or caller exceptions. Inputs are bounded before allocation,
 and descriptor properties and share entries are snapshotted once.
 

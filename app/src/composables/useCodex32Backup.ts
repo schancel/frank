@@ -1,5 +1,8 @@
 import { ref } from 'vue'
-import { accountSession } from '../accounts/session'
+import {
+  AccountBackupUnavailableError,
+  accountSession,
+} from '../accounts/session'
 
 const PRESETS: ReadonlyArray<readonly [number, number]> = [
   [2, 3],
@@ -11,6 +14,8 @@ export function useCodex32Backup() {
   const showBackupDialog = ref(false)
   const backupLoading = ref(false)
   const backupError = ref('')
+  /** This account predates stored account roots: no shares can be issued for it. */
+  const backupUnavailable = ref(false)
   const backupShares = ref<string[]>([])
   const copyStatus = ref('')
   const threshold = ref(2)
@@ -21,15 +26,18 @@ export function useCodex32Backup() {
     count.value = c
     backupLoading.value = true
     backupError.value = ''
+    backupUnavailable.value = false
+    // A new set replaces the old one; shares of two sets must never be shown together.
+    backupShares.value = []
     try {
-      if (typeof accountSession?.backupCodex32 === 'function') {
-        backupShares.value = await accountSession.backupCodex32(t, c)
-      } else {
-        throw new Error('Backup service is unavailable')
-      }
+      backupShares.value = await accountSession.backupCodex32(t, c)
     } catch (err) {
-      backupError.value =
-        (err as Error)?.message || 'Failed to generate backup shares'
+      if (err instanceof AccountBackupUnavailableError) {
+        backupUnavailable.value = true
+      } else {
+        backupError.value =
+          (err as Error)?.message || 'Failed to generate backup shares'
+      }
     } finally {
       backupLoading.value = false
     }
@@ -48,6 +56,7 @@ export function useCodex32Backup() {
     showBackupDialog.value = false
     backupShares.value = []
     backupError.value = ''
+    backupUnavailable.value = false
     copyStatus.value = ''
     threshold.value = 2
     count.value = 3
@@ -83,6 +92,7 @@ export function useCodex32Backup() {
     showBackupDialog,
     backupLoading,
     backupError,
+    backupUnavailable,
     backupShares,
     copyStatus,
     threshold,

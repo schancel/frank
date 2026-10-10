@@ -738,10 +738,19 @@ async function send(
     // Encoded before anything is funded, reserved or journalled: an unregistered type, an item
     // its plugin refuses, or a set of items a reader would refuse rejects here, labelled as not
     // attempted. Nothing was paid or sent.
-    const items = encodeItemFrames(requireMessageItems(owner), params.items)
+    // Whether this wallet is writing to itself is all the item rule is told; which items that
+    // permits is the rule's own business.
+    const selfAddressed =
+      params.recipient.raw.toLowerCase() === owner.identityAddress.toLowerCase()
+    const items = encodeItemFrames(requireMessageItems(owner), params.items, {
+      selfAddressed,
+    })
     const stampValueWei = params.stampValue ?? defaultStampValueWei
     const peer = await directory.peerCurrent({ address: params.recipient.raw })
     if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
+    // The items were admitted for a message to this wallet's own key: it is sealed to no other.
+    if (selfAddressed && peer.subject.toLowerCase() !== owner.subject.toLowerCase())
+      throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
     // The recipient may live on any relay: this wallet always submits to its own relay, which
     // forwards. A relay that does not say it forwards is not handed a payment for another relay.
     let elsewhere = true
@@ -1219,6 +1228,17 @@ async function recoverHistoricalDelivery(
   })
 }
 
+/** The other party of a message is this wallet itself: the key the message names and the key the
+ * directory answered for it are both this wallet's own. */
+function isOwnSubject(
+  owner: CanonicalMessagingOwner,
+  named: string,
+  resolved: string,
+): boolean {
+  const own = owner.subject.toLowerCase()
+  return named.toLowerCase() === own && resolved.toLowerCase() === own
+}
+
 /** The items of an opened message through the installed registry, in order. One item that cannot
  * be read becomes an `unsupported` item; it never fails the message. */
 function receivedItems(
@@ -1230,9 +1250,12 @@ function receivedItems(
   wallet: WalletHandle,
   isOutbound: boolean,
   timestampMs: number,
+  selfAddressed: boolean,
 ): MessageItem[] {
   const children = opened.items
-  const items = decodeItemFrames(registry, children, opened.itemBudget)
+  const items = decodeItemFrames(registry, children, opened.itemBudget, {
+    selfAddressed,
+  })
   // A wallet effect, not a plugin's: a received stealth payment is added to this wallet's keys.
   // It reads the validated frame, so the amount is exact.
   children.forEach((child, index) => {
@@ -1488,6 +1511,9 @@ async function fetchSince(
           params.wallet,
           isOutbound,
           record.timestampMs,
+          // The message opened with this wallet's own key as its other party: its sender and
+          // its recipient are both this wallet.
+          isOwnSubject(owner, peerSubjectHex, peer.subject),
         )
       } catch (error) {
         // Tampered, stale-keyed or foreign ciphertext never reaches display or payment import.
@@ -1696,6 +1722,7 @@ export function canonicalDirectMessages(
                     params.wallet,
                     isOutbound,
                     record.timestampMs,
+                    isOwnSubject(owner, peerSubjectHex, peer.subject),
                   )
                 } finally {
                   roles.dispose()

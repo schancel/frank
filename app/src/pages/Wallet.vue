@@ -322,16 +322,24 @@
                             })
                           }}</span>
                         </p>
-                        <p>
+                        <p
+                          class="text-caption text-grey-7"
+                          data-testid="wallet-native-operation-sync"
+                        >
                           {{
                             $t(
                               operation.syncCallbackComplete
                                 ? 'nativeOperation.syncRecorded'
-                                : 'nativeOperation.syncUnrecorded',
+                                : 'nativeOperation.syncNotShared',
                             )
                           }}
                         </p>
-                        <p>{{ $t('nativeOperation.recoveryUnavailable') }}</p>
+                        <p
+                          v-if="operation.payment !== 'included'"
+                          data-testid="wallet-native-operation-recovery"
+                        >
+                          {{ $t('nativeOperation.recoveryUnavailable') }}
+                        </p>
                       </details>
                     </template>
                   </q-card-section>

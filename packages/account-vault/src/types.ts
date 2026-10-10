@@ -37,8 +37,15 @@ export interface VaultWriteIntent {
 }
 
 export interface PreviewVault {
-  stage(intent: VaultWriteIntent, roots: readonly DomainRoot[]): Promise<VaultReceipt>
+  /** `accountRoot` is the 32-byte root R the typed roots were derived from; the caller vouches for that. */
+  stage(intent: VaultWriteIntent, roots: readonly DomainRoot[], accountRoot: Uint8Array): Promise<VaultReceipt>
   open(receipt: VaultReceipt): Promise<readonly DomainRoot[]>
+  /**
+   * The account root stored with this record, as a caller-owned copy, for issuing a new
+   * backup. `null` means the record was written before account roots were stored: there
+   * is nothing to back up from, and callers must say so instead of substituting a root.
+   */
+  openAccountRoot(receipt: VaultReceipt): Promise<Uint8Array | null>
   reconcile(receipt: VaultReceipt): Promise<'committed' | 'absent' | 'superseded' | 'removed'>
   remove(receipt: VaultReceipt): Promise<void>
   /** Cancel a known pending write, even before its initial stage commits. No roots required. */

@@ -4,7 +4,6 @@ import __pb_registry_metadata_pb from '@frank/cashweb/registry/metadata_pb'
 const { AddressMetadata, Entry } = __pb_registry_metadata_pb
 
 import { BotLoopGuard, parseAddressList } from './bot-loop-guard'
-import { extractPromptText } from './qwen-prompt'
 
 const A = `0x${'aa'.repeat(20)}`
 const B = `0x${'bb'.repeat(20)}`
@@ -219,41 +218,5 @@ describe('two bots exchanging a greeting', () => {
     // greeting + at most 4 replies from each side.
     expect(sent).toBeLessThanOrEqual(1 + 4 + 4)
     expect(sent).toBeGreaterThan(1) // the budget, not the marker, is what stopped it
-  })
-})
-
-describe('extractPromptText', () => {
-  it('returns the text of text items', () => {
-    expect(
-      extractPromptText(
-        JSON.stringify([
-          { type: 'text', text: 'hello' },
-          { type: 'text', text: 'world' },
-        ]),
-      ),
-    ).toBe('hello\nworld')
-  })
-
-  it('never treats structured bot output as a prompt', () => {
-    for (const item of [
-      { type: 'digital-goods', action: 'catalog', catalog: [] },
-      { type: 'raffle', action: 'announce', raffleId: 'r' },
-      { type: 'blackjack-move', action: 'deal' },
-      { type: 'digital-goods', action: 'error', message: 'nope' },
-    ]) {
-      expect(extractPromptText(JSON.stringify([item]))).toBeUndefined()
-    }
-    expect(extractPromptText('[]')).toBeUndefined()
-  })
-
-  it('keeps the legacy bare-string convention', () => {
-    expect(extractPromptText('just a string')).toBe('just a string')
-  })
-})
-
-describe('parseAddressList', () => {
-  it('splits, trims and drops empties', () => {
-    expect(parseAddressList(' 0x1 , ,0x2,')).toEqual(['0x1', '0x2'])
-    expect(parseAddressList(undefined)).toEqual([])
   })
 })

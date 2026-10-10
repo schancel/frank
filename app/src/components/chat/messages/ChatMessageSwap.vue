@@ -102,6 +102,15 @@
         </a>
       </div>
 
+      <!-- A received offer moves no funds from this card (see `fundActionsWithheld`) -->
+      <div
+        v-if="fundActionsWithheld"
+        class="text-caption text-grey-7 q-mt-xs"
+        data-testid="swap-unavailable-note"
+      >
+        {{ $t('walletPanel.swapUnavailableDescription') }}
+      </div>
+
       <!-- Actions based on role & lifecycle phase -->
       <div class="row justify-end q-mt-sm q-gutter-xs">
         <!-- Cancel button (Maker when pending) -->
@@ -345,25 +354,35 @@ export default defineComponent({
     canLockMaker(): boolean {
       return this.outbound && this.status === 'pending' && !this.legATxHash
     },
-    canLockTaker(): boolean {
+    /**
+     * A received offer is whatever its sender wrote: its status, amounts, hash lock and
+     * transaction hashes are that person's claims, and nothing has checked them. Until the swap
+     * flow validates an offer and asks for confirmation, no action that moves funds (deposit and
+     * lock, claim, refund) is offered on an inbound item, whatever state it says it is in.
+     */
+    fundActionsWithheld(): boolean {
       return (
         !this.outbound &&
         (this.status === 'accepted' ||
-          (this.status === 'locked' && !this.legBTxHash))
+          this.status === 'locked' ||
+          this.status === 'expired')
       )
     },
+    canLockTaker(): boolean {
+      // The taker's deposit is driven entirely by a received item: withheld (see above).
+      return false
+    },
     canClaimFunds(): boolean {
-      if (this.outbound) {
-        // Maker can claim Leg B once Leg B is locked and not yet claimed
-        return (
-          this.status === 'locked' && !!this.legBTxHash && !this.claimTxHash
-        )
-      }
-      // Taker can claim Leg A once preimage is revealed
-      return this.status === 'locked' && (!!this.preimage || !!this.claimTxHash)
+      // Maker can claim Leg B once Leg B is locked and not yet claimed
+      return (
+        this.outbound &&
+        this.status === 'locked' &&
+        !!this.legBTxHash &&
+        !this.claimTxHash
+      )
     },
     canRefundFunds(): boolean {
-      return this.status === 'expired'
+      return this.outbound && this.status === 'expired'
     },
     legATxUrl(): string | undefined {
       return multiChainExplorerUrl(this.legATxHash, this.offeredChain)
@@ -410,6 +429,8 @@ export default defineComponent({
       }
     },
     async handleDepositLegB() {
+      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
+      if (!this.outbound) return
       this.busy = true
       try {
         const res = await this.escrow.depositLock({
@@ -432,6 +453,8 @@ export default defineComponent({
       }
     },
     async handleClaim() {
+      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
+      if (!this.outbound) return
       this.busy = true
       try {
         const targetChain = this.outbound
@@ -455,6 +478,8 @@ export default defineComponent({
       }
     },
     async handleRefund() {
+      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
+      if (!this.outbound) return
       this.busy = true
       try {
         const targetChain = this.outbound

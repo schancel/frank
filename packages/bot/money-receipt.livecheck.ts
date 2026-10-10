@@ -77,7 +77,12 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error("money receipt check failed:", error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(
+      "money receipt check failed:",
+      error instanceof Error ? error.message : error
+    );
+    process.exit(1);
+  });
+}

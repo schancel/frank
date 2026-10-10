@@ -765,7 +765,7 @@ async function run() {
       await new Promise(r => setTimeout(r, 500))
       await click('[data-test="review-confirm-button"]')
       await until(
-        `location.hash !== '#/send' || /included|unresolved|pending|reverted/i.test(document.querySelector('[data-test="native-operation-outcome"]')?.innerText ?? '')`,
+        `location.hash !== '#/send' || /sent on|unresolved|pending|reverted/i.test(document.querySelector('[data-test="native-operation-outcome"]')?.innerText ?? '')`,
         30000,
         'native transfer outcome',
       )
@@ -779,7 +779,7 @@ async function run() {
       if (paid.sent === undefined)
         throw new Error('paid message after the native send was not sent')
       if (!/^returned/.test(outcome)) {
-        if (!/Payment included/.test(outcome)) throw new Error(outcome)
+        if (!/Sent on/.test(outcome)) throw new Error(outcome)
         throw new Error(
           `funds moved and a paid message works, but the page stays on: ${outcome}`,
         )

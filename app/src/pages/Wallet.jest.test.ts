@@ -774,8 +774,18 @@ describe('Wallet detail page (#570)', () => {
         )
         expect(history.text()).toContain(fixture.hash)
         expect(history.text()).toContain(fixture.operationId)
-        expect(history.text()).toContain(
-          messages.nativeOperation.syncUnrecorded,
+        // Included reads as sent; the unshared state is a muted note, and recovery is not
+        // mentioned for a transfer that needs none.
+        expect(translate('nativeOperation.included', { network: 'n' })).toMatch(
+          /^(Sent on|Envoyé sur) n\.$/,
+        )
+        const sync = wrapper.get('[data-testid="wallet-native-operation-sync"]')
+        expect(sync.text()).toBe(messages.nativeOperation.syncNotShared)
+        expect(sync.classes()).toEqual(
+          expect.arrayContaining(['text-caption', 'text-grey-7']),
+        )
+        expect(history.text()).not.toContain(
+          messages.nativeOperation.recoveryUnavailable,
         )
         expect(history.text()).toContain('0.01 MON')
         expect(history.text()).toContain('0.002142 MON')

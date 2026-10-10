@@ -265,7 +265,7 @@ it.each(['success', 'invalid-master', 'mismatch'] as const)(
     else
       expectCode(
         () => restore.recover(shares),
-        outcome === 'mismatch' ? 'descriptor-mismatch' : 'bad-format',
+        outcome === 'mismatch' ? 'descriptor-mismatch' : 'not-account-backup',
       )
     expect(recoveredBuffers).toHaveLength(2)
     expect(

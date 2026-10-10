@@ -36,7 +36,6 @@ import {
 } from '@frank/cashweb/relay/directory-client'
 import {
   fetchCanonicalInboxPage,
-  fetchCanonicalRecoveryPage,
   type CanonicalMailboxAuthParams,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import { openNodeDirectoryStore } from '../directory-admission/src/node'
@@ -553,43 +552,9 @@ async function recipientRead(config: DriverConfig, fetch: CanonicalFetch) {
         ),
       }
     })
-    const recovery = await fetchCanonicalRecoveryPage(auth)
-    const imported = []
-    for (const record of recovery.records) {
-      const row = await wallet.client.importRecovery({
-        record,
-        senderCurrent: sender.current,
-        recipientCurrent: recipient.current,
-      })
-      wallet.client.verifyImportedRecoveryCustody(row.obligationId)
-      // A non-terminal obligation must stay unacknowledged; no relay request may be made.
-      let ackRefusal: string | null = null
-      if (!record.lifecycle.startsWith('terminal:'))
-        ackRefusal = await wallet.client
-          .ackImportedRecovery(row.obligationId, auth)
-          .then(
-            () => 'acknowledged',
-            (error: Error) => error.message,
-          )
-      else await wallet.client.ackImportedRecovery(row.obligationId, auth)
-      const after = wallet.client
-        .importedRecoveries()
-        .find(r => r.obligationId === row.obligationId)!
-      imported.push({
-        obligationId: row.obligationId,
-        submissionIdentity: record.submissionIdentity,
-        lifecycle: record.lifecycle,
-        confirmedChildren: [...record.confirmedChildren],
-        accounts: row.accounts,
-        ackRefusal,
-        recipientAcknowledged: after.recipientAcknowledged,
-      })
-    }
     return {
       inbox: opened,
       inboxNextCursor: inbox.nextCursor ?? null,
-      recovery: imported,
-      recoveryNextCursor: recovery.nextCursor ?? null,
     }
   } finally {
     await recipient.close()

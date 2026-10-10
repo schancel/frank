@@ -396,7 +396,6 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
         assert_eq!(inbox[0]["timestampMs"], committed);
         assert_eq!(inbox[0]["t3"], freeze["identity"]["payload_hash"]);
         assert_eq!(inbox[0]["texts"], serde_json::json!([JOINED_TEXT]));
-        assert_eq!(read["recovery"].as_array().unwrap().len(), 0);
     })
     .catch_unwind()
     .await;

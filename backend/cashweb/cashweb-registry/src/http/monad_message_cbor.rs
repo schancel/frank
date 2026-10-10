@@ -416,11 +416,6 @@ pub(crate) enum CanonicalError {
     Capacity,
     #[error("mailbox authentication failed")]
     Unauthorized,
-    /// The wallet still asks for a login to the recovery pages on every read and takes this
-    /// answer to mean "there are none". Delete with that request
-    /// (`fetchCanonicalRecoveryPage` in packages/cashweb/relay/monad-mailbox-client.ts).
-    #[error("recovery pages do not exist")]
-    Retired,
 }
 pub(crate) type Result<T> = std::result::Result<T, CanonicalError>;
 impl IntoResponse for CanonicalError {
@@ -453,7 +448,6 @@ impl IntoResponse for CanonicalError {
             ),
             Self::Capacity => unreachable!(),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "mailbox_auth_failed"),
-            Self::Retired => (StatusCode::GONE, "recovery_endpoint_retired"),
         };
         (status, Json(serde_json::json!({"version":1,"error":error}))).into_response()
     }
@@ -971,7 +965,6 @@ pub(crate) async fn handle_challenge(
         .ok_or(CanonicalError::Unauthorized)?;
     let resource = match query.resource.as_deref() {
         Some("inbox") => MailboxResource::Inbox,
-        Some("recovery") | Some("recovery_ack") => return Err(CanonicalError::Retired),
         Some("mailbox") => MailboxResource::Mailbox,
         Some("mailbox_ws") | Some("mailbox_stream") | Some("mailbox-ws") => {
             MailboxResource::MailboxStream
@@ -996,9 +989,6 @@ pub(crate) async fn handle_challenge(
     Ok(Json(serde_json::json!({
         "epoch":hex::encode(challenge.epoch), "nonce":hex::encode(challenge.nonce), "expires_at_ms":challenge.expires_at_ms, "token":hex::encode(challenge.token),
         "signing_domain":crate::monad_mailbox::MAILBOX_AUTH_DOMAIN, "resource":query.resource, "since":binding.since, "cursor":query.cursor, "limit":binding.limit, "max_bytes":binding.max_bytes, "network_tag":hex::encode(runtime.network_tag()),
-        // The relay has no recovery pages. The client's decoder takes an exact list of fields
-        // that still names these two, and expects null.
-        "recovery_payload_hash":serde_json::Value::Null, "recovery_obligation_id":serde_json::Value::Null
     })).into_response())
 }
 

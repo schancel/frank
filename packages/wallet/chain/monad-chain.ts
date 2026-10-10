@@ -135,7 +135,6 @@ import {
   DirectMessageReceived,
   DirectMessageSendResult,
   ProfileInfo,
-  StampPaymentInfo,
   TopicBroadcastClient,
   TopicPostOutcomeUnknownError,
   NativeWalletHandle,
@@ -148,12 +147,6 @@ import {
 } from "@frank/cashweb/types/messages";
 import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { applyWalletSyncItem } from "../sync-dispatcher";
-import { createMessageItemRegistry } from "../message-item-plugins/registry";
-import {
-  MessageItemBudgetExceededError,
-  boundedLegacyPlaintext,
-  receiveLegacyItems,
-} from "../message-item-plugins/wire";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { requireChainContract, resolveChainIdentifier } from "./chains-registry";
@@ -196,20 +189,13 @@ import {
 import {
   MonadIdentity,
   fetchMonadProfile,
-  mailboxAuthFor,
 } from "../monad-identity";
 import {
   MonadStampClient,
   MonadCanonicalStampClient,
   quoteMonadStampPaymentGasReserve,
-  recoverMonadStampPayments,
 } from "../monad-stamp-client";
-import { fetchMonadMessagesSince } from "@frank/cashweb/relay/monad-message-feed";
 import { MailboxAuthParams } from "@frank/cashweb/relay/monad-mailbox-client";
-import {
-  decryptEnvelope,
-  parseEnvelope,
-} from "@frank/cashweb/relay/monad-message-envelope";
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,
@@ -1340,9 +1326,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
+      if (!canonical)
+        throw new CanonicalMessagingPendingError(
+          "Canonical direct messages require persistent typed wallet custody on a Monad network."
+        );
       const received: DirectMessageReceived[] = [];
-      const seenDigests = new Set<string>();
-      if (canonical) {
+      {
         // The coin list's own first read of the mailbox, from the start, whatever cursor the
         // host asks from: money that arrived before this coin list existed is found here. It
         // records coins only; no message of it is handed to the host. Done once: afterwards
@@ -1396,10 +1385,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           });
         }
         for (const msg of canonicalReceived) {
-          const digest = (msg.payloadDigest ?? "").toLowerCase();
-          if (digest) {
-            seenDigests.add(digest);
-          }
           const taken = await consumeSelfNotes(wallet, msg);
           if (taken.kind === "none") received.push(msg);
           else if (taken.kind === "retry")
@@ -1414,134 +1399,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         }
       }
 
-      try {
-        // The legacy JSON mailbox (`PUT /message/monad`): still written by the command-line
-        // client and by scripts, and a relay that enables it accepts it from anyone. Its items
-        // go through the same receive rule as a canonical message's. An untyped wallet whose
-        // host installed no registry (the canonical read above refuses outright without one)
-        // still gets its messages, with every item unsupported: nothing is ever delivered raw.
-        const registry =
-          installedMessageItemRegistry(wallet) ?? createMessageItemRegistry();
-        const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
-        const stored = await fetchMonadMessagesSince({
-          ...mailbox,
-          sinceMs: params.sinceMs,
-          onTruncated: params.onTruncated,
-        });
-        const myAddress = wallet.identity.address.raw.toLowerCase();
-
-      for (const record of stored) {
-        if (record.message === undefined) continue;
-        const payloadHashHex = bareHex(record.message.payloadHash);
-        if (seenDigests.has(payloadHashHex.toLowerCase())) continue;
-        seenDigests.add(payloadHashHex.toLowerCase());
-
-        const envelope = parseEnvelope(record.message.encryptedPayload);
-        if (envelope === undefined) continue;
-        if (envelope.to.toLowerCase() !== myAddress) continue;
-
-        const senderProfile = await fetchMonadProfile({
-          relayBaseUrl: wallet.relayBaseUrl,
-          address: toChainAddress(envelope.from),
-        });
-        if (senderProfile === undefined) {
-          params.onQuarantinedTimestamp?.(record.timestamp, payloadHashHex);
-          continue;
-        }
-
-        let items: MessageItem[];
-        try {
-          // Nothing the sender wrote is an item until a plugin has read it: a type this path
-          // does not carry, or one its plugin refuses, arrives as an unsupported item. A legacy
-          // message is never self-addressed, so a wallet sync record is among them and reaches
-          // no wallet state.
-          items = receiveLegacyItems(
-            registry,
-            deserializeMessageItems(
-              boundedLegacyPlaintext(
-                decryptEnvelope({
-                  envelope,
-                  myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
-                  senderPubKey: Buffer.from(senderProfile.pubKey),
-                })
-              )
-            )
-          );
-        } catch (error) {
-          // Too large to parse, or its items together cost more than one message may: refused
-          // as a whole and for good, as on the canonical path. Anything else is not a message.
-          if (error instanceof MessageItemBudgetExceededError)
-            params.onQuarantinedTimestamp?.(record.timestamp, payloadHashHex);
-          continue;
-        }
-
-        if (wallet.stampPaymentJournal !== undefined) {
-          const recovered = recoverMonadStampPayments({
-            message: record.message,
-            recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
-          });
-          for (const payment of recovered) {
-            await receivedCoinOwners.get(wallet)?.recordStampCoin({
-              address: payment.address,
-              privateKey: hexlify(payment.privateKey),
-              childIndex: payment.childIndex,
-              payloadDigest: payloadHashHex,
-              valueWei: payment.valueWei,
-              transaction: hexlify(
-                record.message.stampPayments.find(
-                  (carried) => carried.childIndex === payment.childIndex
-                )!.rawTx
-              ),
-              timestampMs: record.timestamp,
-            });
-            const existing = wallet.stampPaymentJournal.get(
-              payloadHashHex,
-              payment.childIndex
-            );
-            if (existing !== undefined) continue;
-            await wallet.stampPaymentJournal.put({
-              payloadHashHex,
-              childIndex: payment.childIndex,
-              txHash: payment.txHash,
-              address: payment.address,
-              valueWei: payment.valueWei.toString(),
-              status: "discovered",
-            });
-          }
-        }
-
-        // Where the carried transactions pay, kept so the funds can be swept before the message
-        // is deleted (see this file's header). Not an amount received.
-        const stampPayments: StampPaymentInfo[] = [];
-        for (const payment of record.message.stampPayments) {
-          const tx = Transaction.from(hexlify(payment.rawTx));
-          if (tx.hash !== null && tx.to !== null) {
-            stampPayments.push({
-              txHash: tx.hash,
-              destinationAddress: tx.to,
-              valueWei: tx.value,
-            });
-          }
-        }
-
-        received.push({
-          senderAddress: toChainAddress(envelope.from),
-          recipientAddress: toChainAddress(envelope.to),
-          items,
-          payloadDigest: payloadHashHex,
-          // Unverified on this transport, so not reported as received: the transactions a legacy
-          // message carries are its sender's claim. Nothing was shown to have been paid.
-          stampValueWei: 0n,
-          stampPayments,
-          receivedTime: record.timestamp,
-        });
-      }
-      } catch (err) {
-        if (!canonical) {
-          throw err;
-        }
-        // Standard mailbox read is best-effort fallback alongside canonical messaging
-      }
       received.sort((a, b) => (a.receivedTime ?? 0) - (b.receivedTime ?? 0));
       // A wallet effect of reading the mailbox, on either transport: the one-time account of
       // every stealth payment addressed to this wallet is recorded as a coin, durably, before

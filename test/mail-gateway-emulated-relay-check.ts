@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Cross-Component System Integration Test Harness
+ * Mail gateway check against an EMULATED relay.
  *
- * Tests the complete loop together across:
- * - Email Gateway Daemon (RFC 5321 SMTP, RFC 5322 MIME, HTTP checkout & webhooks, SQLite ledger)
- * - Frank Relay API (Handle uniqueness, inlined directory entry, rename/moved redirects, tombstone enforcement, mailbox delivery)
- * - Wallet / Client SDK (secp256k1 key generation, profile publication, stamped direct message encryption & retrieval)
- * - Thread Scoping & Bridging (In-Reply-To <-> Frank conversationId)
- * - Real CLI (`signet inbox`, `signet mail send` / `signet send`) with end-to-end cryptographic challenge auth & AES-256-GCM envelope decryption
+ * This is not an integration test of the stack: the relay here is a hand-written in-process HTTP
+ * stand-in (`EmulatedFrankRelay` below, with the old protobuf `MockMailboxRelay`), no chain is
+ * involved, and stamps are a counter. It checks the mail gateway daemon (SMTP in, MIME, checkout
+ * and webhook HTTP, SQLite ledger, In-Reply-To <-> conversation mapping) and the CLI's `inbox` and
+ * `mail send` against that stand-in, including username routes the real relay does not serve.
+ * For the real relay and chain use `packages/bot/demo/real-stack.ts`.
  *
  * Usage:
- *   node --import tsx test/integration/system-harness.ts
+ *   yarn test:mail-gateway-emulated-relay
  */
 
 import * as http from 'node:http';
@@ -24,21 +24,21 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-import { EmailGatewayDaemon } from '../../packages/mail-gateway/src/index';
-import { GatewayConfig } from '../../packages/mail-gateway/src/types';
+import { EmailGatewayDaemon } from '../packages/mail-gateway/src/index';
+import { GatewayConfig } from '../packages/mail-gateway/src/types';
 import {
   GatewayStampProvider,
   GatewayWalletBalance,
   StampSubmissionResult,
-} from '../../packages/mail-gateway/src/stamps/stamp-provider.interface';
-import { MockMailboxRelay } from '../../packages/cashweb/relay/monad-mailbox-mock-relay.testutil';
-import { buildEnvelope } from '../../packages/cashweb/relay/monad-message-envelope';
+} from '../packages/mail-gateway/src/stamps/stamp-provider.interface';
+import { MockMailboxRelay } from '../packages/cashweb/relay/monad-mailbox-mock-relay.testutil';
+import { buildEnvelope } from '../packages/cashweb/relay/monad-message-envelope';
 import {
   MonadIdentity,
   registerMonadIdentityCbor,
   decodeProfileBytes,
-} from '../../packages/wallet/monad-identity';
-import { saveIdentity, saveConfig } from '../../packages/cli/src/config';
+} from '../packages/wallet/monad-identity';
+import { saveIdentity, saveConfig } from '../packages/cli/src/config';
 
 // -----------------------------------------------------------------------------
 // 1. In-Memory Mock/Emulated Frank Relay Server
@@ -344,8 +344,8 @@ function sendSmtpCommands(port: number, commands: string[]): Promise<string[]> {
 // -----------------------------------------------------------------------------
 // 4. Helper: Asynchronous CLI Invocation
 // -----------------------------------------------------------------------------
-const cliPath = path.resolve(__dirname, '../../packages/cli/bin/signet.js');
-const cliTsconfig = path.resolve(__dirname, '../../packages/cli/tsconfig.json');
+const cliPath = path.resolve(__dirname, '../packages/cli/bin/signet.js');
+const cliTsconfig = path.resolve(__dirname, '../packages/cli/tsconfig.json');
 
 async function runCli(args: string[], dataDir: string): Promise<any> {
   const fullArgs = [

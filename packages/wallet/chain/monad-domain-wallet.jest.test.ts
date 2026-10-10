@@ -648,26 +648,9 @@ test.each([false, true])(
   },
 )
 
-test.each([false, true])(
-  'close drains an in-flight native operation and rejects further work (demo: %s)',
-  async demo => {
-    if (demo)
-      jest.spyOn(globalThis, 'fetch').mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          kind: 'frank-simulated-ledger-v1',
-          amountWei: '1000000000000000000',
-          token: 'ab'.repeat(32),
-        }),
-      } as Response)
+test('close drains an in-flight native operation and rejects further work', async () => {
     const chain = createEvmChain({
       ...config,
-      ...(demo
-        ? {
-            networkId: 'monad-testnet',
-            fakeDemo: { enabled: true, controlUrl: 'http://127.0.0.1:8545' },
-          }
-        : {}),
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     })
     const wallet = await chain.createWallet(roots())
@@ -702,8 +685,7 @@ test.each([false, true])(
     await close
     expect(rpc.broadcast).toHaveBeenCalledTimes(1)
     expect(destroyHttp).toHaveBeenCalledTimes(1)
-  },
-)
+})
 
 test('cached callers serialize signing through the same durable native owner', async () => {
   const chain = createEvmChain({
@@ -1163,52 +1145,6 @@ test('construction failure closes opened stores and wipes owned messaging root',
   }
 })
 
-test('failed fake discovery creates no providers, wipes owned material and releases ownership for retry', async () => {
-  const original = materialModule.createMonadWalletMaterial
-  const materials: materialModule.MonadWalletMaterial[] = []
-  jest
-    .spyOn(materialModule, 'createMonadWalletMaterial')
-    .mockImplementation(input => {
-      const material = original(input)
-      materials.push(material)
-      return material
-    })
-  const provider = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
-  const open = jest.spyOn(LevelSubAccountPoolStore.prototype, 'Open')
-  const fetcher = jest
-    .spyOn(globalThis, 'fetch')
-    .mockResolvedValue({ ok: false } as Response)
-  const chain = createEvmChain({
-    ...config,
-    networkId: 'monad-testnet',
-    fakeDemo: { enabled: true, controlUrl: 'http://127.0.0.1:8545' },
-  })
-  await expect(chain.createWallet(roots())).rejects.toThrow('capability')
-  expect(provider).not.toHaveBeenCalled()
-  expect(open).not.toHaveBeenCalled()
-  expect(materials[0].messagingRoot!.every(byte => byte === 0)).toBe(true)
-  fetcher.mockResolvedValue({
-    ok: true,
-    json: async () => ({
-      kind: 'frank-simulated-ledger-v1',
-      amountWei: '1000000000000000000',
-      token: 'ab'.repeat(32),
-    }),
-  } as Response)
-  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
-  expect(
-    provider.mock.calls.map(([options]) => [options.rpcUrl, options.relayAuth]),
-  ).toEqual([
-    ['http://127.0.0.1:8545', undefined],
-    ['http://127.0.0.1:8545', undefined],
-  ])
-  const destroy = jest.spyOn(MonadHttpClient.prototype, 'destroy')
-  await wallet.close()
-  expect(destroy).toHaveBeenCalledTimes(1)
-  expect(wallet.provider.destroyed).toBe(true)
-  expect(materials[1].messagingRoot!.every(byte => byte === 0)).toBe(true)
-})
-
 test('construction failure after both clients exist destroys both providers', async () => {
   const providers = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
   jest
@@ -1226,93 +1162,7 @@ test('construction failure after both clients exist destroys both providers', as
   )
 })
 
-test('demo wallet close cancels dispatched balance and HTTP reads and closes their sockets', async () => {
-  const methods = new Set<string>()
-  let readsStarted!: () => void
-  const started = new Promise<void>(resolve => {
-    readsStarted = resolve
-  })
-  const socketClosures: Promise<void>[] = []
-  const server = createServer((req, res) => {
-    if (req.url === '/_ctl/demo-funding') {
-      res.setHeader('content-type', 'application/json')
-      res.end(
-        JSON.stringify({
-          kind: 'frank-simulated-ledger-v1',
-          amountWei: '1000000000000000000',
-          token: 'ab'.repeat(32),
-        }),
-      )
-      return
-    }
-    let body = ''
-    req.on('data', chunk => {
-      body += chunk
-    })
-    req.on('end', () => {
-      socketClosures.push(
-        new Promise<void>(resolve => res.on('close', resolve)),
-      )
-      const payload = JSON.parse(body)
-      for (const item of Array.isArray(payload) ? payload : [payload])
-        methods.add(item.method)
-      if (methods.has('eth_getBalance') && methods.has('eth_blockNumber'))
-        readsStarted()
-      // Both dispatched client reads intentionally wait forever for a response.
-    })
-  })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  const controlUrl = `http://127.0.0.1:${
-    (server.address() as AddressInfo).port
-  }`
-  const wallet = (await createEvmChain({
-    ...config,
-    networkId: 'monad-testnet',
-    fakeDemo: { enabled: true, controlUrl },
-  }).createWallet(roots())) as EvmChainWalletHandle
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  try {
-    const reads = Promise.allSettled([
-      wallet.getBalance(),
-      wallet.httpClient.getBlockNumber(),
-    ])
-    await started
-    await wallet.close()
-    const outcomes = await Promise.race([
-      reads,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error('dispatched demo reads stayed pending')),
-          300,
-        )
-      }),
-    ])
-    expect(outcomes.every(outcome => outcome.status === 'rejected')).toBe(true)
-    for (const outcome of outcomes) {
-      if (outcome.status === 'rejected')
-        expect(outcome.reason.message).toMatch(/cancel|destroy/i)
-    }
-    await Promise.race([
-      Promise.all(socketClosures),
-      new Promise<never>((_resolve, reject) => {
-        clearTimeout(timeout)
-        timeout = setTimeout(
-          () => reject(new Error('demo RPC socket stayed open')),
-          300,
-        )
-      }),
-    ])
-  } finally {
-    clearTimeout(timeout)
-    await wallet.close()
-    server.closeAllConnections()
-    await new Promise<void>(resolve => server.close(() => resolve()))
-  }
-})
-
-test.each([undefined, false])(
-  'production capability 401 never probes or retries direct (flag %s)',
-  async enabled => {
+test('a capability 401 from the relay is reported; the wallet asks nothing but the relay', async () => {
     const paths: string[] = []
     const server = createServer((req, res) => {
       paths.push(req.url!)
@@ -1342,8 +1192,6 @@ test.each([undefined, false])(
     const wallet = await createEvmChain({
       ...config,
       relayBaseUrl: url,
-      fakeDemo:
-        enabled === undefined ? undefined : { enabled, controlUrl: url },
     }).createWallet(roots())
     try {
       await expect(wallet.getBalance()).rejects.toThrow('401')
@@ -1355,8 +1203,7 @@ test.each([undefined, false])(
       await wallet.close()
       await new Promise<void>(resolve => server.close(() => resolve()))
     }
-  },
-)
+})
 
 test.each([
   'main',

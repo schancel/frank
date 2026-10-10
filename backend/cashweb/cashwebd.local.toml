@@ -9,6 +9,22 @@ net = "mainnet"
 peers = []
 public_relay_urls = []
 
+# The account directory. The message, directory and relay-info routes (`/message*`,
+# `/directory/v1/*`, `/relay/v1/info`) exist only when this section is present: without it nobody
+# can register on or message through this relay. `network` is the registry id of the chain the
+# mailbox above serves; `endpoint` is the origin clients reach this relay at (run-local-monad.sh
+# keeps both in step with FRANK_NETWORK_TAG, FRANK_RELAY_LISTEN and FRANK_RELAY_PUBLIC_URL).
+# `relay_id` and `relay_identity` only name this relay in directory entries; the relay holds no
+# key for them and signs nothing. These are well-known development values: give a deployed relay
+# its own. No sign-up limit for local development and the demo.
+[registry.directory]
+network = "monad-testnet"
+relay_id = "0102030405060708090a0b0c0d0e0f10"
+relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+endpoint = "http://127.0.0.1:8098"
+binding_expiry_ns = "1893456000000000000"
+enrollments_per_source_per_hour = 100000
+
 # The RPC URL is deliberately NOT in this file: `cashwebd-exe` reads it from the
 # MONAD_TESTNET_HTTP_RPC_URL environment variable (and refuses to start with a clear message when
 # it is missing), and requires FRANK_NETWORK_TAG (MONT on Monad testnet) to be set too.

@@ -21,6 +21,26 @@ describe('Supervisor', () => {
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
+  it('a command that never starts is reported, and its log vanishing with the directory does not take the process down', async () => {
+    const sup = new Supervisor({ PATH: process.env.PATH }, () => {})
+    const gone = mkdtempSync(join(tmpdir(), 'supervisor-gone-'))
+    const child = sup.start({
+      name: 'missing',
+      command: join(gone, 'no-such-command'),
+      args: [],
+      cwd: dir,
+      env: {},
+      logPath: join(gone, 'logs', 'missing.log'),
+    })
+    // The directory goes away before the log stream has opened its file.
+    rmSync(gone, { recursive: true, force: true })
+    expect(await child.exited).toBe('error')
+    expect(child.hasExited()).toBe(true)
+    expect(child.tail().join('\n')).toMatch(/failed to start/)
+    await sleep(200) // an unhandled stream error would have thrown by now
+    await sup.stopAll(500)
+  })
+
   it('stopAll kills the whole process group, wrappers and grandchildren included', async () => {
     const sup = new Supervisor({ PATH: process.env.PATH }, () => {})
     // sh -> sleep grandchild, like `yarn` -> `tsx` -> bot.

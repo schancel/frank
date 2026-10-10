@@ -7,7 +7,7 @@ base_config="$script_dir/cashwebd.local.toml"
 
 # The demo launcher (packages/bot/demo) is the one reader of the user's `.env` and passes exactly
 # the variables it needs, so it sets FRANK_RUN_LOCAL_SKIP_DOTENV=1: a `.env` value must not
-# override what it passed (for example the fake-chain RPC URL).
+# override what it passed.
 if [[ -f "$repo_root/.env" && "${FRANK_RUN_LOCAL_SKIP_DOTENV:-}" != "1" ]]; then
     set -a
     # shellcheck disable=SC1091 -- the repository-local environment is intentionally runtime-only.
@@ -68,11 +68,6 @@ if [[ "$expected_chain_id" != "$canonical_chain_id" ]]; then
     echo "run-local-monad: MONAD_TESTNET_CHAIN_ID must be $canonical_chain_id when FRANK_NETWORK_TAG=$network_tag" >&2
     exit 64
 fi
-evm_checkpoint_hash="${FRANK_EVM_CHECKPOINT_HASH:-$canonical_checkpoint_hash}"
-if [[ ! "$evm_checkpoint_hash" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
-    echo "run-local-monad: FRANK_EVM_CHECKPOINT_HASH must be 0x followed by 64 hex characters" >&2
-    exit 64
-fi
 
 # The topic (forum) routes read MONAD_STAMP_BURN_ADDRESS at request time and answer HTTP 500 without
 # it, while direct messages keep working: a silent half-broken relay. Warn loudly at startup, and
@@ -116,7 +111,13 @@ fi
 cd -- "$script_dir"
 # Optional overrides used by the demo launcher; unset they change nothing.
 #   CASHWEBD_BIN            use this prebuilt daemon instead of building with Cargo
-#   FRANK_RELAY_LISTEN      host:port to listen on (also sets the advertised url), e.g. 127.0.0.1:18098
+#   FRANK_RELAY_LISTEN      host:port to listen on (also sets the advertised url and the directory
+#                           endpoint), e.g. 127.0.0.1:18098
+#   FRANK_RELAY_PUBLIC_URL  the origin clients reach this relay at when it is not the listen
+#                           address (a tunnel or proxy); becomes the directory endpoint
+#   FRANK_RELAY_ID          this relay's 16-byte id (32 hex) in the directory section
+#   FRANK_RELAY_IDENTITY    this relay's compressed public key (66 hex) in the directory section;
+#                           two relays run side by side need their own id and identity
 #   FRANK_RELAY_DB_PATH     RocksDB directory (default data/registry.rocksdb under backend/cashweb)
 #   FRANK_RELAY_EXTRA_TOML  file of extra TOML appended to the config (curated defaults)
 if [[ -n "${FRANK_RELAY_LISTEN:-}" && ! "${FRANK_RELAY_LISTEN}" =~ ^[0-9.]+:[0-9]+$ ]]; then
@@ -126,6 +127,27 @@ fi
 case "${FRANK_RELAY_DB_PATH:-}" in
     *[![:print:]]* | *'"'* | *'\'*)
         echo "run-local-monad: FRANK_RELAY_DB_PATH contains unsupported characters" >&2
+        exit 64
+        ;;
+esac
+if [[ -n "${FRANK_RELAY_ID:-}" && ! "${FRANK_RELAY_ID}" =~ ^[0-9a-f]{32}$ ]]; then
+    echo "run-local-monad: FRANK_RELAY_ID must be 32 lowercase hex characters" >&2
+    exit 64
+fi
+if [[ -n "${FRANK_RELAY_IDENTITY:-}" && ! "${FRANK_RELAY_IDENTITY}" =~ ^0[23][0-9a-f]{64}$ ]]; then
+    echo "run-local-monad: FRANK_RELAY_IDENTITY must be a compressed public key (66 lowercase hex characters)" >&2
+    exit 64
+fi
+case "${FRANK_RELAY_PUBLIC_URL:-}" in
+    '' | http://* | https://*) ;;
+    *)
+        echo "run-local-monad: FRANK_RELAY_PUBLIC_URL must be an http(s) URL" >&2
+        exit 64
+        ;;
+esac
+case "${FRANK_RELAY_PUBLIC_URL:-}" in
+    *[![:print:]]* | *'"'* | *'\'* | */)
+        echo "run-local-monad: FRANK_RELAY_PUBLIC_URL contains unsupported characters or a trailing slash" >&2
         exit 64
         ;;
 esac
@@ -173,7 +195,7 @@ fi
 runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
     LAUNCHER_EXPECTED_CHAIN_ID="$expected_chain_id" \
     LAUNCHER_RPC_CHAIN="$rpc_chain" \
-    LAUNCHER_EVM_CHECKPOINT_HASH="$evm_checkpoint_hash" awk '
+    LAUNCHER_EVM_CHECKPOINT_HASH="$canonical_checkpoint_hash" awk '
     /^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 1 }
     in_monad_mailbox && /^\[/ && !/^\[registry\.monad_mailbox\]$/ { in_monad_mailbox = 0 }
     in_monad_mailbox && /^min_value_wei[[:space:]]*=/ {
@@ -182,6 +204,13 @@ runtime_config="$(LAUNCHER_MIN_VALUE_WEI="$min_value_wei" \
     }
     in_monad_mailbox && /^expected_chain_id[[:space:]]*=/ {
         print "expected_chain_id = " ENVIRON["LAUNCHER_EXPECTED_CHAIN_ID"]
+        next
+    }
+    # The directory accepts entries for the same network the mailbox and the RPC proxy serve.
+    /^\[registry\.directory\]$/ { in_directory = 1 }
+    in_directory && /^\[/ && !/^\[registry\.directory\]$/ { in_directory = 0 }
+    in_directory && /^network[[:space:]]*=/ {
+        print "network = \"" ENVIRON["LAUNCHER_RPC_CHAIN"] "\""
         next
     }
     /^\[\[registry\.evm_rpc\.chains\]\]$/ { in_evm_chain = 1 }
@@ -233,6 +262,25 @@ if [[ -n "${FRANK_RELAY_LISTEN:-}" ]]; then
     runtime_config="$(printf '%s\n' "$runtime_config" | awk '
         /^host = / { print "host = \"" ENVIRON["FRANK_RELAY_LISTEN"] "\""; next }
         /^url = / { print "url = \"http://" ENVIRON["FRANK_RELAY_LISTEN"] "\""; next }
+        /^endpoint = / { print "endpoint = \"http://" ENVIRON["FRANK_RELAY_LISTEN"] "\""; next }
+        { print }
+    ')"
+fi
+if [[ -n "${FRANK_RELAY_PUBLIC_URL:-}" ]]; then
+    runtime_config="$(printf '%s\n' "$runtime_config" | awk '
+        /^endpoint = / { print "endpoint = \"" ENVIRON["FRANK_RELAY_PUBLIC_URL"] "\""; next }
+        { print }
+    ')"
+fi
+if [[ -n "${FRANK_RELAY_ID:-}" ]]; then
+    runtime_config="$(printf '%s\n' "$runtime_config" | awk '
+        /^relay_id = / { print "relay_id = \"" ENVIRON["FRANK_RELAY_ID"] "\""; next }
+        { print }
+    ')"
+fi
+if [[ -n "${FRANK_RELAY_IDENTITY:-}" ]]; then
+    runtime_config="$(printf '%s\n' "$runtime_config" | awk '
+        /^relay_identity = / { print "relay_identity = \"" ENVIRON["FRANK_RELAY_IDENTITY"] "\""; next }
         { print }
     ')"
 fi

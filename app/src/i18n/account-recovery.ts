@@ -104,9 +104,6 @@ export const en = {
     'Backup shares were verified before activation. Keep your saved copies safe. Resident domain roots cannot recreate the original master or backup shares.',
   public_recovery_descriptor: 'Public recovery descriptor',
   fingerprint: 'Fingerprint:',
-  local_fake_demo_only_add_up_to:
-    'Local fake demo only. Add up to 1 simulated MON at the wallet receive address. Later calls top up after spending.',
-  add_simulated_funds: 'Add simulated funds',
   create_or_restore_account: 'Create or restore account',
   frank_account_backups_were_verified_before_activation:
     'Frank account backups were verified before activation. Keep the saved shares and public descriptor; this device cannot recreate the original backup shares.',
@@ -264,9 +261,6 @@ export const fr = {
     'Les parts de sauvegarde ont été vérifiées avant l’activation. Gardez vos copies en sécurité. Les racines de domaine stockées ne permettent pas de recréer le secret maître ni les parts d’origine.',
   public_recovery_descriptor: 'Descripteur public de récupération',
   fingerprint: 'Empreinte :',
-  local_fake_demo_only_add_up_to:
-    'Démo locale fictive uniquement. Ajoutez jusqu’à 1 MON simulé à l’adresse de réception du portefeuille. Les appels suivants complètent le solde après des dépenses.',
-  add_simulated_funds: 'Ajouter des fonds simulés',
   create_or_restore_account: 'Créer ou restaurer un compte',
   frank_account_backups_were_verified_before_activation:
     'Les sauvegardes du compte Frank ont été vérifiées avant l’activation. Conservez les parts et le descripteur public ; cet appareil ne peut pas recréer les parts d’origine.',

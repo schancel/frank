@@ -29,14 +29,11 @@ describe('Monad transaction explorer configuration', () => {
       transactionExplorerUrl('0x71f8b14d', 'MONT', { isLocal: true }),
     ).toBeUndefined()
     expect(
-      transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'local-stack' }),
-    ).toBeUndefined()
-    expect(
-      transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'chain-shim' }),
+      transactionExplorerUrl('0x71f8b14d', 'MONT', { rpcChain: 'anvil' }),
     ).toBeUndefined()
     expect(
       transactionExplorerUrl('0x71f8b14d', 'MONT', {
-        relayBaseUrl: 'http://127.0.0.1:18545',
+        relayBaseUrl: 'http://127.0.0.1:8545',
       }),
     ).toBeUndefined()
 

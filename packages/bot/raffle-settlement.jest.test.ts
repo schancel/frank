@@ -11,7 +11,6 @@ import { MonadHttpClient } from '@frank/wallet/monad-http'
 import { verifyRaffleDraw } from '@frank/wallet/message-item-plugins/raffle/draw'
 import { JsonRpcProvider } from 'ethers'
 
-import { startFakeRpc } from './demo/fake-rpc'
 import { RaffleBotStateStore, RaffleRoundRecord } from './raffle-bot-state'
 import {
   beginDrawIfFull,
@@ -1190,128 +1189,6 @@ describe('raffle draw settlement (#363)', () => {
       entrants: round.entrants.map(e => ({ ...e, address: e.address })),
     })
     expect(s2.getPendingCommitment()).toEqual(before)
-  })
-})
-
-describe('#363 end to end on the fake chain (real signers, zero-balance raffle identity)', () => {
-  it('a 3-entrant round pays the winner the full pot and the settler survives', async () => {
-    const operator = Wallet.createRandom()
-    const identityWallet = Wallet.createRandom()
-    const fake = await startFakeRpc({ port: 0, funded: [operator.address] })
-    try {
-      const provider = new JsonRpcProvider(fake.url, undefined, {
-        staticNetwork: true,
-        cacheTimeout: -1,
-      } as any)
-      const httpClient = new MonadHttpClient({ rpcUrl: fake.url })
-      const opSigner = new MonadAccountTxSigner({
-        privateKey: operator.privateKey,
-        provider,
-        httpClient,
-      })
-      const idSigner = new MonadAccountTxSigner({
-        privateKey: identityWallet.privateKey,
-        provider,
-        httpClient,
-      })
-      // Entries arrive net of sweep gas: the identity starts short of the pot.
-      const sweep = await opSigner.buildAndSignTransfer(
-        identityWallet.address,
-        3n * (PRICE - DUST),
-      )
-      await opSigner.submit(sweep)
-
-      const entrants = [
-        Wallet.createRandom().address,
-        Wallet.createRandom().address,
-        Wallet.createRandom().address,
-      ]
-      const state = new RaffleBotStateStore(dir)
-      await state.Open()
-      stores.push(state)
-      const serverSeed = 'ab'.repeat(32)
-      state.setPendingCommitment(serverSeed, sha256Hex(serverSeed))
-      state.setCurrentRound({
-        raffleId: 'e2e',
-        entryPriceWei: PRICE.toString(),
-        maxEntries: 3,
-        serverSeedHash: sha256Hex(serverSeed),
-        entrants: entrants.map((address, i) => ({
-          address,
-          txHash: '0x' + String(i + 1).repeat(64),
-        })),
-      })
-      await begin(state)
-      const winner = (state.getDraws()[0].drawItem as any)
-        .winnerAddress as string
-      const announced: string[] = []
-      const winnerBalanceAtAnnounce: bigint[] = []
-      const settle = createRaffleSettler({
-        state,
-        maxTopUpPerRoundWei: CAP,
-        maxTopUpPerDayWei: CAP * 5n,
-        ports: {
-          getBalanceWei: () =>
-            provider.getBalance(identityWallet.address, 'latest'),
-          operatorBalanceWei: () =>
-            provider.getBalance(operator.address, 'latest'),
-          sweepDustWei: async () => DUST,
-          isTxKnown: async () => true,
-          repricePayout: async () => {
-            throw new Error('not used')
-          },
-          error: m => process.stderr.write(m + '\n'),
-          payoutGasReserveWei: async () => 60_000n * 50n * 10n ** 9n * 2n,
-          signTopUp: async amount => {
-            const tx = await opSigner.buildAndSignTransfer(
-              identityWallet.address,
-              amount,
-            )
-            return { rawTx: tx.rawTx, txHash: tx.txHash }
-          },
-          broadcastTopUp: async (raw, hash) => {
-            await opSigner.submitRaw(raw, hash)
-          },
-          getTopUpStatus: h => opSigner.getStatus(h),
-          signPayout: async (to, value) => {
-            const t = await idSigner.buildAndSignTransfer(to, value)
-            return { rawTx: t.rawTx, txHash: t.txHash }
-          },
-          broadcast: async (raw, hash) => {
-            await idSigner.submitRaw(raw, hash)
-          },
-          getStatus: h => idSigner.getStatus(h),
-          announce: async (to: string, _d: RaffleItem) => {
-            announced.push(to)
-            winnerBalanceAtAnnounce.push(await provider.getBalance(winner))
-          },
-          log: () => {},
-          warn: m => process.stderr.write(m + '\n'),
-        },
-      })
-      // The RPC client caches receipts briefly, so the first pass may report the just-broadcast tx
-      // as pending; the next tick reconciles by hash.
-      let status = (await settle())[0].status
-      for (let i = 0; i < 5 && status !== 'done'; i++) {
-        expect(announced).toEqual([]) // never announced before the payout is confirmed
-        await new Promise(r => setTimeout(r, 300))
-        status = (await settle())[0].status
-      }
-      expect(status).toBe('done')
-      expect(await provider.getBalance(winner)).toBe(3n * PRICE)
-      expect(announced).toHaveLength(3)
-      expect(winnerBalanceAtAnnounce.every(b => b === 3n * PRICE)).toBe(true)
-      // Only the operator top-up and the single payout ever left the identity.
-      expect(
-        fake
-          .transactions()
-          .filter(
-            t => t.from.toLowerCase() === identityWallet.address.toLowerCase(),
-          ),
-      ).toHaveLength(1)
-    } finally {
-      await fake.close()
-    }
   })
 })
 

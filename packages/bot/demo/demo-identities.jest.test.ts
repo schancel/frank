@@ -2,63 +2,49 @@
  * The launcher has to know every bot's address before the relay starts, so it creates the bot
  * profiles itself. The bot host then has to accept exactly what the launcher left behind: these
  * tests run the launcher's identity step on a real directory and admit each profile the way the
- * bot's own process does (`FrankBotHost.register` goes through the same `admitBotProfile`).
+ * one bot process does (`FrankBotHost.register` goes through the same `admitBotProfile`).
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, sep } from 'path'
 
 import { admitBotProfile } from '@frank/bot-framework/bot-profile-admission'
+import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/monad-identity'
 
 import { BOT_PROFILES } from '../bot-directory'
 import { DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
 import { prepareBotIdentities } from './demo-identities'
 
-/** The variable each bot's entry script reads its host state directory from. */
-const STATE_DIR_ENV: Record<string, string> = {
-  blackjack: 'BLACKJACK_BOT_STATE_DIR',
-  raffle: 'RAFFLE_BOT_STATE_DIR',
-  vendor: 'VENDOR_BOT_STATE_DIR',
-  qwen: 'QWEN_BOT_STATE_DIR',
-  faucet: 'FAUCET_STATE_DIR',
-  lobby: 'LOBBY_BOT_STATE_DIR',
-  rps: 'RPS_BOT_STATE_DIR',
-  dice: 'DICE_BOT_STATE_DIR',
-  'liars-dice': 'LIARS_DICE_BOT_STATE_DIR',
-  poker: 'POKER_BOT_STATE_DIR',
-}
+const BOTS = ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice', 'liars-dice', 'poker']
 
 let dir: string
 let stateDir: string
-const configure = (fake = true): DemoConfig =>
+const configure = (): DemoConfig =>
   resolveDemoConfig({
-    env: fake
-      ? { FRANK_DEMO_STATE_DIR: stateDir }
-      : {
-          FRANK_DEMO_STATE_DIR: stateDir,
-          MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc.example.invalid',
-          E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'wallet.json'),
-          FRANK_DEMO_FAUCET_WALLET_JSON: join(dir, 'faucet.json'),
-        },
+    env: {
+      FRANK_DEMO_STATE_DIR: stateDir,
+      MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc.example.invalid',
+      E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'wallet.json'),
+    },
     envFile: {},
-    fakeChainFlag: fake,
     home: dir,
     cwd: dir,
   })
 
-/** What the bot's own process is started with: its state directory and identity file. */
+/** What the one bot process is started with for this bot: the shared host state directory and
+ * the bot's identity file. Every bot definition reads `process.env[identityEnv] ?? default`. */
 function started(config: DemoConfig, name: string) {
-  const bot = config.bots.find(b => b.name === name)!
   const spec = BOT_PROFILES.find(s => s.key === name)!
+  const env = config.botProcess.env
   return {
-    stateDir: bot.env[STATE_DIR_ENV[name]],
-    // Every bot definition reads `process.env[identityEnv] ?? identityDefaultPath`.
-    identityPath: bot.env[spec.identityEnv] ?? spec.identityDefaultPath,
-    configured: bot.env[spec.identityEnv],
+    stateDir: env.BOT_STATE_DIR,
+    identityPath: env[spec.identityEnv] ?? spec.identityDefaultPath,
+    configured: env[spec.identityEnv],
   }
 }
 
-async function admittedAddress(config: DemoConfig, name: string): Promise<string> {
+async function admitted(config: DemoConfig, name: string): Promise<{ address: string; mainAccount: string }> {
   const { stateDir: hostStateDir, identityPath } = started(config, name)
   const profile = await admitBotProfile({
     stateDir: hostStateDir,
@@ -68,7 +54,12 @@ async function admittedAddress(config: DemoConfig, name: string): Promise<string
   })
   await profile.operations.close()
   await profile.state.close()
-  return profile.operations.owner.address
+  return {
+    address: profile.operations.owner.address,
+    // The account the wallet pays stamps from, derived from the roots the host hands the wallet.
+    mainAccount: bip32MasterFromDomainRoot(profile.roots.evm, 'evm-wallet').derivePath(MONAD_IDENTITY_DERIVATION_PATH)
+      .address,
+  }
 }
 
 beforeEach(() => {
@@ -77,38 +68,43 @@ beforeEach(() => {
 })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-describe.each([
-  ['the fake chain', true],
-  ['a real network', false],
-])('bot profiles the launcher creates on %s', (_label, fake) => {
+describe('bot profiles the launcher creates', () => {
   it('gives every bot, the faucet included, an identity file inside the state directory', () => {
-    const config = configure(fake)
-    expect(config.bots.map(b => b.name).sort()).toEqual(Object.keys(STATE_DIR_ENV).sort())
+    const config = configure()
+    expect(config.bots.map(b => b.name).sort()).toEqual([...BOTS].sort())
     for (const bot of config.bots) {
       const { configured, stateDir: hostStateDir } = started(config, bot.name)
-      expect(configured).toBeDefined()
+      expect(configured).toBe(bot.identityJson)
       expect(configured!.startsWith(stateDir + sep)).toBe(true)
       expect(hostStateDir.startsWith(stateDir + sep)).toBe(true)
     }
   })
 
-  it('are admitted by the bot host on a fresh state directory, at the announced address', async () => {
-    const config = configure(fake)
-    const { addresses } = await prepareBotIdentities(config)
-    expect(Object.keys(addresses).sort()).toEqual(Object.keys(STATE_DIR_ENV).sort())
+  it('are admitted by the bot host on a fresh state directory, at the announced addresses', async () => {
+    const config = configure()
+    const { addresses, mainAccounts } = await prepareBotIdentities(config)
+    expect(Object.keys(addresses).sort()).toEqual([...BOTS].sort())
     for (const bot of config.bots) {
-      expect(await admittedAddress(config, bot.name)).toBe(addresses[bot.name].toLowerCase())
+      const host = await admitted(config, bot.name)
+      expect(host.address).toBe(addresses[bot.name].toLowerCase())
+      // The launcher checks this account's balance on chain: it must be the one the wallet uses.
+      expect(host.mainAccount).toBe(mainAccounts[bot.name])
+      expect(mainAccounts[bot.name].toLowerCase()).not.toBe(addresses[bot.name].toLowerCase())
     }
+    // Each bot keeps its own key: no two share an address.
+    expect(new Set(Object.values(addresses)).size).toBe(BOTS.length)
+    expect(new Set(Object.values(mainAccounts)).size).toBe(BOTS.length)
   })
 
   it('keep their addresses when the launcher and then the bots start again', async () => {
-    const config = configure(fake)
+    const config = configure()
     const first = await prepareBotIdentities(config)
-    for (const bot of config.bots) await admittedAddress(config, bot.name)
+    for (const bot of config.bots) await admitted(config, bot.name)
     const second = await prepareBotIdentities(config)
     expect(second.addresses).toEqual(first.addresses)
+    expect(second.mainAccounts).toEqual(first.mainAccounts)
     for (const bot of config.bots) {
-      expect(await admittedAddress(config, bot.name)).toBe(first.addresses[bot.name].toLowerCase())
+      expect((await admitted(config, bot.name)).address).toBe(first.addresses[bot.name].toLowerCase())
     }
   })
 })
@@ -126,11 +122,11 @@ describe('a bot profile the launcher did not create', () => {
       (err: unknown) => err,
     )
     expect(failure).toBeInstanceOf(DemoConfigError)
-    expect((failure as Error).message).toContain(join(stateDir, 'bots', 'blackjack'))
+    expect((failure as Error).message).toContain(join(stateDir, 'bot-host', 'bots', 'blackjack'))
     expect((failure as Error).message).not.toContain('11'.repeat(32))
     expect(readFileSync(identityPath, 'utf8')).toBe(saved)
     // No account root was adopted for it, and no other bot was created past it.
-    expect(existsSync(join(stateDir, 'bots', 'blackjack', 'state', 'bots', 'blackjack', 'account-root.hex'))).toBe(false)
-    expect(readdirSync(join(stateDir, 'bots'))).toEqual(['blackjack'])
+    expect(existsSync(join(stateDir, 'bot-host', 'bots', 'blackjack', 'account-root.hex'))).toBe(false)
+    expect(readdirSync(join(stateDir, 'bot-host', 'bots'))).toEqual(['blackjack'])
   })
 })

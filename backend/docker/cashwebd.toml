@@ -29,6 +29,21 @@ net = "mainnet"
 peers = []
 public_relay_urls = []
 
+# The account directory. The message, directory and relay-info routes (`/message*`,
+# `/directory/v1/*`, `/relay/v1/info`) exist only when this section is present: without it nobody
+# can register on or message through this relay. `network` is the registry id of the chain the
+# mailbox below serves. `endpoint` is the origin clients reach this relay at: change it together
+# with `url` above when the relay is published under another name. `relay_id` and
+# `relay_identity` only name this relay in directory entries; the relay holds no key for them and
+# signs nothing. These are well-known development values: give a deployed relay its own.
+[registry.directory]
+network = "monad-testnet"
+relay_id = "0102030405060708090a0b0c0d0e0f10"
+relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+endpoint = "http://localhost:8080"
+binding_expiry_ns = "1893456000000000000"
+enrollments_per_source_per_hour = 100000
+
 [registry.monad_mailbox]
 enabled = true
 min_value_wei = "1000000000000"

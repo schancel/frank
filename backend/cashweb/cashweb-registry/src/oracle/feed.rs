@@ -101,6 +101,11 @@ impl Feed {
         feed
     }
 
+    /// The bundled data.
+    pub fn seed(&self) -> &Seed {
+        &self.seed
+    }
+
     /// The collector's store.
     pub fn store(&self) -> &OracleStore {
         &self.store
@@ -527,6 +532,7 @@ fx_url = "http://127.0.0.1:1/fx"
         };
         Seed {
             basket: serde_json::json!({"weightCap": {"entry": "bitcoin", "max": 0.6}, "entries": []}),
+            miner_share: [("xec-mainnet".to_owned(), vec![(0, 0.92), (DAY_S, 0.58)])].into(),
             regions: vec![SeedRegion {
                 id: "us-pjm-west".to_owned(),
                 label: "PJM West".to_owned(),
@@ -793,6 +799,24 @@ fx_url = "http://127.0.0.1:1/fx"
             Some(RangeError::StepTooSmall(365 * DAY_S / 1000))
         );
         assert!(feed.range(0, 365 * DAY_S, DAY_S, until).is_ok());
+        Ok(())
+    }
+
+    /// The bundled regional prices give the figure the client's reviewer computed by hand for
+    /// 2026-10-09: Germany's 30-day mean 0.178915 and PJM West's 0.078556 (its last price is
+    /// from 30 September, still ten or more days inside the window), equally weighted.
+    #[test]
+    fn the_bundled_regions_give_the_reviewed_aggregate_for_2026_10_09() -> Result<()> {
+        let dir = tempdir::TempDir::new("oracle-feed")?;
+        let store = OracleStore::open(dir.path().join("oracle"))?;
+        let feed = Feed::new(plan(""), store, Seed::embedded()?);
+        let day = 1_791_504_000;
+        let (time, value) = feed.floor(ELECTRICITY_AGGREGATE, day)?.expect("a point");
+        assert_eq!(time, day);
+        assert!((value - 0.128_736).abs() < 1e-6, "{value}");
+        let (_, last_contributed) = feed.aggregate()?;
+        assert_eq!(last_contributed["de-lu"], day);
+        assert_eq!(last_contributed["us-pjm-west"], day);
         Ok(())
     }
 }

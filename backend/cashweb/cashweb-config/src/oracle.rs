@@ -134,9 +134,6 @@ pub struct OracleStatsChainConf {
     /// instead of the difficulty of the moment. Only for chains with Bitcoin's difficulty rule.
     #[serde(default)]
     pub hashrate_block_seconds: Option<u64>,
-    /// The part of the block subsidy the miner receives, as a decimal (`"0.58"`). Default 1.
-    #[serde(default)]
-    pub miner_share: Option<String>,
 }
 
 /// Which code collects a region's electricity price.
@@ -321,11 +318,6 @@ impl OracleConf {
                 known(chain)?;
                 if row.decimals > 30 {
                     return Err(InvalidSetting("chain_stats decimals"));
-                }
-                if let Some(text) = &row.miner_share {
-                    if parse_positive_decimal(text).is_none_or(|share| share > 1.0) {
-                        return Err(InvalidDecimal(format!("{chain}: {text}")));
-                    }
                 }
             }
         }

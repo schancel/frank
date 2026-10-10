@@ -11,6 +11,8 @@ this directory). This script fetches nothing; it only reshapes those files into 
     mined-chains-monthly.json         -> the same four series for the other basket chains, one
       (if present)                       point a month; block reward times the dated miner share
                                          from curated-steps.json
+    curated-steps.json minerShare     -> minerShare: dated steps the relay applies to the subsidy
+                                         it collects
     curated-steps.json (if present)   -> efficiency/<algorithm> dated steps (estimatedBefore
                                          where the early steps are estimates)
     wholesale-electricity-daily.json  -> electricity/<region> daily points and the regions'
@@ -126,7 +128,12 @@ def build():
 
     # A series the sources have no value for is absent, not empty.
     out = {name: entry for name, entry in out.items() if entry["points"]}
-    return {"basket": basket, "regions": regions, "series": dict(sorted(out.items()))}
+    return {
+        "basket": basket,
+        "regions": regions,
+        "minerShare": {chain: [list(step) for step in steps] for chain, steps in shares.items()},
+        "series": dict(sorted(out.items())),
+    }
 
 
 def main():

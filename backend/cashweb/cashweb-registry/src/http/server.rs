@@ -616,9 +616,15 @@ impl RegistryServer {
                 .merge(crate::http::usernames::router(Arc::clone(&runtime)))
                 .merge(crate::http::directory::router(runtime));
         }
-        if let Some(oracle) = oracle {
-            router = router.merge(crate::http::oracle::router(oracle));
-        }
+        router = match oracle {
+            Some(oracle) => router.merge(crate::http::oracle::router(oracle)),
+            // A relay without the oracle answers 404 here even when it serves the web app for
+            // unknown paths: 404 is how a client learns the relay has no feed.
+            None => router.route(
+                "/oracle/v1/feed",
+                routing::any(|| async { StatusCode::NOT_FOUND }),
+            ),
+        };
         if let Some(spa_dir) = &self.spa_dir {
             use tower_http::services::{ServeDir, ServeFile};
             let index_file = spa_dir.join("index.html");
@@ -1189,6 +1195,18 @@ mod spa_tests {
 
         let (_db_dir, server) = test_server(Some(spa_dir.path().to_path_buf()));
         let router = server.into_router();
+
+        // A relay without the oracle says so with 404, not with the app's page.
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/oracle/v1/feed?latest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
         // 1. API routes take precedence and are not shadowed
         let response = router

@@ -374,11 +374,8 @@ impl Collector {
             points.push((format!("difficulty/{chain}"), now, answer.difficulty));
             if let Some(subsidy) = answer.subsidy {
                 record("subsidy", subsidy);
-                let share = stats.chains[&chain]
-                    .miner_share
-                    .as_deref()
-                    .and_then(cashweb_config::parse_positive_decimal)
-                    .unwrap_or(1.0);
+                // The miner's part comes from the bundled dated steps, the one source of it.
+                let share = self.feed.seed().miner_share(&chain, now);
                 points.push((format!("blockReward/{chain}"), now, subsidy * share));
             }
             let price = self
@@ -1020,7 +1017,6 @@ decimals = 8
 [chain_stats.chains.xec-mainnet]
 name = "ecash"
 decimals = 2
-miner_share = "0.58"
 [chain_stats.chains.xmr-mainnet]
 name = "monero"
 decimals = 12
@@ -1065,7 +1061,8 @@ fx_url = "http://stub/fx"
         let at = |name: &str| store.floor(name, now).unwrap().map(|(_, value)| value);
         assert_eq!(at("difficulty/btc-mainnet"), Some(132_716_002_350_731.3));
         assert_eq!(at("blockReward/btc-mainnet"), Some(3.125));
-        // eCash paid 3,125,000 XEC a block; the miner's 58% is what the feed carries.
+        // eCash paid 3,125,000 XEC a block; the miner's 58% (the bundled step in force) is
+        // what the feed carries.
         assert_eq!(at("blockReward/xec-mainnet"), Some(3_125_000.0 * 0.58));
         // 20,096,217.9 BTC in existence at the relay's own price.
         let cap = at("marketCap/btc-mainnet").expect("market cap");

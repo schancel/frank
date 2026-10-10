@@ -160,9 +160,8 @@ the inputs and does not compute AVU. The feed is for display and valuation, neve
 
 The route is public and unauthenticated. A request is answered from the relay's own store and
 never causes a request to a provider. The `[registry.oracle]` section turns the oracle on;
-without it there is no collector and the path answers `404`, which is how a client learns a relay has no
-feed. (A relay that also serves the web app from `spa_dir` answers unknown paths with the app's
-page instead; such a relay should keep the oracle on.)
+without it there is no collector and the path answers `404` (also on a relay that serves the web app from
+`spa_dir`), which is how a client learns a relay has no feed.
 
 ### What the collector does
 
@@ -191,7 +190,8 @@ that is not yet due after a restart is not repeated.
   asset the two drawn do not.
 - Chain statistics, every `stats_interval_s` (1 hour): one Blockchair `/stats` request gives
   every chain's difficulty, coins in existence and the subsidy it paid per block over 24 hours.
-  `blockReward/<chain>` is that subsidy times `miner_share` (eCash: 0.58);
+  `blockReward/<chain>` is that subsidy times the miner's share in force (eCash: 0.58, from
+  the dated steps in the bundled seed);
   `marketCap/<chain>` is coins in existence times the relay's smoothed price. A chain with
   `hashrate_block_seconds` (Dogecoin: 60) retargets every block and swings about 15% between
   readings, so its difficulty is a 24-hour figure: the 24-hour hash rate times the block time.

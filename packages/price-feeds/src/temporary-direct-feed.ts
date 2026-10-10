@@ -13,6 +13,7 @@
  *
  * Display and valuation only: never a quote for anything that moves money.
  */
+import basketDefinition from './historical/basket.json'
 import { PriceFeedsClient } from './client'
 import { CHAIN_STATS_REFRESH_INTERVAL_MS } from './config'
 import { windowedElectricityAggregate } from './electricity-aggregate'
@@ -38,55 +39,13 @@ import {
 import { fetchMiningStats, type MiningStats } from './mining'
 import { at, sliceSeries, type SeriesPoint, type Timeseries } from './timeseries'
 
-const SHA256_HASHES_PER_DIFFICULTY = 2 ** 32
-
-/** The basket: the largest mined coins, merge-mined Litecoin and Dogecoin as one entry. */
+/**
+ * The basket. Its one definition is src/historical/basket.json, which the relay's seed
+ * (docs/protocol/oracle/seed.json) is generated from; a client reads it from the feed.
+ */
 export const DIRECT_BASKET: FeedBasket = {
-  weightCap: { entry: 'bitcoin', max: 0.6 },
-  entries: [
-    {
-      id: 'bitcoin',
-      label: 'BTC',
-      algorithm: 'sha256',
-      chains: [
-        { chain: 'btc-mainnet', hashesPerDifficulty: SHA256_HASHES_PER_DIFFICULTY },
-      ],
-    },
-    {
-      id: 'bitcoin-cash',
-      label: 'BCH',
-      algorithm: 'sha256',
-      chains: [
-        { chain: 'bch-mainnet', hashesPerDifficulty: SHA256_HASHES_PER_DIFFICULTY },
-      ],
-    },
-    {
-      id: 'ecash',
-      label: 'XEC',
-      algorithm: 'sha256',
-      chains: [
-        { chain: 'xec-mainnet', hashesPerDifficulty: SHA256_HASHES_PER_DIFFICULTY },
-      ],
-    },
-    {
-      // One hash earns on both chains: their pay is summed and the energy counted once.
-      // Scrypt difficulty is defined as Bitcoin's is: 2^32 expected hashes per unit.
-      id: 'scrypt',
-      label: 'LTC+DOGE',
-      algorithm: 'scrypt',
-      chains: [
-        { chain: 'ltc-mainnet', hashesPerDifficulty: SHA256_HASHES_PER_DIFFICULTY },
-        { chain: 'doge-mainnet', hashesPerDifficulty: SHA256_HASHES_PER_DIFFICULTY },
-      ],
-    },
-    {
-      // Monero's difficulty is itself the expected number of hashes per block.
-      id: 'monero',
-      label: 'XMR',
-      algorithm: 'randomx',
-      chains: [{ chain: 'xmr-mainnet', hashesPerDifficulty: 1 }],
-    },
-  ],
+  weightCap: basketDefinition.weightCap,
+  entries: basketDefinition.entries as FeedBasket['entries'],
 }
 
 /**

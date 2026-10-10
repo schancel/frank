@@ -845,9 +845,6 @@ export class EvmNativeOperationJournal {
         m.account = null
       }
       row.cancelled = true
-      // The signed bytes are dropped with it: a released transfer is not kept anywhere it
-      // could be sent from.
-      for (const m of row.members) m.signed = null
     })
   }
   beginCapture(operationId: string, memberIndex: number): EvmNativeCapture {

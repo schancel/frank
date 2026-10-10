@@ -412,9 +412,6 @@ export default {
     walletUnsupported:
       'Ce réseau n’est pas encore pris en charge. Aucune adresse n’est affichée, car l’application ne pourrait pas voir l’argent qui y serait envoyé.',
     notSupported: 'Non pris en charge',
-    cordoned: '{amount} mis à l’écart',
-    cordonedTooltip:
-      'Reçu à votre adresse de profil. Le portefeuille surveille ces fonds mais ne les dépense pas.',
     tokenBalancesLoading: 'Chargement des soldes de jetons…',
     tokenBalancesUnavailable: 'Soldes de jetons indisponibles.',
     tokenBalancesStale:
@@ -765,6 +762,23 @@ export default {
     statusRefunded: 'Remboursé',
     statusExpired: 'Expiré',
     processing: 'Traitement en cours...',
+  },
+  balanceBreakdown: {
+    open: 'Où se trouve ce solde',
+    main: 'Compte principal',
+    mainNote: 'Votre adresse de dépôt : celle affichée ci-dessous.',
+    profile: 'Adresse du profil',
+    profileNote: 'Envoyé à l’adresse de votre profil.',
+    received: 'Paiements reçus ({count})',
+    receivedNote:
+      'Paiements et timbres que l’on vous a envoyés, chacun à sa propre adresse à usage unique, confirmés sur le réseau.',
+    other: 'Comptes d’envoi',
+    otherNote:
+      'Gardé par le portefeuille dans ses propres comptes pour payer vos messages, et la monnaie de paiements précédents.',
+    total: 'Total dans ce portefeuille',
+    yours:
+      'Chacun de ces comptes appartient à ce portefeuille et se retrouve avec votre phrase de récupération.',
+    unavailable: 'Les comptes n’ont pas pu être lus pour le moment.',
   },
   heldContactPayments: {
     title: 'Paiements à des contacts en cours',

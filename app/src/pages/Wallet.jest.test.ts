@@ -271,26 +271,38 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('shows the total with the cordoned amount beside it only while funds sit at the profile address', async () => {
+  it('includes funds at the profile address in the balance, with no bracket beside it', async () => {
     const wrapper = mountWallet()
     await nextTick()
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('1 MON')
-    expect(
-      wrapper.find('[data-testid="wallet-balance-cordoned"]').exists(),
-    ).toBe(false)
     balance.cordoned.value = {
       formattedAmount: '0.25 MON',
       formattedTotal: '1.25 MON',
     }
     await nextTick()
-    expect(region.text().startsWith('1.25 MON')).toBe(true)
-    expect(
-      wrapper.get('[data-testid="wallet-balance-cordoned"]').text(),
-    ).toContain('(walletPanel.cordoned)')
+    expect(region.text()).toBe('1.25 MON')
+    expect(wrapper.text()).not.toContain('cordoned')
     balance.cordoned.value = undefined
     await nextTick()
     expect(region.text()).toBe('1 MON')
+    wrapper.unmount()
+  })
+
+  it('opens the breakdown of the balance from the balance, and closes it again', async () => {
+    const wrapper = mountWallet()
+    await nextTick()
+    const shown = () =>
+      wrapper.findComponent({ name: 'BalanceBreakdown' }).exists()
+    expect(shown()).toBe(false)
+    const toggle = wrapper.get(
+      '[data-testid="wallet-balance-breakdown-toggle"]',
+    )
+    expect(toggle.text()).toBe('balanceBreakdown.open')
+    await toggle.trigger('click')
+    expect(shown()).toBe(true)
+    await toggle.trigger('click')
+    expect(shown()).toBe(false)
     wrapper.unmount()
   })
 

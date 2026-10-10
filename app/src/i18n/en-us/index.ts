@@ -404,9 +404,6 @@ export default {
     walletUnsupported:
       'This network is not supported yet. No address is shown because the app could not see money sent to it.',
     notSupported: 'Not supported',
-    cordoned: '{amount} cordoned',
-    cordonedTooltip:
-      'Received at your profile address. The wallet watches these funds but does not spend them.',
     tokenBalancesLoading: 'Loading token balances…',
     tokenBalancesUnavailable: 'Token balances unavailable.',
     tokenBalancesStale:
@@ -749,6 +746,23 @@ export default {
     statusRefunded: 'Refunded',
     statusExpired: 'Expired',
     processing: 'Processing...',
+  },
+  balanceBreakdown: {
+    open: 'Where this balance is',
+    main: 'Main account',
+    mainNote: 'Your deposit address: the one shown below.',
+    profile: 'Profile address',
+    profileNote: 'Sent to the address on your profile.',
+    received: 'Received payments ({count})',
+    receivedNote:
+      'Payments and stamps people sent you, each at its own one-time address, confirmed on the network.',
+    other: 'Sending accounts',
+    otherNote:
+      'Kept by the wallet in its own accounts to pay for your messages, and change from earlier payments.',
+    total: 'Total in this wallet',
+    yours:
+      'Every one of these accounts belongs to this wallet and comes back from your recovery phrase.',
+    unavailable: 'The accounts could not be read just now.',
   },
   heldContactPayments: {
     title: 'Payments to contacts in progress',

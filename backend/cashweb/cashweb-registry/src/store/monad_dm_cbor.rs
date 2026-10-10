@@ -2,7 +2,6 @@
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex, Weak},
-    time::Duration,
 };
 
 use frank_cbor::{cbor_map, decode_canonical, encode_canonical, CborValue};
@@ -12,12 +11,10 @@ use crate::{
     directory_runtime::DirectoryRuntime,
     http::monad_message_cbor::{CanonicalError, ExactRequest, Result, SubmissionEcho},
     monad_http::{Address, Hash32},
-    monad_outbox::{financial::CanonicalPaymentInput, MonadOutboxReconcileConfig},
+    monad_outbox::financial::CanonicalPaymentInput,
     store::{
         monad_messages::ChallengeConsumption,
-        monad_outbox::{
-            MonadOutboxLimits, MonadOutboxMember, MonadOutboxMemberState, MonadOutboxTerminal,
-        },
+        monad_outbox::{MonadOutboxMember, MonadOutboxMemberState, MonadOutboxTerminal},
     },
 };
 
@@ -99,10 +96,6 @@ pub(crate) struct Claim {
     pub(crate) reserved_charge: u64,
 }
 
-const MAX_RETAINED_OWNERS: u64 = 4096;
-const MAX_RETAINED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-const MAX_RECIPIENT_OWNERS: u64 = 128;
-const MAX_RECIPIENT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_AUTH_NONCES: usize = 4096;
 
 /// Binary CBOR metadata and every possible bounded lifecycle index/member.
@@ -148,6 +141,8 @@ pub(crate) struct Owner {
     db: Mutex<Option<rocksdb::DB>>,
     directory: Mutex<Weak<DirectoryRuntime>>,
     broadcast: tokio::sync::broadcast::Sender<FinalizedEnvelope>,
+    /// When each message's payments were last handed to the node. In memory only.
+    payment_broadcasts: Mutex<std::collections::HashMap<[u8; 32], std::time::Instant>>,
 }
 impl Owner {
     pub(crate) fn new(legacy: PathBuf) -> Self {
@@ -157,7 +152,27 @@ impl Owner {
             db: Mutex::new(None),
             directory: Mutex::new(Weak::new()),
             broadcast,
+            payment_broadcasts: Default::default(),
         }
+    }
+    /// Whether this message's payments may be handed to the node now: at most once per
+    /// `interval`, so a client repeating one message cannot make the relay hammer the node.
+    /// Nothing is remembered across a restart, so the first resend after one always sends.
+    pub(crate) fn may_broadcast_payments(
+        &self,
+        payload_hash: &[u8; 32],
+        interval: std::time::Duration,
+    ) -> bool {
+        let Ok(mut sent) = self.payment_broadcasts.lock() else {
+            return true;
+        };
+        let now = std::time::Instant::now();
+        sent.retain(|_, at| now.duration_since(*at) < interval);
+        if sent.contains_key(payload_hash) {
+            return false;
+        }
+        sent.insert(*payload_hash, now);
+        true
     }
     pub(crate) fn subscribe_finalized(
         &self,
@@ -204,7 +219,6 @@ impl Owner {
             options.create_if_missing(create);
             let opened =
                 rocksdb::DB::open(&options, &self.path).map_err(|_| CanonicalError::Unavailable)?;
-            audit_retained_usage(&opened)?;
             *guard = Some(opened);
         }
         if !self.path.join("CURRENT").is_file() {
@@ -229,289 +243,64 @@ impl Owner {
         self.with(false, |db| financial_usage_locked(db, recipient))
             .map(|usage| usage.unwrap_or_default())
     }
-    pub(crate) fn claim(
-        &self,
-        input: CanonicalPaymentInput,
-        now: i64,
-        config: &MonadOutboxReconcileConfig,
-        external: Result<crate::monad_outbox::financial::AdmissionUsage>,
-    ) -> Result<Claim> {
-        let candidate = input.into_claim(now, config)?;
-        self.with(true, |db| {
-            if let Some(existing) = find_request_locked(db, &candidate.request)? {
-                return Ok(existing);
-            }
-            if let Some(existing) = load(db, &candidate.policy.payload_hash)? {
-                if !existing.request.exact_equal(&candidate.request)
-                    || existing.policy.network != candidate.policy.network
-                    || existing.policy.sender_p != candidate.policy.sender_p
-                    || existing.policy.recipient_p != candidate.policy.recipient_p
-                    || existing.policy.sender_t1 != candidate.policy.sender_t1
-                    || existing.policy.recipient_t1 != candidate.policy.recipient_t1
-                {
-                    return Err(CanonicalError::Conflict);
+    /// Store a checked message in the recipient's inbox, in one durable write. An exact repeat
+    /// returns what is already stored. A refusal (a payment already used for another message)
+    /// leaves nothing behind. The number of messages already stored never refuses one.
+    ///
+    /// `now` is the caller's clock. The delivery time is decided here, under the store's lock:
+    /// see [`deliver`].
+    pub(crate) fn claim(&self, input: CanonicalPaymentInput, now: i64) -> Result<Claim> {
+        let mut candidate = input.into_claim(now)?;
+        let (claim, stored) = self
+            .with(true, |db| {
+                if let Some(existing) = find_request_locked(db, &candidate.request)? {
+                    return Ok((existing, false));
                 }
-                return Ok(existing);
-            }
-            // One signed payment pays for one message. Nothing on chain names the message, so
-            // this durable index is what stops a payment being claimed again for another body.
-            for member in &candidate.members {
-                if db
-                    .get_pinned(payment_key(&member.tx_hash))
-                    .map_err(|_| CanonicalError::Unavailable)?
-                    .is_some()
-                {
-                    return Err(CanonicalError::Conflict);
+                if let Some(existing) = load(db, &candidate.policy.payload_hash)? {
+                    if !existing.request.exact_equal(&candidate.request)
+                        || existing.policy.network != candidate.policy.network
+                        || existing.policy.sender_p != candidate.policy.sender_p
+                        || existing.policy.recipient_p != candidate.policy.recipient_p
+                        || existing.policy.sender_t1 != candidate.policy.sender_t1
+                        || existing.policy.recipient_t1 != candidate.policy.recipient_t1
+                    {
+                        return Err(CanonicalError::Conflict);
+                    }
+                    return Ok((existing, false));
                 }
-            }
-            capacity(db, &candidate, &config.limits, external?)?;
-            let mut batch = WriteBatch::default();
-            reserve_retained_owner(db, &mut batch, &candidate)?;
-            append_owner(&mut batch, &candidate.policy.payload_hash, &candidate)?;
-            for member in &candidate.members {
-                batch.put(
-                    member_key(&candidate.policy.payload_hash, member.child_index),
-                    encode_member(member)?,
-                );
-                batch.put(payment_key(&member.tx_hash), candidate.policy.payload_hash);
-            }
-            let mut identity_key = b"S".to_vec();
-            identity_key.extend_from_slice(&candidate.request.submission_identity());
-            batch.put(identity_key, candidate.policy.payload_hash);
-            write(db, batch)?;
-            Ok(candidate)
-        })?
-        .ok_or(CanonicalError::Unavailable)
-    }
-    pub(crate) fn active_after(
-        &self,
-        after: Option<[u8; 32]>,
-        limit: usize,
-    ) -> Result<Vec<[u8; 32]>> {
-        self.with(false, |db| {
-            let mut result = Vec::new();
-            for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"R")?) {
-                let (key, _) = item.map_err(|_| CanonicalError::Unavailable)?;
-                if key.first() != Some(&b'R') {
-                    continue;
-                }
-                let hash = key
-                    .get(1..)
-                    .and_then(|b| b.try_into().ok())
-                    .ok_or(CanonicalError::Unavailable)?;
-                if after.is_some_and(|previous| hash <= previous) {
-                    continue;
-                }
-                let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
-                if matches!(claim.phase, Phase::Pending | Phase::FullyConfirmed) {
-                    result.push(hash);
-                    if result.len() == limit.max(1) {
-                        break;
+                // One signed payment pays for one message. Nothing on chain names the message, so
+                // this durable index is what stops a payment being claimed again for another body.
+                for member in &candidate.members {
+                    if db
+                        .get_pinned(payment_key(&member.tx_hash))
+                        .map_err(|_| CanonicalError::Unavailable)?
+                        .is_some()
+                    {
+                        return Err(CanonicalError::Conflict);
                     }
                 }
-            }
-            Ok(result)
-        })
-        .map(|rows| rows.unwrap_or_default())
-    }
-    /// Cancellation only pushes replay forward; it never erases a lease or tentative exposure.
-    pub(crate) fn backoff_after_cancelled(&self, hash: &[u8; 32], now: i64) -> Result<()> {
-        self.with(false, |db| {
-            let Some(claim) = load(db, hash)? else {
-                return Ok(());
-            };
-            if claim.phase != Phase::Pending {
-                return Ok(());
-            }
-            for mut member in claim.members {
-                if member.state != MonadOutboxMemberState::Pending {
-                    continue;
+                let mut batch = WriteBatch::default();
+                deliver(db, &mut batch, &mut candidate, now)?;
+                append_owner(&mut batch, &candidate.policy.payload_hash, &candidate)?;
+                for member in &candidate.members {
+                    batch.put(
+                        member_key(&candidate.policy.payload_hash, member.child_index),
+                        encode_member(member)?,
+                    );
+                    batch.put(payment_key(&member.tx_hash), candidate.policy.payload_hash);
                 }
-                if member.attempts == 0 {
-                    break;
-                }
-                let delay = claim
-                    .backoff_base_ms
-                    .saturating_mul(1u64 << member.attempts.saturating_sub(1).min(31))
-                    .min(claim.max_backoff_ms);
-                let earliest = now.saturating_add(delay.min(i64::MAX as u64) as i64);
-                if earliest > member.next_replay_at_ms {
-                    member.next_replay_at_ms = earliest;
-                    member.updated_at_ms = now;
-                    put_member(db, hash, &member)?;
-                }
-                break;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
-    pub(crate) fn release_lease(&self, hash: &[u8; 32], index: u32, generation: u64) -> Result<()> {
-        self.with(false, |db| {
-            let Some(claim) = load(db, hash)? else {
-                return Ok(());
-            };
-            if claim.phase != Phase::Pending {
-                return Ok(());
-            }
-            let mut member = claim
-                .members
-                .into_iter()
-                .find(|m| m.child_index == index)
-                .ok_or(CanonicalError::Unavailable)?;
-            if member.state == MonadOutboxMemberState::Pending
-                && member.lease_generation == generation
-            {
-                member.lease_until_ms = 0;
-                put_member(db, hash, &member)?;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    }
-    pub(crate) fn acquire(
-        &self,
-        hash: &[u8; 32],
-        index: u32,
-        now: i64,
-        lease: Duration,
-    ) -> Result<Option<MonadOutboxMember>> {
-        self.with(false, |db| {
-            let claim = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
-            if !matches!(claim.phase, Phase::Pending) {
-                return Ok(None);
-            }
-            let mut member = claim
-                .members
-                .into_iter()
-                .find(|m| m.child_index == index)
-                .ok_or(CanonicalError::Unavailable)?;
-            if !matches!(member.state, MonadOutboxMemberState::Pending)
-                || member.lease_until_ms > now
-            {
-                return Ok(None);
-            }
-            member.lease_generation = member
-                .lease_generation
-                .checked_add(1)
-                .ok_or(CanonicalError::Unavailable)?;
-            member.lease_until_ms =
-                now.saturating_add(lease.as_millis().min(i64::MAX as u128) as i64);
-            member.updated_at_ms = now;
-            put_member(db, hash, &member)?;
-            Ok(Some(member))
-        })?
-        .ok_or(CanonicalError::Unavailable)
-    }
-    /// Durable exposure/attempt start precedes the send; completion must present its exact lease.
-    pub(crate) fn begin_replay(
-        &self,
-        hash: &[u8; 32],
-        index: u32,
-        generation: u64,
-        now: i64,
-    ) -> Result<Option<MonadOutboxMember>> {
-        self.with(false, |db| {
-            let claim = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
-            let mut member = claim
-                .members
-                .iter()
-                .find(|m| m.child_index == index)
-                .cloned()
-                .ok_or(CanonicalError::Unavailable)?;
-            if !matches!(claim.phase, Phase::Pending)
-                || member.lease_generation != generation
-                || member.lease_until_ms <= now
-                || !matches!(member.state, MonadOutboxMemberState::Pending)
-                || member.attempts >= claim.max_attempts
-                || claim.expires <= now
-            {
-                return Ok(None);
-            }
-            member.attempts = member
-                .attempts
-                .checked_add(1)
-                .ok_or(CanonicalError::Unavailable)?;
-            member.exposed = true;
-            member.updated_at_ms = now;
-            put_member(db, hash, &member)?;
-            Ok(Some(member))
-        })?
-        .ok_or(CanonicalError::Unavailable)
-    }
-    pub(crate) fn complete(
-        &self,
-        hash: &[u8; 32],
-        index: u32,
-        generation: u64,
-        now: i64,
-        state: MonadOutboxMemberState,
-        exposed: bool,
-        error: String,
-    ) -> Result<bool> {
-        self.with(false, |db| {
-            let mut claim = load(db, hash)?.ok_or(CanonicalError::Unavailable)?;
-            let member = claim
-                .members
-                .iter_mut()
-                .find(|m| m.child_index == index)
-                .ok_or(CanonicalError::Unavailable)?;
-            if !matches!(claim.phase, Phase::Pending)
-                || member.lease_generation != generation
-                || member.lease_until_ms <= now
-                || !matches!(member.state, MonadOutboxMemberState::Pending)
-            {
-                return Ok(false);
-            }
-            let terminal = match &state {
-                MonadOutboxMemberState::Terminal(reason) => Some(*reason),
-                _ => None,
-            };
-            member.state = state;
-            // The caller preserves prior exposure on an exact-lookup failure and
-            // restores it after a definite replay rejection. A tentative durable
-            // send marker must not become a permanent obligation after rejection.
-            member.exposed = exposed;
-            member.lease_until_ms = 0;
-            member.updated_at_ms = now;
-            let mut end = error.len().min(512);
-            while !error.is_char_boundary(end) {
-                end -= 1;
-            }
-            member.last_error = error[..end].to_owned();
-            let exponent = member.attempts.saturating_sub(1).min(31);
-            let delay = claim
-                .backoff_base_ms
-                .saturating_mul(1u64 << exponent)
-                .min(claim.max_backoff_ms);
-            member.next_replay_at_ms = now.saturating_add(delay.min(i64::MAX as u64) as i64);
-            if let Some(reason) = terminal {
-                claim.phase = Phase::Terminal(reason);
-                claim.reservation = claim.recoverable();
-            } else if claim
-                .members
-                .iter()
-                .all(|m| matches!(m.state, MonadOutboxMemberState::Confirmed { .. }))
-            {
-                claim.phase = Phase::FullyConfirmed;
-            }
-            claim.updated = now;
-            let mut batch = WriteBatch::default();
-            batch.put(
-                member_key(hash, index),
-                encode_member(
-                    claim
-                        .members
-                        .iter()
-                        .find(|m| m.child_index == index)
-                        .unwrap(),
-                )?,
-            );
-            append_owner(&mut batch, hash, &claim)?;
-            write(db, batch)?;
-            Ok(true)
-        })?
-        .ok_or(CanonicalError::Unavailable)
+                batch.put(
+                    identity_key(&candidate.request),
+                    candidate.policy.payload_hash,
+                );
+                write(db, batch)?;
+                Ok((candidate, true))
+            })?
+            .ok_or(CanonicalError::Unavailable)?;
+        if stored {
+            self.announce(&claim);
+        }
+        Ok(claim)
     }
     #[allow(dead_code)]
     pub(crate) fn terminal(
@@ -534,7 +323,9 @@ impl Owner {
         })?
         .ok_or(CanonicalError::Unavailable)
     }
-    /// Validation and mailbox publication are one locked operation. No caller can mint the view.
+    /// Put an already stored message in the recipient's inbox. Only a row written by the
+    /// earlier relay, which held a message back until its payments confirmed, is ever stored
+    /// without being delivered; a resend of such a message delivers it here.
     pub(crate) fn finalize(&self, hash: &[u8; 32], now: i64) -> Result<Claim> {
         let (claim, newly_finalized) = self
             .with(false, |db| {
@@ -542,53 +333,36 @@ impl Owner {
                 if matches!(claim.phase, Phase::Delivered(_)) {
                     return Ok((claim, false));
                 }
-                if claim.phase != Phase::FullyConfirmed {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let verified = crate::monad_outbox::financial::verify_canonical_confirmed(&claim)?;
-                let _exact = verified
-                    .canonical_request()
-                    .ok_or(CanonicalError::Unavailable)?;
-                claim.phase = Phase::Delivered(now);
-                claim.updated = now;
                 claim.reservation = false;
                 let mut batch = WriteBatch::default();
+                deliver(db, &mut batch, &mut claim, now)?;
                 append_owner(&mut batch, hash, &claim)?;
-                let recipient = claim.policy.recipient()?;
-                let sender = claim.policy.sender()?;
-                let mut inbox = b"I".to_vec();
-                inbox.extend_from_slice(&recipient.0);
-                inbox.extend_from_slice(&now.to_be_bytes());
-                inbox.extend_from_slice(hash);
-                batch.put(inbox, hash);
-                if sender != recipient {
-                    let mut outbox = b"O".to_vec();
-                    outbox.extend_from_slice(&sender.0);
-                    outbox.extend_from_slice(&now.to_be_bytes());
-                    outbox.extend_from_slice(hash);
-                    batch.put(outbox, hash);
-                }
                 write(db, batch)?;
                 Ok((claim, true))
             })?
             .ok_or(CanonicalError::Unavailable)?;
-
         if newly_finalized {
-            if let (Ok(sender), Ok(recipient)) = (claim.policy.sender(), claim.policy.recipient()) {
-                let envelope = FinalizedEnvelope {
-                    sender,
-                    recipient,
-                    payload_hash: claim.policy.payload_hash,
-                    submission_identity: claim.request.submission_identity(),
-                    timestamp: now,
-                    delivery: claim.request.delivery().to_vec(),
-                    context: claim.request.context().to_vec(),
-                };
-                let _ = self.broadcast.send(envelope);
-            }
+            self.announce(&claim);
         }
-
         Ok(claim)
+    }
+    /// Tell open mailbox sockets about a message that has just been delivered.
+    fn announce(&self, claim: &Claim) {
+        if let (Ok(sender), Ok(recipient), Phase::Delivered(time)) = (
+            claim.policy.sender(),
+            claim.policy.recipient(),
+            &claim.phase,
+        ) {
+            let _ = self.broadcast.send(FinalizedEnvelope {
+                sender,
+                recipient,
+                payload_hash: claim.policy.payload_hash,
+                submission_identity: claim.request.submission_identity(),
+                timestamp: *time,
+                delivery: claim.request.delivery().to_vec(),
+                context: claim.request.context().to_vec(),
+            });
+        }
     }
     pub(crate) fn consume_challenge(
         &self,
@@ -811,15 +585,10 @@ impl Owner {
     ) -> Result<Vec<Claim>> {
         self.with(false, |db| {
             let mut result = Vec::new();
-            let mut inspected = 0u64;
             for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
                 let (key, header) = item.map_err(|_| CanonicalError::Unavailable)?;
                 #[cfg(test)]
                 record_read(&key, &header);
-                inspected += 1;
-                if inspected > MAX_RETAINED_OWNERS {
-                    return Err(CanonicalError::Unavailable);
-                }
                 if key.first() != Some(&b'J') {
                     continue;
                 }
@@ -848,62 +617,6 @@ impl Owner {
         })
         .map(|rows| rows.unwrap_or_default())
     }
-    /// Original exposure-only recovery horizon. Confirmed value is retained until
-    /// explicit recipient ACK; immutable retry ownership is never removed here.
-    pub(crate) fn expire_unconfirmed_recovery_after(
-        &self,
-        after: Option<[u8; 32]>,
-        limit: usize,
-        now: i64,
-        limits: &MonadOutboxLimits,
-    ) -> Result<Option<[u8; 32]>> {
-        self.with(false, |db| {
-            let mut scanned = 0usize;
-            let mut last = None;
-            let mut exhausted = true;
-            let age = limits
-                .max_unconfirmed_recovery_age
-                .as_millis()
-                .min(i64::MAX as u128) as i64;
-            for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
-                let (key, header) = item.map_err(|_| CanonicalError::Unavailable)?;
-                let hash: [u8; 32] = key
-                    .get(1..)
-                    .and_then(|bytes| bytes.try_into().ok())
-                    .ok_or(CanonicalError::Unavailable)?;
-                if after.is_some_and(|cursor| hash <= cursor) {
-                    continue;
-                }
-                if scanned == limit.max(1) {
-                    exhausted = false;
-                    break;
-                }
-                scanned += 1;
-                last = Some(hash);
-                let metadata = decode_usage_header(&header)?;
-                if metadata.active || !metadata.reserved || metadata.confirmed {
-                    continue;
-                }
-                let mut claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
-                if !matches!(claim.phase, Phase::Terminal(_))
-                    || claim.acknowledged
-                    || claim.members.iter().any(|member| {
-                        matches!(member.state, MonadOutboxMemberState::Confirmed { .. })
-                    })
-                    || now.saturating_sub(claim.updated) <= age
-                {
-                    continue;
-                }
-                claim.reservation = false;
-                let mut batch = WriteBatch::default();
-                append_owner(&mut batch, &hash, &claim)?;
-                write(db, batch)?;
-            }
-            Ok(if exhausted { None } else { last })
-        })
-        .map(Option::flatten)
-    }
-
     #[allow(dead_code)]
     pub(crate) fn acknowledge(
         &self,
@@ -1066,7 +779,6 @@ fn financial_usage_locked(
     recipient: Address,
 ) -> Result<crate::monad_outbox::financial::AdmissionUsage> {
     let mut usage = crate::monad_outbox::financial::AdmissionUsage::default();
-    let mut inspected = 0u64;
     for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"J")?) {
         let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
         #[cfg(test)]
@@ -1074,8 +786,7 @@ fn financial_usage_locked(
         if key.first() != Some(&b'J') {
             continue;
         }
-        inspected += 1;
-        if inspected > MAX_RETAINED_OWNERS || key.len() != 33 || value.len() > 128 {
+        if key.len() != 33 || value.len() > 128 {
             return Err(CanonicalError::Unavailable);
         }
         let UsageHeader {
@@ -1106,10 +817,8 @@ fn financial_usage_locked(
 
 fn find_request_locked(db: &rocksdb::DB, request: &ExactRequest) -> Result<Option<Claim>> {
     use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
-    let mut identity_key = b"S".to_vec();
-    identity_key.extend_from_slice(&request.submission_identity());
     let indexed = db
-        .get(identity_key)
+        .get(identity_key(request))
         .map_err(|_| CanonicalError::Unavailable)?;
     let ValidationResult::Parsed(frame) = validate_frame(request.delivery(), &relay_context())
         .map_err(|_| CanonicalError::Invalid)?
@@ -1464,167 +1173,54 @@ fn decode_member(raw: &[u8]) -> Result<MonadOutboxMember> {
         last_error: text(&a[9])?.into(),
     })
 }
-fn put_member(db: &rocksdb::DB, hash: &[u8; 32], m: &MonadOutboxMember) -> Result<()> {
-    let mut batch = WriteBatch::default();
-    batch.put(member_key(hash, m.child_index), encode_member(m)?);
-    write(db, batch)
+fn identity_key(request: &ExactRequest) -> Vec<u8> {
+    let mut key = b"S".to_vec();
+    key.extend_from_slice(&request.submission_identity());
+    key
 }
+/// A delivered message's place in a mailbox: `I` for the recipient's inbox, `O` for the
+/// sender's sent copies, ordered by delivery time.
+fn mailbox_key(kind: u8, address: Address, time: i64, hash: &[u8; 32]) -> Vec<u8> {
+    let mut key = vec![kind];
+    key.extend_from_slice(&address.0);
+    key.extend_from_slice(&time.to_be_bytes());
+    key.extend_from_slice(hash);
+    key
+}
+/// Where the last delivery time issued by this store is kept.
+const LAST_DELIVERY_KEY: &[u8] = b"L";
 
-fn retained_usage(db: &rocksdb::DB, key: &[u8]) -> Result<(u64, u64)> {
-    let Some(value) = db.get(key).map_err(|_| CanonicalError::Unavailable)? else {
-        return Ok((0, 0));
-    };
-    let value = decode_canonical(&value).map_err(|_| CanonicalError::Unavailable)?;
-    let [count, bytes] = array(&value)? else {
-        return Err(CanonicalError::Unavailable);
-    };
-    Ok((convert(count)?, convert(bytes)?))
-}
-
-/// Reopen checks the actual durable owner/index set, never an estimated counter.
-/// One row is staged at a time under the fixed owner/byte bounds.
-fn audit_retained_usage(db: &rocksdb::DB) -> Result<()> {
-    let mut global = (0u64, 0u64);
-    let mut recipients = std::collections::BTreeMap::<[u8; 20], (u64, u64)>::new();
-    let mut headers = 0u64;
-    let mut nonces = 0usize;
-    for item in db.iterator(IteratorMode::Start) {
-        let (key, value) = item.map_err(|_| CanonicalError::Unavailable)?;
-        match key.first() {
-            Some(b'R') => {
-                global.0 = global.0.checked_add(1).ok_or(CanonicalError::Unavailable)?;
-                if global.0 > MAX_RETAINED_OWNERS
-                    || key.len() != 33
-                    || value.len() > crate::http::monad_message_cbor::MAX_REQUEST_BYTES + 8192
-                {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let hash: [u8; 32] = key[1..]
-                    .try_into()
-                    .map_err(|_| CanonicalError::Unavailable)?;
-                let claim = load(db, &hash)?.ok_or(CanonicalError::Unavailable)?;
-                global.1 = global
-                    .1
-                    .checked_add(claim.reserved_charge)
-                    .ok_or(CanonicalError::Unavailable)?;
-                if global.1 > MAX_RETAINED_BYTES {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let recipient = recipients.entry(claim.policy.recipient()?.0).or_default();
-                recipient.0 = recipient
-                    .0
-                    .checked_add(1)
-                    .ok_or(CanonicalError::Unavailable)?;
-                recipient.1 = recipient
-                    .1
-                    .checked_add(claim.reserved_charge)
-                    .ok_or(CanonicalError::Unavailable)?;
-                if recipient.0 > MAX_RECIPIENT_OWNERS || recipient.1 > MAX_RECIPIENT_BYTES {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            Some(b'J') => {
-                headers += 1;
-                if headers > MAX_RETAINED_OWNERS || key.len() != 33 || value.len() > 128 {
-                    return Err(CanonicalError::Unavailable);
-                }
-                let hash: [u8; 32] = key[1..]
-                    .try_into()
-                    .map_err(|_| CanonicalError::Unavailable)?;
-                if db
-                    .get_pinned(row_key(&hash))
-                    .map_err(|_| CanonicalError::Unavailable)?
-                    .is_none()
-                {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            Some(b'N') => {
-                nonces += 1;
-                if nonces > MAX_AUTH_NONCES || key.len() != 85 || value.len() != 8 {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            Some(b'T') => {
-                if key.len() != 33 || value.len() != 32 {
-                    return Err(CanonicalError::Unavailable);
-                }
-            }
-            _ => {}
-        }
-    }
-    if headers != global.0 || retained_usage(db, b"Q")? != global {
-        return Err(CanonicalError::Unavailable);
-    }
-    for item in db.iterator(IteratorMode::Start) {
-        let (key, _) = item.map_err(|_| CanonicalError::Unavailable)?;
-        if key.first() != Some(&b'q') {
-            continue;
-        }
-        let recipient: [u8; 20] = key
-            .get(1..)
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(CanonicalError::Unavailable)?;
-        let expected = recipients
-            .remove(&recipient)
-            .ok_or(CanonicalError::Unavailable)?;
-        if retained_usage(db, &key)? != expected {
-            return Err(CanonicalError::Unavailable);
-        }
-    }
-    if !recipients.is_empty() {
-        return Err(CanonicalError::Unavailable);
-    }
-    Ok(())
-}
-
-fn reserve_retained_owner(db: &rocksdb::DB, batch: &mut WriteBatch, claim: &Claim) -> Result<()> {
-    let mut recipient_key = b"q".to_vec();
-    recipient_key.extend_from_slice(&claim.policy.recipient()?.0);
-    for (key, count_limit, byte_limit) in [
-        (b"Q".as_slice(), MAX_RETAINED_OWNERS, MAX_RETAINED_BYTES),
-        (
-            recipient_key.as_slice(),
-            MAX_RECIPIENT_OWNERS,
-            MAX_RECIPIENT_BYTES,
-        ),
-    ] {
-        let (count, bytes) = retained_usage(db, key)?;
-        let count = count.checked_add(1).ok_or(CanonicalError::Capacity)?;
-        let bytes = bytes
-            .checked_add(claim.reserved_charge)
-            .ok_or(CanonicalError::Capacity)?;
-        if count > count_limit || bytes > byte_limit {
-            return Err(CanonicalError::Capacity);
-        }
-        batch.put(key, encode(CborValue::Array(vec![int(count), int(bytes)]))?);
-    }
-    Ok(())
-}
-fn capacity(
-    db: &rocksdb::DB,
-    candidate: &Claim,
-    limits: &MonadOutboxLimits,
-    external: crate::monad_outbox::financial::AdmissionUsage,
-) -> Result<()> {
-    let local = financial_usage_locked(db, candidate.policy.recipient()?)?;
-    let sum = |a: u64, b: u64| a.checked_add(b).ok_or(CanonicalError::Capacity);
-    if sum(local.active, external.active)? >= limits.max_active_claims as u64
-        || sum(local.global_records, external.global_records)? >= limits.max_recovery_records as u64
-        || sum(
-            sum(local.global_bytes, external.global_bytes)?,
-            candidate.reserved_charge,
-        )? > limits.max_recovery_bytes as u64
-        || sum(local.recipient_records, external.recipient_records)?
-            >= limits.max_recovery_records_per_recipient as u64
-        || sum(
-            sum(local.recipient_bytes, external.recipient_bytes)?,
-            candidate.reserved_charge,
-        )? > limits.max_recovery_bytes_per_recipient as u64
-        || sum(local.unconfirmed, external.unconfirmed)?
-            >= limits.max_unconfirmed_claims_per_recipient as u64
+/// Deliver a message as part of `batch`: give it its delivery time and put it in the
+/// recipient's inbox and the sender's own mailbox under that time.
+///
+/// A reader asks for "everything after the last time I saw", so a delivery time must never
+/// be equal to or earlier than one already issued, or a reader who has moved past it would
+/// never be given the message. The time is therefore taken here, under the store's lock at
+/// commit, and is the clock or one millisecond after the last time issued, whichever is
+/// later: two messages in the same millisecond, or a clock that steps back, still get
+/// increasing times. The last time issued is stored with the message, so this holds across
+/// restarts.
+fn deliver(db: &rocksdb::DB, batch: &mut WriteBatch, claim: &mut Claim, now: i64) -> Result<()> {
+    let last = match db
+        .get_pinned(LAST_DELIVERY_KEY)
+        .map_err(|_| CanonicalError::Unavailable)?
     {
-        return Err(CanonicalError::Capacity);
+        Some(raw) => i64::from_be_bytes(
+            raw.as_ref()
+                .try_into()
+                .map_err(|_| CanonicalError::Unavailable)?,
+        ),
+        None => i64::MIN,
+    };
+    let time = now.max(last.checked_add(1).ok_or(CanonicalError::Unavailable)?);
+    claim.phase = Phase::Delivered(time);
+    claim.updated = time;
+    batch.put(LAST_DELIVERY_KEY, time.to_be_bytes());
+    let hash = &claim.policy.payload_hash;
+    let (sender, recipient) = (claim.policy.sender()?, claim.policy.recipient()?);
+    batch.put(mailbox_key(b'I', recipient, time, hash), hash);
+    if sender != recipient {
+        batch.put(mailbox_key(b'O', sender, time, hash), hash);
     }
     Ok(())
 }

@@ -198,6 +198,15 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedRpcBody {
     }
 }
 
+/// Longest startup waits for the first identity check of this proxy's chains.
+const STARTUP_WAIT: Duration = Duration::from_secs(2);
+/// How often an upstream that has not yet proved its identity is asked again.
+const IDENTITY_RETRY: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(30)
+};
+
 #[derive(Clone)]
 struct EvmChainRuntime {
     id: String,
@@ -206,6 +215,9 @@ struct EvmChainRuntime {
     upstream_ws_url: Option<Url>,
     checkpoint: Option<(u64, String)>,
     max_get_logs_range: u64,
+    /// The chain's upstreams have proved they are the configured chain. Until they do, nothing
+    /// is forwarded to them.
+    verified: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl fmt::Debug for EvmChainRuntime {
@@ -579,6 +591,7 @@ impl EvmRpcRuntime {
                         .checkpoint_block_number
                         .zip(chain.checkpoint_block_hash.clone()),
                     max_get_logs_range: chain.max_get_logs_range,
+                    verified: Default::default(),
                 },
             );
         }
@@ -605,12 +618,14 @@ impl EvmRpcRuntime {
             ws_per_customer_limit: (conf.max_concurrency / 4).max(1),
             cooldowns: UpstreamCooldownTracker::default(),
         });
-        runtime.verify_chain_identities().await?;
+        // Only a bad configuration stops the relay. An upstream that is down or is the wrong
+        // chain leaves that chain unserved.
+        runtime.start_verifying().await;
         Ok(Some(runtime))
     }
 
-    async fn verify_chain_identities(&self) -> Result<(), EvmRpcStartError> {
-        for chain in self.chains.values() {
+    async fn verify_chain_identity(&self, chain: &EvmChainRuntime) -> Result<(), EvmRpcStartError> {
+        {
             for upstream_url in &chain.upstream_urls {
                 let response = tokio::time::timeout(
                     self.timeout,
@@ -691,6 +706,81 @@ impl EvmRpcRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Check the identity of every chain not yet verified. A chain whose upstream cannot be
+    /// reached, or answers as a different chain, stays unserved and is reported; the relay
+    /// and its other chains carry on. Returns whether every chain is now verified.
+    async fn verify_unverified_chains(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let checks = self
+            .chains
+            .values()
+            .filter(|chain| !chain.verified.load(Ordering::Relaxed))
+            .map(|chain| async move {
+                match self.verify_chain_identity(chain).await {
+                    Ok(()) => {
+                        chain.verified.store(true, Ordering::Relaxed);
+                        true
+                    }
+                    Err(error) => {
+                        tracing::event!(
+                            tracing::Level::ERROR,
+                            chain = %chain.id,
+                            error = %error,
+                            "EVM RPC chain is NOT being served: its upstream did not pass \
+                             the chain identity check. Requests for it answer unavailable; the check \
+                             is repeated until it passes"
+                        );
+                        false
+                    }
+                }
+            });
+        futures::future::join_all(checks)
+            .await
+            .into_iter()
+            .all(|verified| verified)
+    }
+
+    /// Check every chain's identity in the background, again and again until all pass or the
+    /// relay stops. Startup waits only briefly for the first round, so a healthy upstream is
+    /// verified before the first request and a dead one never holds the relay up.
+    async fn start_verifying(self: &Arc<Self>) {
+        let runtime = Arc::downgrade(self);
+        let (first_round, first_round_done) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut first_round = Some(first_round);
+            loop {
+                let Some(runtime) = runtime.upgrade() else {
+                    return;
+                };
+                let all_verified = runtime.verify_unverified_chains().await;
+                drop(runtime);
+                if let Some(first_round) = first_round.take() {
+                    let _ = first_round.send(());
+                }
+                if all_verified {
+                    return;
+                }
+                tokio::time::sleep(IDENTITY_RETRY).await;
+            }
+        });
+        let _ = tokio::time::timeout(STARTUP_WAIT, first_round_done).await;
+    }
+
+    /// Refuse a request for a chain whose upstream has not proved its identity.
+    fn require_verified(
+        &self,
+        verified: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), RpcRejection> {
+        if verified.load(std::sync::atomic::Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(rpc_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rpc_upstream_unavailable",
+            ))
+        }
     }
 
     async fn verify_ws_identity(
@@ -1854,6 +1944,7 @@ pub(crate) async fn handle_proxy_ws(
         .filter(|runtime| runtime.has_chain(&chain_id))
     {
         let chain = runtime.chains.get(&chain_id).expect("chain checked above");
+        runtime.require_verified(&chain.verified)?;
         let upstream_url = chain
             .upstream_ws_url
             .clone()
@@ -2188,6 +2279,9 @@ async fn proxy_rpc_inner(
     };
     let chain = &runtime.chains[&chain_id];
     let cost = validate_body(runtime, chain, &body)?;
+    runtime
+        .require_verified(&chain.verified)
+        .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
     let correlation = super::json_rpc::request_correlation(&body).map_err(|_| {
         preflight_broadcast_error(
             rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"),
@@ -2478,6 +2572,7 @@ mod tests {
             upstream_ws_url: None,
             checkpoint: None,
             max_get_logs_range: 10,
+            verified: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
 
@@ -3489,7 +3584,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_rejects_wrong_chain_without_leaking_url() {
+    async fn a_wrong_chain_is_not_served_and_its_error_does_not_leak_the_url() {
         let upstream = Router::new().route(
             "/sentinel-api-key",
             routing::post(|| async { Json(json!({"jsonrpc":"2.0","id":1,"result":"0x1"})) }),
@@ -3520,11 +3615,16 @@ mod tests {
             ..EvmRpcConf::default()
         };
         let secret_url = format!("http://{address}/sentinel-api-key");
-        let error = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
+        // The relay starts; the chain is not served.
+        let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
             Some(secret_url.clone())
         })
         .await
-        .unwrap_err();
+        .unwrap()
+        .unwrap();
+        let chain = &runtime.chains["monad-testnet"];
+        assert!(!chain.verified.load(Ordering::Relaxed));
+        let error = runtime.verify_chain_identity(chain).await.unwrap_err();
         let rendered = format!("{error:?} {error}");
         assert!(rendered.contains("reported 1, expected 10143"));
         assert!(!rendered.contains("sentinel-api-key"));
@@ -3532,7 +3632,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_rejects_wrong_websocket_chain_identity() {
+    async fn a_wrong_websocket_chain_identity_is_not_served() {
         let upstream = Router::new().route(
             "/provider-secret",
             routing::post(|body: Bytes| async move {
@@ -3580,13 +3680,18 @@ mod tests {
             }],
             ..EvmRpcConf::default()
         };
-        let error = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| match name {
-            "TEST_HTTP" => Some(format!("http://{address}/provider-secret")),
-            "TEST_WS" => Some(format!("ws://{address}/provider-secret")),
-            _ => None,
-        })
-        .await
-        .unwrap_err();
+        let runtime =
+            EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| match name {
+                "TEST_HTTP" => Some(format!("http://{address}/provider-secret")),
+                "TEST_WS" => Some(format!("ws://{address}/provider-secret")),
+                _ => None,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let chain = &runtime.chains["monad-testnet"];
+        assert!(!chain.verified.load(Ordering::Relaxed));
+        let error = runtime.verify_chain_identity(chain).await.unwrap_err();
         assert!(matches!(
             error,
             EvmRpcStartError::ChainMismatch {
@@ -3595,6 +3700,252 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    const SEPOLIA_CHECKPOINT_HASH: &str =
+        "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6fa9";
+
+    /// A node reporting this chain id and checkpoint block. `forwarded` counts every call
+    /// other than the two identity checks.
+    fn identity_node(
+        chain_id: u64,
+        checkpoint: &'static str,
+        forwarded: Arc<AtomicUsize>,
+    ) -> Router {
+        Router::new().route(
+            "/",
+            routing::post(move |Json(call): Json<Value>| async move {
+                let result = match call["method"].as_str().unwrap() {
+                    "eth_chainId" => json!(format!("0x{chain_id:x}")),
+                    "eth_getBlockByNumber" => json!({ "hash": checkpoint }),
+                    _ => {
+                        forwarded.fetch_add(1, Ordering::SeqCst);
+                        json!("0x7")
+                    }
+                };
+                Json(json!({"jsonrpc": "2.0", "id": call["id"], "result": result}))
+            }),
+        )
+    }
+    fn serve_identity_node(listener: std::net::TcpListener, router: Router) {
+        listener.set_nonblocking(true).unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(router.into_make_service()),
+        );
+    }
+    fn identity_chain(
+        id: &str,
+        chain_id: u64,
+        env: &str,
+        checkpoint: &str,
+    ) -> cashweb_config::EvmRpcChainConf {
+        cashweb_config::EvmRpcChainConf {
+            id: id.to_string(),
+            expected_chain_id: chain_id,
+            upstream_env: env.to_string(),
+            upstream_envs: vec![],
+            upstream_ws_env: None,
+            checkpoint_block_number: Some(0),
+            checkpoint_block_hash: Some(checkpoint.to_string()),
+            max_get_logs_range: 10,
+        }
+    }
+    /// A relay with this proxy and nothing else, and a way to ask it for the height of `chain`.
+    fn identity_relay(runtime: Arc<EvmRpcRuntime>) -> (Router, impl Fn(&str) -> Request<Body>) {
+        let tempdir = TempDir::new("cashweb-registry--evm-startup").unwrap();
+        let registry = Registry::new(
+            Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
+            Arc::new(crate::disabled_chain_adapter::DisabledChainAdapter),
+            Net::Regtest,
+        );
+        let event_bus = registry.event_bus().clone();
+        let auth = Arc::clone(&runtime);
+        let router = RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
+            curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: Some(runtime),
+            bitcoin_proxy: None,
+            solana_proxy: None,
+            spa_dir: None,
+            event_bus,
+        }
+        .into_router();
+        let height = move |chain: &str| {
+            let _keep = &tempdir;
+            let (capability, _) =
+                auth.auth
+                    .issue_capability(Address([7; 20]), chain, now_ms(), 60 * 60 * 1000);
+            Request::post(format!("/chain-rpc/{chain}/cap/{capability}/rpc"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#,
+                ))
+                .unwrap()
+        };
+        (router, height)
+    }
+    async fn identity_error(response: Response) -> Value {
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        serde_json::from_slice::<Value>(&body).unwrap()["error"].clone()
+    }
+
+    #[tokio::test]
+    async fn an_upstream_down_at_startup_leaves_only_its_chain_unserved_until_it_answers() {
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let up = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_url = format!("http://{}", up.local_addr().unwrap());
+        serve_identity_node(
+            up,
+            identity_node(11_155_111, SEPOLIA_CHECKPOINT_HASH, Arc::clone(&forwarded)),
+        );
+        // Nothing listens at the Monad upstream yet.
+        let down = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let down_address = down.local_addr().unwrap();
+        drop(down);
+        let down_url = format!("http://{down_address}");
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![
+                identity_chain(
+                    "ethereum-sepolia",
+                    11_155_111,
+                    "UP",
+                    SEPOLIA_CHECKPOINT_HASH,
+                ),
+                identity_chain("monad-testnet", 10_143, "DOWN", TEST_CHECKPOINT_HASH),
+            ],
+            ..EvmRpcConf::default()
+        };
+        // The relay starts.
+        let runtime = EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |name| {
+            Some(if name == "UP" {
+                up_url.clone()
+            } else {
+                down_url.clone()
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let (router, height) = identity_relay(runtime);
+        // The chain whose upstream answers is served; the other answers unavailable.
+        let served = router
+            .clone()
+            .oneshot(height("ethereum-sepolia"))
+            .await
+            .unwrap();
+        assert_eq!(served.status(), StatusCode::OK);
+        let unserved = router
+            .clone()
+            .oneshot(height("monad-testnet"))
+            .await
+            .unwrap();
+        assert_eq!(unserved.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(identity_error(unserved).await, "rpc_upstream_unavailable");
+        assert_eq!(forwarded.load(Ordering::SeqCst), 1);
+
+        // Its upstream comes up; the repeated check finds it and the chain is served.
+        serve_identity_node(
+            std::net::TcpListener::bind(down_address).unwrap(),
+            identity_node(10_143, TEST_CHECKPOINT_HASH, Arc::clone(&forwarded)),
+        );
+        let mut status = StatusCode::SERVICE_UNAVAILABLE;
+        for _ in 0..100 {
+            status = router
+                .clone()
+                .oneshot(height("monad-testnet"))
+                .await
+                .unwrap()
+                .status();
+            if status == StatusCode::OK {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_upstream_that_is_another_chain_is_never_forwarded_to() {
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        // The upstream answers, as Sepolia, where Monad testnet is configured.
+        serve_identity_node(
+            listener,
+            identity_node(11_155_111, SEPOLIA_CHECKPOINT_HASH, Arc::clone(&forwarded)),
+        );
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![identity_chain(
+                "monad-testnet",
+                10_143,
+                "URL",
+                TEST_CHECKPOINT_HASH,
+            )],
+            ..EvmRpcConf::default()
+        };
+        let runtime =
+            EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| Some(url.clone()))
+                .await
+                .unwrap()
+                .unwrap();
+        let (router, height) = identity_relay(runtime);
+        // Refused now, and still refused after the check has been repeated several times.
+        for _ in 0..2 {
+            let refused = router
+                .clone()
+                .oneshot(height("monad-testnet"))
+                .await
+                .unwrap();
+            assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(identity_error(refused).await, "rpc_upstream_unavailable");
+            tokio::time::sleep(IDENTITY_RETRY * 5).await;
+        }
+        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
+    }
+
+    /// A node that accepts the connection and never answers does not hold startup: the relay
+    /// is up after the short startup wait, with that chain unserved.
+    #[tokio::test]
+    async fn an_upstream_that_never_answers_does_not_hold_startup() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        serve_identity_node(
+            listener,
+            Router::new().route(
+                "/",
+                routing::post(|| async {
+                    futures::future::pending::<()>().await;
+                }),
+            ),
+        );
+        let conf = EvmRpcConf {
+            enabled: true,
+            chains: vec![identity_chain(
+                "monad-testnet",
+                10_143,
+                "URL",
+                TEST_CHECKPOINT_HASH,
+            )],
+            ..EvmRpcConf::default()
+        };
+        let started = std::time::Instant::now();
+        let runtime =
+            EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| Some(url.clone()))
+                .await
+                .unwrap()
+                .unwrap();
+        // The proxy's own upstream timeout is 15 seconds; startup did not wait for it.
+        assert!(started.elapsed() < STARTUP_WAIT + Duration::from_secs(1));
+        assert!(!runtime.chains["monad-testnet"]
+            .verified
+            .load(Ordering::Relaxed));
     }
 
     #[tokio::test]

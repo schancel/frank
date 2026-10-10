@@ -297,25 +297,6 @@ impl Registry {
         &self.canonical_dm
     }
 
-    pub(crate) fn claim_canonical_dm(
-        &self,
-        input: crate::monad_outbox::financial::CanonicalPaymentInput,
-        now: i64,
-        config: &crate::monad_outbox::MonadOutboxReconcileConfig,
-    ) -> crate::http::monad_message_cbor::Result<crate::store::monad_dm_cbor::Claim> {
-        use crate::http::monad_message_cbor::CanonicalError;
-        let _gate = self
-            .financial_admission
-            .lock()
-            .map_err(|_| CanonicalError::Unavailable)?;
-        let external = self
-            .db
-            .monad_outbox()
-            .admission_usage(input.recipient()?, &config.limits)
-            .map_err(|_| CanonicalError::Unavailable);
-        self.canonical_dm.claim(input, now, config, external)
-    }
-
     /// Read a signed [`proto::AddressMetadata`] entry from the database.
     /// [`None`] if no such entry exists.
     pub fn get_metadata(

@@ -107,6 +107,9 @@ jest.mock('./topic/TopicDrawer.vue', () => ({ template: '<div />' }))
 jest.mock('./dialogs/ClearHistoryDialog.vue', () => ({ template: '<div />' }))
 jest.mock('./dialogs/DeleteChatDialog.vue', () => ({ template: '<div />' }))
 jest.mock('./chat/ChatListItem.vue', () => ({ template: '<div />' }))
+jest.mock('./chat/MailboxStatusBanner.vue', () => ({
+  template: '<div />',
+}))
 jest.mock('src/utils/avatar', () => ({ profileAvatar: () => '' }))
 
 const locales = { 'en-us': enUS, 'fr-fr': frFR } as const

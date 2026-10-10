@@ -33,6 +33,9 @@ jest.mock('@frank/wallet/chain', () => ({
 jest.mock('./ChatListItem.vue', () => ({
   template: '<div data-testid="chat-item" />',
 }))
+jest.mock('./MailboxStatusBanner.vue', () => ({
+  template: '<div data-testid="mailbox-status" />',
+}))
 
 let mockWidth = 0
 jest.mock('quasar', () => ({
@@ -184,5 +187,29 @@ describe('ChatList compose email action', () => {
     )
     await startConvBtn.trigger('click')
     expect(mockPush).toHaveBeenCalledWith('/add-contact?mode=conversation')
+  })
+})
+
+describe('ChatList mailbox status', () => {
+  it('carries the mailbox status banner, so an unreadable inbox is said where the chats are listed', async () => {
+    mockChatStore.getSortedChatOrder = []
+    mockWidth = 1200
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: {
+        components: {
+          QScrollArea: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QItemLabel: passthrough,
+          QSeparator: passthrough,
+          QSpace: passthrough,
+          QBtn: passthrough,
+        },
+        mocks: { $status: { setup: true }, $t: (k: string) => k },
+      },
+    })
+    expect(wrapper.find('[data-testid="mailbox-status"]').exists()).toBe(true)
   })
 })

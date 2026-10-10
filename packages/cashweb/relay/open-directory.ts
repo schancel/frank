@@ -33,6 +33,7 @@ import type {
   OpenMode,
 } from '@frank/directory-admission'
 import type { DirectoryFetch, DirectoryResponse } from './directory-client'
+import { isLoopbackHostname } from './directory-client'
 import { matchesRelayOrigin } from './canonical-dm-transport'
 
 const MEDIA = 'application/vnd.frank.cbor'
@@ -796,7 +797,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         typeof info.endpoint !== 'string' ||
         // The relay may only describe itself: an entry is never signed for some other host.
         (!['https:', 'http:'].includes(new URL(info.endpoint).protocol) ||
-          (new URL(info.endpoint).protocol === 'http:' && !['127.0.0.1', 'localhost'].includes(new URL(info.endpoint).hostname))) ||
+          (new URL(info.endpoint).protocol === 'http:' && !isLoopbackHostname(new URL(info.endpoint).hostname))) ||
         !matchesRelayOrigin(info.endpoint, origin) ||
         typeof info.relayKey !== 'string' ||
         !directoryAddress(info.relayKey) ||
@@ -1162,17 +1163,13 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
           matchesRelayOrigin(endpoint, bindingEndpoint))
       )
         return true
-      const peerIsLoopback =
-        new URL(normEndpoint).hostname === '127.0.0.1' ||
-        new URL(normEndpoint).hostname === 'localhost'
-      const originIsLoopback =
-        new URL(origin).hostname === '127.0.0.1' ||
-        new URL(origin).hostname === 'localhost'
+      const peerIsLoopback = isLoopbackHostname(new URL(normEndpoint).hostname)
+      const originIsLoopback = isLoopbackHostname(new URL(origin).hostname)
       if (peerIsLoopback && originIsLoopback) return true
       if (peerIsLoopback && bindingEndpoint) {
-        const bindingIsLoopback =
-          new URL(bindingEndpoint).hostname === '127.0.0.1' ||
-          new URL(bindingEndpoint).hostname === 'localhost'
+        const bindingIsLoopback = isLoopbackHostname(
+          new URL(bindingEndpoint).hostname,
+        )
         if (bindingIsLoopback) return true
       }
     } catch {

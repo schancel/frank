@@ -78,6 +78,9 @@ jest.mock('../components/chat/ChatListItem.vue', () => ({
   props: ['chatAddress'],
   template: '<div data-testid="chat-item" />',
 }))
+jest.mock('../components/chat/MailboxStatusBanner.vue', () => ({
+  template: '<div />',
+}))
 jest.mock('../components/chat/ChatListLink.vue', () => ({
   template: '<div />',
 }))

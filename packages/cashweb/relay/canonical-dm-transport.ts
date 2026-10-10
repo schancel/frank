@@ -14,6 +14,7 @@ import {
 } from '@frank/codec'
 import { randomBytes, sha256 } from '@frank/crypto-box'
 import { keccak_256 } from '@noble/hashes/sha3'
+import { isLoopbackHostname } from './directory-client'
 
 export const CANONICAL_DM_MAX_BYTES = 8 * 1024 * 1024
 export const CANONICAL_DM_MAX_STATUS_BYTES = 16 * 1024
@@ -828,8 +829,7 @@ export const defaultCanonicalFetch: CanonicalFetch = (url, input) => {
 export function installedCanonicalOrigin(origin: string): string {
   const parsed = new URL(origin)
   const isLoopback =
-    parsed.protocol === 'http:' &&
-    (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost')
+    parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname)
   if (
     (!isLoopback && parsed.protocol !== 'https:') ||
     parsed.username ||
@@ -852,10 +852,8 @@ export function matchesRelayOrigin(
   try {
     const endUrl = new URL(normEndpoint)
     const origUrl = new URL(normOrigin)
-    const endIsLoopback =
-      endUrl.hostname === '127.0.0.1' || endUrl.hostname === 'localhost'
-    const origIsLoopback =
-      origUrl.hostname === '127.0.0.1' || origUrl.hostname === 'localhost'
+    const endIsLoopback = isLoopbackHostname(endUrl.hostname)
+    const origIsLoopback = isLoopbackHostname(origUrl.hostname)
     if (endIsLoopback && origIsLoopback) return true
     if (endIsLoopback || origIsLoopback) return true
   } catch {

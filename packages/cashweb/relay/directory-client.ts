@@ -17,6 +17,16 @@ import type {
 } from '@frank/directory-admission'
 const MEDIA = 'application/vnd.frank.cbor'
 const LIMIT = 262144
+/** A name for this machine itself: `127.0.0.1`, `localhost` and any `*.localhost` name (which
+ * browsers resolve to the loopback address). The one place plain http is accepted. */
+export function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === '127.0.0.1' ||
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost')
+  )
+}
+
 export interface DirectoryResponse {
   status: number
   url: string
@@ -118,8 +128,7 @@ export function createDirectoryClient(options: DirectoryClientOptions) {
     throw new Error('Exact directory identity required')
   const origin = new URL(endpoint)
   const isLoopback =
-    origin.protocol === 'http:' &&
-    (origin.hostname === '127.0.0.1' || origin.hostname === 'localhost')
+    origin.protocol === 'http:' && isLoopbackHostname(origin.hostname)
   if (
     (!isLoopback && origin.protocol !== 'https:') ||
     origin.username ||

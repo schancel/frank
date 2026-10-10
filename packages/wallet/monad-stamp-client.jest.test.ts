@@ -1579,7 +1579,7 @@ describe('C0 disk-backed exact attempt ownership', () => {
 
 // Canonical consumer fixtures use real native directory admission over signed public evidence.
 // Chain balances/fees are offline stubs; this is not deployed payment/finality proof.
-import { mkdtemp, rm } from 'node:fs/promises'
+import { cp, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openNodeDirectoryStore } from '../directory-admission/src/node'
@@ -1664,9 +1664,17 @@ async function makeCanonicalConsumerFixture(
       journal: EvmNativeOperationJournal,
       material: ReturnType<typeof createMonadWalletMaterial>,
     ) => Promise<void>
+    /** Start from a copy of another fixture's wallet files, as a process restarted on them. */
+    restoreFrom?: string
   } = {},
 ) {
   const location = await mkdtemp(join(tmpdir(), 'canonical-consumer-'))
+  if (options.restoreFrom)
+    await cp(options.restoreFrom, location, {
+      recursive: true,
+      // The directory stores are per process in this fixture and are created fresh below.
+      filter: source => !source.endsWith('-directory'),
+    })
   const material = createMonadWalletMaterial(canonicalTestRoots(0)),
     recipient = createMonadWalletMaterial(canonicalTestRoots(1))
   const publicInput = (
@@ -3651,4 +3659,770 @@ describe('canonical payment observation capture', () => {
       // The closed owner cannot commit a response into a subsequent wallet session.
     })
   }, 20000)
+})
+
+/**
+ * #1236 Stage 1: `submit` does not hold the wallet queue while its relay request is in flight.
+ *
+ * `submit` is three steps: inside the wallet queue it checks the permit and marks the attempt as
+ * being replayed; outside the queue, under the wallet lifetime only, it sends the frozen bytes;
+ * inside the queue again it records an authenticated final answer. Real typed custody, real Level
+ * journals and the real input admission; only the relay's fetch is a stand-in. The fixture's
+ * `exclusive` queue stands where the chain's wallet queue stands.
+ *
+ * Each test says what it reproduces on main (5983ecf6), or that it is a pin: behaviour main already
+ * had that this change must keep. A test that reproduces a main failure does so by a bounded wait
+ * (`soon`): on main the awaited operation queued behind the unanswered request.
+ */
+describe('canonical submit outside the wallet queue (#1236 Stage 1)', () => {
+  type CanonicalFixture = Awaited<
+    ReturnType<typeof makeCanonicalConsumerFixture>
+  >
+  type Promoted = {
+    link: CanonicalWorkflowLink
+    attempt: Awaited<ReturnType<MonadCanonicalStampClient['finishIntent']>>
+  }
+  /** Fails after a bound instead of hanging: on main the operation waited behind the request. */
+  async function soon<T>(pending: Promise<T>, what: string): Promise<T> {
+    let timer!: ReturnType<typeof setTimeout>
+    try {
+      return await Promise.race([
+        pending,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`still waiting after 4 s: ${what}`)),
+            4000,
+          )
+        }),
+      ])
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  /** Signs and promotes message `id`. `links` is every link the workflow holds, as correlation needs. */
+  async function promote(
+    f: CanonicalFixture,
+    links: CanonicalWorkflowLink[],
+    id = 1,
+  ): Promise<Promoted> {
+    f.pool.ensureSize(id)
+    await f.pool.flush()
+    let link!: CanonicalWorkflowLink
+    await f.prepare(id, async durable => {
+      link = durable
+      links.push(durable)
+    })
+    const attempt = await f.client.finishIntent(permit(f, links, link))
+    return { link, attempt }
+  }
+  /** A fresh permit for one attempt, from a correlation of every link. */
+  function permit(
+    f: CanonicalFixture,
+    links: readonly CanonicalWorkflowLink[],
+    link: CanonicalWorkflowLink,
+  ) {
+    const row = f.client
+      .reconcileWorkflowLinks(links)
+      .find(item => item.attemptRef === link.attemptRef)
+    if (!row?.eligibility)
+      throw new Error(`no permit: ${row?.state ?? 'unknown record'}`)
+    return row.eligibility
+  }
+  /** The relay's authenticated answer for one attempt. */
+  function answer(
+    url: string,
+    attempt: Promoted['attempt'],
+    phase: 'delivered' | 'dead' | 'retained',
+  ): Awaited<ReturnType<CanonicalFetch>> {
+    const body = new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        phase,
+        identity: attempt.request.identity,
+        ...(phase === 'delivered' ? { mailbox_committed_at_ms: 7 } : {}),
+        ...(phase === 'dead' ? { reason: 'undeliverable' } : {}),
+      }),
+    )
+    let done = false
+    return {
+      status: phase === 'retained' ? 202 : 200,
+      url,
+      headers: {
+        get: (name: string) =>
+          name === 'content-type' ? 'application/json' : null,
+      },
+      body: {
+        getReader: () => ({
+          read: async () =>
+            done
+              ? { done: true }
+              : ((done = true), { done: false, value: body }),
+          cancel: async () => undefined,
+          releaseLock: () => undefined,
+        }),
+      },
+    } as Awaited<ReturnType<CanonicalFetch>>
+  }
+  /** A relay that takes each request and answers it only when the test says so. */
+  function heldRelay() {
+    const calls: {
+      body: Uint8Array
+      answer: (reply: Awaited<ReturnType<CanonicalFetch>> | Error) => void
+      url: string
+    }[] = []
+    let waiting: (() => void) | undefined
+    const fetch: CanonicalFetch = (url, init) =>
+      new Promise((resolve, reject) => {
+        calls.push({
+          body: new Uint8Array(init.body!),
+          url,
+          answer: reply =>
+            reply instanceof Error ? reject(reply) : resolve(reply),
+        })
+        waiting?.()
+      })
+    return {
+      fetch,
+      calls,
+      /** Resolves once `count` requests have reached the relay. */
+      entered: async (count = 1) => {
+        while (calls.length < count)
+          await new Promise<void>(resolve => (waiting = resolve))
+      },
+    }
+  }
+  /** Attempts the journal currently marks as having a request in flight. Memory only. */
+  const marks = (f: CanonicalFixture) => [
+    ...(f.canonicalJournal as unknown as { replaying: Set<string> }).replaying,
+  ]
+  const row = (f: CanonicalFixture, ref: string) =>
+    f.canonicalJournal.getAll().find(a => a.attemptRef === ref)
+  const turns = async (count = 10) => {
+    for (let i = 0; i < count; i++)
+      await new Promise(resolve => setImmediate(resolve))
+  }
+  /** One delivered round trip, to show a later submit of the same attempt proceeds. */
+  async function deliversNow(
+    f: CanonicalFixture,
+    links: readonly CanonicalWorkflowLink[],
+    p: Promoted,
+  ) {
+    const fetch = jest.fn<ReturnType<CanonicalFetch>, Parameters<CanonicalFetch>>(
+      async url => answer(url, p.attempt, 'delivered'),
+    )
+    const accepted = await soon(
+      f.client.submit(permit(f, links, p.link), { fetch }),
+      'a later submit of the same attempt',
+    )
+    expect(accepted.phase).toBe('delivered')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls[0]![1].body).toEqual(p.attempt.request.body)
+    expect(row(f, p.link.attemptRef)!.terminal).toMatchObject({
+      phase: 'delivered',
+    })
+    expect(marks(f)).toEqual([])
+  }
+
+  // Reproduces F3 on main at the stamp client: with A's request unanswered, another wallet-queue
+  // entry (here: preparing and signing an unrelated message B) waited for the relay. Also contract
+  // row 1.4: B's journal rows change while A is in flight, and A's answer is still recorded for A.
+  it('with a request unanswered the wallet queue is free, step 2 signs, selects and writes nothing, and the answer is recorded for its own attempt', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links, 1)
+      const relay = heldRelay()
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      try {
+        const submitted = f.client.submit(permit(f, links, a.link), {
+          fetch: relay.fetch,
+        })
+        await soon(relay.entered(), "A's request reaching the relay")
+        // Persist before expose: what the relay was handed is what the journal already holds.
+        expect(relay.calls[0].body).toEqual(a.attempt.request.body)
+        expect(row(f, a.link.attemptRef)!.request.body).toEqual(
+          a.attempt.request.body,
+        )
+        expect(marks(f)).toEqual([a.link.attemptRef])
+        // Step 2 is only the request: across many turns nothing is signed, read from the chain,
+        // broadcast or written.
+        const journalBefore = JSON.stringify([
+          f.canonicalJournal.getIntents(),
+          f.canonicalJournal.getAll(),
+        ])
+        const poolBefore = JSON.stringify(f.pool.records())
+        const rpcBefore = f.providerCalls.mock.calls.length
+        await turns()
+        expect(sign).not.toHaveBeenCalled()
+        expect(f.providerCalls.mock.calls.length).toBe(rpcBefore)
+        expect(f.httpClient.submitRawTransaction).not.toHaveBeenCalled()
+        expect(JSON.stringify(f.pool.records())).toBe(poolBefore)
+        expect(
+          JSON.stringify([
+            f.canonicalJournal.getIntents(),
+            f.canonicalJournal.getAll(),
+          ]),
+        ).toBe(journalBefore)
+
+        // The wallet queue is free: an ordinary operation and a whole unrelated message go through.
+        await soon(
+          f.ordinaryOperation(async () => undefined),
+          'an ordinary wallet operation',
+        )
+        const b = await soon(
+          promote(f, links, 2),
+          'preparing and signing an unrelated message',
+        )
+        expect(b.attempt.reservations.map(r => r.index)).not.toEqual(
+          a.attempt.reservations.map(r => r.index),
+        )
+        expect(relay.calls).toHaveLength(1)
+
+        relay.calls[0].answer(answer(relay.calls[0].url, a.attempt, 'delivered'))
+        expect((await submitted).phase).toBe('delivered')
+        expect(row(f, a.link.attemptRef)!.terminal).toMatchObject({
+          phase: 'delivered',
+          identity: a.attempt.request.identity,
+        })
+        expect(row(f, b.link.attemptRef)!.terminal).toBeNull()
+        expect(marks(f)).toEqual([])
+      } finally {
+        sign.mockRestore()
+      }
+    })
+  }, 30000)
+
+  // Contract row 1.2. On main a second submit of the same attempt queued behind the first and,
+  // if the first was only kept, then sent the same bytes again. Now it is refused at step 1 by the
+  // journal's replay mark, at once, and makes no request.
+  it('a second submit of the same attempt while the first is in flight is refused and makes no request', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links)
+      const relay = heldRelay()
+      const first = f.client.submit(permit(f, links, a.link), {
+        fetch: relay.fetch,
+      })
+      await soon(relay.entered(), "A's request reaching the relay")
+      await expect(
+        soon(
+          f.client.submit(permit(f, links, a.link), { fetch: relay.fetch }),
+          'the refusal of a second submit',
+        ),
+      ).rejects.toMatchObject({ code: 'replay' })
+      await turns()
+      expect(relay.calls).toHaveLength(1)
+      // The refusal did not clear the first request's mark.
+      expect(marks(f)).toEqual([a.link.attemptRef])
+      relay.calls[0].answer(answer(relay.calls[0].url, a.attempt, 'retained'))
+      expect((await first).phase).toBe('retained')
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      expect(marks(f)).toEqual([])
+      await deliversNow(f, links, a)
+    })
+  }, 30000)
+
+  // On main two attempts could never be in flight together: B's request was not made until A's
+  // was answered. Now both are in flight at once and each answer lands on its own record, in
+  // whatever order the relay answers.
+  it('two different attempts are in flight at once and each answer is recorded against its own attempt', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links, 1)
+      const b = await promote(f, links, 2)
+      const relay = heldRelay()
+      // Both permits come from one correlation, as the workflow issues them.
+      const permits = f.client.reconcileWorkflowLinks(links)
+      const of = (p: Promoted) =>
+        permits.find(item => item.attemptRef === p.link.attemptRef)!
+          .eligibility!
+      const first = f.client.submit(of(a), { fetch: relay.fetch })
+      const second = f.client.submit(of(b), { fetch: relay.fetch })
+      await soon(relay.entered(2), 'both requests reaching the relay')
+      expect(relay.calls.map(call => call.body)).toEqual([
+        a.attempt.request.body,
+        b.attempt.request.body,
+      ])
+      expect(marks(f).sort()).toEqual(
+        [a.link.attemptRef, b.link.attemptRef].sort(),
+      )
+      // B is answered first, and ended; A afterwards, delivered.
+      relay.calls[1].answer(answer(relay.calls[1].url, b.attempt, 'dead'))
+      expect((await second).phase).toBe('dead')
+      expect(marks(f)).toEqual([a.link.attemptRef])
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      relay.calls[0].answer(answer(relay.calls[0].url, a.attempt, 'delivered'))
+      expect((await first).phase).toBe('delivered')
+      expect(row(f, a.link.attemptRef)!.terminal).toMatchObject({
+        phase: 'delivered',
+        identity: a.attempt.request.identity,
+      })
+      expect(row(f, b.link.attemptRef)!.terminal).toMatchObject({
+        phase: 'dead',
+        reason: 'undeliverable',
+        identity: b.attempt.request.identity,
+      })
+      expect(marks(f)).toEqual([])
+      expect(relay.calls).toHaveLength(2)
+    })
+  }, 30000)
+
+  // Pin (main already refused this in the transport): an answer that echoes another attempt's
+  // identity is not an answer for this request. Nothing is recorded on either record.
+  it('pin: an answer carrying another attempt\'s identity records nothing on either attempt', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links, 1)
+      const b = await promote(f, links, 2)
+      await expect(
+        f.client.submit(permit(f, links, a.link), {
+          fetch: async url => answer(url, b.attempt, 'delivered'),
+        }),
+      ).rejects.toMatchObject({
+        disposition: 'uncertain',
+        message: 'Unmatched canonical accepted status',
+      })
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      expect(row(f, b.link.attemptRef)!.terminal).toBeNull()
+      expect(marks(f)).toEqual([])
+    })
+  }, 30000)
+
+  // A1.1, pins (main cleared the mark in its own `finally`, inside the queue): after a request
+  // that threw or was aborted, the attempt is unresolved, the mark is gone, and the next submit
+  // of the same attempt proceeds.
+  it.each(['thrown', 'aborted'] as const)(
+    'A1.1 pin: after a request that was %s the mark is cleared, nothing is recorded and the next submit proceeds',
+    async mode => {
+      await withCanonicalConsumer(async f => {
+        const links: CanonicalWorkflowLink[] = []
+        const a = await promote(f, links)
+        const relay = heldRelay()
+        const abort = new AbortController()
+        const submitted = f.client.submit(permit(f, links, a.link), {
+          fetch: relay.fetch,
+          signal: abort.signal,
+        })
+        const outcome = submitted.catch((error: Error) => error)
+        await soon(relay.entered(), "A's request reaching the relay")
+        if (mode === 'thrown') relay.calls[0].answer(new Error('socket hang up'))
+        else abort.abort()
+        expect(await outcome).toMatchObject({ disposition: 'uncertain' })
+        expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+        expect(marks(f)).toEqual([])
+        await deliversNow(f, links, a)
+      })
+    },
+    30000,
+  )
+
+  // A1.1 and the "relay never answers" row. Pin of the outcome (main also ended at the deadline);
+  // what is new is that the queue was free for those 60 seconds (first test of this suite). The
+  // transport's own 60 s deadline is fired by hand; nothing else about time is faked.
+  it('A1.1: a relay that never answers leaves the attempt unresolved (not ended) at the transport deadline, clears the mark, and a later submit proceeds', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links)
+      const relay = heldRelay()
+      const realSetTimeout = global.setTimeout
+      let deadline: (() => void) | undefined
+      const timers = jest.spyOn(global, 'setTimeout').mockImplementation(((
+        callback: () => void,
+        ms?: number,
+        ...rest: unknown[]
+      ) => {
+        if (ms !== 60000) return realSetTimeout(callback, ms, ...rest)
+        deadline = callback
+        return realSetTimeout(() => undefined, 0)
+      }) as typeof setTimeout)
+      try {
+        const outcome = f.client
+          .submit(permit(f, links, a.link), { fetch: relay.fetch })
+          .catch((error: Error) => error)
+        await soon(relay.entered(), "A's request reaching the relay")
+        expect(deadline).toBeDefined()
+        await turns()
+        expect(marks(f)).toEqual([a.link.attemptRef])
+        deadline!()
+        expect(await outcome).toMatchObject({
+          disposition: 'uncertain',
+          message: 'Canonical request aborted',
+        })
+      } finally {
+        timers.mockRestore()
+      }
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      expect(f.client.terminalOutcomes()).toHaveLength(0)
+      expect(marks(f)).toEqual([])
+      await deliversNow(f, links, a)
+    })
+  }, 30000)
+
+  // A1.1, refused step 3 (the journal refuses the write without faulting). On main the same
+  // refusal also cleared the mark; pin. The error is the journal's own, and nothing is recorded.
+  it('A1.1 pin: when step 3 is refused the mark is cleared, the error is reported and the next submit proceeds', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links)
+      const refused = new Error('terminal write refused')
+      const record = jest
+        .spyOn(f.canonicalJournal, 'recordTerminal')
+        .mockRejectedValueOnce(refused)
+      await expect(
+        f.client.submit(permit(f, links, a.link), {
+          fetch: async url => answer(url, a.attempt, 'delivered'),
+        }),
+      ).rejects.toBe(refused)
+      expect(record).toHaveBeenCalledTimes(1)
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      expect(marks(f)).toEqual([])
+      record.mockRestore()
+      await deliversNow(f, links, a)
+    })
+  }, 30000)
+
+  // A1.1, step 3 refused because the journal faulted (its durable write reported an error). The
+  // journal drops every mark when it faults and refuses everything until reopened; that is main's
+  // behaviour and stays. On main the caller saw the journal's later "corrupt" refusal thrown from
+  // the cleanup instead of the storage error; now it sees the storage error. After a reopen the
+  // attempt is unresolved and the next submit proceeds.
+  it('A1.1: when the journal faults on the step-3 write the storage error is reported, no mark survives, and after reopen the next submit proceeds', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links)
+      const journal = f.canonicalJournal as unknown as {
+        persist(write: () => Promise<unknown>): Promise<void>
+      }
+      const persist = journal.persist.bind(journal)
+      const failing = jest
+        .spyOn(journal, 'persist')
+        .mockImplementationOnce(() =>
+          persist(async () => {
+            throw new Error('disk failed')
+          }),
+        )
+      await expect(
+        f.client.submit(permit(f, links, a.link), {
+          fetch: async url => answer(url, a.attempt, 'delivered'),
+        }),
+      ).rejects.toThrow('disk failed')
+      failing.mockRestore()
+      expect(marks(f)).toEqual([])
+      expect(() => f.canonicalJournal.getAll()).toThrow('corrupt')
+      await f.reopenOwner()
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      await deliversNow(f, links, a)
+    })
+  }, 30000)
+
+  // A1.2, pin: the whole-journal guard on a permit is unchanged, for signing and for submit. A
+  // permit issued before any journal row changed is refused, and `finishIntent` signs nothing.
+  it('A1.2 pin: finishIntent and submit both still refuse a permit issued before another journal row changed', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links, 1)
+      f.pool.ensureSize(3)
+      await f.pool.flush()
+      let linkB!: CanonicalWorkflowLink
+      await f.prepare(2, async durable => {
+        linkB = durable
+        links.push(durable)
+      })
+      // One correlation issues both permits; then an unrelated third record appears.
+      const stale = f.client.reconcileWorkflowLinks(links)
+      const of = (ref: string) =>
+        stale.find(item => item.attemptRef === ref)!.eligibility!
+      await f.prepare(3, async durable => void links.push(durable))
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      const fetch = jest.fn(async () => {
+        throw new Error('relay must not be contacted')
+      })
+      try {
+        await expect(
+          f.client.finishIntent(of(linkB.attemptRef)),
+        ).rejects.toThrow('canonical-wallet:reconcile-required')
+        await expect(
+          f.client.submit(of(a.link.attemptRef), { fetch }),
+        ).rejects.toThrow('canonical-wallet:reconcile-required')
+        expect(sign).not.toHaveBeenCalled()
+        expect(fetch).not.toHaveBeenCalled()
+        expect(marks(f)).toEqual([])
+      } finally {
+        sign.mockRestore()
+      }
+    })
+  }, 30000)
+
+  // A1.3, pin: step 1 still refuses when a record the workflow has no link for appeared after the
+  // permit was issued. No request, no mark. A fresh correlation then holds the attempt.
+  it('A1.3 pin: step 1 refuses, with no request, when an uncorrelated record appeared after the permit was issued', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links, 1)
+      const issued = permit(f, links, a.link)
+      f.pool.ensureSize(2)
+      await f.pool.flush()
+      // An intent whose link the workflow never kept: an uncorrelated record.
+      await f.prepare(2, async () => undefined)
+      const fetch = jest.fn(async () => {
+        throw new Error('relay must not be contacted')
+      })
+      await expect(f.client.submit(issued, { fetch })).rejects.toThrow(
+        'canonical-wallet:reconcile-required',
+      )
+      expect(fetch).not.toHaveBeenCalled()
+      expect(marks(f)).toEqual([])
+      expect(
+        f.client.reconcileWorkflowLinks(links).map(item => item.state),
+      ).toEqual(['hold', 'hold'])
+    })
+  }, 30000)
+
+  // A1.4. Lifetime shape: one wallet lifetime spans steps 1 to 3, so the owner cannot finish
+  // closing in the gap; a close that begins before step 2 is seen there and no request is made.
+  // On main the request ran inside the queue entry already admitted and was made regardless.
+  it('A1.4: a wallet close between step 1 and step 2 clears the mark and makes no request', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links)
+      const journal = f.canonicalJournal
+      const begin = journal.beginReplay.bind(journal)
+      const end = journal.endReplay.bind(journal)
+      let closing!: Promise<void>
+      const marksAtClose: string[][] = []
+      const marksAfterClear: string[][] = []
+      jest.spyOn(journal, 'beginReplay').mockImplementationOnce(async token => {
+        const marked = await begin(token)
+        // The last act of step 1: the mark is set, and the wallet starts closing.
+        marksAtClose.push(marks(f))
+        closing = f.state.close()
+        return marked
+      })
+      const cleared = jest
+        .spyOn(journal, 'endReplay')
+        .mockImplementation(token => {
+          end(token)
+          marksAfterClear.push(marks(f))
+        })
+      const fetch = jest.fn(async () => {
+        throw new Error('relay must not be contacted')
+      })
+      await expect(
+        f.client.submit(permit(f, links, a.link), { fetch }),
+      ).rejects.toThrow('Monad wallet bundle is closing or closed')
+      expect(fetch).not.toHaveBeenCalled()
+      expect(marksAtClose).toEqual([[a.link.attemptRef]])
+      // Cleared by `endReplay` itself while the journal was still open, not by the close.
+      expect(marksAfterClear).toEqual([[]])
+      expect(cleared.mock.results).toEqual([{ type: 'return', value: undefined }])
+      await closing
+      jest.restoreAllMocks()
+      await f.reopenOwner()
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      await deliversNow(f, links, a)
+    })
+  }, 30000)
+
+  // Contract row 1.3. The wallet closes while the request is in flight: close waits for the
+  // request, the answer that then arrives is dropped (step 3 is refused), nothing is written
+  // after the close began, nothing faults and no rejection goes unhandled. After reopen the same
+  // bytes are replayed once and delivered is recorded then; one signed set throughout. On main
+  // the queue entry already admitted wrote the answer after the close had begun.
+  it('a relay answer that arrives after the wallet began closing is dropped: nothing recorded, no unhandled rejection, mark cleared; reopen replays the same bytes once', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => void unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      await withCanonicalConsumer(async f => {
+        const links: CanonicalWorkflowLink[] = []
+        const a = await promote(f, links)
+        const relay = heldRelay()
+        const record = jest.spyOn(f.canonicalJournal, 'recordTerminal')
+        const journal = f.canonicalJournal
+        const end = journal.endReplay.bind(journal)
+        const marksAfterClear: string[][] = []
+        const cleared = jest
+          .spyOn(journal, 'endReplay')
+          .mockImplementation(token => {
+            end(token)
+            marksAfterClear.push(marks(f))
+          })
+        const sign = jest.spyOn(
+          MonadAccountTxSigner.prototype,
+          'signFrozenUnsigned',
+        )
+        try {
+          const outcome = f.client
+            .submit(permit(f, links, a.link), { fetch: relay.fetch })
+            .catch((error: Error) => error)
+          await soon(relay.entered(), "A's request reaching the relay")
+          let closed = false
+          const closing = f.state.close().then(() => void (closed = true))
+          await turns()
+          // Close waits for the request in flight (bounded by the transport's deadline).
+          expect(closed).toBe(false)
+          relay.calls[0].answer(
+            answer(relay.calls[0].url, a.attempt, 'delivered'),
+          )
+          const error = await outcome
+          expect(error).toBeInstanceOf(Error)
+          expect((error as Error).message).toBe(
+            'Monad wallet bundle is closing or closed',
+          )
+          await closing
+          expect(record).not.toHaveBeenCalled()
+          expect(marksAfterClear).toEqual([[]])
+          expect(cleared.mock.results).toEqual([
+            { type: 'return', value: undefined },
+          ])
+          record.mockRestore()
+          cleared.mockRestore()
+
+          await f.reopenOwner()
+          // Nothing faulted: the reopened owner is valid and holds the same unanswered record.
+          expect(() => f.state.assertSemanticallyValid()).not.toThrow()
+          expect(f.canonicalJournal.getIntents()).toHaveLength(0)
+          expect(f.canonicalJournal.getAll()).toHaveLength(1)
+          expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+          expect(row(f, a.link.attemptRef)!.request.body).toEqual(
+            a.attempt.request.body,
+          )
+          await deliversNow(f, links, a)
+          expect(relay.calls).toHaveLength(1)
+          expect(sign).not.toHaveBeenCalled()
+        } finally {
+          sign.mockRestore()
+        }
+      })
+      await turns()
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  }, 30000)
+
+  // A1.5. While the request is in flight the record is ended locally, or ended, cleaned up and
+  // acknowledged. The relay's later answer is not written over it and nothing faults. On main
+  // neither could happen during a request: both waited in the queue behind it.
+  it.each(['terminal', 'cleaned'] as const)(
+    'A1.5: an answer that arrives after the row is already %s is not written over it and faults nothing',
+    async mode => {
+      await withCanonicalConsumer(async f => {
+        const links: CanonicalWorkflowLink[] = []
+        const a = await promote(f, links)
+        const relay = heldRelay()
+        const submitted = f.client.submit(permit(f, links, a.link), {
+          fetch: relay.fetch,
+        })
+        await soon(relay.entered(), "A's request reaching the relay")
+        await soon(
+          f.client.markAttemptTerminal(a.link.attemptRef),
+          'ending the attempt while its request is in flight',
+        )
+        if (mode === 'cleaned') {
+          await f.client.cleanupTerminal(a.link.attemptRef, a.link.consumerId)
+          await f.client.acknowledgeWorkflow(
+            a.link.attemptRef,
+            a.link.consumerId,
+          )
+          expect(f.client.wasAcknowledged(a.link.attemptRef)).toBe(true)
+        }
+        const before = JSON.stringify(f.canonicalJournal.getAll())
+        const record = jest.spyOn(f.canonicalJournal, 'recordTerminal')
+        relay.calls[0].answer(answer(relay.calls[0].url, a.attempt, 'delivered'))
+        // The relay's answer is handed back as it was given; the journal is the record.
+        expect((await submitted).phase).toBe('delivered')
+        expect(record).not.toHaveBeenCalled()
+        expect(JSON.stringify(f.canonicalJournal.getAll())).toBe(before)
+        if (mode === 'terminal')
+          expect(row(f, a.link.attemptRef)!.terminal).toMatchObject({
+            phase: 'dead',
+            reason: 'attempts_exhausted',
+          })
+        expect(marks(f)).toEqual([])
+        expect(() => f.state.assertSemanticallyValid()).not.toThrow()
+        // Not faulted: the owner still admits ordinary work.
+        await f.ordinaryOperation(async () => undefined)
+      })
+    },
+    30000,
+  )
+
+  // Pin: an attempt the journal holds as ended is never submitted again, neither with a permit
+  // issued before it ended nor through a new correlation, which issues none.
+  it('pin: an ended attempt is never submitted again', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links)
+      const issued = permit(f, links, a.link)
+      const dead = await f.client.submit(permit(f, links, a.link), {
+        fetch: async url => answer(url, a.attempt, 'dead'),
+      })
+      expect(dead.phase).toBe('dead')
+      const fetch = jest.fn(async () => {
+        throw new Error('relay must not be contacted')
+      })
+      await expect(f.client.submit(issued, { fetch })).rejects.toThrow(
+        'canonical-wallet:reconcile-required',
+      )
+      const again = f.client.reconcileWorkflowLinks(links)
+      expect(again).toEqual([
+        { attemptRef: a.link.attemptRef, state: 'terminal' },
+      ])
+      expect(fetch).not.toHaveBeenCalled()
+      expect(marks(f)).toEqual([])
+    })
+  }, 30000)
+
+  // Crash table, "during step 2". The process dies with the request in flight: the files are
+  // copied as they are at that moment and a second wallet is opened on the copy, so nothing of the
+  // first process (its mark, its permit, its pending answer) carries over. The attempt is
+  // unresolved, no mark exists, and the same bytes are replayed once. Pin: main left the same
+  // files at this point.
+  it('crash during the request: reopened from the files as they were, the attempt is unresolved and replayable and the memory-only mark is gone', async () => {
+    await withCanonicalConsumer(async f => {
+      const links: CanonicalWorkflowLink[] = []
+      const a = await promote(f, links)
+      const relay = heldRelay()
+      const outcome = f.client
+        .submit(permit(f, links, a.link), { fetch: relay.fetch })
+        .catch((error: Error) => error)
+      await soon(relay.entered(), "A's request reaching the relay")
+      expect(marks(f)).toEqual([a.link.attemptRef])
+
+      const reopened = await makeCanonicalConsumerFixture({
+        restoreFrom: f.location,
+      })
+      try {
+        expect(marks(reopened)).toEqual([])
+        expect(reopened.canonicalJournal.getIntents()).toHaveLength(0)
+        expect(reopened.canonicalJournal.getAll()).toHaveLength(1)
+        expect(row(reopened, a.link.attemptRef)!.terminal).toBeNull()
+        expect(row(reopened, a.link.attemptRef)!.request.body).toEqual(
+          a.attempt.request.body,
+        )
+        const sign = jest.spyOn(
+          MonadAccountTxSigner.prototype,
+          'signFrozenUnsigned',
+        )
+        try {
+          await deliversNow(reopened, links, a)
+          expect(sign).not.toHaveBeenCalled()
+        } finally {
+          sign.mockRestore()
+        }
+      } finally {
+        await reopened.close()
+      }
+      // The first process never learns anything: its own record is still unanswered.
+      expect(row(f, a.link.attemptRef)!.terminal).toBeNull()
+      relay.calls[0].answer(new Error('process gone'))
+      expect(await outcome).toMatchObject({ disposition: 'uncertain' })
+    })
+  }, 30000)
 })

@@ -43,6 +43,7 @@ export function useSwapHistory() {
             swapStore.getSwapsForChain(chainName, chainIdentifier),
           ),
         saveLocal: (record: SwapRecord) => swapStore.saveLocal(record),
+        noteToSelf: (record: SwapRecord) => swapStore.noteToSelf(record),
         logSwap: (params: Parameters<typeof swapStore.recordSwap>[0]) =>
           swapStore.recordSwap(params),
       }
@@ -77,6 +78,7 @@ export function useSwapHistory() {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
       fallbackSwaps.value = next
     },
+    noteToSelf: async (_record: SwapRecord) => undefined,
     logSwap: async (params: any) => {
       const record: SwapRecord = {
         id:

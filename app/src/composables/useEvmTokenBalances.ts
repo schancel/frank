@@ -1,9 +1,6 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { readTokenBalance } from '@frank/wallet/swap/evm-swap'
-import {
-  evmSwapDeployment,
-  openEvmSwapSession,
-} from 'src/swap/evm-swap-session'
+import { evmSwapVenues, openEvmSwapSession } from 'src/swap/evm-swap-session'
 import { exactTokenAmount, readableTokenAmount } from 'src/swap/amounts'
 
 export interface EvmTokenRow {
@@ -31,7 +28,7 @@ export function useEvmTokenBalances(chainIdentifier: Ref<string | undefined>) {
   async function refresh(): Promise<void> {
     const id = chainIdentifier.value
     const mine = ++generation
-    if (!id || !evmSwapDeployment(id)) {
+    if (!id || evmSwapVenues(id).length === 0) {
       rows.value = []
       status.value = 'none'
       return
@@ -40,12 +37,12 @@ export function useEvmTokenBalances(chainIdentifier: Ref<string | undefined>) {
     try {
       const session = await openEvmSwapSession(id)
       const balances = await Promise.all(
-        session.venue.tokens.map(token =>
+        session.dex.tokens.map(token =>
           readTokenBalance(session.reader, token, session.account),
         ),
       )
       if (mine !== generation) return
-      rows.value = session.venue.tokens.flatMap((token, index) =>
+      rows.value = session.dex.tokens.flatMap((token, index) =>
         token.address === null
           ? []
           : [

@@ -7,7 +7,6 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { getEvmDexDeployment } from '@frank/wallet/chain/dex-deployments'
-import { uniswapV4Venue } from '@frank/wallet/swap/evm-venue'
 import {
   callRevert,
   cannedNode,
@@ -21,25 +20,35 @@ import type { SwapRecord } from '../../stores/swaps'
 
 enableAutoUnmount(afterEach)
 
+// Set by a test that needs a venue configured differently from the registry's.
+let mockVenueOverride: unknown
+
 const deployment = getEvmDexDeployment('monad-testnet')!
 const MON = findToken(deployment, 'MON')!
 const USDC = findToken(deployment, 'USDC')!
 const account = vectors.account
 const E18 = 10n ** 18n
 
-const mockOpen = jest.fn()
+const mockNotes: SwapRecord[] = []
+let mockNoteFails = false
 const mockSaved: SwapRecord[] = []
 let mockStorageFull = false
 const mockHistory = ref<SwapRecord[]>([])
-jest.mock('src/swap/evm-swap-session', () => {
-  class EvmSwapUnavailableError extends Error {
-    constructor(readonly reason: string) {
-      super(reason)
-    }
-  }
+// The composition is real: only the account session (the wallet handle it returns) and the
+// node behind it are stand-ins.
+const mockSession = {
+  state: { status: 'ready', account: { id: 'a' } as unknown, revision: 1 },
+  getWallet: jest.fn(),
+}
+jest.mock('src/accounts/session', () => ({
+  accountSession: mockSession,
+}))
+jest.mock('@frank/wallet/chain/dex-deployments', () => {
+  const actual = jest.requireActual('@frank/wallet/chain/dex-deployments')
   return {
-    EvmSwapUnavailableError,
-    openEvmSwapSession: (...args: unknown[]) => mockOpen(...args),
+    ...actual,
+    getEvmDexDeployment: (chain: string, venueId?: string) =>
+      mockVenueOverride ?? actual.getEvmDexDeployment(chain, venueId),
   }
 })
 jest.mock('src/composables/useSwapHistory', () => ({
@@ -48,6 +57,10 @@ jest.mock('src/composables/useSwapHistory', () => ({
     saveLocal: (record: SwapRecord) => {
       if (mockStorageFull) throw new Error('QuotaExceededError')
       mockSaved.push(JSON.parse(JSON.stringify(record)))
+    },
+    noteToSelf: async (record: SwapRecord) => {
+      if (mockNoteFails) throw new Error('message store unavailable')
+      mockNotes.push(JSON.parse(JSON.stringify(record)))
     },
   }),
 }))
@@ -172,30 +185,33 @@ function scene(
     ),
     reobserveNativeOperations: jest.fn(async () => undefined),
   }
-  let current = true
-  mockOpen.mockResolvedValue({
+  mockVenueOverride = options.feeBps ? venue : undefined
+  mockSession.state = { status: 'ready', account: { id: 'a' }, revision: 1 }
+  const reader = {
+    ...canned.reader,
+    call: (tx: Parameters<typeof canned.reader.call>[0]) =>
+      canned.reader.call(tx),
+    estimateGas: (tx: Parameters<typeof canned.reader.estimateGas>[0]) =>
+      canned.reader.estimateGas(tx),
+    getTransactionReceipt: async (hash: string) => receipts.get(hash) ?? null,
+    getTransaction: async () => ({}),
+  }
+  // The wallet handle, as the account session returns it.
+  mockSession.getWallet.mockResolvedValue({
+    family: 'evm',
     chainIdentifier: 'monad-testnet',
-    venue: uniswapV4Venue(venue),
-    account,
-    reader: {
-      ...canned.reader,
-      call: (tx: Parameters<typeof canned.reader.call>[0]) =>
-        canned.reader.call(tx),
-      estimateGas: (tx: Parameters<typeof canned.reader.estimateGas>[0]) =>
-        canned.reader.estimateGas(tx),
-      getTransactionReceipt: async (hash: string) => receipts.get(hash) ?? null,
-      getTransaction: async () => ({}),
-    },
-    wallet,
-    isCurrent: () => current,
+    evmReader: reader,
+    getReceiveAddress: async () => ({ raw: account }),
+    ...wallet,
   })
   return {
     ...canned,
     wallet,
     receipts,
     events,
+    reader,
     signOut: () => {
-      current = false
+      mockSession.state = { ...mockSession.state, revision: 2 }
     },
   }
 }
@@ -246,7 +262,10 @@ beforeEach(() => {
   mockSaved.length = 0
   mockStorageFull = false
   mockHistory.value = []
-  mockOpen.mockReset()
+  mockNotes.length = 0
+  mockNoteFails = false
+  mockVenueOverride = undefined
+  mockSession.getWallet.mockReset()
 })
 afterEach(() => {
   jest.useRealTimers()
@@ -409,7 +428,7 @@ describe('the swap form', () => {
   })
 
   it('says so when the wallet cannot swap', async () => {
-    mockOpen.mockRejectedValue(new Error('wallet locked'))
+    mockSession.getWallet.mockRejectedValue(new Error('wallet locked'))
     const view = await mountPanel()
     expect(text(view, 'swap-unavailable')).toBe(
       'The swap could not be loaded. Check your connection.',
@@ -772,6 +791,69 @@ describe('how much the form asks of the network', () => {
     await view.get('[data-testid="evm-swap-panel"]').trigger('pointerdown')
     await flushPromises()
     expect(quoterCalls(s)).toBe(1)
+  })
+})
+
+describe('the record of a swap', () => {
+  it('is kept and noted to self when the swap is signed, before it is broadcast, under the transaction’s own id', async () => {
+    const s = scene()
+    s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))
+    const view = await mountPanel()
+    await type(view, '0.05')
+    await click(view, 'swap-review-btn')
+    await click(view, 'swap-confirm-btn')
+    // Saved once before the broadcast; the note carries that same pending record.
+    expect(s.events).toEqual(['broadcast 0xhash1 after 1 saved'])
+    expect(mockNotes).toHaveLength(1)
+    expect(mockNotes[0]).toMatchObject({
+      id: 'swap-0xhash1',
+      status: 'pending',
+      chainIdentifier: 'monad-testnet',
+      txHash: '0xhash1',
+      fromAsset: 'MON',
+      fromAmount: '0.05',
+      toAsset: 'USDC',
+      toAmount: '≥0.049746',
+      route: 'Uniswap v4',
+      feeDisplay: '0.023 MON',
+      recovery: { venueId: 'uniswap-v4', operationId: 'op-1' },
+    })
+  })
+
+  it('gives approvals no record of their own', async () => {
+    const s = scene()
+    for (const hash of ['0xhash1', '0xhash2'])
+      s.receipts.set(hash, receipt({ logs: [] }))
+    s.receipts.set('0xhash3', receipt(vectors.swapTokenIn))
+    const view = await mountPanel()
+    await click(view, 'swap-flip-btn')
+    await type(view, '0.015')
+    await click(view, 'swap-review-btn')
+    await click(view, 'swap-confirm-btn')
+    // Three transactions were sent; the one record is the swap's.
+    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(3)
+    expect(mockNotes).toHaveLength(1)
+    expect(mockNotes[0]).toMatchObject({
+      id: 'swap-0xhash3',
+      fromAsset: 'USDC',
+      toAsset: 'MON',
+    })
+  })
+
+  it('a note that cannot be written neither stops the swap nor sends it twice', async () => {
+    const s = scene()
+    s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))
+    mockNoteFails = true
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    await click(view, 'swap-confirm-btn')
+    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
+    expect(text(view, 'swap-result')).toContain('Swap complete')
+    expect(mockSaved[mockSaved.length - 1]).toMatchObject({
+      id: 'swap-0xhash1',
+      status: 'confirmed',
+    })
   })
 })
 

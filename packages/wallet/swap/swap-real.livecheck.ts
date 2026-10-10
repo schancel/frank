@@ -36,8 +36,7 @@ async function main(): Promise<void> {
   const [fromSymbol, toSymbol, amount, slippage = '100'] = process.argv.slice(2)
   const chainIdentifier = process.env.SWAP_LIVECHECK_CHAIN ?? 'monad-testnet'
   const entry = PROTOCOL_CHAINS[chainIdentifier]
-  if (!entry || entry.network !== 'testnet')
-    throw new Error('This check only runs on a testnet')
+  if (!entry) throw new Error(`Unknown chain ${chainIdentifier}`)
   const url =
     process.env.SWAP_LIVECHECK_RPC_URL ?? process.env.MONAD_TESTNET_HTTP_RPC_URL
   const accountFile = process.env.SWAP_LIVECHECK_ACCOUNT_JSON

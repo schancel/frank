@@ -42,6 +42,7 @@ const clientKeys = new Set([
   "rpcUrls",
   "explorerUrl",
   "contracts",
+  "dex",
   "exchange",
   "wallet",
 ]);

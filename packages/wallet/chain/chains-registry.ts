@@ -5,6 +5,8 @@ import {
   type ProtocolChainFacts,
 } from "./protocol-chain-registry";
 
+import { MONAD_TESTNET_DEX, type EvmDexEntry } from "./dex-entries";
+
 export type SupportedChainFamily = "evm" | "bitcoin" | "solana";
 export type SupportedNetwork = "mainnet" | "testnet" | "regtest";
 export type SupportedChainKind =
@@ -85,6 +87,12 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   readonly rpcUrls?: readonly string[];
   readonly explorerUrl?: string;
   readonly contracts?: ChainContracts;
+  /**
+   * The exchanges this network's wallet can swap on, in order: facts only (addresses, pools,
+   * which adapter speaks to it, enabled or not). An absent or empty list, or only disabled
+   * entries, means no swap on this network. EVM rows only today; see `dex-entries.ts`.
+   */
+  readonly dex?: readonly EvmDexEntry[];
   readonly exchange?: ChainExchangeConfig;
   /** What the app's own wallet does on this network. Absent: nothing, and no address is shown. */
   readonly wallet?: ChainWalletSupport;
@@ -120,6 +128,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "MONT",
       networkTag: "MONT",
       ...deployedContracts("monad-testnet"),
+      dex: MONAD_TESTNET_DEX,
     }),
     "monad-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,

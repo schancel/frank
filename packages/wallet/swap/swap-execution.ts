@@ -42,6 +42,12 @@ export interface SwapWallet {
     data: string
     value: bigint
     gasLimit?: bigint
+    /**
+     * What this call is, for the wallet to record with it. The wallet keeps the record with the
+     * signed transaction before it broadcasts, and writes the note to self that carries it;
+     * the caller never does either.
+     */
+    record?: ContractCallRecord
     onSigned?: (signed: {
       operationId: string
       txHash: string
@@ -65,6 +71,34 @@ export interface SwapWallet {
   /** Contract calls this wallet signed that are not yet seen in a block. */
   getUnresolvedContractCalls?(): { operationId: string; txHash: string }[]
   reobserveNativeOperations?(): Promise<void>
+}
+
+/**
+ * The record a swap's contract send carries. The same fields on every chain family: where, on
+ * which exchange, what goes in, what was quoted and the least that may come out, the fees. The
+ * transaction id is the wallet's to add once it has signed; what the swap then did is read
+ * from the chain by that id and is not part of the record.
+ */
+export interface ContractCallRecord {
+  readonly kind: 'swap'
+  readonly chainIdentifier: string
+  readonly venueId: string
+  readonly account: string
+  readonly assetIn: { symbol: string; address: string | null; decimals: number }
+  readonly amountIn: bigint
+  readonly assetOut: {
+    symbol: string
+    address: string | null
+    decimals: number
+  }
+  readonly quotedAmountOut: bigint
+  readonly minimumAmountOut: bigint
+  /** Frank's fee, in the output asset; zero when the exchange has none. */
+  readonly interfaceFeeAmount: bigint
+  /** The network fee the swap transaction reserves, in the chain's native coin. */
+  readonly networkFeeWei: bigint
+  /** The exchange's own description of the route; needed to read the outcome later. */
+  readonly route: unknown
 }
 
 export type SwapFailure =
@@ -417,6 +451,7 @@ async function send(
   call: EncodedCall,
   gasLimit: bigint,
   onSigned?: (signed: Handle) => Promise<void>,
+  record?: ContractCallRecord,
 ): Promise<Handle> {
   try {
     return await wallet.sendContractCall({
@@ -424,6 +459,7 @@ async function send(
       data: call.data,
       value: call.value,
       gasLimit,
+      ...(record ? { record } : {}),
       onSigned,
     })
   } catch (error) {
@@ -489,6 +525,9 @@ export async function executeSwap(params: {
   account: string
   /** The amount the user confirmed may be moved into the main account first; none by default. */
   consolidateWei?: bigint
+  /** Passed to the wallet with the swap transaction (never with an approval). `networkFeeWei`
+   * is filled in here from the fee the transaction is sent with. */
+  record?: Omit<ContractCallRecord, 'networkFeeWei'>
   onProgress?: (progress: SwapProgress) => void
   onSigned?: (signed: Handle) => Promise<void>
   timing?: SwapTiming
@@ -531,7 +570,15 @@ export async function executeSwap(params: {
 
   const fee = await feeOrRefusal(reader, plan.swap, account)
   onProgress?.({ stage: 'signing' })
-  const handle = await send(wallet, plan.swap, fee.gasLimit, params.onSigned)
+  const handle = await send(
+    wallet,
+    plan.swap,
+    fee.gasLimit,
+    params.onSigned,
+    params.record
+      ? { ...params.record, networkFeeWei: fee.chargedFeeWei }
+      : undefined,
+  )
   onProgress?.({ stage: 'submitted', txHash: handle.txHash })
   const receipt = await settle(reader, wallet, handle, timing)
   await wallet.reobserveNativeOperations?.()

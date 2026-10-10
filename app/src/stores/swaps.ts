@@ -168,6 +168,55 @@ export const useSwapStore = defineStore('swaps', {
       this.swaps = next
     },
 
+    /**
+     * Writes the swap as a typed note among the account's own messages (no text item, so it
+     * is not a chat). Never throws: a note that could not be written is only a note owed.
+     */
+    async noteToSelf(record: SwapRecord): Promise<void> {
+      try {
+        const chats = useChatStore()
+        if (typeof chats?.selfSendMessage !== 'function') return
+        let cborPayload = record.cborPayload
+        if (!cborPayload) {
+          try {
+            cborPayload = toHex(encodeSwapRecord(record))
+          } catch {
+            cborPayload = undefined
+          }
+        }
+        const swapItem: SwapRecordItem = {
+          type: 'swap-record',
+          swapId: record.id,
+          chain: record.chain,
+          fromAsset: record.fromAsset,
+          toAsset: record.toAsset,
+          fromAmount: record.fromAmount,
+          toAmount: record.toAmount,
+          txHash: record.txHash,
+          route: record.route,
+          feeDisplay: record.feeDisplay,
+          destinationAddress: record.destinationAddress,
+          status: record.status,
+          timestamp: record.timestamp,
+          cborPayload,
+        }
+        await chats.selfSendMessage({
+          items: [swapItem],
+          type: 'swap',
+          meta: {
+            swapId: record.id,
+            chain: record.chain,
+            txHash: record.txHash,
+          },
+        })
+      } catch (err) {
+        console.warn(
+          '[useSwapStore] Failed to write the swap note to self:',
+          err,
+        )
+      }
+    },
+
     async recordSwap(
       params: Omit<SwapRecord, 'id' | 'timestamp' | 'status'> & {
         id?: string
@@ -216,40 +265,7 @@ export const useSwapStore = defineStore('swaps', {
       }
       this.saveToStorage()
 
-      // Self-send typed CBOR swap message (NO text item, avoiding chat inbox pollution)
-      try {
-        const chats = useChatStore()
-        if (typeof chats?.selfSendMessage === 'function') {
-          const swapItem: SwapRecordItem = {
-            type: 'swap-record',
-            swapId: record.id,
-            chain: record.chain,
-            fromAsset: record.fromAsset,
-            toAsset: record.toAsset,
-            fromAmount: record.fromAmount,
-            toAmount: record.toAmount,
-            txHash: record.txHash,
-            route: record.route,
-            feeDisplay: record.feeDisplay,
-            destinationAddress: record.destinationAddress,
-            status: record.status,
-            timestamp: record.timestamp,
-            cborPayload: record.cborPayload,
-          }
-
-          await chats.selfSendMessage({
-            items: [swapItem],
-            type: 'swap',
-            meta: {
-              swapId: record.id,
-              chain: record.chain,
-              txHash: record.txHash,
-            },
-          })
-        }
-      } catch (err) {
-        console.warn('[useSwapStore] Failed to self-send typed CBOR swap:', err)
-      }
+      await this.noteToSelf(record)
 
       return record
     },

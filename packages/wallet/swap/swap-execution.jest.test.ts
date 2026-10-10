@@ -15,6 +15,7 @@ import {
   type SwapWallet,
 } from './swap-execution'
 import { findToken, poolId, routesFor } from './uniswap-v4'
+import { UniswapV4Dex } from './uniswap-v4-dex'
 import {
   callRevert,
   cannedNode,
@@ -578,6 +579,74 @@ describe('what the whole swap costs', () => {
       feeWei: 600_000n,
       totalFeeWei: 1_821_000n,
     })
+  })
+})
+
+describe('the exchange adapter and the wallet it is given', () => {
+  it('quotes, plans and sends through the narrow wallet, and hands the record to the contract send of the swap only', async () => {
+    const s = setup()
+    for (const hash of ['0xhash1', '0xhash2'])
+      s.receipts.set(hash, receiptOf({ logs: [] }))
+    s.receipts.set('0xhash3', receiptOf(vectors.swapTokenIn))
+    const dex = new UniswapV4Dex('monad-testnet', deployment, {
+      reader: s.reader,
+      ...s.wallet,
+    })
+    expect(dex.entry.id).toBe('uniswap-v4')
+    expect(dex.tokens).toBe(deployment.tokens)
+    const quote = await dex.quote({
+      tokenIn: USDC,
+      tokenOut: MON,
+      amountIn: 1_000n,
+    })
+    const plan = await dex.plan({ quote, slippageBps: 100, account })
+    const result = await dex.execute({ plan, account, timing })
+    expect(result.status).toBe('confirmed')
+    const records = s.wallet.sendContractCall.mock.calls.map(
+      ([params]) => (params as { record?: unknown }).record,
+    )
+    expect(records.slice(0, 2)).toEqual([undefined, undefined])
+    expect(records[2]).toEqual({
+      kind: 'swap',
+      chainIdentifier: 'monad-testnet',
+      venueId: 'uniswap-v4',
+      account,
+      assetIn: { symbol: 'USDC', address: USDC.address, decimals: 6 },
+      amountIn: 1_000n,
+      assetOut: { symbol: 'MON', address: null, decimals: 18 },
+      quotedAmountOut: quote.amountOut,
+      minimumAmountOut: plan.minimumAmountOut,
+      interfaceFeeAmount: 0n,
+      // What the swap transaction reserves: 230,000 gas at the price charged.
+      networkFeeWei: 230_000n * 100n * 10n ** 9n,
+      route: quote.route,
+    })
+  })
+
+  it('finishes a recorded swap from its stored route and call, and refuses a route that is not its own', async () => {
+    const s = setup()
+    s.receipts.set('0xhash7', receiptOf(vectors.swapNativeIn))
+    const dex = new UniswapV4Dex('monad-testnet', deployment, {
+      reader: s.reader,
+      ...s.wallet,
+    })
+    const plan = await s.plan('native-in')
+    const stored = {
+      transactionId: '0xhash7',
+      operationId: 'op-7',
+      account,
+      // As it comes back from storage: plain JSON.
+      route: JSON.parse(JSON.stringify(plan.quote.route)),
+      call: { to: plan.swap.to, data: plan.swap.data, value: '1000' },
+      timing,
+    }
+    expect(await dex.reconcile(stored)).toMatchObject({
+      status: 'confirmed',
+      amountOut: 19_996n,
+    })
+    expect(() =>
+      dex.reconcile({ ...stored, route: { pool: 'other' } }),
+    ).toThrow(/does not belong/)
   })
 })
 

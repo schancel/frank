@@ -26,18 +26,10 @@ import { getEvmDexDeployment } from '../chain/dex-deployments'
 import { createEvmChain } from '../chain/monad-chain'
 import { registerMonadIdentity } from '../monad-identity'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
-import {
-  estimateCallFee,
-  fetchSwapQuote,
-  planSwap,
-  readTokenBalances,
-} from './evm-swap'
-import {
-  consolidationNeeded,
-  executeSwap,
-  type SwapWallet,
-} from './swap-execution'
+import { readTokenBalances } from './evm-swap'
+import type { SwapWallet } from './swap-execution'
 import { findToken } from './uniswap-v4'
+import { UniswapV4Dex } from './uniswap-v4-dex'
 
 const PURPOSES = [
   'evm-wallet',
@@ -83,7 +75,8 @@ async function main(): Promise<void> {
       'Set SWAP_LIVECHECK_RELAY_URL and SWAP_LIVECHECK_WALLET_DIR',
     )
   const [fromSymbol, toSymbol, amount, slippage = '100'] = process.argv.slice(2)
-  const deployment = getEvmDexDeployment('monad-testnet')!
+  const chainIdentifier = 'monad-testnet'
+  const deployment = getEvmDexDeployment(chainIdentifier)!
   const wallet = (await createEvmChain({
     networkId: 'monad-testnet',
     chainIdentifier: 'monad-testnet',
@@ -143,33 +136,40 @@ async function main(): Promise<void> {
       sendContractCall: params => wallet.sendContractCall!(params),
       getContractCallFunds: () => wallet.getContractCallFunds!(),
       fundMainAccount: params => wallet.fundMainAccount!(params),
+      estimateLegacyFee: params => wallet.estimateLegacyFee!(params),
       resumeLegacySend: id => wallet.resumeLegacySend!(id),
       resumeNativeOperation: id => wallet.resumeNativeOperation!(id),
       getUnresolvedContractCalls: () => wallet.getUnresolvedContractCalls!(),
       reobserveNativeOperations: () => wallet.reobserveNativeOperations!(),
     }
-    const quote = await fetchSwapQuote(reader, deployment, {
+    // The adapter class, given the wallet as its narrow interface, as the app composes it.
+    const dex = new UniswapV4Dex(chainIdentifier, deployment, {
+      reader,
+      ...swapWallet,
+      sendContractCall: ({ record, ...call }) => {
+        if (record)
+          console.log(
+            `record handed to the contract send: ${JSON.stringify(
+              record,
+              (_k, v) => (typeof v === 'bigint' ? v.toString() : v),
+            )}`,
+          )
+        return swapWallet.sendContractCall(call)
+      },
+    })
+    const quote = await dex.quote({
       tokenIn,
       tokenOut,
       amountIn: parseUnits(amount, tokenIn.decimals),
     })
-    const plan = await planSwap(reader, deployment, {
+    const plan = await dex.plan({
       quote,
       slippageBps: Number(slippage),
       account,
     })
-    const swapFee =
-      plan.approvals.length === 0
-        ? await estimateCallFee(reader, plan.swap, account).catch(
-            () => undefined,
-          )
-        : undefined
-    const need = await consolidationNeeded({
-      reader,
-      wallet: swapWallet,
-      plan,
-      swapFee,
-    })
+    const first = await dex.cost({ plan, account })
+    const need = await dex.consolidation({ plan, swapFee: first.swapFee })
+    const cost = await dex.cost({ plan, account, moveWei: need.moveWei })
     console.log(
       `quote: ${amount} ${tokenIn.symbol} -> ${formatUnits(
         quote.amountOut,
@@ -180,6 +180,14 @@ async function main(): Promise<void> {
       )}; approvals: ${plan.approvals.map(s => s.kind).join(', ') || 'none'}`,
     )
     console.log(
+      `network fee as the form shows it: ${formatUnits(
+        cost.networkFeeWei,
+        18,
+      )} MON over ${cost.transactions.length} transaction(s), complete ${
+        cost.complete
+      }; swap gas limit ${cost.swapFee?.gasLimit ?? 'n/a'}`,
+    )
+    console.log(
       need.moveWei > 0n
         ? `to be moved into the main account first: ${formatUnits(
             need.moveWei,
@@ -188,18 +196,11 @@ async function main(): Promise<void> {
         : 'the main account can pay by itself: nothing is moved',
     )
     if (!need.possible) throw new Error('The wallet cannot cover this swap')
-    const result = await executeSwap({
-      reader,
-      wallet: swapWallet,
-      deployment,
+    const result = await dex.execute({
       plan,
       account,
       consolidateWei: need.moveWei,
       onProgress: progress => console.log('progress', JSON.stringify(progress)),
-      onSigned: async signed =>
-        console.log(
-          `signed and journaled before broadcast: ${signed.operationId} ${signed.txHash}`,
-        ),
     })
     console.log(
       'result',

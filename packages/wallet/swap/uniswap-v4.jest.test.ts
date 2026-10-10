@@ -5,6 +5,7 @@ import {
   listEvmDexDeploymentChains,
   listEvmSwapVenues,
   MAX_INTERFACE_FEE_BPS,
+  MONAD_TESTNET_DEX,
   NATIVE_CURRENCY,
 } from '../chain/dex-deployments'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
@@ -544,14 +545,16 @@ describe('venues', () => {
     expect(
       listEvmSwapVenues('monad-testnet').map(venue => ({
         id: venue.id,
-        protocol: venue.protocol,
+        adapter: venue.adapter,
+        enabled: venue.enabled,
         displayName: venue.displayName,
         maintainer: venue.maintainer,
       })),
     ).toEqual([
       {
         id: 'uniswap-v4',
-        protocol: 'uniswap-v4',
+        adapter: 'uniswap-v4',
+        enabled: true,
         displayName: 'Uniswap v4',
         maintainer: 'Monad',
       },
@@ -564,6 +567,32 @@ describe('venues', () => {
     expect(getEvmDexDeployment('monad-testnet', 'uniswap-v4')).toBe(deployment)
     expect(getEvmDexDeployment('monad-testnet')).toBe(deployment)
     expect(getEvmDexDeployment('monad-testnet', 'orca')).toBeUndefined()
+  })
+
+  it('is the dex list of the network’s registry row, and of no other row', () => {
+    expect(PROTOCOL_CHAINS['monad-testnet']!.dex).toEqual(MONAD_TESTNET_DEX)
+    for (const [id, entry] of Object.entries(PROTOCOL_CHAINS))
+      if (id !== 'monad-testnet') expect(entry.dex).toBeUndefined()
+  })
+
+  it('does not offer a disabled entry: nothing else decides whether a network has a swap', () => {
+    jest.isolateModules(() => {
+      jest.doMock('../chain/dex-entries', () => {
+        const actual = jest.requireActual('../chain/dex-entries')
+        return {
+          ...actual,
+          MONAD_TESTNET_DEX: [
+            { ...actual.MONAD_TESTNET_DEX[0], enabled: false },
+          ],
+        }
+      })
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const config = require('../chain/dex-deployments')
+      expect(config.listEvmSwapVenues('monad-testnet')).toEqual([])
+      expect(config.getEvmDexDeployment('monad-testnet')).toBeUndefined()
+      expect(config.listEvmDexDeploymentChains()).toEqual([])
+    })
+    jest.dontMock('../chain/dex-entries')
   })
 
   it('charges no interface fee anywhere today', () => {

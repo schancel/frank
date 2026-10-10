@@ -459,7 +459,7 @@ import {
   swapRevertReasonOf,
   SWAP_DEADLINE_SECONDS,
 } from '@frank/wallet/swap/evm-swap'
-import type { EvmVenueQuote } from '@frank/wallet/swap/evm-venue'
+import type { EvmDexQuote } from '@frank/wallet/swap/evm-dex'
 import {
   networkFeeShare,
   SwapRefusedError,
@@ -474,6 +474,7 @@ import {
   EvmSwapUnavailableError,
   openEvmSwapSession,
   type EvmSwapSession,
+  type SignedContractCallRecord,
   type EvmSwapUnavailable,
 } from 'src/swap/evm-swap-session'
 import {
@@ -557,7 +558,7 @@ export default defineComponent({
     const slippageBps = ref(50)
     const customSlippage = ref('')
 
-    const quote = shallowRef<EvmVenueQuote>()
+    const quote = shallowRef<EvmDexQuote>()
     /** The network fee of every transaction the quoted swap needs, as it will be charged. */
     const cost = shallowRef<SwapCost>()
     const fee = computed(() => cost.value?.swapFee)
@@ -569,11 +570,11 @@ export default defineComponent({
     const phase = ref<'form' | 'review' | 'working' | 'done'>('form')
     const reviewing = ref(false)
     const confirming = ref(false)
-    const reviewed = shallowRef<EvmVenueQuote>()
+    const reviewed = shallowRef<EvmDexQuote>()
     const progress = ref<SwapProgress>()
     const outcome = shallowRef<Outcome>()
 
-    const tokens = computed(() => session.value?.venue.tokens ?? [])
+    const tokens = computed(() => session.value?.dex.tokens ?? [])
     const payToken = computed(() => tokens.value[payIndex.value]!)
     const receiveToken = computed(() => tokens.value[receiveIndex.value]!)
     const nativeIndex = computed(() =>
@@ -706,7 +707,7 @@ export default defineComponent({
     })
     /** After the swap: what was actually charged, from the receipts. */
     const paidLine = (
-      q: EvmVenueQuote,
+      q: EvmDexQuote,
       totalFeeWei: bigint,
       nativeDecimals: number,
       result: SwapResult,
@@ -793,7 +794,7 @@ export default defineComponent({
           indices.map(index =>
             readTokenBalance(
               current.reader,
-              current.venue.tokens[index]!,
+              current.dex.tokens[index]!,
               current.account,
             ),
           ),
@@ -816,9 +817,8 @@ export default defineComponent({
       const current = session.value
       if (!current) return
       try {
-        const funds = await current.wallet.getContractCallFunds()
-        if (alive && session.value === current)
-          otherAccounts.value = funds.otherBalance
+        const other = await current.otherAccountsBalance()
+        if (alive && session.value === current) otherAccounts.value = other
       } catch {
         /* Unknown stays at the last known figure. */
       }
@@ -850,7 +850,7 @@ export default defineComponent({
     }
 
     /** Reads a quote for exactly what is typed. Returns it only if it is still the latest. */
-    async function refreshQuote(): Promise<EvmVenueQuote | undefined> {
+    async function refreshQuote(): Promise<EvmDexQuote | undefined> {
       const current = session.value
       const amountIn = amount.value
       const sequence = ++quoteSequence
@@ -870,19 +870,17 @@ export default defineComponent({
       }
       quoteState.value = 'loading'
       try {
-        const next = await current.venue.quote(current.reader, {
+        const next = await current.dex.quote({
           tokenIn: payToken.value,
           tokenOut: receiveToken.value,
           amountIn,
         })
-        const plan = await current.venue.plan(current.reader, {
+        const plan = await current.dex.plan({
           quote: next,
           slippageBps: slippageBps.value,
           account: current.account,
         })
-        const nextCost = await current.venue.cost({
-          reader: current.reader,
-          wallet: current.wallet,
+        const nextCost = await current.dex.cost({
           plan,
           account: current.account,
           moveWei: phase.value === 'review' ? moveWei.value : 0n,
@@ -1001,14 +999,12 @@ export default defineComponent({
         // amount on the review card and confirms it with the swap.
         const current = session.value
         if (!current) return
-        const reviewPlan = await current.venue.plan(current.reader, {
+        const reviewPlan = await current.dex.plan({
           quote: fresh,
           slippageBps: slippageBps.value,
           account: current.account,
         })
-        const need = await current.venue.consolidation({
-          reader: current.reader,
-          wallet: current.wallet,
+        const need = await current.dex.consolidation({
           plan: reviewPlan,
           swapFee: fee.value,
         })
@@ -1021,9 +1017,7 @@ export default defineComponent({
         }
         moveWei.value = need.moveWei
         // With the move known, the total includes its transfer fee as well.
-        cost.value = await current.venue.cost({
-          reader: current.reader,
-          wallet: current.wallet,
+        cost.value = await current.dex.cost({
           plan: reviewPlan,
           account: current.account,
           moveWei: need.moveWei,
@@ -1050,17 +1044,64 @@ export default defineComponent({
       }
     }
 
+    /**
+     * Keeps the record the wallet's contract send was given, once the swap is signed and before
+     * it is broadcast. The record is first kept on this device (if that fails this throws and
+     * the swap is not sent), then a note carrying it is written to the account's own messages.
+     * That note never holds up or repeats the swap: if it fails, only the note is owed.
+     */
+    const signedAt = new Map<string, number>()
+    async function recordSigned(signed: SignedContractCallRecord): Promise<void> {
+      const { record } = signed
+      signedAt.set(signed.transactionId, signed.signedAtMs)
+      const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
+      const pending: SwapRecord = {
+        id: swapRecordId(signed.transactionId),
+        timestamp: signed.signedAtMs,
+        chain: props.walletId,
+        chainIdentifier: record.chainIdentifier,
+        fromAsset: record.assetIn.symbol,
+        toAsset: record.assetOut.symbol,
+        fromAmount: exactTokenAmount(record.amountIn, record.assetIn.decimals),
+        toAmount: `≥${readableTokenAmount(
+          record.minimumAmountOut,
+          record.assetOut.decimals,
+        )}`,
+        txHash: signed.transactionId,
+        route: session.value?.dex.entry.displayName ?? record.venueId,
+        feeDisplay: `${readableTokenAmount(
+          record.networkFeeWei,
+          nativeDecimals,
+        )} ${nativeSymbol.value}`,
+        destinationAddress: record.account,
+        status: 'pending',
+        recovery: {
+          operationId: signed.operationId,
+          venueId: record.venueId,
+          account: record.account,
+          route: record.route,
+          call: signed.call,
+          toDecimals: record.assetOut.decimals,
+        },
+      }
+      history.saveLocal(pending)
+      void Promise.resolve()
+        .then(() => history.noteToSelf(pending))
+        .catch(() => undefined)
+    }
+    /** The same id on every frontend of the account: it is the transaction's. */
+    const swapRecordId = (transactionId: string) => `swap-${transactionId}`
+
     function recordOf(
-      id: string,
       timestamp: number,
-      q: EvmVenueQuote,
+      q: EvmDexQuote,
       minimumOut: bigint,
       result: SwapResult,
       swapCall: { to: string; data: string; value: bigint },
     ): SwapRecord {
       const current = session.value!
       const base = {
-        id,
+        id: swapRecordId(result.txHash),
         timestamp,
         chain: props.walletId,
         chainIdentifier: props.chainIdentifier,
@@ -1068,7 +1109,7 @@ export default defineComponent({
         toAsset: q.tokenOut.symbol,
         fromAmount: exactTokenAmount(q.amountIn, q.tokenIn.decimals),
         txHash: result.txHash,
-        route: current.venue.venue.displayName,
+        route: current.dex.entry.displayName,
         destinationAddress: current.account,
       }
       const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
@@ -1104,7 +1145,7 @@ export default defineComponent({
         status: 'pending',
         recovery: {
           operationId: result.operationId,
-          venueId: current.venue.venue.id,
+          venueId: current.dex.entry.id,
           account: current.account,
           route: q.route,
           call: {
@@ -1117,7 +1158,7 @@ export default defineComponent({
       }
     }
 
-    function outcomeOf(result: SwapResult, q: EvmVenueQuote): Outcome {
+    function outcomeOf(result: SwapResult, q: EvmDexQuote): Outcome {
       const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
       return {
         status: result.status,
@@ -1170,43 +1211,31 @@ export default defineComponent({
           flowProblem.value = { key: 'swap.errorPriceMoved', blocking: false }
           return
         }
-        const plan = await current.venue.plan(current.reader, {
+        const plan = await current.dex.plan({
           quote: q,
           slippageBps: slippageBps.value,
           account: current.account,
         })
-        const id = `swap-${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2, 8)}`
-        const timestamp = Date.now()
         phase.value = 'working'
         progress.value = undefined
-        const result = await current.venue.execute({
-          reader: current.reader,
-          wallet: current.wallet,
+        // The wallet keeps the swap's record (`recordSigned`) once it is signed and before it
+        // is broadcast; if the record cannot be kept, nothing is broadcast.
+        const result = await current.dex.execute({
           plan,
           account: current.account,
           consolidateWei: moveWei.value,
           onProgress: next => {
             progress.value = next
           },
-          // Before broadcast: from here on this swap is in the history, whatever happens. If
-          // the history cannot be written this throws, and the wallet broadcasts nothing.
-          onSigned: async signed => {
-            history.saveLocal(
-              recordOf(
-                id,
-                timestamp,
-                q!,
-                plan.minimumAmountOut,
-                { status: 'pending', ...signed },
-                plan.swap,
-              ),
-            )
-          },
         })
         history.saveLocal(
-          recordOf(id, timestamp, q, plan.minimumAmountOut, result, plan.swap),
+          recordOf(
+            signedAt.get(result.txHash) ?? Date.now(),
+            q,
+            plan.minimumAmountOut,
+            result,
+            plan.swap,
+          ),
         )
         outcome.value = outcomeOf(result, q)
         phase.value = 'done'
@@ -1246,7 +1275,7 @@ export default defineComponent({
           record =>
             record.status === 'pending' &&
             record.recovery &&
-            record.recovery.venueId === current.venue.venue.id &&
+            record.recovery.venueId === current.dex.entry.id &&
             record.chainIdentifier === props.chainIdentifier &&
             record.recovery.account.toLowerCase() ===
               current.account.toLowerCase(),
@@ -1254,20 +1283,12 @@ export default defineComponent({
       for (const record of pending) {
         const recovery = record.recovery!
         try {
-          const result = await current.venue.reconcile({
-            reader: current.reader,
-            wallet: current.wallet,
-            route: recovery.route,
+          const result = await current.dex.reconcile({
+            transactionId: record.txHash,
+            operationId: recovery.operationId,
             account: recovery.account,
-            swap: {
-              to: recovery.call.to,
-              data: recovery.call.data,
-              value: BigInt(recovery.call.value),
-            },
-            handle: {
-              operationId: recovery.operationId,
-              txHash: record.txHash,
-            },
+            route: recovery.route,
+            call: recovery.call,
           })
           if (!alive || result.status === 'pending') continue
           const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
@@ -1296,10 +1317,8 @@ export default defineComponent({
       }
       // A contract call that was signed and never seen in a block (an approval whose broadcast
       // was lost) holds the account until it lands: hand the same bytes to the network again.
-      for (const call of current.wallet.getUnresolvedContractCalls?.() ?? [])
-        await current.wallet
-          .resumeNativeOperation?.(call.operationId)
-          .catch(() => undefined)
+      for (const call of current.unresolvedContractCalls())
+        await current.resumeOperation(call.operationId).catch(() => undefined)
       void refreshBalances()
     }
 
@@ -1308,13 +1327,14 @@ export default defineComponent({
         const opened = await openEvmSwapSession(
           props.chainIdentifier,
           props.venueId,
+          recordSigned,
         )
         if (!alive) return
         session.value = opened
-        const usdc = opened.venue.tokens.findIndex(
+        const usdc = opened.dex.tokens.findIndex(
           token => token.address !== null,
         )
-        payIndex.value = opened.venue.tokens.findIndex(
+        payIndex.value = opened.dex.tokens.findIndex(
           token => token.address === null,
         )
         if (payIndex.value < 0) payIndex.value = 0

@@ -60,7 +60,15 @@
 
 <script lang="ts">
 import { computed, defineComponent, ref, watch } from 'vue'
-import { swapVenuesForWallet } from 'src/swap/venues'
+import { swapVenuesForWallet, type SwapPanels } from 'src/swap/venues'
+import EvmSwapPanel from './EvmSwapPanel.vue'
+import SolanaSwapPanel from './SolanaSwapPanel.vue'
+
+// Which panel serves which adapter. A new exchange protocol adds its panel here.
+const PANELS: SwapPanels = {
+  evm: { 'uniswap-v4': EvmSwapPanel },
+  solana: SolanaSwapPanel,
+}
 
 /**
  * The swap shell. It knows a wallet's venues only through `SwapVenuePresentation` (an id, a
@@ -81,7 +89,7 @@ export default defineComponent({
   },
   setup(props) {
     const venues = computed(() =>
-      swapVenuesForWallet(props.selectedWallet, props.isTestnet),
+      swapVenuesForWallet(props.selectedWallet, props.isTestnet, PANELS),
     )
     const chosenVenueId = ref<string>()
     watch(

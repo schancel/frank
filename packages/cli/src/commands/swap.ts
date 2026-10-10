@@ -66,14 +66,10 @@ export const swapNetwork = {
           ', ',
         )}`,
       )
-    const url =
-      options.rpcUrl ??
-      (chainIdentifier === 'monad-testnet'
-        ? process.env.MONAD_TESTNET_HTTP_RPC_URL
-        : undefined)
+    const url = options.rpcUrl ?? process.env.FRANK_SWAP_RPC_URL
     if (!url)
       throw new Error(
-        'A swap quote is read from the chain: pass --rpc-url (or set MONAD_TESTNET_HTTP_RPC_URL)',
+        'A swap quote is read from the chain: pass --rpc-url (or set FRANK_SWAP_RPC_URL)',
       )
     const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 })
     const { chainId } = await provider.getNetwork()

@@ -17,7 +17,8 @@ jest.mock('src/utils/native-transfer', () => ({
 }))
 const mockExtraVenues: {
   id: string
-  protocol: string
+  adapter: string
+  enabled: boolean
   displayName: string
   maintainer: string
   officialUniswapDeployment: boolean
@@ -175,7 +176,8 @@ describe('the swap shell', () => {
     // A second venue of the same protocol, as configuration would list it.
     mockExtraVenues.push({
       id: 'second',
-      protocol: 'uniswap-v4',
+      adapter: 'uniswap-v4',
+      enabled: true,
       displayName: 'Second venue',
       maintainer: 'Someone',
       officialUniswapDeployment: true,

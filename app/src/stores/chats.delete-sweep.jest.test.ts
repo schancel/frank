@@ -12,7 +12,13 @@ import { createPinia, setActivePinia } from 'pinia'
   hasFocus: () => true,
 }
 
-import { useChatStore, type ChatMessage, type Conversation } from './chats'
+import {
+  setConversationIdSalt as installTestConversationIdSalt,
+  useChatStore,
+  type ChatMessage,
+  type Conversation,
+} from './chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
 import { MessageFundsNotSweptError } from '../utils/sweep-on-delete'
@@ -105,6 +111,10 @@ describe('deleting messages that brought money', () => {
   let deleted: () => string[]
 
   beforeEach(async () => {
+    // A chat can be opened only once the account's conversation-ID salt is installed.
+    installTestConversationIdSalt(
+      testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+    )
     setActivePinia(createPinia())
     mockKept.clear()
     mockSwept.length = 0

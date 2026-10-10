@@ -1365,22 +1365,14 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendsWaitingForPreviousPayment.size).toBe(0)
     })
 
-    it('a stamp the chain fee has risen past is raised to the wallet minimum and the message is sent once more', async () => {
+    it('a stamp the chain fee has risen past is never raised silently: the message fails saying so, and nothing more is tried', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
-      const stamps: Array<bigint | undefined> = []
-      jest
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const send = jest
         .spyOn(activeChain.directMessages, 'send')
         .mockImplementation(async params => {
-          stamps.push(params.stampValue)
-          if (params.stampValue !== undefined && params.stampValue < 5_000n)
-            throw new DirectMessageStampBelowFeeError(params.stampValue, 5_000n)
-          return {
-            payloadDigest: 'raised-digest',
-            stampValueWei: params.stampValue ?? 0n,
-            stampPayments: [],
-            preparationTxHashes: [],
-          }
+          throw new DirectMessageStampBelowFeeError(params.stampValue!, 5_000n)
         })
       await expect(
         chats.sendMessage({
@@ -1389,9 +1381,36 @@ describe('stores/chats.ts (ticket #42)', () => {
           items: [{ type: 'text', text: 'fee moved' }],
           stampValue: 1_000n,
         }),
-      ).resolves.toMatchObject({ state: 'sent' })
-      // Refused once (nothing paid), then sent at the minimum the wallet named.
-      expect(stamps).toEqual([1_000n, 5_000n])
+      ).resolves.toEqual({ state: 'failed', reason: 'stamp-below-fee' })
+      // One try, at the stamp the user saw; never a second at a higher one.
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(send.mock.calls[0]![0].stampValue).toBe(1_000n)
+      const message = chats.chats[RECIPIENT_ADDRESS]?.messages[0]
+      expect(message?.stampValueWei).toBe(1_000n)
+      expect(message?.delivery?.failureReason).toBe('stamp-below-fee')
+
+      // The user's Retry, having read why it failed, sends it at the wallet's minimum now.
+      ;(activeChain.directMessages as { minimumStamp?: unknown }).minimumStamp =
+        jest.fn(async () => 5_000n)
+      send.mockImplementation(async params => ({
+        payloadDigest: 'retried-digest',
+        stampValueWei: params.stampValue ?? 0n,
+        stampPayments: [],
+        preparationTxHashes: [],
+      }))
+      try {
+        await expect(
+          chats.retryOutgoing({
+            wallet,
+            address: RECIPIENT_ADDRESS,
+            payloadDigest: message!.payloadDigest,
+          }),
+        ).resolves.toMatchObject({ state: 'sent' })
+        expect(send.mock.calls[1]![0].stampValue).toBe(5_000n)
+      } finally {
+        delete (activeChain.directMessages as { minimumStamp?: unknown })
+          .minimumStamp
+      }
     })
 
     it('does not make a delivered message look retryable when local persistence fails', async () => {

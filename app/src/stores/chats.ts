@@ -781,6 +781,15 @@ function classifySendFailure(
   if (isInsufficientFundsError(error)) {
     return { reason: 'insufficient-funds' }
   }
+  // The chain's fee rose above the stamp the composer showed when the user sent. The wallet
+  // paid and sent nothing. The app never pays more than was shown: the message fails, saying
+  // so, and sending it again takes the stamp now shown.
+  if (
+    error instanceof DirectMessageStampBelowFeeError ||
+    (error instanceof Error && error.name === 'DirectMessageStampBelowFeeError')
+  ) {
+    return { reason: 'stamp-below-fee' }
+  }
   return {
     reason: isNoResponseError(error) ? 'unreachable' : 'error',
     // Any failure after the payment set was journaled leaves that set on the message.
@@ -2975,6 +2984,21 @@ export const useChatStore = defineStore('chats', {
 
       // 2. Build and send a new payment set.
       if (!stillCurrent()) return { state: 'busy' }
+      // The user's own Retry of a message that failed because the fee had risen above its
+      // stamp: the failure said so, and the retry is sent at the wallet's minimum now. Never
+      // on an automatic retry.
+      if (
+        manual &&
+        !automatic &&
+        message.delivery?.failureReason === 'stamp-below-fee' &&
+        message.stampValueWei !== undefined
+      ) {
+        const minimum = await activeChain.directMessages
+          .minimumStamp?.({ wallet })
+          .catch(() => undefined)
+        if (minimum !== undefined && minimum > message.stampValueWei)
+          message.stampValueWei = minimum
+      }
       await this.setOutgoingState(address, id, 'pending', {})
       if (!stillCurrent()) return { state: 'busy' }
       let ownDigest: string | undefined
@@ -3032,19 +3056,6 @@ export const useChatStore = defineStore('chats', {
         } catch (error) {
           lastSendError = error
           sendsWaitingForPreviousPayment.delete(id)
-          // The chain's fee rose past this stamp between the composer's reading of the minimum
-          // and the send. The wallet paid and sent nothing; the stamp is raised to the minimum
-          // it names, saved on the message, and the send is made once more.
-          if (
-            error instanceof DirectMessageStampBelowFeeError &&
-            ownDigest === undefined &&
-            sendAttempt < maxSendAttempts &&
-            stillCurrent()
-          ) {
-            message.stampValueWei = error.floorWei
-            await this.setOutgoingState(address, id, 'pending', {})
-            continue
-          }
           if (error instanceof MonadStampPendingAttemptError) {
             // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
             // bytes. Without an own set, an earlier attempt is still pending and this message has

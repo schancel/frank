@@ -628,6 +628,8 @@ export default {
       'Les fonds sont insuffisants pour envoyer ce message.',
     reasonRecipientUnregistered:
       "Le destinataire n'est pas enregistré sur ce relais.",
+    reasonStampBelowFee:
+      "Les frais du réseau ont dépassé ce timbre avant l'envoi. Rien n'a été payé. Réessayer l'envoie avec le timbre minimal actuel.",
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:

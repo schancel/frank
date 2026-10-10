@@ -607,6 +607,8 @@ export type OutgoingFailureReason =
   | 'insufficient-funds'
   /** The recipient address has no published directory entry on this relay. */
   | 'recipient-unregistered'
+  /** The chain's fee rose above the stamp the composer showed; nothing was paid. */
+  | 'stamp-below-fee'
   | 'error'
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

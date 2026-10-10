@@ -835,8 +835,9 @@ describe("funding the next message ahead (#1235 Q4)", () => {
       later(FUND_AHEAD_BACKOFF_MIN_MS);
       await fundAhead();
       expect(counts()).toEqual(pass);
-      // The whole pass: the balance, the fee read and the plan's own estimates.
-      expect(pass).toEqual({ rpc: 13, chainHttp: 0 });
+      // The whole pass: the balance, the fee read, the plan's own estimates, and the one
+      // further fee read that decides between a pair and a single account (three requests).
+      expect(pass).toEqual({ rpc: 16, chainHttp: 0 });
     });
 
     it("a transfer the chain has not mined: its bytes are offered again once per wait, with no fee quote, and never on the ticks between", async () => {

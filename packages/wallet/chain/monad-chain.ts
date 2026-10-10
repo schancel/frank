@@ -1,7 +1,10 @@
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
-import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
+import {
+  nativeMemberSuperseded,
+  type EvmNativeSource,
+} from "../storage/evm-native-operation-journal";
 import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
 import {
   EvmInputAdmissionError,
@@ -2715,7 +2718,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     !heldForItsMessage(r.operationId) &&
                     r.members.some(
                       (m) =>
-                        m.signed && m.observation.state !== "included-success"
+                        m.signed &&
+                        m.observation.state !== "included-success" &&
+                        // Its nonce went to another transaction: failed for good, nothing
+                        // left to resolve or retry.
+                        !nativeMemberSuperseded(m)
                     )
                 );
               return row?.members[0]?.signed
@@ -2732,7 +2739,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     !heldForItsMessage(r.operationId) &&
                     r.members.some(
                       (m) =>
-                        m.signed && m.observation.state !== "included-success"
+                        m.signed &&
+                        m.observation.state !== "included-success" &&
+                        // Its nonce went to another transaction: failed for good, nothing
+                        // left to resolve or retry.
+                        !nativeMemberSuperseded(m)
                     )
                 );
               if (rows.length !== 1)
@@ -4367,12 +4378,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 });
                 return runMainAccountExclusive(
                   wallet,
-                  () =>
+                  async () =>
                     pool.prepareStampInventory({
                       mainAccountSigner,
                       provider,
                       stampValueWei: input.stampValueWei,
                       gasReserveWei: feeReserveWei,
+                      minimumPaymentWei: transferFeeNow,
                       onProgress: input.onProgress,
                     }),
                   FUNDING_FROM_MAIN
@@ -4388,6 +4400,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // A stamp is paid from coins the wallet already has. Funded sub-accounts first (a
             // payment from one links nothing), then the main account, then the identity account
             // (spending from it links the identity to that payment on chain).
+            /** What one plain transfer is charged right now: the smallest payment a message
+             * makes. Its own read, so a funding pass does not age a send's fee quote. */
+            const transferFeeNow = async () => {
+              const fee = await provider.getFeeData();
+              return 21_000n * (fee.gasPrice ?? fee.maxFeePerGas ?? 0n);
+            };
+            pool.attachFunderSpacing((address) =>
+              waitForSpendSpacing(provider, address, config.spendSpacingBlocks)
+            );
             const stampPayer = new EvmStampPayer({
               pool,
               provider,
@@ -4473,7 +4494,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     });
                     const preparation = await runMainAccountExclusive(
                       wallet,
-                      () =>
+                      async () =>
                         pool.fundStampInventoryAhead({
                           mainAccountSigner,
                           provider,
@@ -4482,6 +4503,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                           // at the current fee cap. No probe is signed for it.
                           gasReserveWei: stampPaymentFeeReserve,
                           maxValueWei: maxValueAheadWei,
+                          minimumPaymentWei: transferFeeNow,
                         }),
                       FUNDING_FROM_MAIN
                     );

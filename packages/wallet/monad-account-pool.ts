@@ -367,6 +367,13 @@ export class MonadSubAccountPool {
     this.spendReservation = isReserved;
   }
 
+  private funderSpacing?: (address: string) => Promise<void>;
+  /** Composition-attached: resolves when a transfer from `address` is safe under the chain's
+   * spacing rule (`EvmChainConfig.spendSpacingBlocks`). Called before each funding transfer. */
+  attachFunderSpacing(wait: (address: string) => Promise<void>): void {
+    this.funderSpacing = wait;
+  }
+
   /** True while sub-account `index` is not free for a new spender: an operation holds a claim on
    * it (see `claim`), or an attached reservation does (see `attachSpendReservation`). `holder`
    * names a claimant whose own claim does not count against it. */
@@ -1164,6 +1171,11 @@ export class MonadSubAccountPool {
     fundingOverrides?: MonadTxOverrides;
     onProgress?: (progress: StampInventoryPreparationProgress) => void;
     receipt?: FundingReceiptOptions;
+    /** The smallest payment a message will make (the chain's fee for one transfer). When the
+     * smaller account of a pair would hold less than this, a message could never pay from the
+     * pair (it refuses a payment below its own fee), so ONE account is funded with the whole
+     * stamp instead. The split exists to hide amounts, which a floor-sized stamp cannot. */
+    minimumPaymentWei?: () => Promise<bigint>;
     /** The operation this inventory is for. The accounts that pay its stamp are claimed for it
      * (`claim`) the moment they are chosen, the ones being funded included, and are returned as
      * `claimed`: no other operation can take them between their funding and their use. On a
@@ -1221,6 +1233,11 @@ export class MonadSubAccountPool {
     gasReserveWei: bigint | (() => Promise<bigint>);
     /** Upper limit on the combined value of this pass's transfers (fees excluded). */
     maxValueWei: bigint;
+    /** The smallest payment a message will make (the chain's fee for one transfer). When the
+     * smaller account of a pair would hold less than this, a message could never pay from the
+     * pair (it refuses a payment below its own fee), so ONE account is funded with the whole
+     * stamp instead. The split exists to hide amounts, which a floor-sized stamp cannot. */
+    minimumPaymentWei?: () => Promise<bigint>;
     fundingOverrides?: MonadTxOverrides;
     /** The wait for this pass's own receipts. Default: `FUND_AHEAD_RECEIPT_WAIT_MS`. */
     receipt?: FundingReceiptOptions;
@@ -1271,6 +1288,7 @@ export class MonadSubAccountPool {
       provider: Provider;
       stampValueWei: bigint;
       gasReserveWei: bigint;
+      minimumPaymentWei?: () => Promise<bigint>;
       fundingOverrides?: MonadTxOverrides;
       onProgress?: (progress: StampInventoryPreparationProgress) => void;
       receipt?: FundingReceiptOptions;
@@ -1362,6 +1380,11 @@ export class MonadSubAccountPool {
     let capacities =
       existingCapacity > zero
         ? [params.stampValueWei - existingCapacity]
+        : // A pair whose smaller account could not make a payment worth its fee is never
+        // paid from: one account with the whole stamp instead.
+        preferredFirstCapacity <
+          ((await params.minimumPaymentWei?.()) ?? zero)
+        ? [params.stampValueWei]
         : [
             preferredFirstCapacity,
             params.stampValueWei - preferredFirstCapacity,
@@ -2089,6 +2112,9 @@ export class MonadSubAccountPool {
     onSigned?: (signedTx: SignedMonadTx) => void;
   }): Promise<FanOutFundingResult> {
     const fundedValue = params.paymentCapacityWei + params.gasReserveWei;
+    // Two funding transfers in a row come from one account: the chain's spacing rule between
+    // them (Monad reverts the second otherwise) is waited out before each is signed.
+    await this.funderSpacing?.(params.mainAccountSigner.address);
     const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
       params.target.address,
       fundedValue,

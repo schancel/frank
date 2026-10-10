@@ -94,12 +94,17 @@ export const offlineChain = {
   broadcastDown: false,
   relayBroadcasts: true,
   walletBroadcasts: [] as string[],
+  /** The next transaction mined is included and REVERTED: nonce consumed, value not moved. */
+  revertNext: false,
+  reverted: new Set<string>(),
   /** What the node answers for `eth_gasPrice`: what a transfer is charged per gas. Zero by
    * default, so a suite's stamps of a few wei are not below the fee floor; a test of the floor
    * sets it. The fee CAP (2 x base fee 1 + tip 1 = 3) is separate and unchanged. */
   gasPrice: 0n,
   reset() {
     this.gasPrice = 0n
+    this.revertNext = false
+    this.reverted.clear()
     this.mined.clear()
     this.nodeDown = false
     this.broadcastDown = false
@@ -116,8 +121,13 @@ export const offlineChain = {
     // One nonce, one transaction: a second transaction at a used nonce never lands.
     if ([...this.mined.values()].filter(a => a === from).length > tx.nonce)
       throw new Error('nonce too low')
-    mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
-    mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
+    if (this.revertNext) {
+      this.revertNext = false
+      this.reverted.add(tx.hash)
+    } else {
+      mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
+      mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
+    }
     this.mined.set(tx.hash, from)
     return tx.hash
   },
@@ -179,7 +189,7 @@ export function offlineProviderModule() {
             effectiveGasPrice: '0x2',
             logs: [],
             logsBloom: '0x' + '00'.repeat(256),
-            status: '0x1',
+            status: offlineChain.reverted.has(hash) ? '0x0' : '0x1',
             type: '0x2',
           }
         }

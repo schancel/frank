@@ -223,6 +223,14 @@ export interface StoredPayment {
    *   (`rawTx` is empty) and the coin was freed at once.
    */
   state: 'pending' | 'spent' | 'reverted' | 'failed' | 'unsent'
+  /**
+   * Set on a transfer made to finish a payment of this message that the chain mined and
+   * REVERTED (a receipt with status 0; never one merely inferred to have failed): the position
+   * in `payments` of the payment it repeats. Same value, same destination, a coin of its own.
+   * There is at most one for a payment, and it is written here before it is broadcast, so a
+   * payment is never made a third time; a repeat that itself reverts is not repeated.
+   */
+  repays?: number
 }
 
 /**
@@ -576,7 +584,21 @@ const holderOf = (owner: CanonicalMessagingOwner, consumerId: string) =>
 const isPending = (payment: StoredPayment) => payment.state === 'pending'
 /** Delivery or payment is not known to be finished: the resend pass still has work on it. */
 const isUnresolved = (row: StoredMessage) =>
-  row.outcome === undefined || row.payments.some(isPending)
+  row.outcome === undefined ||
+  row.payments.some(isPending) ||
+  owedRepayments(row).length > 0
+/** The payments of a delivered message that the chain reverted and that have not been repeated
+ * yet: positions in `payments`. The message arrived, so its payment is still owed. */
+function owedRepayments(row: StoredMessage): number[] {
+  if (row.outcome !== 'delivered') return []
+  return row.payments.flatMap((payment, index) =>
+    payment.state === 'reverted' &&
+    payment.repays === undefined &&
+    !row.payments.some(other => other.repays === index)
+      ? [index]
+      : [],
+  )
+}
 
 /**
  * What this process is doing with each message, by `consumerId`. Process memory only.
@@ -595,6 +617,7 @@ interface MessageWork {
   busy?: Promise<void>
   submit: Pace
   chain: Pace
+  repay: Pace
   /** When a waiter last made the chain look at this message's payments, and how long the next
    * waiter's look must wait after it. One look serves every waiter. */
   lookedAtMs?: number
@@ -619,6 +642,7 @@ function workOf(owner: CanonicalMessagingOwner, consumerId: string): MessageWork
     work = {
       submit: { passes: 0, next: 1, gap: 0 },
       chain: { passes: 0, next: 1, gap: 0 },
+      repay: { passes: 0, next: 1, gap: 0 },
     }
     map.set(consumerId, work)
   }
@@ -982,6 +1006,57 @@ async function settlePayments(
 }
 
 /**
+ * Finishes the payment of a delivered message whose transfer the chain mined and reverted: one
+ * new transfer of the same value to the same address, from a coin claimed for it now. The row
+ * with the new signed transfer is on stable storage before the transfer is handed to the node;
+ * from then on it is a payment of this message like any other and the resend pass settles it.
+ * When no coin covers it now it stays owed, and a later pass tries again. Never throws.
+ */
+async function repayReverted(
+  owner: CanonicalMessagingOwner,
+  consumerId: string,
+): Promise<void> {
+  const payer = owner.payer()
+  const holder = holderOf(owner, consumerId)
+  for (const index of owedRepayments(owner.messages.get(consumerId)!)) {
+    const reverted = Transaction.from(
+      owner.messages.get(consumerId)!.payments[index].rawTx,
+    )
+    let recorded = false
+    try {
+      const claim = await payer.claim({
+        holder,
+        stampValueWei: reverted.value,
+        whileBusy: busyHolder => {
+          owner.payer()
+          return settleHolder(owner, busyHolder)
+        },
+      })
+      const [signed] = await payer.sign(claim, owner.chainId, () => reverted.to!)
+      if (claim.accounts.length !== 1 || signed === undefined)
+        throw new Error('A repeated payment is one transfer')
+      await owner.messages.put({
+        ...owner.messages.get(consumerId)!,
+        payments: [
+          ...owner.messages.get(consumerId)!.payments,
+          { ...signed, state: 'pending', repays: index },
+        ],
+      })
+      recorded = true
+      await payer.broadcast(signed.rawTx)
+    } catch (error) {
+      // Nothing signed left the wallet unless the row has it; then the row keeps the claim.
+      if (!recorded) payer.release(holder)
+      console.warn(
+        `[monad-canonical-dm] the reverted payment ${reverted.hash} of a delivered message is still owed; it is tried again later:`,
+        error,
+      )
+      return
+    }
+  }
+}
+
+/**
  * One look at the chain, and only the chain, for the one message that holds a coin another
  * operation is waiting for. `holder` is the claim's holder; anything that is not an unsettled
  * message of this wallet is left alone. No relay request is made.
@@ -1090,6 +1165,14 @@ async function resend(
             )
             if (settled !== row) work.chain = { passes: 0, next: 1, gap: 0 }
           }
+          // A delivered message whose payment the chain reverted is still owed that payment.
+          // (Once nothing of it is pending: its claims are then all settled.)
+          if (
+            !owner.messages.get(stored.consumerId)!.payments.some(isPending) &&
+            owedRepayments(owner.messages.get(stored.consumerId)!).length > 0 &&
+            due(work.repay, CHAIN_EVERY, now)
+          )
+            await repayReverted(owner, stored.consumerId)
         } finally {
           work.busy = undefined
           ended()

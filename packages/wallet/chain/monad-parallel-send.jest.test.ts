@@ -844,6 +844,61 @@ describe('parallel paid messages', () => {
     relay.answer = undefined
   })
 
+  it('a payment the chain mined and reverted, of a delivered message, is made once more: same value, same address, recorded before it is broadcast, never a third time', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    offlineChain.revertNext = true
+    const sent = await send(1) // delivered; its payment is mined and reverted
+    const payments = () =>
+      f.chain.directMessages.paymentsOf!({
+        wallet: alice,
+        payloadDigest: sent.payloadDigest,
+      })
+    const first = relayPayments()[0]
+    expect(offlineChain.reverted.has(first.hash!)).toBe(true)
+    offlineChain.walletBroadcasts.length = 0
+    await tick()
+    await tick()
+    // One more transfer, written on the message's own record and then broadcast.
+    expect(payments()).toEqual(['reverted', 'spent'])
+    const repeats = offlineChain.walletBroadcasts
+      .map(raw => Transaction.from(raw))
+      .filter(tx => tx.hash !== first.hash)
+    expect(new Set(repeats.map(tx => tx.hash)).size).toBe(1)
+    expect(repeats[0]).toMatchObject({
+      to: first.to,
+      value: first.value,
+      nonce: first.nonce + 1,
+    })
+    expect(repeats[0].from!.toLowerCase()).toBe(main)
+    // It stays one, over a restart and any number of passes.
+    await reopen()
+    for (let i = 0; i < 6; i++) await tick()
+    expect(payments()).toEqual(['reverted', 'spent'])
+    expect(
+      [...offlineChain.mined.values()].filter(from => from === main),
+    ).toHaveLength(2)
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+  })
+
+  it('a repeated payment that itself reverts is not repeated; a payment only inferred to have failed is never repeated', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    offlineChain.revertNext = true
+    const sent = await send(1)
+    offlineChain.revertNext = true // the repeat reverts too
+    for (let i = 0; i < 8; i++) await tick()
+    expect(
+      f.chain.directMessages.paymentsOf!({
+        wallet: alice,
+        payloadDigest: sent.payloadDigest,
+      }),
+    ).toEqual(['reverted', 'reverted'])
+    expect(
+      [...offlineChain.mined.values()].filter(from => from === main),
+    ).toHaveLength(2)
+  })
+
   it('a dead answer that may follow a broadcast keeps the coins claimed until the chain decides', async () => {
     const [row] = await fundAccounts(1)
     relay.answer = identity => ({

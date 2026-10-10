@@ -555,14 +555,16 @@ describe("FrankBotHost Reliability Features", () => {
         1,
         expect.objectContaining({
           to: mockLocalAddress,
-          value: 500_000_000_000_000_000n,
+          // The account that pays transfers: topped up to 1 MON from 0.05.
+          value: 950_000_000_000_000_000n,
         })
       );
       expect(mockSendTransaction).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
           to: "0x9999999999999999999999999999999999999999",
-          value: 500_000_000_000_000_000n,
+          // The account that pays stamps: topped up to 0.5 MON from 0.02.
+          value: 480_000_000_000_000_000n,
         })
       );
 

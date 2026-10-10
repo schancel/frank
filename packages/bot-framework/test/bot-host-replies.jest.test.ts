@@ -43,6 +43,7 @@ jest.mock("../src/directory-manager", () => ({
 const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
 const mockReconcile = jest.fn();
+const mockTxStatus = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/monad-chain", () => {
@@ -56,6 +57,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
         send: mockSend,
         reconcileAttempts: mockReconcile,
       },
+      nativeTransfers: { getTransactionStatus: mockTxStatus },
       topics: { post: jest.fn() },
       createWallet: jest.fn(async (roots: MonadRootBundle) => {
         const { MonadIdentity } = jest.requireActual<
@@ -134,7 +136,14 @@ describe("FrankBotHost replies", () => {
       items: [{ type: "text", text }],
       payloadDigest: byte.repeat(32),
       stampValueWei: options.stampValueWei,
-      stampPayments: [],
+      // A paid message arrives with the transactions that paid it.
+      stampPayments:
+        typeof options.stampValueWei === "bigint" && options.stampValueWei > 0n
+          ? [
+              { txHash: "0x" + byte.repeat(31) + "a1" },
+              { txHash: "0x" + byte.repeat(31) + "a2" },
+            ]
+          : [],
       receivedTime: 1_700_000_000_000 + sequence,
     };
   };
@@ -214,6 +223,7 @@ describe("FrankBotHost replies", () => {
     mockSend.mockReset().mockImplementation(accept);
     mockFetchSince.mockReset().mockResolvedValue([]);
     mockReconcile.mockReset().mockResolvedValue({});
+    mockTxStatus.mockReset().mockResolvedValue("confirmed");
     stateDir = mkdtempSync(join(tmpdir(), "bot-host-replies-"));
   });
 
@@ -363,7 +373,60 @@ describe("FrankBotHost replies", () => {
       expect(stampsSent()).toEqual([70_000_000_000_000_000n]);
     });
 
-    it("is the relay's minimum for the failure reply of a message whose handling was interrupted: what it paid is not kept", async () => {
+    // The rebuilt relay delivers a message before its payments confirm, and a sender can sign
+    // payments from empty accounts: the amount a delivery states is matched only once every
+    // one of its payment transactions is mined.
+    it.each([
+      ["are still pending", async () => "pending"],
+      ["are unknown to the node", async () => "unknown"],
+      ["failed", async () => "failed"],
+      [
+        "are confirmed in part",
+        async ({ transaction }: { transaction: { txHash: string } }) =>
+          transaction.txHash.endsWith("a1") ? "confirmed" : "pending",
+      ],
+      [
+        "cannot be looked up",
+        async () => {
+          throw new Error("RPC unreachable");
+        },
+      ],
+      ["are not answered for in time", () => new Promise(() => undefined)],
+    ])(
+      "is the relay's minimum, and the reply is still sent at once, when the stated payment's transactions %s",
+      async (_label, status) => {
+        mockTxStatus.mockImplementation(status as never);
+        const { host, instance } = await start(
+          bot("unconfirmed-bot", async () => [{ type: "text", text: "answer" }])
+        );
+        const message = inbound("hello", { stampValueWei: STAMP });
+        await poll(host, [message]);
+        await drain(instance);
+        expect(textsSent()).toEqual(["answer"]);
+        expect(stampsSent()).toEqual([MIN]);
+        expect(mockTxStatus).toHaveBeenCalledWith({
+          wallet: instance.wallet,
+          transaction: { txHash: message.stampPayments[0].txHash },
+        });
+      },
+      10_000
+    );
+
+    it("is the stated amount once every payment transaction is confirmed, and no node is asked about a message that states the minimum or less", async () => {
+      const { host, instance } = await start(
+        bot("confirmed-bot", async () => [{ type: "text", text: "answer" }])
+      );
+      await poll(host, [inbound("paid", { stampValueWei: STAMP })]);
+      await drain(instance);
+      expect(mockTxStatus).toHaveBeenCalledTimes(2);
+      await poll(host, [inbound("minimum", { stampValueWei: MIN })]);
+      await poll(host, [inbound("nothing", { stampValueWei: 0n })]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([STAMP, MIN, MIN]);
+      expect(mockTxStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it("is what the message was confirmed to have paid, also for the failure reply of a message whose handling was interrupted", async () => {
       jest.spyOn(console, "error").mockImplementation(() => {});
       const { host, instance } = await start(bot("cut-bot", async () => {}));
       // The handler ran and the write that finishes its message was lost.
@@ -378,7 +441,9 @@ describe("FrankBotHost replies", () => {
       await poll(host, [message]);
       await drain(instance);
       expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
-      expect(stampsSent()).toEqual([MIN]);
+      expect(stampsSent()).toEqual([STAMP]);
+      // Kept with the row, not looked up again.
+      expect(mockTxStatus).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1154,6 +1219,31 @@ describe("FrankBotHost replies", () => {
       }
     );
 
+    // On 8815aed8 a disk that still could not be written logged "is answering again" on every
+    // poll, because reading the journal back was taken for recovery.
+    it("does not say it is answering while the journal can be read but still not written", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(bot("full-disk-bot", async () => {}));
+      const full = jest
+        .spyOn(LevelBotStateStore.prototype, "durableBatch")
+        .mockRejectedValue(new Error("ENOSPC: no space left on device"));
+      await poll(host, [inbound("one")]);
+      await drain(instance);
+      await poll(host);
+      await poll(host);
+      const said = () => error.mock.calls.map((call) => call.join(" "));
+      expect(said().filter((line) => line.includes("IS NOT ANSWERING"))).toHaveLength(2);
+      expect(said().some((line) => line.includes("is answering"))).toBe(false);
+      expect(instance.operations.isFaulted).toBe(true);
+      // Space is freed: now it says so, once, and serves.
+      full.mockRestore();
+      await poll(host, [inbound("two", { from: otherPeer })]);
+      await drain(instance);
+      expect(said().filter((line) => line.includes("is answering"))).toHaveLength(1);
+      expect(instance.operations.isFaulted).toBe(false);
+    });
+
     it("keeps saying so, by name and at error level, while the journal cannot be read back", async () => {
       const error = jest.spyOn(console, "error").mockImplementation(() => {});
       jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -1233,8 +1323,9 @@ describe("FrankBotHost replies", () => {
       clock += 31_000;
       await poll(host);
       await until(() => sendTransaction.mock.calls.length === 1);
+      // Topped up to 1 MON.
       expect(sendTransaction).toHaveBeenCalledWith(
-        expect.objectContaining({ value: 500_000_000_000_000_000n })
+        expect.objectContaining({ value: 950_000_000_000_000_000n })
       );
       // Its receipt is still awaited: later polls start nothing.
       clock += 31_000;
@@ -1254,6 +1345,73 @@ describe("FrankBotHost replies", () => {
       await until(() => sendTransaction.mock.calls.length === 2);
       confirm();
       await settle(instance);
+    });
+
+    // The reviewer's sequence on 8815aed8: a dice bot at 0.5 MON pays 0.196 twice and holds
+    // 0.108; the third win needs 0.196, and nothing topped the bot up because 0.108 was not
+    // under the old 0.1 threshold. The payout failed until the balance happened to fall.
+    it("keeps the paying balance above what a game can owe: a bot at 0.108 MON is topped up to 1 MON", async () => {
+      let clock = Date.now();
+      jest.spyOn(Date, "now").mockImplementation(() => clock);
+      const sendTransaction = jest.fn(async () => ({ wait: async () => {} }));
+      const { host, balances, instance } = await funded(sendTransaction);
+      balances.bot = 108_000_000_000_000_000n;
+      clock += 31_000;
+      await poll(host);
+      await settle(instance);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 892_000_000_000_000_000n })
+      );
+    });
+
+    it("takes its threshold and target from the host options, and warns at registration about a bot whose largest payout they cannot cover", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir,
+        watchRegistrations: false,
+        fundingPrivateKeyHex: "0x" + "22".repeat(32),
+        topUpBelowWei: 2_000_000_000_000_000_000n,
+        topUpToWei: 3_000_000_000_000_000_000n,
+      });
+      hosts.push(host);
+      const sendTransaction = jest.fn(async () => ({ wait: async () => {} }));
+      (host as any).provider = {
+        getBalance: jest.fn(async (address: string) =>
+          address === "0x1111111111111111111111111111111111111111"
+            ? 50_000_000_000_000_000_000n
+            : 1_500_000_000_000_000_000n
+        ),
+      };
+      (host as any).fundingWallet = {
+        address: "0x1111111111111111111111111111111111111111",
+        sendTransaction,
+      };
+      (host as any).nonceSequencer = {
+        withNonce: (run: (nonce: number) => Promise<unknown>) => run(0),
+      };
+      await host.register(
+        bot("covered-bot", async () => {}, {
+          maxPayoutWei: 2_000_000_000_000_000_000n,
+        })
+      );
+      expect(sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 1_500_000_000_000_000_000n })
+      );
+      const warned = () =>
+        warn.mock.calls.filter(([line]) =>
+          String(line).includes("can owe a single payout")
+        );
+      expect(warned()).toHaveLength(0);
+      await host.register(
+        bot("big-bot", async () => {}, {
+          maxPayoutWei: 2_000_000_000_000_000_001n,
+        })
+      );
+      expect(warned()).toHaveLength(1);
+      expect(warned()[0][0]).toContain('Bot "big-bot"');
+      expect(warned()[0][0]).toContain("FRANK_BOT_TOP_UP_BELOW_WEI");
     });
 
     it("is tried again on a later poll after it failed, as when another bot's top-up took the nonce", async () => {

@@ -316,9 +316,10 @@ describe("several bots on one host", () => {
   // inside the shared sequence.
   it("a payout a bot cannot cover is refused by name and takes nothing from the shared funding wallet", async () => {
     newHost({ fundingPrivateKeyHex: "0x" + "22".repeat(32) });
+    const error = jest.spyOn(console, "error").mockImplementation(() => {});
     const fundingSend = jest.fn();
     (host as any).provider = {
-      getBalance: jest.fn(async () => 200_000_000_000_000_000n),
+      getBalance: jest.fn(async () => 600_000_000_000_000_000n),
       getFeeData: jest.fn(async () => ({ gasPrice: 1n })),
     };
     (host as any).fundingWallet = {
@@ -337,11 +338,19 @@ describe("several bots on one host", () => {
       await expect(pay()).rejects.toMatchObject({
         name: "BotBalanceShortError",
         botId: "payer",
-        balanceWei: 200_000_000_000_000_000n,
+        balanceWei: 600_000_000_000_000_000n,
       });
     expect(fundingSend).not.toHaveBeenCalled();
     expect(own).not.toHaveBeenCalled();
     own.mockRestore();
+    // A handler may swallow the rejection; the host has said it regardless, with the bot, the
+    // recipient and the amount.
+    const said = error.mock.calls.map((call) => call.join(" "));
+    expect(said).toHaveLength(3);
+    for (const line of said) {
+      expect(line).toContain("[payer] TRANSFER FAILED");
+      expect(line).toContain(`${10n ** 21n} wei to ${to}`);
+    }
   });
 
   it("builds a bot's own transactions one at a time, so two payouts never read the same nonce", async () => {

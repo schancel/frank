@@ -42,6 +42,9 @@ export interface InboundDispatch extends InboundIdentity {
   phase: "deferred" | "started";
   /** A reply the handler sent itself reached the wallet's journal. */
   replied?: true;
+  /** Wei the message paid, as far as the host could confirm when it started the handler: what
+   * a reply to it may carry. Absent: nothing, or not confirmed. */
+  paid?: string;
   reply?: StagedReply;
 }
 /** Handling order. The wallet sorts a fetch by time only, so equal times are tied by digest. */
@@ -181,6 +184,7 @@ function validateRow(value: unknown): InboundDispatch {
       "messageId",
       "receivedTime",
       "replied",
+      "paid",
       "reply",
     ]) ||
     r.version !== 2 ||
@@ -196,7 +200,9 @@ function validateRow(value: unknown): InboundDispatch {
     Number(r.receivedTime) < 0 ||
     Number(r.receivedTime) >= Number.MAX_SAFE_INTEGER ||
     (r.replied !== undefined && r.replied !== true) ||
-    (r.phase === "deferred" && (r.replied || r.reply !== undefined))
+    (r.paid !== undefined && !stamp(r.paid)) ||
+    (r.phase === "deferred" &&
+      (r.replied || r.reply !== undefined || r.paid !== undefined))
   )
     return hold();
   if (r.reply !== undefined) {
@@ -339,8 +345,8 @@ export class InboundOperationStore {
     return this.faulted && !this.closed;
   }
   /** After a failed write, what is in memory may not be what is on disk (the write may have
-   * landed). Reads the rows back from disk and, if they read cleanly, serves again from them.
-   * Rejects, still faulted, when the store cannot be read. */
+   * landed). Reads the rows back from disk and, if they read cleanly and the disk takes a write
+   * again, serves from them. Rejects, still faulted, when it cannot be read or written. */
   recover(): Promise<void> {
     const task = this.tail.then(async () => {
       if (this.closed || !this.faulted) return;
@@ -355,6 +361,11 @@ export class InboundOperationStore {
         if (key !== ROW + row.digest) return hold();
         rows.set(row.digest, row);
       }
+      // Reading is not enough: the disk must take a write again before the bot is said to be
+      // answering. The owner marker is rewritten with what it already holds.
+      const marker = await this.state.get(OWNER);
+      if (marker === undefined) return hold();
+      await this.state.durableBatch([{ type: "put", key: OWNER, value: marker }]);
       this.rows.clear();
       for (const [digest, row] of rows) this.rows.set(digest, row);
       this.faulted = false;
@@ -448,10 +459,11 @@ export class InboundOperationStore {
       return "retained";
     });
   }
-  /** True only for the one call that moves the row from deferred to started. Replies to one
+  /** True only for the one call that moves the row from deferred to started. `paidWei` is kept
+   * with the row, in the same write. Replies to one
    * conversation go out in order: a row waits for every earlier unfinished message of its own
    * conversation, and for nothing else. */
-  start(input: InboundIdentity): Promise<boolean> {
+  start(input: InboundIdentity, paidWei = 0n): Promise<boolean> {
     return this.mutate(async () => {
       const existing = this.known(input);
       if (!existing) return hold();
@@ -465,6 +477,7 @@ export class InboundOperationStore {
           return false;
       const row = copy(existing);
       row.phase = "started";
+      if (paidWei > 0n) row.paid = paidWei.toString();
       await this.save(row);
       return true;
     });

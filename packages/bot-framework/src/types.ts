@@ -170,6 +170,9 @@ export interface FrankBotDefinition {
    * ever). People are never limited. Unset: `DEFAULT_MAX_REPLIES_PER_PEER`. The operator's
    * `BotHostOptions.maxRepliesPerPeer` overrides it. */
   readonly maxRepliesPerPeer?: number;
+  /** The largest single transfer this bot can owe from its own account (a game's biggest
+   * payout), in wei. The host warns at registration when its top-up cannot cover it. */
+  readonly maxPayoutWei?: bigint;
   readonly schedules?: BotScheduleDefinition[];
   getProfile(): BotProfile;
   onStart?(ctx: BotContext): Promise<void>;
@@ -204,6 +207,13 @@ export interface BotHostOptions {
   /** How long the host keeps trying to deliver a stored reply before it gives up on it, logs
    * the peer and message at error level and lets that conversation go on. Default: one hour. */
   replyGiveUpMs?: number;
+  /** The account a bot pays transfers from is topped up from the shared funding wallet when it
+   * holds less than `topUpBelowWei` (default 0.5 MON, or `FRANK_BOT_TOP_UP_BELOW_WEI`), up to
+   * `topUpToWei` (default 1 MON, or `FRANK_BOT_TOP_UP_TO_WEI`). Set them so that the threshold
+   * is at least the largest payout a bot on this host can owe. One top-up at a time per bot,
+   * and none for five minutes after one went out. */
+  topUpBelowWei?: bigint;
+  topUpToWei?: bigint;
   /** The longest one relay or wallet call of a bot's poll, or one send of a stored reply, may
    * take before the host stops waiting for it. Default: 30 seconds. */
   callTimeoutMs?: number;

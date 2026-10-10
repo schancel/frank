@@ -53,7 +53,6 @@ import {
 } from "@frank/cashweb/relay/canonical-dm-transport";
 import { installCanonicalDirectory } from "@frank/wallet/chain/monad-chain";
 import {
-  describeSweep,
   startRealStack,
   type RealStack,
   type RealWallet,
@@ -958,15 +957,10 @@ async function main() {
   } finally {
     // The sweep is a plain transfer too: let Monad's three-block spacing pass first.
     await sleep(3000);
-    const swept = await stack.sweep().catch((error) => {
-      say("sweep failed:", error instanceof Error ? error.message : error);
-      return undefined;
-    });
-    if (swept)
-      for (const line of describeSweep(swept, stack.fundingAddress)) say(line);
     const address = stack.fundingAddress;
     const rpcUrl = stack.rpcUrl;
-    await stack.stop();
+    // The harness returns what is left, prints the one funds line, and stops.
+    await stack.finish();
     if (address) {
       const { JsonRpcProvider } = await import("ethers");
       const reader = new JsonRpcProvider(rpcUrl.split(",")[0]);

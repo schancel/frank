@@ -89,6 +89,13 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Port the local relay listens on (127.0.0.1).',
   },
   {
+    name: 'FRANK_DEMO_RELAY_DB_PATH',
+    scope: 'relay',
+    default: '<state dir>/relay/registry.rocksdb',
+    description:
+      'Where the relay keeps its database. Set it to start the relay on a fresh database without touching the one in the state directory (a relay refuses a database written by an earlier build).',
+  },
+  {
     name: 'FRANK_DEMO_NGROK',
     scope: 'launcher',
     default: '0',
@@ -449,6 +456,8 @@ export interface DemoConfig {
   publicRelayUrl?: string
   publicAppUrl?: string
   stateDir: string
+  /** The relay's database, when it is not the one inside the state directory. */
+  relayDbPath?: string
   relayPort: number
   relayUrl: string
   rpcUrl: string
@@ -803,6 +812,7 @@ export function resolveDemoConfig(params: {
     maxStartDrawWei: params.allowDrawFlag ? undefined : BigInt(maxStartDraw),
     funding,
     testWalletJson: merged.FRANK_TEST_WALLET_JSON ? resolve(cwd, merged.FRANK_TEST_WALLET_JSON) : undefined,
+    relayDbPath: merged.FRANK_DEMO_RELAY_DB_PATH ? resolve(cwd, merged.FRANK_DEMO_RELAY_DB_PATH) : undefined,
     cashwebdBin: merged.CASHWEBD_BIN || undefined,
     toolchainEnv: Object.fromEntries(
       TOOLCHAIN_VARS.flatMap(name =>

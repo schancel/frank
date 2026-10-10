@@ -13,6 +13,47 @@ import { JsonRpcProvider, Wallet } from 'ethers'
 
 import { MonadTxSubmitter } from '@frank/wallet/monad-account-tx'
 
+// #703/#778: the canonical bot is an ordinary account on the open directory, composed only from
+// public producer/owner/directory APIs. These tests open real typed wallets through the chain
+// factory and the wallet's own canonical bridge, the shared open directory over real Node
+// admission stores (one independent root per account), and the real producer and opener. The
+// relay's directory routes are the shared fake relay, which verifies signatures with the real
+// codec. A loopback listener stands where the relay's RPC proxy and message routes would be, so
+// any startup or correlation request is counted. No account is funded and nothing is sent, so
+// these stop at "held: no spendable inventory".
+import { statSync } from 'fs'
+import { createServer, type Server } from 'http'
+import type { AddressInfo } from 'net'
+import { Transaction, Wallet as EthersWallet, getBytes } from 'ethers'
+import {
+  cborMap,
+  encodeFrame,
+  paymentCommitment,
+  recipientPayloadDigest,
+  toHex,
+} from '@frank/codec'
+import {
+  directMessageText,
+  openDirectMessage,
+  prepareDirectMessage,
+} from '@frank/cashweb/relay/canonical-dm'
+import type { CanonicalInboxRecord } from '@frank/cashweb/relay/monad-mailbox-client'
+import {
+  createFakeRelay,
+  testAccount,
+  type FakeRelay,
+} from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
+import { createCanonicalMessageRoles } from "@frank/wallet/chain/monad-chain";
+import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
+import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
+import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
+import {
+  loadQwenCanonicalRoots,
+  openQwenCanonicalWallet,
+  openQwenDirectory,
+  publishQwenDirectoryEntry,
+} from './qwen-bot-common'
+
 describe('#703/#778 canonical Qwen composition on the open directory', () => {
   const NETWORK = 'monad-testnet'
   const RELAY = 'https://a.example'

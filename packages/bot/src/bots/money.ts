@@ -652,6 +652,24 @@ export async function feeFloorWei(ctx: BotContext): Promise<bigint> {
   return (await ctx.minimumStampWei?.().catch(() => 0n)) ?? 0n;
 }
 
+/** Kept back from a bank's balance when it works out what it can pay: its own fees. */
+export const BANK_RESERVE_WEI = 20_000_000_000_000_000n; // 0.02 MON
+
+/**
+ * What a bank can pay out right now: what it can spend, less what it has already written down
+ * as owed, less the reserve for its own fees. A table's largest stake or payout is worked out
+ * from this each time the table is stated and again when a bet is accepted: a table never offers
+ * what its bank could not pay. Zero when the balance cannot be read.
+ */
+export async function bankAvailableWei(
+  ctx: BotContext,
+  outbox: Outbox
+): Promise<bigint> {
+  const held = await ctx.getBalance().catch(() => 0n);
+  const spoken = (await outbox.owedWei(ctx)) + BANK_RESERVE_WEI;
+  return held > spoken ? held - spoken : 0n;
+}
+
 /** A table's smallest stake, or a shop's or raffle's price: what was configured, and never less
  * than TWICE the chain's fee floor. The floor moves with the gas price between a bet and its
  * refund or payout; at twice the floor an amount taken now can still be paid back after the

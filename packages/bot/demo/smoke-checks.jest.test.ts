@@ -138,6 +138,8 @@ describe('classifyReply: each bot is judged on what it said', () => {
     expect(classifyReply('blackjack', reply, { ...STUB, blackjackMinWagerWei: minWagerWei }).ok).toBe(true)
   })
 
+  // The table's limit is what the bank has available: the test bank holds 1 MON, keeps 0.02 for
+  // its fees and owes nothing, so a roll pays up to 0.98 MON and a match is played for up to half.
   it('dice: the real bot\'s answer to "help" passes, as a free table with its roll committed and the limit named', async () => {
     const reply = await realReply(new SatoshiDiceBot(), 'help')
     expect(reply.items.map(i => i.type)).toEqual(['dice', 'text'])
@@ -145,7 +147,7 @@ describe('classifyReply: each bot is judged on what it said', () => {
     expect(classifyReply('dice', reply, STUB)).toEqual({
       name: 'dice',
       ok: true,
-      detail: `a free table for roll ${table.rollId.slice(0, 8)}, secret committed, paying up to 0.25 MON a roll`,
+      detail: `a free table for roll ${table.rollId.slice(0, 8)}, secret committed, paying up to 0.98 MON a roll`,
     })
   })
 
@@ -161,7 +163,7 @@ describe('classifyReply: each bot is judged on what it said', () => {
     const rollId = (reply.items[0] as unknown as { rollId: string }).rollId
     const secret = (JSON.parse(h.data.get(`roll:${rollId}`)!) as { secret: string }).secret
     fails(altered(reply, 'dice', i => (i.serverSecret = secret)), 'gives away the secret')
-    fails({ ...reply, items: [reply.items[0]] }, 'does not name the table limit of 0.25 MON')
+    fails({ ...reply, items: [reply.items[0]] }, 'does not name the table limit and how a stake is paid')
     fails(reply, 'does not name the table limit of 0.5 MON', { ...STUB, diceMaxPayoutWei: 500_000_000_000_000_000n })
     fails({ ...reply, stampValueWei: 1n }, 'an offer to play carries no money')
   })
@@ -173,7 +175,7 @@ describe('classifyReply: each bot is judged on what it said', () => {
     expect(classifyReply('rps', reply, STUB)).toEqual({
       name: 'rps',
       ok: true,
-      detail: `a free start of match ${start.matchId.slice(0, 8)}, move committed, stakes up to 0.1 MON`,
+      detail: `a free start of match ${start.matchId.slice(0, 8)}, move committed, stakes up to 0.49 MON`,
     })
   })
 
@@ -187,7 +189,7 @@ describe('classifyReply: each bot is judged on what it said', () => {
     fails(altered(reply, 'rps', i => delete i.commitHash), 'no commitment')
     fails(altered(reply, 'rps', i => (i.botMove = 'rock')), "gives away the bot's move")
     fails(altered(reply, 'rps', i => (i.secretSalt = 'ab'.repeat(16))), "gives away the bot's move")
-    fails({ ...reply, items: [reply.items[0]] }, 'does not name the table limit of 0.1 MON')
+    fails({ ...reply, items: [reply.items[0]] }, 'does not name the table limit and how a stake is paid')
     fails(reply, 'does not name the table limit of 0.2 MON', { ...STUB, rpsMaxWagerWei: 200_000_000_000_000_000n })
     fails({ ...reply, stampValueWei: 1n }, 'an offer to play carries no money')
   })

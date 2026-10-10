@@ -26,14 +26,11 @@ import {
   replyFree,
   sendFree,
   tableMinimumWei,
+  bankAvailableWei,
 } from "./money";
-import { BANK_RESERVE_WEI } from "./satoshi-dice-bot";
-
-/** The most one match can be played for: the table limit. */
-export const RPS_DEFAULT_MAX_WAGER_WEI = 100_000_000_000_000_000n; // 0.1 MON
-
-/** What the bot says to anything that is not a move. It names the table limit, so a player
- * knows it before a stake is refused for it. */
+/** What the bot says to anything that is not a move. It names the largest stake right now
+ * (half of what the bank has available: a win pays twice the stake), so a player knows it before
+ * a stake is refused for it. */
 export function rpsHelp(maxWagerWei: bigint): string {
   return `Rock-Paper-Scissors. I pick my move first and send you its hash; you pick yours; I reveal my move and the salt, and the app checks they match the hash.
 
@@ -56,13 +53,14 @@ export class RpsBot implements FrankBotDefinition {
 
   private readonly outbox = new Outbox("rps");
   readonly schedules = [this.outbox.schedule];
-  private readonly maxWagerWei: bigint;
+  /** An operator's own ceiling on one match's stake, if any. */
+  private readonly maxWagerWei: bigint | undefined;
   /** The smallest stake the operator set. The table's minimum is this or the chain's fee
    * floor, whichever is larger. A match with no stake is always free. */
   private readonly minWagerWei: bigint;
 
   constructor(options?: { maxWagerWei?: bigint; minWagerWei?: bigint }) {
-    this.maxWagerWei = options?.maxWagerWei ?? RPS_DEFAULT_MAX_WAGER_WEI;
+    this.maxWagerWei = options?.maxWagerWei;
     this.minWagerWei = options?.minWagerWei ?? 0n;
   }
 
@@ -81,7 +79,7 @@ export class RpsBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.start(ctx, user.address),
-        { type: "text", text: `Welcome to RPS Arena.\n\n${rpsHelp(this.maxWagerWei)}` },
+        { type: "text", text: `Welcome to RPS Arena.\n\n${rpsHelp(await this.limit(ctx))}` },
       ]);
     } catch (err) {
       console.warn(`[rps] Failed to welcome ${user.address}:`, err);
@@ -105,6 +103,15 @@ export class RpsBot implements FrankBotDefinition {
       matchId,
       commitHash: rpsCommitment(match.move, match.salt),
     };
+  }
+
+  /** The largest stake right now: half of what the bank has available (a win pays twice the
+   * stake), and never more than the operator's own ceiling. */
+  private async limit(ctx: BotContext): Promise<bigint> {
+    const cover = (await bankAvailableWei(ctx, this.outbox)) / 2n;
+    return this.maxWagerWei !== undefined && this.maxWagerWei < cover
+      ? this.maxWagerWei
+      : cover;
   }
 
   /** A message cut off by a crash: what it paid is accounted for (see `Outbox.interrupted`). */
@@ -151,7 +158,7 @@ export class RpsBot implements FrankBotDefinition {
     }
     await replyFree(msgCtx, [
       await this.start(ctx, peer),
-      { type: "text", text: rpsHelp(this.maxWagerWei) },
+      { type: "text", text: rpsHelp(await this.limit(ctx)) },
     ]);
   }
 
@@ -202,10 +209,13 @@ export class RpsBot implements FrankBotDefinition {
           minWagerWei
         )}. Nothing was played.`
       );
-    if (wagerWei > this.maxWagerWei)
+    // The largest stake is what the bank can pay twice over now: worked out again here, when
+    // the stake is accepted, not taken from what the table said earlier.
+    const limitWei = await this.limit(ctx);
+    if (wagerWei > limitWei)
       return refused(
         `That stake is over the table limit of ${formatMon(
-          this.maxWagerWei
+          limitWei
         )}. Nothing was played.`
       );
     // The stake is what this message is confirmed, on chain, to have paid. Never what it says.
@@ -216,15 +226,6 @@ export class RpsBot implements FrankBotDefinition {
         )} is confirmed as paid with it. Nothing was played.`
       );
 
-    // The bank must hold the most this match can pay before the stake is taken.
-    if (
-      wagerWei > 0n &&
-      (await ctx.getBalance().catch(() => 0n)) <
-        wagerWei * 2n + BANK_RESERVE_WEI + (await this.outbox.owedWei(ctx))
-    )
-      return refused(
-        "The bank cannot cover that stake right now. Nothing was played."
-      );
     // Anything paid above a stated stake goes back with the result.
     const excessWei = wagerWei > 0n ? received.confirmedWei - wagerWei : 0n;
 

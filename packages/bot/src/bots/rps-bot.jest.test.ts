@@ -165,4 +165,26 @@ describe("RpsBot", () => {
     expect(h.sent[0].valueWei).toBe(STAKE);
     expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "resolve")).toBe(false);
   });
+
+  test("the table states the largest stake the bank can pay twice over right now, and a stake is judged against the bank as it is when the move arrives", async () => {
+    const h = harness();
+    const RESERVE = 20_000_000_000_000_000n;
+    let balance = 10n ** 18n + RESERVE;
+    (h.ctx as any).getBalance = async () => balance;
+    const bot = new RpsBot();
+    h.sent.length = 0;
+    await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
+    expect(
+      (h.sent[0].items.find((i) => i.type === "text") as { text: string }).text
+    ).toContain("up to 0.5 MON");
+    const refused = await match(h, bot, "win");
+    balance = STAKE * 2n + RESERVE - 1n;
+    await bot.onMessage(h.message([refused.mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(STAKE);
+    expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "resolve")).toBe(false);
+    const taken = await match(h, bot, "win");
+    balance = STAKE * 2n + RESERVE;
+    await bot.onMessage(h.message([taken.mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "resolve")).toBe(true);
+  });
 });

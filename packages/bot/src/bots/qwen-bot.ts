@@ -259,19 +259,28 @@ export class QwenBot implements FrankBotDefinition {
       `[qwen] Broadcasting daily newsletter to ${subscribers.length} subscriber(s)`
     );
 
+    // The digest is whatever the model writes today. If the model cannot be reached nothing
+    // is sent: there is no canned text standing in for it.
     let content: string;
     try {
-      const res = await this.replyGenerator.reply([
-        {
-          role: "user",
-          content:
-            "Generate a brief, engaging 2-3 sentence daily tech and crypto digest for Monad users.",
-        },
-      ]);
-      content = res.content;
-    } catch {
-      content =
-        "Monad Daily Digest: Gas is nominal, network finality is sub-second, and the ecosystem is humming. Have a productive day!";
+      const res = await this.replyGenerator.reply(
+        [
+          {
+            role: "user",
+            content:
+              "Generate a brief, engaging 2-3 sentence daily tech and crypto digest for Monad users.",
+          },
+        ],
+        { signal: ctx.stopping }
+      );
+      content = boundedText(res?.content, MAX_HISTORY_CONTENT_BYTES).trim();
+      if (!content) throw new Error("the model returned an empty digest");
+    } catch (error) {
+      console.error(
+        "[qwen] Daily digest not sent: the model could not generate it:",
+        error instanceof Error ? error.message : "unknown error"
+      );
+      return { sent: 0, failed: 0 };
     }
 
     const items: MessageItem[] = [

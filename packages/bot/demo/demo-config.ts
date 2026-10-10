@@ -19,7 +19,7 @@ import {
   trustSnapshot,
 } from './directory-trust/browser-admission'
 
-import { MAX_AMOUNT_WEI } from '../faucet-core'
+import { MAX_AMOUNT_WEI } from '../src/bots/faucet-bot'
 import {
   BET_MESSAGE_FEE_RESERVE_WEI,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
@@ -322,13 +322,7 @@ export const DEMO_VARS: readonly DemoVar[] = [
     scope: 'faucet',
     default: `${DEMO_REAL_FAUCET_AMOUNT_WEI} (0.05 MON); ${DEMO_FAKE_FAUCET_AMOUNT_WEI} (1 MON) with --fake-chain`,
     description:
-      'MON sent to each new profile. The 0.05 MON real-network default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. With --fake-chain the default is 1 MON. FAUCET_MAX_PER_DAY and the per-address rule still apply.',
-  },
-  {
-    name: 'FAUCET_MAX_PER_DAY',
-    scope: 'faucet',
-    default: '20',
-    description: 'New addresses funded per rolling 24 hours.',
+      'MON sent to each new profile. The 0.05 MON real-network default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. With --fake-chain the default is 1 MON. Each profile is granted once.',
   },
   {
     name: 'FAUCET_MIN_RESERVE_WEI',
@@ -360,7 +354,6 @@ const PASSTHROUGH = [
   'BLACKJACK_BOT_MIN_WAGER_WEI',
   'BLACKJACK_BOT_MAX_WAGER_WEI',
   'VENDOR_BOT_CATALOG_DIR',
-  'FAUCET_MAX_PER_DAY',
   'FAUCET_MIN_RESERVE_WEI',
   'FRANK_BOT_PEER_DENYLIST',
   'FRANK_BOT_MAX_REPLIES_PER_PEER',
@@ -845,7 +838,6 @@ export function resolveDemoConfig(params: {
               FAUCET_BOT_IDENTITY_JSON: faucetIdentity,
               FAUCET_STATE_DIR: faucetState,
               FAUCET_AMOUNT_WEI: faucetAmountWei,
-              FAUCET_MAX_PER_RUN: '1000',
             },
           },
         ]),

@@ -6,7 +6,7 @@ import {
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
 } from '@frank/wallet/message-item-plugins/blackjack/game'
 
-import { MAX_AMOUNT_WEI } from '../faucet-core'
+import { MAX_AMOUNT_WEI } from '../src/bots/faucet-bot'
 import {
   DEMO_DEFAULT_BURN_ADDRESS,
   DEMO_FAKE_FAUCET_AMOUNT_WEI,
@@ -197,7 +197,6 @@ describe('resolveDemoConfig', () => {
     expect(env('raffle').RAFFLE_BOT_MAX_ENTRIES).toBe('5')
     expect(env('qwen')).not.toHaveProperty('QWEN_BOT_MAX_REPLIES')
     expect(env('qwen').QWEN_BOT_FUND_VALUE_WEI).toBe('0')
-    expect(env('faucet').FAUCET_MAX_PER_RUN).toBe('1000')
   })
 
   it('passes the exact PROTOC override only to the relay toolchain, with environment precedence', () => {

@@ -122,6 +122,13 @@ jest.mock("@frank/wallet/monad-provider", () => {
         if (request.method === "getBalance")
           return mockBalances.get(request.address!.toLowerCase()) ?? 0n;
         if (request.method === "getTransactionCount") return 0;
+        // This node keeps no transactions: it knows none by hash, and has no receipts.
+        if (
+          request.method === "getTransaction" ||
+          request.method === "getTransactionReceipt"
+        )
+          return null;
+        if (request.method === "getBlockNumber") return 1;
         if (request.method === "estimateGas") return 50_000n;
         // A real, nonzero price per gas: the fee floor of a stamp here is 21,000 x 2 = 42,000
         // wei, and the tests on the real wallet pay a reply stamp above it (`REPLY_STAMP_WEI`).

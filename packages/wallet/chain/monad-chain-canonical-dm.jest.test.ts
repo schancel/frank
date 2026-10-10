@@ -163,6 +163,8 @@ jest.mock('../monad-provider', () => {
           }
         }
         if (request.method === 'getBlockNumber') return 1
+        // This node keeps no transaction bodies: one it has not mined it does not know.
+        if (request.method === 'getTransaction') return null
         if (request.method === 'getTransactionCount') {
           const address = request.address!.toLowerCase()
           return [...mockMined.values()].filter(a => a === address).length

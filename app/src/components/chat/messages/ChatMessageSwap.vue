@@ -429,6 +429,8 @@ export default defineComponent({
       }
     },
     async handleDepositLegB() {
+      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
+      if (!this.outbound) return
       this.busy = true
       try {
         const res = await this.escrow.depositLock({
@@ -451,6 +453,8 @@ export default defineComponent({
       }
     },
     async handleClaim() {
+      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
+      if (!this.outbound) return
       this.busy = true
       try {
         const targetChain = this.outbound
@@ -474,6 +478,8 @@ export default defineComponent({
       }
     },
     async handleRefund() {
+      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
+      if (!this.outbound) return
       this.busy = true
       try {
         const targetChain = this.outbound

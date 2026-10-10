@@ -201,6 +201,25 @@ describe('ChatMessageSwap', () => {
         expect(call).not.toHaveBeenCalled()
     })
 
+    it('the handlers refuse too: called directly on a received offer they do nothing', async () => {
+      const wrapper = mountComponent({
+        outbound: false,
+        status: 'locked',
+        preimage: '0x' + 'aa'.repeat(32),
+      })
+      const vm = wrapper.vm as unknown as Record<string, () => Promise<void>>
+      for (const handler of [
+        'handleDepositLegB',
+        'handleClaim',
+        'handleRefund',
+      ])
+        await vm[handler]()
+      for (const call of Object.values(mockEscrow))
+        expect(call).not.toHaveBeenCalled()
+      for (const event of ['deposit', 'claim', 'refund'])
+        expect(wrapper.emitted(event)).toBeUndefined()
+    })
+
     it('the note is not shown on an offer this user made', () => {
       for (const status of ['pending', 'accepted', 'locked', 'expired'])
         expect(

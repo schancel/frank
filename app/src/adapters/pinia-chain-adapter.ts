@@ -612,13 +612,46 @@ export function startOutgoingReconciliation({
   // message does not look like a fresh arrival.
   knownPending = pendingIds()
 
+  // Whether `chats.reconcileOutgoing` is about to put a question to the wallet itself: it asks
+  // about every message that has a recorded payment, and a message being sent right now settles
+  // the wallet's earlier payments as the first step of its own send.
+  const messagesAskTheWallet = () => {
+    const seenChats = new Set<unknown>()
+    for (const chat of Object.values(chats.conversations ?? {})) {
+      if (!chat || seenChats.has(chat)) continue
+      seenChats.add(chat)
+      for (const message of chat.messages ?? []) {
+        if (!message.outbound || !walletOwnsMessage(wallet, message)) continue
+        if (message.status === 'pending') return true
+        if (
+          (message.status === 'payment-pending' ||
+            message.status === 'error') &&
+          message.delivery?.attemptDigest !== undefined
+        )
+          return true
+      }
+    }
+    return false
+  }
+
   const tick = async () => {
     if (ticking || stopped) return
     ticking = true
     resetRequested = false
     let pending = 0
     try {
+      const asked = messagesAskTheWallet()
       pending = (await chats.reconcileOutgoing({ wallet })).pending
+      // A paid message this app has no message for any more (it was deleted, or its row was
+      // lost) is still the wallet's to finish. The wallet retries every unresolved payment it
+      // holds whichever ones it is asked about, so when no message asked, ask about none: the
+      // same exact bytes are sent again, never a new payment, and with nothing unresolved the
+      // wallet makes no request at all. Once per tick; never from wallet open.
+      if (!asked && !stopped)
+        await activeChain.directMessages.reconcileAttempts({
+          wallet,
+          payloadDigests: [],
+        })
       reconciled = true
       // Every tick that reconciled: this is also how a top-up is picked up.
       fundNextMessage()

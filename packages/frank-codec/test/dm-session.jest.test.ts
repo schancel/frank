@@ -48,7 +48,8 @@ function encrypted(suite = 1, schema = 2, min = 2): Uint8Array {
 function root(extra?: Encodable): Uint8Array {
   const payload = deliveryPayload({ payloadFrame: encrypted() })
   if (extra !== undefined) payload.set(99, extra)
-  return fr(1, payload, extra === undefined ? 1 : 2, 1)
+  // Newer than the reader's type-1 schema (2), so the extra field is retained (V6.3).
+  return fr(1, payload, extra === undefined ? 1 : 3, 1)
 }
 function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
   const payload = M([

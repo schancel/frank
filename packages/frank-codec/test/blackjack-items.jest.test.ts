@@ -435,7 +435,7 @@ it.each(['containers', 'items'] as const)(
     )
     const fields = deliveryPayload({ payloadFrame: payload })
     fields.set(99, grouped(kind === 'containers' ? 8000 : 60000))
-    const root = fr(1, fields, 2, 1)
+    const root = fr(1, fields, 3, 1)
     const content = fr(
       6,
       M([

@@ -87,6 +87,7 @@ import {
   CanonicalRecipientUndeliverableError,
   CanonicalSenderUnpublishedError,
   LevelCanonicalLinkStore,
+  UnpaidDirectMessageNotDeliveredError,
 } from './monad-canonical-dm'
 import {
   isDirectMessageNotAttempted,
@@ -414,6 +415,112 @@ async function fixture(funded = true) {
 }
 
 const text = (value: string) => [{ type: 'text' as const, text: value }]
+
+type ServedRecord = {
+  delivery: Uint8Array
+  context: Uint8Array
+  submissionIdentity: string
+  timestampMs: number
+  direction?: 'in' | 'out'
+}
+/** The relay's authenticated mailbox and inbox reads over `records`, framed as the relay frames
+ * them, so the production challenge, signing and bounded page reader run. `cut` drops bytes off
+ * the end of every page: a page that fails as a whole. */
+function relayMailbox(
+  records: readonly ServedRecord[],
+  cut = 0,
+): CanonicalFetch & { reads: string[] } {
+  const reads: string[] = []
+  const serve: CanonicalFetch = async (url, input) => {
+    let bytes: Uint8Array
+    let media: string
+    const query = new URL(url).searchParams
+    if (url.includes('/auth/')) {
+      expect(input.method).toBe('POST')
+      bytes = Buffer.from(
+        JSON.stringify({
+          epoch: '11'.repeat(32),
+          nonce: '22'.repeat(32),
+          token: '33'.repeat(32),
+          expires_at_ms: Date.now() + 59_000,
+          signing_domain: MAILBOX_AUTH_DOMAIN,
+          resource: query.get('resource'),
+          since: Number(query.get('since')),
+          cursor: query.get('cursor'),
+          limit: Number(query.get('limit')),
+          max_bytes: Number(query.get('max_bytes')),
+          network_tag: '4d4f4e54',
+          recovery_payload_hash: null,
+          recovery_obligation_id: null,
+        } satisfies MailboxChallenge),
+      )
+      media = 'application/json'
+    } else {
+      expect(input.method).toBe('GET')
+      reads.push(url)
+      const combined = new URL(url).pathname.startsWith('/message/mailbox/')
+      const line = (value: string) => Buffer.from(value)
+      const page = Buffer.concat([
+        ...records
+          .filter(record => record.timestampMs >= Number(query.get('since')))
+          .flatMap(record => [
+            line(
+              `--page\r\nContent-Disposition: inline; name="record"\r\nContent-Type: multipart/mixed; boundary=record\r\nX-Frank-Submission-Identity: ${
+                record.submissionIdentity
+              }\r\nX-Frank-Mailbox-Timestamp-Ms: ${record.timestampMs}\r\n${
+                combined
+                  ? `X-Frank-Mailbox-Direction: ${record.direction ?? 'in'}\r\n`
+                  : ''
+              }\r\n`,
+            ),
+            line(
+              '--record\r\nContent-Disposition: inline; name="delivery"\r\nContent-Type: application/vnd.frank.cbor\r\n\r\n',
+            ),
+            record.delivery,
+            line(
+              '\r\n--record\r\nContent-Disposition: inline; name="context"\r\nContent-Type: application/cbor\r\n\r\n',
+            ),
+            record.context,
+            line('\r\n--record--\r\n\r\n'),
+          ]),
+        line('--page--\r\n'),
+      ])
+      bytes = page.subarray(0, page.length - cut)
+      media = 'multipart/mixed; boundary=page'
+    }
+    let read = false
+    return {
+      url,
+      status: 200,
+      headers: {
+        get: name => (name.toLowerCase() === 'content-type' ? media : null),
+      },
+      body: {
+        getReader: () => ({
+          read: async () =>
+            read
+              ? { done: true }
+              : ((read = true), { done: false, value: bytes }),
+          cancel: async () => undefined,
+          releaseLock: () => undefined,
+        }),
+      },
+    }
+  }
+  return Object.assign(serve, { reads })
+}
+/** Both page readers as production runs them, for one test. */
+function productionPageReaders() {
+  const actual = jest.requireActual<
+    typeof import('@frank/cashweb/relay/monad-mailbox-client')
+  >('@frank/cashweb/relay/monad-mailbox-client')
+  mailboxPage.mockReset().mockImplementation(actual.fetchCanonicalMailboxPage)
+  inboxPage.mockReset().mockImplementation(actual.fetchCanonicalInboxPage)
+  return () => {
+    mailboxPage.mockReset().mockImplementation(actual.fetchCanonicalMailboxPage)
+    inboxPage.mockReset()
+  }
+}
 
 describe('typed wallet direct messages use the canonical path (#778)', () => {
   jest.setTimeout(30_000)
@@ -1420,6 +1527,38 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       },
     )
 
+    it('proves the historical delivery from a mailbox that also holds a record it cannot decode', async () => {
+      const historical = await compactedHistoricalAttempt()
+      const restore = productionPageReaders()
+      // A record with a corrupt context, ahead of the record that proves the delivery.
+      const mailbox = relayMailbox([
+        {
+          delivery: historical.record.delivery,
+          context: historical.record.context.slice(0, -1),
+          submissionIdentity: 'ab'.repeat(32),
+          timestampMs: 99_000,
+          direction: 'in',
+        },
+        { ...historical.record, timestampMs: 100_000, direction: 'out' },
+      ])
+      const wallet = await reopen({ ...historical.directory, fetch: mailbox })
+      const effects = noHistoricalExecution(wallet)
+      try {
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet,
+            payloadDigests: [historical.digest],
+          }),
+        ).toEqual({ [historical.digest]: 'delivered' })
+        expect(mailbox.reads).toHaveLength(1)
+        effects.verify()
+      } finally {
+        effects.restore()
+        await wallet.close()
+        restore()
+      }
+    })
+
     it.each([
       'page limit',
       'page failure',
@@ -2102,6 +2241,239 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     ).toThrow('live typed persistent custody')
     expect(() => createCanonicalMessageRoles(f.alice, senderCurrent)).toThrow(
       'live typed wallet custody',
+    )
+  })
+
+  describe('a message sent with no stamp', () => {
+    /** Everything of the payment machinery a send could touch, counted around one call. */
+    function paymentMachinery(wallet: EvmChainWalletHandle) {
+      const spies = (
+        ['bindPrepared', 'prepareIntent', 'finishIntent', 'submit'] as const
+      ).map(method => jest.spyOn(MonadCanonicalStampClient.prototype, method))
+      const pool = structuredClone(wallet.pool.records())
+      const journal = structuredClone(wallet.stampPaymentJournal?.getAll())
+      const funded = mockFunded.length
+      return {
+        expectUntouched: async () => {
+          try {
+            for (const spy of spies) expect(spy).not.toHaveBeenCalled()
+            expect(wallet.pool.records()).toEqual(pool)
+            expect(wallet.stampPaymentJournal?.getAll()).toEqual(journal)
+            expect(mockFunded).toHaveLength(funded)
+          } finally {
+            for (const spy of spies) spy.mockRestore()
+          }
+        },
+      }
+    }
+    const directories = async () => {
+      installCanonicalDirectory(
+        f.alice,
+        await f.directoryFor('alice', f.alice, f.bob),
+      )
+      installCanonicalDirectory(
+        f.bob,
+        await f.directoryFor('bob', f.bob, f.alice),
+      )
+    }
+    const record = (index: number, timestampMs: number) => {
+      const request = restoreCanonicalRequest(f.requests[index])
+      return {
+        delivery: request.parts.delivery,
+        context: request.parts.context,
+        submissionIdentity: request.identity.submission_identity,
+        timestampMs,
+      }
+    }
+
+    it.each(['alice', 'bob'] as const)(
+      'is sealed and delivered with an empty payment list, and %s pays, funds, reserves and records nothing',
+      async from => {
+        await directories()
+        // Bob has no funded account at all: an unpaid message needs none.
+        const [sender, recipient] =
+          from === 'alice' ? [f.alice, f.bob] : [f.bob, f.alice]
+        const machinery = paymentMachinery(sender)
+        const onAttemptCreated = jest.fn()
+        const sent = await f.chain.directMessages.send({
+          wallet: sender,
+          recipient: recipient.identity.address,
+          items: text('no stamp'),
+          stampValue: 0n,
+          onAttemptCreated,
+        })
+        await machinery.expectUntouched()
+        expect(onAttemptCreated).not.toHaveBeenCalled()
+        expect(sent).toEqual({
+          payloadDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+          stampValueWei: 0n,
+          stampPayments: [],
+          paymentTransfers: [],
+          preparationTxHashes: [],
+        })
+        // One request: a schema-2 delivery with no payment member and no transaction.
+        expect(f.requests).toHaveLength(1)
+        const request = restoreCanonicalRequest(f.requests[0])
+        expect(request.parts.transactions).toEqual([])
+        expect(request.identity.payload_hash).toBe(sent.payloadDigest)
+        const delivery = parseFrame(request.parts.delivery)
+        if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+          throw new Error('not a delivery')
+        expect(delivery.schemaVersion).toBe(2)
+        expect(delivery.minReaderVersion).toBe(1)
+        expect(delivery.typed.payments).toEqual([])
+        expect([...(delivery.payload as Map<bigint, FrankValue>).keys()]).toEqual(
+          [0n, 1n, 2n, 3n, 4n, 5n, 6n],
+        )
+        // Nothing for the attempt machinery to know or do.
+        expect(
+          await f.chain.directMessages.unattributedAttempts({
+            wallet: sender,
+            knownDigests: [],
+          }),
+        ).toEqual([])
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet: sender,
+            payloadDigests: [sent.payloadDigest],
+          }),
+        ).toEqual({ [sent.payloadDigest]: 'unknown' })
+        expect(f.requests).toHaveLength(1)
+
+        inboxPage.mockResolvedValue({ records: [record(0, 7)] })
+        const received = await f.chain.directMessages.fetchSince({
+          wallet: recipient,
+          sinceMs: 0,
+        })
+        expect(received).toHaveLength(1)
+        expect(received[0].items).toEqual(text('no stamp'))
+        expect(received[0].payloadDigest).toBe(sent.payloadDigest)
+        expect(received[0].stampValueWei).toBe(0n)
+        expect(received[0].stampPayments).toEqual([])
+        expect(received[0].paymentTransfers).toEqual([])
+      },
+    )
+
+    it('is not held by a pending paid message, does not clear it, and does not hold the next paid one', async () => {
+      await directories()
+      f.setPhase('retained')
+      let pending = ''
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('paid, pending'),
+          onAttemptCreated: digest => void (pending = digest),
+        }),
+      ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      expect(f.requests).toHaveLength(1)
+
+      // Unpaid while the paid one is pending: goes out, and re-sends nothing of the paid one.
+      f.setPhase('delivered')
+      const machinery = paymentMachinery(f.alice)
+      const unpaid = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('unpaid meanwhile'),
+        stampValue: 0n,
+      })
+      await machinery.expectUntouched()
+      expect(f.requests).toHaveLength(2)
+      expect(restoreCanonicalRequest(f.requests[1]).identity.payload_hash).toBe(
+        unpaid.payloadDigest,
+      )
+
+      // The paid message is still the one pending attempt, and still holds a second paid one.
+      f.setPhase('retained')
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('paid, held'),
+        }),
+      ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      f.setPhase('delivered')
+      expect(
+        await f.chain.directMessages.reconcileAttempts({
+          wallet: f.alice,
+          payloadDigests: [pending, unpaid.payloadDigest],
+        }),
+      ).toEqual({ [pending]: 'delivered', [unpaid.payloadDigest]: 'unknown' })
+
+      // A paid send right after an unpaid one is an ordinary paid send.
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('unpaid again'),
+        stampValue: 0n,
+      })
+      mockBalances.set(
+        (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+        10n ** 18n,
+      )
+      const paid = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('paid after unpaid'),
+      })
+      expect(paid.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
+        1_000n,
+      )
+      const last = restoreCanonicalRequest(f.requests[f.requests.length - 1])
+      expect(last.identity.payload_hash).toBe(paid.payloadDigest)
+      expect(last.parts.transactions.length).toBeGreaterThan(0)
+      const paidDelivery = parseFrame(last.parts.delivery)
+      expect(paidDelivery.kind === 'parsed' && paidDelivery.schemaVersion).toBe(1)
+    })
+
+    it.each([
+      ['fail', Error],
+      ['lost', Error],
+      ['retained', UnpaidDirectMessageNotDeliveredError],
+      ['undeliverable', CanonicalRecipientUndeliverableError],
+      ['sender_unpublished', CanonicalSenderUnpublishedError],
+    ] as const)(
+      'when the relay answers "%s" it is an error to the caller and nothing is kept to retry',
+      async (phase, error) => {
+        await directories()
+        f.setPhase(phase)
+        const machinery = paymentMachinery(f.alice)
+        const messageId = '00000000-0000-4000-8000-0000000000aa'
+        const refused: unknown = await f.chain.directMessages
+          .send({
+            wallet: f.alice,
+            recipient: f.bob.identity.address,
+            items: text('unpaid, refused'),
+            stampValue: 0n,
+            messageId,
+          })
+          .then(
+            () => undefined,
+            (reason: unknown) => reason,
+          )
+        expect(refused).toBeInstanceOf(error)
+        // The relay may hold it: the refusal is never labelled "not attempted".
+        expect(isDirectMessageNotAttempted(refused)).toBe(false)
+        await machinery.expectUntouched()
+        expect(
+          await f.chain.directMessages.unattributedAttempts({
+            wallet: f.alice,
+            knownDigests: [],
+          }),
+        ).toEqual([])
+        // The caller may simply send the same message again.
+        f.setPhase('delivered')
+        const requests = f.requests.length
+        const again = await f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('unpaid, refused'),
+          stampValue: 0n,
+          messageId,
+        })
+        expect(again.stampPayments).toEqual([])
+        expect(f.requests).toHaveLength(requests + 1)
+      },
     )
   })
 
@@ -3120,6 +3492,244 @@ describe('two typed wallets on the open directory', () => {
     } finally {
       later.mockRestore()
     }
+  })
+
+  it('delivers a message that carries no payment as a normal message with no stamp', async () => {
+    await online('alice', f.alice)
+    const bobDirectory = await online('bob', f.bob)
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('free of charge'),
+    })
+    // The same sealed message as the relay stores an unpaid one: schema 2, empty payment list.
+    const paid = inboxRecord(0, 7)
+    const parsed = parseFrame(paid.delivery)
+    if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+      throw new Error('fixture')
+    const payload = new Map(parsed.payload)
+    payload.set(4n, [])
+    const unpaid = {
+      ...paid,
+      delivery: encodeFrame(
+        { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+        payload,
+      ),
+      submissionIdentity: 'cd'.repeat(32),
+    }
+    const restore = productionPageReaders()
+    try {
+      installCanonicalDirectory(f.bob, {
+        ...bobDirectory,
+        fetch: relayMailbox([unpaid]),
+      })
+      const quarantined: number[] = []
+      const received = await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: 0,
+        onQuarantinedTimestamp: time => void quarantined.push(time),
+      })
+      expect(quarantined).toEqual([])
+      expect(received).toHaveLength(1)
+      expect(received[0].items).toEqual(text('free of charge'))
+      expect(received[0].outbound).toBe(false)
+      expect(received[0].receivedTime).toBe(7)
+      // Nothing about it is a received payment.
+      expect(received[0].stampValueWei).toBe(0n)
+      expect(received[0].stampPayments).toEqual([])
+      expect(received[0].paymentTransfers).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('reports a forged ciphertext as terminal so the read position passes it, and still delivers the next message', async () => {
+    await online('alice', f.alice)
+    await online('bob', f.bob)
+    for (const body of ['forged over', 'genuine']) {
+      mockBalances.set(
+        (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+        10n ** 18n,
+      )
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text(body),
+      })
+    }
+    // Everything a forger can copy is right (sender, recipient, entries, context); only the
+    // ciphertext is not what the key holders sealed, so it cannot be opened now or later.
+    const original = inboxRecord(0, 5)
+    const delivery = parseFrame(original.delivery)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+      throw new Error('fixture')
+    const sealed = delivery.typed.payloadFrame
+    if (!(sealed.payload instanceof Map)) throw new Error('fixture')
+    const box = new Uint8Array(sealed.payload.get(4n) as Uint8Array)
+    box[box.length - 1] ^= 1
+    const forgedPayload = encodeFrame(
+      { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+      new Map(sealed.payload).set(4n, box),
+    )
+    const forgedDigest = recipientPayloadDigest(
+      delivery.typed.network,
+      forgedPayload,
+    )
+    const forged = {
+      ...original,
+      delivery: encodeFrame(
+        { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+        new Map(delivery.payload as Map<bigint, FrankValue>)
+          .set(2n, forgedPayload)
+          .set(3n, forgedDigest),
+      ),
+    }
+    // A record whose context does not match is not known to be unopenable: it is left alone.
+    const mismatched = inboxRecord(0, 6)
+    const context = new Uint8Array(mismatched.context)
+    context[context.length - 1] ^= 1
+    inboxPage.mockResolvedValue({
+      records: [forged, { ...mismatched, context }, inboxRecord(1, 9)],
+    })
+    const quarantined: [number, string][] = []
+    const received = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+      onQuarantinedTimestamp: (time, id) => void quarantined.push([time, id]),
+    })
+    expect(received.map(m => [m.receivedTime, m.items])).toEqual([
+      [9, text('genuine')],
+    ])
+    expect(quarantined).toEqual([[5, toHex(forgedDigest)]])
+  })
+
+  describe('a mailbox record the client cannot decode', () => {
+    /** Three paid messages from Alice in Bob's mailbox; the middle one is replaced. */
+    async function mailboxWithOneUnreadable(
+      spoil: (record: ServedRecord) => Partial<ServedRecord>,
+    ) {
+      await online('alice', f.alice)
+      const bobDirectory = await online('bob', f.bob)
+      for (const body of ['first', 'second', 'third']) {
+        mockBalances.set(
+          (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+          10n ** 18n,
+        )
+        await f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text(body),
+        })
+      }
+      const original = inboxRecord(1, 7)
+      const delivered = parseFrame(original.delivery)
+      if (delivered.kind !== 'parsed' || delivered.typed?.type !== 1)
+        throw new Error('fixture')
+      const records: ServedRecord[] = [
+        inboxRecord(0, 5),
+        { ...original, ...spoil(original), submissionIdentity: 'ab'.repeat(32) },
+        inboxRecord(2, 9),
+      ]
+      return {
+        records,
+        /** The payments the replaced message was sent with. */
+        spoiledPayments: delivered.typed.payments.map(
+          member => '0x' + toHex(member.transactionId),
+        ),
+        serve: (mailbox: CanonicalFetch) =>
+          installCanonicalDirectory(f.bob, { ...bobDirectory, fetch: mailbox }),
+      }
+    }
+    const read = async (sinceMs: number) => {
+      const incomplete: number[] = [],
+        quarantined: [number, string][] = [],
+        truncated: Error[] = []
+      const received = await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs,
+        onTruncated: reason => void truncated.push(reason),
+        onIncompleteTimestamp: time => void incomplete.push(time),
+        onQuarantinedTimestamp: (time, id) => void quarantined.push([time, id]),
+      })
+      return { received, incomplete, quarantined, truncated }
+    }
+
+    it.each([
+      [
+        'its payments and a corrupt context',
+        (record: ServedRecord) => ({ context: record.context.slice(0, -1) }),
+      ],
+      [
+        'bytes that are not a frame',
+        () => ({ delivery: new Uint8Array(Buffer.from('not a frame')) }),
+      ],
+    ] as const)(
+      'with %s is skipped and reported once; the messages around it arrive and no stamp is counted from it',
+      async (_name, spoil) => {
+        const restore = productionPageReaders()
+        try {
+          const mailbox = await mailboxWithOneUnreadable(spoil)
+          const relay = relayMailbox(mailbox.records)
+          mailbox.serve(relay)
+
+          const first = await read(0)
+          expect(first.received.map(m => [m.receivedTime, m.items])).toEqual([
+            [5, text('first')],
+            [9, text('third')],
+          ])
+          expect(first.quarantined).toEqual([[7, 'ab'.repeat(32)]])
+          expect(first.incomplete).toEqual([])
+          expect(first.truncated).toEqual([])
+          // One request: the combined mailbox answered, nothing fell back or was retried.
+          expect(relay.reads).toHaveLength(1)
+          // Nothing of the skipped record is a message, a payment or a received stamp.
+          const counted = first.received.flatMap(m => [
+            ...(m.stampPayments ?? []).map(p => p.txHash.toLowerCase()),
+            ...(m.paymentTransfers ?? []).flatMap(t =>
+              JSON.stringify(t).toLowerCase(),
+            ),
+          ])
+          expect(mailbox.spoiledPayments).toHaveLength(1)
+          for (const txHash of mailbox.spoiledPayments)
+            expect(counted.some(entry => entry.includes(txHash.slice(2)))).toBe(
+              false,
+            )
+          expect(first.received.every(m => m.stampPayments?.length === 1)).toBe(
+            true,
+          )
+
+          // The host moves its read position past what was delivered and what was reported
+          // terminal; the record is then neither read nor reported again.
+          const next = await read(10)
+          expect(next.received).toEqual([])
+          expect(next.quarantined).toEqual([])
+          expect(new URL(relay.reads[1]).searchParams.get('since')).toBe('10')
+        } finally {
+          restore()
+        }
+      },
+    )
+
+    it('still fails the whole read when the page itself is broken, and reports nothing', async () => {
+      const restore = productionPageReaders()
+      try {
+        const mailbox = await mailboxWithOneUnreadable(record => ({
+          context: record.context.slice(0, -1),
+        }))
+        mailbox.serve(relayMailbox(mailbox.records, 3))
+        const quarantined: number[] = []
+        await expect(
+          f.chain.directMessages.fetchSince({
+            wallet: f.bob,
+            sinceMs: 0,
+            onQuarantinedTimestamp: time => void quarantined.push(time),
+          }),
+        ).rejects.toThrow()
+        expect(quarantined).toEqual([])
+      } finally {
+        restore()
+      }
+    })
   })
 
   describe('a recipient that lives on another relay', () => {

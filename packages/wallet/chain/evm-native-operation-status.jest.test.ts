@@ -100,7 +100,7 @@ it.each([
       expect(status.feeCoverage).toBe(
         state.startsWith("included") ? "complete" : "unknown"
       );
-      expect(status.syncCallbackComplete).toBe(false);
+      expect(status.sharing).toBe("not-shared");
       expect(status.intendedValueWei).toBe("1000");
       expect(status.members[0]!.transactionHash).toBe(
         fixture.row.members[0]!.signed!.transactionHash
@@ -135,18 +135,20 @@ it("keeps partial fan-in separate from recipient inclusion and incomplete total 
       payment: "included",
       observedFeeWei: "42000",
       feeCoverage: "complete",
-      syncCallbackComplete: false,
+      sharing: "not-shared",
     });
+    const sharing = (failed?: boolean) =>
+      summarizeEvmNativeOperation(
+        fixture.journal.get(fixture.row.operationId),
+        failed
+      ).sharing;
+    // A failed attempt is session information; it is never shown once every member is shared.
+    expect(sharing(true)).toBe("failed");
     await fixture.journal.markSyncApplied(fixture.row.operationId, 0);
-    expect(
-      summarizeEvmNativeOperation(fixture.journal.get(fixture.row.operationId))
-        .syncCallbackComplete
-    ).toBe(false);
+    expect(sharing()).toBe("not-shared");
     await fixture.journal.markSyncApplied(fixture.row.operationId, 1);
-    expect(
-      summarizeEvmNativeOperation(fixture.journal.get(fixture.row.operationId))
-        .syncCallbackComplete
-    ).toBe(true);
+    expect(sharing()).toBe("shared");
+    expect(sharing(true)).toBe("shared");
   } finally {
     await fixture.journal.Close();
   }

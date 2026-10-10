@@ -71,7 +71,8 @@ export interface EvmLegacyConsolidatorConfig {
   ) => PoolSpendMemberClass
   /** Transport only. The item carries the member's complete signed transaction. When composition
    * wires none, nothing is transported: a locally recorded member stays not sync-applied and the
-   * send is not failed for it. */
+   * send is not failed for it. A transport that rejects does not fail anything either: the member
+   * stays not sync-applied and a later flush sends it again. */
   onSyncTransaction?: (item: WalletSyncItem) => Promise<void>
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
@@ -147,6 +148,13 @@ export class EvmLegacyConsolidator {
   /** Tasks on the executor queue that have not settled: a send, a resume or a local pass. */
   private queued = 0
   private syncTail: Promise<void> = Promise.resolve()
+  /** Transports run one after another, outside the flush that started them. */
+  private transportTail: Promise<void> = Promise.resolve()
+  /** Members (`operationId:memberIndex`) whose transport has started and not yet settled. */
+  private readonly transporting = new Set<string>()
+  /** Operations whose last transport in this session failed. In memory on purpose: it is only
+   * what a host shows until the next flush tries again; the journal's flag is the record. */
+  private readonly transportFailed = new Set<string>()
   private readonly active = new Map<string, Promise<EvmNativeOperation>>()
   /** This session's local result per member (`operationId:memberIndex`), written only by the
    * local pass. In memory on purpose: it gates transport, and the pool row is the record. */
@@ -211,6 +219,11 @@ export class EvmLegacyConsolidator {
   async drain(): Promise<void> {
     await this.tail
     await this.syncTail
+    await this.transportTail
+  }
+  /** Whether the last attempt in this session to transport this operation's sync item failed. */
+  syncTransportFailed(operationId: string): boolean {
+    return this.transportFailed.has(operationId)
   }
   private journal(lifetime?: WalletOperationLifetime): NativeExecutionJournal {
     if (this.config.inputAdmission) {
@@ -1051,8 +1064,20 @@ export class EvmLegacyConsolidator {
   }
   /** Composition invokes this outside its financial queue; transport may itself need admission.
    * Transport only: a member is sent, and then marked sync-applied, only when this session's local
-   * pass recorded it applied. */
+   * pass recorded it applied. Resolves when the transports it started have settled. A transport
+   * that fails rejects nothing: its member stays not sync-applied for a later flush. */
   flushSync(operationId?: string): Promise<void> {
+    return this.startSync(operationId).then(
+      started => started.transported,
+      async reason => {
+        await this.transportTail
+        throw reason
+      },
+    )
+  }
+  /** As `flushSync`, but resolves as soon as the local check is done, with the transports started
+   * and not waited for: `transported` settles (never rejects) when they have. */
+  startSync(operationId?: string): Promise<{ transported: Promise<void> }> {
     const run = this.syncTail.then(() =>
       this.config.runLifetime
         ? this.config.runLifetime(lifetime =>
@@ -1060,16 +1085,20 @@ export class EvmLegacyConsolidator {
           )
         : this.applySync(operationId),
     )
-    this.syncTail = run.catch(() => undefined)
+    this.syncTail = run.then(
+      () => undefined,
+      () => undefined,
+    )
     return run
   }
   private async applySync(
     operationId?: string,
     lifetime?: WalletOperationLifetime,
-  ): Promise<void> {
+  ): Promise<{ transported: Promise<void> }> {
     const journal = this.journal(lifetime)
     // With no local callback there is no local record to wait for and nothing to transport.
-    if (!this.config.onSyncTransaction && !this.config.applyLocalMember) return
+    if (!this.config.onSyncTransaction && !this.config.applyLocalMember)
+      return { transported: Promise.resolve() }
     // The first operation, in journal order, with a member the local pass has not applied.
     let unapplied: string | undefined
     for (const row of journal
@@ -1094,34 +1123,24 @@ export class EvmLegacyConsolidator {
           // and it stays not sync-applied; that is an outcome, not a failure of the send.
           if (!this.config.onSyncTransaction) continue
           const tx = Transaction.from(member.signed!.rawTransaction)
-          const observation = member.observation
-          if (observation.state === 'included-success') {
-            try {
-              await this.config.onSyncTransaction({
-                type: 'wallet-sync',
-                direction: 'out',
-                chainIdentifier: journal.binding.chainIdentifier,
-                txHash: member.signed!.transactionHash,
-                rawTx: member.signed!.rawTransaction,
-                spentInputs: [
-                  {
-                    address: member.source.address,
-                    nonce: tx.nonce,
-                    valueWei: (
-                      tx.value + BigInt(observation.feeWei)
-                    ).toString(),
-                  },
-                ],
-                createdOutputs: [
-                  { address: tx.to!, valueWei: tx.value.toString() },
-                ],
-                timestamp: Date.now(),
-              })
-            } catch (reason) {
-              throw new EvmNativeOperationPendingError(journal.get(id), reason)
-            }
-            await journal.markSyncApplied(id, i)
-          }
+          this.transport(id, i, {
+            type: 'wallet-sync',
+            direction: 'out',
+            chainIdentifier: journal.binding.chainIdentifier,
+            txHash: member.signed!.transactionHash,
+            rawTx: member.signed!.rawTransaction,
+            spentInputs: [
+              {
+                address: member.source.address,
+                nonce: tx.nonce,
+                valueWei: (
+                  tx.value + BigInt(member.observation.feeWei)
+                ).toString(),
+              },
+            ],
+            createdOutputs: [{ address: tx.to!, valueWei: tx.value.toString() }],
+            timestamp: Date.now(),
+          })
         }
       }
     if (unapplied !== undefined)
@@ -1129,6 +1148,35 @@ export class EvmLegacyConsolidator {
         journal.get(unapplied),
         new Error('Native member has no local spend record in this session'),
       )
+    return { transported: this.transportTail }
+  }
+  /** Queues one member's transport, once while it is under way. Delivered: the member is marked
+   * sync-applied. Failed, or the wallet closed meanwhile: it is left as it was and remembered as
+   * failed for this session. Never rejects and never touches the payment's own outcome. */
+  private transport(
+    operationId: string,
+    memberIndex: number,
+    item: WalletSyncItem,
+  ): void {
+    const key = `${operationId}:${memberIndex}`
+    if (this.transporting.has(key)) return
+    this.transporting.add(key)
+    const mark = (lifetime?: WalletOperationLifetime) =>
+      this.journal(lifetime).markSyncApplied(operationId, memberIndex)
+    this.transportTail = this.transportTail
+      .then(async () => {
+        await this.config.onSyncTransaction!(item)
+        await (this.config.runLifetime
+          ? this.config.runLifetime(lifetime => mark(lifetime))
+          : mark())
+        this.transportFailed.delete(operationId)
+      })
+      .catch(() => {
+        this.transportFailed.add(operationId)
+      })
+      .finally(() => {
+        this.transporting.delete(key)
+      })
   }
   resumeOperation(
     operationId: string,

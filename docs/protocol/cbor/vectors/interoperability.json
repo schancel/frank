@@ -19,17 +19,17 @@
   },
   "format": "frank-cbor-v1-interoperability",
   "hostile_manifest": {
-    "case_count": 420,
+    "case_count": 426,
     "reject_category_counts": {
       "frame": 13,
       "malformed": 31,
       "noncanonical": 28,
-      "resource": 30,
-      "schema": 151,
+      "resource": 31,
+      "schema": 153,
       "semantic": 58,
       "unsupported": 24
     },
-    "reject_count": 335
+    "reject_count": 338
   },
   "rust_origin_ids": [
     "rust-fixture-direct-message",

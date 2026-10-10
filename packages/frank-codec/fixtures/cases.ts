@@ -1472,7 +1472,7 @@ rej(
 )
 rej(
   't1-payments-empty',
-  'Type 1 with an empty payment list: the [1*64] lower bound is a schema error, not resource.',
+  'Type 1 at schema 1 with an empty payment list: the [1*64] lower bound is a schema error, not resource.',
   fr(1, deliveryPayload({ payments: [] })),
   'schema',
   '8.2',
@@ -4313,4 +4313,70 @@ acc(
   ),
   ['S10', 'S10a'],
   { prior: priorStmt },
+)
+
+// ---------------------------------------------------------------------------------------------
+// Type 1 at schema 2: the payment list may be empty or absent (an unpaid message). The relay
+// admits deliveries under this rule (frank-cbor `relay_context`); schema 1 is unchanged.
+// ---------------------------------------------------------------------------------------------
+
+/** A reader that reads type 1 at schema 2, where a delivery may carry no payment. */
+const UNPAID_READER = {
+  ...TS,
+  supported: PRE_TOPIC_SCHEMAS.map(s =>
+    s.typeId === 1 ? { ...s, schemaVersion: 2 } : s,
+  ),
+}
+const withoutPayments = (): ReturnType<typeof deliveryPayload> => {
+  const m = deliveryPayload()
+  m.delete(4)
+  return m
+}
+acc(
+  't1-schema2-payments-empty',
+  'Type 1 at schema 2 (min_reader 1) with an empty payment list: an unpaid message, read by a reader that supports type 1 at schema 2.',
+  fr(1, deliveryPayload({ payments: [] }), 2, 1),
+  ['V1', 'S3'],
+  UNPAID_READER,
+)
+acc(
+  't1-schema2-payments-absent',
+  'Type 1 at schema 2 with no payment list at all: field 4 is optional at schema 2 and reads as no payments.',
+  fr(1, withoutPayments(), 2, 1),
+  ['V1', 'S3'],
+  UNPAID_READER,
+)
+acc(
+  't1-schema2-payments-present',
+  'Type 1 at schema 2 with two payments: a paid delivery is also valid at schema 2.',
+  fr(1, deliveryPayload(), 2, 1),
+  ['V1', 'S3'],
+  UNPAID_READER,
+)
+rej(
+  't1-schema2-payments-65',
+  'Type 1 at schema 2 with 65 payments: the upper bound is unchanged.',
+  fr(1, deliveryPayload({ payments: 65 }), 2, 1),
+  'resource',
+  '8.1',
+  ['R2'],
+  UNPAID_READER,
+)
+rej(
+  't1-schema1-payments-absent',
+  'Type 1 at schema 1 with no payment list: field 4 is required at schema 1, also for a reader that supports schema 2.',
+  fr(1, withoutPayments()),
+  'schema',
+  '8.2',
+  ['S3'],
+  UNPAID_READER,
+)
+rej(
+  't1-schema2-payments-empty-schema1-reader',
+  'The unpaid schema-2 delivery read by a reader that supports type 1 only at schema 1: its schema-1 projection (V6.3) still requires a payment.',
+  fr(1, deliveryPayload({ payments: [] }), 2, 1),
+  'schema',
+  '8.2',
+  ['V6.3', 'S3'],
+  TS,
 )

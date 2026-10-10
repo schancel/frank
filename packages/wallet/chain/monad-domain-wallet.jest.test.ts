@@ -127,6 +127,32 @@ const expected = [
 
 afterEach(() => jest.restoreAllMocks())
 
+/** After a native send the wallet tells the account's other devices with a free note to itself.
+ * The note is started, not waited for: call this at wallet open, and its result when a test needs
+ * the notes started so far to have settled. */
+function watchNotes() {
+  // Every flush goes through `startSync`.
+  const started = jest.spyOn(EvmLegacyConsolidator.prototype, 'startSync')
+  return async () => {
+    for (const result of started.mock.results)
+      await Promise.resolve(result.value as unknown).catch(() => undefined)
+    for (const owner of new Set(started.mock.contexts)) await owner.drain()
+  }
+}
+/** Everything a native send hands the message path is that note: free, to the wallet itself. */
+function expectOnlyFreeNotes(
+  transport: jest.SpyInstance,
+  wallet: EvmChainWalletHandle,
+) {
+  for (const [params] of transport.mock.calls) {
+    expect(params.stampValue).toBe(0n)
+    expect(params.recipient.raw.toLowerCase()).toBe(
+      wallet.identity.address.raw.toLowerCase(),
+    )
+    expect(params.items).toEqual([expect.objectContaining({ type: 'wallet-sync' })])
+  }
+}
+
 test.each([
   ['pool', LevelSubAccountPoolStore.prototype],
   ['change', LevelChangePoolStore.prototype],
@@ -1525,6 +1551,7 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
       bundle,
       // Calls through: the real transport step, observed.
       transport: jest.spyOn(chain.directMessages, 'send'),
+      notesSettled: watchNotes(),
       admission: () =>
         bundle.runLifetime(lifetime =>
           Promise.resolve(bundle.inputAdmission.inspect(lifetime)),
@@ -1601,12 +1628,15 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
   // callback dispatched its own item to the pool (`processed` called once). This device's own
   // record is written by the local pass inside the send.
   //
-  // Changed again, on purpose: the send used to hand a wallet-sync note to the message path
-  // afterwards. A note is a paid message, so the wallet no longer sends one: nothing reaches the
-  // message path, and the member stays not sync-applied.
+  // Changed again, on purpose, twice. The send used to hand a PAID wallet-sync note to the
+  // message path; then none at all. It now sends a free note to itself, after it has resolved.
+  // No directory is installed here, so that note cannot be sent: the member stays not
+  // sync-applied, and the send is unaffected.
   expect(processed).not.toHaveBeenCalled()
-  expect(first.transport).not.toHaveBeenCalled()
-  expect(member.syncApplied).toBe(false)
+  await first.notesSettled()
+  expect(first.transport).toHaveBeenCalledTimes(1)
+  expectOnlyFreeNotes(first.transport, wallet)
+  expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
   return { ...first, rpc, sent, operation, open }
 }
 
@@ -1785,7 +1815,9 @@ test('a pool-sourced legacy send whose transfer is included resolves, with the r
       ).toMatchObject({
         txHash: first.operation.members[0]!.signed!.transactionHash,
       })
-    expect(first.transport).not.toHaveBeenCalled()
+    // Each resume tries the unsent note again; nothing else reaches the message path.
+    await first.notesSettled()
+    expectOnlyFreeNotes(first.transport, wallet)
     expect(sign).not.toHaveBeenCalled()
     expect(first.rpc.broadcast).not.toHaveBeenCalled()
     expect(putMany).not.toHaveBeenCalled()
@@ -1878,6 +1910,7 @@ async function composedWithProductionFundedPoolRow(dir: string) {
       bundle,
       rpc,
       transport: jest.spyOn(chain.directMessages, 'send'),
+      notesSettled: watchNotes(),
       admission: snapshot,
       /** The ready projection as plain data, so two sessions or two wallets can be compared. */
       obligations: async () => {
@@ -2020,8 +2053,16 @@ describe('recording a native spend from the journal under the input admission (#
       spentByMember(wallet.getNativeOperations!()[0]!),
     )
     expect(putMany).toHaveBeenCalledTimes(1)
-    // The later call transported nothing of the earlier operation.
-    expect(f.transport).not.toHaveBeenCalled()
+    // The later send is also where the earlier operation's note goes out: its pool member is
+    // recorded now, so the free note for it is sent. The main-sourced member has no pool row to
+    // tell other devices about and sends none.
+    await f.notesSettled()
+    expectOnlyFreeNotes(f.transport, wallet)
+    expect(
+      f.transport.mock.calls.map(([params]) => params.items[0].txHash),
+    ).toEqual([
+      wallet.getNativeOperations!()[0]!.members[0]!.signed!.transactionHash,
+    ])
     expect(await f.admission()).toMatchObject({ status: 'ready' })
     expect(wallet.pool.selectForStamp()).toBeUndefined()
     await wallet.close()
@@ -2056,10 +2097,10 @@ describe('recording a native spend from the journal under the input admission (#
       totalFeePaid: 21000n,
     })
     expect(seen).toEqual([spentByMember(operation!)])
-    // No note is sent after the send, so nothing reaches the message path and the member is
-    // not marked sync-applied.
-    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
-    expect(f.transport).not.toHaveBeenCalled()
+    // The free note is sent after the send has resolved; the member is then marked.
+    await f.notesSettled()
+    expectOnlyFreeNotes(f.transport, wallet)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(true)
   })
 
   // Contract test 26: restores what Stage 0b's test 10 refused. On main 72631f36 the item is

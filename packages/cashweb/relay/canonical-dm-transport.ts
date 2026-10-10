@@ -336,7 +336,7 @@ export function describeCanonicalParts(
     parts.delivery.length > CANONICAL_DM_MAX_BYTES ||
     parts.context.length > CANONICAL_DM_MAX_CONTEXT_BYTES ||
     !Array.isArray(parts.transactions) ||
-    parts.transactions.length < 1 ||
+    // None is the unpaid message; the count must still equal the delivery's payment members.
     parts.transactions.length > 64
   )
     invalid('Canonical part limits')
@@ -430,8 +430,8 @@ export function inspectCanonicalPair(
     )
   )
     invalid('Payload digest mismatch')
+  // No payment is a valid delivery (type 1 at schema 2): an unpaid message.
   if (
-    delivery.payments.length < 1 ||
     delivery.payments.length > 64 ||
     delivery.payments.some((member, i) => member.childIndex !== i)
   )
@@ -581,7 +581,7 @@ export function decodeCanonicalTransactions(
     return value
   }
   const count = length(4)
-  if (count < 1 || count > 64) invalid('Canonical transaction count')
+  if (count > 64) invalid('Canonical transaction count')
   const raws: Uint8Array[] = []
   for (let i = 0; i < count; i++) {
     const size = length(2)

@@ -182,6 +182,7 @@ import {
   CanonicalRecipientNotPublishedError,
   LevelOutgoingMessageStore,
   MemoryOutgoingMessageStore,
+  noticeOldLinkState,
   restoreOutgoingClaims,
   canonicalDirectMessages,
   installedMessageItemRegistry,
@@ -4518,6 +4519,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
               return fundingAhead;
             });
+            // State of the earlier send code is never silently ignored: named once, with how
+            // to reset it. Nothing is migrated or deleted.
+            if (storageLocation !== undefined)
+              await noticeOldLinkState(storageLocation);
             const messages =
               storageLocation !== undefined
                 ? await LevelOutgoingMessageStore.open(storageLocation)

@@ -4,6 +4,8 @@
  * surface are the offline stand-ins of `canonical-two-wallets.testutil` (unit seam). The same
  * behaviour on real chain software is `monad-parallel-send.anvil.jest.test.ts`.
  */
+import { mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
 import { Transaction, hexlify } from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
@@ -36,6 +38,7 @@ import {
   CanonicalRecipientUndeliverableError,
   CanonicalSenderUnpublishedError,
   REPLACED_AFTER_MS,
+  LevelOutgoingMessageStore,
 } from './monad-canonical-dm'
 
 jest.mock('../monad-provider', () =>
@@ -809,6 +812,48 @@ describe('parallel paid messages', () => {
       expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(2)
     },
   )
+
+  it('a wallet that still has the old link store says so once at open, names the reset, and touches nothing', async () => {
+    const opened = jest.spyOn(LevelOutgoingMessageStore, 'open')
+    await reopen()
+    const location = opened.mock.calls[0]![0]
+    const old = join(location, 'canonical-dm-workflow-links')
+    const notices = (warn: jest.SpyInstance) =>
+      warn.mock.calls
+        .map(call => String(call[0]))
+        .filter(text => text.includes('canonical-dm-workflow-links'))
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      // No old state: nothing is said.
+      expect(notices(warn)).toEqual([])
+      mkdirSync(old)
+      writeFileSync(join(old, 'MARKER'), 'left by the old send code')
+      await reopen()
+      expect(notices(warn)).toHaveLength(1)
+      const [notice] = notices(warn)
+      expect(notice).toContain(location)
+      expect(notice).toMatch(/no longer read/)
+      expect(notice).toMatch(/outgoing-messages-v1/)
+      expect(notice).toMatch(
+        /Development reset: close the wallet and delete the "canonical-dm-workflow-links" store/,
+      )
+      expect(notice).toMatch(
+        /holds no keys; the wallet's keys, roots and funded accounts are untouched/,
+      )
+      // Named once, not at every open; and nothing was migrated or deleted.
+      await reopen()
+      expect(notices(warn)).toHaveLength(1)
+      expect(readFileSync(join(old, 'MARKER'), 'utf8')).toBe(
+        'left by the old send code',
+      )
+    } finally {
+      warn.mockRestore()
+      opened.mockRestore()
+    }
+    // The wallet opens and sends as usual.
+    await fundAccounts(1)
+    await expect(send(1)).resolves.toMatchObject({ stampValueWei: STAMP })
+  })
 
   it('reopening with a message unresolved makes no request until the host ticks', async () => {
     await fundAccounts(1)

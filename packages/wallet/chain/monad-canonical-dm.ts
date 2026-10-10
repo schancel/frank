@@ -303,8 +303,55 @@ export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
 const UNPAID_PREFIX = 'unpaid-envelope:'
 /** Development reset: this directory holds only sent-message records, never a key. Deleting it
  * (with the wallet closed) forgets unfinished sends; funded accounts stay derivable from the
- * seed. The earlier `canonical-dm-workflow-links` directory is no longer read. */
+ * seed. The earlier `canonical-dm-workflow-links` directory is no longer read; a wallet that
+ * still has one says so at open ({@link noticeOldLinkState}). */
 export const OUTGOING_MESSAGE_NAMESPACE = 'outgoing-messages-v1'
+/** Where the earlier send code kept its payment links. Nothing reads it any more. */
+export const OLD_LINK_NAMESPACE = 'canonical-dm-workflow-links'
+const oldLinkStateNoticed = new Set<string>()
+
+/** Whether the earlier link store exists beside this wallet's stores. It is looked for, never
+ * opened: a Node wallet has it as a directory, a browser wallet as an IndexedDB database. */
+async function oldLinkStateExists(location: string): Promise<boolean> {
+  const name = join(location, OLD_LINK_NAMESPACE)
+  const globals = globalThis as {
+    window?: unknown
+    indexedDB?: { databases?: () => Promise<{ name?: string }[]> }
+  }
+  try {
+    if (globals.window !== undefined && globals.indexedDB !== undefined)
+      return ((await globals.indexedDB.databases?.()) ?? []).some(
+        database => database.name === `level-js-${name}`,
+      )
+    // Keep Node's filesystem module outside browser bundles.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return (require('fs') as typeof import('fs')).existsSync(name)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Wallet open: says, once per location in this process, that state of the earlier send code is
+ * still on disk and is not read. That state held the links between payment intents and
+ * messages for sends that had not finished; whatever such a send left unfinished is no longer
+ * resent or reconciled by this wallet. Nothing is migrated and nothing is deleted here. Returns
+ * whether the notice was given.
+ */
+export async function noticeOldLinkState(location: string): Promise<boolean> {
+  if (oldLinkStateNoticed.has(location) || !(await oldLinkStateExists(location)))
+    return false
+  oldLinkStateNoticed.add(location)
+  console.warn(
+    `[monad-canonical-dm] This wallet still has the old sent-message state "${OLD_LINK_NAMESPACE}" in ${location}. ` +
+      `It is no longer read: sent messages are now kept in "${OUTGOING_MESSAGE_NAMESPACE}", and a send the old code left unfinished is not resent or reconciled. ` +
+      `Development reset: close the wallet and delete the "${OLD_LINK_NAMESPACE}" store (that directory, or the IndexedDB database "level-js-${join(
+        location,
+        OLD_LINK_NAMESPACE,
+      )}"). It holds no keys; the wallet's keys, roots and funded accounts are untouched and stay derivable from the seed.`,
+  )
+  return true
+}
 export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   private readonly rows = new Map<string, StoredMessage>()
   private constructor(private readonly db: LevelDB) {}

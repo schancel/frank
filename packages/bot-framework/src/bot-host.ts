@@ -249,7 +249,7 @@ export class FrankBotHost {
   constructor(options: BotHostOptions) {
     const envConfig = loadMonadChainConfigFromEnv();
     const networkTag =
-      options.networkTag ?? (envConfig.networkTag as "MONT" | "MON1") ?? "MONT";
+      options.networkTag ?? (envConfig.networkTag as "MONT" | "MON1" | "MONR") ?? "MONT";
     const relayBaseUrl = options.relayBaseUrl ?? envConfig.relayBaseUrl;
     const rpcUrl =
       options.rpcUrl ??

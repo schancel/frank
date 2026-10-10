@@ -371,7 +371,9 @@ export async function openQwenCanonicalWallet(params: {
   chain: EvmChainConfig
   roots: MonadRootBundle
 }): Promise<QwenCanonicalWallet> {
-  if (params.chain.networkTag !== 'MONT' && params.chain.networkTag !== 'MON1')
+  if (params.chain.networkTag !== 'MONT' &&
+    params.chain.networkTag !== 'MON1' &&
+    params.chain.networkTag !== 'MONR')
     throw new QwenStartRefusal('network-not-monad')
   if (params.chain.walletStorageLocation === false)
     throw new QwenStartRefusal('wallet-storage-not-durable')
@@ -416,7 +418,7 @@ const REFUSAL_LOG_LIMIT = 1024
  */
 export function openQwenDirectory(params: {
   wallet: Pick<QwenCanonicalWallet, 'handle' | 'subject'>
-  networkTag: 'MONT' | 'MON1'
+  networkTag: 'MONT' | 'MON1' | 'MONR'
   /** The relay this bot lives on. Its entry is published to and peers are read from it. */
   relayBaseUrl: string
   /** Durable directory root, separate from wallet and bot state. */

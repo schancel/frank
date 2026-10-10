@@ -90,12 +90,14 @@ function invalid(message: string): never {
   throw new CanonicalTransportError('invalid', message)
 }
 export function canonicalNetworkDescriptor(
-  tag: 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet' | string,
+  tag: 'MONT' | 'MON1' | 'MONR' | 'monad-testnet' | 'monad-mainnet' | string,
 ) {
   if (tag === 'MONT' || tag === 'monad-testnet')
     return { tag: 'MONT', network: 'monad-testnet', chainId: 10143n } as const
   if (tag === 'MON1' || tag === 'monad-mainnet')
     return { tag: 'MON1', network: 'monad-mainnet', chainId: 143n } as const
+  if (tag === 'MONR' || tag === 'monad-regtest')
+    return { tag: 'MONR', network: 'monad-regtest', chainId: 20143n } as const
   return invalid('Unknown installed Monad network descriptor')
 }
 function concat(

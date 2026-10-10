@@ -195,10 +195,18 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                         Some(expected_caip2.as_str()),
                         "EVM CAIP-2 alias contradicts native chain ID"
                     );
-                    assert!(chain.identity_probes.iter().any(|probe| matches!(
-                        probe,
-                        ProtocolIdentityProbe::BlockHash { capability: ProtocolProxyCapability::JsonRpc, .. }
-                    )));
+                    // A public network pins its checkpoint block here. A regtest network is
+                    // created locally, so its operator supplies the block instead.
+                    assert!(chain.identity_probes.iter().any(|probe| match probe {
+                        ProtocolIdentityProbe::BlockHash {
+                            capability: ProtocolProxyCapability::JsonRpc,
+                            ..
+                        } => true,
+                        ProtocolIdentityProbe::OperatorBlockCheckpoint {
+                            capability: ProtocolProxyCapability::JsonRpc,
+                        } => chain.network == "regtest",
+                        _ => false,
+                    }));
                 }
                 ProtocolChainFamily::Bitcoin => {
                     assert!(chain.allowed_proxy_capabilities.iter().all(|capability| chain
@@ -768,7 +776,8 @@ impl fmt::Display for EvmRpcConfigError {
             Self::CheckpointMismatch(id) => {
                 write!(
                     f,
-                    "EVM checkpoint for {id:?} contradicts the protocol registry"
+                    "EVM checkpoint for {id:?} contradicts the protocol registry (a regtest row \
+                     needs checkpoint_block_number above 0 and checkpoint_block_hash)"
                 )
             }
             Self::InvalidUpstreamEnv(name) => {
@@ -876,7 +885,7 @@ impl EvmRpcConf {
             if chain.expected_chain_id == 0 || chain.max_get_logs_range == 0 {
                 return Err(EvmRpcConfigError::InvalidLimit("chain row"));
             }
-            let (checkpoint_height, checkpoint_hash) = protocol
+            let pinned = protocol
                 .identity_probes
                 .iter()
                 .find_map(|probe| match probe {
@@ -886,11 +895,26 @@ impl EvmRpcConf {
                         expected,
                     } => Some((*height, expected.as_str())),
                     _ => None,
-                })
-                .expect("validated EVM registry row must pin a JSON-RPC checkpoint");
-            if chain.checkpoint_block_number != Some(checkpoint_height)
-                || chain.checkpoint_block_hash.as_deref() != Some(checkpoint_hash)
-            {
+                });
+            let checkpoint_is_valid = match pinned {
+                Some((height, hash)) => {
+                    chain.checkpoint_block_number == Some(height)
+                        && chain.checkpoint_block_hash.as_deref() == Some(hash)
+                }
+                // A regtest row: the operator must name a block of the chain it started (not
+                // the genesis block, which every chain started from the same client shares).
+                None => {
+                    chain
+                        .checkpoint_block_number
+                        .is_some_and(|height| height > 0)
+                        && chain.checkpoint_block_hash.as_deref().is_some_and(|hash| {
+                            hash.len() == 66
+                                && hash.starts_with("0x")
+                                && hash[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
+                        })
+                }
+            };
+            if !checkpoint_is_valid {
                 return Err(EvmRpcConfigError::CheckpointMismatch(chain.id.clone()));
             }
         }
@@ -1646,6 +1670,26 @@ continuity_file = "/var/lib/frank/continuity"
             enabled.validate(),
             Err(EvmRpcConfigError::InvalidChainId(id)) if id == "monad-testnet"
         ));
+        enabled.chains.pop();
+
+        // A regtest row has no pinned checkpoint: the operator names a block of its own chain.
+        let regtest = &mut enabled.chains[0];
+        regtest.id = "monad-regtest".to_string();
+        regtest.expected_chain_id = 20_143;
+        let mismatch = Err(EvmRpcConfigError::CheckpointMismatch(
+            "monad-regtest".to_string(),
+        ));
+        regtest.checkpoint_block_number = Some(0);
+        assert_eq!(enabled.validate(), mismatch, "the shared genesis block");
+        enabled.chains[0].checkpoint_block_number = None;
+        assert_eq!(enabled.validate(), mismatch, "no height");
+        enabled.chains[0].checkpoint_block_number = Some(1);
+        enabled.chains[0].checkpoint_block_hash = None;
+        assert_eq!(enabled.validate(), mismatch, "no hash");
+        enabled.chains[0].checkpoint_block_hash = Some("0x1234".to_string());
+        assert_eq!(enabled.validate(), mismatch, "malformed hash");
+        enabled.chains[0].checkpoint_block_hash = Some(format!("0x{}", "ab".repeat(32)));
+        assert_eq!(enabled.validate(), Ok(()));
         Ok(())
     }
 
@@ -1653,7 +1697,7 @@ continuity_file = "/var/lib/frank/continuity"
     fn protocol_registry_is_unique_and_family_validation_fails_closed() {
         let registry = protocol_chain_registry();
         assert_eq!(registry.schema_version, 1);
-        assert_eq!(registry.chains.len(), 26);
+        assert_eq!(registry.chains.len(), 27);
         assert_eq!(
             registry
                 .chains

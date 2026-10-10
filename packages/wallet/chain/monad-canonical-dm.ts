@@ -363,7 +363,7 @@ export class LevelCanonicalLinkStore implements CanonicalLinkStore {
 
 /** Everything the composition root lends to this workflow for one live typed wallet. */
 export interface CanonicalMessagingOwner {
-  readonly installedNetworkTag: 'MONT' | 'MON1'
+  readonly installedNetworkTag: 'MONT' | 'MON1' | 'MONR'
   /** The wallet's installed relay origin; the canonical client submits only there. */
   readonly relayBaseUrl: string
   readonly identityAddress: string

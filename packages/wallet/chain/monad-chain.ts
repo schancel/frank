@@ -381,6 +381,16 @@ export function loadMonadChainConfigFromEnv(overrides?: {
       protocolIdentity?.networkTag ??
       readEnv("FRANK_NETWORK_TAG") ??
       "MONT",
+    // A regtest chain is new on every start, so its contracts are deployed per run and their
+    // addresses come with the run's configuration. Every other network uses the registry.
+    ...(rpcChain === "monad-regtest"
+      ? {
+          contracts: {
+            htlc: readEnv("MONAD_REGTEST_HTLC_ADDRESS"),
+            stateChannel: readEnv("MONAD_REGTEST_STATE_CHANNEL_ADDRESS"),
+          },
+        }
+      : {}),
     stampBurnAddress:
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
@@ -414,7 +424,7 @@ const privateTopicWallets = new WeakMap<
 >();
 const installedCanonicalWalletDescriptors = new WeakMap<
   object,
-  { networkTag: "MONT" | "MON1"; network: string; chainId: bigint }
+  { networkTag: "MONT" | "MON1" | "MONR"; network: string; chainId: bigint }
 >();
 /** Public local evidence only. No Current, enrollment, provider or financial effects. */
 export function prepareMonadRevisionZeroExport(
@@ -917,6 +927,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     config.rpcChain === "monad-testnet" ||
     (config.rpcChain?.includes("testnet") ?? false) ||
     (config.rpcChain?.includes("devnet") ?? false) ||
+    (config.rpcChain?.includes("regtest") ?? false) ||
     config.chainId === 10143 ||
     config.chainId === 10143n ||
     config.networkTag === "MONT";
@@ -1502,6 +1513,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         ? "monad-mainnet"
         : config.networkTag === "MONT"
         ? "monad-testnet"
+        : config.networkTag === "MONR"
+        ? "monad-regtest"
         : config.networkTag,
     chainId: BigInt(config.chainId),
     burnAddress: config.stampBurnAddress,
@@ -3757,7 +3770,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             );
           else if (
             material.canonicalRoles !== undefined &&
-            (config.networkTag === "MONT" || config.networkTag === "MON1")
+            (config.networkTag === "MONT" ||
+              config.networkTag === "MON1" ||
+              config.networkTag === "MONR")
           )
             installedCanonicalWalletDescriptors.set(wallet, {
               networkTag: config.networkTag,
@@ -3767,7 +3782,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           if (
             material.canonicalRoles !== undefined &&
             topicOwner.canonicalJournal !== undefined &&
-            (config.networkTag === "MONT" || config.networkTag === "MON1")
+            (config.networkTag === "MONT" ||
+              config.networkTag === "MON1" ||
+              config.networkTag === "MONR")
           ) {
             const canonicalRoles = material.canonicalRoles;
             const installedNetworkTag = config.networkTag;
@@ -4120,11 +4137,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     topics,
 
     getStateChannelAddress(): string {
-      return requireChainContract(contractChainIdentifier(), "stateChannel");
+      return (
+        config.contracts?.stateChannel ??
+        requireChainContract(contractChainIdentifier(), "stateChannel")
+      );
     },
 
     getHtlcAddress(): string {
-      return requireChainContract(contractChainIdentifier(), "htlc");
+      return (
+        config.contracts?.htlc ??
+        requireChainContract(contractChainIdentifier(), "htlc")
+      );
     },
   };
 }

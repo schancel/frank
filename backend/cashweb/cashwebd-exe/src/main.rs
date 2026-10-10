@@ -61,7 +61,7 @@ pub enum CashwebdExeError {
 
     #[error(
         "FRANK_NETWORK_TAG is set to a tag with no Frank-CBOR network identifier (known tags: \
-         MONT, MON1): refusing to start rather than guess a network"
+         MONT, MON1, MONR): refusing to start rather than guess a network"
     )]
     UnknownNetworkTagEnv,
 

@@ -13,6 +13,12 @@ export interface EvmChainConfig {
   relayBaseUrl: string;
   /** Frank network tag included in every DM envelope before hashing. */
   networkTag: string;
+  /**
+   * Contract addresses for a network whose contracts are deployed per run (a regtest chain is
+   * new on every start, so the registry has no record for it). Other networks take theirs from
+   * the registry and must not set this.
+   */
+  contracts?: { readonly stateChannel?: string; readonly htlc?: string };
   /** `0x`-prefixed Monad burn address Stamp/topic-vote burns are sent to (see
    * `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`). */
   stampBurnAddress: string;

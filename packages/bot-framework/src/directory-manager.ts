@@ -28,7 +28,7 @@ export class DirectoryManager {
 
   static create(params: {
     handle: EvmChainWalletHandle;
-    networkTag: "MONT" | "MON1";
+    networkTag: "MONT" | "MON1" | "MONR";
     relayBaseUrl: string;
     location: string;
     fetch?: DirectoryFetch;

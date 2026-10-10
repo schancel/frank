@@ -230,5 +230,15 @@
     }
   ],
   "bytecode": "0x",
-  "deployedBytecode": "0x"
+  "deployedBytecode": "0x",
+  "compiler": {
+    "version": "0.8.37+commit.f401782d.Emscripten.clang",
+    "settings": {
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "evmVersion": "cancun"
+    }
+  }
 }

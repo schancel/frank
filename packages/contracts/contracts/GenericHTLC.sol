@@ -84,6 +84,7 @@ contract GenericHTLC {
     error InvalidPayoutSum();
     error EmptyBatch();
     error TokenMismatch();
+    error Unauthorized();
 
     /**
      * @notice Locks funds (native coin or ERC-20 token) with a cryptographic hashlock, explicit refund address, and expiry timeout.
@@ -298,9 +299,16 @@ contract GenericHTLC {
 
     /**
      * @notice Multi-winner distribution for group table escrows and tournaments.
-     * Pools multiple locks sharing the same preimage and distributes funds directly
+     * Pools multiple locks sharing the same preimage and distributes the whole pool
      * to a list of recipients and amounts in a single atomic transaction.
-     * Any dust or remainder returns to the first lock's refund address.
+     *
+     * Only the recipient of every lock in the batch may call this. `withdraw` can be
+     * called by anyone because it always pays `lock.recipient`; here the caller chooses
+     * who is paid, so knowing the preimage is not enough: a preimage is public as soon
+     * as it appears in any pending transaction. A table that wants an arbiter to split
+     * the pot names that arbiter as the recipient of each player's lock.
+     *
+     * The payouts must add up to exactly the pooled amount.
      * @param lockIds Array of participant lock identifiers.
      * @param payouts Array of recipient addresses and their respective amounts.
      * @param preimage Secret bytes unlocking all specified locks.
@@ -317,6 +325,7 @@ contract GenericHTLC {
         for (uint256 i = 0; i < lockIds.length; i++) {
             Lock storage l = locks[lockIds[i]];
             if (l.sender == address(0)) revert LockNotFound();
+            if (l.recipient != msg.sender) revert Unauthorized();
             if (l.withdrawn) revert AlreadyWithdrawn();
             if (l.refunded) revert AlreadyRefunded();
             if (l.token != token) revert TokenMismatch();
@@ -336,7 +345,7 @@ contract GenericHTLC {
             totalPayout += payouts[j].amount;
         }
 
-        if (totalPayout > totalPool) revert InvalidPayoutSum();
+        if (totalPayout != totalPool) revert InvalidPayoutSum();
 
         for (uint256 j = 0; j < payouts.length; j++) {
             if (token == address(0)) {
@@ -345,19 +354,6 @@ contract GenericHTLC {
             } else {
                 bool pSuccess = IERC20(token).transfer(payouts[j].recipient, payouts[j].amount);
                 if (!pSuccess) revert TransferFailed();
-            }
-        }
-
-        // Any leftover remainder returns to the primary refund address
-        uint256 remainder = totalPool - totalPayout;
-        if (remainder > 0) {
-            address refundDest = locks[lockIds[0]].refundAddress;
-            if (token == address(0)) {
-                (bool remSuccess, ) = payable(refundDest).call{value: remainder}("");
-                if (!remSuccess) revert TransferFailed();
-            } else {
-                bool remSuccess = IERC20(token).transfer(refundDest, remainder);
-                if (!remSuccess) revert TransferFailed();
             }
         }
 

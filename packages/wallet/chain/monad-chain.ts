@@ -75,13 +75,16 @@ import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
  * recipient's, and decrypts. The decrypted JSON is not delivered as it is: every item goes
  * through the wire module's receive rule (`receiveLegacyItems`), the same one a canonical message's
  * items go through, so a type that path does not carry, or an item its plugin refuses, arrives as
- * an `unsupported` item. The `stampValueWei` of a legacy message is always `0n` and its
- * `stampPayments` empty: the raw transactions a legacy message carries are its SENDER'S CLAIM. The
- * relay delivers a legacy message to the inbox even while those payments are pending or after
- * they were terminally rejected (`backend/cashweb/cashweb-registry/src/http/monad_message.rs`),
- * and this wallet does not check them against the chain, so nothing here reports them as money
- * received. Payments to this wallet's derived stamp addresses are still recorded in the
- * stamp-payment journal as `discovered`, for recovery, which reads the chain itself.
+ * an `unsupported` item. The `stampValueWei` of a legacy message is always `0n`: the raw
+ * transactions a legacy message carries are its SENDER'S CLAIM. The relay delivers a legacy
+ * message to the inbox even while those payments are pending or after they were terminally
+ * rejected (`backend/cashweb/cashweb-registry/src/http/monad_message.rs`), and this wallet does
+ * not check them against the chain, so nothing here reports them as money received. Its
+ * `stampPayments` still list where those transactions pay, because a stamp address is derived
+ * from the message and cannot be found again from the seed alone: the list is what lets the
+ * funds be swept to a seed-derived address before the message is deleted. The sweep reads the
+ * chain for what is really there. Payments to this wallet's derived stamp addresses are also
+ * recorded in the stamp-payment journal as `discovered`.
  *
  * ## Canonical Forum topics
  *
@@ -109,6 +112,7 @@ import {
   DirectMessageReceived,
   DirectMessageSendResult,
   ProfileInfo,
+  StampPaymentInfo,
   TopicBroadcastClient,
   TopicPostOutcomeUnknownError,
   NativeWalletHandle,
@@ -1246,16 +1250,29 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
         }
 
+        // Where the carried transactions pay, kept so the funds can be swept before the message
+        // is deleted (see this file's header). Not an amount received.
+        const stampPayments: StampPaymentInfo[] = [];
+        for (const payment of record.message.stampPayments) {
+          const tx = Transaction.from(hexlify(payment.rawTx));
+          if (tx.hash !== null && tx.to !== null) {
+            stampPayments.push({
+              txHash: tx.hash,
+              destinationAddress: tx.to,
+              valueWei: tx.value,
+            });
+          }
+        }
+
         received.push({
           senderAddress: toChainAddress(envelope.from),
           recipientAddress: toChainAddress(envelope.to),
           items,
           payloadDigest: payloadHashHex,
-          // Unverified on this transport, so not reported: the transactions a legacy message
-          // carries are its sender's claim (see this file's header). Nothing was shown to have
-          // been paid.
+          // Unverified on this transport, so not reported as received: the transactions a legacy
+          // message carries are its sender's claim. Nothing was shown to have been paid.
           stampValueWei: 0n,
-          stampPayments: [],
+          stampPayments,
           receivedTime: record.timestamp,
         });
       }

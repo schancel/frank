@@ -964,7 +964,20 @@ describe("createEvmChain: directMessages", () => {
     expect(received).toHaveLength(1);
     expect(parsedTx1.value + parsedTx2.value).toBe(80235n);
     expect(received[0].stampValueWei).toBe(0n);
-    expect(received[0].stampPayments).toEqual([]);
+    // Where they pay is still listed: a stamp address is derived from the message, so this list
+    // is what lets the funds be swept to a seed-derived address before the message is deleted.
+    expect(received[0].stampPayments).toEqual([
+      {
+        txHash: parsedTx1.hash,
+        destinationAddress: parsedTx1.to,
+        valueWei: parsedTx1.value,
+      },
+      {
+        txHash: parsedTx2.hash,
+        destinationAddress: parsedTx2.to,
+        valueWei: parsedTx2.value,
+      },
+    ]);
 
     expect(received[0].items).toEqual([{ type: "text", text: "hello alice" }]);
     expect(received[0].senderAddress.raw.toLowerCase()).toBe(

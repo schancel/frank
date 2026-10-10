@@ -365,6 +365,9 @@ export default {
     confirmSeed: 'Confirmer la phrase de récupération',
     balanceLoading: 'Chargement du solde…',
     balanceUnavailable: 'Solde indisponible.',
+    cordoned: '{amount} mis à l’écart',
+    cordonedTooltip:
+      'Reçu à votre adresse de profil. Le portefeuille surveille ces fonds mais ne les dépense pas.',
     tokenBalancesLoading: 'Chargement des soldes de jetons…',
     tokenBalancesUnavailable: 'Soldes de jetons indisponibles.',
     tokenBalancesStale:

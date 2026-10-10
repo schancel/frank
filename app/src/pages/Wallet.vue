@@ -108,13 +108,29 @@
                     >
                       {{
                         balanceObservation
-                          ? balanceObservation.formattedBalance
+                          ? balanceObservation.cordoned
+                            ? balanceObservation.cordoned.formattedTotal
+                            : balanceObservation.formattedBalance
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
                                 : 'walletPanel.balanceUnavailable',
                             )
                       }}
+                      <span
+                        v-if="balanceObservation && balanceObservation.cordoned"
+                        class="text-weight-regular text-grey-7"
+                        data-testid="wallet-balance-cordoned"
+                      >
+                        ({{
+                          $t('walletPanel.cordoned', {
+                            amount: balanceObservation.cordoned.formattedAmount,
+                          })
+                        }})
+                        <q-tooltip>{{
+                          $t('walletPanel.cordonedTooltip')
+                        }}</q-tooltip>
+                      </span>
                     </div>
                     <div
                       class="text-caption text-primary cursor-pointer flex items-center justify-center q-gutter-xs q-mt-xs"

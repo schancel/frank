@@ -51,6 +51,40 @@ const formattedBalance = computed(
   () =>
     `${activeChain.toDisplayAmount(balance.value ?? 0n)} ${activeChain.unit}`,
 )
+// Funds sitting at a typed account's profile address. The wallet watches them but never spends
+// them, and they are NOT part of `balance`: anything deciding whether a send is affordable keeps
+// reading `balance`. Only the balance display adds them, marked as cordoned.
+const cordoned = ref<bigint>(0n)
+const formattedCordoned = computed(
+  () => `${activeChain.toDisplayAmount(cordoned.value)} ${activeChain.unit}`,
+)
+const formattedTotal = computed(
+  () =>
+    `${activeChain.toDisplayAmount((balance.value ?? 0n) + cordoned.value)} ${
+      activeChain.unit
+    }`,
+)
+
+/** The profile address's current balance for an account whose receive address differs from it
+ * (a typed account); zero when they are the same address, which the wallet balance already
+ * covers. A read only. */
+export async function readCordonedBalance(wallet: unknown): Promise<bigint> {
+  const handle = wallet as {
+    identity?: { address?: { raw?: string } }
+    provider?: { getBalance?(address: string): Promise<bigint> }
+    getReceiveAddress?(): Promise<{ raw: string }>
+  }
+  const profile = handle?.identity?.address?.raw
+  if (
+    !profile ||
+    typeof handle.provider?.getBalance !== 'function' ||
+    typeof handle.getReceiveAddress !== 'function'
+  )
+    return 0n
+  const receive = (await handle.getReceiveAddress()).raw
+  if (receive.toLowerCase() === profile.toLowerCase()) return 0n
+  return handle.provider.getBalance(profile)
+}
 
 let consumers = 0
 let requestId = 0
@@ -113,6 +147,7 @@ async function fetchBalance(force: boolean) {
     // Wallet changed: drop the old value and invalidate anything still in flight for it.
     walletKey = key
     balance.value = null
+    cordoned.value = 0n
     hasError.value = false
     failures = 0
     requestId++
@@ -130,6 +165,10 @@ async function fetchBalance(force: boolean) {
     const next = await activeChain.nativeTransfers.getBalance({ wallet })
     if (!isCurrent()) return
     balance.value = next
+    // Best effort: a failed read keeps the last cordoned amount and never fails the balance.
+    const held = await readCordonedBalance(wallet).catch(() => undefined)
+    if (!isCurrent()) return
+    if (held !== undefined) cordoned.value = held
     hasError.value = false
     failures = 0
   } catch (err) {
@@ -215,6 +254,7 @@ function acquire() {
         const [oldRev, oldAccStatus, oldMsgStatus] = oldValue ?? []
         if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
           balance.value = null
+          cordoned.value = 0n
           hasError.value = false
           requestId++
           pending = false
@@ -241,6 +281,7 @@ function release() {
   window.removeEventListener(APP_STATE_EVENT, onAppState)
   backgrounded = false
   balance.value = null
+  cordoned.value = 0n
   hasError.value = false
   walletKey = undefined
   // Invalidate anything in flight so a fresh first consumer never inherits a stale guard.
@@ -257,6 +298,9 @@ export function useBalance() {
   return {
     balance: readonly(balance),
     formattedBalance,
+    cordoned: readonly(cordoned),
+    formattedCordoned,
+    formattedTotal,
     loaded,
     isEmpty,
     hasError,

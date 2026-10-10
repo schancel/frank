@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { networkInterfaces, tmpdir } from 'os'
 import { join } from 'path'
 
-import { Transaction, Wallet } from 'ethers'
+import { JsonRpcProvider, Transaction, Wallet } from 'ethers'
 
 import chainRegistry from '../../../docs/protocol/chains/v1.json'
 import { FakeRpc, startFakeRpc } from './fake-rpc'
@@ -62,6 +62,41 @@ describe('fake chain RPC', () => {
       expect((await rpc(fake, 'eth_getBlockByNumber', [tag, false])).result.hash).toBe(
         `0x${'11'.repeat(32)}`,
       )
+    }
+  })
+
+  // The wallet only records a native transfer as included when the node returns the very
+  // transaction it signed (same signature and fee fields), in the receipt's block.
+  it('returns a mined transaction exactly as it was signed, in the block its receipt names', async () => {
+    const provider = new JsonRpcProvider(fake.url, 10143, { staticNetwork: true })
+    try {
+      const legacy = await rich.signTransaction({
+        type: 0,
+        chainId: 10143,
+        nonce: 1,
+        to: poor.address,
+        value: 7n,
+        gasLimit: 21000,
+        gasPrice: 50n * 10n ** 9n,
+      })
+      for (const raw of [(await transfer(rich, poor.address, 5n, 0)).raw, legacy]) {
+        const hash = Transaction.from(raw).hash as string
+        expect((await rpc(fake, 'eth_sendRawTransaction', [raw])).result).toBe(hash)
+        const [found, receipt] = await Promise.all([
+          provider.getTransaction(hash),
+          provider.getTransactionReceipt(hash),
+        ])
+        expect(Transaction.from(found!).serialized).toBe(raw)
+        expect(found!.from).toBe(rich.address)
+        expect(found!.blockHash).toBe(receipt!.blockHash)
+        expect(found!.blockNumber).toBe(receipt!.blockNumber)
+        expect(found!.index).toBe(receipt!.index)
+        const latest = await provider.getBlock('latest')
+        expect(receipt!.blockNumber).toBeLessThanOrEqual(latest!.number)
+        expect((await provider.getBlock(receipt!.blockNumber))!.hash).toBe(receipt!.blockHash)
+      }
+    } finally {
+      provider.destroy()
     }
   })
 

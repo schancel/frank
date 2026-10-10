@@ -731,6 +731,97 @@ describe("FrankBotHost Reliability Features", () => {
     });
   });
 
+  describe("Faucet messaging account funding", () => {
+    // The faucet pays grants straight from the funding wallet, but its welcome message is paid
+    // like any bot's: from stamp accounts funded by its own receive address.
+    it("funds the faucet's receive address so its welcome message can be paid, and nothing else", async () => {
+      const faucet: FrankBotDefinition = {
+        id: "faucet",
+        getProfile: () => ({ name: "Faucet", bot: true }),
+        onMessage: async () => [],
+      };
+      const receive = "0x8888888888888888888888888888888888888888";
+      mockGetReceiveAddress.mockResolvedValue({ raw: receive });
+      const mockSendTransaction = jest.fn().mockResolvedValue({
+        wait: jest.fn().mockResolvedValue({}),
+      });
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/faucet-fund-test`,
+        fundingPrivateKeyHex: "0x" + "22".repeat(32),
+      });
+      (host as any).provider = {
+        getBalance: jest.fn((addr: string) =>
+          Promise.resolve(
+            addr === "0x1111111111111111111111111111111111111111"
+              ? 5_000_000_000_000_000_000n
+              : 0n
+          )
+        ),
+      };
+      (host as any).fundingWallet = {
+        address: "0x1111111111111111111111111111111111111111",
+        sendTransaction: mockSendTransaction,
+      };
+      (host as any).nonceSequencer = {
+        withNonce: (run: (nonce: number) => Promise<void>) => run(0),
+      };
+      await host.register(faucet);
+
+      expect(mockSendTransaction).toHaveBeenCalledTimes(1);
+      expect(mockSendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: receive,
+          value: 500_000_000_000_000_000n,
+        })
+      );
+      await host.stop();
+    });
+  });
+
+  describe("A bot's own sent messages in its mailbox", () => {
+    // The mailbox scan returns what the bot sent as well as what it received. Its own sends are
+    // not inbound work and not an anomaly: every poll used to warn about each of them.
+    it("are skipped without a warning and without running a handler", async () => {
+      const onMessage = jest.fn();
+      const bot: FrankBotDefinition = {
+        id: "own-sends-bot",
+        getProfile: () => ({ name: "OwnSends", bot: true }),
+        onMessage,
+      };
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/own-sends-test`,
+      });
+      await host.register(bot);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([
+          {
+            outbound: true,
+            senderAddress: { raw: mockLocalAddress },
+            senderPublicKey: getBytes("0x" + mockLocalSubject),
+            recipientPublicKey: getBytes(
+              mockPeer.signingKey.compressedPublicKey
+            ),
+            recipientAddress: { raw: mockPeer.address.toLowerCase() },
+            messageId: "03030303-0303-0303-0303-030303030303",
+            conversationId: "01010101-0101-0101-0101-010101010101",
+            items: [{ type: "text", text: "welcome" }],
+            payloadDigest: "55".repeat(32),
+            receivedTime: Date.now(),
+          },
+        ]);
+        await (host as any).pollAllBots();
+        expect(onMessage).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+        await host.stop();
+      }
+    });
+  });
+
   describe("Interrupted handler admission", () => {
     it("holds a failed handler across every subsequent poll without marking it processed", async () => {
       let callCount = 0;

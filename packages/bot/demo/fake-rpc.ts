@@ -246,15 +246,29 @@ export async function startFakeRpc(params: {
           input: t.data,
           nonce: hex(t.nonce),
           gas: hex(t.gasLimit),
-          gasPrice: hex(t.maxFeePerGas ?? 1n),
+          // The fee fields and signature are the signed ones: a wallet that compares what the
+          // node holds with what it signed (native transfer inclusion) must find them equal.
+          gasPrice: hex(t.gasPrice ?? t.maxFeePerGas ?? 1n),
+          ...(t.maxFeePerGas !== null
+            ? {
+                maxFeePerGas: hex(t.maxFeePerGas),
+                maxPriorityFeePerGas: hex(t.maxPriorityFeePerGas ?? 0n),
+              }
+            : {}),
+          ...(t.accessList !== null ? { accessList: t.accessList } : {}),
           chainId: hex(t.chainId),
           type: hex(t.type ?? 2),
           blockHash: BLOCK_HASH,
           blockNumber: hex(1000),
           transactionIndex: '0x0',
-          v: '0x0',
-          r: '0x1',
-          s: '0x1',
+          ...(t.signature
+            ? {
+                v: hex(t.type === 0 ? t.signature.networkV ?? t.signature.v : t.signature.yParity),
+                r: t.signature.r,
+                s: t.signature.s,
+                yParity: hex(t.signature.yParity),
+              }
+            : { v: '0x0', r: '0x1', s: '0x1' }),
         }
       }
       case 'eth_getTransactionReceipt': {

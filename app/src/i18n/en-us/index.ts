@@ -358,6 +358,9 @@ export default {
     confirmSeed: 'Confirm recovery phrase',
     balanceLoading: 'Loading balance…',
     balanceUnavailable: 'Balance unavailable.',
+    cordoned: '{amount} cordoned',
+    cordonedTooltip:
+      'Received at your profile address. The wallet watches these funds but does not spend them.',
     tokenBalancesLoading: 'Loading token balances…',
     tokenBalancesUnavailable: 'Token balances unavailable.',
     tokenBalancesStale:

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import {
+  mkdir,
   mkdtemp,
   writeFile,
   readFile,
@@ -8,13 +9,26 @@ import {
   open,
   stat,
 } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 const origin = process.env.ACCOUNT_APP_ORIGIN ?? 'http://localhost:8080'
 const directory = await mkdtemp(join(tmpdir(), 'frank-e2e-run-'))
-const screenshotDir =
-  '/Users/shammah/.gemini/antigravity/brain/c14f27e3-3a56-4261-89af-3d2fef900992/e2e_screenshots'
+// Where screenshots go; defaults to a folder inside this run's temp directory.
+const screenshotDir = resolve(
+  process.env.E2E_SCREENSHOT_DIR ?? join(directory, 'screenshots'),
+)
+await mkdir(screenshotDir, { recursive: true })
+// The demo launcher writes its logs under `<state dir>/logs`; the state dir defaults to ~/.frank-demo.
+const logsDir = resolve(
+  process.env.E2E_BACKEND_LOGS_DIR ??
+    join(
+      process.env.FRANK_DEMO_STATE_DIR ?? join(homedir(), '.frank-demo'),
+      'logs',
+    ),
+)
+// The fake chain started by `yarn demo --fake-chain`; only used to request simulated funds.
+const fakeRpcUrl = process.env.E2E_FAKE_RPC_URL ?? 'http://127.0.0.1:8545'
 const executable =
   process.env.CUSTODY_CHROME ??
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -272,7 +286,6 @@ async function captureScreenshot(filename) {
 }
 
 async function getLogOffsets() {
-  const logsDir = '/Users/shammah/.frank-demo/logs'
   const offsets = new Map()
   try {
     const logFiles = await readdir(logsDir)
@@ -286,8 +299,10 @@ async function getLogOffsets() {
 }
 
 async function inspectBackendLogs(startOffsets = new Map()) {
-  const logsDir = '/Users/shammah/.frank-demo/logs'
-  const logFiles = await readdir(logsDir)
+  const logFiles = await readdir(logsDir).catch(() => {
+    console.warn(`⚠️ No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR`)
+    return []
+  })
   const backendErrors = []
   for (const file of logFiles) {
     if (!file.endsWith('.log')) continue
@@ -323,12 +338,110 @@ async function stop() {
   }
 }
 
+const results = []
+
+/** Runs one scenario; a failure is recorded and the run continues with the next one. */
+async function scenario(name, body) {
+  console.log(`\n--- SCENARIO ${name} ---`)
+  try {
+    const detail = await body()
+    results.push([name, 'PASS', detail ?? ''])
+    console.log(`✅ ${name}: ${detail ?? ''}`)
+  } catch (err) {
+    results.push([name, 'FAIL', err.message.split('\n')[0]])
+    console.error(
+      `❌ ${name}: ${err.message.split('\n').slice(0, 3).join(' ')}`,
+    )
+    await captureScreenshot(
+      `fail_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}.png`,
+    ).catch(() => {})
+  }
+}
+
+function messageCount() {
+  return evaluate(
+    `document.querySelectorAll('.chat-message-list .q-message').length`,
+  )
+}
+
+/** Opens a conversation the way a user does: from the chat list, by the peer's name. A fresh demo
+ * has fresh bot addresses, so nothing here is addressed by a hard-coded one. */
+async function openConversation(name) {
+  await evaluate(`location.hash = '#/chat'`)
+  await until(
+    `[...document.querySelectorAll('#rail-panel-chats .q-item')].some(e => e.innerText.trim().startsWith(${JSON.stringify(
+      name,
+    )}))`,
+    30000,
+    `conversation with ${name} in the chat list`,
+  )
+  await evaluate(
+    `[...document.querySelectorAll('#rail-panel-chats .q-item')].find(e => e.innerText.trim().startsWith(${JSON.stringify(
+      name,
+    )})).click()`,
+  )
+  await until(
+    `location.hash.length > '#/chat/'.length && document.querySelector('.chat-input-field')`,
+    15000,
+    `${name} chat opened`,
+  )
+  await new Promise(r => setTimeout(r, 1500))
+  return evaluate('location.hash')
+}
+
+/** Sends in the open chat; milliseconds from pressing send until it shows as sent, and until the
+ * peer's reply is on screen (undefined when it did not happen in time). */
+async function timedSend(text, timeoutMs) {
+  const before = await messageCount()
+  await typeInput('.chat-input-field input, .chat-input-field textarea', text)
+  await click('.chat-send-btn')
+  const start = Date.now()
+  let shown, sent, reply
+  while (Date.now() - start < timeoutMs && reply === undefined) {
+    const now = await evaluate(
+      `(() => { const l = document.querySelector('.chat-message-list'); return { n: l.querySelectorAll('.q-message').length, sending: l.innerText.includes('Sending') } })()`,
+    )
+    if (shown === undefined && now.n > before) shown = Date.now() - start
+    if (shown !== undefined && sent === undefined && !now.sending)
+      sent = Date.now() - start
+    if (sent !== undefined && now.n >= before + 2) reply = Date.now() - start
+    await new Promise(r => setTimeout(r, 100))
+  }
+  console.log(`"${text}": sent ${sent} ms, reply ${reply} ms`)
+  return { sent, reply }
+}
+
+/** Fake chain only: asks the launcher's local funding service for 1 simulated MON at `address`
+ * (what `packages/bot/demo/fund-demo.ts` does). False when there is no such service. */
+async function demoCredit(address) {
+  try {
+    const url = `${fakeRpcUrl}/_ctl/demo-funding`
+    const capability = await (await fetch(url)).json()
+    if (capability?.kind !== 'frank-simulated-ledger-v1') return false
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-frank-demo-funding': capability.token,
+      },
+      body: JSON.stringify({
+        evmReceiveAddress: address,
+        amountWei: capability.amountWei,
+      }),
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
 // ---------------------- TEST SUITE EXECUTION ----------------------
 
 async function run() {
   console.log(
-    '🚀 Starting Autonomous Full-Stack E2E Browser Testing against http://localhost:8080',
+    `🚀 Starting Autonomous Full-Stack E2E Browser Testing against ${origin}`,
   )
+  console.log(`Screenshots: ${screenshotDir}\nBackend logs: ${logsDir}`)
   const startTime = Date.now()
   const logOffsets = await getLogOffsets()
 
@@ -416,204 +529,288 @@ async function run() {
     await new Promise(r => setTimeout(r, 2000))
     await captureScreenshot('01_account_created.png')
 
-    // SCENARIO 2: FAUCET AUTO-DRIP VERIFICATION
-    console.log('\n--- SCENARIO 2: Faucet Auto-Drip Verification ---')
-    console.log('Waiting for faucet auto-drip balance update...')
-    await until(
-      `(() => {
-        const balanceEl = document.querySelector('[data-testid="wallet-balance"]') || document.querySelector('[data-test="wallet-balance"]');
-        if (balanceEl) {
-          const m = balanceEl.innerText.match(/([0-9]+(?:\\.[0-9]+)?)\\s*MONT?/);
-          if (m && parseFloat(m[1]) >= 0.01) return true;
-        }
-        return false;
-      })()`,
-      60000,
-      'faucet balance arrival in wallet-balance element',
-    )
-    const balanceText = await evaluate(`(() => {
-      const balanceEl = document.querySelector('[data-testid="wallet-balance"]') || document.querySelector('[data-test="wallet-balance"]');
-      if (balanceEl) {
-        const m = balanceEl.innerText.match(/([0-9]+(?:\\.[0-9]+)?)\\s*MONT?/);
-        if (m) return m[0];
+    results.push([
+      '1 onboarding',
+      'PASS',
+      'landed on ' + (await evaluate('location.hash')),
+    ])
+
+    // SCENARIO 2: what a new account has, with no manual step
+    await scenario('2 new user funds', async () => {
+      const ids = await evaluate(
+        `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => { const w = await m.accountSession.getWallet(); return { profile: w.identity.address.raw, receive: (await w.getReceiveAddress()).raw } })`,
+      )
+      console.log(`profile ${ids.profile}  receive ${ids.receive}`)
+      await evaluate(`location.hash = '#/wallet'`)
+      // The faucet pays the profile address today: shown as cordoned, not spendable.
+      await until(
+        `/cordoned/.test(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '') || parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') > 0`,
+        60000,
+        'any funds shown on the wallet page',
+      )
+      const shown = await evaluate(
+        `document.querySelector('[data-testid="wallet-balance"]').innerText.replace(/\\s+/g, ' ').trim()`,
+      )
+      await captureScreenshot('02_wallet_new_user.png')
+      const spendable = BigInt(
+        await evaluate(
+          `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
+        ),
+      )
+      let note = `wallet page shows "${shown}"; spendable ${spendable} wei`
+      if (spendable === 0n) {
+        // Nothing reaches the receive address on its own. With the fake chain, credit it
+        // explicitly (the documented fund-demo step) so the remaining scenarios can run.
+        const credited = await demoCredit(ids.receive)
+        if (!credited)
+          throw new Error(
+            `${note}; no fake-chain funding service at ${fakeRpcUrl}`,
+          )
+        await until(
+          `parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') >= 1`,
+          30000,
+          'simulated credit on the wallet page',
+        )
+        await captureScreenshot('02_wallet_after_simulated_credit.png')
+        throw new Error(
+          `${note}. NOT spendable without a manual step; continued after an explicit simulated credit of the receive address`,
+        )
       }
-      return 'balance detected';
-    })()`)
-    console.log(`✅ Faucet auto-drip confirmed! Balance: ${balanceText}`)
-    await captureScreenshot('02_faucet_balance.png')
+      return note
+    })
 
-    // SCENARIO 3: NAVIGATION & CURATED BOT BADGING
-    console.log('\n--- SCENARIO 3: Navigation & Curated Badging ---')
-    // Click Contacts rail tab
-    await evaluate(`(() => {
-      const tab = document.querySelector('#rail-tab-contacts') || document.querySelector('[data-testid="icon-rail"]');
-      if (tab) tab.click();
-      else location.hash = '#/contacts';
-    })()`)
-    await new Promise(r => setTimeout(r, 2000))
-    await captureScreenshot('03_contacts_view.png')
+    // SCENARIO 3: Qwen, with timings
+    await scenario('3 qwen', async () => {
+      await openConversation('Qwen')
+      const timings = []
+      for (let i = 1; i <= 3; i++)
+        timings.push(await timedSend(`What is Frank? (${i})`, 40000))
+      await captureScreenshot('03_qwen.png')
+      if (timings.some(t => t.reply === undefined))
+        throw new Error('no reply: ' + JSON.stringify(timings))
+      return timings
+        .map(t => `sent ${t.sent} ms, reply ${t.reply} ms`)
+        .join('; ')
+    })
 
-    const hasContacts = await evaluate(
-      `document.body.innerText.includes('Picture') || document.body.innerText.includes('Vendor') || document.body.innerText.includes('Blackjack') || document.body.innerText.includes('Qwen')`,
-    )
-    console.log(
-      `✅ Contacts page rendered. Bot entries present: ${hasContacts}`,
-    )
-
-    // Check Wallet view
-    await evaluate(`(() => {
-      const tab = document.querySelector('#rail-tab-wallet');
-      if (tab) tab.click();
-      else location.hash = '#/wallet';
-    })()`)
-    await new Promise(r => setTimeout(r, 2000))
-    await captureScreenshot('03_wallet_view.png')
-    console.log('✅ Wallet view rendered without crashes')
-
-    // SCENARIO 4: PICTURE SHOP (VENDOR) BOT CATALOG & MESSAGING
-    console.log('\n--- SCENARIO 4: Picture Shop Bot (Vendor) Interaction ---')
-    const vendorAddress = '0x35dD121885Edd839Ed8D6f69d8E63d6E87bC20eA'
-    await evaluate(`location.hash = '#/chat/${vendorAddress}'`)
-    await until(
-      `document.querySelector('.chat-input-field')`,
-      15000,
-      'chat page loaded',
-    )
-    await new Promise(r => setTimeout(r, 2000))
-
-    // Send "hello" to Picture Shop
-    console.log('Sending "hello" to Picture Shop...')
-    await sendChatMessage('hello')
-    console.log('✅ Message "hello" dispatched!')
-
-    // Wait for response or catalog
-    console.log('Waiting for Picture Shop response or catalog...')
-    try {
+    // SCENARIO 4: blackjack against the hosted dealer, from the dealer's own challenge card
+    await scenario('4 blackjack', async () => {
+      await openConversation('Blackjack')
+      await captureScreenshot('04_blackjack_challenge.png')
+      await typeInput('[data-testid="blackjack-bet-amount"]', '0.02')
+      await click('[data-testid="blackjack-bet"]')
       await until(
-        `(() => {
-          const list = document.querySelector('.chat-message-list');
-          return list && (list.innerText.includes('Welcome') || list.innerText.includes('Catalog') || list.querySelector('.digital-goods') || list.children.length >= 2);
-        })()`,
-        30000,
-        'picture shop catalog or reply',
+        `document.querySelector('[data-testid="blackjack-stand"], [data-testid="blackjack-outcome"]')`,
+        45000,
+        'cards dealt',
       )
-      console.log('✅ Picture Shop response arrived in chat message list!')
-    } catch (e) {
-      console.warn('⚠️ Timed out waiting for catalog in UI:', e.message)
-    }
-    await captureScreenshot('04_picture_shop_chat.png')
+      await captureScreenshot('04_blackjack_dealt.png')
+      for (let step = 0; step < 6; step++) {
+        if (
+          await evaluate(
+            `!!document.querySelector('[data-testid="blackjack-outcome"]')`,
+          )
+        )
+          break
+        const total = await evaluate(
+          `(() => { const m = [...document.querySelectorAll('[data-testid="blackjack-line"]')].map(e => e.innerText).reverse().find(t => /^Player:/.test(t)); return m ? Number(/\\((\\d+)\\)/.exec(m)?.[1] ?? 0) : 0 })()`,
+        )
+        const move = total > 0 && total < 12 ? 'hit' : 'stand'
+        const before = await messageCount()
+        await click(`[data-testid="blackjack-${move}"]`)
+        await until(
+          `document.querySelectorAll('.chat-message-list .q-message').length >= ${
+            before + 2
+          }`,
+          45000,
+          `dealer answer to ${move}`,
+        )
+        await new Promise(r => setTimeout(r, 800))
+        await captureScreenshot(`04_blackjack_${step + 1}_${move}.png`)
+      }
+      const outcome = await evaluate(
+        `[...document.querySelectorAll('[data-testid="blackjack-outcome"], [data-testid="blackjack-payout"]')].map(e => e.innerText).join(' ')`,
+      )
+      if (!outcome) throw new Error('hand did not reach an outcome')
+      return outcome
+    })
 
-    // Check if buy button is present
-    const buyButtonExists = await evaluate(
-      `!!document.querySelector('[data-testid="goods-buy"]')`,
-    )
-    console.log(`Digital goods buy button present: ${buyButtonExists}`)
-    if (buyButtonExists) {
-      console.log('Testing "Buy" flow click...')
+    // SCENARIO 5: picture shop catalog and the Buy flow up to confirmation
+    await scenario('5 vendor', async () => {
+      await openConversation('Picture Shop')
+      await new Promise(r => setTimeout(r, 1500))
+      await captureScreenshot('05_picture_shop.png')
+      const state = await evaluate(
+        `({ catalog: !!document.querySelector('.digital-goods'), buy: !!document.querySelector('[data-testid="goods-buy"]'), rawJson: document.querySelector('.chat-message-list').innerText.includes('"type":"digital-goods"') })`,
+      )
+      if (state.rawJson)
+        throw new Error('the catalog is shown as raw JSON text')
+      if (!state.buy) throw new Error('no catalog with a Buy button')
       await click('[data-testid="goods-buy"]')
+      await until(
+        `document.querySelector('[data-testid="goods-confirm-buy"]')`,
+        10000,
+        'confirm buy',
+      )
+      await captureScreenshot('05_picture_shop_confirm_buy.png')
+      return 'catalog rendered; Buy reaches confirmation'
+    })
+
+    // SCENARIO 6: two bots in quick succession, reload mid-send, recover, send again
+    await scenario('6 quick sends and reload', async () => {
+      const tag = Date.now() % 100000
+      const qwen = await openConversation('Qwen')
+      await sendChatMessage(`quick A ${tag}`)
+      const lobby = await openConversation('Lobby')
+      await sendChatMessage(`quick B ${tag}`)
+      await call('Page.reload', {})
+      await new Promise(r => setTimeout(r, 6000))
+      const settled = async (target, text) => {
+        await evaluate(`location.hash = ${JSON.stringify(target)}`)
+        await until(
+          `document.querySelector('.chat-input-field')`,
+          15000,
+          'chat after reload',
+        )
+        await new Promise(r => setTimeout(r, 1500))
+        return evaluate(
+          `(() => { const l = document.querySelector('.chat-message-list'); const mine = [...l.querySelectorAll('.q-message-sent')].filter(e => e.innerText.includes(${JSON.stringify(
+            text,
+          )})); return { copies: mine.length, sending: mine.some(e => e.innerText.includes('Sending')), failed: mine.some(e => /Failed to send/.test(e.innerText)) } })()`,
+        )
+      }
+      let a = await settled(qwen, `quick A ${tag}`)
+      await captureScreenshot('06_after_reload_qwen.png')
+      const b = await settled(lobby, `quick B ${tag}`)
+      await captureScreenshot('06_after_reload_lobby.png')
+      for (const [name, state] of [
+        ['Qwen', a],
+        ['Lobby', b],
+      ]) {
+        if (state.copies !== 1)
+          throw new Error(`${name}: ${state.copies} copies after reload`)
+        if (state.sending)
+          throw new Error(`${name}: still "Sending" after reload`)
+      }
+      // A send the reload caught after its payment was recorded shows "Payment pending, will
+      // retry" and finishes on its own; later sends in that chat wait behind it.
+      const pendingSince = Date.now()
+      let pendingNote = ''
+      if (
+        await evaluate(
+          `location.hash = ${JSON.stringify(
+            qwen,
+          )}, new Promise(r => setTimeout(() => r(/Payment pending/.test(document.querySelector('.chat-message-list')?.innerText ?? '')), 2500))`,
+        )
+      ) {
+        await until(
+          `!/Payment pending/.test(document.querySelector('.chat-message-list').innerText)`,
+          300000,
+          'the pending payment of the interrupted message to settle',
+        )
+        pendingNote = `; the interrupted Qwen message stayed "Payment pending" for ${Math.round(
+          (Date.now() - pendingSince) / 1000,
+        )} s before it was delivered`
+        a = await settled(qwen, `quick A ${tag}`)
+      }
+      await evaluate(`location.hash = ${JSON.stringify(lobby)}`)
+      await until(
+        `document.querySelector('.chat-input-field')`,
+        15000,
+        'lobby chat',
+      )
+      await new Promise(r => setTimeout(r, 1500))
+      // An interrupted message is offered for resend; resend the one still open (Lobby).
+      if (b.failed) {
+        await evaluate(
+          `[...document.querySelectorAll('.chat-message-list .q-btn')].find(e => e.innerText.includes('replay'))?.click()`,
+        )
+        await until(
+          `!/Failed to send/.test(document.querySelector('.chat-message-list').innerText)`,
+          30000,
+          'resend',
+        )
+      }
+      await evaluate(`location.hash = ${JSON.stringify(qwen)}`)
+      await until(
+        `document.querySelector('.chat-input-field')`,
+        15000,
+        'qwen chat',
+      )
+      await new Promise(r => setTimeout(r, 1500))
+      const again = await timedSend(`after reload ${tag}`, 40000)
+      await captureScreenshot('06_send_again.png')
+      if (again.reply === undefined)
+        throw new Error('no reply to a send after reload')
+      return `after reload: Qwen ${JSON.stringify(a)}, Lobby ${JSON.stringify(
+        b,
+      )}; resend and a new send both delivered${pendingNote}`
+    })
+
+    // SCENARIO 7: native send from the wallet page, then a paid message
+    await scenario('7 native send', async () => {
+      const recipient = '0x1111111111111111111111111111111111111111'
+      await evaluate(`location.hash = '#/wallet'`)
       await new Promise(r => setTimeout(r, 1000))
-      await captureScreenshot('04_picture_shop_confirm_buy.png')
-      const confirmButtonExists = await evaluate(
-        `!!document.querySelector('[data-testid="goods-confirm-buy"]')`,
-      )
-      console.log(`Confirm Buy button present: ${confirmButtonExists}`)
-    }
-    // Allow prior on-chain transaction to settle
-    await new Promise(r => setTimeout(r, 3000))
-
-    // SCENARIO 5: QWEN AI ASSISTANT BOT INTERACTION
-    console.log('\n--- SCENARIO 5: Qwen AI Assistant Interaction ---')
-    const qwenAddress = '0xD9a3FDb466b1FE5C2623B853218C8f955daEaeF6'
-    await evaluate(`location.hash = '#/chat/${qwenAddress}'`)
-    await until(
-      `document.querySelector('.chat-input-field')`,
-      15000,
-      'qwen chat loaded',
-    )
-    await new Promise(r => setTimeout(r, 2000))
-
-    console.log('Sending prompt to Qwen...')
-    await sendChatMessage('What is Frank?')
-    console.log('✅ Prompt sent to Qwen!')
-
-    try {
+      await evaluate(`location.hash = '#/send'`)
+      await typeInput('[data-test="send-address-input"]', recipient)
+      await typeInput('[data-test="send-amount-input"]', '0.01')
+      await click('[data-test="send-review-button"]')
+      // The confirm button is busy until the fee estimate arrives; a click before that is lost.
       await until(
-        `(() => {
-          const list = document.querySelector('.chat-message-list');
-          return list && list.children.length >= 2;
-        })()`,
-        25000,
-        'qwen reply',
+        `(() => { const b = document.querySelector('[data-test="review-confirm-button"]'); return b && !b.disabled && !b.classList.contains('q-btn--loading') && !b.querySelector('.q-spinner') })()`,
+        15000,
+        'confirm button ready',
       )
-      console.log('✅ Qwen AI response received!')
-    } catch (e) {
-      console.warn('⚠️ Qwen reply wait:', e.message)
-    }
-    await captureScreenshot('05_qwen_chat.png')
-    // Allow prior on-chain transaction to settle
-    await new Promise(r => setTimeout(r, 3000))
-
-    // SCENARIO 6: BLACKJACK BOT INTERACTION
-    console.log('\n--- SCENARIO 6: Blackjack Bot Interaction ---')
-    const blackjackAddress = '0xF478E879D51F1725b1C1819d0c30026fC1B84EA1'
-    await evaluate(`location.hash = '#/chat/${blackjackAddress}'`)
-    await until(
-      `document.querySelector('.chat-input-field')`,
-      15000,
-      'blackjack chat loaded',
-    )
-    await new Promise(r => setTimeout(r, 2000))
-
-    console.log('Sending "deal" to Blackjack Bot...')
-    await sendChatMessage('deal')
-    console.log('✅ Deal command sent!')
-
-    try {
+      await new Promise(r => setTimeout(r, 500))
+      await click('[data-test="review-confirm-button"]')
       await until(
-        `(() => {
-          const list = document.querySelector('.chat-message-list');
-          return list && (list.innerText.includes('Blackjack') || list.innerText.includes('Dealer') || list.querySelector('.blackjack-table') || list.children.length >= 2);
-        })()`,
-        25000,
-        'blackjack reply',
+        `location.hash !== '#/send' || /included|unresolved|pending|reverted/i.test(document.querySelector('[data-test="native-operation-outcome"]')?.innerText ?? '')`,
+        30000,
+        'native transfer outcome',
       )
-      console.log('✅ Blackjack reply received!')
-    } catch (e) {
-      console.warn('⚠️ Blackjack response wait:', e.message)
-    }
-    await captureScreenshot('06_blackjack_chat.png')
-    // Allow prior on-chain transaction to settle
-    await new Promise(r => setTimeout(r, 3000))
-
-    // SCENARIO 7: LOBBY BOT INTERACTION
-    console.log('\n--- SCENARIO 7: Lobby Bot Interaction ---')
-    const lobbyAddress = '0x68F337100cc690feb06e822218C7d77d62FBb607'
-    await evaluate(`location.hash = '#/chat/${lobbyAddress}'`)
-    await until(
-      `document.querySelector('.chat-input-field')`,
-      15000,
-      'lobby chat loaded',
-    )
-    await new Promise(r => setTimeout(r, 2000))
-
-    console.log('Sending "/help" to Lobby Bot...')
-    await sendChatMessage('/help')
-    console.log('✅ /help command sent!')
-
-    try {
-      await until(
-        `(() => {
-          const list = document.querySelector('.chat-message-list');
-          return list && (list.innerText.includes('Lobby') || list.innerText.includes('/join') || list.children.length >= 2);
-        })()`,
-        25000,
-        'lobby reply',
+      await new Promise(r => setTimeout(r, 1500))
+      await captureScreenshot('07_native_send.png')
+      const outcome = await evaluate(
+        `location.hash !== '#/send' ? 'returned to ' + location.hash : document.querySelector('[data-test="native-operation-outcome"]').innerText.replace(/\\n+/g, ' | ')`,
       )
-      console.log('✅ Lobby reply received!')
-    } catch (e) {
-      console.warn('⚠️ Lobby response wait:', e.message)
+      await openConversation('Qwen')
+      const paid = await timedSend('paid message after a native send', 40000)
+      if (paid.sent === undefined)
+        throw new Error('paid message after the native send was not sent')
+      if (!/^returned/.test(outcome)) {
+        if (!/Payment included/.test(outcome)) throw new Error(outcome)
+        throw new Error(
+          `funds moved and a paid message works, but the page stays on: ${outcome}`,
+        )
+      }
+      return outcome
+    })
+
+    // SCENARIO 8: the other hosted bots
+    for (const [name, text] of [
+      ['Lobby', '/help'],
+      ['Satoshi Dice', '/roll 0.01'],
+      ['RPS Arena', '/rps'],
+      ['Texas Hold', '/poker create'],
+      ["Liar's Dice", '/table create'],
+    ]) {
+      await scenario(`8 ${name} "${text}"`, async () => {
+        await openConversation(name)
+        const t = await timedSend(text, 25000)
+        await captureScreenshot(
+          `08_${name.toLowerCase().replace(/[^a-z]+/g, '_')}.png`,
+        )
+        if (t.reply === undefined)
+          throw new Error(`sent in ${t.sent} ms, no reply in 25 s`)
+        return `reply in ${t.reply} ms`
+      })
     }
-    await captureScreenshot('07_lobby_chat.png')
+
+    console.log('\n================ SCENARIO RESULTS ================')
+    for (const [name, verdict, detail] of results)
+      console.log(`${verdict.padEnd(4)} ${name}: ${detail}`)
+    if (results.some(r => r[1] === 'FAIL')) process.exitCode = 1
 
     // ZERO ERROR TOLERANCE AUDIT
     console.log(

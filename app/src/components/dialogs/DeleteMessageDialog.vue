@@ -64,10 +64,7 @@ export default defineComponent({
       // 1. Sweep funds of message into ephemeral change accounts before deleting (inbound messages only)
       if (message && !message.outbound) {
         try {
-          await sweepMessageFundsOnDelete({
-            message,
-            relayClient: this.$relayClient,
-          })
+          await sweepMessageFundsOnDelete({ message })
         } catch (sweepErr) {
           console.error(
             'Failed to sweep message funds prior to delete:',
@@ -76,25 +73,7 @@ export default defineComponent({
         }
       }
 
-      // 2. Delete message from relay server if relay client is available and message is inbound
-      if (
-        message &&
-        !message.outbound &&
-        !this.payloadDigest.startsWith('pending:') &&
-        this.$relayClient &&
-        typeof this.$relayClient.deleteMessage === 'function'
-      ) {
-        try {
-          await this.$relayClient.deleteMessage(this.payloadDigest)
-        } catch (err: any) {
-          console.error('Failed to delete message on relay:', err)
-          if (err.response) {
-            console.error(err.response)
-          }
-        }
-      }
-
-      // 3. Delete message locally
+      // 2. Delete message locally      // 3. Delete message locally
       try {
         await this.deleteMessage({
           address: this.address,

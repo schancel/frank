@@ -1,16 +1,26 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
+/**
+ * Feed ids as listed by Hermes' public /v2/price_feeds directory. Hermes answers price
+ * requests with 401 when no API key is sent, so without a key this provider returns
+ * nothing and the other providers carry the price.
+ */
 export const PYTH_FEED_IDS: Record<string, string> = {
   ETH: '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
   SOL: '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
   BTC: '0xe62df6e22e666f357632ddc6b45d24e71cc292e27dc64376c8409dd173237e2a',
-  GOLD: '0x765d2ba906da5188bb6811c0f9d250760786520b41259398f6912f7166396344',
-  XAU: '0x765d2ba906da5188bb6811c0f9d250760786520b41259398f6912f7166396344',
-  BRENT: '0x27f547c8702b80053e1a74288b832b8519cf2d815777a164f0b2fbe8eb2eb471',
+  BCH: '0x3dd2b63686a450ec7290df3a1e0b583c0481f651351edfa7636f39aed55cf8a3',
+  DOGE: '0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c',
+  HYPE: '0x4279e31cc369bbcc2faf022b382b080e32a8e689ff20fbc530d2a603eb6cd98b',
+  MON: '0x31491744e2dbf6df7fcf4ac0820d18a609b49076d45066d3568424e62f686cd1',
+  XEC: '0x44622616f246ce5fc46cf9ebdb879b0c0157275510744cea824ad206e48390b3',
+  GOLD: '0x765d2ba906dbc32ca17cc11f5310a89e9ee1f6420508c63861f2f8ba4ee34bb2',
+  XAU: '0x765d2ba906dbc32ca17cc11f5310a89e9ee1f6420508c63861f2f8ba4ee34bb2',
+  BRENT: '0xf33ce961935076ef4dc98be75cf2126046eac1bffdcd7a0fa05ccf18b746fda6',
 }
 
-export const PYTH_HERMES_URL =
-  'https://hermes.pyth.network/v2/updates/price/latest'
+export const PYTH_HERMES_URL = ORACLE_ENDPOINTS.pyth.latestPrice
 
 export class PythProvider implements PriceFeedProvider {
   readonly id = 'pyth' as const

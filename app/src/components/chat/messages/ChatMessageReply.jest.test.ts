@@ -70,3 +70,29 @@ describe('ChatMessageReply', () => {
     expect(wrapper.text()).toContain('Not Found')
   })
 })
+
+describe('ChatMessageReply quoting a message with pictures', () => {
+  it('names a referenced picture and fetches nothing the quoted text asks for', () => {
+    mockMessageStore['digest-pictures'] = {
+      outbound: false,
+      senderAddress: '0xAlice',
+      items: [
+        {
+          type: 'text',
+          text: 'see ![cat](attachment:1) <img src="https://evil.example/t.png">',
+        },
+        { type: 'image', image: 'data:image/png;base64,AAAA' },
+      ],
+    }
+    const wrapper = shallowMount(ChatMessageReply, {
+      props: { payloadDigest: 'digest-pictures' },
+      global: {
+        stubs: { ChatMessageText: false },
+        mocks: { $q: { dark: { isActive: false } } },
+      },
+    })
+    const quoted = wrapper.get('.chat-message-text')
+    expect(quoted.text()).toBe('see cat')
+    expect(quoted.findAll('img')).toHaveLength(0)
+  })
+})

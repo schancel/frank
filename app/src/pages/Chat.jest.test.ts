@@ -68,9 +68,6 @@ jest.mock('../components/dialogs/ClearHistoryDialog.vue', () => ({
 jest.mock('../components/dialogs/DeleteChatDialog.vue', () => ({
   template: '<div />',
 }))
-jest.mock('../components/dialogs/SendFileDialog.vue', () => ({
-  template: '<div />',
-}))
 
 const passthrough = defineComponent({
   setup(_props, { slots }) {
@@ -268,7 +265,6 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
           }),
           ClearHistoryDialog: true,
           DeleteChatDialog: true,
-          SendFileDialog: true,
         },
       },
     })

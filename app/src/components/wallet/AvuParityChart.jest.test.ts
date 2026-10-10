@@ -1,7 +1,28 @@
 /** @jest-environment jsdom */
 import { mount } from '@vue/test-utils'
+import { flushPromises } from '@vue/test-utils'
+import { readFileSync } from 'fs'
+import { join } from 'path'
+import { createPinia, setActivePinia } from 'pinia'
 import AvuParityChart from './AvuParityChart.vue'
 import en from '../../i18n/en-us'
+import { useOracleStore } from '../../stores/oracle'
+import * as oracleSdk from '@frank/wallet/oracle'
+
+// The provider seam: no test here touches the network.
+jest.mock('@frank/wallet/oracle', () => ({
+  ...jest.requireActual('@frank/wallet/oracle'),
+  fetchPriceHistory: jest.fn(),
+  // No live prices or chain statistics arrive: each test states the ones it shows.
+  fetchPrices: jest.fn(async () => ({ timestamp: Date.now(), prices: {} })),
+  fetchMiningStats: jest.fn(async () => null),
+}))
+
+const fetchPriceHistory = oracleSdk.fetchPriceHistory as jest.Mock
+const BTC_USD = 80_000
+const XEC_USD = 0.00001
+const NOW = Date.now()
+const HOUR = 3_600_000
 
 const t = (key: string) =>
   key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
@@ -20,7 +41,7 @@ function mountChart(
           let str = t(key)
           if (params) {
             for (const [k, v] of Object.entries(params)) {
-              str = str.replace(`{${k}}`, v)
+              str = str.replaceAll(`{${k}}`, String(v))
             }
           }
           return str
@@ -76,540 +97,682 @@ function mountChart(
   })
 }
 
-describe('AvuParityChart component', () => {
-  test('renders top metrics cards with values and universal AVU tooltips', () => {
-    const wrapper = mountChart()
-    expect(wrapper.find('[data-test="avu-parity-chart"]').exists()).toBe(true)
+async function openRange(
+  wrapper: ReturnType<typeof mountChart>,
+  range: string,
+) {
+  await wrapper.find(`[data-test-option="${range}"]`).trigger('click')
+  await flushPromises()
+}
 
-    // 0. Active Token Rate (default Monad)
-    const tokenCard = wrapper.find('[data-test="metric-card-token-rate"]')
-    expect(tokenCard.exists()).toBe(true)
-    expect(tokenCard.text()).toContain('Monad (MON) Parity')
-    expect(tokenCard.text()).toContain('41.67 AVU')
-    expect(tokenCard.text()).toContain('1 MON ≈ 41.67 kWh')
-    expect(tokenCard.find('.q-tooltip-stub').text()).toContain(
-      '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute',
+function setPrice(
+  asset: oracleSdk.SupportedAsset,
+  usd: number,
+  fetchedAt = NOW,
+  sources = 4,
+) {
+  const oracle = useOracleStore()
+  oracle.snapshot.prices[asset] = usd
+  oracle.snapshot.fetchedAt[asset] = fetchedAt
+  oracle.snapshot.priceSources[asset] = sources
+  oracle.snapshot = oracleSdk.rateOracleSnapshot(oracle.snapshot)
+}
+
+const HASHES_PER_KWH = oracleSdk.latestHashingEfficiency('sha256')!.hashesPerKwh
+
+function chainStats(
+  chain: string,
+  subsidyCoinsPerBlock: number,
+  hashesPerBlock: number,
+  circulatingCoins: number,
+  fetchedAt: number,
+) {
+  return {
+    chain,
+    subsidyCoinsPerBlock,
+    difficulty: hashesPerBlock / 2 ** 32,
+    hashesPerBlock,
+    circulatingCoins,
+    fetchedAt,
+  }
+}
+
+/**
+ * Gives the oracle a bitcoin price and bitcoin chain statistics at which the real formula,
+ * with the bundled efficiency, makes AVU_hash exactly `kwhPerDollar`:
+ * kWh/$ = hashes per block / (price x subsidy x hashes per kWh).
+ */
+function setHash(kwhPerDollar = 12, fetchedAt = NOW) {
+  const oracle = useOracleStore()
+  oracle.snapshot.mining.bitcoin = chainStats(
+    'bitcoin',
+    3.125,
+    kwhPerDollar * BTC_USD * 3.125 * HASHES_PER_KWH,
+    20_000_000,
+    fetchedAt,
+  )
+  setPrice('bitcoin', BTC_USD)
+}
+
+/** Adds eCash at `kwhPerDollar`; its miners receive 58% of the 3,125,000 XEC subsidy. */
+function setEcashMining(kwhPerDollar: number) {
+  const oracle = useOracleStore()
+  oracle.snapshot.mining.ecash = chainStats(
+    'ecash',
+    3_125_000,
+    kwhPerDollar * XEC_USD * 3_125_000 * 0.58 * HASHES_PER_KWH,
+    20_000_000_000_000,
+    NOW,
+  )
+  setPrice('ecash', XEC_USD, NOW, 1)
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  setActivePinia(createPinia())
+  fetchPriceHistory.mockReset().mockResolvedValue({
+    asset: '',
+    range: '24h',
+    provider: null,
+    points: [],
+  })
+  // AVU_hash is 12 kWh per dollar unless a test says otherwise.
+  setHash()
+})
+
+describe('the drawn lines are data, never a formula', () => {
+  it('draws exactly the price points the provider published, each times AVU_hash', async () => {
+    const points = [
+      { timestamp: NOW - 3 * HOUR, price: 108.5 },
+      { timestamp: NOW - 2 * HOUR, price: 111.25 },
+      { timestamp: NOW - 1 * HOUR, price: 110.06 },
+    ]
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'coinbase',
+      points,
+    })
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+
+    expect(fetchPriceHistory).toHaveBeenCalledWith('SOL', '24h')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(3)
+    expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(true)
+
+    // Every plotted value is one published price times AVU_hash (12 kWh per dollar).
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(columns).toHaveLength(3)
+    for (const [index, point] of points.entries()) {
+      await columns[index].trigger('mouseenter')
+      const expected = (point.price * 12).toLocaleString('en-US', {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })
+      expect(
+        wrapper.find('[data-test="inspection-cell-token"]').text(),
+      ).toContain(`${expected} AVU`)
+    }
+    const note = wrapper.find('[data-test="chart-data-note"]').text()
+    expect(note).toContain('3 market prices published by coinbase')
+    // The line uses today's AVU_hash throughout, and says so.
+    expect(note).toContain(
+      'Each point is that price times today’s AVU_hash (12.00 kWh/$); AVU_hash is not recomputed along the line.',
     )
-
-    // 1. AVU Hash
-    const avuHashCard = wrapper.find('[data-test="metric-card-avu-hash"]')
-    expect(avuHashCard.exists()).toBe(true)
-    expect(avuHashCard.text()).toContain('AVU (Hash-Derived)')
-    expect(avuHashCard.text()).toContain('11.90 AVU/$')
-    expect(avuHashCard.text()).toContain('11.90 kWh/$')
-    expect(avuHashCard.find('.q-tooltip-stub').text()).toContain(
-      '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute',
-    )
-
-    // 2. AVU Spot
-    const avuSpotCard = wrapper.find('[data-test="metric-card-avu-spot"]')
-    expect(avuSpotCard.exists()).toBe(true)
-    expect(avuSpotCard.text()).toContain('AVU (Grid Spot)')
-    expect(avuSpotCard.text()).toContain('12.20 AVU/$')
-    expect(avuSpotCard.text()).toContain('12.20 kWh/$')
-    expect(avuSpotCard.find('.q-tooltip-stub').text()).toContain(
-      '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute',
-    )
-
-    // 3. TPI
-    const tpiCard = wrapper.find('[data-test="metric-card-tpi"]')
-    expect(tpiCard.exists()).toBe(true)
-    expect(tpiCard.text()).toContain('Thermodynamic Parity Index (TPI)')
-    expect(tpiCard.text()).toContain('1.02')
-    expect(tpiCard.text()).toContain('TPI ≈ 1.00')
-
-    // 4. Arbitrage Margin
-    const arbCard = wrapper.find('[data-test="metric-card-arbitrage"]')
-    expect(arbCard.exists()).toBe(true)
-    expect(arbCard.text()).toContain('Mining Arbitrage Spread')
-    expect(arbCard.text()).toContain('+67.8%')
-    expect(arbCard.text()).toContain('eCash Yield Premium')
   })
 
-  test('specializes active token card and legend when selectedWallet prop changes', () => {
-    const ethWrapper = mountChart({ selectedWallet: 'ethereum' })
-    const tokenCard = ethWrapper.find('[data-test="metric-card-token-rate"]')
-    expect(tokenCard.text()).toContain('Ethereum (ETH) Parity')
-    expect(tokenCard.text()).toContain('30,952.38 AVU')
-    expect(tokenCard.text()).toContain('1 ETH ≈ 30952.38 kWh')
-
-    const legend = ethWrapper.find('[data-test="chart-legend-token"]')
-    expect(legend.text()).toContain('Ethereum (AVU / kWh)')
+  it('moves every plotted value in step with AVU_hash: there is no fixed rate in the line', async () => {
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'coinbase',
+      points: [{ timestamp: NOW - HOUR, price: 100 }],
+    })
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+    const cell = () =>
+      wrapper.find('[data-test="inspection-cell-token"]').text()
+    expect(cell()).toContain('1,200.0 AVU')
+    setHash(24)
+    await flushPromises()
+    expect(cell()).toContain('2,400.0 AVU')
   })
 
-  test('defaults to all-time view and renders time-series SVG with interactive points', async () => {
-    const wrapper = mountChart()
-    expect(wrapper.find('[data-test="macro-chart-container"]').exists()).toBe(
-      true,
+  it('draws no price line while AVU_hash is unavailable, and says why', async () => {
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'coinbase',
+      points: [{ timestamp: NOW - HOUR, price: 100 }],
+    })
+    useOracleStore().snapshot = oracleSdk.unavailableOracleSnapshot()
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      'AVU_hash is unavailable',
     )
-    expect(wrapper.find('[data-test="macro-chart-svg"]').exists()).toBe(true)
+  })
+
+  it.each(['24h', '7d', '30d', '1y'])(
+    'draws no %s line and no points when no history could be fetched, and says so',
+    async range => {
+      const wrapper = mountChart({ selectedWallet: 'ethereum' })
+      setPrice('ethereum', 2496.78)
+      await openRange(wrapper, range)
+
+      expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(0)
+      expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(
+        false,
+      )
+      expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+        'No price history could be fetched for 1 ETH',
+      )
+    },
+  )
+
+  it('shows one published point as one point, with no line through invented neighbours', async () => {
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'HYPE',
+      range: '30d',
+      provider: 'kraken',
+      points: [{ timestamp: NOW - HOUR, price: 84.29 }],
+    })
+    const wrapper = mountChart({ selectedWallet: 'hyperliquid' })
+    await openRange(wrapper, '30d')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(1)
+    expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      '1 market prices published by kraken',
+    )
+  })
+
+  it('falls back to the prices this app recorded itself, and shows only as many as exist', async () => {
+    const wrapper = mountChart({ selectedWallet: 'ecash' })
+    const oracle = useOracleStore()
+    const recorded = (usd: number) => ({
+      usd,
+      sources: 1,
+      providers: { coingecko: usd },
+    })
+    oracle.priceObservations = [
+      { timestamp: NOW - 400 * 24 * HOUR, prices: { ecash: recorded(9e-6) } },
+      { timestamp: NOW - 9 * HOUR, prices: { ecash: recorded(7.3e-6) } },
+      { timestamp: NOW - 8 * HOUR, prices: { solana: recorded(110) } },
+      { timestamp: NOW - HOUR, prices: { ecash: recorded(7.24e-6) } },
+    ]
+    await openRange(wrapper, '7d')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      '2 prices this app fetched and recorded itself',
+    )
+  })
+
+  it('joins the app’s own recorded prices with the provider’s candles into one line, and says which is which', async () => {
+    const hour = Math.floor(NOW / HOUR) * HOUR
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'kraken',
+      points: [3, 2, 1].map(h => ({
+        timestamp: hour - h * HOUR,
+        price: 100 + h,
+      })),
+    })
+    const recorded = (usd: number) => ({
+      usd,
+      sources: 3,
+      providers: { kraken: usd, coinbase: usd, coingecko: usd },
+    })
+    useOracleStore().priceObservations = [
+      // In the same hour as the candle of two hours ago: the app's own record stands for it.
+      {
+        timestamp: hour - 2 * HOUR + 60_000,
+        prices: { solana: recorded(120) },
+      },
+      { timestamp: NOW, prices: { solana: recorded(121) } },
+    ]
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(columns).toHaveLength(4)
+    const values = []
+    for (const column of columns) {
+      await column.trigger('mouseenter')
+      values.push(wrapper.find('[data-test="inspection-cell-token"]').text())
+    }
+    expect(values.map(v => v.match(/[\d,.]+ AVU/)?.[0])).toEqual(
+      [103, 120, 101, 121].map(
+        usd =>
+          `${(usd * 12).toLocaleString('en-US', {
+            minimumFractionDigits: 1,
+            maximumFractionDigits: 1,
+          })} AVU`,
+      ),
+    )
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      '4 market prices from',
+    )
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      '2 fetched and recorded by this app, the rest published by kraken.',
+    )
+  })
+
+  it('continues the bundled Bitcoin kWh-per-dollar months with the app’s own recorded inputs', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '1y')
+    const hashPoints = () =>
+      wrapper.findAll('[data-test="chart-point-hash"]').length
+    const bundledMonths = hashPoints()
+    expect(bundledMonths).toBeGreaterThan(0)
+
+    // One recorded bitcoin price with chain statistics recorded just before it.
+    const oracle = useOracleStore()
+    oracle.miningObservations = {
+      bitcoin: [
+        chainStats(
+          'bitcoin',
+          3.125,
+          15 * BTC_USD * 3.125 * HASHES_PER_KWH,
+          20_000_000,
+          NOW - 60_000,
+        ),
+      ],
+    }
+    oracle.priceObservations = [
+      {
+        timestamp: NOW,
+        prices: {
+          bitcoin: { usd: BTC_USD, sources: 1, providers: { kraken: BTC_USD } },
+        },
+      },
+    ]
+    await flushPromises()
+    expect(hashPoints()).toBe(bundledMonths + 1)
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    await columns[columns.length - 1].trigger('mouseenter')
+    expect(wrapper.find('[data-test="inspection-cell-hash"]').text()).toContain(
+      '15.0 kWh/$',
+    )
+
+    // The shorter ranges have no bundled month: only what the app recorded.
+    await openRange(wrapper, '24h')
+    expect(hashPoints()).toBe(1)
+  })
+
+  it('contains no curve generator: the component computes no sine, cosine or random points', () => {
+    const source = readFileSync(join(__dirname, 'AvuParityChart.vue'), 'utf8')
+    expect(source).not.toMatch(/Math\.(sin|cos|random)/)
+    expect(source).not.toMatch(/interpolate/i)
+  })
+})
+
+describe('dragging across the chart zooms to that stretch', () => {
+  it('keeps only the published points inside the dragged stretch, and Reset shows all again', async () => {
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'coinbase',
+      points: [5, 4, 3, 2, 1].map(h => ({
+        timestamp: NOW - h * HOUR,
+        price: 100 + h,
+      })),
+    })
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(columns).toHaveLength(5)
+    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+
+    await columns[1].trigger('mousedown')
+    await columns[3].trigger('mouseenter')
+    expect(wrapper.find('[data-test="zoom-selection"]').exists()).toBe(true)
+    await columns[3].trigger('mouseup')
+
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(3)
+    expect(wrapper.find('[data-test="zoom-selection"]').exists()).toBe(false)
+
+    await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(5)
+  })
+
+  it('a click without a drag does not zoom', async () => {
+    const wrapper = mountChart()
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    await columns[2].trigger('mousedown')
+    await columns[2].trigger('mouseup')
+    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-test="chart-hover-point"]')).toHaveLength(
+      columns.length,
+    )
+  })
+})
+
+describe('the one-year view also draws the bundled monthly AVU_spot and AVU_hash', () => {
+  it('shows only the published months that fall inside the last year, and none on shorter ranges', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '1y')
+    const yearAgo = NOW - 366 * 24 * HOUR
+    const published = oracleSdk.US_MONTHLY_INDUSTRIAL_ELECTRICITY.filter(
+      m =>
+        Date.UTC(
+          Number(m.month.slice(0, 4)),
+          Number(m.month.slice(5, 7)) - 1,
+          15,
+        ) >= yearAgo,
+    )
+    expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(
+      published.length,
+    )
+    // AVU_hash by month, from the bundled Bitcoin inputs, over the same year.
+    const hashMonths = oracleSdk.BTC_MONTHLY_AVU_HASH.filter(
+      m =>
+        Date.UTC(
+          Number(m.month.slice(0, 4)),
+          Number(m.month.slice(5, 7)) - 1,
+          15,
+        ) >= yearAgo,
+    )
+    expect(hashMonths.length).toBeGreaterThan(0)
+    expect(wrapper.findAll('[data-test="chart-point-hash"]')).toHaveLength(
+      hashMonths.length,
+    )
+    await openRange(wrapper, '30d')
+    expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-test="chart-point-hash"]')).toHaveLength(0)
+  })
+})
+
+describe('bundled long-range data is loaded as data', () => {
+  it('draws one point per published year, straight from the bundled table', async () => {
+    const wrapper = mountChart()
+    await flushPromises()
+    const annual = oracleSdk.US_ANNUAL_ELECTRICITY_AND_GOLD
+    expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(
+      annual.length,
+    )
+    // Gold is absent for a year the source does not publish; no point is made up for it.
+    expect(wrapper.findAll('[data-test="chart-point-gold"]')).toHaveLength(
+      annual.filter(p => p.goldUsd !== undefined).length,
+    )
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      `Yearly published figures, ${annual[0].year} to ${
+        annual[annual.length - 1].year
+      }`,
+    )
+  })
+
+  it('shows the table’s own figure for a year: 1990 at 4.74 cents is 21.1 kWh per dollar', async () => {
+    const wrapper = mountChart()
+    await flushPromises()
+    const annual = oracleSdk.US_ANNUAL_ELECTRICITY_AND_GOLD
+    const index = annual.findIndex(p => p.year === 1990)
+    await wrapper
+      .findAll('[data-test="chart-hover-point"]')
+      [index].trigger('mouseenter')
+    expect(wrapper.find('[data-test="inspection-date"]').text()).toContain(
+      '1990',
+    )
+    expect(wrapper.find('[data-test="inspection-cell-usd"]').text()).toContain(
+      '21.1 kWh/$',
+    )
+  })
+
+  it('draws AVU_hash beside AVU_spot for every year the bundled Bitcoin months cover in full', async () => {
+    const wrapper = mountChart()
+    await flushPromises()
+    const months = oracleSdk.BTC_MONTHLY_AVU_HASH
+    const fullYears = Array.from(
+      new Set(months.map(m => m.month.slice(0, 4))),
+    ).filter(year => months.filter(m => m.month.startsWith(year)).length === 12)
+    expect(fullYears.length).toBeGreaterThan(10)
+    expect(wrapper.findAll('[data-test="chart-point-hash"]')).toHaveLength(
+      fullYears.length,
+    )
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      `AVU_hash is drawn for ${fullYears[0]} to ${
+        fullYears[fullYears.length - 1]
+      }`,
+    )
+    // 2024: the mean of that year's twelve monthly values.
+    const year2024 = months.filter(m => m.month.startsWith('2024'))
+    const mean = year2024.reduce((sum, m) => sum + m.kwhPerDollar, 0) / 12
+    const annual = oracleSdk.US_ANNUAL_ELECTRICITY_AND_GOLD
+    await wrapper
+      .findAll('[data-test="chart-hover-point"]')
+      [annual.findIndex(p => p.year === 2024)].trigger('mouseenter')
+    expect(wrapper.find('[data-test="inspection-cell-hash"]').text()).toContain(
+      `${mean.toFixed(1)} kWh/$`,
+    )
+  })
+
+  it('5Y is the last five bundled years', async () => {
+    const wrapper = mountChart()
+    await openRange(wrapper, '5y')
+    expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(5)
+  })
+
+  it('names the published sources', () => {
+    const text = mountChart().find('[data-test="chart-sources"]').text()
+    expect(text).toContain('EIA Monthly Energy Review Table 9.8')
+    expect(text).toContain('World Bank Commodity Price Data')
+    expect(text).toContain('blockchain.com charts API')
+    // The efficiency series is named as the one curated input, with its source and date.
+    const efficiency = mountChart()
+      .find('[data-test="source-efficiency"]')
+      .text()
+    expect(efficiency).toContain('curated, not a live reading')
+    expect(efficiency).toContain('Cambridge Bitcoin Electricity Consumption')
+    expect(efficiency).toContain(oracleSdk.BTC_MINING_SOURCES.retrieved)
+  })
+})
+
+describe('figures are fetched, bundled or the stated unit; a failure is never a price', () => {
+  it('shows "Unavailable" for the coin rate when no price was fetched', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await flushPromises()
+    const value = wrapper.find('[data-test="metric-value-token-rate"]').text()
+    expect(value).toBe('Unavailable')
+    expect(wrapper.text()).not.toMatch(/≈ [\d,.]+ AVU/)
+  })
+
+  it('shows the fetched price in AVU once there is one', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    setPrice('solana', 110.06)
+    await flushPromises()
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      '1 SOL ≈ 1,320.72 AVU',
+    )
+    const card = wrapper.find('[data-test="metric-card-token-rate"]').text()
+    expect(card).toContain('Market price $110.060')
+    expect(card).toContain('Median of 4 providers.')
+  })
+
+  it('says when a price rests on a single provider', async () => {
+    const wrapper = mountChart({ selectedWallet: 'ecash' })
+    setPrice('ecash', 7.2e-6, NOW, 1)
+    await flushPromises()
     expect(
-      wrapper.find('[data-test="networks-chart-container"]').exists(),
-    ).toBe(false)
-    expect(wrapper.find('[data-test="macro-token-line"]').exists()).toBe(true)
-
-    // Verify macro data points rendered
-    const points = wrapper.findAll('[data-test="chart-hover-point"]')
-    expect(points.length).toBeGreaterThan(5)
-
-    // Hover tooltip initially absent
-    expect(wrapper.find('[data-test="chart-tooltip"]').exists()).toBe(false)
-
-    // Trigger hover on last data point (2026)
-    const point2026 = points[points.length - 1]
-    await point2026.trigger('mouseenter')
-
-    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
-    expect(tooltip.exists()).toBe(true)
-    expect(tooltip.text()).toContain('2026')
-    expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
-    expect(tooltip.text()).toContain('Gold: 31,547 AVU/oz')
-    expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
-    expect(tooltip.text()).toContain('MON: 41.7 AVU (kWh)')
+      wrapper.find('[data-test="metric-card-token-rate"]').text(),
+    ).toContain('One provider only.')
   })
 
-  test('renders standard timeframe preset options (all, 5y, 1y, 30d, 7d, 24h, networks)', () => {
+  it('shows a fetched price as "Unavailable" in AVU while AVU_hash is unavailable', async () => {
+    useOracleStore().snapshot = oracleSdk.unavailableOracleSnapshot()
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    setPrice('solana', 110.06)
+    await flushPromises()
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      'Unavailable',
+    )
+    expect(
+      wrapper.find('[data-test="metric-card-token-rate"]').text(),
+    ).toContain('AVU_hash could not be computed')
+  })
+
+  it('marks an old price as stale with its age instead of showing it as current', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    setPrice('solana', 110.06, NOW - 3 * HOUR)
+    await flushPromises()
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      '1 SOL ≈ 1,320.72 AVU (3 h old)',
+    )
+    expect(
+      wrapper.find('[data-test="metric-card-token-rate"]').text(),
+    ).toContain('Stale: last market price')
+  })
+
+  it('gives a coin no provider prices (Tempo test dollar) no AVU value and no line', async () => {
+    const wrapper = mountChart({ selectedWallet: 'tempo' })
+    await openRange(wrapper, '7d')
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      'Unavailable',
+    )
+    expect(
+      wrapper.find('[data-test="metric-card-token-rate"]').text(),
+    ).toContain('No provider publishes a market price for this coin')
+    expect(fetchPriceHistory).not.toHaveBeenCalled()
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(0)
+  })
+
+  it('labels the MON price as the mainnet coin’s: testnet MON has no market value', async () => {
+    const wrapper = mountChart({ selectedWallet: 'monad' })
+    setPrice('monad', 0.025)
+    await flushPromises()
+    const oracle = useOracleStore()
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      '1 MON ≈ 0.30 AVU (mainnet price; testnet coins have no market value)',
+    )
+    expect(oracle.formatAvuAmount('monad', 5_000_000_000_000_000_000n)).toBe('')
+    expect(oracle.getAvu('monad', 5_000_000_000_000_000_000n)).toBe(0)
+  })
+
+  it('states the unit as 1 kWh and its dollar value as the inverse of AVU_hash', () => {
     const wrapper = mountChart()
-    const options = ['all', '5y', '1y', '30d', '7d', '24h', 'networks']
-    for (const opt of options) {
-      expect(wrapper.find(`button[data-test-option="${opt}"]`).exists()).toBe(
-        true,
+    expect(wrapper.find('[data-test="metric-card-avu-unit"]').text()).toContain(
+      '1 AVU = 1 kWh',
+    )
+    // AVU_hash is 12 kWh per dollar, so one kWh is 1/12 of a dollar.
+    expect(wrapper.find('[data-test="metric-value-avu-unit"]').text()).toBe(
+      '1 AVU = $0.0833',
+    )
+    expect(wrapper.find('[data-test="metric-card-avu-unit"]').text()).toContain(
+      'not a coin or token',
+    )
+  })
+
+  it('reads the grid figure from the newest bundled EIA month', () => {
+    const months = oracleSdk.US_MONTHLY_INDUSTRIAL_ELECTRICITY
+    const latest = months[months.length - 1]
+    const card = mountChart().find('[data-test="metric-card-avu-spot"]').text()
+    expect(card).toContain(`${(100 / latest.centsPerKwh).toFixed(2)} kWh/$`)
+    expect(card).toContain(latest.month)
+  })
+
+  it('no longer shows the typed-in figures', async () => {
+    const wrapper = mountChart({ selectedWallet: 'ecash' })
+    await flushPromises()
+    const text = wrapper.text()
+    for (const literal of [
+      '+67.8%',
+      '12.20',
+      '41.67',
+      'Yield Premium',
+      'TPI',
+    ]) {
+      expect(text).not.toContain(literal)
+    }
+    expect(wrapper.find('[data-test="metric-card-tpi"]').exists()).toBe(false)
+  })
+})
+
+describe('AVU_hash is computed from fetched prices and chain statistics', () => {
+  it('shows "Unavailable" everywhere and draws no bars when it cannot be computed', async () => {
+    useOracleStore().snapshot = oracleSdk.unavailableOracleSnapshot()
+    const wrapper = mountChart()
+    await openRange(wrapper, 'networks')
+    for (const tile of ['avu-hash', 'avu-unit', 'hash-vs-spot', 'arbitrage']) {
+      expect(wrapper.find(`[data-test="metric-value-${tile}"]`).text()).toBe(
+        'Unavailable',
       )
     }
-  })
-
-  test('supports 5Y timeframe selection and displays modern hardware milestones', async () => {
-    const wrapper = mountChart()
-
-    // Switch to '5y' range
-    const btn5Y = wrapper.find('button[data-test-option="5y"]')
-    expect(btn5Y.exists()).toBe(true)
-    await btn5Y.trigger('click')
-
-    // Points from 2021 to 2026 (6 points)
-    const points = wrapper.findAll('[data-test="chart-hover-point"]')
-    expect(points.length).toBe(6)
-
-    // Verify 2024 3nm milestone rendered
-    const milestones = wrapper.findAll(
-      '[data-test="hardware-milestone-marker"]',
+    expect(wrapper.find('[data-test="metric-card-avu-hash"]').text()).toContain(
+      'AVU_hash could not be computed',
     )
-    expect(milestones.length).toBe(1) // 3nm Ultra in 2024
-
-    await milestones[0].trigger('mouseenter')
-    const milestoneTooltip = wrapper.find('[data-test="milestone-tooltip"]')
-    expect(milestoneTooltip.exists()).toBe(true)
-    expect(milestoneTooltip.text()).toContain('2024: 3nm Ultra')
-    expect(milestoneTooltip.text()).toContain('16 J/TH')
-  })
-
-  test('toggles to network parity view and renders comparison bar chart with arbitrage spread', async () => {
-    const wrapper = mountChart()
-
-    // Switch view to 'networks'
-    const networksBtn = wrapper.find('button[data-test-option="networks"]')
-    expect(networksBtn.exists()).toBe(true)
-    await networksBtn.trigger('click')
-
-    expect(wrapper.find('[data-test="macro-chart-container"]').exists()).toBe(
-      false,
+    expect(wrapper.findAll('[data-test="chart-hover-bar"]')).toHaveLength(0)
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      'AVU_hash could not be computed',
     )
+    // AVU_spot does not depend on mining and is still shown.
     expect(
-      wrapper.find('[data-test="networks-chart-container"]').exists(),
-    ).toBe(true)
-    expect(wrapper.find('[data-test="networks-chart-svg"]').exists()).toBe(true)
+      wrapper.find('[data-test="metric-value-avu-spot"]').text(),
+    ).toContain('kWh/$')
+  })
 
-    // Verify 5 network bars
+  it('shows AVU_hash beside AVU_spot, the coins used with their weights, and those left out', async () => {
+    // Bitcoin at 12 kWh/$ and eCash at 6 kWh/$. Bitcoin's market cap dwarfs eCash's, so
+    // it is capped at 60%: AVU_hash = 0.6 x 12 + 0.4 x 6 = 9.6 kWh/$.
+    setEcashMining(6)
+    const wrapper = mountChart()
+    await openRange(wrapper, 'networks')
+    expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
+      '9.60 kWh/$',
+    )
+    const note = wrapper.find('[data-test="metric-card-avu-hash"]').text()
+    expect(note).toContain('2 of 5 basket entries')
+    expect(note).toContain('BTC 60%, XEC 40%')
+    expect(note).toContain(
+      `Cambridge estimate for ${
+        oracleSdk.latestHashingEfficiency('sha256')!.month
+      }`,
+    )
+    expect(note).toContain(
+      'Left out: BCH (no fetched price), LTC+DOGE (no hardware efficiency data), XMR (no hardware efficiency data).',
+    )
+    expect(note).not.toContain('Stale')
+
+    // Side by side with AVU_spot, and how far apart the two are.
+    const spot = oracleSdk.latestAvuSpot()!
+    expect(wrapper.find('[data-test="metric-value-avu-spot"]').text()).toBe(
+      `${spot.kwhPerDollar.toFixed(2)} kWh/$`,
+    )
+    const gap = (9.6 / spot.kwhPerDollar - 1) * 100
+    expect(wrapper.find('[data-test="metric-value-hash-vs-spot"]').text()).toBe(
+      `${gap >= 0 ? '+' : ''}${gap.toFixed(1)}%`,
+    )
+
+    // eCash mining earns 1/6 $ per kWh against Bitcoin's 1/12: twice as much.
+    expect(wrapper.find('[data-test="metric-value-arbitrage"]').text()).toBe(
+      '+100.0%',
+    )
     const bars = wrapper.findAll('[data-test="chart-hover-bar"]')
-    expect(bars.length).toBe(5) // BTC, XEC, BCH, LTC, KAS
-
-    // Check XEC bar highlight & yield
-    const barTexts = bars.map(b => b.text())
-    expect(barTexts.some(t => t.includes('XEC') && t.includes('+67.8%'))).toBe(
-      true,
-    )
-    expect(barTexts.some(t => t.includes('BTC') && t.includes('$0.084'))).toBe(
-      true,
-    )
-
-    // Hover over XEC bar
-    const xecBar = bars[1]
-    await xecBar.trigger('mouseenter')
-
-    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
-    expect(tooltip.exists()).toBe(true)
-    expect(tooltip.text()).toContain('XEC (SHA-256)')
-    expect(tooltip.text()).toContain('Energy Cost: $0.141/kWh')
-    expect(tooltip.text()).toContain('Arbitrage Yield: +67.8%')
+    expect(bars).toHaveLength(2)
+    expect(bars[0].text()).toContain('BTC · 60%')
+    expect(bars[0].text()).toContain('$0.083/kWh')
+    expect(bars[1].text()).toContain('XEC · 40%')
+    expect(bars[1].text()).toContain('$0.167/kWh')
+    expect(bars[1].text()).toContain('+100.0%')
   })
 
-  test('supports 24H fine-grained hourly view, validates tooltips, and verifies PoW green line does not clip below axis', async () => {
-    const wrapper = mountChart()
-
-    // Switch to '24h' view
-    const btn24h = wrapper.find('button[data-test-option="24h"]')
-    expect(btn24h.exists()).toBe(true)
-    await btn24h.trigger('click')
-
-    // Milestones are suppressed in fine-grained view
-    expect(
-      wrapper.findAll('[data-test="hardware-milestone-marker"]').length,
-    ).toBe(0)
-
-    // Exactly 24 hourly data points are rendered
-    const points = wrapper.findAll('[data-test="chart-hover-point"]')
-    expect(points.length).toBe(24)
-
-    // Hover over the final (current hour / "Now") point
-    const nowPoint = points[points.length - 1]
-    await nowPoint.trigger('mouseenter')
-
-    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
-    expect(tooltip.exists()).toBe(true)
-    expect(tooltip.text()).toContain('Now')
-    expect(tooltip.text()).toContain('MON: 41.7 AVU (kWh)')
-    expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
-    expect(tooltip.text()).toContain('Gold: 31,547 AVU/oz')
-    expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
-
-    // Hover over an intermediate point (e.g. 11 hours ago)
-    const midPoint = points[12]
-    await midPoint.trigger('mouseenter')
-    expect(tooltip.text()).toContain('-11h')
-
-    // Verify PoW green line and USD line stay strictly within chart boundaries (y between 20 and 230)
-    // This directly regression tests the fix for the PoW line clipping below the bottom axis
-    const vm = wrapper.vm as any
-    const mappedPts = vm.macroPointsMapped
-    expect(mappedPts.length).toBe(24)
-    for (const pt of mappedPts) {
-      if (pt.powY !== null) {
-        expect(pt.powY).toBeGreaterThanOrEqual(20)
-        expect(pt.powY).toBeLessThanOrEqual(230)
-      }
-      expect(pt.usdY).toBeGreaterThanOrEqual(20)
-      expect(pt.usdY).toBeLessThanOrEqual(230)
-    }
-  })
-
-  test('supports 7D, 30D, and 1Y sub-annual resolution timeframes', async () => {
-    const wrapper = mountChart()
-
-    // 7D view: 28 points
-    await wrapper.find('button[data-test-option="7d"]').trigger('click')
-    expect(wrapper.findAll('[data-test="chart-hover-point"]').length).toBe(28)
-
-    // 30D view: 30 points
-    await wrapper.find('button[data-test-option="30d"]').trigger('click')
-    expect(wrapper.findAll('[data-test="chart-hover-point"]').length).toBe(30)
-
-    // 1Y view: 12 points
-    await wrapper.find('button[data-test-option="1y"]').trigger('click')
-    expect(wrapper.findAll('[data-test="chart-hover-point"]').length).toBe(12)
-  })
-
-  test('supports click-and-drag box zoom on SVG canvas and reset zoom controls', async () => {
-    const wrapper = mountChart()
-
-    // Switch to 24h view with 24 points
-    await wrapper.find('button[data-test-option="24h"]').trigger('click')
-    expect(wrapper.findAll('[data-test="chart-hover-point"]').length).toBe(24)
-
-    const svg = wrapper.find('[data-test="macro-chart-svg"]')
-    expect(svg.exists()).toBe(true)
-
-    // Mock getBoundingClientRect in jsdom
-    ;(svg.element as any).getBoundingClientRect = () => ({
-      width: 680,
-      height: 290,
-      top: 0,
-      left: 0,
-      bottom: 290,
-      right: 680,
-      x: 0,
-      y: 0,
-      toJSON: () => undefined,
-    })
-
-    // Initially, no drag selection box and no reset button
-    expect(wrapper.find('[data-test="drag-selection-box"]').exists()).toBe(
-      false,
-    )
-    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
-
-    // 1. Mouse down at x=150, y=100
-    await svg.trigger('mousedown', { clientX: 150, clientY: 100 })
-
-    // 2. Mouse move to x=400, y=100
-    await svg.trigger('mousemove', { clientX: 400, clientY: 100 })
-    const box = wrapper.find('[data-test="drag-selection-box"]')
-    expect(box.exists()).toBe(true)
-    expect(box.attributes('x')).toBe('150')
-    expect(box.attributes('width')).toBe('250')
-
-    // 3. Mouse up to apply zoom
-    await svg.trigger('mouseup')
-    expect(wrapper.find('[data-test="drag-selection-box"]').exists()).toBe(
-      false,
-    )
-
-    // Reset Zoom button should now be visible
-    const resetBtn = wrapper.find('[data-test="reset-zoom-btn"]')
-    expect(resetBtn.exists()).toBe(true)
-    expect(resetBtn.text()).toContain('Reset Zoom')
-
-    // Zoomed points count should be less than the full 24 points
-    const zoomedCount = wrapper.findAll(
-      '[data-test="chart-hover-point"]',
-    ).length
-    expect(zoomedCount).toBeLessThan(24)
-    expect(zoomedCount).toBeGreaterThanOrEqual(2)
-
-    // 4. Click Reset Zoom button
-    await resetBtn.trigger('click')
-    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
-    expect(wrapper.findAll('[data-test="chart-hover-point"]').length).toBe(24)
-
-    // 5. Test double click resets zoom
-    await svg.trigger('mousedown', { clientX: 150, clientY: 100 })
-    await svg.trigger('mousemove', { clientX: 350, clientY: 100 })
-    await svg.trigger('mouseup')
-    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(true)
-
-    await svg.trigger('dblclick')
-    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
-    expect(wrapper.findAll('[data-test="chart-hover-point"]').length).toBe(24)
-
-    // 6. Test switching timeframe preset resets zoom
-    await svg.trigger('mousedown', { clientX: 150, clientY: 100 })
-    await svg.trigger('mousemove', { clientX: 350, clientY: 100 })
-    await svg.trigger('mouseup')
-    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(true)
-
-    await wrapper.find('button[data-test-option="7d"]').trigger('click')
-    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
-    expect(wrapper.findAll('[data-test="chart-hover-point"]').length).toBe(28)
-  })
-
-  test('renders methodology & data sources citations card with live feeds references', () => {
-    const wrapper = mountChart()
-    const sourcesCard = wrapper.find('[data-test="chart-sources"]')
-    expect(sourcesCard.exists()).toBe(true)
-    expect(sourcesCard.text()).toContain('Methodology & Data Sources')
-    expect(sourcesCard.text()).toContain('CoinGecko & Pyth Network')
-    expect(sourcesCard.text()).toContain('Historical & Intraday Resolution')
-    expect(sourcesCard.text()).toContain(
-      'Energy Information Administration (EIA)',
-    )
-    expect(sourcesCard.text()).toContain('PoW Baseline')
-    expect(sourcesCard.text()).toContain('CBECI')
-  })
-
-  test('supports dark mode and applies dark styling', () => {
-    const darkWrapper = mountChart({ isDark: true })
-    expect(
-      darkWrapper.find('[data-test="metric-card-avu-hash"]').classes(),
-    ).toContain('bg-dark')
-
-    const lightWrapper = mountChart({ isDark: false })
-    expect(
-      lightWrapper.find('[data-test="metric-card-avu-hash"]').classes(),
-    ).toContain('bg-white')
-  })
-
-  test('supports turning metrics on and off on the overlay and dynamically auto-scales to avoid distortion', async () => {
-    const wrapper = mountChart()
-
-    // Initially, all metrics are on
-    const goldToggle = wrapper.find('[data-test="toggle-metric-gold"]')
-    const usdToggle = wrapper.find('[data-test="toggle-metric-usd"]')
-    const powToggle = wrapper.find('[data-test="toggle-metric-pow"]')
-    const tokenToggle = wrapper.find('[data-test="chart-legend-token"]')
-    const milestoneToggle = wrapper.find(
-      '[data-test="toggle-metric-milestones"]',
-    )
-
-    expect(goldToggle.exists()).toBe(true)
-    expect(usdToggle.exists()).toBe(true)
-    expect(powToggle.exists()).toBe(true)
-    expect(tokenToggle.exists()).toBe(true)
-    expect(milestoneToggle.exists()).toBe(true)
-
-    // Verify Gold and right axis are initially visible
-    expect((wrapper.vm as any).showGold).toBe(true)
-    expect((wrapper.vm as any).hasRightAxis).toBe(true)
-
-    // 1. Toggle Gold OFF
-    await goldToggle.trigger('click')
-    expect((wrapper.vm as any).showGold).toBe(false)
-    expect((wrapper.vm as any).hasRightAxis).toBe(false)
-
-    // Hover last point (2026): Tooltip should NOT contain Gold
-    const points = wrapper.findAll('[data-test="chart-hover-point"]')
-    const point2026 = points[points.length - 1]
-    await point2026.trigger('mouseenter')
-
-    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
-    expect(tooltip.exists()).toBe(true)
-    expect(tooltip.text()).not.toContain('Gold:')
-    expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
-    expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
-
-    // 2. Toggle Gold back ON
-    await goldToggle.trigger('click')
-    expect((wrapper.vm as any).showGold).toBe(true)
-    expect((wrapper.vm as any).hasRightAxis).toBe(true)
-    await point2026.trigger('mouseenter')
-    expect(wrapper.find('[data-test="chart-tooltip"]').text()).toContain(
-      'Gold:',
-    )
-
-    // 3. Toggle Token OFF
-    expect(wrapper.find('[data-test="macro-token-line"]').exists()).toBe(true)
-    await tokenToggle.trigger('click')
-    expect((wrapper.vm as any).showToken).toBe(false)
-    expect(wrapper.find('[data-test="macro-token-line"]').exists()).toBe(false)
-
-    // 4. Toggle Milestones OFF
-    expect(
-      wrapper.findAll('[data-test="hardware-milestone-marker"]').length,
-    ).toBeGreaterThan(0)
-    await milestoneToggle.trigger('click')
-    expect((wrapper.vm as any).showMilestones).toBe(false)
-    expect(
-      wrapper.findAll('[data-test="hardware-milestone-marker"]').length,
-    ).toBe(0)
-
-    // 5. Dynamic auto-scaling: In 5Y view with USD + PoW active, scale adapts to 20 instead of 150
-    await wrapper.find('button[data-test-option="5y"]').trigger('click')
-    // With token toggled off, max scales to 20!
-    expect((wrapper.vm as any).usdMaxLimit).toBe(20)
-  })
-
-  test('provides dense sub-annual monthly resolution when zooming into recent years (2024-2026) for Solana, USD, Gold, and PoW', async () => {
+  it('marks AVU_hash and every value with the age of chain statistics that have gone stale', async () => {
+    setHash(12, NOW - 3 * HOUR)
     const wrapper = mountChart({ selectedWallet: 'solana' })
-    const vm = wrapper.vm as any
-
-    // Verify 2025 historical rate is defined for Solana
-    expect(vm.activeTokenInfo.history[2025]).toBe(1950.0)
-
-    // Trigger custom drag-zoom into recent years (2024 to 2026)
-    vm.customZoomRange = {
-      startIndex: 94,
-      endIndex: 96,
-      startYear: 2024,
-      endYear: 2026,
-    }
-    await wrapper.vm.$nextTick()
-
-    // Sub-annual monthly resolution produces 28 monthly data points instead of 3 coarse 1-year points
-    const points = wrapper.findAll('[data-test="chart-hover-point"]')
-    expect(points.length).toBe(28)
-
-    // Check November 2024 data point (index 10)
-    const nov2024Point = points[10]
-    await nov2024Point.trigger('mouseenter')
-
-    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
-    expect(tooltip.exists()).toBe(true)
-    expect(tooltip.text()).toContain('Nov 2024')
-    expect(tooltip.text()).toContain('SOL: 3,000 AVU (kWh)')
-    expect(tooltip.text()).toContain('USD: 12.6 kWh/$')
-    expect(tooltip.text()).toContain('Gold: 33,500 AVU/oz')
-    expect(tooltip.text()).toContain('PoW: 11.7 kWh/$')
-
-    // Check January 2025 point (index 12)
-    const jan2025Point = points[12]
-    await jan2025Point.trigger('mouseenter')
-    expect(tooltip.text()).toContain('Jan 2025')
-    expect(tooltip.text()).toContain('SOL: 2,770 AVU (kWh)')
-
-    // Check latest point (index 27)
-    const apr2026Point = points[27]
-    await apr2026Point.trigger('mouseenter')
-    expect(tooltip.text()).toContain('Apr 2026')
-    expect(tooltip.text()).toContain('SOL: 1,785.7 AVU (kWh)')
-    expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
-    expect(tooltip.text()).toContain('Gold: 31,547 AVU/oz')
-    expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
+    setPrice('solana', 110.06)
+    await flushPromises()
+    expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
+      '12.00 kWh/$',
+    )
+    expect(wrapper.find('[data-test="metric-card-avu-hash"]').text()).toContain(
+      'Stale: oldest input fetched 3 h ago.',
+    )
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      '1 SOL ≈ 1,320.72 AVU (3 h old)',
+    )
   })
 
-  test('dynamically recalibrates right axis scale for Solana when Gold is toggled off', async () => {
-    const wrapper = mountChart({ selectedWallet: 'solana' })
-    const vm = wrapper.vm as any
-
-    // Zoom into 2024-2026
-    vm.customZoomRange = {
-      startIndex: 94,
-      endIndex: 96,
-      startYear: 2024,
-      endYear: 2026,
-    }
-    await wrapper.vm.$nextTick()
-
-    // Initially with Gold ON, right axis limit is Gold ceiling (35,000)
-    expect(vm.showGold).toBe(true)
-    expect(vm.goldMaxLimit).toBe(35000)
-
-    // Toggle Gold OFF: scale recalibrates down to Solana's actual range (~3,500)
-    const goldToggle = wrapper.find('[data-test="toggle-metric-gold"]')
-    await goldToggle.trigger('click')
-
-    expect(vm.showGold).toBe(false)
-    expect(vm.hasRightAxis).toBe(true) // right axis stays visible for Solana
-    expect(vm.goldMaxLimit).toBeLessThanOrEqual(4000)
-    expect(vm.goldMaxLimit).toBeGreaterThanOrEqual(3000)
-    expect(vm.goldMaxLabel).toContain('3.') // e.g. 3.5k
-  })
-
-  test('renders stable inspection table above chart and dynamically maps asset prices to the hovered date', async () => {
-    const wrapper = mountChart()
-
-    // 1. Stable inspection table exists
-    const table = wrapper.find('[data-test="chart-inspection-table"]')
-    expect(table.exists()).toBe(true)
-
-    // 2. Defaults to latest values when not hovering
-    const dateBadge = wrapper.find('[data-test="inspection-date-badge"]')
-    expect(dateBadge.exists()).toBe(true)
-    expect(dateBadge.text()).toContain('2026')
-
-    const usdVal = wrapper.find('[data-test="inspection-usd-value"]')
-    const goldVal = wrapper.find('[data-test="inspection-gold-value"]')
-    const powVal = wrapper.find('[data-test="inspection-pow-value"]')
-    const tokenVal = wrapper.find('[data-test="inspection-token-value"]')
-
-    expect(usdVal.text()).toBe('12.0 kWh/$')
-    expect(goldVal.text()).toBe('31,547 AVU/oz')
-    expect(powVal.text()).toBe('11.9 kWh/$')
-    expect(tokenVal.text()).toBe('41.7 AVU (kWh)')
-
-    // 3. Hovering over point (e.g. index 0: 1930) updates table values
-    const points = wrapper.findAll('[data-test="chart-hover-point"]')
-    await points[0].trigger('mouseenter')
-
-    expect(
-      wrapper.find('[data-test="inspection-date-badge"]').text(),
-    ).toContain('1930')
-    expect(wrapper.find('[data-test="inspection-usd-value"]').text()).toBe(
-      '142.9 kWh/$',
-    )
-    expect(wrapper.find('[data-test="inspection-gold-value"]').text()).toBe(
-      '2,953 AVU/oz',
-    )
-
-    // 4. In Networks view, displays coin, energy cost, and yield
-    const networksBtn = wrapper.find('button[data-test-option="networks"]')
-    await networksBtn.trigger('click')
-
-    expect(
-      wrapper.find('[data-test="inspection-cell-network-coin"]').text(),
-    ).toContain('XEC (SHA-256)')
-    expect(
-      wrapper.find('[data-test="inspection-cell-network-cost"]').text(),
-    ).toContain('$0.141/kWh')
-    expect(
-      wrapper.find('[data-test="inspection-cell-network-yield"]').text(),
-    ).toContain('+67.8%')
+  it('contains no typed-in rate or efficiency', () => {
+    const source = readFileSync(join(__dirname, 'AvuParityChart.vue'), 'utf8')
+    expect(source).not.toMatch(/0\.084|11\.9|17\.5|POW_BASELINE|joulesPerHash/)
   })
 })

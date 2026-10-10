@@ -19,6 +19,11 @@
       />
     </q-dialog>
 
+    <!-- A picture shown inside the text, opened by a click on it -->
+    <q-dialog v-model="imageDialog">
+      <image-dialog :image="openedImage" />
+    </q-dialog>
+
     <template v-if="payloadDigest">
       <q-chat-message
         :sent="message.outbound"
@@ -100,13 +105,18 @@
               :memo="item.memo"
               :outbound="message.outbound"
             />
-            <chat-message-image
-              v-else-if="item.type == 'image'"
-              :image="item.image"
-            />
+            <!-- A picture the text shows where it is referenced is not shown a second time. -->
+            <template v-else-if="item.type == 'image'">
+              <chat-message-image
+                v-if="!inlineImageItems.has(subIndex)"
+                :image="item.image"
+              />
+            </template>
             <chat-message-text
               v-else-if="item.type == 'text'"
               :text="item.text"
+              :attachments="shownAttachments"
+              @imageClick="openImage"
             />
             <chat-message-blackjack
               v-else-if="item.type == 'blackjack-hand'"
@@ -228,6 +238,7 @@ import ChatMessageChannel from './ChatMessageChannel.vue'
 import ChatMessageMenu from '../../context_menus/ChatMessageMenu.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
+import ImageDialog from '../../dialogs/ImageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { activeChain } from '@frank/wallet/chain'
@@ -245,6 +256,11 @@ import {
   readableKeyColor,
   type BubbleAttribution,
 } from '../../../utils/chat-attribution'
+import {
+  inlinePositions,
+  shownAttachments,
+} from '../../../utils/chat-attachments'
+import type { PostAttachment } from '../../../utils/post-editor'
 
 export default defineComponent({
   name: 'ChatMessage',
@@ -264,6 +280,7 @@ export default defineComponent({
     ChatMessageSuffix,
     TransactionDialog,
     DeleteMessageDialog,
+    ImageDialog,
   },
   emits: [
     'replyClicked',
@@ -277,13 +294,14 @@ export default defineComponent({
     return {
       transactionDialog: false,
       deleteDialog: false,
+      imageDialog: false,
+      openedImage: '',
     }
   },
   setup() {
     const chats = useChatStore()
     return {
       deleteMessage: chats.deleteMessage,
-      getStampAmount: chats.getStampAmount,
       sendDirectMessage: chats.sendMessage,
       retryOutgoing: chats.retryOutgoing,
       getMessageItemPreview: (item: MessageItem) =>
@@ -332,18 +350,11 @@ export default defineComponent({
       required: false,
       default: undefined,
     },
-    /** Legacy failure replaces the deleted bubble; the parent focuses that error row. */
-    focusFailedAfterRetry: {
-      type: Function as PropType<() => void>,
-      required: false,
-      default: undefined,
-    },
   },
   methods: {
-    focusRetryStatus() {
-      ;(
-        this.$refs.suffix as { focusStatus?: () => void } | undefined
-      )?.focusStatus?.()
+    openImage(image: string) {
+      this.openedImage = image
+      this.imageDialog = true
     },
     handleReplyDivClick(args: string) {
       this.$emit('replyDivClick', args)
@@ -386,68 +397,41 @@ export default defineComponent({
         ],
       })
     },
-    /** Manual Retry of a failed message. For a Monad message this never deletes it first: the
-     * store asks the wallet whether the earlier payment is still live and re-sends the same bytes
-     * if so (see `stores/chats.ts`, `sendMessage`); a new payment happens only if the earlier one
-     * can no longer be delivered. */
+    /** Manual Retry of a failed message. It never deletes the message first: the store asks
+     * the wallet whether the earlier payment is still live and re-sends the same bytes if so
+     * (see `stores/chats.ts`, `sendMessage`); a new payment happens only if the earlier one can
+     * no longer be delivered. */
     async resend(confirmed = false) {
       // The Retry button unmounts as soon as the state changes; keep focus on this message.
       ;(
         this.$refs.suffix as { focusStatus?: () => void } | undefined
       )?.focusStatus?.()
-      if (this.message.stampValueWei !== undefined) {
-        try {
-          const outcome = await this.retryOutgoing({
-            wallet: useMonadWallet(),
-            address: this.address,
-            payloadDigest: this.payloadDigest,
-            confirmed,
-          })
-          if (outcome.state === 'needs-confirmation') {
-            this.$q
-              .dialog({
-                title: this.$t('outgoing.sendAgainTitle'),
-                message:
-                  outcome.reason === 'recovered'
-                    ? this.$t('outgoing.sendAgainRecovered')
-                    : this.$t('outgoing.sendAgainUnverified'),
-                ok: { label: this.$t('outgoing.sendAgain') },
-                cancel: true,
-                persistent: true,
-              })
-              .onOk(() => void this.resend(true))
-          } else if (outcome.state === 'sent') {
-            // The store rekeys this bubble from its optimistic id to the final payload digest.
-            // Ask the stable Chat parent to take focus after this component unmounts.
-            this.focusAfterRetry?.()
-          }
-        } catch (error) {
-          errorNotify(error instanceof Error ? error : new Error(String(error)))
-        }
-        return
-      }
-
-      // Compatibility path for legacy Lotus messages. Construction can emit messageSendError
-      // and fulfill undefined; that is not delivery. Rejection after delete has no bubble left.
       try {
-        await this.deleteMessage({
+        const outcome = await this.retryOutgoing({
+          wallet: useMonadWallet(),
           address: this.address,
           payloadDigest: this.payloadDigest,
+          confirmed,
         })
-        const stampAmount = this.getStampAmount(this.address)
-        const outcome = await this.$relayClient.sendMessageImpl({
-          address: this.address,
-          items: this.message.items,
-          stampAmount,
-        })
-        if (outcome === undefined || outcome === null) {
-          this.focusFailedAfterRetry?.()
-          return outcome
+        if (outcome.state === 'needs-confirmation') {
+          this.$q
+            .dialog({
+              title: this.$t('outgoing.sendAgainTitle'),
+              message:
+                outcome.reason === 'recovered'
+                  ? this.$t('outgoing.sendAgainRecovered')
+                  : this.$t('outgoing.sendAgainUnverified'),
+              ok: { label: this.$t('outgoing.sendAgain') },
+              cancel: true,
+              persistent: true,
+            })
+            .onOk(() => void this.resend(true))
+        } else if (outcome.state === 'sent') {
+          // The store rekeys this bubble from its optimistic id to the final payload digest.
+          // Ask the stable Chat parent to take focus after this component unmounts.
+          this.focusAfterRetry?.()
         }
-        this.focusAfterRetry?.()
-        return outcome
       } catch (error) {
-        this.focusFailedAfterRetry?.()
         errorNotify(error instanceof Error ? error : new Error(String(error)))
       }
     },
@@ -522,6 +506,22 @@ export default defineComponent({
       return color
         ? { color: readableKeyColor(color, this.$q?.dark?.isActive === true) }
         : {}
+    },
+    // This message's pictures that passed vetting, by position among its image items.
+    shownAttachments(): PostAttachment[] {
+      return shownAttachments(this.message.items)
+    },
+    // Indexes into `message.items` of the pictures the text shows inline.
+    inlineImageItems(): Set<number> {
+      const inline = inlinePositions(this.message.items, this.shownAttachments)
+      const indexes = new Set<number>()
+      let position = 0
+      this.message.items.forEach((item, index) => {
+        if (item.type !== 'image') return
+        position += 1
+        if (inline.has(position)) indexes.add(index)
+      })
+      return indexes
     },
     paymentState(): string {
       const delivery = this.message.delivery

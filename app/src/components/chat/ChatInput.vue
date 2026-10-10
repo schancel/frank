@@ -1,5 +1,48 @@
 <template>
   <div class="row full-width items-center">
+    <!-- Pictures held for the next message. Each is referenced in the text where it shows. -->
+    <div
+      v-if="attachments.length > 0 || attachError || overBudget"
+      class="col-12 row items-center q-gutter-xs q-px-md q-pt-sm"
+      data-testid="chat-attachments"
+    >
+      <q-chip
+        v-for="att in attachments"
+        :key="att.id"
+        removable
+        dense
+        icon="image"
+        color="primary"
+        text-color="white"
+        data-testid="chat-attachment-chip"
+        :data-attachment-id="att.id"
+        :remove-aria-label="
+          $t('chatInput.removeAttachment', { name: att.name })
+        "
+        @remove="removeAttachment(att.id)"
+      >
+        <span class="ellipsis" style="max-width: 140px">{{ att.name }}</span>
+        <span class="q-ml-xs text-caption"
+          >({{ formatAttachmentSize(att.sizeBytes) }})</span
+        >
+      </q-chip>
+      <div
+        v-if="overBudget"
+        class="col-12 text-negative text-caption"
+        role="alert"
+        data-testid="chat-message-too-large"
+      >
+        {{ $t('chatInput.messageTooLarge') }}
+      </div>
+      <div
+        v-if="attachError"
+        class="col-12 text-negative text-caption"
+        role="alert"
+        data-testid="chat-attachment-refused"
+      >
+        {{ attachError }}
+      </div>
+    </div>
     <q-toolbar class="chat-input-toolbar full-width items-center">
       <q-btn
         dense
@@ -13,7 +56,12 @@
       >
         <q-menu>
           <q-list style="min-width: 100px">
-            <q-item clickable v-close-popup @click="sendFileClicked">
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="attach-image-menu-item"
+              @click="pickImages"
+            >
               <q-item-section avatar side>
                 <q-icon name="attach_file" />
               </q-item-section>
@@ -62,8 +110,8 @@
           dense
           borderless
           autogrow
-          @paste="dp($event)"
-          @drop.prevent="dp($event)"
+          @paste="pasted($event)"
+          @drop.prevent="dropped($event)"
           @keydown.enter.exact.prevent
           @keydown.enter.exact="sendMessage"
           @mousedown.self.stop
@@ -177,14 +225,34 @@
         @mousedown.prevent="sendMessage"
       />
     </q-toolbar>
+    <input
+      ref="filePicker"
+      type="file"
+      accept="image/png,image/jpeg,image/gif,image/webp"
+      multiple
+      style="display: none"
+      data-testid="chat-attachment-picker"
+      @change="filesPicked"
+    />
   </div>
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { defineComponent, type PropType } from 'vue'
 import emoji from 'node-emoji'
-import { processInput } from '../../utils/chat'
+import { fitsOneMessage, prepareChatImage } from '../../utils/chat-attachments'
+import {
+  formatAttachmentSize,
+  insertImageMarkdown,
+  removeAttachmentReferences,
+  type PostAttachment,
+} from '../../utils/post-editor'
 import { activeChain } from '@frank/wallet/chain'
+
+/** The pictures among pasted or dropped data. */
+function imageFiles(data: DataTransfer | null | undefined): File[] {
+  return Array.from(data?.files ?? []).filter(f => f.type.startsWith('image/'))
+}
 
 export const DECADE_MULTIPLIERS = [
   1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000,
@@ -195,6 +263,11 @@ export default defineComponent({
     message: {
       type: String,
       default: () => '',
+    },
+    // The pictures held for the next message; the page owns them beside the text.
+    attachments: {
+      type: Array as PropType<PostAttachment[]>,
+      default: () => [],
     },
     stampAmount: {
       type: String,
@@ -218,12 +291,18 @@ export default defineComponent({
       default: false,
     },
   },
+  data() {
+    return {
+      // Why the last picture could not be attached; empty when it could.
+      attachError: '',
+    }
+  },
   emits: [
     'update:message',
+    'update:attachments',
     'update:stampAmount',
     'resetStampToSuggested',
     'sendMessage',
-    'sendFileClicked',
     'blackjackClicked',
     'sendStealthClicked',
   ],
@@ -235,31 +314,105 @@ export default defineComponent({
     focus() {
       ;(this.$refs.inputBox as { focus?: () => void } | undefined)?.focus?.()
     },
-    // ChatInput drop/paste handler
-    async dp(e: ClipboardEvent | DragEvent) {
-      // The text box stays editable during a send (#396), so the attachment path must be gated
-      // here: no file dialog while a send is in flight. (A drop's default, navigating to the
-      // file, is still prevented by the template's `.prevent`.)
-      if (this.disable) {
-        return
-      }
-      const items =
-        'clipboardData' in e ? e.clipboardData?.items : e.dataTransfer?.items
-      if (!items) {
-        console.error('No items found in DP event handler', e)
-        return
-      }
-      const blob = await processInput(items)
-      return blob ? this.$emit('sendFileClicked', blob) : null
+    // A pasted picture becomes an attachment; pasted text is left to the text box.
+    pasted(e: ClipboardEvent) {
+      const files = imageFiles(e.clipboardData)
+      if (files.length === 0) return
+      e.preventDefault()
+      return this.attachImages(files)
     },
+    // The template's `.prevent` already keeps the browser from navigating to a dropped file.
+    dropped(e: DragEvent) {
+      return this.attachImages(imageFiles(e.dataTransfer))
+    },
+    pickImages() {
+      ;(this.$refs.filePicker as HTMLInputElement | undefined)?.click()
+    },
+    filesPicked(e: Event) {
+      const input = e.target as HTMLInputElement
+      const files = Array.from(input.files ?? [])
+      // Picking the same file again must fire `change` again.
+      input.value = ''
+      return this.attachImages(files)
+    },
+    /**
+     * Downscales each picture, holds it for the next message and writes its reference into the
+     * text at the cursor. A picture that cannot be sent is refused here, with the reason,
+     * before anything is paid.
+     */
+    async attachImages(files: File[]) {
+      // The text box stays editable during a send (#396); nothing is attached to a message
+      // that has already left it.
+      if (this.disable || files.length === 0) return
+      const box = this.textarea()
+      let text = this.message
+      let start = box?.selectionStart ?? text.length
+      let end = box?.selectionEnd ?? text.length
+      let attachments = this.attachments
+      this.attachError = ''
+      for (const file of files) {
+        const prepared = await prepareChatImage(file)
+        if (!prepared.ok) {
+          this.attachError = this.$t('chatInput.imageRefused', {
+            name: prepared.name,
+            reason: this.$t(`chatImage.${prepared.reasonKey}`),
+          })
+          continue
+        }
+        const id = String(
+          attachments.reduce((max, a) => Math.max(max, Number(a.id) || 0), 0) +
+            1,
+        )
+        attachments = [
+          ...attachments,
+          {
+            id,
+            name: prepared.name,
+            dataUrl: prepared.dataUrl,
+            sizeBytes: Math.round(
+              ((prepared.dataUrl.split(',')[1] || '').length * 3) / 4,
+            ),
+          },
+        ]
+        const inserted = insertImageMarkdown(
+          text,
+          start,
+          end,
+          prepared.name.replace(/\.[^/.]+$/, ''),
+          `attachment:${id}`,
+        )
+        text = inserted.text
+        start = end = inserted.selectionStart
+        this.$emit('update:attachments', attachments)
+        this.$emit('update:message', text)
+      }
+      const caret = start
+      void this.$nextTick(() => {
+        const el = this.textarea()
+        el?.focus?.()
+        el?.setSelectionRange?.(caret, caret)
+      })
+    },
+    removeAttachment(id: string) {
+      this.attachError = ''
+      this.$emit(
+        'update:attachments',
+        this.attachments.filter(a => a.id !== id),
+      )
+      this.$emit('update:message', removeAttachmentReferences(this.message, id))
+    },
+    textarea(): HTMLTextAreaElement | null {
+      const root = (this.$refs.inputBox as { $el?: Element } | undefined)?.$el
+      return root?.querySelector?.('textarea') ?? null
+    },
+    formatAttachmentSize,
     sendMessage() {
-      if (this.disable) {
+      // A message too large to send is refused here, before anything is paid.
+      if (this.disable || this.overBudget) {
         return
       }
+      this.attachError = ''
       this.$emit('sendMessage', this.innerMessage)
-    },
-    sendFileClicked() {
-      this.$emit('sendFileClicked')
     },
     blackjackClicked() {
       this.$emit('blackjackClicked')
@@ -273,6 +426,9 @@ export default defineComponent({
     },
   },
   computed: {
+    overBudget(): boolean {
+      return !fitsOneMessage(this.message, this.attachments)
+    },
     chainUnit() {
       return activeChain.unit
     },

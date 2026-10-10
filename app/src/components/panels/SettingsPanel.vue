@@ -59,19 +59,6 @@
         </q-item>
         <q-separator />
 
-        <q-item
-          v-if="legacyLotusMode"
-          clickable
-          v-ripple
-          @click="deleteForever"
-        >
-          <q-item-section avatar>
-            <q-icon name="delete_forever" />
-          </q-item-section>
-
-          <q-item-section>{{ $t('SettingPanel.wipeAndSave') }}</q-item-section>
-        </q-item>
-
         <q-item clickable v-ripple @click="openChangelog">
           <q-item-section avatar>
             <q-icon name="change_history" />
@@ -125,7 +112,6 @@ import { openPage } from '../../utils/routes'
 import { useProfileStore } from 'src/stores/my-profile'
 import { storeToRefs } from 'pinia'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 import { isNarrowWidth } from '../../utils/layout'
 
 export default defineComponent({
@@ -192,14 +178,6 @@ export default defineComponent({
       }
     }
 
-    function deleteForever() {
-      const r = getRouter()
-      maybeCloseDrawer('/wipe-wallet')
-      if (r) {
-        return openPage(r, '/wipe-wallet')
-      }
-    }
-
     function openChangelog() {
       const r = getRouter()
       maybeCloseDrawer('/changelog')
@@ -234,7 +212,6 @@ export default defineComponent({
     })
 
     return {
-      legacyLotusMode: legacyLotusModeEnabled(),
       profile,
       inbox,
       myAddress,
@@ -242,7 +219,6 @@ export default defineComponent({
       openBackup,
       openBackupDialog: openBackup,
       openProfile,
-      deleteForever,
       openChangelog,
       openDocs,
       drawerOpenModel,

@@ -82,17 +82,23 @@
                   <div class="text-subtitle2 q-mb-sm">
                     {{ $t('settings.networkModeTitle') }}
                   </div>
+                  <!-- Shown, on and locked: the app runs on testnet only for now. A future
+                  unlock belongs in the settings store's `networkMode`, not in a global swap. -->
                   <div class="row items-center justify-between q-mb-sm">
                     <div>
                       <div class="text-body2 text-weight-medium">
                         {{ $t('settings.testnetMode') }}
                       </div>
-                      <div class="text-caption text-grey">
-                        {{ $t('settings.testnetModeLockedHint') }}
+                      <div
+                        class="text-caption text-grey"
+                        data-test="mainnet-locked-hint"
+                      >
+                        {{ $t('settings.mainnetLockedBanner') }}
                       </div>
                     </div>
                     <q-toggle
-                      v-model="isTestnetMode"
+                      :model-value="isTestnetMode"
+                      disable
                       color="warning"
                       data-test="testnet-mode-toggle"
                     />
@@ -303,6 +309,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useSettingsStore } from 'src/stores/settings'
 import { storeToRefs } from 'pinia'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
+import { activeChain } from '@frank/wallet/chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 const msToMinutes = 60000
 
@@ -370,12 +377,9 @@ export default defineComponent({
       emailGatewayInput.value = settingsStore.emailGatewayAddress
     }
 
-    const isTestnetMode = computed({
-      get: () => settingsStore.networkMode === 'testnet',
-      set: (val: boolean) => {
-        settingsStore.setNetworkMode(val ? 'testnet' : 'mainnet')
-      },
-    })
+    // Stated, not chosen: the toggle shows the network the app is running on and cannot be
+    // flipped. Swapping the chain under an open wallet breaks every call that wallet makes.
+    const isTestnetMode = activeChain.isTestnet ?? false
 
     return {
       appearanceStore,

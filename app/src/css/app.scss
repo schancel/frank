@@ -94,6 +94,15 @@ body {
   margin: 0;
 }
 
+// A picture the message shows where its text refers to it (see ChatMessageText.vue).
+.chat-message-text img {
+  display: block;
+  max-width: min(320px, 100%);
+  max-height: 320px;
+  margin: 4px 0;
+  cursor: pointer;
+}
+
 .chat-message-text p + p::before {
   content: '\A';
   white-space: pre;

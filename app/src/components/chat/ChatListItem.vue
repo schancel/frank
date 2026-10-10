@@ -174,6 +174,7 @@
 
 <script lang="ts">
 import { type Conversation, useChatStore } from 'src/stores/chats'
+import { picturePreviewText } from '../../utils/chat-attachments'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { defineComponent, ref, type PropType } from 'vue'
@@ -366,7 +367,10 @@ export default defineComponent({
       if (info === null || !info) {
         return ''
       }
-      const slicedText = info.text
+      const previewText = info.photos
+        ? picturePreviewText(info, this.$t)
+        : info.text
+      const slicedText = previewText
         .split(' ')
         .map(word => word.slice(0, 15))
         .join(' ')

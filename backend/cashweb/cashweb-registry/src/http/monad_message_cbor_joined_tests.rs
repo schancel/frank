@@ -9,7 +9,6 @@
 use super::*;
 use crate::monad_evm_tx::DecodedSignedTransaction;
 use crate::store::monad_dm_cbor::Phase;
-use crate::store::monad_outbox::{MonadOutboxMemberState, MonadOutboxTerminal};
 use std::sync::Mutex;
 
 const JOINED_CLOCK_SECONDS: &str = "1700000100";
@@ -18,12 +17,10 @@ const JOINED_TEXT: &str = "joined wallet to native relay";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ChainMode {
-    /// Accepted broadcasts stay in the pool without a receipt.
-    Hold,
-    /// Every accepted broadcast has a successful receipt.
-    Mine,
-    /// The first broadcast succeeds; the second is mined reverted.
-    RevertSecond,
+    /// Every broadcast is accepted. Nothing is ever mined: there are no receipts to wait for.
+    Accept,
+    /// The first payment broadcast is accepted; the node refuses every other one.
+    RefuseOthers,
 }
 
 /// Owned local chain. It answers the wallet's quote reads and learns transactions only from
@@ -40,9 +37,6 @@ impl JoinedChain {
             broadcasts: Mutex::new(Vec::new()),
             methods: Mutex::new(Vec::new()),
         })
-    }
-    fn set_mode(&self, mode: ChainMode) {
-        *self.mode.lock().unwrap() = mode;
     }
     fn broadcasts(&self) -> Vec<DecodedSignedTransaction> {
         self.broadcasts.lock().unwrap().clone()
@@ -91,6 +85,11 @@ impl JoinedChain {
                 let hash = decoded.tx_hash.to_hex();
                 let mut broadcasts = self.broadcasts.lock().unwrap();
                 if !broadcasts.iter().any(|tx| tx.tx_hash == decoded.tx_hash) {
+                    if *self.mode.lock().unwrap() == ChainMode::RefuseOthers
+                        && !broadcasts.is_empty()
+                    {
+                        return Err("nonce too low".into());
+                    }
                     broadcasts.push(decoded);
                 }
                 serde_json::json!(hash)
@@ -103,16 +102,7 @@ impl JoinedChain {
                     "input":format!("0x{}", hex::encode(&tx.input))}),
                 None => serde_json::Value::Null,
             },
-            "eth_getTransactionReceipt" => match (by_hash(), *self.mode.lock().unwrap()) {
-                (None, _) | (Some(_), ChainMode::Hold) => serde_json::Value::Null,
-                (Some((index, tx)), mode) => serde_json::json!({
-                    "transactionHash":tx.tx_hash.to_hex(),"blockHash":Hash32([2;32]).to_hex(),
-                    "blockNumber":"0x1","transactionIndex":format!("0x{index:x}"),
-                    "from":tx.sender.to_hex(),"to":tx.destination.map(|to| to.to_hex()),
-                    "gasUsed":"0x5208",
-                    "status":if mode == ChainMode::RevertSecond && index == 1 {"0x0"} else {"0x1"},
-                    "logs":[]}),
-            },
+            "eth_getTransactionReceipt" => serde_json::Value::Null,
             other => return Err(format!("joined chain fake does not serve {other}")),
         })
     }
@@ -331,7 +321,7 @@ fn statuses(pool: &serde_json::Value) -> Vec<&str> {
 #[tokio::test]
 async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipient() {
     use futures::FutureExt;
-    let joined = Joined::start(ChainMode::Hold).await;
+    let joined = Joined::start(ChainMode::Accept).await;
     let outcome = std::panic::AssertUnwindSafe(async {
         // Wallet process 1: durable intent, leases, frozen signatures, promoted exact body.
         let freeze = wallet_phase(&joined.work, "sender-freeze").await;
@@ -351,35 +341,9 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
         let total: u128 = values.iter().sum();
         assert_eq!(total, JOINED_STAMP_VALUE_WEI);
 
-        // Wallet process 2: reopened journal, same bytes, real transport PUT. Chain holds receipts.
-        let retained = wallet_phase(&joined.work, "sender-submit").await;
-        assert_eq!(retained["restoredBody"], freeze["body"]);
-        assert_eq!(retained["reconciledState"], "ready");
-        assert_eq!(retained["accepted"]["phase"], "retained");
-        assert!(retained["terminal"].is_null());
-        assert_eq!(statuses(&retained["pool"]), ["in-use", "in-use"]);
-        let pending = joined.claim(&freeze).expect("native owner retained");
-        assert_eq!(pending.phase, Phase::Pending);
-        assert!(pending.request.exact_equal(&request));
-        assert!(pending.members[0].exposed);
-        let exposed = joined.chain.broadcasts();
-        assert!(!exposed.is_empty());
-        for (index, tx) in exposed.iter().enumerate() {
-            assert_eq!(
-                tx.tx_hash.to_hex(),
-                freeze["members"][index]["hash"].as_str().unwrap()
-            );
-            // #826: what the real wallet signed and the relay broadcast is a plain value
-            // transfer; no calldata reaches the chain.
-            assert!(tx.input.is_empty());
-        }
-        // Recipient does not see recovery records (recovery endpoint is retired).
-        let early = wallet_phase(&joined.work, "recipient-read").await;
-        assert_eq!(early["inbox"].as_array().unwrap().len(), 0);
-        assert_eq!(early["recovery"].as_array().unwrap().len(), 0);
-
-        // Receipts appear. Wallet process 3 re-PUTs the identical retained bytes.
-        joined.chain.set_mode(ChainMode::Mine);
+        // Wallet process 2: reopened journal, same bytes, real transport PUT. Nothing is mined,
+        // and the first answer is already `delivered`: the relay stored the message and handed
+        // both payments to the node.
         let delivered = wallet_phase(&joined.work, "sender-submit").await;
         assert_eq!(delivered["restoredBody"], freeze["body"]);
         assert_eq!(delivered["accepted"]["phase"], "delivered");
@@ -387,21 +351,38 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
         assert_eq!(delivered["terminal"]["phase"], "delivered");
         assert_eq!(delivered["workflowAcknowledged"], true);
         assert_eq!(statuses(&delivered["pool"]), ["spent", "spent"]);
-        let claim = joined.claim(&freeze).unwrap();
+        let claim = joined.claim(&freeze).expect("the relay stored the message");
         let Phase::Delivered(committed) = claim.phase else {
-            panic!("native owner must be delivered, was {:?}", claim.phase);
+            panic!("a stored message is delivered, was {:?}", claim.phase);
         };
         assert_eq!(delivered["accepted"]["mailbox_committed_at_ms"], committed);
-        assert_eq!(claim.obligation_id, pending.obligation_id);
         assert!(claim.request.exact_equal(&request));
-        assert!(claim
-            .members
+        let mut sent: Vec<_> = joined
+            .chain
+            .broadcasts()
             .iter()
-            .all(|member| matches!(member.state, MonadOutboxMemberState::Confirmed { .. })));
-        assert_eq!(joined.chain.broadcasts().len(), 2);
+            .map(|tx| {
+                // #826: what the real wallet signed and the relay broadcast is a plain value
+                // transfer; no calldata reaches the chain.
+                assert!(tx.input.is_empty());
+                tx.tx_hash.to_hex()
+            })
+            .collect();
+        let mut signed: Vec<_> = freeze["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|member| member["hash"].as_str().unwrap().to_owned())
+            .collect();
+        sent.sort();
+        signed.sort();
+        assert_eq!(sent, signed);
         assert_eq!(joined.chain.count("eth_sendRawTransaction"), 2);
+        // The relay looked nothing up and waited for no receipt.
+        assert_eq!(joined.chain.count("eth_getTransactionReceipt"), 0);
+        assert_eq!(joined.chain.count("eth_getTransactionByHash"), 0);
 
-        // Wallet process 4: the reopened owner validates its spent accounts and holds only the
+        // Wallet process 3: the reopened owner validates its spent accounts and holds only the
         // durable workflow acknowledgement, so no further PUT or chain read is possible.
         let financial_calls = joined.chain.methods.lock().unwrap().len();
         let settled = wallet_phase(&joined.work, "sender-submit").await;
@@ -423,9 +404,7 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
         assert_eq!(inbox[0]["timestampMs"], committed);
         assert_eq!(inbox[0]["t3"], freeze["identity"]["payload_hash"]);
         assert_eq!(inbox[0]["texts"], serde_json::json!([JOINED_TEXT]));
-        // Delivered value is not a recovery obligation.
         assert_eq!(read["recovery"].as_array().unwrap().len(), 0);
-        assert!(!joined.claim(&freeze).unwrap().acknowledged);
     })
     .catch_unwind()
     .await;
@@ -435,38 +414,33 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
     }
 }
 
+/// One payment of two never reaches the chain. The message is delivered all the same, so the
+/// recipient holds what it needs to spend the payment that did.
 #[tokio::test]
-async fn joined_real_wallet_terminal_prefix_is_imported_and_acknowledged_by_recipient() {
+async fn joined_real_wallet_message_is_delivered_and_opened_although_the_node_refused_a_payment() {
     use futures::FutureExt;
-    let joined = Joined::start(ChainMode::RevertSecond).await;
+    let joined = Joined::start(ChainMode::RefuseOthers).await;
     let outcome = std::panic::AssertUnwindSafe(async {
         let freeze = wallet_phase(&joined.work, "sender-freeze").await;
         let request = joined.frozen(&freeze).await;
         assert_eq!(request.transaction_count(), 2);
-        assert_eq!(freeze["members"][0]["value"], "1000");
-        assert_eq!(freeze["members"][1]["value"], "500");
 
-        // Member 0 confirms, member 1 reverts: the relay's durable terminal decision.
-        let dead = wallet_phase(&joined.work, "sender-submit").await;
-        assert_eq!(dead["accepted"]["phase"], "dead");
-        assert_eq!(dead["accepted"]["reason"], "verification_failed");
-        assert_eq!(dead["terminal"]["phase"], "dead");
-        assert_eq!(dead["workflowAcknowledged"], true);
-        assert_eq!(statuses(&dead["pool"]), ["retired", "retired"]);
-        let terminal = joined.claim(&freeze).unwrap();
-        assert_eq!(
-            terminal.phase,
-            Phase::Terminal(MonadOutboxTerminal::VerificationFailed)
-        );
-        assert!(terminal.recoverable());
-        assert!(!terminal.acknowledged);
+        let delivered = wallet_phase(&joined.work, "sender-submit").await;
+        assert_eq!(delivered["accepted"]["phase"], "delivered");
+        assert_eq!(delivered["accepted"]["identity"], freeze["identity"]);
+        assert_eq!(delivered["terminal"]["phase"], "delivered");
+        // Both payments were handed to the node once; it took one.
+        assert_eq!(joined.chain.count("eth_sendRawTransaction"), 2);
+        assert_eq!(joined.chain.broadcasts().len(), 1);
+        let claim = joined.claim(&freeze).expect("the relay stored the message");
+        assert!(matches!(claim.phase, Phase::Delivered(_)));
 
-        // Recipient wallet: recovery endpoint is retired (410 Gone) -> 0 recovery records.
         let read = wallet_phase(&joined.work, "recipient-read").await;
-        assert_eq!(read["inbox"].as_array().unwrap().len(), 0);
-        assert_eq!(read["recovery"].as_array().unwrap().len(), 0);
-        let terminal = joined.claim(&freeze).unwrap();
-        assert!(!terminal.acknowledged);
+        let inbox = read["inbox"].as_array().unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0]["delivery"], hex::encode(request.delivery()));
+        assert_eq!(inbox[0]["t3"], freeze["identity"]["payload_hash"]);
+        assert_eq!(inbox[0]["texts"], serde_json::json!([JOINED_TEXT]));
     })
     .catch_unwind()
     .await;

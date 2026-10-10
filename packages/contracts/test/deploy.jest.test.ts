@@ -17,6 +17,7 @@ import {
   loadWalletJson,
   planDeployment,
   predictCreate2Address,
+  isRegtest,
   registryChainId,
   resolveCliTarget,
 } from '../scripts/deploy'
@@ -200,6 +201,10 @@ describe('deploying to a local EVM node', () => {
 
   it('takes a canonical chain identifier and refuses a node that is another chain', async () => {
     expect(registryChainId('monad-testnet')).toBe(10143n)
+    // A local regtest network is deployable too (its record is per run, see --out-dir).
+    expect(registryChainId('monad-regtest')).toBe(20143n)
+    expect(isRegtest('monad-regtest')).toBe(true)
+    expect(isRegtest('monad-testnet')).toBe(false)
     expect(() => registryChainId('monad')).toThrow(/not a chain identifier/)
     expect(() => registryChainId('evm')).toThrow(/not a chain identifier/)
     expect(() => registryChainId('btc-mainnet')).toThrow(/not an EVM network/)

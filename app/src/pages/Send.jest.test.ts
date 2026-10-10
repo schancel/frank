@@ -717,12 +717,19 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         expect(outcome.text()).toContain(fixture.operationId)
         expect(outcome.text()).toContain('69526794')
         expect(outcome.text()).toContain('0.002142 MON')
-        expect(outcome.text()).toContain(
-          messages.nativeOperation.syncUnrecorded,
+        // The payment is included: the outcome reads as sent. That the wallet's other devices
+        // have not been told is a muted note, and nothing speaks of recovery.
+        const sync = wrapper.get('[data-test="native-operation-sync"]')
+        expect(sync.text()).toBe(messages.nativeOperation.syncNotShared)
+        expect(sync.classes()).toEqual(
+          expect.arrayContaining(['text-caption', 'text-grey-7']),
         )
-        expect(outcome.text()).toContain(
+        expect(outcome.text()).not.toContain(
           messages.nativeOperation.recoveryUnavailable,
         )
+        expect(
+          wrapper.find('[data-test="native-operation-recovery"]').exists(),
+        ).toBe(false)
         expect(outcome.text()).not.toContain('private internal')
         expect(wrapper.get('[data-test="review-amount"]').text()).toBe(
           '0.01 MON',
@@ -978,7 +985,9 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         expect(
           wrapper.find('[data-test="review-confirm-button"]').exists(),
         ).toBe(false)
-        if (evidence === 'complete') {
+        // An included payment is a completed send whether or not the wallet has recorded telling
+        // its other devices ('unrecorded'): notify and go back, as for 'complete'.
+        if (evidence === 'complete' || evidence === 'unrecorded') {
           expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
           expect(navigateBack).toHaveBeenCalledTimes(1)
         } else {

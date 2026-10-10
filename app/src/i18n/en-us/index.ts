@@ -943,7 +943,7 @@ export default {
     listTitle: 'Native transfers',
     intendedAmount: 'Intended recipient amount',
     processing: 'Checking the original transfer outcome…',
-    included: 'Payment included on {network}.',
+    included: 'Sent on {network}.',
     reverted:
       'Recipient transaction reverted on {network}. Network fees may have been paid.',
     partial:
@@ -956,7 +956,7 @@ export default {
     feepartial: 'Observed fees so far (partial): {amount} {unit}',
     feeunknown: 'Observed network fees unavailable.',
     block: 'Block {block}',
-    syncUnrecorded: 'Wallet synchronization is not recorded as complete.',
+    syncNotShared: 'Not yet shared with your other devices.',
     syncRecorded:
       'Sync callback completion recorded. This does not confirm synchronization on other devices.',
     recoveryUnavailable: 'Recovery is currently unavailable.',

@@ -14,10 +14,14 @@ jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
     defaultStampValue: 10n ** 16n,
-    toDisplayAmount: (n: bigint) => n.toString(),
-    fromDisplayAmount: (s: string) => BigInt(s),
+    // Most tests here pass amounts as whole base units; the chip tests switch to real decimals.
+    toDisplayAmount: (n: bigint) =>
+      mockDecimals ? jest.requireActual('ethers').formatEther(n) : n.toString(),
+    fromDisplayAmount: (s: string) =>
+      mockDecimals ? jest.requireActual('ethers').parseEther(s) : BigInt(s),
   },
 }))
+let mockDecimals = false
 
 const slotted = (tag: string) =>
   defineComponent({
@@ -70,9 +74,14 @@ const globalOptions = {
   },
   directives: { 'close-popup': {} },
   mocks: {
-    $t: (k: string) =>
-      k.split('.').reduce((o: any, p) => o?.[p], enUS as Record<string, any>) ??
-      k,
+    $t: (k: string, params: Record<string, unknown> = {}) =>
+      String(
+        k
+          .split('.')
+          .reduce((o: any, p) => o?.[p], enUS as Record<string, any>) ?? k,
+      ).replace(/\{(\w+)\}/g, (m, name) =>
+        name in params ? String(params[name]) : m,
+      ),
   },
 }
 
@@ -255,10 +264,8 @@ describe('modernized chat input interface (#1003)', () => {
     expect(wrapper.find('.chat-input-container').exists()).toBe(true)
     expect(wrapper.find('.chat-input-field').exists()).toBe(true)
 
-    // Stamp multiplier pill shows initial multiplier
     const stampBtn = wrapper.find('.chat-stamp-btn')
     expect(stampBtn.exists()).toBe(true)
-    expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('1×')
 
     // Send button has primary color and modern send class
     const sendBtn = wrapper.find('.chat-send-btn')
@@ -266,12 +273,56 @@ describe('modernized chat input interface (#1003)', () => {
     expect(sendBtn.attributes('color')).toBe('primary')
   })
 
-  it('updates stamp multiplier pill text when stampAmount changes', async () => {
-    const wrapper = mount(ChatInput, {
-      props: { stampAmount: '20000000000000000' }, // 2x defaultStampValue (10^16)
-      global: globalOptions,
+  describe('the stamp chip says what it is', () => {
+    beforeEach(() => {
+      mockDecimals = true
     })
-    expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('2×')
+    afterEach(() => {
+      mockDecimals = false
+    })
+
+    it('shows the stamp as an amount in the chain’s unit, not a bare multiplier', () => {
+      const wrapper = mount(ChatInput, {
+        props: { stampAmount: '0.01' },
+        global: globalOptions,
+      })
+      expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('10 mMON')
+      // At the minimum there is no multiple to show.
+      expect(wrapper.find('[data-testid="stamp-pill-multiple"]').exists()).toBe(
+        false,
+      )
+      expect(wrapper.get('[data-testid="stamp-tooltip-amount"]').text()).toBe(
+        'Stamp: 0.01 MON',
+      )
+    })
+
+    it('shows the multiple of the minimum as secondary text, and whether it is the suggestion', () => {
+      // What the run saw after a 0.02 bet: sqrt(0.02 × 0.01).
+      const wrapper = mount(ChatInput, {
+        props: {
+          stampAmount: '0.014142135623730950',
+          suggestedStampAmount: '0.014142135623730950',
+        },
+        global: globalOptions,
+      })
+      expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('14.14 mMON')
+      expect(wrapper.get('[data-testid="stamp-pill-multiple"]').text()).toBe(
+        '1.4×',
+      )
+      expect(wrapper.get('[data-testid="stamp-tooltip-amount"]').text()).toBe(
+        'Stamp: 0.01414 MON, 1.4× the minimum (Suggested)',
+      )
+    })
+
+    it('explains what a stamp is and why the suggestion moves, where the amount is set', () => {
+      const wrapper = mount(ChatInput, {
+        props: { stampAmount: '0.01' },
+        global: globalOptions,
+      })
+      const text = wrapper.get('[data-testid="stamp-explanation"]').text()
+      expect(text).toContain(enUS.chatInput.stampWhat)
+      expect(text).toContain(enUS.chatInput.stampWhy)
+    })
   })
 
   it('does not render bottom stamp status bar to prevent scroll bounce glitches and loads send button when disabled', () => {

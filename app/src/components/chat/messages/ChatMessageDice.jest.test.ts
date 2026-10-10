@@ -170,6 +170,11 @@ describe('ChatMessageDice.vue', () => {
       rollId: 'r1',
       commitment,
     })
+    // The commitment is a long hash: not printed on the card, there on hover.
+    expect(wrapper.text()).not.toContain(commitment.slice(0, 16))
+    expect(
+      wrapper.get('[data-testid="dice-committed"]').attributes('title'),
+    ).toBe(commitment)
     await wrapper.find('[data-testid="dice-preset-16384"]').trigger('click')
     await wrapper.find('[data-testid="dice-chip-0.05"]').trigger('click')
     await wrapper.find('[data-testid="dice-roll-btn"]').trigger('click')

@@ -61,7 +61,9 @@ the bots have spent. Before anything starts the launcher works the draw out from
 (`FRANK_DEMO_MAX_START_DRAW_WEI`), saying exactly how much and from which address. Pass
 `--allow-draw` (or raise the variable) to permit it. It also refuses when the wallet cannot cover
 the draw plus the 0.1 MON reserve the host keeps in it. A bot's key, and so whatever its accounts
-hold, lives in the state directory: do not start on a new one, or delete one, as a quick fix.
+hold, lives in the state directory: do not start on a new one, or delete one, as a quick fix. When
+a start funds bot accounts it says how much it places in the state directory; `yarn demo:sweep
+<state dir> --send` returns a finished demo state's funds to the funding wallet (see below).
 
 Source builds also need a usable native `protoc` (libprotoc 3+ with proto3 support). The relay
 launcher validates `PROTOC` when set; otherwise it searches PATH, then the installed `protoc`
@@ -147,7 +149,10 @@ Per-bot commands also exist: `yarn bot` (Qwen), `yarn blackjack`, `yarn raffle`,
 **Configuration** comes only from environment variables and a `.env` file that you provide
 (`FRANK_DEMO_ENV_FILE`, default `<repo>/.env`, gitignored, `KEY=value` lines). The launcher reads
 just the variables in the table below and passes each child only the ones it needs; the process
-environment wins over the file. The launcher reads only the address of the wallet file
+environment wins over the file. A relative wallet-file path written in the env file
+(`E2E_DEMO_MAIN_WALLET_JSON`, `FRANK_TEST_WALLET_JSON`) is relative to that file, so the repo's
+`.env` works from any directory or worktree; one given in the environment is relative to where
+the command was typed. The launcher reads only the address of the wallet file
 (`E2E_DEMO_MAIN_WALLET_JSON`); its key is read by the bot process. RPC URLs and keys are never
 printed.
 
@@ -172,14 +177,52 @@ wallet; nothing but the bot host may send from `E2E_DEMO_MAIN_WALLET_JSON` while
   move, the move absent), each with the table limit named in its text. No bet is placed:
   `real-games.livecheck.ts` plays for money.
 - `node app/test/autonomous-fullstack-e2e.mjs`: the browser run, against a running `yarn demo`
-  (see the header of that file). It gives a throwaway browser account 0.2 MON that does not come
-  back.
+  (see the header of that file). Its account lives in a persistent Chrome profile,
+  `~/.frank-e2e-browser/autonomous-fullstack-e2e` (`E2E_PROFILE_DIR`): created on the first run,
+  reused afterwards, funded (0.2 MON, `E2E_FUND_MON`) only when it holds less than 0.1 MON. Its
+  native-send scenario pays the test wallet, and at the end what the account holds above 0.15 MON
+  (`E2E_FLOAT_MON`) is sent back to the test wallet through the app's send page; anything not sent
+  stays in the account for the next run. The last line names the account and its balance.
+  `app/test/swap-browser.livecheck.mjs` keeps its account the same way in
+  `~/.frank-e2e-browser/swap-browser`. Never delete these profiles: the account's keys are only
+  there.
 
 Every one of these refuses to fund anything without `FRANK_TEST_WALLET_JSON`, and one funding
 transfer is at most 0.5 MON (`FRANK_TEST_MAX_FUND_WEI`).
 
 The harness these use is `packages/bot/demo/real-stack.ts` (`startRealStack`, `openWallet`, `fund`,
-`stop`): real relay, real chain, real wallets, for any other test that needs them.
+`sweep`, `stop`): real relay, real chain, real wallets, for any other test that needs them. A
+script that funds a wallet calls `stack.sweep()` in a `finally`, before `stop()`:
+`test:two-wallets` and `real-games.livecheck.ts` do, pass or fail, and print one line for every
+account the sweep left money in and why (dust under twice the transfer fee, a failed or reverted
+transfer). The smoke's test user is deliberately persistent and is not swept.
+
+**Where the test money is, and getting it back.** Every demo start, harness run and livecheck
+puts testnet MON in accounts whose keys exist only in a state directory. Two commands read those
+directories with the wallet's own derivation (main account, identity, single-use sender accounts
+whatever their state, change accounts) and the chain:
+
+- `yarn --cwd packages/bot funds:report [dir ...]`: per directory, the wallets found, what each
+  account holds, what is worth moving, what is dust and what has no key left. With no directory
+  it looks at `~/.frank-*` and the `frank-*` directories of the temp directory. Read-only.
+- `yarn --cwd packages/bot funds:sweep <dir ...>`: a dry run of sending it back;
+  `--send` does it. One transfer per account, one at a time, each waited for, to the address of
+  the funding wallet (`E2E_DEMO_MAIN_WALLET_JSON`; only its address is read); every transfer is
+  appended to a log file (`--log <file>`, otherwise a file in the temp directory that the last
+  line names). An account under twice the transfer fee (21,000 gas at the node's gas price,
+  about 0.0021 MON) is left as dust. It refuses a directory a running process has open, and a
+  demo state directory unless asked through `yarn demo:sweep`. It never writes to a state
+  directory (pool records are read from a temporary copy) and never prints a key.
+- `yarn demo:sweep <demo state dir> [--send]` (repo root): the same for a demo's bots, for a
+  demo state that is finished with. A stop does NOT sweep: the bots are meant to stay funded
+  between runs. When a start funds bot accounts the launcher prints how much it places in the
+  state directory and this command.
+
+State kept under a temp directory is gone after a reboot, and its money with it: keep state
+directories under the home directory. Until the unmerged `wallet-parallel-send` branch lands (a
+send then funds nothing ahead), every message is paid from a single-use sender account that is
+funded with a fee reserve, and the part the fee did not use (about 0.002 to 0.005 MON) stays in
+the spent account; `funds:sweep` collects those that are above cost, the rest is dust.
 
 **Checks on a local regtest network** (no funds, no `.env`, nothing outside this machine; the
 first run downloads the eCash node into the git-ignored `.regtest-cache/` and checks its SHA-256):
@@ -206,6 +249,7 @@ that start their own stack. How a regtest network proves its identity is in
 | `FRANK_DEMO_ENV_FILE`              | launcher         | <repo>/.env if it exists                           | Path of the .env file to read (KEY=value lines). The process environment wins over the file. Never committed; you provide it.                                                                                                                                                                                                                                     |
 | `FRANK_DEMO_STATE_DIR`             | launcher         | ~/.frank-demo                                      | One directory holding every bot identity, bot state, the relay database and the logs. Reused across runs.                                                                                                                                                                                                                                                         |
 | `FRANK_DEMO_RELAY_PORT`            | relay            | 8098                                               | Port the local relay listens on (127.0.0.1).                                                                                                                                                                                                                                                                                                                      |
+| `FRANK_DEMO_RELAY_DB_PATH`         | relay            | <state dir>/relay/registry.rocksdb                 | Where the relay keeps its database. Set it to start the relay on a fresh database without touching the one in the state directory (a relay refuses a database written by an earlier build).                                                                                                                                                                       |
 | `FRANK_DEMO_NGROK`                 | launcher         | 0                                                  | Set to 1 (same as the --ngrok flag) to automatically expose the demo stack via local ngrok tunnels.                                                                                                                                                                                                                                                               |
 | `FRANK_DEMO_NGROK_BIN`             | launcher         | ngrok                                              | Executable name or path for the ngrok CLI.                                                                                                                                                                                                                                                                                                                        |
 | `FRANK_DEMO_NGROK_CONFIG`          | launcher         | unset                                              | Path to an existing ngrok configuration file to merge with the demo tunnels.                                                                                                                                                                                                                                                                                      |
@@ -321,7 +365,7 @@ chatbot with blockchain flavor text sprinkled on top.
 
 ```
  human/script                         cashweb-registry relay                    bot
- (qwen-bot-send-demo.livecheck.ts)    (real HTTP server, real Monad RPC)   (qwen-bot.livecheck.ts)
+ (a wallet: the app, `yarn demo:smoke`) (real HTTP server, real Monad RPC)   (qwen-bot.livecheck.ts)
  ─────────────────────────────        ──────────────────────────────      ─────────────────────
  1. register identity  ───PUT /metadata/:addr────────────────────────────────▶ (same, on startup)
  2. encrypt msg (ECDH), burn MON,
@@ -348,10 +392,9 @@ Library code (reusable, no side effects at import time):
   vectors), signing, `PUT`/`GET /metadata/:addr`.
 - `monad-message-envelope.ts` — the E2E encryption + recipient-addressing convention (see "The
   recipient-filtering gap" below), reusing `../relay/crypto.ts`'s existing ECDH+AES code.
-- `monad-message-feed.ts` / `monad-mailbox-client.ts` — the authenticated recipient mailbox
-  client (`POST /message/monad/auth/:me` challenge, identity-key signature, then
-  `GET /message/monad/inbox/:me` with cursor paging). It replaced ticket #37's unauthenticated
-  `GET /message/monad?since=<t>`, which PR #197 removed.
+- `monad-mailbox-client.ts` — the authenticated mailbox client (`POST /message/auth/:me`
+  challenge, identity-key signature, then `GET /message/inbox/:me` or `/message/mailbox/:me` with
+  cursor paging). Bots read through the wallet's own message path, which uses it.
 - `qwen-client.ts` — Qwen 3.8 Max streaming chat client (SSE, hand-parsed; the endpoint rejects
   non-streaming requests — see "Qwen API notes" below).
 - `qwen-bot-common.ts` — shared identity/funding/sub-account-pool setup for both scripts below,
@@ -361,14 +404,15 @@ Runnable entry points (`.livecheck.ts`, this app's existing convention for scrip
 real network — excluded from `jest`'s `testMatch`, meant to be run manually):
 
 - `qwen-bot.livecheck.ts` — the agent itself.
-- `qwen-bot-send-demo.livecheck.ts` — the "human/script" side, for driving a live demo
-  conversation (supports multiple sequential turns via `QWEN_BOT_MESSAGES`).
+
+The "human" side of a live conversation is a wallet: the app, or the smoke user of
+`yarn demo:smoke`, which sends each bot a real message and checks its reply.
 
 ## How the recipient-filtering gap was solved for this demo
 
 > **Historical (pre-PR #197).** The relay now serves each recipient only its own inbox behind a
-> signed challenge, so bots read `fetchMonadMessagesSince({ ...mailboxAuthFor(identity, relayBaseUrl),
-sinceMs })` and no longer download the global feed. The envelope's `to` check below is retained as
+> signed challenge, so bots read their own mailbox through the wallet's message path and no
+> longer download the global feed. The envelope's `to` check below is retained as
 > defence in depth.
 
 Ticket #37's `GET /message/monad?since=<t>` returns **every** stored message — there's no
@@ -554,7 +598,7 @@ Alongside its Qwen-reply behavior, `qwen-bot.livecheck.ts` also polls the live
 `GET /metadata/monad?since=<t>` route (ticket #75, via `fetchMonadProfilesSince`,
 `@frank/wallet/monad-identity`) for newly-registered Monad profiles. For each one seen after the
 bot's own startup (never itself), it sends a real greeting DM (the same stamped-message path used
-for Qwen replies, factored into `qwen-bot-common.ts`'s `sendDirectMessageText`) and funds the new
+for Qwen replies) and funds the new
 address with a small amount of real testnet MON, sent directly via `MonadAccountTxSigner.
 buildAndSignTransfer` on the main funded wallet -- see `qwen-bot.livecheck.ts`'s own header comment
 (point 5) for why that primitive was used instead of `fanOutFundSubAccounts`

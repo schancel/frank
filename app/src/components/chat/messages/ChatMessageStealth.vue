@@ -115,6 +115,7 @@ import { defineComponent, computed, type PropType } from 'vue'
 import { useQuasar } from 'quasar'
 import { Transaction } from 'ethers'
 import { activeChain } from '@frank/wallet/chain'
+import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
 import { multiChainExplorerUrl } from '../../../utils/explorer'
 import { useReceivedPayment } from '../../../composables/useReceivedPayment'
 import { useTranslate } from '../../../composables/useTranslate'
@@ -216,18 +217,12 @@ export default defineComponent({
     networkIdentifier(): string {
       return this.networkTag || this.chainId || 'monad-testnet'
     },
+    /** The unit the chain registry gives the payment's network; the active chain's when the
+     * item names a network the registry does not know. */
     displayUnit(): string {
-      const net = this.networkIdentifier.toLowerCase()
-      if (net.includes('sol')) {
-        return net.includes('dev') || net.includes('test') ? 'tSOL' : 'SOL'
-      }
-      if (net.includes('xec') || net.includes('ecash')) {
-        return net.includes('test') ? 'tXEC' : 'XEC'
-      }
-      if (net.includes('mon')) {
-        return net.includes('test') || net === 'mont' ? 'MONT' : 'MON'
-      }
-      return 'MON'
+      return (
+        resolveChainIdentifier(this.networkIdentifier)?.unit ?? activeChain.unit
+      )
     },
     displayChain(): string {
       const net = this.networkIdentifier.toLowerCase()

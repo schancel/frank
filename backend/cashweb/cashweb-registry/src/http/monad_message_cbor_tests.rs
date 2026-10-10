@@ -412,7 +412,7 @@ fn server_with(
     min_value_wei: u128,
     rpc_timeout: std::time::Duration,
 ) -> super::super::server::RegistryServer {
-    let config = crate::monad_outbox::MonadOutboxReconcileConfig {
+    let config = crate::monad_mailbox::MailboxConfig {
         expected_chain_id: 10143,
         rpc_timeout,
         ..Default::default()
@@ -429,9 +429,10 @@ fn server_with(
         curated_defaults: Arc::new(vec![]),
         monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::enabled(
             crate::monad_http::HttpTransport::new(rpc.parse().unwrap()),
-            Arc::new(config),
+            config,
             min_value_wei,
             b"MONT".to_vec(),
+            &crate::monad_mailbox::SessionSecret::random(),
         ),
         evm_rpc: None,
         bitcoin_proxy: None,
@@ -548,7 +549,7 @@ async fn final_answer(fixture: NativeDirectoryFixture, busy: bool) -> (u16, Stri
         .to_hex();
         let challenge = client
             .post(format!(
-                "{url}/message/monad/cbor/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608"
+                "{url}/message/auth/{recipient}?resource=inbox&since=0&limit=50&max_bytes=8388608"
             ))
             .header("x-frank-mailbox-subject", &account.subject)
             .send()
@@ -557,7 +558,7 @@ async fn final_answer(fixture: NativeDirectoryFixture, busy: bool) -> (u16, Stri
         assert_eq!(challenge.status().as_u16(), 503);
     }
     let response = client
-        .put(format!("{url}/message/monad/cbor"))
+        .put(format!("{url}/message"))
         .header("content-type", request.content_type())
         .body(request.body().to_vec())
         .send()
@@ -685,7 +686,7 @@ async fn zero_stamp_message_is_admitted_and_delivered_immediately() {
 
     let client = reqwest::Client::new();
     let response = client
-        .put(format!("{url}/message/monad/cbor"))
+        .put(format!("{url}/message"))
         .header("content-type", request.content_type())
         .body(request.body().to_vec())
         .send()
@@ -758,27 +759,16 @@ async fn private_headers(
     use bitcoinsuite_core::Sha256;
     let resource = match binding.resource {
         MailboxResource::Inbox => "inbox",
-        MailboxResource::Recovery => "recovery",
-        MailboxResource::RecoveryAck => "recovery_ack",
         MailboxResource::Mailbox => "mailbox",
         MailboxResource::MailboxStream => "mailbox_ws",
     };
-    let mut query = format!(
+    let query = format!(
         "resource={resource}&since={}&limit={}&max_bytes={}",
         binding.since, binding.limit, binding.max_bytes
     );
-    if let Some(hash) = binding.recovery_payload_hash {
-        query.push_str(&format!("&recovery_payload_hash={}", hex::encode(hash)));
-    }
-    if let Some(obligation) = binding.recovery_obligation_id {
-        query.push_str(&format!(
-            "&recovery_obligation_id={}",
-            hex::encode(obligation)
-        ));
-    }
     let response = client
         .post(format!(
-            "{url}/message/monad/cbor/auth/{}?{query}",
+            "{url}/message/auth/{}?{query}",
             binding.recipient.to_hex()
         ))
         .header("x-frank-mailbox-subject", point)
@@ -795,9 +785,8 @@ async fn private_headers(
         token: hash_hex(challenge["token"].as_str().unwrap()).unwrap(),
         expires_at_ms: challenge["expires_at_ms"].as_i64().unwrap(),
     };
-    let digest = Sha256::digest(
-        super::super::monad_message::mailbox_auth_preimage(token, binding, b"MONT").into(),
-    );
+    let digest =
+        Sha256::digest(crate::monad_mailbox::mailbox_auth_preimage(token, binding, b"MONT").into());
     let signature = public_p_signature(root, digest.as_slice().try_into().unwrap(), point).await;
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("x-frank-mailbox-subject", point.parse().unwrap());
@@ -826,14 +815,17 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         .registry
         .canonical_dm()
         .attach_directory(fixture.directory.clone());
-    let mut config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
-    config.expected_chain_id = 10143;
-    config.private_read_concurrency = 1;
+    let config = crate::monad_mailbox::MailboxConfig {
+        expected_chain_id: 10143,
+        private_read_concurrency: 1,
+        ..Default::default()
+    };
     let runtime = crate::monad_mailbox::MonadMailboxRuntime::enabled(
         crate::monad_http::HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
-        Arc::new(config),
+        config,
         10143,
         b"MONT".to_vec(),
+        &crate::monad_mailbox::SessionSecret::random(),
     );
     let server = super::super::server::RegistryServer {
         registry: fixture.registry.clone(),
@@ -876,8 +868,6 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         cursor: None,
         limit: Some(10),
         max_bytes: Some(1024),
-        recovery_payload_hash: None,
-        recovery_obligation_id: None,
     };
     let response = handle_challenge(
         axum::extract::Path(recipient_hex.clone()),
@@ -974,7 +964,7 @@ fn every_canonical_fixture_payment_is_a_plain_transfer_with_empty_input() {
 async fn admitted_input(
     fixture: &NativeDirectoryFixture,
     request: &ExactRequest,
-) -> Result<crate::monad_outbox::financial::CanonicalPaymentInput> {
+) -> Result<crate::monad_dm_payment::CanonicalPaymentInput> {
     let principals = request_principals(request, "monad-testnet").unwrap();
     let recipient = current(
         fixture.registry.canonical_dm(),
@@ -983,7 +973,7 @@ async fn admitted_input(
     )
     .await
     .unwrap();
-    crate::monad_outbox::financial::validate_canonical_payment_set(
+    crate::monad_dm_payment::validate_canonical_payment_set(
         request.clone(),
         &recipient,
         None,
@@ -1083,7 +1073,6 @@ async fn canonical_admission_rejects_any_calldata_on_a_signed_member() {
 #[tokio::test]
 async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
     use crate::monad_http::Hash32;
-    use crate::store::monad_dm_cbor::Phase;
     use futures::FutureExt;
     let fixture = NativeDirectoryFixture::new().await;
     let (genuine, replay) = (genuine_fixture(), replay_fixture());
@@ -1104,7 +1093,7 @@ async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
     let (rpc_url, rpc_stop, rpc_task) = serve_http(rpc).await;
     let put = |url: String, request: ExactRequest| async move {
         let response = reqwest::Client::new()
-            .put(format!("{url}/message/monad/cbor"))
+            .put(format!("{url}/message"))
             .header("content-type", request.content_type())
             .body(request.body().to_vec())
             .send()
@@ -1189,7 +1178,7 @@ async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
     let outcome = std::panic::AssertUnwindSafe(async {
         let owner = reopened.registry.canonical_dm();
         let delivered = owner.get(&paid).unwrap().unwrap();
-        assert!(matches!(delivered.phase, Phase::Delivered(_)));
+        assert!(delivered.delivered_at > 0);
         let (status, refused) = put(url.clone(), replay.clone()).await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(refused["error"], "canonical_submission_conflict");
@@ -1200,7 +1189,6 @@ async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
         assert_eq!(retried["phase"], "delivered");
         let recipient = delivered.policy.recipient().unwrap();
         assert_eq!(owner.inbox(recipient, 0, None, 8).unwrap().len(), 1);
-        assert!(owner.recovery(recipient, None, 8).unwrap().is_empty());
     })
     .catch_unwind()
     .await;

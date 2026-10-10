@@ -92,6 +92,27 @@ describe('ChatListItem message preview (ticket #274)', () => {
     expect(preview(locale)).toBe(expected)
   })
 
+  // The run that found this showed "Them: 💬 **Lobby Group Chat…" in the list.
+  it.each([
+    ['💬 **Lobby Group Chat Commands**', 'Them: 💬 Lobby Group Chat Commands'],
+    ['_hi_ `/join` [the docs](https://x.example)', 'Them: hi /join the docs'],
+    ['see ![cat](https://x.example/c.png)', 'Them: see 📷 Photo'],
+    ['<b>bold</b> <img src=x onerror=alert(1)> a < b', 'Them: bold a < b'],
+  ])('shows %j as plain text %j', (text, expected) => {
+    latest = { text, outbound: false }
+    expect(preview('en-us')).toBe(expected)
+  })
+
+  it('keeps a long word whole (it wraps in the row; it is not cut mid-word)', () => {
+    latest = {
+      text: 'Rock-Paper-Scissors. I pick my move first',
+      outbound: false,
+    }
+    expect(preview('en-us')).toBe(
+      'Them: Rock-Paper-Scissors. I pick my move first',
+    )
+  })
+
   // The text of a message with pictures carries `![name](attachment:1)`; the row shows a count.
   it.each([
     [1, 'look at this', 'Them: 📷 Photo look at this'],

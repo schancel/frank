@@ -5,6 +5,7 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "paths": {
+      "@frank/bot-framework/*": ["../bot-framework/src/*"],
       "@frank/cashweb/*": ["../cashweb/*"],
       "@frank/codec": ["../frank-codec/src/index.ts"],
       "@frank/codec/*": ["../frank-codec/src/*"],

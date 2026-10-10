@@ -6,6 +6,7 @@ import {
 } from 'src/composables/useSolanaSwap'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { exactTokenAmount, readableTokenAmount } from './amounts'
+import { swapAssetSymbol } from './asset-symbol'
 import { evmSwapVenues, openEvmSwapSession } from './evm-swap-session'
 
 export interface SwapActivityRow {
@@ -74,7 +75,7 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
         BigInt(record.amountIn),
         record.assetIn.decimals,
       ),
-      fromAsset: record.assetIn.symbol,
+      fromAsset: swapAssetSymbol(record.chainIdentifier, record.assetIn),
       toAmount:
         outcome?.status === 'failed'
           ? '0'
@@ -87,7 +88,7 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
               BigInt(record.minimumAmountOut),
               record.assetOut.decimals,
             ),
-      toAsset: record.assetOut.symbol,
+      toAsset: swapAssetSymbol(record.chainIdentifier, record.assetOut),
       route:
         solanaSwapActivity(record.chainIdentifier)?.venueName(record.venueId) ??
         evmSwapVenues(record.chainIdentifier).find(

@@ -389,3 +389,31 @@ describe('bitcoin and solana relay proxies', () => {
 })
 
 
+
+describe('wallet file paths', () => {
+  const base = {
+    MONAD_TESTNET_HTTP_RPC_URL: REAL_ENV.MONAD_TESTNET_HTTP_RPC_URL,
+    MONAD_TESTNET_WS_RPC_URL: REAL_ENV.MONAD_TESTNET_WS_RPC_URL,
+  }
+  it('a relative path written in the env file is relative to that file, wherever the launcher runs', () => {
+    const config = resolveDemoConfig({
+      env: base,
+      envFile: { E2E_DEMO_MAIN_WALLET_JSON: '.wallets/main.json', FRANK_TEST_WALLET_JSON: '.wallets/test.json' },
+      envFileDir: '/repo',
+      home: '/home/dummy',
+      cwd: '/repo/.worktrees/x/packages/bot',
+    })
+    expect(config.mainWalletJson).toBe('/repo/.wallets/main.json')
+    expect(config.testWalletJson).toBe('/repo/.wallets/test.json')
+  })
+  it('a relative path given in the environment is relative to where the command was typed', () => {
+    const config = resolveDemoConfig({
+      env: { ...base, E2E_DEMO_MAIN_WALLET_JSON: 'w/main.json' },
+      envFile: { E2E_DEMO_MAIN_WALLET_JSON: '.wallets/main.json' },
+      envFileDir: '/repo',
+      home: '/home/dummy',
+      cwd: '/work',
+    })
+    expect(config.mainWalletJson).toBe('/work/w/main.json')
+  })
+})

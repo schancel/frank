@@ -73,10 +73,9 @@
             />
           </q-avatar>
           <q-toolbar-title class="h6 chat-header-title">
-            <div
-              class="row items-center no-wrap"
-              :style="contactNameColorStyle"
-            >
+            <!-- The name is in the header's own text colour: the per-key colour is a ring on
+            the avatar, where it does not have to be read against the header bar. -->
+            <div class="row items-center no-wrap">
               <span class="ellipsis" data-testid="chat-header-name">{{
                 contactName
               }}</span>
@@ -524,17 +523,6 @@ export default defineComponent({
         return {}
       }
       return { boxShadow: `0 0 0 3px ${pubKeyToColor(pubKey.toBuffer())}` }
-    },
-    // Direct user feedback: the avatar ring alone was too easy to miss -- the same color cue is
-    // now also applied to the name text itself (kept alongside the ring, not instead of it, so
-    // there are two independent places a key change is visible). Same `pubKeyToColor` call, same
-    // "no pubkey yet" -> no color fallback as `contactColorStyle` above.
-    contactNameColorStyle() {
-      const pubKey = this.contactProfile?.pubKey
-      if (!pubKey || this.isGroup) {
-        return {}
-      }
-      return { color: pubKeyToColor(pubKey.toBuffer()) }
     },
   },
 })

@@ -405,6 +405,27 @@ export default configure(ctx => {
           'bn.js',
           'bitcore-lib-xpi',
         ]
+        // The dev server looks for dependencies to pre-bundle once, at start, and its scan does
+        // not reach everything the app loads later (pages the router loads on demand, code behind
+        // a dynamic import). The first time such code ran, Vite found a new dependency,
+        // pre-bundled again and RELOADED the page under the user: a click on a conversation
+        // right after launch reloaded the app back to "Select a conversation" (`dompurify` and
+        // `node-emoji`, first imported by the chat page). Naming them here pre-bundles them at
+        // start. To find one that is missing: start the dev server with an empty
+        // `node_modules/.q-cache`, note the keys of `optimized` in
+        // `node_modules/.q-cache/dev-spa/vite-spa/deps/_metadata.json`, use the app, and compare.
+        viteConf.optimizeDeps.include.push(
+          'atob',
+          'bluebird',
+          'btoa',
+          'crypto',
+          'dompurify',
+          'events',
+          'node-emoji',
+          'qrcode.vue',
+          'vcf',
+          'vue-i18n',
+        )
       },
     },
 

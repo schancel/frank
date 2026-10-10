@@ -130,8 +130,18 @@
           aria-haspopup="menu"
           :disable="disable"
         >
+          <!-- What the message will carry, in the compact form: the chip is a tight place. -->
           <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
-          <q-tooltip>{{ stampLabel }}</q-tooltip>
+          <span
+            v-if="stampMultiplier !== '1'"
+            class="chat-stamp-pill-multiple q-ml-xs"
+            data-testid="stamp-pill-multiple"
+            >{{ stampMultiplier }}×</span
+          >
+          <q-tooltip max-width="280px">
+            <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+            <div>{{ $t('chatInput.stampWhat') }}</div>
+          </q-tooltip>
           <q-menu anchor="top middle" self="bottom middle">
             <div class="q-pa-md" style="min-width: 320px">
               <div class="row items-center justify-between q-mb-xs">
@@ -158,6 +168,14 @@
                 </q-badge>
               </div>
 
+              <div
+                class="text-caption chat-stamp-explanation q-mb-sm"
+                data-testid="stamp-explanation"
+              >
+                <div>{{ $t('chatInput.stampWhat') }}</div>
+                <div class="q-mt-xs">{{ $t('chatInput.stampWhy') }}</div>
+              </div>
+
               <q-input
                 v-model="innerStampAmount"
                 dense
@@ -167,7 +185,8 @@
                 :suffix="chainUnit"
                 :label="$t('chatInput.stampPayment')"
               />
-              <div class="q-mt-sm">
+              <!-- Side room for the first and last marker labels, which are centred on the ends. -->
+              <div class="q-mt-sm q-px-md">
                 <q-slider
                   v-model="decadeIndex"
                   class="q-mt-md"
@@ -248,6 +267,10 @@ import {
   type PostAttachment,
 } from '../../utils/post-editor'
 import { activeChain } from '@frank/wallet/chain'
+import {
+  formatCompactAmount,
+  formatDisplayAmount,
+} from '../../utils/chain-amount'
 
 /** The pictures among pasted or dropped data. */
 function imageFiles(data: DataTransfer | null | undefined): File[] {
@@ -503,11 +526,37 @@ export default defineComponent({
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
     },
+    /** The stamp on the chip: the amount in the chain's unit, compact ("14.14 mMONT"). */
     stampPillText(): string {
-      return `${this.stampMultiplier}×`
+      try {
+        return formatCompactAmount(
+          activeChain,
+          activeChain.fromDisplayAmount(this.stampAmount),
+        )
+      } catch {
+        // Not a number yet (the field is being typed in): shown as typed.
+        return `${this.stampAmount} ${activeChain.unit}`
+      }
     },
+    /** The chip's hover line: the amount in full, how it compares with the minimum, and
+     * whether it is the suggestion for this chat or the user's own choice. */
     stampLabel(): string {
-      const base = `${this.stampAmount} ${activeChain.unit}`
+      let amount = `${this.stampAmount} ${activeChain.unit}`
+      try {
+        amount = formatDisplayAmount(
+          activeChain,
+          activeChain.fromDisplayAmount(this.stampAmount),
+        )
+      } catch {
+        // Shown as typed.
+      }
+      const base =
+        this.stampMultiplier === '1'
+          ? this.$t('chatInput.stampChip', { amount })
+          : this.$t('chatInput.stampChipMultiple', {
+              amount,
+              multiplier: this.stampMultiplier,
+            })
       if (this.suggestedStampAmount && !this.isOverridden) {
         return `${base} (${this.$t('chatInput.convergedPill')})`
       }
@@ -613,6 +662,23 @@ export default defineComponent({
   font-size: 11px;
   font-family: inherit;
   opacity: 0.9;
+  white-space: nowrap;
+}
+
+/* Secondary to the amount; the first thing to go when the composer is narrow. */
+.chat-stamp-pill-multiple {
+  font-size: 10px;
+  opacity: 0.8;
+  white-space: nowrap;
+
+  @media (max-width: 480px) {
+    display: none;
+  }
+}
+
+.chat-stamp-explanation {
+  opacity: 0.8;
+  max-width: 320px;
 }
 
 .chat-send-btn {

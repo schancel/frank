@@ -1,28 +1,21 @@
-//! Actual old-binary proof uses FRANK_DIRECTORY_BASE_OPENER (the separately built pinned helper).
-//! Without that artifact CI checks the exact legacy CF/data invariants, not an emulated old binary.
+//! The directory keeps its records in its own store beside the registry database. Using it
+//! must add no table to the registry database and leave what is already there untouched.
+//!
+//! This used to be proved against a database opened by an older binary. There is no older
+//! format to go back to any more (a database from an earlier build is refused at startup), so
+//! what remains is the invariant itself, against the registry's own table list.
 use cashweb_registry::{directory_admission::*, store::db::Db};
 use frank_cbor::{verify_preview_directory_evidence, TypedPayload};
 use serde_json::Value;
-use std::{path::Path, process::Command};
+use std::path::Path;
 
-// Exact sorted registry CF inventory registered by reviewed base
-// 7b45b3374c102dda10c8c561535c8fd7f7183778 (including RocksDB's default CF).
-// This must not be derived from the candidate opener, even when no old binary is supplied.
-const REVIEWED_BASE_CFS: &[&str] = &[
+// The registry database's tables, sorted (including RocksDB's default one). Written out here,
+// not read back from the opener under test.
+const REGISTRY_CFS: &[&str] = &[
     "default",
     "directory_usernames",
     "message_payloads",
     "metadata",
-    "monad_message_attempts",
-    "monad_messages",
-    "monad_messages_by_recipient_time",
-    "monad_messages_by_time",
-    "monad_outbox_active_v1",
-    "monad_outbox_history_v2",
-    "monad_outbox_members_v1",
-    "monad_outbox_meta_v2",
-    "monad_outbox_recipient_v1",
-    "monad_outbox_v1",
     "monad_profiles",
     "monad_profiles_by_name",
     "monad_profiles_by_time",
@@ -35,34 +28,6 @@ const REVIEWED_BASE_CFS: &[&str] = &[
     "topic_messages",
 ];
 
-fn base_open(path: &Path) -> bool {
-    let Ok(helper) = std::env::var("FRANK_DIRECTORY_BASE_OPENER") else {
-        return false;
-    };
-    let result = Command::new(helper)
-        .args([
-            "--exact",
-            "directory_preview_actual_legacy_opener",
-            "--nocapture",
-        ])
-        .env("FRANK_DIRECTORY_LEGACY_DB", path)
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "actual base opener failed for {}:\n{}\n{}",
-        path.display(),
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    assert!(
-        stdout.contains("running 1 test\n")
-            && stdout.contains("test directory_preview_actual_legacy_opener ... ok"),
-        "wrong/no-op base helper executable: {stdout}"
-    );
-    true
-}
 fn names(path: &Path) -> Vec<String> {
     let mut names = rocksdb::DB::list_cf(&rocksdb::Options::default(), path).unwrap();
     names.sort();
@@ -75,18 +40,15 @@ fn regression(populated: bool) {
         Ok(root) => Path::new(&root).join(label),
         Err(_) => temp.path().join(label),
     };
-    eprintln!("retained rollback fixture: {}", path.display());
-    if !base_open(&path) {
-        drop(Db::open(&path).unwrap());
-    }
+    eprintln!("retained fixture: {}", path.display());
+    drop(Db::open(&path).unwrap());
     assert_eq!(
         names(&path),
-        REVIEWED_BASE_CFS,
-        "initial registry must match the reviewed base, not the candidate's own inventory"
+        REGISTRY_CFS,
+        "a fresh registry holds exactly its own tables"
     );
     {
-        let raw =
-            rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, REVIEWED_BASE_CFS).unwrap();
+        let raw = rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, REGISTRY_CFS).unwrap();
         let mut sync = rocksdb::WriteOptions::default();
         sync.set_sync(true);
         raw.put_opt(b"legacy-sentinel", b"exact-preexisting-legacy-bytes", &sync)
@@ -142,17 +104,13 @@ fn regression(populated: bool) {
             None
         }
     };
-    // Call the old executable before the structural assertion: the before proof must fail
-    // at the real production opener, not merely predict its behavior from a CF list.
-    base_open(&path);
     assert_eq!(
         names(&path),
-        REVIEWED_BASE_CFS,
-        "preview must not modify the legacy CF set"
+        REGISTRY_CFS,
+        "using the directory must add no table to the registry database"
     );
     {
-        let raw =
-            rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, REVIEWED_BASE_CFS).unwrap();
+        let raw = rocksdb::DB::open_cf(&rocksdb::Options::default(), &path, REGISTRY_CFS).unwrap();
         assert_eq!(
             raw.get(b"legacy-sentinel").unwrap().unwrap(),
             b"exact-preexisting-legacy-bytes"
@@ -179,10 +137,10 @@ fn regression(populated: bool) {
 }
 
 #[test]
-fn directory_preview_unused_registry_still_opens_on_reviewed_base() {
+fn an_unused_directory_adds_nothing_to_the_registry_database() {
     regression(false);
 }
 #[test]
-fn directory_preview_populated_registry_still_opens_on_reviewed_base() {
+fn a_used_directory_adds_no_table_and_changes_no_existing_value() {
     regression(true);
 }

@@ -490,8 +490,10 @@ const fn default_directory_sync_interval_s() -> u64 {
     30
 }
 
+/// No sign-up limit worth the name: the demo and local development register many accounts from
+/// one address. An operator who wants one sets it.
 const fn default_directory_enrollments_per_source_per_hour() -> u32 {
-    30
+    100_000
 }
 
 /// Placeholder that accepts any value of a setting which no longer exists.
@@ -665,12 +667,16 @@ impl Default for EvmRpcConf {
     }
 }
 
+/// The RPC quotas default high enough that the app works against a relay started from a
+/// config that does not mention them. A single swap quote costs about 70 units and a swap
+/// about 150, so the old anonymous default of 500 an hour stopped a wallet within minutes.
+/// These bound a runaway client, not a user; an operator who wants a real quota sets one.
 const fn default_evm_customer_units_per_hour() -> u32 {
-    10_000
+    1_000_000
 }
 
 const fn default_evm_anonymous_units_per_hour() -> u32 {
-    500
+    1_000_000
 }
 
 const fn default_rpc_capability_ttl_ms() -> u64 {
@@ -943,7 +949,7 @@ const fn default_bitcoin_response_bytes() -> usize {
     16 * 1024 * 1024
 }
 const fn default_chronik_anonymous_requests_per_hour() -> u32 {
-    20_000
+    1_000_000
 }
 
 /// One Bitcoin-family chain and its optional node/indexer upstreams.
@@ -1315,12 +1321,12 @@ impl SolanaProxyConf {
 /// binaries cannot read newer versioned outbox rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct MonadMailboxConf {
-    /// Whether admission and reconciliation are enabled. This is the only switch for
-    /// `PUT /message/monad` and the private mailbox routes (the shipped configs enable it). The
-    /// one environment input is `cashwebd-exe` filling a missing `rpc_url` from
-    /// `MONAD_TESTNET_HTTP_RPC_URL`; this type itself never reads the environment. A disabled deployment omits those routes (every `/message/monad` request
-    /// other than the separate topic routes answers 404) and does not start a worker; durable rows
-    /// remain readable.
+    /// Whether messages are accepted and delivered. This is the only switch for the message
+    /// routes (`PUT /message`, `/message/auth`, `/message/inbox` and `/message/mailbox`); the
+    /// shipped configs enable it. The one environment input is `cashwebd-exe` filling a missing
+    /// `rpc_url` from `MONAD_TESTNET_HTTP_RPC_URL`; this type itself never reads the
+    /// environment. A disabled deployment does not mount those routes (they answer 404) and
+    /// does not start a worker; stored messages are kept.
     pub enabled: bool,
     /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true; the shipped configs omit it
     /// and `cashwebd-exe` supplies it from the environment before calling `mode()`.
@@ -1546,7 +1552,7 @@ binding_expiry_ns = "1893456000000000000"
         .unwrap();
         minimal.validate().unwrap();
         assert_eq!(minimal.max_subjects, 1_000_000);
-        assert_eq!(minimal.enrollments_per_source_per_hour, 30);
+        assert_eq!(minimal.enrollments_per_source_per_hour, 100_000);
 
         let old: crate::DirectoryConf = toml::from_str(
             r#"

@@ -7,14 +7,13 @@
 
     <!-- The bot has committed to its move -->
     <template v-if="item.action === 'start'">
-      <div class="text-caption q-mb-xs">
-        The bot has committed to its move:
-        <div
-          class="text-mono text-grey-7 ellipsis text-caption"
-          style="font-size: 11px"
-        >
-          {{ item.commitHash }}
-        </div>
+      <!-- The commitment is a long hash: on hover here; the result says whether it matched. -->
+      <div
+        class="text-caption q-mb-xs"
+        :title="item.commitHash"
+        data-testid="rps-committed"
+      >
+        The bot has committed to its move.
       </div>
       <template v-if="!played">
         <div class="text-caption text-weight-medium q-mb-xs">Stake:</div>
@@ -23,6 +22,7 @@
             v-for="chip in wagerChips"
             :key="chip.label"
             dense
+            no-caps
             size="sm"
             :outline="wagerInput !== chip.value"
             color="primary"

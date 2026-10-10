@@ -8,13 +8,23 @@
  * never spends from the demo's funding wallet and refuses when FRANK_TEST_WALLET_JSON is unset:
  * the demo's bot host is the only spender of E2E_DEMO_MAIN_WALLET_JSON. One call sends at most
  * 0.5 MON unless FRANK_TEST_MAX_FUND_WEI says otherwise. Transfers are serialised with every
- * other user of the test wallet. Prints the transaction hash.
+ * other user of the test wallet. Prints the transaction hash. `fund.ts --address` prints the test
+ * wallet's address (for a script that sends its leftover back) and sends nothing.
  */
-import { isAddress, parseEther } from 'ethers'
+import { readFileSync } from 'fs'
+
+import { getAddress, isAddress, parseEther } from 'ethers'
 
 import { fundFromWallet, realStackEnv } from './real-stack'
 
 async function main(argv: string[]): Promise<void> {
+  if (argv.length === 1 && argv[0] === '--address') {
+    // For a script that wants to send its leftover back: the test wallet's address, nothing else.
+    const path = realStackEnv().FRANK_TEST_WALLET_JSON
+    if (!path) throw new Error('FRANK_TEST_WALLET_JSON is not set')
+    console.log(getAddress((JSON.parse(readFileSync(path, 'utf8')) as { address: string }).address))
+    return
+  }
   const [to, amount] = argv
   if (argv.length !== 2 || !isAddress(to) || !/^[0-9]+(\.[0-9]+)?$/.test(amount)) {
     throw new Error('Usage: fund.ts <0x address> <amount in MON, e.g. 0.2>')

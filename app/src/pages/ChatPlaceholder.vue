@@ -1,7 +1,19 @@
 <template>
   <q-page-container>
     <q-page class="flex flex-center text-center q-pa-md">
-      <div class="column items-center q-gutter-md">
+      <!-- A conversation was clicked and is on its way: say so, not "select a conversation". -->
+      <div
+        v-if="opening"
+        class="column items-center q-gutter-md"
+        role="status"
+        data-testid="chat-opening"
+      >
+        <q-spinner size="3rem" color="primary" />
+        <div class="text-body2 chat-placeholder-muted">
+          {{ $t('chatList.openingConversation') }}
+        </div>
+      </div>
+      <div v-else class="column items-center q-gutter-md">
         <q-icon name="chat" size="4rem" color="primary" />
         <div class="text-h6 text-weight-medium">
           {{ $t('chatList.directMessages') }}
@@ -22,11 +34,15 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { computed, defineComponent } from 'vue'
 import { openPage } from 'src/utils/routes'
+import { pendingChatRoute } from 'src/router/pending-chat'
 
 export default defineComponent({
   name: 'ChatPlaceholder',
+  setup() {
+    return { opening: computed(() => pendingChatRoute.value !== null) }
+  },
   methods: {
     openAddContact() {
       openPage(this.$router, '/add-contact')
@@ -34,3 +50,9 @@ export default defineComponent({
   },
 })
 </script>
+
+<style lang="scss" scoped>
+.chat-placeholder-muted {
+  opacity: 0.7;
+}
+</style>

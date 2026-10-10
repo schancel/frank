@@ -30,7 +30,7 @@
             filled
             dense
             data-test="send-amount-input"
-            :placeholder="$t('sendAddressDialog.enterAmount')"
+            :placeholder="$t('sendAddressDialog.enterAmount', { unit })"
           />
         </q-card-section>
         <q-card-actions align="right">

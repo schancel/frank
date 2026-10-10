@@ -1,19 +1,7 @@
-import { computeAddress, getAddress, JsonRpcProvider } from 'ethers'
+import { computeAddress, getAddress } from 'ethers'
 
-import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
-import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { MonadHttpClient } from '@frank/wallet/monad-http'
-import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
-import { fetchMonadProfile } from '@frank/wallet/monad-identity'
-import {
-  MonadStampClient,
-  quoteMonadStampPaymentGasReserve,
-} from '@frank/wallet/monad-stamp-client'
-import { openMonadWalletBundle } from '@frank/wallet/storage/monad-wallet-bundle'
-import { LevelStampAttemptJournal } from '@frank/wallet/storage/stamp-attempt-journal'
-import { LevelStampPaymentJournal } from '@frank/wallet/storage/stamp-payment-journal'
-
-import { loadConfig, loadIdentity, resolveDataDir } from '../config'
+import { openCliAccount, type CliAccount } from '../account'
+import { loadConfig, resolveDataDir } from '../config'
 import {
   formatMonAndWei,
   outputError,
@@ -41,11 +29,14 @@ export async function sendCommand(
   message: string,
   options: SendCommandOptions,
 ): Promise<void> {
-  let bundle: Awaited<ReturnType<typeof openMonadWalletBundle>> | undefined
-  let attemptJournal: LevelStampAttemptJournal | undefined
-  let paymentJournal: LevelStampPaymentJournal | undefined
+  let account: CliAccount | undefined
 
   try {
+    const trimmedRecipient = recipientInput.trim()
+    if (trimmedRecipient.includes('@')) {
+      return await mailSendCommand(trimmedRecipient, message, options)
+    }
+
     const dataDir = resolveDataDir(options.dataDir)
     const config = loadConfig(dataDir)
     const relayUrl = (options.relay ?? config.relayUrl).replace(/\/+$/, '')
@@ -54,35 +45,11 @@ export async function sendCommand(
       ? parseMonOrWei(options.stamp)
       : 10000000000000000n // 0.01 MON default
 
-    const { identity, mnemonic, walletDir } = await loadIdentity(
-      dataDir,
-      undefined,
-      options.password,
-    )
-
-    // Resolve recipient: either email, 0x address, or compressed pubkey hex
+    // The recipient is an account address, or the account's compressed public key.
     let toAddress: string
-    let toPubKey: Buffer
-
-    const trimmedRecipient = recipientInput.trim()
-    if (trimmedRecipient.includes('@')) {
-      return await mailSendCommand(trimmedRecipient, message, options)
-    }
-
     if (/^0x[0-9a-fA-F]{40}$/.test(trimmedRecipient)) {
       toAddress = getAddress(trimmedRecipient)
-      const profile = await fetchMonadProfile({
-        relayBaseUrl: relayUrl,
-        address: { raw: toAddress },
-      })
-      if (!profile || !profile.pubKey || profile.pubKey.length === 0) {
-        throw new Error(
-          `Recipient ${toAddress} has no registered public key on relay ${relayUrl}. Recipient must be registered before sending direct messages.`,
-        )
-      }
-      toPubKey = Buffer.from(profile.pubKey)
     } else if (/^(02|03)[0-9a-fA-F]{64}$/.test(trimmedRecipient)) {
-      toPubKey = Buffer.from(trimmedRecipient, 'hex')
       toAddress = computeAddress('0x' + trimmedRecipient)
     } else {
       throw new Error(
@@ -90,92 +57,41 @@ export async function sendCommand(
       )
     }
 
-    const provider = new JsonRpcProvider(config.rpcUrl)
-    const httpClient = new MonadHttpClient({ rpcUrl: config.rpcUrl })
-
-    bundle = await openMonadWalletBundle({
-      location: walletDir,
-      seed: { mnemonic, passphrase: '' },
-    })
-
-    attemptJournal = new LevelStampAttemptJournal(walletDir)
-    paymentJournal = new LevelStampPaymentJournal(walletDir)
-    await Promise.all([attemptJournal.Open(), paymentJournal.Open()])
-
-    const mainAccountSigner = new MonadAccountTxSigner({
-      privateKey: identity.toPrivateKeyHex(),
-      provider,
-      httpClient,
-    })
-
-    const stampClient = new MonadStampClient({
-      pool: bundle.pool,
-      leaseManager: bundle.leaseManager,
-      provider,
-      httpClient,
-      changePool: bundle.changePool,
-      stampAttemptJournal: attemptJournal,
-      stampPaymentJournal: paymentJournal,
-      walletState: bundle,
-      relayBaseUrl: relayUrl,
-    })
-
-    // Replay/resolve pending attempts before new send
-    await stampClient.resumePendingAttempts()
-
-    // Quote gas reserve and top up pool if necessary
-    const gasReserveWei = await quoteMonadStampPaymentGasReserve({
-      signer: mainAccountSigner,
-      recipientPublicKey: toPubKey,
-    })
-
-    await bundle.pool.prepareStampInventory({
-      mainAccountSigner,
-      provider,
-      stampValueWei,
-      gasReserveWei,
-    })
-
-    // Build E2E encrypted envelope
-    const envelope = buildEnvelope({
-      fromAddress: identity.displayAddress,
-      fromPrivateKey: identity.toNakamotoPrivateKey(),
-      toAddress,
-      toPubKey,
-      plaintext: serializeMessageItems([{ type: 'text', text: message }]),
-      networkTag: config.networkTag,
-    })
-
-    // Submit stamped direct message
-    const sendResult = await stampClient.submitStampedMessage({
-      encryptedPayload: envelope,
-      recipientPublicKey: toPubKey,
-      stampValueWei,
-    })
+    account = await openCliAccount({ dataDir, config, relayUrl })
+    let payloadDigest: string
+    try {
+      payloadDigest = await account.send(
+        toAddress,
+        [{ type: 'text', text: message }],
+        stampValueWei,
+      )
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      throw new Error(
+        stampValueWei > 0n
+          ? `${reason}\nA paid message is paid from this account's own address ${account.mainAccount}: it must hold the stamp (${formatMonAndWei(stampValueWei)}) and its fee. Fund it, or send a free message with --stamp 0.`
+          : reason,
+      )
+    }
 
     const result = {
       status: 'delivered',
       recipient: toAddress,
-      sender: identity.displayAddress,
-      payloadDigest: sendResult.payloadHashHex,
+      sender: account.address,
+      payloadDigest,
       stampValueWei: stampValueWei.toString(),
-      txHashes: sendResult.txHashes,
       relayUrl,
     }
 
     outputResult(
       result,
       () => {
-        console.log('Direct message sent successfully:')
+        console.log('Direct message delivered:')
         console.log(`  Payload Digest:  ${result.payloadDigest}`)
         console.log(`  Sender:          ${result.sender}`)
         console.log(`  Recipient:       ${result.recipient}`)
         console.log(`  Relay URL:       ${result.relayUrl}`)
         console.log(`  Stamp Value:     ${formatMonAndWei(stampValueWei)}`)
-        console.log(`  Stamp Payment Transactions:`)
-        for (const txHash of result.txHashes) {
-          console.log(`    - ${txHash}`)
-        }
       },
       options.json,
     )
@@ -183,13 +99,7 @@ export async function sendCommand(
     outputError(err, options.json)
   } finally {
     try {
-      await attemptJournal?.Close()
-    } catch {}
-    try {
-      await paymentJournal?.Close()
-    } catch {}
-    try {
-      await bundle?.close()
+      await account?.close()
     } catch {}
   }
 }

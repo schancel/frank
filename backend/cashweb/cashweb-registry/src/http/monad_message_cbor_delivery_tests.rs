@@ -67,6 +67,8 @@ enum Parties {
     /// The captured parties, with the context naming this hash as the sender's directory
     /// entry instead of the sender's real one.
     SenderEntry([u8; 32]),
+    /// The captured recipient, from a sender whose key is these 33 bytes.
+    SenderKey([u8; 33]),
     /// The captured recipient writing to itself.
     ToSelf,
 }
@@ -108,6 +110,13 @@ fn build(
         Parties::Captured => {}
         Parties::SenderEntry(hash) => {
             *entry(&mut context, 4) = CborValue::Bytes(hash.to_vec());
+        }
+        Parties::SenderKey(key) => {
+            let mut account = map(entry(&mut sealed, 1).clone());
+            *entry(&mut account, 1) = CborValue::Bytes(key.to_vec());
+            let account = CborValue::Map(account);
+            *entry(&mut sealed, 1) = account.clone();
+            *entry(&mut context, 2) = account;
         }
         Parties::ToSelf => {
             *entry(&mut sealed, 1) = entry(&mut sealed, 2).clone();
@@ -317,7 +326,7 @@ impl Relay {
     }
     async fn put(&self, request: &ExactRequest) -> (u16, serde_json::Value) {
         let response = reqwest::Client::new()
-            .put(format!("{}/message/monad/cbor", self.url))
+            .put(format!("{}/message", self.url))
             .header("content-type", request.content_type())
             .body(request.body().to_vec())
             .send()
@@ -641,7 +650,7 @@ async fn with_the_monad_rpc_down_at_startup_a_paid_message_is_still_delivered() 
 
     let request = message(50, 2);
     let response = client
-        .put(format!("{url}/message/monad/cbor"))
+        .put(format!("{url}/message"))
         .header("content-type", request.content_type())
         .body(request.body().to_vec())
         .send()
@@ -691,7 +700,7 @@ async fn a_failed_broadcast_never_puts_the_node_url_in_a_log_line_or_the_answer(
     .await;
     let request = message(60, 2);
     let response = reqwest::Client::new()
-        .put(format!("{url}/message/monad/cbor"))
+        .put(format!("{url}/message"))
         .header("content-type", request.content_type())
         .body(request.body().to_vec())
         .send()
@@ -780,6 +789,19 @@ async fn a_message_that_fails_a_check_is_refused_with_nothing_stored_and_nothing
             }),
         ),
         ("payments totalling less than the minimum", message(12, 4)),
+        (
+            "a sender key that is not a point on the curve",
+            build(
+                16,
+                Parties::SenderKey({
+                    let mut key = [0xff; 33];
+                    key[0] = 2;
+                    key
+                }),
+                5,
+                Payment::signed,
+            ),
+        ),
         (
             "a payment of nothing",
             build(13, Parties::Captured, 6, |payment| {
@@ -909,7 +931,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     let request = message(40, 2);
     // Stored, and the relay stops before any payment reaches the node.
     let (sender, recipient) = relay.entries().await;
-    let input = crate::monad_outbox::financial::validate_canonical_payment_set(
+    let input = crate::monad_dm_payment::validate_canonical_payment_set(
         request.clone(),
         &recipient,
         None,
@@ -946,7 +968,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     )
     .await;
     let response = reqwest::Client::new()
-        .put(format!("{url}/message/monad/cbor"))
+        .put(format!("{url}/message"))
         .header("content-type", request.content_type())
         .body(request.body().to_vec())
         .send()
@@ -955,10 +977,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     let status = response.status().as_u16();
     let body: serde_json::Value = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
     let committed = delivered(&(status, body), &request);
-    assert_eq!(
-        stored.phase,
-        crate::store::monad_dm_cbor::Phase::Delivered(committed)
-    );
+    assert_eq!(stored.delivered_at, committed);
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     let owner = fixture.registry.canonical_dm();
     assert_eq!(
@@ -976,10 +995,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
 }
 
 fn delivery_time(claim: &crate::store::monad_dm_cbor::Claim) -> i64 {
-    let crate::store::monad_dm_cbor::Phase::Delivered(time) = claim.phase else {
-        panic!("a stored message is delivered");
-    };
-    time
+    claim.delivered_at
 }
 
 /// A reader asks for everything after the last delivery time it has seen. That is a complete
@@ -999,8 +1015,7 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
         let request = message(tag, 0);
         let mut policy = policy.clone();
         policy.payload_hash = payload_hash(&request);
-        crate::monad_outbox::financial::CanonicalPaymentInput::without_directory(request, policy)
-            .unwrap()
+        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy).unwrap()
     };
     let owner = relay.owner();
     let clock = now_ms() + 60_000;
@@ -1086,6 +1101,65 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
     fixture.stop().await;
 }
 
+/// A page asks for what comes after a position. The store goes straight there: the messages
+/// before it are not read, and no payment signature is checked again on the way out.
+#[tokio::test]
+async fn reading_after_a_position_reads_only_what_follows_it() {
+    use crate::store::monad_dm_cbor::ROWS_READ;
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let first = message(500_000, 1);
+    delivered(&relay.put(&first).await, &first);
+    let policy = relay
+        .owner()
+        .get(&payload_hash(&first))
+        .unwrap()
+        .unwrap()
+        .policy;
+    let owner = relay.owner();
+    let mut times = vec![];
+    for tag in 1..200u32 {
+        let request = message(500_000 + tag, 0);
+        let mut policy = policy.clone();
+        policy.payload_hash = payload_hash(&request);
+        let input =
+            crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
+                .unwrap();
+        times.push(owner.claim(input, now_ms()).unwrap().delivered_at);
+    }
+    let rows_read = |read: &dyn Fn() -> usize| {
+        ROWS_READ.with(|count| count.set(0));
+        let returned = read();
+        (returned, ROWS_READ.with(|count| count.get()))
+    };
+    let (recipient, sender) = (relay.recipient(), relay.sender());
+    // The last three messages, by time and by cursor, from either side of the conversation.
+    let since = times[times.len() - 3];
+    assert_eq!(
+        rows_read(&|| owner.inbox(recipient, since, None, 100).unwrap().len()),
+        (3, 3)
+    );
+    let cursor = owner.inbox(recipient, 0, None, 197).unwrap().pop().unwrap();
+    let after = Some((cursor.delivered_at, cursor.policy.payload_hash));
+    assert_eq!(
+        rows_read(&|| owner.inbox(recipient, 0, after, 100).unwrap().len()),
+        (3, 3)
+    );
+    assert_eq!(
+        rows_read(&|| owner.mailbox(sender, 0, after, 100).unwrap().len()),
+        (3, 3)
+    );
+    // A page of one reads one, wherever it starts.
+    assert_eq!(
+        rows_read(&|| owner.mailbox(recipient, 0, after, 1).unwrap().len()),
+        (1, 1)
+    );
+    assert_eq!(
+        rows_read(&|| owner.inbox(recipient, 0, None, 1).unwrap().len()),
+        (1, 1)
+    );
+    relay.stop().await;
+}
+
 /// The relay used to stop at 128 messages per recipient and 4,096 in all, for ever. Nothing
 /// counts stored messages now, so nothing refuses one for how many there are.
 #[tokio::test]
@@ -1106,10 +1180,9 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
         let request = message(100_000 + tag, 0);
         let mut policy = policy.clone();
         policy.payload_hash = payload_hash(&request);
-        let input = crate::monad_outbox::financial::CanonicalPaymentInput::without_directory(
-            request, policy,
-        )
-        .unwrap();
+        let input =
+            crate::monad_dm_payment::CanonicalPaymentInput::without_directory(request, policy)
+                .unwrap();
         relay.owner().claim(input, now_ms()).unwrap();
     }
     assert_eq!(relay.inbox().len(), MESSAGES as usize);
@@ -1132,8 +1205,7 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
     let mut policy = policy;
     policy.payload_hash = payload_hash(&after);
     let input =
-        crate::monad_outbox::financial::CanonicalPaymentInput::without_directory(after, policy)
-            .unwrap();
+        crate::monad_dm_payment::CanonicalPaymentInput::without_directory(after, policy).unwrap();
     owner.claim(input, now_ms()).unwrap();
     fixture.stop().await;
 }
@@ -1156,7 +1228,7 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
     assert_eq!(
         client
             .get(format!(
-                "{url}/message/monad/cbor/auth/{recipient}?resource=inbox&{page}"
+                "{url}/message/auth/{recipient}?resource=inbox&{page}"
             ))
             .header("x-frank-mailbox-subject", point)
             .send()
@@ -1172,14 +1244,12 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
         cursor: None,
         limit: 50,
         max_bytes: MAX_REQUEST_BYTES,
-        recovery_payload_hash: None,
-        recovery_obligation_id: None,
     };
     let root = relay.fixture.root.path();
     let login = private_headers(&client, url, root, point, &binding(MailboxResource::Inbox)).await;
     let inbox = || {
         client
-            .get(format!("{url}/message/monad/cbor/inbox/{recipient}?{page}"))
+            .get(format!("{url}/message/inbox/{recipient}?{page}"))
             .headers(login.clone())
             .send()
     };
@@ -1209,9 +1279,7 @@ async fn a_delivered_message_is_read_back_over_http_and_a_login_works_once() {
     )
     .await;
     let response = client
-        .get(format!(
-            "{url}/message/monad/cbor/mailbox/{recipient}?{page}"
-        ))
+        .get(format!("{url}/message/mailbox/{recipient}?{page}"))
         .headers(login)
         .send()
         .await

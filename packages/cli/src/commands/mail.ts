@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { randomBytes } from 'crypto';
-import { loadConfig, loadIdentity, resolveDataDir } from '../config';
+import { cliAccountAddresses, openCliAccount } from '../account';
+import { loadConfig, resolveDataDir } from '../config';
 import { outputError, outputResult } from '../util';
 
 export interface MailSendOptions {
@@ -44,11 +45,15 @@ export async function mailSendCommand(
       );
     }
 
-    const { identity } = await loadIdentity(
-      dataDir,
-      undefined,
-      options.password
-    );
+    // The sender is the messaging account: replies from the gateway arrive as messages to it,
+    // which is what `inbox` reads. It is created and published here if no message command has
+    // run yet, so the gateway has somewhere to deliver a reply.
+    let senderFrankAddress = cliAccountAddresses(dataDir)?.address;
+    if (senderFrankAddress === undefined) {
+      const account = await openCliAccount({ dataDir, config });
+      senderFrankAddress = account.address;
+      await account.close();
+    }
 
     const conversationId =
       options.conversationId ?? options.conversation ?? `conv_${randomBytes(16).toString('hex')}`;
@@ -56,7 +61,7 @@ export async function mailSendCommand(
       options.frankMessageId ?? options.messageId ?? `frank_msg_${randomBytes(16).toString('hex')}`;
 
     const response = await axios.post(`${gatewayUrl}/api/mail/send`, {
-      senderFrankAddress: identity.displayAddress,
+      senderFrankAddress,
       recipientEmail: trimmedEmail,
       subject: options.subject,
       bodyText: message,

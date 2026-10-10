@@ -8,8 +8,6 @@ use thiserror::Error;
 
 use crate::store::directory_usernames::DbDirectoryUsernames;
 use crate::store::metadata::DbMetadata;
-use crate::store::monad_messages::DbMonadMessages;
-use crate::store::monad_outbox::{DbMonadOutbox, MonadOutboxLimits};
 use crate::store::monad_profiles::DbMonadProfiles;
 use crate::store::monad_topics::{DbMonadTopicPosts, DbMonadTopicVotes};
 use crate::store::topics::DbTopics;
@@ -21,41 +19,8 @@ pub(crate) const CF_PKH_BY_TIME: &str = "pkh_by_time";
 pub(crate) const CF_MESSAGES: &str = "topic_messages";
 pub(crate) const CF_PAYLOADS: &str = "message_payloads";
 pub(crate) const CF_TOPIC_BURNS: &str = "topic_burn_txs";
-/// Ticket #27: stores [`crate::proto::StoredMonadMessage`], keyed by `payload_hash`. Kept
-/// separate from `CF_PAYLOADS`/`CF_MESSAGES`/`CF_TOPIC_BURNS` since those are indexed around a
-/// Lotus `Tx` shape a Monad message doesn't have -- see `crate::store::monad_messages`'s module
-/// docs for why that storage path isn't reusable as-is.
-pub(crate) const CF_MONAD_MESSAGES: &str = "monad_messages";
-/// Ticket #37: secondary index over `CF_MONAD_MESSAGES`, keyed by `timestamp.to_be_bytes() ++
-/// payload_hash` (value: the `payload_hash`, so a range scan doesn't need a second lookup to know
-/// which `CF_MONAD_MESSAGES` entry to fetch). Lets `DbMonadMessages::list_since` iterate messages
-/// in timestamp order without scanning the whole (payload_hash-keyed) primary CF -- mirrors
-/// `DbTopics`'s `CF_MESSAGES` "topic_digest ++ timestamp" key layout, minus the topic prefix.
-pub(crate) const CF_MONAD_MESSAGES_BY_TIME: &str = "monad_messages_by_time";
-/// Recipient-scoped secondary index over `CF_MONAD_MESSAGES`, keyed by the recipient's raw
-/// 20-byte address followed by `timestamp.to_be_bytes() ++ payload_hash`. This is derived from
-/// the already-validated routing envelope and lets a mailbox read only its own journal without
-/// changing the stored protobuf record.
-pub(crate) const CF_MONAD_MESSAGES_BY_RECIPIENT_TIME: &str = "monad_messages_by_recipient_time";
-/// Canonical in-progress direct-message payment sets, keyed by payload hash. Persisting the exact
-/// set makes crash/retry resume the original raw transactions instead of accepting a second set.
-pub(crate) const CF_MONAD_MESSAGE_ATTEMPTS: &str = "monad_message_attempts";
-/// Versioned canonical direct-message relay records keyed by payload hash. Unlike the legacy
-/// digest-only attempt CF, each value owns the exact canonical request bytes needed for recovery.
-pub(crate) const CF_MONAD_OUTBOX_V1: &str = "monad_outbox_v1";
-/// Per-payment recovery state keyed by `payload_hash ++ child_index.to_be_bytes()`.
-pub(crate) const CF_MONAD_OUTBOX_MEMBERS_V1: &str = "monad_outbox_members_v1";
-/// Bounded set of claims which still need reconciliation, keyed by payload hash.
-pub(crate) const CF_MONAD_OUTBOX_ACTIVE_V1: &str = "monad_outbox_active_v1";
-/// Recipient-private recovery index keyed by `recipient_address ++ payload_hash`.
-pub(crate) const CF_MONAD_OUTBOX_RECIPIENT_V1: &str = "monad_outbox_recipient_v1";
-/// Time-ordered bounded history index for compact delivered tombstones and terminal claims that
-/// have no confirmed-prefix recovery obligation. Values store the total retained record bytes.
-pub(crate) const CF_MONAD_OUTBOX_HISTORY_V2: &str = "monad_outbox_history_v2";
-/// Small schema/migration markers for additive outbox upgrades.
-pub(crate) const CF_MONAD_OUTBOX_META_V2: &str = "monad_outbox_meta_v2";
 /// Ticket #30: stores [`crate::proto::StoredMonadTopicPost`], keyed by `payload_hash`. Parallel
-/// to `CF_MONAD_MESSAGES` -- see `crate::store::monad_topics`'s module docs.
+/// See `crate::store::monad_topics`'s module docs.
 pub(crate) const CF_MONAD_TOPIC_POSTS: &str = "monad_topic_posts";
 /// Ticket #30: stores [`crate::proto::StoredMonadTopicVoteEntry`], keyed by
 /// `target_payload_hash ++ tx_hash` so multiple votes can tally against the same post -- see
@@ -109,7 +74,6 @@ pub struct Db {
     db: rocksdb::DB,
     /// Serializes read-check-batch outbox mutations inside this process. RocksDB batches are
     /// atomic, but the active-claim bound also needs its preceding count to be serialized.
-    monad_outbox_lock: Mutex<()>,
     /// Serializes profile writes and secondary index cleanups across formats.
     monad_profile_lock: Mutex<()>,
     /// Serializes compare-and-batch topic-author admission inside this process.
@@ -136,6 +100,23 @@ pub enum DbError {
     #[critical()]
     #[error("RocksDB error")]
     RocksDb,
+
+    /// The files on disk were written by an earlier development build.
+    #[critical()]
+    #[error(
+        "The relay database at {path} was written by an earlier development build ({found}) \
+         and this build has no reader for it. Development reset: stop the relay and delete \
+         {delete}. These hold messages, profiles, topics and directory entries only: no keys \
+         and no funds. Wallets keep their own keys and are not affected."
+    )]
+    OldFormat {
+        /// The registry database path.
+        path: String,
+        /// What was found that this build cannot read.
+        found: String,
+        /// Everything to delete, as a shell-ready list of paths.
+        delete: String,
+    },
 }
 
 use self::DbError::*;
@@ -144,29 +125,72 @@ impl Db {
     /// Opens the database under the specified path.
     /// Creates the database file and necessary column families if necessary.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_monad_outbox_limits(path, &MonadOutboxLimits::default())
-    }
-
-    /// Open with the exact runtime outbox retention policy. Production startup uses this path so
-    /// migration cannot delete history under temporary defaults before readiness applies config.
-    pub fn open_with_monad_outbox_limits(
-        path: impl AsRef<Path>,
-        limits: &MonadOutboxLimits,
-    ) -> Result<Self> {
-        limits.validate()?;
         let mut cfs = Vec::new();
         DbMetadata::add_cfs(&mut cfs);
         DbTopics::add_cfs(&mut cfs);
-        DbMonadMessages::add_cfs(&mut cfs);
-        DbMonadOutbox::add_cfs(&mut cfs);
         DbMonadTopicPosts::add_cfs(&mut cfs);
         DbMonadTopicVotes::add_cfs(&mut cfs);
         DbMonadProfiles::add_cfs(&mut cfs);
         DbDirectoryUsernames::add_cfs(&mut cfs);
-        let db = Self::open_with_cfs(path, cfs)?;
-        db.monad_outbox()
-            .migrate_legacy_delivered_ownership(limits)?;
-        Ok(db)
+        let path = path.as_ref();
+        Self::refuse_old_message_store(path)?;
+        match Self::open_with_cfs(path, cfs) {
+            Ok(db) => Ok(db),
+            Err(error) => {
+                // RocksDB refuses to open a database holding tables it was not told about,
+                // which is what a database from before a table was removed looks like.
+                let unknown_tables = format!("{error:?}");
+                match unknown_tables.split("Column families not opened: ").nth(1) {
+                    Some(tables) => Err(Self::old_format(
+                        path,
+                        format!(
+                            "tables {}",
+                            tables
+                                .split(['"', '\n', ')'])
+                                .next()
+                                .unwrap_or(tables)
+                                .trim()
+                        ),
+                    )
+                    .into()),
+                    None => Err(error),
+                }
+            }
+        }
+    }
+
+    /// Frank has no users yet, so stored formats change without migration and there is no
+    /// reader for an earlier one. A message store left beside the database under an earlier
+    /// name stops the relay here, at startup, with what to delete.
+    fn refuse_old_message_store(path: &Path) -> Result<()> {
+        let left_behind = super::monad_dm_cbor::OLD_STORE_EXTENSIONS
+            .iter()
+            .any(|extension| path.with_extension(extension).exists());
+        if left_behind {
+            return Err(Self::old_format(path, "an earlier message store".to_owned()).into());
+        }
+        Ok(())
+    }
+
+    fn old_format(path: &Path, found: String) -> DbError {
+        let mut delete = vec![
+            path.to_path_buf(),
+            path.with_extension(super::monad_dm_cbor::STORE_EXTENSION),
+        ];
+        delete.extend(
+            super::monad_dm_cbor::OLD_STORE_EXTENSIONS
+                .iter()
+                .map(|extension| path.with_extension(extension)),
+        );
+        OldFormat {
+            path: path.display().to_string(),
+            found,
+            delete: delete
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
     }
 
     /// Returns `DbMetadata`, allowing access to registry metadata.
@@ -215,16 +239,6 @@ impl Db {
         DbTopics::new(self)
     }
 
-    /// Returns `DbMonadMessages`, allowing access to stored Monad-stamped messages (ticket #27).
-    pub(crate) fn monad_messages(&self) -> DbMonadMessages<'_> {
-        DbMonadMessages::new(self)
-    }
-
-    /// Returns the durable Monad payment outbox facade.
-    pub(crate) fn monad_outbox(&self) -> DbMonadOutbox<'_> {
-        DbMonadOutbox::new(self)
-    }
-
     /// Returns `DbMonadProfiles`, allowing access to stored Monad-native profile registrations
     /// (ticket #45).
     pub fn monad_profiles(&self) -> DbMonadProfiles<'_> {
@@ -258,7 +272,6 @@ impl Db {
         let registry_path = std::fs::canonicalize(db.path()).wrap_err(RocksDb)?;
         Ok(Db {
             db,
-            monad_outbox_lock: Mutex::new(()),
             monad_profile_lock: Mutex::new(()),
             monad_topic_lock: Mutex::new(()),
             username_lock: Mutex::new(()),
@@ -305,12 +318,6 @@ impl Db {
     pub(crate) fn write_batch(&self, write_batch: rocksdb::WriteBatch) -> Result<()> {
         self.db.write(write_batch)?;
         Ok(())
-    }
-
-    pub(crate) fn lock_monad_outbox(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.monad_outbox_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn lock_monad_profiles(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -364,12 +371,51 @@ mod tests {
     }
 
     #[test]
-    fn existing_database_reopens_with_additive_outbox_column_families() -> Result<()> {
-        let tempdir = tempdir::TempDir::new("cashweb-registry-store--db-additive-cfs")?;
+    fn a_fresh_or_current_database_opens_and_reopens() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--db-reopen")?;
         let path = tempdir.path().join("db.rocksdb");
-        drop(rocksdb::DB::open_default(&path)?);
-        let db = Db::open(&path)?;
-        assert!(db.monad_outbox().list_active(1)?.is_empty());
+        drop(Db::open(&path)?);
+        drop(Db::open(&path)?);
+        Ok(())
+    }
+
+    /// No migration and no reader for earlier formats: an old database stops the relay at
+    /// startup and says what to delete.
+    #[test]
+    fn a_database_from_an_earlier_build_is_refused_with_what_to_delete() -> Result<()> {
+        let tempdir = tempdir::TempDir::new("cashweb-registry-store--db-old-format")?;
+        // A registry database holding a table this build does not know.
+        let with_old_table = tempdir.path().join("old-table.rocksdb");
+        {
+            let mut options = rocksdb::Options::default();
+            options.create_if_missing(true);
+            options.create_missing_column_families(true);
+            drop(rocksdb::DB::open_cf(
+                &options,
+                &with_old_table,
+                ["monad_outbox_v1"],
+            )?);
+        }
+        let error = format!("{:#}", Db::open(&with_old_table).unwrap_err());
+        assert!(error.contains("monad_outbox_v1"), "{error}");
+        assert!(error.contains("Development reset"), "{error}");
+        assert!(
+            error.contains(&with_old_table.display().to_string()),
+            "{error}"
+        );
+        assert!(error.contains("no keys"), "{error}");
+
+        // A fresh registry database beside a message store left under the earlier name.
+        let beside_old_store = tempdir.path().join("beside.rocksdb");
+        let old_store = tempdir.path().join("beside.monad-dm-cbor-v1");
+        std::fs::create_dir(&old_store)?;
+        let error = format!("{:#}", Db::open(&beside_old_store).unwrap_err());
+        assert!(error.contains("an earlier message store"), "{error}");
+        assert!(error.contains(&old_store.display().to_string()), "{error}");
+        // Nothing was created by the refusal, and deleting what it names is all it takes.
+        assert!(!beside_old_store.exists());
+        std::fs::remove_dir(&old_store)?;
+        drop(Db::open(&beside_old_store)?);
         Ok(())
     }
 }

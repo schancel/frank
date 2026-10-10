@@ -1,16 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
-import {
-  decryptEnvelope,
-  parseEnvelope,
-} from '@frank/cashweb/relay/monad-message-envelope'
-import { fetchMonadMessagesSince } from '@frank/cashweb/relay/monad-message-feed'
 import type { MessageItem } from '@frank/cashweb/types/messages'
-import { deserializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import { fetchMonadProfile, mailboxAuthFor } from '@frank/wallet/monad-identity'
 
-import { loadConfig, loadIdentity, resolveDataDir } from '../config'
+import { openCliAccount, type CliAccount } from '../account'
+import { loadConfig, resolveDataDir } from '../config'
 import { outputError, outputResult } from '../util'
 
 export interface InboxOptions {
@@ -72,118 +66,43 @@ function saveCursor(walletDir: string, timestamp: number): void {
   } catch {}
 }
 
-async function fetchAndDecryptMessages(params: {
-  identity: import('@frank/wallet/monad-identity').MonadIdentity
-  relayUrl: string
-  sinceMs?: number
-  walletDir: string
+/** The account's received messages, oldest first. `unreadOnly` returns those after the saved
+ * cursor and moves the cursor past them. */
+async function fetchMessages(params: {
+  account: CliAccount
+  cursorDir: string
   unreadOnly?: boolean
+  sinceMs?: number
 }): Promise<DecryptedInboxMessage[]> {
-  const lastRead = params.unreadOnly ? loadCursor(params.walletDir) : 0
-  const auth = mailboxAuthFor(params.identity, params.relayUrl)
-
-  const stored = await fetchMonadMessagesSince({
-    ...auth,
-    sinceMs: params.sinceMs ?? (params.unreadOnly ? lastRead + 1 : 0),
-    pageLimit: 100,
-  })
-
-  const messages: DecryptedInboxMessage[] = []
-  const myAddress = params.identity.displayAddress.toLowerCase()
-  let maxTimestamp = lastRead
-
-  // Cache profiles for senders in this batch
-  const profileCache = new Map<string, Buffer>()
-
-  for (const record of stored) {
-    if (!record.message) continue
-    if (record.timestamp > maxTimestamp) {
-      maxTimestamp = record.timestamp
-    }
-    if (params.unreadOnly && record.timestamp <= lastRead) {
-      continue
-    }
-
-    const payloadDigest = Buffer.from(record.message.payloadHash).toString(
-      'hex',
-    )
-    const envelope = parseEnvelope(record.message.encryptedPayload)
-    if (!envelope) continue
-    if (envelope.to.toLowerCase() !== myAddress) continue
-
-    const senderAddress = envelope.from
-    let senderPubKey = profileCache.get(senderAddress.toLowerCase())
-
-    if (!senderPubKey) {
-      try {
-        const profile = await fetchMonadProfile({
-          relayBaseUrl: params.relayUrl,
-          address: { raw: senderAddress },
-        })
-        if (profile?.pubKey) {
-          senderPubKey = Buffer.from(profile.pubKey)
-          profileCache.set(senderAddress.toLowerCase(), senderPubKey)
-        }
-      } catch {}
-    }
-
-    if (!senderPubKey) continue
-
-    let decryptedText = ''
-    let items: MessageItem[] = []
-    try {
-      const plaintext = decryptEnvelope({
-        envelope,
-        myPrivateKey: params.identity.toNakamotoPrivateKey(),
-        senderPubKey,
-      })
-
-      try {
-        items = deserializeMessageItems(plaintext)
-        decryptedText = items
-          .filter(i => i.type === 'text')
-          .map(i => (i as { type: 'text'; text: string }).text)
-          .join('\n')
-      } catch {
-        decryptedText = plaintext
-        items = [{ type: 'text', text: plaintext }]
-      }
-    } catch {
-      continue
-    }
-
-    messages.push({
-      payloadDigest,
-      sender: senderAddress,
-      recipient: envelope.to,
-      timestamp: record.timestamp,
-      date: new Date(record.timestamp).toISOString(),
-      text: decryptedText,
-      items,
-    })
-  }
-
-  if (params.unreadOnly && maxTimestamp > lastRead) {
-    saveCursor(params.walletDir, maxTimestamp)
-  }
-
+  const lastRead = params.unreadOnly ? loadCursor(params.cursorDir) : 0
+  const sinceMs = params.sinceMs ?? (params.unreadOnly ? lastRead + 1 : 0)
+  const received = await params.account.receivedSince(sinceMs)
+  const messages = received.map(message => ({
+    payloadDigest: message.payloadDigest,
+    sender: message.senderAddress.raw,
+    recipient: message.recipientAddress.raw,
+    timestamp: message.receivedTime,
+    date: new Date(message.receivedTime).toISOString(),
+    text: message.items
+      .map(item => (item.type === 'text' ? item.text : `[${item.type}]`))
+      .join('\n'),
+    items: message.items,
+  }))
+  const newest = messages.reduce((max, message) => Math.max(max, message.timestamp), lastRead)
+  if (params.unreadOnly && newest > lastRead) saveCursor(params.cursorDir, newest)
   return messages
 }
 
 export async function inboxCommand(options: InboxOptions): Promise<void> {
+  let account: CliAccount | undefined
   try {
     const dataDir = resolveDataDir(options.dataDir)
     const config = loadConfig(dataDir)
-    const { identity, walletDir } = await loadIdentity(
-      dataDir,
-      undefined,
-      options.password,
-    )
+    account = await openCliAccount({ dataDir, config })
 
-    let messages = await fetchAndDecryptMessages({
-      identity,
-      relayUrl: config.relayUrl,
-      walletDir,
+    let messages = await fetchMessages({
+      account,
+      cursorDir: join(dataDir, 'account'),
       unreadOnly: options.unread,
     })
 
@@ -214,25 +133,25 @@ export async function inboxCommand(options: InboxOptions): Promise<void> {
     )
   } catch (err) {
     outputError(err, options.json)
+  } finally {
+    await account?.close().catch(() => {})
   }
 }
 
 export async function listenCommand(options: ListenOptions): Promise<void> {
+  let account: CliAccount | undefined
   try {
     const dataDir = resolveDataDir(options.dataDir)
     const config = loadConfig(dataDir)
-    const { identity, walletDir } = await loadIdentity(
-      dataDir,
-      undefined,
-      options.password,
-    )
+    const opened = await openCliAccount({ dataDir, config })
+    account = opened
 
     const seenDigests = new Set<string>()
     let sinceMs = Date.now() - 60_000 // Start from last minute
 
     if (!options.json) {
       console.log(
-        `Listening for incoming messages on ${config.relayUrl} for ${identity.displayAddress}...`,
+        `Listening for incoming messages on ${config.relayUrl} for ${opened.address}...`,
       )
       if (options.follow) {
         console.log('Streaming in real-time. Press Ctrl-C to exit.\n')
@@ -241,11 +160,10 @@ export async function listenCommand(options: ListenOptions): Promise<void> {
 
     const poll = async () => {
       try {
-        const messages = await fetchAndDecryptMessages({
-          identity,
-          relayUrl: config.relayUrl,
+        const messages = await fetchMessages({
+          account: opened,
+          cursorDir: join(dataDir, 'account'),
           sinceMs,
-          walletDir,
         })
 
         for (const msg of messages) {
@@ -282,7 +200,7 @@ export async function listenCommand(options: ListenOptions): Promise<void> {
       const shutdown = () => {
         active = false
         clearInterval(interval)
-        process.exit(0)
+        void opened.close().finally(() => process.exit(0))
       }
 
       process.on('SIGINT', shutdown)
@@ -293,5 +211,7 @@ export async function listenCommand(options: ListenOptions): Promise<void> {
     }
   } catch (err) {
     outputError(err, options.json)
+  } finally {
+    await account?.close().catch(() => {})
   }
 }

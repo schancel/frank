@@ -541,6 +541,13 @@ mod tests {
                 panic!("{name}: mailbox must stay enabled");
             };
             assert_eq!(rpc_url.as_str(), "http://127.0.0.1:1/", "{name}");
+            // The message routes exist only with both the mailbox and the directory configured.
+            // Every shipped config has both, so a relay started from one can be messaged
+            // through without a launcher adding anything.
+            assert!(
+                conf.registry.directory.is_some(),
+                "{name}: no [registry.directory], so no /message routes"
+            );
         }
     }
 

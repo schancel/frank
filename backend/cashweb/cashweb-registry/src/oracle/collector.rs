@@ -527,32 +527,53 @@ impl Collector {
                 next = next.min(due - now);
                 continue;
             }
-            next = next.min(interval);
+            // Whom this round asks: their rests decide when a round that got nothing is retried.
+            let providers: Vec<String> = match kind {
+                "price" => self.plan.price_providers().map(|p| p.id.clone()).collect(),
+                "stats" => self
+                    .plan
+                    .conf
+                    .chain_stats
+                    .iter()
+                    .map(|s| s.id.clone())
+                    .collect(),
+                _ => self
+                    .plan
+                    .conf
+                    .electricity
+                    .iter()
+                    .filter(|row| self.plan.collects(row))
+                    .map(|row| row.region.clone())
+                    .chain(["ecb".to_owned()])
+                    .collect(),
+            };
             let result = match kind {
                 "price" => self.price_round(now, rng).await,
                 "stats" => self.stats_round(now).await,
                 _ => self.electricity_round(now).await,
             };
-            // A round in which a provider failed comes round again once the shortest rest is
-            // over, not a whole interval later: a daily source that was down is asked again
-            // the same day. Resting providers are not asked, so this costs no extra requests.
-            let mut ran_at = now;
             match result {
-                Ok(report) => {
-                    if !report.failures.is_empty() {
-                        ran_at = now - interval.saturating_sub(BACKOFF_BASE_S);
-                        next = next.min(BACKOFF_BASE_S);
-                    }
-                    tracing::info!(
-                        round = kind,
-                        requests = ?report.requests,
-                        failures = ?report.failures,
-                        points = report.points,
-                        "oracle: round finished"
-                    )
-                }
+                Ok(report) => tracing::info!(
+                    round = kind,
+                    requests = ?report.requests,
+                    failures = ?report.failures,
+                    points = report.points,
+                    "oracle: round finished"
+                ),
                 Err(error) => tracing::error!(round = kind, %error, "oracle: store failed"),
             }
+            // While one of the round's providers is resting after a failure the round stays
+            // due: it comes round again when the earliest rest ends, not a whole interval
+            // later, so statistics do not lose an hour or electricity a day to a provider that
+            // was down for minutes. A resting provider is not asked, so this costs no requests.
+            let rest_ends = providers
+                .iter()
+                .filter_map(|id| self.backoff.get(id).map(|(_, until)| *until))
+                .filter(|until| *until > now)
+                .min();
+            let next_due = rest_ends.map_or(now + interval, |end| end.min(now + interval));
+            let ran_at = next_due - interval;
+            next = next.min(next_due - now);
             if let Err(error) = self.feed.store().set_meta(&key, ran_at) {
                 tracing::error!(%error, "oracle: store failed");
             }
@@ -575,6 +596,37 @@ impl Collector {
             tokio::time::sleep(Duration::from_secs(wait.clamp(5, 3600))).await;
         }
     }
+}
+
+/// How long after the collector task ended before it is started again.
+const RESTART_PAUSE: Duration = Duration::from_secs(60);
+
+/// Keeps a collector running: when its task ends or panics, that is logged and a new collector
+/// (built by `make`) is started after `pause`. The relay itself is never affected. `runs`
+/// counts the collectors started, for tests.
+pub async fn supervise<F, Fut>(make: F, pause: Duration, runs: Arc<std::sync::atomic::AtomicU64>)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    loop {
+        runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match tokio::spawn(make()).await {
+            Ok(()) => tracing::error!("oracle: the collector stopped; starting it again"),
+            Err(error) if error.is_panic() => {
+                tracing::error!("oracle: the collector panicked; starting it again")
+            }
+            // Cancelled: the runtime is shutting down.
+            Err(_) => return,
+        }
+        tokio::time::sleep(pause).await;
+    }
+}
+
+/// [`supervise`] with the pause the relay uses.
+pub async fn supervise_collector(plan: Plan, feed: Arc<Feed>, upstream: Arc<dyn Upstream>) {
+    let make = move || Collector::new(plan.clone(), Arc::clone(&feed), Arc::clone(&upstream)).run();
+    supervise(make, RESTART_PAUSE, Arc::default()).await
 }
 
 #[cfg(test)]
@@ -979,7 +1031,8 @@ symbols = { btc-mainnet = "BTC", xec-mainnet = "XEC" }
         collector.tick(T0 + 600, &mut rng).await;
         assert_eq!(
             feed.store().meta("last-round/electricity")?,
-            Some(T0 + 1200 - 86_400)
+            Some(T0 + 1800 - 86_400),
+            "failed twice: it rests twenty minutes, and the round is due again exactly then"
         );
         assert!(
             !collector.rested("de-lu", T0 + 601),
@@ -1105,5 +1158,90 @@ fx_url = "http://stub/fx"
         assert!((0.03..0.4).contains(&days[1].1), "{}", days[1].1);
         assert!((1.0..1.3).contains(&rate), "{rate}");
         Ok(())
+    }
+
+    /// A statistics provider that is down for two rounds and then answers: the round stays due
+    /// and is retried when each rest ends, so the reading arrives half an hour late, not after
+    /// the hour (or more) a round marked as run would have cost.
+    #[tokio::test]
+    async fn a_round_that_got_nothing_stays_due_until_the_providers_rest_ends() -> Result<()> {
+        struct Flaky {
+            up: Mutex<bool>,
+            asked: Mutex<u32>,
+        }
+        #[async_trait]
+        impl Upstream for Flaky {
+            async fn fetch(
+                &self,
+                _request: &UpstreamRequest,
+            ) -> std::result::Result<Vec<u8>, UpstreamError> {
+                *self.asked.lock().unwrap() += 1;
+                if *self.up.lock().unwrap() {
+                    Ok(include_bytes!("fixtures/blockchair.json").to_vec())
+                } else {
+                    Err(UpstreamError::Status(430))
+                }
+            }
+        }
+        let only_stats = &STATS_AND_POWER[..STATS_AND_POWER.find("[[electricity]]").unwrap()];
+        let dir = tempdir::TempDir::new("oracle-retry")?;
+        let feed = Arc::new(feed(&dir, only_stats));
+        let flaky = Arc::new(Flaky {
+            up: Mutex::new(false),
+            asked: Mutex::new(0),
+        });
+        let upstream: Arc<dyn Upstream> = flaky.clone();
+        let mut collector = Collector::new(plan(only_stats), Arc::clone(&feed), upstream);
+        let mut rng = StdRng::seed_from_u64(1);
+        let asked = || *flaky.asked.lock().unwrap();
+
+        let due =
+            || -> Result<u64> { Ok(feed.store().meta("last-round/stats")?.expect("ran") + 3600) };
+
+        // Fails: rests ten minutes, and the round is due again then.
+        collector.tick(T0, &mut rng).await;
+        assert_eq!((asked(), due()?), (1, T0 + 600));
+        // Fails again: rests twenty minutes. Waking earlier asks nobody and changes nothing.
+        collector.tick(T0 + 600, &mut rng).await;
+        assert_eq!((asked(), due()?), (2, T0 + 1800));
+        collector.tick(T0 + 1200, &mut rng).await;
+        assert_eq!((asked(), due()?), (2, T0 + 1800));
+        // Back up when the rest ends: asked at once, and the reading is stored.
+        *flaky.up.lock().unwrap() = true;
+        collector.tick(T0 + 1800, &mut rng).await;
+        assert_eq!(asked(), 3);
+        assert_eq!(
+            feed.store()
+                .floor("difficulty/btc-mainnet", u64::MAX)?
+                .map(|(time, _)| time),
+            Some(T0 + 1800)
+        );
+        // From here the statistics round keeps its hour.
+        assert_eq!(due()?, T0 + 1800 + 3600);
+        collector.tick(T0 + 1860, &mut rng).await;
+        assert_eq!(asked(), 3);
+        Ok(())
+    }
+
+    /// A collector that panics or returns is started again after the pause; nothing else notices.
+    #[tokio::test]
+    async fn a_collector_that_panics_or_stops_is_started_again() {
+        let runs = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let seen = Arc::clone(&runs);
+        let make = move || {
+            let run = seen.load(std::sync::atomic::Ordering::SeqCst);
+            async move {
+                match run {
+                    1 => panic!("a provider answered something the collector could not survive"),
+                    2 => {}
+                    _ => std::future::pending::<()>().await,
+                }
+            }
+        };
+        let supervisor = tokio::spawn(supervise(make, Duration::from_millis(5), Arc::clone(&runs)));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(!supervisor.is_finished(), "the third collector is running");
+        supervisor.abort();
     }
 }

@@ -39,12 +39,17 @@ pub(super) fn parse(body: &[u8], symbols: &BTreeMap<String, String>) -> Result<Q
             let answer = answers.iter().find(|answer| answer["id"] == id)?;
             let hex = answer["result"].as_str()?.trim_start_matches("0x");
             // Five 32-byte words: roundId, answer, startedAt, updatedAt, answeredInRound.
-            let word = hex.get(64..128)?;
-            // A price fits 128 bits; a set high half is a negative or absurd answer.
-            if word[..32].bytes().any(|digit| digit != b'0') {
+            // Only hex digits are sliced: anything else is not an answer.
+            if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return None;
             }
-            let raw = u128::from_str_radix(&word[32..], 16).ok()?;
+            let word = hex.get(64..128)?;
+            let (high, low) = word.split_at(32);
+            // A price fits 128 bits; a set high half is a negative or absurd answer.
+            if high.bytes().any(|digit| digit != b'0') {
+                return None;
+            }
+            let raw = u128::from_str_radix(low, 16).ok()?;
             let price = raw as f64 / 10f64.powi(USD_FEED_DECIMALS);
             (price > 0.0).then(|| (asset.clone(), price))
         })

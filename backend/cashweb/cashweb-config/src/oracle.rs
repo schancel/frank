@@ -21,6 +21,10 @@ use crate::protocol_chain;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OracleConf {
+    /// Whether the collector asks providers. `false`: nobody is ever asked and the feed serves
+    /// the bundled seed and what the store already holds; for test and development relays.
+    #[serde(default = "default_true")]
+    pub collect: bool,
     /// Seconds between price rounds.
     #[serde(default = "default_price_interval_s")]
     pub price_interval_s: u64,

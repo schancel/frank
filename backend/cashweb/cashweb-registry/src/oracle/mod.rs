@@ -110,9 +110,11 @@ pub struct OracleRuntime {
 }
 
 impl OracleRuntime {
-    /// Opens the store beside the registry database and starts the collector as its own task.
-    /// Touches no network: the collector's first request happens after this returns, and no
-    /// failure of any provider reaches the caller.
+    /// Opens the store beside the registry database and, unless `collect = false`, starts the
+    /// collector as its own supervised task. Touches no network: the collector's first request
+    /// happens after this returns, and no failure of any provider reaches the caller. With
+    /// collection off no provider is ever asked: the feed serves the bundled seed and whatever
+    /// the store already holds.
     pub fn start(
         conf: OracleConf,
         registry_db_path: &std::path::Path,
@@ -123,11 +125,21 @@ impl OracleRuntime {
             store::OracleStore::open(registry_db_path.with_extension(store::STORE_EXTENSION))?;
         let seed = seed::Seed::embedded()?;
         let feed = Arc::new(feed::Feed::new(plan.clone(), store, seed));
-        let upstream = Arc::new(collector::HttpUpstream::new(
-            std::time::Duration::from_millis(plan.conf.timeout_ms),
-        ));
-        let collector = collector::Collector::new(plan, Arc::clone(&feed), upstream);
-        tokio::spawn(collector.run());
+        if plan.conf.collect {
+            let upstream = Arc::new(collector::HttpUpstream::new(
+                std::time::Duration::from_millis(plan.conf.timeout_ms),
+            ));
+            tokio::spawn(collector::supervise_collector(
+                plan,
+                Arc::clone(&feed),
+                upstream,
+            ));
+        } else {
+            tracing::info!(
+                "oracle: collection is off (registry.oracle.collect = false); serving bundled \
+                 and stored data only"
+            );
+        }
         Ok(OracleRuntime { feed })
     }
 }

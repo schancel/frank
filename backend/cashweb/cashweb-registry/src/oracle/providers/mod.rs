@@ -275,6 +275,22 @@ mod tests {
                 Err(Unreadable)
             );
         }
+        // Text that is not hex, in any encoding, is no answer and no panic.
+        for result in [
+            "0x".to_owned() + &"é".repeat(80),
+            "0x12".to_owned(),
+            "zz".repeat(100),
+        ] {
+            let body = serde_json::json!([{ "jsonrpc": "2.0", "id": 1, "result": result }]);
+            assert_eq!(
+                parse_prices(
+                    OraclePriceAdapter::Chainlink,
+                    body.to_string().as_bytes(),
+                    &symbols
+                ),
+                Ok(BTreeMap::new())
+            );
+        }
         // Zero, negative and non-numeric prices are no price.
         let kraken = br#"{"error":[],"result":{"BTC":{"c":["0","1"]}}}"#;
         assert_eq!(

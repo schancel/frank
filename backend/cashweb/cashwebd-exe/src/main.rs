@@ -453,18 +453,28 @@ async fn main() -> Result<()> {
         None
     };
     // The price and energy oracle is a task of its own: starting it opens its store and
-    // touches no network, and nothing here waits for a provider.
-    let oracle = match conf.registry.oracle.clone() {
-        Some(oracle) => Some(Arc::new(
-            cashweb_registry::oracle::OracleRuntime::start(
-                oracle,
-                &conf.registry.db_path,
-                |name| std::env::var(name).ok(),
-            )
-            .wrap_err("Opening the oracle store")?,
-        )),
-        None => None,
-    };
+    // touches no network, and nothing here waits for a provider. A store that cannot be opened
+    // costs the feed, never the relay: messages are served and the feed path answers 404.
+    let oracle = conf.registry.oracle.clone().and_then(|oracle| {
+        let started = cashweb_registry::oracle::OracleRuntime::start(
+            oracle,
+            &conf.registry.db_path,
+            |name| std::env::var(name).ok(),
+        );
+        match started {
+            Ok(runtime) => Some(Arc::new(runtime)),
+            Err(error) => {
+                tracing::error!(
+                    store = %conf.registry.db_path.with_extension("oracle-v1").display(),
+                    error = %format!("{error:#}"),
+                    "The oracle store could not be opened: this relay runs WITHOUT the price \
+                     and energy feed (GET /oracle/v1/feed answers 404). Move the store aside \
+                     or fix its permissions and restart"
+                );
+                None
+            }
+        }
+    });
     let router = server.into_router_with_services(directory.clone(), oracle);
     info!("Listening on {}", conf.host);
     let server = axum::Server::bind(&conf.host)

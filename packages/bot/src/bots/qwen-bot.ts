@@ -20,6 +20,7 @@ import {
   createQwenReplyGenerator,
   qwenBotConfigFromEnv,
   DEFAULT_MODEL_TRIES,
+  safeDisplayName,
   type QwenBotConfig,
   type QwenReplyGenerator,
 } from "../../qwen-reply";
@@ -297,8 +298,9 @@ export class QwenBot implements FrankBotDefinition {
     }
   }
 
-  /** The name the person publishes in their profile, for the system prompt. Looked up once per
-   * peer; a profile that cannot be read just means the model is not told a name. */
+  /** The name the person publishes in their profile, made safe to quote. The model is given it
+   * as a note in the person's own message, never in the system prompt. Looked up once per peer;
+   * a profile that cannot be read just means the model is not told a name. */
   private async displayName(
     peerAddress: string,
     ctx: BotContext
@@ -306,10 +308,9 @@ export class QwenBot implements FrankBotDefinition {
     const known = this.names.get(peerAddress);
     if (known) return known;
     try {
-      const name = (await ctx.lookupPeer(peerAddress))?.displayName
-        ?.replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 64);
+      const name = safeDisplayName(
+        (await ctx.lookupPeer(peerAddress))?.displayName
+      );
       if (name) this.names.set(peerAddress, name);
       return name || undefined;
     } catch {

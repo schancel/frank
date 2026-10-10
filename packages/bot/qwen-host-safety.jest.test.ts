@@ -599,7 +599,8 @@ describe("durable retention before dispatch", () => {
     mailbox = [a1];
     await open();
     const spy = cutStart(a1.payloadDigest);
-    await pollBoth();
+    // One poll, then the process ends: a second poll would mend the journal and handle A1.
+    await poll();
     spy.mockRestore();
     await host.stop();
     await open();
@@ -1188,6 +1189,8 @@ describe("Qwen answers every message", () => {
     }));
     await pass();
     expect(reply.mock.calls[0][1]).toMatchObject({ userName: "Ada Lovelace" });
+    // Not remembered: the stored turn is what the person wrote.
+    expect(await turns()).toEqual(["Hello", "Saved once"]);
   });
 
   it("stops at once when the model call is still running: the call is aborted and the user gets the failure reply after the restart", async () => {

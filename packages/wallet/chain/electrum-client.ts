@@ -107,7 +107,12 @@ export function toElectrumScriptHash(
 
 /** The server answered the request with an error: it was received and refused. */
 export class ElectrumRpcError extends Error {
-  constructor(readonly method: string, readonly serverMessage: string) {
+  constructor(
+    readonly method: string,
+    readonly serverMessage: string,
+    /** The JSON-RPC error code, when the answer carried one. */
+    readonly code?: number,
+  ) {
     super(`Electrum RPC error (${method}): ${serverMessage}`)
     this.name = 'ElectrumRpcError'
   }
@@ -300,7 +305,13 @@ export class ElectrumClient {
             typeof msg.error === 'string'
               ? msg.error
               : msg.error?.message ?? JSON.stringify(msg.error)
-          pending.reject(new ElectrumRpcError(pending.method, errorMsg))
+          pending.reject(
+            new ElectrumRpcError(
+              pending.method,
+              errorMsg,
+              typeof msg.error?.code === 'number' ? msg.error.code : undefined,
+            ),
+          )
         } else {
           pending.resolve(msg.result)
         }

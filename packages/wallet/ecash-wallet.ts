@@ -2,6 +2,7 @@ import {
   ChainAddress,
   ChainTransaction,
   defaultNativeTransactionAttemptStore,
+  NativeFeeExceededError,
   NativeTransactionRefusedError,
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
@@ -145,6 +146,7 @@ export interface EcashBuiltAction {
     readonly txid: string;
     /** The signed transaction; its bytes are recorded before broadcast. */
     readonly tx?: { ser(): Uint8Array };
+    fee?(): bigint;
   }>;
   broadcast(config?: {
     retryOnUtxoConflict?: boolean;
@@ -166,11 +168,16 @@ export interface EcashWalletBackend {
   };
 }
 
-/** The node's wording when Chronik answered and refused a broadcast; undefined otherwise. */
+/**
+ * The node's reason when Chronik answered and refused a broadcast; undefined otherwise. The relay
+ * forwards a reason only for a 4xx from the node. An empty reason or the relay's placeholder is
+ * not proof of a refusal, and neither is any other failure.
+ */
 function chronikRefusal(reason: unknown): string | undefined {
   const text = reason instanceof Error ? reason.message : String(reason);
   const match = /Failed getting \S+: (.*)$/s.exec(text);
-  return match ? match[1].trim() : undefined;
+  const refusal = match?.[1].trim();
+  return refusal && refusal !== "upstream Chronik error" ? refusal : undefined;
 }
 
 export type EcashWalletFactory = (params: {
@@ -190,9 +197,8 @@ export interface EcashWalletOptions {
     transaction: ChainTransaction
   ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
   /**
-   * Sends already signed transactions (hex, in order) again. Must throw an error whose message
-   * starts with "Failed getting" when the node answered and refused them, and anything else when
-   * the node could not be reached.
+   * Sends already signed transactions (hex, in order) again. Chronik's "Failed getting <path>:
+   * <reason>" error means the node answered and refused them; anything else means unknown.
    */
   rebroadcast?: (rawTransactions: ReadonlyArray<string>) => Promise<void>;
 }
@@ -385,9 +391,7 @@ export class EcashWallet implements NativeWalletHandle {
     } catch (reason) {
       // The node answered and refused: its inputs are gone or it is already mined, so these
       // bytes can never be accepted later and nothing is left to wait for.
-      if (reason instanceof Error && reason.message.startsWith("Failed getting")) {
-        return settle();
-      }
+      if (chronikRefusal(reason) !== undefined) return settle();
       return unresolved(reason);
     }
     settle();
@@ -547,6 +551,7 @@ export class EcashWallet implements NativeWalletHandle {
   async sendNative(params: {
     recipient: ChainAddress;
     value: bigint;
+    maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
     return runNativeTransactionExclusive(
@@ -563,6 +568,7 @@ export class EcashWallet implements NativeWalletHandle {
   private async sendNativeExclusive(params: {
     recipient: ChainAddress;
     value: bigint;
+    maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
     if (this.unresolvedNative !== undefined) {
@@ -588,6 +594,15 @@ export class EcashWallet implements NativeWalletHandle {
         outputs: [{ address: recipient, sats: params.value }],
       })
       .build();
+    if (params.maxFee !== undefined) {
+      // The reviewed fee is a ceiling. Nothing is recorded or sent when it would be exceeded;
+      // the coins the SDK set aside for this build come back with its next sync.
+      const fee = built.builtTxs.reduce(
+        (sum, transaction) => sum + (transaction.fee?.() ?? 0n),
+        0n
+      );
+      if (fee > params.maxFee) throw new NativeFeeExceededError(fee);
+    }
     return this.broadcastNativeAction(built, params.onSigned);
   }
 

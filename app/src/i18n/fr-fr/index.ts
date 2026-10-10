@@ -1020,6 +1020,8 @@ export default {
     estimatedFee: 'Frais estimés',
     feeUnavailable: 'Indisponible',
     refused: 'Le réseau a refusé cette transaction. Rien n’a été envoyé.',
+    feeChanged:
+      'Les frais de réseau ont augmenté. Rien n’a été envoyé. Vérifiez les nouveaux frais et confirmez à nouveau.',
     maxTotal: 'Montant + frais de réseau',
     maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
     irreversibleWarning:

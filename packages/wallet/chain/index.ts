@@ -237,7 +237,10 @@ export type {
 } from "./electrum-client";
 
 export { electrumIndexer, relayElectrumUrl } from "./electrum-indexer";
-export { NativeTransactionRefusedError } from "./chain-wallet";
+export {
+  NativeFeeExceededError,
+  NativeTransactionRefusedError,
+} from "./chain-wallet";
 export { createUtxoChain } from "./utxo-chain";
 export { openRelayUtxoChain } from "./utxo-family";
 export type { RelayUtxoChain } from "./utxo-family";

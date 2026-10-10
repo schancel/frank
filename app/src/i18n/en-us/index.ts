@@ -997,6 +997,8 @@ export default {
     estimatedFee: 'Estimated Fee',
     feeUnavailable: 'Unavailable',
     refused: 'The network refused this transaction. Nothing was sent.',
+    feeChanged:
+      'The network fee went up. Nothing was sent. Check the new fee and confirm again.',
     maxTotal: 'Amount + network fee',
     maxTotalWithFee: '{amount} {unit} (+ network fee)',
     irreversibleWarning:

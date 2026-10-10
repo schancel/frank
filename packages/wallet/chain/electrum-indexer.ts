@@ -24,6 +24,14 @@ export function relayElectrumUrl(
   return url.toString();
 }
 
+/**
+ * The relay's error codes say who answered (backend `http/electrum_proxy.rs`). Only these two
+ * come from the chain's side; every other code is the relay's own (quota, busy, bad request) and
+ * says nothing about a transaction.
+ */
+export const RELAY_NODE_REFUSED_BROADCAST = -32000;
+export const RELAY_UPSTREAM_ERROR = -32001;
+
 export function electrumIndexer(client: ElectrumClient): UtxoIndexer {
   return {
     async listUnspent(scriptPubKey) {
@@ -48,8 +56,14 @@ export function electrumIndexer(client: ElectrumClient): UtxoIndexer {
         await client.request<string>("blockchain.transaction.get", txid);
         return true;
       } catch (error) {
-        // The server answered: it has no such transaction.
-        if (error instanceof ElectrumRpcError) return false;
+        // The Electrum server answered with an error: it has no such transaction. An error
+        // from the relay itself, or no answer, leaves the question open.
+        if (
+          error instanceof ElectrumRpcError &&
+          error.code === RELAY_UPSTREAM_ERROR
+        ) {
+          return false;
+        }
         throw error;
       }
     },
@@ -57,7 +71,12 @@ export function electrumIndexer(client: ElectrumClient): UtxoIndexer {
       try {
         await client.broadcastTransaction(rawHex);
       } catch (error) {
-        if (error instanceof ElectrumRpcError) {
+        // Only the node's own refusal means "not broadcast". A relay error (quota, busy) or a
+        // lost connection does not.
+        if (
+          error instanceof ElectrumRpcError &&
+          error.code === RELAY_NODE_REFUSED_BROADCAST
+        ) {
           throw new UtxoBroadcastRefused(error.serverMessage);
         }
         throw error;

@@ -146,9 +146,7 @@ async function main(): Promise<number> {
       return 1;
     }
     console.log(`indexer shows ${sent.txHash}; balance ${show(before)} -> ${show(after)} (fee ${show(fee)})`);
-    console.log(
-      `OK: a funded send was observed on ${chainIdentifier}. Set wallet.send to true for "${chainIdentifier}" in packages/wallet/chain/chains-registry.ts (and its expectation in chains-registry.jest.test.ts).`
-    );
+    console.log(`OK: a funded send was observed on ${chainIdentifier}.`);
     return 0;
   } finally {
     await close();

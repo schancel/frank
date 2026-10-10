@@ -55,6 +55,17 @@ export class NativeTransactionRefusedError extends Error {
   }
 }
 
+/**
+ * The fee a send would pay now is higher than the fee the user reviewed. Nothing was signed or
+ * sent; `fee` is the current fee, in base units, to show for a fresh review.
+ */
+export class NativeFeeExceededError extends Error {
+  constructor(readonly fee: bigint) {
+    super("The network fee rose above the reviewed fee; review the transfer again");
+    this.name = "NativeFeeExceededError";
+  }
+}
+
 /** Durable guard record; signed replay material may remain wallet-specific and in memory. */
 export interface NativeTransactionAttemptStore {
   /** Coordination reach of this store. Cross-process stores require a host lock not yet exposed. */
@@ -238,6 +249,8 @@ export interface NativeWalletHandle {
   sendNative(params: {
     recipient: ChainAddress;
     value: bigint;
+    /** The fee the user reviewed, as a ceiling; wallets that support it throw NativeFeeExceededError. */
+    maxFee?: bigint;
     /** Invoked after signing and before broadcast so callers can durably record the exact id. */
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction>;

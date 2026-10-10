@@ -5,6 +5,7 @@ import { HDNodeWallet } from "ethers";
 import { decodeCashAddress } from "ecashaddrjs";
 import { parseTransaction } from "@frank/nakamoto";
 import {
+  NativeFeeExceededError,
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
 } from "./chain/chain-wallet";
@@ -434,10 +435,11 @@ describe.each([
     // The claimed coin is not spendable while the outcome is unknown.
     expect(await wallet.getBalance()).toBe(60_000n);
 
-    // Still unreachable: a new send signs nothing.
+    // Still unreachable: the old bytes are tried again and its coin stays claimed. A new send
+    // may only use the other coin, never the claimed one.
     await expect(
-      wallet.sendNative({ recipient: { raw: recipient }, value: 10_000n })
-    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+      wallet.sendNative({ recipient: { raw: recipient }, value: 65_000n })
+    ).rejects.toThrow("Insufficient funds");
     expect(new Set(backend.broadcasts)).toEqual(new Set([raw]));
 
     // After a restart the same bytes are sent again, not a new payment.
@@ -463,6 +465,58 @@ describe.each([
     expect(restarted.wallet.getUnresolvedNativeTransaction()).toBeUndefined();
     await restarted.wallet.sendNative({ recipient: { raw: recipient }, value: 5_000n });
     expect(backend.broadcasts).toHaveLength(2);
+  });
+
+  it("lets a second send use other coins while the first is still being broadcast", async () => {
+    const { wallet, backend } = await open(network);
+    fund(backend, network, (await wallet.getReceiveAddress()).raw, 70_000n, "a");
+    fund(backend, network, (await wallet.getReceiveAddress()).raw, 60_000n, "b");
+    await wallet.getBalance();
+    // The first broadcast hangs at the node.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const accept = backend.indexer.broadcast;
+    let first = true;
+    backend.indexer.broadcast = async (raw) => {
+      if (first) {
+        first = false;
+        await held;
+      }
+      return accept(raw);
+    };
+    const slow = wallet.sendNative({ recipient: { raw: recipient }, value: 10_000n });
+    const quick = await wallet.sendNative({ recipient: { raw: recipient }, value: 10_000n });
+    expect(quick.txHash).toMatch(/^[0-9a-f]{64}$/);
+    release();
+    const slowResult = await slow;
+    expect(slowResult.txHash).not.toBe(quick.txHash);
+    // Two different transactions, no input in common, and the hanging one sent only once.
+    expect(backend.broadcasts).toHaveLength(2);
+    const inputs = backend.broadcasts.map((raw) => {
+      const parsed = parseTransaction(unhex(raw), network.descriptor);
+      if (!parsed.ok) throw new Error("unparseable");
+      return parsed.value.inputs.map((i) => `${hex(i.prevout.txid)}:${i.prevout.vout}`);
+    });
+    expect(inputs[0]).toHaveLength(1);
+    expect(inputs[1]).toHaveLength(1);
+    expect(inputs[0][0]).not.toBe(inputs[1][0]);
+  });
+
+  it("refuses to pay more than the reviewed fee, before signing or recording anything", async () => {
+    const { wallet, backend, store } = await open(network);
+    fund(backend, network, (await wallet.getReceiveAddress()).raw, 70_000n, "a");
+    const transfer = { recipient: { raw: recipient }, value: 10_000n };
+    const { fee } = await wallet.estimateFee(transfer);
+    const before = store.load();
+    const error = await wallet
+      .sendNative({ ...transfer, maxFee: fee - 1n })
+      .catch((caught) => caught);
+    expect(error).toBeInstanceOf(NativeFeeExceededError);
+    expect(error.fee).toBe(fee);
+    expect(backend.broadcasts).toHaveLength(0);
+    expect(store.load()).toBe(before);
+    await wallet.sendNative({ ...transfer, maxFee: fee });
+    expect(feeOf(backend.broadcasts[0], network, 70_000n)).toBe(fee);
   });
 
   it("rejects addresses of other networks", async () => {

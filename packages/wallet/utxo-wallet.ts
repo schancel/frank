@@ -45,6 +45,7 @@ import type {
 import {
   ChainAddress,
   ChainTransaction,
+  NativeFeeExceededError,
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
   NativeWalletHandle,
@@ -322,6 +323,10 @@ export class UtxoWallet implements NativeWalletHandle {
   private queue: Promise<void> = Promise.resolve();
   private coinList: UtxoCoin[] = [];
   private unresolved: NativeTransactionSubmissionError | undefined;
+  /** Sends this process is broadcasting right now; nobody else re-sends or settles them. */
+  private readonly inFlight = new Set<string>();
+  /** Bumped whenever a recorded send is dropped, so a coin read from before it is not used. */
+  private settledGeneration = 0;
 
   private constructor(
     readonly network: UtxoNetwork,
@@ -362,7 +367,7 @@ export class UtxoWallet implements NativeWalletHandle {
     await wallet.discover();
     // Finish a send a restart interrupted. If the indexer cannot be reached now, the next send
     // tries again before it signs anything.
-    await wallet.exclusive(() => wallet.finishPending()).catch(() => undefined);
+    await wallet.finishPending().catch(() => undefined);
     return wallet;
   }
 
@@ -382,21 +387,17 @@ export class UtxoWallet implements NativeWalletHandle {
 
   /** The next receive address that has never been paid. */
   async getReceiveAddress(): Promise<ChainAddress> {
-    return this.exclusive(async () => {
-      await this.sync();
-      return { raw: this.addressAt(0, this.state.receiveIndex) };
-    });
+    await this.sync();
+    return { raw: this.addressAt(0, this.state.receiveIndex) };
   }
 
   /** What the wallet can spend now: its unspent coins, including unconfirmed change. */
   async getBalance(): Promise<bigint> {
-    return this.exclusive(async () => {
-      await this.sync();
-      return this.coinList.reduce(
-        (sum, coin) => (coin.state === "unspent" ? sum + coin.amount : sum),
-        0n
-      );
-    });
+    await this.sync();
+    return this.coinList.reduce(
+      (sum, coin) => (coin.state === "unspent" ? sum + coin.amount : sum),
+      0n
+    );
   }
 
   /** The fee and the number of coins a send of `value` would use right now. */
@@ -404,40 +405,51 @@ export class UtxoWallet implements NativeWalletHandle {
     recipient: ChainAddress;
     value: bigint;
   }): Promise<{ fee: bigint; inputCount: number }> {
-    return this.exclusive(async () => {
-      await this.sync();
-      const plan = planUtxoSend({
-        coins: this.coinList,
-        value: params.value,
-        recipientScript: this.recipientScript(params.recipient.raw),
-        feeRate: await this.feeRate(),
-        network: this.network,
-      });
-      return { fee: plan.fee, inputCount: plan.inputs.length };
+    const recipientScript = this.recipientScript(params.recipient.raw);
+    const feeRate = await this.feeRate();
+    await this.sync();
+    const plan = planUtxoSend({
+      coins: this.coinList,
+      value: params.value,
+      recipientScript,
+      feeRate,
+      network: this.network,
     });
+    return { fee: plan.fee, inputCount: plan.inputs.length };
   }
 
+  /**
+   * One payment. Network reads happen first and unlocked. Choosing coins, signing and recording
+   * the claim is one short step under the wallet's lock, with no network wait inside it. The
+   * broadcast then runs outside the lock, so another send can pick other coins meanwhile.
+   *
+   * `maxFee` is the fee the user reviewed: the send may pay less, never more.
+   */
   async sendNative(params: {
     recipient: ChainAddress;
     value: bigint;
+    maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
-    return this.exclusive(async () => {
-      if (params.value <= 0n) {
-        throw new RangeError("Transfer value must be greater than zero");
-      }
-      const recipientScript = this.recipientScript(params.recipient.raw);
-      // Never sign a second payment while an earlier one may still land.
-      await this.finishPending();
-      if (this.unresolved !== undefined) throw this.unresolved;
-      await this.sync();
+    if (params.value <= 0n) {
+      throw new RangeError("Transfer value must be greater than zero");
+    }
+    const recipientScript = this.recipientScript(params.recipient.raw);
+    // Earlier sends are finished or stay claimed; either way their coins are not chosen again.
+    await this.finishPending();
+    const feeRate = await this.feeRate();
+    await this.sync();
+    const { raw, txid } = await this.exclusive(async () => {
       const plan = planUtxoSend({
         coins: this.coinList,
         value: params.value,
         recipientScript,
-        feeRate: await this.feeRate(),
+        feeRate,
         network: this.network,
       });
+      if (params.maxFee !== undefined && plan.fee > params.maxFee) {
+        throw new NativeFeeExceededError(plan.fee);
+      }
       const changeIndex = this.state.changeIndex;
       const outputs = [{ value: params.value, scriptPubKey: recipientScript }];
       if (plan.change !== undefined) {
@@ -446,44 +458,48 @@ export class UtxoWallet implements NativeWalletHandle {
           scriptPubKey: this.scriptAt(1, changeIndex),
         });
       }
-      const { raw, txid } = this.sign(plan.inputs, outputs);
-      const transaction: ChainTransaction = { txHash: txid };
+      const signed = this.sign(plan.inputs, outputs);
       // Recorded before any byte leaves: after a crash the same transaction is sent again and
       // its inputs stay claimed. The change address is consumed with it, never reused.
       this.persist({
         ...this.state,
-        changeIndex:
-          plan.change === undefined ? changeIndex : changeIndex + 1,
+        changeIndex: plan.change === undefined ? changeIndex : changeIndex + 1,
         pending: [
           ...this.state.pending,
           {
-            txid,
-            raw,
+            txid: signed.txid,
+            raw: signed.raw,
             inputs: plan.inputs.map(({ txid, vout }) => ({ txid, vout })),
           },
         ],
       });
+      this.inFlight.add(signed.txid);
       this.markPending();
-      await params.onSigned?.(transaction);
-      try {
-        await this.indexer.broadcast(raw);
-      } catch (reason) {
-        if (reason instanceof UtxoBroadcastRefused) {
-          // Refused outright: nothing was sent, so the coins are free again.
-          this.dropPending(txid);
-          throw new NativeTransactionRefusedError(reason.reason);
-        }
-        // No answer is not a refusal. Keep the record; the next send or restart finishes it.
-        this.unresolved = new NativeTransactionSubmissionError({
-          transaction: { ...transaction, rawTransactions: [raw] },
-          reason,
-        });
-        throw this.unresolved;
-      }
-      // Accepted: its inputs are spent on the indexer from now on. Keep the record until the
-      // indexer shows the transaction, so a lagging server cannot hand the coins out again.
-      return transaction;
+      return signed;
     });
+    const transaction: ChainTransaction = { txHash: txid };
+    try {
+      await params.onSigned?.(transaction);
+      await this.indexer.broadcast(raw);
+    } catch (reason) {
+      if (reason instanceof UtxoBroadcastRefused) {
+        // Refused outright: nothing was sent, so the coins are free again.
+        await this.exclusive(async () => this.dropPending(txid));
+        throw new NativeTransactionRefusedError(reason.reason);
+      }
+      // No answer is not a refusal. The record and its claim stay; a later send or restart
+      // sends the same bytes again. Other coins remain spendable meanwhile.
+      this.unresolved = new NativeTransactionSubmissionError({
+        transaction: { ...transaction, rawTransactions: [raw] },
+        reason,
+      });
+      throw this.unresolved;
+    } finally {
+      this.inFlight.delete(txid);
+    }
+    // Accepted: its inputs are spent on the indexer from now on. The record stays until the
+    // indexer shows the transaction, so a lagging server cannot hand the coins out again.
+    return transaction;
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -501,6 +517,7 @@ export class UtxoWallet implements NativeWalletHandle {
   }
 
   private dropPending(txid: string): void {
+    this.settledGeneration += 1;
     this.persist({
       ...this.state,
       pending: this.state.pending.filter((send) => send.txid !== txid),
@@ -521,29 +538,34 @@ export class UtxoWallet implements NativeWalletHandle {
   }
 
   /**
-   * Settle every recorded send. One the indexer has was broadcast. One it lacks is sent again
-   * unchanged: the same inputs cannot pay twice. A record stays only while the outcome cannot be
-   * learned, and then no new payment is signed.
+   * Settle every recorded send that is not being broadcast right now. One the indexer has was
+   * broadcast. One it lacks is sent again unchanged: the same inputs cannot pay twice. A record
+   * whose outcome cannot be learned stays, with its coins claimed; it blocks nothing else.
    */
   private async finishPending(): Promise<void> {
-    this.unresolved = undefined;
+    let unresolved: NativeTransactionSubmissionError | undefined;
     for (const send of this.state.pending) {
+      if (this.inFlight.has(send.txid)) continue;
       try {
         if (!(await this.indexer.hasTransaction(send.txid))) {
-          await this.indexer.broadcast(send.raw);
+          try {
+            await this.indexer.broadcast(send.raw);
+          } catch (reason) {
+            // Refused: the node already has it, or its inputs were spent some other way.
+            // Either way these bytes need no further sending. Anything else is unknown.
+            if (!(reason instanceof UtxoBroadcastRefused)) throw reason;
+          }
         }
       } catch (reason) {
-        if (!(reason instanceof UtxoBroadcastRefused)) {
-          this.unresolved = new NativeTransactionSubmissionError({
-            transaction: { txHash: send.txid, rawTransactions: [send.raw] },
-            reason,
-          });
-          return;
-        }
-        // Refused now: its inputs were spent some other way, so it can never be accepted.
+        unresolved = new NativeTransactionSubmissionError({
+          transaction: { txHash: send.txid, rawTransactions: [send.raw] },
+          reason,
+        });
+        continue;
       }
-      this.dropPending(send.txid);
+      await this.exclusive(async () => this.dropPending(send.txid));
     }
+    this.unresolved = unresolved;
   }
 
   private async feeRate(): Promise<bigint> {
@@ -613,10 +635,33 @@ export class UtxoWallet implements NativeWalletHandle {
     }
   }
 
-  /** Rebuild the coin list from the indexer. */
+  /**
+   * Rebuild the coin list from the indexer. The reads run unlocked; the result is applied in one
+   * short locked step, and thrown away if a recorded send was dropped while reading (its inputs
+   * would look unspent in the older answer).
+   */
   private async sync(): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const generation = this.settledGeneration;
+      const read = await this.readCoins();
+      const applied = await this.exclusive(async () => {
+        if (generation !== this.settledGeneration) return false;
+        if (read.receiveIndex > this.state.receiveIndex) {
+          this.persist({ ...this.state, receiveIndex: read.receiveIndex });
+        }
+        this.coinList = read.coins;
+        this.markPending();
+        return true;
+      });
+      if (applied) return;
+    }
+    throw new Error("The wallet's coins kept changing while they were read; try again");
+  }
+
+  private async readCoins(): Promise<{ coins: UtxoCoin[]; receiveIndex: number }> {
     const coins: UtxoCoin[] = [];
     let receiveIndex = this.state.receiveIndex;
+    const changeIndex = this.state.changeIndex;
     const read = async (chain: 0 | 1, index: number) => {
       const scriptPubKey = this.scriptAt(chain, index);
       const outputs = await this.indexer.listUnspent(scriptPubKey);
@@ -641,29 +686,10 @@ export class UtxoWallet implements NativeWalletHandle {
       const paid = await read(0, index);
       if (paid && index === receiveIndex) receiveIndex += 1;
     }
-    for (let index = 0; index < this.state.changeIndex; index++) {
+    for (let index = 0; index < changeIndex; index++) {
       await read(1, index);
     }
-    if (receiveIndex !== this.state.receiveIndex) {
-      this.persist({ ...this.state, receiveIndex });
-    }
-    this.coinList = coins;
-    this.markPending();
-    // A recorded send the indexer now shows needs no record any more.
-    for (const send of this.state.pending) {
-      const spent = send.inputs.every(
-        (input) =>
-          !coins.some(
-            (coin) => coin.txid === input.txid && coin.vout === input.vout
-          )
-      );
-      if (
-        spent &&
-        (await this.indexer.hasTransaction(send.txid).catch(() => false))
-      ) {
-        this.dropPending(send.txid);
-      }
-    }
+    return { coins, receiveIndex };
   }
 
   private sign(

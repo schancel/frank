@@ -140,7 +140,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         }
         return wallet.getBalance();
       },
-      async send({ wallet, recipient, value, onSigned }) {
+      async send({ wallet, recipient, value, maxFee, onSigned }) {
         if (wallet.family !== "bitcoin") {
           throw new Error(
             `Expected a Bitcoin/eCash wallet, got ${wallet.family}`
@@ -161,6 +161,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         return wallet.sendNative({
           recipient: canonicalRecipient,
           value,
+          maxFee,
           onSigned,
         });
       },

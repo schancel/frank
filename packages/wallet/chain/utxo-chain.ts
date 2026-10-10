@@ -78,12 +78,17 @@ export function createUtxoChain(config: UtxoChainConfig): UtxoChain {
     },
     nativeTransfers: {
       getBalance: ({ wallet }) => own(wallet).getBalance(),
-      send: ({ wallet, recipient, value, onSigned }) => {
+      send: ({ wallet, recipient, value, maxFee, onSigned }) => {
         const canonical = parseAddress(recipient.raw);
         if (canonical === undefined) {
           throw new Error("Invalid recipient address for this network");
         }
-        return own(wallet).sendNative({ recipient: canonical, value, onSigned });
+        return own(wallet).sendNative({
+          recipient: canonical,
+          value,
+          maxFee,
+          onSigned,
+        });
       },
       async getTransactionStatus({ wallet, transaction }) {
         own(wallet);

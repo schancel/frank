@@ -22,18 +22,23 @@ const escapeHtml = (text: string) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
 
+/** The attribute a picture placeholder carries: the ID of an attachment of the same message. */
+export const ATTACHMENT_ATTRIBUTE = 'data-attachment'
+const ATTACHMENT_SOURCE = /^attachment:([a-zA-Z0-9_-]+)$/
+
 /**
- * The one sanitiser. With `onlyImages`, the content may make the browser fetch nothing: the
- * only pictures kept are `<img>` whose source is exactly one of the given data URIs, and
- * everything else that could load a resource (other sources, `srcset`, media and form elements,
- * style sheets, inline styles other than this renderer's own) is removed.
+ * The one sanitiser. With `attachments`, the content may make the browser fetch nothing. No
+ * `<img>` leaves here with a source at all: the only pictures kept are placeholders naming one
+ * of the given attachment IDs, which the caller fills in afterwards from the message's own
+ * attachments. Everything else that could load a resource (any `src`, `srcset`, media and form
+ * elements, style sheets, inline styles other than this renderer's own) is removed.
  */
 function sanitize(
   html: string,
-  onlyImages?: ReadonlySet<string>,
+  attachments?: ReadonlySet<string>,
   ownStyles: readonly string[] = [],
 ): string {
-  if (!onlyImages) {
+  if (!attachments) {
     return DOMPurify.sanitize(html, { ADD_ATTR: ['target'], RETURN_DOM: false })
   }
   DOMPurify.addHook('afterSanitizeAttributes', node => {
@@ -41,9 +46,14 @@ function sanitize(
     const style = node.getAttribute('style')
     if (style !== null && !ownStyles.includes(style))
       node.removeAttribute('style')
-    if (!node.hasAttribute('src')) return
-    if (node.nodeName !== 'IMG') node.removeAttribute('src')
-    else if (!onlyImages.has(node.getAttribute('src') ?? '')) node.remove()
+    if (node.nodeName === 'IMG') {
+      const id = node.getAttribute(ATTACHMENT_ATTRIBUTE)
+      if (node.hasAttribute('src') || id === null || !attachments.has(id))
+        node.remove()
+      return
+    }
+    node.removeAttribute('src')
+    node.removeAttribute(ATTACHMENT_ATTRIBUTE)
   })
   try {
     return DOMPurify.sanitize(html, {
@@ -72,22 +82,24 @@ function sanitize(
  * commands, a message typed on several lines); without it a newline inside a paragraph is a
  * space, as Markdown documents (posts, email) expect.
  *
- * `onlyImages` is for content from someone else that must not make the browser fetch anything
- * (a direct message): the listed data URIs are the only pictures shown. Any other Markdown
- * image is written out instead: a web address as a link, anything else as the text it was.
+ * `attachments` is for content from someone else that must not make the browser fetch anything
+ * (a direct message): the IDs of the message's own pictures that may be shown. A reference
+ * `![name](attachment:ID)` to one of them becomes an `<img>` placeholder with no source, marked
+ * with `ATTACHMENT_ATTRIBUTE`; the caller sets the picture on it afterwards. The picture's bytes
+ * never pass through here, so the HTML stays about the size of the text however often one
+ * picture is referenced. Any other Markdown image is written out instead: a web address as a
+ * link, anything else as the text it was.
  */
 export function renderMarkdown(
   input: string,
   linkColor: boolean,
   lineBreaks = false,
-  onlyImages?: readonly string[],
+  attachments?: readonly string[],
 ) {
-  // A picture is large; the cache is for text.
-  const cacheable = !onlyImages || onlyImages.length === 0
   const cacheKey = `${linkColor ? 1 : 0}${lineBreaks ? 'b' : ''}${
-    onlyImages ? 'i' : ''
+    attachments ? `i${attachments.join(',')}` : ''
   }:${input}`
-  const cached = cacheable ? cache.get(cacheKey) : undefined
+  const cached = cache.get(cacheKey)
   if (cached !== undefined) {
     cache.delete(cacheKey)
     cache.set(cacheKey, cached)
@@ -110,13 +122,16 @@ export function renderMarkdown(
   renderer.blockquote = text => {
     return '<div class="quote" style="' + QUOTE_STYLE + '">' + text + '</div>'
   }
-  const allowed = onlyImages ? new Set(onlyImages) : undefined
+  const allowed = attachments ? new Set(attachments) : undefined
   if (allowed) {
     // `text` arrives escaped from marked; `href` does not.
     renderer.image = (href, _title, text) => {
       const source = href ?? ''
-      if (allowed.has(source)) {
-        return '<img src="' + source + '" alt="' + text + '">'
+      const id = ATTACHMENT_SOURCE.exec(source)?.[1]
+      if (id !== undefined && allowed.has(id)) {
+        return (
+          '<img ' + ATTACHMENT_ATTRIBUTE + '="' + id + '" alt="' + text + '">'
+        )
       }
       if (/^https?:\/\//i.test(source)) {
         return renderer.link(
@@ -134,7 +149,6 @@ export function renderMarkdown(
     allowed,
     [QUOTE_STYLE, linkStyle(linkColorHex)],
   )
-  if (!cacheable) return result
   if (cache.size >= MAX_CACHE_ENTRIES) {
     const oldestKey = cache.keys().next().value
     if (oldestKey !== undefined) {
@@ -146,11 +160,11 @@ export function renderMarkdown(
 }
 
 /**
- * Sanitises HTML. With `onlyImages` it also keeps the content from fetching anything, as
+ * Sanitises HTML. With `attachments` it also keeps the content from fetching anything, as
  * `renderMarkdown` does.
  */
-export function purify(input: string, onlyImages?: readonly string[]) {
-  return onlyImages
-    ? sanitize(input, new Set(onlyImages))
+export function purify(input: string, attachments?: readonly string[]) {
+  return attachments
+    ? sanitize(input, new Set(attachments))
     : DOMPurify.sanitize(input)
 }

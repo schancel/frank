@@ -365,7 +365,7 @@ describe('signup and pinned descriptor restore boundary', () => {
       return hash(value)
     })
     const derive = jest.spyOn(domainRoots, 'deriveDomainRoot')
-    errorCode(() => restore.recover(invalid), 'bad-format')
+    errorCode(() => restore.recover(invalid), 'not-account-backup')
     expect(derive).not.toHaveBeenCalled()
     expect(preimages.map(hex)).toEqual([vectors[0]!.validationPreimage])
     spy.mockRestore()

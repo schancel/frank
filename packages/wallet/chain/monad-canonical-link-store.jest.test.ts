@@ -152,6 +152,32 @@ describe('LevelCanonicalLinkStore durability', () => {
     expect(reopened.all()).toEqual(links)
   })
 
+  it('keeps an unpaid envelope by message ID across close and reopen, apart from the links, until it is dropped', async () => {
+    const envelope = {
+      digest: 'aa',
+      delivery: '0102',
+      context: '03',
+      recipientSubject: '02ff',
+    }
+    const first = await LevelCanonicalLinkStore.open(location)
+    await first.put(row('a'))
+    await first.setUnpaid('00112233', envelope)
+    await first.close()
+
+    const second = await LevelCanonicalLinkStore.open(location)
+    expect(second.unpaid('00112233')).toEqual(envelope)
+    expect(second.unpaid('other')).toBeUndefined()
+    // Not a link: the payment workflow never sees it.
+    expect(second.all().map(r => r.attemptRef)).toEqual(['a'])
+    await second.setUnpaid('00112233', undefined)
+    await second.close()
+
+    const third = await LevelCanonicalLinkStore.open(location)
+    expect(third.unpaid('00112233')).toBeUndefined()
+    expect(third.all()).toHaveLength(1)
+    await third.close()
+  })
+
   it('lists rows in first-write order, keeps a rewritten row in place, and returns copies', async () => {
     const store = await open()
     const second = row('attempt-b')

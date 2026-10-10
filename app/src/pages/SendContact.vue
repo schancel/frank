@@ -150,7 +150,7 @@
           />
         </q-card-section>
 
-        <q-card-actions align="right">
+        <q-card-actions align="right" class="wrap">
           <q-btn
             :label="$t('sendContactDialog.cancel')"
             color="negative"
@@ -227,7 +227,7 @@
           </q-banner>
         </q-card-section>
 
-        <q-card-actions align="right">
+        <q-card-actions align="right" class="wrap">
           <q-btn
             :disable="sending"
             :label="$t('sendContactDialog.edit')"
@@ -398,7 +398,16 @@ export default defineComponent({
         isReviewing.value = false
       },
       async confirmSend() {
-        if (sending.value || !isValid.value) return
+        if (sending.value) return
+        if (!isValid.value) {
+          // The details stopped being a payment that can be sent (the contact or the amount
+          // is gone): said, and back to the form, never a button that does nothing.
+          isReviewing.value = false
+          errorNotify(new Error('Invalid transfer details'), {
+            fallbackKey: 'sendContactDialog.invalidAmount',
+          })
+          return
+        }
         sending.value = true
 
         try {
@@ -415,15 +424,20 @@ export default defineComponent({
           // conversation's ordinary send, so it shows in the chat with the contact, with its
           // pending state and Retry; the wallet broadcasts the transfer once the relay has
           // stored that message.
+          // The message carries the stamp chosen for the conversation with this contact, as
+          // a payment sent from the chat itself does; the amount is the payment's own.
+          const stampValue = chatStore.getStampWei(selectedContactAddress.value)
           const prepared = await wallet.prepareContactPayment({
             recipient: { raw: selectedContactAddress.value },
             value: parsedValue.value!,
             memo: memo.value.trim() || undefined,
+            stampValue,
           })
           const outcome = await chatStore.sendMessage({
             wallet: messaging,
             address: selectedContactAddress.value,
             items: [prepared.item],
+            stampValue,
           })
 
           if (outcome.state === 'sent') {

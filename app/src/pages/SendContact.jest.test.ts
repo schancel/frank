@@ -27,7 +27,11 @@ jest.mock('src/utils/clients', () => ({
   useMonadWallet: () => mockMessagingWallet,
 }))
 jest.mock('src/stores/chats', () => ({
-  useChatStore: () => ({ sendMessage: mockSendMessage }),
+  useChatStore: () => ({
+    sendMessage: mockSendMessage,
+    // The stamp chosen for the conversation with the contact: here, free messages.
+    getStampWei: () => 0n,
+  }),
 }))
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -291,6 +295,8 @@ describe('SendContact.vue (dual-send model)', () => {
       recipient: { raw: aliceAddress },
       value: 1500000000000000000n,
       memo: undefined,
+      // The message carries the stamp chosen for the conversation, not a default of its own.
+      stampValue: 0n,
     })
     // The item goes through the conversation's own send (bubble, pending state, Retry).
     expect(mockSendMessage).toHaveBeenCalledTimes(1)
@@ -298,12 +304,40 @@ describe('SendContact.vue (dual-send model)', () => {
       wallet: mockMessagingWallet,
       address: aliceAddress,
       items: [PREPARED.item],
+      stampValue: 0n,
     })
     expect(sentTransactionNotify).toHaveBeenCalledWith(
       '0xabc123',
       'Payment sent',
     )
     expect(navigateBack).toHaveBeenCalled()
+  })
+
+  it('Confirm never does nothing: details that are no longer a payment are said, and the form returns', async () => {
+    const wrapper = mountSendContact()
+    await flushPromises()
+    await wrapper.find('[data-test="contact-item"]').trigger('click')
+    await wrapper
+      .find('[data-test="send-contact-amount-input"]')
+      .setValue('1.5')
+    await wrapper
+      .find('[data-test="send-contact-review-button"]')
+      .trigger('click')
+    await flushPromises()
+    // The amount is gone while the review is on screen.
+    ;(wrapper.vm as unknown as { amount: string }).amount = ''
+    await flushPromises()
+    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendContactDialog.invalidAmount',
+    })
+    expect(mockPrepare).not.toHaveBeenCalled()
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="send-contact-edit-card"]').exists()).toBe(
+      true,
+    )
   })
 
   it('a payment whose message is still being delivered is shown as saved, not as a failure', async () => {

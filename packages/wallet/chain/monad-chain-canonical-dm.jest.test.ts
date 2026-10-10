@@ -87,6 +87,7 @@ import {
   CanonicalRecipientUndeliverableError,
   CanonicalSenderUnpublishedError,
   LevelCanonicalLinkStore,
+  UnpaidDirectMessageNotDeliveredError,
 } from './monad-canonical-dm'
 import {
   isDirectMessageNotAttempted,
@@ -2240,6 +2241,239 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     ).toThrow('live typed persistent custody')
     expect(() => createCanonicalMessageRoles(f.alice, senderCurrent)).toThrow(
       'live typed wallet custody',
+    )
+  })
+
+  describe('a message sent with no stamp', () => {
+    /** Everything of the payment machinery a send could touch, counted around one call. */
+    function paymentMachinery(wallet: EvmChainWalletHandle) {
+      const spies = (
+        ['bindPrepared', 'prepareIntent', 'finishIntent', 'submit'] as const
+      ).map(method => jest.spyOn(MonadCanonicalStampClient.prototype, method))
+      const pool = structuredClone(wallet.pool.records())
+      const journal = structuredClone(wallet.stampPaymentJournal?.getAll())
+      const funded = mockFunded.length
+      return {
+        expectUntouched: async () => {
+          try {
+            for (const spy of spies) expect(spy).not.toHaveBeenCalled()
+            expect(wallet.pool.records()).toEqual(pool)
+            expect(wallet.stampPaymentJournal?.getAll()).toEqual(journal)
+            expect(mockFunded).toHaveLength(funded)
+          } finally {
+            for (const spy of spies) spy.mockRestore()
+          }
+        },
+      }
+    }
+    const directories = async () => {
+      installCanonicalDirectory(
+        f.alice,
+        await f.directoryFor('alice', f.alice, f.bob),
+      )
+      installCanonicalDirectory(
+        f.bob,
+        await f.directoryFor('bob', f.bob, f.alice),
+      )
+    }
+    const record = (index: number, timestampMs: number) => {
+      const request = restoreCanonicalRequest(f.requests[index])
+      return {
+        delivery: request.parts.delivery,
+        context: request.parts.context,
+        submissionIdentity: request.identity.submission_identity,
+        timestampMs,
+      }
+    }
+
+    it.each(['alice', 'bob'] as const)(
+      'is sealed and delivered with an empty payment list, and %s pays, funds, reserves and records nothing',
+      async from => {
+        await directories()
+        // Bob has no funded account at all: an unpaid message needs none.
+        const [sender, recipient] =
+          from === 'alice' ? [f.alice, f.bob] : [f.bob, f.alice]
+        const machinery = paymentMachinery(sender)
+        const onAttemptCreated = jest.fn()
+        const sent = await f.chain.directMessages.send({
+          wallet: sender,
+          recipient: recipient.identity.address,
+          items: text('no stamp'),
+          stampValue: 0n,
+          onAttemptCreated,
+        })
+        await machinery.expectUntouched()
+        expect(onAttemptCreated).not.toHaveBeenCalled()
+        expect(sent).toEqual({
+          payloadDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+          stampValueWei: 0n,
+          stampPayments: [],
+          paymentTransfers: [],
+          preparationTxHashes: [],
+        })
+        // One request: a schema-2 delivery with no payment member and no transaction.
+        expect(f.requests).toHaveLength(1)
+        const request = restoreCanonicalRequest(f.requests[0])
+        expect(request.parts.transactions).toEqual([])
+        expect(request.identity.payload_hash).toBe(sent.payloadDigest)
+        const delivery = parseFrame(request.parts.delivery)
+        if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+          throw new Error('not a delivery')
+        expect(delivery.schemaVersion).toBe(2)
+        expect(delivery.minReaderVersion).toBe(1)
+        expect(delivery.typed.payments).toEqual([])
+        expect([...(delivery.payload as Map<bigint, FrankValue>).keys()]).toEqual(
+          [0n, 1n, 2n, 3n, 4n, 5n, 6n],
+        )
+        // Nothing for the attempt machinery to know or do.
+        expect(
+          await f.chain.directMessages.unattributedAttempts({
+            wallet: sender,
+            knownDigests: [],
+          }),
+        ).toEqual([])
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet: sender,
+            payloadDigests: [sent.payloadDigest],
+          }),
+        ).toEqual({ [sent.payloadDigest]: 'unknown' })
+        expect(f.requests).toHaveLength(1)
+
+        inboxPage.mockResolvedValue({ records: [record(0, 7)] })
+        const received = await f.chain.directMessages.fetchSince({
+          wallet: recipient,
+          sinceMs: 0,
+        })
+        expect(received).toHaveLength(1)
+        expect(received[0].items).toEqual(text('no stamp'))
+        expect(received[0].payloadDigest).toBe(sent.payloadDigest)
+        expect(received[0].stampValueWei).toBe(0n)
+        expect(received[0].stampPayments).toEqual([])
+        expect(received[0].paymentTransfers).toEqual([])
+      },
+    )
+
+    it('is not held by a pending paid message, does not clear it, and does not hold the next paid one', async () => {
+      await directories()
+      f.setPhase('retained')
+      let pending = ''
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('paid, pending'),
+          onAttemptCreated: digest => void (pending = digest),
+        }),
+      ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      expect(f.requests).toHaveLength(1)
+
+      // Unpaid while the paid one is pending: goes out, and re-sends nothing of the paid one.
+      f.setPhase('delivered')
+      const machinery = paymentMachinery(f.alice)
+      const unpaid = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('unpaid meanwhile'),
+        stampValue: 0n,
+      })
+      await machinery.expectUntouched()
+      expect(f.requests).toHaveLength(2)
+      expect(restoreCanonicalRequest(f.requests[1]).identity.payload_hash).toBe(
+        unpaid.payloadDigest,
+      )
+
+      // The paid message is still the one pending attempt, and still holds a second paid one.
+      f.setPhase('retained')
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('paid, held'),
+        }),
+      ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      f.setPhase('delivered')
+      expect(
+        await f.chain.directMessages.reconcileAttempts({
+          wallet: f.alice,
+          payloadDigests: [pending, unpaid.payloadDigest],
+        }),
+      ).toEqual({ [pending]: 'delivered', [unpaid.payloadDigest]: 'unknown' })
+
+      // A paid send right after an unpaid one is an ordinary paid send.
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('unpaid again'),
+        stampValue: 0n,
+      })
+      mockBalances.set(
+        (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+        10n ** 18n,
+      )
+      const paid = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('paid after unpaid'),
+      })
+      expect(paid.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
+        1_000n,
+      )
+      const last = restoreCanonicalRequest(f.requests[f.requests.length - 1])
+      expect(last.identity.payload_hash).toBe(paid.payloadDigest)
+      expect(last.parts.transactions.length).toBeGreaterThan(0)
+      const paidDelivery = parseFrame(last.parts.delivery)
+      expect(paidDelivery.kind === 'parsed' && paidDelivery.schemaVersion).toBe(1)
+    })
+
+    it.each([
+      ['fail', Error],
+      ['lost', Error],
+      ['retained', UnpaidDirectMessageNotDeliveredError],
+      ['undeliverable', CanonicalRecipientUndeliverableError],
+      ['sender_unpublished', CanonicalSenderUnpublishedError],
+    ] as const)(
+      'when the relay answers "%s" it is an error to the caller and nothing is kept to retry',
+      async (phase, error) => {
+        await directories()
+        f.setPhase(phase)
+        const machinery = paymentMachinery(f.alice)
+        const messageId = '00000000-0000-4000-8000-0000000000aa'
+        const refused: unknown = await f.chain.directMessages
+          .send({
+            wallet: f.alice,
+            recipient: f.bob.identity.address,
+            items: text('unpaid, refused'),
+            stampValue: 0n,
+            messageId,
+          })
+          .then(
+            () => undefined,
+            (reason: unknown) => reason,
+          )
+        expect(refused).toBeInstanceOf(error)
+        // The relay may hold it: the refusal is never labelled "not attempted".
+        expect(isDirectMessageNotAttempted(refused)).toBe(false)
+        await machinery.expectUntouched()
+        expect(
+          await f.chain.directMessages.unattributedAttempts({
+            wallet: f.alice,
+            knownDigests: [],
+          }),
+        ).toEqual([])
+        // The caller may simply send the same message again.
+        f.setPhase('delivered')
+        const requests = f.requests.length
+        const again = await f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('unpaid, refused'),
+          stampValue: 0n,
+          messageId,
+        })
+        expect(again.stampPayments).toEqual([])
+        expect(f.requests).toHaveLength(requests + 1)
+      },
     )
   })
 

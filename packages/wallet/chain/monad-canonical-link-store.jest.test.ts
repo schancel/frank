@@ -158,6 +158,7 @@ describe('LevelCanonicalLinkStore durability', () => {
       delivery: '0102',
       context: '03',
       recipientSubject: '02ff',
+      boundary: 'frank-' + '0a'.repeat(24),
     }
     const first = await LevelCanonicalLinkStore.open(location)
     await first.put(row('a'))

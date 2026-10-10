@@ -237,6 +237,24 @@ export interface NativeWalletHandle {
   /** Address to show for a new inbound payment; may rotate independently of wallet identity. */
   getReceiveAddress(): Promise<ChainAddress>;
   getBalance(): Promise<bigint>;
+  /**
+   * Where the balance is, in the wallet's own words: every coin a send can draw on, and nothing
+   * else. `getBalance()` is the sum of the four amounts.
+   * - `main`: the main account (the deposit address);
+   * - `profile`: the address on the user's profile, when it is another address (else 0);
+   * - `received`: payments and stamps received at one-time addresses that the chain shows
+   *   funded (`receivedCount` of them);
+   * - `sending`: single-use sending accounts the wallet has funded and not yet used.
+   * What is left behind in a sending account after its one payment is not in any of them: no
+   * send can draw on it.
+   */
+  getBalanceParts?(): Promise<{
+    main: bigint;
+    profile: bigint;
+    received: bigint;
+    receivedCount: number;
+    sending: bigint;
+  }>;
   /** The exact signed attempt whose submission outcome must be resolved before a fresh send. */
   getUnresolvedNativeTransaction?(): ChainTransaction | undefined;
   /** Resubmits the exact unresolved signed bytes; never builds a replacement payment. */
@@ -253,6 +271,10 @@ export interface NativeWalletHandle {
     maxFee?: bigint;
     /** Invoked after signing and before broadcast so callers can durably record the exact id. */
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<ChainTransaction>;
 
   /** Pays a contact at a one-time address and delivers the message that lets the contact's wallet
@@ -328,6 +350,10 @@ export interface NativeWalletHandle {
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<LegacySendResult>;
 
   /** Computes the estimated network fee required to deliver `value` to a legacy destination. */
@@ -356,6 +382,13 @@ export interface NativeWalletHandle {
    */
   reobserveNativeOperations?(): Promise<void>;
   /**
+   * Waits for the wallet's next look at the chain (its block watcher), then looks at the
+   * transactions of one native operation that are not yet seen in a block. A host showing a
+   * transfer that is not final calls this in a loop and reads `getNativeOperations` after each
+   * turn. Resolves when the look is done, whatever it found; rejects only for a closed wallet.
+   */
+  watchNativeOperation?(operationId: string): Promise<void>;
+  /**
    * One call to a contract from the wallet's main account (which holds the tokens such a call
    * moves), recorded before it is signed and re-submitted byte-for-byte by
    * `resumeNativeOperation`. Resolves once the call is handed to the network; the caller watches
@@ -369,6 +402,10 @@ export interface NativeWalletHandle {
     /** What the call is (a swap's record): journaled with it and carried by its note to self. */
     record?: import("../storage/evm-native-operation-journal").EvmContractCallRecord;
     onSigned?: (signed: ContractCallHandle) => Promise<void>;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<ContractCallHandle>;
   /** What a contract call can spend: the main account's balance and what could be moved into it. */
   getContractCallFunds?(): Promise<{
@@ -386,6 +423,10 @@ export interface NativeWalletHandle {
     value: bigint;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<LegacySendResult>;
 }
 

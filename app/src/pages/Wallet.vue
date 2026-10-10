@@ -131,6 +131,18 @@
                             )
                       }}
                     </div>
+                    <!-- This chain cannot be reached: said here as well as on the messages
+                         that are queued because of it. -->
+                    <q-banner
+                      v-if="chainUnreachable && selectedChain === 'monad'"
+                      dense
+                      rounded
+                      class="bg-orange-1 text-orange-10 q-my-xs"
+                      role="status"
+                      data-testid="wallet-chain-unreachable"
+                    >
+                      {{ $t('chat.chainUnreachable') }}
+                    </q-banner>
                     <!-- Opens where the balance is: which accounts hold it. -->
                     <div v-if="canBreakDownBalance" class="text-center">
                       <q-btn
@@ -338,7 +350,11 @@
                           }}
                         </p>
                         <p
-                          v-if="operation.payment !== 'included'"
+                          v-if="
+                            operation.payment !== 'included' &&
+                            operation.payment !== 'pending' &&
+                            operation.payment !== 'missing'
+                          "
                           data-testid="wallet-native-operation-recovery"
                         >
                           {{ $t('nativeOperation.recoveryUnavailable') }}
@@ -623,6 +639,7 @@ import HeldContactPayments from 'src/components/wallet/HeldContactPayments.vue'
 import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useChainBalance } from 'src/composables/useChainBalance'
+import { useBalance } from 'src/composables/useBalance'
 import { useMyDrawerOpen } from 'src/composables/useMyDrawerOpen'
 import { useWalletNames } from 'src/composables/useWalletNames'
 import { openPage } from 'src/utils/routes'
@@ -721,6 +738,8 @@ export default defineComponent({
     } = useChainBalance(selectedWallet)
     // The profile address is otherwise read at a slow cadence; opening this page shows it fresh.
     onMounted(() => void refreshCordoned?.())
+    // Whether the active wallet's chain answers, as the shared balance loop last found.
+    const { chainUnreachable } = useBalance()
     // The breakdown reads the active (Monad) wallet's accounts; it is opened from the balance.
     const showBreakdown = ref(false)
     const canBreakDownBalance = computed(
@@ -919,6 +938,7 @@ export default defineComponent({
       displayAddress,
       balancePresentation,
       balanceObservation,
+      chainUnreachable,
       balanceTitle,
       showBreakdown,
       canBreakDownBalance,

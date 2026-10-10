@@ -42,6 +42,8 @@ export interface CastTopicVoteParams {
   overrides?: MonadTxOverrides
   waitForLease?: AcquireLeaseWhenAvailableOptions
   leaseIndex?: number
+  /** The operation that claimed `leaseIndex` in the pool, when one did. */
+  leaseHolder?: string
 }
 export interface CastTopicVoteResult {
   txHash: string
@@ -76,6 +78,7 @@ export class MonadTopicVoteClient {
             value: params.voteWeightWei,
             overrides: params.overrides,
             leaseIndex: params.leaseIndex,
+            leaseHolder: params.leaseHolder,
             waitForLease: params.waitForLease,
             encode: raw =>
               encodeTopicVote(this.wallet.cborNetwork!, target, raw),

@@ -131,7 +131,9 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
     mailboxes.clear();
     jest.spyOn(console, "warn").mockImplementation(() => undefined);
     jest.spyOn(console, "log").mockImplementation(() => undefined);
-    f = await fixture();
+    // A stamp large enough that funding its accounts ahead costs less than it moves (the wallet
+    // refuses to fund ahead otherwise).
+    f = await fixture({ defaultStampValueWei: 10n ** 9n });
     const { installCanonicalDirectory } = jest.requireMock(
       "@frank/wallet/chain/monad-chain"
     );

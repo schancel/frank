@@ -41,6 +41,8 @@ export interface Sent {
   /** True when the bot named no stamp, so the host would put its own (paid) stamp on it. A
    * bot's own messages must never be: they carry a payout, a refund, or nothing. */
   hostStamp: boolean;
+  /** The bot marked the amount as money it owes (paid whatever its size). */
+  settlement: boolean;
 }
 
 export const BOT = "0x" + "b0".repeat(20);
@@ -63,6 +65,8 @@ export function harness(data = new Map<string, string>()) {
   /** What the wallet does with the next sends. `refuse`: rejects before any attempt exists.
    * `live`: makes its attempt, then rejects with the message still on its way. `dead`: makes
    * its attempt, and the relay ends it. */
+  /** What the chain charges to move a stamp, as the wallet reports it. Zero: nothing is dust. */
+  let floorWei = 0n;
   let mode: "deliver" | "refuse" | "live" | "dead" = "deliver";
   let refusal = new Error("refused");
 
@@ -89,6 +93,7 @@ export function harness(data = new Map<string, string>()) {
       messageId: id,
       digest: payloadDigest,
       hostStamp: options?.stampValueWei === undefined,
+      settlement: options?.settlement === true,
     };
     if (mode !== "deliver") {
       if (id) attempts.set(id, { digest: payloadDigest, status: mode, message });
@@ -134,6 +139,7 @@ export function harness(data = new Map<string, string>()) {
     },
     waitForReceipt: async () => null,
     getBalance: async () => 10n ** 18n,
+    minimumStampWei: async () => floorWei,
     attemptStatus: async (digest: string) =>
       [...attempts.values()].find((attempt) => attempt.digest === digest)
         ?.status ?? "unknown",
@@ -149,6 +155,10 @@ export function harness(data = new Map<string, string>()) {
     failSends(error?: Error) {
       mode = error ? "refuse" : "deliver";
       if (error) refusal = error;
+    },
+    /** Sets the chain's fee floor for a stamp, as `BotContext.minimumStampWei` reports it. */
+    feeFloor(wei: bigint) {
+      floorWei = wei;
     },
     /** How the wallet treats sends from now on; see `mode` above. */
     wallet(next: "deliver" | "refuse" | "live" | "dead") {
@@ -201,6 +211,9 @@ export function harness(data = new Map<string, string>()) {
           ),
       };
     },
+    /** The amounts of the messages the bot sent as settlements of owed money, in order. */
+    settlements: () =>
+      sent.filter((message) => message.settlement).map((message) => message.valueWei),
     /** Wei the bot has paid out, over every message it sent. */
     paidOut: () => sent.reduce((sum, message) => sum + message.valueWei, 0n),
     item<T extends MessageItem["type"]>(

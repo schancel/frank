@@ -37,6 +37,13 @@ interface BreakdownWallet {
   getReceiveAddress?(): Promise<{ raw: string }>
   evmReader?: { getBalance?(address: string): Promise<bigint> }
   provider?: { getBalance?(address: string): Promise<bigint> }
+  getBalanceParts?(): Promise<{
+    main: bigint
+    profile: bigint
+    received: bigint
+    receivedCount: number
+    sending: bigint
+  }>
   getReceivedPayments?(): readonly { spendable: boolean; amountWei: bigint }[]
   getContractCallFunds?(): Promise<{
     mainBalance: bigint
@@ -48,6 +55,32 @@ export async function readBalanceBreakdown(
   walletHandle: unknown,
 ): Promise<BalanceBreakdown> {
   const wallet = (walletHandle ?? {}) as BreakdownWallet
+  // The wallet's own account of its balance: the rows are its parts, so they add up to the
+  // balance shown above them, and every row is money a send can draw on.
+  if (typeof wallet.getBalanceParts === 'function') {
+    const parts = await wallet.getBalanceParts()
+    const mainAddress =
+      typeof wallet.getReceiveAddress === 'function'
+        ? (await wallet.getReceiveAddress()).raw
+        : undefined
+    const rows: BalanceBreakdownRow[] = [
+      { id: 'main', amount: parts.main, address: mainAddress },
+    ]
+    if (parts.profile > 0n)
+      rows.push({
+        id: 'profile',
+        amount: parts.profile,
+        address: wallet.identity?.address?.raw,
+      })
+    if (parts.received > 0n)
+      rows.push({
+        id: 'received',
+        amount: parts.received,
+        count: parts.receivedCount,
+      })
+    if (parts.sending > 0n) rows.push({ id: 'other', amount: parts.sending })
+    return { rows, total: rows.reduce((sum, row) => sum + row.amount, 0n) }
+  }
   const balanceAt = (address: string): Promise<bigint> | undefined =>
     typeof wallet.evmReader?.getBalance === 'function'
       ? wallet.evmReader.getBalance(address)

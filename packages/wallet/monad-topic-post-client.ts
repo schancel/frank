@@ -74,6 +74,8 @@ export interface SubmitTopicPostParams {
   overrides?: MonadTxOverrides
   waitForLease?: AcquireLeaseWhenAvailableOptions
   leaseIndex?: number
+  /** The operation that claimed `leaseIndex` in the pool, when one did. */
+  leaseHolder?: string
   timestampMs?: number
 }
 export interface SubmitTopicPostResult {
@@ -151,6 +153,7 @@ export class MonadTopicPostClient {
             value: params.voteWeightWei,
             overrides: params.overrides,
             leaseIndex: params.leaseIndex,
+            leaseHolder: params.leaseHolder,
             waitForLease: params.waitForLease,
             encode: raw => encodeTopicPostSubmission(postFrame, raw),
           },

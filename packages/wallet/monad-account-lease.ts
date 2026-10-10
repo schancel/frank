@@ -177,7 +177,7 @@ export class SubAccountLeaseManager {
    * write happen with no `await` between them), so two same-tick calls targeting the same index
    * can't both observe `'available'` and both "win" — the second always sees the first's write.
    */
-  acquireForIndex(index: number): AccountLeaseHandle {
+  acquireForIndex(index: number, holder?: string): AccountLeaseHandle {
     const record = this.pool.getRecord(index)
     if (record === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`)
@@ -187,7 +187,19 @@ export class SubAccountLeaseManager {
         `Sub-account ${index} is not available for lease (status: ${record.status})`,
       )
     }
+    // A lease is taken through the pool's one claim: an account another operation holds is not
+    // leased, and `holder` (the operation that prepared this account) takes its own.
+    const claimant = holder ?? `lease:${index}`
+    if (this.pool.claim(claimant, free =>
+      free.some(row => row.index === index) ? [index] : undefined,
+    ) === undefined) {
+      throw new SubAccountAlreadyLeasedError(
+        `Sub-account ${index} is held by another operation (${this.pool.claimedBy(index) ?? 'a native send'})`,
+      )
+    }
+    // From here the row's `in-use` status is the claim; the memory entry has done its work.
     this.pool.setStatus(index, 'in-use')
+    this.pool.releaseClaim(claimant, [index])
     const handle: AccountLeaseHandle = { index, address: record.address }
     this.liveLeases.set(index, handle)
     return handle

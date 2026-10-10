@@ -14,6 +14,10 @@ export interface EvmNativeOperationStatus {
     | "reverted"
     | "partial"
     | "pending"
+    /** The node answers and knows neither the transfer nor a receipt for it: it has not
+     * arrived yet, or was dropped. The same bytes are offered again. */
+    | "missing"
+    /** The chain could not be read, so nothing is known. Never a state of the transfer. */
     | "unknown"
     | "cancelled";
   readonly finalTransactionHash?: string;
@@ -82,6 +86,8 @@ export function summarizeEvmNativeOperation(
     ? "partial"
     : members.some((member) => member.state === "pending")
     ? "pending"
+    : members.some((member) => member.state === "missing")
+    ? "missing"
     : "unknown";
   return {
     operationId: row.operationId,

@@ -82,6 +82,9 @@ export class CanonicalTransportError extends Error {
     readonly disposition: 'invalid' | 'uncertain',
     message: string,
     readonly status?: number,
+    /** The relay's own word for an error answer (`{"version":1,"error":"..."}`), when it gave
+     * one that reads as such. Nothing else of an unmatched answer is trusted. */
+    readonly relayError?: string,
   ) {
     super(message)
     this.name = 'CanonicalTransportError'
@@ -778,10 +781,20 @@ export function decodeCanonicalAcceptedStatus(
       invalid('Unknown terminal reason')
     return { ...body, identity: expected } as CanonicalAcceptedBody
   } catch {
+    let relayError: string | undefined
+    try {
+      const word = (parseCanonicalJSON(bytes) as { error?: unknown } | null)
+        ?.error
+      if (typeof word === 'string' && /^[a-z_]{1,64}$/.test(word))
+        relayError = word
+    } catch {
+      // Not JSON: no word.
+    }
     throw new CanonicalTransportError(
       'uncertain',
       'Unmatched canonical accepted status',
       status,
+      relayError,
     )
   }
 }

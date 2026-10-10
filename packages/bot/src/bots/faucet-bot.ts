@@ -26,8 +26,8 @@ export interface FaucetBotOptions {
  * Grants each profile testnet funds once: when it registers, or when it asks.
  *
  * The grant goes to the profile's own address, the only address of a user a sender can learn:
- * nothing a profile or a message carries names a wallet's separate deposit address. The app
- * counts money there in the balance it shows, and the wallet pays message stamps from it. The
+ * nothing a profile or a message carries names a wallet's separate deposit address. The wallet
+ * counts money there in its balance and spends from it like from any other coin it holds. The
  * welcome message says where the money went.
  */
 export class FaucetBot implements FrankBotDefinition {

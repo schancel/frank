@@ -52,15 +52,18 @@ export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 // changes or the last consumer unmounts.
 const balance = ref<bigint | null>(null)
 const hasError = ref(false)
+// The active wallet's chain cannot be reached: the wallet's own reads say so (`chainHealth`),
+// or the balance read just failed on the network. Shown as a warning for that chain; paid
+// messages queue meanwhile.
+const chainUnreachable = ref(false)
 const loaded = computed(() => balance.value !== null)
-// Money at the profile address of an account whose deposit address is a different one (what a
-// faucet or anyone who only knows the profile pays to). The wallet's `getBalance` leaves it out,
-// although the wallet does pay message stamps from it when the main account is empty. Zero when
-// the two addresses are the same.
+// Nothing is added beside the wallet's figure any more: `getBalance` is itself the sum of every
+// coin a send can draw on (the main account, the profile address, received coins, funded
+// sending accounts), so adding the profile address here would count it twice. Always zero.
 const cordoned = ref<bigint>(0n)
-// THE wallet balance every screen shows (Wallet page, wallet list, chat sidebar, Receive): what
-// the wallet reports plus the profile address. One figure, computed here only, until the wallet
-// exposes a single total of its own. null while not loaded.
+// THE wallet balance every screen shows (Wallet page, wallet list, chat sidebar, Receive, and
+// "Available for this payment" on Send to Contact): what the wallet reports, which is what its
+// sends, bets and payments can draw on. null while not loaded.
 const total = computed(() =>
   balance.value === null ? null : balance.value + cordoned.value,
 )
@@ -87,22 +90,10 @@ const exactSpendable = computed(() =>
 /** The profile address's current balance for an account whose receive address differs from it
  * (a typed account); zero when they are the same address, which the wallet balance already
  * covers. A read only. */
-export async function readCordonedBalance(wallet: unknown): Promise<bigint> {
-  const handle = wallet as {
-    identity?: { address?: { raw?: string } }
-    provider?: { getBalance?(address: string): Promise<bigint> }
-    getReceiveAddress?(): Promise<{ raw: string }>
-  }
-  const profile = handle?.identity?.address?.raw
-  if (
-    !profile ||
-    typeof handle.provider?.getBalance !== 'function' ||
-    typeof handle.getReceiveAddress !== 'function'
-  )
-    return 0n
-  const receive = (await handle.getReceiveAddress()).raw
-  if (receive.toLowerCase() === profile.toLowerCase()) return 0n
-  return handle.provider.getBalance(profile)
+export async function readCordonedBalance(_wallet: unknown): Promise<bigint> {
+  // The wallet's own balance now counts money at the profile (identity) address: it is spendable
+  // like any other coin. Nothing is held apart from it, so there is nothing to add on top.
+  return 0n
 }
 
 let consumers = 0
@@ -171,6 +162,7 @@ async function fetchBalance(force: boolean) {
     cordoned.value = 0n
     cordonedReadAtMs = undefined
     hasError.value = false
+    chainUnreachable.value = false
     failures = 0
     requestId++
     pending = false
@@ -201,6 +193,13 @@ async function fetchBalance(force: boolean) {
     }
     hasError.value = false
     failures = 0
+    let health: { reachable: boolean } | undefined
+    try {
+      health = activeChain.directMessages?.chainHealth?.({ wallet })
+    } catch {
+      health = undefined
+    }
+    chainUnreachable.value = health?.reachable === false
   } catch (err) {
     // The setup route may render the drawer before a seed exists: not an error, keep polling.
     // Anything else is a real failure worth an error-level log.
@@ -232,6 +231,7 @@ async function fetchBalance(force: boolean) {
         errStr.includes('Failed to fetch')
 
       if (isTransientRpc) {
+        if (isCurrent()) chainUnreachable.value = true
         console.warn('balance refresh transient rpc issue (will retry)', err)
       } else {
         console.error('balance refresh failed', err)
@@ -338,6 +338,7 @@ export function useBalance() {
     loaded,
     isEmpty,
     hasError,
+    chainUnreachable: readonly(chainUnreachable),
     refresh: () => fetchBalance(true),
     /** Refreshes now and reads the profile address too, whenever it was last read. */
     refreshCordoned: () => {

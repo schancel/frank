@@ -48,13 +48,17 @@ import {
   conversationIdSalt,
   formatConversationId,
 } from '@frank/cashweb/relay/conversation-id'
+import {
+  sendsWaitingForChain,
+  sendsWaitingForPreviousPayment,
+} from '../utils/outgoing-waiting'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
 import {
   activeChain,
-  CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
+  DirectMessageStampBelowFeeError,
 } from '@frank/wallet/chain'
 import { sameCanonicalAddress } from '../utils/own-address'
 import type { WalletHandle } from '@frank/wallet/chain'
@@ -1156,11 +1160,20 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendSpy).toHaveBeenCalledWith({
         wallet,
         recipient: { raw: RECIPIENT_ADDRESS },
+        // The message's own ID, fixed by its saved key: every attempt of it names the same.
+        messageId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
         conversationId: expect.any(String),
         items: [{ type: 'text', text: 'hello' }],
-        onPreparationProgress,
+        // The store's own wrapper (it marks a waiting send); the caller's is called through it.
+        onPreparationProgress: expect.any(Function),
         onAttemptCreated: expect.any(Function),
+        // So that deleting the bubble can cancel a send that is still waiting.
+        signal: expect.any(AbortSignal),
       })
+      sendSpy.mock.calls[0]![0].onPreparationProgress!({ stage: 'checking' })
+      expect(onPreparationProgress).toHaveBeenCalledWith({ stage: 'checking' })
 
       const chat = chats.chats[RECIPIENT_ADDRESS]
       expect(chat).toBeDefined()
@@ -1307,39 +1320,146 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
     })
 
-    it('classifies CanonicalMessagingHoldError as actionable interrupted error and logs to console', async () => {
+    it('marks the sending message while its payment waits for the previous one, and clears the mark once its own payment exists', async () => {
       const chats = useChatStore()
       const wallet = makeWallet(SENDER_ADDRESS)
-      const consoleErrorSpy = jest
-        .spyOn(console, 'error')
-        .mockImplementation(() => undefined)
-      const holdError = new CanonicalMessagingHoldError(
-        'An earlier payment could not be finished yet.',
-      )
+      let key = ''
+      const seen: boolean[] = []
       jest
         .spyOn(activeChain.directMessages, 'send')
-        .mockRejectedValue(holdError)
-
+        .mockImplementation(async params => {
+          key = Object.keys(chats.messages)[0]!
+          seen.push(sendsWaitingForPreviousPayment.has(key))
+          // The wallet: the main account is spent by an earlier payment not yet mined.
+          params.onPreparationProgress?.({ stage: 'waiting-for-payment' })
+          seen.push(sendsWaitingForPreviousPayment.has(key))
+          // Its turn came: the payment is signed and recorded.
+          await params.onAttemptCreated?.('waited-digest')
+          seen.push(sendsWaitingForPreviousPayment.has(key))
+          return {
+            payloadDigest: 'waited-digest',
+            stampValueWei: 321n,
+            stampPayments: [],
+            preparationTxHashes: [],
+          }
+        })
       await expect(
         chats.sendMessage({
           wallet,
           address: RECIPIENT_ADDRESS,
-          items: [{ type: 'text', text: 'held message' }],
+          items: [{ type: 'text', text: 'second in line' }],
         }),
-      ).resolves.toEqual({
-        state: 'failed',
-        reason: 'error',
+      ).resolves.toMatchObject({ state: 'sent' })
+      expect(seen).toEqual([false, true, false])
+      expect(sendsWaitingForPreviousPayment.size).toBe(0)
+    })
+
+    it('a send queued because the chain cannot be reached is marked, and deleting its bubble cancels it', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      let key = ''
+      let signal: AbortSignal | undefined
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          key = Object.keys(chats.messages)[0]!
+          signal = params.signal
+          // The wallet: the chain's node does not answer; the send waits, nothing signed.
+          params.onPreparationProgress?.({ stage: 'waiting-for-chain' })
+          return new Promise((_resolve, reject) =>
+            params.signal!.addEventListener('abort', () =>
+              reject(
+                Object.assign(new Error('cancelled'), {
+                  name: 'ChainWaitCancelledError',
+                }),
+              ),
+            ),
+          )
+        })
+      const sending = chats.sendMessage({
+        wallet,
+        address: RECIPIENT_ADDRESS,
+        items: [{ type: 'text', text: 'queued' }],
       })
-      expect(chats.chats[RECIPIENT_ADDRESS]?.messages[0]?.delivery).toEqual(
-        expect.objectContaining({
-          failureReason: 'error',
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(sendsWaitingForChain.has(key)).toBe(true)
+      expect(signal?.aborted).toBe(false)
+      void chats.deleteMessage({
+        address: RECIPIENT_ADDRESS,
+        payloadDigest: key,
+      })
+      expect(signal?.aborted).toBe(true)
+      await sending
+      expect(sendsWaitingForChain.size).toBe(0)
+    })
+
+    it('a send that fails while waiting leaves no waiting mark behind', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          params.onPreparationProgress?.({ stage: 'waiting-for-payment' })
+          throw new Error('signer unavailable')
+        })
+      await expect(
+        chats.sendMessage({
+          wallet,
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'never paid' }],
         }),
-      )
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        '[sendDirectMessage error]:',
-        holdError,
-      )
-      consoleErrorSpy.mockRestore()
+      ).resolves.toEqual({ state: 'failed', reason: 'error' })
+      expect(sendsWaitingForPreviousPayment.size).toBe(0)
+    })
+
+    it('a stamp the chain fee has risen past is never raised silently: the message fails saying so, and nothing more is tried', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          throw new DirectMessageStampBelowFeeError(params.stampValue!, 5_000n)
+        })
+      await expect(
+        chats.sendMessage({
+          wallet,
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'fee moved' }],
+          stampValue: 1_000n,
+        }),
+      ).resolves.toEqual({ state: 'failed', reason: 'stamp-below-fee' })
+      // One try, at the stamp the user saw; never a second at a higher one.
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(send.mock.calls[0]![0].stampValue).toBe(1_000n)
+      const message = chats.chats[RECIPIENT_ADDRESS]?.messages[0]
+      expect(message?.stampValueWei).toBe(1_000n)
+      expect(message?.delivery?.failureReason).toBe('stamp-below-fee')
+
+      // The user's Retry, having read why it failed, sends it at the wallet's minimum now.
+      ;(activeChain.directMessages as { minimumStamp?: unknown }).minimumStamp =
+        jest.fn(async () => 5_000n)
+      send.mockImplementation(async params => ({
+        payloadDigest: 'retried-digest',
+        stampValueWei: params.stampValue ?? 0n,
+        stampPayments: [],
+        preparationTxHashes: [],
+      }))
+      try {
+        await expect(
+          chats.retryOutgoing({
+            wallet,
+            address: RECIPIENT_ADDRESS,
+            payloadDigest: message!.payloadDigest,
+          }),
+        ).resolves.toMatchObject({ state: 'sent' })
+        expect(send.mock.calls[1]![0].stampValue).toBe(5_000n)
+      } finally {
+        delete (activeChain.directMessages as { minimumStamp?: unknown })
+          .minimumStamp
+      }
     })
 
     it('does not make a delivered message look retryable when local persistence fails', async () => {

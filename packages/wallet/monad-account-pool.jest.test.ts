@@ -1746,6 +1746,70 @@ describe("MonadSubAccountPool", () => {
     });
   });
 
+  describe("claim: the one place an account becomes held by an operation", () => {
+    function funded(count: number, balanceWei = 1_100n) {
+      const pool = new MonadSubAccountPool({
+        keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+        store: new InMemorySubAccountPoolStore(),
+      });
+      for (const row of pool.ensureSize(count))
+        pool.capacityCache.set(row.index, {
+          capacityWei: balanceWei,
+          checkedAtMs: Date.now(),
+          balanceWei,
+        });
+      return pool;
+    }
+
+    it("twenty payments claiming in the same tick, from three wallets sharing the pool, take twenty different accounts; the next gets none", () => {
+      const pool = funded(20);
+      const taken = Array.from({ length: 20 }, (_, n) =>
+        pool.claimStampAccounts(`wallet-${n % 3}:frank-dm:${n}`, 1_000n, 100n)
+      );
+      const indexes = taken.flatMap((selection) =>
+        selection!.map((account) => account.index)
+      );
+      expect(indexes).toHaveLength(20);
+      expect(new Set(indexes).size).toBe(20);
+      for (const [n, selection] of taken.entries())
+        expect(pool.claimedBy(selection![0].index)).toBe(
+          `wallet-${n % 3}:frank-dm:${n}`
+        );
+      expect(
+        pool.claimStampAccounts("wallet-0:frank-dm:20", 1_000n, 100n)
+      ).toBeUndefined();
+      // Nothing is claimed by a payment the free accounts could not cover.
+      expect(pool.claimsOf("wallet-0:frank-dm:20")).toEqual([]);
+    });
+
+    it("a released claim is free at once; a restored claim holds and refuses a second holder", () => {
+      const pool = funded(1);
+      const [first] = pool.claimStampAccounts("a:1", 1_000n, 100n)!;
+      expect(pool.claimStampAccounts("a:2", 1_000n, 100n)).toBeUndefined();
+      pool.releaseClaim("a:1");
+      expect(pool.claimedBy(first.index)).toBeUndefined();
+      pool.restoreClaim("a:3", [first.index]);
+      expect(pool.claimStampAccounts("a:2", 1_000n, 100n)).toBeUndefined();
+      expect(() => pool.restoreClaim("a:4", [first.index])).toThrow(
+        /claimed by a:3 and by a:4/
+      );
+      // Its own holder may take it again (a retry of the same operation).
+      expect(pool.claimStampAccounts("a:3", 1_000n, 100n)).toHaveLength(1);
+    });
+
+    it("never offers an account a native send's journal reserves, and never takes one it was not offered", () => {
+      const pool = funded(2);
+      pool.attachSpendReservation((index) => index === 0);
+      expect(pool.isSpendReserved(0, "a:1")).toBe(true);
+      const [only] = pool.claimStampAccounts("a:1", 1_000n, 100n)!;
+      expect(only.index).toBe(1);
+      expect(() => pool.claim("a:2", () => [1])).toThrow(
+        /only take accounts it was offered/
+      );
+      expect(pool.claimedBy(1)).toBe("a:1");
+    });
+  });
+
   describe("prepareBurnAccount (ticket #273: one funded account per topic burn)", () => {
     const FUNDING = {
       gasLimit: 21_000n,
@@ -1805,8 +1869,78 @@ describe("MonadSubAccountPool", () => {
           fundingOverrides: FUNDING,
           receipt: { maxAttempts: 0 },
         });
-      return { balances, httpClient, pool, prepare, store, mainAccountSigner };
+      return {
+        balances,
+        httpClient,
+        pool,
+        prepare,
+        provider,
+        store,
+        mainAccountSigner,
+      };
     }
+
+    it("is claimed for its operation from before its funding: a message built meanwhile is never given it, and only its own operation leases it", async () => {
+      const { pool, provider, mainAccountSigner } = setupBurn();
+      const holder = "wallet-a:topic:1";
+      const burn = await pool.prepareBurnAccount({
+        mainAccountSigner,
+        provider,
+        burnValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: FUNDING,
+        receipt: { maxAttempts: 0 },
+        claimFor: holder,
+      });
+      expect(pool.getRecord(burn.index)?.status).toBe("available");
+      expect(pool.claimedBy(burn.index)).toBe(holder);
+
+      // A message that this account could pay for does not get it.
+      await pool.fundedCapacities(provider, 10n, { fromBalance: true });
+      expect(
+        pool.claimStampAccounts("wallet-a:frank-dm:1", 500n, 10n)
+      ).toBeUndefined();
+      // A second burn of the same size funds its own account instead of reusing this one.
+      const other = await pool.prepareBurnAccount({
+        mainAccountSigner,
+        provider,
+        burnValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: FUNDING,
+        receipt: { maxAttempts: 0 },
+        claimFor: "wallet-b:topic:2",
+      });
+      expect(other.index).not.toBe(burn.index);
+
+      const leases = new SubAccountLeaseManager(pool);
+      expect(() => leases.acquireForIndex(burn.index)).toThrow(
+        /held by another operation/
+      );
+      expect(() =>
+        leases.acquireForIndex(burn.index, "wallet-b:topic:2")
+      ).toThrow(/held by another operation/);
+      const lease = leases.acquireForIndex(burn.index, holder);
+      // The lease's own row status holds the account from here; the claim has done its work.
+      expect(pool.getRecord(lease.index)?.status).toBe("in-use");
+      expect(pool.claimedBy(lease.index)).toBeUndefined();
+    });
+
+    it("a burn preparation that fails leaves nothing claimed", async () => {
+      const { balances, pool, provider, mainAccountSigner } = setupBurn();
+      balances.set(mainAccountSigner.address.toLowerCase(), 0n);
+      await expect(
+        pool.prepareBurnAccount({
+          mainAccountSigner,
+          provider,
+          burnValueWei: 1_000n,
+          gasReserveWei: 10n,
+          fundingOverrides: FUNDING,
+          receipt: { maxAttempts: 0 },
+          claimFor: "wallet-a:topic:1",
+        })
+      ).rejects.toThrow(/Insufficient main account balance/);
+      expect(pool.claimsOf("wallet-a:topic:1")).toEqual([]);
+    });
 
     it("funds exactly one account with burn value + fee reserve and reports progress", async () => {
       const { httpClient, pool, prepare } = setupBurn();

@@ -82,7 +82,10 @@ import {
   TerminalSubAccountCheckpoint,
 } from "./storage/sub-account-pool-storage";
 import type { MonadWalletOperationAdmission } from "./storage/monad-wallet-bundle";
-import { selectStampAccounts } from "./monad-stamp-account-selection";
+import {
+  selectStampAccounts,
+  type SelectedStampAccount,
+} from "./monad-stamp-account-selection";
 import type { ChainUtxoPool } from "./chain-utxo-pool";
 
 export type {
@@ -122,6 +125,8 @@ export type StampInventoryPreparationProgress =
   | { stage: "ready"; fundingTxHashes: string[] };
 
 export interface StampInventoryPreparationResult {
+  /** With `claimFor`: the accounts now claimed for that operation, and what each pays. */
+  claimed?: SelectedStampAccount[];
   fundingTxHashes: string[];
   selectedAccountCount: number;
 }
@@ -160,6 +165,15 @@ export class FundAheadRefusedError extends Error {
   ) {
     super(`Funding ahead refused (${code}): ${detail}`);
     this.name = "FundAheadRefusedError";
+  }
+}
+
+/** The wallet cannot pay for this: its funded accounts do not cover the value and its main
+ * account cannot fund more. Nothing was signed; nothing stays claimed. */
+export class InsufficientStampFundsError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InsufficientStampFundsError";
   }
 }
 
@@ -255,6 +269,12 @@ export class MonadSubAccountPool {
     admission?: MonadWalletOperationAdmission
   ) => Promise<T>;
   private spendReservation?: (index: number) => boolean;
+  /** Sub-account index -> the operation holding it. See `claim`. */
+  private readonly claims = new Map<number, string>();
+  /** Lower-case address of the main or identity account -> the operation holding it. */
+  private readonly accountClaims = new Map<string, string>();
+  private readonly accountGenerations = new Map<string, number>();
+  private readonly accountWaiters = new Map<string, Array<() => void>>();
   private spendApplier?: SubAccountSpendApplier;
   accountUtxoPool?: ChainUtxoPool;
 
@@ -347,9 +367,195 @@ export class MonadSubAccountPool {
     this.spendReservation = isReserved;
   }
 
-  /** True while an attached reservation claims sub-account `index` (see `attachSpendReservation`). */
-  isSpendReserved(index: number): boolean {
+  private funderSpacing?: (address: string) => Promise<void>;
+  /** Composition-attached: resolves when a transfer from `address` is safe under the chain's
+   * spacing rule (`EvmChainConfig.spendSpacingBlocks`). Called before each funding transfer. */
+  attachFunderSpacing(wait: (address: string) => Promise<void>): void {
+    this.funderSpacing = wait;
+  }
+
+  /** True while sub-account `index` is not free for a new spender: an operation holds a claim on
+   * it (see `claim`), or an attached reservation does (see `attachSpendReservation`). `holder`
+   * names a claimant whose own claim does not count against it. */
+  isSpendReserved(index: number, holder?: string): boolean {
+    const claimant = this.claims.get(index);
+    if (claimant !== undefined && claimant !== holder) return true;
     return this.spendReservation?.(index) ?? false;
+  }
+
+  /**
+   * THE claim. The one place a sub-account passes from "free" to "held by this operation", for
+   * every spender of pool accounts (paid messages, topic burns, native sends, funding targets).
+   *
+   * Synchronous from reading what is free to writing the claim: there is no `await` inside, so
+   * two operations started in the same moment, in this wallet or in any other wallet holding
+   * this pool, can never both be handed the same account. `pick` is given every row no other
+   * holder has (rows this holder already claimed included) and returns the indexes it wants, or
+   * `undefined` when what is free does not serve it; then nothing is claimed.
+   *
+   * `holder` identifies the operation and must not collide between wallets sharing a pool:
+   * include the wallet's identity and the message or operation id.
+   *
+   * A claim is process memory. What makes it survive a restart is the claimant's own durable
+   * record (a stored outgoing message with its signed payments, a native journal row, an
+   * `in-use` or `funding` row): the claimant restores its claims from that record at open, before
+   * the wallet is handed out. A claim whose operation never signed anything is simply gone.
+   */
+  claim(
+    holder: string,
+    pick: (free: readonly SubAccountRecord[]) => readonly number[] | undefined
+  ): number[] | undefined {
+    const free = this.store
+      .getAll()
+      .filter((record) => !this.isSpendReserved(record.index, holder));
+    const wanted = pick(free);
+    if (wanted === undefined) return undefined;
+    const offered = new Set(free.map((record) => record.index));
+    if (wanted.some((index) => !offered.has(index)))
+      throw new Error("A claim may only take accounts it was offered");
+    for (const index of wanted) this.claims.set(index, holder);
+    return [...wanted];
+  }
+
+  /** Sets the claims a durable record of `holder` names: at open, for a stored message with a
+   * payment the chain has not answered for; and for a native plan over accounts its own journal
+   * orders, between the plan and its journal write. Synchronous. Unlike `claim` it does not ask
+   * the attached reservation (the caller is that owner), and it throws rather than share. */
+  restoreClaim(holder: string, indices: readonly number[]): void {
+    for (const index of indices) {
+      const claimant = this.claims.get(index);
+      if (claimant !== undefined && claimant !== holder)
+        throw new Error(
+          `Sub-account ${index} is claimed by ${claimant} and by ${holder}`
+        );
+      this.claims.set(index, holder);
+    }
+  }
+
+  /** Ends `holder`'s claim on `indices` (default: all of them). The caller has either recorded
+   * the account's new state from chain evidence, or never let a signature leave the wallet. */
+  releaseClaim(holder: string, indices?: readonly number[]): void {
+    for (const [index, claimant] of [...this.claims])
+      if (claimant === holder && (indices === undefined || indices.includes(index)))
+        this.claims.delete(index);
+    if (indices === undefined)
+      for (const [address, claimant] of [...this.accountClaims])
+        if (claimant === holder) this.releaseAccountClaim(holder, address);
+  }
+
+  /**
+   * The same claim for an account that is not a pool row: the wallet's main account or its
+   * identity account, by address. Each is one coin at its current nonce, so one operation at a
+   * time spends it; the next takes it when the chain has shown what became of the first.
+   * Synchronous. `generation` is what `accountGeneration(address)` answered BEFORE the caller
+   * read the account's nonce and balance: when another operation held and released the account
+   * in between, those reads are stale and the claim is refused, so a nonce is never signed twice.
+   */
+  claimAccount(holder: string, address: string, generation: number): boolean {
+    const key = address.toLowerCase();
+    if (
+      this.accountClaims.has(key) ||
+      (this.accountGenerations.get(key) ?? 0) !== generation
+    )
+      return false;
+    this.accountClaims.set(key, holder);
+    return true;
+  }
+
+  /** Counts the times `address` has been released. See `claimAccount`. */
+  accountGeneration(address: string): number {
+    return this.accountGenerations.get(address.toLowerCase()) ?? 0;
+  }
+
+  /** The operation holding the main or identity account at `address`, if any. */
+  accountClaimedBy(address: string): string | undefined {
+    return this.accountClaims.get(address.toLowerCase());
+  }
+
+  /** At open: the main or identity account a stored, unsettled payment of `holder` spends. */
+  restoreAccountClaim(holder: string, address: string): void {
+    const key = address.toLowerCase();
+    const claimant = this.accountClaims.get(key);
+    if (claimant !== undefined && claimant !== holder)
+      throw new Error(`Account ${key} is claimed by ${claimant} and by ${holder}`);
+    this.accountClaims.set(key, holder);
+  }
+
+  /** Ends `holder`'s claim on the account at `address`. */
+  releaseAccountClaim(holder: string, address: string): void {
+    const key = address.toLowerCase();
+    if (this.accountClaims.get(key) !== holder) return;
+    this.accountClaims.delete(key);
+    this.accountGenerations.set(key, (this.accountGenerations.get(key) ?? 0) + 1);
+    const waiting = this.accountWaiters.get(key);
+    this.accountWaiters.delete(key);
+    for (const wake of waiting ?? []) wake();
+  }
+
+  /** Resolves when the account at `address` is next released (at once if nobody holds it).
+   * Operations waiting for the same account are woken in the order they began to wait. */
+  accountReleased(address: string): Promise<void> {
+    const key = address.toLowerCase();
+    if (!this.accountClaims.has(key)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiting = this.accountWaiters.get(key) ?? [];
+      waiting.push(resolve);
+      this.accountWaiters.set(key, waiting);
+    });
+  }
+
+  /** The operation holding sub-account `index`, if any. */
+  claimedBy(index: number): string | undefined {
+    return this.claims.get(index);
+  }
+
+  /** The accounts `holder` holds. */
+  claimsOf(holder: string): number[] {
+    return [...this.claims]
+      .filter(([, claimant]) => claimant === holder)
+      .map(([index]) => index);
+  }
+
+  /**
+   * Claims, for `holder`, funded accounts that pay a stamp of `stampValueWei`, each keeping
+   * `feeReserveWei` for its own fee: `selectStampAccounts` over the accounts that are `available`
+   * and free, at the balances this pool remembers. Synchronous (it is one `claim`), so it never
+   * reads the chain: call `fundedCapacities` first when balances may not be remembered yet.
+   * Returns `undefined`, claiming nothing, when the free accounts do not cover the stamp.
+   */
+  claimStampAccounts(
+    holder: string,
+    stampValueWei: bigint,
+    feeReserveWei: bigint
+  ): SelectedStampAccount[] | undefined {
+    let selected: SelectedStampAccount[] | undefined;
+    this.claim(holder, (free) => {
+      const accounts = free.flatMap((record) => {
+        const balanceWei = this.capacityCache.get(record.index)?.balanceWei;
+        return record.status === "available" &&
+          balanceWei !== undefined &&
+          balanceWei > feeReserveWei
+          ? [
+              {
+                index: record.index,
+                address: record.address,
+                capacityWei: balanceWei - feeReserveWei,
+              },
+            ]
+          : [];
+      });
+      try {
+        selected = selectStampAccounts({
+          amountWei: stampValueWei,
+          accounts,
+          maxTransactions: 64,
+        });
+      } catch {
+        return undefined;
+      }
+      return selected.map((account) => account.index);
+    });
+    return selected;
   }
 
   /**
@@ -965,10 +1171,25 @@ export class MonadSubAccountPool {
     fundingOverrides?: MonadTxOverrides;
     onProgress?: (progress: StampInventoryPreparationProgress) => void;
     receipt?: FundingReceiptOptions;
+    /** The smallest payment a message will make (the chain's fee for one transfer). When the
+     * smaller account of a pair would hold less than this, a message could never pay from the
+     * pair (it refuses a payment below its own fee), so ONE account is funded with the whole
+     * stamp instead. The split exists to hide amounts, which a floor-sized stamp cannot. */
+    minimumPaymentWei?: () => Promise<bigint>;
+    /** The operation this inventory is for. The accounts that pay its stamp are claimed for it
+     * (`claim`) the moment they are chosen, the ones being funded included, and are returned as
+     * `claimed`: no other operation can take them between their funding and their use. On a
+     * rejection nothing stays claimed. Without it the inventory is left free for any message. */
+    claimFor?: string;
   }): Promise<StampInventoryPreparationResult> {
-    const run = this.preparationQueue.then(() =>
-      this.prepareStampInventoryExclusive(params)
-    );
+    const run = this.preparationQueue.then(async () => {
+      try {
+        return await this.prepareStampInventoryExclusive(params);
+      } catch (error) {
+        if (params.claimFor !== undefined) this.releaseClaim(params.claimFor);
+        throw error;
+      }
+    });
     this.preparationQueue = run.then(
       () => undefined,
       () => undefined
@@ -1012,6 +1233,11 @@ export class MonadSubAccountPool {
     gasReserveWei: bigint | (() => Promise<bigint>);
     /** Upper limit on the combined value of this pass's transfers (fees excluded). */
     maxValueWei: bigint;
+    /** The smallest payment a message will make (the chain's fee for one transfer). When the
+     * smaller account of a pair would hold less than this, a message could never pay from the
+     * pair (it refuses a payment below its own fee), so ONE account is funded with the whole
+     * stamp instead. The split exists to hide amounts, which a floor-sized stamp cannot. */
+    minimumPaymentWei?: () => Promise<bigint>;
     fundingOverrides?: MonadTxOverrides;
     /** The wait for this pass's own receipts. Default: `FUND_AHEAD_RECEIPT_WAIT_MS`. */
     receipt?: FundingReceiptOptions;
@@ -1062,9 +1288,11 @@ export class MonadSubAccountPool {
       provider: Provider;
       stampValueWei: bigint;
       gasReserveWei: bigint;
+      minimumPaymentWei?: () => Promise<bigint>;
       fundingOverrides?: MonadTxOverrides;
       onProgress?: (progress: StampInventoryPreparationProgress) => void;
       receipt?: FundingReceiptOptions;
+      claimFor?: string;
     },
     /** Set for a pass that runs ahead of any message: see `fundStampInventoryAhead`, which has
      * already looked at every `funding` row and found none unresolved. */
@@ -1094,9 +1322,20 @@ export class MonadSubAccountPool {
             })),
           ];
 
+    const holder = params.claimFor;
+    // With a holder, "ready" IS the claim: the same synchronous step decides and takes.
+    const claimed = () =>
+      holder === undefined
+        ? undefined
+        : this.claimStampAccounts(
+            holder,
+            params.stampValueWei,
+            params.gasReserveWei
+          );
     let accounts = await this.fundedCapacities(
       params.provider,
-      params.gasReserveWei
+      params.gasReserveWei,
+      { holder, fromBalance: holder !== undefined }
     );
     for (const account of accounts) {
       this.syncUtxo(
@@ -1105,7 +1344,11 @@ export class MonadSubAccountPool {
         account.capacityWei + params.gasReserveWei
       );
     }
-    let selection = this.selectFundedCapacity(params.stampValueWei, accounts);
+    let taken = claimed();
+    let selection =
+      holder !== undefined
+        ? taken ?? []
+        : this.selectFundedCapacity(params.stampValueWei, accounts);
     // Ready is what the payment intent accepts: any accounts that cover the value, one included.
     // Asking for a second account here when one already covers the stamp sent a wallet with
     // nothing left in its main account to fund a top-up it could not pay for.
@@ -1114,8 +1357,17 @@ export class MonadSubAccountPool {
       return {
         fundingTxHashes,
         selectedAccountCount: selection.length,
+        ...(taken === undefined ? {} : { claimed: taken }),
       };
     }
+    // What exists is part of this operation's payment from here on, with what is funded below.
+    if (holder !== undefined)
+      this.claim(holder, (free) => {
+        const offered = new Set(free.map((record) => record.index));
+        return accounts
+          .filter((a) => a.capacityWei > zero && offered.has(a.index))
+          .map((a) => a.index);
+      });
 
     const firstCapacity = (params.stampValueWei * BigInt(3)) / BigInt(8);
     const preferredFirstCapacity =
@@ -1128,6 +1380,11 @@ export class MonadSubAccountPool {
     let capacities =
       existingCapacity > zero
         ? [params.stampValueWei - existingCapacity]
+        : // A pair whose smaller account could not make a payment worth its fee is never
+        // paid from: one account with the whole stamp instead.
+        preferredFirstCapacity <
+          ((await params.minimumPaymentWei?.()) ?? zero)
+        ? [params.stampValueWei]
         : [
             preferredFirstCapacity,
             params.stampValueWei - preferredFirstCapacity,
@@ -1154,7 +1411,8 @@ export class MonadSubAccountPool {
       .getAll()
       .filter(
         (record) =>
-          record.status === "unfunded" && !this.isSpendReserved(record.index)
+          record.status === "unfunded" &&
+          !this.isSpendReserved(record.index, holder)
       );
     while (unfunded.length < capacities.length) {
       const index = this.nextFreshIndex();
@@ -1166,6 +1424,11 @@ export class MonadSubAccountPool {
       };
       this.store.put(record);
       unfunded.push(record);
+    }
+    if (holder !== undefined) {
+      const targets = unfunded.slice(0, capacities.length).map((r) => r.index);
+      if (this.claim(holder, () => targets) === undefined)
+        throw new Error("Funding targets could not be claimed");
     }
     await this.store.flush();
 
@@ -1212,7 +1475,7 @@ export class MonadSubAccountPool {
       }
     }
     if (requiredMainBalance > availableMainBalance) {
-      throw new Error(
+      throw new InsufficientStampFundsError(
         "Insufficient main account balance to prepare stamp accounts: " +
           `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`
       );
@@ -1259,16 +1522,33 @@ export class MonadSubAccountPool {
 
     accounts = await this.fundedCapacities(
       params.provider,
-      params.gasReserveWei
+      params.gasReserveWei,
+      { holder, fromBalance: holder !== undefined }
     );
-    selection = this.selectFundedCapacity(params.stampValueWei, accounts);
+    taken = claimed();
+    selection =
+      holder !== undefined
+        ? taken ?? []
+        : this.selectFundedCapacity(params.stampValueWei, accounts);
     if (selection.length === 0) {
       throw new Error(
         "Receipt-confirmed stamp accounts do not have enough current fee-adjusted capacity"
       );
     }
+    if (holder !== undefined && taken !== undefined) {
+      // Only what pays stays claimed; anything else this pass held goes back to being free.
+      const paying = new Set(taken.map((account) => account.index));
+      this.releaseClaim(
+        holder,
+        this.claimsOf(holder).filter((index) => !paying.has(index))
+      );
+    }
     params.onProgress?.({ stage: "ready", fundingTxHashes });
-    return { fundingTxHashes, selectedAccountCount: selection.length };
+    return {
+      fundingTxHashes,
+      selectedAccountCount: selection.length,
+      ...(taken === undefined ? {} : { claimed: taken }),
+    };
   }
 
   /**
@@ -1336,6 +1616,12 @@ export class MonadSubAccountPool {
             params.provider.getBalance(record.address),
             params.provider.getTransactionCount(record.address, "pending"),
           ]);
+          // Claimed, leased or changed while the chain was being read: its holder owns it now.
+          if (
+            this.isSpendReserved(record.index) ||
+            this.store.getByIndex(record.index)?.status !== "available"
+          )
+            return;
           if (transactionCount > 0 || balance <= params.gasReserveWei) {
             const { fundingAttempt: _fundingAttempt, ...base } = record;
             this.store.put({ ...base, status: "retired" });
@@ -1378,10 +1664,18 @@ export class MonadSubAccountPool {
     fundingOverrides?: MonadTxOverrides;
     onProgress?: (progress: StampInventoryPreparationProgress) => void;
     receipt?: FundingReceiptOptions;
+    /** The operation the burn account is for: the account is claimed for it (`claim`) when it is
+     * chosen, before any funding, so nothing else takes it before the caller leases it. */
+    claimFor?: string;
   }): Promise<BurnAccountPreparationResult> {
-    const run = this.preparationQueue.then(() =>
-      this.prepareBurnAccountExclusive(params)
-    );
+    const run = this.preparationQueue.then(async () => {
+      try {
+        return await this.prepareBurnAccountExclusive(params);
+      } catch (error) {
+        if (params.claimFor !== undefined) this.releaseClaim(params.claimFor);
+        throw error;
+      }
+    });
     this.preparationQueue = run.then(
       () => undefined,
       () => undefined
@@ -1397,7 +1691,9 @@ export class MonadSubAccountPool {
     fundingOverrides?: MonadTxOverrides;
     onProgress?: (progress: StampInventoryPreparationProgress) => void;
     receipt?: FundingReceiptOptions;
+    claimFor?: string;
   }): Promise<BurnAccountPreparationResult> {
+    const holder = params.claimFor;
     const zero = BigInt(0);
     if (params.burnValueWei <= zero) {
       throw new Error(
@@ -1412,9 +1708,17 @@ export class MonadSubAccountPool {
     params.onProgress?.({ stage: "checking" });
     const fundingTxHashes = await this.reconcileBeforePreparation(params);
 
-    const reusable = (
-      await this.fundedCapacities(params.provider, params.gasReserveWei)
-    )
+    const funded = await this.fundedCapacities(
+      params.provider,
+      params.gasReserveWei,
+      { holder }
+    );
+    // Chosen and claimed in one synchronous step.
+    let reusable: { index: number } | undefined;
+    const choose = (free?: readonly SubAccountRecord[]) => {
+      const offered = free && new Set(free.map((record) => record.index));
+      return funded
+      .filter((account) => offered?.has(account.index) !== false)
       .filter(
         (account) =>
           account.capacityWei >= params.burnValueWei &&
@@ -1427,6 +1731,13 @@ export class MonadSubAccountPool {
           ? -1
           : 1
       )[0];
+    };
+    if (holder === undefined) reusable = choose();
+    else
+      this.claim(holder, (free) => {
+        reusable = choose(free);
+        return reusable === undefined ? undefined : [reusable.index];
+      });
     if (reusable !== undefined) {
       params.onProgress?.({ stage: "ready", fundingTxHashes });
       return { index: reusable.index, fundingTxHashes };
@@ -1436,8 +1747,13 @@ export class MonadSubAccountPool {
       .getAll()
       .find(
         (record) =>
-          record.status === "unfunded" && !this.isSpendReserved(record.index)
+          record.status === "unfunded" &&
+          !this.isSpendReserved(record.index, holder)
       );
+    if (holder !== undefined && target !== undefined) {
+      const index = target.index;
+      this.claim(holder, () => [index]);
+    }
     if (target === undefined) {
       const index = this.nextFreshIndex();
       target = {
@@ -1446,6 +1762,7 @@ export class MonadSubAccountPool {
         status: "unfunded",
       };
       this.store.put(target);
+      if (holder !== undefined) this.claim(holder, () => [index]);
       await this.store.flush();
     }
 
@@ -1462,7 +1779,7 @@ export class MonadSubAccountPool {
       overrides: params.fundingOverrides,
     });
     if (requiredMainBalance > availableMainBalance) {
-      throw new Error(
+      throw new InsufficientStampFundsError(
         "Insufficient main account balance to prepare a burn account: " +
           `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`
       );
@@ -1547,14 +1864,20 @@ export class MonadSubAccountPool {
   async fundedCapacities(
     provider: Provider,
     gasReserveWei: bigint,
-    options: { fromBalance?: boolean; maxCacheAgeMs?: number } = {}
+    options: {
+      fromBalance?: boolean;
+      maxCacheAgeMs?: number;
+      /** Also count the accounts this operation has claimed. */
+      holder?: string;
+    } = {}
   ): Promise<Array<{ index: number; address: string; capacityWei: bigint }>> {
     const maxCacheAgeMs = options.maxCacheAgeMs ?? CAPACITY_CACHE_TTL_MS;
     const availableRecords = this.store
       .getAll()
       .filter(
         (record) =>
-          record.status === "available" && !this.isSpendReserved(record.index)
+          record.status === "available" &&
+          !this.isSpendReserved(record.index, options.holder)
       );
     if (availableRecords.length === 0) {
       return [];
@@ -1617,6 +1940,35 @@ export class MonadSubAccountPool {
       });
     }
     return accounts;
+  }
+
+  /**
+   * What the `available`, unreserved accounts hold between them: the funded sending accounts'
+   * part of the wallet's balance. For display. A balance read within `maxCacheAgeMs` is used
+   * as remembered; another is read and NOT remembered (the remembered capacities belong to the
+   * payment path and its own fee reserve).
+   */
+  async availableBalanceTotal(
+    provider: Provider,
+    maxCacheAgeMs: number
+  ): Promise<bigint> {
+    const now = Date.now();
+    const balances = await Promise.all(
+      this.store
+        .getAll()
+        .filter(
+          (record) =>
+            record.status === "available" && !this.isSpendReserved(record.index)
+        )
+        .map((record) => {
+          const cached = this.capacityCache.get(record.index);
+          return cached?.balanceWei !== undefined &&
+            now - cached.checkedAtMs < maxCacheAgeMs
+            ? cached.balanceWei
+            : provider.getBalance(record.address);
+        })
+    );
+    return balances.reduce((sum, balance) => sum + balance, BigInt(0));
   }
 
   /**
@@ -1789,6 +2141,9 @@ export class MonadSubAccountPool {
     onSigned?: (signedTx: SignedMonadTx) => void;
   }): Promise<FanOutFundingResult> {
     const fundedValue = params.paymentCapacityWei + params.gasReserveWei;
+    // Two funding transfers in a row come from one account: the chain's spacing rule between
+    // them (Monad reverts the second otherwise) is waited out before each is signed.
+    await this.funderSpacing?.(params.mainAccountSigner.address);
     const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
       params.target.address,
       fundedValue,

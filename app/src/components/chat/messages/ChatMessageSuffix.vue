@@ -28,7 +28,7 @@
         v-if="status === 'pending' && outbound"
         data-testid="outgoing-sending"
         class="q-mr-xs"
-        >{{ $t('outgoing.sending') }}</span
+        >{{ sendingText }}</span
       >
       <time
         v-if="stamp"
@@ -39,6 +39,14 @@
       <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
         amount
       }}</span>
+      <!-- What the chain has shown of this message's payment: in the mempool, paid, reverted
+           (and paid again), failed. -->
+      <span
+        v-if="paymentSummaryText"
+        class="q-ml-xs"
+        data-testid="outgoing-payment-summary"
+        >{{ paymentSummaryText }}</span
+      >
       <chat-message-suffix-buttons
         v-if="status === 'confirmed'"
         :status="status"
@@ -120,7 +128,7 @@
           v-if="status === 'pending' && outbound"
           data-testid="outgoing-sending"
           class="q-mr-xs"
-          >{{ $t('outgoing.sending') }}</span
+          >{{ sendingText }}</span
         >
         <template v-if="stamp">
           <span data-testid="outgoing-stamp">{{ stamp }}</span>
@@ -196,6 +204,31 @@ export default defineComponent({
       required: false,
       default: 'checking',
     },
+    /** The send is queued: the chain's node cannot be reached. Nothing is signed for it. */
+    waitingForChain: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    /** The send is waiting for the account's previous payment to be seen on chain. */
+    waitingForPreviousPayment: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
+    /** While waiting for the previous payment: blocks still to pass before this send's coin
+     * may be spent, when the wallet said; -1 otherwise. */
+    waitingBlocks: {
+      type: Number,
+      required: false,
+      default: -1,
+    },
+    /** `DirectMessagePaymentSummary` of a sent paid message; '' when not known. */
+    paymentSummary: {
+      type: String,
+      required: false,
+      default: '',
+    },
     /** Why the message failed (`OutgoingFailureReason`), shown next to "Failed to send". */
     failureReason: {
       type: String,
@@ -237,6 +270,31 @@ export default defineComponent({
     'discardClick',
   ],
   computed: {
+    /** What a message being sent says: that it is being sent, or, while its payment waits for
+     * the account's previous payment to be mined, that it is waiting for that. */
+    sendingText(): string {
+      if (this.waitingForChain) return this.$t('outgoing.waitingForChain')
+      if (this.waitingForPreviousPayment && this.waitingBlocks > 0)
+        return this.$t('outgoing.waitingBlocks', { blocks: this.waitingBlocks })
+      return this.waitingForPreviousPayment
+        ? this.$t('outgoing.waitingForPreviousPayment')
+        : this.$t('outgoing.sending')
+    },
+    /** The payment's state beside the amount of a sent message. */
+    paymentSummaryText(): string {
+      if (!this.outbound || this.status !== 'confirmed') return ''
+      const keys: Record<string, string> = {
+        pending: 'outgoing.paymentSent',
+        mempool: 'outgoing.paymentInMempool',
+        paid: 'outgoing.paymentPaid',
+        reverted: 'outgoing.paymentReverted',
+        repaid: 'outgoing.paymentRepaid',
+        failed: 'outgoing.paymentFailed',
+        unsent: 'outgoing.paymentUnsent',
+      }
+      const key = keys[this.paymentSummary]
+      return key === undefined ? '' : this.$t(key)
+    },
     paymentText(): string {
       if (this.paymentState === 'live')
         return this.$t('outgoing.paymentPending')
@@ -246,7 +304,7 @@ export default defineComponent({
     },
     announcement(): string {
       if (this.status === 'pending' && this.outbound) {
-        return this.$t('outgoing.sending')
+        return this.sendingText
       }
       if (this.status === 'payment-pending') return this.paymentText
       if (this.status === 'error') {
@@ -268,6 +326,7 @@ export default defineComponent({
       }
       keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
       keys['recipient-unregistered'] = 'outgoing.reasonRecipientUnregistered'
+      keys['stamp-below-fee'] = 'outgoing.reasonStampBelowFee'
       const key = keys[this.failureReason]
       return key === undefined ? '' : this.$t(key)
     },

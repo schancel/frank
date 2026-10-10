@@ -106,6 +106,20 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
    * limit times price, not an upper bound.
    */
   readonly gasChargedOn?: "used" | "limit";
+  /**
+   * An account-based network's rule that a value transfer is reverted (mined, fee charged, no
+   * value moved) when it takes its sender below a reserve, unless the sender has sent nothing
+   * in the last `spendSpacingBlocks` blocks. Monad: 10 MON and 3 blocks, measured in
+   * `docs/protocol/chains/monad-reserve-balance.md`. A wallet waits that many blocks after an
+   * account's last transaction before the next transfer from it, unless the transfer leaves
+   * the account at or above `reserveBalanceWei`. Absent: the network has no such rule.
+   * The same delay governs incoming money: the node admits a transaction against the sender's
+   * balance of `spendSpacingBlocks + 1` blocks ago, so funds newer than that are not signed
+   * against (same document, "Money that has just arrived").
+   */
+  /** Decimal wei (a string: the registry is plain data). */
+  readonly reserveBalanceWei?: string;
+  readonly spendSpacingBlocks?: number;
   readonly exchange?: ChainExchangeConfig;
   /** What the app's own wallet does on this network. Absent: nothing, and no address is shown. */
   readonly wallet?: ChainWalletSupport;
@@ -119,6 +133,11 @@ export interface ChainWalletSupport {
   /** How the wallet reads the chain, always through the relay's proxy of this kind. */
   readonly indexer: "json-rpc" | "chronik" | "electrum";
 }
+
+/** The Monad client's reserve-balance rule (v0.16.4: `monad_default_max_reserve_balance_mon`
+ * and delay factor k), the same on every Monad network. */
+const MONAD_RESERVE_BALANCE_WEI = "10000000000000000000";
+const MONAD_SPEND_SPACING_BLOCKS = 3;
 
 const JSON_RPC_WALLET: ChainWalletSupport = Object.freeze({
   indexer: "json-rpc",
@@ -142,6 +161,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       networkTag: "MONT",
       ...deployedContracts("monad-testnet"),
       gasChargedOn: "limit",
+      reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
+      spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
       dex: MONAD_TESTNET_DEX,
     }),
     // A local Monad network (monad-solonet, packages/bot/demo/regtest). Each run is a new
@@ -155,6 +176,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "MONR",
       networkTag: "MONR",
       gasChargedOn: "limit",
+      reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
+      spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
     }),
     "monad-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -166,6 +189,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       networkTag: "MON1",
       ...deployedContracts("monad-mainnet"),
       gasChargedOn: "limit",
+      reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
+      spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
     }),
     "xec-testnet": Object.freeze({
       // The eCash SDK wallet on the relay's Chronik proxy.

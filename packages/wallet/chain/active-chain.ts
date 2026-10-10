@@ -171,6 +171,17 @@ export interface DirectMessageSendResult {
 
 export type DirectMessagePreparationProgress =
   | { stage: "checking" }
+  /** The only coin that can pay is the main (or identity) account, and an earlier payment from
+   * it has not been seen on chain yet: this one waits its turn. Nothing has been signed. */
+  | {
+      stage: "waiting-for-payment";
+      /** Set when what is waited for is the chain's spacing after the account's last
+       * transaction: the blocks still to pass. */
+      blocksRemaining?: number;
+    }
+  /** The chain's node cannot be reached. The send is queued at its building step: nothing is
+   * claimed or signed, it can be cancelled, and it goes on by itself when the node answers. */
+  | { stage: "waiting-for-chain" }
   | {
       stage: "funding";
       completed: number;
@@ -250,6 +261,31 @@ export type RecoveredStampPaymentSweepResult =
  * signed payments cannot land: the wallet keeps them and their reserved accounts, and other
  * messages send from other accounts. Never pay again for the same message on any status without
  * the user's explicit say-so. */
+export type DirectMessagePaymentState =
+  | "pending"
+  | "spent"
+  | "reverted"
+  | "failed"
+  | "unsent";
+/**
+ * The payment of one sent message in one word, for display:
+ * - `pending`: signed; not handed to the chain yet, or the node does not have it yet;
+ * - `mempool`: the node holds it, not in a block yet;
+ * - `paid`: every payment is in a block and succeeded;
+ * - `reverted`: a payment was mined and reverted, and its one repeat is not in a block yet;
+ * - `repaid`: a payment was mined and reverted, and its repeat was paid;
+ * - `failed`: a payment can never land (its nonce went to another transaction), or was
+ *   reverted and so was its repeat; it is not paid again;
+ * - `unsent`: the relay refused the message before anything was broadcast; nothing was paid.
+ */
+export type DirectMessagePaymentSummary =
+  | "pending"
+  | "mempool"
+  | "paid"
+  | "reverted"
+  | "repaid"
+  | "failed"
+  | "unsent";
 export type DirectMessageAttemptStatus =
   | "live"
   | "delivered"
@@ -296,6 +332,18 @@ export class DirectMessageArgumentError extends Error {
       `${argument} must be 16 bytes or their lowercase 8-4-4-4-12 hexadecimal form. Nothing was paid or sent.`
     );
     this.name = "DirectMessageArgumentError";
+  }
+}
+
+/** `send` was asked, explicitly, for a paid stamp smaller than what the chain charges to move it
+ * (`floorWei`: one transfer's fee right now). Nothing was paid or sent. Pay at least the floor,
+ * or send the message with no stamp. */
+export class DirectMessageStampBelowFeeError extends Error {
+  constructor(readonly stampValueWei: bigint, readonly floorWei: bigint) {
+    super(
+      `A stamp of ${stampValueWei} wei is less than the ${floorWei} wei the chain charges to move it. Nothing was paid or sent: pay at least ${floorWei} wei, or send without a stamp.`
+    );
+    this.name = "DirectMessageStampBelowFeeError";
   }
 }
 
@@ -413,6 +461,17 @@ export interface DirectMessageClient {
      * the relay, with its `payloadDigest` (the eventual `DirectMessageSendResult.payloadDigest`).
      * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
     onAttemptCreated?: (payloadDigest: string) => void | Promise<void>;
+    /**
+     * The stamp is money the sender OWES the recipient (a bot's payout or refund), not a price
+     * the sender chose: it is paid whatever its size, even below the chain's fee floor, where
+     * moving it costs more than it is. The floor exists to stop a user picking an uneconomic
+     * stamp, not to stop a debt being settled. Used only by the bot outbox.
+     */
+    settlement?: boolean;
+    /** Cancels a send that is still waiting (for the chain to be reachable, for an earlier
+     * payment to be mined, for the chain's spacing): it rejects with `ChainWaitCancelledError`
+     * and nothing was claimed or signed. Once the payment is signed it has no effect. */
+    signal?: AbortSignal;
     /** Called with the message's `payloadDigest` once it is sealed and BEFORE anything durable is
      * written from which its bytes could be submitted (the payment intent of a paid message) and
      * before any byte is handed to the relay (a free message). Awaited; if it rejects, nothing was
@@ -439,6 +498,20 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     knownDigests: string[];
   }): Promise<string[]>;
+  /**
+   * What this wallet durably holds for the message a caller named `messageId` when it called
+   * `send`: the payload digest of the one attempt made under that ID, and whether it is a paid
+   * one. `paid`: the complete signed message is stored, and `reconcileAttempts` finishes it with
+   * those same bytes. Not `paid`: the sealed envelope of a free message that was handed to the
+   * relay and is not known delivered; `send` with the same ID sends those same bytes again.
+   * `undefined`: nothing was stored for that ID, so nothing of it was signed or handed out. Reads
+   * the wallet's own record: no request. A host that finds a message cut off mid-send (a
+   * reload) asks this before it shows the message as failed.
+   */
+  attemptOf?(params: {
+    wallet: WalletHandle;
+    messageId: string;
+  }): Promise<{ payloadDigest: string; paid: boolean } | undefined>;
   /** Durably records the user's answer for delivered attempts reported by
    * `unattributedAttempts`: they stop being reported. Call it only after the user explicitly
    * chose what to do about them. Attempts with no outcome yet are left as they are. */
@@ -448,6 +521,43 @@ export interface DirectMessageClient {
   }): Promise<void>;
   /** Durably marks an attempt as discarded/dead so it stops blocking subsequent sends.
    * Call when the user explicitly discards or deletes a failed/pending message. */
+  /**
+   * What the chain has shown, so far, of each stamp payment of a message this wallet sent, in
+   * payment order; `undefined` for a digest this wallet has no record of. Reads the wallet's own
+   * record and makes no request: `reconcileAttempts` is what looks at the chain.
+   * - `pending`: signed, not yet seen in a block. Its account stays claimed.
+   * - `spent` / `reverted`: in a block. A reverted payment consumed its account all the same.
+   * - `failed`: the account's nonce was consumed by another transaction; this payment can never
+   *   land. It is never paid again.
+   * - `unsent`: the relay refused the message for good before storing or broadcasting anything;
+   *   the payment was dropped and its coin freed.
+   * Delivery (`DirectMessageAttemptStatus`) and payment are separate facts.
+   */
+  paymentsOf?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): DirectMessagePaymentState[] | undefined;
+  /** `paymentsOf` in one word (see {@link DirectMessagePaymentSummary}); `undefined` for a
+   * digest this wallet has no paid record of. No request. */
+  paymentSummaryOf?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): DirectMessagePaymentSummary | undefined;
+  /**
+   * The smallest paid stamp this wallet sends right now: what the chain charges for the one
+   * transfer that moves it, from the node's current gas price (cached for a few seconds). A
+   * default or suggested stamp should be at least this; `send` raises its own default to it and
+   * refuses an explicit smaller `stampValue` with {@link DirectMessageStampBelowFeeError}.
+   */
+  minimumStamp?(params: { wallet: WalletHandle }): Promise<bigint>;
+  /**
+   * Whether this wallet's chain can be reached: `reachable`, or since when it is not and the
+   * kind of the last error. No request: it is what the wallet's reads of the chain last met.
+   * While unreachable, paid sends queue (stage `waiting-for-chain`); free messages go on.
+   */
+  chainHealth?(params: { wallet: WalletHandle }):
+    | { reachable: true }
+    | { reachable: false; sinceMs: number; errorKind: string };
   discardAttempt?(params: {
     wallet: WalletHandle;
     payloadDigest: string;
@@ -504,6 +614,10 @@ export interface NativeTransferClient {
     /** The fee the user reviewed, as a ceiling, for chains that estimate one before sending. */
     maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<ChainTransaction>;
   getTransactionStatus(params: {
     wallet: NativeWalletHandle;
@@ -521,6 +635,10 @@ export interface NativeTransferClient {
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<LegacySendResult>;
 
   /** Computes the estimated network fee required to deliver `value` to a legacy destination. */
@@ -551,6 +669,10 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
      * caller persist "this hash may be paid" durably first, so a lost broadcast response or a
      * killed app can never leave a paid transfer with no record. */
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<ChainTransaction>;
   /** What the node says about a transaction hash: mined ok (`confirmed`), mined but reverted
    * (`failed`), known but not mined (`pending`), or not known to the node (`unknown`; only
@@ -567,6 +689,10 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<LegacySendResult>;
 
   estimateLegacyFee?(params: {

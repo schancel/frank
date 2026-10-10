@@ -29,6 +29,7 @@
     "regtest:ecash-send": "node --import tsx demo/regtest/ecash-send.livecheck.ts",
     "regtest:monad-check": "node --import tsx demo/regtest/monad-check.livecheck.ts",
     "regtest:monad-reserve": "node --import tsx demo/regtest/monad-reserve.livecheck.ts",
+    "regtest:monad-parallel-send": "PSEND_STACK_MODULE=demo/regtest/monad-parallel-send-stack.ts PHASES=${PHASES:-a,d,e,h,r,w,m,n,b} FUNDED=${FUNDED:-10} BUDGET_WEI=1000000000000000000000 node --import tsx parallel-send.livecheck.ts",
     "regtest:monad-status": "node --import tsx demo/regtest/monad-regtest.ts status",
     "regtest:monad-start": "node --import tsx demo/regtest/monad-regtest.ts start",
     "regtest:monad-stop": "node --import tsx demo/regtest/monad-regtest.ts stop",

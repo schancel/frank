@@ -262,4 +262,34 @@ describe("SatoshiDiceBot", () => {
     expect(rolls.filter((id) => id.startsWith("roll:"))).toHaveLength(1);
     expect(rolls.filter((id) => id.startsWith("refund:"))).toHaveLength(1);
   });
+
+  // The owner's rule: a table's limit is what its bank has available, not a fixed figure.
+  test("the table states what the bank can pay right now, less what it owes and its fee reserve, and a bet is judged against the bank as it is when the bet arrives", async () => {
+    const h = harness();
+    const RESERVE = 20_000_000_000_000_000n;
+    let balance = 3n * 10n ** 18n + RESERVE;
+    (h.ctx as any).getBalance = async () => balance;
+    const bot = new SatoshiDiceBot();
+    const said = async () => {
+      h.sent.length = 0;
+      await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
+      return (h.sent[0].items.find((i) => i.type === "text") as { text: string }).text;
+    };
+    expect(await said()).toContain("The most one roll pays is 3.0 MON.");
+    // The bank shrinks: the next statement of the table says so.
+    balance = 10n ** 18n / 2n + RESERVE;
+    expect(await said()).toContain("The most one roll pays is 0.5 MON.");
+    // A bet whose win the bank covered when the table was stated, and no longer does when
+    // the bet arrives, is refused and refunded.
+    const { bet } = await table(h, bot, "win");
+    balance = dicePayoutWei(STAKE, TARGET) + RESERVE - 1n;
+    await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(STAKE);
+    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+    // One wei more in the bank and the same bet is taken.
+    const again = await table(h, bot, "win");
+    balance = dicePayoutWei(STAKE, TARGET) + RESERVE;
+    await bot.onMessage(h.message([again.bet], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(true);
+  });
 });

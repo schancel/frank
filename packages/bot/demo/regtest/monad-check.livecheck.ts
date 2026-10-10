@@ -18,7 +18,9 @@ import { MONAD_REGTEST_MIN_STAMP_WEI } from './monad-regtest'
 import { deployMonadContracts, monadOf, openMonadWallet } from './monad-wallets'
 import { RegtestStack, startRegtestStack } from './regtest-stack'
 
-const STAMP_WEI = MONAD_REGTEST_MIN_STAMP_WEI
+// The wallet refuses a stamp smaller than the fee of moving it (21,000 gas at the node's price),
+// so the stamp sent here is that floor, read from the chain; never below the relay's minimum.
+let STAMP_WEI = MONAD_REGTEST_MIN_STAMP_WEI
 /** Well above Monad's 10 MON reserve, so this check is not about the reserve rule
  * (monad-reserve.livecheck.ts is). */
 const FUND_WEI = parseEther('50')
@@ -65,6 +67,8 @@ async function main() {
       console.log(`${name} deployed at ${contract.address} (${contract.deployedVia})`)
     }
 
+    const floor = 21_000n * BigInt(await monad.provider.send('eth_gasPrice', []))
+    if (floor > STAMP_WEI) STAMP_WEI = floor
     const alice = await openMonadWallet(stack, 'alice', { stampValueWei: STAMP_WEI, contracts: record })
     assert.equal(alice.chain.getHtlcAddress?.(), record.contracts.GenericHTLC.address)
     assert.equal(alice.chain.getStateChannelAddress?.(), record.contracts.StateChannel.address)

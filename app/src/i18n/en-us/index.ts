@@ -21,6 +21,11 @@ export default {
     stampPreparationFunding:
       'Preparing private stamp accounts ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
     stampPreparationReady: 'Private stamp accounts ready; sending message…',
+    stampPreparationWaiting: 'Waiting for the previous payment to confirm…',
+    stampPreparationWaitingBlocks:
+      'Waiting for the previous payment to confirm ({blocks} blocks to go)…',
+    chainUnreachable:
+      'The network cannot be reached. Paid messages are queued and will be sent when it is back.',
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
   },
@@ -605,6 +610,17 @@ export default {
     paymentQueued:
       'Waiting for an earlier message to finish. This one will be sent after it.',
     paymentChecking: 'Checking payment status…',
+    waitingForPreviousPayment: 'Waiting for the previous payment to confirm…',
+    waitingForChain: 'Queued: the network cannot be reached.',
+    waitingBlocks:
+      'Waiting {blocks} more blocks after the previous payment before paying…',
+    paymentSent: '· payment sent',
+    paymentInMempool: '· payment in the mempool',
+    paymentPaid: '· paid',
+    paymentReverted: '· payment reverted, paying again',
+    paymentRepaid: '· reverted, paid again',
+    paymentFailed: '· payment failed',
+    paymentUnsent: '· not paid',
     reasonUnreachable: "Can't reach the server.",
     reasonUnavailable: 'This relay does not offer messaging.',
     reasonRejected: 'The relay rejected it.',
@@ -613,6 +629,8 @@ export default {
     reasonRecovered: 'An earlier message was delivered meanwhile.',
     reasonInsufficientFunds: 'There are not enough funds to send this message.',
     reasonRecipientUnregistered: 'Recipient is not registered on this relay.',
+    reasonStampBelowFee:
+      'The network fee rose above this stamp before it was sent. Nothing was paid. Retry sends it at the minimum stamp now.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:
@@ -764,7 +782,7 @@ export default {
       'Payments and stamps people sent you, each at its own one-time address, confirmed on the network.',
     other: 'Sending accounts',
     otherNote:
-      'Kept by the wallet in its own accounts to pay for your messages, and change from earlier payments. Not counted in the balance above.',
+      'Set aside by the wallet in its own accounts to pay for your next messages. Part of the balance above.',
     total: 'Balance',
     yours:
       'Every one of these accounts belongs to this wallet and comes back from your recovery phrase.',
@@ -1049,7 +1067,11 @@ export default {
       'Recipient transaction reverted on {network}. Network fees may have been paid.',
     partial:
       'Some funding transactions are included on {network}; recipient payment is not recorded as included.',
-    pending: 'Recipient payment is pending on {network}.',
+    pending: 'In the mempool on {network}: sent, waiting for a block.',
+    missing:
+      '{network} does not have this transfer yet. It is being offered again.',
+    watching:
+      'Watching the network. This updates by itself when the transfer is in a block.',
     unknown:
       'Payment outcome is unresolved on {network}. Funds may have moved.',
     cancelled: 'Unsigned transfer cancelled.',

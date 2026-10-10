@@ -27,8 +27,8 @@ import {
   type ReceivedPayment,
 } from './chain-wallet'
 import {
-  STAMP,
   fixture,
+  offlineChain,
   mailboxes,
   mockBalances,
   mockFunded,
@@ -133,6 +133,9 @@ function attach(wallet: EvmChainWalletHandle) {
 const subjectOf = (wallet: EvmChainWalletHandle) =>
   toHex(wallet.identity.compressedPubKey)
 const VALUE = 5_000_000n
+/** What a message carries here when no stamp is named: the configured default (1,000) raised to
+ * this node's fee floor, 21,000 gas at its price of 1. */
+const STAMP = 21_000n
 
 describe('a payment to a contact', () => {
   let f: Fixture
@@ -162,6 +165,10 @@ describe('a payment to a contact', () => {
     node.broadcasts.filter(sent => sent.value === VALUE)
 
   beforeEach(async () => {
+    // This suite has its own node (the stubs below): the relay stand-in must not also put
+    // payments on the shared offline chain, or a payment would be credited twice.
+    offlineChain.reset()
+    offlineChain.relayBroadcasts = false
     mockBalances.clear()
     mockFunded.length = 0
     mailboxes.clear()
@@ -377,8 +384,12 @@ describe('a payment to a contact', () => {
     await expect(
       alice.sendNative({ recipient: { raw: '0x' + 'c4'.repeat(20) }, value: 10n ** 17n }),
     ).rejects.toThrow('Insufficient unreserved native funds')
-    // ...and a small one is paid from another account of the wallet, never from the held one:
-    // unrelated spending goes on while the payment's message is in flight.
+    // ...and a small one is paid from another account of the wallet, never from the held one
+    // (nor from the account claimed for the undelivered message's stamp): unrelated spending
+    // goes on while the payment's message is in flight.
+    const spare = alice.pool.ensureSize(alice.pool.records().length + 1).slice(-1)[0]
+    await alice.pool.flush()
+    mockBalances.set(spare.address.toLowerCase(), 1_000_000n)
     const small = await alice.sendNative({
       recipient: { raw: '0x' + 'c4'.repeat(20) },
       value: 100n,
@@ -436,7 +447,10 @@ describe('a payment to a contact', () => {
       return real(raw)
     })
     await alice.sendToContact!({ recipient: bob.identity.address, value: VALUE })
-    expect(order).toEqual(['broadcast with 1 message(s) stored'])
+    // The transfer, and the message's own stamp payment, which the wallet also broadcasts
+    // itself: nothing left the wallet before the relay had the message.
+    expect(order.length).toBeGreaterThanOrEqual(1)
+    expect(new Set(order)).toEqual(new Set(['broadcast with 1 message(s) stored']))
   })
 
   it('a stop before the relay confirmed ends, after a restart, with the message delivered and one payment', async () => {
@@ -939,9 +953,12 @@ describe('a payment to a contact', () => {
       // The stamp accounts made ready for this message are gone by the time it is sent
       // (another message used them): its stamp must be funded now, and the only funded
       // account is the one the payment's transfer is held on.
-      jest.spyOn(alice.pool, 'hasStampInventory').mockResolvedValue(false)
+      const taken = alice.pool.claim('another-message', free =>
+        free.map(row => row.index),
+      )
+      expect(taken?.length).toBeGreaterThan(0)
       const refused = await hostSends(prepared.item).catch(error => error)
-      jest.mocked(alice.pool.hasStampInventory).mockRestore()
+      alice.pool.releaseClaim('another-message')
       expect(refused).toBeInstanceOf(ContactPaymentReleasedError)
       expect(alice.getContactPayments!()).toEqual([
         expect.objectContaining({ state: 'released', holdsFunds: false }),
@@ -1317,8 +1334,13 @@ describe('a payment to a contact', () => {
     }
 
     it('the relay only delivered: the wallet broadcasts the carried transactions, sees them included, and the stamp is spendable money', async () => {
+      // The sender's own broadcast does not get out (it goes offline as the relay answers),
+      // and the relay stand-in stored the message and broadcast nothing.
+      const senderBroadcast = jest.mocked(alice.provider.broadcastTransaction)
+      const real = senderBroadcast.getMockImplementation()!
+      senderBroadcast.mockRejectedValue(new Error('offline'))
       const sent = await paid('hello')
-      // The relay stand-in stored the message and broadcast nothing.
+      senderBroadcast.mockImplementation(real)
       expect(node.broadcasts).toEqual([])
       mockBalances.set(await mainOf(bob), 0n)
 

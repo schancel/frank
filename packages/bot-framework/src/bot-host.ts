@@ -563,6 +563,10 @@ export class FrankBotHost {
         stopping: this.stopController.signal,
 
         lookupPeer: (addr: string) => directory.lookupPeer(addr),
+        minimumStampWei: async () =>
+          (await this.chain.directMessages
+            .minimumStamp?.({ wallet })
+            .catch(() => 0n)) ?? 0n,
 
         sendMessage: async (
           recipientAddress: string,
@@ -631,33 +635,48 @@ export class FrankBotHost {
           if (botBalance < needed)
             throw new BotBalanceShortError(definition.id, botBalance, needed);
 
-          let tx: any;
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-              const nextNonce = await this.provider.getTransactionCount(
-                botAddress,
-                "pending"
-              );
-              tx = await botWallet.sendTransaction({
-                to,
-                data: data ?? "0x",
-                value: valueWei,
-                nonce: nextNonce,
-              });
-              break;
-            } catch (err: any) {
-              const isNonceError =
-                String(err).includes("nonce") ||
-                String(err).includes("NONCE_EXPIRED") ||
-                err?.code === "NONCE_EXPIRED";
-              if (isNonceError && attempt < 3) {
-                await new Promise((r) => setTimeout(r, 600 * attempt));
-                continue;
+          // The identity account is also a coin the wallet pays stamps from: the transfer is
+          // signed while the wallet holds that account in its claim, so it never shares a nonce
+          // with a message payment or a native send, and the account stays held until the
+          // chain shows this transfer.
+          const signed = async () => {
+            let tx: any;
+            let nextNonce = 0;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                nextNonce = await this.provider.getTransactionCount(
+                  botAddress,
+                  "pending"
+                );
+                tx = await botWallet.sendTransaction({
+                  to,
+                  data: data ?? "0x",
+                  value: valueWei,
+                  nonce: nextNonce,
+                });
+                break;
+              } catch (err: any) {
+                const isNonceError =
+                  String(err).includes("nonce") ||
+                  String(err).includes("NONCE_EXPIRED") ||
+                  err?.code === "NONCE_EXPIRED";
+                if (isNonceError && attempt < 3) {
+                  await new Promise((r) => setTimeout(r, 600 * attempt));
+                  continue;
+                }
+                throw err;
               }
-              throw err;
             }
-          }
-          return { txHash: tx.hash };
+            return {
+              txHash: tx.hash as string,
+              from: botAddress,
+              nonce: nextNonce,
+            };
+          };
+          const sent = await (wallet.runOwnTransfer
+            ? wallet.runOwnTransfer(signed)
+            : signed());
+          return { txHash: sent.txHash };
           });
         },
 
@@ -702,13 +721,26 @@ export class FrankBotHost {
           if (botBalance < needed)
             throw new BotBalanceShortError(definition.id, botBalance, needed);
 
-          const populated = await botWallet.populateTransaction({
-            to,
-            value: valueWei,
-          });
-          const rawTx = await botWallet.signTransaction(populated);
-          const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
-          return { rawTx, txHash };
+          // Through the wallet's claim, as `sendTransaction` above.
+          const signed = async () => {
+            const populated = await botWallet.populateTransaction({
+              to,
+              value: valueWei,
+            });
+            const rawTx = await botWallet.signTransaction(populated);
+            const txHash = (await this.provider.broadcastTransaction(rawTx))
+              .hash;
+            return {
+              rawTx,
+              txHash,
+              from: botAddress,
+              nonce: Number(populated.nonce ?? 0),
+            };
+          };
+          const sent = await (wallet.runOwnTransfer
+            ? wallet.runOwnTransfer(signed)
+            : signed());
+          return { rawTx: sent.rawTx, txHash: sent.txHash };
           });
         },
 
@@ -1353,6 +1385,10 @@ export class FrankBotHost {
       recipient: string;
       conversationId?: string;
       stampValue: bigint;
+      /** The handler named the amount (a payout or refund), as opposed to the reply stamp. */
+      namedAmount: boolean;
+      /** The amount is money the bot owes: paid whatever its size. */
+      settlement?: boolean;
       messageId?: string;
       items: MessageItem[];
     },
@@ -1366,11 +1402,16 @@ export class FrankBotHost {
           captured.recipient,
           captured.items,
           captured.conversationId,
-          { stampValueWei: captured.stampValue, messageId: captured.messageId },
+          {
+            stampValueWei: captured.stampValue,
+            messageId: captured.messageId,
+            ...(captured.settlement ? { settlement: true } : {}),
+          },
           () => {
             reported = true;
             return linked();
-          }
+          },
+          captured.namedAmount
         );
         if (!reported) await linked();
         return result;
@@ -1613,7 +1654,11 @@ export class FrankBotHost {
           items: [{ type: "text", text }],
           conversationId: row.conversationId,
           messageId: replyMessageId(instance.operations.owner, digest),
-          stampValue: BigInt(row.reply.stampValue),
+          // Paid only if what it carries is at or above the chain's fee floor right now.
+          stampValue: await this.atLeastTheFloor(
+            instance.wallet,
+            BigInt(row.reply.stampValue)
+          ),
           onAttemptCreated: (outbound) =>
             // The row may be finished by the time an abandoned call reports.
             instance.operations.linkReply(digest, outbound).catch(() => {}),
@@ -1957,6 +2002,8 @@ export class FrankBotHost {
           // while answering this message carries the reply stamp.
           stampValue:
             options?.stampValueWei ?? this.replyStampWei(paidWei),
+          namedAmount: options?.stampValueWei !== undefined,
+          ...(options?.settlement ? { settlement: true } : {}),
           messageId: options?.messageId,
           items: structuredClone(items),
         },
@@ -2046,13 +2093,31 @@ export class FrankBotHost {
     await this.finish(instance, identity.digest, false);
   }
 
+  /**
+   * A bot never sends a nonzero stamp smaller than what the chain charges to move it (the
+   * wallet's `minimumStamp`, read from the node's gas price): such an amount is sent as no stamp
+   * at all. An unreadable floor changes nothing here; the wallet still refuses a dust stamp.
+   */
+  private async atLeastTheFloor(
+    wallet: EvmChainWalletHandle,
+    valueWei: bigint
+  ): Promise<bigint> {
+    if (valueWei <= 0n) return 0n;
+    const floor = await this.chain.directMessages
+      .minimumStamp?.({ wallet })
+      .catch(() => 0n);
+    return valueWei < (floor ?? 0n) ? 0n : valueWei;
+  }
+
   private async sendCanonicalMessage(
     wallet: EvmChainWalletHandle,
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,
     options?: BotSendOptions,
-    onAttemptCreated?: (digest: string) => Promise<void>
+    onAttemptCreated?: (digest: string) => Promise<void>,
+    /** `options.stampValueWei` is an amount the bot's handler named, not a reply stamp. */
+    namedAmount = true
   ): Promise<DirectMessageSendResult> {
     const instance = [...this.instances.values()].find(
       (value) => value.wallet === wallet
@@ -2060,6 +2125,14 @@ export class FrankBotHost {
     if (!instance || this.closing)
       throw new Error("Bot send admission unavailable");
     instance.operations.assertOpen();
+    void namedAmount;
+    const wanted = options?.stampValueWei ?? this.options.stampValueWei;
+    // Money the bot owes (the outbox settling a payout or a refund) is paid whatever its size.
+    // Anything else below the chain's fee floor (a reply stamp) goes out with no stamp.
+    const settlement = options?.settlement === true && wanted > 0n;
+    const stampValue = settlement
+      ? wanted
+      : await this.atLeastTheFloor(wallet, wanted);
     return this.chain.directMessages.send({
       wallet,
       recipient: toChainAddress(recipientAddress),
@@ -2068,7 +2141,8 @@ export class FrankBotHost {
         conversationId === undefined
           ? undefined
           : conversationIdentity(conversationId),
-      stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+      stampValue,
+      ...(settlement ? { settlement: true } : {}),
       ...(options?.messageId ? { messageId: options.messageId } : {}),
       onAttemptCreated,
     });

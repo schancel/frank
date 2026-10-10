@@ -13,8 +13,9 @@ import { createPinia, setActivePinia } from 'pinia'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ;(global as any).document = { hasFocus: () => true }
 
-import { rehydateChat, useChatStore } from './chats'
+import { outgoingMessageId, rehydateChat, useChatStore } from './chats'
 import { activeChain } from '@frank/wallet/chain'
+import { DirectMessageAlreadyAttemptedError } from '@frank/wallet/chain'
 import type {
   DirectMessageAttemptStatus,
   DirectMessageSendResult,
@@ -27,7 +28,6 @@ import {
   MonadStampTerminalError,
 } from '@frank/wallet/monad-stamp-client'
 import { MonadRpcError } from '@frank/wallet/monad-http'
-import { CanonicalMessagingHoldError } from '@frank/wallet/chain/monad-canonical-dm'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import {
@@ -142,7 +142,36 @@ function reconcileReturns(
   return spy
 }
 
-async function reload() {
+/** What the wallet says it stored for a cut-off message (`attemptOf`): nothing, unless a test
+ * says otherwise. */
+let walletHolds: { payloadDigest: string; paid: boolean } | undefined
+beforeEach(() => {
+  walletHolds = undefined
+})
+
+/** The first step of the first reconciliation after a reload: each message found "sending" with
+ * no recorded attempt is asked about in the wallet. */
+async function askWalletAboutCutOffSends(
+  chats: ReturnType<typeof useChatStore>,
+) {
+  jest
+    .spyOn(activeChain.directMessages, 'attemptOf')
+    .mockImplementation(async () => walletHolds)
+  for (const conversation of Object.values(chats.conversations))
+    for (const message of [...conversation.messages])
+      if (
+        message.outbound &&
+        message.status === 'pending' &&
+        message.delivery?.attemptDigest === undefined
+      )
+        await chats.resumeCutOffOutgoing({
+          wallet,
+          address: PEER,
+          id: message.payloadDigest,
+        })
+}
+
+async function reload({ askWallet = true }: { askWallet?: boolean } = {}) {
   const metadata = useChatStore().$state
   setActivePinia(createPinia())
   const chats = useChatStore()
@@ -151,6 +180,7 @@ async function reload() {
       ...metadata,
     }),
   )
+  if (askWallet) await askWalletAboutCutOffSends(chats)
   return chats
 }
 
@@ -659,22 +689,112 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(sendSpy).toHaveBeenCalledTimes(2)
     })
 
-    it('an in-flight message left over from a stopped app becomes a failed one (no attempt) it can Retry', async () => {
-      let release: () => void = () => undefined
-      jest.spyOn(activeChain.directMessages, 'send').mockReturnValue(
-        new Promise(resolve => {
-          release = () => resolve(okResult(HASH))
-        }),
+    it('an in-flight message left over from a stopped app, for which the wallet stored nothing, becomes a failed one (no attempt) it can Retry', async () => {
+      // The app was closed mid-send: what is durable is a 'pending' record.
+      await seedInterrupted()
+      // Until the wallet has been asked it is still shown as sending, not as failed.
+      const unasked = await reload({ askWallet: false })
+      expect(only(unasked)[0]).toEqual(
+        expect.objectContaining({ status: 'pending', delivery: {} }),
       )
-      void useChatStore().sendMessage({ wallet, address: PEER, items: TEXT })
-      await new Promise(resolve => setImmediate(resolve))
-      // The app is closed here: what is durable is a 'pending' record.
       const restored = await reload()
-      release()
       expect(only(restored)[0]).toEqual(
         expect.objectContaining({
           status: 'error',
           delivery: expect.objectContaining({ failureReason: 'interrupted' }),
+        }),
+      )
+    })
+
+    // Seen in the browser: a just-sent message was shown "Failed to send. It was interrupted
+    // before it was sent." after a reload, while the wallet held its complete signed message
+    // (and delivered and paid it). The row had not learned the digest when the page went.
+    it("a reload while the wallet holds the message's stored attempt RESUMES it: the row points at that attempt, the same bytes are re-sent, nothing is paid again, and it is never shown as interrupted", async () => {
+      await seedInterrupted()
+      walletHolds = { payloadDigest: HASH, paid: true }
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      const restored = await reload()
+      const [message] = only(restored)
+      expect(message).toEqual(
+        expect.objectContaining({
+          status: 'payment-pending',
+          delivery: { attemptDigest: HASH },
+        }),
+      )
+      // The wallet was asked by this message's own ID, which is fixed by its saved key.
+      expect(activeChain.directMessages.attemptOf).toHaveBeenCalledWith({
+        wallet,
+        messageId: outgoingMessageId('pending:1:1:seed'),
+      })
+      // Durable: a second reload finds the attempt on the row and asks nothing.
+      const again = await reload({ askWallet: false })
+      expect(only(again)[0].delivery?.attemptDigest).toBe(HASH)
+      // The reconciliation re-sends the stored bytes and the message is delivered.
+      const reconcile = reconcileReturns({ [HASH]: 'delivered' })
+      expect(await again.reconcileOutgoing({ wallet })).toEqual({ pending: 0 })
+      expect(reconcile).toHaveBeenCalledWith(
+        expect.objectContaining({ payloadDigests: [HASH] }),
+      )
+      expect(only(again)[0]).toEqual(
+        expect.objectContaining({ status: 'confirmed', payloadDigest: HASH }),
+      )
+      expect(send).not.toHaveBeenCalled()
+    })
+
+    it('the first reconciliation after a reload asks the wallet about a cut-off send by itself; a wallet that cannot answer leaves the message sending, to be asked again', async () => {
+      await seedInterrupted()
+      const restored = await reload({ askWallet: false })
+      const attemptOf = jest
+        .spyOn(activeChain.directMessages, 'attemptOf')
+        .mockRejectedValueOnce(new Error('wallet not open yet'))
+        .mockResolvedValue({ payloadDigest: HASH, paid: true })
+      const reconcile = reconcileReturns({ [HASH]: 'live' })
+      await restored.reconcileOutgoing({ wallet })
+      expect(only(restored)[0].status).toBe('pending')
+      expect(reconcile).not.toHaveBeenCalled()
+      await restored.reconcileOutgoing({ wallet })
+      expect(attemptOf).toHaveBeenCalledTimes(2)
+      expect(only(restored)[0]).toEqual(
+        expect.objectContaining({
+          status: 'payment-pending',
+          delivery: expect.objectContaining({ attemptDigest: HASH }),
+        }),
+      )
+      expect(reconcile).toHaveBeenCalledTimes(1)
+    })
+
+    it("a Retry of an interrupted message is sent under the same message ID, and when the wallet answers that it already holds that ID's attempt the row takes that attempt instead of a second payment", async () => {
+      await seedInterrupted()
+      const restored = await reload()
+      const [message] = only(restored)
+      expect(message.delivery?.failureReason).toBe('interrupted')
+      jest
+        .spyOn(activeChain.directMessages, 'unattributedAttempts')
+        .mockResolvedValue([])
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(
+          new DirectMessageAlreadyAttemptedError(
+            outgoingMessageId(message.payloadDigest),
+            HASH,
+            'aa'.repeat(33),
+          ),
+        )
+      await expect(
+        restored.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+        }),
+      ).resolves.toEqual({ state: 'payment-pending' })
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(send.mock.calls[0][0].messageId).toBe(
+        outgoingMessageId(message.payloadDigest),
+      )
+      expect(only(restored)[0]).toEqual(
+        expect.objectContaining({
+          status: 'payment-pending',
+          delivery: expect.objectContaining({ attemptDigest: HASH }),
         }),
       )
     })
@@ -1559,69 +1679,6 @@ describe('outgoing direct messages (#269, #270)', () => {
     })
   })
 
-  describe('F5: an earlier payment that cannot be finished keeps its failure reason', () => {
-    const held = (cause?: unknown) =>
-      new CanonicalMessagingHoldError(
-        'An earlier payment could not be finished yet.',
-        cause,
-      )
-    it.each([
-      [
-        'not enough funds',
-        new MonadRpcError('insufficient-funds', 'rejected by node', undefined),
-        'insufficient-funds',
-      ],
-      [
-        'no response',
-        Object.assign(new Error('no response'), { isAxiosError: true }),
-        'unreachable',
-      ],
-      ['anything else', new Error('signer unavailable'), 'error'],
-      ['no cause', undefined, 'error'],
-    ])(
-      '%s behind the hold is shown as that reason',
-      async (_, cause, reason) => {
-        jest
-          .spyOn(activeChain.directMessages, 'send')
-          .mockRejectedValue(held(cause))
-        const chats = useChatStore()
-        await expect(
-          chats.sendMessage({ wallet, address: PEER, items: TEXT }),
-        ).resolves.toEqual({ state: 'failed', reason })
-        expect(only(chats)[0].delivery).toEqual(
-          expect.objectContaining({ failureReason: reason }),
-        )
-        // This message never got a payment of its own.
-        expect(only(chats)[0].delivery?.attemptDigest).toBeUndefined()
-      },
-    )
-
-    it('keeps this message’s own payment attempt when the hold comes after it was journaled', async () => {
-      jest
-        .spyOn(activeChain.directMessages, 'send')
-        .mockImplementation(async (params: SendParams) => {
-          await params.onAttemptCreated?.(HASH)
-          throw held(
-            new MonadRpcError(
-              'insufficient-funds',
-              'rejected by node',
-              undefined,
-            ),
-          )
-        })
-      const chats = useChatStore()
-      await expect(
-        chats.sendMessage({ wallet, address: PEER, items: TEXT }),
-      ).resolves.toEqual({ state: 'failed', reason: 'insufficient-funds' })
-      expect(only(chats)[0].delivery).toEqual(
-        expect.objectContaining({
-          failureReason: 'insufficient-funds',
-          attemptDigest: HASH,
-        }),
-      )
-    })
-  })
-
   describe('rehydrating stored records', () => {
     it('a persisted pending record WITH an attempt digest comes back payment-pending, keeping the digest', async () => {
       const db = await durable()
@@ -2022,14 +2079,12 @@ describe('outgoing direct messages (#269, #270)', () => {
         const sentA = tabA.sendMessage({ wallet, address: PEER, items: DEAL })
         await new Promise(resolve => setImmediate(resolve))
         expect(send).toHaveBeenCalledTimes(1)
-        // Tab B opens now: its copy of A's in-flight row says the send was cut off.
+        // Tab B opens now: its copy of A's in-flight row is a message being sent. A holds the
+        // message's lock, so B does not judge it (it is not called interrupted) and asks nothing.
         const tabB = await reload()
         const [inB] = only(tabB)
         expect(inB).toEqual(
-          expect.objectContaining({
-            status: 'error',
-            delivery: expect.objectContaining({ failureReason: 'interrupted' }),
-          }),
+          expect.objectContaining({ status: 'pending', delivery: {} }),
         )
         const delivery = { ...inB.delivery }
         jest.spyOn(console, 'info').mockImplementation(() => undefined)
@@ -2045,7 +2100,7 @@ describe('outgoing direct messages (#269, #270)', () => {
             }),
           ).resolves.toEqual({ state: 'busy' })
         }
-        expect(only(tabB)[0].status).toBe('error')
+        expect(only(tabB)[0].status).toBe('pending')
         expect(only(tabB)[0].delivery).toEqual(delivery)
         expect(send).toHaveBeenCalledTimes(1)
         expect(unattributed).not.toHaveBeenCalled()
@@ -2055,8 +2110,8 @@ describe('outgoing direct messages (#269, #270)', () => {
           payloadDigest: HASH,
         })
         expect(locks.held.size).toBe(0)
-        // A delivered and let go. B's copy still says interrupted, with no payment recorded, and
-        // B's wallet cannot see A's payment: only the durable row (gone now) tells B the truth.
+        // A delivered and let go. B's copy still says sending, with no payment recorded: the
+        // durable row (gone now) tells B the truth at its next reconciliation.
         expect(await resume(tabB)).toBe(0)
         await expect(
           tabB.retryOutgoing({
@@ -2065,6 +2120,7 @@ describe('outgoing direct messages (#269, #270)', () => {
             payloadDigest: inB.payloadDigest,
           }),
         ).resolves.toEqual({ state: 'busy' })
+        await tabB.reconcileOutgoing({ wallet })
         expect(send).toHaveBeenCalledTimes(1)
         expect(unattributed).not.toHaveBeenCalled()
         // B dropped its stale copy instead of showing a failed deal that was delivered.

@@ -364,6 +364,31 @@ describe('modernized chat input interface (#1003)', () => {
     })
   })
 
+  it('measures the stamp against the minimum the wallet reports, not the configured default', () => {
+    // The wallet's minimum (one transfer's fee) is 4x the configured default here.
+    const minimum = 4n * 10n ** 16n
+    const atMinimum = mount(ChatInput, {
+      props: { stampAmount: minimum.toString(), minimumStampWei: minimum },
+      global: globalOptions,
+    })
+    // The chip shows the amount; the multiple of the minimum is beside it, and absent at 1.
+    expect(atMinimum.find('[data-testid="stamp-pill-multiple"]').exists()).toBe(
+      false,
+    )
+    expect(
+      (atMinimum.vm as unknown as { minimumStampAmount: string })
+        .minimumStampAmount,
+    ).toBe(minimum.toString())
+    const doubled = mount(ChatInput, {
+      props: {
+        stampAmount: (2n * minimum).toString(),
+        minimumStampWei: minimum,
+      },
+      global: globalOptions,
+    })
+    expect(doubled.get('[data-testid="stamp-pill-multiple"]').text()).toBe('2×')
+  })
+
   it('does not render bottom stamp status bar to prevent scroll bounce glitches and loads send button when disabled', () => {
     const wrapper = mount(ChatInput, {
       props: {

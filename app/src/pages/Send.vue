@@ -236,7 +236,11 @@
               }}
             </p>
           </template>
-          <template v-if="operation?.payment !== 'included'">
+          <!-- In the mempool, or not at the node yet: the wallet is watching for its block. -->
+          <p v-if="watching" data-test="native-operation-watching">
+            {{ $t('nativeOperation.watching') }}
+          </p>
+          <template v-else-if="operation?.payment !== 'included'">
             <p data-test="native-operation-recovery">
               {{ $t('nativeOperation.recoveryUnavailable') }}
             </p>
@@ -317,6 +321,8 @@ export default defineComponent({
     const dispatched = ref(false)
     const stale = ref(false)
     const operation = shallowRef<EvmNativeOperationStatus>()
+    // True while the shown transfer is not in a block yet and the wallet is looking for it.
+    const watching = ref(false)
     const outcomeHash = ref<string>()
     const estimatedFeeText = ref('')
     // Set when the network refused the last attempt outright; holds the node's reason.
@@ -412,6 +418,7 @@ export default defineComponent({
       dispatched,
       stale,
       operation,
+      watching,
       outcomeHash,
       observedFee: computed(() =>
         operation.value && chain.value
@@ -525,6 +532,33 @@ export default defineComponent({
           outcomeHash.value = signedTxHash
           return evidence
         }
+        // A transfer that is in the mempool, or that the node does not have yet, is not final:
+        // the wallet looks again at each look of its block watcher and this page re-reads the
+        // journal after each, until the chain shows the transfer in a block (or the page goes).
+        // Without this the page kept the answer of the one look made right after the broadcast.
+        const notFinal = () =>
+          operation.value?.payment === 'pending' ||
+          operation.value?.payment === 'missing' ||
+          operation.value?.payment === 'unknown'
+        const watch = async () => {
+          const wallet = reviewed.binding.wallet
+          const id = operation.value?.operationId
+          if (!id || !notFinal() || !wallet.watchNativeOperation) return
+          watching.value = true
+          try {
+            while (!disposed && reviewed.binding.isCurrent() && notFinal()) {
+              await wallet.watchNativeOperation(id)
+              if (disposed) return
+              inspect()
+            }
+            if (!disposed && operation.value?.payment === 'included')
+              sentTransactionNotify(signedTxHash ?? '')
+          } catch {
+            // The wallet was closed: what is shown stays; the journal keeps the transfer.
+          } finally {
+            if (!disposed) watching.value = false
+          }
+        }
         try {
           await reviewed.binding.assertCurrent()
           if (disposed) return
@@ -551,11 +585,13 @@ export default defineComponent({
           inspect()
           // An included payment is a completed send. Whether the wallet's other devices have
           // been told is information shown with the transfer, never a reason to hold this page.
-          if (
-            reviewed.binding.wallet.family === 'evm' &&
-            (!operation.value || operation.value.payment !== 'included')
-          )
+          if (reviewed.binding.wallet.family === 'evm') {
+            // The page stays on the outcome: sent, its block and its fee, from the journal.
+            if (operation.value?.payment === 'included')
+              sentTransactionNotify(result.txHash)
+            else void watch()
             return
+          }
           sentTransactionNotify(result.txHash)
           navigateBack(router)
         } catch (err) {
@@ -585,8 +621,23 @@ export default defineComponent({
           }
           if (err instanceof NativeTransactionSubmissionError)
             signedTxHash = err.transaction.txHash
+          // Nothing was signed (the wallet reports a signature before it hands anything to the
+          // network, and it reported none): the transfer was refused while it was being
+          // planned, so nothing can have moved. Say so, with the reason, and go back to the
+          // review. Shown as "unresolved, funds may have moved" before, with nothing on chain.
+          if (
+            reviewed.binding.wallet.family === 'evm' &&
+            signedTxHash === undefined
+          ) {
+            dispatched.value = false
+            errorNotify(err, {
+              fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
+            })
+            return
+          }
           if (!(await current())) return
           inspect()
+          void watch()
         } finally {
           if (!disposed) sending.value = false
         }

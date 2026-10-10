@@ -278,6 +278,12 @@ export default defineComponent({
       type: String,
       default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
     },
+    /** The smallest stamp the wallet sends right now (`directMessages.minimumStamp`): what the
+     * chain charges to move it. The page reads it; until it has, the configured default. */
+    minimumStampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: () => activeChain.defaultStampValue,
+    },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
     // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its
     // focus (seen in Chromium) and ignores keystrokes until the send ends, so the first characters
@@ -445,10 +451,10 @@ export default defineComponent({
         } catch {
           return 0
         }
-        if (selected <= activeChain.defaultStampValue) {
+        if (selected <= this.minimumStampWei) {
           return 0
         }
-        const mult = Number(selected) / Number(activeChain.defaultStampValue)
+        const mult = Number(selected) / Number(this.minimumStampWei)
         let closest = 0
         let minDiff = Infinity
         for (let i = 0; i < DECADE_MULTIPLIERS.length; i++) {
@@ -468,13 +474,13 @@ export default defineComponent({
           Math.min(DECADE_MULTIPLIERS.length - 1, Math.round(index)),
         )
         const mult = DECADE_MULTIPLIERS[i]
-        const raw = activeChain.defaultStampValue * BigInt(mult)
+        const raw = this.minimumStampWei * BigInt(mult)
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
     },
     sliderLabelValue(): string {
       const mult = DECADE_MULTIPLIERS[this.decadeIndex] ?? 1
-      const raw = activeChain.defaultStampValue * BigInt(mult)
+      const raw = this.minimumStampWei * BigInt(mult)
       const amountStr = activeChain.toDisplayAmount(raw)
       return this.$t('chatInput.stampMultiplierValue', {
         multiplier: mult,
@@ -489,8 +495,7 @@ export default defineComponent({
         } catch {
           return '1'
         }
-        const multiple =
-          Number(selected) / Number(activeChain.defaultStampValue)
+        const multiple = Number(selected) / Number(this.minimumStampWei)
         if (!Number.isFinite(multiple) || multiple <= 1) {
           return '1'
         }
@@ -501,7 +506,7 @@ export default defineComponent({
       },
       set(value: number) {
         const intVal = Number.isFinite(value) ? Math.round(value) : 1
-        const raw = activeChain.defaultStampValue * BigInt(intVal)
+        const raw = this.minimumStampWei * BigInt(intVal)
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
     },
@@ -551,6 +556,9 @@ export default defineComponent({
             amount,
             multiplier: this.stampMultiplier,
           })
+    },
+    minimumStampAmount() {
+      return activeChain.toDisplayAmount(this.minimumStampWei)
     },
     innerMessage: {
       get() {

@@ -31,8 +31,12 @@ jest.mock('@frank/wallet/chain', () => ({
     nativeTransfers: {
       getBalance: (...args: unknown[]) => mockGetBalance(...args),
     },
+    directMessages: {
+      chainHealth: () => mockChainHealth,
+    },
   },
 }))
+let mockChainHealth: { reachable: boolean } = { reachable: true }
 // Like the real one: memoized per seed, so a seed change yields a different promise.
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(
@@ -539,130 +543,8 @@ describe('useBalance', () => {
     newWrapper.unmount()
   })
 
-  describe('funds at the profile address (cordoned)', () => {
-    const typed = (profileBalance: bigint | Error) => ({
-      identity: { address: { raw: '0xAAAA' } },
-      getReceiveAddress: async () => ({ raw: '0xbbbb' }),
-      provider: {
-        getBalance: jest.fn(async (address: string) => {
-          if (profileBalance instanceof Error) throw profileBalance
-          return address === '0xAAAA' ? profileBalance : 999n
-        }),
-      },
-    })
-
-    it('reads the profile address only when it is not the receive address', async () => {
-      expect(await readCordonedBalance(typed(25n))).toBe(25n)
-      const same = {
-        ...typed(25n),
-        getReceiveAddress: async () => ({ raw: '0xaaaa' }),
-      }
-      expect(await readCordonedBalance(same)).toBe(0n)
-      expect(same.provider.getBalance).not.toHaveBeenCalled()
-      expect(await readCordonedBalance({ seed: 'a' })).toBe(0n)
-    })
-
-    it("counts them in the one balance every screen shows, and keeps the wallet's own figure for the payment screens", async () => {
-      mockSeed = 'cordoned'
-      mockWallets.cordoned = Promise.resolve(typed(25n))
-      mockGetBalance.mockResolvedValue(100n)
-      let api!: ReturnType<typeof useBalance>
-      mount(
-        defineComponent({
-          setup() {
-            api = useBalance()
-            return () => h('span')
-          },
-        }),
-      )
-      await advance(0)
-      // The wallet's own figure: what its checks compare a payment against.
-      expect(api.balance.value).toBe(100n)
-      expect(api.formattedSpendable.value).toBe('100 MON')
-      expect(api.cordoned.value).toBe(25n)
-      // The balance that is shown: the wallet's figure plus the profile address.
-      expect(api.total.value).toBe(125n)
-      expect(api.formattedBalance.value).toBe('125 MON')
-      expect(api.isEmpty.value).toBe(false)
-    })
-
-    it('asks for the profile balance at most once per CORDONED_POLL_MS while the loop ticks every 3 s', async () => {
-      // Only cordoned funds: the spendable balance is zero, so the loop is at its fastest.
-      mockSeed = 'cordoned-only'
-      const wallet = typed(25n)
-      mockWallets['cordoned-only'] = Promise.resolve(wallet)
-      mockGetBalance.mockResolvedValue(0n)
-      let api!: ReturnType<typeof useBalance>
-      mount(
-        defineComponent({
-          setup() {
-            api = useBalance()
-            return () => h('span')
-          },
-        }),
-      )
-      await advance(0)
-      expect(api.cordoned.value).toBe(25n)
-      const profileReads = () =>
-        wallet.provider.getBalance.mock.calls.filter(
-          ([address]) => address === '0xAAAA',
-        ).length
-      expect(profileReads()).toBe(1)
-
-      // One minute of 3 s ticks: 20 spendable reads, but the profile address only at 30 s and 60 s.
-      const spendableBefore = mockGetBalance.mock.calls.length
-      for (let elapsed = 0; elapsed < 60_000; elapsed += 3000)
-        await advance(3000)
-      expect(mockGetBalance.mock.calls.length - spendableBefore).toBe(20)
-      expect(CORDONED_POLL_MS).toBe(30_000)
-      expect(profileReads()).toBe(3)
-      expect(api.cordoned.value).toBe(25n)
-    })
-
-    it('reads the profile balance at once when asked to (the Wallet page opening)', async () => {
-      mockSeed = 'cordoned-now'
-      const wallet = typed(25n)
-      mockWallets['cordoned-now'] = Promise.resolve(wallet)
-      mockGetBalance.mockResolvedValue(0n)
-      let api!: ReturnType<typeof useBalance>
-      mount(
-        defineComponent({
-          setup() {
-            api = useBalance()
-            return () => h('span')
-          },
-        }),
-      )
-      await advance(0)
-      expect(wallet.provider.getBalance).toHaveBeenCalledTimes(1)
-      // An ordinary refresh inside the interval does not ask again...
-      await advance(1000)
-      await api.refresh()
-      expect(wallet.provider.getBalance).toHaveBeenCalledTimes(1)
-      // ...the explicit one does.
-      await api.refreshCordoned()
-      expect(wallet.provider.getBalance).toHaveBeenCalledTimes(2)
-    })
-
-    it('a failed read of the profile address does not fail the balance', async () => {
-      mockSeed = 'cordoned-fail'
-      mockWallets['cordoned-fail'] = Promise.resolve(typed(new Error('rpc')))
-      mockGetBalance.mockResolvedValue(100n)
-      let api!: ReturnType<typeof useBalance>
-      mount(
-        defineComponent({
-          setup() {
-            api = useBalance()
-            return () => h('span')
-          },
-        }),
-      )
-      await advance(0)
-      expect(api.balance.value).toBe(100n)
-      expect(api.hasError.value).toBe(false)
-      expect(api.cordoned.value).toBe(0n)
-    })
-  })
+  // Funds at the profile (identity) address are part of the wallet's own balance now: the wallet
+  // spends them like any other coin, so nothing is reported beside the balance any more.
 
   it('allows useBalance().refresh() to be invoked outside an active component instance', async () => {
     mockGetBalance.mockResolvedValue(500n)
@@ -671,5 +553,28 @@ describe('useBalance', () => {
     expect(mockGetBalance).toHaveBeenCalled()
     expect(api.balance.value).toBe(500n)
     expect(api.formattedBalance.value).toBe('500 MON')
+  })
+
+  // The owner's rule: when the chain cannot be reached, a warning for that chain is shown.
+  it("says the chain cannot be reached when the wallet's own reads say so or the balance read fails on the network, and clears it when the chain answers again", async () => {
+    mockChainHealth = { reachable: true }
+    const api = useBalance()
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(false)
+    // The wallet's reads (a send's fee or nonce read) found the node not answering.
+    mockChainHealth = { reachable: false }
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(true)
+    mockChainHealth = { reachable: true }
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(false)
+    // The balance read itself fails on the network.
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    mockGetBalance.mockRejectedValueOnce(new Error('Failed to fetch'))
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(true)
+    mockGetBalance.mockResolvedValue(1n)
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(false)
   })
 })

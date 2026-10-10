@@ -1,7 +1,10 @@
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
-import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
+import {
+  nativeMemberSuperseded,
+  type EvmNativeSource,
+} from "../storage/evm-native-operation-journal";
 import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
 import {
   EvmInputAdmissionError,
@@ -119,7 +122,11 @@ import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { applyWalletSyncItem } from "../sync-dispatcher";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
-import { requireChainContract, resolveChainIdentifier } from "./chains-registry";
+import {
+  getChainRegistryEntry,
+  requireChainContract,
+  resolveChainIdentifier,
+} from "./chains-registry";
 
 import {
   createMonadWalletMaterial,
@@ -180,15 +187,19 @@ import { readViteEnv } from "./vite-env";
 import {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
-  LevelCanonicalLinkStore,
-  MemoryCanonicalLinkStore,
+  LevelOutgoingMessageStore,
+  MemoryOutgoingMessageStore,
+  noticeOldLinkState,
+  restoreOutgoingClaims,
   canonicalDirectMessages,
   installedMessageItemRegistry,
   type CanonicalDirectory,
-  type CanonicalLinkStore,
+  type CanonicalMessagingOwner,
+  type OutgoingMessageStore,
 } from "./monad-canonical-dm";
+import { EvmStampPayer, waitForSpendSpacing } from "../evm-stamp-payer";
+import { EvmBlockWatcher } from "../evm-block-watcher";
 export {
-  CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
   CanonicalRecipientUndeliverableError,
@@ -399,6 +410,11 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     defaultStampValueWei: BigInt(
       readEnv("FRANK_DM_DEFAULT_STAMP_VALUE_WEI") ?? "10000000000000000"
     ),
+    // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
+    spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
+    reserveBalanceWei: ((wei) => (wei === undefined ? undefined : BigInt(wei)))(
+      getChainRegistryEntry(rpcChain)?.reserveBalanceWei
+    ),
     defaultTopicVoteValueWei: BigInt(
       readEnv("FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI") ??
         readEnv("CASHWEB_STAMP_MIN_BURN_VALUE_WEI") ??
@@ -538,7 +554,8 @@ export function installCanonicalDirectory(
 }
 type CanonicalInventoryFunder = (input: {
   stampValueWei: bigint;
-  recipientStampKey: Uint8Array;
+  /** Unused: the fee an account keeps back does not depend on the recipient. */
+  recipientStampKey?: Uint8Array;
   onProgress?: (progress: DirectMessagePreparationProgress) => void;
 }) => Promise<string[]>;
 const canonicalInventoryFunders = new WeakMap<
@@ -559,6 +576,32 @@ const stampFundersAhead = new WeakMap<
  * The wait ends early when a send prepares its inventory or when the wallet's own balance read
  * shows the main account grew. Process memory only: a restart starts with no wait.
  */
+/** How an operation waits for the main or identity account while an earlier payment from it has
+ * not been seen on chain. By default it waits its turn, however long that is. */
+interface MainAccountWait {
+  /** Give up after this long with {@link MainAccountBusyError}. Default: no limit. */
+  waitMs?: number;
+  /** Called once when the operation starts to wait. */
+  onWaiting?: () => void;
+  /** For a spender the native journal does not record (a funding pass, a transfer to a
+   * contact): also wait while a transaction the native holder itself signed from the account
+   * is undecided. Journal operations leave this off: the journal's own rule refuses a second
+   * transaction over an undecided one at once, and a resume is the one driving it. */
+  waitForOwn?: boolean;
+}
+/** A funding pass signs from the main account outside the native journal: it waits for whatever
+ * the wallet signed from that account earlier, a native operation's transaction included. */
+const FUNDING_FROM_MAIN: MainAccountWait = { waitForOwn: true };
+/** The caller's own deadline passed while the main account was still spent by an earlier payment
+ * the chain has not shown. Nothing was signed; the same call can be made again. */
+export class MainAccountBusyError extends Error {
+  constructor() {
+    super(
+      "The main account is still spent by an earlier payment the chain has not shown, and the wait given for it ran out. Nothing was signed."
+    );
+    this.name = "MainAccountBusyError";
+  }
+}
 export const FUND_AHEAD_BACKOFF_MIN_MS = 4_000;
 export const FUND_AHEAD_BACKOFF_MAX_MS = 240_000;
 interface FundAheadBackoff {
@@ -581,8 +624,8 @@ function noteMainBalanceForFundAhead(wallet: object, balanceWei: bigint): void {
 /**
  * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
  * from the wallet's own EVM main account, through the same pool machinery and owner admission as
- * every other inventory preparation. Call it before `prepareIntent`, which selects only funded
- * accounts. Returns the funding transaction hashes (empty when inventory already sufficed).
+ * every other inventory preparation. The accounts are left free for whichever message claims
+ * them. Returns the funding transaction hashes (empty when inventory already sufficed).
  */
 export function prepareCanonicalStampInventory(
   wallet: NativeWalletHandle,
@@ -593,10 +636,7 @@ export function prepareCanonicalStampInventory(
     throw new Error(
       "Canonical inventory requires live typed persistent custody"
     );
-  return fund({
-    ...input,
-    recipientStampKey: new Uint8Array(input.recipientStampKey),
-  });
+  return fund(input);
 }
 /**
  * Scoped canonical message roles of the live typed wallet for one admitted Current of its own
@@ -740,8 +780,18 @@ function nativeOperationOwner(
 }
 /** Sends again the notes of earlier operations whose transport failed or never ran: every send
  * and resume is also a retry for them. Not waited for, and nothing it meets is this call's error. */
-function retryEarlierNotes(owner: EvmLegacyConsolidator): void {
-  void owner.flushSync().catch(() => undefined);
+function retryEarlierNotes(
+  owner: EvmLegacyConsolidator,
+  operationId: string,
+  started: { transported: Promise<void> }
+): void {
+  // Once this call's own note has been tried: if that just failed, the earlier ones would fail
+  // the same way now, and the next send or resume tries them all again.
+  void started.transported
+    .then(() =>
+      owner.syncTransportFailed(operationId) ? undefined : owner.flushSync()
+    )
+    .catch(() => undefined);
 }
 async function reconcileNativeAdmission(
   admission: MainAccountAdmission
@@ -956,9 +1006,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   const mainPrivateKey = (wallet: EvmChainWalletHandle) =>
     walletMaterial.get(wallet)?.mainAccount.privateKey ??
     wallet.identity.toPrivateKeyHex();
-  // One queue per wallet for everything that prepares and spends sub-accounts (direct messages,
-  // topic posts, votes): a burn account prepared for a topic post must not be picked up by a
-  // concurrent stamp selection between preparation and lease.
+  // The queue topic posts, votes and native sends still run their own multi-step sequences on
+  // (each is recorded across several stores). Paid messages never enter it: a message claims its
+  // accounts through the pool's one synchronous claim (`MonadSubAccountPool.claim`), which is
+  // also what keeps these operations and messages off each other's accounts.
   const runWalletExclusive = <T>(
     wallet: EvmChainWalletHandle,
     task: (admission?: MonadWalletOperationAdmission) => Promise<T>,
@@ -968,21 +1019,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(
       async () => {
         const owner = privateTopicWallets.get(wallet)?.walletState;
-        if (
-          !canonical &&
-          owner?.canonicalRetained
-            ?.getIntents()
-            .some((intent) =>
-              intent.members.some(
-                (m) =>
-                  wallet.pool.getRecord(m.reservation.index)?.status ===
-                  "available"
-              )
-            )
-        )
-          throw new Error(
-            "Canonical pre-sign intent requires explicit correlation before ordinary pool operations"
-          );
         if (!owner) return task();
         enclosingTopicAdmissions.add(wallet);
         try {
@@ -1003,9 +1039,224 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     );
     return run;
   };
+  // The main and identity accounts are one coin each, at one nonce. Everything that signs from
+  // one takes it through the pool's one account claim (`MonadSubAccountPool.claimAccount`), the
+  // same claim a paid message takes, and keeps it until the chain shows the transaction mined or
+  // its nonce consumed by another: never until a task merely returns. Whoever needs a held
+  // account waits its turn.
+  //
+  // Native sends, contract calls, consolidations and funding passes run one at a time
+  // (`runNativeTransactionExclusive`) and share one holder per wallet. What keeps the claim after
+  // such an operation returns is its own durable record, the native journal
+  // (`EvmLegacyConsolidator.holdsSource`), plus, for a transfer the journal does not record (a
+  // payment to a contact), the transaction remembered below for this session.
+  const mainAccountHolder = (wallet: EvmChainWalletHandle) =>
+    `${wallet.identity.address.raw.toLowerCase()}:main-account`;
+  const mainAccountAddresses = (wallet: EvmChainWalletHandle) => [
+    ...new Set(
+      [
+        walletMaterial.get(wallet)?.mainAccount.address,
+        wallet.identity.address.raw,
+      ].flatMap((address) =>
+        address === undefined ? [] : [address.toLowerCase()]
+      )
+    ),
+  ];
+  const runningMainTasks = new WeakMap<EvmChainWalletHandle, number>();
+  const blockWatchers = new WeakMap<EvmChainWalletHandle, EvmBlockWatcher>();
+  const lastOwnLookMs = new WeakMap<EvmChainWalletHandle, number>();
+  /** Address -> transfers signed from it outside the journal, not yet seen on chain. */
+  const unjournalledTransfers = new WeakMap<
+    EvmChainWalletHandle,
+    Map<string, { txHash: string; nonce: number }[]>
+  >();
+  /** One look at the chain for each transaction this wallet's native holder signed from
+   * `address` that is still undecided. Never rejects. */
+  const lookAtOwnTransactions = async (
+    wallet: EvmChainWalletHandle,
+    address: string
+  ): Promise<void> => {
+    if (closedWallets.has(wallet)) return;
+    await nativeOperationOwners.get(wallet)?.lookAtSource(address);
+    const transfers = unjournalledTransfers.get(wallet)?.get(address) ?? [];
+    for (const transfer of [...transfers]) {
+      try {
+        const decided =
+          (await wallet.provider.getTransactionReceipt(transfer.txHash)) !==
+            null ||
+          (await wallet.provider.getTransactionCount(address, "latest")) >
+            transfer.nonce;
+        if (decided) transfers.splice(transfers.indexOf(transfer), 1);
+      } catch {
+        // The chain could not be read: nothing is known, the account stays held.
+      }
+    }
+  };
+  /** True while something the native holder signed from `address` is undecided. No request. */
+  const ownTransactionUndecided = (
+    wallet: EvmChainWalletHandle,
+    address: string
+  ): boolean =>
+    nativeOperationOwners.get(wallet)?.holdsSource(address) === true ||
+    (unjournalledTransfers.get(wallet)?.get(address)?.length ?? 0) > 0;
+  /**
+   * Lets go of the main and identity accounts this wallet's native holder has, each as soon as
+   * nothing it signed from that account is still undecided. With `look` the chain is asked first
+   * (one look per undecided transaction); without it only what is already recorded counts.
+   */
+  const releaseSettledMainAccounts = async (
+    wallet: EvmChainWalletHandle,
+    look: boolean
+  ): Promise<void> => {
+    const pool = wallet.pool;
+    if (typeof pool.accountClaimedBy !== "function") return;
+    const holder = mainAccountHolder(wallet);
+    // One look a second for the wallet, however many sends are waiting for the account.
+    if (look) {
+      const last = lastOwnLookMs.get(wallet);
+      if (last !== undefined && Date.now() - last < 1_000) look = false;
+      else lastOwnLookMs.set(wallet, Date.now());
+    }
+    for (const address of mainAccountAddresses(wallet)) {
+      if (pool.accountClaimedBy(address) !== holder) continue;
+      if (look) await lookAtOwnTransactions(wallet, address);
+      // An operation is running under this holder right now: it lets go itself when it ends.
+      if ((runningMainTasks.get(wallet) ?? 0) > 0) return;
+      if (!ownTransactionUndecided(wallet, address))
+        pool.releaseAccountClaim(holder, address);
+    }
+  };
+  /**
+   * Takes the main and identity accounts for the native holder, waiting its turn while an
+   * earlier payment is spending one: a paid message's, or (with `waitForOwn`) a transaction this
+   * holder itself signed earlier. The chain is asked about that one payment at most once a
+   * second, no relay request is made, and nothing times out unless the caller gave a deadline
+   * (`waitMs`). A wait ends when the wallet is closed.
+   */
+  const holdMainAccounts = async (
+    wallet: EvmChainWalletHandle,
+    options: MainAccountWait = {}
+  ): Promise<void> => {
+    const pool = wallet.pool;
+    if (typeof pool.claimAccount !== "function") {
+      runningMainTasks.set(wallet, (runningMainTasks.get(wallet) ?? 0) + 1);
+      return;
+    }
+    const holder = mainAccountHolder(wallet);
+    const addresses = mainAccountAddresses(wallet);
+    const others = () =>
+      addresses.filter((address) => {
+        const claimant = pool.accountClaimedBy(address);
+        return claimant !== undefined && claimant !== holder;
+      });
+    const own = () =>
+      options.waitForOwn === true
+        ? addresses.filter((address) =>
+            ownTransactionUndecided(wallet, address)
+          )
+        : [];
+    const deadline =
+      options.waitMs === undefined ? undefined : Date.now() + options.waitMs;
+    let waiting = false;
+    for (;;) {
+      let held = others();
+      // Synchronous from the look to the claim: nobody else can take one in between.
+      if (held.length === 0 && own().length === 0) {
+        for (const address of addresses)
+          pool.restoreAccountClaim(holder, address);
+        // From this moment an operation is running under the holder: counted in the same
+        // synchronous step as the claim, so a message that is waiting for the account cannot
+        // take the claim for a settled leftover and let it go while this operation is still
+        // waiting out the spacing below. (Seen on testnet: it did, and a native send and a
+        // message payment were both signed at one nonce.)
+        runningMainTasks.set(wallet, (runningMainTasks.get(wallet) ?? 0) + 1);
+        // Held now, so nothing else can sign from them: wait out the chain's spacing rule
+        // after whatever last spent each (a message payment just mined, say).
+        try {
+          for (const address of addresses)
+            await waitForSpendSpacing(
+              wallet.provider,
+              address,
+              config.spendSpacingBlocks
+            );
+        } catch (error) {
+          runningMainTasks.set(wallet, runningMainTasks.get(wallet)! - 1);
+          await releaseSettledMainAccounts(wallet, false);
+          throw error;
+        }
+        return;
+      }
+      if (!waiting) {
+        waiting = true;
+        options.onWaiting?.();
+      }
+      if (held.length > 0) {
+        const holderOfIt = pool.accountClaimedBy(held[0]!);
+        if (holderOfIt !== undefined)
+          await canonicalMessaging
+            .get(wallet)
+            ?.settleHolder(holderOfIt)
+            .catch(() => undefined);
+      } else
+        for (const address of own())
+          await lookAtOwnTransactions(wallet, address);
+      held = others();
+      if (held.length === 0 && own().length === 0) continue;
+      requireOpenWallet(wallet);
+      if (deadline !== undefined && Date.now() >= deadline)
+        throw new MainAccountBusyError();
+      // Woken when the account is released or at the wallet's next look at the chain (the one
+      // block watcher every waiter shares); a wallet with none waits a second.
+      const watcher = blockWatchers.get(wallet);
+      const abort = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const look = watcher
+        ? watcher.next(abort.signal).catch(() => undefined)
+        : new Promise((resolve) => (timer = setTimeout(resolve, 1_000)));
+      await Promise.race([
+        ...(held.length > 0 ? [pool.accountReleased(held[0]!)] : []),
+        look,
+      ]);
+      abort.abort();
+      clearTimeout(timer);
+    }
+  };
+  /**
+   * A transfer signed from the identity or main account outside the native journal (a transfer
+   * to a contact, a bot host's own payout): the two accounts are taken through the claim, the
+   * turn and the chain's spacing are waited for, and the account `sign` reports it spent stays
+   * claimed until the chain shows the transaction mined or its nonce consumed. The transfer
+   * has no durable record of its own, so that hold lasts for this session only.
+   */
+  const runUnjournalledTransfer = <
+    T extends { txHash: string; from: string; nonce: number }
+  >(
+    wallet: EvmChainWalletHandle,
+    sign: () => Promise<T>,
+    waitMs?: number
+  ): Promise<T> =>
+    runMainAccountExclusive(
+      wallet,
+      async () => {
+        const sent = await sign();
+        const from = sent.from.toLowerCase();
+        if (mainAccountAddresses(wallet).includes(from)) {
+          let transfers = unjournalledTransfers.get(wallet);
+          if (!transfers)
+            unjournalledTransfers.set(wallet, (transfers = new Map()));
+          transfers.set(from, [
+            ...(transfers.get(from) ?? []),
+            { txHash: sent.txHash, nonce: sent.nonce },
+          ]);
+        }
+        return sent;
+      },
+      { waitMs, waitForOwn: true }
+    );
   const runMainAccountExclusive = <T>(
     wallet: EvmChainWalletHandle,
-    task: () => Promise<T>
+    task: () => Promise<T>,
+    options: MainAccountWait = {}
   ): Promise<T> => {
     let admission = mainAccountAdmissions.get(wallet);
     if (admission === undefined) {
@@ -1029,7 +1280,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       owner.store.coordinationScope,
       async () => {
         await reconcileNativeAdmission(owner);
-        return task();
+        // Returns holding the accounts, with this operation counted as running.
+        await holdMainAccounts(wallet, options);
+        try {
+          return await task();
+        } finally {
+          runningMainTasks.set(wallet, runningMainTasks.get(wallet)! - 1);
+          // Whatever this operation signed from the main or identity account keeps that account
+          // until the chain shows it; an account it signed nothing from is free at once.
+          await releaseSettledMainAccounts(wallet, false);
+        }
       }
     );
   };
@@ -1042,7 +1302,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     onProgress:
       | ((progress: DirectMessagePreparationProgress) => void)
       | undefined
-  ): Promise<number> => {
+  ): Promise<{ leaseIndex: number; leaseHolder: string }> => {
+    // The burn account is claimed for this one operation from the moment it is chosen, so a
+    // message being built at the same time is never given it.
+    const leaseHolder = `${wallet.identity.address.raw.toLowerCase()}:topic:${hexlify(
+      randomBytes(8)
+    )}`;
     const mainAccountSigner = new MonadAccountTxSigner({
       privateKey: mainPrivateKey(wallet),
       provider: wallet.provider,
@@ -1072,9 +1337,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           burnValueWei: voteWeightWei,
           gasReserveWei,
           onProgress,
+          claimFor: leaseHolder,
         });
+      }, {
+        ...FUNDING_FROM_MAIN,
+        onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
       });
-      return preparation.index;
+      return { leaseIndex: preparation.index, leaseHolder };
     } catch (err) {
       const reason =
         typeof (err as { shortMessage?: unknown })?.shortMessage === "string"
@@ -1273,6 +1542,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return result;
     },
 
+    async attemptOf(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical)
+        throw new CanonicalMessagingPendingError(
+          "Canonical direct messages require persistent typed wallet custody on a Monad network."
+        );
+      return canonical.attemptOf(params);
+    },
+
     async unattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
@@ -1325,6 +1604,27 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       } catch {
         // Discard is best-effort when wallet or canonical messaging is unavailable
       }
+    },
+
+    async minimumStamp(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical) throw new CanonicalMessagingPendingError();
+      return canonical.minimumStamp();
+    },
+
+    chainHealth(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.chainHealth() ?? { reachable: true };
+    },
+
+    paymentsOf(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.paymentsOf(params.payloadDigest);
+    },
+    paymentSummaryOf(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.paymentSummaryOf(params.payloadDigest);
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
@@ -1478,9 +1778,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       recipient,
       value,
       onSigned,
+      mainAccountWaitMs,
     }): Promise<{ txHash: string }> {
       asMonadWallet(wallet, config.networkId);
-      return wallet.sendNative({ recipient, value, onSigned });
+      return wallet.sendNative({
+        recipient,
+        value,
+        onSigned,
+        mainAccountWaitMs,
+      });
     },
 
     async getTransactionStatus({ wallet, transaction }) {
@@ -1495,10 +1801,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return known ? "pending" : "unknown";
     },
 
-    async sendLegacy({ wallet, recipient, value, onProgress, onSigned }) {
+    async sendLegacy({
+      wallet,
+      recipient,
+      value,
+      onProgress,
+      onSigned,
+      mainAccountWaitMs,
+    }) {
       const owned = asMonadWallet(wallet, config.networkId);
       nativeOperationOwner(owned);
-      return owned.sendLegacy!({ recipient, value, onProgress, onSigned });
+      return owned.sendLegacy!({
+        recipient,
+        value,
+        onProgress,
+        onSigned,
+        mainAccountWaitMs,
+      });
     },
     async estimateLegacyFee({ wallet, recipient, value }) {
       return nativeOperationOwner(
@@ -1601,7 +1920,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               },
             });
           }
-          const leaseIndex = await prepareTopicBurnAccount(
+          const burn = await prepareTopicBurnAccount(
             wallet,
             params.voteWeightWei,
             params.onPreparationProgress
@@ -1618,10 +1937,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 direction: params.direction,
                 burnAddress: policy.burnAddress,
                 voteWeightWei: params.voteWeightWei,
-                leaseIndex,
+                ...burn,
               },
               admission
             )
+            // Leased (the row's own status holds it now) or never used: the claim is over.
+            .finally(() => wallet.pool.releaseClaim(burn.leaseHolder))
             .catch((err: unknown) => {
               if (err instanceof MonadTopicPostAbandonedError) {
                 throw new TopicPostOutcomeUnknownError(err.message, err);
@@ -1649,7 +1970,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           const targetPayloadHash = getBytes(`0x${params.payloadDigest}`);
           if (targetPayloadHash.length !== 32)
             throw new Error("Canonical vote requires a T1 digest");
-          const leaseIndex = await prepareTopicBurnAccount(
+          const burn = await prepareTopicBurnAccount(
             wallet,
             params.voteWeightWei,
             params.onPreparationProgress
@@ -1661,10 +1982,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 direction: params.direction,
                 burnAddress: policy.burnAddress,
                 voteWeightWei: params.voteWeightWei,
-                leaseIndex,
+                ...burn,
               },
               admission
             )
+            // Leased (the row's own status holds it now) or never used: the claim is over.
+            .finally(() => wallet.pool.releaseClaim(burn.leaseHolder))
             .catch(asNothingSent);
         });
       });
@@ -1860,7 +2183,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         }
         const leaseManager = new SubAccountLeaseManager(pool);
         let topicOwner: MonadWalletPersistenceBundle | undefined;
-        let canonicalLinks: CanonicalLinkStore | undefined;
+        let canonicalLinks: OutgoingMessageStore | undefined;
         let coins: RecordStore<EvmCoin> | undefined;
         let contactPayments: RecordStore<ContactPayment> | undefined;
         let coinListState:
@@ -2283,6 +2606,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return { raw: mainAccount.address };
             },
             async getBalance() {
+              const parts = await wallet.getBalanceParts!();
+              return parts.main + parts.profile + parts.received + parts.sending;
+            },
+            // The one account of where the wallet's money is: every coin a send can draw on.
+            // `getBalance` is its sum, and the app's breakdown shows its rows.
+            async getBalanceParts() {
               requireOpenWallet(wallet);
               const now = Date.now();
               let mainBalance: bigint;
@@ -2313,8 +2642,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 }
                 noteMainBalanceForFundAhead(wallet, mainBalance);
 
+                // Money at the identity address is the wallet's to spend like any other coin.
                 if (
-                  material.canonicalRoles !== undefined ||
                   identity.address.raw.toLowerCase() ===
                   mainAccount.address.toLowerCase()
                 ) {
@@ -2348,11 +2677,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // Plus every received coin the chain shows funded. A pending coin (nothing seen on
               // the chain yet) is never counted, whatever its message said.
               await readCoins(PRIMARY_BALANCE_CACHE_TTL_MS);
-              return (
-                mainBalance +
-                identityBalance +
-                spendableCoinTotal(coinStore.all())
+              const received = spendableCoins(coinStore.all());
+              // Plus what sits in the single-use sending accounts that are funded and not yet
+              // used: a message pays its stamp from those first.
+              const sending = await pool.availableBalanceTotal(
+                provider,
+                PRIMARY_BALANCE_CACHE_TTL_MS
               );
+              return {
+                main: mainBalance,
+                profile: identityBalance,
+                received: spendableCoinTotal(coinStore.all()),
+                receivedCount: received.length,
+                sending,
+              };
             },
             getReceivedPayments() {
               return coinStore.all().map((coin) => receivedPaymentOf(coin));
@@ -2430,8 +2768,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // The note to this account's other devices is started, not waited for: a native
               // send or resume never waits on the relay or on a message being sent.
               if (!closedWallets.has(wallet)) {
-                await owner.startSync(operationId);
-                retryEarlierNotes(owner);
+                {
+                  const noteOf = operationId;
+                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
+                }
               }
               return result;
             },
@@ -2461,7 +2801,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     owner.applyRecordedEvidence(admission)
                   )
                 )
-                .then(() => owner.resendMissingContractCalls());
+                .then(() => owner.resendMissingContractCalls())
+                // What those looks showed frees the main account for whoever waits for it.
+                .then(() => releaseSettledMainAccounts(wallet, false));
+            },
+            async watchNativeOperation(operationId) {
+              requireOpenWallet(wallet);
+              const owner = nativeOperationOwner(wallet);
+              const watcher = blockWatchers.get(wallet);
+              // The wallet's one block watcher paces the looks; a wallet without one waits a
+              // second. A watcher that was stopped means the wallet is closing.
+              if (watcher) await watcher.next().catch(() => undefined);
+              else await new Promise((resolve) => setTimeout(resolve, 1_000));
+              requireOpenWallet(wallet);
+              await owner.lookAtOperation(operationId);
+              primaryBalanceCache = undefined;
+              // What the look showed frees the main account for whoever waits for it.
+              await releaseSettledMainAccounts(wallet, false);
             },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
@@ -2476,7 +2832,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     !heldForItsMessage(r.operationId) &&
                     r.members.some(
                       (m) =>
-                        m.signed && m.observation.state !== "included-success"
+                        m.signed &&
+                        m.observation.state !== "included-success" &&
+                        // Its nonce went to another transaction: failed for good, nothing
+                        // left to resolve or retry.
+                        !nativeMemberSuperseded(m)
                     )
                 );
               return row?.members[0]?.signed
@@ -2493,7 +2853,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     !heldForItsMessage(r.operationId) &&
                     r.members.some(
                       (m) =>
-                        m.signed && m.observation.state !== "included-success"
+                        m.signed &&
+                        m.observation.state !== "included-success" &&
+                        // Its nonce went to another transaction: failed for good, nothing
+                        // left to resolve or retry.
+                        !nativeMemberSuperseded(m)
                     )
                 );
               if (rows.length !== 1)
@@ -2509,13 +2873,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(wallet, () =>
-                  owner.sendNative(params, admission)
+                runMainAccountExclusive(
+                  wallet,
+                  () => owner.sendNative(params, admission),
+                  { waitMs: params.mainAccountWaitMs }
                 )
               );
               primaryBalanceCache = undefined;
               if (!closedWallets.has(wallet)) {
-                await owner.startSync(
+                {
+                  const noteOf = 
                   owner
                     .listOperations()
                     .find(
@@ -2523,8 +2890,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                         row.members[row.members.length - 1]?.signed
                           ?.transactionHash === result.txHash
                     )!.operationId
-                );
-                retryEarlierNotes(owner);
+                ;
+                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
+                }
               }
               return result;
             },
@@ -2532,13 +2900,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(wallet, () =>
-                  owner.sendLegacy(params, admission)
+                runMainAccountExclusive(
+                  wallet,
+                  () => owner.sendLegacy(params, admission),
+                  { waitMs: params.mainAccountWaitMs }
                 )
               );
               primaryBalanceCache = undefined;
               if (!closedWallets.has(wallet)) {
-                await owner.startSync(
+                {
+                  const noteOf = 
                   owner
                     .listOperations()
                     .find(
@@ -2546,8 +2917,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                         row.members[row.members.length - 1]?.signed
                           ?.transactionHash === result.txHash
                     )!.operationId
-                );
-                retryEarlierNotes(owner);
+                ;
+                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
+                }
               }
               return result;
             },
@@ -2557,13 +2929,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               params = { ...params, to: { ...params.to } };
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(wallet, () =>
-                  owner.sendContractCall(params, admission)
+                runMainAccountExclusive(
+                  wallet,
+                  () => owner.sendContractCall(params, admission),
+                  { waitMs: params.mainAccountWaitMs }
                 )
               );
               primaryBalanceCache = undefined;
               return result;
             },
+            runOwnTransfer: (sign, options) =>
+              runUnjournalledTransfer(wallet, sign, options?.mainAccountWaitMs),
             getContractCallFunds: () =>
               nativeOperationOwner(wallet).contractCallFunds(),
             getUnresolvedContractCalls: () =>
@@ -2572,8 +2948,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async fundMainAccount(params) {
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(wallet, () =>
-                  owner.fundMainAccount({ ...params }, admission)
+                runMainAccountExclusive(
+                  wallet,
+                  () => owner.fundMainAccount({ ...params }, admission),
+                  { waitMs: params.mainAccountWaitMs }
                 )
               );
               primaryBalanceCache = undefined;
@@ -2587,8 +2965,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       row.members[row.members.length - 1]?.signed
                         ?.transactionHash === result.txHash
                   );
-                if (operation) await owner.startSync(operation.operationId);
-                retryEarlierNotes(owner);
+                if (operation)
+                  retryEarlierNotes(
+                    owner,
+                    operation.operationId,
+                    await owner.startSync(operation.operationId)
+                  );
               }
               return result;
             },
@@ -2608,8 +2990,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               );
               primaryBalanceCache = undefined;
               if (!closedWallets.has(wallet)) {
-                await owner.startSync(operationId);
-                retryEarlierNotes(owner);
+                {
+                  const noteOf = operationId;
+                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
+                }
               }
               return result;
             },
@@ -2627,6 +3011,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             close() {
               if (closing !== undefined) return closing;
               closedWallets.add(wallet);
+              // Every wait on the chain ends now: nothing a waiter had was signed.
+              blockWatchers.get(wallet)?.stop();
               closing = (async () => {
                 // A re-observation pass in flight holds the wallet lifetime: end it first, or a
                 // node that never answers would hold the close.
@@ -2729,7 +3115,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               },
               ...pool
                 .records()
-                .filter((r) => r.status !== "in-use" && r.status !== "funding")
+                .filter(
+                  (r) =>
+                    r.status !== "in-use" &&
+                    r.status !== "funding" &&
+                    // An account a message or a topic burn holds is not a native source.
+                    pool.claimedBy(r.index) === undefined
+                )
                 .map((r) => ({
                   kind: "spend" as const,
                   address: r.address.toLowerCase(),
@@ -2817,8 +3209,67 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               journal: topicOwner.nativeJournal!,
               inputAdmission: topicOwner.inputAdmission,
               runLifetime: (operation) => topicOwner!.runLifetime(operation),
+              // A transfer just broadcast is watched for its block on the wallet's one watcher.
+              nextLook: () =>
+                blockWatchers.get(wallet)?.next() ??
+                new Promise((resolve) => setTimeout(resolve, 500)),
+              inclusionWaitMs: config.nativeInclusionWaitMs,
+              // The node admits a transaction against the balance of spacing + 1 blocks ago.
+              fundsSettleBlocks:
+                config.spendSpacingBlocks === undefined
+                  ? undefined
+                  : config.spendSpacingBlocks + 1,
               transactionBuilder,
               getSources,
+              sourceHeld: (source) =>
+                source.kind === "spend"
+                  ? pool.claimedBy(source.index) !== undefined ||
+                    pool.getRecord(source.index)?.status === "in-use"
+                  : (() => {
+                      const claimant = pool.accountClaimedBy(source.address);
+                      return (
+                        claimant !== undefined &&
+                        claimant !== mainAccountHolder(wallet)
+                      );
+                    })(),
+              claimSources: (sources) => {
+                const indices = sources.flatMap((source) =>
+                  source.kind === "spend" ? [source.index] : []
+                );
+                const held = indices.find(
+                  (index) =>
+                    pool.claimedBy(index) !== undefined ||
+                    pool.getRecord(index)?.status === "in-use"
+                );
+                if (held !== undefined)
+                  throw new RangeError(
+                    `Sub-account ${held} is held by another operation; plan the send again`
+                  );
+                const holder = `${identity.address.raw.toLowerCase()}:native:${hexlify(
+                  randomBytes(8)
+                )}`;
+                // A source that is not a pool row (a received coin; the main and identity
+                // accounts are already this operation's through the native holder) is taken
+                // by address in the same claim, so a stamp being paid from that coin at this
+                // moment and a sweep of it cannot both sign.
+                const addresses = sources.flatMap((source) =>
+                  source.kind === "spend" ||
+                  pool.accountClaimedBy(source.address) === mainAccountHolder(wallet)
+                    ? []
+                    : [source.address]
+                );
+                const taken = addresses.find(
+                  (address) => pool.accountClaimedBy(address) !== undefined
+                );
+                if (taken !== undefined)
+                  throw new RangeError(
+                    `${taken} is held by another operation; plan the send again`
+                  );
+                pool.restoreClaim(holder, indices);
+                for (const address of addresses)
+                  pool.restoreAccountClaim(holder, address);
+                return () => pool.releaseClaim(holder);
+              },
               sign: async (source, unsignedTransaction) => {
                 return resolveSource(source).signTransaction(
                   Transaction.from(unsignedTransaction)
@@ -3225,7 +3676,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               );
             // The message is owed once the transfer is out, and it costs a stamp: refused here,
             // before anything, when the wallet cannot pay for both.
-            const stampWei = params.stampValue ?? config.defaultStampValueWei;
+            // The stamp the message will really carry: the configured default is raised to the
+            // chain's fee floor by `send`, so the accounts funded for it below are funded for
+            // that, not for a default the message will not use.
+            let stampWei = params.stampValue ?? config.defaultStampValueWei;
+            if (params.stampValue === undefined && stampWei > 0n) {
+              const floor = await canonicalMessaging
+                .get(wallet)
+                ?.minimumStamp()
+                .catch(() => undefined);
+              if (floor !== undefined && floor > stampWei) stampWei = floor;
+            }
             if ((await wallet.getBalance()) < params.value + stampWei)
               throw new RangeError(
                 "Insufficient funds for the payment and its message stamp"
@@ -3930,6 +4391,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 .applyRecordedEvidence(lifetime);
             })
             .catch(() => undefined);
+          // A native send, contract call or consolidation that was handed to the network and
+          // that the chain has not answered for holds its main or identity account again, in
+          // the same claim a paid message takes, before the wallet is handed out. No request.
+          for (const address of new Set([
+            material.mainAccount.address.toLowerCase(),
+            identity.address.raw.toLowerCase(),
+          ]))
+            if (nativeOperationOwners.get(wallet)!.holdsSource(address))
+              try {
+                pool.restoreAccountClaim(mainAccountHolder(wallet), address);
+              } catch (error) {
+                // A stored message names the same account: it keeps the claim, both are kept,
+                // and the chain decides both.
+                console.warn(
+                  `[monad-chain] ${address} is spent by an unsettled native operation and by an unsettled message payment; the chain decides both:`,
+                  error
+                );
+              }
           topicOwnerWallet = wallet;
           privateTopicWallets.set(wallet, {
             ...wallet,
@@ -3992,52 +4471,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
               return defaultGasReserveWei;
             };
-            // Accounts a paid message already holds (a payment intent, or an attempt not yet
-            // cleaned up). The next intent does not select them, so they are not inventory.
-            const heldByMessages = (): Set<number> =>
-              new Set([
-                ...(topicOwner!.canonicalRetained
-                  ?.getIntents()
-                  .flatMap((intent) =>
-                    intent.members.map((m) => m.reservation.index)
-                  ) ?? []),
-                ...(topicOwner!.canonicalRetained
-                  ?.getAll()
-                  .filter((attempt) => !attempt.cleanupComplete)
-                  .flatMap((attempt) =>
-                    attempt.reservations.map((r) => r.index)
-                  ) ?? []),
-              ]);
-
-            const prepareInventory: CanonicalInventoryFunder = ({
-              stampValueWei,
-              recipientStampKey,
-              onProgress,
+            /**
+             * Funds single-use accounts for one stamp from the main account, left free for
+             * whichever message claims them. A send never calls this: it pays from coins the
+             * wallet already has. It is for a host that wants unlinkable payments prepared.
+             */
+            const fundStampAccounts = (input: {
+              stampValueWei: bigint;
+              feeReserveWei?: bigint;
+              onProgress?: (progress: DirectMessagePreparationProgress) => void;
             }) =>
-              runWalletExclusive(wallet, async () => {
+              topicOwner!.runLifetime(async () => {
                 // A send changes what there is to fund: the next fund-ahead call looks again.
                 fundAheadBackoffs.delete(wallet);
-                // Accounts funded ahead (or left by an earlier preparation) are ready: nothing
-                // is funded, quoted or reconciled, and the send goes straight to its payment.
-                let ready = false;
-                try {
-                  // No funded account, no fee quote: there is nothing to check.
-                  ready =
-                    pool
-                      .records()
-                      .some((record) => record.status === "available") &&
-                    (await pool.hasStampInventory({
-                      provider,
-                      stampValueWei,
-                      feeReserveWei: await stampPaymentFeeReserve(),
-                      heldIndices: heldByMessages(),
-                    }));
-                } catch {
-                  ready = false;
-                }
-                if (ready) return [];
-
-                // Nothing ready (a first message, or a burst): fund this message's accounts now.
+                const feeReserveWei =
+                  input.feeReserveWei ?? (await stampPaymentFeeReserve());
                 let fundingPrivateKey = mainAccount.privateKey;
                 // A main account that holds a signed transfer for a contact payment is not a
                 // funding source: its next nonce is that transfer's. Another source is looked
@@ -4063,7 +4511,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   // cannot cover this stamp, the largest funded coin that can, and that no native
                   // operation holds, funds the stamp accounts instead.
                   const coinNeedWei =
-                    stampValueWei +
+                    input.stampValueWei +
                     BigInt(2 * STAMP_PAIR_TRANSFERS) * defaultGasReserveWei;
                   if (
                     mainBal < coinNeedWei &&
@@ -4096,23 +4544,96 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   provider,
                   httpClient,
                 });
-                const preparation = await runMainAccountExclusive(
+                return runMainAccountExclusive(
                   wallet,
                   async () =>
                     pool.prepareStampInventory({
                       mainAccountSigner,
                       provider,
-                      stampValueWei,
-                      gasReserveWei: await quoteMonadStampPaymentGasReserve({
-                        signer: mainAccountSigner,
-                        recipientPublicKey: recipientStampKey,
-                      }).catch(() => defaultGasReserveWei),
-                      onProgress,
-                    })
+                      stampValueWei: input.stampValueWei,
+                      gasReserveWei: feeReserveWei,
+                      minimumPaymentWei: transferFeeNow,
+                      onProgress: input.onProgress,
+                    }),
+                  FUNDING_FROM_MAIN
                 );
-                return preparation.fundingTxHashes;
               });
+            const prepareInventory: CanonicalInventoryFunder = async ({
+              stampValueWei,
+              onProgress,
+            }) =>
+              (await fundStampAccounts({ stampValueWei, onProgress }))
+                .fundingTxHashes;
             canonicalInventoryFunders.set(wallet, prepareInventory);
+            // A stamp is paid from coins the wallet already has. Funded sub-accounts first (a
+            // payment from one links nothing), then the main account, then the identity account
+            // (spending from it links the identity to that payment on chain).
+            /** What one plain transfer is charged right now: the smallest payment a message
+             * makes. Its own read, so a funding pass does not age a send's fee quote. */
+            const transferFeeNow = async () => {
+              const fee = await provider.getFeeData();
+              return 21_000n * (fee.gasPrice ?? fee.maxFeePerGas ?? 0n);
+            };
+            pool.attachFunderSpacing((address) =>
+              waitForSpendSpacing(provider, address, config.spendSpacingBlocks)
+            );
+            // The wallet's one source of "current block" and of whether the chain answers.
+            const blockWatcher = new EvmBlockWatcher({ provider });
+            blockWatchers.set(wallet, blockWatcher);
+            const stampPayer = new EvmStampPayer({
+              pool,
+              provider,
+              httpClient,
+              watcher: blockWatcher,
+              spendSpacingBlocks: config.spendSpacingBlocks,
+              reserveBalanceWei: config.reserveBalanceWei,
+              // A message took funded accounts: the next fund-ahead call looks again.
+              onPoolCoinsClaimed: () => fundAheadBackoffs.delete(wallet),
+              // Received coins pay for stamps like any other funds, after the wallet's own
+              // accounts. One that a native operation (a sweep, a send) is spending is left out.
+              coins: () =>
+                spendableCoins(coinStore.all())
+                  .filter(
+                    (coin) =>
+                      nativeOperationOwners
+                        .get(wallet)
+                        ?.holdsSource(coin.address) !== true
+                  )
+                  .sort((a, b) =>
+                    BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
+                  )
+                  .map((coin) => ({
+                    address: coin.address,
+                    privateKey: () => coin.privateKey,
+                  })),
+              // Its balance is about to change: the coin list reads the chain again.
+              onCoinClaimed: () => {
+                coinsReadAtMs = 0;
+              },
+              // An account holding the signed, not yet broadcast transfer of a payment to a
+              // contact pays no stamp: its next nonce is that transfer's. A message that could
+              // only be paid from it is refused at once (the payment may be waiting for that
+              // very message), exactly as its funding used to be.
+              accountHeld: (address) => sourceIsHeld(wallet, address),
+              heldRefusal: () => new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT),
+              accounts: [
+                {
+                  source: "main" as const,
+                  address: mainAccount.address,
+                  privateKey: () => mainAccount.privateKey,
+                },
+                ...(identity.address.raw.toLowerCase() ===
+                mainAccount.address.toLowerCase()
+                  ? []
+                  : [
+                      {
+                        source: "identity" as const,
+                        address: identity.address.raw,
+                        privateKey: () => identity.toPrivateKeyHex(),
+                      },
+                    ]),
+              ],
+            });
 
             // Funding ahead (#1235): the same preparation, asked for by the host between
             // messages. Never called from here: opening a wallet makes no request.
@@ -4132,7 +4653,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               reason,
             });
             const fundAheadPass = (): Promise<DirectMessageFundAheadResult> =>
-              runWalletExclusive(wallet, async () => {
+              topicOwner!.runLifetime(async () => {
                 let mainBalanceWei: bigint | undefined;
                 let result: DirectMessageFundAheadResult;
                 try {
@@ -4147,7 +4668,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       provider,
                       stampValueWei: stampValueAhead,
                       feeReserveWei: 0n,
-                      heldIndices: heldByMessages(),
                       maxCacheAgeMs: Infinity,
                     }))
                   )
@@ -4174,20 +4694,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     });
                     const preparation = await runMainAccountExclusive(
                       wallet,
-                      () =>
+                      async () =>
                         pool.fundStampInventoryAhead({
                           mainAccountSigner,
                           provider,
                           stampValueWei: stampValueAhead,
-                          // Quoted only once the pool has nothing unresolved to wait for. No
-                          // recipient yet: the wallet's own key stands in for the quote.
-                          gasReserveWei: () =>
-                            quoteMonadStampPaymentGasReserve({
-                              signer: mainAccountSigner,
-                              recipientPublicKey: identity.compressedPubKey,
-                            }).catch(() => defaultGasReserveWei),
+                          // What a stamp payment really keeps back: one plain transfer's gas
+                          // at the current fee cap. No probe is signed for it.
+                          gasReserveWei: stampPaymentFeeReserve,
                           maxValueWei: maxValueAheadWei,
-                        })
+                          minimumPaymentWei: transferFeeNow,
+                        }),
+                      FUNDING_FROM_MAIN
                     );
                     result = {
                       outcome:
@@ -4199,7 +4717,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   }
                 } catch (error) {
                   // A funding failure is not the caller's: whatever was recorded is resumed by
-                  // the next pass or the next send, and a send funds its own accounts regardless.
+                  // the next pass, and a send pays from what the wallet has regardless.
                   result = notFunded(
                     error instanceof FundAheadRefusedError
                       ? error.code
@@ -4208,7 +4726,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       : String(error)
                   );
                 }
-                if (result.outcome === "not-funded") {
+                // Every pass that got this far read the chain and moved nothing, whether it
+                // could not fund ("not-funded") or found, after looking, that nothing was
+                // needed ("ready"): the next ticks answer from memory until the wait ends, a
+                // message takes funded accounts, or the main account is seen to have grown.
+                if (result.outcome !== "funded") {
                   const last = fundAheadBackoffs.get(wallet);
                   fundAheadBackoffs.set(wallet, {
                     result,
@@ -4235,30 +4757,43 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
               return fundingAhead;
             });
-            const links =
+            // State of the earlier send code is never silently ignored: named once, with how
+            // to reset it. Nothing is migrated or deleted.
+            if (storageLocation !== undefined)
+              await noticeOldLinkState(storageLocation);
+            const messages =
               storageLocation !== undefined
-                ? await LevelCanonicalLinkStore.open(storageLocation)
-                : new MemoryCanonicalLinkStore();
-            canonicalLinks = links;
+                ? await LevelOutgoingMessageStore.open(storageLocation)
+                : new MemoryOutgoingMessageStore();
+            canonicalLinks = messages;
+            const messagingOwner: CanonicalMessagingOwner = {
+              installedNetworkTag,
+              chainId: BigInt(config.chainId),
+              relayBaseUrl: config.relayBaseUrl,
+              identityAddress: identity.address.raw,
+              subject: bareHex(identity.compressedPubKey),
+              roles: canonicalRoles,
+              messages,
+              payer: () => {
+                requireOpenWallet(wallet);
+                return stampPayer;
+              },
+              lifetime: (operation) => topicOwner!.runLifetime(() => operation()),
+              settleOtherHolder: (holder) =>
+                holder === mainAccountHolder(wallet)
+                  ? releaseSettledMainAccounts(wallet, true)
+                  : Promise.resolve(),
+              signDigest: (digest) =>
+                new Uint8Array(identity.signHash(Buffer.from(digest))),
+              directory: () => canonicalDirectories.get(wallet),
+              messageItems: () => installedMessageItemRegistry(wallet),
+            };
+            // Before the wallet is handed out: every stored message with a payment the chain
+            // has not answered for holds its accounts again. No request is made.
+            restoreOutgoingClaims(messagingOwner);
             canonicalMessaging.set(
               wallet,
-              canonicalDirectMessages(
-                {
-                  installedNetworkTag,
-                  relayBaseUrl: config.relayBaseUrl,
-                  identityAddress: identity.address.raw,
-                  subject: bareHex(identity.compressedPubKey),
-                  roles: canonicalRoles,
-                  links,
-                  client: () => canonicalMonadStampClient(wallet),
-                  signDigest: (digest) =>
-                    new Uint8Array(identity.signHash(Buffer.from(digest))),
-                  directory: () => canonicalDirectories.get(wallet),
-                  messageItems: () => installedMessageItemRegistry(wallet),
-                  prepareInventory,
-                },
-                config.defaultStampValueWei
-              )
+              canonicalDirectMessages(messagingOwner, config.defaultStampValueWei)
             );
           }
           walletMaterial.set(wallet, material);

@@ -28,7 +28,9 @@ import { MONAD_REGTEST_MIN_STAMP_WEI, MonadRegtest } from './monad-regtest'
 import { monadOf, openMonadWallet } from './monad-wallets'
 import { startRegtestStack } from './regtest-stack'
 
-const STAMP_WEI = MONAD_REGTEST_MIN_STAMP_WEI
+// The wallet refuses a stamp smaller than the fee of moving it (21,000 gas at the node's price),
+// so the stamp sent here is that floor, read from the chain; never below the relay's minimum.
+let STAMP_WEI = MONAD_REGTEST_MIN_STAMP_WEI
 
 interface ChainTx {
   hash: string
@@ -73,6 +75,9 @@ async function main(): Promise<boolean> {
   const problems: string[] = []
   try {
     const monad = monadOf(stack)
+    const floor = 21_000n * BigInt(await monad.provider.send('eth_gasPrice', []))
+    if (floor > STAMP_WEI) STAMP_WEI = floor
+    console.log(`stamp: ${formatEther(STAMP_WEI)} MON (the fee floor)`)
     const sender = await openMonadWallet(stack, 'sender', { stampValueWei: STAMP_WEI })
     const recipient = await openMonadWallet(stack, 'recipient', { stampValueWei: STAMP_WEI })
     await monad.fund(sender.mainAccount, fundWei)

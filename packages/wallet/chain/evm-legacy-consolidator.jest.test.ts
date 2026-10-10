@@ -38,6 +38,7 @@ import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-stor
 import { InMemoryChangePoolStore } from '../storage/change-pool-storage'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import { validateMonadWalletState } from '../storage/monad-wallet-state-validator'
+import { summarizeEvmNativeOperation } from './evm-native-operation-status'
 
 const recipient = new Wallet('0x' + '11'.repeat(32)).address.toLowerCase()
 const wallets = [1, 2, 3].map(
@@ -2660,5 +2661,269 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(providerCalls(state)).toBe(before)
     expect(unreadable.applied).not.toHaveBeenCalled()
     expect(ended.applied).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------------------------
+  // A transfer is watched until the chain shows it. Seen in the browser on Monad testnet: the
+  // Send page said "outcome is unresolved, funds may have moved" for a transfer that was mined
+  // (status 1) a block later, because the send looked at the chain once, the instant after its
+  // broadcast, and nothing looked again.
+  // ---------------------------------------------------------------------------------------
+  /** As a node holds a transaction it has not mined: known by its hash, in no block. */
+  const inMempool = (state: ReturnType<typeof chain>, raw: string) => {
+    const tx = Transaction.from(raw)
+    state.transactions.set(
+      tx.hash!,
+      Object.assign(tx, { blockHash: null, blockNumber: null, index: 0 }) as never,
+    )
+  }
+  it('a transfer mined a block after its broadcast: the send watches at each look of the block watcher and resolves with the block and fee', async () => {
+    const state = chain([200000n])
+    state.setMode('retained')
+    let looks = 0
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider as unknown as Provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      getSources: async () => sources(),
+      sign: async (source, raw) =>
+        wallets
+          .find(w => w.address.toLowerCase() === source.address)!
+          .signTransaction(Transaction.from(raw)),
+      // The wallet's block watcher: the first look finds it in the mempool, the second mined.
+      nextLook: async () => {
+        looks++
+        if (looks === 1) inMempool(state, state.raws[0]!)
+        else state.mine(state.raws[0]!)
+      },
+    })
+    const result = await executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 100000n,
+    })
+    expect(looks).toBe(2)
+    // The same bytes, handed over once: nothing was signed or sent again while it waited.
+    expect(state.raws).toHaveLength(1)
+    const [row] = journal.list()
+    expect(result.txHash).toBe(row!.members[0]!.signed!.transactionHash)
+    expect(row!.members[0]!.observation).toMatchObject({
+      state: 'included-success',
+      blockNumber: 1,
+      feeWei: '21000',
+    })
+    expect(summarizeEvmNativeOperation(row!)).toMatchObject({
+      payment: 'included',
+      feeCoverage: 'complete',
+      observedFeeWei: '21000',
+      members: [{ state: 'included-success', blockNumber: 1 }],
+    })
+  })
+  it('after the send gave up watching and the wallet was reopened: one look at the operation records the mined transfer; a transfer the node does not know is "missing", never "unknown", and is offered again on the second such look', async () => {
+    const state = chain([200000n])
+    state.setMode('retained')
+    const first = owner(state)
+    await expect(
+      first.executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const id = journal.list()[0]!.operationId
+    const raw = journal.list()[0]!.members[0]!.signed!.rawTransaction
+    // The node answers and has never heard of it.
+    expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('missing')
+    await reopen()
+    const second = owner(state, { sources: [], noPoolRows: true })
+    await second.executor.lookAtOperation(id)
+    expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('missing')
+    expect(state.raws).toEqual([raw])
+    // Missing twice running: the same bytes go back to the node. Never a new transaction.
+    await second.executor.lookAtOperation(id)
+    expect(state.raws).toEqual([raw, raw])
+    expect(second.sign).not.toHaveBeenCalled()
+    inMempool(state, raw)
+    await second.executor.lookAtOperation(id)
+    expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('pending')
+    state.mine(raw)
+    await second.executor.lookAtOperation(id)
+    expect(summarizeEvmNativeOperation(journal.get(id))).toMatchObject({
+      payment: 'included',
+      observedFeeWei: '21000',
+      members: [{ state: 'included-success', blockNumber: 1 }],
+    })
+    // Final: further looks ask the node nothing.
+    const asked = state.provider.getTransactionReceipt.mock.calls.length
+    await second.executor.lookAtOperation(id)
+    expect(state.provider.getTransactionReceipt.mock.calls.length).toBe(asked)
+    // A reverted transfer is a state the chain shows too.
+    expect(state.balances.get(recipient)).toBe(100000n)
+  })
+  it('a transfer mined between two reads of one look (read unmined by its hash, mined by its receipt) is recorded mined, not "unknown"', async () => {
+    const state = chain([200000n])
+    state.setMode('retained')
+    const { executor } = owner(state)
+    await expect(
+      executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const row = journal.list()[0]!
+    const raw = row.members[0]!.signed!.rawTransaction
+    state.mine(raw)
+    const mined = state.transactions.get(Transaction.from(raw).hash!)!
+    // The read by hash was answered before the block; the receipt after it.
+    state.provider.getTransaction.mockImplementationOnce(
+      async () =>
+        Object.assign(Transaction.from(raw), {
+          blockHash: null,
+          blockNumber: null,
+          index: 0,
+        }) as never,
+    )
+    await executor.observe(row.operationId, 0)
+    expect(mined.blockNumber).toBe(1)
+    expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+      'included-success',
+    )
+  })
+
+  // Rule: Monad charges the gas LIMIT, and a transfer to an address with code needs more than
+  // 21,000 (measured: 49,413 for a small contract; sent with 21,000 it was mined, reverted, and
+  // charged in full). The recipient of a native send is whatever the user typed.
+  it('a transfer to the address the user entered carries the node\'s gas estimate for that address; the transfers that fund it between the wallet\'s own accounts stay at exactly 21,000', async () => {
+    const state = chain([80000n, 70000n])
+    state.provider.estimateGas.mockImplementation(async () => 49413n)
+    const { executor } = owner(state)
+    const estimate = await executor.estimateLegacyFee({ raw: recipient }, 40000n)
+    expect(estimate.deliveryFee).toBe(49413n)
+    await executor
+      .sendLegacy({ recipient: { raw: recipient }, value: 40000n })
+      .catch(() => undefined)
+    const members = journal
+      .list()[0]!
+      .members.map(member => Transaction.from(member.unsignedTransaction))
+    // One account funds the other, which then pays the recipient.
+    expect(members).toHaveLength(2)
+    const [funding, toRecipient] = members as [Transaction, Transaction]
+    expect(funding.to!.toLowerCase()).not.toBe(recipient)
+    expect(funding.gasLimit).toBe(21000n)
+    expect(toRecipient.to!.toLowerCase()).toBe(recipient)
+    expect(toRecipient.gasLimit).toBe(49413n)
+    expect(toRecipient.type).toBe(2)
+    expect(funding.type).toBe(2)
+    expect(state.provider.estimateGas).toHaveBeenCalledWith(
+      expect.objectContaining({ to: recipient, value: 40000n }),
+    )
+  })
+  it('a recipient that refuses the transfer (the estimate fails) is not sent to: nothing is planned or signed', async () => {
+    const state = chain([200000n])
+    state.provider.estimateGas.mockRejectedValue(new Error('execution reverted'))
+    const { executor, sign } = owner(state)
+    await expect(
+      executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
+    ).rejects.toThrow('execution reverted')
+    expect(sign).not.toHaveBeenCalled()
+    expect(journal.list()).toHaveLength(0)
+    expect(state.raws).toHaveLength(0)
+  })
+
+  // Seen in Chrome on Monad testnet: a send that needed more than one account never completed.
+  // The transfer funding the paying account was mined; the payment out of it, offered to the
+  // node at once, was refused (the node admits a transaction against the balance of a few
+  // blocks ago) and was never sent: "unknown to the node" eight minutes later.
+  it('the payment out of an account this operation has just funded is handed to the network only once that funding is old enough for the node to count it', async () => {
+    const state = chain([80000n, 70000n])
+    let head = 10
+    let fundedAt: number | undefined
+    const leader = wallets[0]!.address.toLowerCase()
+    const offeredAt: { to: string; head: number }[] = []
+    const provider = state.provider as unknown as Record<string, unknown>
+    provider.getBlockNumber = jest.fn(async () => head)
+    const latest = state.provider.getBalance.getMockImplementation()!
+    state.provider.getBalance.mockImplementation((async (
+      address: string,
+      block?: number,
+    ) =>
+      // Before its funding the paying account held only its own 80,000.
+      block !== undefined &&
+      fundedAt !== undefined &&
+      block < fundedAt &&
+      address.toLowerCase() === leader
+        ? 80000n
+        : latest(address)) as never)
+    const broadcast = state.provider.broadcastTransaction.getMockImplementation()!
+    state.provider.broadcastTransaction.mockImplementation(async (raw: string) => {
+      const tx = Transaction.from(raw)
+      offeredAt.push({ to: tx.to!.toLowerCase(), head })
+      if (tx.to!.toLowerCase() === leader) fundedAt = head
+      return broadcast(raw)
+    })
+    const nextLook = jest.fn(async () => void head++)
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider as unknown as Provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      getSources: async () => sources().slice(0, 2),
+      sign: async (source, raw) =>
+        wallets
+          .find(w => w.address.toLowerCase() === source.address)!
+          .signTransaction(Transaction.from(raw)),
+      nextLook,
+      fundsSettleBlocks: 4,
+    })
+    const result = await executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 100000n,
+    })
+    expect(result.intermediateTxHashes).toHaveLength(1)
+    expect(offeredAt.map(offer => offer.to)).toEqual([leader, recipient])
+    // The funding went out at once; the payment waited until block fundedAt + 4.
+    expect(offeredAt[0]!.head).toBe(10)
+    expect(offeredAt[1]!.head).toBe(14)
+    expect(state.balances.get(recipient)).toBe(100000n)
+    expect(state.raws).toHaveLength(2)
+  })
+  it('the fee quoted for a transfer is what it will be charged (the node\'s price times the gas limit), not the fee cap', async () => {
+    const state = chain([10_000_000n])
+    // Monad testnet's shape: the cap is about twice what is charged.
+    state.provider.getFeeData.mockResolvedValue({
+      gasPrice: 102n,
+      maxFeePerGas: 202n,
+      maxPriorityFeePerGas: 2n,
+    } as never)
+    const { executor } = owner(state, { sources: sources().slice(0, 1) })
+    expect(
+      await executor.estimateLegacyFee({ raw: recipient }, 1000n),
+    ).toMatchObject({
+      inputCount: 1,
+      deliveryFee: 21000n * 102n,
+      consolidationFee: 0n,
+      totalFee: 21000n * 102n,
+    })
+  })
+
+  // Seen on a local Monad chain: a send that needed two accounts failed "Native account block
+  // changed" before it signed anything. Monad's newest block is only proposed and is often
+  // replaced a moment later.
+  it('the newest block being replaced between two reads is read again, not an error; a chain that never settles still ends in the error', async () => {
+    const state = chain([200000n])
+    const { executor } = owner(state)
+    const settled = { hash: '0x' + 'ab'.repeat(32), number: 1 }
+    const replaced = { hash: '0x' + 'cd'.repeat(32), number: 1 }
+    // The first look at "latest" sees a block that is gone when it is read again by number.
+    state.provider.getBlock
+      .mockResolvedValueOnce(replaced as never)
+      .mockResolvedValue(settled as never)
+    const result = await executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 100000n,
+    })
+    expect(result.totalValueSent).toBe(100000n)
+    expect(state.raws).toHaveLength(1)
+    // Never the same block twice: the read gives up, having signed nothing more.
+    let n = 0
+    state.provider.getBlock.mockImplementation((async () => ({
+      hash: '0x' + (n++).toString(16).padStart(64, '0'),
+      number: 1,
+    })) as never)
+    await expect(
+      executor.sendLegacy({ recipient: { raw: recipient }, value: 1000n }),
+    ).rejects.toThrow('Native account block changed')
+    expect(state.raws).toHaveLength(1)
   })
 })

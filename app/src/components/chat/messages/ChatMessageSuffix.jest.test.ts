@@ -33,6 +33,33 @@ function mountSuffix(props: Record<string, unknown>, messages: unknown = enUS) {
 }
 
 describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
+  it.each([
+    ['en-us', enUS],
+    ['fr-fr', frFR],
+  ])(
+    'a message whose payment waits for the previous one says so on the bubble, in place of "Sending" (%s)',
+    (_name, messages) => {
+      const t = translator(messages)
+      const sending = mountSuffix({ status: 'pending', inline: true }, messages)
+      expect(sending.get('[data-testid="outgoing-sending"]').text()).toBe(
+        t('outgoing.sending'),
+      )
+      const waiting = mountSuffix(
+        { status: 'pending', inline: true, waitingForPreviousPayment: true },
+        messages,
+      )
+      expect(waiting.get('[data-testid="outgoing-sending"]').text()).toBe(
+        t('outgoing.waitingForPreviousPayment'),
+      )
+      expect(t('outgoing.waitingForPreviousPayment')).not.toBe(
+        'outgoing.waitingForPreviousPayment',
+      )
+      expect(t('outgoing.waitingForPreviousPayment')).not.toBe(
+        t('outgoing.paymentChecking'),
+      )
+    },
+  )
+
   it('a failed message shows one localized failure line and offers Retry and Discard', async () => {
     const wrapper = mountSuffix({
       status: 'error',
@@ -201,5 +228,77 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(failed.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
       'The message could not be sent.',
     )
+  })
+
+  it.each([
+    ['en-us', enUS],
+    ['fr-fr', frFR],
+  ])(
+    'a send waiting out the blocks after the previous payment says how many remain (%s)',
+    (_name, messages) => {
+      const t = translator(messages)
+      const waiting = mountSuffix(
+        {
+          status: 'pending',
+          inline: true,
+          waitingForPreviousPayment: true,
+          waitingBlocks: 2,
+        },
+        messages,
+      )
+      expect(waiting.get('[data-testid="outgoing-sending"]').text()).toBe(
+        t('outgoing.waitingBlocks'),
+      )
+      expect(t('outgoing.waitingBlocks')).toContain('{blocks}')
+    },
+  )
+
+  it.each([
+    ['pending', 'outgoing.paymentSent'],
+    ['mempool', 'outgoing.paymentInMempool'],
+    ['paid', 'outgoing.paymentPaid'],
+    ['reverted', 'outgoing.paymentReverted'],
+    ['repaid', 'outgoing.paymentRepaid'],
+    ['failed', 'outgoing.paymentFailed'],
+    ['unsent', 'outgoing.paymentUnsent'],
+  ])(
+    'a sent message says what the chain has shown of its payment: %s',
+    (summary, key) => {
+      for (const messages of [enUS, frFR]) {
+        const t = translator(messages)
+        const sent = mountSuffix(
+          {
+            status: 'confirmed',
+            inline: true,
+            amount: '0.002 MON',
+            paymentSummary: summary,
+          },
+          messages,
+        )
+        expect(
+          sent.get('[data-testid="outgoing-payment-summary"]').text(),
+        ).toBe(t(key))
+        // A real string in both languages, never the key.
+        expect(t(key)).not.toBe(key)
+      }
+    },
+  )
+
+  it('says nothing about a payment it knows nothing of, on a received message, or while sending', () => {
+    for (const props of [
+      { status: 'confirmed', inline: true },
+      {
+        status: 'confirmed',
+        inline: true,
+        outbound: false,
+        paymentSummary: 'paid',
+      },
+      { status: 'pending', inline: true, paymentSummary: 'pending' },
+    ])
+      expect(
+        mountSuffix(props)
+          .find('[data-testid="outgoing-payment-summary"]')
+          .exists(),
+      ).toBe(false)
   })
 })

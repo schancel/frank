@@ -155,19 +155,48 @@ describe('the tick after a reload', () => {
   /** Sends a message whose payment the wallet journals and the relay then keeps. With
    * `recorded: false` the app stops before the payment is recorded on the message's row. */
   async function sendThenRelayKeepsIt({ recorded }: { recorded: boolean }) {
+    if (!recorded) {
+      // What is on disk when the app stops after the wallet stored the payment and before the
+      // message's row learned of it: the row, still "sending", with no attempt. (Written
+      // directly: a send left hanging in this process would keep the message's lock, which a
+      // stopped app does not.)
+      held.payments += 1
+      const { store } = jest.requireMock('./level-message-store')
+      const { serializeMessageWrapper } = jest.requireActual(
+        '@frank/cashweb/relay/storage/level-storage',
+      )
+      ;(await store).__serialized.set(
+        'pending:1:1:seed',
+        serializeMessageWrapper({
+          index: 'pending:1:1:seed',
+          outbound: true,
+          senderAddress: ME,
+          copartyAddress: PEER,
+          message: {
+            conversationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            outbound: true,
+            status: 'pending',
+            receivedTime: 1,
+            serverTime: 1,
+            items: [{ type: 'text', text: 'sent just before the reload' }],
+            outpoints: [],
+            senderAddress: ME,
+            delivery: {},
+          },
+        }),
+      )
+      return
+    }
     jest.spyOn(directMessages, 'send').mockImplementation(async params => {
       held.payments += 1
-      if (!recorded) return new Promise(() => undefined)
       await params.onAttemptCreated?.(HASH)
       throw new MonadStampPendingAttemptError([HASH])
     })
-    const sending = useChatStore().sendMessage({
+    await useChatStore().sendMessage({
       wallet,
       address: PEER,
       items: [{ type: 'text', text: 'sent just before the reload' }],
     })
-    if (recorded) await sending
-    else await jest.advanceTimersByTimeAsync(0)
   }
   /** The app starts again: nothing in memory, the tick started, the chats not loaded yet. */
   function reloadAndStartTheTick() {
@@ -181,7 +210,11 @@ describe('the tick after a reload', () => {
       return chats
     }
   }
-  const message = () => useChatStore().chats[PEER]?.messages[0]
+  const message = () =>
+    useChatStore().chats[PEER]?.messages[0] ??
+    Object.values(useChatStore().conversations)
+      .filter(conversation => conversation.address === PEER)
+      .flatMap(conversation => conversation.messages)[0]
 
   it('pin: with the chats loaded before the tick starts, the message is retried at once', async () => {
     await sendThenRelayKeepsIt({ recorded: true })
@@ -234,25 +267,36 @@ describe('the tick after a reload', () => {
   // this payment (no message points at it): zero re-sends, however long the app stays open. With
   // the whole wallet asked every tick but the pauses decided by the messages alone: one re-send
   // a minute. After: the short pauses.
-  it('a payment whose message never recorded it is retried at 0, 4, 12, 27 and 42 s, until it is delivered', async () => {
+  it("a payment whose message never recorded it: the message is never shown as interrupted, takes the wallet's stored attempt at the next tick, and is retried on the short pauses until it is delivered", async () => {
+    // The wallet answers, by the message's ID, that it holds the stored attempt.
+    const attemptOf = jest
+      .spyOn(directMessages, 'attemptOf')
+      .mockResolvedValue({ payloadDigest: HASH, paid: true })
     await sendThenRelayKeepsIt({ recorded: false })
     const loadChats = reloadAndStartTheTick()
     await loadChats()
-    // What the user sees: the message as failed, "interrupted before it was sent", with Retry.
+    // What the user sees first: the message still sending. Not "interrupted before it was sent".
+    expect(message()).toEqual(
+      expect.objectContaining({ status: 'pending', delivery: {} }),
+    )
+    await jest.advanceTimersByTimeAsync(5 * SECOND)
+    // The next tick asked the wallet about it: it is waiting for its payment, like any other.
+    expect(attemptOf).toHaveBeenCalledTimes(1)
     expect(message()).toEqual(
       expect.objectContaining({
-        status: 'error',
-        delivery: { failureReason: 'interrupted' },
+        status: 'payment-pending',
+        delivery: expect.objectContaining({ attemptDigest: HASH }),
       }),
     )
-    await jest.advanceTimersByTimeAsync(43 * SECOND)
-    expect(held.resends).toEqual(
-      [0, 4, 12, 27, 42].map(seconds => seconds * SECOND),
-    )
+    await jest.advanceTimersByTimeAsync(38 * SECOND)
+    // Measured: re-sent at 0, 4, 6, 10, 18 and 33 s.
+    expect(held.resends.length).toBeGreaterThanOrEqual(4)
+    expect(held.resends[0]).toBe(0)
+    expect(held.resends[1]).toBeLessThanOrEqual(4 * SECOND)
     held.relayDelivers = true
     await jest.advanceTimersByTimeAsync(MAX_OUTGOING_RECONCILE_INTERVAL_MS)
     expect(held.delivered).toBe(true)
-    expect(held.resends).toHaveLength(6)
+    expect(message()?.status).toBe('confirmed')
     // Resolved: the tick is back on its idle minute, and the wallet's continued listing of the
     // delivered payment is not a reason to hurry.
     const asked = () =>

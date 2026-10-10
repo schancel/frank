@@ -204,6 +204,10 @@
             :outbound="message.outbound"
             :failure-reason="message.delivery?.failureReason ?? ''"
             :payment-state="paymentState"
+            :waiting-for-previous-payment="waitingForPreviousPayment"
+            :waiting-for-chain="waitingForChain"
+            :waiting-blocks="waitingBlocks"
+            :payment-summary="paymentSummary"
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
@@ -224,6 +228,14 @@
 import { defineComponent, PropType } from 'vue'
 
 import { useChatStore } from '../../../stores/chats'
+import {
+  sendsWaitingForChain,
+  sendsWaitingForPreviousPayment,
+} from '../../../utils/outgoing-waiting'
+import {
+  outgoingPaymentSummaries,
+  sendsWaitingBlocks,
+} from 'src/utils/outgoing-payments'
 
 import moment from 'moment'
 import ChatMessageReply from './ChatMessageReply.vue'
@@ -524,6 +536,25 @@ export default defineComponent({
         if (inline.has(position)) indexes.add(index)
       })
       return indexes
+    },
+    waitingForChain(): boolean {
+      return sendsWaitingForChain.has(this.payloadDigest)
+    },
+    waitingForPreviousPayment(): boolean {
+      return sendsWaitingForPreviousPayment.has(this.payloadDigest)
+    },
+    /** Blocks this send still waits before its coin may be spent; -1 when not known. */
+    waitingBlocks(): number {
+      return sendsWaitingBlocks.get(this.payloadDigest) ?? -1
+    },
+    /** What the chain has shown of this sent message's payment, in one word; '' if unknown. */
+    paymentSummary(): string {
+      if (!this.message.outbound) return ''
+      return (
+        outgoingPaymentSummaries.get(
+          this.message.delivery?.attemptDigest ?? this.payloadDigest,
+        ) ?? ''
+      )
     },
     paymentState(): string {
       const delivery = this.message.delivery

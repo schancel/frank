@@ -49,8 +49,18 @@ jobs:
         with:
           node-version: "26"
       - run: yarn install
+      # Every name below must be a file that exists: jest treats a name as a filter, so a
+      # stale one runs nothing and the job stays green (`ci-payment-suites.jest.test.ts` checks).
       - name: Wallet Monad-chain regression
-        run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts chain/monad-canonical-link-store.jest.test.ts chain/monad-canonical-settle-rewrite.jest.test.ts chain/monad-canonical-dm-message-id.jest.test.ts chain/monad-canonical-ended-attempt.jest.test.ts chain/monad-canonical-input-ownership.jest.test.ts monad-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts
+        run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts chain/monad-parallel-send.jest.test.ts chain/monad-outgoing-message-store.jest.test.ts chain/monad-fund-ahead.jest.test.ts chain/monad-canonical-dm-message-id.jest.test.ts chain/monad-contract-call-composition.jest.test.ts evm-spend-spacing.jest.test.ts monad-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts ci-payment-suites.jest.test.ts
+      # The same sends against a real EVM node (anvil, from the @foundry-rs/anvil package the
+      # contracts workspace installs). The step fails if the binary is missing, so the suite
+      # can never be silently skipped here.
+      - name: Parallel sends on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/monad-parallel-send.anvil.jest.test.ts
 
   bot-demo-suites:
     runs-on: ubuntu-latest

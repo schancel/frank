@@ -95,6 +95,8 @@ it.each([
           ? "reverted"
           : state === "pending"
           ? "pending"
+          : state === "missing"
+          ? "missing"
           : "unknown"
       );
       expect(status.feeCoverage).toBe(

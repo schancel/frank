@@ -614,13 +614,13 @@ export class Outbox {
             // What it pays, or no stamp at all. A bot's own messages are never paid for:
             // value leaves it only as a payout or a refund of confirmed money.
             stampValueWei: value,
+            // Owed money is paid whatever its size, also below the chain's fee floor.
+            ...(value > 0n ? { settlement: true } : {}),
             messageId: messageIdFor(this.botId, id, owed.tries),
           }
         );
-        return sent(
-          result?.payloadDigest ?? "",
-          value > 0n ? value : result?.stampValueWei ?? 0n
-        );
+        // What it actually carried: an amount below the chain's fee floor goes out unpaid.
+        return sent(result?.payloadDigest ?? "", result?.stampValueWei ?? value);
       } catch (error) {
         // The wallet already holds an attempt for this message ID. That is not delivery: the
         // attempt may still be on its way, or the relay may have ended it.
@@ -643,6 +643,43 @@ export class Outbox {
     );
     await this.finish(state, id, "failed", JSON.stringify(owed));
   }
+}
+
+/** What the chain charges, right now, to move one stamp (the wallet's `minimumStamp`, through
+ * `BotContext.minimumStampWei`). An amount below it is not worth sending: moving it costs more
+ * than it is. Zero when it cannot be read; the host and the wallet still refuse a dust stamp. */
+export async function feeFloorWei(ctx: BotContext): Promise<bigint> {
+  return (await ctx.minimumStampWei?.().catch(() => 0n)) ?? 0n;
+}
+
+/** Kept back from a bank's balance when it works out what it can pay: its own fees. */
+export const BANK_RESERVE_WEI = 20_000_000_000_000_000n; // 0.02 MON
+
+/**
+ * What a bank can pay out right now: what it can spend, less what it has already written down
+ * as owed, less the reserve for its own fees. A table's largest stake or payout is worked out
+ * from this each time the table is stated and again when a bet is accepted: a table never offers
+ * what its bank could not pay. Zero when the balance cannot be read.
+ */
+export async function bankAvailableWei(
+  ctx: BotContext,
+  outbox: Outbox
+): Promise<bigint> {
+  const held = await ctx.getBalance().catch(() => 0n);
+  const spoken = (await outbox.owedWei(ctx)) + BANK_RESERVE_WEI;
+  return held > spoken ? held - spoken : 0n;
+}
+
+/** A table's smallest stake, or a shop's or raffle's price: what was configured, and never less
+ * than TWICE the chain's fee floor. The floor moves with the gas price between a bet and its
+ * refund or payout; at twice the floor an amount taken now can still be paid back after the
+ * fee has risen by anything short of doubling. */
+export async function tableMinimumWei(
+  ctx: BotContext,
+  configuredWei: bigint
+): Promise<bigint> {
+  const minimum = 2n * (await feeFloorWei(ctx));
+  return minimum > configuredWei ? minimum : configuredWei;
 }
 
 /** A message that did not pay for what it asked: says so at once, and returns what it is

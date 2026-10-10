@@ -30,6 +30,25 @@ export interface EvmNativeAccountObservation {
   nonce: number
   balanceWei: string
 }
+/**
+ * True when the chain has shown that this signed transaction can never land: the node knows
+ * neither it nor a receipt for it (`missing`), and in that same look the account's nonce was
+ * already past its nonce, so another transaction took its place. The operation has failed for
+ * good and no longer holds its account. (A later look that does find a receipt replaces the
+ * observation, as any look does; the nonce is consumed either way.)
+ */
+export function nativeMemberSuperseded(member: {
+  unsignedTransaction: string
+  observation: EvmNativeObservation
+  account: EvmNativeAccountObservation | null
+}): boolean {
+  return (
+    member.observation.state === 'missing' &&
+    member.account !== null &&
+    member.account.nonce > Transaction.from(member.unsignedTransaction).nonce
+  )
+}
+
 export type EvmNativeObservation =
   | { state: 'unknown' | 'missing' | 'pending' }
   | {
@@ -678,7 +697,8 @@ export class EvmNativeOperationJournal {
           if (
             !m.dependencies.length &&
             m.observation.state !== 'included-success' &&
-            m.observation.state !== 'included-revert'
+            m.observation.state !== 'included-revert' &&
+            !nativeMemberSuperseded(m)
           )
             return false
         }

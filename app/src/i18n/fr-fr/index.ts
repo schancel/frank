@@ -59,6 +59,12 @@ export default {
     stampPreparationFunding:
       'Préparation des comptes de timbre privés ({completed}/{total} transactions on-chain ; jusqu’à {feeReserve} {unit} de réserve de frais chacune)…',
     stampPreparationReady: 'Comptes de timbre privés prêts ; envoi du message…',
+    stampPreparationWaiting:
+      'En attente de la confirmation du paiement précédent…',
+    stampPreparationWaitingBlocks:
+      'En attente de la confirmation du paiement précédent (encore {blocks} blocs)…',
+    chainUnreachable:
+      'Le réseau est injoignable. Les messages payants sont mis en file et partiront à son retour.',
     donationMessage:
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
@@ -614,6 +620,19 @@ export default {
     paymentQueued:
       "En attente de la fin d'un message précédent. Celui-ci sera envoyé ensuite.",
     paymentChecking: "Vérification de l'état du paiement…",
+    waitingForPreviousPayment:
+      'En attente de la confirmation du paiement précédent…',
+    waitingForChain: 'En file : le réseau est injoignable.',
+    waitingBlocks:
+      'Encore {blocks} blocs à attendre après le paiement précédent avant de payer…',
+    paymentSent: '· paiement envoyé',
+    paymentInMempool: '· paiement dans le mempool',
+    paymentPaid: '· payé',
+    paymentReverted:
+      '· paiement annulé par le réseau, nouveau paiement en cours',
+    paymentRepaid: '· annulé par le réseau, payé de nouveau',
+    paymentFailed: '· paiement échoué',
+    paymentUnsent: '· non payé',
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
     reasonRejected: 'Le relais a refusé le message.',
@@ -624,6 +643,8 @@ export default {
       'Les fonds sont insuffisants pour envoyer ce message.',
     reasonRecipientUnregistered:
       "Le destinataire n'est pas enregistré sur ce relais.",
+    reasonStampBelowFee:
+      "Les frais du réseau ont dépassé ce timbre avant l'envoi. Rien n'a été payé. Réessayer l'envoie avec le timbre minimal actuel.",
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:
@@ -779,7 +800,7 @@ export default {
       'Paiements et timbres que l’on vous a envoyés, chacun à sa propre adresse à usage unique, confirmés sur le réseau.',
     other: 'Comptes d’envoi',
     otherNote:
-      'Gardé par le portefeuille dans ses propres comptes pour payer vos messages, et la monnaie de paiements précédents. Non compté dans le solde ci-dessus.',
+      'Mis de côté par le portefeuille dans ses propres comptes pour payer vos prochains messages. Compris dans le solde ci-dessus.',
     total: 'Solde',
     yours:
       'Chacun de ces comptes appartient à ce portefeuille et se retrouve avec votre phrase de récupération.',
@@ -1073,7 +1094,11 @@ export default {
       'La transaction du destinataire a été annulée par le réseau {network}. Des frais de réseau peuvent avoir été payés.',
     partial:
       'Certaines transactions de financement sont incluses sur {network} ; le paiement au destinataire n’est pas enregistré comme inclus.',
-    pending: 'Le paiement au destinataire est en attente sur {network}.',
+    pending: 'Dans le mempool sur {network} : envoyé, en attente d’un bloc.',
+    missing:
+      '{network} n’a pas encore ce transfert. Il lui est proposé de nouveau.',
+    watching:
+      'Surveillance du réseau en cours. Ceci se met à jour dès que le transfert est dans un bloc.',
     unknown:
       'Le résultat du paiement reste indéterminé sur {network}. Des fonds peuvent avoir été transférés.',
     cancelled: 'Transfert non signé annulé.',

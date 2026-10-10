@@ -27,7 +27,7 @@ import {
   type HandItem,
   type HandState,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
-import { Outbox, refuse, type Received } from "./money";
+import { Outbox, refuse, tableMinimumWei, type Received } from "./money";
 
 /** Kept back from the dealer's balance when it works out the largest bet it can cover. */
 const RESERVE_WEI = 20_000_000_000_000_000n;
@@ -126,9 +126,12 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     const balance = held > owed ? held - owed : 0n;
     const free = balance > RESERVE_WEI ? balance - RESERVE_WEI : 0n;
     const cover = free / DEALER_COVER_MULTIPLE;
+    // The table minimum is never below what the chain charges to move a stamp, so a real
+    // bet's payout or refund always clears the fee floor.
     return {
       balance,
       maxBet: cover > this.maxWagerWei ? this.maxWagerWei : cover,
+      minBet: await tableMinimumWei(ctx, this.minWagerWei),
     };
   }
 
@@ -220,8 +223,8 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     peer: string,
     conversationId?: string
   ): Promise<void> {
-    const { balance, maxBet } = await this.limits(ctx);
-    if (maxBet < this.minWagerWei) {
+    const { balance, maxBet, minBet } = await this.limits(ctx);
+    if (maxBet < minBet) {
       await ctx.sendMessage(
         peer,
         [
@@ -252,7 +255,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       { gameId, peer, conversationId },
       0,
       built.item,
-      `Blackjack: bet between ${formatMon(this.minWagerWei)} and ${formatMon(
+      `Blackjack: bet between ${formatMon(minBet)} and ${formatMon(
         maxBet
       )}. Your bet is what your bet message pays the dealer.`
     );
@@ -394,10 +397,10 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         seed = randomBytes(32).toString("hex");
         await ctx.state.put(`seed:${hand.gameId}`, seed);
       }
-      const { balance, maxBet } = await this.limits(ctx);
+      const { balance, maxBet, minBet } = await this.limits(ctx);
       const wanted = state.maxBetWei < maxBet ? state.maxBetWei : maxBet;
       const built =
-        wanted >= this.minWagerWei
+        wanted >= minBet
           ? buildAccept({
               state,
               spendableWei: balance,

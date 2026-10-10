@@ -71,6 +71,8 @@ function nativeExecutor(
       maxFeePerGas: 2n,
       maxPriorityFeePerGas: 1n,
     })),
+    // What a node answers for a plain transfer to an account without code.
+    estimateGas: jest.fn(async () => 21000n),
     getTransaction: jest.fn(async (hash: string) => {
       const known = history.find(h => h.tx.hash === hash)
       return !known || known.outcome === 'missing'
@@ -671,8 +673,11 @@ describe('derived EVM input admission', () => {
       await reopened.close()
     }
   })
+  // Not here any more: a direct member the node does not know at all, whose nonce another
+  // transaction consumed, can never land. It has failed for good and frees its account (see
+  // `nativeMemberSuperseded`, and the composition test of a native send whose nonce was
+  // consumed). A pending one, and every dependent hold, is kept as before.
   it.each([
-    ['direct', 'missing'],
     ['direct', 'pending'],
     ['dependent', 'missing'],
     ['dependent', 'revert'],

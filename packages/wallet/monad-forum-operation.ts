@@ -262,6 +262,7 @@ interface ForumSubmissionParams {
   value: bigint
   overrides?: MonadTxOverrides
   leaseIndex?: number
+  leaseHolder?: string
   waitForLease?: AcquireLeaseWhenAvailableOptions
   encode: (rawTx: Uint8Array) => Uint8Array
 }
@@ -279,7 +280,7 @@ async function submitForumOperationAdmitted(
     throw new Error('Forum provider chain mismatch')
   const handle =
     params.leaseIndex !== undefined
-      ? wallet.leaseManager.acquireForIndex(params.leaseIndex)
+      ? wallet.leaseManager.acquireForIndex(params.leaseIndex, params.leaseHolder)
       : params.waitForLease
       ? await acquireLeaseWhenAvailable(
           wallet.leaseManager,

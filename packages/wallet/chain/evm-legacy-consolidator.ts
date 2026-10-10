@@ -47,6 +47,12 @@ export interface SendLegacyParams {
   value: bigint
   onProgress?: (progress: LegacySendProgress) => void
   onSigned?: (signed: ChainTransaction) => Promise<void>
+  /**
+   * The main account is one coin: while an earlier payment from it has not been seen on chain
+   * this send waits its turn. By default it waits however long that takes; with this, it gives
+   * up after so many milliseconds, having signed nothing.
+   */
+  mainAccountWaitMs?: number
 }
 /** One call to a contract from the main account, recorded and recovered like a native send. */
 export interface ContractCallParams {
@@ -65,6 +71,8 @@ export interface ContractCallParams {
   record?: EvmContractCallRecord
   /** After signing and before broadcast, so the caller can record the exact operation first. */
   onSigned?: (signed: ContractCallResult) => Promise<void>
+  /** As `SendLegacyParams.mainAccountWaitMs`. */
+  mainAccountWaitMs?: number
 }
 export interface ContractCallResult {
   operationId: string
@@ -79,6 +87,12 @@ export interface EvmLegacyConsolidatorConfig {
   ) => Promise<T>
   transactionBuilder: EvmTransactionBuilder
   getSources: () => Promise<EvmNativeSource[]>
+  /** True while another operation of the wallet (a message paying its stamp, a topic burn)
+   * holds this source in the wallet's one claim: it is not offered to a plan. */
+  sourceHeld?: (source: EvmNativeSource) => boolean
+  /** Claims the plan's source accounts in the wallet's one claim, synchronously, or throws when
+   * another operation holds one. Returns the release, called once the plan is in the journal. */
+  claimSources?: (sources: readonly EvmNativeSource[]) => () => void
   sign: (
     source: EvmNativeSource,
     unsignedTransaction: string,
@@ -109,6 +123,19 @@ export interface EvmLegacyConsolidatorConfig {
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
   now?: () => number
+  /** Resolves at the wallet's next look at the chain (its one block watcher). With it, a
+   * transfer that was just broadcast is watched until the chain shows it in a block, for at most
+   * `inclusionWaitMs`. Without it (an executor on its own) the transfer is looked at once. */
+  nextLook?: () => Promise<unknown>
+  /** How long a send watches its own broadcast transfer for a block. Default 30 s. After it
+   * the transfer stays in the journal, holding its account, and is watched from outside
+   * (`lookAtOperation`). */
+  inclusionWaitMs?: number
+  /** How many blocks back the node looks for the balance a transaction spends (Monad: the
+   * spacing + 1, measured: a transfer offered sooner after its account was funded is refused,
+   * and those bytes stay refused). With `nextLook`, a member is not handed to the network until
+   * its account held what it spends that many blocks ago. Absent or 0: no such rule. */
+  fundsSettleBlocks?: number
 }
 /**
  * The id every frontend of the account derives for a swap: from its chain and the transaction
@@ -331,20 +358,26 @@ export class EvmLegacyConsolidator {
   }
   private async account(address: string): Promise<EvmNativeAccountObservation> {
     const { provider } = this.config
-    const block = await provider.getBlock('latest')
-    if (!block?.hash) throw new Error('Native account block unavailable')
-    const [balance, nonce, checked] = await Promise.all([
-      provider.getBalance(address, block.number),
-      provider.getTransactionCount(address, block.number),
-      provider.getBlock(block.number),
-    ])
-    if (checked?.hash !== block.hash)
-      throw new Error('Native account block changed')
-    return {
-      blockHash: block.hash.toLowerCase(),
-      blockNumber: block.number,
-      nonce,
-      balanceWei: balance.toString(),
+    // The balance and the nonce are read at one block, and that block is read again to see it
+    // is still the block at its height. On a chain whose newest block is only proposed (Monad:
+    // seen on a local chain, a send that needed two accounts failed here on its first read)
+    // the newest block is often replaced a moment later: then the read is simply made again.
+    for (let attempt = 0; ; attempt++) {
+      const block = await provider.getBlock('latest')
+      if (!block?.hash) throw new Error('Native account block unavailable')
+      const [balance, nonce, checked] = await Promise.all([
+        provider.getBalance(address, block.number),
+        provider.getTransactionCount(address, block.number),
+        provider.getBlock(block.number),
+      ])
+      if (checked?.hash === block.hash)
+        return {
+          blockHash: block.hash.toLowerCase(),
+          blockNumber: block.number,
+          nonce,
+          balanceWei: balance.toString(),
+        }
+      if (attempt >= 5) throw new Error('Native account block changed')
     }
   }
   /** `wanted`, when given, is asked once the reads are in and before anything is recorded: an
@@ -364,12 +397,20 @@ export class EvmLegacyConsolidator {
     let account: EvmNativeAccountObservation | null = null
     try {
       const expected = Transaction.from(member.signed.rawTransaction)
-      const [transaction, receipt, state] = await Promise.all([
-        provider.getTransaction(member.signed.transactionHash),
-        provider.getTransactionReceipt(member.signed.transactionHash),
-        this.account(member.source.address),
+      const hash = member.signed.transactionHash
+      let [transaction, receipt] = await Promise.all([
+        provider.getTransaction(hash),
+        provider.getTransactionReceipt(hash),
       ])
-      account = state
+      // Blocks come faster than these reads: a transaction mined between two of them was read
+      // unmined by one and mined by the other. That is not an inconsistency of the chain, so
+      // the transaction is read again, and the account is read AFTER the receipt (its block is
+      // then never behind the receipt's). Without this a mined transfer was recorded `unknown`.
+      if (receipt !== null && (transaction === null || !transaction.blockHash))
+        transaction = await provider.getTransaction(hash)
+      if (receipt === null && transaction?.blockHash)
+        receipt = await provider.getTransactionReceipt(hash)
+      account = await this.account(member.source.address)
       if (transaction === null && receipt === null)
         observation = { state: 'missing' }
       else if (
@@ -411,6 +452,81 @@ export class EvmLegacyConsolidator {
     if (wanted && !wanted()) return
     await journal.recordObservation(capture, observation, account)
   }
+  /** The signed, exposed members spending `address` that the chain has not answered for: not seen in a
+   * block (successful or reverted), and the account's nonce not seen past theirs. */
+  private unsettledAt(
+    address: string,
+  ): { operationId: string; index: number }[] {
+    const key = address.toLowerCase()
+    return this.config.journal.list().flatMap(row =>
+      row.cancelled
+        ? []
+        : row.members.flatMap((member, index) =>
+            member.source.address === key &&
+            member.signed !== null &&
+            // Bytes that never left this device cannot land: only a member handed to the
+            // network holds its account.
+            member.exposed &&
+            member.observation.state !== 'included-success' &&
+            member.observation.state !== 'included-revert' &&
+            // The nonce consumed by another transaction: this one can never land, and the
+            // account is at its next nonce either way.
+            !(
+              member.account !== null &&
+              member.account.nonce >
+                Transaction.from(member.unsignedTransaction).nonce
+            )
+              ? [{ operationId: row.operationId, index }]
+              : [],
+          ),
+    )
+  }
+  /**
+   * True while a signed transaction of this journal spends `address` and the chain has not shown
+   * what became of it (mined, or its nonce consumed by another). Journal only: no request. This
+   * is what holds the main or identity account in the wallet's one claim after a native send, a
+   * contract call or a consolidation returns; a discarded or cancelled operation holds nothing.
+   */
+  holdsSource(address: string): boolean {
+    try {
+      return this.unsettledAt(address).length > 0
+    } catch {
+      // A journal that cannot be read frees nothing.
+      return true
+    }
+  }
+  /** One look at the chain for each transaction `holdsSource(address)` is true for; one the node
+   * does not know is handed to it again (the same bytes). Never rejects: a read that fails
+   * records nothing and the account stays held. */
+  async lookAtSource(address: string): Promise<void> {
+    const pass = async (lifetime?: WalletOperationLifetime) => {
+      for (const { operationId, index } of this.unsettledAt(address)) {
+        await this.observe(operationId, index, lifetime)
+        // The node knows neither the transaction nor a receipt: the same signed bytes are
+        // handed to it again, so a lost broadcast cannot hold the account for good.
+        const member = this.config.journal.get(operationId).members[index]!
+        const key = `${operationId}:${index}`
+        if (member.observation.state !== 'missing' || !member.signed) {
+          this.missedOnce.delete(key)
+          continue
+        }
+        // Missing twice running: a node asked the moment after a broadcast often does not
+        // know the transaction yet, and that is not a lost broadcast.
+        if (!this.missedOnce.has(key)) {
+          this.missedOnce.add(key)
+          continue
+        }
+        await this.config.provider
+          .broadcastTransaction(member.signed.rawTransaction)
+          .catch(() => undefined)
+      }
+    }
+    try {
+      await (this.config.runLifetime ? this.config.runLifetime(pass) : pass())
+    } catch {
+      /* Closed, or the chain could not be read: nothing is known, nothing changes. */
+    }
+  }
   private async sources(
     lifetime?: WalletOperationLifetime,
   ): Promise<AvailableSource[]> {
@@ -433,6 +549,7 @@ export class EvmLegacyConsolidator {
         }
     const result: AvailableSource[] = []
     for (const source of sources.values()) {
+      if (this.config.sourceHeld?.(source)) continue
       const account = await this.account(source.address)
       if (!journal.canSelect(source.address, account.nonce)) continue
       const spendableValue =
@@ -446,17 +563,54 @@ export class EvmLegacyConsolidator {
     }
     return result
   }
+  /**
+   * The gas limit of a plain transfer to an address the USER entered: the node's estimate for
+   * it, made now. The recipient may have code, and then 21,000 is not enough: the transfer is
+   * mined, reverted, and (on a chain that charges the gas limit, as Monad does) its whole fee is
+   * paid for nothing. A transfer to an account this wallet derives needs no estimate: it is
+   * exactly 21,000. When the paying account does not hold the amount yet (it is funded by this
+   * same operation first) the estimate is made for one wei. A recipient that refuses the
+   * transfer makes this throw: nothing is planned or signed.
+   */
+  private async recipientGasLimit(
+    from: string,
+    recipient: string,
+    amount: bigint,
+  ): Promise<bigint> {
+    const { provider } = this.config
+    try {
+      return await provider.estimateGas({ from, to: recipient, value: amount })
+    } catch (error) {
+      if (amount <= 1n) throw error
+      return provider.estimateGas({ from, to: recipient, value: 1n })
+    }
+  }
   private async transaction(
     source: AvailableSource,
     recipient: string,
     amount: bigint,
     fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint },
+    /** The recipient is the address the user entered, not an account of this wallet. */
+    toUserAddress = false,
   ): Promise<string> {
     const request = await this.config.transactionBuilder.buildTransfer({
       from: source.source.address,
       recipient,
       amount,
-      overrides: { nonce: source.account.nonce, ...fees },
+      overrides: {
+        nonce: source.account.nonce,
+        ...fees,
+        ...(toUserAddress &&
+        this.config.transactionBuilder.supportsNativeConsolidation === true
+          ? {
+              gasLimit: await this.recipientGasLimit(
+                source.source.address,
+                recipient,
+                amount,
+              ),
+            }
+          : {}),
+      },
     })
     if (
       request.from &&
@@ -544,7 +698,13 @@ export class EvmLegacyConsolidator {
     )
     for (const account of accounts) {
       if (account.spendableValue < params.value) continue
-      const raw = await this.transaction(account, recipient, params.value, fees)
+      const raw = await this.transaction(
+        account,
+        recipient,
+        params.value,
+        fees,
+        excludedSource === undefined,
+      )
       const tx = Transaction.from(raw)
       const maximumFee = nativeMaximumFee(tx)
       if (
@@ -554,7 +714,7 @@ export class EvmLegacyConsolidator {
           : BigInt(account.account.balanceWei) < tx.value + maximumFee
       )
         continue
-      return this.journal(lifetime).prepare({
+      return this.reserve(lifetime, {
         kind,
         recipient,
         intendedValueWei: params.value.toString(),
@@ -570,7 +730,13 @@ export class EvmLegacyConsolidator {
     if (kind === 'native' || accounts.length < 2)
       throw new RangeError('Insufficient unreserved native funds')
     const leader = accounts[0]!
-    const drain = await this.transaction(leader, recipient, params.value, fees)
+    const drain = await this.transaction(
+      leader,
+      recipient,
+      params.value,
+      fees,
+      excludedSource === undefined,
+    )
     const drainTx = Transaction.from(drain)
     let funded = BigInt(leader.account.balanceWei)
     const members: EvmNativeMemberPlan[] = []
@@ -618,12 +784,28 @@ export class EvmLegacyConsolidator {
       unsignedTransaction: drain,
       dependencies: members.map((_, i) => i),
     })
-    return this.journal(lifetime).prepare({
+    return this.reserve(lifetime, {
       kind,
       recipient,
       intendedValueWei: params.value.toString(),
       members,
     })
+  }
+  /** Records the plan. Its source accounts are claimed (synchronously, through the wallet's one
+   * claim) from before the journal write until the write is done; from then on the journal row
+   * itself keeps every other spender off them. */
+  private async reserve(
+    lifetime: WalletOperationLifetime | undefined,
+    plan: Parameters<ReturnType<EvmLegacyConsolidator['journal']>['prepare']>[0],
+  ): Promise<EvmNativeOperation> {
+    const release = this.config.claimSources?.(
+      plan.members.map(member => member.source),
+    )
+    try {
+      return await this.journal(lifetime).prepare(plan)
+    } finally {
+      release?.()
+    }
   }
   private async sign(
     row: EvmNativeOperation,
@@ -686,6 +868,7 @@ export class EvmLegacyConsolidator {
           new Error('Original native prerequisites are pending'),
         )
       if (member.observation.state !== 'included-success') {
+        await this.untilFundsSettled(member)
         await journal.markExposed(id, i)
         try {
           const response = await provider.broadcastTransaction(
@@ -699,7 +882,7 @@ export class EvmLegacyConsolidator {
         // A transfer or a contract call is one transaction: once handed to the network the
         // journal holds it, and the caller watches for its inclusion.
         if (row.kind !== 'legacy') return journal.get(id)
-        await this.observe(id, i, lifetime)
+        await this.watchForInclusion(id, i, lifetime)
         row = journal.get(id)
         member = row.members[i]!
         if (member.observation.state !== 'included-success')
@@ -712,6 +895,125 @@ export class EvmLegacyConsolidator {
       }
     }
     return journal.get(id)
+  }
+  /**
+   * Before a member is handed to the network: waits, at the block watcher's looks, until its
+   * account already held what the member spends `fundsSettleBlocks` blocks ago. The transfer
+   * that pays the recipient out of an account this same operation has just funded is the case:
+   * offered at once it was refused by the node and never sent (seen on Monad testnet: the
+   * funding transfer mined, the payment unknown to the node eight minutes later). Gives up
+   * waiting after 30 looks and hands it over as it is. Never throws.
+   */
+  private async untilFundsSettled(member: {
+    source: EvmNativeSource
+    unsignedTransaction: string
+  }): Promise<void> {
+    const { nextLook, fundsSettleBlocks, provider } = this.config
+    if (!nextLook || !fundsSettleBlocks) return
+    try {
+      const tx = Transaction.from(member.unsignedTransaction)
+      const needed = tx.value + nativeMaximumFee(tx)
+      for (let looks = 0; looks < 30 && !this.reobserveStopped; looks++) {
+        const head = await provider.getBlockNumber()
+        if (head < fundsSettleBlocks) return
+        if (
+          (await provider.getBalance(
+            member.source.address,
+            head - fundsSettleBlocks,
+          )) >= needed
+        )
+          return
+        await nextLook()
+      }
+    } catch {
+      /* A node that cannot answer for an earlier block is not waited on. */
+    }
+  }
+  /**
+   * After a member was handed to the network: looks at it now and at each look of the wallet's
+   * block watcher until the chain shows it in a block (succeeded or reverted), for at most
+   * `inclusionWaitMs`. A transfer the node does not know on two looks running is handed to it
+   * again, the same bytes. Returns with whatever was last recorded; the caller decides on that.
+   * A node asked the instant after a broadcast answers "pending" or "not known" for a transfer
+   * that is mined a block later: one look was not enough to learn that it was sent.
+   */
+  private async watchForInclusion(
+    id: string,
+    index: number,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    const { nextLook } = this.config
+    const until =
+      Date.now() + (nextLook ? this.config.inclusionWaitMs ?? 30_000 : 0)
+    let missed = false
+    for (;;) {
+      await this.observe(id, index, lifetime)
+      const member = this.config.journal.get(id).members[index]!
+      const state = member.observation.state
+      if (state === 'included-success' || state === 'included-revert') return
+      if (!nextLook || this.reobserveStopped || Date.now() >= until) return
+      if (state === 'missing' && missed && member.signed)
+        await this.config.provider
+          .broadcastTransaction(member.signed.rawTransaction)
+          .catch(() => undefined)
+      missed = state === 'missing'
+      try {
+        await nextLook()
+      } catch {
+        // The watcher was stopped: the wallet is closing.
+        return
+      }
+    }
+  }
+  /**
+   * One look at the chain for each transaction of one operation that was handed to the network
+   * and is not yet seen in a block; one the node does not know on two looks running is handed
+   * to it again (the same bytes). What a host calls, at each look of the block watcher, while
+   * it shows a transfer that is not final. Never rejects: a read that fails records nothing.
+   */
+  async lookAtOperation(operationId: string): Promise<void> {
+    const pass = async (lifetime?: WalletOperationLifetime) => {
+      const row = this.config.journal.get(operationId)
+      if (row.cancelled) return
+      for (let index = 0; index < row.members.length; index++) {
+        const before = this.config.journal.get(operationId).members[index]!
+        if (
+          !before.signed ||
+          !before.exposed ||
+          before.observation.state === 'included-success' ||
+          before.observation.state === 'included-revert'
+        )
+          continue
+        await this.observe(
+          operationId,
+          index,
+          lifetime,
+          () => !this.reobserveStopped,
+        )
+        const member = this.config.journal.get(operationId).members[index]!
+        const key = `${operationId}:${index}`
+        if (member.observation.state === 'included-success')
+          // Applied to this device's own state by the next re-observation tick or send.
+          this.localPassOwed = true
+        if (member.observation.state !== 'missing' || !member.signed) {
+          this.missedOnce.delete(key)
+          continue
+        }
+        if (!this.missedOnce.has(key)) {
+          this.missedOnce.add(key)
+          continue
+        }
+        await this.config.provider
+          .broadcastTransaction(member.signed.rawTransaction)
+          .catch(() => undefined)
+      }
+    }
+    try {
+      if (this.reobserveStopped) return
+      await (this.config.runLifetime ? this.config.runLifetime(pass) : pass())
+    } catch {
+      /* Closed, or the chain could not be read: nothing is known, nothing changes. */
+    }
   }
   /**
    * The local pass: applies every included member of EVERY operation in the journal to this
@@ -1421,7 +1723,11 @@ export class EvmLegacyConsolidator {
           left.push(source.address)
           continue
         }
-        const row = await journal.prepare({
+        // Through the same claim as every other plan: a coin a stamp is being paid from at
+        // this moment is not swept under it.
+        let row: EvmNativeOperation
+        try {
+          row = await this.reserve(lifetime, {
           kind: 'native',
           recipient,
           intendedValueWei: (balance - cost).toString(),
@@ -1438,6 +1744,12 @@ export class EvmLegacyConsolidator {
             },
           ],
         })
+        } catch (reason) {
+          // Claimed by another operation at this very moment: held, like a journal hold.
+          if (!(reason instanceof RangeError)) throw reason
+          held.push(source.address)
+          continue
+        }
         planned(row.operationId)
         operationIds.push(row.operationId)
         try {
@@ -1506,6 +1818,7 @@ export class EvmLegacyConsolidator {
     return this.legacyResult(await this.resumeOperation(operationId, lifetime))
   }
   private contractResendAt = new Map<string, { at: number; waitMs: number }>()
+  private readonly missedOnce = new Set<string>()
   /**
    * Drives an exposed contract call that is not yet in a block. Each due call is first looked
    * at once (`observe`: recorded `missing` when the node knows neither the transaction nor a
@@ -1768,22 +2081,43 @@ export class EvmLegacyConsolidator {
     const fees = await this.config.provider.getFeeData()
     const price = fees.maxFeePerGas ?? fees.gasPrice
     if (price == null) throw new Error('Native fee quote unavailable')
+    // What a transaction must be able to pay (the fee CAP) decides how many accounts are needed.
     const fee = 21000n * price
+    // What it is charged is the node's current price (base fee plus tip), times the gas limit:
+    // that is the fee quoted. (The cap, about twice that, was quoted before: 0.004242 MON for a
+    // transfer that was charged 0.002142.)
+    const charged = fees.gasPrice ?? price
     accounts.sort((a, b) => (a.spendableValue > b.spendableValue ? -1 : 1))
+    // The transfer to the recipient is charged its gas LIMIT, which is the node's estimate for
+    // that address (it may have code). The review shows that, not a flat 21,000. An estimate
+    // that cannot be made here is made again, and decides, when the transfer is planned.
+    const deliveryGas =
+      accounts.length > 0
+        ? await this.recipientGasLimit(
+            accounts[0]!.source.address,
+            getAddress(_recipient.raw),
+            value,
+          ).catch(() => 21000n)
+        : 21000n
+    const deliveryFee = deliveryGas * price
     let balance = 0n
     let count = 0
     for (const a of accounts) {
       balance += a.spendableValue
       count++
-      if (balance >= value + BigInt(count) * fee) break
+      if (balance >= value + deliveryFee + BigInt(count - 1) * fee) break
     }
-    if (!count || count > 64 || balance < value + BigInt(count) * fee)
+    if (
+      !count ||
+      count > 64 ||
+      balance < value + deliveryFee + BigInt(count - 1) * fee
+    )
       throw new RangeError('Insufficient native funds')
     return {
       inputCount: count,
-      deliveryFee: fee,
-      consolidationFee: BigInt(count - 1) * fee,
-      totalFee: BigInt(count) * fee,
+      deliveryFee: deliveryGas * charged,
+      consolidationFee: BigInt(count - 1) * 21000n * charged,
+      totalFee: (deliveryGas + BigInt(count - 1) * 21000n) * charged,
     }
   }
 }

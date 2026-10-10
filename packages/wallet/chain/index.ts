@@ -130,11 +130,11 @@ export {
   DirectMessageAlreadyAttemptedError,
   DirectMessageArgumentError,
   DirectMessageAttemptUnlinkedError,
+  DirectMessageStampBelowFeeError,
   NativeTransactionSubmissionError,
   TopicPostOutcomeUnknownError,
 } from "./active-chain";
 export {
-  CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
   CanonicalRelayCannotForwardError,
 } from "./monad-canonical-dm";
@@ -153,6 +153,7 @@ export type {
   ChainFamily,
   ChainTransaction,
   DirectMessageAttemptStatus,
+  DirectMessagePaymentSummary,
   DirectMessageClient,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
@@ -249,3 +250,8 @@ export {
   findEvmNativeOperationStatus,
 } from "./evm-native-operation-status";
 export type { EvmNativeOperationStatus } from "./evm-native-operation-status";
+export {
+  ChainUnreachableError,
+  ChainWaitCancelledError,
+  type ChainHealth,
+} from '../evm-block-watcher'

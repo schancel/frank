@@ -3,11 +3,14 @@
  * that stopped mid-send can ask "was this ID already attempted?" instead of paying twice or holding
  * the message for good.
  *
- * Real typed custody, real Level journals, the real link store, real directory admission, real
+ * Real typed custody, the real sent-message store, real directory admission, real
  * sealing/opening and real stamp funding, from the shared two-wallet fixture
  * (`canonical-two-wallets.testutil.ts`); only the chain RPC and the relay's HTTP surface are
- * stand-ins. Every test counts what reached the wallet's payment journal and the relay, not only
- * which error came back. Each test says what unmodified `main` does instead, or that it is a pin.
+ * stand-ins. Every test counts what was signed (`EvmStampPayer.sign`: one call is one payment
+ * set), what the wallet stored (one row per message ID) and what reached the relay, not only
+ * which error came back. Each test says what `main` before #1237 did instead, or that it is a pin.
+ *
+ * The property: a message ID that already has a payment attempt is never given a second one.
  */
 // First: the mock factories below load this file while the wallet modules are still loading.
 import {
@@ -15,6 +18,7 @@ import {
   mailboxes,
   mockBalances,
   mockFunded,
+  offlineChain,
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
@@ -29,10 +33,8 @@ import { conversationIdSaltOf } from './monad-chain'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { MonadRootBundle } from '../monad-wallet-material'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
-import {
-  MonadCanonicalStampClient,
-  MonadStampPendingAttemptError,
-} from '../monad-stamp-client'
+import { EvmStampPayer } from '../evm-stamp-payer'
+import { MonadStampPendingAttemptError } from '../monad-stamp-client'
 import {
   DirectMessageAlreadyAttemptedError,
   DirectMessageArgumentError,
@@ -43,41 +45,25 @@ import {
 } from './active-chain'
 import * as chainIndex from './index'
 import {
-  CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
   CanonicalRecipientUndeliverableError,
-  LevelCanonicalLinkStore,
+  LevelOutgoingMessageStore,
   type CanonicalDirectory,
 } from './monad-canonical-dm'
-import {
-  canonicalMonadStampClient,
-  installCanonicalDirectory,
-} from './monad-chain'
+import { installCanonicalDirectory } from './monad-chain'
 
 jest.mock('../monad-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
 )
-/** Set to make the chain accept a funding transfer and then lose its answer. */
-const mockFunding = { loseAnswer: false }
-jest.mock('../monad-http', () => {
-  const offline = require('./canonical-two-wallets.testutil').offlineHttpModule()
-  return {
-    ...offline,
-    MonadHttpClient: class extends offline.MonadHttpClient {
-      async submitRawTransaction(raw: string) {
-        const hash = await super.submitRawTransaction(raw)
-        if (mockFunding.loseAnswer)
-          throw new Error('funding broadcast, answer lost')
-        return hash
-      }
-    },
-  }
-})
+jest.mock('../monad-http', () =>
+  require('./canonical-two-wallets.testutil').offlineHttpModule(),
+)
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
-/** How the next durable write of a message link behaves. The real write runs unless dropped. */
-const mockLinkWrite: { mode: 'ok' | 'dropped' | 'written-then-reported-failed' } =
+/** How the next durable write of a sent-message record behaves. The real write runs unless
+ * dropped. */
+const mockMessageWrite: { mode: 'ok' | 'dropped' | 'written-then-reported-failed' } =
   { mode: 'ok' }
 jest.mock('../storage/level-durability', () => {
   const actual = jest.requireActual<
@@ -88,16 +74,16 @@ jest.mock('../storage/level-durability', () => {
     durablePut: async (
       ...args: Parameters<typeof actual.durablePut>
     ): Promise<void> => {
-      const isLink =
+      const isMessage =
         typeof args[2] === 'string' &&
         args[2].includes('"consumerId":"frank-dm:')
-      if (!isLink || mockLinkWrite.mode === 'ok')
+      if (!isMessage || mockMessageWrite.mode === 'ok')
         return actual.durablePut(...args)
-      const mode = mockLinkWrite.mode
-      mockLinkWrite.mode = 'ok'
+      const mode = mockMessageWrite.mode
+      mockMessageWrite.mode = 'ok'
       if (mode === 'written-then-reported-failed')
         await actual.durablePut(...args)
-      throw new Error(`link write ${mode}`)
+      throw new Error(`message write ${mode}`)
     },
   }
 })
@@ -141,20 +127,24 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   /** Every body the relay was handed, in any relay mode, in order. */
   let relayBodies: { body: Uint8Array; contentType: string }[]
   let relayMode: 'fixture' | 'ended'
-  let prepareIntent: jest.SpyInstance
-  let openLinks: jest.SpyInstance
+  /** One call signs one message's payment set: the count of payment attempts made. */
+  let sign: jest.SpyInstance
+  let openMessages: jest.SpyInstance
+  let main: string
 
   beforeEach(async () => {
+    offlineChain.reset()
     mockBalances.clear()
     mockFunded.length = 0
     mailboxes.clear()
-    mockFunding.loseAnswer = false
-    mockLinkWrite.mode = 'ok'
+    mockMessageWrite.mode = 'ok'
     relayBodies = []
     relayMode = 'fixture'
-    openLinks = jest.spyOn(LevelCanonicalLinkStore, 'open')
+    openMessages = jest.spyOn(LevelOutgoingMessageStore, 'open')
     f = await fixture()
     alice = f.alice
+    main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    expect(main).not.toBe(alice.identity.address.raw.toLowerCase())
     const base = await f.directoryFor('alice', f.alice, f.bob)
     directory = {
       ...base,
@@ -204,7 +194,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     bobInbox = []
     mailboxes.set(bobSubject, bobInbox)
     f.setMailbox(bobInbox)
-    prepareIntent = jest.spyOn(MonadCanonicalStampClient.prototype, 'prepareIntent')
+    sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
   })
   afterEach(async () => {
     jest.restoreAllMocks()
@@ -219,23 +209,30 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     if (options.directory !== false)
       uninstall = installCanonicalDirectory(alice, directory)
   }
-  /** One entry per record the wallet's payment journal holds: unsigned intents and signed
-   * attempts. Read through the stamp client's own correlation, given no links at all. */
-  const journal = () =>
-    canonicalMonadStampClient(alice).reconcileWorkflowLinks([])
-  /** Whether the journal holds a record made for this message ID. */
-  const journalHas = (id: string) =>
-    canonicalMonadStampClient(alice).hasConsumerRecord(consumerOf(id))
-  /** The live wallet's link rows, as its own store holds them. */
-  async function links() {
+  /** The live wallet's sent-message rows, as its own store holds them: the whole durable record
+   * of its payment attempts, one row per message ID. */
+  async function rows() {
     const address = (await alice.getReceiveAddress()).raw.toLowerCase()
-    const index = openLinks.mock.calls
+    const index = openMessages.mock.calls
       .map(call => String(call[0]).endsWith(`-evm-${address}`))
       .lastIndexOf(true)
-    const store: LevelCanonicalLinkStore = await openLinks.mock.results[index]
-      .value
+    const store: LevelOutgoingMessageStore = await openMessages.mock.results[
+      index
+    ].value
     return store.all()
   }
+  /** The coins some operation holds right now: funded pool accounts, and the main and identity
+   * accounts (in this fixture a send pays the whole stamp from the main account). */
+  const claimed = () => [
+    ...alice.pool
+      .records()
+      .filter(record => alice.pool.claimedBy(record.index) !== undefined)
+      .map(record => `pool:${record.index}`),
+    ...(alice.pool.accountClaimedBy(main) !== undefined ? ['main'] : []),
+    ...(alice.pool.accountClaimedBy(alice.identity.address.raw) !== undefined
+      ? ['identity']
+      : []),
+  ]
   /** Distinct payment sets the relay was handed (a re-send of the same set counts once). */
   const paymentSets = () =>
     new Set(
@@ -246,7 +243,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   /** One `send` from Alice to Bob and what it did. */
   async function attempt(extra: Extra = {}) {
     const before = {
-      intents: prepareIntent.mock.calls.length,
+      signed: sign.mock.calls.length,
       funded: mockFunded.length,
       requests: relayBodies.length,
     }
@@ -266,7 +263,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       result,
       error,
       labelled: isDirectMessageNotAttempted(error),
-      intents: prepareIntent.mock.calls.length - before.intents,
+      signed: sign.mock.calls.length - before.signed,
       funded: mockFunded.length - before.funded,
       requests: relayBodies.length - before.requests,
     }
@@ -287,7 +284,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       recipientSubject: bobSubject,
     })
     expect(repeat.labelled).toBe(false)
-    expect(repeat.intents).toBe(0)
+    expect(repeat.signed).toBe(0)
     expect(repeat.funded).toBe(0)
     expect(repeat.requests).toBe(0)
   }
@@ -308,18 +305,18 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       [first.result!.payloadDigest, CONVERSATION, ID_A],
       [second.result!.payloadDigest, CONVERSATION, ID_B],
     ])
-    // The stored links carry those IDs, one link and one payment set each.
-    expect((await links()).map(row => [row.digest, row.consumerId])).toEqual([
+    // The stored rows carry those IDs, one row and one payment set each.
+    expect((await rows()).map(row => [row.digest, row.consumerId])).toEqual([
       [first.result!.payloadDigest, consumerOf(ID_A)],
       [second.result!.payloadDigest, consumerOf(ID_B)],
     ])
-    expect(prepareIntent).toHaveBeenCalledTimes(2)
+    expect(sign).toHaveBeenCalledTimes(2)
     expect(paymentSets()).toBe(2)
   })
 
   // On main: the caller's conversation bytes are held by reference until sealing, so a buffer the
   // caller reuses while the send is waiting is sealed with its later content. With a chosen
-  // message ID that would let the repeat check and the intent disagree about the ID.
+  // message ID that would let the repeat check and the sealed message disagree about the ID.
   it('checks and seals the same bytes, whatever the caller does to its buffers during the send', async () => {
     const id = bytesOf(ID_A)
     const conversation = bytesOf(CONVERSATION)
@@ -338,7 +335,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect(
       (await received()).map(m => [m.conversationId, m.messageId]),
     ).toEqual([[CONVERSATION, ID_A]])
-    expect((await links()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
+    expect((await rows()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
     expectAlreadyAttempted(
       await attempt({ messageId: ID_A }),
       ID_A,
@@ -393,10 +390,6 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
 
   // PIN (A6): a caller that passes no `messageId` behaves as on main.
   it('pin: without a message ID the wallet draws a fresh random one for every send, as before', async () => {
-    const journalRead = jest.spyOn(
-      MonadCanonicalStampClient.prototype,
-      'hasConsumerRecord',
-    )
     const first = await attempt()
     const second = await attempt({ conversationId: CONVERSATION })
     expect(first.error).toBeUndefined()
@@ -433,50 +426,27 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect(toHex(conversationIdSaltOf(f.alice)!)).toBe(toHex(senderSalt))
     expect(senderSalt).toHaveLength(16)
     expect(opened[1].conversationId).toBe(CONVERSATION)
-    expect((await links()).map(row => row.consumerId)).toEqual(
+    expect((await rows()).map(row => row.consumerId)).toEqual(
       opened.map(m => consumerOf(m.messageId!)),
     )
+    expect(sign).toHaveBeenCalledTimes(2)
     expect(paymentSets()).toBe(2)
-    // The repeat rule's journal read is never made for a caller that chose no ID.
-    expect(journalRead).not.toHaveBeenCalled()
   })
 
-  // On main: no parameter and no such read. A journal that cannot be read answers nothing about
-  // the ID; the call created nothing, so it is refused like any other refusal before the intent.
-  it('refuses, labelled and without an intent, when the journal cannot be read for a supplied ID', async () => {
-    const unreadable = new Error('journal unreadable')
-    const journalRead = jest
-      .spyOn(MonadCanonicalStampClient.prototype, 'hasConsumerRecord')
-      .mockImplementation(() => {
-        throw unreadable
-      })
-    const refused = await attempt({ messageId: ID_A })
-    expect(refused.error).toBe(unreadable)
-    expect(refused.labelled).toBe(true)
-    expect(refused.intents).toBe(0)
-    expect(refused.funded).toBe(0)
-    expect(refused.requests).toBe(0)
-    journalRead.mockRestore()
-    expect(journal()).toHaveLength(0)
-    // The same ID is then a first attempt.
-    expect((await attempt({ messageId: ID_A })).error).toBeUndefined()
-    expect(prepareIntent).toHaveBeenCalledTimes(1)
-    expect(paymentSets()).toBe(1)
-  })
-
-  // PIN: the label rules existing callers rely on. A refusal before inventory preparation is
+  // PIN: the label rules existing callers rely on. A refusal before anything is claimed is
   // labelled exactly as on main; so is the same refusal when the caller chose the ID.
-  it('pin: a labelled pre-intent refusal still reads true, with or without a message ID', async () => {
+  it('pin: a labelled refusal before any payment still reads true, with or without a message ID', async () => {
     uninstall()
     for (const extra of [{}, { messageId: ID_A }]) {
       const refused = await attempt(extra)
       expect(refused.error).toBeInstanceOf(CanonicalMessagingPendingError)
       expect(refused.labelled).toBe(true)
-      expect(refused.intents).toBe(0)
+      expect(refused.signed).toBe(0)
       expect(refused.funded).toBe(0)
       expect(refused.requests).toBe(0)
     }
-    expect(journal()).toHaveLength(0)
+    expect(await rows()).toHaveLength(0)
+    expect(claimed()).toEqual([])
     // The three new answers never read true, whatever they are asked about.
     for (const error of [
       new DirectMessageArgumentError('messageId'),
@@ -535,12 +505,12 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
           argument,
         })
         expect([where, refused.labelled]).toEqual([where, false])
-        expect(refused.intents).toBe(0)
+        expect(refused.signed).toBe(0)
         expect(refused.funded).toBe(0)
         expect(refused.requests).toBe(0)
       }
-    expect(journal()).toHaveLength(0)
-    expect(await links()).toHaveLength(0)
+    expect(await rows()).toHaveLength(0)
+    expect(claimed()).toEqual([])
     expect(await received()).toHaveLength(0)
     // It is refused before anything else is looked at: also with no directory installed, where a
     // well-formed call gets the labelled "not available yet" refusal.
@@ -554,8 +524,8 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect(mixed.error).toMatchObject({ argument: 'conversationId' })
     const sent = await attempt({ messageId: ID_A })
     expect(sent.error).toBeUndefined()
-    expect((await links()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
-    expect(prepareIntent).toHaveBeenCalledTimes(1)
+    expect((await rows()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
+    expect(sign).toHaveBeenCalledTimes(1)
   })
 
   // On main (A4): the second call draws a new random ID and pays for the message a second time.
@@ -603,9 +573,9 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     await reopen({ directory: false })
     expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest)
 
-    expect(prepareIntent).toHaveBeenCalledTimes(1)
+    expect(sign).toHaveBeenCalledTimes(1)
     expect(paymentSets()).toBe(1)
-    expect((await links()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
+    expect((await rows()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
     expect((await received()).map(m => m.messageId)).toEqual([ID_A])
     // Another ID is a different message and is sent.
     uninstall = installCanonicalDirectory(alice, directory)
@@ -622,21 +592,24 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       messageId: ID_A,
       onAttemptCreated: value => void (digest = value),
     })
-    // The send reports the relay's final answer, and the link holds the final status (#1323).
+    // The send reports the relay's final answer, and the row holds the final status (#1323).
     expect(first.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
     expect(first.labelled).toBe(false)
-    expect(first.intents).toBe(1)
-    expect(journalHas(ID_A)).toBe(true)
-    expect((await links())[0]).toMatchObject({
-      outcome: 'dead',
-      reason: 'undeliverable',
-    })
+    expect(first.signed).toBe(1)
+    expect(await rows()).toEqual([
+      expect.objectContaining({
+        consumerId: consumerOf(ID_A),
+        digest,
+        outcome: 'dead',
+        reason: 'undeliverable',
+      }),
+    ])
 
     expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
     await reopen()
     expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
-    expect(journal()).toHaveLength(1)
-    expect(prepareIntent).toHaveBeenCalledTimes(1)
+    expect(await rows()).toHaveLength(1)
+    expect(sign).toHaveBeenCalledTimes(1)
     expect(paymentSets()).toBe(1)
   })
 
@@ -648,14 +621,16 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       const first = await attempt({ messageId: ID_A })
       expect(first.error).toBeInstanceOf(CanonicalMessagingPendingError)
       expect(first.labelled).toBe(true)
-      expect(journal()).toHaveLength(0)
+      expect(first.signed).toBe(0)
+      expect(await rows()).toHaveLength(0)
+      expect(claimed()).toEqual([])
       await reopen()
-      expect(journal()).toHaveLength(0)
-      expect(await links()).toHaveLength(0)
+      expect(await rows()).toHaveLength(0)
+      expect(claimed()).toEqual([])
 
       const second = await attempt({ messageId: ID_A })
       expect(second.error).toBeUndefined()
-      expect(second.intents).toBe(1)
+      expect(second.signed).toBe(1)
       expect((await received()).map(m => m.messageId)).toEqual([ID_A])
       expect(paymentSets()).toBe(1)
       expectAlreadyAttempted(
@@ -665,45 +640,57 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       )
     })
 
-    // Row 2. On main: no parameter. Funding moved the wallet's own money between its own
-    // accounts and paid no one; no intent exists, so the repeat must not be "already attempted".
-    it('row 2, inventory funding was broadcast and then threw: no intent, and the repeat is the first attempt', async () => {
-      mockFunding.loseAnswer = true
+    // Row 2. The coins were claimed and signing failed: nothing signed left the wallet and
+    // nothing is stored, so the coins are free at once and the repeat must not be "already
+    // attempted". (The earlier row 2, "inventory funding was broadcast and then threw", is gone
+    // with inline funding: a send funds nothing.)
+    it('row 2, coins claimed and signing failed: nothing stored, nothing held, and the repeat is the first attempt', async () => {
+      sign.mockRejectedValueOnce(new Error('signing failed'))
       const first = await attempt({ messageId: ID_A })
-      mockFunding.loseAnswer = false
-      expect(first.error).toBeDefined()
+      expect(first.error).toEqual(new Error('signing failed'))
       expect(first.error).not.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
       expect(first.labelled).toBe(false)
-      expect(first.funded).toBeGreaterThan(0)
-      expect(first.intents).toBe(0)
+      expect(first.funded).toBe(0)
       expect(first.requests).toBe(0)
-      expect(journal()).toHaveLength(0)
+      expect(await rows()).toHaveLength(0)
+      // The message that failed holds no coin.
+      expect(claimed()).toEqual([])
       await reopen()
-      expect(journal()).toHaveLength(0)
-      expect(await links()).toHaveLength(0)
+      expect(await rows()).toHaveLength(0)
+      expect(claimed()).toEqual([])
 
       const second = await attempt({ messageId: ID_A })
       expect(second.error).not.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
       expect(second.error).not.toBeInstanceOf(DirectMessageAttemptUnlinkedError)
       expect(second.error).toBeUndefined()
-      expect(prepareIntent).toHaveBeenCalledTimes(1)
+      expect(second.funded).toBe(0)
       expect(paymentSets()).toBe(1)
       expect((await received()).map(m => m.messageId)).toEqual([ID_A])
+      expectAlreadyAttempted(
+        await attempt({ messageId: ID_A }),
+        ID_A,
+        second.result!.payloadDigest,
+      )
     })
 
-    // Row 3 (A5 as amended by 19.1 rule 4; the power-loss model). On main: no parameter; a
-    // repeat draws a new ID and gets the generic labelled hold, which a consumer retries for ever.
-    it('row 3, intent durable and the link never written: the distinct unlinked answer, never a second intent', async () => {
-      mockLinkWrite.mode = 'dropped'
+    // Row 3 (the power-loss model). The payment set is signed and its record's write is dropped:
+    // whether the record is on disk is unknown to this session, so this ID is never signed for
+    // again in it and its accounts stay held. Nothing left the wallet. After a restart the record
+    // is not there, the accounts are free, and the repeat is the first (and only) payment attempt.
+    // On main: no parameter; a repeat draws a new ID.
+    it('row 3, signed and the record write dropped: the distinct unlinked answer for the session, never a second payment set; after a restart the repeat is the first attempt', async () => {
+      mockMessageWrite.mode = 'dropped'
       const onAttemptCreated = jest.fn()
       const first = await attempt({ messageId: ID_A, onAttemptCreated })
-      expect(first.error).toEqual(new Error('link write dropped'))
+      expect(first.error).toEqual(new Error('message write dropped'))
       expect(first.labelled).toBe(false)
-      expect(first.intents).toBe(1)
+      expect(first.signed).toBe(1)
       expect(first.requests).toBe(0)
       expect(onAttemptCreated).not.toHaveBeenCalled()
-      expect(journalHas(ID_A)).toBe(true)
-      expect(await links()).toHaveLength(0)
+      expect(await rows()).toHaveLength(0)
+      // The signed payment's coin stays held: nothing else can spend it this session.
+      const heldForA = claimed()
+      expect(heldForA).toEqual(['main'])
 
       const expectUnlinked = (repeat: Awaited<ReturnType<typeof attempt>>) => {
         expect(repeat.error).toBeInstanceOf(DirectMessageAttemptUnlinkedError)
@@ -712,58 +699,88 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
           messageId: ID_A,
         })
         expect(repeat.labelled).toBe(false)
-        expect(repeat.intents).toBe(0)
+        expect(repeat.signed).toBe(0)
         expect(repeat.funded).toBe(0)
         expect(repeat.requests).toBe(0)
       }
-      // In the same session, and after a real restart.
-      expectUnlinked(await attempt({ messageId: ID_A }))
-      await reopen()
-      expect(await links()).toHaveLength(0)
+      // For the rest of the session, in either form of the ID.
       expectUnlinked(await attempt({ messageId: ID_A }))
       expectUnlinked(await attempt({ messageId: bytesOf(ID_A) }))
       // Answered before the directory, like the repeat rule.
       uninstall()
       expectUnlinked(await attempt({ messageId: ID_A }))
       uninstall = installCanonicalDirectory(alice, directory)
-
-      // Pin: every other send is still held by the existing wallet-wide hold, labelled as before.
-      for (const extra of [{}, { messageId: ID_B }]) {
-        const held = await attempt(extra)
-        expect(held.error).toBeInstanceOf(CanonicalMessagingHoldError)
-        expect(held.labelled).toBe(true)
-        expect(held.intents).toBe(0)
-      }
-      expect(journal()).toHaveLength(1)
-      expect(journalHas(ID_A)).toBe(true)
-      expect(prepareIntent).toHaveBeenCalledTimes(1)
+      expect(claimed()).toEqual(heldForA)
+      expect(sign).toHaveBeenCalledTimes(1)
       expect(relayBodies).toHaveLength(0)
       expect(await received()).toHaveLength(0)
+
+      // Another message is not refused for it: another ID is sent, paid from another coin (the
+      // identity account, given money here), never from the held one.
+      mockBalances.set(alice.identity.address.raw.toLowerCase(), 10n ** 18n)
+      const other = await attempt({ messageId: ID_B })
+      expect(other.error).toBeUndefined()
+      expect(other.signed).toBe(1)
+      expect((await received()).map(m => m.messageId)).toEqual([ID_B])
+      expect(paymentSets()).toBe(1)
+      expect(
+        (await rows()).flatMap(row => row.payments.map(p => p.source)),
+      ).toEqual(['identity'])
+      expect(claimed()).toContain('main')
+
+      // A real restart: no record of ID_A exists, so nothing of it was ever handed out. Its
+      // accounts are free and the repeat is the first attempt: one payment set at the relay.
+      await reopen()
+      expect((await rows()).map(row => row.consumerId)).toEqual([
+        consumerOf(ID_B),
+      ])
+      expect(claimed()).not.toContain('main')
+      const second = await attempt({ messageId: ID_A })
+      expect(second.error).toBeUndefined()
+      expect(second.signed).toBe(1)
+      expect(second.requests).toBe(1)
+      expect(paymentSets()).toBe(2)
+      expect((await received()).map(m => m.messageId)).toEqual([ID_B, ID_A])
+      expectAlreadyAttempted(
+        await attempt({ messageId: ID_A }),
+        ID_A,
+        second.result!.payloadDigest,
+      )
+      // The relay was handed two requests in all: ID_B's, and the one payment set of ID_A.
+      expect(relayBodies).toHaveLength(2)
+      expect(sign).toHaveBeenCalledTimes(3)
     })
 
     // Row 4. On main: no parameter; the repeat draws a new ID, and after the restart heals the
     // first attempt and it delivers, a caller that sent again has paid twice.
-    it('row 4, link written durably but its write reported an error: never a second intent, and the original after a restart', async () => {
-      mockLinkWrite.mode = 'written-then-reported-failed'
+    it('row 4, record written durably but its write reported an error: never a second payment set, and the original after a restart, delivered once', async () => {
+      mockMessageWrite.mode = 'written-then-reported-failed'
       const first = await attempt({ messageId: ID_A })
       expect(first.error).toEqual(
-        new Error('link write written-then-reported-failed'),
+        new Error('message write written-then-reported-failed'),
       )
       expect(first.labelled).toBe(false)
-      expect(first.intents).toBe(1)
+      expect(first.signed).toBe(1)
       expect(first.requests).toBe(0)
-      expect(journalHas(ID_A)).toBe(true)
+      const heldForA = claimed()
+      expect(heldForA).toEqual(['main'])
 
-      // This session never learned the link is there: it reports the record as unlinked.
+      // This session never learned the record is there: it reports the attempt as unlinked.
       const sameSession = await attempt({ messageId: ID_A })
       expect(sameSession.error).toBeInstanceOf(DirectMessageAttemptUnlinkedError)
       expect(sameSession.labelled).toBe(false)
-      expect(sameSession.intents).toBe(0)
+      expect(sameSession.signed).toBe(0)
+      expect(sameSession.funded).toBe(0)
+      expect(sameSession.requests).toBe(0)
+      expect(claimed()).toEqual(heldForA)
 
       await reopen()
-      const stored = await links()
+      const stored = await rows()
       expect(stored.map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
       const digest = stored[0].digest
+      // The stored message holds its coin again from the moment the wallet opens.
+      expect(claimed()).toEqual(heldForA)
+      expect(stored[0].payments.map(p => p.source)).toEqual(heldForA)
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest)
       // Reconciling the returned digest finishes and delivers the ORIGINAL attempt.
       expect(
@@ -772,8 +789,15 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
           payloadDigests: [digest],
         }),
       ).toEqual({ [digest]: 'delivered' })
+      // Once: later passes hand the relay nothing more.
+      for (let pass = 0; pass < 10; pass++)
+        await f.chain.directMessages.reconcileAttempts({
+          wallet: alice,
+          payloadDigests: [digest],
+        })
+      expect(relayBodies).toHaveLength(1)
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest)
-      expect(prepareIntent).toHaveBeenCalledTimes(1)
+      expect(sign).toHaveBeenCalledTimes(1)
       expect(paymentSets()).toBe(1)
       expect(
         (await received()).map(m => [m.payloadDigest, m.messageId]),
@@ -781,7 +805,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     })
 
     // Row 5 (A3). On main: the second call draws a new ID; once the first delivers, it pays again.
-    it('row 5 (A3), link durable and onAttemptCreated threw: the original digest, one intent, one payment set', async () => {
+    it('row 5 (A3), record durable and onAttemptCreated threw: the original digest, signed once, one payment set', async () => {
       let digest: string | undefined
       const refusal = new Error('caller could not save the attempt')
       const first = await attempt({
@@ -793,15 +817,16 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       })
       expect(first.error).toBe(refusal)
       expect(first.labelled).toBe(false)
-      expect(first.intents).toBe(1)
+      expect(first.signed).toBe(1)
       expect(first.requests).toBe(0)
       expect(digest).toMatch(/^[0-9a-f]{64}$/)
 
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
       await reopen()
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
-      expect(journal()).toHaveLength(1)
-      expect(journalHas(ID_A)).toBe(true)
+      expect((await rows()).map(row => [row.consumerId, row.digest])).toEqual([
+        [consumerOf(ID_A), digest],
+      ])
       expect(relayBodies).toHaveLength(0)
 
       expect(
@@ -811,7 +836,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         }),
       ).toEqual({ [digest!]: 'delivered' })
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
-      expect(prepareIntent).toHaveBeenCalledTimes(1)
+      expect(sign).toHaveBeenCalledTimes(1)
       expect(paymentSets()).toBe(1)
       expect(
         (await received()).map(m => [m.payloadDigest, m.messageId]),
@@ -828,15 +853,17 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         onAttemptCreated: value => void (digest = value),
       })
       expect(first.error).toBeInstanceOf(MonadStampPendingAttemptError)
+      expect(first.error).toMatchObject({ payloadHashes: [digest] })
       expect(first.labelled).toBe(false)
-      expect(first.intents).toBe(1)
+      expect(first.signed).toBe(1)
       expect(first.requests).toBeGreaterThan(0)
 
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
       await reopen()
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
-      expect(journal()).toHaveLength(1)
-      expect(journalHas(ID_A)).toBe(true)
+      expect((await rows()).map(row => [row.consumerId, row.digest])).toEqual([
+        [consumerOf(ID_A), digest],
+      ])
 
       f.setPhase('delivered')
       expect(
@@ -846,7 +873,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
         }),
       ).toEqual({ [digest!]: 'delivered' })
       expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
-      expect(prepareIntent).toHaveBeenCalledTimes(1)
+      expect(sign).toHaveBeenCalledTimes(1)
       expect(paymentSets()).toBe(1)
       expect(
         (await received()).map(m => [m.payloadDigest, m.messageId]),
@@ -855,7 +882,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   })
 
   // On main: both calls draw their own random ID and both pay.
-  it('two concurrent sends with one ID make exactly one intent and one payment set', async () => {
+  it('concurrent sends with one ID sign exactly once and make one payment set', async () => {
     const send = () =>
       f.chain.directMessages.send({
         wallet: alice,
@@ -882,9 +909,9 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       })
       expect(isDirectMessageNotAttempted(reason)).toBe(false)
     }
-    expect(prepareIntent).toHaveBeenCalledTimes(1)
+    expect(sign).toHaveBeenCalledTimes(1)
     expect(paymentSets()).toBe(1)
-    expect((await links()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
+    expect((await rows()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
     expect((await received()).map(m => m.messageId)).toEqual([ID_A])
   })
 })

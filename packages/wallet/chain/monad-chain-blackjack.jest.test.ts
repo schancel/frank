@@ -233,9 +233,17 @@ describe('two typed wallets play blackjack through stamped messages', () => {
       expect(dealer.paid[dealer.paid.length - 1]).toBe(script.owed > 0n ? script.owed : STAMP)
       // Nothing else the dealer sent carried more than an ordinary stamp.
       expect(dealer.paid.slice(0, -1).every(v => v === STAMP)).toBe(true)
-      // Spendable balances only went down: what a wallet receives as stamps is not spendable.
-      expect(await player.balance()).toBeLessThan(START_BALANCE - totalStakeWei(final))
-      expect(await dealer.balance()).toBeLessThan(START_BALANCE - script.owed)
+      // Spendable balances only went down, by at least what each paid: what a wallet receives
+      // as stamps is not spendable. (A stamp is paid straight from the main account, and the
+      // offline chain charges no gas, so nothing more than the stamps themselves left it.)
+      // What a wallet received as stamps is money it can spend (a coin once the chain shows
+      // it), so a balance is at most what it started with, less what it paid, plus that.
+      expect(await player.balance()).toBeLessThanOrEqual(
+        START_BALANCE - totalStakeWei(final) + player.totalReceived(),
+      )
+      expect(await dealer.balance()).toBeLessThanOrEqual(
+        START_BALANCE - script.owed + dealer.totalReceived(),
+      )
     })
   })
 
@@ -355,7 +363,10 @@ describe('two typed wallets play blackjack through stamped messages', () => {
     const { gameId, dealer, player } = await challenge(alice, 'player', 400_000n)
     const accepted = dealer.hand(gameId)!
     expect(accepted.phase).toBe('open')
-    expect(accepted.maxBetWei).toBe(bobCap)
+    // Bob's cover counts the challenge's own stamp, which he received and can spend.
+    expect(accepted.maxBetWei).toBe(
+      maxDealerBetWei(RESERVE + 1_200_000n + STAMP, RESERVE),
+    )
     expect(player.hand(gameId)).toEqual(accepted)
     // The player's own check refuses more than the dealer's figure...
     expect(

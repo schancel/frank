@@ -44,6 +44,8 @@ const clientKeys = new Set([
   "contracts",
   "dex",
   "gasChargedOn",
+  "reserveBalanceWei",
+  "spendSpacingBlocks",
   "exchange",
   "wallet",
 ]);

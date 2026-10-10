@@ -247,6 +247,9 @@ export interface RealWallet {
   mainAccount: string
   handle: EvmChainWalletHandle
   chain: ActiveChain
+  /** The verified directory installed for this wallet. A check that needs to stand between the
+   * wallet and the relay (to drop one answer, say) installs a copy of it with its own `fetch`. */
+  directory: Parameters<typeof installCanonicalDirectory>[1]
   /** Sends and waits until the relay has delivered it. The relay may first answer "accepted,
    * payment not confirmed yet"; the same attempt is then reconciled (never sent again) until it is
    * delivered, as the app and the bot host do. Returns the message's payload digest. */
@@ -330,6 +333,7 @@ export async function openRealWallet(params: {
     mainAccount: (await handle.getReceiveAddress()).raw,
     handle,
     chain,
+    directory: directory.rawDirectory,
     async send(to, items, stampValueWei, timeoutMs = 180_000) {
       let digest: string | undefined
       try {
@@ -535,6 +539,9 @@ export async function startRealStack(options: {
         stampValueWei: walletOptions?.stampValueWei,
         burnAddress: env.MONAD_STAMP_BURN_ADDRESS,
       })
+      // Opening a label again (after the caller closed it) replaces the earlier handle.
+      const earlier = wallets.findIndex(opened => opened.label === label)
+      if (earlier >= 0) wallets.splice(earlier, 1)
       wallets.push(wallet)
       if (walletOptions?.keepIdentityFunds) keepIdentity.add(wallet)
       return wallet

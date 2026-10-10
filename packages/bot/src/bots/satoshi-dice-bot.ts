@@ -23,15 +23,22 @@ import {
   isDiceTarget,
 } from "@frank/wallet/message-item-plugins/dice/fair";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
+import {
+  Outbox,
+  refuse,
+  type Received,
+  replyFree,
+  sendFree,
+  tableMinimumWei,
+  bankAvailableWei,
+  BANK_RESERVE_WEI,
+} from "./money";
 
 /** The most one roll pays, stake included: the table limit. */
-export const DICE_DEFAULT_MAX_PAYOUT_WEI = 250_000_000_000_000_000n; // 0.25 MON
-/** Kept back from the bank's balance when it checks that it can cover a bet. */
-export const BANK_RESERVE_WEI = 20_000_000_000_000_000n; // 0.02 MON
+export { BANK_RESERVE_WEI };
 
-/** What the bot says to anything that is not a bet. It names the table limit, so a player
- * knows it before a bet is refused for it. */
+/** What the bot says to anything that is not a bet. It names the most a roll can pay right
+ * now (what the bank has available), so a player knows it before a bet is refused for it. */
 export function diceHelp(maxPayoutWei: bigint): string {
   return `Satoshi Dice: pick a target, and you win if the number rolled (0 to 65,535) is below it. 1.9% house edge. The most one roll pays is ${formatMon(maxPayoutWei)}.
 
@@ -56,10 +63,16 @@ export class SatoshiDiceBot implements FrankBotDefinition {
   private readonly outbox = new Outbox("dice");
   readonly schedules = [this.outbox.schedule];
   /** The table limit: also what the host sizes this bot's funding against. */
-  readonly maxPayoutWei: bigint;
+  /** An operator's own ceiling on one roll's payout, if any. The table's limit is what the
+   * bank has available, and never more than this. */
+  readonly maxPayoutWei: bigint | undefined;
+  /** The smallest stake the operator set. The table's minimum is this or the chain's fee
+   * floor, whichever is larger. A roll with no stake is always free. */
+  private readonly minWagerWei: bigint;
 
-  constructor(options?: { maxPayoutWei?: bigint }) {
-    this.maxPayoutWei = options?.maxPayoutWei ?? DICE_DEFAULT_MAX_PAYOUT_WEI;
+  constructor(options?: { maxPayoutWei?: bigint; minWagerWei?: bigint }) {
+    this.maxPayoutWei = options?.maxPayoutWei;
+    this.minWagerWei = options?.minWagerWei ?? 0n;
   }
 
   getProfile(): BotProfile {
@@ -77,7 +90,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.offer(ctx, user.address),
-        { type: "text", text: `Welcome to Satoshi Dice.\n\n${diceHelp(this.maxPayoutWei)}` },
+        { type: "text", text: `Welcome to Satoshi Dice.\n\n${diceHelp(await this.limit(ctx))}` },
       ]);
     } catch (err) {
       console.warn(`[dice] Failed to welcome ${user.address}:`, err);
@@ -98,6 +111,15 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     };
   }
 
+  /** The most one roll can pay right now: what the bank has available (`bankAvailableWei`),
+   * and never more than the operator's own ceiling. */
+  private async limit(ctx: BotContext): Promise<bigint> {
+    const available = await bankAvailableWei(ctx, this.outbox);
+    return this.maxPayoutWei !== undefined && this.maxPayoutWei < available
+      ? this.maxPayoutWei
+      : available;
+  }
+
   /** A message cut off by a crash: what it paid is accounted for (see `Outbox.interrupted`). */
   onInterrupted(message: InterruptedMessage, ctx: BotContext): Promise<void> {
     return this.outbox.interrupted(ctx, message);
@@ -116,7 +138,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     // is ever a stake.
     await replyFree(msgCtx, [
       await this.offer(ctx, msgCtx.peerAddress),
-      { type: "text", text: diceHelp(this.maxPayoutWei) },
+      { type: "text", text: diceHelp(await this.limit(ctx)) },
     ]);
   }
 
@@ -164,10 +186,24 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       wagerWei = -1n;
     }
     if (wagerWei < 0n) return refused("That stake is not an amount. No roll was made.");
-    if (dicePayoutWei(wagerWei, target) > this.maxPayoutWei)
+    // A stake, and what it can win, must be worth moving: never below the chain's fee floor.
+    const minWagerWei = await tableMinimumWei(ctx, this.minWagerWei);
+    if (
+      wagerWei > 0n &&
+      (wagerWei < minWagerWei || dicePayoutWei(wagerWei, target) < minWagerWei)
+    )
+      return refused(
+        `The smallest stake at this table is ${formatMon(
+          minWagerWei
+        )}, and a win must pay at least that. No roll was made.`
+      );
+    // The most a roll pays is what the bank has available now: worked out again here, when
+    // the bet is accepted, not taken from what the table said earlier.
+    const limitWei = await this.limit(ctx);
+    if (wagerWei > 0n && dicePayoutWei(wagerWei, target) > limitWei)
       return refused(
         `That stake could win more than the table limit of ${formatMon(
-          this.maxPayoutWei
+          limitWei
         )} per roll. No roll was made.`
       );
     // The stake is what this message is confirmed, on chain, to have paid. Never what it says.
@@ -178,18 +214,6 @@ export class SatoshiDiceBot implements FrankBotDefinition {
         )} is confirmed as paid with it. No roll was made.`
       );
 
-    // The bank must hold the most this roll can pay before the bet is taken.
-    if (
-      wagerWei > 0n &&
-      (await ctx.getBalance().catch(() => 0n)) <
-        dicePayoutWei(wagerWei, target) +
-          BANK_RESERVE_WEI +
-          // What is already written down as owed is not there to win.
-          (await this.outbox.owedWei(ctx))
-    )
-      return refused(
-        "The bank cannot cover that bet right now. No roll was made."
-      );
     // Anything paid above a stated stake goes back with the result. (A free roll states no
     // stake: what its message paid is the price of the message.)
     const excessWei = wagerWei > 0n ? received.confirmedWei - wagerWei : 0n;

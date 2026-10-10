@@ -14,8 +14,6 @@ import { isGameId, type HandItem } from '@frank/wallet/message-item-plugins/blac
 import { formatMon } from '@frank/wallet/monad-amount'
 
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
-import { RPS_DEFAULT_MAX_WAGER_WEI } from '../src/bots/rps-bot'
-import { DICE_DEFAULT_MAX_PAYOUT_WEI } from '../src/bots/satoshi-dice-bot'
 import { DemoHandle } from './demo'
 import { RealStack, RealWallet, startRealStack } from './real-stack'
 
@@ -31,8 +29,9 @@ export interface ReplyExpectations {
   raffleMaxEntries?: number
   /** The dealer's table minimum (`BLACKJACK_BOT_MIN_WAGER_WEI`); the bot's default when unset. */
   blackjackMinWagerWei?: bigint
-  /** The dice table limit and the rock-paper-scissors table limit; the bots' defaults when unset
-   * (the demo starts both with their defaults). */
+  /** The dice table limit and the rock-paper-scissors table limit when the run fixes them. Unset
+   * (the demo): each table states what its bank has available at that moment, so the check is
+   * that a limit is named, whatever the amount. */
   diceMaxPayoutWei?: bigint
   rpsMaxWagerWei?: bigint
 }
@@ -139,16 +138,17 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
       if (!table.rollId) return no('the table names no roll')
       if (!isCommitment(table.commitment)) return no('the table carries no commitment to the secret of its roll')
       if (table.serverSecret !== undefined) return no('the table gives away the secret of its roll before the bet')
-      const limitWei = expected.diceMaxPayoutWei ?? DICE_DEFAULT_MAX_PAYOUT_WEI
       const said = text?.text ?? ''
-      if (!said.includes(`The most one roll pays is ${formatMon(limitWei)}`) || !/Your stake is what your bet message pays/.test(said)) {
-        return no(`the help does not name the table limit of ${formatMon(limitWei)} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
+      const named = /The most one roll pays is ([0-9.]+ MON)/.exec(said)?.[1]
+      const limit = expected.diceMaxPayoutWei === undefined ? named : formatMon(expected.diceMaxPayoutWei)
+      if (!named || named !== limit || !/Your stake is what your bet message pays/.test(said)) {
+        return no(`the help does not name the table limit${limit ? ` of ${limit}` : ''} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
       }
       return (
         paid() ?? {
           name: bot,
           ok: true,
-          detail: `a free table for roll ${table.rollId.slice(0, 8)}, secret committed, paying up to ${formatMon(limitWei)} a roll`,
+          detail: `a free table for roll ${table.rollId.slice(0, 8)}, secret committed, paying up to ${limit} a roll`,
         }
       )
     }
@@ -162,16 +162,17 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
       if (start.botMove !== undefined || start.secretSalt !== undefined) {
         return no('the start gives away the bot\'s move or its salt before the player has moved')
       }
-      const limitWei = expected.rpsMaxWagerWei ?? RPS_DEFAULT_MAX_WAGER_WEI
       const said = text?.text ?? ''
-      if (!said.includes(`Your stake is what your move message pays me, up to ${formatMon(limitWei)}`)) {
-        return no(`the help does not name the table limit of ${formatMon(limitWei)} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
+      const named = /Your stake is what your move message pays me, up to ([0-9.]+ MON)/.exec(said)?.[1]
+      const limit = expected.rpsMaxWagerWei === undefined ? named : formatMon(expected.rpsMaxWagerWei)
+      if (!named || named !== limit) {
+        return no(`the help does not name the table limit${limit ? ` of ${limit}` : ''} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
       }
       return (
         paid() ?? {
           name: bot,
           ok: true,
-          detail: `a free start of match ${start.matchId.slice(0, 8)}, move committed, stakes up to ${formatMon(limitWei)}`,
+          detail: `a free start of match ${start.matchId.slice(0, 8)}, move committed, stakes up to ${limit}`,
         }
       )
     }

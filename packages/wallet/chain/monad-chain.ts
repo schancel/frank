@@ -2680,12 +2680,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               const received = spendableCoins(coinStore.all());
               // Plus what sits in the single-use sending accounts that are funded and not yet
               // used: a message pays its stamp from those first.
-              const sending = (
-                await pool.fundedCapacities(provider, 0n, {
-                  fromBalance: true,
-                  maxCacheAgeMs: PRIMARY_BALANCE_CACHE_TTL_MS,
-                })
-              ).reduce((sum, account) => sum + account.capacityWei, 0n);
+              const sending = await pool.availableBalanceTotal(
+                provider,
+                PRIMARY_BALANCE_CACHE_TTL_MS
+              );
               return {
                 main: mainBalance,
                 profile: identityBalance,

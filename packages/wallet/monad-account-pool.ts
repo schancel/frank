@@ -1943,6 +1943,35 @@ export class MonadSubAccountPool {
   }
 
   /**
+   * What the `available`, unreserved accounts hold between them: the funded sending accounts'
+   * part of the wallet's balance. For display. A balance read within `maxCacheAgeMs` is used
+   * as remembered; another is read and NOT remembered (the remembered capacities belong to the
+   * payment path and its own fee reserve).
+   */
+  async availableBalanceTotal(
+    provider: Provider,
+    maxCacheAgeMs: number
+  ): Promise<bigint> {
+    const now = Date.now();
+    const balances = await Promise.all(
+      this.store
+        .getAll()
+        .filter(
+          (record) =>
+            record.status === "available" && !this.isSpendReserved(record.index)
+        )
+        .map((record) => {
+          const cached = this.capacityCache.get(record.index);
+          return cached?.balanceWei !== undefined &&
+            now - cached.checkedAtMs < maxCacheAgeMs
+            ? cached.balanceWei
+            : provider.getBalance(record.address);
+        })
+    );
+    return balances.reduce((sum, balance) => sum + balance, BigInt(0));
+  }
+
+  /**
    * Whether a stamp of `stampValueWei` can be paid now without funding anything: the accounts that
    * are `available`, unreserved and not in `heldIndices` cover it between them, each keeping
    * `feeReserveWei` for its own fee. That is exactly what the payment intent accepts, whether it

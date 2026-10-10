@@ -1404,10 +1404,19 @@ describe("with the real canonical wallet", () => {
       fetch,
     });
     install(botWallet);
+    /** The host's chain reports every payment it is asked about as confirmed. */
+    const confirmPayments = () => {
+      (
+        host as unknown as { chain: { nativeTransfers?: unknown } }
+      ).chain.nativeTransfers = {
+        getTransactionStatus: async () => "confirmed",
+      };
+    };
     /** The process ends and starts again: a new host, and the wallet reopened from its disk. */
     const restart = async () => {
       await host.stop();
       await open();
+      confirmPayments();
       install(qwen().wallet);
       return qwen().wallet;
     };
@@ -1423,13 +1432,24 @@ describe("with the real canonical wallet", () => {
         chain.directMessages.reconcileAttempts(params)
     );
 
+    // A PAID prompt, its payment confirmed: the reply to it is a paid message, which is what
+    // these tests are about. (A reply to unpaid mail goes out unpaid and has no payment set.)
     const prompt: DirectMessageReceived = {
       ...message(),
       senderAddress: user.identity.address,
       senderPublicKey: user.identity.compressedPubKey,
       receivedTime: Date.now(),
       items: [{ type: "text", text: "P1" }],
+      stampValueWei: 2_000_000_000_000n,
+      stampPayments: [
+        {
+          txHash: "0x" + "ab".repeat(32),
+          destinationAddress: "0x" + "5e".repeat(20),
+          valueWei: 2_000_000_000_000n,
+        },
+      ],
     };
+    confirmPayments();
     mockFetch.mockImplementation(async () => [prompt]);
     reply.mockImplementation(async (turnsSoFar: { content: string }[]) => ({
       content: "re:" + turnsSoFar[turnsSoFar.length - 1].content,

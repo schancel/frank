@@ -327,9 +327,9 @@ describe("FrankBotHost replies", () => {
     it.each([
       ["what the sender paid, when that is less than the bot's own stamp", 4_000_000_000_000_000n, 4_000_000_000_000_000n],
       ["the bot's own stamp at most, however much the sender paid", 5_000_000_000_000_000_000n, STAMP],
-      ["the relay's minimum for a message that paid nothing", 0n, MIN],
-      ["the relay's minimum for a message whose payment the wallet did not report", undefined, MIN],
-      ["the relay's minimum for a message that paid less than a paid message may", MIN - 1n, MIN],
+      ["no stamp at all for a message that paid nothing", 0n, 0n],
+      ["no stamp at all for a message whose payment the wallet did not report", undefined, 0n],
+      ["no stamp at all for a message that paid less than a paid message may", MIN - 1n, 0n],
     ])("is %s", async (_label, paid, expected) => {
       jest.spyOn(console, "error").mockImplementation(() => {});
       const { host, instance } = await start(
@@ -393,7 +393,7 @@ describe("FrankBotHost replies", () => {
       ],
       ["are not answered for in time", () => new Promise(() => undefined)],
     ])(
-      "is the relay's minimum, and the reply is still sent at once, when the stated payment's transactions %s",
+      "is nothing, and the reply is still sent at once, when the stated payment's transactions %s",
       async (_label, status) => {
         mockTxStatus.mockImplementation(status as never);
         const { host, instance } = await start(
@@ -403,7 +403,7 @@ describe("FrankBotHost replies", () => {
         await poll(host, [message]);
         await drain(instance);
         expect(textsSent()).toEqual(["answer"]);
-        expect(stampsSent()).toEqual([MIN]);
+        expect(stampsSent()).toEqual([0n]);
         expect(mockTxStatus).toHaveBeenCalledWith({
           wallet: instance.wallet,
           transaction: { txHash: message.stampPayments[0].txHash },
@@ -422,7 +422,7 @@ describe("FrankBotHost replies", () => {
       await poll(host, [inbound("minimum", { stampValueWei: MIN })]);
       await poll(host, [inbound("nothing", { stampValueWei: 0n })]);
       await drain(instance);
-      expect(stampsSent()).toEqual([STAMP, MIN, MIN]);
+      expect(stampsSent()).toEqual([STAMP, 0n, 0n]);
       expect(mockTxStatus).toHaveBeenCalledTimes(2);
     });
 

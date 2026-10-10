@@ -1455,7 +1455,7 @@ export class FrankBotHost {
    * so the stated amount alone is never matched.
    *
    * It does not wait: a payment not confirmed when the message is handled counts as nothing,
-   * and the reply goes out at once with the minimum stamp. A node that cannot be asked, or
+   * and the reply goes out at once with no stamp. A node that cannot be asked, or
    * does not answer in `PAYMENT_CHECK_MS`, counts the same.
    *
    * THE ONE PLACE that decides this. SWITCH HERE to the wallet's own "has this message's
@@ -1468,7 +1468,7 @@ export class FrankBotHost {
       paymentTxHashes: string[];
     }
   ): Promise<bigint> {
-    // At or under the minimum the reply carries the minimum anyway: nothing to look up.
+    // At or under the minimum the reply carries no stamp anyway: nothing to look up.
     if (
       message.stampValueWei <= this.options.minStampValueWei ||
       !message.paymentTxHashes.length
@@ -1503,12 +1503,11 @@ export class FrankBotHost {
    * configured stamp either.
    *
    * A message that paid nothing confirmed, or less than the relay accepts for a paid message,
-   * is answered at the relay's minimum. SWITCH HERE to 0n (no stamp at all) once the wallet's
-   * unpaid send has landed. */
+   * is answered with no stamp at all (the wallet's unpaid send): free mail gets a free answer,
+   * so answering it can never cost the bot anything. */
   private replyStampWei(paidWei: bigint): bigint {
     const { stampValueWei, minStampValueWei } = this.options;
-    if (paidWei < minStampValueWei)
-      return minStampValueWei < stampValueWei ? minStampValueWei : stampValueWei;
+    if (paidWei < minStampValueWei) return 0n;
     return paidWei < stampValueWei ? paidWei : stampValueWei;
   }
 

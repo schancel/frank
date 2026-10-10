@@ -273,7 +273,8 @@ describe('a conversation with more than two people', () => {
     expect(wrapper.emitted('senderClicked')).toEqual([[ALICE], [ALICE]])
   })
 
-  it.each(['blackjack-hand', 'raffle', 'dice', 'poker', 'liars-dice', 'rps'])(
+  // Poker and liar's dice have no card mounted (parked, #1377): they show as a preview line.
+  it.each(['blackjack-hand', 'raffle', 'dice', 'rps'])(
     'frames a %s item the same way, leaving the item itself alone',
     item => {
       const wrapper = mountBubble(

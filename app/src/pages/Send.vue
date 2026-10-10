@@ -151,6 +151,32 @@
         </q-card-section>
 
         <q-card-section
+          v-if="feeChanged && !dispatched"
+          class="q-pt-none"
+          role="alert"
+          data-test="send-fee-changed"
+        >
+          <q-banner dense rounded class="bg-amber-1 text-amber-10">
+            {{ $t('sendAddressDialog.feeChanged') }}
+          </q-banner>
+        </q-card-section>
+
+        <!-- The network answered no: nothing was sent, and its reason is shown as given. -->
+        <q-card-section
+          v-if="refusal !== undefined && !dispatched"
+          class="q-pt-none"
+          role="alert"
+          data-test="send-refused"
+        >
+          <q-banner dense rounded class="bg-red-1 text-red-10">
+            {{ $t('sendAddressDialog.refused') }}
+            <div v-if="refusal" class="text-caption text-break">
+              {{ refusal }}
+            </div>
+          </q-banner>
+        </q-card-section>
+
+        <q-card-section
           v-if="dispatched"
           data-test="native-operation-outcome"
           role="status"
@@ -263,6 +289,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { sentTransactionNotify, errorNotify } from '../utils/notifications'
 import {
   activeChain,
+  NativeFeeExceededError,
+  NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
   findEvmNativeOperationStatus,
   type EvmNativeOperationStatus,
@@ -291,6 +319,12 @@ export default defineComponent({
     const operation = shallowRef<EvmNativeOperationStatus>()
     const outcomeHash = ref<string>()
     const estimatedFeeText = ref('')
+    // Set when the network refused the last attempt outright; holds the node's reason.
+    const refusal = ref<string>()
+    // The fee the review screen showed, in base units: the ceiling the send may not exceed.
+    let reviewedFee: bigint | undefined
+    // Set when the fee rose above the reviewed one, so the new fee is reviewed before sending.
+    const feeChanged = ref(false)
 
     const route = useRoute()
     const context = shallowRef<NativeTransferContext>()
@@ -385,6 +419,8 @@ export default defineComponent({
           : '',
       ),
       estimatedFeeText,
+      refusal,
+      feeChanged,
       isValid: computed(() => parsedTransfer.value !== undefined),
       formattedRecipient,
       networkName,
@@ -403,6 +439,8 @@ export default defineComponent({
         }
         sending.value = true
         estimatedFeeText.value = ''
+        reviewedFee = undefined
+        feeChanged.value = false
         try {
           const binding = await captured.captureWallet()
           if (disposed) return
@@ -421,6 +459,7 @@ export default defineComponent({
                 value: transfer.value,
               })
             if (estimate && !disposed) {
+              reviewedFee = estimate.totalFee
               estimatedFeeText.value = `${captured.chain.toDisplayAmount(
                 estimate.totalFee,
               )} ${captured.chain.unit}`
@@ -494,11 +533,15 @@ export default defineComponent({
             wallet: reviewed.binding.wallet,
             recipient: reviewed.transfer.recipient,
             value: reviewed.transfer.value,
+            // The reviewed fee binds: the wallet may pay less, never more.
+            maxFee: reviewedFee,
             onSigned: async (signed: { txHash: string }) => {
               signedTxHash = signed.txHash
             },
           }
           // No post-dispatch error proves that a fresh payment is safe.
+          refusal.value = undefined
+          feeChanged.value = false
           dispatched.value = true
           const result = client.sendLegacy
             ? await client.sendLegacy(params)
@@ -521,6 +564,23 @@ export default defineComponent({
             errorNotify(err, {
               fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
             })
+            return
+          }
+          // The one exception: the network answered and refused, so nothing was sent.
+          if (err instanceof NativeTransactionRefusedError) {
+            dispatched.value = false
+            refusal.value = err.reason
+            return
+          }
+          // Nothing was signed: the fee is now higher than the one reviewed. Back to review,
+          // showing the new fee, which becomes the ceiling if the user confirms again.
+          if (err instanceof NativeFeeExceededError) {
+            dispatched.value = false
+            feeChanged.value = true
+            reviewedFee = err.fee
+            estimatedFeeText.value = `${reviewed.context.chain.toDisplayAmount(
+              err.fee,
+            )} ${reviewed.context.chain.unit}`
             return
           }
           if (err instanceof NativeTransactionSubmissionError)

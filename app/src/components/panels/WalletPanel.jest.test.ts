@@ -255,6 +255,21 @@ test('clicking wallet rows navigates to the respective chain', async () => {
   expect(mockRouterPush).toHaveBeenCalledWith('/wallet/solana')
 })
 
+test('says for each wallet exactly what the app can do with it', () => {
+  const view = render()
+  const capability = (id: string) => {
+    const label = view.find(`[data-test="${id}-wallet-capability"]`)
+    return label.exists() ? label.text() : undefined
+  }
+  // A wallet (balance, receive and send) needs no remark.
+  expect(capability('monad')).toBeUndefined()
+  expect(capability('solana')).toBeUndefined()
+  for (const id of ['ecash', 'bitcoin', 'bitcoincash'])
+    expect(capability(id)).toBeUndefined()
+  for (const id of ['dogecoin', 'ethereum', 'tempo', 'hyperliquid'])
+    expect(capability(id)).toBe('Not supported')
+})
+
 test('reorganizes wallet list item layout: no side section for chain name, chain is caption below name', () => {
   const view = render()
 

@@ -483,6 +483,29 @@ test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash a
   expect(f.capability.takeRoots).toHaveBeenCalledTimes(initialTakeRootsCalls)
 })
 
+test.each(['ethereum', 'tempo', 'hyperliquid'])(
+  'shows the wallet receive address for %s, not stamp-pool account 0',
+  async chain => {
+    const f = fixture()
+    // Custody hands out a fresh copy each time; the session clears what it was given.
+    const roots = () =>
+      DOMAIN_PURPOSES.map((purpose, i) => ({
+        registry: DERIVATION_REGISTRY_ID,
+        purpose,
+        bytes: new Uint8Array(32).fill(i + 1),
+      }))
+    const evmRoot = roots().find(root => root.purpose === 'evm-wallet')!.bytes
+    f.capability.takeRoots = jest.fn(roots)
+    await f.session.initialize()
+
+    const { HDNodeWallet } = await import('ethers')
+    const master = HDNodeWallet.fromSeed(evmRoot)
+    const address = await f.session.getChainAddress(chain)
+    expect(address).toBe(master.derivePath("m/44'/60'/1'/0/0").address)
+    expect(address).not.toBe(master.derivePath("m/44'/60'/0'/0/0").address)
+  },
+)
+
 test('resolves and isolates testnet vs mainnet addresses by canonical network ID', async () => {
   const f = fixture()
   f.capability.takeRoots = jest.fn(() =>

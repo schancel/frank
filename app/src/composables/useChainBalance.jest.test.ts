@@ -43,12 +43,32 @@ jest.mock('../accounts/session', () => ({
   },
 }))
 
-const mockFetchEcashBalance = jest.fn().mockResolvedValue({
-  sats: 1_000_000n,
-  formatted: '10000 tXEC',
-  unit: 'tXEC',
-  networkId: 'xec-testnet',
+// The session's Bitcoin-family wallets: each reports the sum over all of its addresses.
+const mockUtxoBalances: Record<string, jest.Mock> = {
+  'xec-testnet': jest.fn().mockResolvedValue(1_000_000n),
+  'btc-testnet': jest.fn().mockResolvedValue(150_000n),
+  'bch-testnet': jest.fn().mockResolvedValue(0n),
+}
+const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => {
+  const getBalance = mockUtxoBalances[chainIdentifier]
+  if (!getBalance)
+    throw new Error(`No wallet is available for ${chainIdentifier}`)
+  const decimals = chainIdentifier === 'xec-testnet' ? 2 : 8
+  return {
+    chain: {
+      unit:
+        { 'xec-testnet': 'tXEC', 'btc-testnet': 'tBTC' }[chainIdentifier] ??
+        'tBCH',
+      toDisplayAmount: (value: bigint) =>
+        (Number(value) / 10 ** decimals).toString(),
+    },
+    wallet: { getBalance },
+  }
 })
+jest.mock('../accounts/utxo-wallets', () => ({
+  openUtxoWallet: (chainIdentifier: string) =>
+    mockOpenUtxoWallet(chainIdentifier),
+}))
 
 const mockFetchSolanaBalance = jest.fn().mockResolvedValue({
   lamports: 2_500_000_000n,
@@ -73,7 +93,6 @@ const mockFetchSolanaTokenAccounts = jest.fn().mockResolvedValue([
 jest.mock('@frank/wallet/chain', () => ({
   // Preserve the real adapter and its change subscription; mock only this test's I/O.
   ...jest.requireActual('@frank/wallet/chain'),
-  fetchEcashBalance: (...args: unknown[]) => mockFetchEcashBalance(...args),
   fetchSolanaBalance: (...args: unknown[]) => mockFetchSolanaBalance(...args),
   fetchSolanaTokenAccounts: (...args: unknown[]) =>
     mockFetchSolanaTokenAccounts(...args),
@@ -161,7 +180,9 @@ describe('useChainBalance', () => {
       expectPresentation({ status: 'loading' })
       mockAccountStatus.status = 'ready'
       const fetchBalance =
-        chain === 'ecash' ? mockFetchEcashBalance : mockFetchSolanaBalance
+        chain === 'ecash'
+          ? mockUtxoBalances['xec-testnet']
+          : mockFetchSolanaBalance
       const error = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
@@ -178,12 +199,13 @@ describe('useChainBalance', () => {
             [],
           )
         for (const amount of [0n, 25n]) {
-          const formattedBalance = `${amount} ${
-            chain === 'ecash' ? 'tXEC' : 'dSOL'
-          }`
+          const formattedBalance =
+            chain === 'ecash'
+              ? `${Number(amount) / 100} tXEC`
+              : `${amount} dSOL`
           fetchBalance.mockResolvedValueOnce(
             chain === 'ecash'
-              ? { sats: amount, formatted: formattedBalance }
+              ? amount
               : { lamports: amount, formatted: formattedBalance },
           )
           await fetchChainBalance(chain, true)
@@ -207,7 +229,8 @@ describe('useChainBalance', () => {
     },
   )
 
-  it.each(['bitcoin', 'bitcoincash', 'dogecoin', 'unknown'])(
+  // Bitcoin and Bitcoin Cash now have wallets (tested below); these rows still have none.
+  it.each(['dogecoin', 'ethereum', 'unknown'])(
     'reports unsupported %s without Monad funds in either view',
     chain => {
       const expected = { status: 'unavailable', reason: 'unsupported' }
@@ -222,19 +245,43 @@ describe('useChainBalance', () => {
     expect(loaded.value).toBe(true)
   })
 
-  it('fetches ecash balance and makes it reactive', async () => {
+  it('reads a Bitcoin-family balance from the session wallet for that chain', async () => {
     await fetchChainBalance('ecash', true)
-    expect(mockFetchEcashBalance).toHaveBeenCalledWith({
-      address: 'ectest:qre5rmxznz7gm2akscph073dmx5cln89tc5k4q5ah7',
-      networkId: 'xec-testnet',
-      relayBaseUrl: 'http://127.0.0.1:8098',
-    })
+    expect(mockOpenUtxoWallet).toHaveBeenCalledWith('xec-testnet')
 
-    const { formattedBalance, loaded, balance } = useChainBalance('ecash')
+    const { formattedBalance, loaded, balance, presentation } =
+      useChainBalance('ecash')
     expect(loaded.value).toBe(true)
     expect(balance.value).toBe(1_000_000n)
     expect(formattedBalance.value).toBe('10000 tXEC')
+    expect(presentation.value.status).toBe('available')
   })
+
+  it('routes Bitcoin and Bitcoin Cash by the registry, with no list of names', async () => {
+    await fetchChainBalance('bitcoin', true)
+    await fetchChainBalance('bitcoincash', true)
+    expect(mockOpenUtxoWallet).toHaveBeenCalledWith('btc-testnet')
+    expect(mockOpenUtxoWallet).toHaveBeenCalledWith('bch-testnet')
+    expect(useChainBalance('bitcoin').formattedBalance.value).toBe(
+      '0.0015 tBTC',
+    )
+    const cash = useChainBalance('bitcoincash')
+    expect(cash.balance.value).toBe(0n)
+    expect(cash.presentation.value).toMatchObject({ status: 'available' })
+  })
+
+  it.each(['dogecoin', 'ethereum', 'tempo', 'hyperliquid', 'nonsense'])(
+    'says %s is unsupported and opens no wallet for it',
+    async chain => {
+      mockOpenUtxoWallet.mockClear()
+      await fetchChainBalance(chain, true)
+      expect(mockOpenUtxoWallet).not.toHaveBeenCalled()
+      expect(useChainBalance(chain).presentation.value).toEqual({
+        status: 'unavailable',
+        reason: 'unsupported',
+      })
+    },
+  )
 
   it('fetches solana balance and makes it reactive', async () => {
     await fetchChainBalance('solana', true)
@@ -269,7 +316,9 @@ describe('useChainBalance', () => {
   })
 
   it('handles fetch error gracefully', async () => {
-    mockFetchEcashBalance.mockRejectedValueOnce(new Error('Network error'))
+    mockUtxoBalances['xec-testnet'].mockRejectedValueOnce(
+      new Error('Network error'),
+    )
     await fetchChainBalance('ecash', true)
 
     const { hasError } = useChainBalance('ecash')

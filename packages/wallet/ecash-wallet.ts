@@ -2,6 +2,8 @@ import {
   ChainAddress,
   ChainTransaction,
   defaultNativeTransactionAttemptStore,
+  NativeFeeExceededError,
+  NativeTransactionRefusedError,
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
@@ -140,7 +142,12 @@ export interface EcashBroadcastResult {
 }
 
 export interface EcashBuiltAction {
-  readonly builtTxs: ReadonlyArray<{ readonly txid: string }>;
+  readonly builtTxs: ReadonlyArray<{
+    readonly txid: string;
+    /** The signed transaction; its bytes are recorded before broadcast. */
+    readonly tx?: { ser(): Uint8Array };
+    fee?(): bigint;
+  }>;
   broadcast(config?: {
     retryOnUtxoConflict?: boolean;
   }): Promise<EcashBroadcastResult>;
@@ -156,7 +163,21 @@ export interface EcashWalletBackend {
     outputs: ReadonlyArray<{ address: string; sats: bigint }>;
   }): {
     build(): EcashBuiltAction;
+    /** Builds without touching the wallet's coins, to learn the fee. */
+    inspect?(): { fee(): bigint };
   };
+}
+
+/**
+ * The node's reason when Chronik answered and refused a broadcast; undefined otherwise. The relay
+ * forwards a reason only for a 4xx from the node. An empty reason or the relay's placeholder is
+ * not proof of a refusal, and neither is any other failure.
+ */
+function chronikRefusal(reason: unknown): string | undefined {
+  const text = reason instanceof Error ? reason.message : String(reason);
+  const match = /Failed getting \S+: (.*)$/s.exec(text);
+  const refusal = match?.[1].trim();
+  return refusal && refusal !== "upstream Chronik error" ? refusal : undefined;
 }
 
 export type EcashWalletFactory = (params: {
@@ -175,6 +196,11 @@ export interface EcashWalletOptions {
   getTransactionStatus?: (
     transaction: ChainTransaction
   ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
+  /**
+   * Sends already signed transactions (hex, in order) again. Chronik's "Failed getting <path>:
+   * <reason>" error means the node answered and refused them; anything else means unknown.
+   */
+  rebroadcast?: (rawTransactions: ReadonlyArray<string>) => Promise<void>;
 }
 
 /**
@@ -207,7 +233,10 @@ export class EcashWallet implements NativeWalletHandle {
     private readonly getTransactionStatus: (
       transaction: ChainTransaction
     ) => Promise<"confirmed" | "failed" | "pending" | "unknown">,
-    chainUtxoPool?: ChainUtxoPool
+    chainUtxoPool?: ChainUtxoPool,
+    private readonly rebroadcast?: (
+      rawTransactions: ReadonlyArray<string>
+    ) => Promise<void>
   ) {
     this.chainUtxoPool = chainUtxoPool;
     this.networkId = networkId;
@@ -243,7 +272,10 @@ export class EcashWallet implements NativeWalletHandle {
           (params.walletFactory ?? createEcashSeedBackend)({
             domainRoot,
             chronik: params.chronik,
-            addressPrefix: ECASH_MAINNET_PREFIX,
+            addressPrefix:
+              canonicalEcashNetworkId(params.networkId) === "xec-testnet"
+                ? "ectest"
+                : ECASH_MAINNET_PREFIX,
           }),
         params.walletFactory !== undefined
       );
@@ -281,20 +313,88 @@ export class EcashWallet implements NativeWalletHandle {
     const canonicalId = canonicalEcashNetworkId(params.networkId);
     const isTestnet = canonicalId === "xec-testnet";
     const addressPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
-    const checkpointHash = ECASH_CHECKPOINTS[canonicalId].hash;
     const primaryAddress = canonicalEcashAddress(
       backend.getReceiveAddress(0),
       addressPrefix
     );
-    return new EcashWallet(
+    const wallet = new EcashWallet(
       backend,
       primaryAddress,
       canonicalId,
-      checkpointHash,
+      // The canonical chain identifier everywhere, including the attempt record's key. It was
+      // the checkpoint hash, which no caller comparing against `xec-testnet` could match.
+      canonicalId,
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
       params.getTransactionStatus ?? (async () => "unknown"),
-      params.chainUtxoPool
+      params.chainUtxoPool,
+      params.rebroadcast
     );
+    // Finish a send that a restart interrupted. If the indexer cannot be reached now, the next
+    // send tries again before it signs anything.
+    await wallet.finishInterruptedSend().catch(() => undefined);
+    return wallet;
+  }
+
+  /**
+   * Settle the recorded attempt of an earlier session. A transaction the indexer already has was
+   * broadcast, so the record is dropped. One it does not have is sent again unchanged: the same
+   * inputs cannot pay twice. The record stays only while the outcome cannot be learned.
+   */
+  async finishInterruptedSend(): Promise<void> {
+    return this.runExclusive(() => this.finishInterruptedSendExclusive());
+  }
+
+  private async finishInterruptedSendExclusive(): Promise<void> {
+    const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
+    if (persisted === undefined) {
+      this.unresolvedNative = undefined;
+      return;
+    }
+    // A send this session saw accepted needs nothing more.
+    if (
+      this.lastSubmittedNative !== undefined &&
+      sameChainTransaction(persisted, this.lastSubmittedNative)
+    ) {
+      return;
+    }
+    const settle = () => {
+      this.nativeAttemptStore.delete(this.nativeAttemptKey);
+      this.unresolvedNative = undefined;
+    };
+    const status = await this.getTransactionStatus(persisted);
+    if (status !== "unknown") return settle();
+    const unresolved = (reason: unknown) => {
+      const current = this.unresolvedNative;
+      // Keep the built action of this session so an explicit retry can still send it.
+      if (
+        current?.built !== undefined &&
+        sameChainTransaction(persisted, current.error.transaction)
+      ) {
+        return;
+      }
+      this.unresolvedNative = {
+        error: new NativeTransactionSubmissionError({
+          transaction: persisted,
+          reason,
+        }),
+      };
+    };
+    if (
+      this.rebroadcast === undefined ||
+      persisted.rawTransactions === undefined ||
+      persisted.rawTransactions.length === 0
+    ) {
+      return unresolved(new Error("Recovered unresolved native transaction"));
+    }
+    try {
+      await this.rebroadcast(persisted.rawTransactions);
+    } catch (reason) {
+      // The node answered and refused: its inputs are gone or it is already mined, so these
+      // bytes can never be accepted later and nothing is left to wait for.
+      if (chronikRefusal(reason) !== undefined) return settle();
+      return unresolved(reason);
+    }
+    settle();
   }
 
   get identity(): NativeWalletHandle["identity"] {
@@ -356,6 +456,23 @@ export class EcashWallet implements NativeWalletHandle {
     return this.runExclusive(async () => {
       await this.backend.sync();
       return this.backend.balanceSats;
+    });
+  }
+
+  /** The network fee a send of `value` to `recipient` would pay right now. */
+  async estimateFee(params: {
+    recipient: ChainAddress;
+    value: bigint;
+  }): Promise<bigint> {
+    return this.runExclusive(async () => {
+      await this.backend.sync();
+      const action = this.backend.action({
+        outputs: [{ address: params.recipient.raw, sats: params.value }],
+      });
+      if (action.inspect === undefined) {
+        throw new Error("This eCash wallet backend cannot estimate a fee");
+      }
+      return action.inspect().fee();
     });
   }
 
@@ -434,6 +551,7 @@ export class EcashWallet implements NativeWalletHandle {
   async sendNative(params: {
     recipient: ChainAddress;
     value: bigint;
+    maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
     return runNativeTransactionExclusive(
@@ -441,33 +559,7 @@ export class EcashWallet implements NativeWalletHandle {
       this.nativeAttemptStore.coordinationScope,
       () =>
         this.runExclusive(async () => {
-          const persisted = this.nativeAttemptStore.get(this.nativeAttemptKey);
-          if (persisted === undefined) {
-            this.unresolvedNative = undefined;
-          } else if (
-            persisted !== undefined &&
-            (this.lastSubmittedNative === undefined ||
-              !sameChainTransaction(persisted, this.lastSubmittedNative)) &&
-            (this.unresolvedNative === undefined ||
-              this.unresolvedNative.built === undefined ||
-              !sameChainTransaction(
-                persisted,
-                this.unresolvedNative.error.transaction
-              ))
-          ) {
-            const status = await this.getTransactionStatus(persisted);
-            if (status === "confirmed" || status === "failed") {
-              this.nativeAttemptStore.delete(this.nativeAttemptKey);
-              this.unresolvedNative = undefined;
-            } else {
-              this.unresolvedNative ??= {
-                error: new NativeTransactionSubmissionError({
-                  transaction: persisted,
-                  reason: new Error("Recovered unresolved native transaction"),
-                }),
-              };
-            }
-          }
+          await this.finishInterruptedSendExclusive();
           return this.sendNativeExclusive(params);
         })
     );
@@ -476,6 +568,7 @@ export class EcashWallet implements NativeWalletHandle {
   private async sendNativeExclusive(params: {
     recipient: ChainAddress;
     value: bigint;
+    maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
     if (this.unresolvedNative !== undefined) {
@@ -501,7 +594,23 @@ export class EcashWallet implements NativeWalletHandle {
         outputs: [{ address: recipient, sats: params.value }],
       })
       .build();
+    if (params.maxFee !== undefined) {
+      // The reviewed fee is a ceiling. Nothing is recorded or sent when it would be exceeded;
+      // the coins the SDK set aside for this build come back with its next sync.
+      const fee = built.builtTxs.reduce(
+        (sum, transaction) => sum + (transaction.fee?.() ?? 0n),
+        0n
+      );
+      if (fee > params.maxFee) throw new NativeFeeExceededError(fee);
+    }
     return this.broadcastNativeAction(built, params.onSigned);
+  }
+
+  /** Forget a refused attempt: it was never broadcast, so nothing is left to reconcile. */
+  private refused(reason: string): NativeTransactionRefusedError {
+    this.nativeAttemptStore.delete(this.nativeAttemptKey);
+    this.unresolvedNative = undefined;
+    return new NativeTransactionRefusedError(reason);
   }
 
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -529,17 +638,29 @@ export class EcashWallet implements NativeWalletHandle {
       builtTxHashes.length === 1
         ? { txHash }
         : { txHash, relatedTxHashes: builtTxHashes };
+    const rawTransactions = built.builtTxs.map((transaction) =>
+      transaction.tx === undefined
+        ? undefined
+        : Buffer.from(transaction.tx.ser()).toString("hex")
+    );
+    const recordedAttempt: ChainTransaction = rawTransactions.every(
+      (raw): raw is string => raw !== undefined
+    )
+      ? { ...attemptedTransaction, rawTransactions }
+      : attemptedTransaction;
     if (onSigned !== undefined) await onSigned(attemptedTransaction);
     const pendingError = new NativeTransactionSubmissionError({
       transaction: attemptedTransaction,
       reason: new Error("Native transaction submission is in progress"),
     });
-    this.nativeAttemptStore.put(this.nativeAttemptKey, attemptedTransaction);
+    this.nativeAttemptStore.put(this.nativeAttemptKey, recordedAttempt);
     this.unresolvedNative = { built, error: pendingError };
     let result: EcashBroadcastResult;
     try {
       result = await built.broadcast({ retryOnUtxoConflict: false });
     } catch (reason) {
+      const refusal = chronikRefusal(reason);
+      if (refusal !== undefined) throw this.refused(refusal);
       const error = new NativeTransactionSubmissionError({
         transaction: attemptedTransaction,
         reason,
@@ -551,6 +672,14 @@ export class EcashWallet implements NativeWalletHandle {
     // A finalization timeout is reported as success:false even though Chronik accepted every
     // listed transaction. Treat those ids as submitted; only an empty accepted set is failure.
     if (result.broadcasted.length === 0) {
+      // Every error is the node's own refusal: nothing was broadcast.
+      const refusals = (result.errors ?? []).map(chronikRefusal);
+      if (
+        refusals.length > 0 &&
+        refusals.every((refusal): refusal is string => refusal !== undefined)
+      ) {
+        throw this.refused(refusals[0]);
+      }
       const error = new NativeTransactionSubmissionError({
         transaction: attemptedTransaction,
         reason:

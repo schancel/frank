@@ -28,6 +28,9 @@ network_tag="${FRANK_NETWORK_TAG:-MONT}"
 cargo_command="${CARGO:-cargo}"
 chronik_url="${XEC_TESTNET_CHRONIK_URL:-https://chronik-testnet.fabien.cash}"
 solana_rpc_url="${SOLANA_DEVNET_HTTP_RPC_URL:-https://api.devnet.solana.com}"
+# Public testnet Electrum servers (see cashwebd.local.toml for the checkpoint each must return).
+btc_electrum_url="${BTC_TESTNET_ELECTRUM_URL:-ssl://electrum.blockstream.info:60002 ssl://blackie.c3-soft.com:57006 wss://testnet.aranguren.org:51004}"
+bch_electrum_url="${BCH_TESTNET_ELECTRUM_URL:-ssl://testnet.imaginary.cash:50002 ssl://tbch.loping.net:60002}"
 if [[ -z "$rpc_url" ]]; then
     echo "run-local-monad: MONAD_TESTNET_HTTP_RPC_URL is required (set it in .env or the environment)" >&2
     exit 64
@@ -236,6 +239,8 @@ export MONAD_TESTNET_HTTP_RPC_URL="$rpc_url"
 export FRANK_NETWORK_TAG="$network_tag"
 export XEC_TESTNET_CHRONIK_URL="$chronik_url"
 export SOLANA_DEVNET_HTTP_RPC_URL="$solana_rpc_url"
+export BTC_TESTNET_ELECTRUM_URL="$btc_electrum_url"
+export BCH_TESTNET_ELECTRUM_URL="$bch_electrum_url"
 
 # Effective, non-secret values for this run. The RPC URL is reported by scheme and host only: its
 # path commonly embeds the provider API key.

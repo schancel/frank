@@ -1,5 +1,8 @@
 /**
- * Universal Electrum / Fulcrum WebSocket client.
+ * Electrum protocol client over WebSocket.
+ *
+ * The app reaches Electrum servers through its relay (`/chain-rpc/<chain>/electrum`), which
+ * forwards to TCP, TLS or WebSocket upstreams; see `relayElectrumUrl` in ./electrum-indexer.
  *
  * Implements a robust JSON-RPC 2.0 Electrum protocol client over WebSocket with:
  * - Multiple server endpoints with automatic failover and rotation
@@ -100,6 +103,19 @@ export function toElectrumScriptHash(
     hex += byte < 16 ? '0' + byte.toString(16) : byte.toString(16)
   }
   return hex
+}
+
+/** The server answered the request with an error: it was received and refused. */
+export class ElectrumRpcError extends Error {
+  constructor(
+    readonly method: string,
+    readonly serverMessage: string,
+    /** The JSON-RPC error code, when the answer carried one. */
+    readonly code?: number,
+  ) {
+    super(`Electrum RPC error (${method}): ${serverMessage}`)
+    this.name = 'ElectrumRpcError'
+  }
 }
 
 export class ElectrumClient {
@@ -290,7 +306,11 @@ export class ElectrumClient {
               ? msg.error
               : msg.error?.message ?? JSON.stringify(msg.error)
           pending.reject(
-            new Error(`Electrum RPC error (${pending.method}): ${errorMsg}`),
+            new ElectrumRpcError(
+              pending.method,
+              errorMsg,
+              typeof msg.error?.code === 'number' ? msg.error.code : undefined,
+            ),
           )
         } else {
           pending.resolve(msg.result)

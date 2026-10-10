@@ -570,8 +570,9 @@ export function createAccountSession(deps: {
             return addr
           } else {
             const { HDNodeWallet } = await import('ethers')
+            // The wallet's receive address; m/44'/60'/0'/0/0 is stamp-pool account 0.
             const hdNode =
-              HDNodeWallet.fromSeed(root).derivePath("m/44'/60'/0'/0/0")
+              HDNodeWallet.fromSeed(root).derivePath("m/44'/60'/1'/0/0")
             const addr = hdNode.address
             return addr
           }

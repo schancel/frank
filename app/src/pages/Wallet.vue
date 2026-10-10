@@ -175,7 +175,19 @@
                     </div>
                   </q-card-section>
                   <q-separator />
-                  <q-card-section>
+                  <q-card-section
+                    v-if="walletStatus === 'unsupported'"
+                    data-testid="wallet-unsupported"
+                  >
+                    <!-- No address: money sent to a chain the app cannot read would be invisible. -->
+                    <q-banner dense rounded class="bg-grey-2 text-grey-9">
+                      <template #avatar>
+                        <q-icon name="block" color="grey-7" />
+                      </template>
+                      {{ $t('walletPanel.walletUnsupported') }}
+                    </q-banner>
+                  </q-card-section>
+                  <q-card-section v-else>
                     <div
                       class="row justify-center items-center"
                       style="min-height: 300px"
@@ -234,31 +246,7 @@
                       />
                       <q-btn
                         no-caps
-                        :label="
-                          selectedWallet === 'ecash'
-                            ? isTestnet
-                              ? $t('walletPanel.sendTxec')
-                              : $t('walletPanel.sendXec')
-                            : selectedWallet === 'solana'
-                            ? $t('walletPanel.sendAsset', {
-                                unit: solanaSendUnit,
-                              })
-                            : selectedWallet === 'tempo'
-                            ? isTestnet
-                              ? 'Send tUSD'
-                              : 'Send USD'
-                            : selectedWallet === 'ethereum'
-                            ? isTestnet
-                              ? 'Send SEP'
-                              : 'Send ETH'
-                            : selectedWallet === 'hyperliquid'
-                            ? isTestnet
-                              ? 'Send tHYPE'
-                              : 'Send HYPE'
-                            : isTestnet
-                            ? $t('walletPanel.sendMont')
-                            : $t('walletPanel.send')
-                        "
+                        :label="$t(sendLabel.key, sendLabel.params ?? {})"
                         color="primary"
                         :disable="!sendChainIdentifier"
                         data-testid="wallet-send-action"
@@ -573,8 +561,9 @@ import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { getExplorerUrl } from 'src/utils/explorer'
 import type { SwapRecord } from 'src/stores/swaps'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
-import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
+import { walletSupport } from 'src/utils/wallet-support'
+import { openUtxoWallet } from 'src/accounts/utxo-wallets'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -629,10 +618,20 @@ export default defineComponent({
       nativeSendChainIdentifier(selectedWallet.value, isTestnet.value),
     )
 
-    const solanaSendUnit = computed(() =>
-      sendChainIdentifier.value
-        ? getChainRegistryEntry(sendChainIdentifier.value)?.unit
-        : undefined,
+    // Whether the app has a wallet for this network, from the chain registry.
+    const support = computed(() =>
+      walletSupport(selectedWallet.value, isTestnet.value),
+    )
+    const walletStatus = computed(() => support.value.status)
+    const sendLabel = computed(() =>
+      selectedWallet.value === 'monad'
+        ? {
+            key: isTestnet.value ? 'walletPanel.sendMont' : 'walletPanel.send',
+          }
+        : {
+            key: 'walletPanel.sendAsset',
+            params: { unit: support.value.entry?.unit ?? '' },
+          },
     )
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
@@ -734,25 +733,6 @@ export default defineComponent({
       accountSession.getCachedChainAddress?.(selectedWallet.value) ?? '',
     )
 
-    const prewarmChains = (active: string) => {
-      if (accountStatus.status === 'ready') {
-        for (const chain of [
-          'bitcoin',
-          'bitcoincash',
-          'dogecoin',
-          'ecash',
-          'solana',
-          'tempo',
-          'ethereum',
-          'hyperliquid',
-        ]) {
-          if (active !== chain) {
-            accountSession?.getChainAddress?.(chain)?.catch(() => undefined)
-          }
-        }
-      }
-    }
-
     watch(
       () => [
         accountStatus.status,
@@ -769,13 +749,22 @@ export default defineComponent({
           displayAddress.value = ''
           return
         }
-        prewarmChains(chain)
-        const cached = accountSession.getCachedChainAddress?.(chain)
-        if (cached) {
-          displayAddress.value = cached
-        } else {
+        const capability = walletSupport(
+          chain,
+          capturedChain.isTestnet ?? false,
+        )
+        if (capability.status === 'unsupported') {
           displayAddress.value = ''
+          return
         }
+        const utxoChain =
+          capability.entry.family === 'bitcoin'
+            ? capability.entry.id
+            : undefined
+        // A Bitcoin-family address rotates, so a cached one may already have been paid.
+        displayAddress.value = utxoChain
+          ? ''
+          : accountSession.getCachedChainAddress?.(chain) ?? ''
         let current = true
         onCleanup(() => {
           current = false
@@ -805,6 +794,11 @@ export default defineComponent({
                       >[0],
                     )
             }
+          } else if (utxoChain) {
+            // The wallet's next unused receive address, never one that was already paid.
+            const { wallet } = await openUtxoWallet(utxoChain)
+            const address = await wallet.getReceiveAddress()
+            if (current) displayAddress.value = address.raw
           } else {
             const address = await accountSession.getChainAddress(chain)
             if (current) displayAddress.value = address
@@ -826,7 +820,8 @@ export default defineComponent({
       activeTab,
       selectedWallet,
       sendChainIdentifier,
-      solanaSendUnit,
+      walletStatus,
+      sendLabel,
       getWalletNetworkLabel,
       selectedChain: selectedWallet,
       currentWalletConfig,

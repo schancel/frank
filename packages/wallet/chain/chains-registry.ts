@@ -86,8 +86,22 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   readonly explorerUrl?: string;
   readonly contracts?: ChainContracts;
   readonly exchange?: ChainExchangeConfig;
-  readonly electrumServers?: readonly string[];
+  /** What the app's own wallet does on this network. Absent: nothing, and no address is shown. */
+  readonly wallet?: ChainWalletSupport;
 }
+
+/**
+ * The wallet the app offers for a network: balance, receive and send. A network without one is
+ * listed as unsupported and shows no deposit address, because money sent there could not be seen.
+ */
+export interface ChainWalletSupport {
+  /** How the wallet reads the chain, always through the relay's proxy of this kind. */
+  readonly indexer: "json-rpc" | "chronik" | "electrum";
+}
+
+const JSON_RPC_WALLET: ChainWalletSupport = Object.freeze({
+  indexer: "json-rpc",
+});
 
 export type ClientChainExtension = Omit<
   ChainRegistryEntry,
@@ -98,6 +112,7 @@ export type ClientChainExtension = Omit<
 const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
   Object.freeze({
     "monad-testnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "monad",
       curve: "secp256k1",
       keyType: 1,
@@ -118,6 +133,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       }),
     }),
     "monad-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "monad",
       curve: "secp256k1",
       keyType: 1,
@@ -138,6 +154,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       }),
     }),
     "xec-testnet": Object.freeze({
+      // The eCash SDK wallet on the relay's Chronik proxy.
+      wallet: Object.freeze({ indexer: "chronik" }),
       kind: "ecash",
       curve: "secp256k1",
       keyType: 1,
@@ -178,6 +196,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       }),
     }),
     "solana-devnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "solana",
       curve: "ed25519",
       keyType: 2,
@@ -218,6 +237,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       }),
     }),
     "solana-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "solana",
       curve: "ed25519",
       keyType: 2,
@@ -368,19 +388,16 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Bitcoin",
       unit: "BTC",
       networkTag: "BTC1",
-      electrumServers: Object.freeze(["wss://electrum.blockstream.info:50002"]),
     }),
     "btc-testnet": Object.freeze({
+      // utxo-wallet.ts on the relay's Electrum route (testnet3).
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "bitcoin",
       curve: "secp256k1",
       keyType: 1,
       name: "Bitcoin Testnet",
       unit: "tBTC",
       networkTag: "BTCT",
-      electrumServers: Object.freeze([
-        "wss://testnet.aranguren.org:51004",
-        "wss://blackie.c3-soft.com:57008",
-      ]),
     }),
     "btc-testnet4": Object.freeze({
       kind: "bitcoin",
@@ -389,7 +406,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Bitcoin Testnet4",
       unit: "tBTC",
       networkTag: "BTC4",
-      electrumServers: Object.freeze(["wss://blackie.c3-soft.com:57012"]),
     }),
     "bch-mainnet": Object.freeze({
       kind: "bitcoincash",
@@ -399,12 +415,10 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "BCH",
       addressPrefix: "bitcoincash",
       networkTag: "BCH1",
-      electrumServers: Object.freeze([
-        "wss://fulcrum.fountainhead.cash:50004",
-        "wss://bch.ninja:50004",
-      ]),
     }),
     "bch-testnet": Object.freeze({
+      // utxo-wallet.ts on the relay's Electrum route (Bitcoin Cash testnet3, not chipnet).
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "bitcoincash",
       curve: "secp256k1",
       keyType: 1,
@@ -412,11 +426,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "tBCH",
       addressPrefix: "bchtest",
       networkTag: "BCHT",
-      electrumServers: Object.freeze([
-        "wss://chipnet.bch.ninja:50004",
-        "wss://chipnet.imaginary.cash:50004",
-        "wss://blackie.c3-soft.com:64004",
-      ]),
     }),
     "doge-mainnet": Object.freeze({
       kind: "dogecoin",
@@ -425,10 +434,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Dogecoin",
       unit: "DOGE",
       networkTag: "DOGE",
-      electrumServers: Object.freeze([
-        "wss://electrum.doge.keys4coins.com:50002",
-        "wss://doge-electrum.cryptonode.id:50004",
-      ]),
     }),
     "doge-testnet": Object.freeze({
       kind: "dogecoin",
@@ -437,9 +442,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Dogecoin Testnet",
       unit: "tDOGE",
       networkTag: "DOGT",
-      electrumServers: Object.freeze([
-        "wss://testnet-electrum.cryptonode.id:50004",
-      ]),
     }),
   });
 

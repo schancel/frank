@@ -48,6 +48,11 @@ jest.mock('@frank/wallet/chain', () => ({
     relayBaseUrl: 'https://relay.invalid',
   }),
 }))
+const mockOpenUtxoWallet = jest.fn()
+jest.mock('./utxo-wallets', () => ({
+  openUtxoWallet: (chainIdentifier: string) =>
+    mockOpenUtxoWallet(chainIdentifier),
+}))
 
 const genesis = protocol.chains
   .find(chain => chain.id === 'solana-devnet')!
@@ -272,4 +277,31 @@ it('invalidates the captured presentation synchronously when the account changes
   expect(binding.isCurrent()).toBe(true)
   mockState.revision++
   expect(binding.isCurrent()).toBe(false)
+})
+
+describe('Bitcoin-family chains', () => {
+  it.each(['doge-testnet', 'xec-mainnet', 'btc-mainnet'])(
+    'refuses Send on %s, which has no wallet, without opening one',
+    async chainIdentifier => {
+      await expect(
+        createNativeTransferContext(chainIdentifier),
+      ).rejects.toThrow(`Native Send is unavailable for ${chainIdentifier}`)
+      expect(mockOpenUtxoWallet).not.toHaveBeenCalled()
+      expect(mockGetRoot).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['xec-testnet', 'btc-testnet', 'bch-testnet'])(
+    'sends on %s through the session wallet of that chain',
+    async chainIdentifier => {
+      const wallet = { chainIdentifier, family: 'bitcoin' }
+      const chain = { chainIdentifier, family: 'bitcoin' }
+      mockOpenUtxoWallet.mockResolvedValue({ chain, wallet })
+      const context = await createNativeTransferContext(chainIdentifier)
+      expect(context.chain).toBe(chain)
+      const binding = await context.captureWallet()
+      expect(binding.wallet).toBe(wallet)
+      expect(mockOpenUtxoWallet).toHaveBeenCalledWith(chainIdentifier)
+    },
+  )
 })

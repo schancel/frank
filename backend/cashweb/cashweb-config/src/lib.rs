@@ -916,9 +916,6 @@ pub struct BitcoinProxyConf {
     /// High, burstable fixed-hour Chronik bootstrap allowance per source IP.
     #[serde(default = "default_chronik_anonymous_requests_per_hour")]
     pub anonymous_chronik_requests_per_hour: u32,
-    /// Small, burstable fixed-hour raw-transaction broadcast allowance per source IP.
-    #[serde(default = "default_anonymous_broadcasts_per_hour")]
-    pub anonymous_broadcasts_per_hour: u32,
     /// Lifetime of a registered-customer bearer capability URL.
     #[serde(default = "default_rpc_capability_ttl_ms")]
     pub capability_ttl_ms: u64,
@@ -934,7 +931,6 @@ impl Default for BitcoinProxyConf {
             max_concurrency: default_rpc_concurrency(),
             timeout_ms: default_rpc_timeout_ms(),
             anonymous_chronik_requests_per_hour: default_chronik_anonymous_requests_per_hour(),
-            anonymous_broadcasts_per_hour: default_anonymous_broadcasts_per_hour(),
             capability_ttl_ms: default_rpc_capability_ttl_ms(),
         }
     }
@@ -948,9 +944,6 @@ const fn default_bitcoin_response_bytes() -> usize {
 }
 const fn default_chronik_anonymous_requests_per_hour() -> u32 {
     20_000
-}
-const fn default_anonymous_broadcasts_per_hour() -> u32 {
-    20
 }
 
 /// One Bitcoin-family chain and its optional node/indexer upstreams.
@@ -2155,11 +2148,20 @@ continuity_file = "/var/lib/frank/continuity"
             );
             conf.registry.evm_rpc.validate().unwrap();
             assert!(conf.registry.bitcoin_proxy.enabled, "{name}");
-            assert_eq!(conf.registry.bitcoin_proxy.chains.len(), 1, "{name}");
-            assert_eq!(
-                conf.registry.bitcoin_proxy.chains[0].id, "xec-testnet",
-                "{name}"
-            );
+            // eCash on Chronik everywhere; the local config adds the Electrum testnets.
+            let bitcoin_chains: Vec<_> = conf
+                .registry
+                .bitcoin_proxy
+                .chains
+                .iter()
+                .map(|chain| (chain.id.as_str(), chain.electrum_upstream_env.as_deref()))
+                .collect();
+            let mut expected_chains = vec![("xec-testnet", None)];
+            if name == "cashwebd.local.toml" {
+                expected_chains.push(("btc-testnet", Some("BTC_TESTNET_ELECTRUM_URL")));
+                expected_chains.push(("bch-testnet", Some("BCH_TESTNET_ELECTRUM_URL")));
+            }
+            assert_eq!(bitcoin_chains, expected_chains, "{name}");
             assert_eq!(
                 conf.registry.bitcoin_proxy.chains[0]
                     .chronik_upstream_env

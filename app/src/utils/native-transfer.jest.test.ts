@@ -9,7 +9,18 @@ it.each([
   ['solana', false, 'solana-mainnet'],
   ['solana-devnet', false, 'solana-devnet'],
   ['unknown', true, undefined],
-  ['ecash', true, undefined],
+  ['monad', true, 'monad-testnet'],
+  // Bitcoin-family testnet wallets send through the same page.
+  ['ecash', true, 'xec-testnet'],
+  ['bitcoin', true, 'btc-testnet'],
+  ['bitcoincash', true, 'bch-testnet'],
+  ['ecash', false, undefined],
+  // No wallet at all.
+  ['dogecoin', true, undefined],
+  ['ethereum', true, undefined],
+  ['tempo', true, undefined],
+  ['hyperliquid', true, undefined],
+  ['bitcoin', false, undefined],
 ])(
   'resolves the selected native Send network %s (%s)',
   (wallet, testnet, expected) => {

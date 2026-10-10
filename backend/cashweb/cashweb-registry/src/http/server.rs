@@ -306,6 +306,7 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
             Cow::Borrowed("/chain-rpc/:chain/cap/:capability/chronik/*path")
         }
         ["chain-rpc", _, "chronik", ..] => Cow::Borrowed("/chain-rpc/:chain/chronik/*path"),
+        ["chain-rpc", _, "electrum"] => Cow::Borrowed("/chain-rpc/:chain/electrum"),
         ["chain-rpc", _, "chronik-auth", ..] => {
             Cow::Borrowed("/chain-rpc/:chain/chronik-auth/*path")
         }
@@ -583,6 +584,10 @@ impl RegistryServer {
                 .route(
                     "/chain-rpc/:chain/chronik/*path",
                     routing::any(proxy_chronik),
+                )
+                .route(
+                    "/chain-rpc/:chain/electrum",
+                    routing::get(crate::http::electrum_proxy::handle_electrum_ws),
                 )
                 .route(
                     "/chain-rpc/:chain/chronik-auth/*path",

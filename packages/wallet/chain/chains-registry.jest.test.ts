@@ -365,7 +365,6 @@ describe("chains-registry", () => {
       unit: "BTC",
       caip2: "bip122:000000000019d6689c085ae165831e93",
       networkTag: "BTC1",
-      electrumServers: ["wss://electrum.blockstream.info:50002"],
     });
 
     expect(PROTOCOL_CHAINS["btc-testnet"]).toMatchObject({
@@ -380,10 +379,6 @@ describe("chains-registry", () => {
       unit: "tBTC",
       caip2: "bip122:000000000933ea01ad0ee984209779ba",
       networkTag: "BTCT",
-      electrumServers: [
-        "wss://testnet.aranguren.org:51004",
-        "wss://blackie.c3-soft.com:57008",
-      ],
     });
 
     expect(PROTOCOL_CHAINS["btc-testnet4"]).toMatchObject({
@@ -397,7 +392,6 @@ describe("chains-registry", () => {
       name: "Bitcoin Testnet4",
       unit: "tBTC",
       networkTag: "BTC4",
-      electrumServers: ["wss://blackie.c3-soft.com:57012"],
     });
 
     expect(PROTOCOL_CHAINS["bch-mainnet"]).toMatchObject({
@@ -412,10 +406,6 @@ describe("chains-registry", () => {
       unit: "BCH",
       addressPrefix: "bitcoincash",
       networkTag: "BCH1",
-      electrumServers: [
-        "wss://fulcrum.fountainhead.cash:50004",
-        "wss://bch.ninja:50004",
-      ],
     });
 
     expect(PROTOCOL_CHAINS["bch-testnet"]).toMatchObject({
@@ -430,11 +420,6 @@ describe("chains-registry", () => {
       unit: "tBCH",
       addressPrefix: "bchtest",
       networkTag: "BCHT",
-      electrumServers: [
-        "wss://chipnet.bch.ninja:50004",
-        "wss://chipnet.imaginary.cash:50004",
-        "wss://blackie.c3-soft.com:64004",
-      ],
     });
 
     expect(PROTOCOL_CHAINS["doge-mainnet"]).toMatchObject({
@@ -448,10 +433,6 @@ describe("chains-registry", () => {
       name: "Dogecoin",
       unit: "DOGE",
       networkTag: "DOGE",
-      electrumServers: [
-        "wss://electrum.doge.keys4coins.com:50002",
-        "wss://doge-electrum.cryptonode.id:50004",
-      ],
     });
 
     expect(PROTOCOL_CHAINS["doge-testnet"]).toMatchObject({
@@ -465,7 +446,6 @@ describe("chains-registry", () => {
       name: "Dogecoin Testnet",
       unit: "tDOGE",
       networkTag: "DOGT",
-      electrumServers: ["wss://testnet-electrum.cryptonode.id:50004"],
     });
   });
 
@@ -898,5 +878,31 @@ describe("chains-registry", () => {
       expect(resolveNetworkId("ethereum", true)).toBe("ethereum-sepolia");
       expect(resolveNetworkId("ethereum", false)).toBe("ethereum-mainnet");
     });
+  });
+});
+
+describe("wallet support", () => {
+  it("names exactly the networks the app has a wallet for, and how each is read", () => {
+    const supported = Object.fromEntries(
+      Object.values(PROTOCOL_CHAINS)
+        .filter((chain) => chain.wallet !== undefined)
+        .map((chain) => [chain.id, chain.wallet])
+    );
+    expect(supported).toEqual({
+      "monad-testnet": { indexer: "json-rpc" },
+      "monad-mainnet": { indexer: "json-rpc" },
+      "solana-devnet": { indexer: "json-rpc" },
+      "solana-mainnet": { indexer: "json-rpc" },
+      "xec-testnet": { indexer: "chronik" },
+      "btc-testnet": { indexer: "electrum" },
+      "bch-testnet": { indexer: "electrum" },
+    });
+  });
+
+  it("reads every wallet through a proxy capability the protocol permits for that chain", () => {
+    for (const chain of Object.values(PROTOCOL_CHAINS)) {
+      if (chain.wallet === undefined) continue;
+      expect(chain.allowedProxyCapabilities).toContain(chain.wallet.indexer);
+    }
   });
 });

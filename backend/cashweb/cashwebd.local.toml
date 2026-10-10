@@ -107,6 +107,23 @@ chronik_upstream_env = "XEC_TESTNET_CHRONIK_URL"
 checkpoint_height = 1421481
 checkpoint_hash = "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b"
 
+# Electrum is the indexer for Bitcoin-family chains other than eCash. An upstream may be tcp://,
+# ssl://, ws:// or wss://; several may be listed in one variable, separated by spaces. Each
+# connection must return this checkpoint block before it is used (Bitcoin testnet and Bitcoin Cash
+# testnet share a genesis block, so only a block after the fork tells them apart). Dogecoin testnet
+# has no row: no public Electrum server for it was reachable on 2026-10-09.
+[[registry.bitcoin_proxy.chains]]
+id = "btc-testnet"
+electrum_upstream_env = "BTC_TESTNET_ELECTRUM_URL"
+checkpoint_height = 5125000
+checkpoint_hash = "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133"
+
+[[registry.bitcoin_proxy.chains]]
+id = "bch-testnet"
+electrum_upstream_env = "BCH_TESTNET_ELECTRUM_URL"
+checkpoint_height = 1155876
+checkpoint_hash = "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5"
+
 [registry.solana_proxy]
 enabled = true
 anonymous_units_per_hour = 1000000

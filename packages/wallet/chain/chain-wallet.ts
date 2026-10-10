@@ -10,6 +10,12 @@ export interface ChainTransaction {
   readonly txHash: string;
   /** Ordered prerequisite/action ids when one logical action required more than one transaction. */
   readonly relatedTxHashes?: ReadonlyArray<string>;
+  /**
+   * The exact signed bytes (hex), in broadcast order, for wallets whose transaction can be sent
+   * again unchanged (UTXO chains). Recorded before broadcast so a restart rebroadcasts the same
+   * transaction instead of leaving the attempt unresolved or paying a second time.
+   */
+  readonly rawTransactions?: ReadonlyArray<string>;
 }
 
 /**
@@ -28,6 +34,35 @@ export class NativeTransactionSubmissionError extends Error {
     this.name = "NativeTransactionSubmissionError";
     this.transaction = params.transaction;
     this.reason = params.reason;
+  }
+}
+
+/**
+ * The network answered and refused the transaction, so it was not broadcast and the same money
+ * can be sent again. `reason` is the node's own wording where the relay passed it on.
+ */
+export class NativeTransactionRefusedError extends Error {
+  readonly reason: string;
+
+  constructor(reason?: string) {
+    super(
+      reason
+        ? `The network refused the transaction: ${reason}`
+        : "The network refused the transaction; nothing was sent"
+    );
+    this.name = "NativeTransactionRefusedError";
+    this.reason = reason ?? "";
+  }
+}
+
+/**
+ * The fee a send would pay now is higher than the fee the user reviewed. Nothing was signed or
+ * sent; `fee` is the current fee, in base units, to show for a fresh review.
+ */
+export class NativeFeeExceededError extends Error {
+  constructor(readonly fee: bigint) {
+    super("The network fee rose above the reviewed fee; review the transfer again");
+    this.name = "NativeFeeExceededError";
   }
 }
 
@@ -98,11 +133,21 @@ function parseStoredTransaction(
     ) {
       return undefined;
     }
+    if (
+      value.rawTransactions !== undefined &&
+      (!Array.isArray(value.rawTransactions) ||
+        value.rawTransactions.some((raw) => typeof raw !== "string"))
+    ) {
+      return undefined;
+    }
     return {
       txHash: value.txHash,
       ...(value.relatedTxHashes === undefined
         ? {}
         : { relatedTxHashes: value.relatedTxHashes }),
+      ...(value.rawTransactions === undefined
+        ? {}
+        : { rawTransactions: value.rawTransactions }),
     };
   } catch {
     return undefined;
@@ -204,6 +249,8 @@ export interface NativeWalletHandle {
   sendNative(params: {
     recipient: ChainAddress;
     value: bigint;
+    /** The fee the user reviewed, as a ceiling; wallets that support it throw NativeFeeExceededError. */
+    maxFee?: bigint;
     /** Invoked after signing and before broadcast so callers can durably record the exact id. */
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction>;

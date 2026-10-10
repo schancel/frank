@@ -1623,7 +1623,7 @@ async fn proxy_chronik_inner(
     let body = if upstream.status.is_success() {
         upstream.body
     } else {
-        proto::Error::decode(upstream.body.as_ref()).map_err(|_| {
+        let upstream_error = proto::Error::decode(upstream.body.as_ref()).map_err(|_| {
             broadcast_error(
                 StatusCode::BAD_GATEWAY,
                 "invalid_rpc_upstream_response",
@@ -1632,9 +1632,14 @@ async fn proxy_chronik_inner(
             )
         })?;
         // Provider-controlled errors are never forwarded verbatim: URL credentials can have
-        // many equivalent encodings, so substring redaction cannot be complete.
+        // many equivalent encodings, so substring redaction cannot be complete. The one exception
+        // is the node's reason for refusing a broadcast, reduced to plain words, so a wallet can
+        // say why a payment was not sent.
+        let reason = broadcast
+            .then(|| super::electrum_proxy::safe_node_reason(&upstream_error.msg))
+            .flatten();
         proto::Error {
-            msg: "upstream Chronik error".to_string(),
+            msg: reason.unwrap_or_else(|| "upstream Chronik error".to_string()),
         }
         .encode_to_vec()
         .into()

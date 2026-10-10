@@ -128,6 +128,27 @@ fn block_hash_from_header_hex(header_hex: &str) -> Option<String> {
     Some(hex::encode(hash))
 }
 
+/// The node's reason for refusing a broadcast, cut down to what is safe to show a wallet user.
+///
+/// Upstream errors are otherwise replaced wholesale, because a provider's message can carry its
+/// URL or key. A refusal reason is words and hyphenated codes ("bad-txns-inputs-missingorspent",
+/// "min relay fee not met"), so only the leading run of letters, digits, spaces and `-_.,:()` is
+/// kept, at most 160 characters: nothing with `/`, `@`, `=`, `?` or `%` gets through.
+pub(crate) fn safe_node_reason(message: &str) -> Option<String> {
+    let mut reason = String::new();
+    for ch in message.chars() {
+        let ch = if ch.is_whitespace() { ' ' } else { ch };
+        if !(ch.is_ascii_alphanumeric() || " -_.,:()".contains(ch)) || reason.len() >= 160 {
+            break;
+        }
+        if !(ch == ' ' && reason.ends_with(' ')) {
+            reason.push(ch);
+        }
+    }
+    let reason = reason.trim();
+    (!reason.is_empty()).then(|| reason.to_string())
+}
+
 /// A connected Electrum server, whatever its transport: one JSON text per message.
 struct Upstream {
     sink: UpstreamSink,
@@ -351,6 +372,7 @@ fn id_key(id: &Value) -> Option<String> {
 
 enum PendingKind {
     Call,
+    Broadcast,
     Subscribe(String),
     Unsubscribe(String),
 }
@@ -516,6 +538,7 @@ async fn forward(
                     "blockchain.headers.subscribe" => {
                         PendingKind::Subscribe(HEADERS_SUBSCRIPTION.to_string())
                     }
+                    _ if broadcast => PendingKind::Broadcast,
                     _ => PendingKind::Call,
                 };
                 let Some(permit) = runtime.try_request_permit() else {
@@ -563,6 +586,13 @@ async fn forward(
                 }
                 // A response nobody asked for means the two sides are out of step.
                 let Some(request) = id_key(&id).and_then(|key| pending.remove(&key)) else { break };
+                let refusal = match (&request.kind, value.get("error")) {
+                    (PendingKind::Broadcast, Some(error)) => error
+                        .as_str()
+                        .or_else(|| error.get("message").and_then(Value::as_str))
+                        .and_then(safe_node_reason),
+                    _ => None,
+                };
                 if value.get("error").is_none_or(Value::is_null) {
                     match request.kind {
                         PendingKind::Subscribe(name) => {
@@ -571,10 +601,14 @@ async fn forward(
                         PendingKind::Unsubscribe(name) => {
                             subscriptions.remove(&name);
                         }
-                        PendingKind::Call => {}
+                        PendingKind::Call | PendingKind::Broadcast => {}
                     }
                 }
                 sanitize_response_errors(&mut value);
+                // A wallet must be able to say why its transaction was refused.
+                if let (Some(reason), Some(error)) = (refusal, value.get_mut("error")) {
+                    *error = json!({ "code": -32000, "message": reason });
+                }
                 reply!(ClientWsMessage::Text(value.to_string()));
             }
         }
@@ -606,6 +640,30 @@ mod tests {
         );
         assert_eq!(block_hash_from_header_hex(&genesis[..158]), None);
         assert_eq!(block_hash_from_header_hex("not hex"), None);
+    }
+
+    #[test]
+    fn keeps_a_refusal_reason_and_nothing_that_could_be_a_url_or_key() {
+        assert_eq!(
+            safe_node_reason(
+                "Broadcast failed: Transaction rejected by mempool: bad-txns-inputs-missingorspent"
+            )
+            .as_deref(),
+            Some(
+                "Broadcast failed: Transaction rejected by mempool: bad-txns-inputs-missingorspent"
+            )
+        );
+        // Fulcrum appends the raw transaction after the reason.
+        assert_eq!(
+            safe_node_reason("the transaction was rejected by network rules.\n\nmin relay fee not met\n[0200beef]").as_deref(),
+            Some("the transaction was rejected by network rules. min relay fee not met")
+        );
+        assert_eq!(
+            safe_node_reason("upstream https://user:secret@node.example/v2/KEY failed").as_deref(),
+            Some("upstream https:")
+        );
+        assert_eq!(safe_node_reason("?key=abc"), None);
+        assert_eq!(safe_node_reason(&"a".repeat(500)).unwrap().len(), 160);
     }
 
     #[test]

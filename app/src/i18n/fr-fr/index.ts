@@ -148,6 +148,26 @@ export default {
       'C’est plus que ce que vous pouvez dépenser maintenant ({balance}).',
     balanceUnknown: 'Votre solde n’est pas encore connu.',
   },
+  gameFairness: {
+    notVerified: 'NON VÉRIFIÉ.',
+    diceVerified:
+      'Vérifié : le secret correspond à l’engagement sur lequel vous avez misé, et le nombre, le résultat et le gain en découlent, avec votre propre valeur aléatoire.',
+    diceHow: 'Comment cela a été vérifié',
+    diceCommitment: 'Engagement (avant votre mise) : {value}',
+    diceSecret: 'Secret (révélé) : {value}',
+    diceSeed: 'Votre valeur aléatoire : {value}',
+    diceRule:
+      'SHA-256(secret) doit être égal à l’engagement ; le tirage correspond aux 16 premiers bits de HMAC-SHA256(secret, votre valeur).',
+    rpsVerified:
+      'Vérifié : le coup et le sel révélés par le bot correspondent à l’engagement envoyé avant votre coup.',
+    payoutClaimed:
+      'Gain : {amount}. Le bot indique que ce message le transporte ; ce n’est pas encore vérifié sur la chaîne.',
+    payoutMissing:
+      'Gain : {amount}, mais ce message transportait {carried}. Vous n’avez pas été payé en totalité.',
+    awaiting: 'En attente de la révélation du bot ({seconds} s).',
+    noAnswer:
+      'Le bot n’a pas répondu après {seconds} s. Votre mise est chez le bot et rien n’a été révélé.',
+  },
   raffleDraw: {
     verified: "Le tirage correspond à l'engagement de la graine",
     failed: 'Échec de la vérification : {reason}',

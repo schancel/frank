@@ -1,298 +1,168 @@
-import { RpsBot, evaluateRps } from "./rps-bot";
-import { createHash } from "crypto";
-import type {
-  BotContext,
-  BotMessageContext,
-  NewUserEvent,
-} from "@frank/bot-framework";
+import type { RpsItem } from "@frank/cashweb/types/messages";
+import {
+  evaluateRps,
+  verifyRpsResult,
+  type RpsMove,
+} from "@frank/wallet/message-item-plugins/rps/fair";
+import { harness, PLAYER } from "./bot-harness.testutil";
+import { RpsBot } from "./rps-bot";
+
+const STAKE = 10_000_000_000_000_000n; // 0.01 MON
+
+/** Starts a match and returns the player's move that gives `want`. */
+async function match(
+  h: ReturnType<typeof harness>,
+  bot: RpsBot,
+  want: "win" | "lose" | "tie",
+  wagerWei = STAKE
+) {
+  await bot.onMessage(h.message([{ type: "text", text: "/rps 5" }]), h.ctx);
+  const start = h.item("rps");
+  const { move } = JSON.parse(h.data.get(`match:${start.matchId}`)!);
+  const playerMove = (["rock", "paper", "scissors"] as RpsMove[]).find(
+    (candidate) => evaluateRps(candidate, move) === want
+  )!;
+  const mine: RpsItem = {
+    type: "rps",
+    action: "move",
+    matchId: start.matchId,
+    commitHash: start.commitHash,
+    playerMove,
+    wagerWei: wagerWei.toString(),
+  };
+  h.sent.length = 0;
+  return { start, mine, botMove: move as RpsMove };
+}
 
 describe("RpsBot", () => {
-  let bot: RpsBot;
-  let mockState: Map<string, string>;
-  let mockContext: BotContext;
-  let sentMessages: Array<{ to: string; items: any[] }>;
-  let transferredFunds: Array<{ to: string; valueWei: bigint }>;
-
-  beforeEach(() => {
-    bot = new RpsBot();
-    mockState = new Map();
-    sentMessages = [];
-    transferredFunds = [];
-
-    mockContext = {
-      botId: "rps",
-      address: "0x8888888888888888888888888888888888888888",
-      subject: "0x8888888888888888888888888888888888888888",
-      relayBaseUrl: "http://127.0.0.1:8098",
-      networkTag: "MONT",
-      provider: {} as any,
-      state: {
-        get: jest.fn(async (k: string) => mockState.get(k)),
-        put: jest.fn(async (k: string, v: string) => {
-          mockState.set(k, v);
-        }),
-        del: jest.fn(async (k: string) => {
-          mockState.delete(k);
-        }),
-        list: jest.fn(async () => []),
-        batch: jest.fn(async () => {}),
-        sublevel: jest.fn(),
-        close: jest.fn(async () => {}),
-      },
-      subscriptions: {} as any,
-      lookupPeer: jest.fn(),
-      sendMessage: jest.fn(async (to, items) => {
-        sentMessages.push({ to, items });
-        return { ok: true } as any;
-      }),
-      sendDirectMessage: jest.fn(async (to, items) => {
-        sentMessages.push({ to, items });
-        return { ok: true } as any;
-      }),
-      onNewUserRegistered: jest.fn(),
-      sendTransfer: jest.fn(async ({ to, valueWei }) => {
-        transferredFunds.push({ to, valueWei });
-        return { txHash: "0xmocktxhash" };
-      }),
-      buildAndSignTransfer: jest.fn(),
-      waitForReceipt: jest.fn(),
-      getBalance: jest.fn(async () => 1_000_000_000_000_000_000n),
-    };
+  test("commits to its move before the player chooses, without showing it", async () => {
+    const h = harness();
+    const { start } = await match(h, new RpsBot(), "win");
+    expect(start.action).toBe("start");
+    expect(start.commitHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(start.botMove).toBeUndefined();
+    expect(start.secretSalt).toBeUndefined();
+    // A wager typed with the command is not part of the match.
+    expect(start.wagerWei).toBeUndefined();
   });
 
-  test("evaluates game outcomes accurately", () => {
-    expect(evaluateRps("rock", "scissors")).toBe("win");
-    expect(evaluateRps("paper", "rock")).toBe("win");
-    expect(evaluateRps("scissors", "paper")).toBe("win");
-
-    expect(evaluateRps("scissors", "rock")).toBe("lose");
-    expect(evaluateRps("rock", "paper")).toBe("lose");
-    expect(evaluateRps("paper", "scissors")).toBe("lose");
-
-    expect(evaluateRps("rock", "rock")).toBe("tie");
-    expect(evaluateRps("paper", "paper")).toBe("tie");
-    expect(evaluateRps("scissors", "scissors")).toBe("tie");
+  test("no payment, no payout: a winning move that states a stake but paid nothing is refused", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const { mine } = await match(h, bot, "win");
+    await bot.onMessage(h.message([mine]), h.ctx);
+    expect(h.paidOut()).toBe(0n);
+    expect(h.sent.flatMap((m) => m.items).some((i) => i.type === "rps" && i.action === "resolve")).toBe(false);
   });
 
-  test("returns valid profile metadata", () => {
-    const profile = bot.getProfile();
-    expect(profile.name).toBe("RPS Arena");
-    expect(profile.bot).toBe(true);
-    expect(profile.avatarPng).toBeInstanceOf(Buffer);
+  test("an under-payment is refused and what was paid is returned", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const { mine } = await match(h, bot, "win");
+    await bot.onMessage(h.message([mine], [h.pay(STAKE / 4n)]), h.ctx);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].valueWei).toBe(STAKE / 4n);
   });
 
-  test("proactively welcomes new users with game invitation", async () => {
-    const user: NewUserEvent = {
-      address: "0x9999999999999999999999999999999999999999",
-      registeredAtMs: Date.now(),
-    };
-
-    await bot.onNewUser(user, mockContext);
-    expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0].to).toBe(user.address);
-    expect(sentMessages[0].items[0].text).toContain("Welcome to Frank! I am the RPS Arena bot");
+  test.each([
+    ["win", STAKE * 2n],
+    ["tie", STAKE],
+    ["lose", 0n],
+  ] as const)("a paid %s pays %s, and the reveal verifies", async (want, pays) => {
+    const h = harness();
+    const bot = new RpsBot();
+    const { mine } = await match(h, bot, want);
+    await bot.onMessage(h.message([mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].to).toBe(PLAYER);
+    expect(h.sent[0].valueWei).toBe(pays);
+    const result = h.item("rps");
+    expect(result.outcome).toBe(want);
+    expect(verifyRpsResult(result, mine)).toEqual({ ok: true });
   });
 
-  test("starts provably fair match with cryptographic commitment and resolves player move", async () => {
-    const player = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const startReplies: any[] = [];
-
-    // 1. /rps
-    await bot.onMessage(
-      {
-        conversationId: "c1",
-        peerAddress: player,
-        peerSubject: player,
-        timestampMs: Date.now(),
-        payloadDigest: "0x11",
-        items: [{ type: "text", text: "/rps" }],
-        reply: jest.fn(async (items) => {
-          startReplies.push(items);
-        }),
-      },
-      mockContext
-    );
-
-    const startText = startReplies[0].find((i: any) => i.type === "text")?.text;
-    const startItem = startReplies[0].find((i: any) => i.type === "rps");
-    expect(startItem).toBeDefined();
-    expect(startItem?.action).toBe("start");
-    expect(startText).toContain("Rock-Paper-Scissors Match Started!");
-    expect(startText).toContain("Cryptographic Commitment");
-
-    // Verify commitment was saved in state
-    const rawMatch = mockState.get(`rps:match:${player}`);
-    expect(rawMatch).toBeDefined();
-    const match = JSON.parse(rawMatch!);
-    expect(match.commitHash).toBeDefined();
-    expect(match.botMove).toBeDefined();
-    expect(match.salt).toBeDefined();
-
-    // Verify hash integrity: SHA256(botMove:salt) === commitHash
-    const expectedHash = createHash("sha256").update(`${match.botMove}:${match.salt}`).digest("hex");
-    expect(match.commitHash).toBe(expectedHash);
-
-    // 2. Player chooses /rock
-    const playReplies: any[] = [];
-    await bot.onMessage(
-      {
-        conversationId: "c1",
-        peerAddress: player,
-        peerSubject: player,
-        timestampMs: Date.now(),
-        payloadDigest: "0x22",
-        items: [{ type: "text", text: "/rock" }],
-        reply: jest.fn(async (items) => {
-          playReplies.push(items);
-        }),
-      },
-      mockContext
-    );
-
-    const playText = playReplies[0].find((i: any) => i.type === "text")?.text;
-    const playItem = playReplies[0].find((i: any) => i.type === "rps");
-    expect(playItem).toBeDefined();
-    expect(playItem?.action).toBe("resolve");
-    expect(playText).toContain("You chose: 🪨 Rock");
-    expect(playText).toContain(`I chose:`);
-    expect(playText).toContain("Fairness Verification");
-    expect(playText).toContain(match.commitHash);
-    expect(playText).toContain(match.salt);
-
-    // Match record removed from state to prevent replay
-    expect(mockState.has(`rps:match:${player}`)).toBe(false);
+  test("one commitment, one match: a second move on it is refused and refunded", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const { mine } = await match(h, bot, "win");
+    await bot.onMessage(h.message([mine], [h.pay(STAKE)]), h.ctx);
+    h.sent.length = 0;
+    await bot.onMessage(h.message([mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].valueWei).toBe(STAKE);
   });
 
-  test("handles wager payouts when player wins against bot", async () => {
-    const player = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-    // Manually set an active match where bot chose scissors and wager is 0.05 MON (50_000_000_000_000_000 wei)
-    const wagerWei = "50000000000000000";
-    const salt = "deadbeef";
-    const commitHash = createHash("sha256").update(`scissors:${salt}`).digest("hex");
-
-    mockState.set(
-      `rps:match:${player}`,
-      JSON.stringify({
-        commitHash,
-        botMove: "scissors",
-        salt,
-        wagerWei,
-        timestampMs: Date.now(),
-      })
-    );
-
-    const playReplies: any[] = [];
-    // Player sends /rock -> beats scissors!
+  test("a typed move plays the open match for nothing, whatever the message paid", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const { botMove } = await match(h, bot, "win");
+    const winning = (["rock", "paper", "scissors"] as RpsMove[]).find(
+      (candidate) => evaluateRps(candidate, botMove) === "win"
+    )!;
     await bot.onMessage(
-      {
-        conversationId: "c1",
-        peerAddress: player,
-        peerSubject: player,
-        timestampMs: Date.now(),
-        payloadDigest: "0x33",
-        items: [{ type: "text", text: "/rock" }],
-        reply: jest.fn(async (items) => {
-          playReplies.push(items);
-        }),
-      },
-      mockContext
+      h.message([{ type: "text", text: `/${winning}` }], [h.pay(STAKE)]),
+      h.ctx
     );
-
-    const winText = playReplies[0].find((i: any) => i.type === "text")?.text;
-    expect(winText).toContain("YOU WIN!");
-    expect(winText).toContain("Payout Sent!");
-    expect(transferredFunds.length).toBe(1);
-    expect(transferredFunds[0].to).toBe(player);
-    // Double payout (0.1 MON)
-    expect(transferredFunds[0].valueWei).toBe(100_000_000_000_000_000n);
+    expect(h.item("rps").outcome).toBe("win");
+    expect(h.paidOut()).toBe(0n);
   });
 
-  test("handles P2P challenges and resolves game between two players", async () => {
-    const alice = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const bob = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  test("a stake over the table limit is refused and refunded", async () => {
+    const h = harness();
+    const bot = new RpsBot({ maxWagerWei: STAKE - 1n });
+    const { mine } = await match(h, bot, "win");
+    await bot.onMessage(h.message([mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(STAKE);
+    expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "resolve")).toBe(false);
+  });
 
-    // 1. Alice challenges Bob
-    const aliceReplies: any[] = [];
-    await bot.onMessage(
-      {
-        conversationId: "c1",
-        peerAddress: alice,
-        peerSubject: alice,
-        timestampMs: Date.now(),
-        payloadDigest: "0x01",
-        items: [{ type: "text", text: `/challenge ${bob} 0.02` }],
-        reply: jest.fn(async (items) => {
-          aliceReplies.push(items);
-        }),
-      },
-      mockContext
-    );
+  test("the bot's move is not predictable from one match to the next", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const moves = new Set<string>();
+    for (let i = 0; i < 60; i++) moves.add((await match(h, bot, "win")).botMove);
+    expect(moves.size).toBe(3);
+  });
 
-    expect(aliceReplies[0][0].text).toContain("Challenge created!");
-    expect(sentMessages.some((m) => m.to === bob && m.items[0].text.includes("New RPS Challenge!"))).toBe(true);
+  test("the profile makes no fairness claim beyond what the app checks", () => {
+    expect(new RpsBot().getProfile().bio).not.toMatch(/provably/i);
+  });
 
-    // Extract challengeId from state
-    const challengeKey = Array.from(mockState.keys()).find((k) => k.startsWith("rps:challenge:"))!;
-    const challengeId = challengeKey.replace("rps:challenge:", "");
+  test("a result the relay ended is not counted as sent; a pending one is sent when it arrives", async () => {
+    const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const h = harness();
+    const bot = new RpsBot();
+    const first = await match(h, bot, "win");
+    h.wallet("live");
+    await bot.onMessage(h.message([first.mine], [h.pay(STAKE)]), h.ctx);
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.sent).toHaveLength(0);
+    h.deliverLive();
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.paidOut()).toBe(STAKE * 2n);
 
-    // 2. Bob accepts challenge
-    const bobReplies: any[] = [];
-    await bot.onMessage(
-      {
-        conversationId: "c2",
-        peerAddress: bob,
-        peerSubject: bob,
-        timestampMs: Date.now(),
-        payloadDigest: "0x02",
-        items: [{ type: "text", text: `/accept ${challengeId}` }],
-        reply: jest.fn(async (items) => {
-          bobReplies.push(items);
-        }),
-      },
-      mockContext
-    );
+    h.wallet("deliver");
+    const second = await match(h, bot, "win");
+    h.wallet("dead");
+    await bot.onMessage(h.message([second.mine], [h.pay(STAKE)]), h.ctx);
+    h.wallet("deliver");
+    await bot.schedules[0].handler(h.ctx);
+    expect(h.sent).toHaveLength(0);
+    expect(errors.mock.calls.flat().join(" ")).toContain("FAILED");
+    errors.mockRestore();
+  });
 
-    expect(bobReplies[0][0].text).toContain("Accepted!");
-    expect(sentMessages.some((m) => m.to === alice && m.items[0].text.includes("Accepted!"))).toBe(true);
+  test("excess over the stake comes back with the result, and a stake the bank cannot cover is refunded", async () => {
+    const h = harness();
+    const bot = new RpsBot();
+    const lost = await match(h, bot, "lose");
+    await bot.onMessage(h.message([lost.mine], [h.pay(STAKE + 3n)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(3n);
 
-    // 3. Alice submits move: rock
-    aliceReplies.length = 0;
-    await bot.onMessage(
-      {
-        conversationId: "c1",
-        peerAddress: alice,
-        peerSubject: alice,
-        timestampMs: Date.now(),
-        payloadDigest: "0x03",
-        items: [{ type: "text", text: `/move ${challengeId} rock` }],
-        reply: jest.fn(async (items) => {
-          aliceReplies.push(items);
-        }),
-      },
-      mockContext
-    );
-    expect(aliceReplies[0][0].text).toContain("Move locked in!");
-
-    // 4. Bob submits move: scissors -> Alice wins!
-    sentMessages.length = 0;
-    await bot.onMessage(
-      {
-        conversationId: "c2",
-        peerAddress: bob,
-        peerSubject: bob,
-        timestampMs: Date.now(),
-        payloadDigest: "0x04",
-        items: [{ type: "text", text: `/move ${challengeId} scissors` }],
-        reply: jest.fn(),
-      },
-      mockContext
-    );
-
-    // Both players notified of final resolution
-    expect(sentMessages.length).toBe(2);
-    expect(sentMessages[0].items[0].text).toContain("P2P Match Resolved!");
-    expect(sentMessages[0].items[0].text).toContain("WINNER: 0xaaaa");
-    expect(sentMessages[1].items[0].text).toContain("WINNER: 0xaaaa");
+    (h.ctx as any).getBalance = async () => STAKE;
+    const refused = await match(h, bot, "win");
+    await bot.onMessage(h.message([refused.mine], [h.pay(STAKE)]), h.ctx);
+    expect(h.sent[0].valueWei).toBe(STAKE);
+    expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "resolve")).toBe(false);
   });
 });

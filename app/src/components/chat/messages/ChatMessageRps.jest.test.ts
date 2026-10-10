@@ -2,15 +2,30 @@
 
 import { mount } from '@vue/test-utils'
 import * as quasar from 'quasar'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, reactive } from 'vue'
 
 import type { RpsItem } from '@frank/cashweb/types/messages'
+import { rpsCommitment } from '@frank/wallet/message-item-plugins/rps/fair'
+import enUS from '../../../i18n/en-us'
 import ChatMessageRps from './ChatMessageRps.vue'
+
+const t = (key: string, params: Record<string, unknown> = {}) => {
+  const text = key.split('.').reduce<any>((o, k) => o?.[k], enUS) as string
+  return String(text ?? key).replace(/\{(\w+)\}/g, (_, name) =>
+    String(params[name]),
+  )
+}
+
+const store: { activeConversation: { messages: any[] } } = reactive({
+  activeConversation: { messages: [] },
+})
+jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
     toDisplayAmount: (n: bigint) => (Number(n) / 1e18).toString(),
+    fromDisplayAmount: (s: string) => BigInt(Math.round(Number(s) * 1e18)),
   },
 }))
 
@@ -73,81 +88,186 @@ quasarStubs.QInput = defineComponent({
       }),
 })
 
+const salt = '5a'.repeat(16)
+const commitHash = rpsCommitment('scissors', salt)
+const STAKE = 10n ** 16n
+const start: RpsItem = {
+  type: 'rps',
+  action: 'start',
+  matchId: 'm1',
+  commitHash,
+}
+const mine: RpsItem = {
+  type: 'rps',
+  action: 'move',
+  matchId: 'm1',
+  commitHash,
+  playerMove: 'rock',
+  wagerWei: STAKE.toString(),
+}
+const resolved: RpsItem = {
+  type: 'rps',
+  action: 'resolve',
+  matchId: 'm1',
+  commitHash,
+  playerMove: 'rock',
+  botMove: 'scissors',
+  secretSalt: salt,
+  wagerWei: STAKE.toString(),
+  outcome: 'win',
+}
+
+function mountCard(item: RpsItem) {
+  return mount(ChatMessageRps, {
+    props: { item, address: '0x123' },
+    global: { stubs: quasarStubs, mocks: { $t: t } },
+  })
+}
+
+function chat(
+  ...messages: { outbound: boolean; item: RpsItem; paid?: bigint }[]
+) {
+  store.activeConversation = {
+    messages: messages.map(m => ({
+      outbound: m.outbound,
+      items: [m.item],
+      stampValueWei: m.paid ?? 0n,
+    })),
+  }
+}
+
 describe('ChatMessageRps.vue', () => {
-  test('renders match start with commitment and allows move selection', async () => {
-    const item: RpsItem = {
-      type: 'rps',
-      action: 'start',
-      commitHash: 'deadbeef12345678',
-      wagerWei: '50000000000000000',
-    }
+  beforeEach(() => chat())
 
-    const wrapper = mount(ChatMessageRps, {
-      props: {
-        item,
-        address: '0x123',
+  test('a move answers the commitment the bot sent and carries the stake as its value', async () => {
+    const wrapper = mountCard(start)
+    expect(wrapper.text()).toContain(commitHash)
+    await wrapper.find('[data-testid="rps-chip-0.05"]').trigger('click')
+    await wrapper.find('[data-testid="rps-paper"]').trigger('click')
+    const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]
+    expect(payload.stampValueWei).toBe(5n * 10n ** 16n)
+    expect(payload.items).toEqual([
+      {
+        type: 'rps',
+        action: 'move',
+        matchId: 'm1',
+        commitHash,
+        playerMove: 'paper',
+        wagerWei: (5n * 10n ** 16n).toString(),
       },
-      global: {
-        stubs: quasarStubs,
-      },
-    })
-
-    expect(wrapper.text()).toContain('Rock-Paper-Scissors Arena')
-    expect(wrapper.text()).toContain('0xdeadbeef12345678')
-    expect(wrapper.text()).toContain('Wager: 0.05 MON')
-
-    // Click Rock
-    const rockBtn = wrapper.find('[data-testid="rps-rock"]')
-    expect(rockBtn.exists()).toBe(true)
-    await rockBtn.trigger('click')
-
-    expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
-    expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
-      items: [{ type: 'text', text: '/rock' }],
-    })
+    ])
   })
 
-  test('renders resolved match with outcome and allows Play Again with selectable wager', async () => {
-    const item: RpsItem = {
-      type: 'rps',
-      action: 'resolve',
-      playerMove: 'rock',
-      botMove: 'scissors',
-      outcome: 'win',
-      commitHash: 'deadbeef',
-      secretSalt: 'salt123',
-      wagerWei: '50000000000000000',
-      txHash: '0xabcdef987654321',
+  test('a free move carries no stake', async () => {
+    const wrapper = mountCard(start)
+    await wrapper.find('[data-testid="rps-rock"]').trigger('click')
+    const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]
+    expect(payload.stampValueWei).toBeUndefined()
+    expect(payload.items[0].wagerWei).toBe('0')
+  })
+
+  test('a match already played offers no second move', () => {
+    chat({ outbound: true, item: mine })
+    expect(mountCard(start).find('[data-testid="rps-rock"]').exists()).toBe(
+      false,
+    )
+  })
+
+  test('an honest reveal of a match the player moved in shows as verified', () => {
+    chat(
+      { outbound: true, item: mine },
+      { outbound: false, item: resolved, paid: STAKE * 2n },
+    )
+    const wrapper = mountCard(resolved)
+    expect(wrapper.find('[data-testid="rps-verified"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="rps-not-verified"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.text()).toContain('YOU WIN')
+  })
+
+  test('a reveal that does not open the commitment shows NOT VERIFIED', () => {
+    const forged: RpsItem = { ...resolved, botMove: 'paper', outcome: 'lose' }
+    chat({ outbound: true, item: mine }, { outbound: false, item: forged })
+    const wrapper = mountCard(forged)
+    expect(wrapper.find('[data-testid="rps-verified"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="rps-not-verified"]').text()).toContain(
+      'NOT VERIFIED',
+    )
+  })
+
+  test('a result with no move of the player shows NOT VERIFIED', () => {
+    chat({ outbound: false, item: resolved, paid: STAKE * 2n })
+    expect(
+      mountCard(resolved).find('[data-testid="rps-not-verified"]').exists(),
+    ).toBe(true)
+  })
+
+  test('a win is verified as an outcome; its payout is shown as claimed, or as short, never as verified', () => {
+    chat(
+      { outbound: true, item: mine },
+      { outbound: false, item: resolved, paid: STAKE * 2n },
+    )
+    const paid = mountCard(resolved)
+    expect(paid.find('[data-testid="rps-verified"]').exists()).toBe(true)
+    expect(paid.find('[data-testid="rps-payout"]').text()).toContain(
+      'not yet verified on chain',
+    )
+    chat(
+      { outbound: true, item: mine },
+      { outbound: false, item: resolved, paid: STAKE },
+    )
+    const short = mountCard(resolved)
+    expect(short.find('[data-testid="rps-verified"]').exists()).toBe(true)
+    expect(short.find('[data-testid="rps-payout"]').text()).toContain(
+      'not been paid in full',
+    )
+  })
+
+  test('a free match played by typing is checked against the commitment the bot sent first', () => {
+    const typed: RpsItem = { ...resolved, wagerWei: '0' }
+    chat({ outbound: false, item: start }, { outbound: false, item: typed })
+    const wrapper = mountCard(typed)
+    expect(wrapper.find('[data-testid="rps-verified"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="rps-not-verified"]').exists()).toBe(
+      false,
+    )
+    // A typed match whose reveal does not open that commitment is still caught.
+    const forged: RpsItem = { ...typed, botMove: 'paper', outcome: 'lose' }
+    chat({ outbound: false, item: start }, { outbound: false, item: forged })
+    expect(
+      mountCard(forged).find('[data-testid="rps-not-verified"]').exists(),
+    ).toBe(true)
+  })
+
+  test('a move shows that it is waiting for the reveal, then that the bot has not answered', () => {
+    store.activeConversation = {
+      messages: [
+        { outbound: true, items: [mine], serverTime: Date.now() - 3_000 },
+      ],
     }
+    const fresh = mountCard(store.activeConversation.messages[0].items[0])
+    expect(fresh.find('[data-testid="rps-waiting"]').text()).toContain(
+      'Waiting for the bot',
+    )
+    fresh.unmount()
+    store.activeConversation.messages[0].serverTime = Date.now() - 200_000
+    const late = mountCard(store.activeConversation.messages[0].items[0])
+    expect(late.find('[data-testid="rps-waiting"]').text()).toContain(
+      'has not answered',
+    )
+    late.unmount()
+  })
 
-    const wrapper = mount(ChatMessageRps, {
-      props: {
-        item,
-        address: '0x123',
-      },
-      global: {
-        stubs: quasarStubs,
-      },
-    })
-
-    expect(wrapper.text()).toContain('YOU WIN!')
-    expect(wrapper.text()).toContain('🪨 Rock')
-    expect(wrapper.text()).toContain('✂️ Scissors')
-    expect(wrapper.text()).toContain('Payout sent!')
-
-    // Select 0.1 MON chip
-    const chip01 = wrapper.find('[data-testid="rps-chip-0.1"]')
-    expect(chip01.exists()).toBe(true)
-    await chip01.trigger('click')
-
-    // Click Play Again
-    const playAgainBtn = wrapper.find('[data-testid="rps-play-again"]')
-    expect(playAgainBtn.exists()).toBe(true)
-    await playAgainBtn.trigger('click')
-
-    expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
+  test('play again asks the bot for a new match', async () => {
+    chat(
+      { outbound: true, item: mine },
+      { outbound: false, item: resolved, paid: STAKE * 2n },
+    )
+    const wrapper = mountCard(resolved)
+    await wrapper.find('[data-testid="rps-play-again"]').trigger('click')
     expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
-      items: [{ type: 'text', text: '/rps 0.1' }],
+      items: [{ type: 'text', text: '/rps' }],
     })
   })
 })

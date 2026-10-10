@@ -1,3 +1,16 @@
+/**
+ * PARKED: not registered. Nothing imports this file: it is not in the bot set (`./index.ts`,
+ * `targets/`), the launcher or the demo, and the app's card for it is not mounted. It is kept
+ * for the rebuild, ticket #1377.
+ *
+ * Known wrong, as it stands:
+ * - dice are never dealt at the start of a round: players bid blind and the bot rolls at
+ *   challenge time (`setPlayerRoundCommit` / `setPlayerRoundSecret` are never called);
+ * - no buy-in is collected, so the "pot" is a number nothing a player paid backs;
+ * - the app's card emitted a malformed message (`{type:'text', text}` with no `items`).
+ * While parked it sends no "settlement": the call to the HTLC contract with lock IDs the bot
+ * made up is removed, and its profile makes no fairness claim.
+ */
 import { randomBytes } from "crypto";
 import type {
   FrankBotDefinition,
@@ -10,11 +23,6 @@ import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { MessageItem, LiarsDiceItem } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
 import { keccak256, toUtf8Bytes } from "ethers";
-import {
-  requireChainContract,
-  resolveChainIdentifier,
-} from "@frank/wallet/chain/chains-registry";
-import { encodeBatchDistributeCall } from "@frank/wallet/game-escrow";
 import {
   createLiarsDiceGame,
   joinGame,
@@ -43,12 +51,6 @@ export interface LiarsDiceTableEscrowRecord {
 }
 export type TableEscrowRecord = LiarsDiceTableEscrowRecord;
 
-function normalizeEvmAddress(addr: string): string {
-  if (/^0x[0-9a-fA-F]{40}$/.test(addr)) return addr;
-  const clean = addr.startsWith("0x") ? addr.slice(2) : addr;
-  const hex = Buffer.from(clean, "utf8").toString("hex");
-  return "0x" + hex.padStart(40, "0").slice(-40);
-}
 
 export class LiarsDiceBot implements FrankBotDefinition {
   readonly id = "liars-dice";
@@ -68,48 +70,17 @@ export class LiarsDiceBot implements FrankBotDefinition {
     game: LiarsDiceGameState,
     ctx?: BotContext
   ): Promise<string | undefined> {
-    const escrow = this.tableEscrows.get(game.tableId);
-    if (!escrow || !game.winnerAddress || !ctx?.sendTransaction) return undefined;
-
-    const lockIds: string[] = Array.from(escrow.playerLocks.values());
-    if (lockIds.length === 0) return undefined;
-
-    try {
-      const callData = encodeBatchDistributeCall({
-        lockIds,
-        payouts: [
-          {
-            recipient: normalizeEvmAddress(game.winnerAddress),
-            amount: game.potWei,
-          },
-        ],
-        preimage: escrow.preimage,
-      });
-      // The HTLC of the network this bot runs on; throws when none is deployed there.
-      const networkTag = String(ctx.networkTag);
-      const htlcAddress = requireChainContract(
-        resolveChainIdentifier(networkTag)?.id ?? networkTag,
-        "htlc"
-      );
-      const res = await ctx.sendTransaction({
-        to: htlcAddress,
-        data: callData,
-      });
-      escrow.settlementTxHash = res.txHash;
-      return res.txHash;
-    } catch (err) {
-      console.error(
-        `[liars-dice] Escrow settlement broadcast error for ${game.tableId}:`,
-        err
-      );
-      return undefined;
-    }
+    // Parked (#1377): no settlement is sent. The earlier code called the HTLC contract's
+    // batchDistribute with lock IDs no player ever funded.
+    void game;
+    void ctx;
+    return undefined;
   }
 
   getProfile(): BotProfile {
     return {
       name: "Liar's Dice",
-      bio: "Provably-fair Liar's Dice (Perudo) table referee with mental dice commitments.",
+      bio: "Liar's Dice (Perudo) table. Parked: not fair or playable yet.",
       avatarPng: generateAvatarPng("liars-dice", [240, 180, 50]),
       bot: true,
       accountType: ACCOUNT_TYPE_BOT,

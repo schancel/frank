@@ -1,3 +1,6 @@
+// PARKED (#1377): the poker code is kept for the rebuild and is not registered anywhere. These
+// tests describe its pre-rebuild behaviour (no commitment, no buy-in, a malformed emit from the
+// card); they keep it compiling and are not a statement that it is fair or playable.
 import { PokerBot } from './poker-bot'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 

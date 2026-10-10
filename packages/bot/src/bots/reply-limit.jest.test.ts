@@ -13,8 +13,6 @@ import {
   BlackjackDealerBot,
   ChatRoomBot,
   FaucetBot,
-  LiarsDiceBot,
-  PokerBot,
   QwenBot,
   RaffleBot,
   RpsBot,
@@ -24,8 +22,6 @@ import {
 
 const bots: FrankBotDefinition[] = [
   new BlackjackDealerBot(),
-  new LiarsDiceBot(),
-  new PokerBot(),
   new RpsBot(),
   new SatoshiDiceBot(),
   new RaffleBot(),
@@ -44,8 +40,6 @@ describe("reply budget per peer declared by each bot", () => {
     );
     expect(declared).toEqual({
       blackjack: 300,
-      "liars-dice": 300,
-      poker: 300,
       rps: 300,
       dice: 300,
       raffle: 300,

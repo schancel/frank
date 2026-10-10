@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 
-import { MAX_AMOUNT_WEI } from '../faucet-core'
+import { MAX_AMOUNT_WEI } from '../src/bots/faucet-bot'
 import {
   DEMO_DEFAULT_BURN_ADDRESS,
   DEMO_FAUCET_AMOUNT_WEI,
@@ -15,9 +15,7 @@ import { childEnv } from './supervisor'
 import {
   RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
   RAFFLE_DEFAULT_MAX_ENTRIES,
-  RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
-  RAFFLE_DEFAULT_MAX_TOPUP_WEI,
-} from '../raffle-settlement'
+} from '../src/bots/raffle-bot'
 
 const HOME = '/home/dummy'
 const REAL_ENV = {
@@ -85,7 +83,7 @@ describe('resolveDemoConfig', () => {
     expect(c.rpcUrl).toBe(REAL_ENV.MONAD_TESTNET_HTTP_RPC_URL)
     expect(c.stateDir).toBe(join(HOME, '.frank-demo'))
     expect(c.mainWalletJson).toBe('/work/wallet.json')
-    const names = ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice', 'liars-dice', 'poker']
+    const names = ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice']
     expect(c.bots.map(b => b.name)).toEqual(names)
     // One process, the framework's multi-bot entry point, told which bots to run.
     expect(c.botProcess.script).toBe('targets/all-bots.ts')
@@ -98,7 +96,7 @@ describe('resolveDemoConfig', () => {
       if (/(IDENTITY_JSON|STATE_DIR)$/.test(k)) expect(v.startsWith(join(HOME, '.frank-demo'))).toBe(true)
     }
     // Every bot is told its own identity file, under the variable the bot reads.
-    expect(c.botProcess.env.LIARS_DICE_BOT_IDENTITY_JSON).toBe(c.bots.find(b => b.name === 'liars-dice')!.identityJson)
+    expect(c.botProcess.env.DICE_BOT_IDENTITY_JSON).toBe(c.bots.find(b => b.name === 'dice')!.identityJson)
     expect(c.botProcess.env.FAUCET_BOT_IDENTITY_JSON).toBe(join(HOME, '.frank-demo', 'bots', 'faucet', 'identity.json'))
   })
 
@@ -144,10 +142,9 @@ describe('resolveDemoConfig', () => {
     expect(all).not.toContain('HOME_SECRET')
   })
 
-  it('demo-friendly limits: small raffle, a high faucet run limit', () => {
+  it('a small raffle for the demo', () => {
     const env = REAL().botProcess.env
     expect(env.RAFFLE_BOT_MAX_ENTRIES).toBe('5')
-    expect(env.FAUCET_MAX_PER_RUN).toBe('1000')
   })
 
   it('passes the exact PROTOC override only to the relay toolchain, with environment precedence', () => {
@@ -311,18 +308,13 @@ describe('child environment', () => {
 
 describe('raffle defaults stay consistent between the launcher and the bot (#363)', () => {
   const documented = (name: string) => DEMO_VARS.find(v => v.name === name)?.default
-  it("documents the bot's own entry price and top-up limit, and passes no price override by default", () => {
-    expect(documented('RAFFLE_BOT_ENTRY_PRICE_WEI')).toBe(RAFFLE_DEFAULT_ENTRY_PRICE_WEI)
-    expect(documented('RAFFLE_BOT_MAX_TOPUP_WEI')).toBe(RAFFLE_DEFAULT_MAX_TOPUP_WEI)
-    expect(documented('RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI')).toBe(RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI)
+  it("documents the bot's own entry price, and passes no price override by default", () => {
+    expect(documented('RAFFLE_BOT_ENTRY_PRICE_WEI')).toBe(RAFFLE_DEFAULT_ENTRY_PRICE_WEI.toString())
     expect(REAL().botProcess.env.RAFFLE_BOT_ENTRY_PRICE_WEI).toBeUndefined()
   })
-  it('the launcher passes the documented round size, and RAFFLE_BOT_MAX_TOPUP_WEI through', () => {
+  it('the launcher passes the documented round size', () => {
     expect(REAL().botProcess.env.RAFFLE_BOT_MAX_ENTRIES).toBe(documented('RAFFLE_BOT_MAX_ENTRIES'))
     expect(RAFFLE_DEFAULT_MAX_ENTRIES).toBe(5)
-    expect(
-      REAL({ RAFFLE_BOT_MAX_TOPUP_WEI: '7' }).botProcess.env.RAFFLE_BOT_MAX_TOPUP_WEI,
-    ).toBe('7')
   })
 })
 

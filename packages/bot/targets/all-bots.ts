@@ -21,8 +21,6 @@ import {
   ChatRoomBot,
   RpsBot,
   SatoshiDiceBot,
-  LiarsDiceBot,
-  PokerBot,
 } from "../src/bots";
 
 const optionalWei = (name: string): bigint | undefined =>
@@ -50,8 +48,6 @@ export const BOT_FACTORIES: Record<string, () => FrankBotDefinition> = {
   lobby: () => new ChatRoomBot(),
   rps: () => new RpsBot(),
   dice: () => new SatoshiDiceBot(),
-  "liars-dice": () => new LiarsDiceBot(),
-  poker: () => new PokerBot(),
 };
 
 /** The bot ids to run: `FRANK_BOTS` if set (unknown ids are an error), otherwise all. */

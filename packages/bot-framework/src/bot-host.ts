@@ -35,13 +35,17 @@ import type { MessageItem } from "@frank/cashweb/types/messages";
 import { installMessageItemRegistry } from "@frank/wallet/chain/monad-canonical-dm";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
-import type { DirectMessageSendResult } from "@frank/wallet/chain/active-chain";
+import type {
+  DirectMessageSendResult,
+  StampPaymentInfo,
+} from "@frank/wallet/chain/active-chain";
 
 import {
   toChainAddress,
   type BotContext,
   type BotHostOptions,
   type BotMessageContext,
+  type BotSendOptions,
   type FrankBotDefinition,
   type NewUserEvent,
   type PreparedReply,
@@ -90,7 +94,7 @@ const TOP_UP_BELOW_WEI = 300_000_000_000_000_000n;
 const TOP_UP_TO_WEI = 500_000_000_000_000_000n;
 // What bot top-ups leave in the shared funding wallet: the faucet pays its grants from the same
 // wallet and keeps this reserve itself (`FAUCET_MIN_RESERVE_WEI`, 0.1 MON when unset; the
-// faucet's own default lives in packages/bot/faucet-core.ts and must stay the same figure).
+// faucet's own default lives in packages/bot/src/bots/faucet-bot.ts and must stay the same figure).
 const FUNDING_RESERVE_WEI = 100_000_000_000_000_000n;
 // The account a bot's wallet pays message stamps from spends far less.
 const STAMP_TOP_UP_BELOW_WEI = 100_000_000_000_000_000n;
@@ -563,7 +567,7 @@ export class FrankBotHost {
           recipientAddress: string,
           items,
           conversationId?: string,
-          options?: { stampValueWei?: bigint }
+          options?: BotSendOptions
         ) => {
           return this.sendCanonicalMessage(
             wallet,
@@ -578,7 +582,7 @@ export class FrankBotHost {
           recipientAddress: string,
           items,
           conversationId?: string,
-          options?: { stampValueWei?: bigint }
+          options?: BotSendOptions
         ) => {
           return this.sendCanonicalMessage(
             wallet,
@@ -713,6 +717,14 @@ export class FrankBotHost {
         ): Promise<TransactionReceipt | null> => {
           return this.provider.waitForTransaction(txHash, 1, timeoutMs);
         },
+
+        attemptStatus: async (payloadDigest: string) =>
+          (
+            await this.chain.directMessages.reconcileAttempts({
+              wallet,
+              payloadDigests: [payloadDigest],
+            })
+          )[payloadDigest] ?? "unknown",
 
         getBalance: async (address?: string): Promise<bigint> => {
           if (address) {
@@ -1152,6 +1164,7 @@ export class FrankBotHost {
           items: MessageItem[];
           stampValueWei: bigint;
           paymentTxHashes: string[];
+          stampPayments: readonly StampPaymentInfo[];
         }[] = [];
         for (const msg of messages) {
           // The scan also returns what this bot sent; that is not inbound work.
@@ -1169,6 +1182,7 @@ export class FrankBotHost {
               paymentTxHashes: (msg.stampPayments ?? []).map(
                 (payment) => payment.txHash
               ),
+              stampPayments: structuredClone(msg.stampPayments ?? []),
             });
           } catch {
             console.warn(
@@ -1328,6 +1342,7 @@ export class FrankBotHost {
       recipient: string;
       conversationId?: string;
       stampValue: bigint;
+      messageId?: string;
       items: MessageItem[];
     },
     linked: () => Promise<void>
@@ -1340,7 +1355,7 @@ export class FrankBotHost {
           captured.recipient,
           captured.items,
           captured.conversationId,
-          { stampValueWei: captured.stampValue },
+          { stampValueWei: captured.stampValue, messageId: captured.messageId },
           () => {
             reported = true;
             return linked();
@@ -1440,20 +1455,22 @@ export class FrankBotHost {
    * so the stated amount alone is never matched.
    *
    * It does not wait: a payment not confirmed when the message is handled counts as nothing,
-   * and the reply goes out at once with the minimum stamp. A node that cannot be asked, or
+   * and the reply goes out at once with no stamp. A node that cannot be asked, or
    * does not answer in `PAYMENT_CHECK_MS`, counts the same.
    *
    * THE ONE PLACE that decides this. SWITCH HERE to the wallet's own "has this message's
-   * payment landed" call when it exists; this uses `nativeTransfers.getTransactionStatus`. */
+   * payment landed" call when it exists; this uses `nativeTransfers.getTransactionStatus` and
+   * reads each transaction back to compare its destination and value. */
   private async confirmedPaidWei(
     instance: ActiveBotInstance,
     message: {
       identity: InboundIdentity;
       stampValueWei: bigint;
       paymentTxHashes: string[];
+      stampPayments: readonly StampPaymentInfo[];
     }
   ): Promise<bigint> {
-    // At or under the minimum the reply carries the minimum anyway: nothing to look up.
+    // At or under the minimum the reply carries no stamp anyway: nothing to look up.
     if (
       message.stampValueWei <= this.options.minStampValueWei ||
       !message.paymentTxHashes.length
@@ -1475,6 +1492,31 @@ export class FrankBotHost {
         PAYMENT_CHECK_MS
       );
       if (!statuses.every((status) => status === "confirmed")) return 0n;
+      // Confirmed is not enough: each must be the transfer the delivery describes (that
+      // address, that value), and a transfer counts for one message only, the first it is
+      // confirmed for. The record is the one the bots' own payment check keeps
+      // (`received:<tx hash>` in the bot's state), so the two never credit one transfer twice.
+      for (const payment of message.stampPayments) {
+        const tx = await bounded(
+          this.provider.getTransaction(payment.txHash),
+          "Reading a message's payment",
+          PAYMENT_CHECK_MS
+        );
+        if (
+          !tx ||
+          tx.to?.toLowerCase() !== payment.destinationAddress.toLowerCase() ||
+          tx.value !== payment.valueWei
+        )
+          return 0n;
+      }
+      for (const payment of message.stampPayments) {
+        const key = `received:${payment.txHash.toLowerCase()}`;
+        const creditedTo = await instance.state.get(key);
+        if (creditedTo !== undefined && creditedTo !== message.identity.digest)
+          return 0n;
+        if (creditedTo === undefined)
+          await instance.state.put(key, message.identity.digest);
+      }
     } catch {
       return 0n;
     }
@@ -1488,12 +1530,11 @@ export class FrankBotHost {
    * configured stamp either.
    *
    * A message that paid nothing confirmed, or less than the relay accepts for a paid message,
-   * is answered at the relay's minimum. SWITCH HERE to 0n (no stamp at all) once the wallet's
-   * unpaid send has landed. */
+   * is answered with no stamp at all (the wallet's unpaid send): free mail gets a free answer,
+   * so answering it can never cost the bot anything. */
   private replyStampWei(paidWei: bigint): bigint {
     const { stampValueWei, minStampValueWei } = this.options;
-    if (paidWei < minStampValueWei)
-      return minStampValueWei < stampValueWei ? minStampValueWei : stampValueWei;
+    if (paidWei < minStampValueWei) return 0n;
     return paidWei < stampValueWei ? paidWei : stampValueWei;
   }
 
@@ -1850,8 +1891,14 @@ export class FrankBotHost {
     {
       items,
       stampValueWei,
+      stampPayments,
       paidWei,
-    }: { items: MessageItem[]; stampValueWei: bigint; paidWei: bigint }
+    }: {
+      items: MessageItem[];
+      stampValueWei: bigint;
+      stampPayments: readonly StampPaymentInfo[];
+      paidWei: bigint;
+    }
   ): Promise<void> {
     const replies: Promise<DirectMessageSendResult>[] = [];
     let accepting = true;
@@ -1880,6 +1927,7 @@ export class FrankBotHost {
           // while answering this message carries the reply stamp.
           stampValue:
             options?.stampValueWei ?? this.replyStampWei(paidWei),
+          messageId: options?.messageId,
           items: structuredClone(items),
         },
         async () => {
@@ -1925,6 +1973,7 @@ export class FrankBotHost {
       timestampMs: identity.receivedTime,
       items,
       stampValueWei,
+      stampPayments,
       reply: boundReply,
     });
     let prepared: PreparedReply | undefined;
@@ -1972,7 +2021,7 @@ export class FrankBotHost {
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,
-    options?: { stampValueWei?: bigint },
+    options?: BotSendOptions,
     onAttemptCreated?: (digest: string) => Promise<void>
   ): Promise<DirectMessageSendResult> {
     const instance = [...this.instances.values()].find(
@@ -1990,6 +2039,7 @@ export class FrankBotHost {
           ? undefined
           : conversationIdentity(conversationId),
       stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+      ...(options?.messageId ? { messageId: options.messageId } : {}),
       onAttemptCreated,
     });
   }

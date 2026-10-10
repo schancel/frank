@@ -29,8 +29,6 @@ export type BotKey =
   | 'lobby'
   | 'rps'
   | 'dice'
-  | 'liars-dice'
-  | 'poker'
 
 export interface BotProfileSpec {
   key: BotKey
@@ -50,7 +48,7 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
   {
     key: 'blackjack',
     name: 'Blackjack Dealer',
-    bio: 'Automated blackjack dealer. Send a wager to start a provably fair hand.',
+    bio: 'Automated blackjack dealer. Both sides commit to their randomness before the bet, and the app works out every card itself.',
     identityEnv: 'BLACKJACK_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/blackjack-bot-identity.json',
     accent: [200, 60, 60],
@@ -110,7 +108,7 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
   {
     key: 'rps',
     name: 'Rock Paper Scissors',
-    bio: 'Provably fair Rock Paper Scissors game. Challenge the dealer or play against other peers.',
+    bio: 'Rock-Paper-Scissors against the bot. It commits to its move before you choose, and the app checks the reveal.',
     identityEnv: 'RPS_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/rps-bot-identity.json',
     accent: [220, 100, 30],
@@ -120,30 +118,10 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
   {
     key: 'dice',
     name: 'Satoshi Dice',
-    bio: 'Provably fair 16-bit crypto dice game. Choose your win chance and roll.',
+    bio: 'Dice with a 1.9% house edge. The bot commits to its secret before you bet, and the app checks every roll.',
     identityEnv: 'DICE_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/dice-bot-identity.json',
     accent: [180, 50, 180],
-    accountType: ACCOUNT_TYPE_BOT,
-    botRole: BOT_ROLE_GAME,
-  },
-  {
-    key: 'liars-dice',
-    name: "Liar's Dice (Perudo)",
-    bio: "Multiplayer cryptographic Liar's Dice (Perudo) table game with on-chain escrow.",
-    identityEnv: 'LIARS_DICE_BOT_IDENTITY_JSON',
-    identityDefaultPath: '/tmp/liars-dice-bot-identity.json',
-    accent: [40, 180, 120],
-    accountType: ACCOUNT_TYPE_BOT,
-    botRole: BOT_ROLE_GAME,
-  },
-  {
-    key: 'poker',
-    name: "Texas Hold'em Poker",
-    bio: "Multiplayer Texas Hold'em mental cards poker table with on-chain escrow.",
-    identityEnv: 'POKER_BOT_IDENTITY_JSON',
-    identityDefaultPath: '/tmp/poker-bot-identity.json',
-    accent: [180, 40, 40],
     accountType: ACCOUNT_TYPE_BOT,
     botRole: BOT_ROLE_GAME,
   },

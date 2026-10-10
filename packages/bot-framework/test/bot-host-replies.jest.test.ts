@@ -109,6 +109,30 @@ describe("FrankBotHost replies", () => {
     };
   };
 
+  /** Transfers the chain holds: what a payment's description is compared with. */
+  const onChain = new Map<string, { to: string; value: bigint }>();
+  /** Two transfers that together pay `total`, on chain as described. */
+  const paid = (byte: string, total: bigint) => {
+    const payments = [
+      {
+        txHash: "0x" + byte.repeat(31) + "a1",
+        destinationAddress: "0x" + "5e".repeat(20),
+        valueWei: total / 2n,
+      },
+      {
+        txHash: "0x" + byte.repeat(31) + "a2",
+        destinationAddress: "0x" + "5f".repeat(20),
+        valueWei: total - total / 2n,
+      },
+    ];
+    for (const payment of payments)
+      onChain.set(payment.txHash, {
+        to: payment.destinationAddress,
+        value: payment.valueWei,
+      });
+    return payments;
+  };
+
   const inbound = (
     text: string,
     options: {
@@ -139,10 +163,7 @@ describe("FrankBotHost replies", () => {
       // A paid message arrives with the transactions that paid it.
       stampPayments:
         typeof options.stampValueWei === "bigint" && options.stampValueWei > 0n
-          ? [
-              { txHash: "0x" + byte.repeat(31) + "a1" },
-              { txHash: "0x" + byte.repeat(31) + "a2" },
-            ]
+          ? paid(byte, options.stampValueWei)
           : [],
       receivedTime: 1_700_000_000_000 + sequence,
     };
@@ -160,6 +181,8 @@ describe("FrankBotHost replies", () => {
       ...options,
     });
     hosts.push(host);
+    (host as any).provider.getTransaction = async (txHash: string) =>
+      onChain.get(txHash) ?? null;
     await host.register(bot);
     return { host, instance: (host as any).instances.get(bot.id) };
   };
@@ -327,9 +350,9 @@ describe("FrankBotHost replies", () => {
     it.each([
       ["what the sender paid, when that is less than the bot's own stamp", 4_000_000_000_000_000n, 4_000_000_000_000_000n],
       ["the bot's own stamp at most, however much the sender paid", 5_000_000_000_000_000_000n, STAMP],
-      ["the relay's minimum for a message that paid nothing", 0n, MIN],
-      ["the relay's minimum for a message whose payment the wallet did not report", undefined, MIN],
-      ["the relay's minimum for a message that paid less than a paid message may", MIN - 1n, MIN],
+      ["no stamp at all for a message that paid nothing", 0n, 0n],
+      ["no stamp at all for a message whose payment the wallet did not report", undefined, 0n],
+      ["no stamp at all for a message that paid less than a paid message may", MIN - 1n, 0n],
     ])("is %s", async (_label, paid, expected) => {
       jest.spyOn(console, "error").mockImplementation(() => {});
       const { host, instance } = await start(
@@ -393,7 +416,7 @@ describe("FrankBotHost replies", () => {
       ],
       ["are not answered for in time", () => new Promise(() => undefined)],
     ])(
-      "is the relay's minimum, and the reply is still sent at once, when the stated payment's transactions %s",
+      "is nothing, and the reply is still sent at once, when the stated payment's transactions %s",
       async (_label, status) => {
         mockTxStatus.mockImplementation(status as never);
         const { host, instance } = await start(
@@ -403,7 +426,7 @@ describe("FrankBotHost replies", () => {
         await poll(host, [message]);
         await drain(instance);
         expect(textsSent()).toEqual(["answer"]);
-        expect(stampsSent()).toEqual([MIN]);
+        expect(stampsSent()).toEqual([0n]);
         expect(mockTxStatus).toHaveBeenCalledWith({
           wallet: instance.wallet,
           transaction: { txHash: message.stampPayments[0].txHash },
@@ -411,6 +434,33 @@ describe("FrankBotHost replies", () => {
       },
       10_000
     );
+
+    it("is nothing when a confirmed transaction is not the transfer the message describes (another value or destination)", async () => {
+      const { host, instance } = await start(
+        bot("described-bot", async () => [{ type: "text", text: "answer" }])
+      );
+      const wrongValue = inbound("a", { stampValueWei: STAMP });
+      onChain.get(wrongValue.stampPayments[0].txHash)!.value = 1n;
+      const wrongTo = inbound("b", { stampValueWei: STAMP });
+      onChain.get(wrongTo.stampPayments[1].txHash)!.to = "0x" + "00".repeat(20);
+      await poll(host, [wrongValue]);
+      await poll(host, [wrongTo]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([0n, 0n]);
+    });
+
+    it("counts one transfer for one message: a second message naming the same transactions is answered unpaid", async () => {
+      const { host, instance } = await start(
+        bot("once-bot", async () => [{ type: "text", text: "answer" }])
+      );
+      const first = inbound("a", { stampValueWei: STAMP });
+      const replay = { ...inbound("b", {}), stampValueWei: STAMP, stampPayments: first.stampPayments };
+      await poll(host, [first]);
+      await drain(instance);
+      await poll(host, [replay]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([STAMP, 0n]);
+    });
 
     it("is the stated amount once every payment transaction is confirmed, and no node is asked about a message that states the minimum or less", async () => {
       const { host, instance } = await start(
@@ -422,7 +472,7 @@ describe("FrankBotHost replies", () => {
       await poll(host, [inbound("minimum", { stampValueWei: MIN })]);
       await poll(host, [inbound("nothing", { stampValueWei: 0n })]);
       await drain(instance);
-      expect(stampsSent()).toEqual([STAMP, MIN, MIN]);
+      expect(stampsSent()).toEqual([STAMP, 0n, 0n]);
       expect(mockTxStatus).toHaveBeenCalledTimes(2);
     });
 

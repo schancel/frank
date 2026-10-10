@@ -14,7 +14,9 @@ describePluginContract({
         target: 32768,
         multiplier: 1.98,
         wagerWei: '10',
-        userNonce: 'n',
+        commitment:
+          'abababababababababababababababababababababababababababababababab',
+        clientSeed: '5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
       },
       preview: 'Satoshi Dice Roll',
     },
@@ -27,8 +29,9 @@ describePluginContract({
         isWin: true,
         serverSecret: '5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
         payoutWei: '19',
-        txHash:
-          '0x0101010101010101010101010101010101010101010101010101010101010101',
+        nextRollId: 'r2',
+        nextCommitment:
+          'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
       },
       preview: 'Satoshi Dice: Rolled 12345 (Win!)',
     },

@@ -279,19 +279,33 @@ export interface RpsItem {
   opponentAddress?: string
 }
 
+/** One roll of the dice bot. Fair by commit-reveal, checkable from the messages alone
+ * (`@frank/wallet/message-item-plugins/dice/fair`): the bot publishes `commitment` (the hash of a
+ * secret) under a `rollId` before any bet; the player's `roll` names that `rollId`, repeats the
+ * `commitment` and adds its own random `clientSeed`; the `result` reveals `serverSecret`, and the
+ * number rolled follows from the secret and the seed. One commitment is good for one roll. The
+ * stake is `wagerWei` and is paid as the value of the `roll` message itself. */
 export interface SatoshiDiceItem {
   type: 'dice'
   action: 'table' | 'roll' | 'result'
+  /** `table`: the roll the bot now offers. `roll`/`result`: the roll being played. */
   rollId?: string
+  /** SHA-256 of the bot's secret for `rollId`, hex. */
+  commitment?: string
+  /** `roll`/`result`: the player's random value, hex. */
+  clientSeed?: string
   target?: number
   multiplier?: number
   wagerWei?: string
   luckyNumber?: number
   isWin?: boolean
+  /** `result` only: the secret `commitment` is the hash of. */
   serverSecret?: string
-  userNonce?: string
+  /** `result` only: what the message carrying it pays the player. */
   payoutWei?: string
-  txHash?: string
+  /** `result` only: the next roll on offer and its commitment. */
+  nextRollId?: string
+  nextCommitment?: string
 }
 
 export interface LiarsDiceItem {

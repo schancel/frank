@@ -8,7 +8,9 @@ import type {
 } from "@frank/bot-framework";
 import type { DigitalGoodsItem, MessageItem } from "@frank/cashweb/types/messages";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_MERCHANT } from "@frank/codec";
+import { formatMon } from "@frank/wallet/monad-amount";
 import { generateAvatarPng } from "../../bot-directory";
+import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
 import {
   buildFulfillItems,
   catalogItem,
@@ -24,6 +26,8 @@ export class VendorBot implements FrankBotDefinition {
     process.env.VENDOR_BOT_IDENTITY_JSON ?? "/tmp/vendor-bot-identity.json";
 
   private readonly catalog: VendorCatalogItem[];
+  private readonly outbox = new Outbox("vendor");
+  readonly schedules = [this.outbox.schedule];
 
   constructor(options?: { catalogDir?: string; catalogItems?: VendorCatalogItem[] }) {
     if (options?.catalogItems) {
@@ -53,11 +57,11 @@ export class VendorBot implements FrankBotDefinition {
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     console.log(`[vendor] Proactively presenting catalog to new user ${user.address}`);
     try {
-      await ctx.sendMessage(user.address, [
+      await sendFree(ctx, user.address, [
         catalogItem(this.catalog) as MessageItem,
         {
           type: "text",
-          text: "Welcome to the Picture Shop! Browse the catalog above and tap any picture to purchase.",
+          text: "Welcome to the Picture Shop. The price of a picture is paid with your purchase message: use Buy on the catalog.",
         },
       ]);
     } catch (err) {
@@ -65,49 +69,74 @@ export class VendorBot implements FrankBotDefinition {
     }
   }
 
-  async onMessage(
-    msgCtx: BotMessageContext,
-    ctx: BotContext
-  ): Promise<void> {
+  async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
     const request = msgCtx.items.find(
-      (item: any) => item.type === "digital-goods" && item.action === "request"
-    ) as DigitalGoodsItem | undefined;
-
+      (item): item is DigitalGoodsItem =>
+        item.type === "digital-goods" && item.action === "request"
+    );
     if (!request) {
-      // Send interactive catalog
-      await msgCtx.reply([
+      await replyFree(msgCtx, [
         catalogItem(this.catalog) as MessageItem,
         {
           type: "text",
-          text: `Welcome! We have ${this.catalog.length} items available. Tap any item to buy with testnet MON.`,
+          text: `${this.catalog.length} pictures for sale. The price is paid with your purchase message: use Buy on the catalog.`,
         },
       ]);
       return;
     }
 
-    console.log(`[vendor] Purchase request for "${request.itemId}" from ${msgCtx.peerAddress}`);
-    const item = this.catalog.find((candidate) => candidate.itemId === request.itemId);
+    // What the purchase paid, on chain. The price is never taken on trust.
+    return this.outbox.handle(msgCtx, ctx, (received) =>
+      this.sell(request, msgCtx, ctx, received)
+    );
+  }
 
-    if (!item) {
-      await msgCtx.reply([
-        {
-          type: "digital-goods",
-          action: "error",
-          message: `Unknown item: ${request.itemId}`,
-        } as DigitalGoodsItem,
+  private async sell(
+    request: DigitalGoodsItem,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
+    received: Received
+  ): Promise<void> {
+    const refused = (why: string) =>
+      refuse(this.outbox, msgCtx, ctx, received, why, [
+        { type: "digital-goods", action: "error", message: why },
       ]);
-      return;
-    }
+    const item = this.catalog.find(
+      (candidate) => candidate.itemId === request.itemId
+    );
+    if (!item)
+      return refused(`There is no item "${request.itemId}". Nothing was sold.`);
+    if (received.unconfirmed.length > 0 || received.confirmedWei < item.priceWei)
+      return refused(
+        `"${item.itemId}" costs ${formatMon(item.priceWei)} and ${formatMon(
+          received.confirmedWei
+        )} is confirmed as paid with your message. Nothing was sold.`
+      );
 
-    // Fulfill item delivery
-    console.log(`[vendor] Delivering "${item.itemId}" to ${msgCtx.peerAddress}`);
-    const deliveryItems = buildFulfillItems(item);
-    await msgCtx.reply([
-      ...deliveryItems,
+    // Paid for: the delivery is written down before it is sent, and sent until it has gone.
+    // Anything paid above the price goes back with the picture.
+    const excessWei = received.confirmedWei - item.priceWei;
+    await this.outbox.owe(
+      ctx,
+      `sale:${msgCtx.payloadDigest}`,
       {
-        type: "text",
-        text: `Thank you for your purchase! Delivered "${item.itemId}".`,
+        to: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+        items: [
+          ...buildFulfillItems(item),
+          {
+            type: "text",
+            text:
+              `Thank you. Here is "${item.itemId}".` +
+              (excessWei > 0n
+                ? ` You paid ${formatMon(excessWei)} more than the price; it is returned with this message.`
+                : ""),
+          },
+        ],
+        valueWei: excessWei,
       },
-    ]);
+      { digest: msgCtx.payloadDigest }
+    );
+    await this.outbox.settle(ctx);
   }
 }

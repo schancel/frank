@@ -10,7 +10,11 @@ import {
   type Encodable,
 } from "@frank/codec";
 import type { BotContext, BotMessageContext } from "@frank/bot-framework";
-import type { MessageItem } from "@frank/cashweb/types/messages";
+import type {
+  MessageItem,
+  RpsItem,
+  SatoshiDiceItem,
+} from "@frank/cashweb/types/messages";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
 import {
@@ -19,8 +23,7 @@ import {
   encodeItemFrames,
 } from "@frank/wallet/message-item-plugins/wire";
 
-import { LiarsDiceBot } from "./liars-dice-bot";
-import { PokerBot } from "./poker-bot";
+import { harness as botHarness } from "./bot-harness.testutil";
 import { RaffleBot } from "./raffle-bot";
 import { RpsBot } from "./rps-bot";
 import { SatoshiDiceBot } from "./satoshi-dice-bot";
@@ -60,75 +63,34 @@ function overTheWire(items: MessageItem[]): MessageItem[] {
   );
 }
 
+/** A bot's table: `say` delivers one message from a player, with the payments it came with, and
+ * `sent` is every message the bot sent, in order. */
 function harness() {
-  const state = new Map<string, string>();
+  const h = botHarness();
   const sent: MessageItem[][] = [];
-  let transfers = 0;
-  let digests = 0;
-  const ctx = {
-    botId: "game",
-    address: BOT,
-    subject: BOT,
-    relayBaseUrl: "http://127.0.0.1:8098",
-    networkTag: "MONT",
-    provider: {},
-    state: {
-      get: async (k: string) => state.get(k),
-      put: async (k: string, v: string) => void state.set(k, v),
-      set: async (k: string, v: string) => void state.set(k, v),
-      del: async (k: string) => void state.delete(k),
-      list: async () => [],
-      batch: async () => undefined,
-      sublevel: () => undefined,
-      close: async () => undefined,
-    },
-    subscriptions: {},
-    lookupPeer: async () => undefined,
-    sendMessage: async (_to: string, items: MessageItem[]) => {
-      sent.push(items);
-      return { ok: true };
-    },
-    sendDirectMessage: async (_to: string, items: MessageItem[]) => {
-      sent.push(items);
-      return { ok: true };
-    },
-    onNewUserRegistered: () => undefined,
-    // What the host returns for a payout: a real transaction hash.
-    sendTransfer: async () => ({
-      txHash: "0x" + (++transfers).toString(16).padStart(64, "0"),
-    }),
-    sendTransaction: async () => ({
-      txHash: "0x" + (++transfers).toString(16).padStart(64, "0"),
-    }),
-    buildAndSignTransfer: async () => undefined,
-    waitForReceipt: async () => undefined,
-    getBalance: async () => 10n ** 18n,
-  } as unknown as BotContext;
+  const sync = () => {
+    sent.length = 0;
+    sent.push(...h.sent.map((message) => message.items));
+    // No bot leaves a message of its own to the host's paid stamp.
+    expect(h.sent.filter((message) => message.hostStamp)).toEqual([]);
+  };
   const say = async (
     bot: { onMessage(m: BotMessageContext, c: BotContext): Promise<void> },
     from: string,
-    input: string | MessageItem
+    input: string | MessageItem,
+    paidWei = 0n
   ) => {
     await bot.onMessage(
-      {
-        conversationId: "c1",
-        peerAddress: from,
-        peerSubject: from,
-        timestampMs: 1_760_000_000_000 + digests,
-        // As the host supplies it: 64 lowercase hex characters, no prefix.
-        payloadDigest: (++digests).toString(16).padStart(64, "0"),
-        stampValueWei: 10n ** 17n,
-        items: [
-          typeof input === "string" ? { type: "text", text: input } : input,
-        ],
-        reply: async (items: MessageItem[]) => {
-          sent.push(items);
-        },
-      } as unknown as BotMessageContext,
-      ctx
+      h.message(
+        [typeof input === "string" ? { type: "text", text: input } : input],
+        paidWei > 0n ? [h.pay(paidWei)] : [],
+        from
+      ),
+      h.ctx
     );
+    sync();
   };
-  return { ctx, sent, say };
+  return { ...h, sent, say, sync };
 }
 
 /** Every reply crosses the wire unchanged, and at least one item of `type` was produced. */
@@ -149,137 +111,113 @@ describe("game bot replies cross the canonical wire", () => {
     jest.useRealTimers();
   });
 
-  it("dice: a roll at every preset target, win or lose", async () => {
-    for (const lucky of [0, 65_535]) {
-      const bot = new SatoshiDiceBot({ luckyNumberOverride: lucky });
-      const { sent, say } = harness();
-      for (const target of [64000, 32768, 16384, 6553, 655, 65, 1, 65535])
-        await say(bot, ALICE, `/roll 0.01 ${target}`);
-      await say(bot, ALICE, "/roll");
-      expectCarried(sent, "dice", ["result"]);
+  it("dice: the table, a paid bet at several targets, and a refused bet", async () => {
+    const bot = new SatoshiDiceBot();
+    const { sent, say } = harness();
+    await say(bot, ALICE, "/roll 0.01 100");
+    for (const target of [64000, 32768, 655, 1, 65535]) {
+      const offer = sent[sent.length - 1].find(
+        (i) => i.type === "dice"
+      ) as SatoshiDiceItem;
+      await say(
+        bot,
+        ALICE,
+        {
+          type: "dice",
+          action: "roll",
+          rollId: offer.nextRollId ?? offer.rollId,
+          commitment: offer.nextCommitment ?? offer.commitment,
+          clientSeed: "c3".repeat(16),
+          target,
+          wagerWei: "1000",
+        },
+        1000n
+      );
     }
+    // A bet on a roll that is not on offer: refused, with a new table.
+    await say(bot, ALICE, { type: "dice", action: "roll", rollId: "gone" });
+    expectCarried(sent, "dice", ["table", "result"]);
   });
 
-  it("rps: a wagered match through every move", async () => {
-    for (const move of ["/rock", "/paper", "/scissors"]) {
+  it("rps: a staked match through every move, and a typed one", async () => {
+    for (const move of ["rock", "paper", "scissors"] as const) {
       const bot = new RpsBot();
       const { sent, say } = harness();
       await say(bot, ALICE, "/rps 0.01");
-      await say(bot, ALICE, move);
+      const start = sent[0].find((i) => i.type === "rps") as RpsItem;
+      await say(
+        bot,
+        ALICE,
+        {
+          type: "rps",
+          action: "move",
+          matchId: start.matchId,
+          commitHash: start.commitHash,
+          playerMove: move,
+          wagerWei: "1000",
+        },
+        1000n
+      );
+      await say(bot, ALICE, "/rps");
+      await say(bot, ALICE, `/${move}`);
       expectCarried(sent, "rps", ["start", "resolve"]);
     }
   });
 
-  it("raffle: announce, entries by item and by text, a refused repeat, and the draw", async () => {
+  it("raffle: announce, paid entries, a refused repeat and an unpaid entry, and the draw", async () => {
+    const PRICE = 20_000_000_000_000_000n;
     const bot = new RaffleBot({ maxEntries: 3 });
-    const { ctx, sent, say } = harness();
+    const { ctx, sent, say, sync } = harness();
     await bot.onNewUser({ address: ALICE, registeredAtMs: 1 }, ctx);
+    sync();
     await say(bot, ALICE, "how does this work?");
     const announce = sent
       .flat()
-      .find(i => i.type === "raffle" && i.action === "announce") as {
+      .find((i) => i.type === "raffle" && i.action === "announce") as {
       raffleId: string;
     };
-    await say(bot, ALICE, {
+    const enter: MessageItem = {
       type: "raffle",
       raffleId: announce.raffleId,
       action: "enter",
-    });
-    await say(bot, ALICE, "enter");
+    };
+    await say(bot, ALICE, enter, PRICE);
+    await say(bot, ALICE, enter, PRICE);
     await say(bot, BOB, "enter");
-    await say(bot, CAROL, "enter");
-    expectCarried(sent, "raffle", ["announce", "draw", "error"]);
+    await say(bot, BOB, enter, PRICE);
+    await say(bot, CAROL, enter, PRICE);
+    expectCarried(sent, "raffle", ["announce", "joined", "draw", "error"]);
   });
 
-  it("vendor: catalog, a purchase with its picture, and an unknown item", async () => {
+  it("vendor: catalog, a paid purchase with its picture, an unpaid one and an unknown item", async () => {
     const image = "data:image/png;base64," + "A".repeat(80_000);
+    const priceWei = 50_000_000_000_000_000n;
     const bot = new VendorBot({
       catalogItems: [
         {
           itemId: "test-art-1",
           description: "Test art",
-          priceWei: 50_000_000_000_000_000n,
+          priceWei,
           image,
           thumbnail: "data:image/png;base64," + "A".repeat(5_000),
         },
       ],
     });
-    const { ctx, sent, say } = harness();
+    const { ctx, sent, say, sync } = harness();
     await bot.onNewUser({ address: ALICE, registeredAtMs: 1 }, ctx);
+    sync();
     await say(bot, ALICE, "what do you have?");
-    await say(bot, ALICE, {
+    const buy: MessageItem = {
       type: "digital-goods",
       action: "request",
       itemId: "test-art-1",
-    });
-    await say(bot, ALICE, {
-      type: "digital-goods",
-      action: "request",
-      itemId: "missing",
-    });
+    };
+    await say(bot, ALICE, buy);
+    expect(sent.flat().some((i) => i.type === "image")).toBe(false);
+    await say(bot, ALICE, buy, priceWei);
+    await say(bot, ALICE, { ...buy, itemId: "missing" }, priceWei);
     expectCarried(sent, "digital-goods", ["catalog", "fulfill", "error"]);
-    expect(sent.flat().some(i => i.type === "image")).toBe(true);
-  });
-
-  it("poker: create, join, deal, bet, call, check and fold to a settled hand", async () => {
-    jest.useFakeTimers();
-    const bot = new PokerBot();
-    const { sent, say } = harness();
-    await say(bot, ALICE, "/poker create");
-    await say(bot, BOB, "/poker join");
-    await say(bot, ALICE, "/poker start");
-    for (const [who, command] of [
-      [ALICE, "/call"],
-      [BOB, "/check"],
-      [BOB, "/bet 40"],
-      [ALICE, "/raise 80"],
-      [BOB, "/call"],
-      [ALICE, "/status"],
-      [BOB, "/check"],
-      [ALICE, "/check"],
-      [BOB, "/fold"],
-      [ALICE, "/fold"],
-    ] as const)
-      await say(bot, who, command);
-    const actions = new Set(
-      sent
-        .flat()
-        .filter(i => i.type === "poker")
-        .map(i => (i as { action: string }).action)
-    );
-    expect(actions.has("create")).toBe(true);
-    expect(actions.has("action")).toBe(true);
-    for (const items of sent)
-      expect(overTheWire(items)).toEqual(items.map(plain));
-  });
-
-  it("liar's dice: create, join, start, bids and a challenge to the showdown", async () => {
-    jest.useFakeTimers();
-    const bot = new LiarsDiceBot();
-    const { sent, say } = harness();
-    await say(bot, ALICE, "/table create 0.05");
-    await say(bot, BOB, "/table join");
-    await say(bot, ALICE, "/start");
-    for (const [who, command] of [
-      [ALICE, "/bid 1 2"],
-      [BOB, "/bid 2 3"],
-      [ALICE, "/bid 2 3"],
-      [BOB, "/bid 3 3"],
-      [ALICE, "/status"],
-      [ALICE, "/liar"],
-      [BOB, "/liar"],
-    ] as const)
-      await say(bot, who, command);
-    const actions = new Set(
-      sent
-        .flat()
-        .filter(i => i.type === "liars-dice")
-        .map(i => (i as { action: string }).action)
-    );
-    for (const action of ["create", "join", "round_start", "bid", "showdown"])
-      expect(actions.has(action)).toBe(true);
-    for (const items of sent)
-      expect(overTheWire(items)).toEqual(items.map(plain));
+    expect(sent.flat().some((i) => i.type === "image")).toBe(true);
   });
 
   it("a swap offer as the app's dialog builds it is not carried: refused before any payment", () => {

@@ -8,19 +8,28 @@ import type {
 import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_SERVICE, BOT_ROLE_FAUCET } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
+import { replyFree, sendFree } from "./money";
 
 export const FAUCET_DEFAULT_AMOUNT_WEI = 50_000_000_000_000_000n; // 0.05 MON
 export const FAUCET_DEFAULT_MIN_RESERVE_WEI = 100_000_000_000_000_000n; // 0.1 MON
-export const FAUCET_DEFAULT_MAX_PER_RUN = 1000;
-export const FAUCET_DEFAULT_MAX_PER_DAY = 100;
+/** The most one grant may be configured to: a misconfigured amount must not empty the wallet. */
+export const MAX_AMOUNT_WEI = 1_000_000_000_000_000_000n; // 1 MON
 
 export interface FaucetBotOptions {
+  /** What each profile is granted, once (`FAUCET_AMOUNT_WEI`). */
   amountWei?: bigint;
+  /** The faucet wallet keeps at least this (`FAUCET_MIN_RESERVE_WEI`). */
   minReserveWei?: bigint;
-  maxPerRun?: number;
-  maxPerDay?: number;
 }
 
+/**
+ * Grants each profile testnet funds once: when it registers, or when it asks.
+ *
+ * The grant goes to the profile's own address, the only address of a user a sender can learn. For
+ * an account whose wallet spends from a separate receive address the app shows such funds as
+ * "cordoned" and does not spend them; nothing a profile or a message carries names that receive
+ * address, so the faucet cannot pay it. The welcome message says where the money went.
+ */
 export class FaucetBot implements FrankBotDefinition {
   readonly id = "faucet";
   readonly label = "Monad Faucet";
@@ -29,9 +38,8 @@ export class FaucetBot implements FrankBotDefinition {
 
   private readonly amountWei: bigint;
   private readonly minReserveWei: bigint;
-  private readonly maxPerRun: number;
-  private readonly maxPerDay: number;
-  private fundedThisRun = 0;
+  /** Grants are decided one at a time: two for one profile never both pass the check. */
+  private turn: Promise<unknown> = Promise.resolve();
 
   constructor(options?: FaucetBotOptions) {
     this.amountWei =
@@ -39,21 +47,15 @@ export class FaucetBot implements FrankBotDefinition {
       (process.env.FAUCET_AMOUNT_WEI
         ? BigInt(process.env.FAUCET_AMOUNT_WEI)
         : FAUCET_DEFAULT_AMOUNT_WEI);
+    if (this.amountWei <= 0n || this.amountWei > MAX_AMOUNT_WEI)
+      throw new Error(
+        `Faucet grant must be between 1 wei and ${MAX_AMOUNT_WEI} wei, got ${this.amountWei}`
+      );
     this.minReserveWei =
       options?.minReserveWei ??
       (process.env.FAUCET_MIN_RESERVE_WEI
         ? BigInt(process.env.FAUCET_MIN_RESERVE_WEI)
         : FAUCET_DEFAULT_MIN_RESERVE_WEI);
-    this.maxPerRun =
-      options?.maxPerRun ??
-      (process.env.FAUCET_MAX_PER_RUN
-        ? parseInt(process.env.FAUCET_MAX_PER_RUN, 10)
-        : FAUCET_DEFAULT_MAX_PER_RUN);
-    this.maxPerDay =
-      options?.maxPerDay ??
-      (process.env.FAUCET_MAX_PER_DAY
-        ? parseInt(process.env.FAUCET_MAX_PER_DAY, 10)
-        : FAUCET_DEFAULT_MAX_PER_DAY);
   }
 
   getProfile(): BotProfile {
@@ -67,124 +69,76 @@ export class FaucetBot implements FrankBotDefinition {
     };
   }
 
-  async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
-    const addr = user.address.toLowerCase();
-    const alreadyFunded = await ctx.state.get(`funded:${addr}`);
-    if (alreadyFunded) {
-      return;
-    }
-
-    if (this.fundedThisRun >= this.maxPerRun) {
-      console.warn(`[faucet] Run limit reached (${this.maxPerRun}); skipping ${user.address}`);
-      return;
-    }
-
-    try {
-      const faucetBalance = await ctx.getBalance();
-      if (faucetBalance < this.amountWei + this.minReserveWei) {
-        console.warn(
-          `[faucet] Balance too low (${formatMon(faucetBalance)}) to fund ${user.address}`
-        );
-        return;
-      }
-
-      if (ctx.provider && typeof ctx.provider.getBalance === "function") {
-        try {
-          const userBalance = await ctx.provider.getBalance(user.address);
-          if (userBalance >= this.amountWei) {
-            console.log(
-              `[faucet] User ${user.address} already has balance (${formatMon(userBalance)}); skipping`
-            );
-            await ctx.state.put(`funded:${addr}`, "skipped:has_funds");
-            return;
-          }
-        } catch {
-          // Non-blocking on provider lookup error
-        }
-      }
-
-      console.log(`[faucet] Funding new user ${user.address} with ${formatMon(this.amountWei)}`);
-
+  /** Grants `address` once. `granted`: the transfer was broadcast now. `already`: this profile
+   * was granted before. `low`: the faucet is at its reserve. A grant is recorded before its
+   * transfer is sent; a record left unfinished by a crash counts as granted only if the address
+   * holds the grant. */
+  private grant(
+    ctx: BotContext,
+    address: string
+  ): Promise<{ outcome: "granted"; txHash: string } | { outcome: "already" | "low" }> {
+    const run = async () => {
+      const key = `funded:${address.toLowerCase()}`;
+      const record = await ctx.state.get(key);
+      if (
+        record !== undefined &&
+        (record !== "pending" || (await ctx.getBalance(address)) >= this.amountWei)
+      )
+        return { outcome: "already" as const };
+      if ((await ctx.getBalance()) < this.amountWei + this.minReserveWei)
+        return { outcome: "low" as const };
+      await ctx.state.put(key, "pending");
       const { txHash } = await ctx.sendTransfer({
-        to: user.address,
+        to: address,
         valueWei: this.amountWei,
       });
+      await ctx.state.put(key, txHash);
+      return { outcome: "granted" as const, txHash };
+    };
+    const next = this.turn.then(run, run);
+    this.turn = next.catch(() => undefined);
+    return next;
+  }
 
-      await ctx.state.put(`funded:${addr}`, String(Date.now()));
-      this.fundedThisRun++;
+  private sentText(address: string, txHash: string): string {
+    return `Sent ${formatMon(
+      this.amountWei
+    )} to your profile address ${address} (transaction ${txHash}). If your wallet spends from a separate receive address, the app shows this as cordoned and cannot spend it yet.`;
+  }
 
-      console.log(`[faucet] Funded ${user.address} (tx: ${txHash})`);
-
-      try {
-        await ctx.sendMessage(user.address, [
-          {
-            type: "text",
-            text: `Welcome to Frank! We sent ${formatMon(
-              this.amountWei
-            )} to your wallet (${txHash.slice(0, 12)}...) to get you started.`,
-          },
-        ]);
-      } catch (dmErr) {
-        console.warn(`[faucet] Failed to send welcome DM to ${user.address}:`, dmErr);
-      }
+  async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
+    try {
+      const result = await this.grant(ctx, user.address);
+      if (result.outcome === "low")
+        console.warn(`[faucet] At the reserve; ${user.address} not funded`);
+      if (result.outcome !== "granted") return;
+      console.log(`[faucet] Funded ${user.address} (tx: ${result.txHash})`);
+      await sendFree(ctx, user.address, [
+        {
+          type: "text",
+          text: `Welcome to Frank. ${this.sentText(user.address, result.txHash)}`,
+        },
+      ]);
     } catch (err) {
-      await ctx.state.del(`funded:${addr}`).catch(() => {});
-      console.error(`[faucet] Failed to fund ${user.address}:`, err);
+      console.error(`[faucet] Failed to fund or greet ${user.address}:`, err);
     }
   }
 
-  async onMessage(
-    msgCtx: BotMessageContext,
-    ctx: BotContext
-  ): Promise<void> {
-    const addr = msgCtx.peerAddress.toLowerCase();
-    const alreadyFunded = await ctx.state.get(`funded:${addr}`);
-
-    if (alreadyFunded && alreadyFunded !== "skipped:has_funds") {
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: "You have already received funds from the faucet. Faucet grants are limited to once per account.",
-        },
-      ]);
-      return;
-    }
-
+  async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
+    let text: string;
     try {
-      const faucetBalance = await ctx.getBalance();
-      if (faucetBalance < this.amountWei + this.minReserveWei) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "The faucet reserve is currently low. Please check back later.",
-          },
-        ]);
-        return;
-      }
-
-      console.log(`[faucet] Funding request from ${msgCtx.peerAddress}`);
-      await ctx.state.put(`funded:${addr}`, String(Date.now()));
-      this.fundedThisRun++;
-
-      const { txHash } = await ctx.sendTransfer({
-        to: msgCtx.peerAddress,
-        valueWei: this.amountWei,
-      });
-
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `Sent ${formatMon(this.amountWei)} to your wallet! Transaction: ${txHash}`,
-        },
-      ]);
+      const result = await this.grant(ctx, msgCtx.peerAddress);
+      text =
+        result.outcome === "granted"
+          ? this.sentText(msgCtx.peerAddress, result.txHash)
+          : result.outcome === "already"
+          ? "You have already received funds from the faucet. It grants once per account."
+          : "The faucet is at its reserve. Please check back later.";
     } catch (err) {
-      console.error(`[faucet] Error processing request from ${msgCtx.peerAddress}:`, err);
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: "Sorry, an error occurred while processing your faucet grant. Please try again later.",
-        },
-      ]);
+      console.error(`[faucet] Grant to ${msgCtx.peerAddress} failed:`, err);
+      text =
+        "The faucet could not send your grant just now. Send any message to try again.";
     }
+    await replyFree(msgCtx, [{ type: "text", text }]);
   }
 }

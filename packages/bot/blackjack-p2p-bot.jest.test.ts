@@ -1,4 +1,14 @@
 /**
+ * PARKED: not registered. Nothing in the bot set, `targets/`, the launcher or the demo starts
+ * this (the `blackjack:p2p` package script is gone); the dealer that runs is
+ * `src/bots/blackjack-bot.ts`. Kept for ticket #1377 (games on escrow).
+ *
+ * What is known: this plays the same peer-to-peer hand as the running dealer (two-sided
+ * commit-reveal, money as the value of a message). It does NOT use the 2-of-2 threshold escrow
+ * (`@frank/wallet/message-item-plugins/blackjack/escrow`): no code outside tests imports that
+ * module. It counts a bet at the value the wallet reports, not at what the chain confirms.
+ */
+/**
  * The headless blackjack bot against a scripted user, over an in-memory relay and wallet journal.
  * The bot is given nothing a person's app does not have: an account that can send a stamped
  * message, read its mailbox and ask about its own payment attempts.

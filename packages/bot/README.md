@@ -36,7 +36,7 @@ how much is missing and starts nothing), starts the local relay through
 `backend/cashweb/run-local-monad.sh` (the first run builds it with Cargo; or set `CASHWEBD_BIN` to
 a prebuilt `cashwebd-exe`), then **one bot process** (`targets/all-bots.ts`) that runs every bot on
 one bot host: blackjack dealer, raffle, picture shop, Qwen (the live model; the offline stub only
-with `QWEN_BOT_MODE=stub`), faucet, lobby, RPS, dice, liar's dice and poker. It prints every bot
+with `QWEN_BOT_MODE=stub`), faucet, lobby, RPS and dice. It prints every bot
 address, the app URL and the exact command to start the app, then waits. Logs are in
 `<state dir>/logs/` (`relay.log`, `bots.log`; each bot's lines start with `[<bot>]`). Missing
 prerequisites (Node, `bash`, `cargo` or `CASHWEBD_BIN`, a busy port, an absent RPC URL or wallet
@@ -96,94 +96,45 @@ it is missing.
 **Faucet amount**: the default is a small 0.05 MON per new profile (real testnet funds), which is
 NOT enough for a blackjack hand (0.07 MON: 0.01 table minimum + 0.01 default stamp + the app's 0.05
 MON fee reserve): set `FAUCET_AMOUNT_WEI` (up to 1 MON) if you want players to play, and the
-summary warns when it is too low. `FAUCET_MAX_PER_DAY`, the one-funding-per-address rule and the
-testnet-only guards are unchanged.
+summary warns when it is too low. Each profile is granted once; the testnet-only guards are unchanged.
 
 **Raffle rounds**: the demo uses 5 entrants per round (`RAFFLE_BOT_MAX_ENTRIES`; the bot's own
 default is unchanged). Set it to a smaller number for a quicker round.
 
-### Raffle draw and payout (#363)
+### How the game and shop bots take and pay money
 
-A raffle entry reaches the raffle identity net of the gas of the sweep that moves it there, so the
-identity alone is always a little short of the gross pot (`entry price x entrants`). What is enforced
-before an entry is credited (`recoverAndSweepEntryPayment`): the entry's on-chain stamp payments to
-the bot's derived addresses, re-derived and checked against the message, total at least the entry
-price; and the amount actually swept into the identity, plus one sweep-gas tolerance per payment, is
-at least the entry price. The entry may be paid in up to 6 on-chain payments; that cap is a griefing
-bound (each payment loses one sweep gas and the hold threshold below scales with the payment count,
-so many tiny payments would widen it), not a rule for honest users, whose wallets can legitimately
-need several payments.
+One rule for dice, rock-paper-scissors, raffle and the picture shop (`src/bots/money.ts`):
 
-**Uncredited entries and refunds.** An entry that fails those checks (more than 6 payments, or less
-swept than the price) is NOT credited to a round, but its payments are first swept into the raffle
-identity, so the money is operator-controlled, never stranded at the derived addresses. The bot
-records it (entrant, payment hashes, swept amount, reason, time) in a persisted `unclaimed` list, logs
-`UNCLAIMED ...` at warn level, and tells the entrant by direct message that the entry was not counted,
-with the payment count and hashes, and that the operator will refund it. To refund: stop the raffle
-bot (it holds the state database), then in `packages/bot` with `MONAD_TESTNET_HTTP_RPC_URL`,
-`RAFFLE_BOT_IDENTITY_JSON` and `RAFFLE_BOT_STATE_DIR` set, run `yarn raffle:refund --list` and then
-`yarn raffle:refund <id>`. The refund pays the recorded swept amount back once: the signed bytes are
-persisted before broadcast, a re-run re-broadcasts the same bytes and reconciles by hash, and a
-refunded record is never paid again. It is refused while a raffle draw is unsettled (refunds and
-payouts share the identity's nonce and balance, #218), and if the identity holds less than the
-amount. Restart the bot afterwards. (A crash between the sweep and the record being written would
-leave the money in the identity without a record; the log line and the on-chain sweeps still show it.)
+- **What a message paid is what is on chain.** A stake, an entry price or a purchase price is the
+  value paid with the message that asks for it. The bot looks up every transfer the wallet reported
+  with that message and counts it only if it is mined, succeeded and is the transfer described; a
+  transfer pays for one message only. An amount typed in chat is never money. A message that paid
+  too little gets a refusal and what it did pay back.
+- **A payout is the value of the bot's own message.** The result, pot or refund is written down in
+  the bot's state before it is sent and is sent, one at a time, until it has gone. Each has one
+  message ID for good and the wallet never makes a second attempt for an ID, so a retry or a restart
+  does not pay twice. What could not be sent is tried again every 10 seconds and at start.
 
-The draw then
-works in this order, each step durable (fsynced) before the next: record the draw (and open the next
-round with a fresh commitment) in one atomic write; make sure the identity holds pot plus payout
-gas, topping up only that shortfall from the stamp wallet; sign the payout once and persist the exact
-bytes; broadcast (a restart re-broadcasts the same bytes, never a new payment) and confirm by hash;
-only then send the draw message that reveals the seed. The launcher therefore does not need to
-pre-fund the raffle identity, and a winner is never announced before the payout is confirmed.
-(Entry-credit writes keep the ordinary, non-fsynced level writes; the entry's funds are already
-swept and confirmed on-chain before it is credited.)
+- **Sent means delivered.** An owed message counts as sent only when the wallet says it was
+  delivered. One the wallet is still delivering stays owed. One the relay ended is kept as FAILED,
+  logged at error level with the bot, recipient and amount, and never announced.
+- **A paid message is written down first.** Before its payment is even looked up, a message that
+  came with money is recorded; the record goes only with the write that settles it. One left over
+  (a crash or an error while handling it) is refunded at the next start or within seconds.
+- **Paying too much.** Anything paid above a stated stake, the entry price or the item price comes
+  back with the bot's answer. Dice and rock-paper-scissors refuse (and refund) a bet the bank
+  cannot cover.
+- **Operator tool.** With the bot stopped: `yarn tsx outbox-admin.livecheck.ts <host state dir>
+  <bot id> list` shows what is owed, pending and failed; `... retry <id> --i-checked-the-chain`
+  sends a failed message again as a new one.
 
-**Operator top-up limits.** The stamp wallet may top up the identity only while all hold: the gap is
-no more than the plausible sweep-gas dust for the round's payments (1.3 x (payments x sweep gas +
-payout gas), the payment count recorded per entrant at credit time, so multi-payment entries raise
-the threshold, up to the cap of 6 each; the 30% margin covers fee drift between the sweeps and the draw, and entrants of earlier
-rounds paid without a top-up (at most one round's payments, reset by any top-up) are carried into
-the count; a larger gap means an entry paid less than
-the price, so the round is held and logged with no operator money moved); the round's cumulative top-ups stay within `RAFFLE_BOT_MAX_TOPUP_WEI`
-(per round, persisted); and the trailing 24 hours stay within `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI`
-(default 5x the per-round limit, persisted). A failed top-up attempt still counts against the limits.
-The signed top-up bytes and hash are persisted before broadcast and checked by hash before any
-further top-up, so a restart never tops up twice while the first one is unmined (a top-up the node
-has never heard of for 30 minutes is abandoned).
-
-**Held rounds.** If the pot cannot be funded (stamp wallet empty, a limit reached, or a suspected
-under-paying entry) the bot does not exit and does not refund: it logs `HELD ... Winner NOT
-announced or paid` once per change, keeps accepting entries for the next round, and pays the held
-round automatically once the cause is fixed. Entrants of a held round see nothing until the payout is
-confirmed (no draw message, no refund); operators must watch `raffle.log` for `HELD`. Refunds and
-leaving a round are a separate design (#218) and are not implemented here. Payouts are strictly
-sequential (oldest round first); a held or unconfirmed payout delays later payouts, never their
-announcements.
-
-**Announcements** are independent of payouts. A failing draw message never delays any payout: it is
-retried per recipient with backoff (5 s doubling to 5 min), and recipients already told are recorded
-so nothing is resent.
-
-**Idle exit.** `RAFFLE_BOT_IDLE_TIMEOUT_MS` only ends the process when no draw is unsettled; a held
-or unconfirmed round keeps it running, and settlement progress counts as activity.
-
-**Stuck payout.** If a signed payout is still unconfirmed after 10 minutes the bot logs
-`STUCK payout <tx hash>` at error level once a minute (typical causes: the fee cap fell below the
-network base fee, or the identity lacks gas). Operator steps: fund the raffle identity address (shown
-at startup) if it is short of gas, and watch the log; the same signed bytes keep being re-broadcast.
-If the node does not know the transaction at all for 15 minutes (receipt missing and
-`eth_getTransactionByHash` empty), the bot re-signs the SAME nonce, recipient and value with up to 2x
-fees (at most 3 times), but never with a fee whose maximum cost exceeds the gas the identity actually
-holds above the pot; if no valid bump is affordable it tops up the payout gas reserve from the
-stamp wallet within the same per-round and per-day limits. One nonce can mine only once, so at most
-one of the attempts is ever paid. Every attempt is reconciled by hash, and if the newest bytes are
-rejected (for example insufficient funds) the earlier attempts' bytes are broadcast instead. A transaction the node still knows is never replaced
-automatically: wait for it, or replace it by hand.
+**Raffle.** An entry is a confirmed payment of the entry price; the entry "transaction" in the draw
+is that payment's hash. When the round fills the winner is fixed and owed the pot (`entry price x
+entrants`); the other entrants are told, and the next round opens, only once the winner's message
+has gone out. Until then the round stays `drawing` and further entries are refused and refunded.
 
 The launcher keeps the bot's default entry price and sets the round size from the
-`RAFFLE_BOT_MAX_ENTRIES` row above (the demo runs 5 entrants); the bot's own default is also 5
-(`raffle-settlement.ts`).
+`RAFFLE_BOT_MAX_ENTRIES` row above (the demo runs 5 entrants); the bot's own default is also 5.
 
 The launcher sets every bot's state directory explicitly, under `<state dir>/bots/<bot>/state`
 (and identities under `<state dir>/bots/<bot>/identity.json`). Bots started on their own with
@@ -225,62 +176,57 @@ The harness these use is `packages/bot/demo/real-stack.ts` (`startRealStack`, `o
 
 #### Variables
 
-| Variable                              | Applies to       | Default                                            | Meaning                                                                                                                                                                                                                                                                                                                                                           |
-| ------------------------------------- | ---------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FRANK_DEMO_ENV_FILE`                 | launcher         | <repo>/.env if it exists                           | Path of the .env file to read (KEY=value lines). The process environment wins over the file. Never committed; you provide it.                                                                                                                                                                                                                                     |
-| `FRANK_DEMO_STATE_DIR`                | launcher         | ~/.frank-demo                                      | One directory holding every bot identity, bot state, the relay database and the logs. Reused across runs.                                                                                                                                                                                                                                                         |
-| `FRANK_DEMO_RELAY_PORT`               | relay            | 8098                                               | Port the local relay listens on (127.0.0.1).                                                                                                                                                                                                                                                                                                                      |
-| `FRANK_DEMO_NGROK`                    | launcher         | 0                                                  | Set to 1 (same as the --ngrok flag) to automatically expose the demo stack via local ngrok tunnels.                                                                                                                                                                                                                                                               |
-| `FRANK_DEMO_NGROK_BIN`                | launcher         | ngrok                                              | Executable name or path for the ngrok CLI.                                                                                                                                                                                                                                                                                                                        |
-| `FRANK_DEMO_NGROK_CONFIG`             | launcher         | unset                                              | Path to an existing ngrok configuration file to merge with the demo tunnels.                                                                                                                                                                                                                                                                                      |
-| `FRANK_DEMO_NGROK_RELAY_DOMAIN`       | launcher         | unset                                              | Domain or hostname for the ngrok relay tunnel (e.g. relay-subdomain.ngrok-free.app).                                                                                                                                                                                                                                                                              |
-| `FRANK_DEMO_NGROK_APP_DOMAIN`         | launcher         | unset                                              | Domain or hostname for the ngrok app tunnel (e.g. app-subdomain.ngrok-free.app).                                                                                                                                                                                                                                                                                  |
-| `FRANK_DEMO_PUBLIC_RELAY_URL`         | relay, app       | unset = http://127.0.0.1:<port>                    | Public base URL of the relay. If unset and FRANK_DEMO_NGROK=1, auto-discovered from ngrok. When set, the app connects to this URL instead of loopback.                                                                                                                                                                                                            |
-| `FRANK_DEMO_PUBLIC_APP_URL`           | app              | unset = http://localhost:<port>                    | Public URL of the frontend app. If unset and FRANK_DEMO_NGROK=1, auto-discovered from ngrok.                                                                                                                                                                                                                                                                      |
-| `NGROK_AUTHTOKEN`                     | launcher         | unset                                              | ngrok authtoken; only needed if not already configured in your local ngrok configuration. Secret: never printed.                                                                                                                                                                                                                                                  |
-| `CASHWEBD_BIN`                        | relay            | built with Cargo                                   | Path of a prebuilt cashwebd-exe; skips the Cargo build in run-local-monad.sh.                                                                                                                                                                                                                                                                                     |
-| `PROTOC`                              | relay build      | auto-detected                                      | Native protoc executable path (libprotoc 3+); an invalid override fails before Cargo. Otherwise tries PATH, then the installed npm native compiler. Ignored with CASHWEBD_BIN.                                                                                                                                                                                    |
-| `CARGO`                               | relay build      | cargo                                              | Toolchain variables (also CARGO_HOME, CARGO_TARGET_DIR, RUSTUP_HOME, RUSTUP_TOOLCHAIN) are passed to the relay build only when set. Ignored with CASHWEBD_BIN.                                                                                                                                                                                                    |
-| `CARGO_HOME`                          | relay build      | unset                                              | See CARGO.                                                                                                                                                                                                                                                                                                                                                        |
-| `CARGO_TARGET_DIR`                    | relay build      | unset                                              | See CARGO. Point it at a scratch directory to keep the build out of the repo tree.                                                                                                                                                                                                                                                                                |
-| `RUSTUP_HOME`                         | relay build      | unset                                              | See CARGO.                                                                                                                                                                                                                                                                                                                                                        |
-| `RUSTUP_TOOLCHAIN`                    | relay build      | unset                                              | See CARGO.                                                                                                                                                                                                                                                                                                                                                        |
-| `MONAD_TESTNET_HTTP_RPC_URL`          | chain            | required                                           | Monad TESTNET JSON-RPC URL (chain id 10143), or several separated by commas (the relay and the bots use the first that answers; a tool given the whole value as one URL gets an authentication error). May embed an API key. Secret: never printed.                                                                                                               |
-| `MONAD_TESTNET_WS_RPC_URL`            | chain            | optional                                           | Monad TESTNET WebSocket JSON-RPC URL used by the relay proxy. May embed an API key. Secret: never printed.                                                                                                                                                                                                                                                        |
-| `XEC_TESTNET_CHRONIK_URL`             | relay            | https://chronik-testnet.fabien.cash                | Chronik indexer HTTP URL for XEC testnet relay proxying. Secret: never printed.                                                                                                                                                                                                                                                                                   |
-| `SOLANA_DEVNET_HTTP_RPC_URL`          | relay            | https://api.devnet.solana.com                      | Solana devnet JSON-RPC HTTP URL used by the relay proxy. Secret: never printed.                                                                                                                                                                                                                                                                                   |
-| `FRANK_NETWORK_TAG`                   | chain            | MONT                                               | Network tag the relay and bots stamp messages with (MONT = Monad testnet).                                                                                                                                                                                                                                                                                        |
-| `MONAD_STAMP_BURN_ADDRESS`            | relay, bots, app | 0x000000000000000000000000000000000000dEaD         | Burn address of stamps and topic votes (0x + 40 hex). Passed to the relay (without it every forum post and vote fails with HTTP 500), to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address.                                                                   |
-| `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`    | relay            | 1000000000000                                      | Minimum wei a message stamp must pay (0.000001 MON).                                                                                                                                                                                                                                                                                                              |
-| `FRANK_DM_DEFAULT_STAMP_VALUE_WEI`    | bots             | 10000000000000000                                  | Default stamp value bots pay per message (0.01 MON).                                                                                                                                                                                                                                                                                                              |
-| `E2E_DEMO_MAIN_WALLET_JSON`           | wallet           | required                                           | Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet. It is the ONE funding wallet of the demo: the single bot process funds every bot from it and the faucet pays new profiles from it, so there is one source of nonces. The launcher reads only its address (to check balances). chmod 600. Secret: never printed.                          |
-| `FRANK_TEST_WALLET_JSON`              | checks           | required for yarn demo:smoke and the browser check | Path of a SECOND funded testnet wallet file, used only by the checks that run beside a demo (they lend a test user a little MON). It must not be E2E_DEMO_MAIN_WALLET_JSON: the bot host counts that wallet's nonces in memory, so a transfer sent from it by another process makes the host's next payment fail. Never given to the bots. Secret: never printed. |
-| `FRANK_DEMO_NO_FAUCET`                | faucet           | 0                                                  | Set to 1 to run without the faucet.                                                                                                                                                                                                                                                                                                                               |
-| `QWEN_API_KEY`                        | qwen             | required unless QWEN_BOT_MODE=stub                 | Key of the model provider. Without it (and without an explicit stub) the Qwen bot fails to start, is reported by name, and the other bots run. Secret: never printed.                                                                                                                                                                                             |
-| `QWEN_OPENAI_COMPATIBLE_ENDPOINT`     | qwen             | required unless QWEN_BOT_MODE=stub                 | OpenAI-compatible base URL of the model provider.                                                                                                                                                                                                                                                                                                                 |
-| `QWEN_MODEL`                          | qwen             | qwen3.8-max                                        | Model name.                                                                                                                                                                                                                                                                                                                                                       |
-| `QWEN_BOT_MODE`                       | qwen             | live                                               | Set to "stub" to ask for the offline stub explicitly (its replies say so). Never chosen for you.                                                                                                                                                                                                                                                                  |
-| `QWEN_MODEL_TIMEOUT_MS`               | qwen             | 45000                                              | How long one model call may take.                                                                                                                                                                                                                                                                                                                                 |
-| `QWEN_MODEL_TRIES`                    | qwen             | 3                                                  | Model calls tried for one message before the user is told it failed.                                                                                                                                                                                                                                                                                              |
-| `QWEN_ENABLE_THINKING`                | qwen             | 0                                                  | Set to 1 to turn the model's thinking on (slower replies).                                                                                                                                                                                                                                                                                                        |
-| `QWEN_SYSTEM_PROMPT`                  | qwen             | the bot's own                                      | Replaces the system prompt the bot sends the model.                                                                                                                                                                                                                                                                                                               |
-| `FRANK_BOT_TOP_UP_BELOW_WEI`          | bots             | host default (300000000000000000, 0.3 MON)         | The bot host refills the account a bot pays transfers and payouts from when it holds less than this. Passed on only when set.                                                                                                                                                                                                                                     |
-| `FRANK_BOT_TOP_UP_TO_WEI`             | bots             | host default (500000000000000000, 0.5 MON)         | What that account is refilled to, from the funding wallet. Passed on only when set.                                                                                                                                                                                                                                                                               |
-| `FRANK_DEMO_MAX_START_DRAW_WEI`       | launcher         | 1000000000000000000 (1 MON)                        | The most one start may draw from the funding wallet to fund bot accounts (their refills plus gas), worked out from chain balances before anything starts. A start that would draw more is refused with the exact amount. Raise it, or pass --allow-draw, to permit a first start on a new state directory (which funds every bot from nothing).                   |
-| `RAFFLE_BOT_ENTRY_PRICE_WEI`          | raffle           | 20000000000000000                                  | Raffle entry price (0.02 MON).                                                                                                                                                                                                                                                                                                                                    |
-| `RAFFLE_BOT_MAX_TOPUP_WEI`            | raffle           | 50000000000000000                                  | Most the stamp wallet may top up the raffle identity per round to cover swept-entry gas and payout gas; beyond it the draw is held and logged (0.05 MON).                                                                                                                                                                                                         |
-| `RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI`    | raffle           | 250000000000000000                                 | Most the stamp wallet may top up the raffle identity per trailing 24 hours (0.25 MON).                                                                                                                                                                                                                                                                            |
-| `RAFFLE_BOT_MAX_ENTRIES`              | raffle           | 5                                                  | Entrants per round. The demo default is 5 (the bot's own default is unchanged); use a smaller number for a quick round.                                                                                                                                                                                                                                           |
-| `BLACKJACK_BOT_MIN_WAGER_WEI`         | blackjack        | bot default (0.01 MON)                             | Table minimum.                                                                                                                                                                                                                                                                                                                                                    |
-| `BLACKJACK_BOT_MAX_WAGER_WEI`         | blackjack        | bot default (1 MON)                                | Table maximum.                                                                                                                                                                                                                                                                                                                                                    |
-| `BLACKJACK_BOT_MAX_GREETINGS`         | blackjack        | 5                                                  | Welcome messages the dealer sends per run (each costs the dealer a stamp); 0 = never greet.                                                                                                                                                                                                                                                                       |
-| `BLACKJACK_BOT_MAX_GREETINGS_PER_DAY` | blackjack        | 20                                                 | Welcome messages per UTC day, kept across restarts.                                                                                                                                                                                                                                                                                                               |
-| `VENDOR_BOT_CATALOG_DIR`              | picture shop     | bundled demo-catalog/                              | Directory with manifest.json and image files the shop sells.                                                                                                                                                                                                                                                                                                      |
-| `FAUCET_AMOUNT_WEI`                   | faucet           | 50000000000000000 (0.05 MON)                       | MON sent to each new profile. The 0.05 MON default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. FAUCET_MAX_PER_DAY and the per-address rule still apply.                                                             |
-| `FAUCET_MAX_PER_DAY`                  | faucet           | 20                                                 | New addresses funded per rolling 24 hours.                                                                                                                                                                                                                                                                                                                        |
-| `FAUCET_MIN_RESERVE_WEI`              | faucet           | 100000000000000000                                 | The faucet stops paying when the funding wallet would drop below this balance.                                                                                                                                                                                                                                                                                    |
-| `FRANK_BOT_PEER_DENYLIST`             | bots             | empty                                              | Comma-separated addresses no bot engages.                                                                                                                                                                                                                                                                                                                         |
-| `FRANK_BOT_MAX_REPLIES_PER_PEER`      | bots             | 20; 300 for the game bots                          | Replies a hosted bot sends to one account per hour; past that it stops answering that account and tells it so once. Setting it overrides every bot, the game bots included. 0 means never reply.                                                                                                                                                                  |
+| Variable                           | Applies to       | Default                                            | Meaning                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------- | ---------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FRANK_DEMO_ENV_FILE`              | launcher         | <repo>/.env if it exists                           | Path of the .env file to read (KEY=value lines). The process environment wins over the file. Never committed; you provide it.                                                                                                                                                                                                                                     |
+| `FRANK_DEMO_STATE_DIR`             | launcher         | ~/.frank-demo                                      | One directory holding every bot identity, bot state, the relay database and the logs. Reused across runs.                                                                                                                                                                                                                                                         |
+| `FRANK_DEMO_RELAY_PORT`            | relay            | 8098                                               | Port the local relay listens on (127.0.0.1).                                                                                                                                                                                                                                                                                                                      |
+| `FRANK_DEMO_NGROK`                 | launcher         | 0                                                  | Set to 1 (same as the --ngrok flag) to automatically expose the demo stack via local ngrok tunnels.                                                                                                                                                                                                                                                               |
+| `FRANK_DEMO_NGROK_BIN`             | launcher         | ngrok                                              | Executable name or path for the ngrok CLI.                                                                                                                                                                                                                                                                                                                        |
+| `FRANK_DEMO_NGROK_CONFIG`          | launcher         | unset                                              | Path to an existing ngrok configuration file to merge with the demo tunnels.                                                                                                                                                                                                                                                                                      |
+| `FRANK_DEMO_NGROK_RELAY_DOMAIN`    | launcher         | unset                                              | Domain or hostname for the ngrok relay tunnel (e.g. relay-subdomain.ngrok-free.app).                                                                                                                                                                                                                                                                              |
+| `FRANK_DEMO_NGROK_APP_DOMAIN`      | launcher         | unset                                              | Domain or hostname for the ngrok app tunnel (e.g. app-subdomain.ngrok-free.app).                                                                                                                                                                                                                                                                                  |
+| `FRANK_DEMO_PUBLIC_RELAY_URL`      | relay, app       | unset = http://127.0.0.1:<port>                    | Public base URL of the relay. If unset and FRANK_DEMO_NGROK=1, auto-discovered from ngrok. When set, the app connects to this URL instead of loopback.                                                                                                                                                                                                            |
+| `FRANK_DEMO_PUBLIC_APP_URL`        | app              | unset = http://localhost:<port>                    | Public URL of the frontend app. If unset and FRANK_DEMO_NGROK=1, auto-discovered from ngrok.                                                                                                                                                                                                                                                                      |
+| `NGROK_AUTHTOKEN`                  | launcher         | unset                                              | ngrok authtoken; only needed if not already configured in your local ngrok configuration. Secret: never printed.                                                                                                                                                                                                                                                  |
+| `CASHWEBD_BIN`                     | relay            | built with Cargo                                   | Path of a prebuilt cashwebd-exe; skips the Cargo build in run-local-monad.sh.                                                                                                                                                                                                                                                                                     |
+| `PROTOC`                           | relay build      | auto-detected                                      | Native protoc executable path (libprotoc 3+); an invalid override fails before Cargo. Otherwise tries PATH, then the installed npm native compiler. Ignored with CASHWEBD_BIN.                                                                                                                                                                                    |
+| `CARGO`                            | relay build      | cargo                                              | Toolchain variables (also CARGO_HOME, CARGO_TARGET_DIR, RUSTUP_HOME, RUSTUP_TOOLCHAIN) are passed to the relay build only when set. Ignored with CASHWEBD_BIN.                                                                                                                                                                                                    |
+| `CARGO_HOME`                       | relay build      | unset                                              | See CARGO.                                                                                                                                                                                                                                                                                                                                                        |
+| `CARGO_TARGET_DIR`                 | relay build      | unset                                              | See CARGO. Point it at a scratch directory to keep the build out of the repo tree.                                                                                                                                                                                                                                                                                |
+| `RUSTUP_HOME`                      | relay build      | unset                                              | See CARGO.                                                                                                                                                                                                                                                                                                                                                        |
+| `RUSTUP_TOOLCHAIN`                 | relay build      | unset                                              | See CARGO.                                                                                                                                                                                                                                                                                                                                                        |
+| `MONAD_TESTNET_HTTP_RPC_URL`       | chain            | required                                           | Monad TESTNET JSON-RPC URL (chain id 10143), or several separated by commas (the relay and the bots use the first that answers; a tool given the whole value as one URL gets an authentication error). May embed an API key. Secret: never printed.                                                                                                               |
+| `MONAD_TESTNET_WS_RPC_URL`         | chain            | optional                                           | Monad TESTNET WebSocket JSON-RPC URL used by the relay proxy. May embed an API key. Secret: never printed.                                                                                                                                                                                                                                                        |
+| `XEC_TESTNET_CHRONIK_URL`          | relay            | https://chronik-testnet.fabien.cash                | Chronik indexer HTTP URL for XEC testnet relay proxying. Secret: never printed.                                                                                                                                                                                                                                                                                   |
+| `SOLANA_DEVNET_HTTP_RPC_URL`       | relay            | https://api.devnet.solana.com                      | Solana devnet JSON-RPC HTTP URL used by the relay proxy. Secret: never printed.                                                                                                                                                                                                                                                                                   |
+| `FRANK_NETWORK_TAG`                | chain            | MONT                                               | Network tag the relay and bots stamp messages with (MONT = Monad testnet).                                                                                                                                                                                                                                                                                        |
+| `MONAD_STAMP_BURN_ADDRESS`         | relay, bots, app | 0x000000000000000000000000000000000000dEaD         | Burn address of stamps and topic votes (0x + 40 hex). Passed to the relay (without it every forum post and vote fails with HTTP 500), to the bots, and printed in the app command as QCLI_MONAD_STAMP_BURN_ADDRESS: all three must agree. The default is the well-known 0x...dEaD burn address.                                                                   |
+| `CASHWEB_STAMP_MIN_BURN_VALUE_WEI` | relay            | 1000000000000                                      | Minimum wei a message stamp must pay (0.000001 MON).                                                                                                                                                                                                                                                                                                              |
+| `FRANK_DM_DEFAULT_STAMP_VALUE_WEI` | bots             | 10000000000000000                                  | Default stamp value bots pay per message (0.01 MON).                                                                                                                                                                                                                                                                                                              |
+| `E2E_DEMO_MAIN_WALLET_JSON`        | wallet           | required                                           | Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet. It is the ONE funding wallet of the demo: the single bot process funds every bot from it and the faucet pays new profiles from it, so there is one source of nonces. The launcher reads only its address (to check balances). chmod 600. Secret: never printed.                          |
+| `FRANK_TEST_WALLET_JSON`           | checks           | required for yarn demo:smoke and the browser check | Path of a SECOND funded testnet wallet file, used only by the checks that run beside a demo (they lend a test user a little MON). It must not be E2E_DEMO_MAIN_WALLET_JSON: the bot host counts that wallet's nonces in memory, so a transfer sent from it by another process makes the host's next payment fail. Never given to the bots. Secret: never printed. |
+| `FRANK_DEMO_NO_FAUCET`             | faucet           | 0                                                  | Set to 1 to run without the faucet.                                                                                                                                                                                                                                                                                                                               |
+| `QWEN_API_KEY`                     | qwen             | required unless QWEN_BOT_MODE=stub                 | Key of the model provider. Without it (and without an explicit stub) the Qwen bot fails to start, is reported by name, and the other bots run. Secret: never printed.                                                                                                                                                                                             |
+| `QWEN_OPENAI_COMPATIBLE_ENDPOINT`  | qwen             | required unless QWEN_BOT_MODE=stub                 | OpenAI-compatible base URL of the model provider.                                                                                                                                                                                                                                                                                                                 |
+| `QWEN_MODEL`                       | qwen             | qwen3.8-max                                        | Model name.                                                                                                                                                                                                                                                                                                                                                       |
+| `QWEN_BOT_MODE`                    | qwen             | live                                               | Set to "stub" to ask for the offline stub explicitly (its replies say so). Never chosen for you.                                                                                                                                                                                                                                                                  |
+| `QWEN_MODEL_TIMEOUT_MS`            | qwen             | 45000                                              | How long one model call may take.                                                                                                                                                                                                                                                                                                                                 |
+| `QWEN_MODEL_TRIES`                 | qwen             | 3                                                  | Model calls tried for one message before the user is told it failed.                                                                                                                                                                                                                                                                                              |
+| `QWEN_ENABLE_THINKING`             | qwen             | 0                                                  | Set to 1 to turn the model's thinking on (slower replies).                                                                                                                                                                                                                                                                                                        |
+| `QWEN_SYSTEM_PROMPT`               | qwen             | the bot's own                                      | Replaces the system prompt the bot sends the model.                                                                                                                                                                                                                                                                                                               |
+| `FRANK_BOT_TOP_UP_BELOW_WEI`       | bots             | host default (300000000000000000, 0.3 MON)         | The bot host refills the account a bot pays transfers and payouts from when it holds less than this. Passed on only when set.                                                                                                                                                                                                                                     |
+| `FRANK_BOT_TOP_UP_TO_WEI`          | bots             | host default (500000000000000000, 0.5 MON)         | What that account is refilled to, from the funding wallet. Passed on only when set.                                                                                                                                                                                                                                                                               |
+| `FRANK_DEMO_MAX_START_DRAW_WEI`    | launcher         | 1000000000000000000 (1 MON)                        | The most one start may draw from the funding wallet to fund bot accounts (their refills plus gas), worked out from chain balances before anything starts. A start that would draw more is refused with the exact amount. Raise it, or pass --allow-draw, to permit a first start on a new state directory (which funds every bot from nothing).                   |
+| `RAFFLE_BOT_ENTRY_PRICE_WEI`       | raffle           | 20000000000000000                                  | Raffle entry price (0.02 MON).                                                                                                                                                                                                                                                                                                                                    |
+| `RAFFLE_BOT_MAX_ENTRIES`           | raffle           | 5                                                  | Entrants per round. The demo default is 5 (the bot's own default is unchanged); use a smaller number for a quick round.                                                                                                                                                                                                                                           |
+| `BLACKJACK_BOT_MIN_WAGER_WEI`      | blackjack        | bot default (0.01 MON)                             | Table minimum.                                                                                                                                                                                                                                                                                                                                                    |
+| `BLACKJACK_BOT_MAX_WAGER_WEI`      | blackjack        | bot default (1 MON)                                | Table maximum.                                                                                                                                                                                                                                                                                                                                                    |
+| `VENDOR_BOT_CATALOG_DIR`           | picture shop     | bundled demo-catalog/                              | Directory with manifest.json and image files the shop sells.                                                                                                                                                                                                                                                                                                      |
+| `FAUCET_AMOUNT_WEI`                | faucet           | 50000000000000000 (0.05 MON)                       | MON sent to each new profile. The 0.05 MON default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. Each profile is granted once.                                                                                        |
+| `FAUCET_MIN_RESERVE_WEI`           | faucet           | 100000000000000000                                 | The faucet stops paying when the funding wallet would drop below this balance.                                                                                                                                                                                                                                                                                    |
+| `FRANK_BOT_PEER_DENYLIST`          | bots             | empty                                              | Comma-separated addresses no bot engages.                                                                                                                                                                                                                                                                                                                         |
+| `FRANK_BOT_MAX_REPLIES_PER_PEER`   | bots             | 20; 300 for the game bots                          | Replies a hosted bot sends to one account per hour; past that it stops answering that account and tells it so once. Setting it overrides every bot, the game bots included. 0 means never reply.                                                                                                                                                                  |
 
 Stopping: Ctrl-C, SIGTERM, SIGHUP, a crash and the relay dying all stop every child process
 group; a second Ctrl-C during the 8 s grace period kills them immediately. One launcher runs per
@@ -629,79 +575,31 @@ address (a sybil gets the budget per address, each still paying a stamp). Blackj
 `blackjack-move` items; it also opens the chat with each new registration (below), skipping itself,
 the denylist and bot-marked profiles through the same guard.
 
-### Blackjack welcome greeting (#395)
+### Blackjack dealer
 
-The dealer watches the new-registration feed like the Qwen greeter and sends each new profile ONE
-message: a `blackjack-move` item with the additive action `welcome` (min/max wager in wei taken from
-`BLACKJACK_BOT_MIN_WAGER_WEI` / `BLACKJACK_BOT_MAX_WAGER_WEI`, a fee hint, a rules summary) followed
-by a plain-text line. The app renders an inline bet control in that bubble (there is no compose-bar
-button). Each greeting costs the dealer a stamp, so: the once-per-address record is durable and
-written before the send (`blackjack-greeting-state` in `BLACKJACK_BOT_STATE_DIR`, a restart never
-re-greets), `BLACKJACK_BOT_MAX_GREETINGS` caps a run (default 5, 0 = off),
-`BLACKJACK_BOT_MAX_GREETINGS_PER_DAY` caps a UTC day (default 20), and both count a failed send. A
-registration held back by a cap or by short dealer funds is greeted later unless it is older than
-`BLACKJACK_BOT_GREETING_MAX_AGE_MS` (default 24 h). When the dealer balance cannot cover its open
-hands plus one greeting (stamp plus a 0.05 MON fee reserve) the greeting is skipped and logged; the
-bot never crashes on it. `BLACKJACK_BOT_PROFILE_SINCE_MS` overrides where a first run starts
-watching (default: now, so an old registry is not greeted). The cursor is persisted.
+The dealer (`src/bots/blackjack-bot.ts`) plays the peer-to-peer hand of
+`docs/protocol/blackjack-p2p.md`, the same state machine the app folds to work out every card. It
+offers each new profile, and anyone who writes to it, a hand (table limits from
+`BLACKJACK_BOT_MIN_WAGER_WEI` / `BLACKJACK_BOT_MAX_WAGER_WEI`). A bet is counted at what its message
+is confirmed, on chain, to have paid; a payout or refund is the value of the dealer's own message,
+written down before it is sent and sent once (see "How the game and shop bots take and pay money").
 
-## Standalone testnet faucet (#316)
+## Testnet faucet
 
-`yarn faucet` (`faucet-bot.livecheck.ts`, logic in `faucet-core.ts`) funds each newly registered
-profile once with testnet MON. It needs no LLM key, no stamp pool and no identity: only
-`MONAD_TESTNET_HTTP_RPC_URL`, `FRANK_NETWORK_TAG=MONT` and `E2E_DEMO_MAIN_WALLET_JSON`
-(`{address, privateKey}` of a wallet holding testnet MON only). See the file header for every knob
-(`FAUCET_AMOUNT_WEI` default 0.05 MON, hard ceiling 1 MON; `FAUCET_MAX_PER_RUN` 10;
-`FAUCET_MAX_PER_DAY` 20 (max 1000); `FAUCET_MIN_RESERVE_WEI` 0.1 MON (minimum 0.01 MON);
-`FAUCET_POLL_INTERVAL_MS` 4000 (min 1000); `FAUCET_STATE_DIR` default `~/.frank-faucet`, warns if under a
-tmp dir). Invalid values fail startup with the variable name; nothing becomes NaN.
+`yarn faucet` (`faucet-bot.livecheck.ts`, logic in `src/bots/faucet-bot.ts`) grants each profile
+testnet MON once: when it registers, or when it writes to the faucet. Settings, all enforced:
+`FAUCET_AMOUNT_WEI` (default 0.05 MON; more than 1 MON is refused at start) and
+`FAUCET_MIN_RESERVE_WEI` (default 0.1 MON; the faucet wallet is never taken below it). There is no
+daily or per-run cap.
 
-- once per address, durable: the exact signed transaction is persisted before broadcast; any
-  record (signed/submitted/confirmed) blocks re-funding, across restarts and address casing. A
-  crash mid-broadcast replays the same bytes on restart; it never re-signs.
-- skips itself, `FRANK_BOT_PEER_DENYLIST`, self-declared bots (#311) and addresses that already
-  hold at least the amount. Stops (without consuming the profile, so it is retried) at the per-run
-  cap, the rolling 24h cap, or when the wallet would fall under the reserve.
-- testnet only: refuses to start unless `FRANK_NETWORK_TAG=MONT` and the RPC reports chain id 10143.
-- Do not also let Qwen fund: set `QWEN_BOT_FUND_VALUE_WEI=0` on the Qwen bot (it still greets).
+A grant is recorded before its transfer is sent, and transfers leave the funding wallet one at a
+time. A record left unfinished by a crash counts as granted only if the address holds the grant.
 
-- one wallet, one faucet: use a wallet dedicated to it. Do not share it with the Qwen bot's funding
-  (`QWEN_BOT_FUND_VALUE_WEI=0`) or run a second faucet on a different state dir: concurrent senders
-  reuse nonces and one kills the other's transfer. The faucet itself will not sign a new transfer
-  while an earlier one is unsettled, and handles profiles one at a time.
-- the wallet JSON holds a private key: `chmod 600` it (the faucet warns if group/others can read it).
-- a profile that keeps failing (e.g. malformed address) is skipped and recorded after 3
-  consecutive failures while the RPC is healthy, so it cannot block everyone behind it; an RPC
-  outage never counts against a profile.
-
-Stuck transfers. If the node rejects the exact-bytes replay (`already known`, `nonce too low`) the
-faucet looks the receipt up by hash: mined settles the record, otherwise it waits and logs once.
-If a record stays stuck (further funding is paused while any transfer is unsettled):
-
-    yarn faucet --list-stuck          # signed / failed / skipped records with tx hashes
-    yarn faucet --clear <address>     # DANGEROUS: lets the address be paid again
-
-`--clear` is guarded because the record is the only thing preventing a second payment. It never
-clears `submitted`/`confirmed` records; if `MONAD_TESTNET_HTTP_RPC_URL` is set it asks the node and
-refuses any tx that is mined or in the mempool (or if the node cannot be asked). A `signed` record
-may already have been broadcast (a timeout after the node accepted the tx looks identical), so it
-additionally needs `--force --confirm-tx <txHash>` typed exactly, and prints a loud warning. A
-`failed` record with a tx hash needs the same when no node lookup is available (a `failed` set
-because the node did not know the tx may still land later). These
-admin commands run before any other env validation and need only `FAUCET_STATE_DIR`.
-
-A `submitted` transfer whose confirmation was never seen is re-checked by hash (5 min after its
-(re)broadcast, at most every 5 min): a receipt settles it; a tx the node no longer knows is marked `failed` so it
-shows in `--list-stuck`. It is never re-funded automatically.
-
-Profiles with a malformed address (not `0x` + 40 hex, e.g. `abc`, `foo.eth`) are skipped up front,
-without any RPC call, so they never stall the cursor. Skipping a profile after repeated failures ignores transient errors (timeouts, 5xx, rate limits):
-malformed-address errors count 3 times; unclassified errors need 10 failures spread over 10 minutes.
-
-Abuse limits (demo level): registration is free, so a sybil can mint addresses and collect the
-amount per address until the daily cap (loss bounded to `maxPerDay * amount`, wallet floor kept by
-the reserve). No captcha, no proof of humanity, no per-IP limit. The app's Receive page shows the
-user's address and explains the faucet when the balance is a real zero.
+**Where the grant goes.** To the profile's own address: the only address of a user that a sender
+can learn. An account whose wallet spends from a separate receive address sees that money as
+"cordoned" in the app and cannot spend it. Nothing a profile, a directory entry or a message
+carries names the receive address, so the faucet cannot pay it; fixing that is wallet or directory
+work, not the faucet's.
 
 ## Bot profiles and curated defaults (#317)
 

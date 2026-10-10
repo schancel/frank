@@ -1,108 +1,99 @@
-import { FaucetBot } from "./faucet-bot";
-import type {
-  BotContext,
-  BotMessageContext,
-  NewUserEvent,
-} from "@frank/bot-framework";
+import type { BotContext } from "@frank/bot-framework";
+import { harness, PLAYER } from "./bot-harness.testutil";
+import { FaucetBot, MAX_AMOUNT_WEI } from "./faucet-bot";
+
+const AMOUNT = 50_000_000_000_000_000n;
+const RESERVE = 100_000_000_000_000_000n;
+
+/** A faucet wallet holding `funds`, and what it transferred. */
+function faucet(funds = 10n ** 18n) {
+  const h = harness();
+  const transfers: { to: string; valueWei: bigint }[] = [];
+  const balances = new Map<string, bigint>();
+  let fails = false;
+  const ctx = {
+    ...h.ctx,
+    getBalance: async (address?: string) =>
+      address ? balances.get(address.toLowerCase()) ?? 0n : funds,
+    sendTransfer: async ({ to, valueWei }: { to: string; valueWei: bigint }) => {
+      if (fails) throw new Error("rpc down");
+      funds -= valueWei;
+      balances.set(to.toLowerCase(), (balances.get(to.toLowerCase()) ?? 0n) + valueWei);
+      transfers.push({ to, valueWei });
+      return { txHash: "0x" + transfers.length.toString(16).padStart(64, "0") };
+    },
+  } as unknown as BotContext;
+  return { ...h, ctx, transfers, failTransfers: (on: boolean) => (fails = on) };
+}
+
+const bot = () => new FaucetBot({ amountWei: AMOUNT, minReserveWei: RESERVE });
 
 describe("FaucetBot", () => {
-  let bot: FaucetBot;
-  let mockState: Map<string, string>;
-  let mockContext: BotContext;
-  let sentTransfers: Array<{ to: string; valueWei: bigint }>;
-  let sentMessages: Array<{ to: string; items: any[] }>;
+  test("grants a new profile once and says where the money went", async () => {
+    const f = faucet();
+    const b = bot();
+    await b.onNewUser({ address: PLAYER, registeredAtMs: 1 }, f.ctx);
+    await b.onNewUser({ address: PLAYER, registeredAtMs: 2 }, f.ctx);
+    expect(f.transfers).toEqual([{ to: PLAYER, valueWei: AMOUNT }]);
+    expect(f.sent).toHaveLength(1);
+    expect(f.item("text").text).toContain(`profile address ${PLAYER}`);
+  });
 
-  beforeEach(() => {
-    bot = new FaucetBot({
-      amountWei: 50_000_000_000_000_000n, // 0.05 MON
-      minReserveWei: 100_000_000_000_000_000n, // 0.1 MON
+  test("a message from a profile that was never granted is granted once; afterwards it is told so", async () => {
+    const f = faucet();
+    const b = bot();
+    await b.onMessage(f.message([{ type: "text", text: "funds please" }]), f.ctx);
+    await b.onMessage(f.message([{ type: "text", text: "again" }]), f.ctx);
+    expect(f.transfers).toHaveLength(1);
+    expect(f.sent[1].items[0]).toMatchObject({
+      text: expect.stringContaining("already received"),
     });
-    mockState = new Map();
-    sentTransfers = [];
-    sentMessages = [];
-
-    mockContext = {
-      botId: "faucet",
-      address: "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
-      subject: "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
-      relayBaseUrl: "http://127.0.0.1:8098",
-      networkTag: "MONT",
-      provider: {
-        getBalance: jest.fn(async () => 0n), // New user has 0 balance
-      } as any,
-      state: {
-        get: jest.fn(async (k: string) => mockState.get(k)),
-        put: jest.fn(async (k: string, v: string) => {
-          mockState.set(k, v);
-        }),
-        del: jest.fn(async (k: string) => {
-          mockState.delete(k);
-        }),
-        batch: jest.fn(async () => {}),
-        sublevel: jest.fn(),
-      },
-      lookupPeer: jest.fn(),
-      sendMessage: jest.fn(async (to, items) => {
-        sentMessages.push({ to, items });
-        return { ok: true } as any;
-      }),
-      sendDirectMessage: jest.fn(async (to, items) => {
-        sentMessages.push({ to, items });
-        return { ok: true } as any;
-      }),
-      onNewUserRegistered: jest.fn(),
-      sendTransfer: jest.fn(async ({ to, valueWei }) => {
-        sentTransfers.push({ to, valueWei });
-        return { txHash: "0x" + "ff".repeat(32) };
-      }),
-      buildAndSignTransfer: jest.fn(),
-      waitForReceipt: jest.fn(),
-      getBalance: jest.fn(async () => 1_000_000_000_000_000_000n), // 1 MON faucet balance
-    };
   });
 
-  test("provides profile metadata", () => {
-    const profile = bot.getProfile();
-    expect(profile.name).toBe("Monad Faucet");
-    expect(profile.bot).toBe(true);
-    expect(profile.avatarPng).toBeInstanceOf(Buffer);
+  test("two requests at once for one profile grant once", async () => {
+    const f = faucet();
+    const b = bot();
+    await Promise.all([
+      b.onNewUser({ address: PLAYER, registeredAtMs: 1 }, f.ctx),
+      b.onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx),
+    ]);
+    expect(f.transfers).toHaveLength(1);
   });
 
-  test("funds new user on registration and sends confirmation DM", async () => {
-    const user: NewUserEvent = {
-      address: "0x1234567890123456789012345678901234567890",
-      registeredAtMs: Date.now(),
-    };
-
-    await bot.onNewUser(user, mockContext);
-    expect(sentTransfers.length).toBe(1);
-    expect(sentTransfers[0].to).toBe(user.address);
-    expect(sentTransfers[0].valueWei).toBe(50_000_000_000_000_000n);
-    expect(sentMessages.length).toBe(1);
-    expect(sentMessages[0].to).toBe(user.address);
-
-    // Second call for the same user should be a no-op
-    await bot.onNewUser(user, mockContext);
-    expect(sentTransfers.length).toBe(1);
+  test("the reserve is kept on both paths", async () => {
+    const f = faucet(AMOUNT + RESERVE - 1n);
+    const b = bot();
+    await b.onNewUser({ address: PLAYER, registeredAtMs: 1 }, f.ctx);
+    await b.onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx);
+    expect(f.transfers).toHaveLength(0);
+    expect(f.item("text").text).toContain("reserve");
   });
 
-  test("handles DM request from user eligible for funds", async () => {
-    const replies: any[] = [];
-    const msgCtx: BotMessageContext = {
-      conversationId: "conv-1",
-      peerAddress: "0x9876543210987654321098765432109876543210",
-      peerSubject: "0x9876543210987654321098765432109876543210",
-      timestampMs: Date.now(),
-      payloadDigest: "0x" + "aa".repeat(32),
-      items: [{ type: "text", text: "faucet please" }],
-      reply: jest.fn(async (items) => {
-        replies.push(items);
-      }),
-    };
+  test("a transfer that failed is not counted as a grant", async () => {
+    const f = faucet();
+    const b = bot();
+    f.failTransfers(true);
+    await b.onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx);
+    expect(f.item("text").text).toContain("could not send");
+    f.failTransfers(false);
+    // Also after a restart: the unfinished record does not block the grant.
+    await bot().onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx);
+    expect(f.transfers).toHaveLength(1);
+  });
 
-    await bot.onMessage(msgCtx, mockContext);
-    expect(sentTransfers.length).toBe(1);
-    expect(replies.length).toBe(1);
-    expect(replies[0][0].text).toContain("Sent 0.05 MON");
+  test("a grant whose record was left unfinished by a crash, but which landed, is not paid again", async () => {
+    const f = faucet();
+    await bot().onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx);
+    f.data.set(`funded:${PLAYER}`, "pending");
+    await bot().onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx);
+    expect(f.transfers).toHaveLength(1);
+  });
+
+  test("every setting is enforced: there is no cap that is read and ignored", () => {
+    expect(() => new FaucetBot({ amountWei: MAX_AMOUNT_WEI + 1n })).toThrow();
+    expect(() => new FaucetBot({ amountWei: 0n })).toThrow();
+    expect(Object.keys(bot())).not.toEqual(
+      expect.arrayContaining(["maxPerDay", "maxPerRun"])
+    );
   });
 });

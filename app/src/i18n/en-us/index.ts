@@ -145,6 +145,26 @@ export default {
     insufficient: 'That is more than you can spend now ({balance}).',
     balanceUnknown: 'Your balance is not known yet.',
   },
+  gameFairness: {
+    notVerified: 'NOT VERIFIED.',
+    diceVerified:
+      'Verified: the secret matches the commitment you bet on, and the number, outcome and payout follow from it and your own random value.',
+    diceHow: 'How this was checked',
+    diceCommitment: 'Commitment (before your bet): {value}',
+    diceSecret: 'Secret (revealed): {value}',
+    diceSeed: 'Your random value: {value}',
+    diceRule:
+      'SHA-256(secret) must equal the commitment; the roll is the first 16 bits of HMAC-SHA256(secret, your value).',
+    rpsVerified:
+      'Verified: the move and salt the bot revealed match the commitment it sent before you moved.',
+    payoutClaimed:
+      'Payout: {amount}. The bot says this message carries it; that is not yet verified on chain.',
+    payoutMissing:
+      'Payout: {amount}, but this message carried {carried}. You have not been paid in full.',
+    awaiting: 'Waiting for the bot to reveal ({seconds} s).',
+    noAnswer:
+      'The bot has not answered after {seconds} s. Your stake is with the bot and nothing has been revealed.',
+  },
   raffleDraw: {
     verified: 'Draw matches the seed commitment',
     failed: 'Verification failed: {reason}',

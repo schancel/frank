@@ -1,4 +1,4 @@
-import { randomBytes, createHash } from "crypto";
+import { randomBytes, randomInt } from "crypto";
 import type {
   FrankBotDefinition,
   BotProfile,
@@ -7,55 +7,31 @@ import type {
   NewUserEvent,
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
-import type { MessageItem } from "@frank/cashweb/types/messages";
-import { formatMon, parseMon } from "@frank/wallet/monad-amount";
+import type { MessageItem, RpsItem } from "@frank/cashweb/types/messages";
+import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
+import {
+  evaluateRps,
+  RPS_MOVES,
+  rpsCommitment,
+  rpsPayoutWei,
+  type RpsMove,
+} from "@frank/wallet/message-item-plugins/rps/fair";
 import { generateAvatarPng } from "../../bot-directory";
+import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
+import { BANK_RESERVE_WEI } from "./satoshi-dice-bot";
 
-export type RpsMove = "rock" | "paper" | "scissors";
+/** The most one match can be played for: the table limit. */
+export const RPS_DEFAULT_MAX_WAGER_WEI = 100_000_000_000_000_000n; // 0.1 MON
 
-export interface RpsSinglePlayerMatch {
-  commitHash: string;
-  botMove: RpsMove;
+const HELP = `Rock-Paper-Scissors. I pick my move first and send you its hash; you pick yours; I reveal my move and the salt, and the app checks they match the hash.
+
+Your stake is what your move message pays me: a win pays twice the stake, a tie returns it. Amounts typed in chat are not bets. Use the card below, or type rock, paper or scissors to play for nothing.`;
+
+interface Match {
+  move: RpsMove;
   salt: string;
-  wagerWei?: string;
-  wagerTxHash?: string;
-  timestampMs: number;
-}
-
-export interface RpsP2PChallenge {
-  challengeId: string;
-  creator: string;
-  opponent: string;
-  wagerWei: string;
-  status: "pending" | "accepted" | "resolved" | "cancelled";
-  creatorMove?: RpsMove;
-  opponentMove?: RpsMove;
-  winner?: string | "tie";
-  timestampMs: number;
-}
-
-export function evaluateRps(player: RpsMove, bot: RpsMove): "win" | "lose" | "tie" {
-  if (player === bot) return "tie";
-  if (
-    (player === "rock" && bot === "scissors") ||
-    (player === "paper" && bot === "rock") ||
-    (player === "scissors" && bot === "paper")
-  ) {
-    return "win";
-  }
-  return "lose";
-}
-
-export function moveEmoji(move: RpsMove): string {
-  switch (move) {
-    case "rock":
-      return "🪨 Rock";
-    case "paper":
-      return "📄 Paper";
-    case "scissors":
-      return "✂️ Scissors";
-  }
+  peer: string;
 }
 
 export class RpsBot implements FrankBotDefinition {
@@ -66,10 +42,18 @@ export class RpsBot implements FrankBotDefinition {
   readonly defaultIdentityPath =
     process.env.RPS_BOT_IDENTITY_JSON ?? "/tmp/rps-bot-identity.json";
 
+  private readonly outbox = new Outbox("rps");
+  readonly schedules = [this.outbox.schedule];
+  private readonly maxWagerWei: bigint;
+
+  constructor(options?: { maxWagerWei?: bigint }) {
+    this.maxWagerWei = options?.maxWagerWei ?? RPS_DEFAULT_MAX_WAGER_WEI;
+  }
+
   getProfile(): BotProfile {
     return {
       name: "RPS Arena",
-      bio: "Provably-fair Rock-Paper-Scissors! Play against the bot or challenge other players.",
+      bio: "Rock-Paper-Scissors against the bot. It commits to its move before you choose, and the app checks the reveal.",
       avatarPng: generateAvatarPng("rps", [220, 80, 50]),
       bot: true,
       accountType: ACCOUNT_TYPE_BOT,
@@ -78,445 +62,187 @@ export class RpsBot implements FrankBotDefinition {
   }
 
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
-    console.log(`[rps] Proactively challenging new user ${user.address}`);
     try {
-      await ctx.sendMessage(user.address, [
-        {
-          type: "text",
-          text: "🎮 Welcome to Frank! I am the RPS Arena bot. Challenge me to provably fair Rock-Paper-Scissors by sending /rps, or /help to see all game modes!",
-        },
+      await sendFree(ctx, user.address, [
+        await this.start(ctx, user.address),
+        { type: "text", text: `Welcome to RPS Arena.\n\n${HELP}` },
       ]);
     } catch (err) {
       console.warn(`[rps] Failed to welcome ${user.address}:`, err);
     }
   }
 
-  private generateCommitment(): { move: RpsMove; salt: string; hash: string } {
-    const moves: RpsMove[] = ["rock", "paper", "scissors"];
-    const move = moves[Math.floor(Math.random() * moves.length)];
-    const salt = randomBytes(16).toString("hex");
-    const hash = createHash("sha256").update(`${move}:${salt}`).digest("hex");
-    return { move, salt, hash };
+  /** A new match: the bot's move is chosen and saved before its hash is shown to anyone. */
+  private async start(ctx: BotContext, peerAddress: string): Promise<RpsItem> {
+    const peer = peerAddress.toLowerCase();
+    const matchId = randomBytes(16).toString("hex");
+    const match: Match = {
+      move: RPS_MOVES[randomInt(RPS_MOVES.length)],
+      salt: randomBytes(16).toString("hex"),
+      peer,
+    };
+    await ctx.state.put(`match:${matchId}`, JSON.stringify(match));
+    await ctx.state.put(`open:${peer}`, matchId);
+    return {
+      type: "rps",
+      action: "start",
+      matchId,
+      commitHash: rpsCommitment(match.move, match.salt),
+    };
   }
 
   async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
-    const textItems = msgCtx.items.filter((item: any) => item.type === "text") as Array<{
-      type: "text";
-      text: string;
-    }>;
-    const text = textItems.map((it) => it.text).join("\n").trim();
-    const sender = msgCtx.peerAddress.toLowerCase();
+    const peer = msgCtx.peerAddress.toLowerCase();
+    const played = msgCtx.items.find(
+      (item): item is RpsItem => item.type === "rps" && item.action === "move"
+    );
+    if (played)
+      return this.outbox.handle(msgCtx, ctx, (received) =>
+        this.resolve(played, msgCtx, ctx, received)
+      );
 
-    if (!text) {
-      await msgCtx.reply([
+    const text = msgCtx.items
+      .flatMap((item) => (item.type === "text" ? [item.text] : []))
+      .join("\n")
+      .trim()
+      .toLowerCase();
+    // A typed move plays the open match for nothing: a message's text is never a stake.
+    const typed = text.match(/^\/?(rock|paper|scissors)$/)?.[1] as
+      | RpsMove
+      | undefined;
+    const open = typed ? await ctx.state.get(`open:${peer}`) : undefined;
+    const raw = open ? await ctx.state.get(`match:${open}`) : undefined;
+    if (typed && open && raw) {
+      const match = JSON.parse(raw) as Match;
+      // Free: nothing the message paid is a stake, so nothing is looked up or held.
+      return this.resolve(
         {
-          type: "text",
-          text: "🎮 Welcome to RPS Arena! Send `/rps` to start a match, or `/help` for instructions.",
+          type: "rps",
+          action: "move",
+          matchId: open,
+          commitHash: rpsCommitment(match.move, match.salt),
+          playerMove: typed,
         },
-      ]);
-      return;
+        msgCtx,
+        ctx,
+        { confirmedWei: 0n, confirmed: [], unconfirmed: [] }
+      );
     }
-
-    const lower = text.toLowerCase();
-
-    // 1. /help
-    if (lower === "/help" || lower === "help") {
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `🎮 **RPS Arena Commands**
-
-• \`/rps\` or \`/play\` - Start a new match against the bot (bot commits first!)
-• \`/rock\`, \`/paper\`, \`/scissors\` - Make your move in an active match
-• \`/challenge <address> [amount]\` - Challenge another user to P2P RPS
-• \`/accept <id>\` - Accept a pending challenge
-• \`/rules\` - Learn about provable fairness & rules`,
-        },
-      ]);
-      return;
-    }
-
-    // 2. /rules
-    if (lower === "/rules" || lower === "rules") {
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `⚖️ **Provable Fairness in RPS Arena**
-
-1. When you start a match, the bot picks its move secretly and hashes it: \`SHA256(botMove:salt)\`.
-2. The hash commitment is sent to you before you pick your move, guaranteeing the bot cannot change its choice.
-3. After you choose, the bot reveals its move and the secret salt.
-4. You can independently verify that \`SHA256(revealedMove:salt)\` matches the initial commitment hash!`,
-        },
-      ]);
-      return;
-    }
-
-    // 3. /rps or /play - Start single-player match against the bot
-    if (lower === "/rps" || lower === "rps" || lower === "/play" || lower === "play" || lower.startsWith("/rps ") || lower.startsWith("/play ")) {
-      const parts = text.split(/\s+/);
-      const wagerMonStr = parts[1];
-      let wagerWei: string | undefined;
-
-      if (wagerMonStr && !isNaN(parseFloat(wagerMonStr))) {
-        try {
-          wagerWei = parseMon(wagerMonStr).toString();
-        } catch {
-          // ignore invalid wager string
-        }
-      }
-
-      const { move, salt, hash } = this.generateCommitment();
-      const match: RpsSinglePlayerMatch = {
-        commitHash: hash,
-        botMove: move,
-        salt,
-        wagerWei,
-        timestampMs: Date.now(),
-      };
-
-      await ctx.state.put(`rps:match:${sender}`, JSON.stringify(match));
-
-      const wagerNote = wagerWei ? `\n💰 **Wager**: ${formatMon(BigInt(wagerWei))} MON` : "";
-
-      await msgCtx.reply([
-        {
-          type: "rps" as any,
-          action: "start",
-          commitHash: hash,
-          wagerWei,
-        },
-        {
-          type: "text",
-          text: `🎮 **Rock-Paper-Scissors Match Started!**${wagerNote}
-
-🔐 **Cryptographic Commitment**:
-\`0x${hash}\`
-_(I have committed my secret move. I cannot change it!)_
-
-👉 **Make your move:**
-Reply **/rock**, **/paper**, or **/scissors**!`,
-        },
-      ]);
-      return;
-    }
-
-    // 4. Player Move: /rock, /paper, /scissors
-    const moveMatch = lower.match(/^\/?(rock|paper|scissors)$/);
-    if (moveMatch) {
-      const playerMove = moveMatch[1] as RpsMove;
-      const rawMatch = await ctx.state.get(`rps:match:${sender}`);
-
-      let match: RpsSinglePlayerMatch;
-      if (rawMatch) {
-        match = JSON.parse(rawMatch);
-      } else {
-        // Auto-start match if none was active
-        const generated = this.generateCommitment();
-        match = {
-          commitHash: generated.hash,
-          botMove: generated.move,
-          salt: generated.salt,
-          timestampMs: Date.now(),
-        };
-      }
-
-      // Delete active match so it cannot be replayed
-      await ctx.state.del(`rps:match:${sender}`);
-
-      const outcome = evaluateRps(playerMove, match.botMove);
-
-      let outcomeHeadline = "";
-      if (outcome === "win") {
-        outcomeHeadline = "🎉 **YOU WIN!** Congratulations!";
-      } else if (outcome === "lose") {
-        outcomeHeadline = "💀 **I WIN!** Better luck next time!";
-      } else {
-        outcomeHeadline = "🤝 **IT'S A TIE!** Great minds think alike!";
-      }
-
-      let payoutNote = "";
-      let payoutTxHash: string | undefined;
-
-      if (match.wagerWei && outcome === "win") {
-        const winAmountWei = BigInt(match.wagerWei) * 2n;
-        try {
-          const tx = await ctx.sendTransfer({
-            to: sender,
-            valueWei: winAmountWei,
-          });
-          payoutTxHash = tx.txHash;
-          payoutNote = `\n\n🏆 **Payout Sent!** Transferred ${formatMon(winAmountWei)} MON (tx: \`${tx.txHash}\`)`;
-        } catch (err) {
-          console.error("[rps] Error sending payout transfer:", err);
-          payoutNote = `\n\n⚠️ Payout transfer error: ${String(err)}`;
-        }
-      } else if (match.wagerWei && outcome === "tie") {
-        const refundWei = BigInt(match.wagerWei);
-        try {
-          const tx = await ctx.sendTransfer({
-            to: sender,
-            valueWei: refundWei,
-          });
-          payoutTxHash = tx.txHash;
-          payoutNote = `\n\n↩️ **Wager Refunded:** Returned ${formatMon(refundWei)} MON (tx: \`${tx.txHash}\`)`;
-        } catch {
-          // ignore
-        }
-      }
-
-      await msgCtx.reply([
-        {
-          type: "rps" as any,
-          action: "resolve",
-          commitHash: match.commitHash,
-          botMove: match.botMove,
-          playerMove,
-          secretSalt: match.salt,
-          wagerWei: match.wagerWei,
-          outcome,
-          txHash: payoutTxHash,
-        },
-        {
-          type: "text",
-          text: `🧑 You chose: ${moveEmoji(playerMove)}
-🤖 I chose: ${moveEmoji(match.botMove)}
-
-${outcomeHeadline}${payoutNote}
-
-🔍 **Fairness Verification:**
-• Commitment: \`0x${match.commitHash}\`
-• Secret Salt: \`${match.salt}\`
-• Proof: \`SHA256("${match.botMove}:${match.salt}")\` matches!
-
-_Send \`/rps\` to play again!_`,
-        },
-      ]);
-      return;
-    }
-
-    // 5. /challenge <address> [amount] - P2P Matchmaking
-    if (lower.startsWith("/challenge") || lower.startsWith("challenge")) {
-      const parts = text.split(/\s+/);
-      const targetPeer = parts[1]?.trim()?.toLowerCase();
-      const wagerMon = parts[2]?.trim() ?? "0";
-
-      if (!targetPeer || !targetPeer.startsWith("0x")) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "⚠️ Usage: `/challenge <0xAddress> [wagerMon]`",
-          },
-        ]);
-        return;
-      }
-
-      const challengeId = randomBytes(8).toString("hex");
-      let wagerWei = "0";
-      try {
-        if (wagerMon && wagerMon !== "0") {
-          wagerWei = parseMon(wagerMon).toString();
-        }
-      } catch {
-        wagerWei = "0";
-      }
-
-      const challenge: RpsP2PChallenge = {
-        challengeId,
-        creator: sender,
-        opponent: targetPeer,
-        wagerWei,
-        status: "pending",
-        timestampMs: Date.now(),
-      };
-
-      await ctx.state.put(`rps:challenge:${challengeId}`, JSON.stringify(challenge));
-
-      // Notify opponent
-      try {
-        await ctx.sendMessage(targetPeer, [
-          {
-            type: "text",
-            text: `⚔️ **New RPS Challenge!**
-**${sender.slice(0, 6)}...${sender.slice(-4)}** challenged you to Rock-Paper-Scissors!
-${wagerWei !== "0" ? `💰 **Wager**: ${formatMon(BigInt(wagerWei))} MON\n` : ""}
-To accept, reply:
-\`/accept ${challengeId}\``,
-          },
-        ]);
-      } catch (err) {
-        console.warn(`[rps] Could not notify opponent ${targetPeer}:`, err);
-      }
-
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `✅ **Challenge created!** (ID: \`${challengeId}\`)
-Waiting for ${targetPeer.slice(0, 6)}...${targetPeer.slice(-4)} to accept.`,
-        },
-      ]);
-      return;
-    }
-
-    // 6. /accept <challengeId>
-    if (lower.startsWith("/accept") || lower.startsWith("accept")) {
-      const parts = text.split(/\s+/);
-      const challengeId = parts[1]?.trim();
-      if (!challengeId) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "⚠️ Usage: `/accept <challengeId>`",
-          },
-        ]);
-        return;
-      }
-
-      const raw = await ctx.state.get(`rps:challenge:${challengeId}`);
-      if (!raw) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "⚠️ Challenge not found or already completed.",
-          },
-        ]);
-        return;
-      }
-
-      const challenge: RpsP2PChallenge = JSON.parse(raw);
-      if (challenge.opponent !== sender) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "⚠️ This challenge was not sent to you.",
-          },
-        ]);
-        return;
-      }
-
-      challenge.status = "accepted";
-      await ctx.state.put(`rps:challenge:${challengeId}`, JSON.stringify(challenge));
-
-      // Notify creator
-      try {
-        await ctx.sendMessage(challenge.creator, [
-          {
-            type: "text",
-            text: `⚔️ **Challenge #${challengeId} Accepted!**
-${sender.slice(0, 6)}...${sender.slice(-4)} accepted your challenge!
-Reply with: \`/move ${challengeId} rock\` (or paper/scissors) to lock in your move.`,
-          },
-        ]);
-      } catch {
-        // ignore
-      }
-
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `🎉 **Challenge #${challengeId} Accepted!**
-Now send your secret move:
-\`/move ${challengeId} rock\` (or paper/scissors)`,
-        },
-      ]);
-      return;
-    }
-
-    // 7. /move <challengeId> <rock|paper|scissors>
-    if (lower.startsWith("/move") || lower.startsWith("move")) {
-      const parts = text.split(/\s+/);
-      const challengeId = parts[1]?.trim();
-      const move = parts[2]?.trim()?.toLowerCase() as RpsMove;
-
-      if (!challengeId || !["rock", "paper", "scissors"].includes(move)) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "⚠️ Usage: `/move <challengeId> <rock|paper|scissors>`",
-          },
-        ]);
-        return;
-      }
-
-      const raw = await ctx.state.get(`rps:challenge:${challengeId}`);
-      if (!raw) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "⚠️ Challenge not found.",
-          },
-        ]);
-        return;
-      }
-
-      const challenge: RpsP2PChallenge = JSON.parse(raw);
-      if (challenge.creator !== sender && challenge.opponent !== sender) {
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: "⚠️ You are not a player in this challenge.",
-          },
-        ]);
-        return;
-      }
-
-      if (sender === challenge.creator) {
-        challenge.creatorMove = move;
-      } else {
-        challenge.opponentMove = move;
-      }
-
-      if (challenge.creatorMove && challenge.opponentMove) {
-        // Both moved! Resolve outcome
-        challenge.status = "resolved";
-        const outcome = evaluateRps(challenge.creatorMove, challenge.opponentMove);
-        if (outcome === "win") {
-          challenge.winner = challenge.creator;
-        } else if (outcome === "lose") {
-          challenge.winner = challenge.opponent;
-        } else {
-          challenge.winner = "tie";
-        }
-
-        await ctx.state.put(`rps:challenge:${challengeId}`, JSON.stringify(challenge));
-
-        const resultText = `🏁 **P2P Match Resolved!** (Challenge #${challengeId})
-
-Player 1 (${challenge.creator.slice(0, 6)}...): ${moveEmoji(challenge.creatorMove)}
-Player 2 (${challenge.opponent.slice(0, 6)}...): ${moveEmoji(challenge.opponentMove)}
-
-${
-  challenge.winner === "tie"
-    ? "🤝 **IT'S A DRAW!**"
-    : `🏆 **WINNER: ${challenge.winner.slice(0, 6)}...${challenge.winner.slice(-4)}**!`
-}`;
-
-        // Send to both players
-        try {
-          await ctx.sendMessage(challenge.creator, [{ type: "text", text: resultText }]);
-          await ctx.sendMessage(challenge.opponent, [{ type: "text", text: resultText }]);
-        } catch {
-          // ignore
-        }
-        return;
-      }
-
-      await ctx.state.put(`rps:challenge:${challengeId}`, JSON.stringify(challenge));
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `🔒 Move locked in! Waiting for the other player to submit their move.`,
-        },
-      ]);
-      return;
-    }
-
-    // Default response for unhandled message
-    await msgCtx.reply([
-      {
-        type: "text",
-        text: `👋 RPS Arena here! Send \`/rps\` to play against the bot, or \`/help\` for commands.`,
-      },
+    await replyFree(msgCtx, [
+      await this.start(ctx, peer),
+      { type: "text", text: HELP },
     ]);
+  }
+
+  private async resolve(
+    played: RpsItem,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
+    received: Received
+  ): Promise<void> {
+    const peer = msgCtx.peerAddress.toLowerCase();
+    const refused = async (why: string) =>
+      refuse(this.outbox, msgCtx, ctx, received, why, [
+        await this.start(ctx, peer),
+      ]);
+
+    const matchId = played.matchId ?? "";
+    const raw = matchId ? await ctx.state.get(`match:${matchId}`) : undefined;
+    const match = raw ? (JSON.parse(raw) as Match) : undefined;
+    // One commitment, one match: it is deleted once its result is written down.
+    if (
+      !match ||
+      match.peer !== peer ||
+      (await this.outbox.has(ctx, `match:${matchId}`))
+    )
+      return refused(
+        "That match is not open (each commitment is good for one match). Nothing was played."
+      );
+    const commitHash = rpsCommitment(match.move, match.salt);
+    if ((played.commitHash ?? "").replace(/^0x/, "").toLowerCase() !== commitHash)
+      return refused(
+        "Your move names a different commitment than the one I published. Nothing was played."
+      );
+    const playerMove = played.playerMove;
+    if (!playerMove || !RPS_MOVES.includes(playerMove))
+      return refused("That is not rock, paper or scissors. Nothing was played.");
+    let wagerWei: bigint;
+    try {
+      wagerWei = BigInt(played.wagerWei ?? "0");
+    } catch {
+      wagerWei = -1n;
+    }
+    if (wagerWei < 0n) return refused("That stake is not an amount. Nothing was played.");
+    if (wagerWei > this.maxWagerWei)
+      return refused(
+        `That stake is over the table limit of ${formatMon(
+          this.maxWagerWei
+        )}. Nothing was played.`
+      );
+    // The stake is what this message is confirmed, on chain, to have paid. Never what it says.
+    if (received.unconfirmed.length > 0 || received.confirmedWei < wagerWei)
+      return refused(
+        `Your move states a stake of ${formatMon(wagerWei)} but ${formatMon(
+          received.confirmedWei
+        )} is confirmed as paid with it. Nothing was played.`
+      );
+
+    // The bank must hold the most this match can pay before the stake is taken.
+    if (
+      wagerWei > 0n &&
+      (await ctx.getBalance().catch(() => 0n)) <
+        wagerWei * 2n + BANK_RESERVE_WEI + (await this.outbox.owedWei(ctx))
+    )
+      return refused(
+        "The bank cannot cover that stake right now. Nothing was played."
+      );
+    // Anything paid above a stated stake goes back with the result.
+    const excessWei = wagerWei > 0n ? received.confirmedWei - wagerWei : 0n;
+
+    const outcome = evaluateRps(playerMove, match.move);
+    const payoutWei = rpsPayoutWei(wagerWei, outcome);
+    const result: RpsItem = {
+      type: "rps",
+      action: "resolve",
+      matchId,
+      commitHash,
+      playerMove,
+      botMove: match.move,
+      secretSalt: match.salt,
+      wagerWei: wagerWei.toString(),
+      outcome,
+    };
+    const text =
+      `You chose ${playerMove}, I chose ${match.move}: ` +
+      (outcome === "win" ? "you win." : outcome === "lose" ? "I win." : "a tie.") +
+      (wagerWei === 0n
+        ? " Nothing was staked."
+        : payoutWei > 0n
+        ? ` This message pays you ${formatMon(payoutWei)}.`
+        : ` Your stake of ${formatMon(wagerWei)} is lost.`) +
+      (excessWei > 0n
+        ? ` You paid ${formatMon(excessWei)} more than your stake; it is returned with this message.`
+        : "");
+    const items: MessageItem[] = [result, { type: "text", text }];
+    // The result, with its payout, is written down before the move is given up and before
+    // anything is sent; it is then sent until it has gone, once.
+    await this.outbox.owe(
+      ctx,
+      `match:${matchId}`,
+      {
+        to: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+        items,
+        valueWei: payoutWei + excessWei,
+      },
+      {
+        digest: msgCtx.payloadDigest,
+        writes: [
+          { type: "del", key: `match:${matchId}` },
+          { type: "del", key: `open:${peer}` },
+        ],
+      }
+    );
+    await this.outbox.settle(ctx);
   }
 }

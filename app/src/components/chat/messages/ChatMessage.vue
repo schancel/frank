@@ -173,18 +173,6 @@
               :address="address"
               @sendFollowUp="handleSendFollowUp"
             />
-            <chat-message-liars-dice
-              v-else-if="item.type == 'liars-dice'"
-              :item="item"
-              :address="address"
-              @sendFollowUp="handleSendFollowUp"
-            />
-            <chat-message-poker
-              v-else-if="item.type == 'poker'"
-              :item="item"
-              :address="address"
-              @sendFollowUp="handleSendFollowUp"
-            />
             <chat-message-channel
               v-else-if="item.type == 'channel-update'"
               :item="item"
@@ -246,8 +234,6 @@ import ChatMessageRaffle from './ChatMessageRaffle.vue'
 import ChatMessageSwap from './ChatMessageSwap.vue'
 import ChatMessageRps from './ChatMessageRps.vue'
 import ChatMessageDice from './ChatMessageDice.vue'
-import ChatMessageLiarsDice from './ChatMessageLiarsDice.vue'
-import ChatMessagePoker from './ChatMessagePoker.vue'
 import ChatMessageChannel from './ChatMessageChannel.vue'
 import ChatMessageMenu from '../../context_menus/ChatMessageMenu.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
@@ -288,8 +274,6 @@ export default defineComponent({
     ChatMessageSwap,
     ChatMessageRps,
     ChatMessageDice,
-    ChatMessageLiarsDice,
-    ChatMessagePoker,
     ChatMessageChannel,
     ChatMessageImage,
     ChatMessageStealth,

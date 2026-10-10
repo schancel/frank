@@ -16,7 +16,7 @@ import { BOT_PROFILES } from '../bot-directory'
 import { DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
 import { prepareBotIdentities } from './demo-identities'
 
-const BOTS = ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice', 'liars-dice', 'poker']
+const BOTS = ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice']
 
 let dir: string
 let stateDir: string

@@ -1,4 +1,7 @@
 /** @jest-environment jsdom */
+// PARKED (#1377): the liar's dice card code is kept for the rebuild and is not registered anywhere. These
+// tests describe its pre-rebuild behaviour (no commitment, no buy-in, a malformed emit from the
+// card); they keep it compiling and are not a statement that it is fair or playable.
 
 import { mount } from '@vue/test-utils'
 import * as quasar from 'quasar'

@@ -18,7 +18,7 @@ import {
   trustSnapshot,
 } from './directory-trust/browser-admission'
 
-import { MAX_AMOUNT_WEI } from '../faucet-core'
+import { MAX_AMOUNT_WEI } from '../src/bots/faucet-bot'
 import {
   BET_MESSAGE_FEE_RESERVE_WEI,
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
@@ -335,19 +335,6 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Raffle entry price (0.02 MON).',
   },
   {
-    name: 'RAFFLE_BOT_MAX_TOPUP_WEI',
-    scope: 'raffle',
-    default: '50000000000000000',
-    description:
-      'Most the stamp wallet may top up the raffle identity per round to cover swept-entry gas and payout gas; beyond it the draw is held and logged (0.05 MON).',
-  },
-  {
-    name: 'RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI',
-    scope: 'raffle',
-    default: '250000000000000000',
-    description: 'Most the stamp wallet may top up the raffle identity per trailing 24 hours (0.25 MON).',
-  },
-  {
     name: 'RAFFLE_BOT_MAX_ENTRIES',
     scope: 'raffle',
     default: DEMO_RAFFLE_MAX_ENTRIES,
@@ -367,18 +354,6 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Table maximum.',
   },
   {
-    name: 'BLACKJACK_BOT_MAX_GREETINGS',
-    scope: 'blackjack',
-    default: '5',
-    description: 'Welcome messages the dealer sends per run (each costs the dealer a stamp); 0 = never greet.',
-  },
-  {
-    name: 'BLACKJACK_BOT_MAX_GREETINGS_PER_DAY',
-    scope: 'blackjack',
-    default: '20',
-    description: 'Welcome messages per UTC day, kept across restarts.',
-  },
-  {
     name: 'VENDOR_BOT_CATALOG_DIR',
     scope: 'picture shop',
     default: 'bundled demo-catalog/',
@@ -389,13 +364,7 @@ export const DEMO_VARS: readonly DemoVar[] = [
     scope: 'faucet',
     default: `${DEMO_FAUCET_AMOUNT_WEI} (0.05 MON)`,
     description:
-      'MON sent to each new profile. The 0.05 MON default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. FAUCET_MAX_PER_DAY and the per-address rule still apply.',
-  },
-  {
-    name: 'FAUCET_MAX_PER_DAY',
-    scope: 'faucet',
-    default: '20',
-    description: 'New addresses funded per rolling 24 hours.',
+      'MON sent to each new profile. The 0.05 MON default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. Each profile is granted once.',
   },
   {
     name: 'FAUCET_MIN_RESERVE_WEI',
@@ -424,14 +393,9 @@ export const DEMO_VAR_NAMES: ReadonlySet<string> = new Set(DEMO_VARS.map(v => v.
 const PASSTHROUGH = [
   'FRANK_DM_DEFAULT_STAMP_VALUE_WEI',
   'RAFFLE_BOT_ENTRY_PRICE_WEI',
-  'RAFFLE_BOT_MAX_TOPUP_WEI',
-  'RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI',
   'BLACKJACK_BOT_MIN_WAGER_WEI',
   'BLACKJACK_BOT_MAX_WAGER_WEI',
-  'BLACKJACK_BOT_MAX_GREETINGS',
-  'BLACKJACK_BOT_MAX_GREETINGS_PER_DAY',
   'VENDOR_BOT_CATALOG_DIR',
-  'FAUCET_MAX_PER_DAY',
   'FAUCET_MIN_RESERVE_WEI',
   'FRANK_BOT_PEER_DENYLIST',
   'FRANK_BOT_MAX_REPLIES_PER_PEER',
@@ -458,8 +422,6 @@ export type BotName =
   | 'lobby'
   | 'rps'
   | 'dice'
-  | 'liars-dice'
-  | 'poker'
 
 export interface DemoBot {
   name: BotName
@@ -768,7 +730,7 @@ export function resolveDemoConfig(params: {
   const relayUrl = `http://127.0.0.1:${relayPort}`
   const idPath = (bot: string) => join(stateDir, 'bots', bot, 'identity.json')
   const names: BotName[] = (
-    ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice', 'liars-dice', 'poker'] as BotName[]
+    ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice'] as BotName[]
   ).filter(name => !(noFaucet && name === 'faucet'))
   const bots: DemoBot[] = names.map(name => ({ name, identityJson: idPath(name) }))
 
@@ -793,7 +755,7 @@ export function resolveDemoConfig(params: {
             ? { QWEN_OPENAI_COMPATIBLE_ENDPOINT: merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT }
             : {}),
         }),
-    ...(noFaucet ? {} : { FAUCET_AMOUNT_WEI: faucetAmountWei, FAUCET_MAX_PER_RUN: '1000' }),
+    ...(noFaucet ? {} : { FAUCET_AMOUNT_WEI: faucetAmountWei }),
   }
   for (const name of names) {
     botEnv[`${name.toUpperCase().replace(/-/g, '_')}_BOT_IDENTITY_JSON`] = idPath(name)

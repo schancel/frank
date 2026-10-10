@@ -356,25 +356,27 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           throw error
         }
       }),
-    exportAccountRoot: () =>
-      run(async () => {
+    async exportAccountRoot() {
+      let accountRoot: Uint8Array | null = null
+      try {
+        check()
         const state = await read()
         if (!state.active) throw new CustodyError('locked')
-        const accountRoot = await vault.openAccountRoot(state.active.receipt)
-        try {
-          const latest = await read()
-          if (
-            latest.revision !== state.revision ||
-            !same(latest.active, state.active)
-          )
-            throw new CustodyError('conflict')
-          check()
-          return { account: state.active, accountRoot }
-        } catch (error) {
-          accountRoot?.fill(0)
-          throw error
-        }
-      }),
+        accountRoot = await vault.openAccountRoot(state.active.receipt)
+        const latest = await read()
+        if (
+          latest.revision !== state.revision ||
+          !same(latest.active, state.active)
+        )
+          throw new CustodyError('conflict')
+        // Last step before handing the copy over; any failure from here back wipes it.
+        check()
+        return { account: state.active, accountRoot }
+      } catch (error) {
+        accountRoot?.fill(0)
+        throw normalized(error)
+      }
+    },
     close() {
       closed = true
       for (const capability of capabilities) capability.close()

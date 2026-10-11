@@ -44,6 +44,7 @@ const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
 const mockReconcile = jest.fn();
 const mockTxStatus = jest.fn();
+const mockCheckMessagePayment = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/monad-chain", () => {
@@ -68,6 +69,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
         mockLocalSubject = identity.compressedPubKey.toString("hex");
         return {
           identity,
+          checkMessagePayment: mockCheckMessagePayment,
           getReceiveAddress: jest.fn(async () => ({ raw: mockLocalAddress })),
           close: jest.fn().mockResolvedValue(undefined),
         };
@@ -111,6 +113,10 @@ describe("FrankBotHost replies", () => {
 
   /** Transfers the chain holds: what a payment's description is compared with. */
   const onChain = new Map<string, { to: string; value: bigint }>();
+  const deliveredPayments = new Map<
+    string,
+    { txHash: string; destinationAddress: string; valueWei: bigint }[]
+  >();
   /** Two transfers that together pay `total`, on chain as described. */
   const paid = (byte: string, total: bigint) => {
     const payments = [
@@ -184,11 +190,52 @@ describe("FrankBotHost replies", () => {
     (host as any).provider.getTransaction = async (txHash: string) =>
       onChain.get(txHash) ?? null;
     await host.register(bot);
-    return { host, instance: (host as any).instances.get(bot.id) };
+    const instance = (host as any).instances.get(bot.id);
+    mockCheckMessagePayment.mockImplementation(async (digest: string) => {
+      const payments = await Promise.all(
+        (deliveredPayments.get(digest) ?? []).map(async (payment) => {
+          const verdict = await mockTxStatus({
+            wallet: instance.wallet,
+            transaction: { txHash: payment.txHash },
+          });
+          const tx = onChain.get(payment.txHash);
+          const status =
+            verdict !== "confirmed"
+              ? verdict === "failed"
+                ? "failed"
+                : "pending"
+              : tx?.to.toLowerCase() ===
+                payment.destinationAddress.toLowerCase()
+              ? "received"
+              : "failed";
+          return {
+            address: payment.destinationAddress,
+            origin: "stamp",
+            status,
+            payloadDigest: digest,
+            receivedAmountWei: status === "received" ? tx!.value : undefined,
+            amountWei: status === "received" ? tx!.value : 0n,
+            claimedAmountWei: payment.valueWei,
+            spendable: status === "received",
+          };
+        })
+      );
+      return { status: "pending", payments, receivedWei: 0n, statedWei: 0n };
+    });
+    return { host, instance };
   };
 
   /** One poll returning `messages`; resolves once the poll pass itself has finished. */
   const poll = async (host: FrankBotHost, messages: unknown[] = []) => {
+    for (const message of messages as {
+      payloadDigest: string;
+      stampPayments: {
+        txHash: string;
+        destinationAddress: string;
+        valueWei: bigint;
+      }[];
+    }[])
+      deliveredPayments.set(message.payloadDigest, message.stampPayments);
     mockFetchSince.mockResolvedValueOnce(messages);
     await (host as any).pollAllBots();
   };
@@ -247,6 +294,8 @@ describe("FrankBotHost replies", () => {
     mockFetchSince.mockReset().mockResolvedValue([]);
     mockReconcile.mockReset().mockResolvedValue({});
     mockTxStatus.mockReset().mockResolvedValue("confirmed");
+    mockCheckMessagePayment.mockReset();
+    deliveredPayments.clear();
     stateDir = mkdtempSync(join(tmpdir(), "bot-host-replies-"));
   });
 
@@ -397,8 +446,7 @@ describe("FrankBotHost replies", () => {
     });
 
     // The rebuilt relay delivers a message before its payments confirm, and a sender can sign
-    // payments from empty accounts: the amount a delivery states is matched only once every
-    // one of its payment transactions is mined.
+    // payments from empty accounts: only individual wallet-verified receipts are matched.
     it.each([
       ["are still pending", async () => "pending"],
       ["are unknown to the node", async () => "unknown"],
@@ -416,7 +464,7 @@ describe("FrankBotHost replies", () => {
       ],
       ["are not answered for in time", () => new Promise(() => undefined)],
     ])(
-      "is nothing, and the reply is still sent at once, when the stated payment's transactions %s",
+      "matches only verified money and replies promptly when payments %s",
       async (_label, status) => {
         mockTxStatus.mockImplementation(status as never);
         const { host, instance } = await start(
@@ -426,16 +474,17 @@ describe("FrankBotHost replies", () => {
         await poll(host, [message]);
         await drain(instance);
         expect(textsSent()).toEqual(["answer"]);
-        expect(stampsSent()).toEqual([0n]);
-        expect(mockTxStatus).toHaveBeenCalledWith({
-          wallet: instance.wallet,
-          transaction: { txHash: message.stampPayments[0].txHash },
-        });
+        expect(stampsSent()).toEqual([
+          _label === "are confirmed in part" ? STAMP / 2n : 0n,
+        ]);
+        expect(mockCheckMessagePayment).toHaveBeenCalledWith(
+          message.payloadDigest
+        );
       },
       10_000
     );
 
-    it("is nothing when a confirmed transaction is not the transfer the message describes (another value or destination)", async () => {
+    it("uses actual verified partial amounts and excludes evidence that did not pay the recipient", async () => {
       const { host, instance } = await start(
         bot("described-bot", async () => [{ type: "text", text: "answer" }])
       );
@@ -446,7 +495,7 @@ describe("FrankBotHost replies", () => {
       await poll(host, [wrongValue]);
       await poll(host, [wrongTo]);
       await drain(instance);
-      expect(stampsSent()).toEqual([0n, 0n]);
+      expect(stampsSent()).toEqual([STAMP / 2n + 1n, STAMP / 2n]);
     });
 
     it("counts one transfer for one message: a second message naming the same transactions is answered unpaid", async () => {
@@ -468,12 +517,12 @@ describe("FrankBotHost replies", () => {
       );
       await poll(host, [inbound("paid", { stampValueWei: STAMP })]);
       await drain(instance);
-      expect(mockTxStatus).toHaveBeenCalledTimes(2);
+      expect(mockCheckMessagePayment).toHaveBeenCalledTimes(1);
       await poll(host, [inbound("minimum", { stampValueWei: MIN })]);
       await poll(host, [inbound("nothing", { stampValueWei: 0n })]);
       await drain(instance);
       expect(stampsSent()).toEqual([STAMP, 0n, 0n]);
-      expect(mockTxStatus).toHaveBeenCalledTimes(2);
+      expect(mockCheckMessagePayment).toHaveBeenCalledTimes(1);
     });
 
     it("is what the message was confirmed to have paid, also for the failure reply of a message whose handling was interrupted", async () => {
@@ -493,7 +542,7 @@ describe("FrankBotHost replies", () => {
       expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
       expect(stampsSent()).toEqual([STAMP]);
       // Kept with the row, not looked up again.
-      expect(mockTxStatus).toHaveBeenCalledTimes(2);
+      expect(mockCheckMessagePayment).toHaveBeenCalledTimes(1);
     });
   });
 

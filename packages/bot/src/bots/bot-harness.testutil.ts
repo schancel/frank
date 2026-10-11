@@ -65,6 +65,7 @@ export function harness(
     string,
     { digest: string; status: "live" | "delivered" | "dead"; message: Sent }
   >();
+  const messages = new Map<string, readonly StampPaymentInfo[]>();
   const chain = new Map<
     string,
     { to: string; value: bigint; status: number; mined: boolean }
@@ -131,6 +132,34 @@ export function harness(
         return tx ? { to: tx.to, value: tx.value } : null;
       },
     },
+    // Unit stand-in below the wallet receipt seam. No bot verifies RPC responses itself.
+    checkMessagePayment: async (digest: string) => {
+      const payments = (messages.get(digest) ?? []).map((payment) => {
+        const tx = chain.get(payment.txHash);
+        const status = !tx?.mined
+          ? ("pending" as const)
+          : tx.status !== 1 ||
+            tx.to.toLowerCase() !== payment.destinationAddress.toLowerCase()
+          ? ("failed" as const)
+          : ("received" as const);
+        return {
+          origin: "stamp" as const,
+          address: payment.destinationAddress,
+          payloadDigest: digest,
+          status,
+          amountWei: status === "received" ? tx!.value : 0n,
+          receivedAmountWei: status === "received" ? tx!.value : undefined,
+          claimedAmountWei: payment.valueWei,
+          spendable: status === "received",
+        };
+      });
+      return {
+        status: payments.length ? ("pending" as const) : ("none" as const),
+        receivedWei: 0n,
+        statedWei: 0n,
+        payments,
+      };
+    },
     state: memoryState(data),
     lookupPeer: async () => undefined,
     sendMessage,
@@ -186,7 +215,7 @@ export function harness(
       options: { status?: number; mined?: boolean } = {}
     ): StampPaymentInfo {
       const txHash = hash();
-      const destinationAddress = "0x" + "5e".repeat(20);
+      const destinationAddress = "0x" + counter.toString(16).padStart(40, "0");
       chain.set(txHash, {
         to: destinationAddress,
         value: valueWei,
@@ -201,12 +230,14 @@ export function harness(
       payments: StampPaymentInfo[] = [],
       peerAddress = PLAYER
     ): BotMessageContext {
+      const payloadDigest = hash().slice(2);
+      messages.set(payloadDigest, payments);
       return {
         conversationId: "00000000-0000-4000-8000-000000000001",
         peerAddress,
         peerSubject: "02" + "a1".repeat(32),
         timestampMs: Date.now(),
-        payloadDigest: hash().slice(2),
+        payloadDigest,
         items,
         stampValueWei: payments.reduce((sum, p) => sum + p.valueWei, 0n),
         stampPayments: payments,

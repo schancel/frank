@@ -17,7 +17,7 @@ describe("confirmReceived", () => {
     expect((await confirmReceived(message, h.ctx, 0)).confirmedWei).toBe(0n);
   });
 
-  test("a reverted transfer, and one that is not the transfer described, count for nothing", async () => {
+  test("failed evidence counts for nothing; a verified partial receipt counts its actual value", async () => {
     const h = harness();
     const reverted = h.pay(5n, { status: 0 });
     const other = h.pay(5n);
@@ -30,7 +30,8 @@ describe("confirmReceived", () => {
       h.ctx,
       0
     );
-    expect(got).toEqual({ confirmedWei: 0n, confirmed: [], unconfirmed: [] });
+    expect(got).toMatchObject({ confirmedWei: 1n, unconfirmed: [] });
+    expect(got.confirmed.map((payment) => payment.valueWei)).toEqual(["1"]);
     // Never seen by the chain: not received, and reported as not confirmed.
     const pending = await confirmReceived(h.message([], [unknown]), h.ctx, 0);
     expect(pending.confirmedWei).toBe(0n);
@@ -61,6 +62,92 @@ describe("confirmReceived", () => {
       (await confirmReceived(h.message([], [twice, twice]), h.ctx, 0))
         .confirmedWei
     ).toBe(3n);
+  });
+});
+
+describe("wallet-owned stamp evidence", () => {
+  test("uses actual stamp receipts despite failed aggregate; ignores stealth and RPC hash checks", async () => {
+    const h = harness();
+    const payment = h.pay(100n);
+    const message = h.message([], [payment]);
+    const receipt = {
+      address: payment.destinationAddress,
+      payloadDigest: message.payloadDigest,
+      status: "received" as const,
+      origin: "stamp" as const,
+      receivedAmountWei: 7n,
+      amountWei: 0n,
+      claimedAmountWei: 100n,
+      spendable: false,
+    };
+    h.ctx.checkMessagePayment = jest.fn(async () => ({
+      status: "failed",
+      receivedWei: 999n,
+      statedWei: 100n,
+      payments: [
+        receipt,
+        { ...receipt, origin: "stealth", receivedAmountWei: 992n },
+      ],
+    }));
+    const rpc = jest
+      .spyOn(h.ctx.provider, "getTransactionReceipt")
+      .mockRejectedValue(new Error("superseded"));
+    const received = await confirmReceived(message, h.ctx, 0);
+    expect(received.confirmedWei).toBe(7n);
+    expect(received.confirmed[0].valueWei).toBe("7");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  test("another digest's evidence is unresolved, and no stated amount becomes received", async () => {
+    const h = harness();
+    const payment = h.pay(100n);
+    const message = h.message([], [payment]);
+    h.ctx.checkMessagePayment = jest.fn(async () => ({
+      status: "received",
+      receivedWei: 100n,
+      statedWei: 100n,
+      payments: [
+        {
+          address: payment.destinationAddress,
+          payloadDigest: "other",
+          status: "received",
+          origin: "stamp",
+          receivedAmountWei: 100n,
+          amountWei: 100n,
+          claimedAmountWei: 100n,
+          spendable: true,
+        },
+      ],
+    }));
+    expect(await confirmReceived(message, h.ctx, 0)).toMatchObject({
+      confirmedWei: 0n,
+      unconfirmed: [expect.objectContaining({ txHash: payment.txHash })],
+    });
+  });
+
+  test("an existing durable transfer claim survives restart and blocks another message", async () => {
+    const h = harness();
+    const payment = h.pay(5n);
+    const first = h.message([], [payment]);
+    await h.ctx.state.put(
+      `received:${payment.txHash.toLowerCase()}`,
+      first.payloadDigest
+    );
+    expect((await confirmReceived(first, h.ctx, 0)).confirmedWei).toBe(5n);
+    const restarted = harness(h.data);
+    restarted.chain.set(payment.txHash, h.chain.get(payment.txHash)!);
+    expect(
+      (
+        await confirmReceived(
+          restarted.message([], [payment]),
+          restarted.ctx,
+          0
+        )
+      ).confirmedWei
+    ).toBe(0n);
+    expect(
+      await restarted.ctx.state.get(`received:${payment.txHash.toLowerCase()}`)
+    ).toBe(first.payloadDigest);
   });
 });
 

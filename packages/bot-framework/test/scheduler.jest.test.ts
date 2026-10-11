@@ -51,6 +51,7 @@ function createMockContext(store: BotStateStore): BotContext {
     buildAndSignTransfer: jest.fn(),
     waitForReceipt: jest.fn(),
     getBalance: jest.fn(),
+    checkMessagePayment: jest.fn(),
   };
 }
 

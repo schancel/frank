@@ -4,7 +4,10 @@ import {
   type TransactionReceipt,
 } from "ethers";
 import type { MessageItem } from "@frank/cashweb/types/messages";
-import type { DirectMessageSendResult } from "@frank/wallet/chain";
+import type {
+  MessagePayment,
+  DirectMessageSendResult,
+} from "@frank/wallet/chain";
 import type { StampPaymentInfo } from "@frank/wallet/chain/active-chain";
 import type { ForumMessageEntry } from "@frank/wallet/forum-model";
 
@@ -159,6 +162,8 @@ export interface BotContext {
   ): void;
 
   // --- Financial & Transaction Operations ---
+  /** Wallet-owned receipt evidence for this chain and message; stated amounts are not receipts. */
+  checkMessagePayment(payloadDigest: string): Promise<MessagePayment>;
   sendTransfer(params: {
     to: string;
     valueWei: bigint;

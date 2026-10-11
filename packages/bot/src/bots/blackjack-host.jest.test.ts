@@ -38,6 +38,7 @@ jest.mock("../../../bot-framework/src/directory-manager", () => ({
 
 const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
+const mockCheckMessagePayment = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/monad-chain", () => {
@@ -65,6 +66,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
         mockLocalSubject = identity.compressedPubKey.toString("hex");
         return {
           identity,
+          checkMessagePayment: mockCheckMessagePayment,
           getReceiveAddress: jest.fn(async () => ({ raw: mockLocalAddress })),
           close: jest.fn().mockResolvedValue(undefined),
         };
@@ -95,6 +97,10 @@ describe("blackjack dealer behind the bot host", () => {
 
   /** Transfers the chain knows: what a bet's money is checked against. */
   const mined = new Map<string, { to: string; value: bigint }>();
+  const receivedPayments = new Map<
+    string,
+    { txHash: string; destinationAddress: string; valueWei: bigint }[]
+  >();
 
   /** `paidWei`: a mined transfer of that value comes with the message. `stampValueWei` alone is
    * only what the wallet says the message carried. */
@@ -120,6 +126,22 @@ describe("blackjack dealer behind the bot host", () => {
         to: payment.destinationAddress,
         value: payment.valueWei,
       });
+    receivedPayments.set(byte.repeat(32), stampPayments);
+    mockCheckMessagePayment.mockImplementation(async (digest: string) => ({
+      status: "received",
+      receivedWei: 0n,
+      statedWei: 0n,
+      payments: (receivedPayments.get(digest) ?? []).map((payment) => ({
+        address: payment.destinationAddress,
+        origin: "stamp",
+        status: "received",
+        payloadDigest: digest,
+        amountWei: payment.valueWei,
+        receivedAmountWei: payment.valueWei,
+        claimedAmountWei: payment.valueWei,
+        spendable: true,
+      })),
+    }));
     return {
       senderAddress: { raw: playerAddress },
       senderPublicKey: getBytes(player.signingKey.compressedPublicKey),
@@ -189,6 +211,7 @@ describe("blackjack dealer behind the bot host", () => {
       async () => 500_000_000_000_000_000n
     );
     mined.clear();
+    receivedPayments.clear();
     (host as any).provider.getTransactionReceipt = jest.fn(
       async (txHash: string) => (mined.has(txHash) ? { status: 1 } : null)
     );

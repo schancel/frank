@@ -51,7 +51,7 @@ import {
   type PreparedReply,
 } from "./types";
 import { chainAmounts } from "./amounts";
-import { claimTransfer } from "./claims";
+import { claimTransfer, checkStampPayments } from "./claims";
 import { EVMNonceSequencer } from "./nonce-sequencer";
 import { LevelBotStateStore } from "./state-store";
 import {
@@ -559,6 +559,13 @@ export class FrankBotHost {
         relayBaseUrl: this.options.relayBaseUrl,
         networkTag: this.options.networkTag,
         ...chainAmounts(this.chain),
+        checkMessagePayment: async (digest) => {
+          if (!wallet.checkMessagePayment)
+            throw new Error(
+              "Wallet does not support received-payment evidence"
+            );
+          return wallet.checkMessagePayment(digest);
+        },
         provider: this.provider,
         state,
         subscriptions,
@@ -785,14 +792,19 @@ export class FrankBotHost {
       // A transfer that fails, for whatever reason, is said at error level here, whatever the
       // handler then does with the rejection: money a bot owed was not sent.
       const transfers = context as {
-        -readonly [K in "sendTransaction" | "buildAndSignTransfer"]: BotContext[K];
+        -readonly [K in
+          | "sendTransaction"
+          | "buildAndSignTransfer"]: BotContext[K];
       };
       for (const name of ["sendTransaction", "buildAndSignTransfer"] as const) {
         const inner = transfers[name] as (params: {
           to: string;
           valueWei?: bigint;
         }) => Promise<never>;
-        transfers[name] = (async (params: { to: string; valueWei?: bigint }) => {
+        transfers[name] = (async (params: {
+          to: string;
+          valueWei?: bigint;
+        }) => {
           try {
             return await inner(params);
           } catch (error) {
@@ -1503,18 +1515,8 @@ export class FrankBotHost {
     return task;
   }
 
-  /** What a message is CONFIRMED to have paid: the amount its delivery states, if every one of
-   * its payment transactions is mined and succeeded; otherwise nothing. The relay may deliver a
-   * message before its payments confirm, and a sender can sign payments from empty accounts,
-   * so the stated amount alone is never matched.
-   *
-   * It does not wait: a payment not confirmed when the message is handled counts as nothing,
-   * and the reply goes out at once with no stamp. A node that cannot be asked, or
-   * does not answer in `PAYMENT_CHECK_MS`, counts the same.
-   *
-   * THE ONE PLACE that decides this. SWITCH HERE to the wallet's own "has this message's
-   * payment landed" call when it exists; this uses `nativeTransfers.getTransactionStatus` and
-   * reads each transaction back to compare its destination and value. */
+  /** Match replies against wallet-verified stamp receipts. Unresolved evidence never
+   * delays dispatch beyond PAYMENT_CHECK_MS or becomes a stated amount. */
   private async confirmedPaidWei(
     instance: ActiveBotInstance,
     message: {
@@ -1524,59 +1526,45 @@ export class FrankBotHost {
       stampPayments: readonly StampPaymentInfo[];
     }
   ): Promise<bigint> {
-    // At or under the minimum the reply carries no stamp anyway: nothing to look up.
-    if (
-      message.stampValueWei <= this.options.minStampValueWei ||
-      !message.paymentTxHashes.length
-    )
-      return 0n;
+    if (message.stampValueWei <= this.options.minStampValueWei) return 0n;
     const known = instance.confirmedPaid.get(message.identity.digest);
     if (known !== undefined) return known;
     try {
-      const statuses = await bounded(
-        Promise.all(
-          message.paymentTxHashes.map((txHash) =>
-            this.chain.nativeTransfers.getTransactionStatus({
-              wallet: instance.wallet,
-              transaction: { txHash },
-            })
-          )
-        ),
+      const payments = await bounded(
+        checkStampPayments(instance.context, message.identity.digest),
         "Checking a message's payment",
         PAYMENT_CHECK_MS
       );
-      if (!statuses.every((status) => status === "confirmed")) return 0n;
-      // Confirmed is not enough: each must be the transfer the delivery describes (that
-      // address, that value), and a transfer counts for one message only, the first it is
-      // confirmed for. The record is the one the bots' own payment check keeps
-      // (`received:<tx hash>` in the bot's state), so the two never credit one transfer twice.
-      for (const payment of message.stampPayments) {
-        const tx = await bounded(
-          this.provider.getTransaction(payment.txHash),
-          "Reading a message's payment",
-          PAYMENT_CHECK_MS
+      if (!payments.length) return 0n;
+      let paidWei = 0n;
+      const seen = new Set<string>();
+      for (const payment of payments) {
+        const address = payment.address.toLowerCase();
+        if (seen.has(address)) continue;
+        seen.add(address);
+        const amount = payment.receivedAmountWei ?? 0n;
+        if (payment.status !== "received" || amount <= 0n) continue;
+        const delivered = message.stampPayments.find(
+          (item) => item.destinationAddress.toLowerCase() === address
         );
+        // The delivered hash remains the durable attribution ID, not receipt proof.
         if (
-          !tx ||
-          tx.to?.toLowerCase() !== payment.destinationAddress.toLowerCase() ||
-          tx.value !== payment.valueWei
-        )
-          return 0n;
-      }
-      for (const payment of message.stampPayments)
-        if (
+          !delivered ||
           !(await claimTransfer(
             instance.state,
-            payment.txHash,
+            delivered.txHash,
             message.identity.digest
           ))
         )
-          return 0n;
+          continue;
+        paidWei += amount;
+      }
+      if (paidWei > 0n)
+        instance.confirmedPaid.set(message.identity.digest, paidWei);
+      return paidWei;
     } catch {
       return 0n;
     }
-    instance.confirmedPaid.set(message.identity.digest, message.stampValueWei);
-    return message.stampValueWei;
   }
 
   /** The stamp a bot puts on what it sends in answer to a message, when the handler names no

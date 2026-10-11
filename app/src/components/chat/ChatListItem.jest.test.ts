@@ -324,8 +324,19 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
       },
     })
     const vm = wrapper.vm as any
-    expect(vm.formattedTimestamp).toBeTruthy()
-    expect(typeof vm.formattedTimestamp).toBe('string')
+    expect(vm.timestampParts.date).toBe(
+      new Date(timestamp).toLocaleDateString(undefined, {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }),
+    )
+    expect(vm.timestampParts.time).toBe(
+      new Date(timestamp).toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    )
   })
 
   it('does not highlight an independent thread merely because it shares the active peer', () => {
@@ -367,7 +378,7 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
 })
 
 describe('ChatListItem title line', () => {
-  it('keeps the name and its badge in one wrapping group, apart from the time and unread count', () => {
+  it('keeps the name and badge separate from stacked date/time and unread count', () => {
     mockOwnAddress.value = OWN_ADDRESS
     const wrapper = shallowMount(ChatListItem, {
       props: {
@@ -386,12 +397,17 @@ describe('ChatListItem title line', () => {
     })
     const title = wrapper.find('[data-testid="chat-list-title"]')
     expect(title.exists()).toBe(true)
-    // The badge may wrap under the name: the group must not force a single clipped line.
-    expect(title.classes()).not.toContain('no-wrap')
+    // Metadata stays out of the title so narrow rows can hide it independently.
     expect(title.text()).toContain('Alice Profile')
     expect(title.findComponent({ name: 'AccountBadge' }).exists()).toBe(true)
     expect(title.find('[data-testid="chat-timestamp"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="chat-timestamp"]').exists()).toBe(true)
+    expect(
+      wrapper.get('[data-testid="chat-timestamp-date"]').text(),
+    ).toBeTruthy()
+    expect(
+      wrapper.get('[data-testid="chat-timestamp-time"]').text(),
+    ).toBeTruthy()
   })
 })
 

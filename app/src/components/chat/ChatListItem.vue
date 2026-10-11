@@ -1,5 +1,10 @@
 <template>
-  <q-item :active="isActive" active-class="active-chat-list-item" clickable>
+  <q-item
+    class="chat-list-row"
+    :active="isActive"
+    active-class="active-chat-list-item"
+    clickable
+  >
     <q-item-section avatar v-if="$status.setup" side>
       <q-avatar
         rounded
@@ -21,9 +26,8 @@
         />
       </q-avatar>
     </q-item-section>
-    <q-item-section v-show="!compact">
-      <!-- The name keeps its line; a badge that does not fit beside it moves under it instead of
-      running over the time and unread count. -->
+    <q-item-section v-show="!compact" class="chat-list-text">
+      <!-- Keep the name and badges on one bounded line. -->
       <div class="chat-list-title" data-testid="chat-list-title">
         <q-icon
           v-if="isEmail && isVerifiedGateway"
@@ -53,7 +57,7 @@
         </q-badge>
         <q-item-label
           lines="1"
-          class="text-weight-medium text-body2 ellipsis"
+          class="chat-list-name text-weight-medium text-body2 ellipsis"
           >{{ titleName }}</q-item-label
         >
         <account-badge
@@ -80,15 +84,17 @@
     <q-item-section
       v-show="!compact"
       side
-      class="column items-end justify-start q-gutter-xs"
+      class="chat-list-metadata column items-end justify-start"
+      :class="{ 'chat-list-metadata-unread': !!effectiveNumUnread }"
     >
       <q-item-label
         caption
-        v-if="formattedTimestamp"
-        class="text-caption text-grey-6 text-no-wrap"
+        v-if="timestampParts.date"
+        class="chat-list-timestamp text-caption text-grey-6 text-no-wrap"
         data-testid="chat-timestamp"
       >
-        {{ formattedTimestamp }}
+        <span data-testid="chat-timestamp-date">{{ timestampParts.date }}</span>
+        <span data-testid="chat-timestamp-time">{{ timestampParts.time }}</span>
       </q-item-label>
       <q-badge
         v-if="!!effectiveNumUnread"
@@ -185,7 +191,6 @@ import {
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
 } from 'src/utils/own-address'
-import { formatConversationTimestamp } from 'src/utils/formatting'
 import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { openChat, openContactProfile } from 'src/utils/routes'
 import { addressCopiedNotify } from 'src/utils/notifications'
@@ -324,15 +329,28 @@ export default defineComponent({
     effectiveValueUnread(): string {
       return this.valueUnread || ''
     },
-    formattedTimestamp(): string {
-      const ts =
+    timestampParts(): { date: string; time: string } {
+      const timestamp =
         this.timestamp ||
         this.conversation?.lastReceived ||
         this.conversation?.updatedAt ||
         this.conversation?.createdAt ||
         0
-      if (!ts) return ''
-      return formatConversationTimestamp(ts)
+      const date = new Date(timestamp)
+      if (!timestamp || Number.isNaN(date.getTime()))
+        return { date: '', time: '' }
+      const locale = this.$i18n?.locale || undefined
+      return {
+        date: date.toLocaleDateString(locale, {
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }),
+        time: date.toLocaleTimeString(locale, {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      }
     },
     /** An email thread is titled by its subject. Any other conversation is titled by its
      * peer, with the subject (if it has one) on its own line under the name. */
@@ -502,7 +520,7 @@ export default defineComponent({
 
 .chat-list-title {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 2px 4px;
   min-width: 0;
@@ -514,7 +532,55 @@ export default defineComponent({
   max-width: 100%;
 }
 
-/* The gap spaces the badges here; their own left margin would indent a wrapped one. */
+.chat-list-row {
+  container-type: inline-size;
+}
+
+.chat-list-text,
+.chat-list-name {
+  min-width: 0;
+}
+
+.chat-list-name {
+  flex: 1 1 auto;
+}
+
+.chat-list-title > :deep(.q-badge) {
+  flex: 0 1 auto;
+  max-width: 40%;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-list-title > :deep(.q-icon) {
+  flex-shrink: 0;
+}
+
+.chat-list-metadata {
+  display: none;
+  min-width: 0;
+}
+
+.chat-list-metadata-unread {
+  display: flex;
+}
+
+.chat-list-timestamp {
+  display: none;
+}
+
+@container (min-width: 320px) {
+  .chat-list-metadata {
+    display: flex;
+  }
+  .chat-list-timestamp {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+}
+
+/* The title's gap owns badge/icon spacing. */
 .chat-list-title > :deep(.q-badge),
 .chat-list-title > :deep(.q-icon) {
   margin-left: 0;

@@ -10,6 +10,7 @@ import {
   type ShareStatus,
   type ShareVerdict,
 } from './errors.js'
+import { decodeHistoricalShare, validateHistoricalSymbols } from './historical-payload.js'
 
 /**
  * The search tries every threshold-sized subset of a backup set, so the number of shares
@@ -28,6 +29,7 @@ export function maxSharesForThreshold(threshold: number): number {
 }
 
 interface Entry {
+  readonly format: 'root' | 'historical'
   readonly position: number
   readonly identifier: string
   readonly threshold: number
@@ -38,6 +40,7 @@ interface Entry {
 
 /** One valid master found among the supplied shares. The caller owns and wipes `master`. */
 export interface FoundMaster {
+  readonly format: 'root' | 'historical'
   readonly master: Uint8Array
   /** Positions (in the supplied order) of every share that lies on this master's split. */
   readonly supporting: readonly number[]
@@ -61,7 +64,7 @@ export interface ShareSearchResult {
  * A set with more shares than maxSharesForThreshold allows is refused with `too-many-shares`.
  * Nothing about share contents or reconstructed secrets is placed in the verdicts or errors.
  */
-export function searchShares(shares: readonly string[]): ShareSearchResult {
+export function searchShares(shares: readonly string[], includeHistorical = false): ShareSearchResult {
   const status = new Array<ShareStatus>(shares.length).fill('inconsistent')
   const codes = new Array<Codex32ErrorCode | null>(shares.length).fill(null)
   const candidatesOf = shares.map((): number[] => [])
@@ -69,11 +72,12 @@ export function searchShares(shares: readonly string[]): ShareSearchResult {
     shares.length,
   ).fill(null)
   const entries: Entry[] = []
-  const masters: { master: Uint8Array; supporting: number[] }[] = []
+  const masters: { format: 'root' | 'historical'; master: Uint8Array; supporting: number[] }[] = []
   try {
     const seen = new Map<string, Entry[]>()
     shares.forEach((text, position) => {
-      const decoded = decodeCodex32(text)
+      const historical = includeHistorical && text.startsWith('frank-bip39-v1:')
+      const decoded = historical ? decodeHistoricalShare(text) : decodeCodex32(text)
       if (!decoded.ok) {
         status[position] = 'invalid'
         codes[position] = decoded.error.code
@@ -89,7 +93,8 @@ export function searchShares(shares: readonly string[]): ShareSearchResult {
         codes[position] = 'invalid-index'
         return
       }
-      const group = `${share.identifier}/${share.threshold}/${share.payload.length}`
+      const format = historical ? 'historical' : 'root'
+      const group = `${format}/${share.identifier}/${share.threshold}/${share.payload.length}`
       const sameIndex = seen.get(`${group}/${share.index}`) ?? []
       if (sameIndex.some(other => equal(other.payload, share.payload))) {
         share.payload.fill(0)
@@ -97,6 +102,7 @@ export function searchShares(shares: readonly string[]): ShareSearchResult {
         return
       }
       const entry: Entry = {
+        format,
         position,
         identifier: share.identifier,
         threshold: share.threshold,
@@ -133,7 +139,7 @@ export function searchShares(shares: readonly string[]): ShareSearchResult {
       searched.add(members[0]?.group ?? '')
       searchGroup(members, threshold, found => {
         const known = masters.findIndex(other =>
-          equal(other.master, found.master),
+          other.format === found.format && equal(other.master, found.master),
         )
         if (known >= 0) {
           found.master.fill(0)
@@ -216,7 +222,7 @@ function failureCode(
 function searchGroup(
   members: readonly Entry[],
   threshold: number,
-  report: (found: { master: Uint8Array; supporting: number[] }) => number,
+  report: (found: { format: 'root' | 'historical'; master: Uint8Array; supporting: number[] }) => number,
 ): void {
   const supporters: Set<Entry>[] = []
   const picks = Array.from({ length: threshold }, (_, i) => i)
@@ -231,6 +237,7 @@ function searchGroup(
       if (master) {
         const supporting = members.filter(entry => liesOn(subset, entry))
         const candidate = report({
+          format: subset[0]!.format,
           master,
           supporting: supporting.map(entry => entry.position),
         })
@@ -250,6 +257,10 @@ function searchGroup(
 function reconstruct(subset: readonly Entry[]): Uint8Array | null {
   const symbols = interpolateCodex32Symbols(subset, 's')
   if (!symbols.ok) return null
+  if (subset[0]?.format === 'historical') {
+    try { return validateHistoricalSymbols(symbols.value) }
+    finally { symbols.value.fill(0) }
+  }
   const bytes = codex32SymbolsToBytes(symbols.value)
   symbols.value.fill(0)
   if (!bytes.ok) return null

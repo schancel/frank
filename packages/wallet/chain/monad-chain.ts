@@ -1,3 +1,4 @@
+import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
@@ -2258,7 +2259,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               nativeChainId: String(config.chainId),
               publicTuple: JSON.stringify({
                 version: 1,
-                registry: material.canonicalRoles!.derivationRegistry,
+                registry: material.canonicalRoles?.derivationRegistry ?? DERIVATION_REGISTRY_ID,
                 chainIdentifier,
                 nativeChainId: String(config.chainId),
                 mainAddress: mainAccount.address.toLowerCase(),

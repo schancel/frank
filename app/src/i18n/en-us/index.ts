@@ -697,7 +697,7 @@ export default {
     waitingForChain: 'Queued: the network cannot be reached.',
     waitingBlocks:
       'Waiting {blocks} more blocks after the previous payment before paying…',
-    paymentSent: '· payment sent',
+    paymentSent: 'Sent',
     paymentInMempool: '· payment in the mempool',
     paymentPaid: '· paid',
     paymentReverted: '· payment reverted, paying again',

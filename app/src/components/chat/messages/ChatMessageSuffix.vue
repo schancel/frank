@@ -39,7 +39,7 @@
       <span>{{ paymentText }}</span>
     </div>
     <div
-      v-else-if="paymentSummaryText"
+      v-else-if="paymentSummaryText && paymentSummary !== 'pending'"
       class="outgoing-status"
       data-testid="outgoing-payment-summary"
     >
@@ -54,6 +54,11 @@
         v-if="status === 'pending' && outbound"
         data-testid="outgoing-sending"
         >{{ sendingText }}</span
+      >
+      <span
+        v-if="paymentSummaryText && paymentSummary === 'pending'"
+        data-testid="outgoing-payment-summary"
+        >{{ paymentSummaryText }}</span
       >
       <time
         v-if="stamp"

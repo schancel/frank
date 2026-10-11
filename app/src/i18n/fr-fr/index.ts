@@ -709,7 +709,7 @@ export default {
     waitingForChain: 'En file : le réseau est injoignable.',
     waitingBlocks:
       'Encore {blocks} blocs à attendre après le paiement précédent avant de payer…',
-    paymentSent: '· paiement envoyé',
+    paymentSent: 'Envoyé',
     paymentInMempool: '· paiement dans le mempool',
     paymentPaid: '· payé',
     paymentReverted:

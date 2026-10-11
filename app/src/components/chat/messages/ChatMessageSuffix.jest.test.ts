@@ -276,6 +276,19 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
         expect(
           sent.get('[data-testid="outgoing-payment-summary"]').text(),
         ).toBe(t(key))
+        if (summary === 'pending') {
+          const label = sent.get(
+            '[data-testid="outgoing-payment-summary"]',
+          ).element
+          expect(label.parentElement).toBe(
+            sent.get('[data-testid="outgoing-footer"]').element,
+          )
+          expect(label.nextElementSibling).toBe(
+            sent.get('[data-testid="outgoing-amount"]').element,
+          )
+          expect(label.textContent).toBe(messages === enUS ? 'Sent' : 'Envoyé')
+          expect(sent.findAll('.outgoing-status')).toHaveLength(0)
+        }
         // A real string in both languages, never the key.
         expect(t(key)).not.toBe(key)
       }

@@ -74,6 +74,8 @@ test('historical recovery derives every existing family address locally from its
   await session.initialize()
   await stageBip39Recovery(session, phrase)
   await activate(session)
+  // The user-visible address call failed before this correction, before any indexer access.
+  const ecashAddress = await session.getChainAddress('ecash')
   const material = await session.getActiveFamilyMaterial('ecash-bch-wallet')
   expect('seed' in material).toBe(true)
   if (!('seed' in material))

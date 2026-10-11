@@ -339,6 +339,9 @@
           bordered
           class="q-pa-md swap-card swap-card--review"
           data-testid="swap-review"
+          tabindex="-1"
+          role="region"
+          :aria-label="$t('swap.reviewTitle')"
         >
           <div class="text-subtitle2 text-weight-bold q-mb-xs">
             {{ $t('swap.reviewTitle') }}
@@ -448,6 +451,7 @@
 import {
   computed,
   defineComponent,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -1032,6 +1036,12 @@ export default defineComponent({
         reviewed.value = fresh
         quoteStale.value = false
         phase.value = 'review'
+        await nextTick()
+        const card = root.value?.querySelector<HTMLElement>(
+          '[data-testid="swap-review"]',
+        )
+        card?.focus({ preventScroll: true })
+        card?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
       } catch (error) {
         flowProblem.value = problemOf(error, 'swap.errorQuote')
       } finally {

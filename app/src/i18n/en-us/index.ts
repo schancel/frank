@@ -1611,7 +1611,7 @@ export default {
     errorAccountChanged: 'The account changed. Review the swap again.',
     errorQuote: 'Could not get a price from the network. Try again.',
     errorExecution:
-      'The swap was not sent. Nothing was swapped; check Recent swaps before trying again.',
+      'The swap status could not be confirmed. Check Recent swaps before trying again; a submitted swap may still complete.',
     warnHighImpact:
       'This amount is large for the pool: you receive noticeably less than the market rate.',
     status: {

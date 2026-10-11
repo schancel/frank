@@ -468,6 +468,46 @@ describe('confirming and executing', () => {
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 
+  it('brings the rendered review card into view and focuses it before confirmation', async () => {
+    scene()
+    const scroll = jest.fn()
+    const focus = jest.spyOn(HTMLElement.prototype, 'focus')
+    const previous = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = scroll
+    try {
+      const view = await mountPanel()
+      await type(view, '0.02')
+      await click(view, 'swap-review-btn')
+      const card = view.get('[data-testid="swap-review"]')
+      expect(card.attributes('tabindex')).toBe('-1')
+      expect(scroll).toHaveBeenCalledWith({
+        block: 'nearest',
+        behavior: 'smooth',
+      })
+      expect(scroll.mock.instances).toContain(card.element)
+      expect(focus.mock.instances).toContain(card.element)
+    } finally {
+      HTMLElement.prototype.scrollIntoView = previous
+      focus.mockRestore()
+    }
+  })
+
+  it('does not claim nothing was swapped when result handling fails after submission', async () => {
+    const s = scene()
+    s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    s.wallet.getNativeOperations.mockImplementation(() => {
+      throw new Error('journal read unavailable')
+    })
+    await click(view, 'swap-confirm-btn')
+    expect(s.events).toContain('broadcast 0xhash1')
+    expect(view.text()).toContain('The swap status could not be confirmed.')
+    expect(view.text()).not.toContain('Nothing was swapped')
+    expect(view.text()).not.toContain('The swap was not sent')
+  })
+
   it('shows the amount from the receipt, not the quote, hands the wallet the record, and remembers the outcome', async () => {
     const s = scene()
     // The real receipt of 0.02 MON -> 0.019996 USDC; the form will be quoting a different amount.

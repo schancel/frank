@@ -1666,7 +1666,7 @@ export default {
     errorAccountChanged: 'Le compte a changé. Vérifiez à nouveau l’échange.',
     errorQuote: 'Impossible d’obtenir un prix du réseau. Réessayez.',
     errorExecution:
-      'L’échange n’a pas été envoyé. Rien n’a été échangé ; consultez les échanges récents avant de réessayer.',
+      'L’état de l’échange n’a pas pu être confirmé. Consultez les échanges récents avant de réessayer ; un échange envoyé peut encore aboutir.',
     warnHighImpact:
       'Ce montant est important pour ce pool : vous recevez nettement moins que le taux du marché.',
     status: {

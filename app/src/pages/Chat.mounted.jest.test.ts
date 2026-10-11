@@ -6,6 +6,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
 import { defineComponent, h } from 'vue'
+import { messagingStateOwner } from '../utils/messaging-state'
 import type { DefaultStampQuote } from '@frank/wallet/oracle'
 
 jest.mock('../adapters/level-message-store', () => ({
@@ -179,6 +180,7 @@ async function mountChat(
 describe('Chat.vue blackjack wiring (mounted)', () => {
   afterEach(() => jest.restoreAllMocks())
   beforeEach(() => {
+    messagingStateOwner.status = 'ready'
     const quote: DefaultStampQuote = {
       status: 'available',
       chainIdentifier: activeChain.chainIdentifier,
@@ -194,6 +196,35 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     mockUseMonadWallet.mockReturnValue({
       identity: { address: { raw: SELF }, displayAddress: SELF },
     })
+  })
+
+  it('refreshes the default as soon as directory publication makes the messaging wallet ready after reload', async () => {
+    messagingStateOwner.status = 'publishing'
+    const wallet = {
+      identity: { address: { raw: SELF }, displayAddress: SELF },
+    }
+    mockUseMonadWallet.mockImplementation(() => {
+      if (messagingStateOwner.status !== 'ready')
+        throw new Error('Messaging is not available yet')
+      return wallet
+    })
+    const { wrapper } = await mountChat(undefined)
+    try {
+      expect((wrapper.vm as any).defaultStampWei).toBeUndefined()
+      expect((wrapper.vm as any).defaultStampFailure).toBe('messaging-pending')
+      expect(
+        activeChain.directMessages.defaultStampQuote,
+      ).not.toHaveBeenCalled()
+      messagingStateOwner.status = 'ready'
+      await flushPromises()
+      expect(activeChain.directMessages.defaultStampQuote).toHaveBeenCalledWith(
+        { wallet },
+      )
+      expect((wrapper.vm as any).defaultStampWei).toBe(10n ** 16n)
+      expect((wrapper.vm as any).defaultStampFailure).toBe('')
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it.each([

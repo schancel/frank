@@ -141,7 +141,7 @@
           <!-- What the message will carry, in the compact form: the chip is a tight place. -->
           <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
           <span
-            v-if="stampMultiplier !== '1'"
+            v-if="stampMultiplier && stampMultiplier !== '1'"
             class="chat-stamp-pill-multiple q-ml-xs"
             data-testid="stamp-pill-multiple"
             >{{ stampMultiplier }}×</span
@@ -183,15 +183,23 @@
                   v-model="decadeIndex"
                   class="q-mt-md"
                   :min="0"
-                  :max="12"
+                  :max="multiplierSteps.length - 1"
+                  :disable="defaultStampWei === undefined"
                   :step="1"
                   label
                   label-always
-                  :label-value="sliderLabelValue"
+                  :label-value="stampMultiplier ? `${stampMultiplier}×` : ''"
                   markers
                   :marker-labels="decadeMarkerLabels"
                   data-testid="chat-input-stamp-slider"
                 />
+              </div>
+              <div
+                class="text-caption q-mt-sm"
+                style="overflow-wrap: anywhere"
+                data-testid="chat-input-stamp-selection"
+              >
+                {{ sliderLabelValue }}
               </div>
               <div class="text-caption text-grey-7 q-mt-sm">
                 {{ $t('chatInput.stampQuickSelection') }}
@@ -267,8 +275,10 @@ function imageFiles(data: DataTransfer | null | undefined): File[] {
   return Array.from(data?.files ?? []).filter(f => f.type.startsWith('image/'))
 }
 
-export const DECADE_MULTIPLIERS = [
-  1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000,
+// Tenths keep fractional presets exact even when the quote exceeds Number's safe range.
+export const STAMP_MULTIPLIER_TENTHS = [
+  0, 1, 2, 5, 9, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000,
+  50000, 100000,
 ]
 
 export default defineComponent({
@@ -314,6 +324,7 @@ export default defineComponent({
       attachError: '',
       // The stamp as the user is typing it; shown while it still means the chosen amount.
       typedStamp: null as string | null,
+      multiplierSteps: STAMP_MULTIPLIER_TENTHS,
     }
   },
   emits: [
@@ -326,6 +337,15 @@ export default defineComponent({
     'sendStealthClicked',
   ],
   methods: {
+    /** Scale the AVU quote, retaining the adapter floor for paid presets and explicit zero. */
+    multipliedStamp(tenths: number): bigint {
+      const raw = ((this.defaultStampWei ?? 0n) * BigInt(tenths)) / 10n
+      return tenths === 0
+        ? 0n
+        : raw < this.minimumStampWei
+        ? this.minimumStampWei
+        : raw
+    },
     resetToDefault() {
       this.typedStamp = null
       this.$emit('resetStampDefault')
@@ -453,74 +473,79 @@ export default defineComponent({
       return activeChain.unit
     },
     decadeMarkerLabels(): Record<number, string> {
-      return { 0: '1×', 3: '10×', 6: '100×', 9: '1k×', 12: '10k×' }
+      return {
+        0: this.$t('chatInput.stampFree'),
+        5: '1×',
+        8: '10×',
+        11: '100×',
+        14: '1k×',
+        17: '10k×',
+      }
     },
     decadeIndex: {
       get(): number {
-        let selected: bigint
-        try {
-          selected = activeChain.fromDisplayAmount(this.stampAmount)
-        } catch {
+        if (this.defaultStampWei === undefined || this.stampWei === undefined)
           return 0
-        }
-        if (selected <= this.minimumStampWei) {
-          return 0
-        }
-        const mult = Number(selected) / Number(this.minimumStampWei)
         let closest = 0
-        let minDiff = Infinity
-        for (let i = 0; i < DECADE_MULTIPLIERS.length; i++) {
-          const diff = Math.abs(
-            Math.log(mult) - Math.log(DECADE_MULTIPLIERS[i]),
-          )
-          if (diff < minDiff) {
-            minDiff = diff
+        let distance: bigint | undefined
+        for (let i = 0; i < STAMP_MULTIPLIER_TENTHS.length; i++) {
+          const raw =
+            (this.defaultStampWei * BigInt(STAMP_MULTIPLIER_TENTHS[i])) / 10n
+          const delta =
+            raw > this.stampWei ? raw - this.stampWei : this.stampWei - raw
+          if (distance === undefined || delta < distance) {
+            distance = delta
             closest = i
           }
         }
         return closest
       },
       set(index: number) {
+        if (this.defaultStampWei === undefined || !Number.isFinite(index))
+          return
         const i = Math.max(
           0,
-          Math.min(DECADE_MULTIPLIERS.length - 1, Math.round(index)),
+          Math.min(STAMP_MULTIPLIER_TENTHS.length - 1, Math.round(index)),
         )
-        const mult = DECADE_MULTIPLIERS[i]
-        const raw = this.minimumStampWei * BigInt(mult)
+        const raw = this.multipliedStamp(STAMP_MULTIPLIER_TENTHS[i])
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
     },
     sliderLabelValue(): string {
-      const mult = DECADE_MULTIPLIERS[this.decadeIndex] ?? 1
-      const raw = this.minimumStampWei * BigInt(mult)
-      const amountStr = activeChain.toDisplayAmount(raw)
-      return this.$t('chatInput.stampMultiplierValue', {
-        multiplier: mult,
-        amount: `${amountStr} ${this.chainUnit}`,
-      })
+      if (this.stampWei === 0n) return this.$t('chatInput.stampFree')
+      if (this.stampWei === undefined)
+        return this.$t('chatInput.stampQuoteUnavailable')
+      const amount = `${activeChain.toDisplayAmount(this.stampWei)} ${
+        this.chainUnit
+      }`
+      // A typed amount need not equal a preset. The label always describes what will be sent.
+      return this.stampMultiplier
+        ? this.$t('chatInput.stampMultiplierValue', {
+            multiplier: this.stampMultiplier,
+            amount,
+          })
+        : amount
     },
-    stampMultiplier: {
-      get(): string {
-        let selected: bigint
-        try {
-          selected = activeChain.fromDisplayAmount(this.stampAmount)
-        } catch {
-          return '1'
-        }
-        const multiple = Number(selected) / Number(this.minimumStampWei)
-        if (!Number.isFinite(multiple) || multiple <= 1) {
-          return '1'
-        }
-        if (Math.abs(multiple - Math.round(multiple)) < 0.05) {
-          return String(Math.round(multiple))
-        }
-        return multiple.toFixed(1)
-      },
-      set(value: number) {
-        const intVal = Number.isFinite(value) ? Math.round(value) : 1
-        const raw = this.minimumStampWei * BigInt(intVal)
-        this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
-      },
+    stampMultiplier(): string {
+      const selected = this.stampWei
+      const reference = this.defaultStampWei
+      if (
+        selected === undefined ||
+        selected === 0n ||
+        reference === undefined ||
+        reference <= 0n
+      )
+        return ''
+      const scaled = (selected * 10000n + reference / 2n) / reference
+      const whole = scaled / 10000n
+      const fraction = (scaled % 10000n)
+        .toString()
+        .padStart(4, '0')
+        .replace(/0+$/, '')
+      const approximate = (selected * 10000n) % reference !== 0n
+      return `${approximate ? '≈' : ''}${whole}${
+        fraction ? '.' + fraction : ''
+      }`
     },
     /** The chosen stamp in base units; `undefined` while the field holds no amount. */
     stampWei(): bigint | undefined {
@@ -564,7 +589,7 @@ export default defineComponent({
       } catch {
         // Shown as typed.
       }
-      return this.stampMultiplier === '1'
+      return !this.stampMultiplier || this.stampMultiplier === '1'
         ? this.$t('chatInput.stampChip', { amount })
         : this.$t('chatInput.stampChipMultiple', {
             amount,

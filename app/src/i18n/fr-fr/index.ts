@@ -117,7 +117,7 @@ export default {
     stampPrice: 'Prix du timbre',
     stampPayment: 'Paiement du timbre',
     stampQuickSelection:
-      'Sélection rapide par ordres de grandeur (1× à 10 000×)',
+      'Sélection rapide : gratuit, fractions ou multiples du montant par défaut',
     stampMultiplierValue: '{multiplier}× par défaut ({amount})',
     defaultStamp: 'Par défaut : {amount}',
     stampBelowMinimum:
@@ -126,6 +126,7 @@ export default {
     stampQuoteUnavailableReason:
       'Timbre par défaut indisponible : {reason}. Choisissez un montant explicite ou un message gratuit.',
     stampQuoteReasons: {
+      'messaging-pending': 'connexion du compte en cours',
       'missing-rate': 'taux de conversion absent',
       'stale-rate': 'taux de conversion périmé',
       'missing-fee': 'estimation des frais indisponible',

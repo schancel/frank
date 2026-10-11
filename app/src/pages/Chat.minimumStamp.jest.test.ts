@@ -11,6 +11,9 @@ jest.mock('../adapters/level-message-store', () => ({
     },
   }),
 }))
+jest.mock('../utils/messaging-state', () => ({
+  messagingState: { status: 'ready' },
+}))
 let mockWallet = { id: 'wallet' }
 jest.mock('../accounts/session', () => ({
   accountStatus: { revision: 1, status: 'ready' },
@@ -135,4 +138,41 @@ it('discards a quote that resolves after its messaging wallet changes', async ()
   await waiting
   expect(self.defaultStampWei).toBeUndefined()
   mockWallet = original
+})
+
+it('does not let an older fee failure replace a newer successful quote', async () => {
+  let rejectOld!: (error: Error) => void
+  defaultStampQuote.mockReturnValueOnce(
+    new Promise((_resolve, reject) => {
+      rejectOld = reject
+    }),
+  )
+  const self = fakeThis()
+  const first = page.methods.refreshMinimumStamp.call(self)
+  defaultStampQuote.mockResolvedValueOnce({
+    status: 'available',
+    amount: 50_000n,
+    minimumStamp: 42_000n,
+  })
+  await page.methods.refreshMinimumStamp.call(self)
+  rejectOld(new Error('old fee lookup failed'))
+  await first
+  expect(self.defaultStampWei).toBe(50_000n)
+  expect(self.defaultStampFailure).toBe('')
+})
+
+it('a real fee failure stays unavailable until a later fresh quote succeeds', async () => {
+  const self = fakeThis()
+  defaultStampQuote.mockRejectedValueOnce(new Error('RPC unavailable'))
+  await page.methods.refreshMinimumStamp.call(self)
+  expect(self.defaultStampWei).toBeUndefined()
+  expect(self.defaultStampFailure).toBe('missing-fee')
+  defaultStampQuote.mockResolvedValueOnce({
+    status: 'available',
+    amount: 60_000n,
+    minimumStamp: 45_000n,
+  })
+  await page.methods.refreshMinimumStamp.call(self)
+  expect(self.defaultStampWei).toBe(60_000n)
+  expect(self.minimumStampWei).toBe(45_000n)
 })

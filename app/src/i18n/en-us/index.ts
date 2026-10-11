@@ -114,7 +114,7 @@ export default {
     stampPrice: 'Stamp Price',
     stampPayment: 'Stamp payment',
     stampQuickSelection:
-      'Quick selection across orders of magnitude (1× to 10,000×)',
+      'Quick selection: free, fractions, or multiples of the default',
     stampMultiplierValue: '{multiplier}× default ({amount})',
     defaultStamp: 'Default: {amount}',
     stampBelowMinimum:
@@ -123,6 +123,7 @@ export default {
     stampQuoteUnavailableReason:
       'Default stamp unavailable: {reason}. Choose an explicit amount or a free message.',
     stampQuoteReasons: {
+      'messaging-pending': 'account is still connecting',
       'missing-rate': 'missing conversion rate',
       'stale-rate': 'stale conversion rate',
       'missing-fee': 'fee estimate unavailable',

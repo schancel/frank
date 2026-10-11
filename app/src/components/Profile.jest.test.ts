@@ -58,10 +58,10 @@ describe('Profile.vue component avatar handling', () => {
     originalImage = window.Image
     class MockImage {
       crossOrigin = ''
-      width = 512
-      height = 512
-      naturalWidth = 512
-      naturalHeight = 512
+      width = 960
+      height = 960
+      naturalWidth = 960
+      naturalHeight = 960
       complete = true
       _src = ''
       onload: ((e: any) => void) | null = null
@@ -116,10 +116,17 @@ describe('Profile.vue component avatar handling', () => {
     expect(wrapper.vm.$data.internalAvatar).toContain(
       'data:image/webp;base64,RESIZED_AVATAR',
     )
-    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(4096)
+    expect(mockDrawImage).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+      0,
+      512,
+      512,
+    )
+    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(65536)
   })
 
-  it('cycles avatar and downscales to thumbnail under 4 KB', async () => {
+  it('cycles the original bundled avatar at profile display resolution', async () => {
     const wrapper = mount(ProfileComponent, {
       props: {
         avatar: 'data:image/webp;base64,EXISTING',
@@ -162,7 +169,14 @@ describe('Profile.vue component avatar handling', () => {
     expect(wrapper.vm.$data.internalAvatar).toContain(
       'data:image/webp;base64,RESIZED_AVATAR',
     )
-    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(4096)
+    expect(mockDrawImage).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+      0,
+      512,
+      512,
+    )
+    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(65536)
   })
 
   it('validates username handle and emits normalized handle', async () => {

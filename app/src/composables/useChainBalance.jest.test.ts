@@ -632,7 +632,7 @@ function mountSolanaViews(pinia: ReturnType<typeof createPinia>) {
 }
 
 describe('native Solana AVU presentation', () => {
-  it('keeps header, asset row and drawer on the oracle’s cached rate', async () => {
+  it('keeps header and asset row on the cached rate, with a native-only drawer', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const oracle = useOracleStore()
@@ -643,11 +643,11 @@ describe('native Solana AVU presentation', () => {
     const { detail, drawer } = mountSolanaViews(pinia)
     try {
       await flushPromises()
-      expect(detail.get('[data-testid="wallet-chain"]').text()).toBe(
-        'Solana Devnet',
+      expect(detail.get('[data-testid="wallet-name-text"]').text()).toBe(
+        'walletPanel.solana',
       )
-      expect(drawer.get('[data-test="solana-wallet-chain"]').text()).toBe(
-        'Solana Devnet',
+      expect(drawer.get('[data-test="solana-wallet-name-text"]').text()).toBe(
+        'walletPanel.solana',
       )
       expect(detail.get('[data-testid="wallet-balance"]').text()).toBe(
         '2.5 dSOL',
@@ -667,12 +667,10 @@ describe('native Solana AVU presentation', () => {
             )
             .text(),
         ).toBe(expected)
-        expect(drawer.get('[data-test="solana-wallet-avu"]').text()).toBe(
-          `· ${expected}`,
+        expect(drawer.find('[data-test="solana-wallet-avu"]').exists()).toBe(
+          false,
         )
-        expect(drawer.get('[data-test="subtoken-dsol"]').text()).toContain(
-          `(${expected})`,
-        )
+        expect(drawer.find('[data-test="subtoken-dsol"]').exists()).toBe(false)
       }
       expectAgreement('≈ 92.5 AVU · testnet')
       oracle.$patch({ current: { ...oracle.current, rates: { solana: 83 } } })
@@ -688,7 +686,7 @@ describe('native Solana AVU presentation', () => {
   })
 })
 
-describe('Solana token availability in both views', () => {
+describe('Solana token availability in the asset view', () => {
   it.each(['loading', 'unavailable'])(
     'shows one SPL holding while native SOL is %s and retains it after token failure',
     async nativeStatus => {
@@ -728,9 +726,6 @@ describe('Solana token availability in both views', () => {
         expect(
           detail.get('[data-testid="wallet-token-item-tusdc"]').text(),
         ).toContain('100.00 tUSDC')
-        expect(drawer.get('[data-test="subtoken-tusdc"]').text()).toContain(
-          '100.00 tUSDC',
-        )
         expect(drawer.find('[data-test="solana-token-status"]').exists()).toBe(
           false,
         )
@@ -744,12 +739,7 @@ describe('Solana token availability in both views', () => {
         await fetchChainBalance('solana', true)
         await nextTick()
         expect(getChainTokens('solana')).toHaveLength(1)
-        expect(drawer.get('[data-test="subtoken-tusdc"]').text()).toContain(
-          '100.00 tUSDC',
-        )
-        expect(drawer.get('[data-test="solana-token-status"]').text()).toBe(
-          'walletPanel.tokenBalancesStale',
-        )
+
         expect(detail.get('[data-testid="wallet-token-status"]').text()).toBe(
           'walletPanel.tokenBalancesStale',
         )
@@ -787,9 +777,7 @@ describe('Solana token availability in both views', () => {
       expect(detail.get('[data-testid="wallet-token-status"]').text()).toBe(
         'walletPanel.tokenBalancesLoading',
       )
-      expect(drawer.get('[data-test="solana-token-status"]').text()).toBe(
-        'walletPanel.tokenBalancesLoading',
-      )
+
       expect(detail.get('[data-testid="wallet-balance"]').text()).toBe(
         '2.5 dSOL',
       )
@@ -798,9 +786,7 @@ describe('Solana token availability in both views', () => {
       expect(detail.get('[data-testid="wallet-token-status"]').text()).toBe(
         'walletPanel.tokenBalancesUnavailable',
       )
-      expect(drawer.get('[data-test="solana-token-status"]').text()).toBe(
-        'walletPanel.tokenBalancesUnavailable',
-      )
+
       expect(
         detail.get('[data-testid="wallet-send-action"]').attributes('disabled'),
       ).toBeUndefined()
@@ -846,15 +832,13 @@ describe('Solana token availability in both views', () => {
       expect(
         detail.get('[data-testid="wallet-token-item-test"]').text(),
       ).toContain('50 TEST')
-      expect(drawer.get('[data-test="subtoken-test"]').text()).toContain(
-        '50 TEST',
+      expect(drawer.get('[data-test="solana-wallet-balance"]').text()).toBe(
+        '3 dSOL',
       )
       expect(detail.get('[data-testid="wallet-token-status"]').text()).toBe(
         'walletPanel.tokenBalancesStale',
       )
-      expect(drawer.get('[data-test="solana-token-status"]').text()).toBe(
-        'walletPanel.tokenBalancesStale',
-      )
+
       expect(
         detail.get('[data-testid="wallet-send-action"]').attributes('disabled'),
       ).toBeUndefined()

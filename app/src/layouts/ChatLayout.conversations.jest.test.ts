@@ -36,7 +36,7 @@ jest.mock('../router/routes', () => ({
   createRoutes: () => [
     { path: '/forum', component: { template: '<div />' } },
     {
-      path: '/add-contact',
+      path: '/new-conversation',
       component: jest.requireActual('../pages/AddContact.vue').default,
     },
     {
@@ -205,19 +205,17 @@ async function mountedConversations(bot = false) {
   const create = async (address: string, subject: string, explicit = true) => {
     if (explicit)
       await root.get('[data-testid="start-conversation-btn"]').trigger('click')
-    else await router.push('/add-contact')
+    else {
+      await router.push(`/chat/${address}`)
+      await settle()
+      return chats.activeConversationId as string
+    }
     await settle()
     const page = root.getComponent(AddContact)
     await page.get('[data-test="address-input"]').setValue(address)
     await settle()
-    if (explicit) await page.get('[data-test="topic-input"]').setValue(subject)
-    await page
-      .get(
-        explicit
-          ? '[data-test="start-conversation-btn"]'
-          : '[data-test="add-and-chat-btn"]',
-      )
-      .trigger('click')
+    await page.get('[data-test="topic-input"]').setValue(subject)
+    await page.get('[data-test="start-conversation-btn"]').trigger('click')
     await settle()
     return chats.activeConversationId as string
   }
@@ -633,7 +631,7 @@ it.each([false, true])(
   },
 )
 
-it('Compose Email creates independent equal and blank roots, reopens by ID and preserves direct defaults', async () => {
+it('New conversation infers email and creates independent equal and blank roots, reopens by ID and preserves direct defaults', async () => {
   const app = await mountedConversations()
   try {
     const defaultId = await app.create(PEER, '', false)
@@ -645,7 +643,9 @@ it('Compose Email creates independent equal and blank roots, reopens by ID and p
       ['alice@example.com', ''],
       ['bob@example.com', 'Same'],
     ]) {
-      await app.root.get('[data-testid="compose-email-btn"]').trigger('click')
+      await app.root
+        .get('[data-testid="start-conversation-btn"]')
+        .trigger('click')
       await settle()
       const page = app.root.getComponent(AddContact)
       await page.get('[data-test="address-input"]').setValue(recipient)

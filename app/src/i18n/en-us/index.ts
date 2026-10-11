@@ -325,7 +325,6 @@ export default {
   a11y: {
     openNavigation: 'Open navigation menu',
     addContact: 'Add contact',
-    composeEmail: 'Compose email',
     addTopic: 'Add topic',
     deleteTopic: 'Delete topic {topic}',
     deleteContact: 'Delete contact {name}',

@@ -65,6 +65,12 @@ const SAME_IN_FRENCH = new Set([
   'walletPanel.zeroTdoge',
   'walletPanel.avuDrawerHeader',
   'walletPanel.chartTokenAvu',
+  // Scientific labels and the French cognate observations.
+  'walletPanel.priceHistoryHash',
+  'walletPanel.priceHistorySpot',
+  'walletPanel.avuReferenceHash',
+  'walletPanel.avuReferenceSpot',
+  'walletPanel.avuReferencePointCount',
   'swap.max',
   'swap.networkFeeKnown',
   'SettingPanel.contacts',

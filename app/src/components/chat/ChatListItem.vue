@@ -96,12 +96,23 @@
         <span data-testid="chat-timestamp-date">{{ timestampParts.date }}</span>
         <span data-testid="chat-timestamp-time">{{ timestampParts.time }}</span>
       </q-item-label>
-      <q-badge
-        v-if="!!effectiveNumUnread"
-        rounded
-        color="secondary"
-        :label="effectiveNumUnread"
-      />
+      <div v-if="!!effectiveNumUnread" class="chat-list-unread-chips">
+        <q-badge
+          rounded
+          color="secondary"
+          :label="effectiveNumUnread"
+          data-testid="chat-unread-count"
+        />
+        <q-badge
+          v-if="effectiveValueUnread"
+          rounded
+          color="primary"
+          :label="effectiveValueUnread"
+          :title="effectiveValueUnread"
+          class="chat-list-unread-value"
+          data-testid="chat-unread-value"
+        />
+      </div>
     </q-item-section>
 
     <!-- Right-click contextual menu -->
@@ -563,6 +574,22 @@ export default defineComponent({
 
 .chat-list-metadata-unread {
   display: flex;
+  max-width: 42%;
+}
+
+.chat-list-unread-chips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.chat-list-unread-value {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .chat-list-timestamp {

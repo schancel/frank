@@ -378,6 +378,68 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
 })
 
 describe('ChatListItem title line', () => {
+  it.each(['0.4068 MONR', '12.34 SOL', '0 SOL'])(
+    'renders separate unread count and configured value chips for %s',
+    valueUnread => {
+      const wrapper = shallowMount(ChatListItem, {
+        props: {
+          chatAddress: '0xabc',
+          compact: false,
+          numUnread: 2,
+          valueUnread,
+        },
+        global: {
+          mocks: {
+            $t: translator('en-us'),
+            $status: { setup: true },
+            $route: { params: {} },
+          },
+          stubs: {
+            QBadge: { props: ['label'], template: '<span>{{ label }}</span>' },
+          },
+        },
+      })
+      expect(wrapper.get('[data-testid="chat-unread-count"]').text()).toBe('2')
+      expect(wrapper.get('[data-testid="chat-unread-value"]').text()).toBe(
+        valueUnread,
+      )
+      expect(
+        wrapper.get('[data-testid="chat-unread-value"]').attributes('title'),
+      ).toBe(valueUnread)
+      const title = wrapper.get('[data-testid="chat-list-title"]')
+      expect(title.find('[data-testid="chat-unread-count"]').exists()).toBe(
+        false,
+      )
+      expect(title.find('[data-testid="chat-unread-value"]').exists()).toBe(
+        false,
+      )
+    },
+  )
+
+  it('hides both unread chips when all messages have been read', () => {
+    const wrapper = shallowMount(ChatListItem, {
+      props: {
+        chatAddress: '0xabc',
+        compact: false,
+        numUnread: 0,
+        valueUnread: '12 SOL',
+      },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+    expect(wrapper.find('[data-testid="chat-unread-count"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="chat-unread-value"]').exists()).toBe(
+      false,
+    )
+  })
+
   it('keeps the name and badge separate from stacked date/time and unread count', () => {
     mockOwnAddress.value = OWN_ADDRESS
     const wrapper = shallowMount(ChatListItem, {

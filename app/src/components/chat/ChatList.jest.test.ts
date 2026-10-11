@@ -31,7 +31,9 @@ jest.mock('@frank/wallet/chain', () => ({
   activeChain: { toDisplayAmount: (n: bigint) => n.toString(), unit: 'MON' },
 }))
 jest.mock('./ChatListItem.vue', () => ({
-  template: '<div data-testid="chat-item" />',
+  props: ['valueUnread', 'numUnread'],
+  template:
+    '<div data-testid="chat-item"><span data-testid="unread-value">{{ valueUnread }}</span></div>',
 }))
 jest.mock('./MailboxStatusBanner.vue', () => ({
   template: '<div data-testid="mailbox-status" />',
@@ -78,6 +80,27 @@ describe('ChatList closeDrawer', () => {
     mockChatStore.getSortedChatOrder = [
       { id: 'thread1', address: 'addr1', totalUnreadMessages: 0 },
     ]
+  })
+
+  it('passes a zero unread value with the configured messaging unit to the row', async () => {
+    const chain = jest.requireMock('@frank/wallet/chain').activeChain
+    const previousUnit = chain.unit
+    chain.unit = 'SOL'
+    mockChatStore.getSortedChatOrder = [
+      {
+        id: 'free-unread',
+        address: 'addr1',
+        totalUnreadMessages: 2,
+        totalUnreadValue: 0,
+      },
+    ]
+    try {
+      const wrapper = await selectChatAt(390)
+      expect(wrapper.get('[data-testid="unread-value"]').text()).toBe('0 SOL')
+      wrapper.unmount()
+    } finally {
+      chain.unit = previousUnit
+    }
   })
 
   it.each([390, 800])('emits closeDrawer at %ipx (mobile)', async width => {

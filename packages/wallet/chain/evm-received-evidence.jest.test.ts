@@ -473,3 +473,15 @@ it.each(["wrong-chain", "noncanonical", "malformed"] as const)(
     }
   }
 );
+
+it.each(["request-budget-exhausted", "deadline-exceeded"] as const)(
+  "preserves a verified lower bound alongside typed %s coverage",
+  async (reason) => {
+    const raw = await sign();
+    const result = evaluate([raw], [fact(raw)], {
+      coverageIssues: [{ reason }],
+    });
+    expect(result.verifiedReceivedWei).toBe(10n);
+    expect(result.issues).toEqual([{ reason }]);
+  }
+);

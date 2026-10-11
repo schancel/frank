@@ -292,6 +292,8 @@ import {
   avuSpotAt,
   priceAssetId,
   seriesName,
+  mergeSeries,
+  type OracleFeed,
   type OracleInputs,
   type SupportedAsset,
 } from '@frank/wallet/oracle'
@@ -481,9 +483,27 @@ interface Series {
   gaps: number[]
 }
 
+// Only the current zoom holds unthinned history; old detailed intervals never accumulate.
+const detailedHistory = ref<OracleFeed[]>([])
+const historyInputs = computed<OracleInputs | undefined>(() => {
+  const held = inputs.value
+  if (!held) return undefined
+  const series = { ...held.series }
+  for (const feed of detailedHistory.value) {
+    for (const [name, received] of Object.entries(feed.series)) {
+      series[name] = {
+        ...received,
+        points: mergeSeries(series[name]?.points ?? [], received.points),
+      }
+    }
+  }
+  return { ...held, series }
+})
+
 /** Only actual selected-coin price timestamps provide historical observations. */
 const sampleTimes = computed<number[]>(() => {
-  const points = inputs.value?.series[tokenPriceSeries.value]?.points ?? []
+  const points =
+    historyInputs.value?.series[tokenPriceSeries.value]?.points ?? []
   const now = Math.floor(Date.now() / 1000)
   // Request resolution must not discard finer observations already held in the cache.
   return points
@@ -492,7 +512,7 @@ const sampleTimes = computed<number[]>(() => {
 })
 
 const rangeSeries = computed<Series[]>(() => {
-  const feed = inputs.value
+  const feed = historyInputs.value
   if (!feed || denomination.value === 'gold') return []
   const points: DataPoint[] = []
   const gaps: number[] = []
@@ -526,6 +546,13 @@ const rangeSeries = computed<Series[]>(() => {
 
 // Drag across the chart to zoom to that stretch. Zooming only hides points outside it.
 const zoom = ref<{ min: number; max: number } | null>(null)
+watch(
+  zoom,
+  () => {
+    detailedHistory.value = []
+  },
+  { flush: 'sync' },
+)
 const series = computed<Series[]>(() => {
   const window = zoom.value
   if (!window) return rangeSeries.value
@@ -746,16 +773,21 @@ const dataNote = computed(() => {
 // While this chart is on screen, the oracle's local series are made to hold the range it
 // shows: the feed is asked only for the stretches they lack. Nothing is drawn until real
 // data is there.
-useOracleHistory(() => {
-  const range = timeRange.value
-  const window = zoom.value
-  if (!window) return { since: rangeStart.value, step: range.step }
-  const span = window.max - window.min
-  const resolution = Object.values(RANGES)
-    .filter(candidate => candidate.span >= span)
-    .reduce((step, candidate) => Math.min(step, candidate.step), range.step)
-  return { since: window.min, until: window.max, step: resolution }
-})
+useOracleHistory(
+  () => {
+    const range = timeRange.value
+    const window = zoom.value
+    if (!window) return { since: rangeStart.value, step: range.step }
+    const span = window.max - window.min
+    const resolution = Object.values(RANGES)
+      .filter(candidate => candidate.span >= span)
+      .reduce((step, candidate) => Math.min(step, candidate.step), range.step)
+    return { since: window.min, until: window.max, step: resolution }
+  },
+  feeds => {
+    if (zoom.value) detailedHistory.value = feeds
+  },
+)
 </script>
 
 <style scoped>

@@ -385,6 +385,74 @@ describe('selected coin price history', () => {
     )
   })
 
+  it('keeps fetched intraday detail visible when zooming history older than the persistent cache cutoff', async () => {
+    const start = NOW - 20 * DAY
+    const end = start + DAY
+    const oracle = receive(
+      testFeed([start, end], { prices: { 'monad-mainnet': 0.025 } }),
+    )
+    const times = [start, start + 600, start + 1200, end]
+    oracle.useFeedSource(async request =>
+      !('latest' in request) && request.step === 600
+        ? testFeed(times, { prices: { 'monad-mainnet': 0.03 } })
+        : undefined,
+    )
+    const wrapper = mountChart()
+    await flushPromises()
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(columns).toHaveLength(2)
+    await columns[0].trigger('mousedown')
+    await columns[1].trigger('mouseup')
+    await flushPromises()
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(4)
+    expect(oracle.cache.series['price/monad-mainnet'].points).toHaveLength(2)
+    expect(
+      oracle.cache.coverage.some(one => one.step < DAY && one.from <= start),
+    ).toBe(false)
+    await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it.each(['reset', 'range', 'coin'])(
+    'ignores late old-history detail after %s',
+    async change => {
+      const start = NOW - 20 * DAY
+      const end = start + DAY
+      const oracle = receive(
+        testFeed([start, end], { prices: { 'monad-mainnet': 0.025 } }),
+      )
+      let resolve!: (feed: OracleFeed) => void
+      const pending = new Promise<OracleFeed>(done => {
+        resolve = done
+      })
+      oracle.useFeedSource(async request =>
+        !('latest' in request) && request.step === 600 ? pending : undefined,
+      )
+      const wrapper = mountChart()
+      await flushPromises()
+      const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+      await columns[0].trigger('mousedown')
+      await columns[1].trigger('mouseup')
+      await flushPromises()
+      if (change === 'reset')
+        await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
+      else if (change === 'range') await openRange(wrapper, '1y')
+      else await wrapper.setProps({ selectedWallet: 'ecash' })
+      resolve(
+        testFeed([start, start + 600, start + 1200, end], {
+          prices: { 'monad-mainnet': 0.03 },
+        }),
+      )
+      await flushPromises()
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(
+        change === 'coin' ? 0 : 2,
+      )
+      wrapper.unmount()
+    },
+  )
+
   it.each(['all', '5y', '1y', '30d', '7d', '24h'])(
     'zooms %s to finer bounded history and clears selection on reset/range/coin changes',
     async range => {

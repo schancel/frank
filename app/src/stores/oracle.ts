@@ -33,6 +33,7 @@ import {
   missingRanges,
   oracleInputs,
   restoreOracleCache,
+  retainedCoverage,
   saveOracleCache,
 } from './oracle-series'
 
@@ -111,7 +112,7 @@ interface Schedule {
   /** How many holders want the feed kept current (the app shell, while it is mounted). */
   holders: number
   latestInFlight: Promise<void> | null
-  rangesInFlight: Map<string, Promise<void>>
+  rangesInFlight: Map<string, Promise<OracleFeed | undefined>>
   failures: number
   retryAt: number
   lastLatestAt: number
@@ -465,7 +466,7 @@ export const useOracleStore = defineStore('oracle', {
       since: number,
       step: number,
       requestedUntil?: number,
-    ): Promise<void> {
+    ): Promise<OracleFeed[] | undefined> {
       const schedule = scheduleOf(this)
       try {
         await this.restored
@@ -476,8 +477,14 @@ export const useOracleStore = defineStore('oracle', {
         requestedUntil ?? Infinity,
         Math.floor(Date.now() / 1000),
       )
-      await Promise.all(
-        missingRanges(this.cache.coverage, since, until, step).map(range => {
+      const nowSeconds = Math.floor(Date.now() / 1000)
+      const answers = await Promise.all(
+        missingRanges(
+          retainedCoverage(this.cache.coverage, nowSeconds),
+          since,
+          until,
+          step,
+        ).map(range => {
           const key = `${range.since}:${range.until}:${step}`
           const underWay = schedule.rangesInFlight.get(key)
           if (underWay) return underWay
@@ -496,19 +503,20 @@ export const useOracleStore = defineStore('oracle', {
               this.$patch({
                 cache: {
                   ...merged,
-                  coverage: coverRange(
-                    merged.coverage,
-                    range.since,
-                    range.until,
-                    step,
+                  coverage: retainedCoverage(
+                    coverRange(merged.coverage, range.since, range.until, step),
+                    Math.floor(Date.now() / 1000),
                   ),
                 },
               })
+              // The active view may use unthinned detail; persistence remains bounded.
+              return feed
             })
           schedule.rangesInFlight.set(key, request)
           return request
         }),
       )
+      return answers.filter((feed): feed is OracleFeed => feed !== undefined)
     },
   },
 

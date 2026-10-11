@@ -398,6 +398,23 @@ describe('the local series the chart reads', () => {
     expect(store.cache.coverage).toEqual([{ from: since, until, step: 600 }])
   })
 
+  it('returns old fine detail to the active view without claiming the thinned cache retains it', async () => {
+    const store = useOracleStore()
+    const since = seconds() - 20 * 86_400
+    const until = since + 3600
+    const times = [since, since + 600, since + 1200]
+    const feed = testFeed(times)
+    const { source, requests } = recordingSource(() => feed)
+    store.useFeedSource(source)
+    expect(await store.ensureHistory(since, 600, until)).toEqual([feed])
+    expect(
+      store.cache.series['price/btc-mainnet'].points.map(point => point[0]),
+    ).toEqual([since])
+    expect(store.cache.coverage).toEqual([{ from: since, until, step: 86_400 }])
+    await store.ensureHistory(since, 600, until)
+    expect(requests).toHaveLength(2)
+  })
+
   it('a range that could not be fetched is asked for again next time', async () => {
     const store = useOracleStore()
     let failing = true

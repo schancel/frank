@@ -1,5 +1,9 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { activeChain, type ContactPaymentInfo } from '@frank/wallet/chain'
+import {
+  activeChain,
+  onActiveChainChange,
+  type ContactPaymentInfo,
+} from '@frank/wallet/chain'
 import { accountStatus } from 'src/accounts/session'
 import { useActiveWallet } from './useActiveWallet'
 
@@ -7,8 +11,17 @@ import { useActiveWallet } from './useActiveWallet'
 export function useSentContactPayments(enabled: () => boolean) {
   const payments = ref<ContactPaymentInfo[]>([])
   let stopped = false
+  let mounted = false
+  let generation = 0
   let timer: ReturnType<typeof setTimeout> | undefined
+  let stopChain: (() => void) | undefined
+  const invalidate = () => {
+    generation++
+    clearTimeout(timer)
+    payments.value = []
+  }
   const read = async () => {
+    const admitted = generation
     const revision = accountStatus.revision
     const chainIdentifier = activeChain.chainIdentifier
     try {
@@ -16,6 +29,7 @@ export function useSentContactPayments(enabled: () => boolean) {
       const wallet = await useActiveWallet()
       if (
         stopped ||
+        admitted !== generation ||
         revision !== accountStatus.revision ||
         chainIdentifier !== activeChain.chainIdentifier ||
         wallet.chainIdentifier !== chainIdentifier
@@ -23,26 +37,38 @@ export function useSentContactPayments(enabled: () => boolean) {
         return
       payments.value = wallet.getContactPayments?.() ?? []
     } catch {
-      payments.value = []
+      if (admitted === generation) payments.value = []
       // Missing journal or locked wallet means unknown, never paid.
     } finally {
-      if (!stopped && enabled()) {
+      if (!stopped && enabled() && admitted === generation) {
         timer = setTimeout(() => void read(), 5000)
         ;(timer as { unref?: () => void }).unref?.()
       }
     }
   }
-  watch(
-    () => [accountStatus.revision, activeChain.chainIdentifier],
-    () => {
-      payments.value = []
-    },
-    { flush: 'sync' },
-  )
-  onMounted(() => void read())
+  const restart = () => {
+    invalidate()
+    if (mounted && enabled()) void read()
+  }
+  const activate = () => {
+    stopChain?.()
+    stopChain = undefined
+    invalidate()
+    if (!mounted || !enabled()) return
+    // activeChain is a plain object; its owner supplies change notifications, including A→B→A.
+    stopChain = onActiveChainChange(restart)
+    void read()
+  }
+  watch(() => accountStatus.revision, restart, { flush: 'sync' })
+  watch(enabled, activate, { flush: 'sync' })
+  onMounted(() => {
+    mounted = true
+    activate()
+  })
   onBeforeUnmount(() => {
     stopped = true
-    clearTimeout(timer)
+    stopChain?.()
+    invalidate()
   })
   return { sentContactPayments: payments }
 }

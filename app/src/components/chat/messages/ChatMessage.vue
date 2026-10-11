@@ -110,7 +110,7 @@
               :outbound="message.outbound"
               :outbound-state="
                 stealthTransactionGroups.find(
-                  group => group.ephemeralPubKey === item.ephemeralPubKey,
+                  group => group.itemIndex === subIndex,
                 )?.state
               "
             />
@@ -566,41 +566,43 @@ export default defineComponent({
     },
     /** What the chain has shown of this sent message's payment, in one word; '' if unknown. */
     stealthTransactionGroups() {
-      return this.message.items
-        .filter(item => item.type === 'stealth')
-        .map(item => {
-          const chain = resolveChainIdentifier(
-            item.networkTag || item.chainId || '',
-          )
-          const transactions = stealthTransactionDetails(
-            item.transactions ?? [],
-          ).map(tx => ({
-            ...tx,
-            state:
-              this.message.outbound && chain?.id === activeChain.chainIdentifier
-                ? contactPaymentState(
-                    this.sentContactPayments,
-                    item.ephemeralPubKey ?? '',
-                    [tx.txHash],
-                  )
-                : 'unknown',
-          }))
-          const state =
+      return this.message.items.flatMap((item, itemIndex) => {
+        if (item.type !== 'stealth') return []
+        const chain = resolveChainIdentifier(
+          item.networkTag || item.chainId || '',
+        )
+        const transactions = stealthTransactionDetails(
+          item.transactions ?? [],
+        ).map(tx => ({
+          ...tx,
+          state:
             this.message.outbound && chain?.id === activeChain.chainIdentifier
               ? contactPaymentState(
                   this.sentContactPayments,
                   item.ephemeralPubKey ?? '',
-                  transactions.map(tx => tx.txHash),
+                  [tx.txHash],
                 )
-              : 'unknown'
-          return {
+              : 'unknown',
+        }))
+        const state =
+          this.message.outbound && chain?.id === activeChain.chainIdentifier
+            ? contactPaymentState(
+                this.sentContactPayments,
+                item.ephemeralPubKey ?? '',
+                transactions.map(tx => tx.txHash),
+              )
+            : 'unknown'
+        return [
+          {
+            itemIndex,
             ephemeralPubKey: item.ephemeralPubKey,
             chainIdentifier: chain?.id,
             unit: chain?.unit,
             state,
             transactions,
-          }
-        })
+          },
+        ]
+      })
     },
     paymentSummary(): string {
       if (!this.message.outbound) return ''

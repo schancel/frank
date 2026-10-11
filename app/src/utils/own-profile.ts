@@ -150,41 +150,60 @@ export async function syncOwnProfile(options: {
   }
   const sent = { ...store.profile }
   await options.publish(sent)
+  if (options.isCancelled?.() || !sameAddress(store.owner, address))
+    return 'unreachable'
   // An edit made while this one was on its way is still unpublished.
-  if (sameAddress(store.owner, address) && sameProfile(store.profile, sent))
-    store.unpublished = false
+  if (sameProfile(store.profile, sent)) store.unpublished = false
   return 'published'
 }
 
-let relaySync: Promise<unknown> = Promise.resolve()
+// Serialise publishes for one account only. A stalled old account must not hold up the new
+// account's messaging activation. Entries are removed as soon as the account's last run ends.
+const relaySyncs = new Map<string, Promise<OwnProfileOutcome | undefined>>()
+export const PROFILE_RELAY_TIMEOUT_MS = 10_000
 
 /**
- * {@link syncOwnProfile} for the app's profile store and the account's relay. One run at a time:
+ * {@link syncOwnProfile} for the app's profile store and the account's relay. One run per account at a time:
  * a second run reads what the first one stored. Rejects only when publishing was refused or
  * failed; resolves to `undefined` where there is no profile store (a non-Vue host).
  */
-export function syncOwnProfileWithRelay(options: {
+export async function syncOwnProfileWithRelay(options: {
   relayBaseUrl: string
   identity: MonadIdentity
   network?: string
   isCancelled?: () => boolean
+  signal?: AbortSignal
 }): Promise<OwnProfileOutcome | undefined> {
   const { relayBaseUrl, identity, network } = options
+  let store: ReturnType<typeof useProfileStore>
+  try {
+    store = useProfileStore()
+  } catch {
+    return undefined
+  }
+  await store.restored
+  if (options.isCancelled?.() || options.signal?.aborted) return undefined
+  // Claim before waiting for this account's queue or asking the relay: an old account's
+  // profile must never be presented as the active account's while the network is unavailable.
+  claimProfileStore(store, identity.address.raw)
+  const owner = identity.address.raw.toLowerCase()
   const run = async (): Promise<OwnProfileOutcome | undefined> => {
-    let store: ReturnType<typeof useProfileStore>
-    try {
-      store = useProfileStore()
-    } catch {
+    if (
+      options.isCancelled?.() ||
+      options.signal?.aborted ||
+      store.owner !== owner
+    )
       return undefined
-    }
-    await store.restored
-    if (options.isCancelled?.()) return undefined
+    const deadline = AbortSignal.timeout(PROFILE_RELAY_TIMEOUT_MS)
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, deadline])
+      : deadline
     return syncOwnProfile({
       store,
-      isCancelled: options.isCancelled,
+      isCancelled: () => options.isCancelled?.() === true || signal.aborted,
       address: identity.address.raw,
       fetchPublished: () =>
-        fetchMonadProfile({ relayBaseUrl, address: identity.address }),
+        fetchMonadProfile({ relayBaseUrl, address: identity.address, signal }),
       publish: async profile => {
         // The relay refuses an avatar over its size limit: a smaller one, or none, is sent.
         let avatar = profile.avatar
@@ -199,8 +218,11 @@ export function syncOwnProfileWithRelay(options: {
             avatar = undefined
           }
         }
+        if (signal.aborted || options.isCancelled?.() || store.owner !== owner)
+          return
         await registerMonadIdentityCbor({
           relayBaseUrl,
+          signal,
           identity,
           profile: { ...profile, avatar } as MonadProfileFields,
           network,
@@ -208,7 +230,12 @@ export function syncOwnProfileWithRelay(options: {
       },
     })
   }
-  const next = relaySync.then(run, run)
-  relaySync = next.catch(() => undefined)
-  return next
+  const previous = relaySyncs.get(owner)
+  const next = (previous ?? Promise.resolve()).then(run, run)
+  relaySyncs.set(owner, next)
+  try {
+    return await next
+  } finally {
+    if (relaySyncs.get(owner) === next) relaySyncs.delete(owner)
+  }
 }

@@ -425,6 +425,23 @@ describe('direct-message polling: cadence, backoff and status', () => {
       polling.stop()
     })
 
+    it('the default 401 profile recovery is cancelled when the poller stops', async () => {
+      const sync = jest.mocked(syncOwnProfileWithRelay)
+      sync.mockClear()
+      const { mailbox, wallet } = setup()
+      mailbox.inject(unauthorized())
+      const polling = startDirectMessagePolling({ wallet })
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(sync).toHaveBeenCalledTimes(1)
+      const options = sync.mock.calls[0][0]
+      expect(options.isCancelled?.()).toBe(false)
+      expect(options.signal?.aborted).toBe(false)
+      polling.stop()
+      expect(options.isCancelled?.()).toBe(true)
+      expect(options.signal?.aborted).toBe(true)
+      expect(sync).toHaveBeenCalledTimes(1)
+    })
+
     it('triggers onAuthRecovery when direct-message polling encounters 401', async () => {
       const { mailbox, wallet } = setup()
       mailbox.inject(unauthorized())

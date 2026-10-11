@@ -192,6 +192,10 @@ export interface Conversation {
    * deleted at. It outlives the conversation being opened again, so that old messages do not
    * come back with it. */
   clearedBefore?: number
+  /** Highest relay time removed on this device by Clear or message deletion. Kept with
+   * conversation metadata so a later conversation Delete can cover that history after reload.
+   * This is a UI deletion boundary only; coin recovery remains owned by mailbox tombstones. */
+  removedRelayTime?: number
   /** What the account's own mailbox is known to say about this conversation: the facts this
    * device has noted to the account's other devices, or read from a note of theirs. A fact
    * beyond these is noted by the next pass of `noteConversationStates`. */
@@ -761,11 +765,10 @@ function isUntimedOutgoing(message: ChatMessage): boolean {
   )
 }
 
-/** The newest time the relay gave a message this conversation holds; zero when it holds none
- * the relay has timed. */
-function newestRelayTime(conversation: Conversation): number {
+/** The newest relay time in these messages; zero when the relay has timed none of them. */
+function newestRelayTime(messages: readonly ChatMessage[]): number {
   let newest = 0
-  for (const message of conversation.messages)
+  for (const message of messages)
     if (!isUntimedOutgoing(message) && message.serverTime > newest)
       newest = message.serverTime
   return newest
@@ -2203,6 +2206,11 @@ export const useChatStore = defineStore('chats', {
                 !(m.messageHash && digests.has(m.messageHash)) &&
                 !((m as any).index && digests.has((m as any).index)),
             )
+            const kept = new Set(remaining)
+            conv.removedRelayTime = Math.max(
+              conv.removedRelayTime ?? 0,
+              newestRelayTime(conv.messages.filter(m => !kept.has(m))),
+            )
             conv.messages.splice(0, conv.messages.length, ...remaining)
             conv.messages = remaining
             recomputeChatAccounting(conv, this.activeConversationId)
@@ -2286,15 +2294,10 @@ export const useChatStore = defineStore('chats', {
         console.debug('readAll: no chat yet for', addressOrId)
         return
       }
-      const values = chat.messages
-      if (values.length === 0) {
-        chat.lastRead = 0
-      } else {
-        chat.lastRead = Math.max(
-          values[values.length - 1].serverTime,
-          chat.lastRead ?? 0,
-        )
-      }
+      chat.lastRead = Math.max(
+        newestRelayTime(chat.messages),
+        chat.lastRead ?? 0,
+      )
       chat.totalUnreadMessages = 0
       chat.totalUnreadValue = 0
       // The account's other devices show it read too.
@@ -2472,7 +2475,6 @@ export const useChatStore = defineStore('chats', {
           sameCanonicalAddress(displayAddress, trustedGateway) ||
           sameCanonicalAddress(conv.address, trustedGateway)
       }
-      conv.lastRead = Date.now()
       conv.lastReceived = Math.max(conv.lastReceived, timestamp)
       recomputeChatAccounting(conv, this.activeConversationId)
       recordLogicalMessage(this.logicalMessages, message, conv.id)
@@ -3726,6 +3728,10 @@ export const useChatStore = defineStore('chats', {
       for (const digest of unscopedDigests) {
         await messageStore.deleteMessage(digest)
       }
+      chat.removedRelayTime = Math.max(
+        chat.removedRelayTime ?? 0,
+        newestRelayTime(clearingMessages),
+      )
       const clearedPayloads = new Set<string>()
       for (const message of clearingMessages) {
         clearedPayloads.add(message.payloadDigest)
@@ -3816,8 +3822,12 @@ export const useChatStore = defineStore('chats', {
       // A thread dropped while its subject was being edited: the one that replaced it.
       const conversation = resolveConversation(this.conversations, id)
       if (!conversation) throw new Error(`Unknown conversation ${id}`)
-      // An empty subject clears it: the conversation is shown by its peer alone again.
-      conversation.name = subject.trim() || undefined
+      // Reject invalid nonempty subjects before mutating: every device keeps the same previous
+      // subject. A blank one intentionally removes it.
+      const normalized = usableSubject(subject)
+      if (subject.trim() && normalized === undefined)
+        throw new Error('Invalid conversation subject')
+      conversation.name = normalized
       conversation.updatedAt = Date.now()
       // The user's subject is the newest one this device knows of, and the account's other
       // devices are told. (The peer is told by the next message, which carries it.)
@@ -3859,18 +3869,20 @@ export const useChatStore = defineStore('chats', {
       if (conversation) await this.deleteConversation(conversation.id)
     },
     /**
-     * Deletes a conversation with everything it shows now.
+     * Deletes a conversation's relay-timed history. Untimed own sends stay visible until their
+     * relay echo, so every frontend applies the same cutoff to them.
      *
      * The deletion is timed by the RELAY's clock, never this device's: it reaches exactly as
-     * far as the newest message it removed that the relay has timed. So it covers what the user
+     * far as the newest removed message the relay has timed, including history removed earlier
+     * on this device by Clear or message deletion. So it covers what the user
      * saw and nothing else: a message the relay times later, on any device, is newer than the
      * deletion and brings the conversation back, however wrong this device's clock is. (The
      * relay hands a mailbox over in the order of its times, so a message this device has not
      * seen yet is newer than every one it has.)
      *
-     * A conversation with nothing the relay has timed is deleted "up to" where it was already
-     * cleared, or up to time 1: nothing is covered, the conversation is hidden, and the first
-     * message in it brings it back.
+     * An empty conversation is deleted "up to" its retained removal boundary, where it was
+     * already cleared, or time 1 when it held no relay history. The next newer message brings
+     * it back.
      */
     async deleteConversation(conversationId: string) {
       if (!this.conversations[conversationId]) return
@@ -3878,12 +3890,15 @@ export const useChatStore = defineStore('chats', {
         const conv = this.conversations[conversationId]
         if (!conv) return
         const deletedAt = Math.max(
-          newestRelayTime(conv),
+          newestRelayTime(conv.messages),
+          conv.removedRelayTime ?? 0,
           clearedUpTo(conv) ?? 0,
           1,
         )
-        await this.clearChatExclusive(conversationId)
-        conv.deletedAt = deletedAt
+        // Apply the same boundary as the account's other devices. A send the relay has not
+        // timed remains visible and can reopen the conversation identically when echoed.
+        await this.applyClearedBeforeExclusive(conv, deletedAt)
+        if (conv.messages.length === 0) conv.deletedAt = deletedAt
         conv.actedBy = accountTag()
         if (this.activeConversationId === conversationId)
           this.activeConversationId = null

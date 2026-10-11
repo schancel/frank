@@ -136,6 +136,7 @@ interface Device {
   disk: Disk
   chats: ReturnType<typeof useChatStore>
   changeAccount: () => void
+  reload: () => Promise<void>
 }
 
 const opened: Device[] = []
@@ -210,6 +211,12 @@ function device(name: string): Device {
       })
     made = {
       name,
+      reload: async () =>
+        made!.chats.$patch(
+          await chatsModule.rehydrateState(
+            JSON.parse(JSON.stringify(made!.chats.$state)),
+          ),
+        ),
       changeAccount: () =>
         chatsModule.setConversationIdSalt(
           conversationIdSalt(new Uint8Array(32).fill(0x22)),
@@ -499,6 +506,81 @@ describe('a conversation deleted on one device', () => {
     ])
   })
 
+  it.each(['pending', 'payment-pending', 'confirmed'] as const)(
+    'keeps an untimed own %s message through Delete and agrees after its relay echo',
+    async status => {
+      const one = device('one')
+      await deliver(one, HISTORY)
+      await on(one, chats =>
+        chats.sendMessageLocal({
+          address: PEER,
+          conversationId: WITH_PEER,
+          senderAddress: ME,
+          index: 'my-last-send',
+          items: [{ type: 'text', text: 'bye' }],
+          outpoints: [],
+          status,
+          previousHash: null,
+          timestamp: 9000,
+        }),
+      )
+      await on(one, chats => chats.deleteConversation(WITH_PEER))
+      const note = await notes(one)
+      expect(shown(one).conversations[0].messages).toEqual(['my-last-send'])
+      expect(shown(one).listed).toEqual([WITH_PEER])
+      const echo = row({ digest: 'my-last-send', time: 2100, from: ME })
+      await deliver(one, [echo], note)
+      await on(one, () => one.reload())
+      for (const batches of [
+        [HISTORY, note, [echo]],
+        [[echo], note, HISTORY],
+      ]) {
+        const other = device('other')
+        await deliver(other, ...batches)
+        expect(shown(other)).toEqual(shown(one))
+      }
+    },
+  )
+
+  it.each(['clear', 'single'] as const)(
+    'Delete still covers relay history after per-device %s and restart',
+    async removal => {
+      const one = device('one')
+      await deliver(one, HISTORY)
+      await on(one, chats =>
+        removal === 'clear'
+          ? chats.clearConversation(WITH_PEER)
+          : chats.deleteMessage({ address: PEER, payloadDigest: 'peer-2' }),
+      )
+      expect(await notes(one)).toEqual([])
+      await on(one, () => one.reload())
+      await on(one, chats => chats.deleteConversation(WITH_PEER))
+      const note = await notes(one)
+      expect(
+        (note[0].message.items[0] as ConversationStateItem).clearedBefore,
+      ).toBe(2000)
+      const restored = device('restored')
+      await deliver(restored, HISTORY, note)
+      expect(shown(restored)).toEqual(shown(one))
+    },
+  )
+
+  it('a second Delete after a reply, Clear and restart advances the previously noted cutoff', async () => {
+    const { one, note: first } = await deletedOnDeviceOne()
+    const reply = row({ digest: 'reply', time: 6000 })
+    await deliver(one, [reply])
+    await on(one, chats => chats.clearConversation(WITH_PEER))
+    await on(one, () => one.reload())
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
+    const second = await notes(one)
+    expect(
+      (second[0].message.items[0] as ConversationStateItem).clearedBefore,
+    ).toBe(6000)
+    const restored = device('restored')
+    await deliver(restored, [...HISTORY, reply], second, first)
+    expect(shown(restored)).toEqual(shown(one))
+  })
+
   it('one failed conversation note does not stop another conversation from syncing', async () => {
     const one = device('one')
     const otherId = '22222222-2222-4222-8222-222222222222'
@@ -747,6 +829,41 @@ describe('a conversation read on one device', () => {
     expect(readNote(await notes(one)).map(n => n.readUpTo)).toEqual([3000])
   })
 
+  it.each([1800, 9000])(
+    'sending and opening with device clock %s never moves a read mark beyond relay history',
+    async deviceTime => {
+      const one = device('one')
+      await deliver(one, HISTORY)
+      jest.spyOn(Date, 'now').mockReturnValue(deviceTime)
+      await on(one, chats =>
+        chats.sendMessageLocal({
+          address: PEER,
+          conversationId: WITH_PEER,
+          senderAddress: ME,
+          index: 'own-reply',
+          items: [{ type: 'text', text: 'reply' }],
+          outpoints: [],
+          status: 'confirmed',
+          previousHash: null,
+          timestamp: deviceTime,
+        }),
+      )
+      await on(one, chats => {
+        chats.setActiveConversation(WITH_PEER)
+        chats.setActiveConversation(null)
+      })
+      const note = await notes(one)
+      expect(readNote(note).map(n => n.readUpTo)).toEqual([2000])
+      const echo = row({ digest: 'own-reply', time: 2100, from: ME })
+      const reply = row({ digest: 'new-unread', time: 6000 })
+      await deliver(one, [echo, reply])
+      expect(shown(one).conversations[0].unread).toBe(1)
+      const restored = device('restored')
+      await deliver(restored, [...HISTORY, echo, reply], note)
+      expect(shown(restored)).toEqual(shown(one))
+    },
+  )
+
   it('the mark is a relay time: a message of ours on its way does not move it', async () => {
     const one = device('one')
     await deliver(one, HISTORY)
@@ -837,6 +954,19 @@ describe('a conversation subject set on one device', () => {
     expect(note).toHaveLength(1)
     return { one, note }
   }
+
+  it.each(['x'.repeat(513), 'é'.repeat(257), 'subject\ncontrol'])(
+    'rejects an invalid subject without changing or noting the previous subject',
+    async subject => {
+      const { one } = await namedOnDeviceOne('Kept subject')
+      const previous = shown(one)
+      await expect(
+        on(one, chats => chats.renameConversation(WITH_PEER, subject)),
+      ).rejects.toThrow('Invalid conversation subject')
+      expect(await notes(one)).toEqual([])
+      expect(shown(one)).toEqual(previous)
+    },
+  )
 
   it('is noted to self once, with the time it was set', async () => {
     const { one, note } = await namedOnDeviceOne()

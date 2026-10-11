@@ -375,3 +375,94 @@ it('a queued refresh of a stopped session cannot reclaim another account profile
   expect(one.store.profile.name).toBe('Current account')
   expect(fetchPublished).not.toHaveBeenCalled()
 })
+
+it('a stalled old account read does not block claiming and refreshing the new account', async () => {
+  const api = jest.requireActual(
+    '@frank/wallet/monad-identity',
+  ) as typeof import('@frank/wallet/monad-identity')
+  const one = device()
+  const oldIdentity = MonadIdentity.generate()
+  const newIdentity = MonadIdentity.generate()
+  claimProfileStore(one.store, oldIdentity.address.raw)
+  one.store.profile = { name: 'Old account' }
+  let finishOld!: (value: ProfileInfo) => void
+  const read = jest
+    .spyOn(api, 'fetchMonadProfile')
+    .mockImplementation(async ({ address }) => {
+      if (address.raw === oldIdentity.address.raw)
+        return new Promise(resolve => {
+          finishOld = resolve
+        })
+      return { name: 'New account', accountType: 0 } as ProfileInfo
+    })
+  const publish = jest
+    .spyOn(api, 'registerMonadIdentityCbor')
+    .mockResolvedValue(undefined)
+  const oldRun = syncOwnProfileWithRelay({
+    relayBaseUrl: 'http://relay.invalid',
+    identity: oldIdentity,
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    expect(finishOld).toBeDefined()
+    expect(
+      await syncOwnProfileWithRelay({
+        relayBaseUrl: 'http://relay.invalid',
+        identity: newIdentity,
+      }),
+    ).toBe('adopted')
+    expect(one.store.owner).toBe(newIdentity.address.raw.toLowerCase())
+    expect(one.store.profile.name).toBe('New account')
+  } finally {
+    finishOld({
+      name: 'Old account late result',
+      accountType: 0,
+    } as ProfileInfo)
+    await oldRun
+    read.mockRestore()
+    publish.mockRestore()
+  }
+  expect(one.store.profile.name).toBe('New account')
+})
+
+it('stopping an in-flight own-profile GET aborts the request and does not adopt or publish', async () => {
+  const api = jest.requireActual(
+    '@frank/wallet/monad-identity',
+  ) as typeof import('@frank/wallet/monad-identity')
+  const one = device()
+  const identity = MonadIdentity.generate()
+  claimProfileStore(one.store, identity.address.raw)
+  one.store.profile = { name: 'Kept copy' }
+  const controller = new AbortController()
+  let requestSignal: AbortSignal | undefined
+  const read = jest
+    .spyOn(api, 'fetchMonadProfile')
+    .mockImplementation(({ signal }) => {
+      requestSignal = signal
+      return new Promise((_resolve, reject) =>
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+          once: true,
+        }),
+      )
+    })
+  const publish = jest
+    .spyOn(api, 'registerMonadIdentityCbor')
+    .mockResolvedValue(undefined)
+  try {
+    const run = syncOwnProfileWithRelay({
+      relayBaseUrl: 'http://relay.invalid',
+      identity,
+      signal: controller.signal,
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(requestSignal).toBeDefined()
+    controller.abort()
+    expect(await run).toBe('unreachable')
+    expect(requestSignal?.aborted).toBe(true)
+    expect(one.store.profile.name).toBe('Kept copy')
+    expect(publish).not.toHaveBeenCalled()
+  } finally {
+    read.mockRestore()
+    publish.mockRestore()
+  }
+})

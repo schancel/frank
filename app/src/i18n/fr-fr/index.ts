@@ -86,6 +86,8 @@ export default {
       'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
   },
   chatLayout: {
+    invalidSubject:
+      'Utilisez un sujet de 512 octets UTF-8 maximum sans caractères de contrôle.',
     participantCount: '{count} personnes',
     editSubject: 'Modifier le sujet',
     subject: 'Sujet',
@@ -1337,6 +1339,8 @@ export default {
     close: 'Fermer',
   },
   profileDialog: {
+    accountChanged:
+      'Votre compte a changé. Rouvrez le profil avant de l’enregistrer.',
     cancel: 'Annuler',
     update: 'Mettre à jour',
     republish: 'Republier',

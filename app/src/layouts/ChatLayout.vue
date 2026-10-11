@@ -258,6 +258,7 @@ import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import AccountBadge from '../components/contacts/AccountBadge.vue'
+import { errorNotify } from '../utils/notifications'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore, type Conversation } from 'src/stores/chats'
@@ -361,8 +362,12 @@ export default defineComponent({
       const subject = this.subjectDraft.trim()
       if (!this.subjectEditorOpen || !id || id !== this.activeConversation?.id)
         return
-      useChatStore().renameConversation(id, subject)
-      this.cancelSubjectEditor()
+      try {
+        useChatStore().renameConversation(id, subject)
+        this.cancelSubjectEditor()
+      } catch (error) {
+        errorNotify(error, { fallbackKey: 'chatLayout.invalidSubject' })
+      }
     },
     openInfo() {
       this.infoOpen = true

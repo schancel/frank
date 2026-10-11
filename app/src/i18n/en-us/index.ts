@@ -83,6 +83,8 @@ export default {
     },
   },
   chatLayout: {
+    invalidSubject:
+      'Use a subject of at most 512 UTF-8 bytes without control characters.',
     participantCount: '{count} participants',
     editSubject: 'Edit subject',
     subject: 'Subject',
@@ -1300,6 +1302,7 @@ export default {
     close: 'Close',
   },
   profileDialog: {
+    accountChanged: 'Your account changed. Reopen the profile before saving.',
     cancel: 'Cancel',
     update: 'Update',
     republish: 'Re-publish',

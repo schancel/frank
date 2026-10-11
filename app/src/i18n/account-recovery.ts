@@ -1,4 +1,16 @@
 export const en = {
+  mera_create: 'Create a new passkey account',
+  mera_login: 'Log in with an existing passkey',
+  mera_description:
+    'Passkeys (preview) create a separate Frank account. To log in elsewhere, use the same passkey on this same website with a supported browser and passkey provider. Save recovery shares from account backup as another way to recover access.',
+  mera_unsupported:
+    'Passkeys require a secure website and a supported browser. Use account creation or recovery shares instead.',
+  mera_cancelled:
+    'The passkey request was cancelled or timed out. No account was activated. Try again when ready.',
+  mera_prf:
+    'This passkey or browser did not provide the required PRF secret. No account was activated. Try a supported passkey provider and browser, or use recovery shares.',
+  mera_failed:
+    'The passkey request could not finish. No account was activated. Retry with the same passkey. A passkey may have been created before this failure; use existing-passkey login to retry it.',
   wallet_chain_mismatch:
     'This saved wallet does not match the network or account configuration the app is using. Restore the previous network configuration and retry opening the existing account. Its saved data has not been changed.',
   profile_restore_unreachable:
@@ -163,6 +175,18 @@ export const en = {
 }
 
 export const fr = {
+  mera_create: 'Créer un compte avec une nouvelle clé d’accès',
+  mera_login: 'Se connecter avec une clé d’accès existante',
+  mera_description:
+    'Les clés d’accès (aperçu) créent un compte Frank distinct. Pour vous connecter ailleurs, utilisez la même clé d’accès sur ce même site avec un navigateur et un fournisseur compatibles. Enregistrez aussi des parts de récupération dans la sauvegarde du compte.',
+  mera_unsupported:
+    'Les clés d’accès nécessitent un site sécurisé et un navigateur compatible. Utilisez la création de compte ou les parts de récupération.',
+  mera_cancelled:
+    'La demande de clé d’accès a été annulée ou a expiré. Aucun compte n’a été activé. Réessayez lorsque vous êtes prêt.',
+  mera_prf:
+    'Cette clé d’accès ou ce navigateur n’a pas fourni le secret PRF requis. Aucun compte n’a été activé. Essayez un fournisseur et un navigateur compatibles, ou utilisez les parts de récupération.',
+  mera_failed:
+    'La demande de clé d’accès n’a pas abouti. Aucun compte n’a été activé. Réessayez avec la même clé. Une clé a peut-être été créée avant cet échec ; réessayez avec la connexion par clé existante.',
   wallet_chain_mismatch:
     'Ce portefeuille enregistré ne correspond pas au réseau ou à la configuration de compte utilisé par l’application. Rétablissez la configuration réseau précédente puis réessayez d’ouvrir le compte existant. Les données enregistrées n’ont pas été modifiées.',
   profile_restore_unreachable:

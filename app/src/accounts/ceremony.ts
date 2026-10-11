@@ -6,14 +6,27 @@ import {
   encodeRecoveryDescriptor,
   destroyRecoveredBackup,
   randomCodex32Identifier,
+  deriveRecoveryPublicMetadata,
+  type AccountDomainRoots,
   type PendingCodex32Signup,
   type PublicRecoveryDescriptor,
   type RecoveredAccountBackup,
 } from '@frank/account-recovery'
+import { createMasterPayload } from '@frank/codex32'
+import {
+  DOMAIN_PURPOSES,
+  deriveDomainRoot,
+  type DomainRoot,
+} from '@frank/domain-roots'
+import { getMeraAccountRoot, type MeraAccountAction } from './mera-passkey'
+import {
+  activeChain,
+  onActiveChainChange,
+  setCustomRelayBaseUrl,
+} from '@frank/wallet/chain'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { toHex } from '@frank/codec'
-import { setCustomRelayBaseUrl } from '@frank/wallet/chain'
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { accountSession } from './session'
 import { assertLegacyUnchanged, legacyStatus } from './legacy'
@@ -80,6 +93,7 @@ export function createAccountCeremony() {
     take: () => RecoveredAccountBackup | undefined,
     isRestore: boolean,
     displayName: string,
+    isCurrent: () => boolean = () => true,
   ) {
     if (!attempt) throw new Error('Start an account ceremony first')
     const captured = attempt
@@ -97,13 +111,14 @@ export function createAccountCeremony() {
           const address = identity.displayAddress
           identityDetails = { subject, address }
           discoveredRelayUrl = await probeDirectoryRelay({ subject, address })
-          if (discoveredRelayUrl) setCustomRelayBaseUrl(discoveredRelayUrl)
+          if (discoveredRelayUrl && token === epoch && isCurrent())
+            setCustomRelayBaseUrl(discoveredRelayUrl)
         } catch {
           // probe failure should never block account recovery
         }
       }
       await assertLegacyUnchanged(captured.legacyRevision)
-      if (token !== epoch) throw new Error('Ceremony cancelled')
+      if (token !== epoch || !isCurrent()) throw new Error('Ceremony cancelled')
       // Preserve the exact secret and its original derivation through the common stage boundary.
       const context = { ...captured, displayName, custodyEpoch: 1 }
       await accountSession.stage(
@@ -115,7 +130,7 @@ export function createAccountCeremony() {
               accountRoot: recovered.accountRoot,
             },
       )
-      if (token !== epoch)
+      if (token !== epoch || !isCurrent())
         await accountSession.cancelPending(captured.attemptId)
       return {
         isRestore,
@@ -133,6 +148,65 @@ export function createAccountCeremony() {
   }
   return {
     cancel,
+    /** Passkeys stage the same root32 account as backup recovery; activation stays explicit. */
+    async beginPasskey(
+      action: MeraAccountAction,
+      readRoot: (
+        action: MeraAccountAction,
+      ) => Promise<Uint8Array> = getMeraAccountRoot,
+    ) {
+      cancel()
+      const chainIdentifier = activeChain.chainIdentifier
+      let chainChanged = false
+      const unlisten = onActiveChainChange(() => {
+        chainChanged = true
+      })
+      let root: Uint8Array | undefined
+      let master: Uint8Array | undefined
+      const derived: DomainRoot[] = []
+      try {
+        await capture()
+        const token = epoch
+        root = await readRoot(action)
+        if (
+          token !== epoch ||
+          chainChanged ||
+          chainIdentifier !== activeChain.chainIdentifier
+        )
+          throw new Error('Ceremony cancelled')
+        const payload = createMasterPayload(root)
+        if (!payload.ok) throw new Error('Invalid account root')
+        master = payload.value
+        const metadata = deriveRecoveryPublicMetadata(master)
+        for (const purpose of DOMAIN_PURPOSES)
+          derived.push(deriveDomainRoot(root, purpose))
+        const recovered = {
+          accountRoot: root,
+          metadata,
+          roots: Object.freeze(
+            Object.fromEntries(derived.map(value => [value.purpose, value])),
+          ) as AccountDomainRoots,
+        }
+        const outcome = await finish(
+          () => recovered,
+          action === 'login',
+          '',
+          () =>
+            !chainChanged && chainIdentifier === activeChain.chainIdentifier,
+        )
+        if (token !== epoch || chainChanged)
+          throw new Error('Ceremony cancelled')
+        return outcome
+      } catch (error) {
+        cancel()
+        throw error
+      } finally {
+        unlisten()
+        root?.fill(0)
+        master?.fill(0)
+        derived.forEach(value => value.bytes.fill(0))
+      }
+    },
     async beginNew(threshold: 2 | 3, count: 3 | 5) {
       cancel()
       await capture()

@@ -401,12 +401,36 @@
                   outline
                   color="primary"
                   no-caps
+                  :label="$t('accountRecovery.mera_create')"
+                  data-test="mera-create"
+                  :disable="!mayBegin || busy"
+                  @click="beginPasskey('create')"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.mera_login')"
+                  data-test="mera-login"
+                  :disable="!mayBegin || busy"
+                  @click="beginPasskey('login')"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
                   :label="$t('accountRecovery.identify_legacy_account_locally')"
                   data-test="legacy-recovery"
                   :disable="!mayBegin || busy"
                   @click="changeMode('legacy')"
                 />
               </div>
+              <p class="q-mt-md" data-test="mera-description">
+                {{ $t('accountRecovery.mera_description') }}
+              </p>
+              <p v-if="!passkeysSupported" data-test="mera-unsupported">
+                {{ $t('accountRecovery.mera_unsupported') }}
+              </p>
               <q-btn
                 v-if="account.status === 'ready'"
                 class="q-mt-md"
@@ -800,6 +824,11 @@ import {
   recoveryErrorMessage,
 } from '../accounts/ceremony'
 import {
+  MeraAccountError,
+  supportsMeraPasskeys,
+  type MeraAccountAction,
+} from '../accounts/mera-passkey'
+import {
   legacyStatus as legacy,
   retryLegacyInspection,
 } from '../accounts/legacy'
@@ -825,6 +854,7 @@ const emit = defineEmits([
 const router = useRouter()
 const t = useTranslate()
 const ceremony = createAccountCeremony()
+const passkeysSupported = supportsMeraPasskeys()
 const tabCoordinator = useTabCoordinatorStore()
 
 const defaultRelayUrl = getDefaultRelayBaseUrl()
@@ -1010,7 +1040,10 @@ async function run(work: () => Promise<void>) {
       if (!wasLegacy) {
         mode.value = 'choice'
       }
-      error.value = recoveryErrorMessage(failure)
+      error.value =
+        failure instanceof MeraAccountError
+          ? t(`accountRecovery.mera_${failure.code}`)
+          : recoveryErrorMessage(failure)
       // Which share was wrong is worth knowing even when nothing could be restored.
       shareReport.value = (failure as { shares?: ShareVerdict[] })?.shares ?? []
       reportCandidate.value = 0
@@ -1019,6 +1052,14 @@ async function run(work: () => Promise<void>) {
   } finally {
     if (alive && token === request) busy.value = false
   }
+}
+function beginPasskey(action: MeraAccountAction) {
+  return run(async () => {
+    if (!mayBegin.value) return
+    shareReport.value = []
+    await applyDiscoveredRelay(await ceremony.beginPasskey(action))
+    if (alive) changeMode('choice')
+  })
 }
 function beginNew() {
   return run(async () => {

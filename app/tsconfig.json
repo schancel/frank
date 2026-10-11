@@ -28,6 +28,11 @@
     // internal chain -- does not automatically derive its module resolution from tsconfig
     // `paths`; these are two independent mechanisms that both need to agree).
     "paths": {
+      // Mera exposes declarations through exports.types. This project's legacy Node
+      // resolver needs the same explicit declaration entry; Vite uses package exports.
+      "@category-labs/mera": [
+        "../node_modules/@category-labs/mera/dist/index.d.ts"
+      ],
       "@frank/account-vault": ["../packages/account-vault/src/index.ts"],
       "@frank/account-recovery": ["../packages/account-recovery/src/index.ts"],
       "@frank/domain-roots": ["../packages/domain-roots/src/index.ts"],

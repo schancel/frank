@@ -3,7 +3,10 @@
  * (session, custody, vault, ceremony, recovery) and the three stand-ins outside backup/restore.
  */
 import { splitCodex32 } from '@frank/codex32'
-import { DOMAIN_PURPOSES } from '@frank/domain-roots'
+import { DOMAIN_PURPOSES, BIP39_DERIVATION } from '@frank/domain-roots'
+import { parseAccountBackupShareInput } from '@frank/account-recovery'
+import { historicalBip39WalletMaterial } from '@frank/wallet/monad-wallet-material'
+import { mnemonicToSeedSync } from 'bip39'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { AccountBackupUnavailableError, stageBip39Recovery } from './session'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
@@ -63,9 +66,99 @@ test('a historical BIP39 phrase uses shared staging, activation and reopen witho
   await expect(
     reopened.getActiveDomainRoot('evm-wallet'),
   ).rejects.toMatchObject({ code: 'account-purpose-unavailable' })
-  await expect(reopened.backupCodex32(2, 3)).rejects.toMatchObject({
-    code: 'account-backup-unavailable',
+  expect((await reopened.backupCodex32(2, 3)).length).toBe(3)
+})
+
+function historicalPublicKeys(seed: Uint8Array) {
+  const material = historicalBip39WalletMaterial({
+    derivation: BIP39_DERIVATION,
+    seed,
   })
+  try {
+    return {
+      identity: Buffer.from(material.identity.compressedPubKey).toString('hex'),
+      spend: material.keyring.deriveSubAccount(0).publicKey,
+      change: material.changeKeyring.deriveChangeAccount(0).publicKey,
+    }
+  } finally {
+    material.dispose()
+  }
+}
+
+test.each([
+  [2, 3],
+  [3, 5],
+] as const)(
+  'historical %i-of-%i backup restores the original identity and spend keys through activation and reopen',
+  async (threshold, count) => {
+    const phrase = 'test test test test test test test test test test test junk'
+    const originalSeed = mnemonicToSeedSync(phrase)
+    const expected = historicalPublicKeys(originalSeed)
+    const original = freshDevice()
+    await original.initialize()
+    await stageBip39Recovery(original, phrase)
+    await activate(original)
+    const shares = await original.backupCodex32(threshold, count)
+    expect(shares.length).toBe(count)
+    await original.close()
+    // The paper presentation uses two adjacent lines per share. Clipboard envelopes also work.
+    const paper = shares
+      .slice(-threshold)
+      .map(share => share.split(':').slice(1).join('\n'))
+      .join('\n')
+    const observed: ReturnType<typeof historicalPublicKeys>[] = []
+    const options = {
+      observeHistoricalSeed: (seed: Uint8Array) => {
+        expect(
+          seed.length === originalSeed.length &&
+            seed.every((byte, i) => byte === originalSeed[i]),
+        ).toBe(true)
+        observed.push(historicalPublicKeys(seed))
+      },
+    }
+    const restored = freshDevice(options)
+    await restore(restored, parseAccountBackupShareInput(paper))
+    expect(observed).toEqual([expected])
+    expect(
+      Buffer.from(
+        (await restored.getWallet()).identity.compressedPubKey,
+      ).toString('hex'),
+    ).toBe(expected.identity)
+    await restored.close()
+    const reopened = openSession(options)
+    await reopened.initialize()
+    expect(observed).toEqual([expected, expected])
+    expect(
+      Buffer.from(
+        (await reopened.getWallet()).identity.compressedPubKey,
+      ).toString('hex'),
+    ).toBe(expected.identity)
+    const secondBackup = await reopened.backupCodex32(threshold, count)
+    expect(secondBackup.length).toBe(count)
+    originalSeed.fill(0)
+  },
+)
+
+test('mixed historical components fail before staging and leave the active account unchanged', async () => {
+  const session = freshDevice()
+  await session.initialize()
+  await stageBip39Recovery(
+    session,
+    'test test test test test test test test test test test junk',
+  )
+  await activate(session)
+  const before = await session.snapshot()
+  const first = await session.backupCodex32(2, 3)
+  const second = await session.backupCodex32(2, 3)
+  const wrong = first.slice(0, 2).map((line, i) => {
+    const parts = line.split(':')
+    return `${parts[0]}:${parts[1]}:${second[i]!.split(':')[2]}`
+  })
+  const ceremony = createAccountCeremony()
+  await ceremony.beginRestore()
+  await expect(ceremony.confirm(wrong, '')).rejects.toThrow()
+  expect(await session.snapshot()).toEqual(before)
+  expect(session.state.status).toBe('ready')
 })
 
 test('historical recovery derives every existing family address locally from its original seed', async () => {

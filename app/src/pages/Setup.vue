@@ -643,7 +643,7 @@
                 type="textarea"
                 outlined
                 :label="$t('accountRecovery.saved_codex32_shares_one_per_line')"
-                :maxlength="6000"
+                :maxlength="7000"
                 autocomplete="off"
                 autocorrect="off"
                 :spellcheck="false"
@@ -755,7 +755,10 @@
 </template>
 
 <script setup lang="ts">
-import type { ShareVerdict } from '@frank/account-recovery'
+import {
+  parseAccountBackupShareInput,
+  type ShareVerdict,
+} from '@frank/account-recovery'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTranslate } from '../composables/useTranslate'
@@ -1034,9 +1037,7 @@ function pinDescriptor() {
 }
 function confirm() {
   return run(async () => {
-    let shares = shareInput.value
-      .split(/\r?\n/)
-      .filter(value => value.length > 0)
+    let shares = parseAccountBackupShareInput(shareInput.value)
     shareInput.value = ''
     shownShare.value = ''
     try {

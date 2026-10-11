@@ -1,14 +1,13 @@
 import {
   beginCodex32Signup,
-  beginCodex32Restore,
+  recoverAccountBackupShares,
   decodeRecoveryDescriptor,
   encodeRecoveryDescriptor,
-  destroyRecoveredAccount,
+  destroyRecoveredBackup,
   randomCodex32Identifier,
   type PendingCodex32Signup,
-  type PendingCodex32Restore,
-  type Codex32ShareRecovery,
-  type RecoveredCodex32Account,
+  type PublicRecoveryDescriptor,
+  type RecoveredAccountBackup,
 } from '@frank/account-recovery'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
@@ -18,11 +17,19 @@ import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { accountSession } from './session'
 import { assertLegacyUnchanged, legacyStatus } from './legacy'
 import type { ExpectedActive } from './custody'
+import { bip39Descriptor } from './custody/bip39'
+
+function identityOf(account: RecoveredAccountBackup): MonadIdentity {
+  return 'seed' in account
+    ? MonadIdentity.fromBip39Seed(account.seed)
+    : MonadIdentity.fromDomainRoot(account.roots['identity-authentication'])
+}
 
 /** Non-reactive transient owner. Components hold only currently displayed/input strings. */
 export function createAccountCeremony() {
   let signup: PendingCodex32Signup | undefined
-  let restore: PendingCodex32Restore | undefined
+  let restoring = false
+  let expectedDescriptor: PublicRecoveryDescriptor | undefined
   let attempt:
     | {
         attemptId: string
@@ -33,15 +40,15 @@ export function createAccountCeremony() {
     | undefined
   let epoch = 0
   /** Accounts awaiting the user's explicit pick; wiped on choose or cancel. */
-  let choice: RecoveredCodex32Account[] | undefined
+  let choice: RecoveredAccountBackup[] | undefined
   const cancel = () => {
     ++epoch
-    choice?.forEach(destroyRecoveredAccount)
+    choice?.forEach(destroyRecoveredBackup)
     choice = undefined
     signup?.cancel()
-    restore?.cancel()
+    restoring = false
+    expectedDescriptor = undefined
     signup = undefined
-    restore = undefined
     attempt = undefined
   }
   async function capture() {
@@ -69,14 +76,14 @@ export function createAccountCeremony() {
     }
   }
   async function finish(
-    take: () => RecoveredCodex32Account | undefined,
+    take: () => RecoveredAccountBackup | undefined,
     isRestore: boolean,
     displayName: string,
   ) {
     if (!attempt) throw new Error('Start an account ceremony first')
     const captured = attempt
     const token = epoch
-    let recovered: RecoveredCodex32Account | undefined
+    let recovered: RecoveredAccountBackup | undefined
     try {
       recovered = take()
       if (!recovered) throw new Error('Start an account ceremony first')
@@ -84,35 +91,29 @@ export function createAccountCeremony() {
       let identityDetails: { subject: string; address: string } | undefined
       if (isRestore) {
         try {
-          const authRoot = recovered.roots['identity-authentication']
-          if (authRoot) {
-            const identity = MonadIdentity.fromDomainRoot(authRoot)
-            const subject = toHex(identity.compressedPubKey)
-            const address = identity.displayAddress
-            identityDetails = { subject, address }
-            discoveredRelayUrl = await probeDirectoryRelay({
-              subject,
-              address,
-            })
-            if (discoveredRelayUrl) {
-              setCustomRelayBaseUrl(discoveredRelayUrl)
-            }
-          }
+          const identity = identityOf(recovered)
+          const subject = toHex(identity.compressedPubKey)
+          const address = identity.displayAddress
+          identityDetails = { subject, address }
+          discoveredRelayUrl = await probeDirectoryRelay({ subject, address })
+          if (discoveredRelayUrl) setCustomRelayBaseUrl(discoveredRelayUrl)
         } catch {
           // probe failure should never block account recovery
         }
       }
       await assertLegacyUnchanged(captured.legacyRevision)
       if (token !== epoch) throw new Error('Ceremony cancelled')
-      // Custody keeps the account root only; every purpose root is derived from it
-      // each time the account is opened.
-      await accountSession.stage({
-        ...captured,
-        displayName,
-        custodyEpoch: 1,
-        metadata: recovered.metadata,
-        accountRoot: recovered.accountRoot,
-      })
+      // Preserve the exact secret and its original derivation through the common stage boundary.
+      const context = { ...captured, displayName, custodyEpoch: 1 }
+      await accountSession.stage(
+        'seed' in recovered
+          ? { ...context, bip39Seed: recovered.seed }
+          : {
+              ...context,
+              metadata: recovered.metadata,
+              accountRoot: recovered.accountRoot,
+            },
+      )
       if (token !== epoch)
         await accountSession.cancelPending(captured.attemptId)
       return {
@@ -126,7 +127,7 @@ export function createAccountCeremony() {
       cancel()
       throw error
     } finally {
-      if (recovered) destroyRecoveredAccount(recovered)
+      if (recovered) destroyRecoveredBackup(recovered)
     }
   }
   return {
@@ -165,7 +166,8 @@ export function createAccountCeremony() {
       // Pin the independent descriptor before accepting any shares if provided.
       const descriptor = text ? decodeRecoveryDescriptor(text) : undefined
       await capture()
-      restore = beginCodex32Restore(descriptor)
+      expectedDescriptor = descriptor
+      restoring = true
       return descriptor ? encodeRecoveryDescriptor(descriptor) : ''
     },
     /**
@@ -191,11 +193,12 @@ export function createAccountCeremony() {
           displayName,
         )
       }
-      let recovery: Codex32ShareRecovery
+      let recovery: ReturnType<typeof recoverAccountBackupShares>
       try {
-        if (!restore) throw new Error('Start an account ceremony first')
-        recovery = restore.recoverAny(shares)
-        restore = undefined
+        if (!restoring) throw new Error('Start an account ceremony first')
+        restoring = false
+        recovery = recoverAccountBackupShares(shares, expectedDescriptor)
+        expectedDescriptor = undefined
       } catch (error) {
         cancel()
         throw error
@@ -206,12 +209,13 @@ export function createAccountCeremony() {
           isRestore: true,
           report: recovery.shares,
           candidates: recovery.candidates.map(candidate => ({
-            address: MonadIdentity.fromDomainRoot(
-              candidate.account.roots['identity-authentication'],
-            ).displayAddress,
-            descriptor: encodeRecoveryDescriptor(
-              candidate.account.metadata.descriptor,
-            ),
+            address: identityOf(candidate.account).displayAddress,
+            descriptor:
+              'seed' in candidate.account
+                ? bip39Descriptor(candidate.account.seed).descriptor
+                : encodeRecoveryDescriptor(
+                    candidate.account.metadata.descriptor,
+                  ),
             supporting: candidate.supporting,
           })),
         }
@@ -229,7 +233,7 @@ export function createAccountCeremony() {
       choice = undefined
       const chosen = candidates?.[index]
       candidates?.forEach(candidate => {
-        if (candidate !== chosen) destroyRecoveredAccount(candidate)
+        if (candidate !== chosen) destroyRecoveredBackup(candidate)
       })
       if (!chosen) {
         cancel()

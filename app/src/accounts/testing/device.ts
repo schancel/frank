@@ -71,6 +71,8 @@ export function freshDevice(
 /** A later app start on the same device: nothing carried over in memory. */
 export function openSession(
   options: {
+    /** Test observer at the real session-to-custody boundary; never retain secret bytes. */
+    observeHistoricalSeed?: (seed: Uint8Array) => void
     restoreApplicationState?: Parameters<
       typeof createAccountSession
     >[0]['restoreApplicationState']
@@ -79,14 +81,16 @@ export function openSession(
   const session = createAccountSession({
     restoreApplicationState: options.restoreApplicationState,
     open: () => openAccountCustody({ namespace: NAMESPACE }),
-    createWallet: async roots =>
-      ({
+    createWallet: async roots => {
+      if ('derivation' in roots) options.observeHistoricalSeed?.(roots.seed)
+      return {
         identity:
           'derivation' in roots
             ? MonadIdentity.fromBip39Seed(roots.seed)
             : MonadIdentity.fromDomainRoot(roots.authentication),
         close: async () => undefined,
-      } as unknown as RuntimeWallet),
+      } as unknown as RuntimeWallet
+    },
   })
   opened.push(session)
   current = session

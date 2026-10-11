@@ -127,7 +127,11 @@ export const en = {
   show_recovery_shares_warning:
     'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
   codex32_backup_unavailable_for_account:
-    'This account was created before Frank could issue new backup shares. Only the shares shown when the account was created can restore it, so no shares are shown here.',
+    'The original secret needed to issue backup shares is unavailable on this device. Your existing backup remains valid.',
+  historical_share_keep_both_lines:
+    'Keep the Seed and Check lines together as one paper share. Enter both lines together when restoring.',
+  backup_seed_line: 'Seed',
+  backup_check_line: 'Check',
   configure_scheme: 'Configure threshold and shares',
   custom_threshold_shares: 'Custom threshold and shares',
   threshold: 'Threshold',
@@ -286,7 +290,11 @@ export const fr = {
   show_recovery_shares_warning:
     'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',
   codex32_backup_unavailable_for_account:
-    'Ce compte a été créé avant que Frank puisse émettre de nouvelles parts de sauvegarde. Seules les parts affichées à la création du compte peuvent le restaurer ; aucune part n’est donc affichée ici.',
+    'Le secret d’origine nécessaire pour créer des parts de sauvegarde est indisponible sur cet appareil. Votre sauvegarde existante reste valide.',
+  historical_share_keep_both_lines:
+    'Conservez les lignes Graine et Vérification ensemble comme une seule part papier. Saisissez les deux lignes ensemble lors de la restauration.',
+  backup_seed_line: 'Graine',
+  backup_check_line: 'Vérification',
   configure_scheme: 'Configurer le seuil et les parts',
   custom_threshold_shares: 'Seuil et parts personnalisés',
   threshold: 'Seuil',

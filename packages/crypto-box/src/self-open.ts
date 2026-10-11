@@ -77,7 +77,18 @@ export function selfOpenKeyFromRoot(messagingRoot: Uint8Array): Uint8Array {
   if (!isPlainBytes(messagingRoot) || messagingRoot.length !== 32) {
     throw new RangeError('self-open root must be exactly 32 bytes')
   }
-  const prk = hkdfExtract(messagingRoot, ascii(SELF_OPEN_DOMAIN))
+  return deriveSelfOpenKey(messagingRoot)
+}
+
+/** Historical Frank uses the complete PBKDF2 seed, never a role scalar or truncated root. */
+export function selfOpenKeyFromBip39Seed(seed: Uint8Array): Uint8Array {
+  if (!isPlainBytes(seed) || seed.length !== 64)
+    throw new RangeError('historical BIP39 seed must be exactly 64 bytes')
+  return deriveSelfOpenKey(seed)
+}
+
+function deriveSelfOpenKey(secret: Uint8Array): Uint8Array {
+  const prk = hkdfExtract(secret, ascii(SELF_OPEN_DOMAIN))
   try {
     return hkdfExpand(prk, KEY_INFO, SELF_OPEN_KEY_LENGTH)
   } finally {

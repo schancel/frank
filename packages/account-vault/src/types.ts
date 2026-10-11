@@ -1,7 +1,7 @@
 import type { DomainPurpose, DomainRoot, DERIVATION_REGISTRY_ID, RECOVERY_FORMAT_ID } from '@frank/domain-roots'
+import { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION } from '@frank/domain-roots'
+export { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION }
 
-export const BIP39_RECOVERY_FORMAT = 'bip39-pbkdf2-seed-v1' as const
-export const BIP39_DERIVATION = 'frank-bip39-bip32-v1' as const
 
 export type VaultErrorCode = 'invalid-input' | 'unavailable' | 'closed' | 'locked' | 'corrupt' | 'conflict' | 'capacity' | 'storage-failed'
 

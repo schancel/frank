@@ -173,6 +173,17 @@ export class MonadIdentity implements FrankIdentityHandle {
     return new MonadIdentity(new Wallet(node.privateKey))
   }
 
+  /** Historical Frank identity from the exact BIP39 PBKDF2 seed, without conversion. */
+  static fromBip39Seed(seed: Uint8Array): MonadIdentity {
+    if (!(seed instanceof Uint8Array) || seed.length !== 64)
+      throw new Error('Expected the exact historical BIP39 PBKDF2 seed')
+    const owned = new Uint8Array(seed)
+    try {
+      const node = HDNodeWallet.fromSeed(owned).derivePath(MONAD_IDENTITY_DERIVATION_PATH)
+      return new MonadIdentity(new Wallet(node.privateKey))
+    } finally { owned.fill(0) }
+  }
+
   /** Rebuilds a previously-generated identity from its raw `0x`-prefixed private key hex. */
   static fromPrivateKeyHex(privateKeyHex: string): MonadIdentity {
     return new MonadIdentity(new Wallet(privateKeyHex))

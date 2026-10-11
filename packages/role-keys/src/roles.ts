@@ -1,4 +1,8 @@
-import { DERIVATION_REGISTRY_ID, type DomainRoot } from '@frank/domain-roots'
+import {
+  BIP39_DERIVATION,
+  DERIVATION_REGISTRY_ID,
+  type DomainRoot,
+} from '@frank/domain-roots'
 import { pointMultiply } from '@frank/nakamoto/curve'
 import {
   deriveHdPrivate,
@@ -15,7 +19,7 @@ type Purpose = {
 }
 
 export interface RolePoint<R extends Role = Role> {
-  readonly registry: typeof DERIVATION_REGISTRY_ID
+  readonly registry: typeof DERIVATION_REGISTRY_ID | typeof BIP39_DERIVATION
   readonly role: R
   readonly purpose: Purpose[R]
   readonly path: string
@@ -40,6 +44,13 @@ export interface RoleDerivation {
   readonly messageGeneration: bigint
   readonly stampGeneration: bigint
   /** Optional explicit adjacent generation. Its presence does not grant grace. */
+  readonly previousStampGeneration?: bigint
+}
+
+export interface Bip39RoleDerivation {
+  readonly seed: Uint8Array
+  readonly messageGeneration: bigint
+  readonly stampGeneration: bigint
   readonly previousStampGeneration?: bigint
 }
 
@@ -157,6 +168,7 @@ function derive<R extends Role>(
   role: R,
   purpose: Purpose[R],
   g: number,
+  registry: RolePoint['registry'] = DERIVATION_REGISTRY_ID,
 ): RoleLeaf<R> {
   const indices =
     role === 'auth'
@@ -184,7 +196,7 @@ function derive<R extends Role>(
     const point = publicFromPrivate(current.privateKey)
     if (!point.ok) throw new RoleKeyError('derivation-failed')
     return new Leaf(current.privateKey.bytes, point.value.compressed, {
-      registry: DERIVATION_REGISTRY_ID,
+      registry,
       role,
       purpose,
       generation: g,
@@ -254,6 +266,65 @@ export function deriveRoleLeaves(input: RoleDerivation): RoleLeaves {
     throw error
   } finally {
     for (const seed of seeds) seed.fill(0)
+  }
+}
+
+/** Exact historical PBKDF2 seed under the existing reserved BIP32 role paths. */
+export function deriveBip39RoleLeaves(input: Bip39RoleDerivation): RoleLeaves {
+  const leaves: RoleLeaf[] = []
+  let seed: Uint8Array | undefined
+  try {
+    const source = input.seed
+    if (!(source instanceof Uint8Array)) throw new RoleKeyError('invalid-root')
+    seed = new Uint8Array(source)
+    if (seed.length !== 64) throw new RoleKeyError('invalid-root')
+    const mg = generation(input.messageGeneration)
+    const sg = generation(input.stampGeneration)
+    const pg =
+      input.previousStampGeneration === undefined
+        ? undefined
+        : generation(input.previousStampGeneration)
+    if (pg !== undefined && (sg === 0 || pg !== sg - 1))
+      throw new RoleKeyError('invalid-previous-generation')
+    const auth = derive(
+      seed,
+      'auth',
+      'identity-authentication',
+      0,
+      BIP39_DERIVATION,
+    )
+    leaves.push(auth)
+    const message = derive(
+      seed,
+      'message',
+      'messaging-encryption',
+      mg,
+      BIP39_DERIVATION,
+    )
+    leaves.push(message)
+    const stamp = derive(seed, 'stamp', 'evm-wallet', sg, BIP39_DERIVATION)
+    leaves.push(stamp)
+    const previousStamp =
+      pg === undefined
+        ? undefined
+        : derive(seed, 'stamp', 'evm-wallet', pg, BIP39_DERIVATION)
+    if (previousStamp) leaves.push(previousStamp)
+    if (!distinct(leaves.map(leaf => leaf.public.compressedPoint)))
+      throw new RoleKeyError('role-collision')
+    return Object.freeze({
+      auth,
+      message,
+      stamp,
+      ...(previousStamp ? { previousStamp } : {}),
+      dispose() {
+        for (const leaf of leaves) leaf.dispose()
+      },
+    })
+  } catch (error) {
+    for (const leaf of leaves) leaf.dispose()
+    throw error
+  } finally {
+    seed?.fill(0)
   }
 }
 

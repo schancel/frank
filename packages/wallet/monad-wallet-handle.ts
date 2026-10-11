@@ -38,7 +38,7 @@ export interface PublicNextRevisionInput extends PublicRevisionZeroInput {
 }
 export interface PublicRevisionZeroExport {
   readonly kind: 'public-revision-zero-preparation'
-  readonly registry: 'frank-domain-roots-v1'
+  readonly registry: RolePoint['registry']
   readonly networkTag: 'MONT' | 'MON1' | 'MONR'
   readonly network: string
   readonly chainId: bigint

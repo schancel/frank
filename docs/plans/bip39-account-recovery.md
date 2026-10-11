@@ -45,10 +45,11 @@ Canonical messaging currently requires scoped auth/message/stamp role capabiliti
 that historical wallet material does not supply. The role-key module reserves auth
 at the same identity path, message at `m/44'/60'/4'/0'/g'`, and stamp at
 `m/44'/60'/2'/0'/g'`. Extending composition must preserve the historical identity
-and the actual mailbox decryption keys. Merely enabling the wallet while leaving
-directory admission or mailbox recovery unavailable is not completion. The
-historical mailbox reader boundary needs independent review before a feature
-candidate can be called ready; an invented conversion or identity-key fallback
+and the actual mailbox decryption keys. The first feature candidate restores custody, historical wallet keys, profile, and
+current canonical messaging. Historical envelope retrieval is a separate required
+stack if the removed transport needs reconstruction; this candidate must not claim
+that restoring keys retrieves old envelopes. The historical mailbox reader boundary
+needs independent review; an invented conversion or identity-key fallback
 inside canonical transport does not establish preservation.
 
 ## Feature and acceptance

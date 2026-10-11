@@ -28,6 +28,7 @@ export {
   openAsSender,
   selfOpenEphemeral,
   selfOpenKeyFromRoot,
+  selfOpenKeyFromBip39Seed,
   SELF_OPEN_DOMAIN,
 } from './self-open.js'
 export type { OpenAsSenderArgs } from './self-open.js'

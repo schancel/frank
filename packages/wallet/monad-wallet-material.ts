@@ -26,14 +26,15 @@ import {
   getBytes,
   concat,
 } from 'ethers'
-import { DERIVATION_REGISTRY_ID } from '../domain-roots/src'
+import { BIP39_DERIVATION, DERIVATION_REGISTRY_ID } from '../domain-roots/src'
 import type { DomainRoot, DomainPurpose } from '../domain-roots/src'
 import type { HDSeed } from './chain/active-chain'
 import { MonadIdentity, MONAD_IDENTITY_DERIVATION_PATH } from './monad-identity'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadChangeKeyring } from './monad-change-keyring'
 import { bip32MasterFromDomainRoot } from './bip32-domain-root'
-import { deriveRoleLeaves, matchLocalRolePoints } from '../role-keys/src'
+import { deriveBip39RoleLeaves, deriveRoleLeaves } from '../role-keys/src'
+import type { Bip39RoleDerivation } from '../role-keys/src'
 import type { RolePoint } from '../role-keys/src'
 import type { Current } from '../directory-admission/src'
 import {
@@ -51,10 +52,14 @@ import {
   randomBytes,
   selfOpenEphemeral,
   selfOpenKeyFromRoot,
+  selfOpenKeyFromBip39Seed,
   SUITE_AUTH_XCHACHA,
 } from '@frank/crypto-box'
 import type { SuiteResult } from '@frank/crypto-box'
-import { conversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+import {
+  conversationIdSalt,
+  conversationIdSaltFromBip39Seed,
+} from '@frank/cashweb/relay/conversation-id'
 import {
   openOwnDirectMessage,
   type OpenOwnDirectMessageInput,
@@ -94,6 +99,7 @@ export interface MonadCanonicalRoles {
 
 /** Caller must obtain Current from fresh admission; this owner never grants that authority. */
 export interface MonadCanonicalRoleOwner {
+  readonly derivationRegistry: RolePoint['registry']
   create(network: string, current: Current): MonadCanonicalRoles
   verifyRetainedRecoveryCustody(proof: CanonicalRecoveryCustody): void
   /** The private key of the one-time account a stamp payment to this wallet pays: the stamp
@@ -124,14 +130,25 @@ const sameBytes = (a: Uint8Array, b: Uint8Array): boolean =>
   a.length === b.length && a.every((v, i) => v === b[i])
 
 function roleOwner(
-  evm: DomainRoot<'evm-wallet'>,
-  authentication: DomainRoot<'identity-authentication'>,
-  messaging: DomainRoot<'messaging-encryption'>,
+  input: MonadRootBundle | HistoricalBip39Seed,
   identityPoint: Uint8Array,
 ): MonadCanonicalRoleOwner {
-  const authRoot = snapshot(authentication, 'identity-authentication')
-  const messageRoot = snapshot(messaging, 'messaging-encryption')
-  const stampRoot = snapshot(evm, 'evm-wallet')
+  const historical = 'derivation' in input
+  const seed = historical ? new Uint8Array(input.seed) : undefined
+  const roots = historical
+    ? undefined
+    : {
+        authRoot: snapshot(input.authentication, 'identity-authentication'),
+        messageRoot: snapshot(input.messaging, 'messaging-encryption'),
+        stampRoot: snapshot(input.evm, 'evm-wallet'),
+      }
+  const derive = (generations: Omit<Bip39RoleDerivation, 'seed'>) =>
+    seed
+      ? deriveBip39RoleLeaves({ seed, ...generations })
+      : deriveRoleLeaves({ ...roots!, ...generations })
+  const registry = historical ? BIP39_DERIVATION : DERIVATION_REGISTRY_ID
+  // Historical auxiliaries consume the complete seed. Domain-root auxiliaries are unchanged.
+  const auxiliarySecret = seed ?? roots!.messageRoot.bytes
   const ownedIdentity = new Uint8Array(identityPoint)
   const sessions = new Set<MonadCanonicalRoles>()
   let disposed = false
@@ -145,10 +162,7 @@ function roleOwner(
     configuration: () => C,
   ) => {
     if (disposed) throw new Error('canonical-roles:disposed')
-    const leaves = deriveRoleLeaves({
-      authRoot,
-      messageRoot,
-      stampRoot,
+    const leaves = derive({
       messageGeneration: 0n,
       stampGeneration: 0n,
     })
@@ -244,7 +258,7 @@ function roleOwner(
       return Object.freeze({
         kind,
         revision,
-        registry: DERIVATION_REGISTRY_ID,
+        registry,
         networkTag: owned.networkTag,
         network: owned.network,
         chainId: owned.chainId,
@@ -272,13 +286,11 @@ function roleOwner(
     }
   }
   return Object.freeze({
+    derivationRegistry: registry,
     verifyRetainedRecoveryCustody(proof: CanonicalRecoveryCustody): void {
       if (disposed) throw new Error('canonical-roles:disposed')
       const recovery = inspectRetainedCanonicalRecovery(proof)
-      const leaves = deriveRoleLeaves({
-        authRoot,
-        messageRoot,
-        stampRoot,
+      const leaves = derive({
         messageGeneration: 0n,
         stampGeneration: BigInt(recovery.stampGeneration),
       })
@@ -362,10 +374,7 @@ function roleOwner(
     }): string | undefined {
       if (disposed) throw new Error('canonical-roles:disposed')
       // The stamp key never rotates (see `prepareRevisionZero`): generation zero is the key.
-      const leaves = deriveRoleLeaves({
-        authRoot,
-        messageRoot,
-        stampRoot,
+      const leaves = derive({
         messageGeneration: 0n,
         stampGeneration: 0n,
       })
@@ -438,14 +447,13 @@ function roleOwner(
     },
     conversationIdSalt() {
       if (disposed) throw new Error('canonical-roles:disposed')
-      return conversationIdSalt(messageRoot.bytes)
+      return historical
+        ? conversationIdSaltFromBip39Seed(auxiliarySecret)
+        : conversationIdSalt(auxiliarySecret)
     },
     publicGenerationZeroPoints() {
       if (disposed) throw new Error('canonical-roles:disposed')
-      const leaves = deriveRoleLeaves({
-        authRoot,
-        messageRoot,
-        stampRoot,
+      const leaves = derive({
         messageGeneration: 0n,
         stampGeneration: 0n,
       })
@@ -488,9 +496,6 @@ function roleOwner(
       )
         throw new Error('canonical-roles:directory-mismatch')
       const derivation = {
-        authRoot,
-        messageRoot,
-        stampRoot,
         messageGeneration: current.generations[0],
         stampGeneration: current.generations[1],
         ...(current.previousStamp === null
@@ -499,21 +504,30 @@ function roleOwner(
               previousStampGeneration: current.generations[1] - 1n,
             }),
       }
+      const leaves = derive(derivation)
       if (
-        !matchLocalRolePoints(derivation, {
-          auth: ownedIdentity,
-          message: current.messageKey.keyBytes,
-          stamp: current.stampKey.keyBytes,
-          ...(current.previousStamp === null
-            ? {}
-            : {
-                previousStamp: current.previousStamp.keyBytes,
-              }),
-        }).matches
-      )
+        !sameBytes(leaves.auth.public.compressedPoint, ownedIdentity) ||
+        !sameBytes(
+          leaves.message.public.compressedPoint,
+          current.messageKey.keyBytes,
+        ) ||
+        !sameBytes(
+          leaves.stamp.public.compressedPoint,
+          current.stampKey.keyBytes,
+        ) ||
+        (current.previousStamp !== null &&
+          (!leaves.previousStamp ||
+            !sameBytes(
+              leaves.previousStamp.public.compressedPoint,
+              current.previousStamp.keyBytes,
+            )))
+      ) {
+        leaves.dispose()
         throw new Error('canonical-roles:local-mismatch')
-      const leaves = deriveRoleLeaves(derivation)
-      const selfOpenKey = selfOpenKeyFromRoot(messageRoot.bytes)
+      }
+      const selfOpenKey = historical
+        ? selfOpenKeyFromBip39Seed(auxiliarySecret)
+        : selfOpenKeyFromRoot(auxiliarySecret)
       let closed = false
       const session: MonadCanonicalRoles = Object.freeze({
         auth: leaves.auth.public,
@@ -635,7 +649,9 @@ function roleOwner(
     dispose() {
       disposed = true
       for (const session of sessions) session.dispose()
-      for (const root of [authRoot, messageRoot, stampRoot]) root.bytes.fill(0)
+      seed?.fill(0)
+      auxiliarySecret.fill(0)
+      if (roots) for (const root of Object.values(roots)) root.bytes.fill(0)
     },
   })
 }
@@ -655,7 +671,7 @@ export interface MonadWalletMaterial {
   readonly fingerprint: string
   /** Owned copy only; never used for legacy identity-based encryption. */
   readonly messagingRoot?: Uint8Array
-  /** Typed roots only. Legacy mnemonic material cannot authorize canonical messaging. */
+  /** Explicit custody derivations only. Bare mnemonic material cannot authorize canonical messaging. */
   readonly canonicalRoles?: MonadCanonicalRoleOwner
   dispose(): void
 }
@@ -684,10 +700,28 @@ function snapshot<P extends DomainPurpose>(
 
 /** Synchronous validation and snapshotting must finish before any storage or RPC effect. */
 export function createMonadWalletMaterial(
-  input: HDSeed | MonadRootBundle,
+  input: HDSeed | MonadRootBundle | HistoricalBip39Seed,
 ): MonadWalletMaterial {
   if (!input || typeof input !== 'object')
     throw new Error('Expected Monad wallet roots')
+  if ('derivation' in input) {
+    if (
+      [
+        'mnemonic',
+        'passphrase',
+        'evm',
+        'authentication',
+        'messaging',
+        'bytes',
+        'purpose',
+        'registry',
+      ].some(key => key in input)
+    )
+      throw new Error(
+        'Cannot mix historical BIP39 seed and other wallet material',
+      )
+    return historicalBip39WalletMaterial(input)
+  }
   if ('mnemonic' in input) {
     if (
       'evm' in input ||
@@ -736,9 +770,7 @@ export function createMonadWalletMaterial(
     }
     const identity = MonadIdentity.fromDomainRoot(authentication)
     canonicalRoles = roleOwner(
-      evm,
-      authentication,
-      messaging,
+      { evm, authentication, messaging },
       identity.compressedPubKey,
     )
     const keyring = MonadHdKeyring.fromDomainRoot(evm)
@@ -768,6 +800,51 @@ export function createMonadWalletMaterial(
     throw error
   } finally {
     for (const bytes of owned) bytes.fill(0)
+  }
+}
+
+/** Persisted historical derivation, explicitly distinct from a Codex32 root bundle. */
+export interface HistoricalBip39Seed {
+  readonly derivation: typeof BIP39_DERIVATION
+  readonly seed: Uint8Array
+}
+
+export function historicalBip39WalletMaterial(
+  input: HistoricalBip39Seed,
+): MonadWalletMaterial {
+  const source = input.seed
+  if (input.derivation !== BIP39_DERIVATION || !(source instanceof Uint8Array))
+    throw new Error('Expected the exact historical BIP39 PBKDF2 seed')
+  const seed = new Uint8Array(source)
+  if (seed.length !== 64) {
+    seed.fill(0)
+    throw new Error('Expected the exact historical BIP39 PBKDF2 seed')
+  }
+  let canonicalRoles: MonadCanonicalRoleOwner | undefined
+  try {
+    const master = HDNodeWallet.fromSeed(seed)
+    const identityNode = master.derivePath(MONAD_IDENTITY_DERIVATION_PATH)
+    const identity = MonadIdentity.fromPrivateKeyHex(identityNode.privateKey)
+    canonicalRoles = roleOwner(
+      { derivation: BIP39_DERIVATION, seed },
+      identity.compressedPubKey,
+    )
+    return {
+      identity,
+      mainAccount: new Wallet(identityNode.privateKey),
+      keyring: new MonadHdKeyring(master),
+      changeKeyring: new MonadChangeKeyring(master),
+      fingerprint: `bip39:${identity.address.raw.toLowerCase()}`,
+      canonicalRoles,
+      dispose() {
+        canonicalRoles?.dispose()
+      },
+    }
+  } catch (error) {
+    canonicalRoles?.dispose()
+    throw error
+  } finally {
+    seed.fill(0)
   }
 }
 
@@ -845,7 +922,7 @@ export function canonicalWalletPublicBinding(
     message: hexlify(points.message),
     stamp: hexlify(points.stamp),
     main: material.mainAccount.address.toLowerCase(),
-    registry: DERIVATION_REGISTRY_ID,
+    registry: material.canonicalRoles.derivationRegistry,
     accounts: branch(material.keyring.publicBranchDescriptor()),
     change: branch(material.changeKeyring.publicBranchDescriptor()),
   })

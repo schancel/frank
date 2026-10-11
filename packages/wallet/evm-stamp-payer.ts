@@ -13,6 +13,7 @@
  *   answer or a restart.
  */
 import { Transaction, type Provider } from 'ethers'
+import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import {
   InsufficientStampFundsError,
   type MonadSubAccountPool,
@@ -73,10 +74,10 @@ export type StampPaymentObservation =
     }
   /** The account's nonce was consumed by a different transaction: this one can never land. */
   | { readonly state: 'replaced' }
-  /** Not in a block: the node holds it (`mempool`), or does not know it at all. */
+  /** Not settled: in the mempool, included but awaiting failure depth, or unknown to the node. */
   | {
       readonly state: 'pending'
-      readonly where?: 'mempool' | 'unknown-to-node'
+      readonly where?: 'mempool' | 'included' | 'unknown-to-node'
     }
 
 /** One coin claimed for a payment: the account, the nonce it is at, and what it pays. */
@@ -526,10 +527,16 @@ export class EvmStampPayer {
               this.config.reserveBalanceWei !== undefined &&
               balanceWei - input.stampValueWei - feeReserveWei >=
                 this.config.reserveBalanceWei
-            if (coin.notBeforeBlock > head && !aboveReserve) {
+            // notBeforeBlock is earliest INCLUSION. Once canonical head is its parent,
+            // a newly offered transaction cannot enter an already sealed block. Monad checks
+            // the inclusion block, its parent and grandparent; an inclusion at b+3 is safe
+            // after a spend at b. A stale (lower) RPC head only lengthens this wait.
+            const offerAtBlock =
+              coin.notBeforeBlock - (this.config.spendSpacingBlocks ? 1 : 0)
+            if (offerAtBlock > head && !aboveReserve) {
               waiting = true
-              input.onWaiting?.(coin.notBeforeBlock - head)
-              await this.watcher.until(coin.notBeforeBlock, input.signal)
+              input.onWaiting?.(offerAtBlock - head)
+              await this.watcher.until(offerAtBlock, input.signal)
             }
             // Funds that arrived in the last few blocks are not spendable yet.
             await this.untilFundsSettled(
@@ -605,7 +612,7 @@ export class EvmStampPayer {
           )
         // The account that pays is one coin and an earlier payment is spending it: this one
         // waits its turn. It is woken when that account is released; meanwhile the chain is
-        // asked about the holder's payment, that one only, at most once a second.
+        // asked about the holder's payment, that one only, at the shared watcher's pace.
         if (!waiting) {
           waiting = true
           input.onWaiting?.()
@@ -726,9 +733,11 @@ export class EvmStampPayer {
         const aboveReserve =
           this.config.reserveBalanceWei !== undefined &&
           coin.capacityWei - valueWei >= this.config.reserveBalanceWei
-        if (at.notBeforeBlock > head && !aboveReserve) {
-          onWaiting(at.notBeforeBlock - head)
-          await this.watcher.until(at.notBeforeBlock, input.signal)
+        const offerAtBlock =
+          at.notBeforeBlock - (this.config.spendSpacingBlocks ? 1 : 0)
+        if (offerAtBlock > head && !aboveReserve) {
+          onWaiting(offerAtBlock - head)
+          await this.watcher.until(offerAtBlock, input.signal)
         }
         await this.untilFundsSettled(
           address,
@@ -875,13 +884,21 @@ export class EvmStampPayer {
       ]),
     )
     if (receipt !== null) {
-      if (tx.nonce > 0 || used > 1) this.noteMined(tx.from!, tx.nonce, receipt.blockNumber)
-      else {
-        // A single-use account's one transaction: no successor coin to keep.
-        const from = tx.from!.toLowerCase()
-        if ((this.settledNonce.get(from) ?? -1) < tx.nonce)
-          this.settledNonce.set(from, tx.nonce)
+      if (receipt.status === 0) {
+        const [block, head] = await this.read(() =>
+          Promise.all([
+            provider.getBlock(receipt.blockNumber),
+            provider.getBlockNumber(),
+          ]),
+        )
+        if (
+          block?.hash !== receipt.blockHash ||
+          head - receipt.blockNumber + 1 < EVM_FAILURE_CONFIRMATIONS
+        ) return { state: 'pending', where: 'included' }
       }
+      // Keep the actual inclusion block even for nonce zero. A reusable main/profile account
+      // otherwise starts a fresh conservative spacing window when its next coin is read.
+      this.noteMined(tx.from!, tx.nonce, receipt.blockNumber)
       return {
         state: 'included',
         reverted: receipt.status === 0,

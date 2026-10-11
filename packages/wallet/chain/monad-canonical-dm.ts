@@ -633,9 +633,13 @@ interface MessageWork {
    * waiter's look must wait after it. One look serves every waiter. */
   lookedAtMs?: number
   lookGapMs?: number
+  /** Delivered holders get one probe per shared watcher look, including staggered waiters. */
+  lookedAtWatch?: number
 }
-/** Waiters for a coin look at its holder's payment at most this often, all of them together. */
+/** Undelivered holders start at this polling interval; all their waiters share each look. */
 export const HOLDER_LOOK_MS = 1_000
+/** ...and of a DELIVERED holder's payment at most this often: the block watcher's looks pace it. */
+export const DELIVERED_LOOK_MS = 100
 /** ...and, while the holder's message is not delivered (its payment can land only if the relay
  * broadcast it before an answer was lost), ever more rarely, up to this. */
 export const HOLDER_LOOK_MAX_MS = 16_000
@@ -952,8 +956,8 @@ async function refuseUnexposed(
   return refused
 }
 
-/** Signed payments the node was last seen holding unmined. Process memory, for display only. */
-const inMempool = new Set<string>()
+/** Signed payments last seen in the mempool or awaiting canonical failure depth. Process memory. */
+const knownToNode = new Set<string>()
 
 /** The position of the first transaction signed for the payment that `index` belongs to. */
 function slotOf(row: StoredMessage, index: number): number {
@@ -988,7 +992,7 @@ function paymentSummary(row: StoredMessage): DirectMessagePaymentSummary {
     }
     const pending = signed.filter(({ payment }) => payment.state === 'pending')
     if (pending.length > 0)
-      return pending.some(({ payment }) => inMempool.has(payment.rawTx))
+      return pending.some(({ payment }) => knownToNode.has(payment.rawTx))
         ? 'mempool'
         : 'pending'
     return signed.every(({ payment }) => payment.state === 'unsent')
@@ -1142,10 +1146,11 @@ async function settlePayments(
           return 'failed'
         }
         // Not known to the node at all: the same bytes are offered again (once the relay has
-        // the message). In the mempool: nothing to do but look again.
-        if (seen.where === 'mempool') inMempool.add(payment.rawTx)
-        else inMempool.delete(payment.rawTx)
-        if (broadcast && seen.where !== 'mempool') resubmit.push(payment.rawTx)
+        // the message). Known to the node, including a shallow revert: only look again.
+        const known = seen.where === 'mempool' || seen.where === 'included'
+        if (known) knownToNode.add(payment.rawTx)
+        else knownToNode.delete(payment.rawTx)
+        if (broadcast && !known) resubmit.push(payment.rawTx)
       } catch {
         // The chain could not be read or reached: nothing is known, so nothing changes.
       }
@@ -1247,17 +1252,25 @@ async function settleHolder(
   if (work.creating) return
   if (work.busy) return void (await work.busy)
   // One look per holder, however many sends wait for its coin: a waiter that comes within the
-  // gap of the last look makes none. Undelivered, the gap doubles from a second to sixteen.
+  // gap of the last look makes none. A delivered message's payment is in the node's hands and
+  // is looked for at every look of the block watcher (the waiters come at its pace): a second's
+  // gap here cost every main-paid message two or three blocks. Undelivered, the gap doubles
+  // from a second to sixteen.
   const now = Date.now()
+  const watch = owner.payer().watcher.looks
+  if (row.outcome === 'delivered' && work.lookedAtWatch === watch) return
   if (
     work.lookedAtMs !== undefined &&
-    now - work.lookedAtMs < (work.lookGapMs ?? HOLDER_LOOK_MS)
+    now - work.lookedAtMs < (row.outcome === 'delivered'
+      ? DELIVERED_LOOK_MS
+      : work.lookGapMs ?? HOLDER_LOOK_MS)
   )
     return
   work.lookedAtMs = now
+  if (row.outcome === 'delivered') work.lookedAtWatch = watch
   work.lookGapMs =
     row.outcome === 'delivered'
-      ? HOLDER_LOOK_MS
+      ? DELIVERED_LOOK_MS
       : Math.min(
           work.lookedAtMs === undefined || work.lookGapMs === undefined
             ? HOLDER_LOOK_MS

@@ -974,6 +974,14 @@ describe('parallel paid messages', () => {
     const first = relayPayments()[0]
     expect(offlineChain.reverted.has(first.hash!)).toBe(true)
     offlineChain.walletBroadcasts.length = 0
+    // A shallow revert is not a terminal payment failure and cannot trigger another payment.
+    await tick()
+    expect(payments()).toEqual(['pending'])
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    expect(offlineChain.walletBroadcasts).toEqual([])
+    await reopen()
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    jest.spyOn(alice.provider, 'getBlockNumber').mockResolvedValue(3)
     await tick()
     await tick()
     // One more transfer, written on the message's own record and then broadcast.
@@ -1004,6 +1012,7 @@ describe('parallel paid messages', () => {
     offlineChain.revertNext = true
     const sent = await send(1)
     offlineChain.revertNext = true // the repeat reverts too
+    jest.spyOn(alice.provider, 'getBlockNumber').mockResolvedValue(3)
     for (let i = 0; i < 8; i++) await tick()
     expect(
       f.chain.directMessages.paymentsOf!({

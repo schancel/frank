@@ -37,6 +37,8 @@ export interface EvmChainConfig {
    * at or above it is never reverted by the rule, so it needs no spacing. Both facts come from
    * the network's registry row (`ChainRegistryEntry`). */
   reserveBalanceWei?: bigint;
+  /** Client polling policy for waiting payments (the registry row's `paymentPollIntervalMs`). */
+  paymentPollIntervalMs?: number;
   /** How long a native send watches the transfer it just broadcast for its block before it
    * returns it as pending (it is then watched from outside). Default 30 s. Tests on a stub
    * node that never mines set 0: one look. */

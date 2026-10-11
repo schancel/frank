@@ -4,6 +4,24 @@
 import { fr as accountRecovery } from '../account-recovery'
 
 export default {
+  notificationPermission: {
+    title: 'Notifications',
+    default: 'Les notifications du navigateur ne sont pas activées.',
+    granted: 'Les notifications du navigateur sont activées.',
+    denied:
+      'Les notifications sont bloquées. Autorisez-les dans les paramètres du site de votre navigateur, puis revenez dans Frank.',
+    unsupported:
+      'Ce navigateur ne prend pas en charge les notifications de bureau.',
+    enable: 'Activer les notifications',
+    notNow: 'Plus tard',
+    offer: 'Soyez averti de l’arrivée des messages',
+    offerHint:
+      'Activez les notifications maintenant ou plus tard dans Paramètres → Notifications.',
+    contactHint:
+      'La préférence de notification de chaque contact est distincte de cette autorisation du navigateur.',
+    failed:
+      'Impossible d’activer les notifications. Vérifiez les paramètres du site dans votre navigateur.',
+  },
   startupFailure: {
     title: 'Impossible de charger les données enregistrées',
     message:

@@ -1,4 +1,8 @@
 /** @jest-environment jsdom */
+jest.mock('quasar', () => ({
+  ...jest.requireActual('quasar'),
+  Notify: { create: jest.fn() },
+}))
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, h, nextTick } from 'vue'
@@ -102,6 +106,7 @@ jest.mock('./components/dialogs/ContactBookDialog.vue', () => ({
 // Import after installing the encoding globals required by the real chat store.
 /* eslint-disable @typescript-eslint/no-var-requires */
 const App = require('./App.vue').default
+const AppRuntime = require('./AppRuntime.vue').default
 const ChatPage = require('./pages/Chat.vue').default
 const ChatLayout = require('./layouts/ChatLayout.vue').default
 const ChatInfoView = require('./components/panels/ChatInfoView.vue').default
@@ -150,7 +155,15 @@ async function mountedApp() {
         $t: (key: string) => key,
       },
       stubs: {
-        QBtn: true,
+        QBtn: {
+          emits: ['click'],
+          methods: {
+            click() {
+              this.$emit('click')
+            },
+          },
+          template: '<button @click="$emit(\'click\')"><slot /></button>',
+        },
         QDialog: true,
         QCard: true,
         QCardSection: true,
@@ -175,6 +188,31 @@ describe('App exact conversation route authority (#1237)', () => {
     jest.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
   })
   afterEach(() => jest.restoreAllMocks())
+
+  it('never requests notification permission during contact-book updates or navigation', async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'Notification')
+    const requestPermission = jest.fn(async () => 'default')
+    Object.defineProperty(globalThis, 'Notification', {
+      configurable: true,
+      value: { permission: 'default', requestPermission },
+    })
+    jest.spyOn(quasar.Notify, 'create').mockReturnValue(jest.fn())
+    const { wrapper, router } = await mountedApp()
+    try {
+      const instance = wrapper.getComponent(AppRuntime)
+      instance.vm.contactBookOpen = true
+      await nextTick()
+      instance.vm.contactBookOpen = false
+      await nextTick()
+      await router.push('/forum?search=peer')
+      await flushPromises()
+      expect(requestPermission).not.toHaveBeenCalled()
+    } finally {
+      wrapper.unmount()
+      if (original) Object.defineProperty(globalThis, 'Notification', original)
+      else Reflect.deleteProperty(globalThis, 'Notification')
+    }
+  })
 
   it.each([
     'lowercase peer',

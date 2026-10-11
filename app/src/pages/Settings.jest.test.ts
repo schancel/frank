@@ -337,6 +337,10 @@ it('has no directory installation controls and retains storage controls', async 
   const router = await openDirectly('#/settings')
   const wrapper = mountSettings(router)
   expect(wrapper.find('persistent-storage-panel-stub').exists()).toBe(true)
+  expect(
+    wrapper.find('[data-test="settings-tab-notifications"]').exists(),
+  ).toBe(true)
+  expect(wrapper.find('notification-permission-panel-stub').exists()).toBe(true)
   expect(wrapper.find('directory-provisioning-panel-stub').exists()).toBe(false)
   expect(wrapper.html()).not.toMatch(/directory/i)
   expect(wrapper.find('[data-test="settings-back"]').exists()).toBe(true)

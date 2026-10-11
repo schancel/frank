@@ -24,6 +24,7 @@ import type { VaultReceipt } from '@frank/account-vault'
 import { aad } from '../../../../packages/account-vault/src/encoding'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { activeChain } from '@frank/wallet/chain'
 import { createAccountCeremony } from '../ceremony'
 import { openAccountCustody } from '../custody'
 import { inspectLegacyWallet } from '../legacy'
@@ -83,11 +84,14 @@ export function openSession(
     open: () => openAccountCustody({ namespace: NAMESPACE }),
     createWallet: async roots => {
       if ('derivation' in roots) options.observeHistoricalSeed?.(roots.seed)
+      const identity =
+        'derivation' in roots
+          ? MonadIdentity.fromBip39Seed(roots.seed)
+          : MonadIdentity.fromDomainRoot(roots.authentication)
       return {
-        identity:
-          'derivation' in roots
-            ? MonadIdentity.fromBip39Seed(roots.seed)
-            : MonadIdentity.fromDomainRoot(roots.authentication),
+        chainIdentifier: activeChain.chainIdentifier,
+        identity,
+        getReceiveAddress: async () => identity.displayAddress,
         close: async () => undefined,
       } as unknown as RuntimeWallet
     },

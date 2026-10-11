@@ -212,7 +212,7 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
       'Alice Wonderland',
     )
     expect(wrapper.find('[data-test="info-contact-username"]').text()).toBe(
-      '@alice_w',
+      'alice_w',
     )
     expect(wrapper.find('[data-test="info-contact-bio"]').text()).toBe(
       'Cypherpunk & dev',

@@ -432,7 +432,7 @@ describe('ContactsPanel navigation', () => {
       const results = wrapper.findAll('[data-test="directory-search-result"]')
       expect(results.length).toBe(1)
       expect(results[0].find('[data-test="username-handle"]').text()).toBe(
-        '@charlie',
+        'charlie',
       )
 
       // Adding it pins the contact to the address the name resolved to.
@@ -481,7 +481,7 @@ describe('ContactsPanel navigation', () => {
         false,
       )
       expect(results[1].find('[data-test="username-handle"]').text()).toBe(
-        '@qwen',
+        'qwen',
       )
 
       // Added from the row, the impostor carries no handle and no name it was "added by".
@@ -510,7 +510,9 @@ describe('ContactsPanel navigation', () => {
 
       const results = wrapper.findAll('[data-test="directory-search-result"]')
       expect(results.length).toBe(1)
-      expect(results[0].text()).toContain('@dana')
+      expect(results[0].find('[data-test="username-handle"]').text()).toBe(
+        'dana',
+      )
       expect(mockUsernamesOfAddresses).not.toHaveBeenCalled()
     })
   })

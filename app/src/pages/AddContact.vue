@@ -5,9 +5,7 @@
         <q-card-section>
           <div class="text-h6">
             {{
-              isComposeMode
-                ? $t('newContactDialog.composeEmail')
-                : isConversationMode
+              isConversationMode
                 ? $t('newContactDialog.startConversation')
                 : $t('newContactDialog.newContact')
             }}
@@ -285,15 +283,6 @@
             <template v-else>
               <q-btn
                 :disable="!canAdd"
-                outline
-                no-caps
-                color="primary"
-                :label="$t('newContactDialog.addAndChat')"
-                data-test="add-and-chat-btn"
-                @click="addContactAndOpenChat()"
-              />
-              <q-btn
-                :disable="!canAdd"
                 label="Add"
                 no-caps
                 color="primary"
@@ -384,19 +373,14 @@ export default defineComponent({
     }
   },
   computed: {
-    isComposeMode(): boolean {
-      return this.$route?.query?.compose === 'email'
-    },
     isConversationMode(): boolean {
-      return Boolean(
-        this.$route?.query?.mode === 'conversation' || this.isComposeMode,
-      )
+      return this.$route?.path === '/new-conversation'
     },
     isContactMode(): boolean {
       return !this.isConversationMode
     },
     isEmailRecipient(): boolean {
-      return EMAIL_REGEX.test(this.address.trim())
+      return this.isConversationMode && EMAIL_REGEX.test(this.address.trim())
     },
     emailAddress(): string {
       return this.address.trim()
@@ -765,6 +749,7 @@ export default defineComponent({
       }
     },
     startEmailThread() {
+      if (!this.isConversationMode) return
       if (!this.isEmailRecipient) {
         return
       }
@@ -803,6 +788,7 @@ export default defineComponent({
       this.cancel()
     },
     addContactAndOpenChat() {
+      if (!this.isConversationMode) return
       if (!this.acceptedLookup && this.matchingExistingContacts.length === 1) {
         const single = this.matchingExistingContacts[0]
         this.selectExistingContact(single.address, single.contact, true)
@@ -824,7 +810,6 @@ export default defineComponent({
         openChat(this.$router, conversation.id)
         return
       }
-      openChat(this.$router, resolvedAddress)
     },
     addContact() {
       if (this.isConversationMode) {

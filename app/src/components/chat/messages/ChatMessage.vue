@@ -190,9 +190,7 @@
               {{ getMessageItemPreview(item) }}
             </span>
           </template>
-          <!-- Keep one suffix instance mounted across status changes. Its inline
-               mode shares the last text line; error and payment-pending render
-               their own row without replacing the live region or focus target. -->
+          <!-- One footer position across delivery states; status and failure copy live above it. -->
           <chat-message-suffix
             ref="suffix"
             :inline="usesInlineFooter"
@@ -595,33 +593,25 @@ export default defineComponent({
       return String(base)
     },
     shortTimestamp() {
-      switch (this.message.status) {
-        case 'confirmed': {
-          const timestamp = this.message.serverTime
-          // return moment(timestamp).fromNow(true)
-          const howLongAgo = moment(timestamp)
-          return howLongAgo.calendar(null, {
-            sameDay: 'HH:mm:ss',
-            nextDay: '[Tomorrow] HH:mm:ss',
-            nextWeek: '[Next] ddd',
-            lastDay: '[Yest.] HH:mm',
-            lastWeek: 'ddd HH:mm',
-            sameElse: 'DD/MM/YYYY',
-          })
-        }
-        case 'pending':
-        case 'payment-pending':
-        case 'error':
-          // The stamp is the time. Status text lives in ChatMessageSuffix once (#393).
-          return ''
-      }
-      return 'N/A'
+      const timestamp = this.message.serverTime
+      if (
+        timestamp === undefined ||
+        timestamp === null ||
+        !Number.isFinite(timestamp)
+      )
+        return ''
+      return moment(timestamp).calendar(null, {
+        sameDay: 'HH:mm:ss',
+        nextDay: '[Tomorrow] HH:mm:ss',
+        nextWeek: '[Next] ddd',
+        lastDay: '[Yest.] HH:mm',
+        lastWeek: 'ddd HH:mm',
+        sameElse: 'DD/MM/YYYY',
+      })
     },
     usesInlineFooter(): boolean {
-      // Confirmed and the fresh-send line are one cluster on the last text
-      // line. Failed and payment-pending keep the row under the text.
-      return (
-        this.message.status === 'confirmed' || this.message.status === 'pending'
+      return ['confirmed', 'pending', 'payment-pending', 'error'].includes(
+        this.message.status,
       )
     },
     stampDatetime(): string {

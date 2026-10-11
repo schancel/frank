@@ -281,6 +281,22 @@ describe('the swap form', () => {
     expect(view.text()).not.toMatch(/AVU|8\.75|MetaMask/)
   })
 
+  it('offers existing preset and custom slippage controls before the first quote', async () => {
+    scene()
+    const view = await mountPanel()
+    expect(view.find('[data-testid="swap-details"]').exists()).toBe(false)
+    expect(view.get('[data-testid="swap-slippage"]').text()).toContain(
+      'Slippage',
+    )
+    expect(view.find('[data-testid="swap-slippage-50"]').exists()).toBe(true)
+    expect(view.find('[data-testid="swap-slippage-custom"]').exists()).toBe(
+      true,
+    )
+    await click(view, 'swap-slippage-100')
+    await type(view, '0.02')
+    expect(text(view, 'swap-minimum-received')).toBe('0.019796 USDC')
+  })
+
   it('shows what the quoter answered for the typed amount, with fee, impact and minimum', async () => {
     scene()
     const view = await mountPanel()

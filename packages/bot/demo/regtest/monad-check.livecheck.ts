@@ -35,7 +35,7 @@ async function exchange(stack: RegtestStack, from: RealWallet, to: RealWallet, t
   )
   assert.equal(got.senderAddress.raw.toLowerCase(), from.address.toLowerCase())
   const problem = await checkStampOnChain(monad.provider, got, stampWei)
-  assert.equal(problem, undefined, problem)
+  assert.equal(problem, undefined, problem ?? "");
   console.log(
     stampWei === 0n
       ? `${from.label} -> ${to.label}: free message delivered, no payment`

@@ -133,36 +133,12 @@ describe('ChatList conversation selection (#943)', () => {
   })
 })
 
-describe('ChatList compose email action', () => {
+describe('ChatList new conversation action', () => {
   beforeEach(() => {
     mockPush.mockClear()
   })
 
-  it('renders compose email button and navigates to /add-contact?compose=email when clicked', async () => {
-    mockWidth = 1024
-    const wrapper = mount(ChatList, {
-      props: { compact: false },
-      global: {
-        components: {
-          QScrollArea: passthrough,
-          QList: passthrough,
-          QItem: passthrough,
-          QItemSection: passthrough,
-          QItemLabel: passthrough,
-          QSeparator: passthrough,
-          QSpace: passthrough,
-          QBtn: passthrough,
-        },
-        mocks: { $status: { setup: true }, $t: (k: string) => k },
-      },
-    })
-    const composeBtn = wrapper.find('[data-testid="compose-email-btn"]')
-    expect(composeBtn.exists()).toBe(true)
-    await composeBtn.trigger('click')
-    expect(mockPush).toHaveBeenCalledWith('/add-contact?compose=email')
-  })
-
-  it('renders start conversation button and navigates to /add-contact?mode=conversation when clicked', async () => {
+  it('renders start conversation button and navigates to /new-conversation when clicked', async () => {
     mockWidth = 1024
     const wrapper = mount(ChatList, {
       props: { compact: false },
@@ -181,12 +157,15 @@ describe('ChatList compose email action', () => {
       },
     })
     const startConvBtn = wrapper.find('[data-testid="start-conversation-btn"]')
+    expect(wrapper.find('[data-testid="compose-email-btn"]').exists()).toBe(
+      false,
+    )
     expect(startConvBtn.exists()).toBe(true)
     expect(startConvBtn.attributes('aria-label')).toBe(
       'newContactDialog.startConversation',
     )
     await startConvBtn.trigger('click')
-    expect(mockPush).toHaveBeenCalledWith('/add-contact?mode=conversation')
+    expect(mockPush).toHaveBeenCalledWith('/new-conversation')
   })
 })
 

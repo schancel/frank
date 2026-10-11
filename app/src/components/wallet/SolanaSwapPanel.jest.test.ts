@@ -227,6 +227,36 @@ describe('SolanaSwapPanel', () => {
     mockOpenSession.mockReset()
   })
 
+  it('presents separate compact pay and receive cards with slippage before a quote', async () => {
+    const session = fakeSession()
+    const wrapper = await mountPanel(session)
+    const pay = wrapper.get('[data-testid="solana-swap-pay-card"]')
+    const receive = wrapper.get('[data-testid="solana-swap-receive-card"]')
+    expect(pay.classes()).toContain('swap-card')
+    expect(receive.classes()).toContain('swap-card')
+    expect(pay.find('[data-testid="solana-swap-amount"]').classes()).toContain(
+      'text-h5',
+    )
+    expect(pay.find('[data-testid="solana-swap-max"]').exists()).toBe(true)
+    expect(
+      receive.find('[data-testid="solana-swap-receive-amount"]').classes(),
+    ).toContain('text-h5')
+    expect(wrapper.get('[data-testid="solana-swap-flip"]').classes()).toContain(
+      'swap-flip-btn',
+    )
+    expect(wrapper.get('[data-testid="solana-swap-venue"]').text()).toContain(
+      'Orca',
+    )
+    expect(
+      wrapper.get('[data-testid="solana-swap-slippage"]').text(),
+    ).toContain('0.5%')
+    expect(wrapper.find('[data-testid="solana-swap-quote"]').exists()).toBe(
+      false,
+    )
+    expect(session.quote).not.toHaveBeenCalled()
+    expect(session.execute).not.toHaveBeenCalled()
+  })
+
   it('shows a priority fee on its own line: on the quote, on the review card and in the result', async () => {
     const session = fakeSession({
       quote: jest.fn(async ({ amount }: { amount: bigint }) =>

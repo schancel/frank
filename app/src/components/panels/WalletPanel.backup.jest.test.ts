@@ -2,7 +2,6 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
 import Panel from './WalletPanel.vue'
-import { accountSession } from '../../accounts/session'
 import en from '../../i18n/en-us'
 
 const t = (key: string) =>
@@ -85,11 +84,21 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848, #1042)', () => {
     jest.clearAllMocks()
   })
 
-  test('renders Backup account (Codex32) button', () => {
+  test('keeps the complete accessible backup row in a footer outside the scrolling wallets', () => {
     const view = render()
     const btn = view.find('[data-test="backup-codex32-button"]')
     expect(btn.exists()).toBe(true)
     expect(btn.text()).toContain('Backup account (Codex32)')
+    const footer = view.get('[data-test="wallet-backup-footer"]')
+    const scroll = view.get('[data-test="wallet-list-scroll"]')
+    expect(footer.element.contains(btn.element)).toBe(true)
+    expect(scroll.element.contains(footer.element)).toBe(false)
+    expect(footer.element.parentElement).toBe(scroll.element.parentElement)
+    // Native button semantics provide Enter/Space activation and a single keyboard stop.
+    expect(btn.element.tagName).toBe('BUTTON')
+    expect(btn.attributes('type')).toBe('button')
+    expect((btn.element as HTMLButtonElement).tabIndex).toBe(0)
+    expect(btn.findAll('button, a, [tabindex]')).toHaveLength(0)
   })
 
   test('clicking Backup button navigates to /backup instead of opening a dialog', async () => {

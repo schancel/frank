@@ -157,233 +157,175 @@ afterEach(() => {
   jest.restoreAllMocks()
 })
 
-describe('with nothing received from the oracle', () => {
-  it('says every figure is unavailable and draws nothing: no placeholder value', () => {
+describe('selected coin price history', () => {
+  it('shows an unavailable current value and no substitute curve before any feed', () => {
     const wrapper = mountChart()
-    for (const id of ['token-rate', 'avu-hash', 'avu-spot', 'hash-vs-spot']) {
-      expect(wrapper.find(`[data-test="metric-value-${id}"]`).text()).toBe(
-        'Unavailable',
-      )
-    }
-    expect(wrapper.findAll('[data-test^="chart-line-"]')).toHaveLength(0)
+    expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
+      'Unavailable',
+    )
     expect(wrapper.findAll('[data-test^="chart-point-"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="chart-data-note"]').text()).toBe(
+    expect(wrapper.get('[data-test="chart-data-note"]').text()).toBe(
       en.walletPanel.chartNoteNoFeed,
     )
   })
-})
 
-describe('the figures', () => {
-  it('state the coin in AVU, the basket used, and the grid kWh in AVU', () => {
+  it('opens on the selected coin valued by AVU_hash, with the graph first and no lecture cards', () => {
     receive(twoEntryFeed())
     const wrapper = mountChart()
-    const value = (id: string) =>
-      wrapper.find(`[data-test="metric-value-${id}"]`).text()
-    // Equal market caps: Bitcoin 50%, Monero 50%. AVU_hash = (10 + 5) / 2 = 7.5.
-    // 1 MON = 0.025 x 7.5 = 0.1875 AVU.
-    expect(value('token-rate')).toBe('1 MON ≈ 187.5 mAVU · testnet')
-    expect(value('avu-hash')).toBe('2 of 2 basket entries')
-    const basket = wrapper.find('[data-test="metric-card-avu-hash"]').text()
-    expect(basket).toContain('BTC 50%')
-    expect(basket).toContain('XMR 50%')
-    // A wholesale kWh costs 0.05; valued by mining: 0.05 x 7.5 = 0.375 AVU.
-    expect(value('avu-spot')).toBe('A wholesale kWh costs 0.38 AVU')
-    // A kWh of mining pays 1 / 0.375 = 2.667 times its wholesale price: +166.7%.
-    expect(value('hash-vs-spot')).toBe('+166.7%')
-    expect(
-      wrapper.find('[data-test="metric-card-hash-vs-spot"]').text(),
-    ).toContain('Mining pays 167% more per kWh than the grid charges.')
-    // The tile says how the price was built and which regions are in it.
-    const spot = wrapper.find('[data-test="metric-card-avu-spot"]').text()
-    expect(spot).toContain('over the 30 days to')
-    expect(spot).toContain('regions weighted equally: Test region day-ahead.')
-    expect(spot).not.toContain('Not in this figure')
-    expect(spot).not.toContain('Not refreshed')
-    expect(value('avu-unit')).toBe('1 AVU = 1 kWh')
-  })
-
-  it('say "N of 5"-style how many entries were used and why each other was left out', () => {
-    const feed = twoEntryFeed()
-    delete feed.series['price/xmr-mainnet']
-    receive(feed)
-    const wrapper = mountChart()
-    expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
-      '1 of 2 basket entries',
+    expect(wrapper.get('[data-test="price-history-title"]').text()).toBe(
+      'MON price history',
     )
-    const basket = wrapper.find('[data-test="metric-card-avu-hash"]').text()
-    expect(basket).toContain('BTC 100%')
-    expect(basket).toContain('Left out: XMR (no price).')
+    expect(wrapper.get('[data-test="price-history-axis"]').text()).toBe(
+      'AVU_hash per MON',
+    )
+    expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
+      '1 MON ≈ 187.5 mAVU · testnet',
+    )
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(1)
+    expect(
+      wrapper.findAll(
+        '[data-test="chart-point-grid"], [data-test="chart-point-gold"]',
+      ),
+    ).toHaveLength(0)
+    expect(wrapper.find('[data-test="metric-card-avu-hash"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-test="chart-sources"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test-option="networks"]').exists()).toBe(false)
+    const svg = wrapper.get('[data-test="macro-chart-svg"]').element
+    const inspection = wrapper.get(
+      '[data-test="chart-inspection-table"]',
+    ).element
+    expect(
+      svg.compareDocumentPosition(inspection) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
   })
 
-  it('give the reason when AVU_spot has no inverse', () => {
-    const feed = twoEntryFeed()
-    feed.series['electricity/aggregate'].points = electricity(-0.01)
-    receive(feed)
+  it('values the selected coin using AVU_spot instead of plotting the electricity price', async () => {
+    receive(twoEntryFeed())
     const wrapper = mountChart()
-    expect(wrapper.find('[data-test="metric-value-avu-spot"]').text()).toBe(
+    await openRange(wrapper, '24h')
+    await wrapper
+      .get('[data-test="denomination-toggle"] [data-test-option="spot"]')
+      .trigger('click')
+    expect(wrapper.get('[data-test="price-history-axis"]').text()).toBe(
+      'AVU_spot per MON',
+    )
+    // MON 0.025 times the inverse of the 0.05 wholesale price = 0.5 AVU_spot.
+    expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
+      '1 MON ≈ 500 mAVU · testnet',
+    )
+    expect(wrapper.get('[data-test="inspection-cell-token"]').text()).toContain(
+      '500 mAVU',
+    )
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
+    expect(wrapper.find('[data-test="chart-point-grid"]').exists()).toBe(false)
+  })
+
+  it('does not claim dated gold valuation from an old annual average', async () => {
+    receive(twoEntryFeed())
+    const wrapper = mountChart()
+    await wrapper
+      .get('[data-test="denomination-toggle"] [data-test-option="gold"]')
+      .trigger('click')
+    expect(wrapper.get('[data-test="price-history-axis"]').text()).toBe(
+      'Troy ounces of gold per MON',
+    )
+    expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
       'Unavailable',
     )
-    expect(wrapper.find('[data-test="metric-card-avu-spot"]').text()).toContain(
-      en.walletPanel.avuSpotNotPositive,
+    expect(wrapper.get('[data-test="chart-data-note"]').text()).toBe(
+      en.walletPanel.priceHistoryGoldUnavailable,
     )
+    expect(wrapper.findAll('[data-test^="chart-point-"]')).toHaveLength(0)
   })
 
-  it('say "less" when mining pays under the grid price, and name a region that is no longer counted', () => {
+  it('reports missing MON history even when other coin and electricity observations exist', async () => {
     const feed = twoEntryFeed()
-    // A wholesale kWh at 0.2: 0.2 x 7.5 = 1.5 AVU; mining pays 1 / 1.5 - 1 = -33.3%.
-    feed.series['electricity/aggregate'].points = electricity(0.2)
-    feed.electricity = {
-      ...feed.electricity,
-      regions: [
-        { ...feed.electricity.regions[0], lastContributed: TODAY },
-        {
-          id: 'gone',
-          label: 'Quiet region',
-          attribution: 'Quiet market',
-          lastContributed: Date.UTC(2026, 8, 30) / 1000,
-        },
-      ],
-    }
+    delete feed.series['price/monad-mainnet']
     receive(feed)
     const wrapper = mountChart()
-    expect(wrapper.find('[data-test="metric-value-avu-spot"]').text()).toBe(
-      'A wholesale kWh costs 1.50 AVU',
-    )
-    expect(wrapper.find('[data-test="metric-value-hash-vs-spot"]').text()).toBe(
-      '-33.3%',
-    )
-    expect(
-      wrapper.find('[data-test="metric-card-hash-vs-spot"]').text(),
-    ).toContain('Mining pays 33% less per kWh than the grid charges.')
-    const spot = wrapper.find('[data-test="metric-card-avu-spot"]').text()
-    expect(spot).toContain('regions weighted equally: Test region day-ahead.')
-    expect(spot).toMatch(
-      /Not in this figure, too few recent prices: Quiet region \(last counted .*2026\)\./,
+    await openRange(wrapper, '24h')
+    expect(wrapper.findAll('[data-test^="chart-point-"]')).toHaveLength(0)
+    expect(wrapper.get('[data-test="chart-data-note"]').text()).toContain(
+      'There is no price history for 1 MON in this range.',
     )
   })
 
-  it('mark an electricity price that was not refreshed with its age', () => {
+  it('samples only real selected coin timestamps, without extending its first price backwards or inventing later prices', async () => {
     const feed = twoEntryFeed()
-    feed.series['electricity/aggregate'].stale = true
+    feed.series['price/monad-mainnet'].points = [[NOW - 1800, 0.025]]
     receive(feed)
     const wrapper = mountChart()
-    expect(wrapper.find('[data-test="metric-card-avu-spot"]').text()).toContain(
-      'Not refreshed: latest price is 12 h old.',
+    await openRange(wrapper, '24h')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(1)
+    expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="chart-data-note"]').text()).toContain(
+      en.walletPanel.priceHistorySinglePoint,
     )
   })
 
-  it('say so when an entry rests on an estimated hardware figure', () => {
+  it('omits future coin points and points whose benchmark did not yet exist', async () => {
+    const feed = twoEntryFeed()
+    feed.series['price/monad-mainnet'].points = [
+      [NOW - 7200, 0.025],
+      [NOW - 60, 0.025],
+      [NOW + 60, 0.025],
+    ]
+    receive(feed)
+    const wrapper = mountChart()
+    await openRange(wrapper, '24h')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(1)
+  })
+
+  it('breaks the selected coin line across unavailable spot inputs', async () => {
+    const times = [NOW - 3600, NOW - 1800, NOW - 60]
+    receive(
+      testFeed(times, {
+        prices: { 'monad-mainnet': 0.025 },
+        electricity: [
+          [times[0], 0.05],
+          [times[1], -0.01],
+          [times[2], 0.05],
+        ],
+      }),
+    )
+    const wrapper = mountChart()
+    await openRange(wrapper, '24h')
+    await wrapper
+      .get('[data-test="denomination-toggle"] [data-test-option="spot"]')
+      .trigger('click')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
+    expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(false)
+  })
+
+  it('retains the warning when historical hash valuation uses estimated hardware efficiency', async () => {
     const feed = twoEntryFeed()
     feed.series['efficiency/randomx'].estimatedBefore = NOW + 1
     receive(feed)
     const wrapper = mountChart()
-    expect(wrapper.find('[data-test="metric-card-avu-hash"]').text()).toContain(
+    await openRange(wrapper, '24h')
+    expect(wrapper.get('[data-test="chart-data-note"]').text()).toContain(
       en.walletPanel.avuHashEstimated,
     )
   })
-})
 
-describe('the lines', () => {
-  it('are today’s functions evaluated at the times the series hold, one point each', async () => {
-    receive(twoEntryFeed())
-    const wrapper = mountChart()
+  it('keeps eCash quote units at one million coins', async () => {
+    receive(
+      testFeed([NOW - 3600, NOW - 60], { prices: { 'xec-mainnet': 0.00001 } }),
+    )
+    const wrapper = mountChart({ selectedWallet: 'ecash' })
     await openRange(wrapper, '24h')
-    // Two times held in the range (an hour ago, a minute ago): two points per line.
-    expect(wrapper.findAll('[data-test="chart-point-grid"]')).toHaveLength(2)
-    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
-    expect(wrapper.find('[data-test="chart-line-grid"]').exists()).toBe(true)
-    const cells = wrapper.find('[data-test="chart-inspection-table"]').text()
-    expect(cells).toContain('0.38 AVU')
-    expect(cells).toContain('187.5 mAVU')
-    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
-      '2 points from',
+    expect(wrapper.get('[data-test="price-history-axis"]').text()).toBe(
+      'AVU_hash per 1M XEC',
+    )
+    expect(wrapper.get('[data-test="inspection-cell-token"]').text()).toContain(
+      '100 AVU',
     )
   })
 
-  it('have their scale labels anchored inside the picture, where a long figure cannot run off the side', async () => {
-    receive(twoEntryFeed())
-    const wrapper = mountChart()
-    await openRange(wrapper, '24h')
-    const svg = wrapper.get('[data-test="macro-chart-svg"]')
-    const width = Number(svg.attributes('viewBox')!.split(' ')[2])
-    const labels = svg.findAll(
-      '[data-test^="chart-max-label-"], [data-test^="chart-min-label-"]',
-    )
-    expect(labels.length).toBeGreaterThanOrEqual(2)
-    for (const label of labels) {
-      const x = Number(label.attributes('x'))
-      const left = label.attributes('data-test')!.endsWith('left')
-      // Text grows away from the edge it is anchored to, into the picture.
-      expect(label.attributes('text-anchor')).toBe(left ? 'start' : 'end')
-      expect(x).toBeGreaterThanOrEqual(0)
-      expect(x).toBeLessThanOrEqual(width)
-      expect(left ? x < width / 2 : x > width / 2).toBe(true)
-    }
-  })
-
-  // 2026-10-10: with 1 MON and gold both scaled on the right, each line drew its own
-  // label at the same corner and the two figures were printed over each other.
-  it('print the scale ends of two lines on the same side one after another, never on top of each other', async () => {
-    const feed = twoEntryFeed()
-    // Inputs held since 2015, so the yearly gold points of the last five years exist.
-    for (const held of Object.values(feed.series)) {
-      held.points = [
-        [Date.UTC(2015, 0, 1) / 1000, held.points[0][1]],
-        ...held.points,
-      ]
-    }
-    receive(feed)
-    const wrapper = mountChart()
-    await openRange(wrapper, '5y')
-    const svg = wrapper.get('[data-test="macro-chart-svg"]')
-    expect(
-      svg.findAll('[data-test="chart-point-gold"]').length,
-    ).toBeGreaterThan(0)
-    for (const end of ['max', 'min']) {
-      // One text at the right corner, holding both figures in their own colours.
-      const corner = svg.findAll(`[data-test="chart-${end}-label-right"]`)
-      expect(corner).toHaveLength(1)
-      const token = corner[0].get(`[data-test="chart-scale-${end}-token"]`)
-      const gold = corner[0].get(`[data-test="chart-scale-${end}-gold"]`)
-      expect(token.text()).toMatch(/AVU$/)
-      expect(gold.text()).toMatch(/AVU\/oz$/)
-      expect(gold.attributes('fill')).not.toBe(token.attributes('fill'))
-      // The second figure starts after the first, with a gap.
-      expect(Number(gold.attributes('dx'))).toBeGreaterThan(0)
-    }
-  })
-
-  // Layout is not computed under jest: this pins the rule; the widths were measured in a
-  // browser at 1272 px (2026-10-10: the right-hand cards ran past the page edge).
-  it('the figure cards share the width they are given: a column never grows to its longest label', () => {
-    const source = readFileSync(join(__dirname, 'AvuParityChart.vue'), 'utf8')
-    const style = source.slice(source.indexOf('<style'))
-    expect(style).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));')
-    expect(style).not.toMatch(/grid-template-columns: (repeat\(2, )?1fr\)?;/)
-  })
-
-  it('have no point where an input is missing: the first value is not extended backwards', async () => {
-    const feed = twoEntryFeed()
-    // Monad's price exists only from a minute ago.
-    feed.series['price/monad-mainnet'].points = [[NOW - 60, 0.025]]
-    receive(feed)
-    const wrapper = mountChart()
-    await openRange(wrapper, '24h')
-    expect(wrapper.findAll('[data-test="chart-point-grid"]')).toHaveLength(2)
-    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(1)
-  })
-
-  it('say so when the open coin has no price history', async () => {
-    receive(twoEntryFeed())
-    const wrapper = mountChart({ selectedWallet: 'tempo' })
-    await openRange(wrapper, '24h')
-    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(0)
-    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
-      'There is no price history for 1 TUSD in this range.',
-    )
-  })
-
-  it('ask the oracle for the history of the range shown', async () => {
+  it('preserves hover, drag zoom and range-driven history requests', async () => {
     const oracle = receive(twoEntryFeed())
     const ensure = jest
       .spyOn(oracle, 'ensureHistory')
@@ -393,63 +335,35 @@ describe('the lines', () => {
     await openRange(wrapper, '7d')
     const last = ensure.mock.calls[ensure.mock.calls.length - 1]
     expect(last[1]).toBe(3600)
-    expect(NOW - last[0]).toBeGreaterThanOrEqual(7 * DAY - 5)
-    expect(NOW - last[0]).toBeLessThanOrEqual(7 * DAY + 5)
-    await openRange(wrapper, 'networks')
-    expect(ensure.mock.calls[ensure.mock.calls.length - 1]).toBe(last)
-  })
-})
-
-describe('the networks view', () => {
-  it('shows what a kWh of mining earns on each entry, in AVU, against the basket', async () => {
-    receive(twoEntryFeed())
-    const wrapper = mountChart()
-    await openRange(wrapper, 'networks')
-    const text = wrapper.find('[data-test="networks-chart-svg"]').text()
-    // Bitcoin: 0.1 x 7.5 = 0.75 AVU per kWh (-25% against the basket).
-    // Monero: 0.2 x 7.5 = 1.50 AVU per kWh (+50%).
-    expect(text).toContain('0.75 AVU/kWh')
-    expect(text).toContain('-25.0%')
-    expect(text).toContain('1.50 AVU/kWh')
-    expect(text).toContain('+50.0%')
-    expect(text).toContain('BTC · 50%')
-    expect(wrapper.findAll('[data-test="chart-hover-bar"]')).toHaveLength(2)
-  })
-})
-
-describe('what is on screen', () => {
-  it('names where each kind of input comes from, as the feed says', () => {
-    receive(twoEntryFeed())
-    const wrapper = mountChart()
-    expect(wrapper.find('[data-test="source-prices"]').text()).toContain(
-      'test prices',
+    expect(last[0]).toBe(NOW - 7 * DAY)
+    await openRange(wrapper, '24h')
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    await columns[0].trigger('mouseenter')
+    expect(wrapper.get('[data-test="inspection-date"]').text()).toContain(
+      'Inspecting',
     )
-    const chains = wrapper.find('[data-test="source-chains"]').text()
-    expect(chains).toContain('test chain statistics')
-    // The eCash split is read from the dated steps, not typed into the text.
-    expect(chains).toMatch(/eCash miners receive 58% .* \(92% before\)/)
-    expect(en.walletPanel.sourceEcashShare).not.toMatch(/\d/)
-    expect(wrapper.find('[data-test="source-efficiency"]').text()).toContain(
-      'curated',
-    )
-    expect(wrapper.find('[data-test="source-electricity"]').text()).toContain(
-      'Test region day-ahead (Test market)',
-    )
+    await columns[0].trigger('mousedown')
+    await columns[1].trigger('mouseup')
+    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(true)
+    await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
+    expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
   })
 
-  it('never shows a dollar sign, "USD", or an undefined term', async () => {
+  it('keeps scale labels inside the SVG and presentation containers shrinkable', () => {
     receive(twoEntryFeed())
     const wrapper = mountChart()
-    for (const range of ['all', '5y', '1y', '30d', '7d', '24h', 'networks']) {
-      await openRange(wrapper, range)
-      const text = wrapper.text()
-      expect(text).not.toMatch(/\$|USD|dollar/i)
-      expect(text).not.toContain('TPI')
+    const svg = wrapper.get('[data-test="macro-chart-svg"]')
+    for (const label of svg.findAll(
+      '[data-test^="chart-max-label-"], [data-test^="chart-min-label-"]',
+    )) {
+      expect(Number(label.attributes('x'))).toBeLessThanOrEqual(680)
+      expect(label.attributes('text-anchor')).toBe('end')
     }
-  })
-
-  it('has no typed-in rate in its source: every number is read from the feed', () => {
     const source = readFileSync(join(__dirname, 'AvuParityChart.vue'), 'utf8')
-    expect(source).not.toMatch(/kwhPerDollar|centsPerKwh|goldUsd \* \d/)
+    expect(source).toContain('min-width: 0;')
+    expect(source).toContain(
+      'grid-template-columns: repeat(2, minmax(0, 1fr));',
+    )
+    expect(source).toContain('overflow-wrap: anywhere;')
   })
 })

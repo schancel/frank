@@ -237,7 +237,7 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(store.selectedTopic).toBe('memes')
   })
 
-  it('renders active topic chip and breadcrumb on /forum when selectedTopic is active, and clearTopic resets it', async () => {
+  it('renders the selected topic as plain breadcrumb text and preserves Forum parent navigation', async () => {
     const store = useForumStore()
     store.setSelectedTopic('news')
 
@@ -246,17 +246,20 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     })
     await flushPromises()
 
-    const chip = wrapper.find('[data-test="forum-active-topic-chip"]')
-    expect(chip.exists()).toBe(true)
-    expect(chip.text()).toContain('#news')
+    const topic = wrapper.get('[data-test="forum-active-topic"]')
+    expect(topic.element.tagName).toBe('SPAN')
+    expect(topic.text()).toBe('#news')
+    expect(topic.classes()).toEqual([])
+    expect(wrapper.find('.q-chip').exists()).toBe(false)
+    expect(wrapper.find('.chip-remove').exists()).toBe(false)
+    await topic.trigger('click')
+    expect(store.selectedTopic).toBe('news')
 
     const breadcrumb = wrapper.find('[data-test="forum-breadcrumb-root"]')
     expect(breadcrumb.exists()).toBe(true)
 
-    const vm = wrapper.vm as any
-    await vm.clearTopic()
+    await breadcrumb.trigger('click')
     await flushPromises()
-
     expect(store.selectedTopic).toBe('')
   })
 

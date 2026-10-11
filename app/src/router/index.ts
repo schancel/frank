@@ -134,6 +134,8 @@ export default () => {
     // Only a committed route owns selection/read state. Publishing from beforeEach lets
     // selection observers replace in-flight query navigation or mark canceled targets read.
     if (failure || startupRestoration.value.phase !== 'restored') return
+    // Viewing a profile is not opening its conversation or marking its messages read.
+    if (to.path.startsWith('/chat/') && to.query.info === 'true') return
     const address =
       to.path.startsWith('/chat/') && typeof to.params.address === 'string'
         ? to.params.address
@@ -141,7 +143,9 @@ export default () => {
     void ensureChatState(address, () => {
       const current = Router.currentRoute.value
       return (
-        current.path.startsWith('/chat/') && current.params.address === address
+        current.path.startsWith('/chat/') &&
+        current.params.address === address &&
+        current.query.info !== 'true'
       )
     })
   })

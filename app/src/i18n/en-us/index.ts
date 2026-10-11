@@ -172,6 +172,12 @@ export default {
     balanceUnknown: 'Your balance is not known yet.',
   },
   gameFairness: {
+    dicePractice: 'Practice',
+    dicePracticeDescription:
+      'Zero stake, no payout. Practice uses the same roll rules without wagering funds.',
+    dicePracticeRoll: 'Practice roll',
+    diceRoll: 'Roll',
+
     moveNotSent:
       'Not sent. Use Retry on your message below, or discard it to choose again.',
     notVerified: 'NOT VERIFIED.',
@@ -319,7 +325,6 @@ export default {
   a11y: {
     openNavigation: 'Open navigation menu',
     addContact: 'Add contact',
-    composeEmail: 'Compose email',
     addTopic: 'Add topic',
     deleteTopic: 'Delete topic {topic}',
     deleteContact: 'Delete contact {name}',
@@ -502,7 +507,39 @@ export default {
     avuRatesAsset: 'Asset',
     avuRatesRate: 'Physical Compute (AVU / kWh)',
     tabBalance: 'Balance & Transfer',
-    tabParity: 'Thermodynamic Parity',
+    priceHistoryTitle: '{symbol} price history',
+    priceHistoryAxisHash: 'AVU_hash per {symbol}',
+    priceHistoryAxisSpot: 'AVU_spot per {symbol}',
+    priceHistoryAxisGold: 'Troy ounces of gold per {symbol}',
+    priceHistoryHash: 'AVU_hash',
+    priceHistorySpot: 'AVU_spot',
+    priceHistoryGold: 'Gold',
+    priceHistoryPoints: '{count} price observations since {first}.',
+    priceHistorySinglePoint:
+      'Only one price observation is available in this range; no line is drawn.',
+    priceHistoryGoldUnavailable:
+      'Dated gold prices are unavailable. Annual averages cannot price this coin at these dates.',
+    priceHistorySource: 'Price source: {source}.',
+    priceHistoryBenchmarkUnavailable:
+      'No {benchmark} valuation is available for this coin in this range.',
+    avuReferenceTitle: 'AVU value in US dollars',
+    avuReferenceAxis: 'USD per AVU',
+    avuReferenceHash: '1 AVU_hash',
+    avuReferenceSpot: '1 AVU_spot',
+    avuReferenceNoHistory:
+      'No AVU reference history is available in this range.',
+    avuReferenceSinglePoint:
+      'Only one observation is available for a benchmark; no line is drawn for it.',
+    avuReferencePointCount: '{count} observations',
+    avuReferenceMethod: 'How AVU is calculated',
+    avuReferenceMethodText:
+      'AVU_hash values energy through proof-of-work mining; AVU_spot uses wholesale electricity prices. The dollar value of each is the inverse of its energy per dollar. Missing inputs remain unavailable.',
+    aboutAvu: 'About AVU',
+    tabHistory: 'History',
+    historyEmpty: 'No recorded activity on this network yet.',
+    historyPending: 'Pending and unresolved',
+    historyUndated: 'Date unavailable',
+    tabParity: 'Price history',
     tabSwap: 'Instant Swap',
     swapUnavailable: 'Instant Swap unavailable',
     swapUnavailableDescription:

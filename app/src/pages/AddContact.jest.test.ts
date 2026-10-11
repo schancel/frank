@@ -197,11 +197,17 @@ async function settle(): Promise<void> {
   await nextTick()
 }
 
-function mountPage(route: { query?: Record<string, string> } = {}): VueWrapper {
+function mountPage(
+  route: { path?: string; query?: Record<string, string> } = {},
+): VueWrapper {
   return mount(AddContact, {
     global: {
       components: quasarStubs,
-      mocks: { $t: translate, $router: mockRouter, $route: route },
+      mocks: {
+        $t: translate,
+        $router: mockRouter,
+        $route: { path: '/add-contact', ...route },
+      },
     },
   })
 }
@@ -825,6 +831,10 @@ describe('AddContact latest lookup', () => {
   })
 
   describe('email recipient recognition', () => {
+    beforeEach(() => {
+      wrapper.unmount()
+      wrapper = mountPage({ path: '/new-conversation' })
+    })
     it('recognizes email address matching regex and shows affordance card without chain lookup', async () => {
       await type(wrapper, 'alice@example.com')
       jest.advanceTimersByTime(DEBOUNCE_MS)
@@ -905,12 +915,12 @@ describe('AddContact latest lookup', () => {
       )
     })
 
-    it('customizes page title and placeholder when query parameter compose=email is provided', () => {
+    it('uses the same conversation page for email recipients', () => {
       wrapper.unmount()
-      wrapper = mountPage({ query: { compose: 'email' } })
+      wrapper = mountPage({ path: '/new-conversation' })
 
       const title = wrapper.find('.text-h6')
-      expect(title.text()).toBe(translate('newContactDialog.composeEmail'))
+      expect(title.text()).toBe(translate('newContactDialog.startConversation'))
 
       const input = wrapper.find('input')
       expect(input.attributes('placeholder')).toBe(
@@ -938,7 +948,7 @@ describe('AddContact latest lookup', () => {
 
     it('creates an independent conversation with a presentation subject', async () => {
       wrapper.unmount()
-      wrapper = mountPage({ query: { mode: 'conversation' } })
+      wrapper = mountPage({ path: '/new-conversation' })
       chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
 
       await typeAndFire(wrapper, '  a  ')
@@ -967,7 +977,7 @@ describe('AddContact latest lookup', () => {
 
     it('does not fall back to the default thread when explicit creation fails', async () => {
       wrapper.unmount()
-      wrapper = mountPage({ query: { mode: 'conversation' } })
+      wrapper = mountPage({ path: '/new-conversation' })
       chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
       await typeAndFire(wrapper, 'a')
       mockOpenChat.mockClear()
@@ -981,6 +991,8 @@ describe('AddContact latest lookup', () => {
     })
 
     it('in contact mode, hides topic input and uses address or email placeholder', () => {
+      wrapper.unmount()
+      wrapper = mountPage()
       expect(wrapper.find('.text-h6').text()).toBe(
         translate('newContactDialog.newContact'),
       )
@@ -990,24 +1002,27 @@ describe('AddContact latest lookup', () => {
       )
     })
 
-    it('in contact mode, Add & Chat commits contact and opens chat', async () => {
+    it('in contact mode, adding a contact never starts a conversation', async () => {
+      wrapper.unmount()
+      wrapper = mountPage()
       chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
 
       await typeAndFire(wrapper, 'a')
       const addAndChatBtn = addAndChatButton(wrapper)
-      expect(addAndChatBtn.exists()).toBe(true)
-      await addAndChatBtn.trigger('click')
+      expect(addAndChatBtn.exists()).toBe(false)
+      await addButton(wrapper).trigger('click')
 
       expect(mockAddContactToStore).toHaveBeenCalledWith({
         address: ADDRESS_A,
         contact: expect.anything(),
       })
-      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+      expect(mockOpenChat).not.toHaveBeenCalled()
+      expect(mockCreateConversation).not.toHaveBeenCalled()
     })
 
     it('in conversation mode, renders topic input and start conversation button which opens chat', async () => {
       wrapper.unmount()
-      wrapper = mountPage({ query: { mode: 'conversation' } })
+      wrapper = mountPage({ path: '/new-conversation' })
 
       expect(wrapper.find('.text-h6').text()).toBe(
         translate('newContactDialog.startConversation'),
@@ -1042,7 +1057,7 @@ describe('AddContact latest lookup', () => {
 
     it('in conversation mode, Enter key starts conversation and opens chat', async () => {
       wrapper.unmount()
-      wrapper = mountPage({ query: { mode: 'conversation' } })
+      wrapper = mountPage({ path: '/new-conversation' })
       chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
 
       await type(wrapper, 'a')
@@ -1094,7 +1109,7 @@ describe('AddContact latest lookup', () => {
 
       it('typing existing contact display name resolves immediately and enables Start Conversation', async () => {
         wrapper.unmount()
-        wrapper = mountPage({ query: { mode: 'conversation' } })
+        wrapper = mountPage({ path: '/new-conversation' })
 
         await type(wrapper, 'Alice Smith')
         await settle()
@@ -1123,7 +1138,7 @@ describe('AddContact latest lookup', () => {
 
       it('typing existing contact username with @ resolves contact and starts topic thread', async () => {
         wrapper.unmount()
-        wrapper = mountPage({ query: { mode: 'conversation' } })
+        wrapper = mountPage({ path: '/new-conversation' })
         // The relay says @alice is held by address A, which is already a contact.
         mockResolveUsername.mockResolvedValue({
           username: 'alice',
@@ -1158,7 +1173,7 @@ describe('AddContact latest lookup', () => {
 
       it('typing partial name displays suggestions list and clicking suggestion selects contact', async () => {
         wrapper.unmount()
-        wrapper = mountPage({ query: { mode: 'conversation' } })
+        wrapper = mountPage({ path: '/new-conversation' })
 
         await type(wrapper, 'Ali')
         await settle()
@@ -1193,7 +1208,7 @@ describe('AddContact latest lookup', () => {
 
       it('in conversation mode, Enter key on partial match auto-selects contact and opens chat', async () => {
         wrapper.unmount()
-        wrapper = mountPage({ query: { mode: 'conversation' } })
+        wrapper = mountPage({ path: '/new-conversation' })
 
         await type(wrapper, 'Bob')
         await wrapper.find('input').trigger('keydown.enter')
@@ -1207,7 +1222,7 @@ describe('AddContact latest lookup', () => {
 
       it('clearing selected contact resets input and selection', async () => {
         wrapper.unmount()
-        wrapper = mountPage({ query: { mode: 'conversation' } })
+        wrapper = mountPage({ path: '/new-conversation' })
 
         await type(wrapper, 'Bob Jones')
         await settle()

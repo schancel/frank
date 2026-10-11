@@ -4,27 +4,11 @@
     data-test="avu-explainer-dialog"
     @update:model-value="$emit('update:modelValue', $event)"
   >
-    <q-card
-      style="max-width: 540px; width: 100%"
-      data-test="avu-explainer-card"
-    >
+    <q-card class="avu-details-card" data-test="avu-explainer-card">
       <q-card-section class="row items-center q-pb-none">
-        <q-avatar
-          icon="bolt"
-          color="primary"
-          text-color="white"
-          size="36px"
-          class="q-mr-sm"
-        />
-        <div>
-          <div class="text-h6 text-weight-bold">
-            {{ $t('walletPanel.avuDialogTitle') }}
-          </div>
-          <div class="text-caption text-grey-7">
-            {{ $t('walletPanel.avuDialogSubtitle') }}
-            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-          </div>
-        </div>
+        <h2 class="text-h6 text-weight-bold q-my-none">
+          {{ t('walletPanel.avuReferenceTitle') }}
+        </h2>
         <q-space />
         <q-btn
           icon="close"
@@ -34,79 +18,129 @@
           @click="$emit('update:modelValue', false)"
         />
       </q-card-section>
-
-      <q-card-section class="q-pt-md">
-        <p class="text-body2 text-grey-9 q-mb-md">
-          {{ $t('walletPanel.avuDialogDesc') }}
-        </p>
-
-        <div class="q-mb-md">
+      <q-card-section>
+        <div class="reference-values q-mb-sm">
           <div
-            class="text-subtitle2 text-weight-bold text-primary flex items-center q-gutter-xs"
+            v-for="benchmark in benchmarks"
+            :key="benchmark.id"
+            :data-test="`avu-reference-current-${benchmark.id}`"
           >
-            <q-icon name="psychology" size="18px" />
-            <span>{{ $t('walletPanel.avuMemeHeading') }}</span>
+            <div class="text-caption" :style="{ color: benchmark.color }">
+              {{ benchmark.label }}
+            </div>
+            <div class="text-subtitle1 text-weight-bold">
+              {{ benchmark.current }}
+            </div>
+            <div class="text-caption text-grey-7">{{ benchmark.age }}</div>
           </div>
-          <p class="text-body2 text-grey-8 q-mt-xs q-mb-none">
-            {{ $t('walletPanel.avuMemeDesc') }}
-          </p>
         </div>
-
-        <div class="q-mb-md">
-          <div
-            class="text-subtitle2 text-weight-bold text-primary flex items-center q-gutter-xs"
+        <q-btn-toggle
+          v-model="selectedRange"
+          dense
+          no-caps
+          unelevated
+          toggle-color="primary"
+          :options="rangeOptions"
+          class="reference-ranges q-mb-sm"
+          data-test="avu-reference-range"
+        />
+        <div
+          class="text-caption text-weight-medium"
+          data-test="avu-reference-axis"
+        >
+          {{ t('walletPanel.avuReferenceAxis') }}
+        </div>
+        <svg
+          viewBox="0 0 600 260"
+          class="reference-chart"
+          role="img"
+          :aria-label="t('walletPanel.avuReferenceTitle')"
+          data-test="avu-reference-chart"
+        >
+          <line
+            x1="60"
+            y1="220"
+            x2="560"
+            y2="220"
+            stroke="currentColor"
+            opacity="0.4"
+          />
+          <line
+            x1="60"
+            y1="25"
+            x2="60"
+            y2="220"
+            stroke="currentColor"
+            opacity="0.4"
+          />
+          <text x="4" y="18" font-size="11" fill="currentColor">
+            {{ scale ? dollars(scale.max) : '' }}
+          </text>
+          <text x="4" y="220" font-size="11" fill="currentColor">
+            {{ scale ? dollars(scale.min) : '' }}
+          </text>
+          <g v-for="line in lines" :key="line.id">
+            <path
+              v-if="line.path"
+              :d="line.path"
+              fill="none"
+              :stroke="line.color"
+              stroke-width="2.5"
+              :data-test="`avu-reference-line-${line.id}`"
+            />
+            <circle
+              v-for="point in line.points"
+              :key="point.at"
+              :cx="point.x"
+              :cy="point.y"
+              r="3"
+              :fill="line.color"
+              :data-test="`avu-reference-point-${line.id}`"
+            >
+              <title>
+                {{ line.label }} · {{ dateLabel(point.at) }} ·
+                {{ dollars(point.value) }}
+              </title>
+            </circle>
+          </g>
+          <text x="60" y="246" font-size="11" fill="currentColor">
+            {{ extent ? dateLabel(extent.min) : '' }}
+          </text>
+          <text
+            x="560"
+            y="246"
+            text-anchor="end"
+            font-size="11"
+            fill="currentColor"
           >
-            <q-icon name="precision_manufacturing" size="18px" />
-            <span>{{ $t('walletPanel.avuSupplyChainHeading') }}</span>
-          </div>
-          <p class="text-body2 text-grey-8 q-mt-xs q-mb-none">
-            {{ $t('walletPanel.avuSupplyChainDesc') }}
-          </p>
+            {{ extent ? dateLabel(extent.max) : '' }}
+          </text>
+        </svg>
+        <div class="text-caption text-grey-7" data-test="avu-reference-note">
+          {{ historyNote }}
         </div>
-
-        <div class="q-mb-md">
-          <div
-            class="text-subtitle2 text-weight-bold text-primary flex items-center q-gutter-xs"
-          >
-            <q-icon name="trending_down" size="18px" />
-            <span>{{ $t('walletPanel.avuCpiHeading') }}</span>
-          </div>
-          <p class="text-body2 text-grey-8 q-mt-xs q-mb-none">
-            {{ $t('walletPanel.avuCpiDesc') }}
+        <details class="q-mt-md" data-test="avu-reference-methodology">
+          <summary>{{ t('walletPanel.avuReferenceMethod') }}</summary>
+          <p class="text-body2 q-mt-sm">
+            {{ t('walletPanel.avuReferenceMethodText') }}
           </p>
-        </div>
-
-        <div class="q-mb-md">
-          <div
-            class="text-subtitle2 text-weight-bold text-primary flex items-center q-gutter-xs"
-          >
-            <q-icon name="verified" size="18px" />
-            <span>{{ $t('walletPanel.avuOracleLessHeading') }}</span>
-          </div>
-          <p class="text-body2 text-grey-8 q-mt-xs q-mb-none">
-            {{ $t('walletPanel.avuOracleLessDesc') }}
-          </p>
-        </div>
-
+        </details>
         <div class="q-mt-md" data-test="avu-rates-section">
-          <div
-            class="text-subtitle2 text-weight-bold text-primary flex items-center q-gutter-xs q-mb-xs"
-          >
-            <q-icon name="table_chart" size="18px" />
-            <span>{{ $t('walletPanel.avuRatesTitle') }}</span>
+          <div class="text-subtitle2 text-weight-bold">
+            {{ t('walletPanel.avuRatesTitle') }}
           </div>
           <q-markup-table
             flat
             bordered
             dense
             separator="horizontal"
-            class="full-width q-mt-xs"
+            class="coin-rates q-mt-xs"
             data-test="avu-rates-table"
           >
             <thead>
-              <tr class="text-left text-grey-8">
-                <th>{{ $t('walletPanel.avuRatesAsset') }}</th>
-                <th>{{ $t('walletPanel.avuRatesRate') }}</th>
+              <tr class="text-left">
+                <th>{{ t('walletPanel.avuRatesAsset') }}</th>
+                <th>{{ t('walletPanel.priceHistoryHash') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -115,61 +149,243 @@
                 :key="row.asset"
                 :data-test="`avu-rate-row-${row.asset}`"
               >
-                <td class="text-weight-medium">{{ row.label }}</td>
-                <td class="text-primary text-weight-bold">
-                  {{ row.rateFormatted }}
-                  <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-                </td>
+                <td>{{ row.label }}</td>
+                <td>{{ row.rateFormatted }}</td>
               </tr>
             </tbody>
           </q-markup-table>
         </div>
       </q-card-section>
-
-      <q-card-actions align="right" class="q-pa-md q-pt-none">
-        <q-btn
+      <q-card-actions align="right"
+        ><q-btn
           flat
           no-caps
           color="primary"
-          :label="$t('walletPanel.avuDialogClose')"
+          :label="t('walletPanel.avuDialogClose')"
           data-test="avu-dialog-close-btn"
           @click="$emit('update:modelValue', false)"
-        />
-      </q-card-actions>
+      /></q-card-actions>
     </q-card>
   </q-dialog>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useSafeOracleStore } from '../../stores/oracle'
+import { computed, ref, watch } from 'vue'
+import {
+  useSafeOracleStore,
+  formatAge,
+  MINING_STALE_AFTER_MS,
+} from '../../stores/oracle'
 import { UNIT_RATE_ASSET_METRICS } from '../../utils/avu-units'
 import { useTranslate } from '../../composables/useTranslate'
-import { SUPPORTED_ASSETS } from '@frank/wallet/oracle'
+import { useOracleHistory } from '../../composables/useOracleFeed'
+import {
+  SUPPORTED_ASSETS,
+  ELECTRICITY_AGGREGATE,
+  avuHashAt,
+  avuSpotAt,
+  seriesName,
+} from '@frank/wallet/oracle'
 
-defineProps<{
-  modelValue: boolean
-}>()
-
-defineEmits<{
-  (e: 'update:modelValue', value: boolean): void
-}>()
-
+const props = defineProps<{ modelValue: boolean }>()
+defineEmits<{ (e: 'update:modelValue', value: boolean): void }>()
 const oracle = useSafeOracleStore()
 const t = useTranslate()
-
-interface EquivalencyRow {
-  asset: string
-  label: string
-  rateFormatted: string
+const DAY = 86400
+const ranges = {
+  'all': { span: Infinity, step: 30 * DAY },
+  '1y': { span: 365 * DAY, step: DAY },
+  '30d': { span: 30 * DAY, step: 6 * 3600 },
+  '7d': { span: 7 * DAY, step: 3600 },
+} as const
+const selectedRange = ref<keyof typeof ranges>('1y')
+const since = ref(0)
+watch(
+  selectedRange,
+  () => {
+    since.value = Number.isFinite(ranges[selectedRange.value].span)
+      ? Math.floor(Date.now() / 1000) - ranges[selectedRange.value].span
+      : Date.UTC(2010, 0, 1) / 1000
+  },
+  { immediate: true },
+)
+const rangeOptions = computed(() => [
+  { label: t('walletPanel.rangeAll'), value: 'all' },
+  { label: t('walletPanel.range1Y'), value: '1y' },
+  { label: t('walletPanel.range30D'), value: '30d' },
+  { label: t('walletPanel.range7D'), value: '7d' },
+])
+function dollars(value: number): string {
+  return value.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 18,
+  })
 }
-
-/**
- * One row per coin: what one unit of it is worth in AVU, by the rate the oracle store
- * computed. A coin with no rate says so; nothing stands in for it. No dollar figure is
- * shown: prices are an input of the rate, not something this app displays.
- */
-const equivalencyRows = computed<EquivalencyRow[]>(() =>
+function dateLabel(at: number): string {
+  return new Date(at * 1000).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+const benchmarks = computed(() => {
+  const now = Date.now()
+  return [
+    {
+      id: 'hash',
+      label: t('walletPanel.avuReferenceHash'),
+      color: '#7c3aed',
+      value: oracle.current?.avuHash?.kwhPerValue,
+      at: oracle.current?.avuHash?.oldestInputAt,
+      stale: oracle.current?.avuHash?.stale,
+      threshold: MINING_STALE_AFTER_MS,
+    },
+    {
+      id: 'spot',
+      label: t('walletPanel.avuReferenceSpot'),
+      color: '#0284c7',
+      value: oracle.current?.avuSpot.kwhPerValue,
+      at: oracle.current?.avuSpot.at,
+      stale: oracle.current?.avuSpot.stale,
+      threshold: 3 * DAY * 1000,
+    },
+  ].map(benchmark => ({
+    ...benchmark,
+    current:
+      benchmark.value && benchmark.value > 0
+        ? `≈ ${dollars(1 / benchmark.value)}`
+        : t('walletPanel.avuUnavailable'),
+    age:
+      benchmark.at === undefined
+        ? ''
+        : t(
+            benchmark.stale || now - benchmark.at * 1000 > benchmark.threshold
+              ? 'walletPanel.avuPriceStaleNote'
+              : 'walletPanel.avuPriceFreshNote',
+            { age: formatAge(now - benchmark.at * 1000) },
+          ),
+  }))
+})
+const observations = computed(() => {
+  const feed = oracle.inputs
+  if (!feed) return []
+  const names = new Set([ELECTRICITY_AGGREGATE])
+  for (const entry of feed.basket.entries) {
+    names.add(seriesName('efficiency', entry.algorithm))
+    for (const chain of entry.chains)
+      for (const kind of [
+        'price',
+        'marketCap',
+        'difficulty',
+        'blockReward',
+      ] as const)
+        names.add(seriesName(kind, chain.chain))
+  }
+  const times = new Set<number>()
+  const now = Math.floor(Date.now() / 1000)
+  for (const name of Array.from(names))
+    for (const [at] of feed.series[name]?.points ?? [])
+      if (at >= since.value && at <= now) times.add(at)
+  return Array.from(times)
+    .sort((a, b) => a - b)
+    .map(at => {
+      const hash = avuHashAt(feed, at)
+      return {
+        at,
+        hash: hash?.kwhPerValue,
+        estimated: hash?.entries.some(entry => entry.estimated),
+        spot: avuSpotAt(feed, at).kwhPerValue,
+      }
+    })
+})
+const histories = computed(() =>
+  benchmarks.value.map(benchmark => ({
+    ...benchmark,
+    points: observations.value.map(point => {
+      const kwhPerValue = benchmark.id === 'hash' ? point.hash : point.spot
+      return {
+        at: point.at,
+        value: kwhPerValue && kwhPerValue > 0 ? 1 / kwhPerValue : undefined,
+      }
+    }),
+  })),
+)
+const extent = computed(() => {
+  const times = histories.value.flatMap(line =>
+    line.points
+      .filter(point => point.value !== undefined)
+      .map(point => point.at),
+  )
+  return times.length
+    ? { min: Math.min(...times), max: Math.max(...times) }
+    : null
+})
+const scale = computed(() => {
+  const values = histories.value.flatMap(line =>
+    line.points.flatMap(point =>
+      point.value === undefined ? [] : [point.value],
+    ),
+  )
+  if (!values.length) return null
+  const low = Math.min(...values),
+    high = Math.max(...values)
+  const pad = low === high ? Math.abs(high) * 0.05 || 1 : (high - low) * 0.1
+  return { min: Math.max(0, low - pad), max: high + pad }
+})
+const lines = computed(() =>
+  histories.value.map(line => {
+    const bounds = extent.value,
+      axis = scale.value
+    const points = line.points.flatMap((point, index) =>
+      point.value === undefined || !bounds || !axis
+        ? []
+        : [
+            {
+              at: point.at,
+              value: point.value,
+              index,
+              x:
+                bounds.max === bounds.min
+                  ? 310
+                  : 60 +
+                    ((point.at - bounds.min) / (bounds.max - bounds.min)) * 500,
+              y: 220 - ((point.value - axis.min) / (axis.max - axis.min)) * 195,
+            },
+          ],
+    )
+    return {
+      ...line,
+      points,
+      path: points
+        .flatMap((point, index) => {
+          const next = points[index + 1]
+          return next && next.index === point.index + 1
+            ? [`M ${point.x},${point.y} L ${next.x},${next.y}`]
+            : []
+        })
+        .join(' '),
+    }
+  }),
+)
+const historyNote = computed(() => {
+  const count = lines.value.reduce((sum, line) => sum + line.points.length, 0)
+  if (!count) return t('walletPanel.avuReferenceNoHistory')
+  return [
+    t('walletPanel.avuReferencePointCount', { count }),
+    observations.value.some(point => point.estimated)
+      ? t('walletPanel.avuHashEstimated')
+      : '',
+    lines.value.some(line => line.points.length === 1)
+      ? t('walletPanel.avuReferenceSinglePoint')
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+})
+const equivalencyRows = computed(() =>
   SUPPORTED_ASSETS.map(asset => ({
     asset,
     label: UNIT_RATE_ASSET_METRICS[asset].symbol,
@@ -177,4 +393,48 @@ const equivalencyRows = computed<EquivalencyRow[]>(() =>
       oracle.formatUnitRate?.(asset) || t('walletPanel.avuUnavailable'),
   })),
 )
+useOracleHistory(() =>
+  props.modelValue
+    ? { since: since.value, step: ranges[selectedRange.value].step }
+    : null,
+)
 </script>
+
+<style scoped>
+.avu-details-card {
+  width: 100%;
+  max-width: 680px;
+  min-width: 0;
+}
+.reference-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.reference-values > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.reference-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.reference-ranges {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.coin-rates {
+  width: 100%;
+}
+.coin-rates :deep(td),
+.coin-rates :deep(th) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 360px) {
+  .reference-values {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+</style>

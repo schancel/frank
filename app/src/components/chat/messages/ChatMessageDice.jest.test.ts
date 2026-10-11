@@ -333,14 +333,26 @@ describe('ChatMessageDice.vue', () => {
     ).toBeDefined()
   })
 
-  test('a free roll carries no stamp', async () => {
+  test('a clearly labeled practice roll carries no stake or payout', async () => {
     const wrapper = mountCard({
       type: 'dice',
       action: 'table',
       rollId: 'r1',
       commitment,
     })
+    expect(wrapper.get('[data-testid="dice-chip-free"]').text()).toBe(
+      'Practice',
+    )
+    expect(
+      wrapper.get('[data-testid="dice-chip-free"]').attributes('size'),
+    ).toBeUndefined()
     await wrapper.find('[data-testid="dice-chip-free"]').trigger('click')
+    expect(
+      wrapper.get('[data-testid="dice-practice-description"]').text(),
+    ).toContain('Zero stake, no payout.')
+    expect(wrapper.get('[data-testid="dice-roll-btn"]').text()).toBe(
+      'Practice roll',
+    )
     await wrapper.find('[data-testid="dice-roll-btn"]').trigger('click')
     const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]
     // An explicit zero: left out, the chat's ordinary stamp was charged for a free roll.

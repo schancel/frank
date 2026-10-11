@@ -316,7 +316,7 @@ describe('App exact conversation route authority (#1237)', () => {
             await settleNavigation()
             expect(router.currentRoute.value.params.address).toBe(routeAddress)
             expect(router.currentRoute.value.query).toEqual({ info: 'true' })
-            expect(chats.activeConversationId).toBe(selected.id)
+            expect(chats.activeConversationId).toBe(first.id)
             layout = mount(ChatLayout, {
               global: {
                 plugins: [router],
@@ -430,24 +430,34 @@ describe('App exact conversation route authority (#1237)', () => {
     }
   })
 
-  it.each([PEER, OTHER])(
-    'preserves the committed profile query for %s when leaving an explicit thread',
+  it.each([PEER, OTHER, '0x4444444444444444444444444444444444444444'])(
+    'views profile %s without selecting, allocating or reading its conversation',
     async peer => {
-      const { chats, first, router, wrapper } = await mountedApp()
+      const { chats, first, other, defaultThread, router, wrapper } =
+        await mountedApp()
       try {
         await openChat(router, first.id)
         await settleNavigation()
-        openContactProfile(router, peer)
+        other.totalUnreadMessages = 2
+        defaultThread.totalUnreadMessages = 3
+        const inventory = Object.keys(chats.conversations)
+        const read = jest.spyOn(chats, 'readAll')
+        for (const target of [peer, PEER, peer]) {
+          await openContactProfile(router, target)
+          await settleNavigation()
+          expect(router.currentRoute.value.query).toEqual({ info: 'true' })
+          expect(router.currentRoute.value.params.address).toBe(target)
+          expect(chats.activeConversationId).toBe(first.id)
+          expect(Object.keys(chats.conversations)).toEqual(inventory)
+          expect(other.totalUnreadMessages).toBe(2)
+          expect(defaultThread.totalUnreadMessages).toBe(3)
+          expect(read).not.toHaveBeenCalled()
+        }
+        // The profile's explicit chat action removes info on the same peer path.
+        await router.replace({ query: {} })
         await settleNavigation()
-        expect(router.currentRoute.value.query).toEqual({ info: 'true' })
-        expect(router.currentRoute.value.params.address).toBe(peer)
-        expect(chats.activeConversationId).toBe(chats.chats[peer]?.id)
-
-        // A later selection is a new navigation, not an instruction to copy profile state.
-        chats.setActiveConversation(first.id)
-        await settleNavigation()
-        expect(router.currentRoute.value.params.address).toBe(first.id)
-        expect(router.currentRoute.value.query).toEqual({})
+        expect(chats.activeConversationId).toBe(chats.chats[peer].id)
+        expect(read).toHaveBeenCalled()
       } finally {
         wrapper.unmount()
       }

@@ -60,6 +60,7 @@ jest.mock('src/stores/my-profile', () => ({
     jest.requireActual('vue').reactive({ profile: {}, inbox: {} }),
 }))
 jest.mock('@frank/wallet/chain', () => ({
+  onActiveChainChange: jest.fn(() => () => undefined),
   activeChain: {
     unit: 'MON',
     toDisplayAmount: (amount: bigint) => amount.toString(),

@@ -3,14 +3,14 @@
 import { shallowMount } from '@vue/test-utils'
 import fs from 'fs'
 import path from 'path'
-import { defineComponent, nextTick, ref } from 'vue'
+import { defineComponent, nextTick, reactive, ref } from 'vue'
 
 const runtime = { legacy: false }
 const mockAccountStatus = { status: 'ready' }
 jest.mock('../../accounts/session', () => ({
   accountStatus: mockAccountStatus,
 }))
-const mockRoute = { path: '/' }
+const mockRoute = reactive({ path: '/', query: {} as Record<string, string> })
 const balance = {
   formattedBalance: ref('1 MON'),
   loaded: ref(true),
@@ -128,6 +128,7 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
   beforeEach(() => {
     runtime.legacy = false
     mockRoute.path = '/'
+    mockRoute.query = {}
     balance.formattedBalance.value = '1 MON'
     balance.loaded.value = true
     balance.hasError.value = false
@@ -177,6 +178,48 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     expect(vm(mountDrawer()).tab).toBe('chats')
     mockRoute.path = '/add-contact'
     expect(vm(mountDrawer()).tab).toBe('contacts')
+    mockRoute.path = '/new-conversation'
+    expect(vm(mountDrawer()).tab).toBe('chats')
+  })
+
+  it('keeps Contacts visible across profile clicks until explicitly opening chat', async () => {
+    mockRoute.path = '/contacts'
+    const wrapper = mountDrawer()
+    const vm = wrapper.vm as unknown as { tab: string }
+    try {
+      expect(vm.tab).toBe('contacts')
+      // Existing and new contacts both use peer profile routes, independent of chat state.
+      for (const address of [
+        'existing-peer',
+        'new-peer',
+        'new-peer',
+        'other-peer',
+      ]) {
+        mockRoute.path = `/chat/${address}`
+        mockRoute.query = { info: 'true' }
+        await nextTick()
+        expect(vm.tab).toBe('contacts')
+        expect(wrapper.get('contacts-panel-stub').isVisible()).toBe(true)
+      }
+      // The profile's Send message button removes info without changing the path.
+      mockRoute.query = {}
+      await nextTick()
+      expect(vm.tab).toBe('chats')
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('switches Contacts to Direct Messages for an explicit plain-chat route', async () => {
+    mockRoute.path = '/contacts'
+    const wrapper = mountDrawer()
+    try {
+      mockRoute.path = '/chat/peer'
+      await nextTick()
+      expect((wrapper.vm as unknown as { tab: string }).tab).toBe('chats')
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it('navigates to /chat when clicking chats rail tab with no active chats', async () => {

@@ -211,6 +211,42 @@
           </div>
         </q-card>
 
+        <div
+          class="swap-row swap-slippage items-center"
+          data-testid="swap-slippage"
+        >
+          <span class="text-grey-7">{{ $t('swap.slippage') }}</span>
+          <div class="row items-center q-gutter-x-xs">
+            <q-btn
+              v-for="option in slippageOptions"
+              :key="option"
+              dense
+              no-caps
+              unelevated
+              size="sm"
+              :outline="slippageBps !== option"
+              :color="slippageBps === option ? 'primary' : 'grey-7'"
+              :label="`${option / 100}%`"
+              :disable="locked"
+              :data-testid="`swap-slippage-${option}`"
+              @click="setSlippage(option)"
+            />
+            <q-input
+              v-model="customSlippage"
+              dense
+              outlined
+              inputmode="decimal"
+              suffix="%"
+              class="swap-slippage-input"
+              :error="customSlippageInvalid"
+              hide-bottom-space
+              :disable="locked"
+              :aria-label="$t('swap.slippageCustom')"
+              data-testid="swap-slippage-custom"
+            />
+          </div>
+        </div>
+
         <!-- What the chain quoted -->
         <q-card
           v-if="quote"
@@ -281,39 +317,6 @@
                 })
               }}
             </span>
-          </div>
-          <q-separator class="q-my-xs" />
-          <div class="swap-row items-center">
-            <span class="text-grey-7">{{ $t('swap.slippage') }}</span>
-            <div class="row items-center q-gutter-x-xs no-wrap">
-              <q-btn
-                v-for="option in slippageOptions"
-                :key="option"
-                dense
-                no-caps
-                unelevated
-                size="sm"
-                :outline="slippageBps !== option"
-                :color="slippageBps === option ? 'primary' : 'grey-7'"
-                :label="`${option / 100}%`"
-                :disable="locked"
-                :data-testid="`swap-slippage-${option}`"
-                @click="setSlippage(option)"
-              />
-              <q-input
-                v-model="customSlippage"
-                dense
-                outlined
-                inputmode="decimal"
-                suffix="%"
-                class="swap-slippage-input"
-                :error="customSlippageInvalid"
-                hide-bottom-space
-                :disable="locked"
-                :aria-label="$t('swap.slippageCustom')"
-                data-testid="swap-slippage-custom"
-              />
-            </div>
           </div>
         </q-card>
 
@@ -1552,6 +1555,13 @@ export default defineComponent({
   justify-content: space-between;
   gap: 12px;
   padding: 3px 4px;
+}
+.swap-slippage {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.swap-slippage > div {
+  flex-wrap: wrap;
 }
 .swap-slippage-input {
   width: 76px;

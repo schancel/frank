@@ -462,12 +462,14 @@ export default defineComponent({
       },
     )
     watch(
-      () => route.path,
-      (path, oldPath) => {
+      () => [route.path, route.query?.info] as const,
+      ([path, info], previous) => {
+        const oldPath = previous?.[0]
         // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
         // `router/index.ts`'s own comment on `protectedRoutes` -- but is still a Forum page.
         // Only force the highlight on navigation -- never overrides a subsequent direct
-        // 'settings'/'contacts' click, since this only runs when `path` itself changes. /wallet
+        // 'settings'/'contacts' click. Observe info too: opening chat from a profile removes
+        // its query without changing the path. /wallet
         // gets the same treatment (#570): opening a wallet (deep link, back navigation) puts the
         // highlight back on its own rail tab.
         if (
@@ -499,8 +501,11 @@ export default defineComponent({
         } else if (path.startsWith('/contacts')) {
           tab.value = 'contacts'
         } else if (path.startsWith('/chat')) {
-          if (oldPath?.startsWith('/add-contact') && tab.value === 'contacts') {
-            // Keep contacts tab active when returning from adding a contact
+          if (
+            tab.value === 'contacts' &&
+            (info === 'true' || oldPath?.startsWith('/add-contact'))
+          ) {
+            // A profile visit keeps the contact list in place for the next contact click.
           } else {
             tab.value = 'chats'
           }

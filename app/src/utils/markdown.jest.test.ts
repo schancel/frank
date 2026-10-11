@@ -36,6 +36,47 @@ describe('renderMarkdown', () => {
     jest.clearAllMocks()
   })
 
+  it('links exact full-address mentions in ordinary text without changing line breaks', () => {
+    const address = '0x' + 'a'.repeat(40)
+    const html = renderMarkdown(`hello @${address}\nnext line`, false, true, [], {})
+    expect(html).toContain(`href="/chat/${address}?info=true"`)
+    expect(html).toContain('<br>')
+    expect(html).toContain(`@${address}`)
+  })
+
+  it('keeps mentions out of code, links, HTML and abbreviated or oversized addresses', () => {
+    const address = '0x' + 'a'.repeat(40)
+    const input = [
+      `\`@${address}\``,
+      '```text\n@' + address + '\n```',
+      `[@${address}](https://example.com)`,
+      `<a href="https://example.com">@${address}</a>`,
+      '@0xaaaa...aaaa', '@' + address + 'a', 'email@' + address,
+    ].join('\n\n')
+    expect(renderMarkdown(input, false, true, [], {})).not.toContain('/chat/')
+  })
+
+  it('escapes resolved profile names and changes cache identity when the name changes', () => {
+    const address = '0x' + 'a'.repeat(40)
+    const input = '@' + address
+    const html = renderMarkdown(input, false, true, [], { [address]: '<b>Alice</b>' })
+    expect(html).toContain('&lt;b&gt;Alice&lt;/b&gt;')
+    expect(html).not.toContain('<b>Alice</b>')
+    const next = renderMarkdown(input, false, true, [], { [address]: 'Bob' })
+    expect(next).toContain('>Bob</a>')
+    expect(next).not.toContain('Alice')
+    // Ordinary Markdown callers do not implicitly resolve or link mentions.
+    expect(renderMarkdown(input, false)).not.toContain('/chat/')
+  })
+
+  it('recognizes mixed-case full addresses in nested text and keeps punctuation outside the link', () => {
+    const address = '0x' + 'aB'.repeat(20)
+    const canonical = address.toLowerCase()
+    const html = renderMarkdown(`- **Hello @${address}!**`, false, true, [], {})
+    expect(html).toContain(`href="/chat/${canonical}?info=true"`)
+    expect(html).toContain(`@${address}</a>!`)
+  })
+
   it('renders basic markdown to HTML', () => {
     expect(renderMarkdown('**bold** and *italic*', false)).toContain(
       '<strong>bold</strong>',

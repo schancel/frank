@@ -4,6 +4,10 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
+import { getActiveChain, onActiveChainChange } from '@frank/wallet/chain'
+import { fetchContactProfile } from '../../../utils/directory-peer'
+import { openContactProfile } from '../../../utils/routes'
+import { addressMentionTokens } from '../../../utils/address-mentions'
 import {
   ATTACHMENT_ATTRIBUTE,
   renderMarkdown,
@@ -52,6 +56,9 @@ export default defineComponent({
     return {
       // Object URLs made for this message's pictures, by data URI; revoked on unmount.
       urls: new Map<string, string>(),
+      mentionNames: {} as Record<string, string>,
+      mentionGeneration: 0,
+      removeChainListener: undefined as (() => void) | undefined,
     }
   },
   computed: {
@@ -73,20 +80,49 @@ export default defineComponent({
         this.$q.dark.isActive,
         true,
         this.attachments.map(a => a.id),
+        this.mentionNames,
       )
     },
   },
+  watch: {
+    text() { void this.refreshMentions() },
+    isReply() { void this.refreshMentions() },
+  },
   mounted() {
     this.showPictures()
+    void this.refreshMentions()
+    this.removeChainListener = onActiveChainChange(() => { void this.refreshMentions() })
   },
   updated() {
     this.showPictures()
   },
   beforeUnmount() {
+    this.mentionGeneration++
+    this.removeChainListener?.()
     this.urls.forEach(url => URL.revokeObjectURL(url))
     this.urls.clear()
   },
   methods: {
+    async refreshMentions() {
+      const generation = ++this.mentionGeneration
+      this.mentionNames = {}
+      if (this.isReply) return
+      const addresses = addressMentionTokens(this.text).addresses
+      if (!addresses.length) return
+      const chain = getActiveChain()
+      await Promise.all(addresses.map(async address => {
+        try {
+          const parsed = chain.parseAddress(address)
+          if (!parsed) return
+          const profile = await fetchContactProfile(parsed)
+          if (generation !== this.mentionGeneration || getActiveChain() !== chain) return
+          const name = profile?.name?.trim()
+          if (name) this.mentionNames = { ...this.mentionNames, [address]: name }
+        } catch {
+          // The full address remains usable when its profile is unavailable.
+        }
+      }))
+    },
     attachmentOf(image: Element): PostAttachment | undefined {
       const id = image.getAttribute(ATTACHMENT_ATTRIBUTE)
       return this.attachments.find(a => a.id === id)
@@ -113,6 +149,13 @@ export default defineComponent({
     },
     clicked(event: MouseEvent) {
       const target = event.target as HTMLElement | null
+      const anchor = target?.closest('a')
+      const address = /^\/chat\/(0x[0-9a-f]{40})\?info=true$/i.exec(anchor?.getAttribute('href') ?? '')?.[1]
+      if (address) {
+        event.preventDefault()
+        void openContactProfile(this.$router, address)
+        return
+      }
       if (target?.tagName !== 'IMG') return
       const attachment = this.attachmentOf(target)
       if (attachment) this.$emit('imageClick', attachment.dataUrl)

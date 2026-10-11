@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * Offline stand-ins and a two-wallet table for tests that play blackjack through real typed
  * wallets and the canonical direct-message path. Copied from the fixture of
@@ -328,7 +329,7 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     relayBaseUrl: RELAY,
     networkTag: 'MONT',
     stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-    defaultStampValueWei: 1_000n,
+    resolveDefaultStamp: fixedStampDefault(1_000n),
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
     // The stub node never mines on its own: a native send looks once and returns.

@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import * as legacyEnvelope from "@frank/cashweb/relay/monad-message-envelope";
 import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 /**
@@ -153,7 +154,7 @@ const TEST_CONFIG: EvmChainConfig = {
   relayBaseUrl: "http://relay.test",
   networkTag: "MONT",
   stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
-  defaultStampValueWei: 1_000_000_000_000n,
+  resolveDefaultStamp: fixedStampDefault(1_000_000_000_000n),
   defaultTopicVoteValueWei: 1_000_000_000_000n,
   subAccountPoolSize: 3,
   // The stub node never mines on its own: a native send looks once and returns.

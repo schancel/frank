@@ -716,6 +716,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         QCLI_MONAD_RPC_CHAIN: 'monad-testnet',
         QCLI_MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
         QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
+        QCLI_FRANK_DM_DEFAULT_STAMP_AVU: config.defaultStampAvu,
       }
       const quasarBin = join(REPO_ROOT, 'node_modules', '@quasar', 'app-vite', 'bin', 'quasar.js')
       const appCommandPath = existsSync(quasarBin) ? process.execPath : 'yarn'
@@ -776,7 +777,7 @@ export function appCommand(config: DemoConfig, relayUrl: string): string[] {
   return [
     `cd app && QCLI_MONAD_RELAY_BASE_URL=${relayUrl} QCLI_MONAD_RPC_CHAIN=monad-testnet \\`,
     `  QCLI_MONAD_STAMP_BURN_ADDRESS=${config.stampBurnAddress} QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${config.minStampWei} \\`,
-    '  yarn dev:browser',
+    `  QCLI_FRANK_DM_DEFAULT_STAMP_AVU=${config.defaultStampAvu} yarn dev:browser`,
   ]
 }
 

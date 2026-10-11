@@ -1,3 +1,4 @@
+import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy"
 /**
  * Canonical (#778) direct messages for a typed Monad wallet: type8 -> type6 -> type5/schema2/suite1
  * sealed by `@frank/cashweb/relay/canonical-dm`, paid and journaled by the wallet's own
@@ -1398,7 +1399,7 @@ export function restoreOutgoingClaims(owner: CanonicalMessagingOwner): void {
 async function send(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['send']>[0],
-  defaultStampValueWei: bigint,
+  resolveDefaultStamp: (minimumStamp?: bigint) => Promise<DefaultStampQuote>,
 ): Promise<DirectMessageSendResult> {
   // Supplied identities are taken exactly or refused: 16 bytes or their lowercase 8-4-4-4-12
   // form. Nothing is repaired. Bytes are copied, so the repeat check and the sealed message use
@@ -1464,7 +1465,7 @@ async function send(
     const items = encodeItemFrames(requireMessageItems(owner), params.items, {
       selfAddressed,
     })
-    let stampValueWei = params.stampValue ?? defaultStampValueWei
+    let stampValueWei = params.stampValue
     const peer = await directory.peerCurrent({ address: params.recipient.raw })
     if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
     // The items were admitted for a message to this wallet's own key: it is sealed to no other.
@@ -1591,22 +1592,24 @@ async function send(
         preparationTxHashes: [],
       }
     }
-    if (stampValueWei <= 0n || stampValueWei >= 1n << 256n)
+    if (stampValueWei !== undefined && (stampValueWei <= 0n || stampValueWei >= 1n << 256n))
       throw new Error('canonical-wallet:economics-invalid')
     // A paid stamp is never smaller than what the chain charges to move it. The wallet's own
     // default is raised to that; an amount the caller chose is refused, not changed.
-    const requestedWei = stampValueWei
-    // While the chain's node cannot be reached this send is QUEUED here, at its building step:
-    // nothing is claimed or signed, it can be cancelled, and when the node answers again it
-    // goes on. It does not fail. (A free message never comes this way.)
+    let requestedWei = stampValueWei
+    // Explicit paid sends queue while the node is unreachable. A new implicit default instead
+    // reports an unavailable fee before claiming or signing; free messages bypass this path.
     for (;;) {
       try {
-        stampValueWei = requestedWei
         const floorWei = await owner.lifetime(() => payer.minimumPaymentWei())
+        if (requestedWei === undefined) {
+          const quote = await owner.lifetime(() => resolveDefaultStamp(floorWei))
+          if (quote.status === 'unavailable') throw new DefaultStampUnavailableError(quote)
+          requestedWei = quote.amount
+        }
+        stampValueWei = requestedWei
         if (stampValueWei < floorWei && params.settlement !== true) {
-          if (params.stampValue !== undefined)
-            throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
-          stampValueWei = floorWei
+          throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
         }
         // This message's own paying coins: claimed in one synchronous step, so no other
         // message, topic or native send being built at this moment can be given them.
@@ -1637,6 +1640,11 @@ async function send(
         break
       } catch (error) {
         if (!(error instanceof ChainUnreachableError)) throw error
+        if (requestedWei === undefined) {
+          const quote = await resolveDefaultStamp(undefined)
+          if (quote.status === 'unavailable') throw new DefaultStampUnavailableError(quote)
+          throw error
+        }
         owner.payer()
         params.onPreparationProgress?.({ stage: 'waiting-for-chain' })
         await owner.lifetime(() => payer.watcher.whenReachable(params.signal))
@@ -2224,11 +2232,11 @@ async function fetchSince(
  * Nothing here queues: every send does its own work and holds no lock over a network wait. */
 export function canonicalDirectMessages(
   owner: CanonicalMessagingOwner,
-  defaultStampValueWei: bigint,
+  resolveDefaultStamp: (minimumStamp?: bigint) => Promise<DefaultStampQuote>,
 ) {
   return {
     send: (params: Parameters<DirectMessageClient['send']>[0]) =>
-      send(owner, params, defaultStampValueWei),
+      send(owner, params, resolveDefaultStamp),
     /**
      * The host's tick. Drives every unresolved message of this wallet one step (see `resend`),
      * whichever digests are named, and answers for the named ones. `maxPutAttempts` above 1 is
@@ -2254,6 +2262,16 @@ export function canonicalDirectMessages(
       owner.lifetime(() => settleHolder(owner, holder)),
     /** Whether the chain's node answers, as the wallet's reads last found. No request. */
     chainHealth: () => owner.payer().watcher.health(),
+    /** Preview and implicit send share the same host resolver and live adapter floor. */
+    defaultStampQuote: async (): Promise<DefaultStampQuote> => {
+      let floor: bigint
+      try { floor = await owner.lifetime(() => owner.payer().minimumPaymentWei()) }
+      catch (error) {
+        if (!(error instanceof ChainUnreachableError)) throw error
+        return resolveDefaultStamp(undefined)
+      }
+      return owner.lifetime(() => resolveDefaultStamp(floor))
+    },
     /** The smallest paid stamp right now: one transfer's fee at the node's gas price. */
     minimumStamp: () => owner.lifetime(() => owner.payer().minimumPaymentWei()),
     /** What the chain has shown of the payments of one sent message. No request is made. */

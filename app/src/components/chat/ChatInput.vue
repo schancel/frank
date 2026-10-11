@@ -43,6 +43,14 @@
         {{ attachError }}
       </div>
     </div>
+    <div
+      v-if="stampUnavailable"
+      class="col-12 text-negative text-caption q-px-md"
+      role="alert"
+      data-testid="stamp-unavailable"
+    >
+      {{ stampUnavailable }}
+    </div>
     <q-toolbar class="chat-input-toolbar full-width items-center">
       <q-btn
         dense
@@ -221,7 +229,7 @@
         icon="send"
         class="chat-send-btn q-btn"
         :aria-label="$t('a11y.sendMessage')"
-        :disable="disable"
+        :disable="disable || Boolean(stampUnavailable)"
         :loading="disable"
         @mousedown.prevent="sendMessage"
       />
@@ -276,14 +284,20 @@ export default defineComponent({
     },
     stampAmount: {
       type: String,
-      default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
+      default: () => '',
     },
     /** The smallest stamp the wallet sends right now (`directMessages.minimumStamp`): what the
      * chain charges to move it. The page reads it; until it has, the configured default. */
     minimumStampWei: {
       type: BigInt as unknown as PropType<bigint>,
-      default: () => activeChain.defaultStampValue,
+      default: () => 0n,
     },
+    defaultStampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: undefined,
+    },
+    defaultStampMode: { type: Boolean, default: true },
+    stampUnavailable: { type: String, default: '' },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
     // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its
     // focus (seen in Chromium) and ignores keystrokes until the send ends, so the first characters
@@ -306,6 +320,7 @@ export default defineComponent({
     'update:message',
     'update:attachments',
     'update:stampAmount',
+    'resetStampDefault',
     'sendMessage',
     'blackjackClicked',
     'sendStealthClicked',
@@ -313,10 +328,7 @@ export default defineComponent({
   methods: {
     resetToDefault() {
       this.typedStamp = null
-      this.$emit(
-        'update:stampAmount',
-        activeChain.toDisplayAmount(activeChain.defaultStampValue),
-      )
+      this.$emit('resetStampDefault')
     },
     /** Public focus target for chat-level focus handoffs. */
     focus() {
@@ -416,7 +428,7 @@ export default defineComponent({
     formatAttachmentSize,
     sendMessage() {
       // A message too large to send is refused here, before anything is paid.
-      if (this.disable || this.overBudget) {
+      if (this.disable || this.overBudget || this.stampUnavailable) {
         return
       }
       this.attachError = ''
@@ -519,10 +531,12 @@ export default defineComponent({
       }
     },
     isDefaultStamp(): boolean {
-      return this.stampWei === activeChain.defaultStampValue
+      return this.defaultStampMode
     },
     defaultStampText(): string {
-      return formatCompactAmount(activeChain, activeChain.defaultStampValue)
+      return this.defaultStampWei === undefined
+        ? this.$t('chatInput.stampQuoteUnavailable')
+        : formatCompactAmount(activeChain, this.defaultStampWei)
     },
     /** The stamp on the chip: the amount in the chain's unit, compact ("14.14 mMONT"); a
      * message with no stamp reads "Free". */

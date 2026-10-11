@@ -133,6 +133,10 @@
         v-model:attachments="attachments"
         v-model:stamp-amount="stampAmount"
         :minimum-stamp-wei="minimumStampWei"
+        :default-stamp-wei="defaultStampWei"
+        :default-stamp-mode="isDefaultStampMode"
+        :stamp-unavailable="stampUnavailable"
+        @resetStampDefault="resetStampDefault"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -177,7 +181,9 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref } from 'vue'
+import { defineComponent, ref, onUnmounted } from 'vue'
+import { accountStatus } from '../accounts/session'
+import { useSafeOracleStore } from '../stores/oracle'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
 import EmailThreadView, {
@@ -273,6 +279,8 @@ export default defineComponent({
   },
   beforeUnmount() {
     window.removeEventListener('resize', this.resizeHandler)
+    if (this.stampQuoteTimer) clearInterval(this.stampQuoteTimer)
+    this.stampQuoteSequence++
   },
   data() {
     return {
@@ -295,8 +303,12 @@ export default defineComponent({
       attachments: [] as PostAttachment[],
       stampPreparationStatus: null as string | null,
       // The smallest stamp the wallet sends right now, read from it (`refreshMinimumStamp`).
-      // Until the first answer, the configured default.
-      minimumStampWei: activeChain.defaultStampValue as bigint,
+      // Until a fresh quote arrives, the default remains unavailable.
+      minimumStampWei: 0n as bigint,
+      defaultStampWei: undefined as bigint | undefined,
+      defaultStampFailure: 'missing-rate' as string,
+      stampQuoteSequence: 0,
+      stampQuoteTimer: undefined as ReturnType<typeof setInterval> | undefined,
       sendingMessage: false,
       activeSendCount: 0,
       blackjackDialog: false,
@@ -311,12 +323,17 @@ export default defineComponent({
     }
   },
   setup() {
+    const oracle = useSafeOracleStore()
+    const releaseOracle = oracle.acquire()
+    onUnmounted(releaseOracle)
     const chats = useChatStore()
     const contacts = useContactStore()
     const myProfile = useProfileStore()
     const { refresh: refreshBalance } = useBalance()
 
     return {
+      oracle,
+      accountStatus,
       refreshBalance,
       getAcceptancePrice: contacts.getAcceptancePrice,
       getContactVuex: contacts.getContact,
@@ -332,6 +349,10 @@ export default defineComponent({
   emits: ['giveLotusClicked'],
   mounted() {
     void this.refreshMinimumStamp()
+    this.stampQuoteTimer = setInterval(
+      () => void this.refreshMinimumStamp(),
+      60_000,
+    )
     if (
       this.address &&
       typeof this.chatStore?.setActiveConversation === 'function'
@@ -572,17 +593,47 @@ export default defineComponent({
     /** Asks the wallet for the smallest stamp it sends right now: one transfer's fee at the
      * node's gas price. A wallet that cannot say leaves the last known value. */
     async refreshMinimumStamp() {
+      const sequence = ++this.stampQuoteSequence
+      const client = activeChain.directMessages
+      const chainIdentifier = activeChain.chainIdentifier
+      const revision = accountStatus.revision
+      this.defaultStampWei = undefined
       try {
-        const minimum = await activeChain.directMessages.minimumStamp?.({
-          wallet: useMonadWallet(),
-        })
-        if (typeof minimum === 'bigint' && minimum > 0n)
-          this.minimumStampWei = minimum
+        const wallet = useMonadWallet()
+        const quote = await client.defaultStampQuote?.({ wallet })
+        if (
+          sequence !== this.stampQuoteSequence ||
+          revision !== accountStatus.revision ||
+          client !== activeChain.directMessages ||
+          chainIdentifier !== activeChain.chainIdentifier ||
+          wallet !== useMonadWallet()
+        )
+          return
+        if (quote?.status === 'available') {
+          this.minimumStampWei = quote.minimumStamp
+          this.defaultStampWei = quote.amount
+          this.defaultStampFailure = ''
+        } else {
+          this.defaultStampWei = undefined
+          this.defaultStampFailure = quote?.reason ?? 'unsupported'
+        }
       } catch {
-        // No wallet yet, or the node did not answer: keep what is known.
+        if (sequence !== this.stampQuoteSequence) return
+        this.defaultStampWei = undefined
+        this.defaultStampFailure = 'missing-fee'
       }
     },
+    resetStampDefault() {
+      const target = this.conversation?.id || this.recipientAddress
+      if (target)
+        this.chatStore.setStampWei({ address: target, stampWei: undefined })
+    },
     async sendMessage(message: string) {
+      if (this.stampUnavailable) {
+        errorNotify(new Error(this.stampUnavailable))
+        return
+      }
+      const wallet = useMonadWallet()
       const recipient = this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const rawPrice = this.getAcceptancePrice(recipient)
@@ -626,7 +677,7 @@ export default defineComponent({
 
       try {
         await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: recipient,
           conversationId: this.conversation?.id,
           items,
@@ -669,11 +720,13 @@ export default defineComponent({
       const originalName = conversation.name
       const recipient =
         payload.targetAddress || this.recipientAddress || this.address
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {
+        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
+        const wallet = useMonadWallet()
+        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
         await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: recipient,
           conversationId: conversation.id,
           items: payload.items,
@@ -715,18 +768,42 @@ export default defineComponent({
       value: bigint
       memo?: string
     }) {
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
         let prepared
+        let stampValue: bigint
+        let wallet: ReturnType<typeof useMonadWallet>
+        let conversationId: string | undefined
+        let requireCurrentContext: () => void
         try {
-          const wallet = await useActiveWallet()
-          if (!wallet.prepareContactPayment)
+          if (this.stampUnavailable) throw new Error(this.stampUnavailable)
+          stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+          wallet = useMonadWallet()
+          const chainIdentifier = activeChain.chainIdentifier
+          const client = activeChain.directMessages
+          const revision = accountStatus.revision
+          conversationId = this.conversation?.id
+          requireCurrentContext = () => {
+            if (
+              revision !== accountStatus.revision ||
+              chainIdentifier !== activeChain.chainIdentifier ||
+              client !== activeChain.directMessages ||
+              wallet !== useMonadWallet() ||
+              recipient !== (this.recipientAddress || this.address) ||
+              conversationId !== this.conversation?.id
+            )
+              throw new Error(this.$t('chat.sendContextChanged'))
+          }
+          const activeWallet = await useActiveWallet()
+          requireCurrentContext()
+          if (activeWallet !== wallet)
+            throw new Error(this.$t('chat.sendContextChanged'))
+          if (!activeWallet.prepareContactPayment)
             throw new Error(
               'Payments to a contact are not available on this chain',
             )
-          prepared = await wallet.prepareContactPayment({
+          prepared = await activeWallet.prepareContactPayment({
             recipient: { raw: recipient },
             value,
             memo: memo || undefined,
@@ -738,10 +815,11 @@ export default defineComponent({
           return
         }
         try {
+          requireCurrentContext()
           await this.sendDirectMessage({
-            wallet: useMonadWallet(),
+            wallet,
             address: recipient,
-            conversationId: this.conversation?.id,
+            conversationId,
             items: [prepared.item],
             stampValue,
             onPreparationProgress: this.showStampPreparation,
@@ -761,13 +839,15 @@ export default defineComponent({
       }
     },
     async sendSwapOffer(item: MessageItem) {
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const items: MessageItem[] = [item]
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
+        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
+        const wallet = useMonadWallet()
+        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
         await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: recipient,
           conversationId: this.conversation?.id,
           items,
@@ -843,44 +923,61 @@ export default defineComponent({
       if (this.sendingMessage) {
         return false
       }
-      const stampValue =
-        stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
-      // A blackjack message is sent only while it is still the hand's next message, judged on
-      // the messages saved on this device too, so a payout, refund, bet or deal that another
-      // tab already sent (or is still sending) is not sent a second time from this one.
-      const peer = this.recipientAddress || this.address
-      const handItem = soleHandItem(items)
-      if (handItem) {
-        this.sendingMessage = true
-        let stillNext = false
-        try {
+      this.sendingMessage = true
+      let outcome: OutgoingOutcome
+      try {
+        // Capture the displayed decision and its session before hand validation opens storage.
+        if (stampValueWei === undefined && this.stampUnavailable)
+          throw new Error(this.stampUnavailable)
+        const wallet = useMonadWallet()
+        const chainIdentifier = activeChain.chainIdentifier
+        const client = activeChain.directMessages
+        const revision = accountStatus.revision
+        const peer = this.recipientAddress || this.address
+        const conversationId = this.conversation?.id
+        const stampValue =
+          stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
+        const capturedItems = items.slice()
+        const contextCurrent = () =>
+          revision === accountStatus.revision &&
+          chainIdentifier === activeChain.chainIdentifier &&
+          client === activeChain.directMessages &&
+          wallet === useMonadWallet() &&
+          peer === (this.recipientAddress || this.address) &&
+          conversationId === this.conversation?.id
+        const requireCurrentContext = () => {
+          if (!contextCurrent())
+            throw new Error(this.$t('chat.sendContextChanged'))
+        }
+        // Only the next saved hand action may leave this session. A changed session must
+        // review the action again rather than choose another wallet after these awaits.
+        const handItem = soleHandItem(capturedItems)
+        if (handItem) {
+          const memory = this.peerMessages
           const own = await getOwnCanonicalAddress()
-          stillNext =
+          requireCurrentContext()
+          const stillNext =
             !!own &&
             (await handItemStillNext({
               item: handItem,
               stampWei: stampValue,
               own,
               peer,
-              memory: this.peerMessages,
+              memory,
               stored: () => storedOutgoingMessages(peer),
             }))
-        } finally {
-          this.sendingMessage = false
+          requireCurrentContext()
+          if (!stillNext) {
+            errorNotify(new Error(this.$t('blackjackP2p.notNext')))
+            return false
+          }
         }
-        if (!stillNext) {
-          errorNotify(new Error(this.$t('blackjackP2p.notNext')))
-          return false
-        }
-      }
-      this.sendingMessage = true
-      let outcome: OutgoingOutcome
-      try {
+        requireCurrentContext()
         outcome = await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: peer,
-          conversationId: this.conversation?.id,
-          items,
+          conversationId,
+          items: capturedItems,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
@@ -982,7 +1079,11 @@ export default defineComponent({
           own,
           messages: this.peerMessages,
           attempted: this.blackjackAttempted,
-          ordinaryStampWei: activeChain.fromDisplayAmount(this.stampAmount),
+          // Without a quote, every positive stamp is money: settle its original attempt.
+          // Free recovery still proceeds; no new default is invented.
+          ordinaryStampWei: this.stampUnavailable
+            ? 0n
+            : activeChain.fromDisplayAmount(this.stampAmount),
         })
       } finally {
         this.resumingHand = false
@@ -1072,6 +1173,30 @@ export default defineComponent({
     },
   },
   computed: {
+    isDefaultStampMode(): boolean {
+      const target = this.conversation?.id || this.recipientAddress
+      return !target || this.chatStore.getStampWei(target) === undefined
+    },
+    stampUnavailable(): string {
+      const target = this.conversation?.id || this.recipientAddress
+      const explicit = target ? this.chatStore.getStampWei(target) : undefined
+      if (
+        explicit !== undefined &&
+        explicit > 0n &&
+        explicit < this.minimumStampWei
+      )
+        return this.$t('chatInput.stampBelowMinimum', {
+          amount: activeChain.toDisplayAmount(this.minimumStampWei),
+          unit: activeChain.unit,
+        })
+      return this.isDefaultStampMode && this.defaultStampWei === undefined
+        ? this.$t('chatInput.stampQuoteUnavailableReason', {
+            reason: this.$t(
+              `chatInput.stampQuoteReasons.${this.defaultStampFailure}`,
+            ),
+          })
+        : ''
+    },
     isEmailThread(): boolean {
       if (this.conversation?.kind === 'email') {
         return true
@@ -1199,33 +1324,32 @@ export default defineComponent({
           return
         }
         if (rawAmount < 0n) return
-        // A paid stamp is never smaller than what the wallet will send (the fee of moving it);
-        // zero stays zero: a free message.
-        if (rawAmount > 0n && rawAmount < this.minimumStampWei)
-          rawAmount = this.minimumStampWei
         const target = this.conversation?.id || this.recipientAddress
         if (!target) return
         this.chatStore.setStampWei({
           address: target,
-          stampWei:
-            rawAmount === activeChain.defaultStampValue ? undefined : rawAmount,
+          stampWei: rawAmount,
         })
       },
       get(): string {
         const target = this.conversation?.id || this.recipientAddress
-        const chosen = target
-          ? this.chatStore.getStampWei(target)
-          : activeChain.defaultStampValue
-        // Never shown below what the wallet will send; zero stays zero (a free message).
-        return activeChain.toDisplayAmount(
-          chosen > 0n && chosen < this.minimumStampWei
-            ? this.minimumStampWei
-            : chosen,
-        )
+        const chosen =
+          (target ? this.chatStore.getStampWei(target) : undefined) ??
+          this.defaultStampWei
+        return chosen === undefined ? '' : activeChain.toDisplayAmount(chosen)
       },
     },
   },
   watch: {
+    'accountStatus.revision'() {
+      void this.refreshMinimumStamp()
+    },
+    'accountStatus.status'() {
+      void this.refreshMinimumStamp()
+    },
+    'oracle.current'() {
+      void this.refreshMinimumStamp()
+    },
     'address'(newAddr: string) {
       if (
         newAddr &&

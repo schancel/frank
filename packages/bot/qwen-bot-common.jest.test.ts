@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../wallet/oracle/stamp-policy.testutil'
 import {
   chmodSync,
   existsSync,
@@ -95,7 +96,7 @@ describe('#703/#778 canonical Qwen composition on the open directory', () => {
       }`,
       networkTag: 'MONT',
       stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-      defaultStampValueWei: 32n,
+      resolveDefaultStamp: fixedStampDefault(32n),
       defaultTopicVoteValueWei: 1n,
       subAccountPoolSize: 2,
       walletStorageLocation: join(root, 'wallet'),

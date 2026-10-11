@@ -1937,7 +1937,7 @@ export const useChatStore = defineStore('chats', {
      * chain's configured default. What the peer pays does not change it. Zero is a free message. */
     getStampWei:
       state =>
-      (addressOrId: string): bigint => {
+      (addressOrId: string): bigint | undefined => {
         let chat: Conversation | undefined = state.conversations?.[addressOrId]
         if (!chat) {
           try {
@@ -1949,9 +1949,7 @@ export const useChatStore = defineStore('chats', {
             chat = undefined
           }
         }
-        return chat?.stampWei === undefined
-          ? activeChain.defaultStampValue
-          : BigInt(chat.stampWei)
+        return chat?.stampWei === undefined ? undefined : BigInt(chat.stampWei)
       },
     getLatestMessage: state => (addressOrId: string) => {
       let chat: Conversation | undefined

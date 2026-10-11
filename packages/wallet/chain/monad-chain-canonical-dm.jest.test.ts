@@ -1,3 +1,7 @@
+import { DefaultStampUnavailableError } from '../oracle/stamp-policy'
+import { ChainUnreachableError } from '../evm-block-watcher'
+import { EvmStampPayer } from '../evm-stamp-payer'
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import * as canonicalOpen from "@frank/cashweb/relay/canonical-dm";
 import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 import * as legacyEnvelope from "@frank/cashweb/relay/monad-message-envelope";
@@ -278,7 +282,7 @@ async function fixture(funded = true) {
     relayBaseUrl: RELAY,
     networkTag: 'MONT',
     stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-    defaultStampValueWei: 1_000n,
+    resolveDefaultStamp: fixedStampDefault(1_000n),
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
     // The stub node never mines on its own: a native send looks once and returns.
@@ -442,6 +446,7 @@ async function fixture(funded = true) {
     }
   }
   const ret = {
+    config,
     chain,
     alice,
     bob,
@@ -602,6 +607,60 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       .filter(index => wallet.pool.claimedBy(index) !== undefined)
   const paymentStates = (wallet: EvmChainWalletHandle, payloadDigest: string) =>
     f.chain.directMessages.paymentsOf!({ wallet, payloadDigest })
+
+  it('shares the host quote with new implicit sends, while free and explicit sends need no oracle', async () => {
+    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
+    const resolver = jest.fn(fixedStampDefault(50_000n))
+    f.config.resolveDefaultStamp = resolver
+    expect(await f.chain.directMessages.defaultStampQuote!({ wallet: f.alice })).toMatchObject({ status: 'available', amount: 50_000n, minimumStamp: DEFAULT_STAMP })
+    const sent = await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('quoted default') })
+    expect(sent.stampValueWei).toBe(50_000n)
+    expect(resolver).toHaveBeenLastCalledWith({ chainIdentifier: 'monad-testnet', minimumStamp: DEFAULT_STAMP })
+    const offline = jest.fn(async () => ({ status: 'unavailable' as const, chainIdentifier: 'monad-testnet', reason: 'missing-rate' as const }))
+    f.config.resolveDefaultStamp = offline
+    const claims = structuredClone(f.alice.pool.records())
+    await expect(f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('no quote') })).rejects.toBeInstanceOf(DefaultStampUnavailableError)
+    expect(f.alice.pool.records()).toEqual(claims)
+    expect(f.requests).toHaveLength(1)
+    offline.mockClear()
+    await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('free'), stampValue: 0n })
+    await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('explicit'), stampValue: DEFAULT_STAMP })
+    expect(offline).not.toHaveBeenCalled()
+  })
+
+  it('reports unavailable fees for a new implicit default before claiming or signing', async () => {
+    installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
+    const floor = jest.spyOn(EvmStampPayer.prototype, 'minimumPaymentWei').mockRejectedValue(new ChainUnreachableError(new Error('offline')))
+    const claim = jest.spyOn(EvmStampPayer.prototype, 'claim')
+    const sign = jest.spyOn(EvmStampPayer.prototype, 'sign')
+    try {
+      expect(await f.chain.directMessages.defaultStampQuote!({ wallet: f.alice })).toMatchObject({ status: 'unavailable', reason: 'missing-fee' })
+      await expect(f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('no fee') })).rejects.toMatchObject({ quote: { reason: 'missing-fee' } })
+      expect(claim).not.toHaveBeenCalled()
+      expect(sign).not.toHaveBeenCalled()
+      expect(f.requests).toHaveLength(0)
+    } finally { floor.mockRestore(); claim.mockRestore(); sign.mockRestore() }
+  })
+
+  it('reopens an existing attempt and reconciles it with the default oracle offline', async () => {
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    f.setPhase('retained')
+    const messageId = '00000000-0000-4000-8000-0000000000fa'
+    let digest = ''
+    await expect(f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('original'), messageId,
+      onAttemptCreated: value => { digest = value } })).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+    await f.alice.close()
+    const offline = jest.fn(async () => { throw new Error('oracle offline') })
+    f.config.resolveDefaultStamp = offline
+    f.alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    installCanonicalDirectory(f.alice, directory)
+    await expect(f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('original'), messageId }))
+      .rejects.toMatchObject({ payloadDigest: digest })
+    f.setPhase('delivered')
+    expect(await f.chain.directMessages.reconcileAttempts({ wallet: f.alice, payloadDigests: [digest] })).toEqual({ [digest]: 'delivered' })
+    expect(offline).not.toHaveBeenCalled()
+  })
 
   it('stays pending and makes no request until a verified directory is installed', async () => {
     const recipient = f.bob.identity.address

@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../../../packages/wallet/oracle/stamp-policy.testutil'
 /** @jest-environment node */
 /**
  * The messaging session with real typed wallets, the real open directory, the real browser
@@ -105,7 +106,7 @@ async function wallet(index: number, name: string) {
     relayBaseUrl: RELAY,
     networkTag: 'MONT',
     stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-    defaultStampValueWei: 1000n,
+    resolveDefaultStamp: fixedStampDefault(1000n),
     defaultTopicVoteValueWei: 1000n,
     subAccountPoolSize: 0,
     walletStorageLocation: join(dir, name),

@@ -63,6 +63,8 @@ export default {
       'En attente de la confirmation du paiement précédent…',
     stampPreparationWaitingBlocks:
       'En attente de la confirmation du paiement précédent (encore {blocks} blocs)…',
+    sendContextChanged:
+      'Le compte, la chaîne ou la conversation a changé. Vérifiez à nouveau cette action.',
     chainUnreachable:
       'Le réseau est injoignable. Les messages payants sont mis en file et partiront à son retour.',
     donationMessage:
@@ -118,6 +120,17 @@ export default {
       'Sélection rapide par ordres de grandeur (1× à 10 000×)',
     stampMultiplierValue: '{multiplier}× par défaut ({amount})',
     defaultStamp: 'Par défaut : {amount}',
+    stampBelowMinimum:
+      'Ce montant est inférieur au minimum actuel de {amount} {unit}. Choisissez un autre montant ou un message gratuit.',
+    stampQuoteUnavailable: 'Timbre par défaut indisponible',
+    stampQuoteUnavailableReason:
+      'Timbre par défaut indisponible : {reason}. Choisissez un montant explicite ou un message gratuit.',
+    stampQuoteReasons: {
+      'missing-rate': 'taux de conversion absent',
+      'stale-rate': 'taux de conversion périmé',
+      'missing-fee': 'estimation des frais indisponible',
+      'unsupported': 'messagerie non prise en charge',
+    },
     resetToDefault: 'Revenir au montant par défaut',
     stampFree: 'Gratuit',
     stampChipFree: 'Sans timbre : ce message est gratuit',

@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, h, nextTick } from 'vue'
 import { TextDecoder, TextEncoder } from 'util'
+import type { DefaultStampQuote } from '@frank/wallet/oracle'
 
 Object.assign(globalThis, { TextEncoder, TextDecoder })
 const mockErrorNotify = jest.fn()
@@ -60,10 +61,11 @@ jest.mock('../utils/own-address', () => ({
     jest.requireActual('vue').ref('0x1a1A1A1A1a1A1a1a1a1a1a1a1a1a1a1A1A1a1a1a'),
 }))
 
+const mockEmailWallet = {
+  identity: { displayAddress: '0x1111111111111111111111111111111111111111' },
+}
 jest.mock('../utils/clients', () => ({
-  useMonadWallet: () => ({
-    identity: { displayAddress: '0x1111111111111111111111111111111111111111' },
-  }),
+  useMonadWallet: () => mockEmailWallet,
 }))
 jest.mock('../composables/useBalance', () => ({
   useBalance: () => ({ refresh: jest.fn() }),
@@ -74,6 +76,7 @@ const { useChatStore } = require('../stores/chats')
 const { setStartupRestoration } = require('../boot/startup-state')
 const createAppRouter = require('../router').default
 const Chat = require('./Chat.vue').default
+const { activeChain } = require('@frank/wallet/chain')
 const EmailThreadView =
   require('../components/chat/email/EmailThreadView.vue').default
 const quasar = require('quasar')
@@ -226,6 +229,17 @@ async function mountedEmails() {
 }
 beforeEach(() => {
   jest.clearAllMocks()
+  const quote: DefaultStampQuote = {
+    status: 'available',
+    chainIdentifier: activeChain.chainIdentifier,
+    amount: 10n ** 16n,
+    targetAmount: 10n ** 16n,
+    minimumStamp: 1n,
+    rateAt: Date.now(),
+  }
+  jest
+    .spyOn(activeChain.directMessages, 'defaultStampQuote')
+    .mockResolvedValue(quote)
   jest.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
 })
 afterEach(() => jest.restoreAllMocks())

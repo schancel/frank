@@ -90,7 +90,7 @@ jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
     formatAddress: (address: { raw: string }) => address.raw,
-    defaultStampValue: 1n,
+
     fromDisplayAmount: (value: string) => BigInt(value),
     toDisplayAmount: (amount: bigint) => amount.toString(),
     nativeTransfers: { getBalance: jest.fn(async () => 0n) },

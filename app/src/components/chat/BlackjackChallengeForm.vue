@@ -104,11 +104,11 @@ export default defineComponent({
       if (this.maxBet.trim() === '') return this.$t('blackjackP2p.enterAmount')
       if (this.maxBetWei === null || this.maxBetWei <= 0n)
         return this.$t('blackjackP2p.enterAmount')
-      if (this.maxBetWei < activeChain.defaultStampValue)
+      if (this.maxBetWei < activeChain.minimumWagerValue)
         return this.$t('blackjackP2p.belowStamp', {
           amount: formatDisplayAmount(
             activeChain,
-            activeChain.defaultStampValue,
+            activeChain.minimumWagerValue,
           ),
         })
       if (this.maxBetWei > this.limitWei)

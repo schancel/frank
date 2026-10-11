@@ -1,3 +1,4 @@
+import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
@@ -407,9 +408,8 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     stampBurnAddress:
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
-    defaultStampValueWei: BigInt(
-      readEnv("FRANK_DM_DEFAULT_STAMP_VALUE_WEI") ?? "10000000000000000"
-    ),
+    minimumWagerValueWei: 10_000_000_000_000_000n,
+    stampFundingTargetWei: 10_000_000_000_000_000n,
     // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
     spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
     paymentPollIntervalMs: getChainRegistryEntry(rpcChain)?.paymentPollIntervalMs,
@@ -1607,6 +1607,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       }
     },
 
+    async defaultStampQuote(params): Promise<DefaultStampQuote> {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical) return { status: "unavailable", chainIdentifier: contractChainIdentifier(), reason: "unsupported" };
+      return canonical.defaultStampQuote();
+    },
+
     async minimumStamp(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
@@ -2046,7 +2053,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       stealthPayments: true,
       legacyConsolidation: "evm-staging",
     },
-    defaultStampValue: config.defaultStampValueWei,
+    minimumWagerValue: config.minimumWagerValueWei ?? 10_000_000_000_000_000n,
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
     toDisplayAmount(raw: bigint): string {
@@ -3500,6 +3507,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             let payment = paymentStore.get(stealthAddress);
             if (payment === undefined)
               throw new Error("No such payment to a contact");
+            if (payment.state === "planned" && payment.stampValueWei === undefined)
+              throw new Error("Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records.");
             if (payment.state === "planned") {
               // Stopped around signing. A transfer the journal holds signed is this payment's;
               // with none, nothing was signed and the plan is dropped.
@@ -3527,6 +3536,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             if (payment.state === "delivered")
               return broadcastContactTransfer(payment);
             if (payment.state !== "prepared") return payment;
+            // Capture before journal updates replace the payment object during takeover.
+            if (payment.stampValueWei === undefined)
+              throw new Error("Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records.");
+            const stampValue = BigInt(payment.stampValueWei);
             if (payment.deliveredBy === "host") {
               // The host's own send path carries the message. Once it has an attempt, its
               // outcome is asked for; `contactMessageDelivered` is told when the relay has it.
@@ -3574,9 +3587,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   ...(payment.conversationId === undefined
                     ? {}
                     : { conversationId: payment.conversationId }),
-                  ...(payment.stampValueWei === undefined
-                    ? {}
-                    : { stampValue: BigInt(payment.stampValueWei) }),
+                  stampValue,
                 })
               ).payloadDigest;
             } catch (error) {
@@ -3682,16 +3693,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               );
             // The message is owed once the transfer is out, and it costs a stamp: refused here,
             // before anything, when the wallet cannot pay for both.
-            // The stamp the message will really carry: the configured default is raised to the
-            // chain's fee floor by `send`, so the accounts funded for it below are funded for
-            // that, not for a default the message will not use.
-            let stampWei = params.stampValue ?? config.defaultStampValueWei;
-            if (params.stampValue === undefined && stampWei > 0n) {
-              const floor = await canonicalMessaging
-                .get(wallet)
-                ?.minimumStamp()
-                .catch(() => undefined);
-              if (floor !== undefined && floor > stampWei) stampWei = floor;
+            // Capture the host default before signing. Preparation and any later recovery use
+            // this exact recipient amount; a changed fee floor is refused rather than raised.
+            let stampWei = params.stampValue;
+            if (stampWei === undefined) {
+              const quote = await directMessages.defaultStampQuote!({ wallet });
+              if (quote.status === "unavailable") throw new DefaultStampUnavailableError(quote);
+              stampWei = quote.amount;
             }
             if ((await wallet.getBalance()) < params.value + stampWei)
               throw new RangeError(
@@ -3729,9 +3737,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 ...(params.conversationId === undefined
                   ? {}
                   : { conversationId: params.conversationId }),
-                ...(params.stampValue === undefined
-                  ? {}
-                  : { stampValueWei: params.stampValue.toString() }),
+                stampValueWei: stampWei.toString(),
                 state: "planned",
                 deliveredBy: hostDelivers ? "host" : "wallet",
                 createdAtMs: Date.now(),
@@ -3775,6 +3781,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (hostDelivers)
                 return {
                   item: itemOf(payment),
+                  stampValue: stampWei,
                   txHash: payment.txHash!,
                   stealthAddress: destination.stealthAddress,
                   value: params.value,
@@ -4649,7 +4656,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
             // Funding ahead (#1235): the same preparation, asked for by the host between
             // messages. Never called from here: opening a wallet makes no request.
-            const stampValueAhead = config.defaultStampValueWei;
+            const stampValueAhead = config.stampFundingTargetWei ?? 10_000_000_000_000_000n;
             // The most one pass may move: the stamp value plus one fee reserve per transfer. A
             // reserve above this ceiling (fees so high that it exceeds the stamp it serves)
             // is not paid ahead; a send still funds its own accounts.
@@ -4805,7 +4812,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             restoreOutgoingClaims(messagingOwner);
             canonicalMessaging.set(
               wallet,
-              canonicalDirectMessages(messagingOwner, config.defaultStampValueWei)
+              canonicalDirectMessages(messagingOwner, async (minimumStamp) => {
+                const context = { chainIdentifier: contractChainIdentifier(), minimumStamp };
+                if (minimumStamp === undefined) return { status: "unavailable" as const, chainIdentifier: context.chainIdentifier, reason: "missing-fee" as const };
+                return config.resolveDefaultStamp?.(context) ?? {
+                  status: "unavailable" as const,
+                  chainIdentifier: context.chainIdentifier,
+                  reason: "missing-rate" as const,
+                };
+              })
             );
           }
           walletMaterial.set(wallet, material);
@@ -4871,10 +4886,3 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
   };
 }
-
-/** The default, env-configured `MonadChain` singleton -- `./index.ts`'s `activeChain` is exactly
- * this. See this file's header, "Configuration", for why reading env here (rather than in every
- * wallet client) is the right composition point. */
-export const MonadChain: ActiveChain = createEvmChain(
-  loadMonadChainConfigFromEnv()
-);

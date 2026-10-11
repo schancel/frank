@@ -43,9 +43,9 @@ import { formatBaseUnit } from '@frank/wallet/chain/base-unit'
 import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
 import {
-  createEvmChain,
+  createRelayPricedEvmChain,
   installCanonicalDirectory,
-} from '@frank/wallet/chain/monad-chain'
+} from '@frank/wallet/chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
@@ -124,7 +124,7 @@ function fileStorage(path: string) {
 async function openAccount(relayBaseUrl: string, dir: string, state: string) {
   const roots = loadRoots(dir)
   mkdirSync(join(dir, state), { recursive: true })
-  const chain = createEvmChain({
+  const chain = createRelayPricedEvmChain({
     networkId: MESSAGING_CHAIN,
     chainIdentifier: MESSAGING_CHAIN,
     chainId: 10143,
@@ -134,7 +134,7 @@ async function openAccount(relayBaseUrl: string, dir: string, state: string) {
     stampBurnAddress:
       process.env.MONAD_STAMP_BURN_ADDRESS ??
       '0x000000000000000000000000000000000000dEaD',
-    defaultStampValueWei: 10n ** 16n,
+
     defaultTopicVoteValueWei: 10n ** 12n,
     subAccountPoolSize: 2,
     walletStorageLocation: join(dir, state, 'wallet'),

@@ -19,6 +19,7 @@ let mockStampWei = 0n
 const mockPrepare = jest.fn()
 const mockSendMessage = jest.fn()
 const PREPARED = {
+  stampValue: 0n,
   item: { type: 'stealth', amount: 1.5e18, ephemeralPubKey: '02ab' },
   txHash: '0xabc123',
   stealthAddress: '0x9999999999999999999999999999999999999999',
@@ -321,7 +322,10 @@ describe('SendContact.vue (dual-send model)', () => {
   it('with a stamp chosen for the chat, the payment and its stamp are two separate amounts', async () => {
     mockStampWei = 20_000_000_000_000_000n // 0.02
     try {
-      mockPrepare.mockResolvedValueOnce(PREPARED)
+      mockPrepare.mockResolvedValueOnce({
+        ...PREPARED,
+        stampValue: mockStampWei,
+      })
       mockSendMessage.mockResolvedValueOnce({
         state: 'sent',
         payloadDigest: 'dd',

@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -26,9 +27,10 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
   return {
     ...actual,
-    createEvmChain: jest.fn(() => ({
+    createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
       chainIdentifier: "monad-testnet",
       directMessages: {
+        defaultStampQuote: async () => config.resolveDefaultStamp!({ chainIdentifier: "monad-testnet", minimumStamp: 0n }),
         fetchSince: mockDirectMessagesFetchSince,
         send: mockDirectMessagesSend,
         // A wallet with no payment attempts: asked about none, it has nothing to report.
@@ -57,7 +59,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     loadMonadChainConfigFromEnv: jest.fn(() => ({
       networkTag: "MONT",
       relayBaseUrl: "http://127.0.0.1:8098",
-      defaultStampValueWei: 10_000_000_000_000_000n,
+      resolveDefaultStamp: fixedStampDefault(10_000_000_000_000_000n),
     })),
   };
 });

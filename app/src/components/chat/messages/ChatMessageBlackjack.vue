@@ -594,9 +594,9 @@ export default defineComponent({
       if (this.balance === null) return this.$t('blackjackP2p.balanceUnknown')
       if (this.amount.trim() === '' || this.amountWei === null)
         return this.$t('blackjackP2p.enterAmount')
-      if (this.amountWei < activeChain.defaultStampValue)
+      if (this.amountWei < activeChain.minimumWagerValue)
         return this.$t('blackjackP2p.belowStamp', {
-          amount: this.display(activeChain.defaultStampValue),
+          amount: this.display(activeChain.minimumWagerValue),
         })
       let error: HandMoneyError | undefined
       if (this.canAccept) {

@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * Ticket #273: a topic post or vote from an account that never sent a direct message failed with
  * "No available sub-account to lease", because only the DM path funded sub-accounts (#79) and the
@@ -69,7 +70,7 @@ const CONFIG: EvmChainConfig = {
   relayBaseUrl: 'http://relay.test',
   networkTag: 'MONT',
   stampBurnAddress: BURN_ADDRESS,
-  defaultStampValueWei: 10n * WEIGHT,
+  resolveDefaultStamp: fixedStampDefault(10n * WEIGHT),
   defaultTopicVoteValueWei: WEIGHT,
   subAccountPoolSize: 3,
   // The stub node never mines on its own: a native send looks once and returns.

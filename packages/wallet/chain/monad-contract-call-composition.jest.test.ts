@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * A contract call through the composed EVM wallet handle: the wallet queue, the main-account
  * coordination, the input admission and the on-disk native journal, as the app reaches it. Only
@@ -30,7 +31,7 @@ const config: EvmChainConfig = {
   relayBaseUrl: 'http://127.0.0.1:1',
   networkTag: 'MONT',
   stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-  defaultStampValueWei: 1n,
+  resolveDefaultStamp: fixedStampDefault(1n),
   defaultTopicVoteValueWei: 1n,
   subAccountPoolSize: 2,
   // The stub node never mines on its own: a native send looks once and returns.

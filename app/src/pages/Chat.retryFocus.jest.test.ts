@@ -60,7 +60,7 @@ jest.mock('@frank/wallet/chain', () => ({
       }
     },
     formatAddress: (address: { raw: string }) => address.raw,
-    defaultStampValue: 1n,
+
     fromDisplayAmount: () => 1n,
     toDisplayAmount: () => '1',
     unit: 'MON',

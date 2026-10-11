@@ -1,3 +1,4 @@
+import type { DefaultStampQuote } from "../oracle/stamp-policy";
 /**
  * The compile-time chain-selection seam (ticket #41 -- see `PLAN.md`'s M9 section, "Design: a
  * compile-time `ActiveChain` seam"). One interface, `ActiveChain`, is satisfied by exactly one real
@@ -550,6 +551,8 @@ export interface DirectMessageClient {
    * refuses an explicit smaller `stampValue` with {@link DirectMessageStampBelowFeeError}.
    */
   minimumStamp?(params: { wallet: WalletHandle }): Promise<bigint>;
+  /** The host's current default quote, bound to this wallet and canonical chain. */
+  defaultStampQuote?(params: { wallet: WalletHandle }): Promise<DefaultStampQuote>;
   /**
    * Whether this wallet's chain can be reached: `reachable`, or since when it is not and the
    * kind of the last error. No request: it is what the wallet's reads of the chain last met.
@@ -796,8 +799,8 @@ export interface ActiveChain extends NativeAssetChain {
     readonly directMessages: true;
     readonly topics: true;
   };
-  /** Default raw native-chain value for a direct-message stamp payment. */
-  readonly defaultStampValue: bigint;
+  /** Existing configured EVM wager minimum, independent of the message stamp default. */
+  readonly minimumWagerValue: bigint;
   /** Default raw native-chain value burned for a topic post or vote. */
   readonly defaultTopicVoteValue: bigint;
   createWallet(

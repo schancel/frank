@@ -1,3 +1,4 @@
+import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 /**
  * The real test harness: the real relay binary against the real chain (Monad testnet), real
  * wallets, real transfers. Nothing here simulates a chain or a relay.
@@ -49,7 +50,7 @@ import type { MessageItem } from '@frank/cashweb/types/messages'
 import { deriveDomainRoot } from '@frank/domain-roots'
 import type { ActiveChain, DirectMessageReceived, DirectMessageSendResult } from '@frank/wallet/chain/active-chain'
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
-import { createEvmChain, installCanonicalDirectory, loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { installCanonicalDirectory, loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { monadProtocolIdentity } from '@frank/wallet/monad-provider'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
@@ -296,7 +297,7 @@ export async function openRealWallet(params: {
   }
   accountRoot.fill(0)
   const startedAt = Date.now()
-  const chain = createEvmChain({
+  const chain = createRelayPricedEvmChain({
     ...loadMonadChainConfigFromEnv({ isTestnet: true }),
     networkId: network.rpcChain,
     rpcChain: network.rpcChain,
@@ -307,7 +308,6 @@ export async function openRealWallet(params: {
     stampBurnAddress: params.burnAddress ?? DEMO_DEFAULT_BURN_ADDRESS,
     walletStorageLocation: join(dir, 'chain-storage'),
     subAccountPoolSize: 1,
-    ...(params.stampValueWei ? { defaultStampValueWei: params.stampValueWei } : {}),
   })
   const handle = (await chain.createWallet(roots)) as EvmChainWalletHandle
   const directory = DirectoryManager.create({
@@ -341,7 +341,7 @@ export async function openRealWallet(params: {
           wallet: handle,
           recipient: { raw: to },
           items,
-          stampValue: stampValueWei,
+          stampValue: stampValueWei ?? params.stampValueWei,
           onAttemptCreated: created => {
             digest = created
           },

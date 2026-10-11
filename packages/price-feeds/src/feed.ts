@@ -4,8 +4,9 @@
  * its TypeScript side: the types, the parser applied to whatever a relay answers, and the
  * one function that asks a relay for it.
  *
- * Display and valuation only. Nothing that moves money (a swap quote, a payment amount)
- * may be priced from this feed.
+ * Display, valuation and host-composed default attention-stamp suggestions. A stamp quote
+ * becomes an explicit native amount before signing; swap quotes and contract settlement
+ * amounts must still come from their own execution/verification boundaries.
  */
 import type { SeriesPoint } from './timeseries'
 

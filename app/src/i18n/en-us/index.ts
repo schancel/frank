@@ -24,6 +24,8 @@ export default {
     stampPreparationWaiting: 'Waiting for the previous payment to confirm…',
     stampPreparationWaitingBlocks:
       'Waiting for the previous payment to confirm ({blocks} blocks to go)…',
+    sendContextChanged:
+      'The account, chain or conversation changed. Review the action again.',
     chainUnreachable:
       'The network cannot be reached. Paid messages are queued and will be sent when it is back.',
     donationMessage:
@@ -115,6 +117,17 @@ export default {
       'Quick selection across orders of magnitude (1× to 10,000×)',
     stampMultiplierValue: '{multiplier}× default ({amount})',
     defaultStamp: 'Default: {amount}',
+    stampBelowMinimum:
+      'This amount is below the current minimum of {amount} {unit}. Choose another amount or a free message.',
+    stampQuoteUnavailable: 'Default stamp unavailable',
+    stampQuoteUnavailableReason:
+      'Default stamp unavailable: {reason}. Choose an explicit amount or a free message.',
+    stampQuoteReasons: {
+      'missing-rate': 'missing conversion rate',
+      'stale-rate': 'stale conversion rate',
+      'missing-fee': 'fee estimate unavailable',
+      'unsupported': 'messaging unsupported',
+    },
     resetToDefault: 'Reset to default',
     stampFree: 'Free',
     stampChipFree: 'No stamp: this message is free',

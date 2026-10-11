@@ -58,6 +58,15 @@ module.exports = {
     '^@frank/domain-roots$': '<rootDir>/../packages/domain-roots/src/index.ts',
     '^@frank/codex32$': '<rootDir>/../packages/codex32/src/index.ts',
     '^@frank/cashweb/(.*)$': '<rootDir>/../packages/cashweb/$1',
+    // Only the live-relay tests reach these: they open real wallets through the bot package's
+    // harness (packages/bot/demo/real-stack.ts).
+    '^@frank/bot-framework/(.*)$': '<rootDir>/../packages/bot-framework/src/$1',
+    '^@frank/directory-admission$':
+      '<rootDir>/../packages/directory-admission/src/index.ts',
+    '^@frank/directory-admission/browser$':
+      '<rootDir>/../packages/directory-admission/src/browser.ts',
+    '^@frank/directory-admission/node$':
+      '<rootDir>/../packages/directory-admission/src/node.ts',
     '^@frank/wallet/(.*)$': '<rootDir>/../packages/wallet/$1',
     '^@frank/price-feeds$': '<rootDir>/../packages/price-feeds/src/index.ts',
     '^@frank/price-feeds/(.*)$': '<rootDir>/../packages/price-feeds/src/$1',

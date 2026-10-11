@@ -52,6 +52,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+import { accountStatus } from '../accounts/session'
 
 import { useProfileStore } from 'src/stores/my-profile'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -105,6 +106,8 @@ export default defineComponent({
     const myProfile = useProfileStore()
 
     return {
+      profileOwner: myProfile.owner,
+      profileRevision: accountStatus.revision,
       name: myProfile.profile.name,
       username: myProfile.profile.username,
       // A saved name the relay refused to give back at startup is said so on the field.
@@ -190,7 +193,19 @@ export default defineComponent({
     },
   },
   methods: {
+    profileFormIsCurrent(): boolean {
+      const current =
+        !!this.profileOwner &&
+        this.profileOwner === this.storedRelayData.owner &&
+        this.profileRevision === accountStatus.revision
+      if (!current)
+        errorNotify(new Error('profile account changed'), {
+          fallbackKey: 'profileDialog.accountChanged',
+        })
+      return current
+    },
     async updateRelayData() {
+      if (!this.profileFormIsCurrent()) return
       // Validate before any network work so a bad name is reported as such, not as a relay failure.
       const name = validateProfileDisplayName(this.name ?? '')
       const nameError = profileNameError(this.name ?? '', (key, params) =>
@@ -242,10 +257,13 @@ export default defineComponent({
       // relay gives a name to one account only, and a claim that succeeded must not be
       // followed by a local failure that leaves the profile showing the old name. A name that
       // is taken or refused stops the save here, before it is stored or published as ours.
+      if (!this.profileFormIsCurrent()) return
       this.usernameError = ''
       if (this.username) {
         try {
-          setOwnUsername(await claimOwnUsername(this.username))
+          const held = await claimOwnUsername(this.username, this.profileOwner)
+          if (!this.profileFormIsCurrent()) return
+          setOwnUsername(held)
         } catch (err: unknown) {
           this.usernameError = this.$t(usernameErrorKey(err))
           errorNotify(err, { safeMessage: this.usernameError })
@@ -254,6 +272,7 @@ export default defineComponent({
       }
 
       // Save locally to store first
+      if (!this.profileFormIsCurrent()) return
       this.setRelayData(this.relayData)
 
       // Set profile on relay if wallet is available
@@ -269,7 +288,14 @@ export default defineComponent({
         } catch {
           // No active wallet: local profile updated, nothing to publish to relay
         }
+        if (!this.profileFormIsCurrent()) return
         if (wallet && wallet.identity) {
+          if (wallet.identity.address.raw.toLowerCase() !== this.profileOwner) {
+            errorNotify(new Error('profile account changed'), {
+              fallbackKey: 'profileDialog.accountChanged',
+            })
+            return
+          }
           const cfg = loadMonadChainConfigFromEnv()
           await registerMonadIdentityCbor({
             relayBaseUrl:
@@ -279,6 +305,10 @@ export default defineComponent({
             profile: this.relayData.profile,
             network: cfg.rpcChain,
           })
+          // The relay has the edit. Until it does, the edit stays marked as this device's to
+          // publish, and the next start sends it.
+          if (!this.profileFormIsCurrent()) return
+          this.storedRelayData.unpublished = false
         }
       } catch (err: unknown) {
         console.error(err)

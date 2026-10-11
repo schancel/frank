@@ -55,6 +55,7 @@ import type {
   StealthItem,
   SwapRecordItem,
   EmailItem,
+  ConversationStateItem,
 } from '@frank/cashweb/types/messages'
 import {
   isSafeRelayTimestamp,
@@ -106,6 +107,9 @@ export type ChatMessage = {
   logicalMessageId?: string
   revisionDigest?: string
   deliveryDigest?: string
+  /** `serverTime` is this device's clock: the message was written here and its row has not
+   * been read back from the relay, which is what gives it the time every device sees. */
+  localTime?: boolean
 }
 
 /** Conversation metadata is owned by conversations[id]; messages are owned by the message store.
@@ -188,6 +192,22 @@ export interface Conversation {
    * deleted at. It outlives the conversation being opened again, so that old messages do not
    * come back with it. */
   clearedBefore?: number
+  /** Highest relay time removed on this device by Clear or message deletion. Kept with
+   * conversation metadata so a later conversation Delete can cover that history after reload.
+   * This is a UI deletion boundary only; coin recovery remains owned by mailbox tombstones. */
+  removedRelayTime?: number
+  /** What the account's own mailbox is known to say about this conversation: the facts this
+   * device has noted to the account's other devices, or read from a note of theirs. A fact
+   * beyond these is noted by the next pass of `noteConversationStates`. */
+  noted?: { clearedBefore?: number; readUpTo?: number }
+  /** The user set or removed the subject here (`name`, at `nameSetAt`) and the account's
+   * mailbox does not say so yet. Cleared once the note is sent, or a later subject replaces
+   * this one. */
+  subjectToNote?: boolean
+  /** The account whose user last deleted, named or created this conversation on this device
+   * (`accountTag`). Only that account notes the deletion and the subject: the store can still
+   * hold conversations of an account that was replaced here. */
+  actedBy?: string
   verifiedGateway?: boolean
 }
 
@@ -301,7 +321,10 @@ function isAnotherMessage(
  */
 function inDeletedConversation(
   conversation: Conversation,
-  message: { outbound: boolean; senderAddress: string; serverTime: number },
+  message: Pick<
+    ChatMessage,
+    'outbound' | 'senderAddress' | 'serverTime' | 'status' | 'localTime'
+  >,
   reopenedAlready = false,
 ): 'live' | 'reopens' | 'gone' {
   const deletedAt = reopenedAlready ? undefined : conversation.deletedAt
@@ -309,7 +332,8 @@ function inDeletedConversation(
     conversation.clearedBefore ?? -Infinity,
     conversation.deletedAt ?? -Infinity,
   )
-  if (message.serverTime <= clearedBefore) return 'gone'
+  if (!isUntimedOutgoing(message) && message.serverTime <= clearedBefore)
+    return 'gone'
   if (deletedAt === undefined) return 'live'
   return speaksForConversation(conversation, message) ? 'reopens' : 'gone'
 }
@@ -714,6 +738,188 @@ function ownSwapRecords(
 }
 
 /**
+ * The conversation notes of a row the account sent to itself: what one of its devices says
+ * about a conversation, for the others. Anyone else's row carries none (the wallet's receive
+ * rule already refuses those; this does not rely on it).
+ */
+function ownConversationStates(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): ConversationStateItem[] {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items)
+  )
+    return []
+  return wrapper.message.items.filter(
+    (item): item is ConversationStateItem =>
+      !!item && item.type === 'conversation-state',
+  )
+}
+
+/** A message of ours the relay has not timed yet: its time is this device's clock, which no
+ * other device sees. No deletion time is taken from it, and a deletion noted from elsewhere
+ * never covers it. */
+function isUntimedOutgoing(
+  message: Pick<ChatMessage, 'outbound' | 'status' | 'localTime'>,
+): boolean {
+  return (
+    message.outbound &&
+    (message.status !== 'confirmed' || message.localTime === true)
+  )
+}
+
+/** The newest relay time in these messages; zero when the relay has timed none of them. */
+function newestRelayTime(messages: readonly ChatMessage[]): number {
+  let newest = 0
+  for (const message of messages)
+    if (!isUntimedOutgoing(message) && message.serverTime > newest)
+      newest = message.serverTime
+  return newest
+}
+
+/**
+ * A private mark of the active account, the same on each of its devices and unknown to anyone
+ * else: what a conversation is tagged with when the account's user acts on it. `undefined`
+ * while no account is active.
+ */
+function accountTag(): string | undefined {
+  const salt = conversationIdSalt.value
+  return salt
+    ? formatConversationId(
+        allocateOpeningConversationId(salt, 'frank:conversation-notes'),
+      )
+    : undefined
+}
+
+/** While a conversation is open, its read mark is noted at most this often. It is noted at
+ * once when the conversation is closed. */
+export const READ_NOTE_INTERVAL_MS = 10_000
+/** When this session last noted a read mark for each conversation. */
+const readNotedAt = new Map<string, number>()
+
+/** The time up to which a conversation's messages are gone, if it was ever deleted. */
+function clearedUpTo(conversation: Conversation): number | undefined {
+  const cleared = Math.max(
+    conversation.clearedBefore ?? -Infinity,
+    conversation.deletedAt ?? -Infinity,
+  )
+  return Number.isFinite(cleared) ? cleared : undefined
+}
+
+/**
+ * What this device still has to note to the account's other devices about a conversation: the
+ * facts it holds beyond what the account's mailbox is known to say. `undefined` when there is
+ * nothing to say, and for a conversation with no peer address (a group): only conversations
+ * with one peer are noted.
+ */
+function conversationStateToNote(
+  conversation: Conversation,
+  ownAddress: string,
+  activeConversationId: string | null,
+): ConversationStateItem | undefined {
+  if (!isChainAddress(conversation.address)) return undefined
+  const note: ConversationStateItem = {
+    type: 'conversation-state',
+    conversationId: conversation.id,
+    peer: conversation.address,
+  }
+  // A deletion and a subject are noted by the account whose user made them.
+  const ours =
+    conversation.actedBy !== undefined && conversation.actedBy === accountTag()
+  const cleared = clearedUpTo(conversation)
+  if (
+    ours &&
+    cleared !== undefined &&
+    cleared > (conversation.noted?.clearedBefore ?? -1)
+  )
+    note.clearedBefore = Math.trunc(cleared)
+  // A read mark moves with every message that arrives in an open conversation: there it is
+  // noted once per interval, and when the conversation is closed.
+  const read = readUpTo(conversation, ownAddress)
+  if (
+    read > (conversation.noted?.readUpTo ?? 0) &&
+    (conversation.id !== activeConversationId ||
+      Date.now() - (readNotedAt.get(conversation.id) ?? -Infinity) >=
+        READ_NOTE_INTERVAL_MS)
+  )
+    note.readUpTo = read
+  if (ours && conversation.subjectToNote && conversation.kind === 'direct') {
+    note.subject = usableSubject(conversation.name) ?? ''
+    note.subjectSetAt = conversation.nameSetAt ?? 0
+  }
+  return note.clearedBefore === undefined &&
+    note.readUpTo === undefined &&
+    note.subject === undefined
+    ? undefined
+    : note
+}
+
+/**
+ * How far this device has read a conversation, as every device of the account can state it: the
+ * relay time of the newest message from someone else that has been read here. (Our own messages
+ * are never unread, and one still on its way carries this device's clock, so `lastRead` itself
+ * is not a time the other devices share.) Zero when nothing of the peer's has been read.
+ *
+ * Only messages sent to `ownAddress` count: this device's store can still hold conversations of
+ * an account that was replaced here, and what was read there is not this account's to note.
+ */
+function readUpTo(conversation: Conversation, ownAddress: string): number {
+  let read = 0
+  for (const message of conversation.messages)
+    if (
+      !isOwnMessage(message) &&
+      !!message.destinationAddress &&
+      sameCanonicalAddress(message.destinationAddress, ownAddress) &&
+      message.serverTime <= conversation.lastRead &&
+      message.serverTime > read
+    )
+      read = message.serverTime
+  return read
+}
+
+/** A note's facts are now in the account's mailbox (this device sent it, or read it there). */
+function recordNoted(
+  conversation: Conversation,
+  note: ConversationStateItem,
+): void {
+  const noted = { ...conversation.noted }
+  if (note.clearedBefore !== undefined)
+    noted.clearedBefore = Math.max(
+      noted.clearedBefore ?? -1,
+      note.clearedBefore,
+    )
+  if (note.readUpTo !== undefined)
+    noted.readUpTo = Math.max(noted.readUpTo ?? 0, note.readUpTo)
+  conversation.noted = noted
+  // The mailbox says exactly what the user set here: nothing is left to note. (A subject set
+  // again while the note was on its way is still to be noted.)
+  if (
+    note.subject !== undefined &&
+    note.subjectSetAt === (conversation.nameSetAt ?? 0) &&
+    note.subject === (usableSubject(conversation.name) ?? '')
+  )
+    conversation.subjectToNote = undefined
+}
+
+/** The ID of the note stating exactly these facts: the same on every device, so two devices
+ * noting the same thing write the same message. */
+function conversationNoteId(note: ConversationStateItem): Uint8Array {
+  return uuidv5Bytes(
+    new Uint8Array(16),
+    `frank-conversation-state:${note.conversationId}:${
+      note.clearedBefore ?? ''
+    }:${note.readUpTo ?? ''}:${note.subjectSetAt ?? ''}:${note.subject ?? ''}`,
+  )
+}
+
+/** One pass of `noteConversationStates` at a time; a change made during it starts another. */
+let notingConversations: Promise<void> | undefined
+let noteConversationsAgain = false
+
+/**
  * Cancellation identity of one delivery attempt (e.g. one direct-message poller generation).
  * Whether to notify is decided synchronously, but the delivery mutation itself is queued behind
  * the module-global serialized boundary -- when account replacement stops the old poller and
@@ -1046,13 +1252,43 @@ function applyCarriedSubject(
       message.outbound ||
       sameCanonicalAddress(message.senderAddress, conversation.address)
     ) ||
-    message.serverTime < (conversation.nameSetAt ?? 0)
+    !subjectReplaces(conversation, subject, message.serverTime)
   )
     return
-  if (conversation.name !== subject) conversation.updatedAt = Date.now()
-  conversation.name = subject
+  setSubject(conversation, subject, message.serverTime)
   conversation.nameOnWire = subject
-  conversation.nameSetAt = message.serverTime
+}
+
+/**
+ * Whether a subject set at `setAt` replaces the conversation's current one. One rule for every
+ * way a subject arrives (carried by a message, at the message's relay time; noted by another
+ * device of this account, at the time the user set it): the later one wins, whatever order they
+ * are read in; of two set at the same time, the greater text. So every device of the account
+ * ends with the same subject, and reading the same one again changes nothing.
+ */
+function subjectReplaces(
+  conversation: Conversation,
+  subject: string | undefined,
+  setAt: number,
+): boolean {
+  const current = conversation.nameSetAt ?? 0
+  if (setAt !== current) return setAt > current
+  return (subject ?? '') >= (usableSubject(conversation.name) ?? '')
+}
+
+/** Gives the conversation a subject that {@link subjectReplaces} its current one. A subject
+ * the user set here and has not noted yet is replaced with it: there is nothing left to note. */
+function setSubject(
+  conversation: Conversation,
+  subject: string | undefined,
+  setAt: number,
+): void {
+  if (conversation.name !== subject) {
+    conversation.updatedAt = Date.now()
+    conversation.subjectToNote = undefined
+  }
+  conversation.name = subject
+  conversation.nameSetAt = setAt
 }
 
 /** The subject the next message sent in `conversation` must carry, if any: its subject when no
@@ -1286,6 +1522,7 @@ function isInternalMessage(items: unknown): boolean {
         (item.type === 'swap-record' ||
           item.type === 'wallet-sync' ||
           item.type === 'received-coin' ||
+          item.type === 'conversation-state' ||
           item.type === 'payment-transfer'),
     )
   )
@@ -1975,6 +2212,11 @@ export const useChatStore = defineStore('chats', {
                 !(m.messageHash && digests.has(m.messageHash)) &&
                 !((m as any).index && digests.has((m as any).index)),
             )
+            const kept = new Set(remaining)
+            conv.removedRelayTime = Math.max(
+              conv.removedRelayTime ?? 0,
+              newestRelayTime(conv.messages.filter(m => !kept.has(m))),
+            )
             conv.messages.splice(0, conv.messages.length, ...remaining)
             conv.messages = remaining
             recomputeChatAccounting(conv, this.activeConversationId)
@@ -2058,17 +2300,14 @@ export const useChatStore = defineStore('chats', {
         console.debug('readAll: no chat yet for', addressOrId)
         return
       }
-      const values = chat.messages
-      if (values.length === 0) {
-        chat.lastRead = 0
-      } else {
-        chat.lastRead = Math.max(
-          values[values.length - 1].serverTime,
-          chat.lastRead ?? 0,
-        )
-      }
+      chat.lastRead = Math.max(
+        newestRelayTime(chat.messages),
+        chat.lastRead ?? 0,
+      )
       chat.totalUnreadMessages = 0
       chat.totalUnreadValue = 0
+      // The account's other devices show it read too.
+      void this.noteConversationStates()
     },
     reset() {
       this.conversations = Object.fromEntries(
@@ -2150,6 +2389,7 @@ export const useChatStore = defineStore('chats', {
         stampPayments,
         senderAddress,
         destinationAddress: displayAddress,
+        localTime: true,
         messageHash: payloadDigest,
         delivery,
         conversationId: conv?.id || conversationId,
@@ -2241,7 +2481,6 @@ export const useChatStore = defineStore('chats', {
           sameCanonicalAddress(displayAddress, trustedGateway) ||
           sameCanonicalAddress(conv.address, trustedGateway)
       }
-      conv.lastRead = Date.now()
       conv.lastReceived = Math.max(conv.lastReceived, timestamp)
       recomputeChatAccounting(conv, this.activeConversationId)
       recordLogicalMessage(this.logicalMessages, message, conv.id)
@@ -3438,11 +3677,18 @@ export const useChatStore = defineStore('chats', {
     async clearChatExclusive(address: string): Promise<void> {
       const chat = this.conversationToClear(address)
       if (!chat) return
-      const messageStore = await store
       // This is Clear's atomic cutoff: everything in the conversation now goes. Composer sends
       // invoked while the durable deletes are in flight may appear optimistically, but are
       // queued after this mutation and must survive.
-      const clearingMessages = [...chat.messages]
+      await this.tombstoneMessagesExclusive(chat, [...chat.messages])
+    },
+    /** Tombstones these messages of `chat`, inside the mutation queue. */
+    async tombstoneMessagesExclusive(
+      chat: Conversation,
+      clearingMessages: ChatMessage[],
+    ): Promise<void> {
+      if (clearingMessages.length === 0) return
+      const messageStore = await store
       const groups = new Map<
         string,
         { digests: Set<string>; suppressions: RelayDeliverySuppression[] }
@@ -3488,6 +3734,10 @@ export const useChatStore = defineStore('chats', {
       for (const digest of unscopedDigests) {
         await messageStore.deleteMessage(digest)
       }
+      chat.removedRelayTime = Math.max(
+        chat.removedRelayTime ?? 0,
+        newestRelayTime(clearingMessages),
+      )
       const clearedPayloads = new Set<string>()
       for (const message of clearingMessages) {
         clearedPayloads.add(message.payloadDigest)
@@ -3564,15 +3814,36 @@ export const useChatStore = defineStore('chats', {
       for (const member of Object.values(conv.members ?? {}))
         member.role = initialRole
       this.conversations[id] = conv
+      // A conversation the user created with a subject: the account's other devices learn
+      // of it, and of its subject, now, and not only once a message is sent in it.
+      if (kind === 'direct' && usableSubject(name) !== undefined) {
+        this.conversations[id].nameSetAt = Date.now()
+        this.conversations[id].subjectToNote = true
+        this.conversations[id].actedBy = accountTag()
+        void this.noteConversationStates()
+      }
       return this.conversations[id]
     },
     renameConversation(id: string, subject: string): void {
       // A thread dropped while its subject was being edited: the one that replaced it.
       const conversation = resolveConversation(this.conversations, id)
       if (!conversation) throw new Error(`Unknown conversation ${id}`)
-      // An empty subject clears it: the conversation is shown by its peer alone again.
-      conversation.name = subject.trim() || undefined
+      // Reject invalid nonempty subjects before mutating: every device keeps the same previous
+      // subject. A blank one intentionally removes it.
+      const normalized = usableSubject(subject)
+      if (subject.trim() && normalized === undefined)
+        throw new Error('Invalid conversation subject')
+      conversation.name = normalized
       conversation.updatedAt = Date.now()
+      // The user's subject is the newest one this device knows of, and the account's other
+      // devices are told. (The peer is told by the next message, which carries it.)
+      conversation.nameSetAt = Math.max(
+        Date.now(),
+        (conversation.nameSetAt ?? 0) + 1,
+      )
+      conversation.subjectToNote = true
+      conversation.actedBy = accountTag()
+      void this.noteConversationStates()
     },
     createEmailConversation({
       recipientEmail,
@@ -3597,23 +3868,203 @@ export const useChatStore = defineStore('chats', {
         verifiedGateway: true,
       })
     },
-    async deleteChat(addressOrId: string, deletedAt = Date.now()) {
+    async deleteChat(addressOrId: string) {
       const conversation =
         this.conversations[addressOrId] ??
         this.chats[safeChainDisplayAddress(addressOrId) || addressOrId]
-      if (conversation)
-        await this.deleteConversation(conversation.id, deletedAt)
+      if (conversation) await this.deleteConversation(conversation.id)
     },
-    async deleteConversation(conversationId: string, deletedAt = Date.now()) {
+    /**
+     * Deletes a conversation's relay-timed history. Untimed own sends stay visible until their
+     * relay echo, so every frontend applies the same cutoff to them.
+     *
+     * The deletion is timed by the RELAY's clock, never this device's: it reaches exactly as
+     * far as the newest removed message the relay has timed, including history removed earlier
+     * on this device by Clear or message deletion. So it covers what the user
+     * saw and nothing else: a message the relay times later, on any device, is newer than the
+     * deletion and brings the conversation back, however wrong this device's clock is. (The
+     * relay hands a mailbox over in the order of its times, so a message this device has not
+     * seen yet is newer than every one it has.)
+     *
+     * An empty conversation is deleted "up to" its retained removal boundary, where it was
+     * already cleared, or time 1 when it held no relay history. The next newer message brings
+     * it back.
+     */
+    async deleteConversation(conversationId: string) {
       if (!this.conversations[conversationId]) return
       return serializeDeliveryMutation(async () => {
         const conv = this.conversations[conversationId]
         if (!conv) return
-        await this.clearChatExclusive(conversationId)
-        conv.deletedAt = deletedAt
+        const deletedAt = Math.max(
+          newestRelayTime(conv.messages),
+          conv.removedRelayTime ?? 0,
+          clearedUpTo(conv) ?? 0,
+          1,
+        )
+        // Apply the same boundary as the account's other devices. A send the relay has not
+        // timed remains visible and can reopen the conversation identically when echoed.
+        await this.applyClearedBeforeExclusive(conv, deletedAt)
+        if (conv.messages.length === 0) conv.deletedAt = deletedAt
+        conv.actedBy = accountTag()
         if (this.activeConversationId === conversationId)
           this.activeConversationId = null
+        // The account's other devices, and one restored later, delete it too.
+        void this.noteConversationStates()
       })
+    },
+    /**
+     * Applies, inside the mutation queue, what a note this account wrote to itself says about
+     * one conversation. Applying a note again changes nothing, and notes may be applied in any
+     * order, before or after the messages they are about.
+     */
+    async applyConversationStateExclusive(
+      note: ConversationStateItem,
+      ownAddress: string | null,
+    ): Promise<void> {
+      let peer: string
+      let id: string
+      try {
+        peer = toChainDisplayAddress(note.peer)
+        id = canonicalConversationId(note.conversationId)
+      } catch {
+        console.warn('conversation note: not a conversation of one peer', note)
+        return
+      }
+      let conv = this.conversations[id]
+      if (conv && !sameCanonicalAddress(conv.address, peer)) {
+        console.warn(`conversation note: ${id} is with another peer; ignored`)
+        return
+      }
+      if (!conv) {
+        // A conversation this device has not seen yet: the fact is recorded for it, and its
+        // messages are judged by it when they arrive.
+        this.conversations[id] = newConversation({
+          id,
+          address: peer,
+          participants: ownAddress ? [ownAddress, peer] : [peer],
+        })
+        conv = this.conversations[id]
+      }
+      if (note.clearedBefore !== undefined)
+        await this.applyClearedBeforeExclusive(conv, note.clearedBefore)
+      // The subject set on another device: the later one wins (`subjectReplaces`). An email
+      // thread's subject is the email's, and a group's is not one person's to set.
+      if (
+        note.subject !== undefined &&
+        note.subjectSetAt !== undefined &&
+        conv.kind === 'direct'
+      ) {
+        const subject =
+          note.subject === '' ? undefined : usableSubject(note.subject)
+        if (
+          (note.subject === '' || subject !== undefined) &&
+          subjectReplaces(conv, subject, note.subjectSetAt)
+        )
+          setSubject(conv, subject, note.subjectSetAt)
+      }
+      // Read on another device: the highest mark wins, and what is unread is counted again.
+      if (note.readUpTo !== undefined && note.readUpTo > conv.lastRead) {
+        conv.lastRead = note.readUpTo
+        recomputeChatAccounting(conv, this.activeConversationId)
+      }
+      recordNoted(conv, note)
+    },
+    /**
+     * The conversation was deleted, on another device of this account, with everything up to
+     * `clearedBefore`. The same rule as a deletion made here: those messages are gone; if the
+     * peer or this account has said something since, the conversation stays, without them;
+     * otherwise it is deleted here too. An earlier deletion than one already known changes
+     * nothing.
+     */
+    async applyClearedBeforeExclusive(
+      conv: Conversation,
+      clearedBefore: number,
+    ): Promise<void> {
+      if (clearedBefore <= (clearedUpTo(conv) ?? -Infinity)) return
+      const kept = conv.messages.filter(
+        message =>
+          isUntimedOutgoing(message) || message.serverTime > clearedBefore,
+      )
+      // While a conversation is deleted, only its peer or this account brings it back: what
+      // anyone else sent before that is gone with it.
+      const revivedAt = kept.findIndex(message =>
+        speaksForConversation(conv, message),
+      )
+      const surviving = new Set(revivedAt < 0 ? [] : kept.slice(revivedAt))
+      await this.tombstoneMessagesExclusive(
+        conv,
+        conv.messages.filter(message => !surviving.has(message)),
+      )
+      if (surviving.size > 0) {
+        conv.clearedBefore = clearedBefore
+        conv.deletedAt = undefined
+        return
+      }
+      conv.deletedAt = clearedBefore
+      if (this.activeConversationId === conv.id)
+        this.activeConversationId = null
+    },
+    /**
+     * Notes to the account's own mailbox what this device knows about its conversations and
+     * the mailbox does not say yet (deleted up to when, read up to when, its subject): a free
+     * message to self per conversation, read by the
+     * account's other devices and by one restored later from the seed. A note that could not
+     * be sent is sent by a later pass (the mailbox poll starts one every time the relay
+     * answers). Nothing is paid, and nothing is sent when there is nothing to say.
+     */
+    noteConversationStates(
+      wallet: WalletHandle | undefined = messagingWallet(),
+    ): Promise<void> {
+      if (!wallet) return Promise.resolve()
+      if (notingConversations) {
+        noteConversationsAgain = true
+        return notingConversations
+      }
+      const ownAddress = activeChain.formatAddress(wallet.identity.address)
+      const pass = async (): Promise<void> => {
+        // A note that cannot be sent is left for a later pass and the others go on: one
+        // conversation's failure never holds back another's note. It is not tried again in
+        // this pass, so a change made meanwhile does not turn a failure into a loop.
+        const failed = new Set<string>()
+        do {
+          noteConversationsAgain = false
+          for (const id of Object.keys(this.conversations)) {
+            const conv = this.conversations[id]
+            const note =
+              conv && !failed.has(id)
+                ? conversationStateToNote(
+                    conv,
+                    ownAddress,
+                    this.activeConversationId,
+                  )
+                : undefined
+            if (!note) continue
+            try {
+              await activeChain.directMessages.send({
+                wallet,
+                recipient: wallet.identity.address,
+                items: [note],
+                stampValue: 0n,
+                messageId: conversationNoteId(note),
+              })
+            } catch (error) {
+              failed.add(id)
+              console.warn(
+                `conversation note for ${id} not sent; will retry:`,
+                error,
+              )
+              continue
+            }
+            if (note.readUpTo !== undefined) readNotedAt.set(id, Date.now())
+            const current = this.conversations[id]
+            if (current) recordNoted(current, note)
+          }
+        } while (noteConversationsAgain)
+      }
+      notingConversations = pass().finally(() => {
+        notingConversations = undefined
+      })
+      return notingConversations
     },
     async clearConversation(conversationId: string): Promise<void> {
       return serializeDeliveryMutation(() =>
@@ -3647,7 +4098,11 @@ export const useChatStore = defineStore('chats', {
         : undefined
       if (conversationId && !conv)
         throw new Error(`Unknown conversation ${conversationId}`)
+      const closed = this.activeConversationId
       this.activeConversationId = conv?.id ?? null
+      // What was read in the conversation just closed is noted now.
+      if (closed !== null && closed !== this.activeConversationId)
+        void this.noteConversationStates()
       if (conv) {
         if (isChainAddress(conv.address))
           useContactStore().refresh(conv.address)
@@ -3768,6 +4223,16 @@ export const useChatStore = defineStore('chats', {
           for (const item of swaps) useSwapStore().handleSwapItem(item)
         }
       }
+      // What the account's other devices noted about its conversations.
+      const conversationNotes = recordRows.flatMap(wrapper =>
+        ownConversationStates(wrapper, ownAddress),
+      )
+      // A later durable receipt is a restart frontier even before the poll advances its
+      // cursor. Commit authenticated note effects first, through the existing metadata
+      // owner, so a crash cannot skip a note whose raw row is intentionally not stored.
+      for (const note of conversationNotes)
+        await this.applyConversationStateExclusive(note, ownAddress)
+      if (conversationNotes.length > 0) await this.flushPersistence?.()
       const outboundMatches = new Map<string, OutboundDeliveryMatch>()
       const replacedAccountCollisions = new Map<
         string,
@@ -3991,6 +4456,33 @@ export const useChatStore = defineStore('chats', {
         this.conversations[conv.id] ??= conv
         receivedConversations.set(index, this.conversations[conv.id])
       }
+
+      // A local send has no relay time until its echo arrives. Once it does, apply the
+      // same deletion boundary as any other mailbox row, including a note received in
+      // an earlier poll. Tombstone both the local row and its receipt before installing
+      // anything, retaining the wallet's independent submission/recovery evidence.
+      const coveredEchoes = new Set<string>()
+      for (const [index, loopback] of outboundMatches) {
+        const conv = receivedConversations.get(index)!
+        if (inDeletedConversation(conv, loopback.message) !== 'gone') continue
+        const original = this.messages[loopback.oldIndex]
+        await this.tombstoneMessagesExclusive(conv, [
+          ...(original ? [original] : []),
+          { payloadDigest: index, ...loopback.message },
+        ])
+        if (conv.messages.length === 0) {
+          conv.deletedAt = clearedUpTo(conv)
+          if (this.activeConversationId === conv.id)
+            this.activeConversationId = null
+        }
+        coveredEchoes.add(index)
+        suppressedDigests.add(index)
+        toNotify.delete(index)
+        outboundMatches.delete(index)
+      }
+      deliverableWrappers = deliverableWrappers.filter(
+        wrapper => !coveredEchoes.has(wrapper.index),
+      )
 
       for (const wrapper of deliverableWrappers) {
         // An index this call did not claim belongs to an overlapping receive.

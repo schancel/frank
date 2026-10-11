@@ -72,7 +72,10 @@ jest.mock('../utils/directory-peer', () => ({
   fetchContactProfile: jest.fn(async () => undefined),
   contactLookupFailure: () => 'not-found',
 }))
-jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
+jest.mock('../utils/notifications', () => ({
+  desktopNotify: jest.fn(),
+  errorNotify: jest.fn(),
+}))
 jest.mock('../utils/own-address', () => ({
   ...jest.requireActual('../utils/own-address'),
   getOwnCanonicalAddress: async () =>
@@ -532,14 +535,33 @@ it.each([false, true])(
           ?.text(),
       ).toContain('Renamed subject')
       expect(app.router.currentRoute.value.params.address).toBe(first)
+      await edit('é'.repeat(257), true)
+      expect(app.chats.conversations[first].name).toBe('Renamed subject')
+      // Invalid input leaves the editor open so the user can correct it.
+      expect(
+        app.root.find('[data-testid="conversation-subject-save"]').exists(),
+      ).toBe(true)
+      await app.root
+        .get('[data-testid="conversation-subject-cancel"]')
+        .trigger('click')
+      await settle()
       await edit('Same subject', true)
+      // An edit changes the subject and when it was set (each edit is later than the last),
+      // and nothing else.
       const {
         name: _name,
         updatedAt: _updatedAt,
+        nameSetAt: editedAt,
         ...unchanged
       } = mockClone(app.chats.conversations[first])
-      const { name: _oldName, updatedAt: _oldTime, ...before } = original
+      const {
+        name: _oldName,
+        updatedAt: _oldTime,
+        nameSetAt: createdAt,
+        ...before
+      } = original
       expect(unchanged).toEqual(before)
+      expect(editedAt).toBeGreaterThan(createdAt)
       expect(app.chats.conversations[second]).toEqual(sibling)
       await edit('Canceled subject', false)
       expect(app.chats.conversations[first].name).toBe('Same subject')

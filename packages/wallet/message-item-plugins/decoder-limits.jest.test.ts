@@ -1,5 +1,5 @@
 /**
- * Every range, size and format rule of the fifteen CBOR item decoders, tested against bytes a
+ * Every range, size and format rule of the sixteen CBOR item decoders, tested against bytes a
  * peer could send: a valid item's own bytes with exactly one field replaced by a value outside
  * the rule. Each must be refused with the typed decode error, and the unmodified bytes must be
  * accepted.
@@ -477,6 +477,36 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
   },
   {
     item: {
+      type: 'conversation-state',
+      conversationId: '123e4567-e89b-52d3-a456-426614174000',
+      peer: A,
+      clearedBefore: 1760000000000,
+      readUpTo: 1760000000001,
+      subject: 'Audit thread',
+      subjectSetAt: 1760000000002,
+    },
+    cases: [
+      ...each(
+        'conversationId',
+        [0],
+        [
+          '',
+          '123e4567e89b52d3a456426614174000',
+          '123E4567-E89B-52D3-A456-426614174000',
+          '123e4567-e89b-52d3-a456-42661417400',
+          1,
+        ],
+      ),
+      ...each('peer', [1], BAD_CHAIN_ADDRESSES),
+      ...each('clearedBefore', [2], BAD_TIMESTAMPS),
+      ...each('readUpTo', [3], BAD_TIMESTAMPS),
+      ['subject: 513 bytes', [4], 'x'.repeat(513)],
+      ['subject: not text', [4], 1],
+      ...each('subjectSetAt', [5], BAD_TIMESTAMPS),
+    ],
+  },
+  {
+    item: {
       type: 'device-claim',
       instanceId: '123e4567-e89b-42d3-a456-426614174000',
       deviceName: 'iOS Device',
@@ -610,10 +640,11 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
   },
 ]
 
-describe('the fifteen CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
-  it('covers exactly the fifteen CBOR-map plugins', () => {
+describe('the sixteen CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
+  it('covers exactly the sixteen CBOR-map plugins', () => {
     expect(SUITES.map(s => s.item.type).sort()).toEqual(
       [
+        'conversation-state',
         'device-claim',
         'dice',
         'digital-goods',

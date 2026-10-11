@@ -38,7 +38,10 @@ export function usernameErrorKey(error: unknown): string {
  * invalid, unreachable) and `NoWalletForUsernameError` when there is no unlocked account to
  * sign with.
  */
-export async function claimOwnUsername(username: string): Promise<string> {
+export async function claimOwnUsername(
+  username: string,
+  expectedOwner?: string,
+): Promise<string> {
   let wallet: Awaited<ReturnType<typeof useActiveWallet>>
   try {
     wallet = await useActiveWallet()
@@ -47,6 +50,11 @@ export async function claimOwnUsername(username: string): Promise<string> {
   }
   const identity = (wallet as unknown as { identity?: UsernameSigner }).identity
   if (!identity) throw new NoWalletForUsernameError()
+  if (
+    expectedOwner &&
+    wallet.identity.address.raw.toLowerCase() !== expectedOwner.toLowerCase()
+  )
+    throw new NoWalletForUsernameError()
   const config = loadMonadChainConfigFromEnv()
   const entry = await claimUsername({
     relayBaseUrl:

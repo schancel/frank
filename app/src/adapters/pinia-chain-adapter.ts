@@ -53,12 +53,9 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
-import { useProfileStore } from '../stores/my-profile'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
-import {
-  registerMonadIdentityCbor,
-  type MonadIdentity,
-} from '@frank/wallet/monad-identity'
+import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import { syncOwnProfileWithRelay } from '../utils/own-profile'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
  * range. Configurable via `MONAD_DM_POLL_INTERVAL_MS` (see `src/boot/monad-direct-messages.ts`). */
@@ -161,30 +158,29 @@ export interface DirectMessagePolling {
  * never from local/outbound message clocks.
  */
 /**
- * Auto-registers the wallet's identity profile against the relay after an authentication failure
- * (e.g. relay restart or wiped profile table).
+ * After the relay refused an authenticated read (it restarted, or lost its profile table): the
+ * account's profile is brought in line with the relay again. A relay that has no profile for the
+ * account is given this device's copy; one that has a profile keeps it (`../utils/own-profile`).
  */
-export async function autoRecoverProfile(wallet: WalletHandle): Promise<void> {
+export async function autoRecoverProfile(
+  wallet: WalletHandle,
+  isCancelled?: () => boolean,
+  signal?: AbortSignal,
+): Promise<void> {
   const identity = (wallet as unknown as { identity?: MonadIdentity }).identity
   if (!identity) return
   try {
-    const relayBaseUrl =
-      (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
-      loadMonadChainConfigFromEnv().relayBaseUrl
-    let profile = undefined
-    try {
-      profile = useProfileStore().profile
-    } catch {
-      // Pinia store not initialized
-    }
-    await registerMonadIdentityCbor({
-      relayBaseUrl,
+    await syncOwnProfileWithRelay({
+      relayBaseUrl:
+        (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
+        loadMonadChainConfigFromEnv().relayBaseUrl,
       identity,
-      profile,
+      isCancelled,
+      signal,
       network: loadMonadChainConfigFromEnv().rpcChain,
     })
   } catch (err) {
-    console.warn('auto-register profile after 401 failed', err)
+    console.warn('own profile sync failed', err)
   }
 }
 
@@ -209,6 +205,8 @@ export function startDirectMessagePolling({
   let unavailableFailures = 0
   let otherFailures = 0
   let lastErrorKey: string | undefined
+  let profileRefresh: Promise<void> | undefined
+  const profileAbort = new AbortController()
 
   // Polls are chained (next one is scheduled when this one settles), never overlapping, so the
   // delay can adapt to what the relay just told us.
@@ -260,6 +258,20 @@ export function startDirectMessagePolling({
       otherFailures = 0
       lastErrorKey = undefined
       mailboxStatus.setOk()
+      // Profile publication belongs to the relay. Refresh even when the mailbox is empty,
+      // and retry a failed startup read on the next poll without delaying message delivery.
+      if (!profileRefresh) {
+        profileRefresh = autoRecoverProfile(
+          wallet,
+          () => stopped,
+          profileAbort.signal,
+        ).finally(() => {
+          profileRefresh = undefined
+        })
+      }
+      // The relay answers: what this device has to note to the account's other devices about
+      // its conversations (a deletion or a read mark not sent yet) goes out now. Free, and not waited for.
+      void chats.noteConversationStates(wallet).catch(() => undefined)
       if (
         received.length === 0 &&
         quarantined.length === 0 &&
@@ -416,7 +428,11 @@ export function startDirectMessagePolling({
           if (onAuthRecovery) {
             void onAuthRecovery().catch(() => undefined)
           } else {
-            void autoRecoverProfile(wallet).catch(() => undefined)
+            void autoRecoverProfile(
+              wallet,
+              () => stopped,
+              profileAbort.signal,
+            ).catch(() => undefined)
           }
         }
         const key =
@@ -486,6 +502,7 @@ export function startDirectMessagePolling({
   return {
     stop: () => {
       stopped = true
+      profileAbort.abort()
       unsubscribeStream?.()
       // A stopped poller (e.g. the wallet was switched) must not leave its last problem on screen.
       mailboxStatus.setOk()

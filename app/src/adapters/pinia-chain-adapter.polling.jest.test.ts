@@ -9,6 +9,11 @@
  * is what the wallet's read passes up unchanged.
  */
 import { createPinia, setActivePinia } from 'pinia'
+import { syncOwnProfileWithRelay } from '../utils/own-profile'
+
+jest.mock('../utils/own-profile', () => ({
+  syncOwnProfileWithRelay: jest.fn().mockResolvedValue('unchanged'),
+}))
 
 const documentListeners: Record<string, () => void> = {}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -163,6 +168,41 @@ describe('direct-message polling: cadence, backoff and status', () => {
   afterEach(() => {
     jest.useRealTimers()
     jest.restoreAllMocks()
+  })
+
+  it('retries an unreachable own profile on the next successful poll', async () => {
+    const sync = jest.mocked(syncOwnProfileWithRelay)
+    sync.mockClear()
+    sync.mockResolvedValueOnce('unreachable').mockResolvedValueOnce('adopted')
+    const { wallet, mailbox } = setup()
+    const polling = startDirectMessagePolling({ wallet })
+    await jest.advanceTimersByTimeAsync(1000)
+    expect(sync).toHaveBeenCalledTimes(1)
+    await jest.advanceTimersByTimeAsync(7000)
+    expect(sync).toHaveBeenCalledTimes(2)
+    expect(mailbox.count).toBe(2)
+    polling.stop()
+    expect(sync.mock.calls[1][0].isCancelled?.()).toBe(true)
+  })
+
+  it('a slow profile read does not delay mailbox polls or start overlapping profile reads', async () => {
+    const sync = jest.mocked(syncOwnProfileWithRelay)
+    sync.mockClear()
+    let finish!: (outcome: 'unchanged') => void
+    sync.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        }),
+    )
+    const { wallet, mailbox } = setup()
+    const polling = startDirectMessagePolling({ wallet })
+    await jest.advanceTimersByTimeAsync(22_000)
+    expect(mailbox.count).toBe(4)
+    expect(sync).toHaveBeenCalledTimes(1)
+    polling.stop()
+    finish('unchanged')
+    await Promise.resolve()
   })
 
   it('steady state at the default 7 s cadence reads once per poll, about nine times a minute', async () => {
@@ -383,6 +423,23 @@ describe('direct-message polling: cadence, backoff and status', () => {
       await jest.advanceTimersByTimeAsync(20_000)
       expect(status.state).toBe('ok')
       polling.stop()
+    })
+
+    it('the default 401 profile recovery is cancelled when the poller stops', async () => {
+      const sync = jest.mocked(syncOwnProfileWithRelay)
+      sync.mockClear()
+      const { mailbox, wallet } = setup()
+      mailbox.inject(unauthorized())
+      const polling = startDirectMessagePolling({ wallet })
+      await jest.advanceTimersByTimeAsync(1000)
+      expect(sync).toHaveBeenCalledTimes(1)
+      const options = sync.mock.calls[0][0]
+      expect(options.isCancelled?.()).toBe(false)
+      expect(options.signal?.aborted).toBe(false)
+      polling.stop()
+      expect(options.isCancelled?.()).toBe(true)
+      expect(options.signal?.aborted).toBe(true)
+      expect(sync).toHaveBeenCalledTimes(1)
     })
 
     it('triggers onAuthRecovery when direct-message polling encounters 401', async () => {

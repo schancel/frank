@@ -359,6 +359,8 @@ async function openStore() {
   return { chats, reload }
 }
 
+let deletionNotes = 0
+
 /** Applies the steps; returns the payload hashes of every message the user deleted. */
 async function apply(
   chats: ReturnType<typeof useChatStore>,
@@ -386,7 +388,43 @@ async function apply(
       for (const digest of shown(step.conversationId)) deleted.add(digest)
       if (step.kind === 'clear')
         await chats.clearConversation(step.conversationId)
-      else await chats.deleteConversation(step.conversationId, step.deletedAt)
+      else {
+        // The user deletes it here, which reaches as far as the newest message shown; and
+        // another device of the account notes that it deleted it up to `deletedAt`, which
+        // may be earlier or later than anything this device has seen.
+        await chats.deleteConversation(step.conversationId)
+        deletionNotes += 1
+        await chats.receiveMessages(
+          [
+            {
+              outbound: false,
+              senderAddress: ME,
+              copartyAddress: ME,
+              copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+              index: `deletion-note-${deletionNotes}`,
+              stampValue: 0,
+              message: {
+                outbound: false,
+                status: 'confirmed',
+                senderAddress: ME,
+                destinationAddress: ME,
+                items: [
+                  {
+                    type: 'conversation-state',
+                    conversationId: step.conversationId,
+                    peer: chats.conversations[step.conversationId].address,
+                    clearedBefore: step.deletedAt,
+                  },
+                ],
+                serverTime: 1000 + deletionNotes,
+                receivedTime: 1000 + deletionNotes,
+                outpoints: [],
+              },
+            } as unknown as ReceivedMessageWrapper,
+          ],
+          ME,
+        )
+      }
     }
   }
   return deleted

@@ -253,6 +253,12 @@ export const NEVER_FROM_A_PEER_SAMPLES: MessageItem[] = [
     timestamp: 1760000000000,
   },
   {
+    type: 'conversation-state',
+    conversationId: '123e4567-e89b-52d3-a456-426614174000',
+    peer: '0x' + 'b2'.repeat(20),
+    clearedBefore: 1760000000000,
+  },
+  {
     type: 'device-claim',
     instanceId: '123e4567-e89b-42d3-a456-426614174000',
     claimedAt: 1760000000000,

@@ -5,11 +5,16 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
+import { accountStatus } from '../accounts/session'
+
+jest.mock('../accounts/session', () => ({ accountStatus: { revision: 1 } }))
+
 import { registerMonadIdentityCbor } from '@frank/wallet/monad-identity'
 
 const mockSetRelayData = jest.fn()
 jest.mock('src/stores/my-profile', () => ({
   useProfileStore: jest.fn(() => ({
+    owner: '0x1234567890123456789012345678901234567890',
     profile: {
       name: 'Alice',
       bio: 'Crypto enthusiast',
@@ -94,6 +99,7 @@ const defaultStubs = {
 describe('Profile.vue', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    ;(accountStatus as { revision: number }).revision = 1
     HTMLCanvasElement.prototype.getContext = jest.fn(() => null)
     // The relay gives whatever name is asked for unless a test says otherwise.
     ;(claimUsername as jest.Mock).mockImplementation(
@@ -162,6 +168,77 @@ describe('Profile.vue', () => {
         relayBaseUrl: 'https://127.0.0.1:18443',
       }),
     )
+  })
+
+  it('rejects a profile form kept open across an account revision change', async () => {
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    ;(accountStatus as { revision: number }).revision = 2
+    ;(wrapper.vm as any).name = 'Old account fields'
+    await (wrapper.vm as any).updateRelayData()
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+    expect(claimUsername).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'profileDialog.accountChanged',
+    })
+  })
+
+  it('does not publish old form fields if the account switches while the wallet is opening', async () => {
+    ;(useActiveWallet as jest.Mock).mockImplementation(async () => {
+      ;(accountStatus as { revision: number }).revision = 2
+      return {
+        identity: {
+          address: { raw: '0x7777777777777777777777777777777777777777' },
+        },
+      }
+    })
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    await (wrapper.vm as any).updateRelayData()
+    expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'profileDialog.accountChanged',
+    })
+  })
+
+  it('never claims a stale form username with another account wallet', async () => {
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      identity: {
+        address: { raw: '0x7777777777777777777777777777777777777777' },
+      },
+    })
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    ;(wrapper.vm as any).username = 'oldname'
+    await (wrapper.vm as any).updateRelayData()
+    expect(claimUsername).not.toHaveBeenCalled()
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
   })
 
   it('validates avatar size before submitting and rejects oversized avatar with error notification', async () => {
@@ -530,6 +607,7 @@ describe('Profile.vue', () => {
 
   it('opens with the reason on the username field when the saved name was refused at startup', async () => {
     const saved = {
+      owner: '0x1234567890123456789012345678901234567890',
       profile: { name: 'Alice', username: 'alice' },
       inbox: { acceptancePrice: 100 },
       setRelayData: mockSetRelayData,

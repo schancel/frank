@@ -747,6 +747,7 @@ export function buildSignedDirectoryStatement(
  * Sends a canonical Type-2 directory attestation signed by the identity key. */
 export async function registerMonadIdentityCbor(params: {
   relayBaseUrl: string
+  signal?: AbortSignal
   identity: MonadIdentity
   profile?: MonadProfileFields
   network?: string
@@ -770,6 +771,7 @@ export async function registerMonadIdentityCbor(params: {
   })
   await axios({
     method: 'put',
+    ...(params.signal ? { signal: params.signal } : {}),
     url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
       params.identity.address.raw
     }`,
@@ -1162,12 +1164,14 @@ export async function fetchMonadIdentityPubKey(params: {
  * nothing is registered under `address` yet. */
 export async function fetchMonadProfile(params: {
   relayBaseUrl: string
+  signal?: AbortSignal
   address: ChainAddress
   expectedNetwork?: string
 }): Promise<ProfileInfo | undefined> {
   try {
     const response = await axios({
       method: 'get',
+      ...(params.signal ? { signal: params.signal } : {}),
       url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/${
         params.address.raw
       }`,

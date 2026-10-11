@@ -7,7 +7,7 @@
  * Error and payment-pending keep their own row.
  */
 import { readFileSync } from 'fs'
-import { dirname, join } from 'path'
+import { join } from 'path'
 
 import { mount } from '@vue/test-utils'
 
@@ -233,46 +233,7 @@ describe('inline bubble footer (#391)', () => {
     ).toBeGreaterThan(0)
   })
 
-  it('leaves failed and payment-pending on their own row, outside the text', async () => {
-    const failed = mountBubble({
-      status: 'error',
-      text: 'hello',
-      delivery: { failureReason: 'unavailable' },
-    })
-    await failed.vm.$nextTick()
-    const failedBody = failed.get('[data-testid="chat-message-body"]')
-    expect(failedBody.find('[data-testid="outgoing-meta"]').exists()).toBe(
-      false,
-    )
-    const failedRow = failedBody.get('[data-testid="outgoing-failed"]')
-    expect(failedRow.classes()).toContain('row')
-    expect(
-      failed.get('[data-testid="outgoing-focus-target"]').classes(),
-    ).not.toContain('chat-message-inline-meta')
-    expect(failed.get('[data-testid="outgoing-retry"]').exists()).toBe(true)
-    failed.unmount()
-
-    const pendingPay = mountBubble({
-      status: 'payment-pending',
-      text: 'hello',
-      delivery: { attemptDigest: 'abc', live: true },
-    })
-    await pendingPay.vm.$nextTick()
-    expect(
-      pendingPay
-        .get('[data-testid="chat-message-body"]')
-        .find('[data-testid="outgoing-meta"]')
-        .exists(),
-    ).toBe(false)
-    expect(
-      pendingPay
-        .get('[data-testid="chat-message-body"]')
-        .get('[data-testid="outgoing-payment-pending"]')
-        .classes(),
-    ).toContain('row')
-  })
-
-  it('keeps Quasar stamp styling on one real suffix across row transitions', async () => {
+  it('keeps time, amount and footer placement through failure, retry and payment checking', async () => {
     const wrapper = mountBubble({
       status: 'error',
       text: 'hello',
@@ -280,43 +241,37 @@ describe('inline bubble footer (#391)', () => {
       realQChatMessage: true,
     })
     await wrapper.vm.$nextTick()
-    const suffix = wrapper.get('[data-testid="outgoing-focus-target"]')
-    const announcement = suffix.get('[data-testid="outgoing-announcement"]')
-
-    expect(suffix.classes()).toContain('q-message-stamp')
-    expect(
-      wrapper
-        .get('.q-message-text:last-child')
-        .element.contains(suffix.element),
-    ).toBe(true)
-
-    await setStatus(wrapper, 'pending')
-    expect(wrapper.get('[data-testid="outgoing-meta"]').element).toBe(
-      suffix.element,
+    const suffix = wrapper.get('[data-testid="outgoing-meta"]')
+    const footer = suffix.get('[data-testid="outgoing-footer"]').element
+    const time = suffix.get('[data-testid="outgoing-stamp"]').element
+    const amount = suffix.get('[data-testid="outgoing-amount"]').element
+    const announcement = suffix.get(
+      '[data-testid="outgoing-announcement"]',
+    ).element
+    expect(suffix.get('[data-testid="outgoing-failed"]').classes()).toContain(
+      'outgoing-status',
     )
-    expect(suffix.classes()).not.toContain('q-message-stamp')
-
-    await setStatus(wrapper, 'payment-pending')
-    expect(wrapper.get('[data-testid="outgoing-focus-target"]').element).toBe(
-      suffix.element,
-    )
-    expect(suffix.classes()).toContain('q-message-stamp')
-    expect(suffix.get('[data-testid="outgoing-announcement"]').element).toBe(
-      announcement.element,
-    )
-
-    const quasarCss = readFileSync(
-      join(
-        dirname(require.resolve('quasar/dist/quasar.umd.prod.js')),
-        'quasar.css',
-      ),
-      'utf8',
-    )
-    const stampRule =
-      quasarCss.match(/\.q-message-stamp\s*\{[^}]*\}/)?.[0] ?? ''
-    expect(stampRule).toMatch(/margin-top:\s*4px/)
-    expect(stampRule).toMatch(/opacity:\s*0\.6/)
-    expect(stampRule).toMatch(/font-size:\s*small/)
+    expect(suffix.find('[data-testid="outgoing-retry"]').exists()).toBe(true)
+    for (const status of ['pending', 'payment-pending', 'confirmed']) {
+      await setStatus(wrapper, status)
+      expect(wrapper.get('[data-testid="outgoing-meta"]').element).toBe(
+        suffix.element,
+      )
+      expect(suffix.classes()).toContain('chat-message-inline-meta')
+      expect(suffix.get('[data-testid="outgoing-footer"]').element).toBe(footer)
+      expect(suffix.get('[data-testid="outgoing-stamp"]').element).toBe(time)
+      expect(suffix.get('[data-testid="outgoing-amount"]').element).toBe(amount)
+      expect(suffix.get('[data-testid="outgoing-announcement"]').element).toBe(
+        announcement,
+      )
+      expect(
+        suffix
+          .get('[data-testid="outgoing-footer"]')
+          .find('[data-testid="outgoing-failed"]')
+          .exists(),
+      ).toBe(false)
+    }
+    wrapper.unmount()
   })
 
   it('puts a fresh send on the inline cluster without a second stamp line', async () => {
@@ -328,7 +283,9 @@ describe('inline bubble footer (#391)', () => {
     expect(meta.classes()).toContain('chat-message-inline-meta')
     expect(meta.classes()).toContain('chat-message-inline-meta--sent')
     expect(meta.findAll('br')).toHaveLength(0)
-    expect(meta.find('[data-testid="outgoing-stamp"]').exists()).toBe(false)
+    expect(
+      meta.get('[data-testid="outgoing-stamp"]').text().length,
+    ).toBeGreaterThan(0)
     expect(meta.get('[data-testid="outgoing-sending"]').text()).toBe(
       translate(enUS)('outgoing.sending'),
     )
@@ -365,7 +322,7 @@ describe('inline bubble footer (#391)', () => {
         attachToDocument: true,
       })
       await wrapper.vm.$nextTick()
-      const focusTarget = wrapper.get('[data-testid="outgoing-focus-target"]')
+      const focusTarget = wrapper.get('[data-testid="outgoing-meta"]')
         .element as HTMLElement
       focusTarget.focus()
       expect(document.activeElement).toBe(focusTarget)

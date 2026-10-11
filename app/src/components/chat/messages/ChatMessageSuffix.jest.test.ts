@@ -72,8 +72,8 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(wrapper.find('[data-testid="outgoing-retry-hint"]').exists()).toBe(
       false,
     )
-    expect(wrapper.get('[data-testid="outgoing-failed"]').text()).toBe(
-      'Failed to send This relay does not offer messaging.',
+    expect(wrapper.get('[data-testid="outgoing-failed"]').text()).toContain(
+      'Failed to send',
     )
 
     await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
@@ -256,9 +256,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
   it.each([
     ['pending', 'outgoing.paymentSent'],
     ['mempool', 'outgoing.paymentInMempool'],
-    ['paid', 'outgoing.paymentPaid'],
     ['reverted', 'outgoing.paymentReverted'],
-    ['repaid', 'outgoing.paymentRepaid'],
     ['failed', 'outgoing.paymentFailed'],
     ['unsent', 'outgoing.paymentUnsent'],
   ])(
@@ -283,6 +281,43 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       }
     },
   )
+
+  it('keeps one time/amount/actions footer through send and payment transitions, with successful payments silent', async () => {
+    const wrapper = mountSuffix({
+      status: 'pending',
+      inline: true,
+      stamp: '12:34',
+      amount: '0.002 MON',
+    })
+    const footer = wrapper.get('[data-testid="outgoing-footer"]').element
+    const time = wrapper.get('[data-testid="outgoing-stamp"]').element
+    const amount = wrapper.get('[data-testid="outgoing-amount"]').element
+    for (const props of [
+      { status: 'payment-pending' },
+      { status: 'error', failureReason: 'unavailable' },
+      { status: 'confirmed', paymentSummary: 'paid' },
+      { status: 'confirmed', paymentSummary: 'repaid' },
+    ]) {
+      await wrapper.setProps(props)
+      expect(wrapper.get('[data-testid="outgoing-footer"]').element).toBe(
+        footer,
+      )
+      expect(wrapper.get('[data-testid="outgoing-stamp"]').element).toBe(time)
+      expect(wrapper.get('[data-testid="outgoing-amount"]').element).toBe(
+        amount,
+      )
+      expect(
+        wrapper.find('[data-testid="outgoing-payment-summary"]').exists(),
+      ).toBe(false)
+      expect(
+        wrapper
+          .get('[data-testid="outgoing-footer"]')
+          .find('[data-testid="outgoing-failed"]')
+          .exists(),
+      ).toBe(false)
+    }
+    wrapper.unmount()
+  })
 
   it('says nothing about a payment it knows nothing of, on a received message, or while sending', () => {
     for (const props of [

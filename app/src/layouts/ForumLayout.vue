@@ -38,22 +38,10 @@
             data-test="forum-breadcrumb"
           >
             <span>{{ $t('leftDrawer.forum') }}</span>
-            <q-icon
-              name="chevron_right"
-              size="18px"
-              class="q-mx-xs text-grey-5"
-            />
-            <q-chip
-              v-if="selectedTopic"
-              dense
-              outline
-              size="sm"
-              color="white"
-              text-color="white"
-              class="q-ma-none text-weight-medium"
-            >
+            <q-icon name="chevron_right" size="1em" class="q-mx-xs" />
+            <span v-if="selectedTopic" data-test="forum-thread-topic">
               #{{ selectedTopic }}
-            </q-chip>
+            </span>
             <span v-else class="text-body2 text-grey-4">{{
               $t('forum.thread')
             }}</span>
@@ -69,24 +57,8 @@
               data-test="forum-breadcrumb-root"
               >{{ $t('leftDrawer.forum') }}</span
             >
-            <q-icon
-              name="chevron_right"
-              size="18px"
-              class="q-mx-xs text-grey-5"
-            />
-            <q-chip
-              dense
-              removable
-              size="sm"
-              color="white"
-              text-color="primary"
-              class="q-ma-none text-weight-medium cursor-pointer"
-              data-test="forum-active-topic-chip"
-              @remove="clearTopic"
-              @click="clearTopic"
-            >
-              #{{ selectedTopic }}
-            </q-chip>
+            <q-icon name="chevron_right" size="1em" class="q-mx-xs" />
+            <span data-test="forum-active-topic">#{{ selectedTopic }}</span>
           </div>
           <span v-else>{{ $t('leftDrawer.forum') }}</span>
         </q-toolbar-title>

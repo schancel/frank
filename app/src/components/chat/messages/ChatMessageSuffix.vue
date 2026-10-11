@@ -10,10 +10,6 @@
     ref="focusTarget"
     :data-testid="inline ? 'outgoing-meta' : 'outgoing-focus-target'"
   >
-    <!-- Programmatic focus lands on this suffix when Retry unmounts (#429). The live region
-    below stays clipped and is not a keyboard target. One persistent polite live region per
-    message: it exists before its text changes, so a state change is announced once, and a
-    message that merely renders (e.g. after a reload) is not announced. -->
     <span
       class="q-sr-only"
       role="status"
@@ -21,15 +17,46 @@
       data-testid="outgoing-announcement"
       >{{ announced }}</span
     >
-    <!-- Last line of the bubble (#391): one row of time and amount, floated
-         to the end of the text. No break between them, and no second row. -->
-    <template v-if="inline">
-      <span
-        v-if="status === 'pending' && outbound"
-        data-testid="outgoing-sending"
-        class="q-mr-xs"
-        >{{ sendingText }}</span
-      >
+    <div
+      v-if="status === 'error'"
+      class="outgoing-status outgoing-status--failed"
+      data-testid="outgoing-failed"
+    >
+      <q-icon name="error" color="negative" />
+      <div>
+        <div>{{ $t('chatMessage.failedToSend') }}</div>
+        <div v-if="failureText" data-testid="outgoing-failure-reason">
+          {{ failureText }}
+        </div>
+      </div>
+    </div>
+    <div
+      v-else-if="status === 'payment-pending'"
+      class="outgoing-status"
+      data-testid="outgoing-payment-pending"
+    >
+      <q-icon name="schedule" />
+      <span>{{ paymentText }}</span>
+    </div>
+    <div
+      v-else-if="status === 'pending' && outbound"
+      class="outgoing-status"
+      data-testid="outgoing-sending"
+    >
+      {{ sendingText }}
+    </div>
+    <div
+      v-else-if="paymentSummaryText"
+      class="outgoing-status"
+      data-testid="outgoing-payment-summary"
+    >
+      {{ paymentSummaryText }}
+    </div>
+    <div
+      class="outgoing-footer"
+      :class="suffixPlacement"
+      data-testid="outgoing-footer"
+    >
       <time
         v-if="stamp"
         data-testid="outgoing-stamp"
@@ -39,115 +66,15 @@
       <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
         amount
       }}</span>
-      <!-- What the chain has shown of this message's payment: in the mempool, paid, reverted
-           (and paid again), failed. -->
-      <span
-        v-if="paymentSummaryText"
-        class="q-ml-xs"
-        data-testid="outgoing-payment-summary"
-        >{{ paymentSummaryText }}</span
-      >
       <chat-message-suffix-buttons
-        v-if="status === 'confirmed'"
         :status="status"
         @replyClick="$emit('replyClick')"
         @forwardClick="$emit('forwardClick')"
         @infoClick="$emit('infoClick')"
         @deleteClick="$emit('deleteClick')"
+        @resendClick="$emit('resendClick')"
+        @discardClick="$emit('discardClick')"
       />
-    </template>
-    <div
-      v-else-if="status === 'error'"
-      :class="['row', 'items-center', suffixPlacement]"
-      data-testid="outgoing-failed"
-    >
-      <div v-if="outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @resendClick="$emit('resendClick')"
-          @discardClick="$emit('discardClick')"
-        />
-      </div>
-      <div class="col-auto">
-        <q-icon name="error" color="red" />{{ $t('chatMessage.failedToSend') }}
-        <span v-if="failureText" data-testid="outgoing-failure-reason">
-          {{ failureText }}
-        </span>
-      </div>
-      <div v-if="!outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @resendClick="$emit('resendClick')"
-          @discardClick="$emit('discardClick')"
-        />
-      </div>
-    </div>
-    <div
-      v-else-if="status === 'payment-pending'"
-      :class="['row', 'items-center', suffixPlacement]"
-      data-testid="outgoing-payment-pending"
-    >
-      <div v-if="outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @discardClick="$emit('discardClick')"
-        />
-      </div>
-      <div class="col-auto q-pa-xs">
-        <q-icon name="schedule" />{{ paymentText }}
-      </div>
-      <!-- A passed stamp is the time, never a second copy of the status (#393). -->
-      <div v-if="stamp" class="col-auto q-pa-xs" data-testid="outgoing-stamp">
-        {{ stamp }}
-      </div>
-      <div v-if="!outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @discardClick="$emit('discardClick')"
-        />
-      </div>
-    </div>
-    <div
-      v-else
-      :class="['row', 'items-center', suffixPlacement]"
-      data-testid="outgoing-footer"
-    >
-      <!-- Button placement for sent mssages -->
-      <div v-if="outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @replyClick="$emit('replyClick')"
-          @forwardClick="$emit('forwardClick')"
-          @infoClick="$emit('infoClick')"
-          @deleteClick="$emit('deleteClick')"
-        />
-      </div>
-      <!-- One cluster. A break exists only when a nonempty time stamp precedes the amount. -->
-      <div class="col-auto q-pa-xs" data-testid="outgoing-meta">
-        <span
-          v-if="status === 'pending' && outbound"
-          data-testid="outgoing-sending"
-          class="q-mr-xs"
-          >{{ sendingText }}</span
-        >
-        <template v-if="stamp">
-          <span data-testid="outgoing-stamp">{{ stamp }}</span>
-          <br />
-        </template>
-        <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
-          amount
-        }}</span>
-      </div>
-      <!-- Button placement for received mssages -->
-      <div v-if="!outbound" :class="buttonPlacement">
-        <chat-message-suffix-buttons
-          :status="status"
-          @replyClick="$emit('replyClick')"
-          @forwardClick="$emit('forwardClick')"
-          @infoClick="$emit('infoClick')"
-          @deleteClick="$emit('deleteClick')"
-        />
-      </div>
     </div>
   </div>
 </template>
@@ -173,7 +100,7 @@ export default defineComponent({
       required: false,
       default: '',
     },
-    /** Confirmed and pending sit on the last text line. Other states keep a row. */
+    /** Match the bubble’s inline placement; the footer itself keeps one shared structure. */
     inline: {
       type: Boolean,
       required: false,
@@ -286,9 +213,7 @@ export default defineComponent({
       const keys: Record<string, string> = {
         pending: 'outgoing.paymentSent',
         mempool: 'outgoing.paymentInMempool',
-        paid: 'outgoing.paymentPaid',
         reverted: 'outgoing.paymentReverted',
-        repaid: 'outgoing.paymentRepaid',
         failed: 'outgoing.paymentFailed',
         unsent: 'outgoing.paymentUnsent',
       }
@@ -333,11 +258,39 @@ export default defineComponent({
     suffixPlacement(): string {
       return this.outbound ? 'text-right' : 'text-left'
     },
-    buttonPlacement(): string[] {
-      return this.outbound
-        ? ['col-grow', 'q-mr-sm', 'text-left']
-        : ['col-grow', 'q-ml-sm', 'text-right']
-    },
   },
 })
 </script>
+
+<style scoped>
+.outgoing-focus-target {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.outgoing-focus-target.chat-message-inline-meta {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+.outgoing-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+.outgoing-footer.text-left {
+  justify-content: flex-start;
+}
+.outgoing-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0;
+  white-space: normal;
+  line-height: 1.5;
+  font-size: 0.875rem;
+  text-align: left;
+}
+</style>

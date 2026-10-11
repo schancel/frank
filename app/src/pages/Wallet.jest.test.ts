@@ -9,6 +9,11 @@ afterEach(() => {
   mockChainBalance.hasError.value = false
 })
 import { nextTick, ref } from 'vue'
+import RenameWalletDialog from '../components/wallet/RenameWalletDialog.vue'
+import { useWalletNames } from '../composables/useWalletNames'
+import * as nativeTransfer from '../accounts/native-transfer'
+import type { EvmNativeOperationStatus } from '@frank/wallet/chain'
+import type { SwapActivityRow } from '../swap/useSwapActivity'
 import en from '../i18n/en-us'
 import fr from '../i18n/fr-fr'
 const mockGetChainAddress = jest.fn(async (chain: string) => {
@@ -66,6 +71,10 @@ const balance = {
 }
 const openPage = jest.fn()
 const mockCopyToClipboard = jest.fn()
+const mockSwapRows = ref<SwapActivityRow[]>([])
+jest.mock('src/swap/useSwapActivity', () => ({
+  useSwapActivity: () => ({ rows: mockSwapRows }),
+}))
 const mockUseActiveWallet = jest.fn()
 const mockRoute = ref<{ query: Record<string, string>; path: string }>({
   query: { chain: 'monad' },
@@ -178,6 +187,10 @@ function mountWallet(
               : key),
       },
       stubs: {
+        AddressText: {
+          props: ['address'],
+          template: '<span>{{ address }}</span>',
+        },
         // The copy button lives in q-input's named #append slot; a generic stub drops it.
         QInput: {
           template:
@@ -207,6 +220,10 @@ function mountWallet(
             'q-tab-panel',
             'q-tooltip',
             'q-icon',
+            'q-list',
+            'q-item',
+            'q-item-section',
+            'q-item-label',
           ].map(n => [n, { template: '<div><slot /></div>' }]),
         ),
       },
@@ -216,6 +233,8 @@ function mountWallet(
 
 describe('Wallet detail page (#570)', () => {
   beforeEach(() => {
+    mockSwapRows.value = []
+    useWalletNames().clearAllCustomNames()
     mockRoute.value = { query: { chain: 'monad' }, path: '/wallet' }
     session.status = 'ready'
     session.revision = 1
@@ -242,17 +261,18 @@ describe('Wallet detail page (#570)', () => {
       'walletPanel.mainWallet',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
-      true,
+      false,
     )
-    expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'walletPanel.monadTestnet',
-    )
+    expect(wrapper.find('[data-testid="wallet-chain"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
       '0xabc',
     )
     expect(wrapper.get('[data-testid="wallet-send-action"]').text()).toBe(
       'walletPanel.sendMont',
     )
+    expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe('(MONT)')
+    await wrapper.get('[data-testid="wallet-about-avu"]').trigger('click')
+    expect(wrapper.vm.showAvuDialog).toBe(true)
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('1 MON')
     expect(region.attributes()).toMatchObject({
@@ -447,11 +467,9 @@ describe('Wallet detail page (#570)', () => {
       'walletPanel.ecash',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
-      true,
+      false,
     )
-    expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'walletPanel.ecashTestnet',
-    )
+    expect(wrapper.find('[data-testid="wallet-chain"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
       'walletPanel.balanceLoading',
     )
@@ -569,11 +587,9 @@ describe('Wallet detail page (#570)', () => {
       'walletPanel.solana',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
-      true,
+      false,
     )
-    expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'Solana Devnet',
-    )
+    expect(wrapper.find('[data-testid="wallet-chain"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe('15 dSOL')
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
@@ -750,6 +766,15 @@ describe('Wallet detail page (#570)', () => {
     // Tab buttons exist
     const balanceTab = wrapper.find('[data-testid="wallet-tab-balance"]')
     expect(balanceTab.exists()).toBe(true)
+    expect(wrapper.find('[data-testid="wallet-tab-history"]').exists()).toBe(
+      true,
+    )
+    expect(
+      wrapper
+        .get('[data-testid="wallet-history-panel"]')
+        .find('[data-testid="wallet-tokens-card"]')
+        .exists(),
+    ).toBe(false)
     const swapTab = wrapper.find('[data-testid="wallet-tab-swap"]')
     expect(swapTab.exists()).toBe(true)
     const parityTab = wrapper.find('[data-testid="wallet-tab-parity"]')
@@ -790,6 +815,32 @@ describe('Wallet detail page (#570)', () => {
     await menuBtn.trigger('click')
     expect(wrapper.emitted('toggleMyDrawerOpen')).toBeTruthy()
     expect(wrapper.emitted('toggleMyDrawerOpen')?.length).toBe(1)
+
+    // Renaming lives in the main view and remains bound to the wallet opened in the dialog.
+    await wrapper.get('[data-testid="wallet-rename-action"]').trigger('click')
+    const rename = wrapper.getComponent(RenameWalletDialog)
+    expect(rename.props('modelValue')).toBe(true)
+    expect(rename.props('chain')).toBe('monad')
+    expect(rename.props('defaultName')).toBe('walletPanel.mainWallet')
+    mockRoute.value.path = '/wallet/ecash'
+    mockRoute.value.query = {}
+    await nextTick()
+    rename.vm.$emit('save', 'Primary wallet')
+    await flush()
+    expect(useWalletNames().getCustomName('monad')).toBe('Primary wallet')
+    expect(useWalletNames().getCustomName('ecash')).toBe('')
+    await wrapper.get('[data-testid="wallet-rename-action"]').trigger('click')
+    expect(rename.props('chain')).toBe('ecash')
+    rename.vm.$emit('save', 'Coffee wallet')
+    await flush()
+    expect(wrapper.get('[data-testid="wallet-name-text"]').text()).toBe(
+      'Coffee wallet',
+    )
+    rename.vm.$emit('reset')
+    await flush()
+    expect(wrapper.get('[data-testid="wallet-name-text"]').text()).toBe(
+      'walletPanel.ecash',
+    )
 
     wrapper.unmount()
   })
@@ -843,7 +894,7 @@ describe('Wallet detail page (#570)', () => {
         await flush()
         const history = wrapper.get('[data-testid="wallet-native-operations"]')
         expect(history.text()).toContain(
-          translate('nativeOperation.included', { network: 'monad-testnet' }),
+          translate('nativeOperation.included', { network: 'Monad Testnet' }),
         )
         expect(history.text()).toContain(fixture.hash)
         expect(history.text()).toContain(fixture.operationId)
@@ -889,6 +940,92 @@ describe('Wallet detail page (#570)', () => {
       }
     },
   )
+
+  it('lists dated swaps in order, pins pending activity, keeps undated transfers explicit and combines shared transactions', async () => {
+    const sharedHash = '0x' + '34'.repeat(32)
+    const native: EvmNativeOperationStatus = {
+      operationId: 'transfer',
+      chainIdentifier: 'monad-testnet',
+      kind: 'legacy',
+      recipient: '0x' + '56'.repeat(20),
+      intendedValueWei: '10000000000000000',
+      payment: 'included',
+      members: [],
+      observedFeeWei: '0',
+      feeCoverage: 'unknown',
+      sharing: 'not-shared',
+    }
+    const contract: EvmNativeOperationStatus = {
+      ...native,
+      operationId: 'contract',
+      kind: 'contract',
+      intendedValueWei: '0',
+      finalTransactionHash: sharedHash,
+      members: [{ transactionHash: sharedHash, state: 'included-success' }],
+    }
+    const inspect = jest
+      .spyOn(nativeTransfer, 'inspectNativeTransferOperations')
+      .mockReturnValue({ status: 'available', operations: [native, contract] })
+    const swap = (
+      id: string,
+      timestamp: number,
+      status: SwapActivityRow['status'] = 'confirmed',
+    ): SwapActivityRow => ({
+      id,
+      timestamp,
+      status,
+      chainIdentifier: 'monad-testnet',
+      txHash: '0x' + '78'.repeat(32),
+      fromAmount: '1',
+      fromAsset: 'MON',
+      toAmount: '2',
+      toAsset: 'TOKEN',
+      route: 'Exchange',
+    })
+    mockSwapRows.value = [
+      swap('old', 100),
+      { ...swap('shared', 300), txHash: sharedHash },
+      swap('pending', 200, 'pending'),
+      { ...swap('other-chain', 500), chainIdentifier: 'solana-devnet' },
+    ]
+    const wrapper = mountWallet()
+    try {
+      await flush()
+      wrapper.vm.activeTab = 'history'
+      await nextTick()
+      const history = wrapper.get('[data-testid="wallet-history-panel"]')
+      expect(
+        history
+          .findAll('[data-testid="wallet-activity-item"]')
+          .map(row => row.attributes('data-activity-id')),
+      ).toEqual(['swap:pending', 'swap:shared', 'swap:old', 'native:transfer'])
+      expect(history.text()).toContain('walletPanel.historyPending')
+      expect(history.text()).toContain('walletPanel.historyUndated')
+      expect(
+        history.findAll('[data-testid="wallet-native-operation"]'),
+      ).toHaveLength(2)
+      expect(
+        history.find('[data-activity-id="native:contract"]').exists(),
+      ).toBe(false)
+      const summary = history.get(
+        '[data-activity-id="native:transfer"] summary',
+      )
+      expect(summary.text()).toBe('nativeOperation.viewTransfer')
+      expect(summary.classes()).toContain('wallet-history-action')
+      expect(
+        history.get('[data-activity-id="native:transfer"]').text(),
+      ).toContain('0.01 MON')
+      expect(
+        history.get('[data-activity-id="swap:shared"] a').attributes('href'),
+      ).toContain(sharedHash)
+      expect(history.find('[data-testid="wallet-tokens-card"]').exists()).toBe(
+        false,
+      )
+    } finally {
+      inspect.mockRestore()
+      wrapper.unmount()
+    }
+  })
 
   it('reports capability absence for Solana without asking an EVM owner for history', async () => {
     mockRoute.value.query = { chain: 'solana' }

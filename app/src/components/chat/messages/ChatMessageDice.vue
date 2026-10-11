@@ -1,7 +1,7 @@
 <template>
   <div
     class="satoshi-dice-game q-pa-sm"
-    style="min-width: 280px; max-width: 400px"
+    style="width: 100%; min-width: 0; max-width: 400px"
   >
     <div class="row items-center q-mb-xs">
       <q-icon name="casino" size="22px" class="q-mr-xs text-amber-9" />
@@ -16,14 +16,14 @@
 
     <!-- The player's own bet -->
     <template v-if="item.action === 'roll'">
-      <div class="text-caption" data-testid="dice-bet">
+      <div class="text-body2" data-testid="dice-bet">
         Bet {{ displayMon(item.wagerWei) }} on a roll below
         <strong>{{ item.target }}</strong
         >.
       </div>
       <div
         v-if="waiting"
-        class="text-caption"
+        class="text-body2"
         :class="waiting.late ? 'text-weight-bold' : 'game-waiting-quiet'"
         data-testid="dice-waiting"
       >
@@ -38,10 +38,10 @@
     <template v-else>
       <template v-if="item.action === 'result'">
         <div class="q-my-xs">
-          <div class="text-caption">
+          <div class="text-body2">
             Target: <strong>&lt; {{ item.target }}</strong>
           </div>
-          <div class="text-caption">
+          <div class="text-body2">
             Rolled:
             <strong class="text-mono">{{ item.luckyNumber }}</strong> / 65,535
           </div>
@@ -56,7 +56,7 @@
 
         <div
           v-if="payout"
-          class="text-caption q-mb-xs"
+          class="text-body2 q-mb-xs"
           :class="payout.short ? 'text-negative' : 'text-grey-8'"
           data-testid="dice-payout"
         >
@@ -73,24 +73,20 @@
         <!-- Fairness: checked here, from the messages alone. -->
         <div
           v-if="check.ok"
-          class="text-caption text-positive q-my-xs"
+          class="text-body2 text-positive q-my-xs"
           data-testid="dice-verified"
         >
           {{ $t('gameFairness.diceVerified') }}
         </div>
         <q-banner
           v-else
-          dense
           class="bg-negative text-white q-my-xs"
           data-testid="dice-not-verified"
         >
           <strong>{{ $t('gameFairness.notVerified') }}</strong>
           {{ check.reason }}
         </q-banner>
-        <details
-          class="q-my-xs text-caption text-grey-8"
-          style="font-size: 11px"
-        >
+        <details class="q-my-xs text-body2 text-grey-8">
           <summary>{{ $t('gameFairness.diceHow') }}</summary>
           <div class="q-pt-xs text-mono" style="word-break: break-all">
             <div>
@@ -114,21 +110,18 @@
         <!-- The commitment itself is a long hash: it is on hover here, and in full under
         "how this was checked" on the result. -->
         <div
-          class="text-caption text-grey-8 q-mb-xs"
-          style="font-size: 11px"
+          class="text-body2 text-grey-8 q-mb-xs"
           :title="offer.commitment"
           data-testid="dice-committed"
         >
           The bot has committed to its secret for the next roll.
         </div>
-        <div class="text-caption text-weight-medium q-mb-xs">1. Target:</div>
+        <div class="text-body2 text-weight-medium q-mb-xs">1. Target:</div>
         <div class="row q-gutter-xs q-mb-sm">
           <q-btn
             v-for="preset in presets"
             :key="preset.target"
-            dense
             no-caps
-            size="sm"
             :color="target === preset.target ? 'primary' : 'grey-8'"
             :outline="target !== preset.target"
             :label="`${preset.label} (${preset.multiplier}x)`"
@@ -137,17 +130,15 @@
           />
         </div>
 
-        <div class="text-caption text-weight-medium q-mb-xs">2. Stake:</div>
+        <div class="text-body2 text-weight-medium q-mb-xs">2. Stake:</div>
         <div class="row q-gutter-xs items-center q-mb-xs">
           <q-btn
             v-for="chip in wagerChips"
-            :key="chip.label"
-            dense
+            :key="chip.value"
             no-caps
-            size="sm"
             :outline="wagerInput !== chip.value"
             color="primary"
-            :label="chip.label"
+            :label="chip.value ? chip.label : $t('gameFairness.dicePractice')"
             :data-testid="`dice-chip-${chip.value || 'free'}`"
             @click="wagerInput = chip.value"
           />
@@ -155,7 +146,6 @@
 
         <q-input
           v-model="wagerInput"
-          dense
           outlined
           label="Stake"
           :suffix="unit"
@@ -165,19 +155,29 @@
           style="max-width: 220px"
         />
 
-        <div class="text-caption text-grey-9 q-mb-sm" style="font-size: 12px">
+        <div
+          v-if="practice"
+          class="text-body2 text-grey-9 q-mb-sm"
+          data-testid="dice-practice-description"
+        >
+          {{ $t('gameFairness.dicePracticeDescription') }}
+        </div>
+        <div v-else class="text-body2 text-grey-9 q-mb-sm">
           Your stake is paid with the bet message. A win pays
           <strong class="text-positive">{{ estimatedPayout }}</strong
           >.
         </div>
 
         <q-btn
-          dense
           no-caps
           color="amber-9"
           text-color="black"
           class="full-width text-weight-bold"
-          label="Roll"
+          :label="
+            practice
+              ? $t('gameFairness.dicePracticeRoll')
+              : $t('gameFairness.diceRoll')
+          "
           data-testid="dice-roll-btn"
           :loading="rolling"
           :disable="rolling || played"
@@ -185,12 +185,12 @@
         />
         <div
           v-if="betFailed"
-          class="text-caption text-negative q-mt-xs"
+          class="text-body2 text-negative q-mt-xs"
           data-testid="dice-bet-not-sent"
         >
           {{ $t('gameFairness.moveNotSent') }}
         </div>
-        <div v-else-if="played" class="text-caption text-grey-7 q-mt-xs">
+        <div v-else-if="played" class="text-body2 text-grey-7 q-mt-xs">
           You have bet on this roll.
         </div>
       </template>
@@ -249,7 +249,7 @@ export default defineComponent({
       target: DICE_DEFAULT_TARGET,
       wagerInput: '0.01',
       wagerChips: [
-        { label: 'Free', value: '' },
+        { label: '', value: '' },
         { label: '0.01', value: '0.01' },
         { label: '0.05', value: '0.05' },
         { label: '0.1', value: '0.1' },
@@ -262,6 +262,12 @@ export default defineComponent({
     }
   },
   computed: {
+    practice(): boolean {
+      return (
+        parseWager(this.wagerInput, a => activeChain.fromDisplayAmount(a)) ===
+        0n
+      )
+    },
     unit(): string {
       return activeChain.unit
     },
@@ -390,7 +396,7 @@ export default defineComponent({
       }
       this.$emit('sendFollowUp', {
         items: [bet],
-        // The stake is the value of the bet message itself: a free roll carries no stamp.
+        // The stake is the value of the bet message itself: a practice roll carries no stamp.
         stampValueWei: wager,
         settled: () => {
           this.rolling = false

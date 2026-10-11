@@ -25,29 +25,35 @@
                   : $t('walletPanel.mainWallet'))
               }}
             </span>
-            <q-badge
-              v-if="isTestnet"
-              outline
-              color="white"
-              :label="$t('walletPanel.testnet')"
-              class="q-ml-xs text-bold"
-              data-testid="wallet-testnet-badge"
-            />
-          </div>
-          <div
-            class="text-caption text-white ellipsis"
-            style="line-height: 1.1; opacity: 0.85"
-            data-testid="wallet-chain"
-          >
-            {{
-              currentWalletConfig
-                ? getWalletNetworkLabel(currentWalletConfig, isTestnet, $t)
-                : isTestnet
-                ? $t('walletPanel.monadTestnet')
-                : $t('walletPanel.monad')
-            }}
+            <span
+              v-if="walletUnit"
+              class="q-ml-sm text-weight-regular wallet-header-unit"
+              data-testid="wallet-unit"
+              >({{ walletUnit }})</span
+            >
           </div>
         </q-toolbar-title>
+        <q-btn
+          flat
+          dense
+          icon="help_outline"
+          :aria-label="$t('walletPanel.aboutAvu')"
+          data-testid="wallet-about-avu"
+          @click="showAvuDialog = true"
+        >
+          <q-tooltip>{{ $t('walletPanel.aboutAvu') }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
+          round
+          dense
+          icon="edit"
+          :aria-label="$t('walletPanel.renameWallet')"
+          data-testid="wallet-rename-action"
+          @click="openRenameDialog"
+        >
+          <q-tooltip>{{ $t('walletPanel.renameWallet') }}</q-tooltip>
+        </q-btn>
       </q-toolbar>
     </q-header>
 
@@ -83,6 +89,12 @@
                   icon="account_balance_wallet"
                   :label="$t('walletPanel.tabBalance')"
                   data-testid="wallet-tab-balance"
+                />
+                <q-tab
+                  name="history"
+                  icon="history"
+                  :label="$t('walletPanel.tabHistory')"
+                  data-testid="wallet-tab-history"
                 />
                 <q-tab
                   name="swap"
@@ -274,95 +286,6 @@
                     <held-contact-payments v-if="selectedWallet === 'monad'" />
                   </q-card-section>
 
-                  <q-card-section data-testid="wallet-native-operations">
-                    <div class="text-subtitle2 text-weight-bold">
-                      {{ $t('nativeOperation.listTitle') }}
-                    </div>
-                    <p
-                      v-if="nativeOperations.status !== 'available'"
-                      role="status"
-                    >
-                      {{ $t(`nativeOperation.${nativeOperations.status}`) }}
-                    </p>
-                    <template v-else>
-                      <p v-if="!nativeOperations.operations.length">
-                        {{ $t('nativeOperation.empty') }}
-                      </p>
-                      <details
-                        v-for="operation in nativeOperations.operations"
-                        :key="operation.operationId"
-                        data-testid="wallet-native-operation"
-                      >
-                        <summary>
-                          {{
-                            $t(`nativeOperation.${operation.payment}`, {
-                              network: operation.chainIdentifier,
-                            })
-                          }}
-                          —
-                          {{
-                            $t(
-                              operation.kind === 'contract'
-                                ? 'nativeOperation.contractCall'
-                                : 'nativeOperation.viewTransfer',
-                            )
-                          }}
-                        </summary>
-                        <p>{{ operation.operationId }}</p>
-                        <p>
-                          {{ $t('nativeOperation.intendedAmount') }}:
-                          {{ nativeAmount(operation.intendedValueWei) }}
-                          {{ nativeUnit }}
-                        </p>
-                        <p class="text-break">{{ operation.recipient }}</p>
-                        <p>
-                          {{
-                            $t(`nativeOperation.fee${operation.feeCoverage}`, {
-                              amount: nativeAmount(operation.observedFeeWei),
-                              unit: nativeUnit,
-                            })
-                          }}
-                        </p>
-                        <p
-                          v-for="(member, index) in operation.members"
-                          :key="index"
-                          class="text-break"
-                        >
-                          {{ member.transactionHash }}
-                          <span v-if="member.blockNumber !== undefined">{{
-                            $t('nativeOperation.block', {
-                              block: member.blockNumber,
-                            })
-                          }}</span>
-                        </p>
-                        <p
-                          class="text-caption text-grey-7"
-                          data-testid="wallet-native-operation-sync"
-                        >
-                          {{
-                            $t(
-                              operation.sharing === 'shared'
-                                ? 'nativeOperation.syncShared'
-                                : operation.sharing === 'failed'
-                                ? 'nativeOperation.syncFailed'
-                                : 'nativeOperation.syncNotShared',
-                            )
-                          }}
-                        </p>
-                        <p
-                          v-if="
-                            operation.payment !== 'included' &&
-                            operation.payment !== 'pending' &&
-                            operation.payment !== 'missing'
-                          "
-                          data-testid="wallet-native-operation-recovery"
-                        >
-                          {{ $t('nativeOperation.recoveryUnavailable') }}
-                        </p>
-                      </details>
-                    </template>
-                  </q-card-section>
-
                   <!-- Assets & Tokens Card -->
                   <div class="q-px-md q-pt-md">
                     <q-card
@@ -425,14 +348,15 @@
                                 · {{ token.name }}
                               </span>
                             </q-item-label>
-                            <q-item-label caption class="ellipsis text-grey-6">
+                            <q-item-label caption class="text-grey-6">
                               <span
                                 v-if="!token.isNative && token.mintOrAddress"
                               >
                                 {{ $t('walletPanel.tokenMint') }}:
-                                {{ token.mintOrAddress.slice(0, 8) }}...{{
-                                  token.mintOrAddress.slice(-6)
-                                }}
+                                <address-text
+                                  :address="token.mintOrAddress"
+                                  copyable
+                                />
                               </span>
                               <span v-else>
                                 {{ $t('walletPanel.nativeCoin') }}
@@ -475,11 +399,9 @@
                                 · {{ token.name }}
                               </span>
                             </q-item-label>
-                            <q-item-label caption class="ellipsis text-grey-6">
+                            <q-item-label caption class="text-grey-6">
                               {{ $t('walletPanel.tokenContract') }}:
-                              {{ token.address.slice(0, 8) }}...{{
-                                token.address.slice(-6)
-                              }}
+                              <address-text :address="token.address" copyable />
                             </q-item-label>
                           </q-item-section>
                           <q-item-section side>
@@ -502,75 +424,210 @@
                       </p>
                     </q-card>
                   </div>
+                </q-tab-panel>
 
-                  <!-- Recent Activity / Transactions Card -->
-                  <div class="q-px-md q-pt-md q-pb-lg">
-                    <q-card
-                      flat
-                      bordered
-                      class="q-pa-md bg-transparent"
-                      data-testid="wallet-activity-card"
+                <q-tab-panel
+                  name="history"
+                  class="q-pa-none"
+                  data-testid="wallet-history-panel"
+                >
+                  <q-card-section data-testid="wallet-native-operations">
+                    <p
+                      v-if="nativeOperations.status !== 'available'"
+                      role="status"
+                      class="text-caption text-grey-7"
                     >
-                      <div class="row items-center justify-between q-mb-sm">
-                        <div class="row items-center q-gutter-x-xs">
-                          <q-icon name="history" size="18px" color="primary" />
-                          <span class="text-subtitle2 text-weight-bold">
-                            {{ $t('walletPanel.recentActivity') }}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div
-                        v-if="recentSwaps.length === 0"
-                        class="text-center text-caption text-grey-6 q-py-md"
-                        data-testid="wallet-activity-empty"
-                      >
-                        <q-icon
-                          name="receipt_long"
-                          size="32px"
-                          color="grey-5"
-                          class="q-mb-xs block q-mx-auto"
-                        />
-                        {{ $t('walletPanel.noRecentActivity') }}
-                      </div>
-
-                      <q-list
-                        v-else
-                        separator
-                        class="rounded-borders"
-                        data-testid="wallet-activity-list"
-                      >
+                      {{ $t(`nativeOperation.${nativeOperations.status}`) }}
+                    </p>
+                    <p
+                      v-if="!historyGroups.length"
+                      data-testid="wallet-activity-empty"
+                    >
+                      {{ $t('walletPanel.historyEmpty') }}
+                    </p>
+                    <q-list v-else separator data-testid="wallet-activity-list">
+                      <template v-for="group in historyGroups" :key="group.id">
+                        <q-item-label header>{{
+                          $t(group.label)
+                        }}</q-item-label>
                         <q-item
-                          v-for="swap in recentSwaps"
-                          :key="swap.id"
-                          class="q-px-none q-py-sm"
+                          v-for="entry in group.rows"
+                          :key="entry.id"
+                          class="q-px-none q-py-md"
                           data-testid="wallet-activity-item"
+                          :data-activity-id="entry.id"
                         >
                           <q-item-section avatar top>
-                            <q-avatar
-                              size="32px"
+                            <q-icon
+                              :name="
+                                entry.kind === 'swap'
+                                  ? 'swap_horiz'
+                                  : 'north_east'
+                              "
                               color="primary"
-                              text-color="white"
-                              icon="swap_horiz"
+                              size="24px"
                             />
                           </q-item-section>
                           <q-item-section>
-                            <q-item-label class="text-weight-bold">
-                              {{ swap.fromAmount }} {{ swap.fromAsset }} →
-                              {{ swap.status === 'pending' ? '≥' : ''
-                              }}{{ swap.toAmount }} {{ swap.toAsset }}
-                            </q-item-label>
-                            <q-item-label caption class="text-grey-7">
-                              {{ swap.route }} ·
-                              {{ formatSwapTime(swap.timestamp) }}
-                            </q-item-label>
+                            <template v-if="entry.kind === 'swap'">
+                              <q-item-label class="text-weight-bold">
+                                {{ entry.swap.fromAmount }}
+                                {{ entry.swap.fromAsset }} →
+                                {{ entry.swap.status === 'pending' ? '≥' : ''
+                                }}{{ entry.swap.toAmount }}
+                                {{ entry.swap.toAsset }}
+                              </q-item-label>
+                              <q-item-label caption>
+                                {{ entry.swap.route }} ·
+                                {{ formatSwapTime(entry.swap.timestamp) }}
+                              </q-item-label>
+                            </template>
+                            <template v-else>
+                              <q-item-label class="text-weight-bold">
+                                {{
+                                  nativeAmount(entry.operation.intendedValueWei)
+                                }}
+                                {{ nativeUnit }}
+                              </q-item-label>
+                              <q-item-label caption>{{
+                                $t('nativeOperation.intendedAmount')
+                              }}</q-item-label>
+                              <address-text
+                                :address="entry.operation.recipient"
+                                copyable
+                              />
+                              <q-item-label caption>
+                                {{
+                                  $t(
+                                    `nativeOperation.${entry.operation.payment}`,
+                                    {
+                                      network: networkName(
+                                        entry.operation.chainIdentifier,
+                                      ),
+                                    },
+                                  )
+                                }}
+                              </q-item-label>
+                            </template>
+                            <details
+                              v-if="entry.operation"
+                              data-testid="wallet-native-operation"
+                              class="q-mt-xs"
+                            >
+                              <summary class="wallet-history-action">
+                                {{ $t('nativeOperation.viewTransfer') }}
+                              </summary>
+                              <p v-if="entry.operation.kind === 'contract'">
+                                {{ $t('nativeOperation.contractCall') }}
+                              </p>
+                              <p>
+                                {{
+                                  $t(
+                                    `nativeOperation.${entry.operation.payment}`,
+                                    {
+                                      network: networkName(
+                                        entry.operation.chainIdentifier,
+                                      ),
+                                    },
+                                  )
+                                }}
+                              </p>
+                              <p>{{ entry.operation.operationId }}</p>
+                              <p>
+                                {{ $t('nativeOperation.intendedAmount') }}:
+                                {{
+                                  nativeAmount(entry.operation.intendedValueWei)
+                                }}
+                                {{ nativeUnit }}
+                              </p>
+                              <address-text
+                                :address="entry.operation.recipient"
+                                copyable
+                              />
+                              <p>
+                                {{
+                                  $t(
+                                    `nativeOperation.fee${entry.operation.feeCoverage}`,
+                                    {
+                                      amount: nativeAmount(
+                                        entry.operation.observedFeeWei,
+                                      ),
+                                      unit: nativeUnit,
+                                    },
+                                  )
+                                }}
+                              </p>
+                              <div
+                                v-for="(member, index) in entry.operation
+                                  .members"
+                                :key="index"
+                                class="q-my-sm"
+                              >
+                                <address-text
+                                  v-if="member.transactionHash"
+                                  :address="member.transactionHash"
+                                  copyable
+                                />
+                                <a
+                                  v-if="
+                                    member.transactionHash &&
+                                    transactionExplorerLink(
+                                      member.transactionHash,
+                                      entry.operation.chainIdentifier,
+                                    )
+                                  "
+                                  :href="
+                                    transactionExplorerLink(
+                                      member.transactionHash,
+                                      entry.operation.chainIdentifier,
+                                    )
+                                  "
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  class="wallet-history-action"
+                                >
+                                  {{ $t('walletPanel.viewInExplorer') }}
+                                </a>
+                                <p v-if="member.blockNumber !== undefined">
+                                  {{
+                                    $t('nativeOperation.block', {
+                                      block: member.blockNumber,
+                                    })
+                                  }}
+                                </p>
+                              </div>
+                              <p
+                                class="text-caption text-grey-7"
+                                data-testid="wallet-native-operation-sync"
+                              >
+                                {{
+                                  $t(
+                                    entry.operation.sharing === 'shared'
+                                      ? 'nativeOperation.syncShared'
+                                      : entry.operation.sharing === 'failed'
+                                      ? 'nativeOperation.syncFailed'
+                                      : 'nativeOperation.syncNotShared',
+                                  )
+                                }}
+                              </p>
+                              <p
+                                v-if="
+                                  entry.operation.payment !== 'included' &&
+                                  entry.operation.payment !== 'pending' &&
+                                  entry.operation.payment !== 'missing'
+                                "
+                                data-testid="wallet-native-operation-recovery"
+                              >
+                                {{ $t('nativeOperation.recoveryUnavailable') }}
+                              </p>
+                            </details>
                           </q-item-section>
-                          <q-item-section side>
+                          <q-item-section v-if="entry.kind === 'swap'" side top>
                             <q-badge
                               :color="
-                                swap.status === 'confirmed'
+                                entry.swap.status === 'confirmed'
                                   ? 'positive'
-                                  : swap.status === 'pending'
+                                  : entry.swap.status === 'pending'
                                   ? 'warning'
                                   : 'negative'
                               "
@@ -578,23 +635,22 @@
                               class="text-bold"
                               data-testid="wallet-activity-status"
                             >
-                              {{ $t(`swap.status.${swap.status}`) }}
+                              {{ $t(`swap.status.${entry.swap.status}`) }}
                             </q-badge>
                             <a
-                              v-if="getExplorerLink(swap)"
-                              :href="getExplorerLink(swap)"
+                              v-if="getExplorerLink(entry.swap)"
+                              :href="getExplorerLink(entry.swap)"
                               target="_blank"
                               rel="noopener noreferrer"
-                              class="text-caption text-primary q-mt-xs text-right cursor-pointer"
-                              style="text-decoration: underline"
+                              class="wallet-history-action q-mt-xs"
                             >
                               {{ $t('walletPanel.viewInExplorer') }}
                             </a>
                           </q-item-section>
                         </q-item>
-                      </q-list>
-                    </q-card>
-                  </div>
+                      </template>
+                    </q-list>
+                  </q-card-section>
                 </q-tab-panel>
 
                 <q-tab-panel name="swap" class="q-pa-none">
@@ -613,6 +669,16 @@
         </q-scroll-area>
       </q-page>
 
+      <rename-wallet-dialog
+        v-model="showRenameDialog"
+        :chain="renameChain"
+        :current-name="getCustomName(renameChain)"
+        :default-name="
+          $t(renameWalletConfig?.defaultNameKey || 'walletPanel.mainWallet')
+        "
+        @save="saveWalletName"
+        @reset="resetCustomName(renameChain)"
+      />
       <avu-explainer-dialog v-model="showAvuDialog" />
     </q-page-container>
   </div>
@@ -631,6 +697,8 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
+import AddressText from 'src/components/AddressText.vue'
+import RenameWalletDialog from 'src/components/wallet/RenameWalletDialog.vue'
 import AvuExplainerDialog from 'src/components/wallet/AvuExplainerDialog.vue'
 import AvuParityChart from 'src/components/wallet/AvuParityChart.vue'
 import BalanceBreakdown from 'src/components/wallet/BalanceBreakdown.vue'
@@ -649,15 +717,31 @@ import {
   inspectNativeTransferOperations,
   type NativeOperationInspection,
 } from 'src/accounts/native-transfer'
-import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
+import {
+  activeChain,
+  onActiveChainChange,
+  resolveNetworkId,
+  findEvmNativeOperationStatus,
+  getChainRegistryEntry,
+  type EvmNativeOperationStatus,
+} from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapActivity, type SwapActivityRow } from 'src/swap/useSwapActivity'
 import { useEvmTokenBalances } from 'src/composables/useEvmTokenBalances'
 import { getExplorerUrl } from 'src/utils/explorer'
-import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
+import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import { walletSupport } from 'src/utils/wallet-support'
 import { openUtxoWallet } from 'src/accounts/utxo-wallets'
+
+type WalletHistoryRow =
+  | {
+      kind: 'swap'
+      id: string
+      swap: SwapActivityRow
+      operation?: EvmNativeOperationStatus
+    }
+  | { kind: 'native'; id: string; operation: EvmNativeOperationStatus }
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -665,6 +749,8 @@ import { openUtxoWallet } from 'src/accounts/utxo-wallets'
 export default defineComponent({
   components: {
     QrcodeVue,
+    AddressText,
+    RenameWalletDialog,
     AvuExplainerDialog,
     AvuParityChart,
     DAppSwapView,
@@ -685,10 +771,22 @@ export default defineComponent({
       }),
     )
     const isTestnet = computed(() => network.value.isTestnet ?? false)
-    const { getCustomName } = useWalletNames()
+    const { getCustomName, setCustomName, resetCustomName } = useWalletNames()
+    const showRenameDialog = ref(false)
+    const renameChain = ref('monad')
+    const renameWalletConfig = computed(() =>
+      WALLET_CONFIGS.find(wallet => wallet.id === renameChain.value),
+    )
+    function openRenameDialog() {
+      renameChain.value = selectedWallet.value
+      showRenameDialog.value = true
+    }
+    function saveWalletName(name: string) {
+      setCustomName(renameChain.value, name)
+    }
     const oracle = useSafeOracleStore()
     const showAvuDialog = ref(false)
-    const activeTab = ref<'balance' | 'swap' | 'parity'>('balance')
+    const activeTab = ref<'balance' | 'history' | 'swap' | 'parity'>('balance')
 
     const selectedWallet = computed<string>(() => {
       const parts = (route?.path || '').toLowerCase().split('/').filter(Boolean)
@@ -823,17 +921,73 @@ export default defineComponent({
       }
     }
 
-    const getExplorerLink = (swap: SwapActivityRow) => {
-      if (!swap.txHash) return undefined
-      // A swap that names its network links to that network's explorer.
-      return getExplorerUrl(swap.txHash, swap.chainIdentifier, {
-        isTestnet: isTestnet.value,
-      })
-    }
+    const transactionExplorerLink = (hash: string, chainIdentifier: string) =>
+      getExplorerUrl(hash, chainIdentifier, { isTestnet: isTestnet.value })
+    const getExplorerLink = (swap: SwapActivityRow) =>
+      swap.txHash
+        ? transactionExplorerLink(swap.txHash, swap.chainIdentifier)
+        : undefined
 
     const nativeOperations = shallowRef<NativeOperationInspection>({
       status: 'unsupported',
     })
+    // A derived view only: journal operations and swap history retain their existing owners.
+    // A matching final transaction is one activity, with both the swap and transfer details.
+    const historyGroups = computed(() => {
+      const operations =
+        nativeOperations.value.status === 'available'
+          ? nativeOperations.value.operations
+          : []
+      const attached = new Set<string>()
+      const rows: WalletHistoryRow[] = recentSwaps.value
+        .filter(swap => swap.chainIdentifier === sendChainIdentifier.value)
+        .sort((a, b) => b.timestamp - a.timestamp || a.id.localeCompare(b.id))
+        .map(swap => {
+          const operation = findEvmNativeOperationStatus(
+            operations,
+            swap.chainIdentifier,
+            swap.txHash,
+          )
+          if (operation) attached.add(operation.operationId)
+          return { kind: 'swap', id: `swap:${swap.id}`, swap, operation }
+        })
+      for (const operation of operations) {
+        if (!attached.has(operation.operationId))
+          rows.push({
+            kind: 'native',
+            id: `native:${operation.operationId}`,
+            operation,
+          })
+      }
+      const pending = (row: WalletHistoryRow) =>
+        row.kind === 'swap'
+          ? row.swap.status === 'pending'
+          : !['included', 'reverted', 'cancelled'].includes(
+              row.operation.payment,
+            )
+      return [
+        {
+          id: 'pending',
+          label: 'walletPanel.historyPending',
+          rows: rows.filter(pending),
+        },
+        {
+          id: 'dated',
+          label: 'walletPanel.tabHistory',
+          rows: rows.filter(row => !pending(row) && row.kind === 'swap'),
+        },
+        // The public native inspection currently has no event/block timestamp. Keep these
+        // explicitly undated, rather than assigning an invented date or older ordering.
+        {
+          id: 'undated',
+          label: 'walletPanel.historyUndated',
+          rows: rows.filter(row => !pending(row) && row.kind === 'native'),
+        },
+      ].filter(group => group.rows.length > 0)
+    })
+    const networkName = (chainIdentifier: string) =>
+      getChainRegistryEntry(chainIdentifier)?.name ?? ''
+
     const nativePresentation = shallowRef({
       unit: '',
       toDisplayAmount: (value: bigint) => value.toString(),
@@ -923,6 +1077,8 @@ export default defineComponent({
     return {
       myDrawerOpen,
       nativeOperations,
+      historyGroups,
+      networkName,
       nativeUnit: computed(() => nativePresentation.value.unit),
       nativeAmount: (value: string) =>
         nativePresentation.value.toDisplayAmount(BigInt(value)),
@@ -931,7 +1087,12 @@ export default defineComponent({
       sendChainIdentifier,
       walletStatus,
       sendLabel,
-      getWalletNetworkLabel,
+      walletUnit: computed(
+        () =>
+          getChainRegistryEntry(
+            resolveNetworkId(selectedWallet.value, isTestnet.value),
+          )?.unit ?? '',
+      ),
       selectedChain: selectedWallet,
       currentWalletConfig,
       isTestnet,
@@ -947,6 +1108,12 @@ export default defineComponent({
       currentWalletAvu,
       currentUnitRateAvu,
       getCustomName,
+      resetCustomName,
+      showRenameDialog,
+      renameChain,
+      renameWalletConfig,
+      openRenameDialog,
+      saveWalletName,
       showAvuDialog,
       async copyAddress() {
         if (!displayAddress.value) return
@@ -975,12 +1142,23 @@ export default defineComponent({
       recentSwaps,
       formatSwapTime,
       getExplorerLink,
+      transactionExplorerLink,
     }
   },
 })
 </script>
 
 <style scoped>
+.wallet-header-unit {
+  flex-shrink: 0;
+}
+.wallet-history-action {
+  color: var(--q-primary);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .wallet-scroll-content {
   width: 100%;
   min-height: 100%;

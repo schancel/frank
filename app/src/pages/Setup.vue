@@ -1052,8 +1052,7 @@ async function run(work: (isCurrent: () => boolean) => Promise<void>) {
     !invalidated &&
     account.revision === expectedRevision &&
     legacy.revision === expectedLegacyRevision &&
-    (account.account?.receipt.context.accountId ?? null) ===
-      expectedAccountId &&
+    account.account === expectedAccount &&
     activeChain.chainIdentifier === chainIdentifier
   busy.value = true
   error.value = ''

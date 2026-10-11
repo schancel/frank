@@ -236,18 +236,21 @@ export async function collectReceivedEvidence(input: {
     return new Promise<T>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let settled = false;
-      const finish = (error: unknown, value?: T) => {
+      const finish = (
+        outcome: { ok: true; value: T } | { ok: false; error: unknown }
+      ) => {
         if (settled) return;
         settled = true;
         if (timer !== undefined) clearTimeout(timer);
         signal.removeEventListener("abort", abort);
-        if (error !== undefined) reject(error);
-        else resolve(value!);
+        if (outcome.ok) resolve(outcome.value);
+        else reject(outcome.error);
       };
-      const abort = () => finish(new CollectionStop("cancelled"));
+      const abort = () =>
+        finish({ ok: false, error: new CollectionStop("cancelled") });
       const deadline = () => {
         if (Date.now() >= budget.deadlineMs)
-          finish(new CollectionStop("deadline-exceeded"));
+          finish({ ok: false, error: new CollectionStop("deadline-exceeded") });
         else
           timer = setTimeout(
             deadline,
@@ -269,12 +272,12 @@ export async function collectReceivedEvidence(input: {
           (value) => {
             try {
               guard();
-              finish(undefined, value);
+              finish({ ok: true, value });
             } catch (error) {
-              finish(error);
+              finish({ ok: false, error });
             }
           },
-          (error: unknown) => finish(error)
+          (error: unknown) => finish({ ok: false, error })
         );
     });
   };
@@ -517,7 +520,10 @@ export async function collectReceivedEvidence(input: {
   ): ReceivedEvidenceCollection => ({
     kind: "unavailable",
     issue: { reason },
-    retryCandidates: [...candidates.values()],
+    retryCandidates: [...candidates.keys()].flatMap((hash) => {
+      const tx = transactions.get(hash);
+      return tx?.chainId === owner.nativeChainId ? [tx.serialized] : [];
+    }),
     callsUsed,
   });
   try {

@@ -87,7 +87,12 @@ export function exportRecoveryShares(input: {
       throw new AccountRecoveryError('invalid-threshold')
     let identifier = input.identifier
     if (identifier === undefined) {
-      const random = snapshotBytes(randomBytes(4), 4, 'rng-failed')
+      let random: Uint8Array
+      try {
+        random = snapshotBytes(randomBytes(4), 4, 'rng-failed')
+      } catch {
+        throw new AccountRecoveryError('rng-failed')
+      }
       try {
         identifier = Array.from(random, byte => GF32_ALPHABET[byte & 31]).join(
           '',
@@ -97,6 +102,7 @@ export function exportRecoveryShares(input: {
       }
     }
     if (
+      typeof identifier !== 'string' ||
       identifier.length !== 4 ||
       Array.from(identifier).some(char => !GF32_ALPHABET.includes(char))
     )
@@ -109,10 +115,11 @@ export function exportRecoveryShares(input: {
       threshold,
       ...Array.from(identifier, char => GF32_ALPHABET.indexOf(char)),
     ])
+    const requestedIndices = input.indices
     const indices =
-      input.indices === undefined
+      requestedIndices === undefined
         ? INDICES.slice(0, shareCount)
-        : [...input.indices]
+        : [...requestedIndices]
     if (indices.length !== shareCount)
       throw new AccountRecoveryError('wrong-share-count')
     digest = validation(secret, common, format)

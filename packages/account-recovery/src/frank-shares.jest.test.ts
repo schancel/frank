@@ -175,3 +175,22 @@ test('metadata alteration fails BCH; incomplete sets report required and availab
     secret.fill(0)
   }
 })
+
+test('RNG failure is observable without exposing caller exception contents', () => {
+  const secret = new Uint8Array(32)
+  try {
+    expect(() =>
+      exportRecoveryShares({
+        format: 'root',
+        secret,
+        threshold: 2,
+        shareCount: 3,
+        randomBytes: () => {
+          throw new Error('caller private detail')
+        },
+      }),
+    ).toThrow('rng-failed')
+  } finally {
+    secret.fill(0)
+  }
+})

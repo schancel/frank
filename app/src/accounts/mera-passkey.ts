@@ -1,3 +1,4 @@
+/// <reference lib="esnext.disposable" />
 import type { WebAuthnClient } from '@category-labs/mera'
 
 export type MeraAccountAction = 'create' | 'login'

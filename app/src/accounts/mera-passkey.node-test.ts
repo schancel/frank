@@ -1,6 +1,6 @@
 // Real pinned Mera with a synthetic authenticator; no browser/profile credentials.
 // Run: node --import tsx --test app/src/accounts/mera-passkey.node-test.ts
-import { test, beforeEach } from 'node:test'
+import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash, webcrypto } from 'node:crypto'
 import type { WebAuthnClient } from '@category-labs/mera'
@@ -10,18 +10,23 @@ import {
   MeraAccountError,
 } from './mera-passkey'
 
-beforeEach(() => {
+function prepareBrowser() {
   Object.defineProperties(globalThis, {
     crypto: { configurable: true, value: webcrypto },
     isSecureContext: { configurable: true, value: true },
     PublicKeyCredential: { configurable: true, value: class {} },
     navigator: {
       configurable: true,
-      value: { credentials: { create() {}, get() {} } },
+      value: {
+        credentials: {
+          create: () => Promise.resolve(null),
+          get: () => Promise.resolve(null),
+        },
+      },
     },
     location: { configurable: true, value: { hostname: 'frank.test' } },
   })
-})
+}
 
 function authenticator() {
   const requests: {
@@ -57,6 +62,7 @@ function authenticator() {
 }
 
 test('real Mera creates once and discovers the same root on repeated fresh-local-state login', async () => {
+  prepareBrowser()
   const { client, requests } = authenticator()
   const created = await getMeraAccountRoot('create', client)
   for (let device = 0; device < 2; device++) {
@@ -65,7 +71,8 @@ test('real Mera creates once and discovers the same root on repeated fresh-local
   }
   assert.equal(requests.creates.length, 1)
   assert.equal(requests.gets.length, 2)
-  const creation = requests.creates[0]!
+  const creation = requests.creates[0]
+  assert.ok(creation)
   assert.equal(creation.rp.id, 'frank.test')
   assert.equal(creation.residentKey, 'required')
   assert.equal(creation.userVerification, 'required')
@@ -73,6 +80,14 @@ test('real Mera creates once and discovers the same root on repeated fresh-local
     .update(MERA_ACCOUNT_PRF_DOMAIN)
     .digest()
   assert.deepEqual(Buffer.from(creation.prfSalt), expectedSalt)
+  assert.deepEqual(
+    Buffer.from(created),
+    createHash('sha256')
+      .update('synthetic-credential-only')
+      .update('frank.test')
+      .update(expectedSalt)
+      .digest(),
+  )
   for (const request of requests.gets) {
     assert.equal(request.rpId, creation.rp.id)
     assert.equal(request.userVerification, 'required')
@@ -84,6 +99,7 @@ test('real Mera creates once and discovers the same root on repeated fresh-local
 })
 
 test('real Mera creation fallback assertion uses the same salt and selected credential', async () => {
+  prepareBrowser()
   const { client, requests } = authenticator()
   const fallbackClient: WebAuthnClient = {
     ...client,
@@ -94,15 +110,20 @@ test('real Mera creation fallback assertion uses the same salt and selected cred
   }
   const root = await getMeraAccountRoot('create', fallbackClient)
   assert.equal(root.length, 32)
+  const assertion = requests.gets[0]
+  const creation = requests.creates[0]
+  assert.ok(assertion)
+  assert.ok(creation)
   assert.deepEqual(
-    requests.gets[0]!.allowCredential?.credentialId,
+    assertion.allowCredential?.credentialId,
     Uint8Array.of(1, 2, 3),
   )
-  assert.deepEqual(requests.gets[0]!.prfSalt, requests.creates[0]!.prfSalt)
+  assert.deepEqual(assertion.prfSalt, creation.prfSalt)
   root.fill(0)
 })
 
 test('unsupported environment never asks for a credential', async () => {
+  prepareBrowser()
   const { client, requests } = authenticator()
   Object.defineProperty(globalThis, 'isSecureContext', { value: false })
   await assert.rejects(getMeraAccountRoot('login', client), {
@@ -112,6 +133,7 @@ test('unsupported environment never asks for a credential', async () => {
 })
 
 test('real Mera missing or invalid PRF fails without substituting random bytes', async () => {
+  prepareBrowser()
   for (const prfOutput of [undefined, new Uint8Array(31)]) {
     const { client } = authenticator()
     const failing: WebAuthnClient = {
@@ -126,6 +148,7 @@ test('real Mera missing or invalid PRF fails without substituting random bytes',
 })
 
 test('real Mera cancellation becomes a bounded public error', async () => {
+  prepareBrowser()
   const { client } = authenticator()
   const cancelled: WebAuthnClient = {
     ...client,

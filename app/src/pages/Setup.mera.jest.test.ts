@@ -10,7 +10,6 @@ import { MeraAccountError } from '../accounts/mera-passkey'
 import fr from '../i18n/fr-fr'
 import Setup from './Setup.vue'
 import { inspectLegacyWallet } from '../accounts/legacy'
-import { usePersistentStorageStore } from '../stores/persistent-storage'
 import en from '../i18n/en-us'
 
 const mockPasskey = jest.fn()
@@ -25,10 +24,18 @@ jest.mock('../accounts/ceremony', () => ({
 const mockPush = jest.fn(async () => undefined)
 jest.mock('vue-router', () => ({ useRouter: () => ({ push: mockPush }) }))
 const mockAccount = reactive(toRaw(accountStatus))
-const t = (locale: 'en' | 'fr') => (key: string) =>
-  key
+const t = (locale: 'en' | 'fr') => (key: string) => {
+  const value = key
     .split('.')
-    .reduce((value: any, part) => value[part], locale === 'fr' ? fr : en)
+    .reduce<unknown>(
+      (current, part) =>
+        current && typeof current === 'object'
+          ? (current as Record<string, unknown>)[part]
+          : undefined,
+      locale === 'fr' ? fr : en,
+    )
+  return typeof value === 'string' ? value : key
+}
 const pending = {
   status: 'staging',
   account: {

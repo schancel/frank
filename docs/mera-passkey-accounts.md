@@ -72,3 +72,12 @@ The dependency install must generate `yarn.lock`; do not hand-author lock entrie
 Run the root backup roundtrip suite again on the combined Recovery Shares candidate.
 Synthetic credential tests establish the application's derivation and lifecycle
 contract; they do not certify any physical authenticator/provider combination.
+
+Mera's exported signing-session declarations mention `Symbol.dispose`; the adapter
+references TypeScript's `esnext.disposable` ambient library without using disposal
+at runtime. The existing app uses legacy Node module resolution, so its paths
+map points to Mera's exported declaration entry. A standalone legacy-resolution
+probe without that mapping reports TS2307; the adapter and synthetic node test
+compile with the app mapping. No app-wide resolver or runtime target changes are
+required. The repository fast typecheck covers the configured library projects
+and custody; it does not typecheck Vue templates.

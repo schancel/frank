@@ -53,12 +53,11 @@ it('reads the existing owner snapshot without recovery effects and rejects a wal
 it('clears a paid cache immediately on a chain-only switch and rejects an old A read after A to B to A', async () => {
   let releaseOld!: (wallet: unknown) => void
   const paid = { state: 'paid' }
-  jest
-    .mocked(useActiveWallet)
-    .mockResolvedValue({
-      chainIdentifier: 'monad-testnet',
-      getContactPayments: () => [paid],
-    } as never)
+  const currentWallet = {
+    chainIdentifier: 'monad-testnet',
+    getContactPayments: () => [paid],
+  }
+  jest.mocked(useActiveWallet).mockResolvedValue(currentWallet as never)
   const wrapper = mount(
     defineComponent({
       setup: () => useSentContactPayments(() => true),

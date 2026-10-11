@@ -15,7 +15,8 @@ import {
   type SeriesPoint,
 } from '@frank/wallet/oracle'
 
-const NOW = Math.floor(Date.now() / 1000)
+// Noon UTC keeps the daily electricity point outside the two recent hourly inputs.
+const NOW = Date.UTC(2026, 9, 10, 12) / 1000
 const DAY = 86_400
 
 const t = (key: string) =>
@@ -145,10 +146,15 @@ function twoEntryFeed(): OracleFeed {
 }
 
 beforeEach(() => {
+  jest.spyOn(Date, 'now').mockReturnValue(NOW * 1000)
   setActivePinia(createPinia())
   const oracle = useOracleStore()
   // No test here asks anyone for anything.
   oracle.useFeedSource(async () => undefined)
+})
+
+afterEach(() => {
+  jest.restoreAllMocks()
 })
 
 describe('with nothing received from the oracle', () => {
@@ -192,6 +198,7 @@ describe('the figures', () => {
     expect(spot).toContain('over the 30 days to')
     expect(spot).toContain('regions weighted equally: Test region day-ahead.')
     expect(spot).not.toContain('Not in this figure')
+    expect(spot).not.toContain('Not refreshed')
     expect(value('avu-unit')).toBe('1 AVU = 1 kWh')
   })
 
@@ -260,8 +267,8 @@ describe('the figures', () => {
     feed.series['electricity/aggregate'].stale = true
     receive(feed)
     const wrapper = mountChart()
-    expect(wrapper.find('[data-test="metric-card-avu-spot"]').text()).toMatch(
-      /Not refreshed: latest price is \d+ (h|d) old\./,
+    expect(wrapper.find('[data-test="metric-card-avu-spot"]').text()).toContain(
+      'Not refreshed: latest price is 12 h old.',
     )
   })
 

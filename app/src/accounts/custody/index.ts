@@ -1,5 +1,6 @@
 import {
   openPreviewVault,
+  BIP39_RECOVERY_FORMAT,
   VaultError,
   type PreviewVault,
 } from '@frank/account-vault'
@@ -10,6 +11,7 @@ import {
 import type { DomainRoot } from '@frank/domain-roots'
 import {
   capture,
+  captureBip39,
   expected,
   id,
   matches,
@@ -27,6 +29,7 @@ import {
   type PendingChange,
   type PublicAccount,
 } from './types'
+import { bip39Descriptor } from './bip39'
 
 export { CustodyError } from './types'
 export type {
@@ -38,6 +41,7 @@ export type {
   PendingChange,
   PublicAccount,
   StageAccount,
+  StageBip39Account,
 } from './types'
 
 function normalized(error: unknown): CustodyError {
@@ -142,15 +146,31 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       stored?.fill(0)
     }
   }
-  const authenticated = async (pending: PendingChange): Promise<void> => {
-    const roots = await vault.open(pending.account.receipt)
+  const historical = (account: PublicAccount) =>
+    account.receipt.context.recoveryFormat === BIP39_RECOVERY_FORMAT
+  const openBip39Seed = async (account: PublicAccount): Promise<Uint8Array> => {
+    const seed = await vault.openBip39Seed(account.receipt)
     try {
-      check()
-    } finally {
-      wipe(roots)
+      if (!seed || bip39Descriptor(seed).descriptor !== account.descriptor)
+        throw new CustodyError('conflict')
+      return seed
+    } catch (error) {
+      seed?.fill(0)
+      throw error
     }
-    // Staged material that cannot reproduce its account is never ready to activate.
-    await requireAccountRoot(pending.account)
+  }
+  const authenticateAccount = async (account: PublicAccount) => {
+    if (historical(account)) {
+      const seed = await openBip39Seed(account)
+      seed.fill(0)
+    } else {
+      wipe(await vault.open(account.receipt))
+      await requireAccountRoot(account)
+    }
+    check()
+  }
+  const authenticated = async (pending: PendingChange): Promise<void> => {
+    await authenticateAccount(pending.account)
   }
   const discard = async (pending: PendingChange): Promise<CustodySnapshot> => {
     await vault.discardIntent(writeIntent(pending.account))
@@ -171,10 +191,17 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
     async stage(input) {
       // capture is synchronous even if the caller mutates inputs as soon as stage returns.
       check()
-      const captured = capture(input)
+      const captured = (() => {
+        try {
+          return 'bip39Seed' in input ? captureBip39(input) : capture(input)
+        } catch {
+          throw new CustodyError('invalid-input')
+        }
+      })()
+      const secret = 'seed' in captured ? captured.seed : captured.accountRoot
       try {
         return await run(async () => {
-          const { account, expectedActive, accountRoot } = captured
+          const { account, expectedActive } = captured
           const state = await update(current => {
             if (!matches(current, expectedActive))
               throw new CustodyError('conflict')
@@ -203,7 +230,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           const status = await vault.reconcile(account.receipt)
           if (status === 'absent') {
             try {
-              await vault.stage(writeIntent(account), accountRoot)
+              await vault.stage(writeIntent(account), secret)
             } catch (error) {
               // Concurrent same-intent writes and lost acknowledgements resolve by exact receipt.
               if ((await vault.reconcile(account.receipt)) !== 'committed')
@@ -211,16 +238,13 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
             }
           } else if (status !== 'committed') throw new CustodyError('locked')
           // The record must open, and (below) hold exactly this account's root.
-          wipe(await vault.open(account.receipt))
-          // A record that cannot reproduce this account must surface now, not at the
-          // first open or the first backup.
-          await requireAccountRoot(account)
+          await authenticateAccount(account)
           const latest = await read()
           if (!same(latest.pending, pending)) throw new CustodyError('conflict')
           return latest
         })
       } finally {
-        captured.accountRoot.fill(0)
+        secret.fill(0)
       }
     },
     reconcile: attemptId =>
@@ -228,8 +252,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
         const operation = id(attemptId),
           state = await read()
         if (state.active?.receipt.operationId === operation) {
-          const roots = await vault.open(state.active.receipt)
-          wipe(roots)
+          await authenticateAccount(state.active)
           const latest = await read()
           if (!same(latest.active, state.active))
             throw new CustodyError('conflict')
@@ -310,9 +333,12 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       run(async () => {
         const state = await read()
         if (!state.active) throw new CustodyError('locked')
-        let roots: readonly DomainRoot[] | undefined = await vault.open(
-          state.active.receipt,
-        )
+        let seed = historical(state.active)
+          ? await openBip39Seed(state.active)
+          : undefined
+        let roots: readonly DomainRoot[] | undefined = seed
+          ? undefined
+          : await vault.open(state.active.receipt)
         try {
           const latest = await read()
           if (
@@ -331,8 +357,18 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
               capabilities.delete(capability)
               return owned
             },
+            takeBip39Seed() {
+              check()
+              if (!seed) throw new CustodyError('closed')
+              const owned = seed
+              seed = undefined
+              capabilities.delete(capability)
+              return owned
+            },
             close() {
               if (roots) wipe(roots)
+              seed?.fill(0)
+              seed = undefined
               roots = undefined
               capabilities.delete(capability)
             },
@@ -341,6 +377,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           return capability
         } catch (error) {
           if (roots) wipe(roots)
+          seed?.fill(0)
           throw error
         }
       }),
@@ -357,6 +394,23 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
         return roots
       } catch (error) {
         if (roots) wipe(roots)
+        throw normalized(error)
+      }
+    },
+    async openPendingBip39Seed(attemptId) {
+      let seed: Uint8Array | undefined
+      try {
+        check()
+        const pending = pendingFor(await read(), id(attemptId))
+        if (pending.status !== 'staging' || !historical(pending.account))
+          throw new CustodyError('conflict')
+        seed = await openBip39Seed(pending.account)
+        if (!same((await read()).pending, pending))
+          throw new CustodyError('conflict')
+        check()
+        return seed
+      } catch (error) {
+        seed?.fill(0)
         throw normalized(error)
       }
     },

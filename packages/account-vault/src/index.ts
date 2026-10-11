@@ -1,9 +1,10 @@
 import type { DomainRoot } from '@frank/domain-roots'
-import { aad, createIntent, decode, decodeAccountRoot, intent, plaintext, receipt, same, validate } from './encoding.js'
+import { aad, createIntent, decode, decodeAccountRoot, decodeBip39Seed, intent, plaintext, receipt, same, validate } from './encoding.js'
 import { commit, database, discardIntent, read, remove, transaction, validKey, type RecordRow } from './storage.js'
 import { VaultError, type PreviewVault, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export { VaultError } from './types.js'
+export { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION } from './types.js'
 export type { PreviewVault, VaultContext, VaultErrorCode, VaultReceipt, VaultWriteIntent } from './types.js'
 
 export function createVaultWriteIntent(input: {
@@ -79,7 +80,7 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
     async stage(input, accountRoot: Uint8Array) {
       active()
       const snapshot = validate(() => intent(input))
-      const bytes = validate(() => plaintext(accountRoot))
+      const bytes = validate(() => plaintext(accountRoot, snapshot.receipt.context))
       try {
         const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
         const iv = crypto.getRandomValues(new Uint8Array(12))
@@ -94,6 +95,7 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
     },
     open: input => material(input, decode),
     openAccountRoot: input => material(input, decodeAccountRoot),
+    openBip39Seed: input => material(input, decodeBip39Seed),
     async reconcile(input) {
       const target = validate(() => receipt(input))
       const stored = await current(target)

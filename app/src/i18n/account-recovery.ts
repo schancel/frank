@@ -139,8 +139,8 @@ export const en = {
     'Write down each share. Any {threshold} of these {count} shares restore the original account secret and its derivation.',
   codex32_backup_sets_do_not_mix:
     'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
-  show_recovery_shares: 'Show recovery shares',
-  show_recovery_shares_warning:
+  cancel_scheme: 'Cancel',
+  recovery_shares_privacy:
     'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
   codex32_backup_unavailable_for_account:
     'The original secret needed to issue backup shares is unavailable on this device. Your existing backup remains valid.',
@@ -318,8 +318,8 @@ export const fr = {
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
     'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
-  show_recovery_shares: 'Afficher les parts de récupération',
-  show_recovery_shares_warning:
+  cancel_scheme: 'Annuler',
+  recovery_shares_privacy:
     'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',
   codex32_backup_unavailable_for_account:
     'Le secret d’origine nécessaire pour créer des parts de sauvegarde est indisponible sur cet appareil. Votre sauvegarde existante reste valide.',

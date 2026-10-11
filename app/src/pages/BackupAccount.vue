@@ -38,7 +38,7 @@
                 :label="`${threshold} of ${count}`"
                 :disable="backupLoading"
                 data-test="codex32-scheme-btn"
-                @click="cycleScheme"
+                @click="toggleCustomConfig"
               />
               <q-btn
                 flat
@@ -117,6 +117,13 @@
                     @click="applyCustom"
                   />
                 </div>
+                <q-btn
+                  flat
+                  no-caps
+                  :label="$t('accountRecovery.cancel_scheme')"
+                  data-test="cancel-custom-scheme"
+                  @click="showCustomConfig = false"
+                />
               </div>
             </div>
           </q-card-section>
@@ -147,24 +154,10 @@
             >
               {{ backupError }}
             </div>
-            <div
-              v-else-if="backupShares.length === 0"
-              class="q-pa-sm"
-              data-test="backup-reveal"
-            >
-              <div class="text-body2 q-mb-sm" data-test="backup-reveal-warning">
-                {{ $t('accountRecovery.show_recovery_shares_warning') }}
-              </div>
-              <q-btn
-                unelevated
-                no-caps
-                color="primary"
-                :label="$t('accountRecovery.show_recovery_shares')"
-                data-test="show-recovery-shares"
-                @click="generateShares"
-              />
-            </div>
             <div v-else class="q-gutter-y-sm" data-test="backup-shares-list">
+              <div class="text-caption text-grey-8" data-test="backup-privacy">
+                {{ $t('accountRecovery.recovery_shares_privacy') }}
+              </div>
               <div
                 v-for="(share, index) in backupShares"
                 :key="index"
@@ -226,7 +219,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCodex32Backup } from '../composables/useCodex32Backup'
 import { navigateBack } from '../utils/navigate-back'
@@ -246,7 +239,6 @@ const {
   backupShares,
   threshold,
   count,
-  cycleScheme,
   setScheme,
   generateShares,
   clearShares,
@@ -288,9 +280,14 @@ function toggleCustomConfig() {
 }
 
 function applyCustom() {
-  if (!isCustomValid.value) return
-  setScheme(Number(customThreshold.value), Number(customCount.value))
+  if (!isCustomValid.value || backupLoading.value) return
+  const nextThreshold = Number(customThreshold.value)
+  const nextCount = Number(customCount.value)
   showCustomConfig.value = false
+  if (nextThreshold === threshold.value && nextCount === count.value) return
+  copyStatus.value = ''
+  setScheme(nextThreshold, nextCount)
+  void generateShares()
 }
 
 async function copyShare(share: string, index: number) {
@@ -306,8 +303,11 @@ function cancel() {
   navigateBack(router)
 }
 
-// Nothing is read from custody until the user asks for shares, and whatever was shown
-// (or was still being issued) is dropped when they leave the page.
+// Entering this dedicated backup route is the explicit request to display shares.
+// The existing session checks custody readiness; leaving abandons even an in-flight set.
+onMounted(() => {
+  void generateShares()
+})
 onBeforeUnmount(clearShares)
 </script>
 

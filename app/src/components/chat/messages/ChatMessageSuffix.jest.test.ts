@@ -292,6 +292,10 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     const footer = wrapper.get('[data-testid="outgoing-footer"]').element
     const time = wrapper.get('[data-testid="outgoing-stamp"]').element
     const amount = wrapper.get('[data-testid="outgoing-amount"]').element
+    const sending = wrapper.get('[data-testid="outgoing-sending"]').element
+    expect(sending.parentElement).toBe(footer)
+    expect(sending.nextElementSibling).toBe(time)
+    expect(wrapper.findAll('.outgoing-status')).toHaveLength(0)
     for (const props of [
       { status: 'payment-pending' },
       { status: 'error', failureReason: 'unavailable' },

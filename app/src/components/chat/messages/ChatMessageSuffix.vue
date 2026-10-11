@@ -39,13 +39,6 @@
       <span>{{ paymentText }}</span>
     </div>
     <div
-      v-else-if="status === 'pending' && outbound"
-      class="outgoing-status"
-      data-testid="outgoing-sending"
-    >
-      {{ sendingText }}
-    </div>
-    <div
       v-else-if="paymentSummaryText"
       class="outgoing-status"
       data-testid="outgoing-payment-summary"
@@ -57,6 +50,11 @@
       :class="suffixPlacement"
       data-testid="outgoing-footer"
     >
+      <span
+        v-if="status === 'pending' && outbound"
+        data-testid="outgoing-sending"
+        >{{ sendingText }}</span
+      >
       <time
         v-if="stamp"
         data-testid="outgoing-stamp"

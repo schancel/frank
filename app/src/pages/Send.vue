@@ -395,9 +395,11 @@ export default defineComponent({
         ? chain.value.formatAddress(transfer.recipient)
         : ''
     })
-    const networkName = computed(() =>
-      getChainRegistryEntry(chain.value?.chainIdentifier ?? '')?.name ??
-      chain.value?.name ?? '',
+    const networkName = computed(
+      () =>
+        getChainRegistryEntry(chain.value?.chainIdentifier ?? '')?.name ??
+        chain.value?.name ??
+        '',
     )
     const unit = computed(() => chain.value?.unit ?? '')
     const maxTotal = computed(() =>

@@ -15,7 +15,11 @@ export function nativeSendChainIdentifier(
   isTestnet: boolean,
   configuredChainIdentifier = activeChain.chainIdentifier,
 ): string | undefined {
-  const entry = walletNetworkMetadata(wallet, isTestnet, configuredChainIdentifier)
+  const entry = walletNetworkMetadata(
+    wallet,
+    isTestnet,
+    configuredChainIdentifier,
+  )
   if (!entry?.wallet) return undefined
   // The only EVM wallet the app builds is the active chain's.
   if (entry.family === 'evm' && entry.id !== activeChain.chainIdentifier)

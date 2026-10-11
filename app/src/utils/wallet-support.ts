@@ -38,7 +38,11 @@ export function walletSupport(
   isTestnet: boolean,
   configuredChainIdentifier = activeChain.chainIdentifier,
 ): WalletSupport {
-  const entry = walletNetworkMetadata(wallet, isTestnet, configuredChainIdentifier)
+  const entry = walletNetworkMetadata(
+    wallet,
+    isTestnet,
+    configuredChainIdentifier,
+  )
   return entry?.wallet
     ? { status: 'available', entry }
     : { status: 'unsupported', entry }

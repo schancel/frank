@@ -819,12 +819,20 @@ export default defineComponent({
       WALLET_CONFIGS.find(w => w.id === selectedWallet.value),
     )
     const sendChainIdentifier = computed(() =>
-      nativeSendChainIdentifier(selectedWallet.value, isTestnet.value, network.value.chainIdentifier),
+      nativeSendChainIdentifier(
+        selectedWallet.value,
+        isTestnet.value,
+        network.value.chainIdentifier,
+      ),
     )
 
     // Whether the app has a wallet for this network, from the chain registry.
     const support = computed(() =>
-      walletSupport(selectedWallet.value, isTestnet.value, network.value.chainIdentifier),
+      walletSupport(
+        selectedWallet.value,
+        isTestnet.value,
+        network.value.chainIdentifier,
+      ),
     )
     const walletStatus = computed(() => support.value.status)
     const sendLabel = computed(() => ({
@@ -1093,7 +1101,9 @@ export default defineComponent({
       sendChainIdentifier,
       walletStatus,
       sendLabel,
-      selectedWalletIsTestnet: computed(() => support.value.entry?.isTestnet ?? false),
+      selectedWalletIsTestnet: computed(
+        () => support.value.entry?.isTestnet ?? false,
+      ),
       walletUnit: computed(() => support.value.entry?.unit ?? ''),
       selectedChain: selectedWallet,
       currentWalletConfig,

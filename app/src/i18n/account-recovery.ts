@@ -115,8 +115,8 @@ export const en = {
   browser_persistence_reduces_automatic_eviction_it_is:
     'Browser persistence reduces automatic eviction. It is not a backup or protection against malicious code or a stolen browser profile.',
   request_persistent_storage: 'Request persistent storage',
-  frank_account_backup_shares_were_verified_before:
-    'Frank account backup shares were verified before activation. Keep your independent shares and public descriptor. They cannot be reconstructed from this device.',
+  keep_independent_account_backup:
+    'Keep an independent backup of your account. Browser storage protection is not a backup.',
   import_bip39_seed: 'Import BIP39 seed',
   backup_account_codex32: 'Backup account (Codex32)',
   codex32_threshold_explainer:
@@ -274,8 +274,8 @@ export const fr = {
   browser_persistence_reduces_automatic_eviction_it_is:
     'La persistance du navigateur réduit l’effacement automatique. Ce n’est ni une sauvegarde ni une protection contre le code malveillant ou le vol du profil du navigateur.',
   request_persistent_storage: 'Demander le stockage persistant',
-  frank_account_backup_shares_were_verified_before:
-    'Les parts de sauvegarde du compte Frank ont été vérifiées avant l’activation. Conservez vos parts indépendantes et votre descripteur public. Cet appareil ne permet pas de les reconstruire.',
+  keep_independent_account_backup:
+    'Conservez une sauvegarde indépendante de votre compte. La protection du stockage du navigateur ne remplace pas une sauvegarde.',
   import_bip39_seed: 'Importer la graine BIP39',
   backup_account_codex32: 'Sauvegarder le compte (Codex32)',
   codex32_threshold_explainer:

@@ -213,24 +213,24 @@ export default {
   persistentStorage: {
     tab: 'Storage',
     heading: 'Persistent storage',
-    granted: 'Persistent storage: granted',
-    notGranted: 'Persistent storage: not granted',
-    unsupported: 'Persistent storage: unavailable',
-    unknown: 'Persistent storage: checking…',
+    granted: 'Granted',
+    notGranted: 'Not granted',
+    unsupported: 'Unavailable',
+    unknown: 'Checking…',
     explainGranted:
-      'Your browser has agreed to keep this app’s data unless you clear it yourself. Your recovery phrase is still the only backup if you lose this device.',
+      'Your browser has agreed to protect Frank’s saved data from automatic eviction. Clearing website data can still remove it. Keep an independent account backup.',
     explainNotGranted:
-      'Your browser may delete this app’s data, including your stored recovery phrase, when it is short on space or, in Safari, after 7 days without a visit unless the app is added to your Home Screen. Your recovery phrase is the only backup.',
+      'Frank already saves data on this device. This permission adds protection against automatic eviction; it does not add disk space. Without it, the browser may remove saved data. Keep an independent account backup.',
     explainUnsupported:
-      'Persistent storage is unavailable (this page is not a secure context or the browser does not support it), so the browser may delete this app’s data (Safari does after 7 days without a visit unless the app is added to your Home Screen). Your recovery phrase is the only backup.',
+      'This browser or context does not offer protection against automatic eviction. Frank can still save data, but the browser may remove it. Keep an independent account backup.',
     request: 'Ask the browser to keep my data',
     confirmSeed: 'Confirm my recovery phrase',
     seedConfirmed: 'Your recovery phrase is confirmed.',
     safariTip:
-      'Tip for Safari / WebKit: Add Frank to your Home Screen / Dock or bookmark this site to enable persistence automatically.',
+      'Safari on Mac (macOS Sonoma 14 or later): choose File > Add to Dock, open Frank from the Dock, then request protection again. On iPhone or iPad, use Share > Add to Home Screen and open Frank there. The browser still decides whether to grant protection; bookmarking alone does not guarantee it.',
     grantedToast: 'Persistent storage granted by browser.',
     declinedToast:
-      'The browser declined persistent storage. Bookmark or install Frank to enable persistence.',
+      'The browser has not granted protection against automatic eviction. Your data is still stored. See the installation guidance below and try again; protection is not guaranteed.',
   },
   blackjackP2p: {
     notDeliveredYet:
@@ -442,7 +442,7 @@ export default {
     tokenBalancesStale:
       'Token balances unavailable. Showing last known balances.',
     balanceStale: '{balance} (last known)',
-    failedLoadAddress: 'Failed to load the Monad wallet address',
+    failedLoadAddress: 'Could not derive wallet address',
     unableCopyAddress: 'Unable to copy the Monad address',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',
@@ -1106,7 +1106,7 @@ export default {
       'Your balance is 0. This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrives after a minute, ask the demo operator to send testnet MON to the address below.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
-    failedLoadBalance: 'Failed to load Monad wallet balance',
+    failedLoadBalance: 'Could not load wallet balance',
     unableCopyAddress: 'Unable to copy the Monad address',
   },
   nativeOperation: {

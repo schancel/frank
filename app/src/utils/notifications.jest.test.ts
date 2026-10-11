@@ -67,7 +67,7 @@ describe('errorNotify', () => {
     })
     expect(createNotification).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        message: 'Failed to load the Monad wallet address',
+        message: 'Could not derive wallet address',
       }),
     )
 
@@ -77,7 +77,7 @@ describe('errorNotify', () => {
     })
     expect(createNotification).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        message: 'Échec du chargement de l’adresse du portefeuille Monad',
+        message: 'Impossible de dériver l’adresse du portefeuille',
       }),
     )
   })

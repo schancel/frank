@@ -3,6 +3,8 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import Panel from './PersistentStoragePanel.vue'
 import en from '../../i18n/en-us'
+import fr from '../../i18n/fr-fr'
+import { usePersistentStorageStore } from '../../stores/persistent-storage'
 jest.mock('../../accounts/session', () => ({
   accountStatus: { account: { descriptor: 'public' } },
 }))
@@ -24,10 +26,51 @@ test('storage persistence is separate from backup proof and exposes an explicit 
     },
   })
   await flushPromises()
-  expect(view.text()).toContain('not-granted')
-  expect(view.text()).toContain('cannot be reconstructed')
+  expect(view.get('[data-test="persistent-storage-chip"]').text()).toBe(
+    en.persistentStorage.notGranted,
+  )
+  expect(view.text()).not.toContain('not-granted')
+  expect(view.find('[data-test="status-raw"]').exists()).toBe(false)
+  expect(view.text()).toContain('Keep an independent backup')
+  expect(view.text()).not.toContain('verified before activation')
   await view.get('button').trigger('click')
   await flushPromises()
   expect(persist).toHaveBeenCalledTimes(1)
-  expect(view.text()).toContain('granted')
+  expect(view.get('[data-test="persistent-storage-chip"]').text()).toBe(
+    en.persistentStorage.granted,
+  )
 })
+
+test.each(['en', 'fr'] as const)(
+  'announces each human-readable storage status once (%s)',
+  async locale => {
+    setActivePinia(createPinia())
+    const store = usePersistentStorageStore()
+    jest.spyOn(store, 'refresh').mockResolvedValue()
+    const messages = locale === 'fr' ? fr : en
+    const view = mount(Panel, {
+      global: {
+        mocks: {
+          $t: (key: string) =>
+            key.split('.').reduce((value: any, part) => value[part], messages),
+        },
+      },
+    })
+    for (const [status, label] of [
+      ['granted', messages.persistentStorage.granted],
+      ['not-granted', messages.persistentStorage.notGranted],
+      ['unsupported', messages.persistentStorage.unsupported],
+      ['unknown', messages.persistentStorage.unknown],
+    ] as const) {
+      store.status = status
+      await flushPromises()
+      const chip = view.get('[data-test="persistent-storage-chip"]')
+      expect(chip.text()).toBe(label)
+      expect(chip.attributes('role')).toBe('status')
+      expect(chip.attributes('aria-live')).toBe('polite')
+      expect(view.text().split(label)).toHaveLength(2)
+      expect(view.find('[data-test="status-raw"]').exists()).toBe(false)
+    }
+    view.unmount()
+  },
+)

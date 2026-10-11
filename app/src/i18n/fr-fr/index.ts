@@ -217,24 +217,24 @@ export default {
   persistentStorage: {
     tab: 'Stockage',
     heading: 'Stockage persistant',
-    granted: 'Stockage persistant : accordé',
-    notGranted: 'Stockage persistant : non accordé',
-    unsupported: 'Stockage persistant : indisponible',
-    unknown: 'Stockage persistant : vérification…',
+    granted: 'Accordé',
+    notGranted: 'Non accordé',
+    unsupported: 'Indisponible',
+    unknown: 'Vérification…',
     explainGranted:
-      'Votre navigateur a accepté de conserver les données de cette application sauf si vous les effacez vous-même. Votre phrase de récupération reste la seule sauvegarde si vous perdez cet appareil.',
+      'Votre navigateur a accepté de protéger les données enregistrées de Frank contre l’effacement automatique. Effacer les données du site peut toujours les supprimer. Conservez une sauvegarde indépendante du compte.',
     explainNotGranted:
-      'Votre navigateur peut supprimer les données de cette application, dont votre phrase de récupération enregistrée, lorsqu’il manque d’espace ou, dans Safari, après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil. Votre phrase de récupération est la seule sauvegarde.',
+      'Frank enregistre déjà les données sur cet appareil. Cette autorisation les protège contre l’effacement automatique ; elle n’ajoute pas d’espace disque. Sans elle, le navigateur peut supprimer les données enregistrées. Conservez une sauvegarde indépendante du compte.',
     explainUnsupported:
-      'Le stockage persistant est indisponible (cette page n’est pas un contexte sécurisé ou le navigateur ne le prend pas en charge) : le navigateur peut supprimer les données de cette application (Safari le fait après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil). Votre phrase de récupération est la seule sauvegarde.',
+      'Ce navigateur ou ce contexte ne propose pas de protection contre l’effacement automatique. Frank peut toujours enregistrer les données, mais le navigateur peut les supprimer. Conservez une sauvegarde indépendante du compte.',
     request: 'Demander au navigateur de conserver mes données',
     confirmSeed: 'Confirmer ma phrase de récupération',
     seedConfirmed: 'Votre phrase de récupération est confirmée.',
     safariTip:
-      'Conseil pour Safari / WebKit : ajoutez Frank à votre écran d’accueil / Dock ou ajoutez ce site à vos favoris pour activer la persistance automatiquement.',
+      'Safari sur Mac (macOS Sonoma 14 ou version ultérieure) : choisissez Fichier > Ajouter au Dock, ouvrez Frank depuis le Dock, puis redemandez la protection. Sur iPhone ou iPad, utilisez Partager > Sur l’écran d’accueil, puis ouvrez Frank depuis celui-ci. Le navigateur décide toujours d’accorder ou non la protection ; un favori seul ne la garantit pas.',
     grantedToast: 'Stockage persistant accordé par le navigateur.',
     declinedToast:
-      'Le navigateur a refusé le stockage persistant. Ajoutez Frank à vos favoris ou installez-le pour activer la persistance.',
+      'Le navigateur n’a pas accordé la protection contre l’effacement automatique. Vos données restent enregistrées. Consultez les conseils d’installation ci-dessous et réessayez ; la protection n’est pas garantie.',
   },
   blackjackP2p: {
     notDeliveredYet:
@@ -451,7 +451,7 @@ export default {
     tokenBalancesStale:
       'Soldes de jetons indisponibles. Affichage des derniers soldes connus.',
     balanceStale: '{balance} (dernière valeur connue)',
-    failedLoadAddress: 'Échec du chargement de l’adresse du portefeuille Monad',
+    failedLoadAddress: 'Impossible de dériver l’adresse du portefeuille',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',
@@ -1133,7 +1133,7 @@ export default {
     noFundsHint:
       "Votre solde est de 0. Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n'arrive après une minute, demandez à l'opérateur de la démo d'envoyer des MON de testnet à l'adresse ci-dessous.",
     addressCopied: 'Adresse copiée dans le presse papier',
-    failedLoadBalance: 'Échec du chargement du solde du portefeuille Monad',
+    failedLoadBalance: 'Impossible de charger le solde du portefeuille',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
   nativeOperation: {

@@ -13,18 +13,12 @@
         :color="statusChipColor"
         :text-color="statusChipTextColor"
         :icon="statusChipIcon"
-        data-test="persistent-storage-chip"
-      >
-        {{ statusLabel }}
-      </q-chip>
-      <!-- Preserve exact status token in DOM for screen readers and test assertions -->
-      <span
         role="status"
         aria-live="polite"
-        class="sr-only"
-        data-test="status-raw"
-        >{{ status }}</span
+        data-test="persistent-storage-chip"
       >
+        {{ $t(statusLabel) }}
+      </q-chip>
     </div>
 
     <p class="text-body2 text-grey-8">
@@ -33,6 +27,8 @@
           ? $t('persistentStorage.explainGranted')
           : status === 'unsupported'
           ? $t('persistentStorage.explainUnsupported')
+          : status === 'not-granted'
+          ? $t('persistentStorage.explainNotGranted')
           : $t(
               'accountRecovery.browser_persistence_reduces_automatic_eviction_it_is',
             )
@@ -68,9 +64,7 @@
     </div>
 
     <p v-if="account.account" class="text-caption text-grey-7">
-      {{
-        $t('accountRecovery.frank_account_backup_shares_were_verified_before')
-      }}
+      {{ $t('accountRecovery.keep_independent_account_backup') }}
     </p>
   </section>
 </template>
@@ -80,6 +74,7 @@ import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useQuasar } from 'quasar'
 import { usePersistentStorageStore } from '../../stores/persistent-storage'
+import { translateMessage } from '../../i18n'
 import { accountStatus as account } from '../../accounts/session'
 
 const $q = useQuasar()
@@ -122,7 +117,13 @@ const statusChipIcon = computed(() => {
 })
 
 const statusLabel = computed(() => {
-  return status.value
+  const keys = {
+    'granted': 'persistentStorage.granted',
+    'not-granted': 'persistentStorage.notGranted',
+    'unsupported': 'persistentStorage.unsupported',
+    'unknown': 'persistentStorage.unknown',
+  }
+  return keys[status.value]
 })
 
 async function requestStorage() {
@@ -133,13 +134,12 @@ async function requestStorage() {
     if (status.value === 'granted') {
       $q?.notify?.({
         type: 'positive',
-        message: 'Persistent storage granted by browser.',
+        message: translateMessage('persistentStorage.grantedToast'),
       })
     } else if (status.value === 'not-granted') {
       $q?.notify?.({
         type: 'warning',
-        message:
-          'The browser declined persistent storage. Bookmark or install Frank to enable persistence.',
+        message: translateMessage('persistentStorage.declinedToast'),
       })
     }
   } finally {

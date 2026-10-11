@@ -33,6 +33,7 @@ export {
 export type { EcashNetworkId, EcashAddressPrefix } from "../ecash-wallet";
 export {
   createEvmChain,
+  installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
   CUSTOM_RELAY_STORAGE_KEY,
   getCustomRelayBaseUrl,

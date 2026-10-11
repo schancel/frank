@@ -3507,7 +3507,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             let payment = paymentStore.get(stealthAddress);
             if (payment === undefined)
               throw new Error("No such payment to a contact");
-            if ((payment.state === "planned" || payment.state === "prepared") && payment.stampValueWei === undefined)
+            if (payment.state === "planned" && payment.stampValueWei === undefined)
               throw new Error("Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records.");
             if (payment.state === "planned") {
               // Stopped around signing. A transfer the journal holds signed is this payment's;
@@ -3536,6 +3536,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             if (payment.state === "delivered")
               return broadcastContactTransfer(payment);
             if (payment.state !== "prepared") return payment;
+            // Capture before journal updates replace the payment object during takeover.
+            if (payment.stampValueWei === undefined)
+              throw new Error("Contact payment has no captured stamp amount; unsupported development journal format. Recover the signed payment before resetting its application records.");
+            const stampValue = BigInt(payment.stampValueWei);
             if (payment.deliveredBy === "host") {
               // The host's own send path carries the message. Once it has an attempt, its
               // outcome is asked for; `contactMessageDelivered` is told when the relay has it.
@@ -3583,7 +3587,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   ...(payment.conversationId === undefined
                     ? {}
                     : { conversationId: payment.conversationId }),
-                  stampValue: BigInt(payment.stampValueWei),
+                  stampValue,
                 })
               ).payloadDigest;
             } catch (error) {

@@ -456,19 +456,26 @@ export const useOracleStore = defineStore('oracle', {
     },
 
     /**
-     * Makes the local series hold [since, now] at `step` seconds or finer, for a chart
+     * Makes the local series hold [since, requestedUntil or now] at `step` seconds or finer, for a chart
      * that is on screen: asks the feed for exactly the stretches they lack (before the
      * first local point, or while the app was closed) and stores what comes back in the
      * same series. A stretch already held, or already asked for, is not asked for again.
      */
-    async ensureHistory(since: number, step: number): Promise<void> {
+    async ensureHistory(
+      since: number,
+      step: number,
+      requestedUntil?: number,
+    ): Promise<void> {
       const schedule = scheduleOf(this)
       try {
         await this.restored
       } catch {
         // Carry on with what is in memory.
       }
-      const until = Math.floor(Date.now() / 1000)
+      const until = Math.min(
+        requestedUntil ?? Infinity,
+        Math.floor(Date.now() / 1000),
+      )
       await Promise.all(
         missingRanges(this.cache.coverage, since, until, step).map(range => {
           const key = `${range.since}:${range.until}:${step}`

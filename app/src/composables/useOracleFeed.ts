@@ -28,7 +28,7 @@ export function useAppOracleFeed(): void {
  * nothing.
  */
 export function useOracleHistory(
-  range: () => { since: number; step: number } | null,
+  range: () => { since: number; step: number; until?: number } | null,
 ): void {
   const oracle = useSafeOracleStore()
   const instance = getCurrentInstance()
@@ -38,12 +38,16 @@ export function useOracleHistory(
   watch(
     () => {
       const wanted = onScreen.value ? range() : null
-      return wanted ? `${wanted.since}:${wanted.step}` : ''
+      return wanted
+        ? `${wanted.since}:${wanted.step}:${wanted.until ?? ''}`
+        : ''
     },
     key => {
       if (!key) return
-      const [since, step] = key.split(':').map(Number)
-      void oracle.ensureHistory?.(since, step)
+      const [since, step, until] = key.split(':')
+      if (until === '') void oracle.ensureHistory?.(Number(since), Number(step))
+      else
+        void oracle.ensureHistory?.(Number(since), Number(step), Number(until))
     },
   )
 

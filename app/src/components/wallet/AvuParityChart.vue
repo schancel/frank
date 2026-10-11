@@ -77,7 +77,7 @@
       <div class="chart-container" data-test="macro-chart-container">
         <svg
           class="chart-svg cursor-crosshair"
-          viewBox="0 0 680 290"
+          viewBox="0 0 640 290"
           preserveAspectRatio="xMidYMid meet"
           data-test="macro-chart-svg"
           @mouseleave="leaveChart"
@@ -136,30 +136,6 @@
             />
           </g>
 
-          <!-- Scale labels stay anchored inside the chart. -->
-          <template v-for="side in axisLabels" :key="`axis-${side.axis}`">
-            <text
-              v-for="end in side.ends"
-              :key="`${side.axis}-${end.name}`"
-              :x="side.axis === 'left' ? 4 : 676"
-              :y="end.y"
-              dominant-baseline="middle"
-              font-size="10"
-              :text-anchor="side.axis === 'left' ? 'start' : 'end'"
-              :data-test="`chart-${end.name}-label-${side.axis}`"
-            >
-              <tspan
-                v-for="(label, index) in end.labels"
-                :key="label.id"
-                :dx="index === 0 ? 0 : 10"
-                :fill="label.color"
-                :data-test="`chart-scale-${end.name}-${label.id}`"
-              >
-                {{ label.text }}
-              </tspan>
-            </text>
-          </template>
-
           <line
             v-if="hovered"
             :x1="hovered.x"
@@ -216,6 +192,34 @@
             </text>
           </g>
         </svg>
+        <div
+          v-for="side in axisLabels"
+          :key="side.axis"
+          class="chart-scale"
+          :style="{
+            gridTemplateRows: `${Y_TOP}fr ${Y_BOTTOM - Y_TOP}fr ${
+              290 - Y_BOTTOM
+            }fr`,
+          }"
+          data-test="chart-scale"
+        >
+          <div class="chart-scale-bounds">
+            <div
+              v-for="end in side.ends"
+              :key="end.name"
+              :data-test="`chart-${end.name}-label-${side.axis}`"
+            >
+              <span
+                v-for="label in end.labels"
+                :key="label.id"
+                :style="{ color: label.color }"
+                :data-test="`chart-scale-${end.name}-${label.id}`"
+              >
+                {{ label.text }}
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div
@@ -331,7 +335,7 @@ const themeColors = computed(() =>
 )
 
 const DAY = 86_400
-/** How far back each range reaches and how fine its points are, in seconds. */
+/** Range duration and requested history resolution, in seconds. */
 const RANGES = {
   // Bitcoin's bundled history begins in 2010; nothing older can be asked for.
   'all': { span: Infinity, step: 30 * DAY },
@@ -480,15 +484,11 @@ interface Series {
 /** Only actual selected-coin price timestamps provide historical observations. */
 const sampleTimes = computed<number[]>(() => {
   const points = inputs.value?.series[tokenPriceSeries.value]?.points ?? []
-  const range = timeRange.value
   const now = Math.floor(Date.now() / 1000)
-  const lastInStep = new Map<number, number>()
-  for (const [time] of points) {
-    if (time < rangeStart.value || time > now) continue
-    const bucket = Math.floor(time / range.step)
-    if ((lastInStep.get(bucket) ?? -1) < time) lastInStep.set(bucket, time)
-  }
-  return Array.from(lastInStep.values()).sort((a, b) => a - b)
+  // Request resolution must not discard finer observations already held in the cache.
+  return points
+    .filter(([time]) => time >= rangeStart.value && time <= now)
+    .map(([time]) => time)
 })
 
 const rangeSeries = computed<Series[]>(() => {
@@ -626,8 +626,8 @@ const axisLabels = computed(() =>
       return {
         axis,
         ends: [
-          { name: 'max', y: Y_TOP, labels: labels('maxLabel') },
-          { name: 'min', y: Y_BOTTOM, labels: labels('minLabel') },
+          { name: 'max', labels: labels('maxLabel') },
+          { name: 'min', labels: labels('minLabel') },
         ],
       }
     })
@@ -748,7 +748,13 @@ const dataNote = computed(() => {
 // data is there.
 useOracleHistory(() => {
   const range = timeRange.value
-  return range ? { since: rangeStart.value, step: range.step } : null
+  const window = zoom.value
+  if (!window) return { since: rangeStart.value, step: range.step }
+  const span = window.max - window.min
+  const resolution = Object.values(RANGES)
+    .filter(candidate => candidate.span >= span)
+    .reduce((step, candidate) => Math.min(step, candidate.step), range.step)
+  return { since: window.min, until: window.max, step: resolution }
 })
 </script>
 
@@ -773,7 +779,23 @@ useOracleHistory(() => {
   border-radius: 8px;
 }
 .chart-container {
-  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  column-gap: 8px;
+}
+.chart-scale {
+  display: grid;
+  min-width: 5.5em;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.chart-scale-bounds {
+  grid-row: 2;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  white-space: nowrap;
 }
 .chart-svg {
   width: 100%;

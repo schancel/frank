@@ -181,7 +181,7 @@ describe('selected coin price history', () => {
     expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
       '1 MON ≈ 187.5 mAVU · testnet',
     )
-    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
     expect(
       wrapper.findAll(
         '[data-test="chart-point-grid"], [data-test="chart-point-gold"]',
@@ -200,6 +200,34 @@ describe('selected coin price history', () => {
       svg.compareDocumentPosition(inspection) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+  })
+
+  it('ALL retains every available shorter-range observation and newly received finer history', async () => {
+    receive(twoEntryFeed())
+    const wrapper = mountChart()
+    const timestamps = () =>
+      wrapper.findAll('[data-test="chart-hover-point"]').length
+    const allCount = timestamps()
+    expect(allCount).toBe(2)
+    for (const range of ['1y', '30d', '7d', '24h']) {
+      await openRange(wrapper, range)
+      expect(timestamps()).toBe(allCount)
+    }
+    // A later history answer merges another genuine timestamp into the production cache.
+    receive(testFeed([NOW - 1800], { prices: { 'monad-mainnet': 0.03 } }))
+    await flushPromises()
+    expect(timestamps()).toBe(3)
+    await openRange(wrapper, 'all')
+    expect(timestamps()).toBe(3)
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(3)
+    const oracle = useOracleStore()
+    const held = oracle.cache
+    wrapper.unmount()
+    setActivePinia(createPinia())
+    useOracleStore().$patch({ cache: held })
+    const reopened = mountChart()
+    expect(reopened.findAll('[data-test="chart-point-token"]')).toHaveLength(3)
+    reopened.unmount()
   })
 
   it('values the selected coin using AVU_spot instead of plotting the electricity price', async () => {
@@ -226,17 +254,22 @@ describe('selected coin price history', () => {
   it('aligns endpoint labels to the plot bounds and uses readable benchmark names', () => {
     receive(twoEntryFeed())
     const wrapper = mountChart()
-    expect(
-      wrapper.get('[data-test="chart-max-label-right"]').attributes('y'),
-    ).toBe('30')
-    expect(
-      wrapper.get('[data-test="chart-min-label-right"]').attributes('y'),
-    ).toBe('230')
+    const scale = wrapper.get('[data-test="chart-scale"]')
+    expect(scale.attributes('style')).toContain(
+      'grid-template-rows: 30fr 200fr 60fr',
+    )
+    expect(scale.get('[data-test="chart-max-label-right"]').text()).toContain(
+      'AVU',
+    )
+    expect(scale.get('[data-test="chart-min-label-right"]').text()).toContain(
+      'AVU',
+    )
     expect(
       wrapper
-        .get('[data-test="chart-max-label-right"]')
-        .attributes('dominant-baseline'),
-    ).toBe('middle')
+        .get('[data-test="macro-chart-svg"]')
+        .find('[data-test="chart-scale"]')
+        .exists(),
+    ).toBe(false)
     expect(wrapper.get('[data-test="denomination-toggle"]').text()).toContain(
       'AVU (Hash)',
     )
@@ -301,26 +334,31 @@ describe('selected coin price history', () => {
     expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(1)
   })
 
-  it('breaks the selected coin line across unavailable spot inputs', async () => {
-    const times = [NOW - 3600, NOW - 1800, NOW - 60]
-    receive(
-      testFeed(times, {
-        prices: { 'monad-mainnet': 0.025 },
-        electricity: [
-          [times[0], 0.05],
-          [times[1], -0.01],
-          [times[2], 0.05],
-        ],
-      }),
-    )
-    const wrapper = mountChart()
-    await openRange(wrapper, '24h')
-    await wrapper
-      .get('[data-test="denomination-toggle"] [data-test-option="spot"]')
-      .trigger('click')
-    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
-    expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(false)
-  })
+  it.each(['all', '24h'])(
+    'breaks the selected coin line across unavailable spot inputs in %s',
+    async range => {
+      const times = [NOW - 3600, NOW - 1800, NOW - 60]
+      receive(
+        testFeed(times, {
+          prices: { 'monad-mainnet': 0.025 },
+          electricity: [
+            [times[0], 0.05],
+            [times[1], -0.01],
+            [times[2], 0.05],
+          ],
+        }),
+      )
+      const wrapper = mountChart()
+      await openRange(wrapper, range)
+      await wrapper
+        .get('[data-test="denomination-toggle"] [data-test-option="spot"]')
+        .trigger('click')
+      expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
+      expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(
+        false,
+      )
+    },
+  )
 
   it('retains the warning when historical hash valuation uses estimated hardware efficiency', async () => {
     const feed = twoEntryFeed()
@@ -347,6 +385,44 @@ describe('selected coin price history', () => {
     )
   })
 
+  it.each(['all', '5y', '1y', '30d', '7d', '24h'])(
+    'zooms %s to finer bounded history and clears selection on reset/range/coin changes',
+    async range => {
+      const oracle = receive(twoEntryFeed())
+      const ensure = jest
+        .spyOn(oracle, 'ensureHistory')
+        .mockResolvedValue(undefined)
+      const wrapper = mountChart()
+      await openRange(wrapper, range)
+      const select = async () => {
+        const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+        await columns[0].trigger('mousedown')
+        await columns[columns.length - 1].trigger('mouseup')
+        await flushPromises()
+      }
+      await select()
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(true)
+      expect(ensure).toHaveBeenLastCalledWith(NOW - 3600, 600, NOW - 60)
+      await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      expect(ensure.mock.calls[ensure.mock.calls.length - 1]).toHaveLength(2)
+      await select()
+      await openRange(wrapper, range === '7d' ? '30d' : '7d')
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      await select()
+      await wrapper.setProps({ selectedWallet: 'ecash' })
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(0)
+      // A late answer for the old coin must not restore its zoom or appear as eCash.
+      receive(testFeed([NOW - 1800], { prices: { 'monad-mainnet': 0.03 } }))
+      await flushPromises()
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(0)
+      wrapper.unmount()
+    },
+  )
+
   it('preserves hover, drag zoom and range-driven history requests', async () => {
     const oracle = receive(twoEntryFeed())
     const ensure = jest
@@ -371,16 +447,14 @@ describe('selected coin price history', () => {
     expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
   })
 
-  it('keeps scale labels inside the SVG and presentation containers shrinkable', () => {
+  it('reserves a separate scale column and keeps presentation containers shrinkable', () => {
     receive(twoEntryFeed())
     const wrapper = mountChart()
     const svg = wrapper.get('[data-test="macro-chart-svg"]')
-    for (const label of svg.findAll(
-      '[data-test^="chart-max-label-"], [data-test^="chart-min-label-"]',
-    )) {
-      expect(Number(label.attributes('x'))).toBeLessThanOrEqual(680)
-      expect(label.attributes('text-anchor')).toBe('end')
-    }
+    expect(svg.find('[data-test="chart-max-label-right"]').exists()).toBe(false)
+    expect(
+      wrapper.get('[data-test="chart-scale"]').element.previousElementSibling,
+    ).toBe(svg.element)
     const source = readFileSync(join(__dirname, 'AvuParityChart.vue'), 'utf8')
     expect(source).toContain('min-width: 0;')
     expect(source).toContain(

@@ -443,7 +443,7 @@ export default defineComponent({
             wallet: messaging,
             address: selectedContactAddress.value,
             items: [prepared.item],
-            stampValue,
+            stampValue: prepared.stampValue,
           })
 
           if (outcome.state === 'sent') {

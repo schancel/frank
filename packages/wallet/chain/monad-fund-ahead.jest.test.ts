@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 /**
  * #1235 Q4: the next message's sender accounts are funded ahead of it, through the recorded
  * funding path. A send itself never funds: it pays from the funded accounts when they cover the
@@ -137,7 +138,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     atRelay = undefined;
     relayBodies = [];
     mockMined.clear();
-    f = await fixture({ defaultStampValueWei: STAMP });
+    f = await fixture({ resolveDefaultStamp: fixedStampDefault(STAMP )});
     alice = f.alice;
     main = (await alice.getReceiveAddress()).raw.toLowerCase();
     const base = await f.directoryFor("alice", f.alice, f.bob);
@@ -762,7 +763,7 @@ describe("funding the next message ahead (#1235 Q4)", () => {
         mockBalances.clear();
         mockFunded.length = 0;
         mockMined.clear();
-        const g = await fixture({ defaultStampValueWei: STAMP });
+        const g = await fixture({ resolveDefaultStamp: fixedStampDefault(STAMP )});
         try {
           installCanonicalDirectory(
             g.alice,

@@ -15,7 +15,7 @@ jest.mock('../../composables/useBalance', () => ({
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
-    defaultStampValue: 10n,
+    minimumWagerValue: 10n,
     toDisplayAmount: (n: bigint) => n.toString(),
     fromDisplayAmount: (s: string) => BigInt(s),
   },

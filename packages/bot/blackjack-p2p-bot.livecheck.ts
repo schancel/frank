@@ -1,3 +1,4 @@
+import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 /**
  * PARKED: not registered. Nothing in the bot set, `targets/`, the launcher or the demo starts
  * this (the `blackjack:p2p` package script is gone); the dealer that runs is
@@ -36,7 +37,6 @@ import { join, resolve } from 'path'
 
 import { deriveDomainRoot } from '../domain-roots/src'
 import {
-  createEvmChain,
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
 } from "@frank/wallet/chain/monad-chain";
@@ -200,7 +200,7 @@ export async function openBlackjackBotWallet() {
     ...loadMonadChainConfigFromEnv(),
     walletStorageLocation: join(stateDir, 'wallet'),
   }
-  const chain = createEvmChain(config)
+  const chain = createRelayPricedEvmChain(config)
   const wallet = (await chain.createWallet({
     evm: deriveDomainRoot(accountRoot, 'evm-wallet'),
     authentication: deriveDomainRoot(accountRoot, 'identity-authentication'),
@@ -267,12 +267,13 @@ export async function main(deps: LauncherDeps = {}) {
     new FileBotStore(join(stateDir, 'bot-state.json')),
     {
       maxBetWei: BigInt(process.env.BLACKJACK_P2P_MAX_BET_WEI ?? 10n ** 17n),
-      playerBetWei: optionalWei('BLACKJACK_P2P_PLAYER_BET_WEI'),
+      playerBetWei: optionalWei('BLACKJACK_P2P_PLAYER_BET_WEI') ?? 10n * chain.minimumWagerValue,
       maxPlayerRiskWei: optionalWei('BLACKJACK_P2P_PLAYER_RISK_WEI'),
       maxOpenHands: process.env.BLACKJACK_P2P_MAX_OPEN_HANDS
         ? Number(process.env.BLACKJACK_P2P_MAX_OPEN_HANDS)
         : undefined,
-      stampWei: config.defaultStampValueWei,
+      // Game-owned explicit amount; changing attention defaults must not change stakes.
+      stampWei: chain.minimumWagerValue,
       reserveWei: BET_MESSAGE_FEE_RESERVE_WEI,
       newAccounts,
       log,

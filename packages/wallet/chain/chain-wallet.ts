@@ -541,6 +541,8 @@ export interface ContactSendResult {
 /** A payment to a contact that is signed, saved and NOT broadcast, with the message item the host
  * must now deliver to the contact through its ordinary message send. */
 export interface PreparedContactPayment {
+  /** Captured before signing; use this exact amount for the host message and any retry. */
+  stampValue: bigint;
   item: import("@frank/cashweb/types/messages").StealthItem;
   txHash: string;
   stealthAddress: string;

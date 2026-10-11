@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 /**
  * The bot host's poll against a REAL typed wallet (#1236 Q3): a paid reply the host holds no
  * incomplete row for is finished by polls alone, and an idle wallet is asked without a single
@@ -91,7 +92,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     loadMonadChainConfigFromEnv: () => ({
       networkTag: "MONT",
       relayBaseUrl: "http://127.0.0.1:8098",
-      defaultStampValueWei: 1_000n,
+      resolveDefaultStamp: fixedStampDefault(1_000n),
     }),
   };
 });
@@ -133,7 +134,7 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
     jest.spyOn(console, "log").mockImplementation(() => undefined);
     // A stamp large enough that funding its accounts ahead costs less than it moves (the wallet
     // refuses to fund ahead otherwise).
-    f = await fixture({ defaultStampValueWei: 10n ** 9n });
+    f = await fixture({ resolveDefaultStamp: fixedStampDefault(10n ** 9n )});
     const { installCanonicalDirectory } = jest.requireMock(
       "@frank/wallet/chain/monad-chain"
     );

@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../wallet/oracle/stamp-policy.testutil'
 /**
  * Usernames against the REAL relay binary, through the real TypeScript clients.
  *
@@ -153,7 +154,7 @@ min_value_wei = "0"
       relayBaseUrl,
       networkTag: 'MONT',
       stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
-      defaultStampValueWei: 1_000n,
+      resolveDefaultStamp: fixedStampDefault(1_000n),
       defaultTopicVoteValueWei: 1_000n,
       subAccountPoolSize: 0,
       walletStorageLocation: join(root, `${name}-wallet`),

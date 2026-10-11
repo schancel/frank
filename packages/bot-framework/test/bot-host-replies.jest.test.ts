@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 /**
  * What a handler is told about the message it answers, and what happens to its reply, through
  * the real host: poll, retention, dispatch and the journal are the host's own. Only the chain's
@@ -79,7 +80,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     loadMonadChainConfigFromEnv: jest.fn(() => ({
       networkTag: "MONT",
       relayBaseUrl: "http://127.0.0.1:8098",
-      defaultStampValueWei: 10_000_000_000_000_000n,
+      resolveDefaultStamp: fixedStampDefault(10_000_000_000_000_000n),
     })),
   };
 });

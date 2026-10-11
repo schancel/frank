@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../wallet/oracle/stamp-policy.testutil'
 import {
   mkdtempSync,
   rmSync,
@@ -96,7 +97,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     loadMonadChainConfigFromEnv: () => ({
       networkTag: "MONT",
       relayBaseUrl: "http://localhost.invalid",
-      defaultStampValueWei: 1n,
+      resolveDefaultStamp: fixedStampDefault(1n),
     }),
   };
 });
@@ -1301,7 +1302,7 @@ describe("with the real canonical wallet", () => {
       relayBaseUrl: RELAY,
       networkTag: "MONT",
       stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
-      defaultStampValueWei: 1_000n,
+      resolveDefaultStamp: fixedStampDefault(1_000n),
       defaultTopicVoteValueWei: 1_000n,
       subAccountPoolSize: 0,
       walletStorageLocation: join(root, "real-wallet"),

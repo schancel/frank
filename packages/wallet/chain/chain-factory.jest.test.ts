@@ -1,3 +1,5 @@
+import { ASSET_DECIMALS } from '../oracle/price-oracle'
+import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { getBase58Decoder } from "@solana/codecs-strings";
 
@@ -68,7 +70,7 @@ describe("createChain", () => {
           relayBaseUrl: "http://127.0.0.1:8098",
           networkTag: "MONT",
           stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
-          defaultStampValueWei: 1n,
+          resolveDefaultStamp: fixedStampDefault(1n),
           defaultTopicVoteValueWei: 1n,
           subAccountPoolSize: 1,
           walletStorageLocation: false,
@@ -97,7 +99,7 @@ describe("createChain", () => {
           relayBaseUrl: "http://127.0.0.1:8098",
           networkTag: "BASE",
           stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
-          defaultStampValueWei: 1n,
+          resolveDefaultStamp: fixedStampDefault(1n),
           defaultTopicVoteValueWei: 1n,
           subAccountPoolSize: 1,
           walletStorageLocation: false,
@@ -126,7 +128,7 @@ describe("createChain", () => {
           relayBaseUrl: "http://127.0.0.1:8098",
           networkTag: "HYPE",
           stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
-          defaultStampValueWei: 1n,
+          resolveDefaultStamp: fixedStampDefault(1n),
           defaultTopicVoteValueWei: 1n,
           subAccountPoolSize: 1,
           walletStorageLocation: false,
@@ -155,7 +157,7 @@ describe("createChain", () => {
           relayBaseUrl: "http://127.0.0.1:8098",
           networkTag: "TMPO",
           stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
-          defaultStampValueWei: 1n,
+          resolveDefaultStamp: fixedStampDefault(1n),
           defaultTopicVoteValueWei: 1n,
           subAccountPoolSize: 1,
           walletStorageLocation: false,
@@ -211,6 +213,7 @@ describe("createChain", () => {
     exerciseCodecs(chain, recipient.toBase58());
     expect(chain.toDisplayAmount(1_500_000_000n)).toBe("1.5");
     expect(chain.fromDisplayAmount("1.5")).toBe(1_500_000_000n);
+    expect(chain.fromDisplayAmount("1")).toBe(10n ** BigInt(ASSET_DECIMALS.solana));
 
     const wallet = await chain.createWallet({ mnemonic: MNEMONIC });
     await expect(chain.nativeTransfers.getBalance({ wallet })).resolves.toBe(
@@ -329,6 +332,7 @@ describe("createChain", () => {
     ).toBeUndefined();
     expect(chain.toDisplayAmount(123n)).toBe("1.23");
     expect(chain.fromDisplayAmount("1.23")).toBe(123n);
+    expect(chain.fromDisplayAmount("1")).toBe(10n ** BigInt(ASSET_DECIMALS.ecash));
     expect(() => chain.fromDisplayAmount("1.234")).toThrow(
       "at most 2 decimal places"
     );

@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -57,7 +58,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     loadMonadChainConfigFromEnv: jest.fn(() => ({
       networkTag: "MONT",
       relayBaseUrl: "http://127.0.0.1:8098",
-      defaultStampValueWei: 10_000_000_000_000_000n,
+      resolveDefaultStamp: fixedStampDefault(10_000_000_000_000_000n),
     })),
   };
 });

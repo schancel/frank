@@ -207,7 +207,7 @@ describe('payments between two wallets on a real EVM node', () => {
     snapshot = await node.send('evm_snapshot', [])
     mailboxes.clear()
     extraRoots = []
-    f = await fixture({ defaultStampValueWei: STAMP })
+    f = await fixture()
     alice = f.alice
     bob = f.bob
     installCanonicalDirectory(alice, await f.directoryFor('alice', alice, bob))

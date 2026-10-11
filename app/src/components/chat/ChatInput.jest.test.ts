@@ -13,7 +13,6 @@ import enUS from '../../i18n/en-us'
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
-    defaultStampValue: 10n ** 16n,
     // Most tests here pass amounts as whole base units; the chip tests switch to real decimals.
     toDisplayAmount: (n: bigint) =>
       mockDecimals ? jest.requireActual('ethers').formatEther(n) : n.toString(),
@@ -283,7 +282,7 @@ describe('modernized chat input interface (#1003)', () => {
 
     it('shows the stamp as an amount in the chain’s unit, not a bare multiplier', () => {
       const wrapper = mount(ChatInput, {
-        props: { stampAmount: '0.01' },
+        props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: '0.01' },
         global: globalOptions,
       })
       expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('10 mMON')
@@ -298,7 +297,7 @@ describe('modernized chat input interface (#1003)', () => {
 
     it('shows the multiple of the default as secondary text', () => {
       const wrapper = mount(ChatInput, {
-        props: { stampAmount: '0.014142135623730950' },
+        props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: '0.014142135623730950' },
         global: globalOptions,
       })
       expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('14.14 mMON')
@@ -312,7 +311,7 @@ describe('modernized chat input interface (#1003)', () => {
 
     it('a stamp of 0 reads "Free" on the chip and in its hover line', () => {
       const wrapper = mount(ChatInput, {
-        props: { stampAmount: '0.0' },
+        props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: '0.0' },
         global: globalOptions,
       })
       expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('Free')
@@ -323,7 +322,7 @@ describe('modernized chat input interface (#1003)', () => {
 
     it('the amount box takes 0, and keeps what was typed while it is the chosen amount', async () => {
       const wrapper = mount(ChatInput, {
-        props: { stampAmount: '0.01' },
+        props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: '0.01' },
         global: globalOptions,
       })
       const vm = wrapper.vm as any
@@ -341,13 +340,14 @@ describe('modernized chat input interface (#1003)', () => {
 
     it('offers the default again once another amount is chosen', async () => {
       const wrapper = mount(ChatInput, {
-        props: { stampAmount: '0.0' },
+        props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: '0.0' },
         global: globalOptions,
       })
       const reset = wrapper.get('[data-testid="chat-input-reset-default"]')
       await reset.trigger('click')
-      expect(wrapper.emitted('update:stampAmount')?.[0]).toEqual(['0.01'])
-      await wrapper.setProps({ stampAmount: '0.01' })
+      expect(wrapper.emitted('resetStampDefault')).toEqual([[]])
+      expect(wrapper.emitted('update:stampAmount')).toBeUndefined()
+      await wrapper.setProps({ stampAmount: '0.01', defaultStampMode: true })
       expect(
         wrapper.find('[data-testid="chat-input-reset-default"]').exists(),
       ).toBe(false)
@@ -355,7 +355,7 @@ describe('modernized chat input interface (#1003)', () => {
 
     it('explains what a stamp is and how its amount is chosen, where the amount is set', () => {
       const wrapper = mount(ChatInput, {
-        props: { stampAmount: '0.01' },
+        props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: '0.01' },
         global: globalOptions,
       })
       const text = wrapper.get('[data-testid="stamp-explanation"]').text()
@@ -368,7 +368,7 @@ describe('modernized chat input interface (#1003)', () => {
     // The wallet's minimum (one transfer's fee) is 4x the configured default here.
     const minimum = 4n * 10n ** 16n
     const atMinimum = mount(ChatInput, {
-      props: { stampAmount: minimum.toString(), minimumStampWei: minimum },
+      props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: minimum.toString(), minimumStampWei: minimum },
       global: globalOptions,
     })
     // The chip shows the amount; the multiple of the minimum is beside it, and absent at 1.
@@ -419,7 +419,7 @@ describe('ChatInput toolbar alignment and layout (#1009)', () => {
 describe('orders-of-magnitude stamp slider (Issue #819)', () => {
   it('correctly maps multipliers across 4 orders of magnitude in decadeIndex', async () => {
     const wrapper = mount(ChatInput, {
-      props: { stampAmount: (10n ** 16n).toString() },
+      props: { minimumStampWei: 10n ** 16n, defaultStampWei: 10n ** 16n, defaultStampMode: false, stampAmount: (10n ** 16n).toString() },
       global: globalOptions,
     })
     const vm = wrapper.vm as any

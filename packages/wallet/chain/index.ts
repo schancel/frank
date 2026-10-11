@@ -6,7 +6,18 @@
  * `LotusChain`, once one is actually built for real -- see issue #41's "Non-goals"), never a
  * runtime branch anywhere else in the app.
  */
-import { MonadChain } from "./monad-chain";
+import { createEvmChain, loadMonadChainConfigFromEnv } from "./monad-chain";
+import { createRelayStampDefaultResolver } from "./evm-host";
+import { defaultNativeEvmTransactionBuilder as nativeStampTransfer } from "./evm-transaction-builder";
+import type { StampDefaultResolver } from "../oracle/stamp-policy";
+import { stampPolicyConfig } from "../oracle/stamp-policy";
+import { readViteEnv } from "./vite-env";
+export { createRelayPricedEvmChain } from "./evm-host";
+const defaultHostConfig = loadMonadChainConfigFromEnv();
+const MonadChain = createEvmChain(defaultHostConfig);
+defaultHostConfig.resolveDefaultStamp = createRelayStampDefaultResolver(defaultHostConfig, MonadChain, stampPolicyConfig(
+  readViteEnv("QCLI_FRANK_DM_DEFAULT_STAMP_AVU") ?? process.env.FRANK_DM_DEFAULT_STAMP_AVU,
+));
 import { ActiveChain } from "./active-chain";
 export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
@@ -84,6 +95,17 @@ export function setActiveChain(chain: ActiveChain): void {
       console.error("Error in activeChain change listener", err);
     }
   }
+}
+
+/** Host boot composition only: install before account activation, never redirect a live wallet. */
+export function installDefaultStampResolver(chainIdentifier: string, resolver: StampDefaultResolver): void {
+  if (currentActiveChain !== MonadChain || currentActiveChain.chainIdentifier !== chainIdentifier)
+    throw new Error('Default stamp composition does not match the configured chain');
+  // A token builder needs its own priced-asset identity, even if its decimals match native wei.
+  defaultHostConfig.resolveDefaultStamp = defaultHostConfig.transactionBuilder !== undefined &&
+    defaultHostConfig.transactionBuilder !== nativeStampTransfer
+    ? async () => ({ status: "unavailable", chainIdentifier, reason: "unsupported" })
+    : resolver;
 }
 
 export function getActiveChain(): ActiveChain {

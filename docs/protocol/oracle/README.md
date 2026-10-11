@@ -4,8 +4,9 @@ The relay is the price and energy oracle. A client makes one request to its rela
 normalised feed; it knows nothing about any price provider, chain statistics API or electricity
 market. The relay owns the provider adapters, sampling, smoothing, history and any provider keys.
 
-The feed is for display and valuation only (AVU figures beside balances, the Parity chart). It is
-not a quote: nothing that moves money may be priced from it.
+The feed supports valuation and host-composed AVU defaults for message stamps. A stamp default
+is a recipient-value suggestion, captured as a native amount before signing; it is not a
+settlement quote for swaps or contracts. Missing or stale observations cannot price a default.
 
 Files: this document, `feed.schema.json` (JSON Schema of the response), `feed.example.json` (a
 small valid response; `packages/price-feeds/test/feed.jest.test.ts` parses it with the client's

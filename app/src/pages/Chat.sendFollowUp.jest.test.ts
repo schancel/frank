@@ -21,7 +21,7 @@ jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     fromDisplayAmount: (s: string) => BigInt(Math.round(Number(s) * 1e18)),
     unit: 'MON',
-    defaultStampValue: 1n,
+
     nativeTransfers: { getBalance: jest.fn() },
     toDisplayAmount: (n: bigint) => n.toString(),
   },
@@ -619,10 +619,11 @@ describe("Chat.vue: the conversation's stamp is the user's own choice", () => {
   // The harness's chain: 1 display unit is 1e18 base units, the default stamp is 1 base unit.
   function stampThis(chosen?: bigint) {
     const chatStore = {
-      getStampWei: jest.fn(() => chosen ?? activeChain.defaultStampValue),
+      getStampWei: jest.fn(() => chosen),
       setStampWei: jest.fn(),
     }
     return {
+      defaultStampWei: 1n,
       conversation: { id: 'conv-1' },
       recipientAddress: '0xPeer',
       chatStore,

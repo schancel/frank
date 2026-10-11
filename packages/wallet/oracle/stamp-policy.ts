@@ -120,3 +120,20 @@ export function quoteDefaultStamp(input: {
     rateAt: input.rateAt,
   };
 }
+
+/** Bound by host composition to the installed chain and its observed oracle data. */
+export interface StampPricingContext {
+  readonly chainIdentifier: string
+  readonly minimumStamp?: bigint
+}
+
+export type StampDefaultResolver = (
+  context: StampPricingContext,
+) => Promise<DefaultStampQuote>
+
+export class DefaultStampUnavailableError extends Error {
+  constructor(readonly quote: Extract<DefaultStampQuote, { status: 'unavailable' }>) {
+    super(`Default stamp unavailable for ${quote.chainIdentifier}: ${quote.reason}. Nothing was paid or sent.`)
+    this.name = 'DefaultStampUnavailableError'
+  }
+}

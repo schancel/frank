@@ -453,7 +453,7 @@ describe('a payment to a contact', () => {
     expect(new Set(order)).toEqual(new Set(['broadcast with 1 message(s) stored']))
   })
 
-  it('a stop before the relay confirmed ends, after a restart, with the message delivered and one payment', async () => {
+  it('a stop before confirmation recovers the captured stamp after restart with the oracle offline', async () => {
     f.setPhase('fail')
     const refused = await alice
       .sendToContact!({ recipient: bob.identity.address, value: VALUE })
@@ -461,6 +461,9 @@ describe('a payment to a contact', () => {
     expect(refused).toBeInstanceOf(ContactPaymentPendingError)
     expect(node.broadcasts).toEqual([])
     await alice.close()
+
+    const offline = jest.fn(async () => { throw new Error('oracle offline') })
+    f.config.resolveDefaultStamp = offline
 
     const restarted = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
     attach(restarted)
@@ -487,6 +490,7 @@ describe('a payment to a contact', () => {
       expect(restarted.getContactPayments!()).toEqual([
         expect.objectContaining({ state: 'paid', txHash: refused.txHash }),
       ])
+      expect(offline).not.toHaveBeenCalled()
       expect(bobMailbox).toHaveLength(1)
       const paid = toOneTimeAddresses()
       expect(paid).toEqual([expect.objectContaining({ hash: refused.txHash })])
@@ -539,6 +543,7 @@ describe('a payment to a contact', () => {
       value: VALUE,
       memo: 'lunch',
     })
+    expect(prepared.stampValue).toBe(STAMP)
     // Signed, saved, held: nothing sent anywhere.
     expect(node.broadcasts).toEqual([])
     expect(bobMailbox).toHaveLength(0)
@@ -554,6 +559,7 @@ describe('a payment to a contact', () => {
         wallet: alice,
         recipient: bob.identity.address,
         items: [prepared.item],
+        stampValue: prepared.stampValue,
         onAttemptCreated: digest => {
           attempt = digest
         },

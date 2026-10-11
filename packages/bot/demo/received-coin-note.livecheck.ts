@@ -38,9 +38,9 @@ import type { ReceivedCoinItem } from '@frank/cashweb/types/messages'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
 import {
-  createEvmChain,
+  createRelayPricedEvmChain,
   installCanonicalDirectory,
-} from '@frank/wallet/chain/monad-chain'
+} from '@frank/wallet/chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
@@ -89,7 +89,7 @@ function loadRoots(dir: string): MonadRootBundle {
 
 /** A wallet with messaging, as a host composes one: directory entry published and installed. */
 async function openWallet(relayBaseUrl: string, dir: string, state: string) {
-  const chain = createEvmChain({
+  const chain = createRelayPricedEvmChain({
     networkId: CHAIN,
     chainIdentifier: CHAIN,
     chainId: 10143,
@@ -99,7 +99,7 @@ async function openWallet(relayBaseUrl: string, dir: string, state: string) {
     stampBurnAddress:
       process.env.MONAD_STAMP_BURN_ADDRESS ??
       '0x000000000000000000000000000000000000dEaD',
-    defaultStampValueWei: 10n ** 12n,
+
     defaultTopicVoteValueWei: 10n ** 12n,
     subAccountPoolSize: 0,
     walletStorageLocation: join(dir, state, 'wallet'),

@@ -19,7 +19,7 @@ import type { PostAttachment } from '../../utils/post-editor'
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
-    defaultStampValue: 10n ** 16n,
+
     toDisplayAmount: (n: bigint) => n.toString(),
     fromDisplayAmount: (s: string) => BigInt(s),
   },

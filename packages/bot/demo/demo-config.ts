@@ -238,10 +238,10 @@ export const DEMO_VARS: readonly DemoVar[] = [
     description: 'Minimum wei a message stamp must pay (0.000001 MON).',
   },
   {
-    name: 'FRANK_DM_DEFAULT_STAMP_VALUE_WEI',
-    scope: 'bots',
-    default: '10000000000000000',
-    description: 'Default stamp value bots pay per message (0.01 MON).',
+    name: 'FRANK_DM_DEFAULT_STAMP_AVU',
+    scope: 'bots, app',
+    default: '0.1',
+    description: 'Fixed recipient-value target in AVU for implicit message stamps; the live adapter fee floor applies. Explicit amounts and free messages remain unchanged.',
   },
   {
     name: 'E2E_DEMO_MAIN_WALLET_JSON',
@@ -398,7 +398,7 @@ export const DEMO_VAR_NAMES: ReadonlySet<string> = new Set(DEMO_VARS.map(v => v.
 
 /** Variables the launcher passes on to child processes only when set (a subset of DEMO_VARS). */
 const PASSTHROUGH = [
-  'FRANK_DM_DEFAULT_STAMP_VALUE_WEI',
+  'FRANK_DM_DEFAULT_STAMP_AVU',
   'RAFFLE_BOT_ENTRY_PRICE_WEI',
   'BLACKJACK_BOT_MIN_WAGER_WEI',
   'BLACKJACK_BOT_MAX_WAGER_WEI',

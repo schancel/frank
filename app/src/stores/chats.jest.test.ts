@@ -5076,13 +5076,13 @@ describe('stores/chats.ts (ticket #42)', () => {
     it('the stamp does not rise because the peer paid more', async () => {
       const store = useChatStore()
       const conv = store.openDirectConversation(peerAddress)
-      expect(store.getStampWei(conv.id)).toBe(activeChain.defaultStampValue)
+      expect(store.getStampWei(conv.id)).toBeUndefined()
       // The peer pays 100 times the default: the next message still carries the default.
       await store.receiveMessages([
-        inbound('rich', peerAddress, 100, activeChain.defaultStampValue * 100n),
+        inbound('rich', peerAddress, 100, ONE_MON * 100n),
       ])
-      expect(store.getStampWei(conv.id)).toBe(activeChain.defaultStampValue)
-      expect(store.getStampWei(peerAddress)).toBe(activeChain.defaultStampValue)
+      expect(store.getStampWei(conv.id)).toBeUndefined()
+      expect(store.getStampWei(peerAddress)).toBeUndefined()
     })
 
     it('keeps the amount the user chose, zero included, and saves it with the conversation', async () => {
@@ -5099,7 +5099,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
       expect(saved.stampWei).toBe((2n * ONE_MON).toString())
       store.setStampWei({ address: conv.id, stampWei: undefined })
-      expect(store.getStampWei(conv.id)).toBe(activeChain.defaultStampValue)
+      expect(store.getStampWei(conv.id)).toBeUndefined()
     })
 
     it('lists the conversation with the newest message first, and opening one does not move it', async () => {

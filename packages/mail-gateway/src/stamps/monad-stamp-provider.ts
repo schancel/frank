@@ -72,7 +72,7 @@ export class MonadStampProvider implements GatewayStampProvider {
       wallet: this.wallet,
       recipient,
       items,
-      stampValue: this.activeChain.defaultStampValue,
+      // An omitted amount uses the host-composed AVU policy before any payment claim.
     });
 
     return {

@@ -75,7 +75,7 @@ jest.mock('../composables/useActiveWallet', () => ({
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
-    defaultStampValue: 1n,
+
     fromDisplayAmount: () => mockStampWei,
     toDisplayAmount: () => '1',
     unit: 'MON',

@@ -23,7 +23,7 @@ import { formatUnits, parseUnits } from 'ethers'
 import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
 import type { MonadRootBundle } from '../chain/active-chain'
 import { getEvmDexDeployment } from '../chain/dex-deployments'
-import { createEvmChain } from '../chain/monad-chain'
+import { createRelayPricedEvmChain } from '../chain/evm-host'
 import { registerMonadIdentity } from '../monad-identity'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { readTokenBalances } from './evm-swap'
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   const [fromSymbol, toSymbol, amount, slippage = '100'] = process.argv.slice(2)
   const chainIdentifier = 'monad-testnet'
   const deployment = getEvmDexDeployment(chainIdentifier)!
-  const wallet = (await createEvmChain({
+  const wallet = (await createRelayPricedEvmChain({
     networkId: 'monad-testnet',
     chainIdentifier: 'monad-testnet',
     chainId: 10143,
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
     stampBurnAddress:
       process.env.MONAD_STAMP_BURN_ADDRESS ??
       '0x000000000000000000000000000000000000dEaD',
-    defaultStampValueWei: 10n ** 16n,
+
     defaultTopicVoteValueWei: 10n ** 12n,
     subAccountPoolSize: 2,
     walletStorageLocation: join(dir, 'state'),

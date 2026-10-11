@@ -1,3 +1,4 @@
+import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 /**
  * Several bots on one host in one process, the way the demo runs them: one shared funding
  * wallet and nonce sequence, and no bot able to hold up another. The host, its poll, journal
@@ -67,7 +68,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     loadMonadChainConfigFromEnv: jest.fn(() => ({
       networkTag: "MONT",
       relayBaseUrl: "http://127.0.0.1:8098",
-      defaultStampValueWei: 10_000_000_000_000_000n,
+      resolveDefaultStamp: fixedStampDefault(10_000_000_000_000_000n),
     })),
   };
 });

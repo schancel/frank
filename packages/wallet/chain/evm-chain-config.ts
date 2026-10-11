@@ -1,3 +1,4 @@
+import type { StampDefaultResolver } from "../oracle/stamp-policy";
 /** Generic EVM configuration; runtime/environment composition remains in monad-chain.ts. */
 import type { NativeTransactionAttemptStore } from "./chain-wallet";
 import type { EvmTransactionBuilder } from "./evm-transaction-builder";
@@ -22,8 +23,12 @@ export interface EvmChainConfig {
   /** `0x`-prefixed Monad burn address Stamp/topic-vote burns are sent to (see
    * `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`). */
   stampBurnAddress: string;
-  /** Default aggregate value, in wei, `directMessages.send` pays per Stamp message. */
-  defaultStampValueWei: bigint;
+  /** Host-owned default stamp pricing. Omitted when only explicit/free amounts are used. */
+  resolveDefaultStamp?: StampDefaultResolver;
+  /** Existing EVM wager minimum, independent of attention-stamp pricing. */
+  minimumWagerValueWei?: bigint;
+  /** Existing background funding sizing, independent of attention-stamp pricing. */
+  stampFundingTargetWei?: bigint;
   /**
    * How many blocks must pass after an account's last transaction before a value transfer from
    * it is safe. Monad: 3. Its reserve-balance rule reverts (and still charges gas for) a

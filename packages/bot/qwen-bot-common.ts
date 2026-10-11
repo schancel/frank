@@ -1,3 +1,4 @@
+import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
 /**
  * Shared setup for the bots: load or create a bot's identity, register its profile, load the
  * operator's main wallet, and open a bot's account-based wallet and directory entry.
@@ -33,7 +34,6 @@ import {
 import type { MonadTxOverrides } from '@frank/wallet/monad-account-tx'
 import {
   canonicalMonadStampClient,
-  createEvmChain,
   loadMonadChainConfigFromEnv,
 } from "@frank/wallet/chain/monad-chain";
 import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
@@ -250,13 +250,11 @@ export interface QwenCanonicalWallet {
 export function qwenCanonicalChainConfig(params: {
   relayBaseUrl: string
   walletStorageLocation: string
-  stampValueWei: bigint
 }): EvmChainConfig {
   return {
     ...loadMonadChainConfigFromEnv(),
     relayBaseUrl: params.relayBaseUrl,
     walletStorageLocation: params.walletStorageLocation,
-    defaultStampValueWei: params.stampValueWei,
   }
 }
 
@@ -377,7 +375,7 @@ export async function openQwenCanonicalWallet(params: {
     throw new QwenStartRefusal('network-not-monad')
   if (params.chain.walletStorageLocation === false)
     throw new QwenStartRefusal('wallet-storage-not-durable')
-  const handle = (await createEvmChain(params.chain).createWallet(
+  const handle = (await createRelayPricedEvmChain(params.chain).createWallet(
     params.roots,
   )) as unknown as EvmChainWalletHandle
   try {

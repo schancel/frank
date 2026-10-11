@@ -2,6 +2,8 @@ import { defineStore, getActivePinia } from 'pinia'
 import { toRaw } from 'vue'
 import {
   type AvuHash,
+  STALE_AFTER_MS,
+  MINING_STALE_AFTER_MS,
   type AvuRates,
   type AvuSpot,
   type FeedRequest,
@@ -45,12 +47,8 @@ export interface OracleState {
   current: OracleRates
 }
 
-const HOUR_MS = 60 * 60 * 1000
 const POLL_SECONDS = ORACLE_REFRESH_INTERVAL_MS / 1000
-/** A price this old has missed a refresh. */
-export const STALE_AFTER_MS = 2 * ORACLE_REFRESH_INTERVAL_MS
-/** Difficulty, subsidy and supply move slowly: chain statistics this old are stale. */
-export const MINING_STALE_AFTER_MS = 2 * HOUR_MS
+export { STALE_AFTER_MS, MINING_STALE_AFTER_MS } from '@frank/wallet/oracle'
 /**
  * While the app is visible, how often the store looks whether the feed has come due.
  * Looking costs nothing; the feed is still asked for once per ORACLE_REFRESH_INTERVAL_MS.

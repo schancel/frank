@@ -57,7 +57,7 @@ const MASTER_LENGTH = 64
 const CODEX32_ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
 /** Every share index except the secret index `s`. */
 const BACKUP_SHARE_INDICES = Object.freeze(
-  Array.from(CODEX32_ALPHABET).filter((index) => index !== 's'),
+  Array.from(CODEX32_ALPHABET).filter(index => index !== 's'),
 )
 
 /** Share-family metadata only; it never authenticates account identity. */
@@ -113,7 +113,7 @@ export type RecoveredAccountBackup =
 export function parseAccountBackupShareInput(text: string): string[] {
   const lines = text
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map(line => line.trim())
     .filter(Boolean)
   const shares: string[] = []
   for (let i = 0; i < lines.length; i++) {
@@ -179,14 +179,12 @@ export function recoverAccountBackupShares(
     if (!candidates.length)
       throw new AccountRecoveryError('descriptor-mismatch', found.shares)
     const supporting = new Set(
-      candidates.flatMap((value) => [...value.supporting]),
+      candidates.flatMap(value => [...value.supporting]),
     )
     const result = Object.freeze({
-      candidates: Object.freeze(
-        candidates.map((value) => Object.freeze(value)),
-      ),
+      candidates: Object.freeze(candidates.map(value => Object.freeze(value))),
       shares: Object.freeze(
-        found.shares.map((share) =>
+        found.shares.map(share =>
           share.status !== 'supports'
             ? share
             : Object.freeze({
@@ -266,7 +264,7 @@ export function exportHistoricalCodex32Backup(input: {
         )
           throw new AccountRecoveryError('confirmation-mismatch')
       } finally {
-        recovered.candidates.forEach((value) =>
+        recovered.candidates.forEach(value =>
           destroyRecoveredBackup(value.account),
         )
       }
@@ -506,14 +504,14 @@ export function recoverFromAnyShares(
     if (expected === undefined) {
       const result = Object.freeze({
         candidates: Object.freeze(
-          candidates.map((value) => Object.freeze(value)),
+          candidates.map(value => Object.freeze(value)),
         ),
         shares: found.shares,
       })
       candidates.length = 0 // ownership moved to the caller
       return result
     }
-    const wanted = candidates.findIndex((candidate) =>
+    const wanted = candidates.findIndex(candidate =>
       equalBytes(
         candidate.account.metadata.descriptor.publicRecoveryFingerprint,
         expected,
@@ -530,7 +528,7 @@ export function recoverFromAnyShares(
       ]),
       // Shares of any other account in the pile are simply not part of this one.
       shares: Object.freeze(
-        found.shares.map((share) =>
+        found.shares.map(share =>
           share.status !== 'supports'
             ? share
             : Object.freeze({
@@ -665,7 +663,7 @@ export function exportCodex32Backup(
         identifier: randomCodex32Identifier(randomBytes),
         indices: BACKUP_SHARE_INDICES.slice(0, shareCount),
         secret: master,
-        randomBytes: (length) => secureRandom(randomBytes, length),
+        randomBytes: length => secureRandom(randomBytes, length),
       }),
     )
     // Read every share back: each one, together with the threshold - 1 shares that
@@ -726,7 +724,7 @@ export function randomCodex32Identifier(
 ): string {
   const bytes = secureRandom(randomBytes, 4)
   try {
-    return Array.from(bytes, (byte) => CODEX32_ALPHABET[byte & 31]).join('')
+    return Array.from(bytes, byte => CODEX32_ALPHABET[byte & 31]).join('')
   } finally {
     bytes.fill(0)
   }
@@ -774,7 +772,7 @@ function accountFrom(
       derived.push(deriveDomainRoot(accountRoot, purpose))
     return Object.freeze({
       roots: Object.freeze(
-        Object.fromEntries(derived.map((value) => [value.purpose, value])),
+        Object.fromEntries(derived.map(value => [value.purpose, value])),
       ) as AccountDomainRoots,
       metadata,
       accountRoot,

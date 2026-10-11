@@ -38,11 +38,11 @@ test.each([
       if (!('seed' in account)) throw new Error('Expected historical material')
       expect(account.derivation).toBe(BIP39_DERIVATION)
       expect(same(account.seed, original)).toBe(true)
-      expect(
-        recovered.shares.every((share) => share.status === 'supports'),
-      ).toBe(true)
+      expect(recovered.shares.every(share => share.status === 'supports')).toBe(
+        true,
+      )
     } finally {
-      recovered.candidates.forEach((value) =>
+      recovered.candidates.forEach(value =>
         destroyRecoveredBackup(value.account),
       )
       original.fill(0)
@@ -78,7 +78,7 @@ test('historical validation rejects a seed paired with another seed’s check, w
     )
     expect(() =>
       recoverAccountBackupShares(
-        left.slice(0, 2).map((line) => line.split(':')[1]!),
+        left.slice(0, 2).map(line => line.split(':')[1]!),
       ),
     ).toThrow('not-account-backup')
   } finally {
@@ -108,16 +108,16 @@ test('root and historical backups in one pile remain separate explicit candidate
   try {
     expect(result.candidates.length).toBe(2)
     expect(
-      result.candidates.filter((value) => 'seed' in value.account).length,
+      result.candidates.filter(value => 'seed' in value.account).length,
     ).toBe(1)
-    expect(result.shares.map((share) => share.candidates)).toEqual([
+    expect(result.shares.map(share => share.candidates)).toEqual([
       [0],
       [0],
       [1],
       [1],
     ])
   } finally {
-    result.candidates.forEach((value) => destroyRecoveredBackup(value.account))
+    result.candidates.forEach(value => destroyRecoveredBackup(value.account))
     signup.cancel()
     original.fill(0)
   }
@@ -139,7 +139,7 @@ test('one corrupted historical paper share is diagnosed while intact shares rest
     expect(result.shares[2]?.status).toBe('invalid')
     expect(result.shares[2]?.code).toBe('bad-checksum')
   } finally {
-    result.candidates.forEach((value) => destroyRecoveredBackup(value.account))
+    result.candidates.forEach(value => destroyRecoveredBackup(value.account))
     original.fill(0)
   }
 })

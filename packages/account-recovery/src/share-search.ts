@@ -108,7 +108,7 @@ export function searchShares(
       const format = historical ? 'historical' : 'root'
       const group = `${format}/${share.identifier}/${share.threshold}/${share.payload.length}`
       const sameIndex = seen.get(`${group}/${share.index}`) ?? []
-      if (sameIndex.some((other) => equal(other.payload, share.payload))) {
+      if (sameIndex.some(other => equal(other.payload, share.payload))) {
         share.payload.fill(0)
         status[position] = 'duplicate'
         return
@@ -146,12 +146,12 @@ export function searchShares(
     const searched = new Set<string>()
     for (const members of ordered) {
       const threshold = members[0]?.threshold ?? 0
-      if (new Set(members.map((member) => member.index)).size < threshold)
+      if (new Set(members.map(member => member.index)).size < threshold)
         continue
       searched.add(members[0]?.group ?? '')
-      searchGroup(members, threshold, (found) => {
+      searchGroup(members, threshold, found => {
         const known = masters.findIndex(
-          (other) =>
+          other =>
             other.format === found.format && equal(other.master, found.master),
         )
         if (known >= 0) {
@@ -169,9 +169,9 @@ export function searchShares(
       }
     })
     const withCandidate = new Set(
-      masters.flatMap((found) =>
+      masters.flatMap(found =>
         found.supporting.map(
-          (position) => entries.find((e) => e.position === position)?.group,
+          position => entries.find(e => e.position === position)?.group,
         ),
       ),
     )
@@ -201,7 +201,7 @@ export function searchShares(
       )
     }
     const result = Object.freeze({
-      masters: Object.freeze(masters.map((found) => Object.freeze(found))),
+      masters: Object.freeze(masters.map(found => Object.freeze(found))),
       shares: Object.freeze(verdicts),
     })
     masters.length = 0 // ownership moved to the caller
@@ -220,7 +220,7 @@ function failureCode(
   groupCount: number,
 ): AccountRecoveryError['code'] {
   if (anySetReachedThreshold) return 'not-account-backup'
-  const invalid = codes.find((code) => code !== null)
+  const invalid = codes.find(code => code !== null)
   if (invalid) return invalid
   if (status.includes('duplicate')) return 'duplicate-share'
   if (groupCount > 1) return 'inconsistent-share'
@@ -244,19 +244,19 @@ function searchGroup(
   const supporters: Set<Entry>[] = []
   const picks = Array.from({ length: threshold }, (_, i) => i)
   for (;;) {
-    const subset = picks.map((pick) => members[pick] as Entry)
+    const subset = picks.map(pick => members[pick] as Entry)
     if (
-      new Set(subset.map((entry) => entry.index)).size === subset.length &&
+      new Set(subset.map(entry => entry.index)).size === subset.length &&
       // A subset inside one known split can only reconstruct that split again.
-      !supporters.some((set) => subset.every((entry) => set.has(entry)))
+      !supporters.some(set => subset.every(entry => set.has(entry)))
     ) {
       const master = reconstruct(subset)
       if (master) {
-        const supporting = members.filter((entry) => liesOn(subset, entry))
+        const supporting = members.filter(entry => liesOn(subset, entry))
         const candidate = report({
           format: subset[0]!.format,
           master,
-          supporting: supporting.map((entry) => entry.position),
+          supporting: supporting.map(entry => entry.position),
         })
         supporters[candidate] = new Set(supporting)
       }

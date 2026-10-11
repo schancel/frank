@@ -630,6 +630,7 @@ export async function collectReceivedEvidence(input: {
         entry.transactionHash === undefined ||
         !verifiedHashes.has(entry.transactionHash)
     );
+    guard();
     return {
       kind: "checked",
       owner,

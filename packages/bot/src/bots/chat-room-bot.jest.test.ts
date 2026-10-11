@@ -139,6 +139,40 @@ describe("ChatRoomBot", () => {
     expect(mockState.get(`nick:${alice}`)).toBe("Alice");
   });
 
+  test("/who uses profile names after explicit nicknames and falls back to exact addresses", async () => {
+    const [alice, bob, blank, missing, failed] = ["a", "b", "c", "d", "e"].map(
+      digit => "0x" + digit.repeat(40)
+    );
+    mockState.set(`user_room:${alice}`, "general");
+    mockState.set(`nick:${alice}`, "  Local Alice  ");
+    for (const address of [alice, bob, blank, missing, failed])
+      await mockContext.subscriptions.subscribe(address, "room:general");
+    (mockContext.lookupPeer as jest.Mock).mockImplementation(async (address) => {
+      if (address === failed) throw new Error("profile lookup unavailable");
+      if (address === missing) return undefined;
+      return { displayName: address === bob ? "  Bob Profile  " : "   " };
+    });
+    const reply = jest.fn(async () => undefined);
+    await bot.onMessage({
+      conversationId: "room-names",
+      peerAddress: alice,
+      peerSubject: alice,
+      timestampMs: Date.now(),
+      payloadDigest: "room-names",
+      items: [{ type: "text", text: "/who" }],
+      reply,
+    }, mockContext);
+    expect(reply).toHaveBeenCalledWith([{
+      type: "text",
+      text: `👥 **Members in #general** (5):\n\n• **Local Alice** (you)\n• Bob Profile\n• ${blank}\n• ${missing}\n• ${failed}`,
+    }]);
+    expect(mockContext.lookupPeer).not.toHaveBeenCalledWith(alice);
+    expect(mockContext.lookupPeer).toHaveBeenCalledWith(bob);
+    expect(mockContext.lookupPeer).toHaveBeenCalledWith(blank);
+    expect(mockContext.lookupPeer).toHaveBeenCalledWith(missing);
+    expect(mockContext.lookupPeer).toHaveBeenCalledWith(failed);
+  });
+
   test("joins rooms, manages member presence, and relays messages to participants", async () => {
     const alice = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const bob = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

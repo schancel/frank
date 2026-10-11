@@ -167,8 +167,16 @@ export class ChatRoomBot implements FrankBotDefinition {
       const subs = await ctx.subscriptions.listSubscribers(`room:${currentRoom}`);
       const memberNames: string[] = [];
       for (const sub of subs) {
-        const name = await this.getDisplayName(sub, ctx);
-        memberNames.push(sub === sender ? `• **${name}** (you)` : `• ${name}`);
+        let name = (await ctx.state.get(`nick:${sub.toLowerCase()}`))?.trim();
+        if (!name) {
+          try {
+            name = (await ctx.lookupPeer(sub))?.displayName?.trim();
+          } catch {
+            // A missing profile must not hide a room member.
+          }
+        }
+        const display = name || sub;
+        memberNames.push(sub === sender ? `• **${display}** (you)` : `• ${display}`);
       }
 
       await msgCtx.reply([

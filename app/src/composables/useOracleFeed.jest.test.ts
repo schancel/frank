@@ -5,6 +5,8 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAppOracleFeed, useOracleHistory } from './useOracleFeed'
 import { useOracleStore } from '../stores/oracle'
+import { testFeed } from '../stores/oracle-test-feed'
+import { developmentBuildActions } from '../../test/jest/utils/pinia-dev-build'
 
 /** Stands in for the browser telling the page whether an element is on screen. */
 class FakeIntersectionObserver {
@@ -55,6 +57,57 @@ describe('useAppOracleFeed', () => {
     expect(oracle.acquire).toHaveBeenCalledTimes(1)
     wrapper.unmount()
     expect(held).toBe(0)
+  })
+})
+
+describe('the app shell, mounted in a development build', () => {
+  const RELAY = 'http://127.0.0.1:28198'
+  const realFetch = globalThis.fetch
+  const realRelay = process.env.MONAD_RELAY_BASE_URL
+
+  afterEach(() => {
+    globalThis.fetch = realFetch
+    if (realRelay === undefined) delete process.env.MONAD_RELAY_BASE_URL
+    else process.env.MONAD_RELAY_BASE_URL = realRelay
+  })
+
+  // The bug of 2026-10-10: in `quasar dev` every AVU value was "Unavailable" and no price
+  // request was ever made. Nothing here is replaced but the network call itself.
+  it('asks its relay for the latest feed on mount, and the answer becomes the AVU rates', async () => {
+    process.env.MONAD_RELAY_BASE_URL = RELAY
+    const now = Math.floor(Date.now() / 1000)
+    const requested: string[] = []
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requested.push(String(input))
+      return {
+        status: 200,
+        ok: true,
+        json: async () =>
+          testFeed([now], { prices: { 'monad-mainnet': 0.02 } }),
+      }
+    }) as unknown as typeof fetch
+
+    const pinia = createPinia()
+    pinia.use(developmentBuildActions)
+    setActivePinia(pinia)
+    const wrapper = mount(
+      defineComponent({
+        setup() {
+          useAppOracleFeed()
+          return () => h('div')
+        },
+      }),
+      { global: { plugins: [pinia] } },
+    )
+    const oracle = useOracleStore()
+    for (let turn = 0; turn < 20 && !oracle.avuHash; turn++) {
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+
+    expect(requested).toEqual([`${RELAY}/oracle/v1/feed?latest`])
+    expect(oracle.avuHash?.kwhPerValue).toBeGreaterThan(0)
+    expect(oracle.rates.monad).toBeGreaterThan(0)
+    wrapper.unmount()
   })
 })
 

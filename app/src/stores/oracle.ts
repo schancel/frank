@@ -1,4 +1,5 @@
 import { defineStore, getActivePinia } from 'pinia'
+import { toRaw } from 'vue'
 import {
   type AvuHash,
   type AvuRates,
@@ -121,11 +122,19 @@ interface Schedule {
   source: FeedSource
 }
 
-/** Per store instance; none of it is state and none of it is saved. */
+/**
+ * Per store; none of it is state and none of it is saved. Keyed by the store's state object
+ * (as the forum and topic stores key theirs), never by the `this` of an action: in a
+ * development build Pinia's devtools plugin calls every action with a new Proxy of the
+ * store as `this`, so a map keyed by `this` gave each call a schedule of its own. `acquire`
+ * then counted its holder on one schedule, `refreshDue` read no holder on another, and the
+ * feed was never asked for.
+ */
 const schedules = new WeakMap<object, Schedule>()
 
-function scheduleOf(store: object): Schedule {
-  let schedule = schedules.get(store)
+function scheduleOf(store: { $state: object }): Schedule {
+  const owner = toRaw(store.$state)
+  let schedule = schedules.get(owner)
   if (!schedule) {
     schedule = {
       holders: 0,
@@ -138,7 +147,7 @@ function scheduleOf(store: object): Schedule {
       onVisibilityChange: null,
       source: relayThenDirect,
     }
-    schedules.set(store, schedule)
+    schedules.set(owner, schedule)
   }
   return schedule
 }

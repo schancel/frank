@@ -18,6 +18,10 @@ jest.mock('vue-router', () => ({
   useRoute: () => mockRoute.value,
 }))
 
+// The raw figure each wallet's balance line shows (useMultichainBalance().getRawBalance).
+const mockRawBalances = ref<Record<string, bigint>>({})
+const mockFormatAvuAmount = jest.fn((_asset: string, _raw: bigint) => '')
+const mockGetAvu = jest.fn((_asset: string, _raw: bigint) => 0)
 const mockEcashError = ref(false)
 const mockEcashBalance = ref<string | undefined>(undefined)
 
@@ -61,7 +65,7 @@ jest.mock('../../composables/useChainBalance', () => ({
         ? { status: 'available', observation }
         : { status: 'loading' }
     },
-    getRawBalance: () => null,
+    getRawBalance: (chain: string) => mockRawBalances.value[chain] ?? null,
   }),
 }))
 
@@ -70,8 +74,9 @@ const mockAcquireOracle = jest.fn(() => mockReleaseOracle)
 
 jest.mock('../../stores/oracle', () => ({
   useSafeOracleStore: () => ({
-    getAvu: () => 0,
-    formatAvuAmount: () => '',
+    getAvu: (asset: string, raw: bigint) => mockGetAvu(asset, raw),
+    formatAvuAmount: (asset: string, raw: bigint) =>
+      mockFormatAvuAmount(asset, raw),
     formatAvuValue: () => '',
     formatUnitRate: (asset: string) => {
       if (asset === 'monad') return '1 MON ≈ 41.67 AVU'
@@ -403,6 +408,33 @@ test('renders universal AVU tooltips on portfolio total and drawer header', () =
       tt.text().includes('1 AVU ≡ 1 kWh (3.6 MJ) of physical compute'),
     ),
   ).toBe(true)
+})
+
+test('the main wallet and the portfolio total value the balance its line shows, not another figure', () => {
+  // Only the shared balance reader owns the figure the panel should value.
+  mockRawBalances.value = { monad: 1640n }
+  mockFormatAvuAmount.mockImplementation(
+    (asset, raw) => `≈ ${asset} ${raw} AVU`,
+  )
+  mockLoaded.value = true
+  try {
+    const view = render()
+    expect(view.text()).toContain('≈ monad 1640 AVU')
+    for (const calls of [
+      mockFormatAvuAmount.mock.calls,
+      mockGetAvu.mock.calls,
+    ]) {
+      expect(calls.length).toBeGreaterThan(0)
+      expect(
+        calls.every(([asset, raw]) => asset === 'monad' && raw === 1640n),
+      ).toBe(true)
+    }
+  } finally {
+    mockRawBalances.value = {}
+    mockFormatAvuAmount.mockImplementation(() => '')
+    mockFormatAvuAmount.mockClear()
+    mockGetAvu.mockClear()
+  }
 })
 
 test('does not hold the oracle feed itself: the app shell holds it for every screen', () => {

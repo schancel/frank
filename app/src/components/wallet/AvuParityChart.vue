@@ -209,29 +209,33 @@
               stroke-width="1"
               :data-test="`chart-point-${line.id}`"
             />
-            <!-- The scale's ends, above and below the plot and anchored to the picture's own
-            edges: beside the plot a long figure ("33.1586 kAVU/oz") ran off the side. -->
-            <text
-              :x="line.axis === 'left' ? 4 : 676"
-              y="14"
-              font-size="10"
-              :text-anchor="line.axis === 'left' ? 'start' : 'end'"
-              :fill="line.color"
-              :data-test="`chart-max-label-${line.axis}`"
-            >
-              {{ line.maxLabel }}
-            </text>
-            <text
-              :x="line.axis === 'left' ? 4 : 676"
-              y="266"
-              font-size="10"
-              :text-anchor="line.axis === 'left' ? 'start' : 'end'"
-              :fill="line.color"
-              :data-test="`chart-min-label-${line.axis}`"
-            >
-              {{ line.minLabel }}
-            </text>
           </g>
+
+          <!-- The scale's ends, above and below the plot and anchored to the picture's own
+          edges: beside the plot a long figure ("33.1586 kAVU/oz") ran off the side. One text
+          per side, each line's figure in its colour, one after another: two lines on the same
+          side (1 MON and gold, both right) used to be drawn on top of each other. -->
+          <template v-for="side in axisLabels" :key="`axis-${side.axis}`">
+            <text
+              v-for="end in side.ends"
+              :key="`${side.axis}-${end.name}`"
+              :x="side.axis === 'left' ? 4 : 676"
+              :y="end.y"
+              font-size="10"
+              :text-anchor="side.axis === 'left' ? 'start' : 'end'"
+              :data-test="`chart-${end.name}-label-${side.axis}`"
+            >
+              <tspan
+                v-for="(label, index) in end.labels"
+                :key="label.id"
+                :dx="index === 0 ? 0 : 10"
+                :fill="label.color"
+                :data-test="`chart-scale-${end.name}-${label.id}`"
+              >
+                {{ label.text }}
+              </tspan>
+            </text>
+          </template>
 
           <line
             v-if="hovered"
@@ -957,6 +961,28 @@ const drawnLines = computed(() =>
     }),
 )
 
+/** The ends of each side's scales: per side, every line's highest and lowest figure. */
+const axisLabels = computed(() =>
+  (['left', 'right'] as const)
+    .map(axis => {
+      const lines = drawnLines.value.filter(line => line.axis === axis)
+      const labels = (pick: 'maxLabel' | 'minLabel') =>
+        lines.map(line => ({
+          id: line.id,
+          color: line.color,
+          text: line[pick],
+        }))
+      return {
+        axis,
+        ends: [
+          { name: 'max', y: 14, labels: labels('maxLabel') },
+          { name: 'min', y: 266, labels: labels('minLabel') },
+        ],
+      }
+    })
+    .filter(side => side.ends[0].labels.length > 0),
+)
+
 interface Column {
   key: number
   x: number
@@ -1166,14 +1192,18 @@ useOracleHistory(() => {
   width: 100%;
 }
 
+/* minmax(0, 1fr), not 1fr: a 1fr column is never narrower than its longest unbreakable
+   content (a card's one-line label), so two such columns grew wider than the page and the
+   right-hand cards were cut off at its edge. */
 .metric-cards-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
 .metric-card-wrapper {
   display: flex;
+  min-width: 0;
 }
 
 .metric-card-featured {
@@ -1182,7 +1212,7 @@ useOracleHistory(() => {
 
 @media (max-width: 520px) {
   .metric-cards-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .metric-card-featured {
     grid-column: span 1;

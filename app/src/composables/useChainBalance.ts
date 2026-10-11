@@ -79,6 +79,17 @@ function observedTokens(observation: TokenObservation) {
     : observation.lastKnown
 }
 
+/**
+ * The wallet's complete `getBalance()` figure, exposed by `useBalance().total`.
+ * It already includes the profile address and sending accounts; every displayed balance
+ * and AVU conversion reads it once. Null until the wallet's first successful read.
+ */
+function shownMonadBalance(
+  monad: ReturnType<typeof useBalance>,
+): bigint | null {
+  return monad.loaded.value ? monad.total.value : null
+}
+
 // Derived presentation only: the existing readers remain the observation owners.
 function getBalancePresentation(
   chain: string,
@@ -89,7 +100,7 @@ function getBalancePresentation(
   if (chain === 'monad') {
     exactBalance = monad.exactBalance?.value
     state = {
-      balance: monad.total.value,
+      balance: shownMonadBalance(monad),
       formattedBalance: monad.formattedBalance.value,
       loaded: monad.loaded.value,
       hasError: monad.hasError.value,
@@ -400,7 +411,7 @@ export function useChainBalance(chainRef: Ref<string> | string) {
   )
 
   const balance = computed<bigint | null>(() => {
-    if (chain.value === 'monad') return monad.balance.value
+    if (chain.value === 'monad') return shownMonadBalance(monad)
     if (chain.value === 'solana') return solanaState.value.balance
     return utxoState(chain.value).balance
   })
@@ -530,9 +541,7 @@ export function useMultichainBalance() {
       return state.loaded ? state.formattedBalance : undefined
     },
     getRawBalance(chain: string): bigint | null {
-      if (chain === 'monad') {
-        return monad.loaded.value ? monad.balance.value : null
-      }
+      if (chain === 'monad') return shownMonadBalance(monad)
       if (chain === 'solana') {
         return solanaState.value.loaded ? solanaState.value.balance : null
       }

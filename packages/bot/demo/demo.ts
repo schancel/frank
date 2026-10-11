@@ -766,7 +766,12 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
   }
 }
 
-/** The exact shell command that starts the app so its browser can reach this stack. */
+/**
+ * The exact shell command that starts the app so its browser can reach this stack.
+ * QCLI_MONAD_RELAY_BASE_URL is the one variable naming the relay: the app in the browser
+ * reads it, and the app's dev server forwards the relay's routes to it
+ * (app/config/relay-dev-proxy.cjs), whatever port this launcher's relay is on.
+ */
 export function appCommand(config: DemoConfig, relayUrl: string): string[] {
   return [
     `cd app && QCLI_MONAD_RELAY_BASE_URL=${relayUrl} QCLI_MONAD_RPC_CHAIN=monad-testnet \\`,

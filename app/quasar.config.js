@@ -17,9 +17,11 @@ import nodePolyfills from 'rollup-plugin-polyfill-node'
 import inject from '@rollup/plugin-inject'
 import stdLibBrowser from 'node-stdlib-browser'
 import publicClientEnv from './config/public-client-env.cjs'
+import relayDevProxyConfig from './config/relay-dev-proxy.cjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const { filterPublicClientEnv } = publicClientEnv
+const { relayDevProxy } = relayDevProxyConfig
 
 // Ticket #51 (Vite migration): `vite-plugin-node-polyfills` (tried first) is a documented,
 // known-broken combination with Vite 8's Rolldown-based dependency optimizer -- confirmed via a
@@ -448,72 +450,16 @@ export default configure(ctx => {
       fs: {
         strict: false,
       },
-      // Reverse-proxy relay routes directly to the local relay daemon so that public/ngrok frontend
+      // Reverse-proxy relay routes directly to the relay so that public/ngrok frontend
       // access (including single-domain tunnel setups) can reach relay endpoints and WebSockets
       // through the same dev server origin without CORS or loopback binding constraints.
+      // Which routes and which relay: config/relay-dev-proxy.cjs.
       proxy: {
-        '/chains': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
-        '/peers': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
-        '/metadata': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
-        '/messages': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
-        '/message': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          ws: true,
-          changeOrigin: true,
-        },
-        '/chain-rpc': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          ws: true,
-          changeOrigin: true,
-        },
-        '/directory': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
-        '/relay': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
-        '/address': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
-        '/profiles': {
-          target: `http://127.0.0.1:${
-            process.env.FRANK_DEMO_RELAY_PORT || 8098
-          }`,
-          changeOrigin: true,
-        },
+        ...relayDevProxy(process.env, {
+          FRANK_DEMO_RELAY_PORT: import.meta.env.FRANK_DEMO_RELAY_PORT,
+          QCLI_MONAD_RELAY_BASE_URL: import.meta.env.QCLI_MONAD_RELAY_BASE_URL,
+          QCLI_E2E_DEMO_RELAY_URL: import.meta.env.QCLI_E2E_DEMO_RELAY_URL,
+        }),
         '/docs': {
           target: `http://127.0.0.1:${
             process.env.FRANK_DOCS_DEV_PORT ||

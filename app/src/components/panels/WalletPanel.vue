@@ -367,14 +367,8 @@ function selectWallet(wallet: string) {
   }
 }
 
-const {
-  monad,
-  getPresentation,
-  getRawBalance,
-  getTokens,
-  getTokenObservation,
-} = useMultichainBalance()
-const { loaded, balance } = monad
+const { getPresentation, getRawBalance, getTokens, getTokenObservation } =
+  useMultichainBalance()
 
 function getWalletTokens(wallet: WalletItemConfig) {
   return getTokens?.(wallet.id) || []
@@ -396,11 +390,9 @@ const props = withDefaults(defineProps<{ shown?: boolean }>(), { shown: true })
 
 const oracle = useSafeOracleStore()
 
+// Every wallet's AVU value, the main one included, converts `getRawBalance`: the same raw
+// figure its balance line shows.
 function getWalletAvu(wallet: WalletItemConfig): string {
-  if (wallet.isMain) {
-    if (!loaded.value || !balance?.value) return ''
-    return oracle.formatAvuAmount('monad', balance.value)
-  }
   const raw = getRawBalance?.(wallet.id)
   if (!raw) return ''
   return oracle.formatAvuAmount(wallet.id as any, raw)
@@ -408,15 +400,10 @@ function getWalletAvu(wallet: WalletItemConfig): string {
 
 const portfolioTotalAvu = computed(() => {
   let total = 0
-  if (loaded.value && balance?.value) {
-    total += oracle.getAvu('monad', balance.value)
-  }
   for (const w of WALLET_CONFIGS) {
-    if (!w.isMain) {
-      const raw = getRawBalance?.(w.id)
-      if (raw) {
-        total += oracle.getAvu(w.id as any, raw)
-      }
+    const raw = getRawBalance?.(w.id)
+    if (raw) {
+      total += oracle.getAvu(w.id as any, raw)
     }
   }
   return oracle.formatAvuValue('monad', total)

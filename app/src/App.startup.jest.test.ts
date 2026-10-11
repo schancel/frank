@@ -198,6 +198,11 @@ const { useChatStore } = require('./stores/chats')
 const { useContactStore } = require('./stores/contacts')
 const { useAppearanceStore } = require('./stores/appearance')
 const { useProfileStore } = require('./stores/my-profile')
+const { useOracleStore } = require('./stores/oracle')
+const { testFeed } = require('./stores/oracle-test-feed')
+const {
+  developmentBuildActions,
+} = require('../test/jest/utils/pinia-dev-build')
 const { store: messageStorePromise } = require('./adapters/level-message-store')
 const {
   serializeMessageWrapper,
@@ -762,4 +767,53 @@ describe('visible read-only startup failure', () => {
       wrapper.unmount()
     },
   )
+
+  // 2026-10-10, in `quasar dev`: every AVU value "Unavailable" and no price request at all.
+  // The real root, runtime, boot sequence and oracle store, with store actions called the
+  // way a development build calls them; only the network call is replaced.
+  it('the mounted app asks its relay for the latest oracle feed, and AVU rates follow', async () => {
+    const relay = 'http://127.0.0.1:28198'
+    const priorRelay = process.env.MONAD_RELAY_BASE_URL
+    const priorFetch = globalThis.fetch
+    process.env.MONAD_RELAY_BASE_URL = relay
+    const requested: string[] = []
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      requested.push(url)
+      if (!url.includes('/oracle/')) throw new Error('not part of this test')
+      return {
+        status: 200,
+        ok: true,
+        json: async () =>
+          testFeed([Math.floor(Date.now() / 1000)], {
+            prices: { 'monad-mainnet': 0.02 },
+          }),
+      }
+    }) as unknown as typeof fetch
+    const { app, pinia } = await fixture()
+    pinia.use(developmentBuildActions)
+    let wrapper: ReturnType<typeof mountedRoot> | undefined
+    try {
+      await setupApis({ app })
+      await messagingBoot({ app })
+      const router = createRouter()
+      await router.push('/wallet')
+      await router.isReady()
+      wrapper = mountedRoot(pinia, router, app.config.globalProperties.$status)
+      await flushPromises()
+      const oracle = useOracleStore()
+      for (let turn = 0; turn < 50 && !oracle.avuHash; turn++) {
+        await new NativePromise(resolve => setTimeout(resolve, 0))
+      }
+      expect(requested.filter(url => url.includes('/oracle/'))).toEqual([
+        `${relay}/oracle/v1/feed?latest`,
+      ])
+      expect(oracle.rates.monad).toBeGreaterThan(0)
+    } finally {
+      wrapper?.unmount()
+      globalThis.fetch = priorFetch
+      if (priorRelay === undefined) delete process.env.MONAD_RELAY_BASE_URL
+      else process.env.MONAD_RELAY_BASE_URL = priorRelay
+    }
+  })
 })

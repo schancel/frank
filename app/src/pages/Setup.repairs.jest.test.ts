@@ -391,8 +391,8 @@ test('BIP39 recovery still offers existing-account retry with a truthful network
   const view = render()
   await view.find('[data-test="legacy-locked-recovery"]').trigger('click')
   await flushPromises()
-  expect(view.find('[data-test="account-status"]').text()).toMatch(
-    /network or account configuration/,
+  expect(view.find('[data-test="account-status"]').text()).toBe(
+    en.accountRecovery.wallet_chain_mismatch,
   )
   const retry = view.find('[data-test="retry-existing-account"]')
   expect(retry.exists()).toBe(true)

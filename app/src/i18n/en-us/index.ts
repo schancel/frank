@@ -251,6 +251,15 @@ export default {
       'The browser has not granted protection against automatic eviction. Your data is still stored. See the installation guidance below and try again; protection is not guaranteed.',
   },
   blackjackP2p: {
+    cancel: 'Cancel',
+    challengeDealerReview: 'The other player chooses a bet within this limit.',
+    challengeBetLimit: 'Bet limit',
+    challengeBeforeBet:
+      'This opens a hand. Review and confirm your bet after the dealer accepts.',
+    preparingChallenge: 'Preparing challenge…',
+    betSummary: 'Bet: {amount}',
+    changeBet: 'Change',
+    confirmBet: 'Bet {amount}',
     notDeliveredYet:
       'The other side does not have this message yet: it is still being sent.',
     notDelivered:

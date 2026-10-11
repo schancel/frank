@@ -108,7 +108,7 @@ stubs.QDialog = defineComponent({
 })
 const FormStub = defineComponent({
   props: ['busy'],
-  emits: ['submit'],
+  emits: ['submit', 'cancel'],
   setup: () => () => h('div', { 'data-stub': 'challenge-form' }),
 })
 const Bubble = defineComponent({
@@ -284,6 +284,45 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     expect(sent.stampValue).toBe(activeChain.fromDisplayAmount(vm.stampAmount))
     expect(wrapper.findComponent(FormStub).exists()).toBe(false)
   })
+
+  it.each(['cancel', 'conversation', 'wallet'] as const)(
+    'prepares a challenge with immediate feedback and never sends after %s changes its captured context',
+    async change => {
+      const { wrapper } = await mountChat(undefined, { realInput: true })
+      await wrapper.find('[data-testid="blackjack-menu-item"]').trigger('click')
+      const form = wrapper.findComponent(FormStub)
+      const vm = wrapper.vm as any
+      let finish!: (balance: bigint) => void
+      jest
+        .spyOn(activeChain.nativeTransfers, 'getBalance')
+        .mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              finish = resolve
+            }),
+        )
+      vm.sendDirectMessage = jest.fn()
+      form.vm.$emit('submit', { role: 'player', maxBetWei: 10n ** 17n })
+      await flushPromises()
+      expect(vm.blackjackPreparing).toBe(true)
+      expect(wrapper.findComponent(FormStub).props('busy')).toBe(true)
+      // Repeated submit while preparation waits never starts a second operation.
+      form.vm.$emit('submit', { role: 'player', maxBetWei: 10n ** 17n })
+      await flushPromises()
+      if (change === 'cancel') form.vm.$emit('cancel')
+      else if (change === 'conversation') vm.address = SELF
+      else
+        mockUseMonadWallet.mockReturnValue({
+          ...mockUseMonadWallet(),
+          changed: true,
+        })
+      finish(10n ** 18n)
+      await flushPromises()
+      expect(vm.sendDirectMessage).not.toHaveBeenCalled()
+      expect(vm.blackjackPreparing).toBe(false)
+      wrapper.unmount()
+    },
+  )
 
   it('submits the mounted composer to the ordinary stamped store path for self-chat', async () => {
     const send = jest

@@ -256,6 +256,15 @@ export default {
       'Le navigateur n’a pas accordé la protection contre l’effacement automatique. Vos données restent enregistrées. Consultez les conseils d’installation ci-dessous et réessayez ; la protection n’est pas garantie.',
   },
   blackjackP2p: {
+    cancel: 'Annuler',
+    challengeDealerReview: 'L’autre joueur choisit une mise dans cette limite.',
+    challengeBetLimit: 'Limite de mise',
+    challengeBeforeBet:
+      'Ceci ouvre une main. Vérifiez et confirmez votre mise après acceptation du croupier.',
+    preparingChallenge: 'Préparation du défi…',
+    betSummary: 'Mise : {amount}',
+    changeBet: 'Modifier',
+    confirmBet: 'Miser {amount}',
     notDeliveredYet:
       'L’autre joueur n’a pas encore ce message : l’envoi est en cours.',
     notDelivered:

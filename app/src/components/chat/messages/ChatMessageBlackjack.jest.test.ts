@@ -271,6 +271,15 @@ describe('the player', () => {
     expect(wrapper.find('[data-testid="blackjack-line"]').text()).toContain(
       'the sender deals',
     )
+    expect(wrapper.find('[data-testid="blackjack-bet-amount"]').exists()).toBe(
+      false,
+    )
+    expect(
+      wrapper.find('[data-testid="blackjack-bet-summary"]').text(),
+    ).toContain('1000 MON')
+    expect(button(wrapper, 'bet').text()).toContain('1000 MON')
+    expect(followUp(wrapper)).toEqual([])
+    await button(wrapper, 'change-bet').trigger('click')
     const input = wrapper.find('[data-testid="blackjack-bet-amount"]')
     // Suggested: the most this user may bet, here the hand's max.
     expect((input.element as HTMLInputElement).value).toBe('1000')
@@ -377,6 +386,7 @@ describe('the player', () => {
   ])('cannot bet %s', async (_n, amount, balance, message) => {
     mockBalance.value = balance
     const wrapper = await mountLast(hand(false, WIN, 0n, []))
+    await button(wrapper, 'change-bet').trigger('click')
     await wrapper.find('[data-testid="blackjack-bet-amount"]').setValue(amount)
     expect(
       wrapper.find('[data-testid="blackjack-amount-error"]').text(),
@@ -731,6 +741,29 @@ describe('older bubbles', () => {
     expect(wrapper.findAll('button')).toHaveLength(0)
   })
 
+  it('keeps the dealer upcard and face-down card when a hit/card bubble becomes historical', async () => {
+    const messages = hand(false, HIT_SEED, 400n, ['hit'])
+    const wrapper = await mountLast(messages)
+    expect(wrapper.props('item').action).toBe('card')
+    expect(wrapper.findAll('[data-testid="blackjack-card-back"]')).toHaveLength(
+      1,
+    )
+    const stand = playerStep(stateOf(messages), 'stand', HIT_SEED)!
+    store.activeConversation.messages.push(
+      toMessage({ outbound: true, item: stand }),
+    )
+    await flushPromises()
+    expect(wrapper.find('[data-testid="blackjack-line"]').text()).toBe(
+      'Card dealt.',
+    )
+    expect(wrapper.findAll('[data-testid="blackjack-card-back"]')).toHaveLength(
+      1,
+    )
+    expect(wrapper.text()).toContain('Dealer shows:')
+    expect(wrapper.findAll('button')).toHaveLength(0)
+    wrapper.unmount()
+  })
+
   it('an older hit/card bubble permanently shows the card dealt', async () => {
     saveSeed(ME, PEER, GAME, HIT_SEED)
     const messages = hand(true, HIT_SEED, 400n, ['hit', 'stand'], 'reveal')
@@ -742,6 +775,10 @@ describe('older bubbles', () => {
     )
     expect(wrapper.text()).toContain('Card: ')
     expect(wrapper.text()).toContain('Player: ')
+    expect(wrapper.text()).toContain('Dealer shows:')
+    expect(wrapper.findAll('[data-testid="blackjack-card-back"]')).toHaveLength(
+      1,
+    )
     expect(wrapper.findAll('button')).toHaveLength(0)
   })
 })

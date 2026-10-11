@@ -149,7 +149,22 @@
       </div>
       <!-- The player bets: the bet is this message's own stamp. -->
       <div v-if="canBet" class="q-mt-sm">
+        <div v-if="!editingBet" class="row items-center q-gutter-sm">
+          <span data-testid="blackjack-bet-summary">{{
+            $t('blackjackP2p.betSummary', { amount: display(amountWei ?? 0n) })
+          }}</span>
+          <q-btn
+            flat
+            dense
+            no-caps
+            :disable="busy"
+            :label="$t('blackjackP2p.changeBet')"
+            data-testid="blackjack-change-bet"
+            @click="editingBet = true"
+          />
+        </div>
         <q-input
+          v-else
           v-model="amount"
           dense
           data-testid="blackjack-bet-amount"
@@ -165,7 +180,9 @@
           color="primary"
           class="q-mt-xs"
           data-testid="blackjack-bet"
-          :label="$t('blackjackP2p.bet')"
+          :label="
+            $t('blackjackP2p.confirmBet', { amount: display(amountWei ?? 0n) })
+          "
           :disable="busy || !!amountError"
           @click="onBet"
         />
@@ -243,6 +260,15 @@
       />
     </template>
     <template v-else-if="item.action === 'card'">
+      <blackjack-cards
+        v-if="view.dealerUpCard !== undefined"
+        :label="$t('blackjackP2p.rowDealer')"
+        :cards="[view.dealerUpCard]"
+        :hidden="1"
+        :sentence="
+          $t('blackjackP2p.dealerShows', { card: cardLabel(view.dealerUpCard) })
+        "
+      />
       <blackjack-cards
         v-if="itemCard !== undefined"
         :label="$t('blackjackP2p.rowCard')"
@@ -413,7 +439,7 @@ export default defineComponent({
     return { balance }
   },
   data() {
-    return { own: '', sending: false, amount: '' }
+    return { own: '', sending: false, amount: '', editingBet: false }
   },
   computed: {
     unit(): string {

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { Wallet } from "ethers";
 import { LevelBotStateStore, type BotContext } from "@frank/bot-framework";
+import { chainAmounts } from "@frank/bot-framework/amounts";
 import { conversationIdentity } from "@frank/bot-framework/inbound-operation-store";
 import { confirmReceived, Outbox } from "./src/bots/money";
 import { openMonadWallet, monadOf } from "./demo/regtest/monad-wallets";
@@ -49,6 +50,7 @@ async function main() {
       throw new Error("unused livecheck capability");
     };
     const ctx: BotContext = {
+      ...chainAmounts(bob.chain),
       botId: "receipt-proof",
       address: bob.address,
       subject: bob.handle.identity.compressedPubKey.toString("hex"),

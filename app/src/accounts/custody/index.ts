@@ -278,8 +278,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
         const state = await read()
         if (state.active?.receipt.operationId === operation) {
           // Lost activation acknowledgement: the active pointer is the authoritative receipt.
-          const roots = await vault.open(state.active.receipt)
-          wipe(roots)
+          await authenticateAccount(state.active)
           const latest = await read()
           if (!same(latest.active, state.active))
             throw new CustodyError('conflict')

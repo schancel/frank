@@ -80,8 +80,14 @@ test('public custody stages, activates and reopens the exact historical seed wit
   expect(recovered).toEqual(expectedSeed())
   recovered.fill(0)
   await custody.activate(staged.attemptId, staged.expectedActive)
+  await expect(
+    custody.activate(staged.attemptId, staged.expectedActive),
+  ).resolves.toMatchObject({ active: pending.account })
   custody.close()
   const reopened = await open()
+  await expect(
+    reopened.activate(staged.attemptId, staged.expectedActive),
+  ).resolves.toMatchObject({ active: pending.account })
   expect((await reopened.snapshot()).active).toEqual(pending.account)
   const capability = await reopened.openActive()
   const seed = capability.takeBip39Seed()

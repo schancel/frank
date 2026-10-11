@@ -557,10 +557,12 @@ export default defineComponent({
 }
 
 .chat-list-title > :deep(.q-badge) {
-  flex: 0 1 auto;
-  max-width: 40%;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  /* The role uses its natural width; the name yields first. A badge wider than the entire
+     title may wrap, but never clips its label or pushes the row sideways. */
+  flex: 0 0 auto;
+  max-width: calc(100% - 4px);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .chat-list-title > :deep(.q-icon) {
@@ -612,9 +614,5 @@ export default defineComponent({
 .chat-list-title > :deep(.q-icon) {
   margin-left: 0;
   margin-right: 0;
-}
-
-.chat-list-title > :deep(.q-badge) {
-  overflow: hidden;
 }
 </style>

@@ -3,6 +3,8 @@
 import { enableAutoUnmount, flushPromises, shallowMount } from '@vue/test-utils'
 import { messages } from 'src/i18n'
 import { ref } from 'vue'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import ChatListItem from './ChatListItem.vue'
 
 // Every row reads the shared `mockOwnAddress` ref below. A row left mounted re-renders when a
@@ -18,15 +20,19 @@ let latest: {
 // Addresses (lower case) that are not contacts, and names of those that are.
 const mockStrangers = new Set<string>()
 const mockNames: Record<string, string> = {}
+const mockCurated = new Set<string>()
+const mockRoles: Record<string, { accountType: number; botRole: number }> = {}
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({ getLatestMessage: () => latest }),
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
     isContact: (address: string) => !mockStrangers.has(address.toLowerCase()),
+    isCurated: (address: string) => mockCurated.has(address.toLowerCase()),
     getContactProfile: (address: string) => ({
       name: mockNames[address?.toLowerCase()] ?? 'Alice Profile',
       avatar: undefined,
+      ...mockRoles[address?.toLowerCase()],
     }),
   }),
 }))
@@ -378,6 +384,57 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
 })
 
 describe('ChatListItem title line', () => {
+  it.each([
+    [3, 'Official Game'],
+    [2, 'Official Faucet'],
+    [5, 'Official Merchant'],
+  ])(
+    'lets the complete official role %s use the title width before the name',
+    (role, label) => {
+      const address = '0x1111111111111111111111111111111111111111'
+      mockCurated.add(address)
+      mockRoles[address] = { accountType: 2, botRole: role as number }
+      const style = document.createElement('style')
+      const source = readFileSync(join(__dirname, 'ChatListItem.vue'), 'utf8')
+      style.textContent = source
+        .split('<style scoped>')[1]
+        .split('</style>')[0]
+        .replace(/:deep\(([^)]+)\)/g, '$1')
+        // jsdom does not implement container queries; the title's flex rules are outside them.
+        .replace(/@container[^{]*\{[\s\S]*?\n\}/g, '')
+      document.head.append(style)
+      try {
+        const wrapper = shallowMount(ChatListItem, {
+          attachTo: document.body,
+          props: { chatAddress: address, compact: false },
+          global: {
+            mocks: {
+              $t: translator('en-us'),
+              $status: { setup: true },
+              $route: { params: {} },
+            },
+            stubs: {
+              AccountBadge: false,
+              QBadge: { template: '<span class="q-badge"><slot /></span>' },
+              QIcon: { template: '<i class="q-icon" />' },
+            },
+          },
+        })
+        const badge = wrapper.get('.chat-list-title .account-badge')
+        expect(badge.text()).toBe(label)
+        const css = getComputedStyle(badge.element)
+        expect(css.flexShrink).toBe('0')
+        expect(css.maxWidth).not.toBe('40%')
+        expect(css.whiteSpace).toBe('normal')
+        expect(css.overflow).not.toBe('hidden')
+      } finally {
+        style.remove()
+        mockCurated.delete(address)
+        delete mockRoles[address]
+      }
+    },
+  )
+
   it.each(['0.4068 MONR', '12.34 SOL', '0 SOL'])(
     'renders separate unread count and configured value chips for %s',
     valueUnread => {

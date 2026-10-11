@@ -1,44 +1,34 @@
 <template>
-  <div class="avu-parity-chart q-pa-sm" data-test="avu-parity-chart">
-    <!-- Figures: each is fetched, read from a bundled published table, or the stated unit -->
-    <div class="metric-cards-grid q-mb-md">
-      <div
-        v-for="tile in tiles"
-        :key="tile.id"
-        class="metric-card-wrapper"
-        :class="{ 'metric-card-featured': tile.featured }"
+  <section class="avu-parity-chart q-pa-sm" data-test="avu-parity-chart">
+    <header class="price-history-header q-mb-sm">
+      <h2
+        class="text-subtitle1 text-weight-bold q-my-none"
+        data-test="price-history-title"
       >
-        <q-card
-          bordered
-          flat
-          class="metric-card full-height"
-          :class="cardBgClass"
-          :data-test="`metric-card-${tile.id}`"
-        >
-          <q-card-section class="q-pa-sm">
-            <div class="row items-center justify-between no-wrap">
-              <span
-                class="text-caption text-weight-medium text-grey-7 ellipsis"
-              >
-                {{ tile.label }}
-              </span>
-              <q-icon :name="tile.icon" :color="tile.color" size="18px" />
-            </div>
-            <div
-              class="text-h6 text-weight-bolder q-mt-xs"
-              :class="tile.value ? `text-${tile.color}` : 'text-grey-6'"
-              :data-test="`metric-value-${tile.id}`"
-            >
-              {{ tile.value || $t('walletPanel.avuUnavailable') }}
-            </div>
-            <div class="text-caption text-grey-6 text-weight-regular">
-              {{ tile.note }}
-            </div>
-          </q-card-section>
-        </q-card>
+        {{ t('walletPanel.priceHistoryTitle', { symbol: quoteUnit }) }}
+      </h2>
+      <div class="text-h5 text-weight-bold" data-test="metric-value-token-rate">
+        {{ currentRate || t('walletPanel.avuUnavailable') }}
       </div>
-    </div>
+      <div
+        class="text-caption text-grey-7"
+        data-test="price-history-current-note"
+      >
+        {{ currentNote }}
+      </div>
+    </header>
 
+    <div class="denomination-controls q-mb-sm">
+      <q-btn-toggle
+        v-model="denomination"
+        dense
+        no-caps
+        unelevated
+        toggle-color="primary"
+        :options="denominationOptions"
+        data-test="denomination-toggle"
+      />
+    </div>
     <div class="timeframe-controls-section q-mb-md">
       <div class="row items-center q-gutter-x-xs">
         <div class="timeframe-pill-track">
@@ -69,26 +59,6 @@
           @click="zoom = null"
         />
       </div>
-
-      <div
-        v-if="legend.length > 0"
-        class="asset-filter-chips-row row items-center q-gutter-xs q-mt-sm"
-      >
-        <div
-          v-for="entry in legend"
-          :key="entry.id"
-          class="asset-chip asset-chip--active"
-          :style="{
-            borderColor: `${entry.color}55`,
-            backgroundColor: `${entry.color}18`,
-            color: entry.color,
-          }"
-          :data-test="`chart-legend-${entry.id}`"
-        >
-          <span class="legend-dot" :style="{ backgroundColor: entry.color }" />
-          <span class="text-weight-medium">{{ entry.label }}</span>
-        </div>
-      </div>
     </div>
 
     <q-card
@@ -97,59 +67,14 @@
       class="chart-canvas-card q-pa-sm"
       :class="cardBgClass"
     >
-      <!-- What the drawn points are and where they came from; says so when there are few or none -->
       <div
-        class="text-caption text-grey-7 q-px-sm q-pb-xs"
-        data-test="chart-data-note"
+        class="text-caption text-weight-medium q-px-sm"
+        data-test="price-history-axis"
       >
-        {{ dataNote }}
+        {{ axisTitle }}
       </div>
-
-      <div
-        class="chart-inspection-panel q-pa-sm q-mb-xs rounded-borders"
-        :class="isDark ? 'bg-dark-1' : 'bg-grey-1'"
-        data-test="chart-inspection-table"
-      >
-        <div
-          class="inspection-grid row items-center justify-between q-col-gutter-xs text-center"
-        >
-          <div class="col inspection-cell" data-test="inspection-date">
-            <div class="text-caption text-grey-7 text-weight-medium">
-              {{
-                hovered
-                  ? $t('walletPanel.inspectingDate')
-                  : $t('walletPanel.latestValue')
-              }}
-            </div>
-            <div class="text-weight-bolder text-subtitle2 q-mt-xs">
-              {{ inspected ? inspected.label : '—' }}
-            </div>
-          </div>
-          <div
-            v-for="cell in inspectedCells"
-            :key="cell.id"
-            class="col inspection-cell"
-            :data-test="`inspection-cell-${cell.id}`"
-          >
-            <div class="text-caption text-grey-7 text-weight-medium ellipsis">
-              {{ cell.label }}
-            </div>
-            <div
-              class="text-weight-bolder text-subtitle2 q-mt-xs"
-              :style="{ color: cell.color }"
-            >
-              {{ cell.value }}
-            </div>
-          </div>
-        </div>
-      </div>
-
       <!-- Lines: one circle per real data point, joined in order. No point is computed between them. -->
-      <div
-        v-if="selectedRange !== 'networks'"
-        class="chart-container"
-        data-test="macro-chart-container"
-      >
+      <div class="chart-container" data-test="macro-chart-container">
         <svg
           class="chart-svg cursor-crosshair"
           viewBox="0 0 680 290"
@@ -211,10 +136,7 @@
             />
           </g>
 
-          <!-- The scale's ends, above and below the plot and anchored to the picture's own
-          edges: beside the plot a long figure ("33.1586 kAVU/oz") ran off the side. One text
-          per side, each line's figure in its colour, one after another: two lines on the same
-          side (1 MON and gold, both right) used to be drawn on top of each other. -->
+          <!-- Scale labels stay anchored inside the chart. -->
           <template v-for="side in axisLabels" :key="`axis-${side.axis}`">
             <text
               v-for="end in side.ends"
@@ -295,97 +217,59 @@
         </svg>
       </div>
 
-      <!-- Dollars per kWh of mining for each basket entry AVU_hash was computed from -->
-      <div v-else class="chart-container" data-test="networks-chart-container">
-        <svg
-          class="chart-svg"
-          viewBox="0 0 680 280"
-          preserveAspectRatio="xMidYMid meet"
-          data-test="networks-chart-svg"
-        >
-          <line
-            x1="55"
-            y1="230"
-            x2="625"
-            y2="230"
-            :stroke="themeColors.axis"
-            stroke-width="1.5"
-          />
-          <g
-            v-for="bar in networkBars"
-            :key="bar.id"
-            class="bar-group"
-            data-test="chart-hover-bar"
-          >
-            <rect
-              :x="bar.x"
-              :y="bar.y"
-              :width="bar.width"
-              :height="bar.height"
-              rx="5"
-              :fill="themeColors.barBase"
-              opacity="0.85"
-            />
-            <text
-              :x="bar.x + bar.width / 2"
-              :y="bar.y - 8"
-              font-size="11"
-              font-weight="bold"
-              text-anchor="middle"
-              :fill="themeColors.textPrimary"
-            >
-              {{ bar.costLabel }}
-            </text>
-            <text
-              :x="bar.x + bar.width / 2"
-              y="248"
-              font-size="12"
-              font-weight="bold"
-              text-anchor="middle"
-              :fill="themeColors.textPrimary"
-            >
-              {{ bar.name }}
-            </text>
-            <text
-              :x="bar.x + bar.width / 2"
-              y="264"
-              font-size="10"
-              text-anchor="middle"
-              :fill="themeColors.text"
-            >
-              {{ bar.spreadLabel }}
-            </text>
-          </g>
-        </svg>
-      </div>
-    </q-card>
-
-    <q-card
-      bordered
-      flat
-      class="q-mt-sm q-pa-sm"
-      :class="cardBgClass"
-      data-test="chart-sources"
-    >
       <div
-        class="row items-center q-gutter-xs text-weight-bold text-caption text-primary q-mb-xs"
+        class="chart-inspection-panel q-pa-sm q-mb-xs rounded-borders"
+        :class="isDark ? 'bg-dark-1' : 'bg-grey-1'"
+        data-test="chart-inspection-table"
       >
-        <q-icon name="menu_book" size="16px" />
-        <span>{{ $t('walletPanel.sourcesTitle') }}</span>
-      </div>
-      <div class="text-caption text-grey-7 q-gutter-y-xs">
-        <div
-          v-for="line in sourceLines"
-          :key="line.id"
-          :data-test="`source-${line.id}`"
-        >
-          • {{ line.text }}
+        <div class="inspection-grid text-center">
+          <div class="inspection-cell" data-test="inspection-date">
+            <div class="text-caption text-grey-7 text-weight-medium">
+              {{
+                hovered
+                  ? $t('walletPanel.inspectingDate')
+                  : $t('walletPanel.latestValue')
+              }}
+            </div>
+            <div class="text-weight-bolder text-subtitle2 q-mt-xs">
+              {{ inspected ? inspected.label : '—' }}
+            </div>
+          </div>
+          <div
+            v-for="cell in inspectedCells"
+            :key="cell.id"
+            class="inspection-cell"
+            :data-test="`inspection-cell-${cell.id}`"
+          >
+            <div class="text-caption text-grey-7 text-weight-medium">
+              {{ cell.label }}
+            </div>
+            <div
+              class="text-weight-bolder text-subtitle2 q-mt-xs"
+              :style="{ color: cell.color }"
+            >
+              {{ cell.value }}
+            </div>
+          </div>
         </div>
       </div>
-    </q-card>
-  </div>
-</template>
 
+      <div
+        class="text-caption text-grey-7 q-px-sm q-py-xs"
+        data-test="chart-data-note"
+      >
+        {{ dataNote }}
+      </div>
+    </q-card>
+    <div
+      v-if="priceSource && denomination !== 'gold'"
+      class="text-caption text-grey-7 q-mt-sm"
+      data-test="price-history-source"
+    >
+      {{ t('walletPanel.priceHistorySource', { source: priceSource }) }}
+    </div>
+  </section>
+</template>
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
@@ -398,12 +282,8 @@ import { UNIT_RATE_ASSET_METRICS, formatAvu } from 'src/utils/avu-units'
 import { useTranslate } from 'src/composables/useTranslate'
 import { useOracleHistory } from 'src/composables/useOracleFeed'
 import {
-  ELECTRICITY_AGGREGATE,
-  MINER_SHARE_STEPS,
-  US_ANNUAL_ELECTRICITY_AND_GOLD,
   at as valueAt,
   avuHashAt,
-  avuPerCoin,
   avuSpotAt,
   priceAssetId,
   seriesName,
@@ -431,7 +311,6 @@ const themeColors = computed(() =>
   isDark.value
     ? {
         grid: '#38bdf8',
-        gold: '#f59e0b',
         token: '#c084fc',
         gridLines: '#334155',
         axis: '#64748b',
@@ -441,7 +320,6 @@ const themeColors = computed(() =>
       }
     : {
         grid: '#0284c7',
-        gold: '#d97706',
         token: '#7c3aed',
         gridLines: '#e2e8f0',
         axis: '#94a3b8',
@@ -464,11 +342,9 @@ const RANGES = {
 } as const
 const EARLIEST = Date.UTC(2010, 0, 1) / 1000
 
-export type TimeRange = keyof typeof RANGES | 'networks'
+export type TimeRange = keyof typeof RANGES
 const selectedRange = ref<TimeRange>('all')
-const timeRange = computed(() =>
-  selectedRange.value === 'networks' ? null : RANGES[selectedRange.value],
-)
+const timeRange = computed(() => RANGES[selectedRange.value])
 
 const rangeToggleOptions = computed(() => [
   { label: t('walletPanel.rangeAll'), value: 'all' },
@@ -477,7 +353,6 @@ const rangeToggleOptions = computed(() => [
   { label: t('walletPanel.range30D'), value: '30d' },
   { label: t('walletPanel.range7D'), value: '7d' },
   { label: t('walletPanel.range24H'), value: '24h' },
-  { label: t('walletPanel.rangeNetworks'), value: 'networks' },
 ])
 
 /** The start of the selected range, fixed when the range is chosen. Unix seconds. */
@@ -511,265 +386,76 @@ const tokenPriceSeries = computed(() => {
   return id ? seriesName('price', id) : ''
 })
 
-function formatNumber(value: number, digits = 2): string {
-  return value.toLocaleString('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  })
-}
-
-function formatSpread(percent: number): string {
-  return `${percent >= 0 ? '+' : ''}${formatNumber(percent, 1)}%`
-}
-
-function formatWeight(weight: number): string {
-  return `${formatNumber(weight * 100, weight < 0.1 ? 1 : 0)}%`
-}
-
-/** "9 Oct 2026": a day of a daily series (they are stamped in UTC). */
-function formatDay(seconds: number): string {
-  return new Date(seconds * 1000).toLocaleDateString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  })
-}
-
-// ---- AVU_hash and AVU_spot, now -----------------------------------------------------------
-
+const quoteUnit = computed(() =>
+  unit.value.multiplier === 1
+    ? unit.value.symbol.replace(/^1 /, '')
+    : unit.value.symbol,
+)
 const inputs = computed<OracleInputs | undefined>(() => oracle.inputs)
-/** Energy per unit of value read off mining, with the basket entries it was computed from. */
-const avuHash = computed(() => oracle.current?.avuHash)
-/** Energy per unit of value at the mean wholesale electricity price. */
-const avuSpot = computed(() => oracle.current?.avuSpot)
-
-/**
- * What a kWh of wholesale electricity costs, in AVU: its price times AVU_hash, which is
- * AVU_hash divided by AVU_spot. At 1 the two readings agree: mining pays for a kWh
- * exactly what the grid charges for one. Stated without any currency.
- */
-function gridKwhInAvu(
-  hash: { kwhPerValue: number } | undefined,
-  spot: { kwhPerValue?: number } | undefined,
-): number | undefined {
-  return hash && spot?.kwhPerValue
-    ? hash.kwhPerValue / spot.kwhPerValue
-    : undefined
-}
-
-const miningRows = computed(() => {
-  const hash = avuHash.value
-  return (hash?.entries ?? []).map(entry => {
-    // AVU a kWh of this entry's mining earns: its pay per kWh priced by the basket.
-    const avuPerKwh = entry.valuePerKwh * hash!.kwhPerValue
-    return {
-      ...entry,
-      avuPerKwh,
-      // Against the basket: 1 AVU per kWh is the basket's own (weighted harmonic) pay.
-      spreadPercent: (avuPerKwh - 1) * 100,
-    }
-  })
+type Denomination = 'hash' | 'spot' | 'gold'
+const denomination = ref<Denomination>('hash')
+const denominationOptions = computed(() => [
+  { label: t('walletPanel.priceHistoryHash'), value: 'hash' },
+  { label: t('walletPanel.priceHistorySpot'), value: 'spot' },
+  { label: t('walletPanel.priceHistoryGold'), value: 'gold' },
+])
+const axisTitle = computed(() =>
+  t(
+    `walletPanel.priceHistoryAxis${
+      denomination.value === 'hash'
+        ? 'Hash'
+        : denomination.value === 'spot'
+        ? 'Spot'
+        : 'Gold'
+    }`,
+    { symbol: quoteUnit.value },
+  ),
+)
+const currentRate = computed(() => {
+  if (denomination.value === 'gold') return ''
+  if (denomination.value === 'hash')
+    return oracle.formatUnitRate?.(asset.value) ?? ''
+  const price = valueAt(
+    inputs.value?.series[tokenPriceSeries.value]?.points,
+    Math.floor(Date.now() / 1000),
+  )
+  const value =
+    price && oracle.current?.avuSpot.kwhPerValue
+      ? price[1] * oracle.current.avuSpot.kwhPerValue * unit.value.multiplier
+      : undefined
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return ''
+  const rate = `${unit.value.symbol} ≈ ${formatAvu(value)}`
+  return oracle.valuesAreTestnet
+    ? t('walletPanel.avuTestnetValue', { rate })
+    : rate
 })
-
-const LEFT_OUT_REASON_KEYS = {
-  efficiency: 'walletPanel.avuHashLeftOutEfficiency',
-  price: 'walletPanel.avuHashLeftOutPrice',
-  chain: 'walletPanel.avuHashLeftOutChain',
-} as const
-
-/** Which basket entries AVU_hash used and with what weight, which it left out, and its age. */
-const basketNote = computed(() => {
-  const current = avuHash.value
-  if (!current) return t('walletPanel.avuHashUnavailableNote')
-  const parts = [
-    t('walletPanel.avuHashNote', {
-      weights: current.entries
-        .map(entry => `${entry.label} ${formatWeight(entry.weight)}`)
-        .join(', '),
-    }),
-  ]
-  if (current.leftOut.length > 0) {
-    parts.push(
-      t('walletPanel.avuHashLeftOut', {
-        coins: current.leftOut
-          .map(
-            entry =>
-              `${entry.label} (${t(LEFT_OUT_REASON_KEYS[entry.reason])})`,
-          )
-          .join(', '),
-      }),
-    )
-  }
-  if (current.entries.some(entry => entry.estimated)) {
-    parts.push(t('walletPanel.avuHashEstimated'))
-  }
-  const staleAge = oracle.avuHashStaleAgeMs?.()
-  if (staleAge !== undefined) {
-    parts.push(t('walletPanel.avuHashStale', { age: formatAge(staleAge) }))
+const currentNote = computed(() => {
+  if (denomination.value === 'gold')
+    return t('walletPanel.priceHistoryGoldUnavailable')
+  const age = oracle.priceAgeMs?.(asset.value)
+  if (!currentRate.value) return t('walletPanel.avuUnavailable')
+  const parts =
+    age === undefined
+      ? []
+      : [
+          t(
+            age > STALE_AFTER_MS
+              ? 'walletPanel.avuPriceStaleNote'
+              : 'walletPanel.avuPriceFreshNote',
+            { age: formatAge(age) },
+          ),
+        ]
+  const spot = oracle.current?.avuSpot
+  if (denomination.value === 'spot' && spot?.at !== undefined) {
+    const spotAge = Date.now() - spot.at * 1000
+    if (spot.stale || spotAge > 3 * DAY * 1000)
+      parts.push(t('walletPanel.avuSpotStale', { age: formatAge(spotAge) }))
   }
   return parts.join(' ')
 })
-
-const networkBars = computed(() => {
-  const rows = miningRows.value
-  const top = Math.max(...rows.map(r => r.avuPerKwh), 0)
-  const step = 520 / Math.max(rows.length, 1)
-  return rows.map((row, index) => {
-    const height = top > 0 ? (row.avuPerKwh / top) * 170 : 0
-    return {
-      ...row,
-      name: `${row.label} · ${formatWeight(row.weight)}`,
-      x: 90 + index * step + (step - 60) / 2,
-      y: 230 - height,
-      width: 60,
-      height,
-      costLabel: `${formatNumber(row.avuPerKwh, 2)} AVU/kWh`,
-      spreadLabel: formatSpread(row.spreadPercent),
-    }
-  })
-})
-
-// ---- Figures ---------------------------------------------------------------------------
-
-interface Tile {
-  id: string
-  label: string
-  icon: string
-  color: string
-  /** Empty when the figure is unavailable; the tile then says so. */
-  value: string
-  note: string
-  featured?: boolean
-}
-
-const tiles = computed<Tile[]>(() => {
-  const age = oracle.priceAgeMs?.(asset.value)
-  const hash = avuHash.value
-  const spot = avuSpot.value
-  const rateLine = oracle.formatUnitRate?.(asset.value) ?? ''
-  let rateNote = t('walletPanel.avuNoPrice')
-  if (rateLine && age !== undefined) {
-    rateNote = t(
-      age > STALE_AFTER_MS
-        ? 'walletPanel.avuPriceStaleNote'
-        : 'walletPanel.avuPriceFreshNote',
-      { age: formatAge(age) },
-    )
-  } else if (!hash) {
-    rateNote = t('walletPanel.avuHashUnavailableNote')
-  }
-
-  const grid = gridKwhInAvu(hash, spot)
-  let spotNote = ''
-  if (spot?.kwhPerValue && spot.at !== undefined) {
-    const electricity = inputs.value?.electricity
-    const priceDay = spot.at
-    const regions = electricity?.regions ?? []
-    // A region counts in the figure when the feed says it counted in that day's price.
-    const counted = regions.filter(
-      region => region.lastContributed === priceDay,
-    )
-    const dropped = regions.filter(
-      region => region.lastContributed !== priceDay,
-    )
-    spotNote = t('walletPanel.avuSpotNote', {
-      window: electricity?.windowDays ?? '',
-      latest: formatDay(priceDay),
-      regions: counted.map(region => region.label).join('; '),
-    })
-    if (dropped.length > 0) {
-      spotNote += ` ${t('walletPanel.avuSpotRegionsLeftOut', {
-        regions: dropped
-          .map(region =>
-            region.lastContributed === undefined
-              ? region.label
-              : t('walletPanel.avuSpotRegionLast', {
-                  region: region.label,
-                  day: formatDay(region.lastContributed),
-                }),
-          )
-          .join('; '),
-      })}`
-    }
-    const spotAge = Date.now() - priceDay * 1000
-    if (spot.stale || spotAge > 3 * DAY * 1000) {
-      spotNote += ` ${t('walletPanel.avuSpotStale', {
-        age: formatAge(spotAge),
-      })}`
-    }
-  } else if (spot?.unavailable) {
-    spotNote = t(
-      spot.unavailable === 'not-positive'
-        ? 'walletPanel.avuSpotNotPositive'
-        : 'walletPanel.avuSpotNoData',
-    )
-  }
-  // What a kWh of mining earns against what a kWh costs at wholesale.
-  const miningVsGrid = grid === undefined ? undefined : (1 / grid - 1) * 100
-
-  return [
-    {
-      id: 'token-rate',
-      label: t('walletPanel.activeTokenCardTitle', {
-        symbol: unit.value.symbol,
-      }),
-      icon: 'bolt',
-      color: 'purple-7',
-      value: rateLine,
-      note: rateNote,
-      featured: true,
-    },
-    {
-      id: 'avu-hash',
-      label: t('walletPanel.avuHashLabel'),
-      icon: 'memory',
-      color: 'positive',
-      value: hash
-        ? t('walletPanel.avuHashValue', {
-            used: hash.entries.length,
-            total: hash.basketSize,
-          })
-        : '',
-      note: basketNote.value,
-    },
-    {
-      id: 'avu-spot',
-      label: t('walletPanel.avuSpotLabel'),
-      icon: 'bolt',
-      color: 'amber-9',
-      value:
-        grid === undefined
-          ? ''
-          : t('walletPanel.avuSpotValue', { avu: formatNumber(grid, 2) }),
-      note: spotNote,
-    },
-    {
-      id: 'hash-vs-spot',
-      label: t('walletPanel.avuHashVsSpotLabel'),
-      icon: 'compare_arrows',
-      color: 'primary',
-      value: miningVsGrid === undefined ? '' : formatSpread(miningVsGrid),
-      note:
-        miningVsGrid === undefined
-          ? t('walletPanel.avuHashVsSpotNote')
-          : t(
-              miningVsGrid < 0
-                ? 'walletPanel.avuHashVsSpotLess'
-                : 'walletPanel.avuHashVsSpotMore',
-              { percent: formatNumber(Math.abs(miningVsGrid), 0) },
-            ),
-    },
-    {
-      id: 'avu-unit',
-      label: t('walletPanel.avuUnitLabel'),
-      icon: 'straighten',
-      color: 'primary',
-      value: t('walletPanel.avuUnitValue'),
-      note: t('walletPanel.avuUnitNote'),
-    },
-  ]
-})
+const priceSource = computed(
+  () => inputs.value?.series[tokenPriceSeries.value]?.source ?? '',
+)
 
 // ---- Lines ------------------------------------------------------------------------------
 
@@ -777,100 +463,64 @@ interface DataPoint {
   /** Unix seconds. */
   at: number
   value: number
+  estimated?: boolean
 }
 
 interface Series {
-  id: 'grid' | 'gold' | 'token'
+  id: 'token'
   label: string
   color: string
   axis: 'left' | 'right'
   format: (value: number) => string
   points: DataPoint[]
+  gaps: number[]
 }
 
-/**
- * The times the lines are evaluated at: the times of the points the local series actually
- * hold inside the range (the selected coin's price, the basket's prices, the electricity
- * price), the last one in each step of the range. Every line is the same functions that
- * give today's figures, evaluated at these times; no time is made up between them.
- */
+/** Only actual selected-coin price timestamps provide historical observations. */
 const sampleTimes = computed<number[]>(() => {
-  const feed = inputs.value
+  const points = inputs.value?.series[tokenPriceSeries.value]?.points ?? []
   const range = timeRange.value
-  if (!feed || !range) return []
-  const names = new Set<string>([ELECTRICITY_AGGREGATE])
-  if (tokenPriceSeries.value) names.add(tokenPriceSeries.value)
-  for (const entry of feed.basket.entries) {
-    for (const chain of entry.chains)
-      names.add(seriesName('price', chain.chain))
-  }
   const now = Math.floor(Date.now() / 1000)
   const lastInStep = new Map<number, number>()
-  names.forEach(name => {
-    for (const point of feed.series[name]?.points ?? []) {
-      if (point[0] < rangeStart.value || point[0] > now) continue
-      const bucket = Math.floor(point[0] / range.step)
-      if ((lastInStep.get(bucket) ?? -1) < point[0]) {
-        lastInStep.set(bucket, point[0])
-      }
-    }
-  })
+  for (const [time] of points) {
+    if (time < rangeStart.value || time > now) continue
+    const bucket = Math.floor(time / range.step)
+    if ((lastInStep.get(bucket) ?? -1) < time) lastInStep.set(bucket, time)
+  }
   return Array.from(lastInStep.values()).sort((a, b) => a - b)
 })
 
 const rangeSeries = computed<Series[]>(() => {
   const feed = inputs.value
-  if (!feed || selectedRange.value === 'networks') return []
-  const grid: DataPoint[] = []
-  const token: DataPoint[] = []
+  if (!feed || denomination.value === 'gold') return []
+  const points: DataPoint[] = []
+  const gaps: number[] = []
   for (const time of sampleTimes.value) {
-    const hash = avuHashAt(feed, time)
-    if (!hash) continue
-    const kwh = gridKwhInAvu(hash, avuSpotAt(feed, time))
-    if (kwh !== undefined) grid.push({ at: time, value: kwh })
     const price = valueAt(feed.series[tokenPriceSeries.value]?.points, time)
-    const value = price ? avuPerCoin(price[1], hash) : undefined
-    if (value !== undefined) {
-      token.push({ at: time, value: value * unit.value.multiplier })
-    }
+    const hash =
+      denomination.value === 'hash' ? avuHashAt(feed, time) : undefined
+    const basis = denomination.value === 'hash' ? hash : avuSpotAt(feed, time)
+    const value =
+      price && basis?.kwhPerValue ? price[1] * basis.kwhPerValue : undefined
+    if (value !== undefined && Number.isFinite(value) && value > 0)
+      points.push({
+        at: time,
+        value: value * unit.value.multiplier,
+        estimated: hash?.entries.some(entry => entry.estimated),
+      })
+    else gaps.push(time)
   }
-  const lines: Series[] = [
-    {
-      id: 'grid',
-      label: t('walletPanel.chartGridAvu'),
-      color: themeColors.value.grid,
-      axis: 'left',
-      format: value => `${formatNumber(value, 2)} AVU`,
-      points: grid,
-    },
+  return [
     {
       id: 'token',
-      label: `${unit.value.symbol} (AVU)`,
+      label: axisTitle.value,
       color: themeColors.value.token,
       axis: 'right',
       format: value => formatAvu(value),
-      points: token,
+      points,
+      gaps,
     },
   ]
-  if (selectedRange.value === 'all' || selectedRange.value === '5y') {
-    lines.push({
-      id: 'gold',
-      label: t('walletPanel.chartGoldAvu'),
-      color: themeColors.value.gold,
-      axis: 'right',
-      format: value => `${formatAvu(value)}/oz`,
-      // The published yearly gold price times AVU_hash at the middle of that year: an
-      // ounce's AVU value, as any coin's. A year with no gold price or no AVU_hash has
-      // no point.
-      points: US_ANNUAL_ELECTRICITY_AND_GOLD.flatMap(year => {
-        const middle = Date.UTC(year.year, 6, 1) / 1000
-        if (year.goldUsd === undefined || middle < rangeStart.value) return []
-        const value = avuPerCoin(year.goldUsd, avuHashAt(feed, middle))
-        return value === undefined ? [] : [{ at: middle, value }]
-      }),
-    })
-  }
-  return lines
 })
 
 // Drag across the chart to zoom to that stretch. Zooming only hides points outside it.
@@ -883,8 +533,6 @@ const series = computed<Series[]>(() => {
     points: s.points.filter(p => p.at >= window.min && p.at <= window.max),
   }))
 })
-
-const legend = computed(() => series.value.filter(s => s.points.length > 0))
 
 function formatAt(at: number): string {
   const date = new Date(at * 1000)
@@ -948,13 +596,15 @@ const drawnLines = computed(() =>
         color: s.color,
         axis: s.axis,
         points,
-        // Two points make a line; one point is drawn as a point.
-        path:
-          points.length < 2
-            ? ''
-            : points
-                .map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x},${p.y}`)
-                .join(' '),
+        // Missing benchmark inputs break the line; isolated observations stay circles.
+        path: points
+          .flatMap((point, index) => {
+            const next = points[index + 1]
+            if (!next || s.gaps.some(at => at > point.key && at < next.key))
+              return []
+            return [`M ${point.x},${point.y} L ${next.x},${next.y}`]
+          })
+          .join(' '),
         minLabel: s.format(min),
         maxLabel: s.format(max),
       }
@@ -1011,7 +661,7 @@ const columnHitWidth = computed(() =>
 
 const hovered = ref<Column | null>(null)
 const dragFrom = ref<Column | null>(null)
-watch([selectedRange, asset], () => {
+watch([selectedRange, asset, denomination], () => {
   hovered.value = null
   dragFrom.value = null
   zoom.value = null
@@ -1045,14 +695,6 @@ const inspected = computed<Column | null>(
 )
 
 const inspectedCells = computed(() => {
-  if (selectedRange.value === 'networks') {
-    return miningRows.value.map(row => ({
-      id: row.id,
-      label: row.label,
-      color: themeColors.value.textPrimary,
-      value: `${formatNumber(row.avuPerKwh, 2)} AVU/kWh`,
-    }))
-  }
   const column = inspected.value
   if (!column) return []
   return series.value.flatMap(s => {
@@ -1070,112 +712,30 @@ const inspectedCells = computed(() => {
   })
 })
 
-/** Whether any point drawn rests on an efficiency figure that is an estimate. */
-const drawsEstimates = computed(() => {
-  const feed = inputs.value
-  const first = sampleTimes.value[0]
-  if (!feed || first === undefined) return false
-  return feed.basket.entries.some(entry => {
-    const one = feed.series[seriesName('efficiency', entry.algorithm)]
-    const step = valueAt(one?.points, first)
-    return (
-      one?.estimatedBefore !== undefined &&
-      step !== undefined &&
-      step[0] < one.estimatedBefore
-    )
-  })
-})
-
-/** Says what is drawn, from where, and when that is little or nothing. */
+/** Missing or single observations never become a substitute series or a fabricated line. */
 const dataNote = computed(() => {
-  if (selectedRange.value === 'networks') {
-    return avuHash.value
-      ? t('walletPanel.chartNoteNetworks')
-      : t('walletPanel.chartNoteNetworksUnavailable')
-  }
+  if (denomination.value === 'gold')
+    return t('walletPanel.priceHistoryGoldUnavailable')
   if (!inputs.value) return t('walletPanel.chartNoteNoFeed')
   const drawn = columns.value
-  if (drawn.length === 0) return t('walletPanel.chartNoteNoHistory')
+  if (drawn.length === 0)
+    return sampleTimes.value.length > 0
+      ? t('walletPanel.priceHistoryBenchmarkUnavailable', {
+          benchmark: denomination.value === 'hash' ? 'AVU_hash' : 'AVU_spot',
+        })
+      : t('walletPanel.chartNoteNoTokenPrice', { symbol: unit.value.symbol })
   const parts = [
-    t('walletPanel.chartNoteLines', {
-      count: drawn.length,
-      first: drawn[0].label,
-    }),
+    drawn.length === 1
+      ? t('walletPanel.priceHistorySinglePoint')
+      : t('walletPanel.priceHistoryPoints', {
+          count: drawn.length,
+          first: drawn[0].label,
+        }),
   ]
-  if (!legend.value.some(line => line.id === 'token')) {
-    parts.push(
-      t('walletPanel.chartNoteNoTokenPrice', { symbol: unit.value.symbol }),
-    )
-  }
-  if (drawsEstimates.value) parts.push(t('walletPanel.chartNoteEstimated'))
+  if (series.value.some(line => line.points.some(point => point.estimated)))
+    parts.push(t('walletPanel.avuHashEstimated'))
   if (oracle.valuesAreTestnet) parts.push(t('walletPanel.chartNoteTestnet'))
   return parts.join(' ')
-})
-
-// ---- Sources ----------------------------------------------------------------------------
-
-/** The eCash miner's share now and before, from the dated steps read off the chain. */
-function ecashShareNote(): string {
-  const steps = MINER_SHARE_STEPS['xec-mainnet'] ?? []
-  const current = steps[steps.length - 1]
-  const previous = steps[steps.length - 2]
-  if (!current || !previous) return ''
-  const percent = (share: number) => `${formatNumber(share * 100, 0)}%`
-  return t('walletPanel.sourceEcashShare', {
-    share: percent(current.share),
-    previous: percent(previous.share),
-    since: formatDay(Date.parse(`${current.from}T00:00:00Z`) / 1000),
-  })
-}
-
-/** One line per kind of input, naming where the feed says its values come from. */
-const sourceLines = computed(() => {
-  const feed = inputs.value
-  const labels = (kind: string) =>
-    Array.from(
-      new Set(
-        Object.entries(feed?.series ?? {}).flatMap(([name, one]) =>
-          name.startsWith(`${kind}/`) && one
-            ? [(one as { source?: string }).source ?? '']
-            : [],
-        ),
-      ),
-    )
-      .filter(Boolean)
-      .join('; ')
-  const lines = [{ id: 'unit', text: t('walletPanel.sourceUnit') }]
-  if (!feed) return lines
-  lines.push(
-    {
-      id: 'prices',
-      text: t('walletPanel.sourcePrices', { sources: labels('price') }),
-    },
-    {
-      id: 'chains',
-      text: [
-        t('walletPanel.sourceChains', { sources: labels('difficulty') }),
-        ecashShareNote(),
-      ]
-        .filter(Boolean)
-        .join(' '),
-    },
-    {
-      id: 'efficiency',
-      text: t('walletPanel.sourceEfficiency', {
-        sources: labels('efficiency'),
-      }),
-    },
-    {
-      id: 'electricity',
-      text: t('walletPanel.sourceElectricity', {
-        sources: feed.electricity.regions
-          .map(region => `${region.label} (${region.attribution})`)
-          .join('; '),
-      }),
-    },
-    { id: 'gold', text: t('walletPanel.sourceGold') },
-  )
-  return lines
 })
 
 // While this chart is on screen, the oracle's local series are made to hold the range it
@@ -1188,219 +748,72 @@ useOracleHistory(() => {
 </script>
 
 <style scoped>
-.avu-parity-chart {
+.avu-parity-chart,
+.chart-canvas-card,
+.chart-container,
+.price-history-header,
+.timeframe-controls-section {
   width: 100%;
-}
-
-/* minmax(0, 1fr), not 1fr: a 1fr column is never narrower than its longest unbreakable
-   content (a card's one-line label), so two such columns grew wider than the page and the
-   right-hand cards were cut off at its edge. */
-.metric-cards-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.metric-card-wrapper {
-  display: flex;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
-
-.metric-card-featured {
-  grid-column: span 2;
+.price-history-header,
+.inspection-cell,
+[data-test='chart-data-note'],
+[data-test='price-history-source'] {
+  overflow-wrap: anywhere;
 }
-
-@media (max-width: 520px) {
-  .metric-cards-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .metric-card-featured {
-    grid-column: span 1;
-  }
-}
-
-.metric-card {
-  border-radius: 8px;
-  width: 100%;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-
-.metric-card:hover {
-  transform: translateY(-1px);
-}
-
 .chart-canvas-card {
   border-radius: 8px;
-  overflow: hidden;
 }
-
 .chart-container {
-  width: 100%;
   position: relative;
 }
-
 .chart-svg {
   width: 100%;
   height: auto;
   display: block;
 }
-
-.legend-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-  transition: background-color 0.15s ease;
-}
-
-.legend-item {
-  padding: 3px 8px;
-  border-radius: 6px;
-  transition: all 0.15s ease;
-  user-select: none;
-  border: 1px solid transparent;
-}
-
-.legend-item:hover {
-  background-color: rgba(0, 0, 0, 0.05);
-}
-
-.body--dark .legend-item:hover {
-  background-color: rgba(255, 255, 255, 0.08);
-}
-
-.legend-item--active {
-  border-color: rgba(0, 0, 0, 0.06);
-}
-
-.body--dark .legend-item--active {
-  border-color: rgba(255, 255, 255, 0.1);
-}
-
-.legend-item--inactive {
-  opacity: 0.45;
-}
-
-.legend-item--inactive:hover {
-  opacity: 0.75;
-}
-
-.timeframe-controls-section {
-  width: 100%;
-}
-
 .timeframe-pill-track {
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 10px;
-  padding: 2px;
-  display: inline-flex;
-  align-items: center;
+  min-width: 0;
+  max-width: 100%;
 }
-
-.body--dark .timeframe-pill-track {
-  background: rgba(255, 255, 255, 0.08);
+.timeframe-btn-toggle {
+  flex-wrap: wrap;
+  max-width: 100%;
 }
-
+.denomination-controls {
+  min-width: 0;
+  max-width: 100%;
+}
+.denomination-controls :deep(.q-btn-toggle) {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
 .timeframe-btn-toggle :deep(.q-btn) {
   font-size: 11.5px;
-  font-weight: 500;
   padding: 4px 10px;
   min-height: 28px;
-  border-radius: 8px;
-  transition: all 0.15s ease;
 }
-
-.asset-filter-chips-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.asset-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 11px;
-  border-radius: 16px;
-  font-size: 11.5px;
-  line-height: 1.2;
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  background: rgba(0, 0, 0, 0.03);
-  color: #555;
-  transition: all 0.15s ease;
-  user-select: none;
-}
-
-.body--dark .asset-chip {
-  border-color: rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.05);
-  color: #bbb;
-}
-
-.asset-chip:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06);
-}
-
-.asset-chip--inactive {
-  opacity: 0.45;
-  text-decoration: line-through;
-  background: transparent !important;
-  border-style: dashed !important;
-  border-color: rgba(0, 0, 0, 0.15) !important;
-}
-
-.body--dark .asset-chip--inactive {
-  border-color: rgba(255, 255, 255, 0.2) !important;
-}
-
-.chart-inspection-panel {
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  transition: background-color 0.2s ease;
-}
-
-.body--dark .chart-inspection-panel {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
 .inspection-grid {
-  min-height: 48px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
-
 .inspection-cell {
+  min-width: 0;
   padding: 4px 6px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.02);
-  margin: 0 3px;
-  transition: background-color 0.15s ease;
 }
-
-.body--dark .inspection-cell {
-  background: rgba(255, 255, 255, 0.03);
+@media (max-width: 360px) {
+  .inspection-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
-
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 .unselectable {
   user-select: none;
 }
-
 .cursor-crosshair {
   cursor: crosshair;
-}
-
-.chart-svg-tooltip {
-  pointer-events: none;
-  user-select: none;
 }
 </style>

@@ -32,7 +32,16 @@ jest.mock('./session', () => ({
       return mockState
     },
     getWallet: () => mockGetWallet(),
-    getActiveDomainRoot: (purpose: string) => mockGetRoot(purpose),
+    getSolanaSigner: async () => {
+      const root = await mockGetRoot('solana-wallet')
+      try {
+        return await jest
+          .requireActual('@solana/web3.js')
+          .Keypair.fromSeed(root)
+      } finally {
+        root.fill(0)
+      }
+    },
   },
 }))
 jest.mock('@solana/web3.js', () => ({

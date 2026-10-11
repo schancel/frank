@@ -5,6 +5,8 @@
  * `UtxoWallet`. Nothing is inferred from names or prefixes, and a chain without a wallet row is
  * refused.
  */
+import { BIP39_DERIVATION } from "../../domain-roots/src";
+import type { HistoricalBip39Seed } from "../../domain-roots/src";
 import { ChronikClient } from "chronik-client";
 import type { NativeAssetChain } from "./active-chain";
 import type {
@@ -23,12 +25,36 @@ import type { UtxoWalletStore } from "../utxo-wallet";
 export interface RelayUtxoChain {
   readonly chain: Omit<NativeAssetChain, "createWallet">;
   /**
-   * `root` is the 32-byte `ecash-bch-wallet` domain root, the BIP32 seed of every Bitcoin-family
-   * wallet. The caller keeps ownership and may clear it once this resolves.
+   * `root` is either the existing 32-byte ecash-bch-wallet domain root or explicitly tagged
+   * original BIP39 seed64. Both use the configured family HD paths. The caller owns the input.
    */
-  createWallet(root: Uint8Array): Promise<NativeWalletHandle>;
+  createWallet(
+    root: Uint8Array | HistoricalBip39Seed
+  ): Promise<NativeWalletHandle>;
   /** Release the indexer connection. */
   close(): Promise<void>;
+}
+
+async function withMaterial<T>(
+  material: Uint8Array | HistoricalBip39Seed,
+  open: (material: Uint8Array | HistoricalBip39Seed) => Promise<T>
+): Promise<T> {
+  const historical = !(material instanceof Uint8Array);
+  const source = historical ? material.seed : material;
+  if (
+    !(source instanceof Uint8Array) ||
+    source.length !== (historical ? 64 : 32) ||
+    (historical && material.derivation !== BIP39_DERIVATION)
+  )
+    throw new Error("Expected a domain root32 or tagged original BIP39 seed64");
+  const bytes = new Uint8Array(source);
+  try {
+    return await open(
+      historical ? { derivation: BIP39_DERIVATION, seed: bytes } : bytes
+    );
+  } finally {
+    bytes.fill(0);
+  }
 }
 
 export function openRelayUtxoChain(params: {
@@ -59,16 +85,24 @@ export function openRelayUtxoChain(params: {
       networkId: chainIdentifier,
       checkpoint: params.checkpoint,
       nativeAttemptStore: params.nativeAttemptStore,
-      chronik: new ChronikClient([`${relay}/chain-rpc/${chainIdentifier}/chronik`]),
+      chronik: new ChronikClient([
+        `${relay}/chain-rpc/${chainIdentifier}/chronik`,
+      ]),
     });
     return {
       chain,
       createWallet: (root) =>
-        chain.createWallet({
-          registry: "frank-domain-roots-v1",
-          purpose: "ecash-bch-wallet",
-          bytes: root,
-        }),
+        withMaterial(root, (material) =>
+          chain.createWallet(
+            material instanceof Uint8Array
+              ? {
+                  registry: "frank-domain-roots-v1",
+                  purpose: "ecash-bch-wallet",
+                  bytes: material,
+                }
+              : material
+          )
+        ),
       close: async () => undefined,
     };
   }
@@ -86,7 +120,12 @@ export function openRelayUtxoChain(params: {
     });
     return {
       chain,
-      createWallet: (root) => chain.createWallet(root),
+      createWallet: (root) =>
+        withMaterial(root, (material) =>
+          chain.createWallet(
+            material instanceof Uint8Array ? material : material.seed
+          )
+        ),
       close: () => client.close(),
     };
   }

@@ -410,9 +410,9 @@ export function createAccountSession(deps: {
       if (state.status !== 'ready' || !wallet) throw new CustodyError('locked')
       return wallet
     },
-    async getActiveDomainRoot<P extends DomainRoot['purpose']>(
+    async getActiveFamilyMaterial<P extends DomainRoot['purpose']>(
       purpose: P,
-    ): Promise<Uint8Array> {
+    ): Promise<DomainRoot<P> | HistoricalBip39Seed> {
       const checkCurrent = captureDerivation()
       await session.initialize()
       checkCurrent()
@@ -428,14 +428,56 @@ export function createAccountSession(deps: {
           capability.account.receipt.context.recoveryFormat ===
           BIP39_RECOVERY_FORMAT
         )
-          throw new AccountPurposeUnavailableError(purpose)
+          return {
+            derivation: BIP39_DERIVATION,
+            seed: capability.takeBip39Seed(),
+          }
         roots = capability.takeRoots()
         const found = roots.find(r => r.purpose === purpose)
         if (!found) throw new AccountPurposeUnavailableError(purpose)
-        return new Uint8Array(found.bytes)
+        return { ...found, purpose, bytes: new Uint8Array(found.bytes) }
       } finally {
         roots.forEach(r => r.bytes.fill(0))
         capability.close()
+      }
+    },
+    async getActiveDomainRoot<P extends DomainRoot['purpose']>(
+      purpose: P,
+    ): Promise<Uint8Array> {
+      const material = await session.getActiveFamilyMaterial(purpose)
+      if ('seed' in material) {
+        material.seed.fill(0)
+        throw new AccountPurposeUnavailableError(purpose)
+      }
+      return material.bytes
+    },
+    async getSolanaSigner() {
+      const checkCurrent = captureDerivation()
+      const material = await session.getActiveFamilyMaterial('solana-wallet')
+      try {
+        if ('seed' in material) {
+          const { SolanaHdKeyring } = await import(
+            '@frank/wallet/ed25519-hd-keyring'
+          )
+          const account = await SolanaHdKeyring.fromSeed(
+            material.seed,
+          ).deriveSubAccount(0)
+          const { Keypair } = await import('@solana/web3.js')
+          try {
+            const signer = await Keypair.fromSeed(account.privateKeyBytes)
+            checkCurrent()
+            return signer
+          } finally {
+            account.privateKeyBytes.fill(0)
+          }
+        }
+        const { Keypair } = await import('@solana/web3.js')
+        const signer = await Keypair.fromSeed(material.bytes)
+        checkCurrent()
+        return signer
+      } finally {
+        if ('seed' in material) material.seed.fill(0)
+        else material.bytes.fill(0)
       }
     },
     getCachedChainAddress(chain: string): string | undefined {
@@ -498,6 +540,8 @@ export function createAccountSession(deps: {
       const inFlight = chainAddressInFlight.get(netId)
       if (inFlight) return inFlight
       const promise = (async () => {
+        if (entry?.family === 'solana')
+          return (await session.getSolanaSigner()).publicKey.toBase58()
         const purpose =
           chain === 'ecash' ||
           chain === 'bitcoin' ||
@@ -511,7 +555,8 @@ export function createAccountSession(deps: {
             : chain === 'solana' || netId.startsWith('solana-')
             ? 'solana-wallet'
             : 'evm-wallet'
-        const root = await this.getActiveDomainRoot(purpose)
+        const material = await session.getActiveFamilyMaterial(purpose)
+        const root = 'seed' in material ? material.seed : material.bytes
         try {
           if (chain === 'ecash' || netId.startsWith('xec-')) {
             const { HDNodeWallet } = await import('ethers')
@@ -612,11 +657,6 @@ export function createAccountSession(deps: {
             payload.set(hash160, 1)
             const addr = encodeBase58Check(payload)
             return addr
-          } else if (chain === 'solana' || netId.startsWith('solana-')) {
-            const { Keypair } = await import('@solana/web3.js')
-            const kp = await Keypair.fromSeed(root)
-            const addr = kp.publicKey.toBase58()
-            return addr
           } else {
             const { HDNodeWallet } = await import('ethers')
             // The wallet's receive address; m/44'/60'/0'/0/0 is stamp-pool account 0.
@@ -678,15 +718,8 @@ export function createAccountSession(deps: {
       if (inFlight) return inFlight
       const promise = (async () => {
         if (curve === 'ed25519') {
-          const root = await this.getActiveDomainRoot('solana-wallet')
-          try {
-            const { Keypair } = await import('@solana/web3.js')
-            const kp = await Keypair.fromSeed(root)
-            const pubKeyBytes = new Uint8Array(kp.publicKey.toBytes())
-            return pubKeyBytes
-          } finally {
-            root.fill(0)
-          }
+          const kp = await session.getSolanaSigner()
+          return new Uint8Array(kp.publicKey.toBytes())
         }
         throw new Error(`Unsupported curve: ${curve}`)
       })()

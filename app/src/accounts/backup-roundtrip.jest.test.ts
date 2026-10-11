@@ -68,6 +68,52 @@ test('a historical BIP39 phrase uses shared staging, activation and reopen witho
   })
 })
 
+test('historical recovery derives every existing family address locally from its original seed', async () => {
+  const phrase = 'test test test test test test test test test test test junk'
+  const session = freshDevice()
+  await session.initialize()
+  await stageBip39Recovery(session, phrase)
+  await activate(session)
+  const material = await session.getActiveFamilyMaterial('ecash-bch-wallet')
+  expect('seed' in material).toBe(true)
+  if (!('seed' in material))
+    throw new Error('Expected historical seed material')
+  try {
+    const { HDNodeWallet, getBytes } = await import('ethers')
+    const { encodeCashAddress } = await import('ecashaddrjs')
+    const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+    const { sha256 } = await import('@noble/hashes/sha256.js')
+    const node = HDNodeWallet.fromSeed(material.seed).derivePath(
+      "m/44'/1899'/0'/0/0",
+    )
+    expect(await session.getChainAddress('ecash')).toBe(
+      encodeCashAddress(
+        'ectest',
+        'p2pkh',
+        ripemd160(sha256(getBytes(node.publicKey))),
+      ),
+    )
+    expect(await session.getChainAddress('bitcoin')).toMatch(/^tb1q/)
+    expect(await session.getChainAddress('bitcoincash')).toMatch(/^bchtest:/)
+    const { SolanaHdKeyring } = await import('@frank/wallet/ed25519-hd-keyring')
+    const original = await SolanaHdKeyring.fromMnemonic(phrase)
+    const leaf = await original.deriveSubAccount(0)
+    try {
+      expect(await session.getChainAddress('solana')).toBe(leaf.address)
+      expect((await session.getSolanaSigner()).publicKey.toBase58()).toBe(
+        leaf.address,
+      )
+      expect(await session.getCurvePublicKey('ed25519')).toEqual(
+        new Uint8Array(leaf.publicKey.toBytes()),
+      )
+    } finally {
+      leaf.privateKeyBytes.fill(0)
+    }
+  } finally {
+    material.seed.fill(0)
+  }
+})
+
 test('recovered custody stays durable while required profile restoration gates activation and retry', async () => {
   const originalDevice = freshDevice()
   const shares = await signUp(originalDevice)

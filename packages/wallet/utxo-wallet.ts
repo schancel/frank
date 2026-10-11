@@ -340,7 +340,7 @@ export class UtxoWallet implements NativeWalletHandle {
   }
 
   /**
-   * `seed` is the 32-byte wallet root, used directly as the BIP32 seed (the same interpretation
+   * `seed` is the wallet domain root32 or original historical BIP39 seed64, used directly as the BIP32 seed (the same interpretation
    * the eCash wallet uses). The caller keeps ownership of it.
    */
   static async create(params: {

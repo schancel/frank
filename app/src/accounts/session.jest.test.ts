@@ -728,9 +728,17 @@ describe.each(['refresh replacement', 'invalidation'] as const)(
         const a = deferred<Uint8Array>(),
           b = deferred<Uint8Array>()
         const roots = jest
-          .spyOn(f.session, 'getActiveDomainRoot')
-          .mockReturnValueOnce(a.promise)
-          .mockReturnValueOnce(b.promise)
+          .spyOn(f.session, 'getActiveFamilyMaterial')
+          .mockImplementationOnce(async purpose => ({
+            registry: DERIVATION_REGISTRY_ID,
+            purpose,
+            bytes: await a.promise,
+          }))
+          .mockImplementationOnce(async purpose => ({
+            registry: DERIVATION_REGISTRY_ID,
+            purpose,
+            bytes: await b.promise,
+          }))
         const read = derivation(f, path)
         let displayed: string | Uint8Array | undefined
         const old = read.read().then(value => {
@@ -767,14 +775,22 @@ test.each(derivedPaths)(
     await f.session.initialize()
     const a = deferred<Uint8Array>()
     const roots = jest
-      .spyOn(f.session, 'getActiveDomainRoot')
-      .mockReturnValueOnce(a.promise)
+      .spyOn(f.session, 'getActiveFamilyMaterial')
+      .mockImplementationOnce(async purpose => ({
+        registry: DERIVATION_REGISTRY_ID,
+        purpose,
+        bytes: await a.promise,
+      }))
     const read = derivation(f, path)
     const failure = new Error('synthetic derivation failure')
     a.reject(failure)
     await expect(read.read()).rejects.toBe(failure)
     const pending = deferred<Uint8Array>()
-    roots.mockReturnValueOnce(pending.promise)
+    roots.mockImplementationOnce(async purpose => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: await pending.promise,
+    }))
     const old = read.read()
     const rejected = expect(old).rejects.toMatchObject({ code: 'closed' })
     await f.session.close()

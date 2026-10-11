@@ -7,6 +7,13 @@ export const DERIVATION_REGISTRY_ID = 'frank-domain-roots-v1' as const
 /** Historical Frank recovery is a distinct BIP32 derivation, never an HKDF domain root. */
 export const BIP39_RECOVERY_FORMAT = 'bip39-pbkdf2-seed-v1' as const
 export const BIP39_DERIVATION = 'frank-bip39-bip32-v1' as const
+
+/** Original PBKDF2 seed, interpreted through the historical family HD paths. */
+export interface HistoricalBip39Seed {
+  readonly derivation: typeof BIP39_DERIVATION
+  readonly seed: Uint8Array
+}
+
 export const DERIVATION_REGISTRY_CODE = 1 as const
 export const DERIVATION_ALGORITHM_ID = 'hkdf-sha256-rfc5869' as const
 

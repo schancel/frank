@@ -27,6 +27,7 @@ import {
   concat,
 } from 'ethers'
 import { BIP39_DERIVATION, DERIVATION_REGISTRY_ID } from '../domain-roots/src'
+import type { HistoricalBip39Seed } from '../domain-roots/src'
 import type { DomainRoot, DomainPurpose } from '../domain-roots/src'
 import type { HDSeed } from './chain/active-chain'
 import { MonadIdentity, MONAD_IDENTITY_DERIVATION_PATH } from './monad-identity'
@@ -803,11 +804,7 @@ export function createMonadWalletMaterial(
   }
 }
 
-/** Persisted historical derivation, explicitly distinct from a Codex32 root bundle. */
-export interface HistoricalBip39Seed {
-  readonly derivation: typeof BIP39_DERIVATION
-  readonly seed: Uint8Array
-}
+export type { HistoricalBip39Seed } from '../domain-roots/src'
 
 export function historicalBip39WalletMaterial(
   input: HistoricalBip39Seed,

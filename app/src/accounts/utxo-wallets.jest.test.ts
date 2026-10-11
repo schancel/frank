@@ -5,7 +5,11 @@ jest.mock('./session', () => ({
     get state() {
       return mockState
     },
-    getActiveDomainRoot: (purpose: string) => mockGetRoot(purpose),
+    getActiveFamilyMaterial: async (purpose: string) => ({
+      registry: 'frank-domain-roots-v1',
+      purpose,
+      bytes: await mockGetRoot(purpose),
+    }),
   },
 }))
 const mockCreateWallet = jest.fn()

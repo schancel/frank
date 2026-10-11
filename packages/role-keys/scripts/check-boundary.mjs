@@ -88,6 +88,7 @@ assert.deepEqual(actual.match, {
 assert.equal(actual.disposed, true)
 assert.deepEqual(actual.exports, [
   'RoleKeyError',
+  'deriveBip39RoleLeaves',
   'deriveRoleLeaves',
   'matchLocalRolePoints',
 ])

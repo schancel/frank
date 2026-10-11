@@ -22,6 +22,45 @@
           @scroll="scrollHandler"
           class="q-px-sm absolute full-width full-height"
         >
+          <div class="text-h6">v0.3.0 — Interim update — 2026-10-11</div>
+          <div class="text-body1">
+            <ul>
+              <li>
+                Bring message payments into the wallet history alongside
+                transfers and swaps, with clearer payment and delivery states.
+              </li>
+              <li>
+                Improve the wallet overview, balance breakdown, and controls for
+                sending and receiving funds.
+              </li>
+              <li>
+                Restore historical BIP39 account identities and show the
+                recovered account before activation. Restore its profile before
+                enabling messaging, with an explicit profile setup step when
+                needed.
+              </li>
+              <li>
+                Add AVU value displays and price history. Default message stamps
+                use a configured AVU amount; explicit amounts and free messages
+                remain available.
+              </li>
+              <li>
+                Improve the swap interface, quote details, progress, and wallet
+                history entries.
+              </li>
+              <li>
+                Improve contact discovery and new conversations, including
+                username display and separate conversations with the same
+                contact.
+              </li>
+            </ul>
+            <p>
+              Still in progress: retrieving old mailbox history, complete
+              recovery of wallet funds and history from a seed or backup, and
+              equivalent recovery across other chain families.
+            </p>
+          </div>
+
           <div class="text-h6">2026-09-28 — Frank Monad Preview</div>
           <div class="text-body1">
             <ul>

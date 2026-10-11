@@ -10,6 +10,8 @@ import {
 } from '@frank/wallet/chain'
 import en from '../i18n/en-us'
 import { useProfileStore } from '../stores/my-profile'
+import * as ownProfile from '../utils/own-profile'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
 
 jest.mock('../accounts/session', () => ({
   accountStatus: jest.requireActual('vue').reactive({
@@ -31,6 +33,7 @@ jest.mock('../accounts/session', () => ({
       pending: null,
     })),
     setBip39Params: jest.fn(),
+    getWallet: jest.fn(),
   },
   importBip39Wallet: jest.fn(),
 }))
@@ -171,6 +174,8 @@ describe('Setup page advanced relay configuration', () => {
     mockBeginNew.mockClear()
     mockBeginRestore.mockClear()
     mockConfirm.mockClear()
+    accountSession.activatePending.mockClear()
+    accountSession.getWallet.mockReset()
     jest.restoreAllMocks()
   })
 
@@ -293,7 +298,6 @@ describe('Setup page advanced relay configuration', () => {
     await view
       .get('[data-test="confirm-shares"] input')
       .setValue('share1\nshare2')
-    await view.get('[data-test="display-name"] input').setValue('Restored User')
     await flushPromises()
 
     // Submit restore form
@@ -315,45 +319,76 @@ describe('Setup page advanced relay configuration', () => {
     view.unmount()
   })
 
-  test('the name typed at setup becomes the profile name on activation, and the field says it is required', async () => {
-    mockConfirm.mockImplementationOnce(async () => {
+  test('restore does not ask for a display name before verifying the root', async () => {
+    const view = render()
+    await view.get('[data-test="restore-account"]').trigger('click')
+    await flushPromises()
+    expect(view.find('[data-test="display-name"]').exists()).toBe(false)
+    await view.get('[data-test="confirm-shares"] input').setValue('s1')
+    await view.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockConfirm).toHaveBeenCalledWith(['s1'], '')
+    view.unmount()
+  })
+
+  test.each(['adopted', 'missing', 'unreachable'] as const)(
+    'after activation an unnamed recovered account handles an %s profile',
+    async outcome => {
+      const identity = MonadIdentity.fromPrivateKeyHex('0x' + '02'.repeat(32))
       Object.assign(mockAccount, {
-        status: 'fresh',
         pending: {
           status: 'staging',
           account: {
-            displayName: 'Tester A',
+            displayName: '',
             descriptor: 'PUBLIC-DESC',
-            receipt: { operationId: 'op-1' },
+            receipt: { operationId: 'restore-op' },
           },
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
-        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
+        pendingIdentityAddress: identity.displayAddress,
       })
-      return { isRestore: false, discoveredRelayUrl: undefined }
-    })
-    accountSession.activatePending.mockImplementationOnce(async () => {
-      Object.assign(mockAccount, { status: 'ready', pending: null })
-    })
-
-    const view = render()
-    await view.get('[data-test="restore-account"]').trigger('click')
-    await flushPromises()
-    // Verify is disabled until a name is typed: the field says so itself.
-    expect(view.html()).toContain(en.accountRecovery.display_name_required)
-    await view.get('[data-test="confirm-shares"] input').setValue('s1\ns2')
-    await view.get('[data-test="display-name"] input').setValue('Tester A')
-    await view.get('form').trigger('submit')
-    await flushPromises()
-
-    expect(useProfileStore().profile.name).toBeUndefined()
-    await view.get('[data-test="activate-account"]').trigger('click')
-    await flushPromises()
-    expect(useProfileStore().profile.name).toBe('Tester A')
-
-    view.unmount()
-  })
+      accountSession.activatePending.mockImplementationOnce(async () => {
+        Object.assign(mockAccount, {
+          status: 'ready',
+          pending: null,
+          revision: 1,
+        })
+      })
+      accountSession.getWallet.mockResolvedValue({ identity })
+      const read = jest
+        .spyOn(ownProfile, 'restoreOwnProfileWithRelay')
+        .mockImplementation(async () => {
+          // Profile restoration is downstream of durable custody activation.
+          expect(mockAccount.status).toBe('ready')
+          expect(mockAccount.pending).toBeNull()
+          return outcome
+        })
+      const view = render()
+      await view.get('[data-test="activate-account"]').trigger('click')
+      await flushPromises()
+      expect(read).toHaveBeenCalledTimes(1)
+      if (outcome === 'unreachable') {
+        expect(mockPush).not.toHaveBeenCalled()
+        expect(view.get('[data-test="account-error"]').text()).toBe(
+          en.accountRecovery.profile_restore_unreachable,
+        )
+        expect(view.emitted('setupCompleted')).toBeUndefined()
+        read.mockResolvedValueOnce('adopted')
+        await view.get('[data-test="retry-profile-recovery"]').trigger('click')
+        await flushPromises()
+        expect(mockPush).toHaveBeenCalledWith('/wallet')
+        expect(accountSession.activatePending).toHaveBeenCalledTimes(1)
+      } else {
+        expect(mockPush).toHaveBeenCalledWith(
+          outcome === 'missing' ? '/profile' : '/wallet',
+        )
+        expect(view.emitted('setupCompleted')).toHaveLength(1)
+      }
+      expect(mockAccount.status).toBe('ready')
+      view.unmount()
+    },
+  )
 
   test('a profile that already has a name keeps it on activation', async () => {
     // The stored profile is this account's own (it was set up here before).
@@ -445,9 +480,6 @@ describe('Setup page advanced relay configuration', () => {
     await view
       .get('[data-test="confirm-shares"] input')
       .setValue('share1\nshare2')
-    await view
-      .get('[data-test="display-name"] input')
-      .setValue('Offline Account')
     await flushPromises()
 
     await view.get('form').trigger('submit')
@@ -496,7 +528,6 @@ describe('Setup page advanced relay configuration', () => {
     await view
       .get('[data-test="confirm-shares"] input')
       .setValue('share1\nshare2')
-    await view.get('[data-test="display-name"] input').setValue('Error Account')
     await flushPromises()
 
     await view.get('form').trigger('submit')
@@ -545,7 +576,6 @@ describe('Setup page advanced relay configuration', () => {
     await view
       .get('[data-test="confirm-shares"] input')
       .setValue('share1\nshare2')
-    await view.get('[data-test="display-name"] input').setValue('Probe Test')
     await flushPromises()
 
     await view.get('form').trigger('submit')
@@ -647,7 +677,6 @@ describe('Setup page restore from more shares than the threshold', () => {
       en.accountRecovery.enter_at_least_the_threshold_number_of_shares,
     )
     await view.get('[data-test="confirm-shares"] input').setValue(lines)
-    await view.get('[data-test="display-name"] input').setValue('Restored')
     await view.get('form').trigger('submit')
     await flushPromises()
     return view
@@ -728,7 +757,7 @@ describe('Setup page restore from more shares than the threshold', () => {
       .get('[data-test="restore-candidate-pick"]')
       .trigger('click')
     await flushPromises()
-    expect(mockChoose).toHaveBeenCalledWith(1, 'Restored')
+    expect(mockChoose).toHaveBeenCalledWith(1, '')
     const report = view.get('[data-test="share-report"]').text()
     expect(report).toContain('Share 2 (index p): used.')
     expect(report).toContain(

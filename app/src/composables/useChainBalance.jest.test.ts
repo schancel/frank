@@ -127,9 +127,6 @@ jest.mock('src/utils/notifications', () => ({
   errorNotify: jest.fn(),
 }))
 jest.mock('quasar', () => ({ copyToClipboard: jest.fn() }))
-jest.mock('src/components/wallet/AvuExplainerDialog.vue', () => ({
-  template: '<div />',
-}))
 jest.mock('src/components/wallet/AvuParityChart.vue', () => ({
   template: '<div />',
 }))

@@ -1,4 +1,4 @@
-export const MAX_AVATAR_DIMENSION = 80
+export const MAX_AVATAR_DIMENSION = 512
 export const MAX_AVATAR_BYTES = 65536
 export const DEFAULT_AVATAR_QUALITY = 0.8
 
@@ -75,6 +75,8 @@ export function resizeImageToCanvas(
 
   const ctx = canvas.getContext('2d')
   if (ctx) {
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
     if (fillWhiteBackground) {
       ctx.fillStyle = '#ffffff'
       ctx.fillRect(0, 0, width, height)
@@ -165,7 +167,7 @@ export function canvasToCompressedDataUrl(
 
 /**
  * Resizes and compresses an image or canvas so that dimensions are at most `maxDimension`
- * (default 80x80) and data URL is under `maxBytes` (default 65536 bytes).
+ * (default 512x512) and data URL is under `maxBytes` (default 65536 bytes).
  */
 export function resizeAndCompressImage(
   source: HTMLImageElement | HTMLCanvasElement,
@@ -183,7 +185,7 @@ export function resizeAndCompressImage(
   }
 
   // Step down dimensions if still too large
-  const fallbackDims = [64, 48, 32, 24, 16]
+  const fallbackDims = [384, 256, 192, 128, 96, 64, 48, 32, 24, 16]
   for (const dim of fallbackDims) {
     if (dim < maxDim) {
       canvas = resizeImageToCanvas(source, dim)
@@ -233,8 +235,21 @@ export function compressAvatarDataUrl(
       settled = true
       clearTimeout(timer)
       try {
+        const maxDimension = options?.maxDimension ?? MAX_AVATAR_DIMENSION
+        const maxBytes = options?.maxBytes ?? MAX_AVATAR_BYTES
+        if (
+          (img.naturalWidth || img.width) <= maxDimension &&
+          (img.naturalHeight || img.height) <= maxDimension &&
+          !isAvatarTooLarge(dataUrl, maxBytes)
+        ) {
+          // Editing an existing profile must not repeatedly encode an already valid avatar.
+          resolve(dataUrl)
+          return
+        }
         const compressed = resizeAndCompressImage(img, options)
-        resolve(compressed || dataUrl)
+        if (!compressed)
+          throw new Error('Avatar cannot fit within the byte limit')
+        resolve(compressed)
       } catch (err) {
         reject(err)
       }

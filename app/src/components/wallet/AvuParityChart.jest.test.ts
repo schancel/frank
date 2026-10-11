@@ -176,7 +176,7 @@ describe('selected coin price history', () => {
       'MON price history',
     )
     expect(wrapper.get('[data-test="price-history-axis"]').text()).toBe(
-      'AVU_hash per MON',
+      'AVU (Hash) per MON',
     )
     expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
       '1 MON ≈ 187.5 mAVU · testnet',
@@ -210,7 +210,7 @@ describe('selected coin price history', () => {
       .get('[data-test="denomination-toggle"] [data-test-option="spot"]')
       .trigger('click')
     expect(wrapper.get('[data-test="price-history-axis"]').text()).toBe(
-      'AVU_spot per MON',
+      'AVU (Spot) per MON',
     )
     // MON 0.025 times the inverse of the 0.05 wholesale price = 0.5 AVU_spot.
     expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
@@ -221,6 +221,28 @@ describe('selected coin price history', () => {
     )
     expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
     expect(wrapper.find('[data-test="chart-point-grid"]').exists()).toBe(false)
+  })
+
+  it('aligns endpoint labels to the plot bounds and uses readable benchmark names', () => {
+    receive(twoEntryFeed())
+    const wrapper = mountChart()
+    expect(
+      wrapper.get('[data-test="chart-max-label-right"]').attributes('y'),
+    ).toBe('30')
+    expect(
+      wrapper.get('[data-test="chart-min-label-right"]').attributes('y'),
+    ).toBe('230')
+    expect(
+      wrapper
+        .get('[data-test="chart-max-label-right"]')
+        .attributes('dominant-baseline'),
+    ).toBe('middle')
+    expect(wrapper.get('[data-test="denomination-toggle"]').text()).toContain(
+      'AVU (Hash)',
+    )
+    expect(wrapper.get('[data-test="denomination-toggle"]').text()).toContain(
+      'AVU (Spot)',
+    )
   })
 
   it('does not claim dated gold valuation from an old annual average', async () => {
@@ -318,7 +340,7 @@ describe('selected coin price history', () => {
     const wrapper = mountChart({ selectedWallet: 'ecash' })
     await openRange(wrapper, '24h')
     expect(wrapper.get('[data-test="price-history-axis"]').text()).toBe(
-      'AVU_hash per 1M XEC',
+      'AVU (Hash) per 1M XEC',
     )
     expect(wrapper.get('[data-test="inspection-cell-token"]').text()).toContain(
       '100 AVU',

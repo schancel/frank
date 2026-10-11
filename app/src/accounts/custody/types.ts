@@ -10,6 +10,7 @@ export type CustodyErrorCode =
   | 'storage-failed'
   | 'closed'
   | 'capacity'
+  | 'profile-unreachable'
   /** A staged attempt saved before account roots were kept: it can only be cancelled and redone. */
   | 'outdated-attempt'
 
@@ -27,11 +28,13 @@ export interface ExpectedActive {
 }
 
 export interface PublicAccount {
+  /** Local presentation only; may be empty for a recovered account. */
   readonly displayName: string
   readonly descriptor: string
   readonly fingerprint: string
-  readonly masterRetirementId: string
-  readonly recoveryIdentityCommitment: string
+  /** Codex32 recovery metadata only; absent for historical BIP39 accounts. */
+  readonly masterRetirementId?: string
+  readonly recoveryIdentityCommitment?: string
   readonly receipt: VaultReceipt
 }
 
@@ -64,16 +67,27 @@ export interface StageAccount {
   readonly accountRoot: Uint8Array
 }
 
+export interface StageBip39Account {
+  readonly attemptId: string
+  readonly accountId: string
+  readonly expectedActive: ExpectedActive
+  readonly displayName: string
+  readonly custodyEpoch: number
+  /** Exact BIP39 PBKDF2 seed. This is not a Codex32 account root. */
+  readonly bip39Seed: Uint8Array
+}
+
 /** Roots remain outside enumerable state. takeRoots transfers ownership exactly once. */
 export interface ActiveCustody {
   readonly account: PublicAccount
   takeRoots(): readonly DomainRoot[]
+  takeBip39Seed(): Uint8Array
   close(): void
 }
 
 export interface AccountCustody {
   snapshot(): Promise<CustodySnapshot>
-  stage(input: StageAccount): Promise<CustodySnapshot>
+  stage(input: StageAccount | StageBip39Account): Promise<CustodySnapshot>
   reconcile(
     attemptId: string,
   ): Promise<'active' | 'ready' | 'incomplete' | 'discarded'>
@@ -88,6 +102,7 @@ export interface AccountCustody {
    * identity an attempt would activate before choosing to. Changes nothing.
    */
   openPending(attemptId: string): Promise<readonly DomainRoot[]>
+  openPendingBip39Seed(attemptId: string): Promise<Uint8Array>
   /**
    * The active account and a caller-owned copy of its account root, for issuing backup
    * shares. `accountRoot` is null for an account stored before roots were kept: no backup

@@ -3,7 +3,7 @@
 import { Address } from "ecash-lib/dist/address/address";
 
 import { NativeAssetChain } from "./active-chain";
-import type { DomainRoot } from "../../domain-roots/src";
+import type { HistoricalBip39Seed, DomainRoot } from "../../domain-roots/src";
 import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
 import {
@@ -77,7 +77,7 @@ function parseEcashAddress(
 
 export interface EcashChain extends Omit<NativeAssetChain, "createWallet"> {
   createWallet(
-    domainRoot: DomainRoot<"ecash-bch-wallet">
+    domainRoot: DomainRoot<"ecash-bch-wallet"> | HistoricalBip39Seed
   ): Promise<EcashWallet>;
 }
 
@@ -110,8 +110,8 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
       return parseEcashAddress(config, input);
     },
     async createWallet(domainRoot) {
-      return EcashWallet.fromDomainRoot({
-        domainRoot,
+      return EcashWallet.fromDerivationMaterial({
+        material: domainRoot,
         chronik: config.chronik,
         networkId: canonicalNetwork,
         checkpoint: config.checkpoint,

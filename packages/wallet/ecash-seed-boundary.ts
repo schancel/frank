@@ -1,5 +1,9 @@
-import { DERIVATION_REGISTRY_ID, registryEntry } from "../domain-roots/src";
-import type { DomainRoot } from "../domain-roots/src";
+import {
+  BIP39_DERIVATION,
+  DERIVATION_REGISTRY_ID,
+  registryEntry,
+} from "../domain-roots/src";
+import type { DomainRoot, HistoricalBip39Seed } from "../domain-roots/src";
 import type { ChronikClient } from "chronik-client";
 import type { HdNode } from "ecash-lib/dist/hdwallet";
 import type {
@@ -50,29 +54,55 @@ export const createEcashSeedBackend: EcashWalletFactory = async ({
 }) => {
   const root = snapshotEcashDomainRoot(domainRoot);
   try {
-    const imported = await import("ecash-wallet/dist/index.js");
-    const { HdNode } = await import("ecash-lib");
-    const sdk = imported as unknown as {
-      Wallet?: unknown;
-      default?: { Wallet?: unknown };
-    };
-    const Wallet = sdk.Wallet ?? sdk.default?.Wallet;
-    if (typeof Wallet !== "function")
-      throw new Error("ecash-wallet did not export Wallet");
-    // Same account and path as the pinned SDK's HD constructor, with the registry bytes fed
-    // directly to BIP32. No mnemonic encoding or PBKDF2 is part of this interpretation.
-    const account = HdNode.fromSeed(root.bytes).derivePath("m/44'/1899'/0'");
-    const secretKey = account.seckey();
-    if (secretKey === undefined)
-      throw new Error("eCash seed did not produce a private HD account");
-    return new (Wallet as EcashSdkHdConstructor)(
-      secretKey,
-      chronik,
-      account,
-      0,
-      addressPrefix
-    );
+    return await createBackend(root.bytes, chronik, addressPrefix);
   } finally {
     root.bytes.fill(0);
   }
 };
+
+export async function createEcashBip39SeedBackend(
+  material: HistoricalBip39Seed,
+  chronik: ChronikClient,
+  addressPrefix: EcashAddressPrefix
+): Promise<EcashWalletBackend> {
+  if (
+    material.derivation !== BIP39_DERIVATION ||
+    !(material.seed instanceof Uint8Array) ||
+    material.seed.length !== 64
+  )
+    throw new Error("Expected the original 64-byte historical BIP39 seed");
+  const seed = new Uint8Array(material.seed);
+  try {
+    return await createBackend(seed, chronik, addressPrefix);
+  } finally {
+    seed.fill(0);
+  }
+}
+
+async function createBackend(
+  seed: Uint8Array,
+  chronik: ChronikClient,
+  addressPrefix: EcashAddressPrefix
+): Promise<EcashWalletBackend> {
+  const imported = await import("ecash-wallet/dist/index.js");
+  const { HdNode } = await import("ecash-lib");
+  const sdk = imported as unknown as {
+    Wallet?: unknown;
+    default?: { Wallet?: unknown };
+  };
+  const Wallet = sdk.Wallet ?? sdk.default?.Wallet;
+  if (typeof Wallet !== "function")
+    throw new Error("ecash-wallet did not export Wallet");
+  // Both supported custody representations enter the established SDK BIP32 account path.
+  const account = HdNode.fromSeed(seed).derivePath("m/44'/1899'/0'");
+  const secretKey = account.seckey();
+  if (secretKey === undefined)
+    throw new Error("eCash seed did not produce a private HD account");
+  return new (Wallet as EcashSdkHdConstructor)(
+    secretKey,
+    chronik,
+    account,
+    0,
+    addressPrefix
+  );
+}

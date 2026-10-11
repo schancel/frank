@@ -66,6 +66,12 @@
       <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
         amount
       }}</span>
+      <span
+        v-if="showPaymentSuccess"
+        class="outgoing-payment-success"
+        data-testid="outgoing-payment-success"
+        >{{ $t(paymentSuccessKey) }}</span
+      >
       <chat-message-suffix-buttons
         :status="status"
         @replyClick="$emit('replyClick')"
@@ -164,7 +170,13 @@ export default defineComponent({
     },
   },
   data() {
-    return { announced: '' }
+    return {
+      announced: '',
+      showPaymentSuccess: false,
+      paymentSuccessTimer: undefined as
+        | ReturnType<typeof setTimeout>
+        | undefined,
+    }
   },
   mounted() {
     // Render the region empty, then fill it: many screen readers ignore text that is already in
@@ -176,7 +188,21 @@ export default defineComponent({
       })
     }
   },
+  beforeUnmount() {
+    clearTimeout(this.paymentSuccessTimer)
+  },
   watch: {
+    // A mounted history item stays silent. Only a newly observed success flashes beside
+    // its time and amount; this timer changes presentation, never payment state.
+    paymentSuccessKey(key: string) {
+      clearTimeout(this.paymentSuccessTimer)
+      this.showPaymentSuccess = key !== ''
+      if (key) {
+        this.paymentSuccessTimer = setTimeout(() => {
+          this.showPaymentSuccess = false
+        }, 5000)
+      }
+    },
     announcement(text: string) {
       this.announced = text
     },
@@ -206,6 +232,12 @@ export default defineComponent({
       return this.waitingForPreviousPayment
         ? this.$t('outgoing.waitingForPreviousPayment')
         : this.$t('outgoing.sending')
+    },
+    paymentSuccessKey(): string {
+      if (!this.outbound || this.status !== 'confirmed') return ''
+      if (this.paymentSummary === 'paid') return 'outgoing.paymentPaid'
+      if (this.paymentSummary === 'repaid') return 'outgoing.paymentRepaid'
+      return ''
     },
     /** The payment's state beside the amount of a sent message. */
     paymentSummaryText(): string {
@@ -237,7 +269,8 @@ export default defineComponent({
           this.failureText
         }`.trim()
       }
-      return ''
+      if (this.showPaymentSuccess) return this.$t(this.paymentSuccessKey)
+      return this.paymentSummaryText
     },
     failureText(): string {
       const keys: Record<string, string> = {
@@ -279,6 +312,10 @@ export default defineComponent({
   justify-content: flex-end;
   gap: 6px;
   white-space: nowrap;
+}
+.outgoing-payment-success {
+  min-width: 0;
+  white-space: normal;
 }
 .outgoing-footer.text-left {
   justify-content: flex-start;

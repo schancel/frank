@@ -21,7 +21,7 @@ export interface UtxoChainConfig {
 }
 
 export interface UtxoChain extends Omit<NativeAssetChain, "createWallet"> {
-  /** `seed` is the 32-byte `ecash-bch-wallet` domain root; the caller keeps ownership. */
+  /** `seed` is a validated domain root32 or original BIP39 seed64; the caller keeps ownership. */
   createWallet(seed: Uint8Array): Promise<UtxoWallet>;
 }
 

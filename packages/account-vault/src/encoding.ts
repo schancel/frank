@@ -1,5 +1,5 @@
 import { DERIVATION_REGISTRY_ID, DOMAIN_PURPOSES, RECOVERY_FORMAT_ID, deriveDomainRoot, registryEntry, type DomainRoot } from '@frank/domain-roots'
-import { VaultError, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
+import { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION, VaultError, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export const POLICY = 'browser-preview-aes-gcm-v1'
 export const MAX_SLOTS = 1024
@@ -21,11 +21,14 @@ function integer(value: unknown, minimum: number): number {
 }
 
 export function context(value: VaultContext): VaultContext {
-  if (!value || value.registry !== DERIVATION_REGISTRY_ID || value.recoveryFormat !== RECOVERY_FORMAT_ID) reject()
+  if (!value) reject()
+  const historical = value.recoveryFormat === BIP39_RECOVERY_FORMAT
+  if (historical ? value.registry !== BIP39_DERIVATION :
+      value.registry !== DERIVATION_REGISTRY_ID || value.recoveryFormat !== RECOVERY_FORMAT_ID) reject()
   const source = value.purposes
   if (!Array.isArray(source)) reject()
   const count = source.length
-  if (!Number.isInteger(count) || count < 1 || count > DOMAIN_PURPOSES.length) reject()
+  if (!Number.isInteger(count) || (historical ? count !== 0 : count < 1 || count > DOMAIN_PURPOSES.length)) reject()
   const purposes: VaultContext['purposes'][number][] = []
   let last = -1
   for (let i = 0; i < count; i++) {
@@ -37,7 +40,8 @@ export function context(value: VaultContext): VaultContext {
   }
   return Object.freeze({
     accountId: text(value.accountId), creationId: text(value.creationId),
-    recoveryFormat: RECOVERY_FORMAT_ID, registry: DERIVATION_REGISTRY_ID,
+    recoveryFormat: historical ? BIP39_RECOVERY_FORMAT : RECOVERY_FORMAT_ID,
+    registry: historical ? BIP39_DERIVATION : DERIVATION_REGISTRY_ID,
     purposes: Object.freeze(purposes), custodyEpoch: integer(value.custodyEpoch, 0),
     recoveryFingerprint: text(value.recoveryFingerprint), retirementContext: text(value.retirementContext, true),
   })
@@ -93,7 +97,14 @@ export function same(a: VaultReceipt, b: VaultReceipt): boolean {
  * The record is the account root alone (framing 3), copied synchronously before the first
  * asynchronous boundary. Every purpose root is derived from it when the record is opened.
  */
-export function plaintext(accountRoot: Uint8Array): Uint8Array<ArrayBuffer> {
+export function plaintext(accountRoot: Uint8Array, c?: VaultContext): Uint8Array<ArrayBuffer> {
+  if (c?.recoveryFormat === BIP39_RECOVERY_FORMAT) {
+    if (!(accountRoot instanceof Uint8Array) || accountRoot.byteLength !== 64 || !(accountRoot.buffer instanceof ArrayBuffer)) reject()
+    const output = new Uint8Array(65)
+    output[0] = 4
+    output.set(accountRoot, 1)
+    return output
+  }
   if (!(accountRoot instanceof Uint8Array) || accountRoot.byteLength !== 32 || !(accountRoot.buffer instanceof ArrayBuffer)) reject()
   const output = new Uint8Array(33)
   output[0] = 3
@@ -140,6 +151,7 @@ function accountRootOffset(bytes: Uint8Array, c: VaultContext): number {
  * yields exactly the roots stored in it and can never gain a purpose.
  */
 export function decode(bytes: Uint8Array, c: VaultContext): readonly DomainRoot[] {
+  if (c.recoveryFormat === BIP39_RECOVERY_FORMAT) throw new VaultError('invalid-input')
   const offset = accountRootOffset(bytes, c)
   if (offset < 0) {
     return Object.freeze(c.purposes.map((purpose, i) => Object.freeze({
@@ -159,6 +171,16 @@ export function decode(bytes: Uint8Array, c: VaultContext): readonly DomainRoot[
 
 /** The stored account root, or null for a framing 1 record that never held one. */
 export function decodeAccountRoot(bytes: Uint8Array, c: VaultContext): Uint8Array | null {
+  if (c.recoveryFormat === BIP39_RECOVERY_FORMAT) {
+    decodeBip39Seed(bytes, c)?.fill(0)
+    return null
+  }
   const offset = accountRootOffset(bytes, c)
   return offset < 0 ? null : bytes.slice(offset, offset + 32)
+}
+
+export function decodeBip39Seed(bytes: Uint8Array, c: VaultContext): Uint8Array | null {
+  if (c.recoveryFormat !== BIP39_RECOVERY_FORMAT) return null
+  if (bytes.length !== 65 || bytes[0] !== 4) throw new VaultError('corrupt')
+  return bytes.slice(1)
 }

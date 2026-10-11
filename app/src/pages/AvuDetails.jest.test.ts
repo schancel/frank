@@ -1,30 +1,26 @@
 /** @jest-environment jsdom */
 import { mount } from '@vue/test-utils'
-import AvuExplainerDialog from './AvuExplainerDialog.vue'
-import en from '../../i18n/en-us'
+import AvuDetails from './AvuDetails.vue'
+import en from '../i18n/en-us'
 import { createPinia, setActivePinia } from 'pinia'
-import { useOracleStore } from '../../stores/oracle'
-import { mergeFeed, oracleInputs } from '../../stores/oracle-series'
-import { testFeed } from '../../stores/oracle-test-feed'
+import { useOracleStore } from '../stores/oracle'
+import { mergeFeed, oracleInputs } from '../stores/oracle-series'
+import { testFeed } from '../stores/oracle-test-feed'
 import { computeOracleRates, type OracleFeed } from '@frank/wallet/oracle'
 
 const t = (key: string) =>
   key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
 
-function mountDialog(props = {}) {
-  return mount(AvuExplainerDialog, {
-    props: {
-      modelValue: true,
-      ...props,
-    },
+function mountPage() {
+  return mount(AvuDetails, {
     global: {
       mocks: { $t: t },
       stubs: {
-        QDialog: {
-          props: ['modelValue'],
-          template:
-            '<div v-if="modelValue" data-test="dialog-stub"><slot /></div>',
-        },
+        QHeader: { template: '<header><slot /></header>' },
+        QToolbar: { template: '<div><slot /></div>' },
+        QToolbarTitle: { template: '<h1><slot /></h1>' },
+        QPageContainer: { template: '<main><slot /></main>' },
+        QPage: { template: '<section><slot /></section>' },
         QCard: { template: '<div><slot /></div>' },
         QCardSection: { template: '<div><slot /></div>' },
         QCardActions: { template: '<div><slot /></div>' },
@@ -34,9 +30,9 @@ function mountDialog(props = {}) {
         QMarkupTable: { template: '<table><slot /></table>' },
         QBtnToggle: { props: ['modelValue', 'options'], template: '<div />' },
         QBtn: {
-          props: ['label', 'disable'],
+          props: ['label', 'disable', 'to'],
           template:
-            '<button :disabled="disable" @click="$emit(\'click\')">{{ label }}<slot /></button>',
+            '<button :data-route="to" :disabled="disable" @click="$emit(\'click\')">{{ label }}<slot /></button>',
         },
       },
     },
@@ -65,7 +61,7 @@ afterEach(() => {
 
 describe('AVU dollar reference details', () => {
   test('puts the shared USD-per-AVU chart before collapsed neutral methodology', () => {
-    const wrapper = mountDialog()
+    const wrapper = mountPage()
     expect(wrapper.get('[data-test="avu-explainer-card"]').text()).toContain(
       en.walletPanel.avuReferenceTitle,
     )
@@ -85,12 +81,19 @@ describe('AVU dollar reference details', () => {
   })
 
   test('with no feed both references and coin rows are unavailable, with no invented curve', () => {
-    const wrapper = mountDialog()
+    const wrapper = mountPage()
     for (const id of ['hash', 'spot'])
       expect(
         wrapper.get(`[data-test="avu-reference-current-${id}"]`).text(),
       ).toContain('Unavailable')
-    for (const asset of ['monad', 'solana', 'ethereum', 'ecash', 'bitcoin'])
+    for (const asset of [
+      'monad',
+      'solana',
+      'ethereum',
+      'ecash',
+      'bitcoin',
+      'usd',
+    ])
       expect(
         wrapper.get(`[data-test="avu-rate-row-${asset}"]`).text(),
       ).toContain('Unavailable')
@@ -108,7 +111,7 @@ describe('AVU dollar reference details', () => {
         electricity: times.map(at => [at, 0.05]),
       }),
     )
-    const wrapper = mountDialog()
+    const wrapper = mountPage()
     expect(
       wrapper.get('[data-test="avu-reference-current-hash"]').text(),
     ).toContain('$0.10')
@@ -144,7 +147,7 @@ describe('AVU dollar reference details', () => {
 
   test('shows a single observation as a point and never invents missing spot history or future points', () => {
     receive(testFeed([NOW - 60, NOW + 60]))
-    const wrapper = mountDialog()
+    const wrapper = mountPage()
     expect(
       wrapper.findAll('[data-test="avu-reference-point-hash"]'),
     ).toHaveLength(1)
@@ -170,7 +173,7 @@ describe('AVU dollar reference details', () => {
         ],
       }),
     )
-    const wrapper = mountDialog()
+    const wrapper = mountPage()
     expect(
       wrapper.findAll('[data-test="avu-reference-point-spot"]'),
     ).toHaveLength(2)
@@ -182,14 +185,14 @@ describe('AVU dollar reference details', () => {
     )
   })
 
-  test('marks old benchmark inputs and requests selected history only while open', async () => {
+  test('marks old benchmark inputs and requests history while the page is mounted', async () => {
     const oracle = receive(
       testFeed([NOW - 4 * DAY], { electricity: [[NOW - 4 * DAY, 0.05]] }),
     )
     const ensure = jest
       .spyOn(oracle, 'ensureHistory')
       .mockImplementation(async () => undefined)
-    const wrapper = mountDialog()
+    const wrapper = mountPage()
     await wrapper.vm.$nextTick()
     await wrapper.vm.$nextTick()
     expect(
@@ -199,15 +202,44 @@ describe('AVU dollar reference details', () => {
       wrapper.get('[data-test="avu-reference-current-spot"]').text(),
     ).toContain('Stale')
     expect(ensure).toHaveBeenCalled()
-    await wrapper.setProps({ modelValue: false })
-    const calls = ensure.mock.calls.length
-    await wrapper.setProps({ modelValue: false })
-    expect(ensure).toHaveBeenCalledTimes(calls)
+    wrapper.unmount()
   })
 
-  test('emits update:modelValue when closed', async () => {
-    const wrapper = mountDialog()
-    await wrapper.get('[data-test="avu-dialog-close-btn"]').trigger('click')
-    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false])
+  test('provides a wallet route, explicit legend and a USD row consistent with the inverse chart', () => {
+    const oracle = receive(
+      testFeed([NOW - 60], { electricity: [[NOW - 60, 0.05]] }),
+    )
+    const wrapper = mountPage()
+    expect(
+      wrapper.get('[data-test="avu-back-wallet"]').attributes('data-route'),
+    ).toBe('/wallet')
+    expect(wrapper.get('[data-test="avu-reference-legend"]').text()).toContain(
+      'AVU (Hash)',
+    )
+    expect(wrapper.get('[data-test="avu-reference-legend"]').text()).toContain(
+      'AVU (Spot)',
+    )
+    const kwhPerUsd = oracle.current.avuHash!.kwhPerValue
+    expect(wrapper.get('[data-test="avu-rate-row-usd"]').text()).toContain(
+      `${kwhPerUsd} AVU`,
+    )
+    const inverse = 1 / kwhPerUsd
+    expect(
+      wrapper.get('[data-test="avu-reference-current-hash"]').text(),
+    ).toContain(
+      inverse.toLocaleString('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
+      }),
+    )
+    expect(wrapper.find('[data-test="avu-rate-row-usdc"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="avu-rate-row-tusd"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="avu-rate-row-tempo"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.text()).not.toMatch(/USDC|USDT|TUSD/)
+    expect(wrapper.text()).not.toMatch(/AVU_hash|AVU_spot/)
   })
 })

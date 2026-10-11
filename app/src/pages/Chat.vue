@@ -183,6 +183,7 @@
 <script lang="ts">
 import { defineComponent, ref, onUnmounted } from 'vue'
 import { accountStatus } from '../accounts/session'
+import { messagingState } from '../utils/messaging-state'
 import { useSafeOracleStore } from '../stores/oracle'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
@@ -334,6 +335,7 @@ export default defineComponent({
     return {
       oracle,
       accountStatus,
+      messagingState,
       refreshBalance,
       getAcceptancePrice: contacts.getAcceptancePrice,
       getContactVuex: contacts.getContact,
@@ -590,16 +592,16 @@ export default defineComponent({
         this.$nextTick(() => message.$el.scrollIntoView({ behavior: 'smooth' }))
       }, 50)()
     },
-    /** Asks the wallet for the smallest stamp it sends right now: one transfer's fee at the
-     * node's gas price. A wallet that cannot say leaves the last known value. */
+    /** Refresh the shared AVU default and its live adapter floor for this messaging session. */
     async refreshMinimumStamp() {
       const sequence = ++this.stampQuoteSequence
       const client = activeChain.directMessages
       const chainIdentifier = activeChain.chainIdentifier
       const revision = accountStatus.revision
       this.defaultStampWei = undefined
+      let wallet: ReturnType<typeof useMonadWallet> | undefined
       try {
-        const wallet = useMonadWallet()
+        wallet = useMonadWallet()
         const quote = await client.defaultStampQuote?.({ wallet })
         if (
           sequence !== this.stampQuoteSequence ||
@@ -618,9 +620,25 @@ export default defineComponent({
           this.defaultStampFailure = quote?.reason ?? 'unsupported'
         }
       } catch {
-        if (sequence !== this.stampQuoteSequence) return
+        if (
+          sequence !== this.stampQuoteSequence ||
+          revision !== accountStatus.revision ||
+          client !== activeChain.directMessages ||
+          chainIdentifier !== activeChain.chainIdentifier
+        )
+          return
+        if (wallet && messagingState.status === 'ready') {
+          try {
+            if (wallet !== useMonadWallet()) return
+          } catch {
+            return
+          }
+        }
         this.defaultStampWei = undefined
-        this.defaultStampFailure = 'missing-fee'
+        this.defaultStampFailure =
+          messagingState.status === 'ready'
+            ? 'missing-fee'
+            : 'messaging-pending'
       }
     },
     resetStampDefault() {
@@ -1341,6 +1359,9 @@ export default defineComponent({
     },
   },
   watch: {
+    'messagingState.status'() {
+      void this.refreshMinimumStamp()
+    },
     'accountStatus.revision'() {
       void this.refreshMinimumStamp()
     },

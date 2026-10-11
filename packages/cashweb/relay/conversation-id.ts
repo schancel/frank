@@ -65,6 +65,13 @@ export function conversationIdSalt(secretRoot: Uint8Array): Uint8Array {
   return hmacSha256(SALT_LABEL, secretRoot).slice(0, 16)
 }
 
+/** Historical Frank salt from the complete BIP39 PBKDF2 seed under the same private label. */
+export function conversationIdSaltFromBip39Seed(seed: Uint8Array): Uint8Array {
+  if (seed.length !== 64)
+    throw new RangeError('historical BIP39 seed must be exactly 64 bytes')
+  return hmacSha256(SALT_LABEL, seed).slice(0, 16)
+}
+
 /**
  * The ID this account allocates for its conversation with `peer` when it opens one (or when a
  * message from `peer` arrives with none): UUIDv5(namespace = `salt`, name = `peer`, no topic).

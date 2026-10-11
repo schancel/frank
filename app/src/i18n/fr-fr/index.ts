@@ -117,7 +117,7 @@ export default {
     stampPrice: 'Prix du timbre',
     stampPayment: 'Paiement du timbre',
     stampQuickSelection:
-      'Sélection rapide par ordres de grandeur (1× à 10 000×)',
+      'Sélection rapide : gratuit, fractions ou multiples du montant par défaut',
     stampMultiplierValue: '{multiplier}× par défaut ({amount})',
     defaultStamp: 'Par défaut : {amount}',
     stampBelowMinimum:
@@ -126,6 +126,7 @@ export default {
     stampQuoteUnavailableReason:
       'Timbre par défaut indisponible : {reason}. Choisissez un montant explicite ou un message gratuit.',
     stampQuoteReasons: {
+      'messaging-pending': 'connexion du compte en cours',
       'missing-rate': 'taux de conversion absent',
       'stale-rate': 'taux de conversion périmé',
       'missing-fee': 'estimation des frais indisponible',
@@ -217,24 +218,24 @@ export default {
   persistentStorage: {
     tab: 'Stockage',
     heading: 'Stockage persistant',
-    granted: 'Stockage persistant : accordé',
-    notGranted: 'Stockage persistant : non accordé',
-    unsupported: 'Stockage persistant : indisponible',
-    unknown: 'Stockage persistant : vérification…',
+    granted: 'Accordé',
+    notGranted: 'Non accordé',
+    unsupported: 'Indisponible',
+    unknown: 'Vérification…',
     explainGranted:
-      'Votre navigateur a accepté de conserver les données de cette application sauf si vous les effacez vous-même. Votre phrase de récupération reste la seule sauvegarde si vous perdez cet appareil.',
+      'Votre navigateur a accepté de protéger les données enregistrées de Frank contre l’effacement automatique. Effacer les données du site peut toujours les supprimer. Conservez une sauvegarde indépendante du compte.',
     explainNotGranted:
-      'Votre navigateur peut supprimer les données de cette application, dont votre phrase de récupération enregistrée, lorsqu’il manque d’espace ou, dans Safari, après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil. Votre phrase de récupération est la seule sauvegarde.',
+      'Frank enregistre déjà les données sur cet appareil. Cette autorisation les protège contre l’effacement automatique ; elle n’ajoute pas d’espace disque. Sans elle, le navigateur peut supprimer les données enregistrées. Conservez une sauvegarde indépendante du compte.',
     explainUnsupported:
-      'Le stockage persistant est indisponible (cette page n’est pas un contexte sécurisé ou le navigateur ne le prend pas en charge) : le navigateur peut supprimer les données de cette application (Safari le fait après 7 jours sans visite sauf si l’application est ajoutée à l’écran d’accueil). Votre phrase de récupération est la seule sauvegarde.',
+      'Ce navigateur ou ce contexte ne propose pas de protection contre l’effacement automatique. Frank peut toujours enregistrer les données, mais le navigateur peut les supprimer. Conservez une sauvegarde indépendante du compte.',
     request: 'Demander au navigateur de conserver mes données',
     confirmSeed: 'Confirmer ma phrase de récupération',
     seedConfirmed: 'Votre phrase de récupération est confirmée.',
     safariTip:
-      'Conseil pour Safari / WebKit : ajoutez Frank à votre écran d’accueil / Dock ou ajoutez ce site à vos favoris pour activer la persistance automatiquement.',
+      'Safari sur Mac (macOS Sonoma 14 ou version ultérieure) : choisissez Fichier > Ajouter au Dock, ouvrez Frank depuis le Dock, puis redemandez la protection. Sur iPhone ou iPad, utilisez Partager > Sur l’écran d’accueil, puis ouvrez Frank depuis celui-ci. Le navigateur décide toujours d’accorder ou non la protection ; un favori seul ne la garantit pas.',
     grantedToast: 'Stockage persistant accordé par le navigateur.',
     declinedToast:
-      'Le navigateur a refusé le stockage persistant. Ajoutez Frank à vos favoris ou installez-le pour activer la persistance.',
+      'Le navigateur n’a pas accordé la protection contre l’effacement automatique. Vos données restent enregistrées. Consultez les conseils d’installation ci-dessous et réessayez ; la protection n’est pas garantie.',
   },
   blackjackP2p: {
     notDeliveredYet:
@@ -451,7 +452,7 @@ export default {
     tokenBalancesStale:
       'Soldes de jetons indisponibles. Affichage des derniers soldes connus.',
     balanceStale: '{balance} (dernière valeur connue)',
-    failedLoadAddress: 'Échec du chargement de l’adresse du portefeuille Monad',
+    failedLoadAddress: 'Impossible de dériver l’adresse du portefeuille',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',
@@ -517,11 +518,11 @@ export default {
     avuRatesRate: 'Calcul physique (AVU / kWh)',
     tabBalance: 'Solde & Transfert',
     priceHistoryTitle: 'Historique du prix de {symbol}',
-    priceHistoryAxisHash: 'AVU_hash par {symbol}',
-    priceHistoryAxisSpot: 'AVU_spot par {symbol}',
+    priceHistoryAxisHash: 'AVU (Hash) par {symbol}',
+    priceHistoryAxisSpot: 'AVU (Spot) par {symbol}',
     priceHistoryAxisGold: 'Onces troy d’or par {symbol}',
-    priceHistoryHash: 'AVU_hash',
-    priceHistorySpot: 'AVU_spot',
+    priceHistoryHash: 'AVU (Hash)',
+    priceHistorySpot: 'AVU (Spot)',
     priceHistoryGold: 'Or',
     priceHistoryPoints: '{count} observations de prix depuis le {first}.',
     priceHistorySinglePoint:
@@ -533,8 +534,8 @@ export default {
       'Aucune évaluation en {benchmark} n’est disponible pour cette monnaie sur cette période.',
     avuReferenceTitle: 'Valeur de l’AVU en dollars américains',
     avuReferenceAxis: 'USD par AVU',
-    avuReferenceHash: '1 AVU_hash',
-    avuReferenceSpot: '1 AVU_spot',
+    avuReferenceHash: '1 AVU (Hash)',
+    avuReferenceSpot: '1 AVU (Spot)',
     avuReferenceNoHistory:
       'Aucun historique de référence de l’AVU n’est disponible sur cette période.',
     avuReferenceSinglePoint:
@@ -542,12 +543,17 @@ export default {
     avuReferencePointCount: '{count} observations',
     avuReferenceMethod: 'Comment l’AVU est calculé',
     avuReferenceMethodText:
-      'AVU_hash évalue l’énergie à travers le minage par preuve de travail ; AVU_spot utilise les prix de gros de l’électricité. Leur valeur en dollars est l’inverse de leur énergie par dollar. Les données manquantes restent indisponibles.',
+      'AVU (Hash) évalue l’énergie à travers le minage par preuve de travail ; AVU (Spot) utilise les prix de gros de l’électricité. Leur valeur en dollars est l’inverse de leur énergie par dollar. Les données manquantes restent indisponibles.',
     aboutAvu: 'À propos de l’AVU',
     tabHistory: 'Historique',
     historyEmpty: 'Aucune activité enregistrée sur ce réseau.',
     historyPending: 'En attente ou non résolu',
     historyUndated: 'Date indisponible',
+    backToWallet: 'Retour au portefeuille',
+    avuReferenceMeasurement:
+      'Un AVU représente un kilowattheure. Ces courbes montrent sa valeur en dollars américains selon les mesures du minage et des prix de gros de l’électricité.',
+    avuReferenceSampling:
+      'La mesure du minage utilise les prix des monnaies, les récompenses de bloc, la difficulté, l’efficacité du matériel et les pondérations par capitalisation. Les données historiques incluent des moyennes mensuelles et des changements datés ; chaque valeur reste valable jusqu’à l’observation suivante. Les variations peuvent provenir de chacun de ces paramètres, et pas seulement de la difficulté.',
     tabParity: 'Historique des prix',
     tabSwap: 'Échange instantané',
     swapUnavailable: 'Échange instantané indisponible',
@@ -787,7 +793,7 @@ export default {
     deleteChat: 'Supprimer la discussion',
     unknownContact: 'Inconnu',
     usernameReassigned:
-      "Vous avez ajouté ce contact sous {'@'}{username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.",
+      'Vous avez ajouté ce contact sous {username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.',
   },
   sendStealthDialog: {
     sendStealthTo: 'Envoyer furtivement à',
@@ -1133,7 +1139,7 @@ export default {
     noFundsHint:
       "Votre solde est de 0. Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n'arrive après une minute, demandez à l'opérateur de la démo d'envoyer des MON de testnet à l'adresse ci-dessous.",
     addressCopied: 'Adresse copiée dans le presse papier',
-    failedLoadBalance: 'Échec du chargement du solde du portefeuille Monad',
+    failedLoadBalance: 'Impossible de charger le solde du portefeuille',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
   nativeOperation: {
@@ -1281,7 +1287,7 @@ export default {
     chainUnsupported: 'Non pris en charge',
   },
   profile: {
-    name: 'Pseudonyme',
+    name: 'Nom affiché',
     seedEntry: 'Phrase de récupération',
     importSeed: 'Rappel des mémoires perdues', //? Recover past memories
     invalidSeed: 'Ce n’est pas une phrase de récupération valide.',
@@ -1313,9 +1319,9 @@ export default {
     usernameNotHeld:
       "Votre identifiant enregistré n'est pas détenu par ce compte sur le relais. Ouvrez votre profil pour savoir pourquoi.",
     usernameStillHeld:
-      "Ce compte détient {'@'}{username}. Un identifiant ne peut pas être abandonné : il reste le vôtre jusqu'à ce que vous en preniez un autre.",
+      "Ce compte détient {username}. Un identifiant ne peut pas être abandonné : il reste le vôtre jusqu'à ce que vous en preniez un autre.",
     nameStartsWithAt:
-      "Un nom ne peut pas commencer par {'@'}. C'est ainsi que s'écrivent les identifiants ; définissez le vôtre dans le champ Identifiant.",
+      "Un nom ne peut pas commencer par {'@'}. Définissez votre identifiant dans le champ Identifiant.",
     location: 'Localisation',
     locationHint: 'Où vous vous situez (facultatif)',
     links: 'Liens et réseaux',

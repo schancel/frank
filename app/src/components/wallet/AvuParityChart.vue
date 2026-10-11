@@ -143,6 +143,7 @@
               :key="`${side.axis}-${end.name}`"
               :x="side.axis === 'left' ? 4 : 676"
               :y="end.y"
+              dominant-baseline="middle"
               font-size="10"
               :text-anchor="side.axis === 'left' ? 'start' : 'end'"
               :data-test="`chart-${end.name}-label-${side.axis}`"
@@ -625,8 +626,8 @@ const axisLabels = computed(() =>
       return {
         axis,
         ends: [
-          { name: 'max', y: 14, labels: labels('maxLabel') },
-          { name: 'min', y: 266, labels: labels('minLabel') },
+          { name: 'max', y: Y_TOP, labels: labels('maxLabel') },
+          { name: 'min', y: Y_BOTTOM, labels: labels('minLabel') },
         ],
       }
     })
@@ -721,7 +722,11 @@ const dataNote = computed(() => {
   if (drawn.length === 0)
     return sampleTimes.value.length > 0
       ? t('walletPanel.priceHistoryBenchmarkUnavailable', {
-          benchmark: denomination.value === 'hash' ? 'AVU_hash' : 'AVU_spot',
+          benchmark: t(
+            denomination.value === 'hash'
+              ? 'walletPanel.priceHistoryHash'
+              : 'walletPanel.priceHistorySpot',
+          ),
         })
       : t('walletPanel.chartNoteNoTokenPrice', { symbol: unit.value.symbol })
   const parts = [
@@ -778,14 +783,28 @@ useOracleHistory(() => {
 .timeframe-pill-track {
   min-width: 0;
   max-width: 100%;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.05);
 }
 .timeframe-btn-toggle {
   flex-wrap: wrap;
   max-width: 100%;
 }
 .denomination-controls {
+  display: inline-flex;
   min-width: 0;
   max-width: 100%;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.05);
+}
+.denomination-controls :deep(.q-btn) {
+  font-size: 11.5px;
+  padding: 4px 10px;
+  min-height: 28px;
+  border-radius: 8px;
 }
 .denomination-controls :deep(.q-btn-toggle) {
   flex-wrap: wrap;

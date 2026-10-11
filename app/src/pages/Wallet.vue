@@ -31,6 +31,14 @@
               data-testid="wallet-unit"
               >({{ walletUnit }})</span
             >
+            <q-badge
+              v-if="selectedWalletIsTestnet"
+              outline
+              color="white"
+              class="q-ml-sm wallet-header-unit"
+              :label="$t('walletPanel.testnet')"
+              data-testid="wallet-testnet-badge"
+            />
           </div>
         </q-toolbar-title>
         <q-btn
@@ -39,7 +47,7 @@
           icon="help_outline"
           :aria-label="$t('walletPanel.aboutAvu')"
           data-testid="wallet-about-avu"
-          @click="showAvuDialog = true"
+          @click="openAvuDetails"
         >
           <q-tooltip>{{ $t('walletPanel.aboutAvu') }}</q-tooltip>
         </q-btn>
@@ -179,7 +187,11 @@
                     <div
                       class="text-caption text-primary cursor-pointer flex items-center justify-center q-gutter-xs q-mt-xs"
                       data-testid="wallet-unit-rate-avu"
-                      @click="showAvuDialog = true"
+                      role="button"
+                      tabindex="0"
+                      @keydown.enter="openAvuDetails"
+                      @keydown.space.prevent="openAvuDetails"
+                      @click="openAvuDetails"
                     >
                       <span>{{ currentUnitRateAvu }}</span>
                       <q-icon name="help_outline" size="14px" />
@@ -189,7 +201,11 @@
                       v-if="currentWalletAvu"
                       class="text-caption text-grey-7 text-center q-mt-xs cursor-pointer flex items-center justify-center q-gutter-xs"
                       data-testid="wallet-balance-avu"
-                      @click="showAvuDialog = true"
+                      role="button"
+                      tabindex="0"
+                      @keydown.enter="openAvuDetails"
+                      @keydown.space.prevent="openAvuDetails"
+                      @click="openAvuDetails"
                     >
                       <span>{{ currentWalletAvu }}</span>
                       <q-icon name="help_outline" size="14px" />
@@ -679,7 +695,6 @@
         @save="saveWalletName"
         @reset="resetCustomName(renameChain)"
       />
-      <avu-explainer-dialog v-model="showAvuDialog" />
     </q-page-container>
   </div>
 </template>
@@ -699,7 +714,6 @@ import { useRoute, useRouter } from 'vue-router'
 import QrcodeVue from 'qrcode.vue'
 import AddressText from 'src/components/AddressText.vue'
 import RenameWalletDialog from 'src/components/wallet/RenameWalletDialog.vue'
-import AvuExplainerDialog from 'src/components/wallet/AvuExplainerDialog.vue'
 import AvuParityChart from 'src/components/wallet/AvuParityChart.vue'
 import BalanceBreakdown from 'src/components/wallet/BalanceBreakdown.vue'
 import DAppSwapView from 'src/components/wallet/DAppSwapView.vue'
@@ -751,7 +765,6 @@ export default defineComponent({
     QrcodeVue,
     AddressText,
     RenameWalletDialog,
-    AvuExplainerDialog,
     AvuParityChart,
     DAppSwapView,
     HeldContactPayments,
@@ -785,7 +798,6 @@ export default defineComponent({
       setCustomName(renameChain.value, name)
     }
     const oracle = useSafeOracleStore()
-    const showAvuDialog = ref(false)
     const activeTab = ref<'balance' | 'history' | 'swap' | 'parity'>('balance')
 
     const selectedWallet = computed<string>(() => {
@@ -1087,6 +1099,12 @@ export default defineComponent({
       sendChainIdentifier,
       walletStatus,
       sendLabel,
+      selectedWalletIsTestnet: computed(
+        () =>
+          getChainRegistryEntry(
+            resolveNetworkId(selectedWallet.value, isTestnet.value),
+          )?.isTestnet ?? false,
+      ),
       walletUnit: computed(
         () =>
           getChainRegistryEntry(
@@ -1114,7 +1132,7 @@ export default defineComponent({
       renameWalletConfig,
       openRenameDialog,
       saveWalletName,
-      showAvuDialog,
+      openAvuDetails: () => openPage(router, '/avu'),
       async copyAddress() {
         if (!displayAddress.value) return
         try {

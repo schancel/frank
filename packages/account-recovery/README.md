@@ -115,3 +115,24 @@ encodings for synthetic zero/sequence roots; `check:vectors` independently
 recomputes it using Node/OpenSSL and a separate Bech32m implementation. The
 Codex32 and domain-root package suites and domain-root vector checker must also
 pass. No real account material belongs in these fixtures.
+
+## Original historical BIP39 seed backups
+
+`exportHistoricalCodex32Backup({ seed, threshold, shareCount, randomBytes })`
+backs up the exact original 64-byte PBKDF2 seed. Each returned paper share is
+`frank-bip39-v1:<seed-share>:<check-share>`, pairing a standard 64-byte Codex32
+payload with a standard 32-byte validation payload. Both components must be kept
+together. They use the same threshold, identifier and index, but independent
+sharing polynomials. Validation is SHA256 of UTF-8
+`frank/bip39-backup/v1\0frank-bip39-bip32-v1\0` followed by all 64 seed bytes.
+The prefix selects the historical derivation and validation binds it to the seed.
+No seed is truncated, hashed into a root, or interpreted as an HKDF domain root.
+
+`recoverAccountBackupShares` searches both current root backups and these
+historical envelopes with the existing per-set subset bound. It returns explicit
+candidates: current `{ roots, metadata, accountRoot }` or historical
+`{ derivation: 'frank-bip39-bip32-v1', seed }`. Mixed complete backups remain
+separate candidates for an explicit user choice. Call `destroyRecoveredBackup`
+after copying the chosen secret into custody. Existing root-only APIs and
+Codex32 master-seed lengths are unchanged. There is no new persistent format: a
+historical result is staged using the existing BIP39 custody format.

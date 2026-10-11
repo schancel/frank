@@ -65,7 +65,7 @@ export type {
 } from "@frank/cashweb/types/messages";
 import type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
 export type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
-import type { MonadRootBundle } from "../monad-wallet-material";
+import type { MonadRootBundle, HistoricalBip39Seed } from "../monad-wallet-material";
 export type { MonadRootBundle } from "../monad-wallet-material";
 import {
   ChainAddress,
@@ -804,7 +804,7 @@ export interface ActiveChain extends NativeAssetChain {
   /** Default raw native-chain value burned for a topic post or vote. */
   readonly defaultTopicVoteValue: bigint;
   createWallet(
-    roots: MonadRootBundle
+    roots: MonadRootBundle | HistoricalBip39Seed
   ): Promise<NativeWalletHandle & WalletHandle & { close(): Promise<void> }>;
   /** @deprecated Legacy recovery compatibility. #699 owns the app switch and deletion. */
   createWallet(seed: HDSeed): Promise<NativeWalletHandle & WalletHandle>;

@@ -312,10 +312,10 @@ describe('modernized chat input interface (#1003)', () => {
       })
       expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('14.14 mMON')
       expect(wrapper.get('[data-testid="stamp-pill-multiple"]').text()).toBe(
-        '1.4×',
+        '≈1.4142×',
       )
       expect(wrapper.get('[data-testid="stamp-tooltip-amount"]').text()).toBe(
-        'Stamp: 0.01414 MON, 1.4× the default',
+        'Stamp: 0.01414 MON, ≈1.4142× the default',
       )
     })
 
@@ -394,34 +394,69 @@ describe('modernized chat input interface (#1003)', () => {
     })
   })
 
-  it('measures the stamp against the minimum the wallet reports, not the configured default', () => {
-    // The wallet's minimum (one transfer's fee) is 4x the configured default here.
-    const minimum = 4n * 10n ** 16n
-    const atMinimum = mount(ChatInput, {
+  it('uses the agreed AVU quote as 1× even when its fee floor is much lower', async () => {
+    const quote = 402708123456789123n
+    const wrapper = mount(ChatInput, {
       props: {
-        defaultStampWei: 10n ** 16n,
-        defaultStampMode: false,
-        stampAmount: minimum.toString(),
-        minimumStampWei: minimum,
+        defaultStampWei: quote,
+        minimumStampWei: 2142000000000000n,
+        stampAmount: quote.toString(),
       },
       global: globalOptions,
     })
-    // The chip shows the amount; the multiple of the minimum is beside it, and absent at 1.
-    expect(atMinimum.find('[data-testid="stamp-pill-multiple"]').exists()).toBe(
+    const vm = wrapper.vm as any
+    expect(vm.stampMultiplier).toBe('1')
+    expect(
+      wrapper.get('[data-testid="chat-input-stamp-selection"]').text(),
+    ).toBe(`1× default (${quote} MON)`)
+    expect(wrapper.find('[data-testid="stamp-pill-multiple"]').exists()).toBe(
       false,
     )
-    expect(
-      (atMinimum.vm as unknown as { minimumStampAmount: string })
-        .minimumStampAmount,
-    ).toBe(minimum.toString())
-    const doubled = mount(ChatInput, {
+    for (const [index, tenths] of [
+      [3, 5n],
+      [4, 9n],
+      [5, 10n],
+    ] as const) {
+      vm.decadeIndex = index
+      const expected = (quote * tenths) / 10n
+      expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual([
+        expected.toString(),
+      ])
+      await wrapper.setProps({ stampAmount: expected.toString() })
+      expect(
+        wrapper.get('[data-testid="chat-input-stamp-selection"]').text(),
+      ).toContain(`(${expected} MON)`)
+    }
+    const custom = quote + 12345n
+    await wrapper.setProps({ stampAmount: custom.toString() })
+    expect(vm.sliderLabelValue).toContain(`(${custom} MON)`)
+    expect(vm.stampMultiplier).toBe('≈1')
+    vm.decadeIndex = 0
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
+  })
+
+  it('retains the live paid floor, explicit free choice, and no slider when the quote is unavailable', async () => {
+    const wrapper = mount(ChatInput, {
       props: {
-        stampAmount: (2n * minimum).toString(),
-        minimumStampWei: minimum,
+        defaultStampWei: 1000n,
+        minimumStampWei: 900n,
+        stampAmount: '1000',
       },
       global: globalOptions,
     })
-    expect(doubled.get('[data-testid="stamp-pill-multiple"]').text()).toBe('2×')
+    const vm = wrapper.vm as any
+    vm.decadeIndex = 3
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['900'])
+    vm.decadeIndex = 0
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
+    await wrapper.setProps({ defaultStampWei: undefined, stampAmount: '777' })
+    expect(vm.sliderLabelValue).toBe('777 MON')
+    expect(vm.stampMultiplier).toBe('')
+    const before = wrapper.emitted('update:stampAmount')?.length
+    vm.decadeIndex = 5
+    expect(wrapper.emitted('update:stampAmount')?.length).toBe(before)
+    vm.innerStampAmount = '0'
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
   })
 
   it('does not render bottom stamp status bar to prevent scroll bounce glitches and loads send button when disabled', () => {
@@ -463,11 +498,11 @@ describe('orders-of-magnitude stamp slider (Issue #819)', () => {
       global: globalOptions,
     })
     const vm = wrapper.vm as any
-    // 1x default -> index 0
-    expect(vm.decadeIndex).toBe(0)
+    // 1x default -> index 5
+    expect(vm.decadeIndex).toBe(5)
 
-    // Set to 10x (index 3)
-    vm.decadeIndex = 3
+    // Set to 10x (index 8)
+    vm.decadeIndex = 8
     const emitted = wrapper.emitted('update:stampAmount')
     expect(emitted).toBeTruthy()
     // 10x of default stamp = 10^17 wei in test mock

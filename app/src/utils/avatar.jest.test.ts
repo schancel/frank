@@ -183,6 +183,25 @@ describe('avatar resizing and compression utilities', () => {
     })
   })
 
+  it('keeps sufficient resolution for a large profile from the original image', () => {
+    const drawImage = jest.fn()
+    HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+      drawImage,
+      fillRect: jest.fn(),
+      fillStyle: '',
+    })) as any
+    HTMLCanvasElement.prototype.toDataURL = jest.fn(
+      () => 'data:image/webp;base64,PROFILE',
+    )
+    const img = document.createElement('img')
+    Object.defineProperty(img, 'naturalWidth', { value: 960 })
+    Object.defineProperty(img, 'naturalHeight', { value: 960 })
+    expect(resizeAndCompressImage(img)).toContain('data:image/webp')
+    expect(drawImage).toHaveBeenCalledWith(img, 0, 0, 512, 512)
+    // Old small stored avatars stay small; enlarging them cannot recover lost detail.
+    expect(calculateTargetDimensions(80, 80)).toEqual({ width: 80, height: 80 })
+  })
+
   describe('compressAvatarDataUrl', () => {
     it('compresses data URL through Image and canvas', async () => {
       const compressedUrl = 'data:image/webp;base64,COMPRESSED'
@@ -224,6 +243,12 @@ describe('avatar resizing and compression utilities', () => {
         const result = await compressAvatarDataUrl(inputUrl, { maxBytes: 4096 })
         expect(result).toBe(compressedUrl)
         expect(result.length).toBeLessThanOrEqual(4096)
+        const validOriginal = 'data:image/png;base64,ORIGINAL'
+        ;(HTMLCanvasElement.prototype.toDataURL as jest.Mock).mockClear()
+        expect(
+          await compressAvatarDataUrl(validOriginal, { maxBytes: 4096 }),
+        ).toBe(validOriginal)
+        expect(HTMLCanvasElement.prototype.toDataURL).not.toHaveBeenCalled()
       } finally {
         window.Image = originalImage
       }
@@ -243,10 +268,10 @@ describe('avatar resizing and compression utilities', () => {
       const originalImage = window.Image
       class MockImage {
         crossOrigin = ''
-        width = 400
-        height = 400
-        naturalWidth = 400
-        naturalHeight = 400
+        width = 960
+        height = 960
+        naturalWidth = 960
+        naturalHeight = 960
         complete = false
         private _src = ''
         onload: (() => void) | null = null

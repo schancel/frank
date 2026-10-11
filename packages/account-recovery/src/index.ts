@@ -16,11 +16,16 @@ import {
   RECOVERY_FORMAT_CODE,
   RECOVERY_FORMAT_ID,
   deriveDomainRoot,
+  BIP39_DERIVATION,
   type DomainPurpose,
   type DomainRoot,
 } from '@frank/domain-roots'
 import { AccountRecoveryError, type ShareVerdict } from './errors.js'
 import { searchShares } from './share-search.js'
+import {
+  HISTORICAL_SHARE_PREFIX,
+  historicalValidation,
+} from './historical-payload.js'
 
 export { maxSharesForThreshold } from './share-search.js'
 import {
@@ -93,6 +98,182 @@ export interface RecoveredCodex32Account {
    * later backup must split; wipe it with destroyRecoveredAccount when custody has it.
    */
   readonly accountRoot: Uint8Array
+}
+
+export interface RecoveredHistoricalAccount {
+  readonly derivation: typeof BIP39_DERIVATION
+  /** Caller-owned exact historical seed. Wipe after custody copies it. */
+  readonly seed: Uint8Array
+}
+export type RecoveredAccountBackup =
+  | RecoveredCodex32Account
+  | RecoveredHistoricalAccount
+
+/** Restore accepts copied envelopes or the two adjacent lines written on one historical paper share. */
+export function parseAccountBackupShareInput(text: string): string[] {
+  const lines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+  const shares: string[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!,
+      next = lines[i + 1]
+    if (
+      /^ms1/i.test(line) &&
+      line.length === 127 &&
+      next &&
+      /^ms1/i.test(next) &&
+      next.length === 74
+    ) {
+      shares.push(`${HISTORICAL_SHARE_PREFIX}${line}:${next}`)
+      i++
+    } else shares.push(line)
+  }
+  return shares
+}
+
+/** Both supported account formats use the same bounded subset search and verdicts. */
+export function recoverAccountBackupShares(
+  candidateShares: readonly string[],
+  expected?: PublicRecoveryDescriptor,
+): {
+  readonly candidates: readonly {
+    readonly account: RecoveredAccountBackup
+    readonly supporting: readonly number[]
+  }[]
+  readonly shares: readonly ShareVerdict[]
+} {
+  if (Array.isArray(candidateShares) && candidateShares.length > 31)
+    throw new AccountRecoveryError('too-many-shares', undefined, 31)
+  const shares = snapshotShares(candidateShares)
+  const pinned =
+    expected === undefined ? undefined : snapshotPublicDescriptor(expected)
+  const found = searchShares(shares, true)
+  const candidates: {
+    account: RecoveredAccountBackup
+    supporting: readonly number[]
+  }[] = []
+  try {
+    for (const item of found.masters) {
+      const account: RecoveredAccountBackup =
+        item.format === 'historical'
+          ? Object.freeze({
+              derivation: BIP39_DERIVATION,
+              seed: new Uint8Array(item.master),
+            })
+          : accountFrom(item.master)
+      if (
+        pinned &&
+        ('seed' in account ||
+          !equalBytes(
+            account.metadata.descriptor.publicRecoveryFingerprint,
+            pinned.publicRecoveryFingerprint,
+          ))
+      ) {
+        destroyRecoveredBackup(account)
+        continue
+      }
+      candidates.push({ account, supporting: item.supporting })
+    }
+    if (!candidates.length)
+      throw new AccountRecoveryError('descriptor-mismatch', found.shares)
+    const supporting = new Set(
+      candidates.flatMap(value => [...value.supporting]),
+    )
+    const result = Object.freeze({
+      candidates: Object.freeze(candidates.map(value => Object.freeze(value))),
+      shares: Object.freeze(
+        found.shares.map(share =>
+          share.status !== 'supports'
+            ? share
+            : Object.freeze({
+                ...share,
+                status: supporting.has(share.position)
+                  ? ('supports' as const)
+                  : ('inconsistent' as const),
+                candidates: Object.freeze(
+                  candidates.flatMap((candidate, index) =>
+                    candidate.supporting.includes(share.position)
+                      ? [index]
+                      : [],
+                  ),
+                ),
+              }),
+        ),
+      ),
+    })
+    candidates.length = 0
+    return result
+  } finally {
+    for (const item of found.masters) item.master.fill(0)
+    for (const item of candidates) destroyRecoveredBackup(item.account)
+  }
+}
+
+export function destroyRecoveredBackup(account: RecoveredAccountBackup): void {
+  if ('seed' in account) account.seed.fill(0)
+  else destroyRecoveredAccount(account)
+}
+
+/** Each returned line is one paper share, containing a standard seed component and check component. */
+export function exportHistoricalCodex32Backup(input: {
+  readonly seed: Uint8Array
+  readonly threshold: SplitCodex32Input['threshold']
+  readonly shareCount: number
+  readonly randomBytes: (length: number) => Uint8Array
+}): readonly string[] {
+  const seed = snapshotBytes(input.seed, 64, 'bad-format')
+  let validation: Uint8Array | undefined
+  try {
+    const { threshold, shareCount, randomBytes } = input
+    if (
+      !Number.isInteger(threshold) ||
+      threshold < 2 ||
+      threshold > 9 ||
+      !Number.isInteger(shareCount) ||
+      shareCount < threshold ||
+      shareCount > 31
+    )
+      throw new AccountRecoveryError('invalid-threshold')
+    validation = historicalValidation(seed)
+    const common = {
+      threshold,
+      identifier: randomCodex32Identifier(randomBytes),
+      indices: BACKUP_SHARE_INDICES.slice(0, shareCount),
+      randomBytes: (length: number) => secureRandom(randomBytes, length),
+    }
+    const seedShares = unwrap(splitCodex32({ ...common, secret: seed }))
+    const checks = unwrap(splitCodex32({ ...common, secret: validation }))
+    const shares = seedShares.map(
+      (share, i) => `${HISTORICAL_SHARE_PREFIX}${share}:${checks[i]}`,
+    )
+    for (let first = 0; first < shareCount; first++) {
+      const subset = Array.from(
+        { length: threshold },
+        (_, offset) => shares[(first + offset) % shareCount]!,
+      )
+      const recovered = recoverAccountBackupShares(subset)
+      try {
+        const account = recovered.candidates[0]?.account
+        if (
+          recovered.candidates.length !== 1 ||
+          !account ||
+          !('seed' in account) ||
+          !equalBytes(account.seed, seed)
+        )
+          throw new AccountRecoveryError('confirmation-mismatch')
+      } finally {
+        recovered.candidates.forEach(value =>
+          destroyRecoveredBackup(value.account),
+        )
+      }
+    }
+    return Object.freeze(shares)
+  } finally {
+    seed.fill(0)
+    validation?.fill(0)
+  }
 }
 
 export interface ExportCodex32BackupInput {

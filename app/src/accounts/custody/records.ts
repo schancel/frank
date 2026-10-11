@@ -4,7 +4,12 @@ import {
   encodeRecoveryFingerprint,
   isAccountRootOf,
 } from '@frank/account-recovery'
-import { createVaultWriteIntent } from '@frank/account-vault'
+import {
+  BIP39_RECOVERY_FORMAT,
+  BIP39_DERIVATION,
+  createVaultWriteIntent,
+} from '@frank/account-vault'
+import { bip39Descriptor } from './bip39'
 import { DOMAIN_PURPOSES, type DomainRoot } from '@frank/domain-roots'
 import {
   CustodyError,
@@ -12,6 +17,7 @@ import {
   type ExpectedActive,
   type PublicAccount,
   type StageAccount,
+  type StageBip39Account,
 } from './types'
 
 const MAX_REVISION = 0xfffffffe
@@ -23,6 +29,58 @@ const setBytes = Uint8Array.prototype.set
 
 export function invalid(): never {
   throw new CustodyError('invalid-input')
+}
+
+export function captureBip39(input: StageBip39Account): {
+  account: PublicAccount
+  expectedActive: ExpectedActive
+  seed: Uint8Array
+} {
+  let seed: Uint8Array | undefined
+  try {
+    const attemptId = id(input.attemptId),
+      accountId = id(input.accountId)
+    const expectedActive = expected(input.expectedActive)
+    const name = displayName(input.displayName),
+      custodyEpoch = revision(input.custodyEpoch)
+    const source = input.bip39Seed
+    if (
+      Reflect.apply(tagOf, source, []) !== 'Uint8Array' ||
+      Reflect.apply(lengthOf, source, []) !== 64 ||
+      !(Reflect.apply(bufferOf, source, []) instanceof ArrayBuffer)
+    )
+      invalid()
+    seed = new Uint8Array(64)
+    Reflect.apply(setBytes, seed, [source])
+    const { descriptor, fingerprint } = bip39Descriptor(seed)
+    const receipt = createVaultWriteIntent({
+      expected: null,
+      operationId: attemptId,
+      context: {
+        accountId,
+        creationId: attemptId,
+        custodyEpoch,
+        recoveryFormat: BIP39_RECOVERY_FORMAT,
+        registry: BIP39_DERIVATION,
+        purposes: [],
+        recoveryFingerprint: fingerprint,
+        retirementContext: '',
+      },
+    }).receipt
+    return {
+      account: Object.freeze({
+        displayName: name,
+        descriptor,
+        fingerprint,
+        receipt,
+      }),
+      expectedActive,
+      seed,
+    }
+  } catch {
+    seed?.fill(0)
+    throw new CustodyError('invalid-input')
+  }
 }
 export function id(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(value))
@@ -84,7 +142,6 @@ function hexText(value: unknown): string {
 function displayName(value: unknown): string {
   if (
     typeof value !== 'string' ||
-    !value.length ||
     value.length > 80 ||
     value !== value.trim() ||
     Array.from(value).some(character => {
@@ -168,6 +225,38 @@ function keys(value: object, names: string[]): void {
     invalid()
 }
 function account(value: PublicAccount): PublicAccount {
+  if (value?.receipt?.context?.recoveryFormat === BIP39_RECOVERY_FORMAT) {
+    keys(value, ['displayName', 'descriptor', 'fingerprint', 'receipt'])
+    const supplied = value.receipt
+    const receipt = createVaultWriteIntent({
+      expected: null,
+      context: supplied.context,
+      operationId: supplied.operationId,
+    }).receipt
+    const fingerprint = value.fingerprint
+    if (
+      !/^(02|03)[0-9a-f]{64}$/.test(fingerprint) ||
+      !same(receipt, supplied) ||
+      receipt.context.creationId !== receipt.operationId ||
+      receipt.context.recoveryFingerprint !== fingerprint ||
+      receipt.context.retirementContext !== '' ||
+      value.descriptor !==
+        JSON.stringify({
+          derivation: BIP39_DERIVATION,
+          identityPath: "m/44'/60'/1'/0/0",
+          identityPublicKey: fingerprint,
+        })
+    )
+      invalid()
+    id(receipt.context.accountId)
+    id(receipt.operationId)
+    return Object.freeze({
+      displayName: displayName(value.displayName),
+      descriptor: value.descriptor,
+      fingerprint,
+      receipt,
+    })
+  }
   keys(value, [
     'displayName',
     'descriptor',

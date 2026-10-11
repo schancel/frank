@@ -28,6 +28,7 @@
           <div class="text-h4 text-weight-bold">
             {{ $t('about.appName') }}
           </div>
+          <div class="text-caption text-grey-8">v{{ appVersion }}</div>
           <div class="text-subtitle1 text-grey-8 q-mt-xs">
             {{ $t('about.tagline') }}
           </div>
@@ -176,6 +177,7 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
+import { version as appVersion } from '../../package.json'
 
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import {
@@ -195,6 +197,7 @@ export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   setup(_, { emit }) {
     return {
+      appVersion,
       myDrawerOpen: useMyDrawerOpen(),
       notice: SILENCE_LABORATORIES_NOTICE,
       license: SILENCE_LABORATORIES_LICENSE,

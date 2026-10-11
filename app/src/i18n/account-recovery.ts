@@ -1,4 +1,7 @@
 export const en = {
+  profile_restore_unreachable:
+    'Your account was recovered, but its profile could not be fetched. Check the relay connection and retry.',
+  profile_restore_retry: 'Retry profile lookup',
   pending_outdated_cancel_and_redo:
     'This attempt was saved by an earlier version of Frank and cannot be activated. Cancel it, then create or restore the account again. The shares you wrote down still restore the account.',
   pending_retry:
@@ -16,12 +19,13 @@ export const en = {
   retry_opening_account: 'Retry',
   reset_account_storage: 'Reset storage',
   reset_account_storage_confirm:
-    'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares. BIP39 import remains unavailable. Proceed?',
+    'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares. Proceed?',
   a_saved_account_attempt_is_pending_it:
     'A saved account attempt is pending. It is not active until you choose Activate account.',
+  account_found: 'Account found',
   activate_account: 'Activate',
   pending_identity_address:
-    'This is the account these shares restore. Activating opens the account with this identity address:',
+    'This is the account your backup restores. Activating opens the account with this identity address:',
   pending_identity_stop_if_unexpected:
     'If you are restoring an account and this is not the address you expect, stop: do not activate. Cancel the attempt instead.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
@@ -40,11 +44,9 @@ export const en = {
   legacy_recovery_migration: 'Legacy recovery',
   return_to_wallet: 'Back',
   this_identifies_your_old_account_locally_you:
-    'This identifies your BIP39 account locally without importing or activating it. Existing account and recovery data stays unchanged. BIP39 import is currently unavailable.',
+    'Enter the BIP39 phrase saved for your Frank account. Review its identity address before activating. Your existing profile will be fetched after recovery.',
   legacy_bip39_recovery_phrase: 'Legacy BIP39 recovery phrase',
-  identify_legacy_account_locally: 'Identify account',
-  bip39_import_unavailable:
-    'BIP39 account identified. Importing this account is currently unavailable. No account was activated or replaced, and existing account and recovery data is unchanged.',
+  identify_legacy_account_locally: 'Restore BIP39 account',
   old_account: 'Old account:',
   the_new_identity_is_different_no_funds:
     '. The new identity is different; no funds, history or remote keys are migrated.',
@@ -113,8 +115,8 @@ export const en = {
   browser_persistence_reduces_automatic_eviction_it_is:
     'Browser persistence reduces automatic eviction. It is not a backup or protection against malicious code or a stolen browser profile.',
   request_persistent_storage: 'Request persistent storage',
-  frank_account_backup_shares_were_verified_before:
-    'Frank account backup shares were verified before activation. Keep your independent shares and public descriptor. They cannot be reconstructed from this device.',
+  keep_independent_account_backup:
+    'Keep an independent backup of your account. Browser storage protection is not a backup.',
   import_bip39_seed: 'Import BIP39 seed',
   backup_account_codex32: 'Backup account (Codex32)',
   codex32_threshold_explainer:
@@ -125,7 +127,11 @@ export const en = {
   show_recovery_shares_warning:
     'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
   codex32_backup_unavailable_for_account:
-    'This account was created before Frank could issue new backup shares. Only the shares shown when the account was created can restore it, so no shares are shown here.',
+    'The original secret needed to issue backup shares is unavailable on this device. Your existing backup remains valid.',
+  historical_share_keep_both_lines:
+    'Keep the Seed and Check lines together as one paper share. Enter both lines together when restoring.',
+  backup_seed_line: 'Seed',
+  backup_check_line: 'Check',
   configure_scheme: 'Configure threshold and shares',
   custom_threshold_shares: 'Custom threshold and shares',
   threshold: 'Threshold',
@@ -153,6 +159,9 @@ export const en = {
 }
 
 export const fr = {
+  profile_restore_unreachable:
+    'Votre compte a été récupéré, mais son profil n’a pas pu être chargé. Vérifiez la connexion au relais et réessayez.',
+  profile_restore_retry: 'Réessayer de charger le profil',
   pending_outdated_cancel_and_redo:
     'Cette tentative a été enregistrée par une version antérieure de Frank et ne peut pas être activée. Annulez-la, puis créez ou restaurez le compte à nouveau. Les parts que vous avez notées restaurent toujours le compte.',
   pending_retry:
@@ -170,12 +179,13 @@ export const fr = {
   retry_opening_account: 'Réessayer',
   reset_account_storage: 'Réinitialiser le stockage',
   reset_account_storage_confirm:
-    'La réinitialisation effacera les données de compte local illisibles. Vous pourrez ensuite restaurer votre compte depuis vos clés de secours. L’importation BIP39 reste indisponible. Continuer ?',
+    'La réinitialisation effacera les données de compte local illisibles. Vous pourrez ensuite restaurer votre compte depuis vos clés de secours. Continuer ?',
   a_saved_account_attempt_is_pending_it:
     'Une tentative de création enregistrée est en attente. Le compte ne sera actif qu’après avoir choisi Activer le compte.',
+  account_found: 'Compte retrouvé',
   activate_account: 'Activer',
   pending_identity_address:
-    'Voici le compte que ces parts restaurent. L’activation ouvre le compte ayant cette adresse d’identité :',
+    'Voici le compte que votre sauvegarde restaure. L’activation ouvre le compte ayant cette adresse d’identité :',
   pending_identity_stop_if_unexpected:
     'Si vous restaurez un compte et que ce n’est pas l’adresse attendue, arrêtez : n’activez pas. Annulez plutôt la tentative.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
@@ -194,12 +204,10 @@ export const fr = {
   legacy_recovery_migration: 'Récupération',
   return_to_wallet: 'Retour',
   this_identifies_your_old_account_locally_you:
-    'Cette étape identifie votre compte BIP39 localement sans l’importer ni l’activer. Les données de compte et de récupération existantes restent inchangées. L’importation BIP39 est actuellement indisponible.',
+    'Entrez la phrase BIP39 enregistrée pour votre compte Frank. Vérifiez son adresse avant l’activation. Votre profil existant sera chargé après la récupération.',
   legacy_bip39_recovery_phrase:
     'Phrase de récupération BIP39 de l’ancien compte',
-  identify_legacy_account_locally: 'Identifier le compte',
-  bip39_import_unavailable:
-    'Compte BIP39 identifié. L’importation de ce compte est actuellement indisponible. Aucun compte n’a été activé ou remplacé ; les données de compte et de récupération existantes sont inchangées.',
+  identify_legacy_account_locally: 'Restaurer un compte BIP39',
   old_account: 'Ancien compte :',
   the_new_identity_is_different_no_funds:
     '. La nouvelle identité est différente ; aucun fonds, historique ou clé distante n’est migré.',
@@ -270,8 +278,8 @@ export const fr = {
   browser_persistence_reduces_automatic_eviction_it_is:
     'La persistance du navigateur réduit l’effacement automatique. Ce n’est ni une sauvegarde ni une protection contre le code malveillant ou le vol du profil du navigateur.',
   request_persistent_storage: 'Demander le stockage persistant',
-  frank_account_backup_shares_were_verified_before:
-    'Les parts de sauvegarde du compte Frank ont été vérifiées avant l’activation. Conservez vos parts indépendantes et votre descripteur public. Cet appareil ne permet pas de les reconstruire.',
+  keep_independent_account_backup:
+    'Conservez une sauvegarde indépendante de votre compte. La protection du stockage du navigateur ne remplace pas une sauvegarde.',
   import_bip39_seed: 'Importer la graine BIP39',
   backup_account_codex32: 'Sauvegarder le compte (Codex32)',
   codex32_threshold_explainer:
@@ -282,7 +290,11 @@ export const fr = {
   show_recovery_shares_warning:
     'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',
   codex32_backup_unavailable_for_account:
-    'Ce compte a été créé avant que Frank puisse émettre de nouvelles parts de sauvegarde. Seules les parts affichées à la création du compte peuvent le restaurer ; aucune part n’est donc affichée ici.',
+    'Le secret d’origine nécessaire pour créer des parts de sauvegarde est indisponible sur cet appareil. Votre sauvegarde existante reste valide.',
+  historical_share_keep_both_lines:
+    'Conservez les lignes Graine et Vérification ensemble comme une seule part papier. Saisissez les deux lignes ensemble lors de la restauration.',
+  backup_seed_line: 'Graine',
+  backup_check_line: 'Vérification',
   configure_scheme: 'Configurer le seuil et les parts',
   custom_threshold_shares: 'Seuil et parts personnalisés',
   threshold: 'Seuil',

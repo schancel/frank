@@ -58,10 +58,10 @@ describe('Profile.vue component avatar handling', () => {
     originalImage = window.Image
     class MockImage {
       crossOrigin = ''
-      width = 512
-      height = 512
-      naturalWidth = 512
-      naturalHeight = 512
+      width = 960
+      height = 960
+      naturalWidth = 960
+      naturalHeight = 960
       complete = true
       _src = ''
       onload: ((e: any) => void) | null = null
@@ -82,6 +82,24 @@ describe('Profile.vue component avatar handling', () => {
     window.Image = originalImage
   })
 
+  it('shows the username plainly in the editor and identity card', () => {
+    const wrapper = mount(ProfileComponent, {
+      props: {
+        avatar: 'data:image/webp;base64,EXISTING',
+        username: 'alice_99',
+      },
+      global: { mocks: { $t: (key: string) => key }, stubs: defaultStubs },
+    })
+    expect(
+      wrapper.get('[data-test="profile-input-username"]').attributes('prefix'),
+    ).toBeUndefined()
+    expect(wrapper.get('[data-panel="identity"]').text()).toContain('alice_99')
+    expect(wrapper.get('[data-panel="identity"]').text()).not.toContain(
+      '@alice_99',
+    )
+    wrapper.unmount()
+  })
+
   it('resizes default avatar on creation when no avatar is provided', async () => {
     const wrapper = mount(ProfileComponent, {
       props: {
@@ -98,10 +116,17 @@ describe('Profile.vue component avatar handling', () => {
     expect(wrapper.vm.$data.internalAvatar).toContain(
       'data:image/webp;base64,RESIZED_AVATAR',
     )
-    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(4096)
+    expect(mockDrawImage).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+      0,
+      512,
+      512,
+    )
+    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(65536)
   })
 
-  it('cycles avatar and downscales to thumbnail under 4 KB', async () => {
+  it('cycles the original bundled avatar at profile display resolution', async () => {
     const wrapper = mount(ProfileComponent, {
       props: {
         avatar: 'data:image/webp;base64,EXISTING',
@@ -144,7 +169,14 @@ describe('Profile.vue component avatar handling', () => {
     expect(wrapper.vm.$data.internalAvatar).toContain(
       'data:image/webp;base64,RESIZED_AVATAR',
     )
-    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(4096)
+    expect(mockDrawImage).toHaveBeenCalledWith(
+      expect.anything(),
+      0,
+      0,
+      512,
+      512,
+    )
+    expect(wrapper.vm.$data.internalAvatar.length).toBeLessThanOrEqual(65536)
   })
 
   it('validates username handle and emits normalized handle', async () => {
@@ -228,7 +260,7 @@ describe('Profile.vue component avatar handling', () => {
     expect((wrapper.vm as any).usernameHint).toBe('profile.usernameHint')
   })
 
-  it('refuses a display name that starts with @, which is how usernames are written', async () => {
+  it('refuses a display name that starts with @, under the existing display-name rule', async () => {
     const wrapper = mount(ProfileComponent, {
       props: { name: 'Alice' },
       global: {

@@ -3,11 +3,17 @@
  * (session, custody, vault, ceremony, recovery) and the three stand-ins outside backup/restore.
  */
 import { splitCodex32 } from '@frank/codex32'
-import { DOMAIN_PURPOSES } from '@frank/domain-roots'
+import { DOMAIN_PURPOSES, BIP39_DERIVATION } from '@frank/domain-roots'
+import { parseAccountBackupShareInput } from '@frank/account-recovery'
+import { historicalBip39WalletMaterial } from '@frank/wallet/monad-wallet-material'
+import { mnemonicToSeedSync } from 'bip39'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
-import { AccountBackupUnavailableError } from './session'
+import { AccountBackupUnavailableError, stageBip39Recovery } from './session'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { CustodyError } from './custody'
 import {
   closeDevices,
+  activate,
   describeAccount,
   failure,
   forgetAccountRoot,
@@ -35,6 +41,258 @@ jest.mock('@frank/cashweb/relay', () => ({
 
 beforeAll(prepareDevices)
 afterEach(closeDevices)
+
+test('a historical BIP39 phrase uses shared staging, activation and reopen without a name or reset', async () => {
+  const phrase = 'test test test test test test test test test test test junk'
+  const expected = MonadIdentity.fromSeed({ mnemonic: phrase })
+  const session = freshDevice()
+  await session.initialize()
+  await stageBip39Recovery(session, phrase)
+  expect(session.state.status).toBe('pending')
+  expect(session.state.account).toBeNull()
+  expect(session.state.pendingIdentityAddress).toBe(expected.displayAddress)
+  expect(session.state.pending?.account.displayName).toBe('')
+  await activate(session)
+  expect((await session.getWallet()).identity.compressedPubKey).toEqual(
+    expected.compressedPubKey,
+  )
+  await session.close()
+  const reopened = openSession()
+  await reopened.initialize()
+  expect(reopened.state.status).toBe('ready')
+  expect((await reopened.getWallet()).identity.compressedPubKey).toEqual(
+    expected.compressedPubKey,
+  )
+  await expect(
+    reopened.getActiveDomainRoot('evm-wallet'),
+  ).rejects.toMatchObject({ code: 'account-purpose-unavailable' })
+  expect((await reopened.backupCodex32(2, 3)).length).toBe(3)
+})
+
+function historicalPublicKeys(seed: Uint8Array) {
+  const material = historicalBip39WalletMaterial({
+    derivation: BIP39_DERIVATION,
+    seed,
+  })
+  try {
+    return {
+      identity: Buffer.from(material.identity.compressedPubKey).toString('hex'),
+      spend: material.keyring.deriveSubAccount(0).publicKey,
+      change: material.changeKeyring.deriveChangeAccount(0).publicKey,
+    }
+  } finally {
+    material.dispose()
+  }
+}
+
+test.each([
+  [2, 3],
+  [3, 5],
+] as const)(
+  'historical %i-of-%i backup restores the original identity and spend keys through activation and reopen',
+  async (threshold, count) => {
+    const phrase = 'test test test test test test test test test test test junk'
+    const originalSeed = mnemonicToSeedSync(phrase)
+    const expected = historicalPublicKeys(originalSeed)
+    const original = freshDevice()
+    await original.initialize()
+    await stageBip39Recovery(original, phrase)
+    await activate(original)
+    const shares = await original.backupCodex32(threshold, count)
+    expect(shares.length).toBe(count)
+    await original.close()
+    // The paper presentation uses two adjacent lines per share. Clipboard envelopes also work.
+    const paper = shares
+      .slice(-threshold)
+      .map(share => share.split(':').slice(1).join('\n'))
+      .join('\n')
+    const observed: ReturnType<typeof historicalPublicKeys>[] = []
+    const options = {
+      observeHistoricalSeed: (seed: Uint8Array) => {
+        expect(
+          seed.length === originalSeed.length &&
+            seed.every((byte, i) => byte === originalSeed[i]),
+        ).toBe(true)
+        observed.push(historicalPublicKeys(seed))
+      },
+    }
+    const restored = freshDevice(options)
+    await restore(restored, parseAccountBackupShareInput(paper))
+    expect(observed).toEqual([expected])
+    expect(
+      Buffer.from(
+        (await restored.getWallet()).identity.compressedPubKey,
+      ).toString('hex'),
+    ).toBe(expected.identity)
+    await restored.close()
+    const reopened = openSession(options)
+    await reopened.initialize()
+    expect(observed).toEqual([expected, expected])
+    expect(
+      Buffer.from(
+        (await reopened.getWallet()).identity.compressedPubKey,
+      ).toString('hex'),
+    ).toBe(expected.identity)
+    const secondBackup = await reopened.backupCodex32(threshold, count)
+    expect(secondBackup.length).toBe(count)
+    originalSeed.fill(0)
+  },
+)
+
+test('mixed historical components fail before staging and leave the active account unchanged', async () => {
+  const session = freshDevice()
+  await session.initialize()
+  await stageBip39Recovery(
+    session,
+    'test test test test test test test test test test test junk',
+  )
+  await activate(session)
+  const before = await session.snapshot()
+  const first = await session.backupCodex32(2, 3)
+  const second = await session.backupCodex32(2, 3)
+  const wrong = first.slice(0, 2).map((line, i) => {
+    const parts = line.split(':')
+    return `${parts[0]}:${parts[1]}:${second[i]!.split(':')[2]}`
+  })
+  const ceremony = createAccountCeremony()
+  await ceremony.beginRestore()
+  await expect(ceremony.confirm(wrong, '')).rejects.toThrow()
+  expect(await session.snapshot()).toEqual(before)
+  expect(session.state.status).toBe('ready')
+})
+
+test('historical recovery derives every existing family address locally from its original seed', async () => {
+  const phrase = 'test test test test test test test test test test test junk'
+  const session = freshDevice()
+  await session.initialize()
+  await stageBip39Recovery(session, phrase)
+  await activate(session)
+  // The user-visible address call failed before this correction, before any indexer access.
+  const ecashAddress = await session.getChainAddress('ecash')
+  const material = await session.getActiveFamilyMaterial('ecash-bch-wallet')
+  expect('seed' in material).toBe(true)
+  if (!('seed' in material))
+    throw new Error('Expected historical seed material')
+  try {
+    const { HDNodeWallet, getBytes } = await import('ethers')
+    const { encodeCashAddress } = await import('ecashaddrjs')
+    const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+    const { sha256 } = await import('@noble/hashes/sha256.js')
+    const node = HDNodeWallet.fromSeed(material.seed).derivePath(
+      "m/44'/1899'/0'/0/0",
+    )
+    expect(await session.getChainAddress('ecash')).toBe(
+      encodeCashAddress(
+        'ectest',
+        'p2pkh',
+        ripemd160(sha256(getBytes(node.publicKey))),
+      ),
+    )
+    expect(await session.getChainAddress('bitcoin')).toMatch(/^tb1q/)
+    expect(await session.getChainAddress('bitcoincash')).toMatch(/^bchtest:/)
+    const { SolanaHdKeyring } = await import('@frank/wallet/ed25519-hd-keyring')
+    const original = await SolanaHdKeyring.fromMnemonic(phrase)
+    const leaf = await original.deriveSubAccount(0)
+    try {
+      expect(await session.getChainAddress('solana')).toBe(leaf.address)
+      expect((await session.getSolanaSigner()).publicKey.toBase58()).toBe(
+        leaf.address,
+      )
+      expect(await session.getCurvePublicKey('ed25519')).toEqual(
+        new Uint8Array(leaf.publicKey.toBytes()),
+      )
+    } finally {
+      leaf.privateKeyBytes.fill(0)
+    }
+  } finally {
+    material.seed.fill(0)
+  }
+})
+
+test('recovered custody stays durable while required profile restoration gates activation and retry', async () => {
+  const originalDevice = freshDevice()
+  const shares = await signUp(originalDevice)
+  const original = await describeAccount(originalDevice)
+  await originalDevice.close()
+  let resolveProfile!: () => void
+  let beginProfile!: () => void
+  let profileStarted = new Promise<void>(resolve => {
+    beginProfile = resolve
+  })
+  let online = false
+  const restoring = freshDevice({
+    restoreApplicationState: async ({ account }) => {
+      expect(account.displayName).toBe('')
+      await new Promise<void>(resolve => {
+        resolveProfile = resolve
+        beginProfile()
+      })
+      if (!online) throw new CustodyError('profile-unreachable')
+    },
+  })
+  await restoring.initialize()
+  const ceremony = createAccountCeremony()
+  await ceremony.beginRestore()
+  await ceremony.confirm(shares.slice(0, 2), '')
+  const pending = restoring.state.pending!
+  const activating = restoring.activatePending(
+    pending.account.receipt.operationId,
+    pending.expectedActive,
+  )
+  // Real IndexedDB and WebCrypto must finish before the application restoration starts.
+  await Promise.race([
+    profileStarted,
+    activating.then(() => {
+      throw new Error(
+        'Account activation finished before required profile restoration',
+      )
+    }),
+  ])
+  expect(restoring.state.status).toBe('loading')
+  expect(restoring.state.account?.fingerprint).toBe(original.fingerprint)
+  resolveProfile()
+  await activating
+  expect(restoring.state.status).toBe('unavailable')
+  expect(restoring.state.error).toBe('profile-unreachable')
+  expect(restoring.state.pending).toBeNull()
+  expect(restoring.state.account?.fingerprint).toBe(original.fingerprint)
+  online = true
+  profileStarted = new Promise<void>(resolve => {
+    beginProfile = resolve
+  })
+  const retrying = restoring.retry()
+  await profileStarted
+  expect(restoring.state.status).toBe('loading')
+  resolveProfile()
+  await retrying
+  expect(restoring.state.status).toBe('ready')
+  expect(await describeAccount(restoring)).toEqual(original)
+})
+
+test('restore activates and reopens the same custody account without a display name', async () => {
+  const originalDevice = freshDevice()
+  const shares = await signUp(originalDevice)
+  const original = await describeAccount(originalDevice)
+  await originalDevice.close()
+
+  const recoveredDevice = freshDevice()
+  await recoveredDevice.initialize()
+  const ceremony = createAccountCeremony()
+  await ceremony.beginRestore()
+  await ceremony.confirm(shares.slice(0, 2), '')
+  expect(recoveredDevice.state.pending?.account.displayName).toBe('')
+  expect(recoveredDevice.state.pendingIdentityAddress).toBe(
+    original.identityAddress,
+  )
+  await activate(recoveredDevice)
+  expect(await describeAccount(recoveredDevice)).toEqual(original)
+  await recoveredDevice.close()
+
+  const reopened = openSession()
+  await reopened.initialize()
+  expect(reopened.state.account?.displayName).toBe('')
+  expect(await describeAccount(reopened)).toEqual(original)
+})
 
 test('a backup made from Settings restores the same account on a fresh device', async () => {
   const first = freshDevice()

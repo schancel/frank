@@ -601,7 +601,7 @@ export default defineComponent({
         this.address =
           contact.profile?.name ||
           (contact.profile?.username
-            ? `@${contact.profile.username}`
+            ? contact.profile.username
             : resolvedAddress)
       }
     },

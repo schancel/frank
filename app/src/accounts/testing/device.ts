@@ -22,7 +22,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import { webcrypto } from 'crypto'
 import type { VaultReceipt } from '@frank/account-vault'
 import { aad } from '../../../../packages/account-vault/src/encoding'
-import { DOMAIN_PURPOSES, type DomainRoot } from '@frank/domain-roots'
+import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { createAccountCeremony } from '../ceremony'
 import { openAccountCustody } from '../custody'
@@ -62,21 +62,35 @@ export async function closeDevices() {
 }
 
 /** Switch to a new, empty browser profile and open the app's session on it. */
-export function freshDevice(): Session {
+export function freshDevice(
+  options: Parameters<typeof openSession>[0] = {},
+): Session {
   globalThis.indexedDB = new IDBFactory()
-  return openSession()
+  return openSession(options)
 }
 /** A later app start on the same device: nothing carried over in memory. */
-export function openSession(): Session {
+export function openSession(
+  options: {
+    /** Test observer at the real session-to-custody boundary; never retain secret bytes. */
+    observeHistoricalSeed?: (seed: Uint8Array) => void
+    restoreApplicationState?: Parameters<
+      typeof createAccountSession
+    >[0]['restoreApplicationState']
+  } = {},
+): Session {
   const session = createAccountSession({
+    restoreApplicationState: options.restoreApplicationState,
     open: () => openAccountCustody({ namespace: NAMESPACE }),
-    createWallet: async (roots: {
-      authentication: DomainRoot<'identity-authentication'>
-    }) =>
-      ({
-        identity: MonadIdentity.fromDomainRoot(roots.authentication),
+    createWallet: async roots => {
+      if ('derivation' in roots) options.observeHistoricalSeed?.(roots.seed)
+      return {
+        identity:
+          'derivation' in roots
+            ? MonadIdentity.fromBip39Seed(roots.seed)
+            : MonadIdentity.fromDomainRoot(roots.authentication),
         close: async () => undefined,
-      } as unknown as RuntimeWallet),
+      } as unknown as RuntimeWallet
+    },
   })
   opened.push(session)
   current = session

@@ -1,3 +1,5 @@
+import type { HistoricalBip39Seed } from "../domain-roots/src";
+import { BIP39_DERIVATION } from "../domain-roots/src";
 import {
   ChainAddress,
   ChainTransaction,
@@ -16,6 +18,7 @@ import type { ChronikClient } from "chronik-client";
 import type { DomainRoot } from "../domain-roots/src";
 import {
   createEcashSeedBackend,
+  createEcashBip39SeedBackend,
   snapshotEcashDomainRoot,
 } from "./ecash-seed-boundary";
 import type { LegacyEcashSeedOptions } from "./ecash-legacy-seed";
@@ -107,7 +110,9 @@ export function ecashCheckpoint(
     return operatorCheckpoint;
   }
   if (operatorCheckpoint !== undefined) {
-    throw new Error(`The checkpoint of ${canonicalId} is fixed and cannot be given`);
+    throw new Error(
+      `The checkpoint of ${canonicalId} is fixed and cannot be given`
+    );
   }
   return ECASH_CHECKPOINTS[canonicalId];
 }
@@ -306,6 +311,41 @@ export class EcashWallet implements NativeWalletHandle {
           reason: new Error("Recovered unresolved native transaction"),
         }),
       };
+    }
+  }
+
+  static async fromDerivationMaterial(
+    params: EcashWalletOptions & {
+      material: DomainRoot<"ecash-bch-wallet"> | HistoricalBip39Seed;
+      walletFactory?: EcashWalletFactory;
+    }
+  ): Promise<EcashWallet> {
+    if (!("seed" in params.material))
+      return EcashWallet.fromDomainRoot({
+        ...params,
+        domainRoot: params.material,
+      });
+    if (
+      params.material.derivation !== BIP39_DERIVATION ||
+      !(params.material.seed instanceof Uint8Array) ||
+      params.material.seed.length !== 64
+    )
+      throw new Error("Expected the original 64-byte historical BIP39 seed");
+    // Snapshot before endpoint verification or SDK loading; the caller may wipe its copy.
+    const seed = new Uint8Array(params.material.seed);
+    try {
+      return await EcashWallet.initialize(
+        params,
+        () =>
+          createEcashBip39SeedBackend(
+            { derivation: BIP39_DERIVATION, seed },
+            params.chronik,
+            ECASH_ADDRESS_PREFIXES[canonicalEcashNetworkId(params.networkId)]
+          ),
+        false
+      );
+    } finally {
+      seed.fill(0);
     }
   }
 

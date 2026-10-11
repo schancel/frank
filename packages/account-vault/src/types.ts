@@ -1,4 +1,7 @@
 import type { DomainPurpose, DomainRoot, DERIVATION_REGISTRY_ID, RECOVERY_FORMAT_ID } from '@frank/domain-roots'
+import { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION } from '@frank/domain-roots'
+export { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION }
+
 
 export type VaultErrorCode = 'invalid-input' | 'unavailable' | 'closed' | 'locked' | 'corrupt' | 'conflict' | 'capacity' | 'storage-failed'
 
@@ -13,8 +16,8 @@ export class VaultError extends Error {
 export interface VaultContext {
   readonly accountId: string
   readonly creationId: string
-  readonly recoveryFormat: typeof RECOVERY_FORMAT_ID
-  readonly registry: typeof DERIVATION_REGISTRY_ID
+  readonly recoveryFormat: typeof RECOVERY_FORMAT_ID | typeof BIP39_RECOVERY_FORMAT
+  readonly registry: typeof DERIVATION_REGISTRY_ID | typeof BIP39_DERIVATION
   readonly purposes: readonly DomainPurpose[]
   readonly custodyEpoch: number
   readonly recoveryFingerprint: string
@@ -38,8 +41,8 @@ export interface VaultWriteIntent {
 
 export interface PreviewVault {
   /**
-   * Store the 32-byte account root R. It is the record's only secret and the source of
-   * truth; the caller vouches that it is this account's root.
+   * Store the secret selected by the authenticated recovery format: a 32-byte Codex32
+   * account root or the exact 64-byte historical BIP39 PBKDF2 seed. They are never converted.
    */
   stage(intent: VaultWriteIntent, accountRoot: Uint8Array): Promise<VaultReceipt>
   /**
@@ -50,10 +53,12 @@ export interface PreviewVault {
   open(receipt: VaultReceipt): Promise<readonly DomainRoot[]>
   /**
    * The account root stored with this record, as a caller-owned copy, for issuing a new
-   * backup. `null` means the record was written before account roots were stored: there
-   * is nothing to back up from, and callers must say so instead of substituting a root.
+   * backup. `null` means this record has no Codex32 root (historical BIP39, or a record
+   * written before roots were stored). Callers must never substitute a different secret.
    */
   openAccountRoot(receipt: VaultReceipt): Promise<Uint8Array | null>
+  /** Exact historical PBKDF2 seed, never an HKDF domain root; null for Codex32 accounts. */
+  openBip39Seed(receipt: VaultReceipt): Promise<Uint8Array | null>
   reconcile(receipt: VaultReceipt): Promise<'committed' | 'absent' | 'superseded' | 'removed'>
   remove(receipt: VaultReceipt): Promise<void>
   /** Cancel a known pending write, even before its initial stage commits. No roots required. */

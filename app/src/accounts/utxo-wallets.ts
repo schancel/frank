@@ -28,8 +28,8 @@ const opened = new Map<string, Opened>()
 
 function sessionScope(): string {
   const { status, account, revision } = accountSession.state
-  if (status !== 'ready') throw new Error('No account is open')
-  return `${String(account)}:${revision}`
+  if (status !== 'ready' || !account) throw new Error('No account is open')
+  return `${account.receipt.context.accountId}:${revision}`
 }
 
 /** Opens (once per account) the wallet for a canonical Bitcoin-family chain identifier. */
@@ -47,13 +47,18 @@ export function openUtxoWallet(
     relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
   })
   const opening = (async () => {
-    const root = await accountSession.getActiveDomainRoot('ecash-bch-wallet')
+    const material = await accountSession.getActiveFamilyMaterial(
+      'ecash-bch-wallet',
+    )
     try {
-      const wallet = await relayChain.createWallet(root)
+      const wallet = await relayChain.createWallet(
+        'seed' in material ? material : material.bytes,
+      )
       if (sessionScope() !== scope) throw new Error('Account changed')
       return { chain: relayChain.chain, wallet }
     } finally {
-      root.fill(0)
+      if ('seed' in material) material.seed.fill(0)
+      else material.bytes.fill(0)
     }
   })()
   const entry: Opened = { scope, opening, close: () => relayChain.close() }

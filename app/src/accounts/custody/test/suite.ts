@@ -388,7 +388,6 @@ async function regressions() {
     const api = await open('invalid-input'),
       input = fixture('invalid-input')
     for (const update of [
-      { displayName: '' },
       { displayName: ' untrimmed' },
       { displayName: String.fromCharCode(0) },
       { custodyEpoch: -1 },

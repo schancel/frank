@@ -2,15 +2,11 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { reactive, toRaw } from 'vue'
-import { AbstractProvider } from 'ethers'
 import {
   accountSession as mockSession,
   accountStatus,
 } from '../accounts/session'
 import * as sessionApi from '../accounts/session'
-import * as bip39Scanner from '@frank/wallet/bip39-import'
-import * as chain from '@frank/wallet/chain'
-import * as relay from '@frank/cashweb/relay'
 import fr from '../i18n/fr-fr'
 import Setup from './Setup.vue'
 import { inspectLegacyWallet } from '../accounts/legacy'
@@ -188,112 +184,44 @@ test.each(['denied', 'hanging'])(
 
 const PUBLIC_PHRASE =
   'test test test test test test test test test test test junk'
-const CANDIDATE = '0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650'
-const CANDIDATE_PATH = "m/44'/60'/1'/0/0"
-
 test.each(['en', 'fr'] as const)(
-  'read-only identification is truthful in %s for ready and locked accounts',
+  'BIP39 input enters the shared pending activation flow in %s',
   async locale => {
-    for (const status of ['ready', 'locked'] as const) {
-      Object.assign(mockAccount, {
-        status,
-        account: { displayName: 'Existing account' },
-        pending: status === 'locked' ? pending : null,
+    Object.assign(mockAccount, {
+      status: 'fresh',
+      account: null,
+      pending: null,
+    })
+    const stage = jest
+      .spyOn(sessionApi, 'importBip39Wallet')
+      .mockImplementation(async () => {
+        Object.assign(mockAccount, {
+          status: 'pending',
+          pending,
+          pendingReady: true,
+          pendingIdentityAddress: '0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650',
+        })
       })
-      const original = JSON.stringify(mockAccount)
-      const sentinel = JSON.stringify({
-        custody: 'EXISTING',
-        journal: 'FUNDED PENDING OPERATION',
-      })
-      localStorage.setItem('synthetic-recovery-evidence', sentinel)
-      const scan = jest.spyOn(bip39Scanner, 'scanBip39Accounts')
-      const refuse = jest.spyOn(sessionApi, 'importBip39Wallet')
-      const balance = jest
-        .spyOn(AbstractProvider.prototype, 'getBalance')
-        .mockRejectedValue(new Error('No RPC allowed'))
-      const probe = jest
-        .spyOn(relay, 'probeDirectoryRelay')
-        .mockRejectedValue(new Error('No relay IO allowed'))
-      const saveRelay = jest.spyOn(chain, 'setCustomRelayBaseUrl')
-      const construct = jest
-        .spyOn(chain.activeChain, 'createWallet')
-        .mockRejectedValue(new Error('No wallet construction allowed'))
-      const afterActivation = jest.spyOn(
-        usePersistentStorageStore(),
-        'afterActivation',
-      )
-      const view = render(locale)
-      const entry =
-        status === 'locked' ? 'legacy-locked-recovery' : 'legacy-recovery'
-      expect(view.get(`[data-test="${entry}"]`).text()).toBe(
-        t(locale)('accountRecovery.identify_legacy_account_locally'),
-      )
-      expect(
-        view.get(`[data-test="${entry}"]`).attributes('disabled'),
-      ).toBeUndefined()
-      if (status === 'ready')
-        expect(
-          view.get('[data-test="new-account"]').attributes('disabled'),
-        ).toBeDefined()
-      await view.get(`[data-test="${entry}"]`).trigger('click')
+    const view = render(locale)
+    try {
+      await view.get('[data-test="legacy-recovery"]').trigger('click')
       await view.get('[data-test="legacy-phrase"]').setValue(PUBLIC_PHRASE)
       await view.get('form').trigger('submit')
       await flushPromises()
-      expect(scan).toHaveBeenCalledWith({ phrase: PUBLIC_PHRASE })
-      expect(refuse).toHaveBeenCalledWith(PUBLIC_PHRASE, CANDIDATE_PATH)
-      expect(view.get('[data-test="detected-account"]').text()).toContain(
-        CANDIDATE,
+      expect(stage).toHaveBeenCalledWith(
+        PUBLIC_PHRASE,
+        undefined,
+        expect.any(Function),
       )
-      expect(view.get('[data-test="detected-account"]').text()).toContain(
-        CANDIDATE_PATH,
-      )
-      expect(view.get('[data-test="legacy-unavailable"]').text()).toBe(
-        t(locale)('accountRecovery.bip39_import_unavailable'),
-      )
-      expect(view.find('[data-test="account-error"]').exists()).toBe(false)
-      expect(view.find('[data-test="advanced-relay-expansion"]').exists()).toBe(
-        false,
-      )
-      expect(view.find('[data-test="custom-relay-input"]').exists()).toBe(false)
-      expect(view.emitted('setupCompleted')).toBeUndefined()
+      expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+      expect(mockSession.activatePending).not.toHaveBeenCalled()
       expect(mockPush).not.toHaveBeenCalled()
-      for (const action of [
-        mockSession.snapshot,
-        mockSession.reset,
-        mockSession.stage,
-        mockSession.activatePending,
-        mockSession.getWallet,
-        construct,
-        afterActivation,
-        probe,
-        saveRelay,
-        balance,
-      ])
-        expect(action).not.toHaveBeenCalled()
-      expect(JSON.stringify(mockAccount)).toBe(original)
-      expect(localStorage.getItem('synthetic-recovery-evidence')).toBe(sentinel)
-      await view.get('[data-test="cancel-ceremony"]').trigger('click')
-      await view.get(`[data-test="${entry}"]`).trigger('click')
-      expect(
-        (view.get('[data-test="legacy-phrase"]').element as HTMLTextAreaElement)
-          .value,
-      ).toBe('')
-      expect(view.find('[data-test="detected-account"]').exists()).toBe(false)
-      expect(view.find('[data-test="legacy-unavailable"]').exists()).toBe(false)
+      expect(view.emitted('setupCompleted')).toBeUndefined()
+    } finally {
       view.unmount()
-      for (const spy of [
-        scan,
-        refuse,
-        balance,
-        probe,
-        saveRelay,
-        construct,
-        afterActivation,
-      ])
-        spy.mockRestore()
+      stage.mockRestore()
     }
   },
-  30000,
 )
 
 test('locked account shows retry, restore, legacy recovery, and reset options', () => {
@@ -382,6 +310,41 @@ test.each(['en', 'fr'] as const)(
     expect(shown).toContain(words.pending_identity_address)
     expect(shown).toContain(words.pending_identity_stop_if_unexpected)
     expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+  },
+)
+
+test.each([
+  ['en', 'codex32-public-descriptor'],
+  ['fr', 'codex32-public-descriptor'],
+  [
+    'en',
+    '{"derivation":"frank-bip39-bip32-v1","identityPath":"internal-path","identityPublicKey":"internal-public-key"}',
+  ],
+  [
+    'fr',
+    '{"derivation":"frank-bip39-bip32-v1","identityPath":"internal-path","identityPublicKey":"internal-public-key"}',
+  ],
+] as const)(
+  'pending recovery shows the account, not its descriptor (%s, %s)',
+  (locale, descriptor) => {
+    const address = '0x1234567890abcdef1234567890ABCDEF12345678'
+    Object.assign(mockAccount, {
+      status: 'pending',
+      pending: { ...pending, account: { ...pending.account, descriptor } },
+      pendingReady: true,
+      pendingIdentityAddress: address,
+    })
+    const view = render(locale)
+    const words = (locale === 'fr' ? fr : en).accountRecovery
+    expect(view.text()).not.toContain(descriptor)
+    expect(view.text()).toContain(words.account_found)
+    expect(view.get('[data-test="account-found"]').exists()).toBe(true)
+    expect(view.get('[data-test="pending-identity-address"]').text()).toBe(
+      address,
+    )
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+    expect(view.find('[data-test="cancel-pending"]').exists()).toBe(true)
+    view.unmount()
   },
 )
 

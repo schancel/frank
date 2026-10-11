@@ -1,5 +1,5 @@
 import { MAX_SLOTS, intent, receipt, same } from './encoding.js'
-import { VaultError, type VaultReceipt, type VaultWriteIntent } from './types.js'
+import { BIP39_RECOVERY_FORMAT, VaultError, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export interface RecordRow { receipt: VaultReceipt; iv: Uint8Array<ArrayBuffer>; ciphertext: Uint8Array<ArrayBuffer> }
 export interface KeyRow { receipt: VaultReceipt; key: CryptoKey }
@@ -77,7 +77,9 @@ function inspect(value: Inventory): Inventory {
     const current = fence.receipt
     if (!row || !same(receipt(row.receipt), current) ||
         !(row.iv instanceof Uint8Array) || row.iv.length !== 12 ||
-        !(row.ciphertext instanceof Uint8Array) || !recordLengths(current.context.purposes.length).includes(row.ciphertext.length)) throw 0
+        !(row.ciphertext instanceof Uint8Array) || !(current.context.recoveryFormat === BIP39_RECOVERY_FORMAT
+          ? row.ciphertext.length === 81
+          : recordLengths(current.context.purposes.length).includes(row.ciphertext.length))) throw 0
     if (!key) throw new VaultError('locked')
     if (!same(receipt(key.receipt), current) || !validKey(key.key)) throw 0
     return { fence, record: { ...row, receipt: current }, key: { ...key, receipt: current } }

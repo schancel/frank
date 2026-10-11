@@ -3,13 +3,11 @@ import {
   accountSession,
   createAccountSession,
   importBip39Wallet,
-  Bip39ImportUnavailableError,
   resetAccountStorage,
   type RuntimeWallet,
 } from './session'
-import { toRaw, watch } from 'vue'
+import { watch } from 'vue'
 import { importBip39Wallet as legacyImport } from './legacy'
-import { activeChain } from '@frank/wallet/chain'
 import {
   CustodyError,
   type AccountCustody,
@@ -663,102 +661,20 @@ test('setStandby suppresses background revalidate and custody acquisition', asyn
   expect(f.custody.openActive).not.toHaveBeenCalled()
 })
 
-describe('BIP39 public capability containment', () => {
-  const phrase = 'test test test test test test test test test test test junk'
-  const path = "m/44'/60'/1'/0/0"
-  test.each(['fresh', 'ready', 'locked', 'unavailable', 'pending'] as const)(
-    'refuses both public entry points without effects in %s state',
-    async status => {
-      const raw = toRaw(accountSession.state)
-      const original = { ...raw }
-      const records = new Map([
-        ['custody', 'EXISTING CUSTODY BYTES'],
-        ['pending', 'EXISTING PENDING BYTES'],
-        ['journal', 'EXISTING JOURNAL BYTES'],
-      ])
-      const before = new Map(records)
-      const account = {
-        displayName: 'Existing',
-        descriptor: 'PUBLIC',
-        receipt: {
-          operationId: 'existing',
-          context: { accountId: 'existing' },
-        },
-      } as PublicAccount
-      const pending =
-        status === 'pending' || status === 'locked'
-          ? ({
-              status: 'staging',
-              account,
-              expectedActive: { revision: 7, accountId: 'existing' },
-            } as const)
-          : null
-      const snapshot = {
-        schema: 1,
-        revision: 7,
-        active: account,
-        pending,
-      } as CustodySnapshot
-      Object.assign(raw, {
-        status,
-        revision: 7,
-        account: status === 'fresh' ? null : account,
-        pending,
-      })
-      const stateBefore = JSON.stringify(raw)
-      const spies = [
-        jest.spyOn(accountSession, 'initialize').mockResolvedValue(undefined),
-        jest.spyOn(accountSession, 'snapshot').mockResolvedValue(snapshot),
-        jest.spyOn(accountSession, 'reset').mockImplementation(async () => {
-          records.clear()
-        }),
-        jest.spyOn(accountSession, 'stage').mockImplementation(async () => {
-          records.set('pending', 'REPLACED')
-        }),
-        jest
-          .spyOn(accountSession, 'activatePending')
-          .mockImplementation(async () => {
-            records.set('custody', 'REPLACED')
-          }),
-        jest
-          .spyOn(accountSession, 'getWallet')
-          .mockResolvedValue({} as RuntimeWallet),
-      ]
-      const databaseDescriptor = Object.getOwnPropertyDescriptor(
-        globalThis,
-        'indexedDB',
-      )
-      const deleteDatabase = jest.fn()
-      Object.defineProperty(globalThis, 'indexedDB', {
-        configurable: true,
-        value: { deleteDatabase },
-      })
-      jest.mocked(activeChain.createWallet).mockClear()
-      try {
-        for (const invoke of [importBip39Wallet, legacyImport]) {
-          const failure = await invoke(phrase, path).then(
-            () => undefined,
-            error => error,
-          )
-          expect(failure).toMatchObject({ code: 'bip39-import-unavailable' })
-          expect(failure).toBeInstanceOf(Bip39ImportUnavailableError)
-        }
-        for (const spy of spies) expect(spy).not.toHaveBeenCalled()
-        expect(activeChain.createWallet).not.toHaveBeenCalled()
-        expect(deleteDatabase).not.toHaveBeenCalled()
-        expect(records).toEqual(before)
-        expect(raw.status).toBe(status)
-        expect(raw.revision).toBe(7)
-        expect(JSON.stringify(raw)).toBe(stateBefore)
-      } finally {
-        Object.assign(raw, original)
-        spies.forEach(spy => spy.mockRestore())
-        if (databaseDescriptor)
-          Object.defineProperty(globalThis, 'indexedDB', databaseDescriptor)
-        else Reflect.deleteProperty(globalThis, 'indexedDB')
-      }
-    },
-  )
+test('BIP39 public import rejects a different identity path before any custody effects', async () => {
+  const snapshot = jest.spyOn(accountSession, 'snapshot')
+  try {
+    for (const invoke of [importBip39Wallet, legacyImport])
+      await expect(
+        invoke(
+          'test test test test test test test test test test test junk',
+          "m/44'/60'/0'/0/0",
+        ),
+      ).rejects.toMatchObject({ code: 'invalid-input' })
+    expect(snapshot).not.toHaveBeenCalled()
+  } finally {
+    snapshot.mockRestore()
+  }
 })
 
 async function replaceAccount(
@@ -812,9 +728,17 @@ describe.each(['refresh replacement', 'invalidation'] as const)(
         const a = deferred<Uint8Array>(),
           b = deferred<Uint8Array>()
         const roots = jest
-          .spyOn(f.session, 'getActiveDomainRoot')
-          .mockReturnValueOnce(a.promise)
-          .mockReturnValueOnce(b.promise)
+          .spyOn(f.session, 'getActiveFamilyMaterial')
+          .mockImplementationOnce(async purpose => ({
+            registry: DERIVATION_REGISTRY_ID,
+            purpose,
+            bytes: await a.promise,
+          }))
+          .mockImplementationOnce(async purpose => ({
+            registry: DERIVATION_REGISTRY_ID,
+            purpose,
+            bytes: await b.promise,
+          }))
         const read = derivation(f, path)
         let displayed: string | Uint8Array | undefined
         const old = read.read().then(value => {
@@ -851,14 +775,22 @@ test.each(derivedPaths)(
     await f.session.initialize()
     const a = deferred<Uint8Array>()
     const roots = jest
-      .spyOn(f.session, 'getActiveDomainRoot')
-      .mockReturnValueOnce(a.promise)
+      .spyOn(f.session, 'getActiveFamilyMaterial')
+      .mockImplementationOnce(async purpose => ({
+        registry: DERIVATION_REGISTRY_ID,
+        purpose,
+        bytes: await a.promise,
+      }))
     const read = derivation(f, path)
     const failure = new Error('synthetic derivation failure')
     a.reject(failure)
     await expect(read.read()).rejects.toBe(failure)
     const pending = deferred<Uint8Array>()
-    roots.mockReturnValueOnce(pending.promise)
+    roots.mockImplementationOnce(async purpose => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: await pending.promise,
+    }))
     const old = read.read()
     const rejected = expect(old).rejects.toMatchObject({ code: 'closed' })
     await f.session.close()

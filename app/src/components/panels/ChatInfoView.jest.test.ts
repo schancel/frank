@@ -162,7 +162,7 @@ describe('ChatInfoView contact profile display and actions', () => {
     // Username with @ prefix
     const usernameEl = wrapper.find('[data-test="info-contact-username"]')
     expect(usernameEl.exists()).toBe(true)
-    expect(usernameEl.text()).toBe('@alicew')
+    expect(usernameEl.text()).toBe('alicew')
 
     // Bio
     const bioEl = wrapper.find('[data-test="info-contact-bio"]')
@@ -256,7 +256,7 @@ describe('ChatInfoView contact profile display and actions', () => {
       },
     })
     await flushPromises()
-    expect(real.find('[data-test="username-handle"]').text()).toBe('@qwen')
+    expect(real.find('[data-test="username-handle"]').text()).toBe('qwen')
   })
 
   it('tells the user when the username a contact was added by now belongs to a different account', async () => {

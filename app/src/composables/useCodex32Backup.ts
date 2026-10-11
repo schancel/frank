@@ -18,7 +18,7 @@ const PRESETS: ReadonlyArray<readonly [number, number]> = [
 export function useCodex32Backup() {
   const backupLoading = ref(false)
   const backupError = ref('')
-  /** This account predates stored account roots: no shares can be issued for it. */
+  /** Original backup material is unavailable; do not substitute a derived secret. */
   const backupUnavailable = ref(false)
   const backupShares = ref<string[]>([])
   const threshold = ref(2)

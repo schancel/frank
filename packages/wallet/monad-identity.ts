@@ -173,6 +173,17 @@ export class MonadIdentity implements FrankIdentityHandle {
     return new MonadIdentity(new Wallet(node.privateKey))
   }
 
+  /** Historical Frank identity from the exact BIP39 PBKDF2 seed, without conversion. */
+  static fromBip39Seed(seed: Uint8Array): MonadIdentity {
+    if (!(seed instanceof Uint8Array) || seed.length !== 64)
+      throw new Error('Expected the exact historical BIP39 PBKDF2 seed')
+    const owned = new Uint8Array(seed)
+    try {
+      const node = HDNodeWallet.fromSeed(owned).derivePath(MONAD_IDENTITY_DERIVATION_PATH)
+      return new MonadIdentity(new Wallet(node.privateKey))
+    } finally { owned.fill(0) }
+  }
+
   /** Rebuilds a previously-generated identity from its raw `0x`-prefixed private key hex. */
   static fromPrivateKeyHex(privateKeyHex: string): MonadIdentity {
     return new MonadIdentity(new Wallet(privateKeyHex))
@@ -489,7 +500,10 @@ export function buildSignedDirectoryStatement(
     (options.curveKeys || options.spendKeys) &&
     !rawSpendKeys.some(k => k.keyType === 1)
   ) {
-    rawSpendKeys.push({ keyType: 1, keyBytes: new Uint8Array(identity.compressedPubKey) })
+    rawSpendKeys.push({
+      keyType: 1,
+      keyBytes: new Uint8Array(identity.compressedPubKey),
+    })
   }
   rawSpendKeys.sort(compareAccounts)
 
@@ -533,9 +547,7 @@ export function buildSignedDirectoryStatement(
       ]),
     )
   }
-  const username = validateProfileUsername(
-    options.profile?.username,
-  ).normalized
+  const username = validateProfileUsername(options.profile?.username).normalized
   if (username !== undefined) {
     entries.push(
       cborMap([
@@ -811,6 +823,7 @@ export async function registerMonadIdentity(params: {
 export interface DecodedProfile {
   pubKey: Uint8Array
   timestampMs: number
+  expiresAtMs?: number
   derivedAddress: string
   network?: string
   name?: string
@@ -945,7 +958,9 @@ export function decodeProfileBytes(
           ).toString('base64')}`
         } else if (entry.kind === 'spend_key') {
           const curveHeader = entry.headers.find(h => h.name === 'curve')?.value
-          const keyTypeHeader = entry.headers.find(h => h.name === 'key_type')?.value
+          const keyTypeHeader = entry.headers.find(
+            h => h.name === 'key_type',
+          )?.value
           if (curveHeader === 'secp256k1' || keyTypeHeader === '1') {
             if (!curveKeys.secp256k1) {
               curveKeys.secp256k1 = entry.body
@@ -1003,6 +1018,12 @@ export function decodeProfileBytes(
     return {
       pubKey,
       timestampMs,
+      expiresAtMs: stmt.expiry
+        ? Number(
+            BigInt(stmt.expiry.seconds) * 1000n +
+              BigInt(stmt.expiry.nanoseconds) / 1_000_000n,
+          )
+        : undefined,
       derivedAddress,
       network: stmt.network,
       name,
@@ -1115,6 +1136,10 @@ export function decodeProfileBytes(
   return {
     pubKey,
     timestampMs: metadata.getTimestamp(),
+    expiresAtMs:
+      metadata.getTtl() > 0
+        ? metadata.getTimestamp() + metadata.getTtl()
+        : undefined,
     derivedAddress,
     name,
     username,
@@ -1182,6 +1207,8 @@ export async function fetchMonadProfile(params: {
       expectedAddress: params.address.raw,
       expectedNetwork: params.expectedNetwork,
     })
+    if (decoded.expiresAtMs !== undefined && decoded.expiresAtMs <= Date.now())
+      return undefined
     const result: ProfileInfo = {
       address: params.address,
       pubKey: decoded.pubKey,
@@ -1193,7 +1220,8 @@ export async function fetchMonadProfile(params: {
     if (decoded.links !== undefined) result.links = decoded.links
     if (decoded.bot !== undefined) result.bot = decoded.bot
     if (decoded.avatar !== undefined) result.avatar = decoded.avatar
-    if (decoded.accountType !== undefined) result.accountType = decoded.accountType
+    if (decoded.accountType !== undefined)
+      result.accountType = decoded.accountType
     if (decoded.botRole !== undefined) result.botRole = decoded.botRole
     if (decoded.spendKeys !== undefined) result.spendKeys = decoded.spendKeys
     if (decoded.curveKeys !== undefined) result.curveKeys = decoded.curveKeys

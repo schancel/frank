@@ -110,7 +110,7 @@ export default defineComponent({
         return this.selectConversation(item)
       },
       formatAmount(amount?: number) {
-        if (!amount) {
+        if (amount === undefined) {
           return
         }
         return formatDisplayAmount(activeChain, BigInt(Math.trunc(amount)))

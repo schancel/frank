@@ -81,7 +81,7 @@ export async function createNativeTransferContext(
       .find(value => value.id === chainIdentifier)
       ?.identity_probes.find(probe => probe.kind === 'genesis-hash')?.expected
     if (!genesisHash) throw new Error('Solana network identity is unavailable')
-    const [{ Connection, Keypair }, { SolanaWallet }] = await Promise.all([
+    const [{ Connection }, { SolanaWallet }] = await Promise.all([
       import('@solana/web3.js'),
       import('@frank/wallet/solana-wallet'),
     ])
@@ -104,25 +104,19 @@ export async function createNativeTransferContext(
       },
     })
     createWallet = async () => {
-      const root = await accountSession.getActiveDomainRoot('solana-wallet')
-      try {
-        // Identical to getChainAddress: no new derivation path or custody format.
-        const signer = await Keypair.fromSeed(root)
-        return new SolanaWallet({
-          connection,
-          signer,
+      const signer = await accountSession.getSolanaSigner()
+      return new SolanaWallet({
+        connection,
+        signer,
+        chainIdentifier,
+        networkId: chainIdentifier,
+        genesisHash,
+        // Its journal for program calls (a swap), and its sync event as a note to self.
+        legacy: solanaLegacyWiring(
+          signer.publicKey.toBase58(),
           chainIdentifier,
-          networkId: chainIdentifier,
-          genesisHash,
-          // Its journal for program calls (a swap), and its sync event as a note to self.
-          legacy: solanaLegacyWiring(
-            signer.publicKey.toBase58(),
-            chainIdentifier,
-          ),
-        })
-      } finally {
-        root.fill(0)
-      }
+        ),
+      })
     }
   } else if (entry.family === 'bitcoin' && entry.wallet) {
     // eCash on Chronik, Bitcoin and Bitcoin Cash on Electrum: one wallet per chain for the

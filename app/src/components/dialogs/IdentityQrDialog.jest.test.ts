@@ -113,7 +113,7 @@ describe('IdentityQrDialog', () => {
       'Shammah',
     )
     expect(wrapper.find('[data-test="identity-qr-username"]').text()).toBe(
-      '@shammah',
+      'shammah',
     )
     expect(
       wrapper.find('[data-test="identity-qr-code"]').attributes('data-value'),

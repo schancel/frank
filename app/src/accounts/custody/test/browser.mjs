@@ -44,10 +44,10 @@ for (const input of Object.keys(bundle.metafile.inputs)) {
       packages.some(name =>
         absolute.startsWith(join(root, 'packages', name, 'src/')),
       ) ||
-      /^packages\/nakamoto\/src\/(bech32|base32|convert-bits|encoding-error)\.ts$/.test(
+      /^packages\/nakamoto\/src\/(bech32|base32|convert-bits|encoding-error|integer|bytes|secp256k1|backend|backend\/types|backend\/noble|base58|base58check|constructors|keys|hd)\.ts$/.test(
         input,
       ) ||
-      absolute.includes('/node_modules/@noble/hashes/'),
+      /\/node_modules\/@noble\/(hashes|curves)\//.test(absolute),
     `Dependency escaped custody facade: ${input}`,
   )
 }
@@ -57,7 +57,7 @@ assert.ok(
   ),
 )
 console.log(
-  'architecture: own-tree custody/recovery/vault/registry and pure encoding leaves; self-contained browser bundle',
+  'architecture: own-tree custody/recovery/vault/registry and pure encoding/HD/curve leaves; self-contained browser bundle',
 )
 
 const directory = await mkdtemp(join(tmpdir(), 'frank-custody-browser-'))

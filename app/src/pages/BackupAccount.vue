@@ -202,7 +202,32 @@
                     @click="copyShare(share, index)"
                   />
                 </div>
+                <template v-if="historicalParts(share)">
+                  <p
+                    class="text-caption"
+                    data-test="historical-share-explainer"
+                  >
+                    {{ $t('accountRecovery.historical_share_keep_both_lines') }}
+                  </p>
+                  <div
+                    v-for="part in historicalParts(share)"
+                    :key="part.label"
+                    class="q-mb-sm"
+                  >
+                    <div class="text-caption text-weight-bold">
+                      {{ $t(`accountRecovery.${part.label}`) }}
+                    </div>
+                    <div
+                      class="text-caption text-mono"
+                      style="word-break: break-all; user-select: all"
+                      :data-test="part.label"
+                    >
+                      {{ part.value }}
+                    </div>
+                  </div>
+                </template>
                 <div
+                  v-else
                   class="text-caption text-mono"
                   style="
                     word-break: break-all;
@@ -253,6 +278,15 @@ defineEmits<{
   (e: 'setupNavigationLocked'): void
   (e: 'setupCompleted'): void
 }>()
+
+function historicalParts(share: string) {
+  if (!share.startsWith('frank-bip39-v1:')) return undefined
+  const [, seed, check] = share.split(':')
+  return [
+    { label: 'backup_seed_line', value: seed },
+    { label: 'backup_check_line', value: check },
+  ]
+}
 
 const router = useRouter()
 const {

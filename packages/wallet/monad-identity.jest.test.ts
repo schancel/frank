@@ -318,6 +318,30 @@ describe('registerMonadIdentity', () => {
 })
 
 describe('fetchMonadIdentityPubKey / fetchMonadProfile', () => {
+  it('distinguishes an expired signed profile from network failure', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const timestampMs = Date.now() - 60_000
+    const frame = buildSignedDirectoryStatement(identity, {
+      timestampMs,
+      ttlMs: 30_000,
+      profile: { name: 'Expired profile' },
+    })
+    mockedAxios.mockResolvedValueOnce({ data: Buffer.from(frame) })
+    expect(
+      await fetchMonadProfile({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address,
+      }),
+    ).toBeUndefined()
+    const failure = new Error('Relay unavailable')
+    mockedAxios.mockRejectedValueOnce(failure)
+    await expect(
+      fetchMonadProfile({
+        relayBaseUrl: RELAY_BASE_URL,
+        address: identity.address,
+      }),
+    ).rejects.toBe(failure)
+  })
   it('GETs /metadata/:addr and returns the registered pubkey', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const signedPayload = new SignedPayload()
@@ -861,7 +885,7 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
         url: `${RELAY_BASE_URL}/metadata/${identity.address.raw}`,
         headers: expect.objectContaining({
           'Content-Type': 'application/cbor',
-          'Origin': 'http://frank.local',
+          Origin: 'http://frank.local',
         }),
       }),
     )
@@ -1133,7 +1157,9 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
 
     const decoded = decodeProfileBytes(cborFrame)
     expect(decoded.curveKeys).toBeDefined()
-    expect(decoded.curveKeys?.secp256k1).toEqual(new Uint8Array(identity.compressedPubKey))
+    expect(decoded.curveKeys?.secp256k1).toEqual(
+      new Uint8Array(identity.compressedPubKey),
+    )
     expect(decoded.curveKeys?.ed25519).toEqual(edKey)
     expect(decoded.spendKeys).toHaveLength(2)
     expect(decoded.spendKeys?.[0]).toEqual({
@@ -1158,7 +1184,9 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
       relayBaseUrl: RELAY_BASE_URL,
       address: identity.address,
     })
-    expect(profile?.curveKeys?.secp256k1).toEqual(new Uint8Array(identity.compressedPubKey))
+    expect(profile?.curveKeys?.secp256k1).toEqual(
+      new Uint8Array(identity.compressedPubKey),
+    )
     expect(profile?.curveKeys?.ed25519).toEqual(edKey)
     expect(profile?.spendKeys).toHaveLength(2)
   })
@@ -1170,7 +1198,9 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     })
 
     const decoded = decodeProfileBytes(cborFrame)
-    expect(decoded.curveKeys?.secp256k1).toEqual(new Uint8Array(identity.compressedPubKey))
+    expect(decoded.curveKeys?.secp256k1).toEqual(
+      new Uint8Array(identity.compressedPubKey),
+    )
     expect(decoded.curveKeys?.ed25519).toBeUndefined()
     expect(decoded.spendKeys).toEqual([
       {

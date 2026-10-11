@@ -114,7 +114,7 @@ export default {
     stampPrice: 'Stamp Price',
     stampPayment: 'Stamp payment',
     stampQuickSelection:
-      'Quick selection across orders of magnitude (1× to 10,000×)',
+      'Quick selection: free, fractions, or multiples of the default',
     stampMultiplierValue: '{multiplier}× default ({amount})',
     defaultStamp: 'Default: {amount}',
     stampBelowMinimum:
@@ -123,6 +123,7 @@ export default {
     stampQuoteUnavailableReason:
       'Default stamp unavailable: {reason}. Choose an explicit amount or a free message.',
     stampQuoteReasons: {
+      'messaging-pending': 'account is still connecting',
       'missing-rate': 'missing conversion rate',
       'stale-rate': 'stale conversion rate',
       'missing-fee': 'fee estimate unavailable',
@@ -213,24 +214,24 @@ export default {
   persistentStorage: {
     tab: 'Storage',
     heading: 'Persistent storage',
-    granted: 'Persistent storage: granted',
-    notGranted: 'Persistent storage: not granted',
-    unsupported: 'Persistent storage: unavailable',
-    unknown: 'Persistent storage: checking…',
+    granted: 'Granted',
+    notGranted: 'Not granted',
+    unsupported: 'Unavailable',
+    unknown: 'Checking…',
     explainGranted:
-      'Your browser has agreed to keep this app’s data unless you clear it yourself. Your recovery phrase is still the only backup if you lose this device.',
+      'Your browser has agreed to protect Frank’s saved data from automatic eviction. Clearing website data can still remove it. Keep an independent account backup.',
     explainNotGranted:
-      'Your browser may delete this app’s data, including your stored recovery phrase, when it is short on space or, in Safari, after 7 days without a visit unless the app is added to your Home Screen. Your recovery phrase is the only backup.',
+      'Frank already saves data on this device. This permission adds protection against automatic eviction; it does not add disk space. Without it, the browser may remove saved data. Keep an independent account backup.',
     explainUnsupported:
-      'Persistent storage is unavailable (this page is not a secure context or the browser does not support it), so the browser may delete this app’s data (Safari does after 7 days without a visit unless the app is added to your Home Screen). Your recovery phrase is the only backup.',
+      'This browser or context does not offer protection against automatic eviction. Frank can still save data, but the browser may remove it. Keep an independent account backup.',
     request: 'Ask the browser to keep my data',
     confirmSeed: 'Confirm my recovery phrase',
     seedConfirmed: 'Your recovery phrase is confirmed.',
     safariTip:
-      'Tip for Safari / WebKit: Add Frank to your Home Screen / Dock or bookmark this site to enable persistence automatically.',
+      'Safari on Mac (macOS Sonoma 14 or later): choose File > Add to Dock, open Frank from the Dock, then request protection again. On iPhone or iPad, use Share > Add to Home Screen and open Frank there. The browser still decides whether to grant protection; bookmarking alone does not guarantee it.',
     grantedToast: 'Persistent storage granted by browser.',
     declinedToast:
-      'The browser declined persistent storage. Bookmark or install Frank to enable persistence.',
+      'The browser has not granted protection against automatic eviction. Your data is still stored. See the installation guidance below and try again; protection is not guaranteed.',
   },
   blackjackP2p: {
     notDeliveredYet:
@@ -442,7 +443,7 @@ export default {
     tokenBalancesStale:
       'Token balances unavailable. Showing last known balances.',
     balanceStale: '{balance} (last known)',
-    failedLoadAddress: 'Failed to load the Monad wallet address',
+    failedLoadAddress: 'Could not derive wallet address',
     unableCopyAddress: 'Unable to copy the Monad address',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',
@@ -503,16 +504,16 @@ export default {
       'Unlike traditional DeFi oracles that rely on trusted third-party feeds, Proof-of-Work difficulty and emission schedules are verified directly on-chain by full nodes and anchored by competitive thermodynamics.',
     avuDialogClose: 'Close',
     avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
-    avuRatesTitle: 'What one coin is worth in AVU',
+    avuRatesTitle: 'What one unit is worth in AVU',
     avuRatesAsset: 'Asset',
     avuRatesRate: 'Physical Compute (AVU / kWh)',
     tabBalance: 'Balance & Transfer',
     priceHistoryTitle: '{symbol} price history',
-    priceHistoryAxisHash: 'AVU_hash per {symbol}',
-    priceHistoryAxisSpot: 'AVU_spot per {symbol}',
+    priceHistoryAxisHash: 'AVU (Hash) per {symbol}',
+    priceHistoryAxisSpot: 'AVU (Spot) per {symbol}',
     priceHistoryAxisGold: 'Troy ounces of gold per {symbol}',
-    priceHistoryHash: 'AVU_hash',
-    priceHistorySpot: 'AVU_spot',
+    priceHistoryHash: 'AVU (Hash)',
+    priceHistorySpot: 'AVU (Spot)',
     priceHistoryGold: 'Gold',
     priceHistoryPoints: '{count} price observations since {first}.',
     priceHistorySinglePoint:
@@ -524,8 +525,8 @@ export default {
       'No {benchmark} valuation is available for this coin in this range.',
     avuReferenceTitle: 'AVU value in US dollars',
     avuReferenceAxis: 'USD per AVU',
-    avuReferenceHash: '1 AVU_hash',
-    avuReferenceSpot: '1 AVU_spot',
+    avuReferenceHash: '1 AVU (Hash)',
+    avuReferenceSpot: '1 AVU (Spot)',
     avuReferenceNoHistory:
       'No AVU reference history is available in this range.',
     avuReferenceSinglePoint:
@@ -533,12 +534,17 @@ export default {
     avuReferencePointCount: '{count} observations',
     avuReferenceMethod: 'How AVU is calculated',
     avuReferenceMethodText:
-      'AVU_hash values energy through proof-of-work mining; AVU_spot uses wholesale electricity prices. The dollar value of each is the inverse of its energy per dollar. Missing inputs remain unavailable.',
+      'AVU (Hash) values energy through proof-of-work mining; AVU (Spot) uses wholesale electricity prices. The dollar value of each is the inverse of its energy per dollar. Missing inputs remain unavailable.',
     aboutAvu: 'About AVU',
     tabHistory: 'History',
     historyEmpty: 'No recorded activity on this network yet.',
     historyPending: 'Pending and unresolved',
     historyUndated: 'Date unavailable',
+    backToWallet: 'Back to wallet',
+    avuReferenceMeasurement:
+      'One AVU represents one kilowatt-hour. These curves show its value in US dollars using mining and wholesale electricity measurements.',
+    avuReferenceSampling:
+      'The mining measurement uses coin prices, block rewards, difficulty, hardware efficiency and market-cap weights. Historical inputs include monthly averages and dated changes; each value holds until its next observation. Changes in the curve can come from any of these inputs, not only difficulty.',
     tabParity: 'Price history',
     tabSwap: 'Instant Swap',
     swapUnavailable: 'Instant Swap unavailable',
@@ -769,7 +775,7 @@ export default {
     deleteChat: 'Delete Chat',
     unknownContact: 'Unknown',
     usernameReassigned:
-      "You added this contact as {'@'}{username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.",
+      'You added this contact as {username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.',
   },
   sendStealthDialog: {
     sendStealthTo: 'Send Stealth to',
@@ -1106,7 +1112,7 @@ export default {
       'Your balance is 0. This app uses testnet MON, which has no real value. The demo faucet funds new profiles automatically; if nothing arrives after a minute, ask the demo operator to send testnet MON to the address below.',
     close: 'Close',
     addressCopied: 'Address copied to clipboard',
-    failedLoadBalance: 'Failed to load Monad wallet balance',
+    failedLoadBalance: 'Could not load wallet balance',
     unableCopyAddress: 'Unable to copy the Monad address',
   },
   nativeOperation: {
@@ -1248,7 +1254,7 @@ export default {
     chainUnsupported: 'Not supported',
   },
   profile: {
-    name: "Character's Public Name",
+    name: 'Display Name',
     seedEntry: 'Recovery phrase',
     importSeed: 'Recover past memories',
     invalidSeed: 'That is not a valid recovery phrase.',
@@ -1279,9 +1285,9 @@ export default {
     usernameNotHeld:
       'Your saved username is not held by this account on the relay. Open your profile to see why.',
     usernameStillHeld:
-      "This account holds {'@'}{username}. A username cannot be given up: it stays yours until you claim another one.",
+      'This account holds {username}. A username cannot be given up: it stays yours until you claim another one.',
     nameStartsWithAt:
-      "A name cannot start with {'@'}. That is how usernames are written; set yours in the Username field.",
+      "A name cannot start with {'@'}. Set your username in the Username field.",
     location: 'Location',
     locationHint: 'Where you are based (optional)',
     links: 'Links & Socials',

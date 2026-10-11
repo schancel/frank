@@ -1,7 +1,7 @@
+import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
-import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import {
   nativeMemberSuperseded,
   type EvmNativeSource,
@@ -135,6 +135,7 @@ import {
 } from "../monad-wallet-material";
 import type {
   MonadRootBundle,
+  HistoricalBip39Seed,
   MonadWalletMaterial,
 } from "../monad-wallet-material";
 import type { HDSeed } from "./active-chain";
@@ -2085,14 +2086,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
 
     async createWallet(
-      seed: HDSeed | MonadRootBundle
+      seed: HDSeed | MonadRootBundle | HistoricalBip39Seed
     ): Promise<EvmChainWalletHandle> {
       const material = createMonadWalletMaterial(seed);
       const { identity, mainAccount, keyring, changeKeyring } = material;
       const identityKey = identity.address.raw.toLowerCase();
       const mainAccountKey = mainAccount.address.toLowerCase();
       const economicOwnerKey =
-        material.messagingRoot === undefined
+        material.canonicalRoles === undefined
           ? undefined
           : `${config.chainId}:${mainAccountKey}`;
       const existing = walletsByIdentity.get(identityKey);
@@ -2120,7 +2121,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
       const pending = (async (): Promise<EvmChainWalletHandle> => {
         const storageKey =
-          material.messagingRoot === undefined
+          material.canonicalRoles === undefined
             ? identityKey
             : `evm-${mainAccount.address.toLowerCase()}`;
         const storageLocation =
@@ -2258,7 +2259,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               nativeChainId: String(config.chainId),
               publicTuple: JSON.stringify({
                 version: 1,
-                registry: DERIVATION_REGISTRY_ID,
+                registry: material.canonicalRoles?.derivationRegistry ?? DERIVATION_REGISTRY_ID,
                 chainIdentifier,
                 nativeChainId: String(config.chainId),
                 mainAddress: mainAccount.address.toLowerCase(),
@@ -4825,7 +4826,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
-          if (material.messagingRoot !== undefined) typedWallets.add(wallet);
+          if (material.canonicalRoles !== undefined) typedWallets.add(wallet);
           return wallet;
         } catch (error) {
           try {

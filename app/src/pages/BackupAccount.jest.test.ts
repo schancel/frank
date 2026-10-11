@@ -7,9 +7,13 @@ import {
   beginCodex32Signup,
   encodeRecoveryDescriptor,
   recoverCodex32Shares,
+  recoverAccountBackupShares,
+  destroyRecoveredBackup,
   type RecoveredCodex32Account,
 } from '@frank/account-recovery'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
+import { BIP39_RECOVERY_FORMAT, BIP39_DERIVATION } from '@frank/account-vault'
+import { bip39Descriptor } from '../accounts/custody/bip39'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import type { AccountCustody, PublicAccount } from '../accounts/custody'
 import { createAccountSession, type RuntimeWallet } from '../accounts/session'
@@ -182,6 +186,88 @@ describe('BackupAccount page', () => {
         writeText: jest.fn().mockResolvedValue(undefined),
       },
     })
+  })
+
+  test('a recovered historical account reveals one paper share with Seed and Check lines and copies both together', async () => {
+    const seed = Uint8Array.from({ length: 64 }, (_, i) => i + 1)
+    const account = {
+      displayName: '',
+      descriptor: bip39Descriptor(seed).descriptor,
+      receipt: {
+        operationId: 'historical',
+        context: {
+          accountId: 'historical',
+          recoveryFormat: BIP39_RECOVERY_FORMAT,
+          registry: BIP39_DERIVATION,
+        },
+      },
+    } as PublicAccount
+    const custody = {
+      snapshot: async () => ({
+        schema: 1,
+        revision: 1,
+        active: account,
+        pending: null,
+      }),
+      openActive: async () => ({
+        account,
+        takeBip39Seed: () => seed.slice(),
+        close: () => undefined,
+      }),
+      exportAccountRoot: async () => {
+        throw new Error('Historical backup must not export a root')
+      },
+      close: () => undefined,
+    } as unknown as AccountCustody
+    mockSession = createAccountSession({
+      open: async () => custody,
+      createWallet: async material =>
+        ({
+          identity:
+            'derivation' in material
+              ? MonadIdentity.fromBip39Seed(material.seed)
+              : undefined,
+          close: async () => undefined,
+        } as unknown as RuntimeWallet),
+    })
+    await mockSession.initialize()
+    const wrapper = mountPage()
+    try {
+      expect(wrapper.find('[data-test="backup-unavailable"]').exists()).toBe(
+        false,
+      )
+      await wrapper.find('[data-test="show-recovery-shares"]').trigger('click')
+      await settled(wrapper)
+      expect(wrapper.findAll('[data-test="backup_seed_line"]').length).toBe(3)
+      expect(wrapper.findAll('[data-test="backup_check_line"]').length).toBe(3)
+      expect(
+        wrapper.findAll('[data-test="historical-share-explainer"]').length,
+      ).toBe(3)
+      const envelopes: string[] = []
+      for (const button of wrapper
+        .findAll('[data-test="copy-share"]')
+        .slice(0, 2)) {
+        await button.trigger('click')
+        const calls = jest.mocked(navigator.clipboard.writeText).mock.calls
+        envelopes.push(String(calls[calls.length - 1]![0]))
+      }
+      const recovered = recoverAccountBackupShares(envelopes)
+      try {
+        const value = recovered.candidates[0]!.account
+        expect(
+          'seed' in value &&
+            value.seed.length === seed.length &&
+            value.seed.every((byte, i) => byte === seed[i]),
+        ).toBe(true)
+      } finally {
+        recovered.candidates.forEach(value =>
+          destroyRecoveredBackup(value.account),
+        )
+      }
+    } finally {
+      wrapper.unmount()
+      seed.fill(0)
+    }
   })
 
   it('reads nothing secret until the user asks, and drops it when they leave', async () => {

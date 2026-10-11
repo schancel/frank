@@ -1,7 +1,7 @@
 <template>
   <div
-    class="satoshi-dice-game q-pa-sm"
-    style="width: 100%; min-width: 0; max-width: 400px"
+    class="satoshi-dice-game"
+    style="width: 100%; min-width: 0; max-width: 100%"
   >
     <div class="row items-center q-mb-xs">
       <q-icon name="casino" size="22px" class="q-mr-xs text-amber-9" />

@@ -45,6 +45,16 @@
           >
             {{ error }}
           </p>
+          <q-btn
+            v-if="profileRecoveryFailed && account.status === 'ready'"
+            outline
+            color="primary"
+            no-caps
+            :label="$t('accountRecovery.profile_restore_retry')"
+            :disable="busy"
+            data-test="retry-profile-recovery"
+            @click="retryProfileRecovery"
+          />
           <div
             v-if="shareReport.length && mode !== 'restore-choose'"
             role="status"
@@ -110,7 +120,13 @@
             "
           >
             <p>
-              {{ $t('accountRecovery.saved_account_data_could_not_be_opened') }}
+              {{
+                $t(
+                  account.error === 'profile-unreachable'
+                    ? 'accountRecovery.profile_restore_unreachable'
+                    : 'accountRecovery.saved_account_data_could_not_be_opened',
+                )
+              }}
             </p>
             <div class="row q-gutter-sm items-center q-my-md">
               <q-btn
@@ -140,6 +156,7 @@
                 @click="startLegacyLocked"
               />
               <q-btn
+                v-if="account.error !== 'profile-unreachable'"
                 flat
                 color="negative"
                 no-caps
@@ -182,10 +199,9 @@
             <p>
               {{ $t('accountRecovery.a_saved_account_attempt_is_pending_it') }}
             </p>
-            <p>{{ account.pending.account.displayName }}</p>
-            <p class="recovery-text">
-              {{ account.pending.account.descriptor }}
-            </p>
+            <h2 class="text-h6" data-test="account-found">
+              {{ $t('accountRecovery.account_found') }}
+            </h2>
             <div
               v-if="account.pendingIdentityAddress"
               role="status"
@@ -359,7 +375,7 @@
                   no-caps
                   :label="$t('accountRecovery.identify_legacy_account_locally')"
                   data-test="legacy-recovery"
-                  :disable="busy"
+                  :disable="!mayBegin || busy"
                   @click="changeMode('legacy')"
                 />
               </div>
@@ -394,23 +410,6 @@
                 :maxlength="512"
                 data-test="legacy-phrase"
               />
-              <p
-                v-if="detectedAccount"
-                role="status"
-                aria-live="polite"
-                class="q-mt-sm text-positive"
-                data-test="detected-account"
-              >
-                {{ detectedAccount }}
-              </p>
-              <p
-                v-if="legacyUnavailable"
-                role="status"
-                aria-live="polite"
-                data-test="legacy-unavailable"
-              >
-                {{ $t('accountRecovery.bip39_import_unavailable') }}
-              </p>
               <div class="row q-gutter-sm q-mt-md items-center">
                 <q-btn
                   type="submit"
@@ -644,13 +643,14 @@
                 type="textarea"
                 outlined
                 :label="$t('accountRecovery.saved_codex32_shares_one_per_line')"
-                :maxlength="6000"
+                :maxlength="7000"
                 autocomplete="off"
                 autocorrect="off"
                 :spellcheck="false"
                 data-test="confirm-shares"
               />
               <q-input
+                v-if="mode === 'confirm'"
                 v-model="displayName"
                 outlined
                 class="q-mt-sm"
@@ -722,7 +722,11 @@
                     $t('accountRecovery.verify_backups_and_stage_account')
                   "
                   data-test="verify-backups"
-                  :disable="busy || !shareInput || !displayName.trim()"
+                  :disable="
+                    busy ||
+                    !shareInput ||
+                    (mode === 'confirm' && !displayName.trim())
+                  "
                   :loading="busy"
                 />
                 <q-btn
@@ -751,7 +755,10 @@
 </template>
 
 <script setup lang="ts">
-import type { ShareVerdict } from '@frank/account-recovery'
+import {
+  parseAccountBackupShareInput,
+  type ShareVerdict,
+} from '@frank/account-recovery'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTranslate } from '../composables/useTranslate'
@@ -759,19 +766,19 @@ import {
   accountSession,
   accountStatus as account,
   importBip39Wallet,
-  Bip39ImportUnavailableError,
 } from '../accounts/session'
 import {
   createAccountCeremony,
   recoveryErrorMessage,
 } from '../accounts/ceremony'
 import {
-  identifyLegacyAccount,
   legacyStatus as legacy,
   retryLegacyInspection,
 } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
 import { nameOwnProfile } from '../utils/monad-identity-session'
+import { restoreOwnProfileWithRelay } from '../utils/own-profile'
+import type { MonadIdentity } from '@frank/wallet/monad-identity'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import {
   getDefaultRelayBaseUrl,
@@ -848,6 +855,7 @@ const mode = ref<Mode>('choice')
 const heading = ref<HTMLElement>()
 const busy = ref(false)
 const error = ref('')
+const profileRecoveryFailed = ref(false)
 const policy = ref<string | null>(null)
 const policies = [
   { label: '2 of 3 shares — tolerate losing one', value: '2-3' },
@@ -891,8 +899,6 @@ const shareReportLines = computed(() =>
 const displayName = ref('')
 const legacyPhrase = ref('')
 const legacyAddress = ref('')
-const detectedAccount = ref('')
-const legacyUnavailable = ref(false)
 const replaceAccepted = ref(false)
 let alive = true
 let request = 0
@@ -920,8 +926,6 @@ function clearSecrets(preserveLegacyPhrase = false) {
   if (!preserveLegacyPhrase) {
     legacyPhrase.value = ''
   }
-  detectedAccount.value = ''
-  legacyUnavailable.value = false
 }
 function focus() {
   void nextTick(() => heading.value?.focus())
@@ -937,6 +941,7 @@ function changeMode(value: Mode) {
 }
 function cancel() {
   request++
+  profileRecoveryFailed.value = false
   ceremony.cancel()
   clearSecrets()
   shareReport.value = []
@@ -1032,9 +1037,7 @@ function pinDescriptor() {
 }
 function confirm() {
   return run(async () => {
-    let shares = shareInput.value
-      .split(/\r?\n/)
-      .filter(value => value.length > 0)
+    let shares = parseAccountBackupShareInput(shareInput.value)
     shareInput.value = ''
     shownShare.value = ''
     try {
@@ -1098,19 +1101,15 @@ function submitLegacyPhrase() {
   return run(async () => {
     let phrase = legacyPhrase.value
     const token = request
-    detectedAccount.value = ''
-    legacyUnavailable.value = false
     try {
-      const { scanBip39Accounts } = await import('@frank/wallet/bip39-import')
-      const scanned = await scanBip39Accounts({ phrase })
+      await importBip39Wallet(
+        phrase,
+        undefined,
+        () => !alive || token !== request || mode.value !== 'legacy',
+      )
       if (!alive || token !== request || mode.value !== 'legacy') return
-      detectedAccount.value = `${scanned.address} (${scanned.path})`
-      try {
-        await importBip39Wallet(phrase, scanned.path)
-      } catch (failure) {
-        if (!(failure instanceof Bip39ImportUnavailableError)) throw failure
-        if (alive && token === request) legacyUnavailable.value = true
-      }
+      legacyPhrase.value = ''
+      mode.value = 'choice'
     } finally {
       phrase = ''
     }
@@ -1133,16 +1132,47 @@ function activate() {
       pending.expectedActive,
     )
     if (account.status !== 'ready') return
+    void usePersistentStorageStore().afterActivation()
+    if (!pending.account.displayName) {
+      await completeProfileRecovery()
+      return
+    }
     // The name typed at setup is a new account's name. An account restored here has the
     // profile it published, which the relay holds.
     void nameOwnProfile(
       pending.account.displayName,
       identityAddress ?? undefined,
     ).catch(() => undefined)
-    void usePersistentStorageStore().afterActivation()
     emit('setupCompleted')
     await router.push('/wallet')
   })
+}
+
+async function completeProfileRecovery() {
+  const revision = account.revision
+  const current = () =>
+    alive && account.status === 'ready' && account.revision === revision
+  const wallet = await accountSession.getWallet()
+  if (!current()) return
+  const outcome = await restoreOwnProfileWithRelay({
+    relayBaseUrl:
+      (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
+      (customRelayUrl.value.trim() || defaultRelayUrl),
+    identity: wallet.identity as MonadIdentity,
+    isCancelled: () => !current(),
+  })
+  if (!current()) return
+  profileRecoveryFailed.value = outcome === 'unreachable'
+  if (profileRecoveryFailed.value) {
+    error.value = t('accountRecovery.profile_restore_unreachable')
+    return
+  }
+  emit('setupCompleted')
+  await router.push(outcome === 'missing' ? '/profile' : '/wallet')
+}
+
+function retryProfileRecovery() {
+  return run(completeProfileRecovery)
 }
 function cancelPending() {
   return run(async () => {
@@ -1156,6 +1186,8 @@ function retry() {
   return run(async () => {
     await retryLegacyInspection()
     await accountSession.retry()
+    if (account.status === 'ready' && !account.account?.displayName)
+      await completeProfileRecovery()
   })
 }
 function startRestoreLocked() {

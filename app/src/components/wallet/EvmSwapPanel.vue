@@ -1099,7 +1099,6 @@ export default defineComponent({
         )
         card?.focus({ preventScroll: true })
         card?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
-        const costedMove = moveWei.value
         const fresh = await refreshQuote()
         if (!active() || !fresh || problem.value?.blocking) return
         stage = 'review-plan'
@@ -1123,17 +1122,15 @@ export default defineComponent({
           return
         }
         moveWei.value = need.moveWei
-        // refreshQuote already priced this exact call. Reprice only an additional move.
-        if (need.moveWei !== costedMove) {
-          stage = 'review-cost'
-          const revisedCost = await current.dex.cost({
-            plan: reviewPlan,
-            account: current.account,
-            moveWei: need.moveWei,
-          })
-          if (!active()) return
-          cost.value = revisedCost
-        }
+        // Price the final plan with the required move; its deadline can differ from the quote plan.
+        stage = 'review-cost'
+        const revisedCost = await current.dex.cost({
+          plan: reviewPlan,
+          account: current.account,
+          moveWei: need.moveWei,
+        })
+        if (!active()) return
+        cost.value = revisedCost
         reviewed.value = fresh
         quoteStale.value = false
       } catch (error) {

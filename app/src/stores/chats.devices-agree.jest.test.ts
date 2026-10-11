@@ -542,6 +542,112 @@ describe('a conversation deleted on one device', () => {
     },
   )
 
+  it.each([
+    ['pending', 'local'],
+    ['pending', 'remote'],
+    ['confirmed', 'local'],
+    ['confirmed', 'remote'],
+  ] as const)(
+    'keeps a slow-clock own %s message across %s Delete and restart before its echo',
+    async (status, deletion) => {
+      const one = device('one')
+      await deliver(one, HISTORY)
+      const index = status === 'pending' ? 'pending:slow-send' : 'slow-send'
+      await on(one, async chats => {
+        chats.sendMessageLocal({
+          address: PEER,
+          conversationId: WITH_PEER,
+          senderAddress: ME,
+          index,
+          items: [{ type: 'text', text: 'bye' }],
+          outpoints: [],
+          status,
+          previousHash: null,
+          timestamp: 1000,
+        })
+        if (status === 'pending')
+          chats.messages[index]!.delivery = { attemptDigest: 'slow-send' }
+        // Use the production outgoing writer and its persisted format before reopening.
+        await chats.saveOutgoing(PEER, index, { strict: true })
+      })
+      let note: ReceivedMessageWrapper[]
+      if (deletion === 'local') {
+        await on(one, chats => chats.deleteConversation(WITH_PEER))
+        note = await notes(one)
+      } else {
+        const deleting = device('deleting device')
+        await deliver(deleting, HISTORY)
+        await on(deleting, chats => chats.deleteConversation(WITH_PEER))
+        note = await notes(deleting)
+        await deliver(one, note)
+      }
+      expect(shown(one).conversations[0].messages).toEqual([index])
+      await on(one, () => one.reload())
+      expect(shown(one).listed).toEqual([WITH_PEER])
+      expect(shown(one).conversations[0].messages).toEqual([index])
+      expect(one.chats.messages[index]?.localTime).toBe(true)
+      if (status === 'pending')
+        expect(one.chats.messages[index]?.delivery?.attemptDigest).toBe(
+          'slow-send',
+        )
+      const echo = row({ digest: 'slow-send', time: 2100, from: ME })
+      await deliver(one, [echo])
+      const restored = device('restored from mailbox')
+      await deliver(restored, HISTORY, note, [echo])
+      expect(shown(restored)).toEqual(shown(one))
+    },
+  )
+
+  it.each(['note-first', 'echo-first', 'same-batch'] as const)(
+    'tombstones a covered own echo in %s order and after restart',
+    async order => {
+      const one = device('one')
+      await deliver(one, HISTORY)
+      await on(one, async chats => {
+        chats.sendMessageLocal({
+          address: PEER,
+          conversationId: WITH_PEER,
+          senderAddress: ME,
+          index: 'pending:covered-send',
+          items: [{ type: 'text', text: 'already sent' }],
+          outpoints: [],
+          status: 'pending',
+          previousHash: null,
+          timestamp: 1000,
+        })
+        chats.messages['pending:covered-send']!.delivery = {
+          attemptDigest: 'covered-send',
+        }
+        await chats.saveOutgoing(PEER, 'pending:covered-send', { strict: true })
+      })
+      const deleting = device('deleting device')
+      await deliver(deleting, HISTORY)
+      await on(deleting, chats => chats.deleteConversation(WITH_PEER))
+      const note = await notes(deleting)
+      const echo = row({ digest: 'covered-send', time: 2000, from: ME })
+      if (order === 'note-first') {
+        await deliver(one, note)
+        await on(one, () => one.reload())
+        expect(one.chats.messages['pending:covered-send']).toBeDefined()
+        await deliver(one, [echo])
+      } else if (order === 'echo-first') {
+        await deliver(one, [echo], note)
+      } else {
+        await deliver(one, [...note, echo])
+      }
+      expect(one.chats.messages['pending:covered-send']).toBeUndefined()
+      expect(one.chats.messages['covered-send']).toBeUndefined()
+      expect(one.disk.suppressed.has('covered-send')).toBe(true)
+      expect(one.disk.rows.has('pending:covered-send')).toBe(false)
+      await on(one, () => one.reload())
+      await deliver(one, [echo], note, [echo])
+      const restored = device('restored from mailbox')
+      await deliver(restored, HISTORY, note, [echo])
+      expect(shown(one)).toEqual(shown(restored))
+      expect(shown(one).listed).toEqual([])
+    },
+  )
+
   it.each(['clear', 'single'] as const)(
     'Delete still covers relay history after per-device %s and restart',
     async removal => {

@@ -321,7 +321,10 @@ function isAnotherMessage(
  */
 function inDeletedConversation(
   conversation: Conversation,
-  message: { outbound: boolean; senderAddress: string; serverTime: number },
+  message: Pick<
+    ChatMessage,
+    'outbound' | 'senderAddress' | 'serverTime' | 'status' | 'localTime'
+  >,
   reopenedAlready = false,
 ): 'live' | 'reopens' | 'gone' {
   const deletedAt = reopenedAlready ? undefined : conversation.deletedAt
@@ -329,7 +332,8 @@ function inDeletedConversation(
     conversation.clearedBefore ?? -Infinity,
     conversation.deletedAt ?? -Infinity,
   )
-  if (message.serverTime <= clearedBefore) return 'gone'
+  if (!isUntimedOutgoing(message) && message.serverTime <= clearedBefore)
+    return 'gone'
   if (deletedAt === undefined) return 'live'
   return speaksForConversation(conversation, message) ? 'reopens' : 'gone'
 }
@@ -758,7 +762,9 @@ function ownConversationStates(
 /** A message of ours the relay has not timed yet: its time is this device's clock, which no
  * other device sees. No deletion time is taken from it, and a deletion noted from elsewhere
  * never covers it. */
-function isUntimedOutgoing(message: ChatMessage): boolean {
+function isUntimedOutgoing(
+  message: Pick<ChatMessage, 'outbound' | 'status' | 'localTime'>,
+): boolean {
   return (
     message.outbound &&
     (message.status !== 'confirmed' || message.localTime === true)
@@ -4445,6 +4451,33 @@ export const useChatStore = defineStore('chats', {
         this.conversations[conv.id] ??= conv
         receivedConversations.set(index, this.conversations[conv.id])
       }
+
+      // A local send has no relay time until its echo arrives. Once it does, apply the
+      // same deletion boundary as any other mailbox row, including a note received in
+      // an earlier poll. Tombstone both the local row and its receipt before installing
+      // anything, retaining the wallet's independent submission/recovery evidence.
+      const coveredEchoes = new Set<string>()
+      for (const [index, loopback] of outboundMatches) {
+        const conv = receivedConversations.get(index)!
+        if (inDeletedConversation(conv, loopback.message) !== 'gone') continue
+        const original = this.messages[loopback.oldIndex]
+        await this.tombstoneMessagesExclusive(conv, [
+          ...(original ? [original] : []),
+          { payloadDigest: index, ...loopback.message },
+        ])
+        if (conv.messages.length === 0) {
+          conv.deletedAt = clearedUpTo(conv)
+          if (this.activeConversationId === conv.id)
+            this.activeConversationId = null
+        }
+        coveredEchoes.add(index)
+        suppressedDigests.add(index)
+        toNotify.delete(index)
+        outboundMatches.delete(index)
+      }
+      deliverableWrappers = deliverableWrappers.filter(
+        wrapper => !coveredEchoes.has(wrapper.index),
+      )
 
       for (const wrapper of deliverableWrappers) {
         // An index this call did not claim belongs to an overlapping receive.

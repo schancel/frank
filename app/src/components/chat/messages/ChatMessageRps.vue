@@ -1,22 +1,18 @@
 <template>
-  <div class="rps-game q-pa-sm" style="min-width: 260px; max-width: 380px">
+  <div class="rps-game">
     <div class="row items-center q-mb-xs">
       <q-icon name="sports_esports" size="20px" class="q-mr-xs text-primary" />
-      <span class="text-caption text-weight-bold">Rock-Paper-Scissors</span>
+      <span class="text-weight-bold">Rock-Paper-Scissors</span>
     </div>
 
     <!-- The bot has committed to its move -->
     <template v-if="item.action === 'start'">
       <!-- The commitment is a long hash: on hover here; the result says whether it matched. -->
-      <div
-        class="text-caption q-mb-xs"
-        :title="item.commitHash"
-        data-testid="rps-committed"
-      >
+      <div class="q-mb-xs" :title="item.commitHash" data-testid="rps-committed">
         The bot has committed to its move.
       </div>
       <template v-if="!played">
-        <div class="text-caption text-weight-medium q-mb-xs">Stake:</div>
+        <div class="text-weight-medium q-mb-xs">Stake:</div>
         <div class="row items-center q-gutter-xs q-mb-xs">
           <q-btn
             v-for="chip in wagerChips"
@@ -41,7 +37,7 @@
           data-testid="rps-wager-input"
           style="max-width: 200px"
         />
-        <div class="text-caption text-grey-8 q-my-xs" style="font-size: 12px">
+        <div class="text-grey-8 q-my-xs">
           Your stake is paid with your move. A win pays twice the stake, a tie
           returns it.
         </div>
@@ -62,19 +58,19 @@
       </template>
       <div
         v-else-if="moveFailed"
-        class="text-caption text-negative"
+        class="text-negative"
         data-testid="rps-move-not-sent"
       >
         {{ $t('gameFairness.moveNotSent') }}
       </div>
-      <div v-else class="text-caption text-grey-7" data-testid="rps-moved">
+      <div v-else class="text-grey-7" data-testid="rps-moved">
         You have moved.
       </div>
     </template>
 
     <!-- The player's own move -->
     <template v-else-if="item.action === 'move'">
-      <div class="text-caption" data-testid="rps-move">
+      <div data-testid="rps-move">
         You played <strong>{{ moveLabel(item.playerMove) }}</strong>
         <span v-if="item.wagerWei && item.wagerWei !== '0'">
           for {{ displayWager(item.wagerWei) }}</span
@@ -82,7 +78,6 @@
       </div>
       <div
         v-if="waiting"
-        class="text-caption"
         :class="waiting.late ? 'text-weight-bold' : 'game-waiting-quiet'"
         data-testid="rps-waiting"
       >
@@ -96,15 +91,15 @@
 
     <template v-else-if="item.action === 'resolve'">
       <div class="q-my-xs">
-        <div class="text-caption">
+        <div>
           You: <strong>{{ moveLabel(item.playerMove) }}</strong>
         </div>
-        <div class="text-caption">
+        <div>
           Bot: <strong>{{ moveLabel(item.botMove) }}</strong>
         </div>
       </div>
       <div
-        class="text-subtitle2 q-my-xs text-weight-bold"
+        class="q-my-xs text-weight-bold"
         :class="{
           'text-positive': item.outcome === 'win',
           'text-negative': item.outcome === 'lose',
@@ -115,8 +110,8 @@
       </div>
       <div
         v-if="payout"
-        class="text-caption q-mb-xs"
-        :class="payout.short ? 'text-negative' : 'text-grey-8'"
+        class="q-mb-xs"
+        :class="{ 'text-negative': payout.short }"
         data-testid="rps-payout"
       >
         {{
@@ -128,11 +123,7 @@
           )
         }}
       </div>
-      <div
-        v-if="check.ok"
-        class="text-caption text-positive"
-        data-testid="rps-verified"
-      >
+      <div v-if="check.ok" class="text-positive" data-testid="rps-verified">
         {{ $t('gameFairness.rpsVerified') }}
       </div>
       <q-banner
@@ -354,3 +345,12 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.rps-game {
+  max-width: 100%;
+  min-width: 0;
+  font: inherit;
+  letter-spacing: normal;
+}
+</style>

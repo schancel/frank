@@ -282,7 +282,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     },
   )
 
-  it('keeps one time/amount/actions footer through send and payment transitions, with successful payments silent', async () => {
+  it('keeps one time/amount/actions footer through send and payment transitions, without a separate success row', async () => {
     const wrapper = mountSuffix({
       status: 'pending',
       inline: true,
@@ -317,6 +317,88 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       ).toBe(false)
     }
     wrapper.unmount()
+  })
+
+  it.each(['paid', 'repaid'])(
+    'briefly shows a new %s result beside the amount, then clears it',
+    async summary => {
+      jest.useFakeTimers({
+        doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+      })
+      const wrapper = mountSuffix({
+        status: 'confirmed',
+        paymentSummary: 'mempool',
+        stamp: '12:34',
+        amount: '0.002 MON',
+      })
+      try {
+        const footer = wrapper.get('[data-testid="outgoing-footer"]')
+        await wrapper.setProps({ paymentSummary: summary })
+        const success = footer.get('[data-testid="outgoing-payment-success"]')
+        expect(success.element.tagName).toBe('SPAN')
+        expect(success.text()).toBe(
+          translator(enUS)(
+            summary === 'paid'
+              ? 'outgoing.paymentPaid'
+              : 'outgoing.paymentRepaid',
+          ),
+        )
+        expect(
+          wrapper.get('[data-testid="outgoing-announcement"]').text(),
+        ).toBe(success.text())
+        jest.advanceTimersByTime(5000)
+        await wrapper.vm.$nextTick()
+        expect(
+          footer.find('[data-testid="outgoing-payment-success"]').exists(),
+        ).toBe(false)
+        expect(
+          wrapper.get('[data-testid="outgoing-announcement"]').text(),
+        ).toBe('')
+        expect(footer.get('[data-testid="outgoing-stamp"]').text()).toBe(
+          '12:34',
+        )
+        expect(footer.get('[data-testid="outgoing-amount"]').text()).toBe(
+          '0.002 MON',
+        )
+      } finally {
+        wrapper.unmount()
+        jest.useRealTimers()
+      }
+    },
+  )
+
+  it('does not replay historical success, and does not hide a subsequent failure', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+    })
+    const wrapper = mountSuffix({ status: 'confirmed', paymentSummary: 'paid' })
+    try {
+      expect(
+        wrapper.find('[data-testid="outgoing-payment-success"]').exists(),
+      ).toBe(false)
+      await wrapper.setProps({ paymentSummary: 'repaid' })
+      expect(
+        wrapper.find('[data-testid="outgoing-payment-success"]').exists(),
+      ).toBe(true)
+      await wrapper.setProps({ paymentSummary: 'failed' })
+      expect(
+        wrapper.find('[data-testid="outgoing-payment-success"]').exists(),
+      ).toBe(false)
+      jest.advanceTimersByTime(5000)
+      await wrapper.vm.$nextTick()
+      expect(
+        wrapper.get('[data-testid="outgoing-payment-summary"]').text(),
+      ).toBe(translator(enUS)('outgoing.paymentFailed'))
+      expect(wrapper.get('[data-testid="outgoing-announcement"]').text()).toBe(
+        translator(enUS)('outgoing.paymentFailed'),
+      )
+      await wrapper.setProps({ paymentSummary: 'paid' })
+      wrapper.unmount()
+      expect(jest.getTimerCount()).toBe(0)
+    } finally {
+      wrapper.unmount()
+      jest.useRealTimers()
+    }
   })
 
   it('says nothing about a payment it knows nothing of, on a received message, or while sending', () => {

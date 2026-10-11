@@ -26,47 +26,35 @@
       </q-toolbar>
     </q-header>
     <q-page-container>
-      <q-page class="q-ma-none q-pa-md" data-test="backup-account-page">
-        <q-card
-          flat
-          class="bg-transparent"
-          style="max-width: 680px; margin: 0 auto"
-        >
-          <q-card-section>
-            <div class="row items-center justify-between no-wrap">
-              <div class="text-h6">
-                {{ $t('accountRecovery.backup_account_codex32') }}
-              </div>
-              <div
-                v-if="!backupUnavailable"
-                class="row items-center q-gutter-xs"
+      <q-page class="backup-page q-ma-none" data-test="backup-account-page">
+        <q-card flat class="backup-card bg-transparent">
+          <q-card-section class="backup-section">
+            <div v-if="!backupUnavailable" class="backup-controls">
+              <q-btn
+                outline
+                no-caps
+                size="sm"
+                color="primary"
+                :label="`${threshold} of ${count}`"
+                :disable="backupLoading"
+                data-test="codex32-scheme-btn"
+                @click="cycleScheme"
+              />
+              <q-btn
+                flat
+                round
+                dense
+                size="sm"
+                icon="tune"
+                color="primary"
+                :disable="backupLoading"
+                data-test="codex32-custom-scheme-btn"
+                @click="toggleCustomConfig"
               >
-                <q-btn
-                  outline
-                  no-caps
-                  size="sm"
-                  color="primary"
-                  :label="`${threshold} of ${count}`"
-                  :disable="backupLoading"
-                  data-test="codex32-scheme-btn"
-                  @click="cycleScheme"
-                />
-                <q-btn
-                  flat
-                  round
-                  dense
-                  size="sm"
-                  icon="tune"
-                  color="primary"
-                  :disable="backupLoading"
-                  data-test="codex32-custom-scheme-btn"
-                  @click="toggleCustomConfig"
-                >
-                  <q-tooltip>{{
-                    $t('accountRecovery.configure_scheme')
-                  }}</q-tooltip>
-                </q-btn>
-              </div>
+                <q-tooltip>{{
+                  $t('accountRecovery.configure_scheme')
+                }}</q-tooltip>
+              </q-btn>
             </div>
             <div
               v-if="backupShares.length > 0"
@@ -85,15 +73,15 @@
 
           <q-card-section
             v-if="showCustomConfig && !backupUnavailable"
-            class="q-py-none"
+            class="backup-section"
             data-test="custom-scheme-section"
           >
             <div class="custom-scheme-box q-pa-sm rounded-borders q-mb-sm">
               <div class="text-caption text-weight-medium q-mb-xs">
                 {{ $t('accountRecovery.custom_threshold_shares') }}
               </div>
-              <div class="row items-center q-gutter-sm">
-                <div class="col">
+              <div class="backup-custom-controls">
+                <div class="backup-custom-input">
                   <q-input
                     v-model.number="customThreshold"
                     type="number"
@@ -105,7 +93,7 @@
                     data-test="input-threshold"
                   />
                 </div>
-                <div class="col">
+                <div class="backup-custom-input">
                   <q-input
                     v-model.number="customCount"
                     type="number"
@@ -133,7 +121,7 @@
             </div>
           </q-card-section>
 
-          <q-card-section class="q-pt-none">
+          <q-card-section class="backup-section">
             <div
               v-if="backupLoading"
               class="text-center q-pa-lg"
@@ -177,12 +165,19 @@
               />
             </div>
             <div v-else class="q-gutter-y-sm" data-test="backup-shares-list">
+              <p
+                v-if="backupShares.some(share => historicalParts(share))"
+                class="text-caption"
+                data-test="historical-share-explainer"
+              >
+                {{ $t('accountRecovery.historical_share_keep_both_lines') }}
+              </p>
               <div
                 v-for="(share, index) in backupShares"
                 :key="index"
                 class="share-card q-pa-sm rounded-borders"
               >
-                <div class="row items-center justify-between q-mb-xs">
+                <div class="backup-share-heading q-mb-xs">
                   <div class="text-weight-bold text-caption">
                     {{
                       `${$t('accountRecovery.share')} ${index + 1} / ${
@@ -203,12 +198,6 @@
                   />
                 </div>
                 <template v-if="historicalParts(share)">
-                  <p
-                    class="text-caption"
-                    data-test="historical-share-explainer"
-                  >
-                    {{ $t('accountRecovery.historical_share_keep_both_lines') }}
-                  </p>
                   <div
                     v-for="part in historicalParts(share)"
                     :key="part.label"
@@ -218,8 +207,7 @@
                       {{ $t(`accountRecovery.${part.label}`) }}
                     </div>
                     <div
-                      class="text-caption text-mono"
-                      style="word-break: break-all; user-select: all"
+                      class="backup-share-value text-caption text-mono"
                       :data-test="part.label"
                     >
                       {{ part.value }}
@@ -228,12 +216,7 @@
                 </template>
                 <div
                   v-else
-                  class="text-caption text-mono"
-                  style="
-                    word-break: break-all;
-                    font-family: monospace;
-                    user-select: all;
-                  "
+                  class="backup-share-value text-caption text-mono"
                   data-test="codex32-share"
                 >
                   {{ share }}
@@ -250,7 +233,7 @@
             </div>
           </q-card-section>
 
-          <q-card-actions align="right" class="q-pa-md">
+          <q-card-actions align="right" class="q-pa-none">
             <q-btn
               flat
               no-caps
@@ -361,6 +344,54 @@ onBeforeUnmount(clearShares)
 </script>
 
 <style lang="scss" scoped>
+.backup-page {
+  padding: 16px;
+  min-width: 0;
+}
+
+.backup-card {
+  width: 100%;
+  max-width: 680px;
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.backup-section {
+  padding: 0 0 16px;
+  min-width: 0;
+}
+
+.backup-controls,
+.backup-custom-controls,
+.backup-share-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.backup-share-heading {
+  justify-content: space-between;
+}
+
+.backup-custom-input {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.share-card {
+  min-width: 0;
+}
+
+.backup-share-value {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-family: monospace;
+  user-select: all;
+}
+
 .share-card,
 .custom-scheme-box {
   background: rgba(0, 0, 0, 0.04);

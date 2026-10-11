@@ -242,7 +242,12 @@ describe('BackupAccount page', () => {
       expect(wrapper.findAll('[data-test="backup_check_line"]').length).toBe(3)
       expect(
         wrapper.findAll('[data-test="historical-share-explainer"]').length,
-      ).toBe(3)
+      ).toBe(1)
+      expect(
+        wrapper
+          .find('[data-test="historical-share-explainer"]')
+          .element.closest('.share-card'),
+      ).toBeNull()
       const envelopes: string[] = []
       for (const button of wrapper
         .findAll('[data-test="copy-share"]')

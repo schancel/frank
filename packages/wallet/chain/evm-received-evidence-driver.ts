@@ -613,22 +613,53 @@ export async function collectReceivedEvidence(input: {
       canonicalBlocks.push(current);
     }
     guard();
-    // Only independently valid incoming inclusion resolves a named transaction lookup
-    // gap. Reconstruction alone, unrelated receipts and broader discovery gaps do not.
-    const verifiedHashes = new Set(
-      evaluateReceivedEvidence({
-        owner,
-        head,
-        candidates: [...candidates.values()],
-        facts,
-        canonicalBlocks,
-      }).verifiedTransactions.map((raw) => Transaction.from(raw).hash!)
-    );
+    // A canonical native inclusion resolves transaction lookup uncertainty even when
+    // it reverted or paid elsewhere. Contribution/rejection remains the evaluator's
+    // responsibility; contradictory canonical sender nonces resolve neither lookup.
+    const includedHashes = new Set<string>();
+    const nonceHashes = new Map<string, Set<string>>();
+    for (const fact of facts) {
+      const hash = normalizedHash(fact.transactionHash);
+      const tx = hash === undefined ? undefined : transactions.get(hash);
+      const receipt = fact.receipt;
+      if (
+        hash === undefined ||
+        tx === undefined ||
+        !tx.isSigned() ||
+        tx.chainId !== owner.nativeChainId ||
+        tx.hash !== hash ||
+        fact.chainIdentifier !== owner.chainIdentifier ||
+        receipt.kind !== "included" ||
+        (receipt.status !== 0 && receipt.status !== 1) ||
+        !integer(receipt.blockNumber) ||
+        receipt.blockNumber > head.number ||
+        normalizedHash(receipt.transactionHash) !== hash
+      )
+        continue;
+      const block = canonicalBlocks.find(
+        (entry) => entry.number === receipt.blockNumber
+      );
+      if (
+        block === undefined ||
+        normalizedHash(block.hash) !== normalizedHash(receipt.blockHash) ||
+        !block.transactionHashes.some((value) => normalizedHash(value) === hash)
+      )
+        continue;
+      includedHashes.add(hash);
+      const nonceKey = `${tx.from.toLowerCase()}:${tx.nonce}`;
+      const alternatives = nonceHashes.get(nonceKey) ?? new Set<string>();
+      alternatives.add(hash);
+      nonceHashes.set(nonceKey, alternatives);
+    }
+    for (const alternatives of nonceHashes.values()) {
+      if (alternatives.size > 1)
+        for (const hash of alternatives) includedHashes.delete(hash);
+    }
     const coverageIssues = issues.filter(
       (entry) =>
         entry.reason !== "transaction-unavailable" ||
         entry.transactionHash === undefined ||
-        !verifiedHashes.has(entry.transactionHash)
+        !includedHashes.has(entry.transactionHash)
     );
     guard();
     return {

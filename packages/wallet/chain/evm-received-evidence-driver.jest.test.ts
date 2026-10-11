@@ -763,3 +763,69 @@ it.each(["unrelated", "wrong-recipient", "wrong-chain", "malformed"] as const)(
       });
   }
 );
+
+it.each(["wrong-recipient", "reverted"] as const)(
+  "resolves a recovered canonical %s replacement lookup without crediting it",
+  async (kind) => {
+    const original = await sign();
+    const replacement = await sign({
+      gasPrice: 3n,
+      ...(kind === "wrong-recipient" ? { to: independent.address } : {}),
+    });
+    const hash = hashOf(replacement);
+    const f = fixture([
+      { raw: replacement, number: 4, status: kind === "reverted" ? 0 : 1 },
+    ]);
+    const lookup = f.rpc.transaction.bind(f.rpc);
+    let attempts = 0;
+    f.rpc.transaction = jest.fn(async (target) => {
+      if (target === hash && ++attempts === 1)
+        throw new Error("transient lookup failure");
+      return lookup(target);
+    });
+    f.rpc.nonce = jest.fn(async (_address, number) => (number >= 4 ? 1 : 0));
+    const { result, value } = checked(await f.collect([hash, original]));
+    expect(attempts).toBe(2);
+    expect(value.verifiedReceivedWei).toBe(0n);
+    expect(value.supersededTransactionHashes).toEqual([hashOf(original)]);
+    expect(result.coverageIssues).toEqual([]);
+    expect(value.issues).toEqual([]);
+    if (kind === "wrong-recipient") {
+      expect(
+        value.rejected.some((entry) => entry.reason === "wrong-recipient")
+      ).toBe(true);
+    } else {
+      expect(value.revertedTransactionHashes).toEqual([hash]);
+    }
+  }
+);
+
+it("contradictory canonical nonce alternatives cannot retire a recovered lookup gap", async () => {
+  const original = await sign();
+  const first = await sign({ gasPrice: 3n });
+  const second = await sign({ gasPrice: 4n, to: independent.address });
+  const hash = hashOf(first);
+  const f = fixture([
+    { raw: first, number: 4 },
+    { raw: second, number: 4 },
+  ]);
+  const lookup = f.rpc.transaction.bind(f.rpc);
+  let attempts = 0;
+  f.rpc.transaction = jest.fn(async (target) => {
+    if (target === hash && ++attempts === 1)
+      throw new Error("transient lookup failure");
+    return lookup(target);
+  });
+  f.rpc.nonce = jest.fn(async (_address, number) => (number >= 4 ? 1 : 0));
+  const { result, value } = checked(await f.collect([hash, original]));
+  expect(value.verifiedReceivedWei).toBe(0n);
+  expect(
+    value.rejected.filter(
+      (entry) => entry.reason === "conflicting-canonical-nonce"
+    )
+  ).toHaveLength(2);
+  expect(result.coverageIssues).toContainEqual({
+    reason: "transaction-unavailable",
+    transactionHash: hash,
+  });
+});

@@ -534,7 +534,7 @@ describe('Chat.vue automatic dealer steps', () => {
     info.mockRestore()
     expect(chatStore.retryOutgoing).toHaveBeenCalledTimes(1)
     expect(chatStore.retryOutgoing).toHaveBeenCalledWith({
-      wallet: {},
+      wallet: mockWallet,
       address: '0xPeer',
       payloadDigest: 'pending:1:1:',
       automatic: true,

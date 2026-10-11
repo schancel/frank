@@ -14,8 +14,8 @@ const EMBEDDED: &str = include_str!("../../../../../docs/protocol/oracle/seed.js
 pub const SERIES_KINDS: [&str; 6] = [
     "price",
     "marketCap",
-    "difficulty",
-    "blockReward",
+    "hashrate",
+    "minerRevenue",
     "efficiency",
     "electricity",
 ];
@@ -69,7 +69,7 @@ pub struct Seed {
     /// Labels of the electricity regions the seed has history for.
     #[serde(default)]
     pub regions: Vec<SeedRegion>,
-    /// Chain -> dated steps `[unixSeconds, share]` of the part of the block subsidy consensus
+    /// Chain -> dated steps `[unixSeconds, share]` of the part of the total coinbase reward consensus
     /// pays the miner. A chain without steps pays the miner all of it.
     #[serde(default, rename = "minerShare")]
     pub miner_share: BTreeMap<String, Vec<(u64, f64)>>,
@@ -83,7 +83,7 @@ impl Seed {
         Self::parse(EMBEDDED)
     }
 
-    /// The miner's part of `chain`'s block subsidy at `time`: the dated step in force, 1 for a
+    /// The miner's part of `chain`'s total coinbase reward at `time`: the dated step in force, 1 for a
     /// chain with no steps or before its first.
     pub fn miner_share(&self, chain: &str, time: u64) -> f64 {
         self.miner_share

@@ -70,7 +70,7 @@ pub struct OracleConf {
     /// Price providers. Each round asks two of them, chosen at random.
     #[serde(default)]
     pub price_providers: Vec<OraclePriceProviderConf>,
-    /// Chain statistics (difficulty, coins in existence, block subsidy).
+    /// Chain statistics (observed hash rate, supply and fee-inclusive miner revenue).
     #[serde(default)]
     pub chain_stats: Option<OracleChainStatsConf>,
     /// Wholesale electricity prices, one row per region.
@@ -132,12 +132,6 @@ pub struct OracleStatsChainConf {
     pub name: String,
     /// Base units per coin are `10^decimals`.
     pub decimals: u32,
-    /// For a chain that retargets every block (Dogecoin), whose difficulty swings between
-    /// readings: the chain's target block time in seconds. The feed then carries a 24-hour
-    /// figure, the provider's 24-hour hash rate times this, as difficulty (per 2^32 hashes),
-    /// instead of the difficulty of the moment. Only for chains with Bitcoin's difficulty rule.
-    #[serde(default)]
-    pub hashrate_block_seconds: Option<u64>,
 }
 
 /// Which code collects a region's electricity price.

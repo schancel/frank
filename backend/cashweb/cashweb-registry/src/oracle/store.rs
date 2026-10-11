@@ -10,7 +10,7 @@
 //! - `raw`: what each provider answered. Key `name 0x00 time(8, big-endian) provider`, value the
 //!   number (8 bytes, big-endian IEEE 754). `name` is a series name, or an input that is not
 //!   itself served (`providers/<asset>`: how many providers could be asked for it that round;
-//!   `supply/<chain>`, `subsidy/<chain>`, `fx/eur-usd`, and
+//!   `supply/<chain>`, `fees/<chain>`, `issuance/<chain>`, `fx/eur-usd`, and
 //!   `electricity/<region>` in the source's own currency per MWh).
 //! - `series`: the served series. Key `name 0x00 time(8)`, same value. The owner of these points
 //!   is the collector; `price/*` is derived from `raw` by [`super::sampling::replay`].

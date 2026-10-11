@@ -193,12 +193,19 @@ that is not yet due after a restart is not repeated.
   round (XEC and XMR are listed by few providers), and five or six on the first round or
   after a long gap, when every series wants three answers.
 - Chain statistics, every `stats_interval_s` (1 hour): one Blockchair `/stats` request gives
-  every chain's difficulty, coins in existence and the subsidy it paid per block over 24 hours.
-  `blockReward/<chain>` is that subsidy times the miner's share in force (eCash: 0.58, from
-  the dated steps in the bundled seed);
-  `marketCap/<chain>` is coins in existence times the relay's smoothed price. A chain with
-  `hashrate_block_seconds` (Dogecoin: 60) retargets every block and swings about 15% between
-  readings, so its difficulty is a 24-hour figure: the 24-hour hash rate times the block time.
+  observed `hashrate_24h` in hashes/s, supply, tip, issuance and 24-hour block count.
+  One additional `<provider-chain>/blocks` aggregate per chain requests
+  `a=sum(fee_total),sum(generation),count()` scoped to `id(tip-count+1..tip)`.
+  Revenue is accepted only when count and issuance match the stats snapshot exactly; missing
+  or invalid fees never become zero. `hashrate/<chain>` is observed hashes/s and
+  `minerRevenue/<chain>` is `(issuance + fees) / 10^decimals / 86400`, times the dated
+  consensus miner share (eCash: 0.58 applied to total coinbase; per-block satoshi rounding
+  is not modelled). Both points share one collection timestamp; windows crossing a share
+  change produce no revenue point. Monero lacks a compatible fee/issuance aggregate and
+  remains unavailable for mining revenue. `marketCap/<chain>` remains supply times price.
+  Fees/issuance are retained as raw provider samples. API failures use per-chain backoff.
+  Old difficulty/blockReward stored series are no longer served; the regenerated seed and
+  client consume hashrate/minerRevenue together. This changes no wallet/account data.
 - Electricity, every `electricity_interval_s` (1 day): per region one request for day-ahead
   prices and one for the ECB euro reference rates. Each complete UTC day becomes one point of
   `electricity/<region>`: the day's mean price in US dollars per kWh, zero and negative days

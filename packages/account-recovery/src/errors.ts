@@ -48,16 +48,27 @@ export class AccountRecoveryError extends Error {
 
   /** With `too-many-shares`: the most shares of one backup set that may be entered. */
   readonly maxShares?: number
+  /** Public counts for each incomplete, checksum-valid backup group. */
+  readonly insufficientSets?: readonly {
+    readonly identifier: string
+    readonly required: number
+    readonly available: number
+  }[]
 
   constructor(
     code: AccountRecoveryErrorCode,
     shares?: readonly ShareVerdict[],
     maxShares?: number,
+    insufficientSets?: AccountRecoveryError['insufficientSets'],
   ) {
     super(`Frank account recovery failed: ${code}`)
     this.name = 'AccountRecoveryError'
     this.code = code
     if (shares) this.shares = shares
     if (maxShares !== undefined) this.maxShares = maxShares
+    if (insufficientSets)
+      this.insufficientSets = Object.freeze(
+        insufficientSets.map(set => Object.freeze({ ...set })),
+      )
   }
 }

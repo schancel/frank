@@ -194,8 +194,11 @@ function checksum(values: readonly number[]): number[] {
   return out
 }
 
-function longPolymod(values: readonly number[]): bigint {
-  let checksum = POLYMOD_INITIAL
+function longPolymod(
+  values: readonly number[],
+  initial = POLYMOD_INITIAL,
+): bigint {
+  let checksum = initial
   for (const value of values) {
     const top = checksum >> 70n
     checksum = ((checksum & 0x3fffffffffffffffffn) << 5n) ^ BigInt(value)
@@ -515,10 +518,20 @@ export function interpolateCodex32Symbols(
   shares: readonly Pick<Codex32Share, 'index' | 'payload'>[],
   targetIndex: string,
 ): Codex32Result<Uint8Array> {
+  if (!Array.isArray(shares) || shares.length < 2)
+    return fail('wrong-share-count')
+  return interpolateGf32Symbols(shares, targetIndex)
+}
+
+/** Pure GF(32) interpolation, including a degree-zero (one-share) polynomial. */
+export function interpolateGf32Symbols(
+  shares: readonly Pick<Codex32Share, 'index' | 'payload'>[],
+  targetIndex: string,
+): Codex32Result<Uint8Array> {
   let xs: number[]
   let rows: Uint8Array[]
   try {
-    if (!Array.isArray(shares) || shares.length < 2 || shares.length > 9) {
+    if (!Array.isArray(shares) || shares.length < 1 || shares.length > 9) {
       return fail('wrong-share-count')
     }
     xs = shares.map(share => valueOf(String(share.index)))
@@ -836,4 +849,149 @@ function snapshotExactBytes(
   } catch {
     return fail('bad-format')
   }
+}
+
+/** Alphabet and primitives for application-owned formats, not standard Codex32 strings. */
+export const GF32_ALPHABET = CHARSET
+
+/** Long BCH framing over an explicit human-readable prefix and five-bit values. */
+export function createLongBchChecksum(
+  hrp: string,
+  values: readonly number[],
+): number[] {
+  const expanded = expandBchHrp(hrp)
+  if (
+    expanded.length + values.length + LONG_CHECKSUM_LENGTH < 96 ||
+    expanded.length + values.length + LONG_CHECKSUM_LENGTH > 1023 ||
+    values.some(value => !Number.isInteger(value) || value < 0 || value > 31)
+  ) {
+    throw new Error('invalid long BCH framing')
+  }
+  const residue =
+    longPolymod(
+      [...expanded, ...values, ...new Array<number>(15).fill(0)],
+      1n,
+    ) ^ LONG_POLYMOD_RESIDUE
+  return Array.from({ length: 15 }, (_, index) =>
+    Number((residue >> BigInt(5 * (14 - index))) & 31n),
+  )
+}
+
+export function verifyLongBchChecksum(
+  hrp: string,
+  values: readonly number[],
+): boolean {
+  const expanded = expandBchHrp(hrp)
+  return (
+    expanded.length + values.length >= 96 &&
+    expanded.length + values.length <= 1023 &&
+    values.every(
+      value => Number.isInteger(value) && value >= 0 && value <= 31,
+    ) &&
+    longPolymod([...expanded, ...values], 1n) === LONG_POLYMOD_RESIDUE
+  )
+}
+
+function expandBchHrp(hrp: string): number[] {
+  if (!/^[a-z]{1,83}$/.test(hrp)) throw new Error('invalid BCH prefix')
+  const codes = Array.from(hrp, character => character.charCodeAt(0))
+  return [
+    ...codes.map(value => value >> 5),
+    0,
+    ...codes.map(value => value & 31),
+  ]
+}
+
+/** Split application-owned symbols in one polynomial pass; caller owns returned rows. */
+export function splitGf32Symbols(input: {
+  readonly payload: Uint8Array
+  readonly threshold: number
+  readonly indices: readonly string[]
+  readonly randomBytes: (length: number) => Uint8Array
+}): Codex32Result<readonly Uint8Array[]> {
+  const { payload, threshold, indices, randomBytes } = input
+  if (!(payload instanceof Uint8Array) || payload.some(value => value > 31))
+    return fail('bad-format')
+  if (
+    !Number.isInteger(threshold) ||
+    threshold < 1 ||
+    threshold > 9 ||
+    indices.length < threshold ||
+    indices.length > 31 ||
+    (threshold === 1 && indices.length !== 1)
+  )
+    return fail('invalid-threshold')
+  if (indices.some(index => !validIndex(index) || index === SECRET_INDEX))
+    return fail('invalid-index')
+  if (new Set(indices).size !== indices.length) return fail('duplicate-share')
+  let random: Uint8Array | undefined
+  const rows = indices.map(() => new Uint8Array(payload.length))
+  let transferred = false
+  try {
+    const count = payload.length * (threshold - 1)
+    const supplied = randomBytes(count)
+    if (!(supplied instanceof Uint8Array) || supplied.length !== count)
+      return fail('rng-failed')
+    random = new Uint8Array(supplied)
+    for (let column = 0; column < payload.length; column++) {
+      const coefficients = [payload[column] ?? 0]
+      try {
+        for (let degree = 1; degree < threshold; degree++)
+          coefficients.push(
+            (random[column * (threshold - 1) + degree - 1] ?? 0) & 31,
+          )
+        indices.forEach((index, row) => {
+          rows[row]![column] = evaluate(
+            coefficients,
+            valueOf(index) ^ valueOf(SECRET_INDEX),
+          )
+        })
+      } finally {
+        coefficients.fill(0)
+      }
+    }
+    transferred = true
+    return { ok: true, value: rows }
+  } catch {
+    return fail('rng-failed')
+  } finally {
+    random?.fill(0)
+    if (!transferred) rows.forEach(row => row.fill(0))
+  }
+}
+
+/** Canonical padded byte/symbol conversion for application-owned payload lengths. */
+export function bytesToGf32Symbols(bytes: Uint8Array): Uint8Array {
+  return Uint8Array.from(bytesToGroups(bytes))
+}
+export function gf32SymbolsToBytes(
+  symbols: Uint8Array,
+  byteLength: number,
+): Codex32Result<Uint8Array> {
+  if (
+    !(symbols instanceof Uint8Array) ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength < 1 ||
+    symbols.length !== Math.ceil((byteLength * 8) / 5) ||
+    symbols.some(value => value > 31)
+  )
+    return fail('bad-format')
+  const output = new Uint8Array(byteLength)
+  let accumulator = 0,
+    bits = 0,
+    cursor = 0
+  for (const symbol of symbols) {
+    accumulator = (accumulator << 5) | symbol
+    bits += 5
+    if (bits >= 8) {
+      bits -= 8
+      output[cursor++] = (accumulator >> bits) & 255
+      accumulator &= (1 << bits) - 1
+    }
+  }
+  if (accumulator !== 0) {
+    output.fill(0)
+    return fail('bad-format')
+  }
+  return { ok: true, value: output }
 }

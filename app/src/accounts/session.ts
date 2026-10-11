@@ -794,7 +794,7 @@ export function createAccountSession(deps: {
           return [
             ...exportHistoricalCodex32Backup({
               seed,
-              threshold: threshold as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+              threshold: threshold as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
               shareCount: count,
               randomBytes: length =>
                 crypto.getRandomValues(new Uint8Array(length)),
@@ -816,7 +816,7 @@ export function createAccountSession(deps: {
             accountRoot: exported.accountRoot,
             // The root must reproduce this account's own recorded fingerprint.
             expected: decodeRecoveryDescriptor(exported.account.descriptor),
-            threshold: threshold as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+            threshold: threshold as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
             shareCount: count,
             randomBytes: length =>
               crypto.getRandomValues(new Uint8Array(length)),

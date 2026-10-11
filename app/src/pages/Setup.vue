@@ -89,6 +89,14 @@
               </li>
             </ul>
           </div>
+          <p
+            v-for="(set, index) in insufficientSets"
+            :key="index"
+            data-test="insufficient-share-set"
+            role="status"
+          >
+            {{ $t('accountRecovery.insufficient_share_set', set) }}
+          </p>
           <template
             v-if="tabCoordinator.otherTabActive || account.status === 'standby'"
           >
@@ -891,6 +899,9 @@ const descriptorSaved = ref(false)
 const shareInput = ref('')
 /** What the last restore found in each entered share. Public facts only, never contents. */
 const shareReport = ref<readonly ShareVerdict[]>([])
+const insufficientSets = ref<
+  readonly { identifier: string; required: number; available: number }[]
+>([])
 const restoreCandidates = ref<
   { address: string; descriptor: string; supporting: readonly number[] }[]
 >([])
@@ -967,6 +978,7 @@ function cancel() {
   ceremony.cancel()
   clearSecrets()
   shareReport.value = []
+  insufficientSets.value = []
   restoreCandidates.value = []
   descriptor.value = ''
   descriptorInput.value = ''
@@ -1011,6 +1023,7 @@ async function run(work: () => Promise<void>) {
 function beginNew() {
   return run(async () => {
     shareReport.value = []
+    insufficientSets.value = []
     if (!mayBegin.value || !policy.value) return
     const cleanedRelay = customRelayUrl.value?.trim()
     if (cleanedRelay && cleanedRelay !== defaultRelayUrl) {
@@ -1043,6 +1056,7 @@ function nextShare() {
 function startRestore() {
   return run(async () => {
     shareReport.value = []
+    insufficientSets.value = []
     if (!mayBegin.value) return
     descriptor.value = await ceremony.beginRestore()
     if (alive) changeMode('restore-shares')
@@ -1051,6 +1065,7 @@ function startRestore() {
 function pinDescriptor() {
   return run(async () => {
     shareReport.value = []
+    insufficientSets.value = []
     if (!mayBegin.value) return
     descriptor.value = await ceremony.beginRestore(descriptorInput.value)
     descriptorInput.value = ''
@@ -1065,6 +1080,7 @@ function confirm() {
     try {
       const outcome = (await ceremony.confirm(shares, displayName.value)) as any
       shareReport.value = outcome?.report ?? []
+      insufficientSets.value = outcome?.insufficientSets ?? []
       reportCandidate.value = 0
       if (outcome?.candidates) {
         // Complete backups of more than one account: the user picks, with the addresses shown.

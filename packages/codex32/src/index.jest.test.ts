@@ -591,3 +591,47 @@ describe('interpolating at an arbitrary index', () => {
     )
   })
 })
+
+describe('application framing primitives preserve standard Codex32', () => {
+  test('generalized HRP expansion matches the pinned standard long checksum', () => {
+    const text =
+      'MS100C8VSM32ZXFGUHPCHTLUPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZYGSFJD6AN074RXVCEMLH8WU3TK925ACDEFGHJKLMNPQRSTUVWXY06FHPV80UNDVARHRAK'.toLowerCase()
+    const values = Array.from(text.slice(3), char =>
+      codex32.GF32_ALPHABET.indexOf(char),
+    )
+    expect(codex32.verifyLongBchChecksum('ms', values)).toBe(true)
+    expect(codex32.createLongBchChecksum('ms', values.slice(0, -15))).toEqual(
+      values.slice(-15),
+    )
+    expect(codex32.verifyLongBchChecksum('fr', values)).toBe(false)
+    expect(decodeCodex32(text).ok).toBe(true)
+    expect(decodeCodex32('fr1' + text.slice(3)).ok).toBe(false)
+  })
+  test('long BCH enforces expanded length bounds', () => {
+    expect(() =>
+      codex32.createLongBchChecksum('fr', Array(75).fill(0)),
+    ).toThrow()
+    const maximum = Array(1003).fill(0)
+    const check = codex32.createLongBchChecksum('fr', maximum)
+    expect(codex32.verifyLongBchChecksum('fr', [...maximum, ...check])).toBe(
+      true,
+    )
+    expect(() =>
+      codex32.createLongBchChecksum('fr', Array(1004).fill(0)),
+    ).toThrow()
+  })
+  test('degree-zero primitive leaves standard share threshold rules unchanged', () => {
+    const row = new Uint8Array([1, 2, 3])
+    const primitive = codex32.interpolateGf32Symbols(
+      [{ index: 'q', payload: row }],
+      's',
+    )
+    expect(
+      primitive.ok && primitive.value.every((value, i) => value === row[i]),
+    ).toBe(true)
+    if (primitive.ok) primitive.value.fill(0)
+    expect(
+      codex32.interpolateCodex32Symbols([{ index: 'q', payload: row }], 's').ok,
+    ).toBe(false)
+  })
+})

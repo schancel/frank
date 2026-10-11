@@ -1,10 +1,7 @@
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
 import * as codex32 from '@frank/codex32'
-import {
-  createMasterPayload,
-  decodeCodex32,
-  splitCodex32,
-} from '@frank/codex32'
+import { createMasterPayload, splitCodex32 } from '@frank/codex32'
+import { decodeFrankRecoveryShare } from './frank-shares.js'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import {
   AccountRecoveryError,
@@ -106,7 +103,7 @@ describe('backup shares issued after signup', () => {
     const created = signup()
     const shares = backup(created.account, threshold, shareCount)
     expect(shares).toHaveLength(shareCount)
-    expect(new Set(shares.map(share => share[8])).size).toBe(shareCount)
+    expect(new Set(shares.map(share => share[12])).size).toBe(shareCount)
     expect(
       fingerprintOf(recoverCodex32Shares(shares.slice(-threshold))),
     ).toEqual(fingerprintOf(created.account))
@@ -132,7 +129,7 @@ describe('backup shares issued after signup', () => {
       expected,
     )
     const idOf = (share: string) => {
-      const decoded = decodeCodex32(share)
+      const decoded = decodeFrankRecoveryShare(share)
       if (!decoded.ok) throw new Error('share must decode')
       return decoded.value.identifier
     }
@@ -316,8 +313,8 @@ describe('every issued share is read back before the set is returned', () => {
     'a %i-of-%i split with a wrong share at position %i is caught, not handed out',
     (threshold, shareCount, position) => {
       const created = signup()
-      const realSplit = codex32.splitCodex32
-      jest.spyOn(codex32, 'splitCodex32').mockImplementation(input => {
+      const realSplit = codex32.splitGf32Symbols
+      jest.spyOn(codex32, 'splitGf32Symbols').mockImplementation(input => {
         const good = realSplit(input)
         // A well-formed share with the same header from a different polynomial.
         const other = realSplit({ ...input, randomBytes })

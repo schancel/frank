@@ -65,19 +65,19 @@ describe('Codex32 account ceremony', () => {
       indices: ['q', 'p'],
       randomBytes: deterministicRandom(0),
     })
-    const recover = codex32.recoverCodex32Exact
-    const spy = jest.spyOn(codex32, 'recoverCodex32Exact')
-    spy.mockImplementationOnce(shares => {
-      const result = recover(shares)
+    const recover = codex32.interpolateGf32Symbols
+    const spy = jest.spyOn(codex32, 'interpolateGf32Symbols')
+    spy.mockImplementationOnce((shares, target) => {
+      const result = recover(shares, target)
       if (result.ok) {
-        result.value.payloadSymbols[102] = result.value.payloadSymbols[102]! ^ 1
+        result.value[102] = result.value[102]! ^ 1
       }
       return result
     })
     try {
       expectRecoveryError(
         () => pending.confirm(pending.shares),
-        'confirmation-mismatch',
+        'not-account-backup',
       )
     } finally {
       spy.mockRestore()
@@ -102,7 +102,7 @@ describe('Codex32 account ceremony', () => {
       identifier: 'frnk',
     })
     expect(pending.shares).toHaveLength(3)
-    expect(pending.shares.every(share => share.length === 127)).toBe(true)
+    expect(pending.shares.every(share => share.length === 131)).toBe(true)
 
     const shares = pending.shares
     const roots = pending.confirm(shares.slice(0, 2))

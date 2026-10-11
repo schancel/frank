@@ -188,7 +188,7 @@ describe('BackupAccount page', () => {
     })
   })
 
-  test('a recovered historical account reveals one paper share with Seed and Check lines and copies both together', async () => {
+  test('a recovered historical account reveals one string per share and copies the exact restore input', async () => {
     const seed = Uint8Array.from({ length: 64 }, (_, i) => i + 1)
     const account = {
       displayName: '',
@@ -238,16 +238,13 @@ describe('BackupAccount page', () => {
       )
       await wrapper.find('[data-test="show-recovery-shares"]').trigger('click')
       await settled(wrapper)
-      expect(wrapper.findAll('[data-test="backup_seed_line"]').length).toBe(3)
-      expect(wrapper.findAll('[data-test="backup_check_line"]').length).toBe(3)
-      expect(
-        wrapper.findAll('[data-test="historical-share-explainer"]').length,
-      ).toBe(1)
-      expect(
-        wrapper
-          .find('[data-test="historical-share-explainer"]')
-          .element.closest('.share-card'),
-      ).toBeNull()
+      expect(wrapper.findAll('[data-test="codex32-share"]').length).toBe(3)
+      expect(wrapper.find('[data-test="backup_seed_line"]').exists()).toBe(
+        false,
+      )
+      expect(wrapper.find('[data-test="backup_check_line"]').exists()).toBe(
+        false,
+      )
       const envelopes: string[] = []
       for (const button of wrapper
         .findAll('[data-test="copy-share"]')
@@ -281,7 +278,7 @@ describe('BackupAccount page', () => {
     await settled(wrapper)
     expect(mockRootReads).toBe(0)
     expect(wrapper.findAll('[data-test="codex32-share"]')).toHaveLength(0)
-    expect(wrapper.text()).not.toMatch(/ms1[0-9]/)
+    expect(wrapper.text()).not.toMatch(/fr1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]/)
     expect(wrapper.find('[data-test="backup-reveal-warning"]').text()).toBe(
       'accountRecovery.show_recovery_shares_warning',
     )
@@ -355,11 +352,24 @@ describe('BackupAccount page', () => {
     await wrapper.find('[data-test="input-count"]').setValue(7)
     await wrapper.find('[data-test="apply-custom-scheme"]').trigger('click')
     const fourOfSeven = await shownShares(wrapper, 7)
+    await wrapper
+      .find('[data-test="codex32-custom-scheme-btn"]')
+      .trigger('click')
+    await wrapper.find('[data-test="input-threshold"]').setValue(1)
+    await wrapper.find('[data-test="input-count"]').setValue(2)
+    expect(
+      wrapper.find('[data-test="apply-custom-scheme"]').attributes('disabled'),
+    ).toBeDefined()
+    await wrapper.find('[data-test="input-count"]').setValue(1)
+    await wrapper.find('[data-test="apply-custom-scheme"]').trigger('click')
+    const oneOfOne = await shownShares(wrapper, 1)
+
     expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(
       false,
     )
 
     for (const [threshold, shares] of [
+      [1, oneOfOne],
       [2, twoOfThree],
       [3, threeOfFive],
       [6, sixOfTen],
@@ -387,7 +397,7 @@ describe('BackupAccount page', () => {
       'accountRecovery.codex32_backup_unavailable_for_account',
     )
     expect(wrapper.findAll('[data-test="codex32-share"]')).toHaveLength(0)
-    expect(wrapper.text()).not.toMatch(/ms1[0-9]/)
+    expect(wrapper.text()).not.toMatch(/fr1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]/)
     // Nothing on the page claims shares restore the account, or offers another scheme.
     expect(wrapper.find('[data-test="backup-explainer"]').exists()).toBe(false)
     expect(wrapper.find('[data-test="codex32-scheme-btn"]').exists()).toBe(

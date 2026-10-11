@@ -5,6 +5,7 @@ import {
 } from '../accounts/session'
 
 const PRESETS: ReadonlyArray<readonly [number, number]> = [
+  [1, 1],
   [2, 3],
   [3, 5],
   [6, 10],
@@ -59,7 +60,16 @@ export function useCodex32Backup() {
   }
 
   function setScheme(t: number, c: number) {
-    if (t < 2 || t > 9 || c < t || c > 31) return
+    if (
+      !Number.isInteger(t) ||
+      !Number.isInteger(c) ||
+      t < 1 ||
+      t > 9 ||
+      c < t ||
+      c > 31 ||
+      (t === 1 && c !== 1)
+    )
+      return
     clearShares()
     threshold.value = t
     count.value = c

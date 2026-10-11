@@ -5,7 +5,6 @@ import {
   beginCodex32Restore,
   beginCodex32Signup,
   destroyRecoveredAccount,
-  exportCodex32Backup,
   maxSharesForThreshold,
   recoverFromAnyShares,
   type Codex32ShareRecovery,
@@ -30,15 +29,24 @@ function backup(
   threshold: number,
   shareCount: number,
 ) {
-  return [
-    ...exportCodex32Backup({
-      accountRoot: of.accountRoot,
-      expected: of.metadata.descriptor,
+  const master = createMasterPayload(of.accountRoot)
+  if (!master.ok) throw new Error('fixture')
+  try {
+    const split = splitCodex32({
+      secret: master.value,
       threshold: threshold as 2,
-      shareCount,
+      identifier: Array.from(
+        randomBytes(4),
+        byte => 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'[byte & 31],
+      ).join(''),
+      indices: INDICES.slice(0, shareCount),
       randomBytes,
-    }),
-  ]
+    })
+    if (!split.ok) throw new Error('fixture')
+    return [...split.value]
+  } finally {
+    master.value.fill(0)
+  }
 }
 /** A well-formed share (valid checksum) with the same header and index, but wrong contents. */
 function poisoned(share: string): string {

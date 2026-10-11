@@ -87,7 +87,7 @@
                     type="number"
                     dense
                     outlined
-                    :min="2"
+                    :min="1"
                     :max="9"
                     :label="$t('accountRecovery.threshold')"
                     data-test="input-threshold"
@@ -99,7 +99,7 @@
                     type="number"
                     dense
                     outlined
-                    :min="customThreshold || 2"
+                    :min="customThreshold || 1"
                     :max="31"
                     :label="$t('accountRecovery.total_shares')"
                     data-test="input-count"
@@ -165,13 +165,6 @@
               />
             </div>
             <div v-else class="q-gutter-y-sm" data-test="backup-shares-list">
-              <p
-                v-if="backupShares.some(share => historicalParts(share))"
-                class="text-caption"
-                data-test="historical-share-explainer"
-              >
-                {{ $t('accountRecovery.historical_share_keep_both_lines') }}
-              </p>
               <div
                 v-for="(share, index) in backupShares"
                 :key="index"
@@ -197,25 +190,8 @@
                     @click="copyShare(share, index)"
                   />
                 </div>
-                <template v-if="historicalParts(share)">
-                  <div
-                    v-for="part in historicalParts(share)"
-                    :key="part.label"
-                    class="q-mb-sm"
-                  >
-                    <div class="text-caption text-weight-bold">
-                      {{ $t(`accountRecovery.${part.label}`) }}
-                    </div>
-                    <div
-                      class="backup-share-value text-caption text-mono"
-                      :data-test="part.label"
-                    >
-                      {{ part.value }}
-                    </div>
-                  </div>
-                </template>
+
                 <div
-                  v-else
                   class="backup-share-value text-caption text-mono"
                   data-test="codex32-share"
                 >
@@ -262,15 +238,6 @@ defineEmits<{
   (e: 'setupCompleted'): void
 }>()
 
-function historicalParts(share: string) {
-  if (!share.startsWith('frank-bip39-v1:')) return undefined
-  const [, seed, check] = share.split(':')
-  return [
-    { label: 'backup_seed_line', value: seed },
-    { label: 'backup_check_line', value: check },
-  ]
-}
-
 const router = useRouter()
 const {
   backupLoading,
@@ -304,10 +271,11 @@ const isCustomValid = computed(() => {
   return (
     Number.isInteger(t) &&
     Number.isInteger(c) &&
-    t >= 2 &&
+    t >= 1 &&
     t <= 9 &&
     c >= t &&
-    c <= 31
+    c <= 31 &&
+    (t !== 1 || c === 1)
   )
 })
 

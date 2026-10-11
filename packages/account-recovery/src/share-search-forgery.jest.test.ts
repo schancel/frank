@@ -1,16 +1,12 @@
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
-import {
-  createMasterPayload,
-  decodeCodex32,
-  encodeCodex32,
-  interpolateCodex32Symbols,
-  splitCodex32,
-} from '@frank/codex32'
+import { createLongBchChecksum, interpolateGf32Symbols } from '@frank/codex32'
+import { decodeFrankRecoveryShare } from './frank-shares.js'
 import {
   AccountRecoveryError,
   beginCodex32Signup,
   destroyRecoveredAccount,
   exportCodex32Backup,
+  exportRecoveryShares,
   recoverFromAnyShares,
   type Codex32ShareRecovery,
   type RecoveredCodex32Account,
@@ -50,9 +46,9 @@ function release(recovery: Codex32ShareRecovery) {
 
 /**
  * What an insider who has seen ONE genuine share can do: build shares of an account they
- * control on a polynomial that also passes through that genuine share. Codex32 strings
- * interpolate character by character (header and checksum included), so the forgeries are
- * well-formed shares of the same backup set as far as any per-share check can tell.
+ * control on a polynomial that also passes through that genuine share. An attacker can interpolate payloads through a genuine point and their own valid
+ * secret, then recompute the public BCH framing. No per-share checksum can distinguish
+ * these; bounded search must expose every valid account instead of choosing the largest set.
  */
 function forgeThrough(
   seen: string,
@@ -60,53 +56,63 @@ function forgeThrough(
   count: number,
   avoid: readonly string[],
 ): string[] {
-  const threshold = Number(seen[3]) as 2
-  const identifier = seen.slice(4, 8)
-  const master = createMasterPayload(attacker.accountRoot)
-  if (!master.ok) throw new Error('fixture')
-  const secret = encodeCodex32({
+  const decoded = decodeFrankRecoveryShare(seen)
+  if (!decoded.ok) throw new Error('fixture')
+  const header = decoded.value
+  const threshold = header.threshold
+  const attackerSet = exportRecoveryShares({
+    format: 'root',
+    secret: attacker.accountRoot,
     threshold,
-    identifier,
-    index: 's',
-    secret: master.value,
-  })
-  if (!secret.ok) throw new Error(secret.error.code)
-  const used = new Set(avoid.map(share => share[8]))
-  const free = INDICES.filter(index => !used.has(index))
-  // threshold - 2 arbitrary well-formed strings of this header fix the rest of the polynomial.
-  const filler = splitCodex32({
-    threshold,
-    identifier,
-    indices: [...free.slice(0, threshold - 2), ...free.slice(-2)].slice(
-      0,
-      Math.max(threshold, threshold - 2),
-    ),
-    secret: randomBytes(64),
+    shareCount: threshold,
+    identifier: header.identifier,
     randomBytes,
   })
-  if (!filler.ok) throw new Error(filler.error.code)
-  const points = [secret.value, seen, ...filler.value.slice(0, threshold - 2)]
-  const symbols = (text: string) => ({
-    index: text[8]!,
-    payload: Uint8Array.from(text.slice(3), character =>
-      CHARSET.indexOf(character),
-    ),
+  const attackerRows = attackerSet.map(text => {
+    const row = decodeFrankRecoveryShare(text)
+    if (!row.ok) throw new Error('fixture')
+    return row.value
   })
-  const forged = [
-    ...filler.value.slice(0, threshold - 2),
-    ...free.slice(threshold - 2, count).map(index => {
-      const derived = interpolateCodex32Symbols(points.map(symbols), index)
-      if (!derived.ok) throw new Error(derived.error.code)
-      return `ms1${Array.from(derived.value, value => CHARSET[value]).join('')}`
-    }),
-  ].slice(0, count)
-  for (const share of forged) {
-    const decoded = decodeCodex32(share)
-    if (!decoded.ok)
-      throw new Error(`forged share invalid: ${decoded.error.code}`)
-    expect(decoded.value.identifier).toBe(identifier)
+  const secret = interpolateGf32Symbols(attackerRows, 's')
+  if (!secret.ok) throw new Error('fixture')
+  const used = new Set(avoid.map(text => text[12]))
+  const free = INDICES.filter(index => !used.has(index))
+  const filler = free.slice(0, threshold - 2).map(index => ({
+    index,
+    payload: Uint8Array.from(
+      randomBytes(header.payload.length),
+      byte => byte & 31,
+    ),
+  }))
+  const points = [{ index: 's', payload: secret.value }, header, ...filler]
+  try {
+    return free.slice(0, count).map(index => {
+      const derived = interpolateGf32Symbols(points, index)
+      if (!derived.ok) throw new Error('fixture')
+      const data = [
+        ...header.commonMetadata,
+        CHARSET.indexOf(index),
+        ...derived.value,
+      ]
+      try {
+        const text = `fr1${[...data, ...createLongBchChecksum('fr', data)]
+          .map(value => CHARSET[value])
+          .join('')}`
+        const verified = decodeFrankRecoveryShare(text)
+        if (!verified.ok) throw new Error('forged framing invalid')
+        verified.value.payload.fill(0)
+        return text
+      } finally {
+        data.fill(0)
+        derived.value.fill(0)
+      }
+    })
+  } finally {
+    header.payload.fill(0)
+    secret.value.fill(0)
+    attackerRows.forEach(row => row.payload.fill(0))
+    filler.forEach(row => row.payload.fill(0))
   }
-  return forged
 }
 
 describe('forged shares built through one genuine share', () => {

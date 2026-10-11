@@ -1,4 +1,5 @@
 import {
+  AccountRecoveryError,
   beginCodex32Signup,
   recoverAccountBackupShares,
   decodeRecoveryDescriptor,
@@ -208,6 +209,7 @@ export function createAccountCeremony() {
         return {
           isRestore: true,
           report: recovery.shares,
+          insufficientSets: recovery.insufficientSets,
           candidates: recovery.candidates.map(candidate => ({
             address: identityOf(candidate.account).displayAddress,
             descriptor:
@@ -225,7 +227,11 @@ export function createAccountCeremony() {
         true,
         displayName,
       )
-      return { ...outcome, report: recovery.shares }
+      return {
+        ...outcome,
+        report: recovery.shares,
+        insufficientSets: recovery.insufficientSets,
+      }
     },
     /** Stage the candidate the user picked after `confirm` returned several. */
     async choose(index: number, _name?: string) {
@@ -246,6 +252,14 @@ export function createAccountCeremony() {
 
 export function recoveryErrorMessage(error: unknown): string {
   const code = (error as { code?: string })?.code
+  if (error instanceof AccountRecoveryError && error.insufficientSets?.length) {
+    return error.insufficientSets
+      .map(
+        set =>
+          `Backup ${set.identifier}: ${set.available} distinct shares available; ${set.required} required.`,
+      )
+      .join(' ')
+  }
   const messages: Record<string, string> = {
     'descriptor-mismatch':
       'These shares belong to a different account. Start again with your independently saved descriptor.',

@@ -28,8 +28,8 @@ const opened = new Map<string, Opened>()
 
 function sessionScope(): string {
   const { status, account, revision } = accountSession.state
-  if (status !== 'ready') throw new Error('No account is open')
-  return `${String(account)}:${revision}`
+  if (status !== 'ready' || !account) throw new Error('No account is open')
+  return `${account.receipt.context.accountId}:${revision}`
 }
 
 /** Opens (once per account) the wallet for a canonical Bitcoin-family chain identifier. */

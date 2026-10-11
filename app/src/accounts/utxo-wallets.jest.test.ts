@@ -1,4 +1,11 @@
-const mockState = { status: 'ready', account: 'account-a', revision: 1 }
+const publicAccount = (accountId: string) => ({
+  receipt: { context: { accountId } },
+})
+const mockState = {
+  status: 'ready',
+  account: publicAccount('account-a'),
+  revision: 1,
+}
 const mockGetRoot = jest.fn()
 jest.mock('./session', () => ({
   accountSession: {
@@ -36,7 +43,7 @@ let roots: Uint8Array[]
 beforeEach(() => {
   jest.clearAllMocks()
   mockState.status = 'ready'
-  mockState.account = 'account-a'
+  mockState.account = publicAccount('account-a')
   mockState.revision += 1
   roots = []
   mockGetRoot.mockImplementation(async () => {
@@ -76,7 +83,7 @@ it('opens one wallet per chain for the account, through the relay, and clears th
 it('does not hand one account the wallet of another', async () => {
   const first = await openUtxoWallet('btc-testnet')
   const closedBefore = mockClose.mock.calls.length
-  mockState.account = 'account-b'
+  mockState.account = publicAccount('account-b')
   const second = await openUtxoWallet('btc-testnet')
   expect(second).not.toBe(first)
   // The earlier account's connection is released.
@@ -85,7 +92,7 @@ it('does not hand one account the wallet of another', async () => {
 
 it('refuses a wallet whose account changed while it was opening', async () => {
   mockCreateWallet.mockImplementationOnce(async () => {
-    mockState.account = 'account-b'
+    mockState.account = publicAccount('account-b')
     return { chainIdentifier: 'btc-testnet' }
   })
   await expect(openUtxoWallet('btc-testnet')).rejects.toThrow('Account changed')

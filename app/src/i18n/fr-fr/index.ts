@@ -472,6 +472,11 @@ export default {
       'Soldes de jetons indisponibles. Affichage des derniers soldes connus.',
     balanceStale: '{balance} (dernière valeur connue)',
     failedLoadAddress: 'Impossible de dériver l’adresse du portefeuille',
+    receiveDiscoveryUnavailable:
+      'La prochaine adresse de réception inutilisée n’a pas pu être vérifiée via le relais. Réessayez lorsque la connexion est disponible.',
+    receiveAddressUnavailable:
+      'L’adresse de réception est indisponible pour ce compte et ce réseau. Réessayez de l’ouvrir.',
+    retryAddress: 'Réessayer l’adresse',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',

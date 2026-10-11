@@ -462,6 +462,11 @@ export default {
       'Token balances unavailable. Showing last known balances.',
     balanceStale: '{balance} (last known)',
     failedLoadAddress: 'Could not derive wallet address',
+    receiveDiscoveryUnavailable:
+      'The next unused receive address could not be checked through the relay. Retry when the connection is available.',
+    receiveAddressUnavailable:
+      'The receive address is unavailable for this account and network. Retry opening it.',
+    retryAddress: 'Retry address',
     unableCopyAddress: 'Unable to copy the Monad address',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',

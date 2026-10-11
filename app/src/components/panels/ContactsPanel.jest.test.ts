@@ -86,12 +86,20 @@ const passthrough = defineComponent({
 })
 
 describe('ContactsPanel navigation', () => {
+  const wrappers: ReturnType<typeof mount>[] = []
+
   beforeEach(() => {
     jest.clearAllMocks()
   })
 
+  afterEach(() => {
+    // Unmount while the timer implementation that created each debounce is active.
+    for (const wrapper of wrappers.splice(0)) wrapper.unmount()
+    jest.useRealTimers()
+  })
+
   function mountPanel(width = 1024) {
-    return mount(ContactsPanel, {
+    const wrapper = mount(ContactsPanel, {
       global: {
         provide: {
           _q_: { screen: { width } },
@@ -153,6 +161,8 @@ describe('ContactsPanel navigation', () => {
         },
       },
     })
+    wrappers.push(wrapper)
+    return wrapper
   }
 
   it('clicking a contact row opens the contact profile instead of chat directly', async () => {
@@ -286,10 +296,6 @@ describe('ContactsPanel navigation', () => {
         doNotFake: ['setImmediate', 'nextTick'],
       })
     })
-    afterEach(() => {
-      jest.useRealTimers()
-    })
-
     it('searches the relay directory when input is >= 2 characters', async () => {
       mockSearchMonadProfiles.mockResolvedValueOnce([
         {

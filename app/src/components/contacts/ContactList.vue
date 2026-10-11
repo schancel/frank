@@ -1,13 +1,18 @@
 <template>
-  <q-list separator padding style="max-height: 60%">
+  <q-list separator padding>
     <contact-item
       v-for="(contact, address) in contacts"
       :key="address"
       @mouseover-contact="navigateUsingMouse"
+      @mouseleave-contact="hoveredAddress = null"
       :address="address"
       :contact="contact"
       :contact-click="contactClick"
-      :class="{ active: address === activeAddress }"
+      :class="{
+        active:
+          address === hoveredAddress ||
+          (!hoveredAddress && keyboardFocus && address === activeAddress),
+      }"
     />
   </q-list>
 </template>
@@ -35,6 +40,8 @@ export default defineComponent({
   data() {
     return {
       activeAddress: Object.keys(this.contacts)[0],
+      hoveredAddress: null as string | null,
+      keyboardFocus: false,
     }
   },
   created() {
@@ -46,6 +53,10 @@ export default defineComponent({
   methods: {
     navigateUsingArrowKeys(e: KeyboardEvent) {
       const addresses = Object.keys(this.contacts)
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        this.keyboardFocus = true
+        this.hoveredAddress = null
+      }
       if (e.key === 'ArrowUp') {
         this.activeAddress = addresses[this.nextAddressIndex({ direction: -1 })]
       }
@@ -66,7 +77,8 @@ export default defineComponent({
       )
     },
     navigateUsingMouse(addressToBecomeFocused: string) {
-      this.activeAddress = addressToBecomeFocused
+      this.hoveredAddress = addressToBecomeFocused
+      this.keyboardFocus = false
     },
   },
   watch: {

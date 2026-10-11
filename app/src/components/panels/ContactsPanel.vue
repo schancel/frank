@@ -116,16 +116,44 @@
                   round
                   dense
                   size="sm"
-                  icon="delete"
+                  icon="more_vert"
                   color="grey"
                   class="q-ml-xs"
                   :aria-label="
-                    $t('a11y.deleteContact', {
+                    $t('a11y.contactActions', {
                       name: contactDisplayName(item),
                     })
                   "
-                  @click.stop="deleteContact(item.address)"
-                />
+                  aria-haspopup="menu"
+                  data-test="contact-actions"
+                  @click.stop
+                >
+                  <q-menu @click.stop @keydown.stop>
+                    <q-list dense>
+                      <q-item
+                        clickable
+                        v-close-popup
+                        role="menuitem"
+                        data-test="contact-delete-menu"
+                        @click.stop="
+                          deleteTarget = {
+                            address: item.address,
+                            name: contactDisplayName(item),
+                          }
+                        "
+                      >
+                        <q-item-section avatar
+                          ><q-icon name="delete" color="negative"
+                        /></q-item-section>
+                        <q-item-section>{{
+                          $t('a11y.deleteContact', {
+                            name: contactDisplayName(item),
+                          })
+                        }}</q-item-section>
+                      </q-item>
+                    </q-list>
+                  </q-menu>
+                </q-btn>
               </div>
             </q-item-section>
           </q-item>
@@ -233,6 +261,23 @@
       </q-list>
     </q-scroll-area>
     <identity-qr-dialog v-model="showMyQrDialog" />
+    <q-dialog
+      :model-value="!!deleteTarget"
+      persistent
+      @update:model-value="
+        value => {
+          if (!value) deleteTarget = null
+        }
+      "
+    >
+      <delete-contact-dialog
+        v-if="deleteTarget"
+        :address="deleteTarget.address"
+        :name="deleteTarget.name"
+        @cancel="deleteTarget = null"
+        @deleted="deleteTarget = null"
+      />
+    </q-dialog>
   </div>
 </template>
 
@@ -260,6 +305,7 @@ import { activeChain } from '@frank/wallet/chain'
 import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
+import DeleteContactDialog from 'src/components/dialogs/DeleteContactDialog.vue'
 import { isOwnAddress } from 'src/utils/own-address'
 import {
   searchMonadProfiles,
@@ -287,6 +333,7 @@ interface NetworkSearchResult {
 export default defineComponent({
   components: {
     IdentityQrDialog,
+    DeleteContactDialog,
     AccountBadge,
     UsernameHandle,
   },
@@ -296,6 +343,7 @@ export default defineComponent({
     const contactStore = useContactStore()
     const { getContacts } = storeToRefs(contactStore)
     const search = ref<string | null>('')
+    const deleteTarget = ref<{ address: string; name: string } | null>(null)
     const showMyQrDialog = ref(false)
     const networkResults = ref<NetworkSearchResult[]>([])
     const isSearchingNetwork = ref(false)
@@ -606,10 +654,6 @@ export default defineComponent({
       openPage(router, target)
     }
 
-    function deleteContact(address: string) {
-      contactStore.deleteContact(address)
-    }
-
     return {
       search,
       filteredContacts,
@@ -624,7 +668,7 @@ export default defineComponent({
       addAndStartChat,
       addAndOpenProfile,
       openAddContact,
-      deleteContact,
+      deleteTarget,
       showMyQrDialog,
       contactDisplayName,
     }

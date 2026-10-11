@@ -351,6 +351,7 @@ export default {
     },
   },
   a11y: {
+    contactActions: 'Options du contact {name}',
     openNavigation: 'Ouvrir le menu de navigation',
     addContact: 'Ajouter un contact',
     addTopic: 'Ajouter un sujet',
@@ -804,6 +805,7 @@ export default {
     viewAction: 'Voir',
   },
   chatRightDrawer: {
+    deleteContactAndConversations: 'Supprimer le contact et les conversations',
     stampPrice: 'Prix du timbre',
     sendLotus: 'Envoyer des Lotus',
     notifications: 'Notifications',
@@ -1396,6 +1398,12 @@ export default {
     clear: 'Effacer',
     message:
       "Êtes-vous sûr de vouloir effacer tout l'historique des discussions avec",
+  },
+  deleteContactDialog: {
+    message: 'Supprimer {name} et toutes les conversations avec ce contact ?',
+    cancel: 'Annuler',
+    delete: 'Supprimer le contact et les conversations',
+    failed: 'La suppression de ce contact a échoué. Réessayez.',
   },
   deleteChatDialog: {
     cancel: 'Annuler',

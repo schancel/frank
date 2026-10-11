@@ -93,6 +93,19 @@ describe('ChatLayout info mode with ?info=true query', () => {
     expect(wrapper.find('[data-testid="chat-info-view"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(false)
 
+    expect(wrapper.get('[data-testid="info-header-name"]').text()).toBe('Alice')
+    expect(
+      wrapper.get('[data-testid="info-header-avatar"] img').attributes('src'),
+    ).toBe('alice.png')
+    expect(
+      wrapper.get('[data-testid="info-header-close"]').attributes('aria-label'),
+    ).toBe('a11y.closeInfo')
+    // The explicit Close remains accessible after replacing the back icon with identity.
+    await wrapper.get('[data-testid="info-header-close"]').trigger('click')
+    await flushPromises()
+    expect(mockReplace).toHaveBeenCalledWith({ query: {} })
+    ;(wrapper.vm as unknown as { openInfo(): void }).openInfo()
+    await flushPromises()
     // Clicking chat on ChatInfoView closes info and removes ?info=true
     await wrapper.find('[data-testid="info-chat-btn"]').trigger('click')
     await flushPromises()

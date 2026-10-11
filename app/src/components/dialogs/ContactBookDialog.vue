@@ -1,5 +1,5 @@
 <template>
-  <q-card class="q-px-sm q-pb-md dialog-medium">
+  <q-card class="contact-book-card q-px-sm dialog-medium">
     <q-card-section class="row items-center q-pb-none">
       <div class="text-h6">{{ $t('contactBookDialog.contacts') }}</div>
       <q-space />
@@ -15,13 +15,13 @@
         ref="contactSearch"
       />
     </q-card-section>
-    <q-card-section class="q-pb-none">
+    <q-card-section class="contact-book-list q-pb-none">
       <contact-list
         :contacts="searchContacts(search)"
         :contact-click="contactClick"
       />
     </q-card-section>
-    <q-card-actions align="right">
+    <q-card-actions align="right" class="contact-book-actions">
       <q-btn flat :label="$t('close')" color="primary" v-close-popup />
     </q-card-actions>
   </q-card>
@@ -90,3 +90,20 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.contact-book-card {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 48px);
+  overflow: hidden;
+}
+.contact-book-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.contact-book-actions {
+  flex: 0 0 auto;
+}
+</style>

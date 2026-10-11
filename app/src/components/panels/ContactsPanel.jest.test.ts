@@ -113,6 +113,11 @@ describe('ContactsPanel navigation', () => {
           QSeparator: passthrough,
           QSpace: passthrough,
           QAvatar: passthrough,
+          QMenu: passthrough,
+          QDialog: passthrough,
+          QCard: passthrough,
+          QCardSection: passthrough,
+          QCardActions: passthrough,
           QInput: defineComponent({
             name: 'QInput',
             props: ['modelValue'],
@@ -136,6 +141,7 @@ describe('ContactsPanel navigation', () => {
           QSpinner: passthrough,
           QBtn: defineComponent({
             props: {
+              label: { type: String, default: '' },
               icon: { type: String, default: '' },
               ariaLabel: { type: String, default: '' },
             },
@@ -148,13 +154,14 @@ describe('ContactsPanel navigation', () => {
                     'data-icon': props.icon,
                     'onClick': (e: MouseEvent) => emit('click', e),
                   },
-                  slots.default?.(),
+                  slots.default?.() ?? props.label,
                 )
             },
           }),
         },
         directives: {
-          ripple: () => undefined,
+          'ripple': () => undefined,
+          'close-popup': () => undefined,
         },
         mocks: {
           $t: (k: string) => k,
@@ -211,16 +218,35 @@ describe('ContactsPanel navigation', () => {
     )
   })
 
-  it('clicking delete icon removes the contact', async () => {
+  it('keeps Message primary and offers deletion only through the labelled overflow confirmation', async () => {
     const wrapper = mountPanel()
     await flushPromises()
-
-    const deleteButtons = wrapper.findAll('button[data-icon="delete"]')
-    expect(deleteButtons.length).toBe(2)
-
-    await deleteButtons[0].trigger('click')
+    const row = wrapper.get('[data-test="contact-list-row"]')
+    expect(row.find('button[data-icon="chat"]').exists()).toBe(true)
+    expect(row.find('button[data-icon="delete"]').exists()).toBe(false)
+    const overflow = row.get('[data-test="contact-actions"]')
+    expect(overflow.attributes('aria-haspopup')).toBe('menu')
+    await overflow.trigger('click')
+    expect(mockPush).not.toHaveBeenCalled()
+    expect(mockDeleteContact).not.toHaveBeenCalled()
+    await row.get('[data-test="contact-delete-menu"]').trigger('click')
+    expect(mockDeleteContact).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="delete-contact-confirm"]').trigger('click')
+    await flushPromises()
     expect(mockDeleteContact).toHaveBeenCalledWith(
       '0x1111111111111111111111111111111111111111',
+    )
+  })
+
+  it('cancels overflow deletion without changing the contact or navigating', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.get('[data-test="contact-delete-menu"]').trigger('click')
+    await wrapper.get('[data-test="delete-contact-cancel"]').trigger('click')
+    expect(mockDeleteContact).not.toHaveBeenCalled()
+    expect(mockPush).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="delete-contact-dialog"]').exists()).toBe(
+      false,
     )
   })
 

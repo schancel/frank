@@ -2,21 +2,29 @@
   <div>
     <q-header>
       <q-toolbar class="q-pl-sm">
-        <!-- Info is a full-pane swap (see `infoOpen` below), not a side drawer, so its own
-        toolbar row is just a back arrow -- there's nothing else from the chat toolbar (avatar/
-        name/overflow menu) that still applies once the chat itself isn't showing. -->
         <template v-if="infoOpen">
+          <q-avatar
+            rounded
+            size="32px"
+            :style="contactColorStyle"
+            data-testid="info-header-avatar"
+          >
+            <img
+              :src="profileAvatar(presentedAvatar, effectiveAddress || address)"
+            />
+          </q-avatar>
+          <q-toolbar-title class="h6 ellipsis" data-testid="info-header-name">{{
+            targetProfile?.name || contactName
+          }}</q-toolbar-title>
           <q-btn
-            class="q-px-sm"
             flat
+            round
             dense
-            icon="arrow_back"
+            icon="close"
             :aria-label="$t('a11y.closeInfo')"
+            data-testid="info-header-close"
             @click="closeInfo"
           />
-          <q-toolbar-title class="h6">{{
-            $t('chatLayout.infoTitle')
-          }}</q-toolbar-title>
         </template>
         <!-- Select mode (see `chatSelectMode`'s `provide` below, and
         ChatMessageSuffixButtons.vue's own header) -- delete is only ever available here, never as

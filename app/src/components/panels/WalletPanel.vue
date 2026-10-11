@@ -47,9 +47,18 @@
                 caption
                 class="wallet-row-balance ellipsis"
                 :data-test="wallet.balanceDataTest"
-                :title="nativeBalance(wallet.id)"
-                >{{ nativeBalance(wallet.id) }}</q-item-label
+                :title="nativeBalanceTitle(wallet.id)"
+                :aria-label="nativeBalanceTitle(wallet.id)"
               >
+                <q-icon
+                  v-if="isBalanceStale(wallet.id)"
+                  name="history"
+                  size="14px"
+                  class="q-mr-xs"
+                  aria-hidden="true"
+                  :data-test="`${wallet.id}-balance-stale-indicator`"
+                />{{ nativeBalance(wallet.id) }}
+              </q-item-label>
             </q-item-section>
           </q-item>
         </template>
@@ -115,6 +124,17 @@ function nativeBalance(wallet: string): string {
       ? 'walletPanel.balanceLoading'
       : 'walletPanel.balanceUnavailable'
   return String(instance?.proxy?.$t(key) ?? key)
+}
+
+function isBalanceStale(wallet: string): boolean {
+  const presentation = getPresentation(wallet)
+  return presentation.status === 'unavailable' && !!presentation.lastKnown
+}
+function nativeBalanceTitle(wallet: string): string {
+  const amount = nativeBalance(wallet)
+  return isBalanceStale(wallet)
+    ? `${amount}. ${instance?.proxy?.$t('accountRecovery.balance_stale')}`
+    : amount
 }
 
 defineProps<{ shown?: boolean }>()

@@ -145,6 +145,9 @@ test('updates the reserved native balance line without adding rows or hiding a w
   await flushPromises()
   expect(row.get('[data-test="wallet-balance"]').element).toBe(balance)
   expect(row.get('[data-test="wallet-balance"]').text()).toBe('1.2345 MONT')
+  expect(row.find('[data-test="monad-balance-stale-indicator"]').exists()).toBe(
+    false,
+  )
   mockPresentations.value.monad = {
     status: 'unavailable',
     reason: 'fetch-error',
@@ -153,6 +156,17 @@ test('updates the reserved native balance line without adding rows or hiding a w
   await flushPromises()
   expect(row.get('[data-test="wallet-balance"]').element).toBe(balance)
   expect(row.get('[data-test="wallet-balance"]').text()).toBe('1.2345 MONT')
+  expect(row.get('[data-test="wallet-balance"]').attributes('title')).toContain(
+    'Last known balance — refresh failed.',
+  )
+  expect(
+    row.get('[data-test="wallet-balance"]').attributes('aria-label'),
+  ).toContain('This value may be out of date.')
+  expect(
+    row
+      .get('[data-test="monad-balance-stale-indicator"]')
+      .attributes('aria-hidden'),
+  ).toBe('true')
   mockPresentations.value.monad = {
     status: 'unavailable',
     reason: 'fetch-error',
@@ -166,4 +180,7 @@ test('updates the reserved native balance line without adding rows or hiding a w
   ).toEqual(names)
   expect(row.findAll('[data-test$="wallet-balance"]')).toHaveLength(1)
   expect(row.find('[data-test="balance-stale"]').exists()).toBe(false)
+  expect(row.find('[data-test="monad-balance-stale-indicator"]').exists()).toBe(
+    false,
+  )
 })

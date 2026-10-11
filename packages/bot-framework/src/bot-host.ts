@@ -1,3 +1,5 @@
+import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
+import { DefaultStampUnavailableError, stampPolicyConfig } from '@frank/wallet/oracle/stamp-policy'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
@@ -14,7 +16,6 @@ import {
   type ActiveChain,
 } from "@frank/wallet/chain/active-chain";
 import {
-  createEvmChain,
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
 } from "@frank/wallet/chain/monad-chain";
@@ -212,9 +213,9 @@ interface ActiveBotInstance {
 
 export class FrankBotHost {
   private readonly options: Required<
-    Omit<BotHostOptions, "maxRepliesPerPeer">
+    Omit<BotHostOptions, "maxRepliesPerPeer" | "stampValueWei">
   > &
-    Pick<BotHostOptions, "maxRepliesPerPeer">;
+    Pick<BotHostOptions, "maxRepliesPerPeer" | "stampValueWei">;
   private readonly provider: JsonRpcProvider;
   private readonly chain: ActiveChain;
   private readonly fundingWallet?: Wallet;
@@ -294,10 +295,7 @@ export class FrankBotHost {
         }
         return "";
       })(),
-      stampValueWei:
-        options.stampValueWei ??
-        envConfig.defaultStampValueWei ??
-        10_000_000_000_000_000n,
+      stampValueWei: options.stampValueWei,
       minStampValueWei:
         options.minStampValueWei ??
         BigInt(process.env.CASHWEB_STAMP_MIN_BURN_VALUE_WEI || "1000000000000"),
@@ -349,13 +347,12 @@ export class FrankBotHost {
     const primaryRpcUrl = rpcUrls[0] || "https://testnet-rpc.monad.xyz";
 
     this.provider = new JsonRpcProvider(primaryRpcUrl);
-    this.chain = createEvmChain({
+    this.chain = createRelayPricedEvmChain({
       ...envConfig,
       relayBaseUrl: this.options.relayBaseUrl,
       networkTag: this.options.networkTag,
       walletStorageLocation: join(this.options.stateDir, "chain-storage"),
-      defaultStampValueWei: this.options.stampValueWei,
-    });
+    }, stampPolicyConfig(process.env.FRANK_DM_DEFAULT_STAMP_AVU));
 
     if (this.options.fundingPrivateKeyHex) {
       this.fundingWallet = new Wallet(
@@ -784,7 +781,8 @@ export class FrankBotHost {
             topic,
             entries,
             direction: "up",
-            voteWeightWei: voteWeightWei ?? this.options.stampValueWei,
+            // Topic policy remains its existing independent raw amount.
+            voteWeightWei: voteWeightWei ?? this.options.stampValueWei ?? 10_000_000_000_000_000n,
           });
         },
       };
@@ -1474,7 +1472,7 @@ export class FrankBotHost {
         },
       ],
       identity.conversationId,
-      { stampValueWei: this.replyStampWei(0n) }
+      { stampValueWei: 0n }
     ).then(
       () => undefined,
       () =>
@@ -1575,10 +1573,21 @@ export class FrankBotHost {
    * A message that paid nothing confirmed, or less than the relay accepts for a paid message,
    * is answered with no stamp at all (the wallet's unpaid send): free mail gets a free answer,
    * so answering it can never cost the bot anything. */
-  private replyStampWei(paidWei: bigint): bigint {
-    const { stampValueWei, minStampValueWei } = this.options;
-    if (paidWei < minStampValueWei) return 0n;
-    return paidWei < stampValueWei ? paidWei : stampValueWei;
+  private async defaultStampWei(wallet: EvmChainWalletHandle): Promise<bigint> {
+    if (this.options.stampValueWei !== undefined) return this.options.stampValueWei;
+    const quote = await this.chain.directMessages.defaultStampQuote!({ wallet });
+    if (quote.status === 'unavailable') throw new DefaultStampUnavailableError(quote);
+    return quote.amount;
+  }
+
+  private async replyStampWei(wallet: EvmChainWalletHandle, paidWei: bigint): Promise<bigint> {
+    if (paidWei <= 0n || paidWei < this.options.minStampValueWei) return 0n;
+    // A small receipt which cannot pay its own transfer still gets a free reply, without
+    // needing an oracle. The adapter owns this floor; it is never an added payment.
+    const floor = await this.chain.directMessages.minimumStamp?.({ wallet });
+    if (floor !== undefined && paidWei < floor) return 0n;
+    const ceiling = await this.defaultStampWei(wallet);
+    return paidWei < ceiling ? paidWei : ceiling;
   }
 
   /** Stores the one text reply the host owes for a message and sends it, stamped by
@@ -1590,7 +1599,7 @@ export class FrankBotHost {
     text: string,
     paidWei: bigint
   ): Promise<void> {
-    const stamp = this.replyStampWei(paidWei).toString();
+    const stamp = (await this.replyStampWei(instance.wallet, paidWei)).toString();
     try {
       await instance.operations.stageReply(digest, text, stamp, Date.now());
     } catch {
@@ -1979,10 +1988,7 @@ export class FrankBotHost {
         return Promise.reject(new Error("Bot invocation is no longer active"));
       // Snapshot caller-owned values before any asynchronous work. A send that fails rejects to
       // the handler and to nothing else: a handler that catches it can still send.
-      const reply = this.sendReply(
-        instance,
-        identity,
-        {
+      const captured = {
           recipient: getAddress(recipient).toLowerCase(),
           conversationId:
             conversationId === undefined
@@ -1990,18 +1996,19 @@ export class FrankBotHost {
               : conversationIdentity(conversationId),
           // An amount the handler names (a payout) is the handler's. Anything else it sends
           // while answering this message carries the reply stamp.
-          stampValue:
-            options?.stampValueWei ?? this.replyStampWei(paidWei),
+          stampValue: options?.stampValueWei,
           namedAmount: options?.stampValueWei !== undefined,
           ...(options?.settlement ? { settlement: true } : {}),
           messageId: options?.messageId,
           items: structuredClone(items),
-        },
+      };
+      const reply = (async () => this.sendReply(instance, identity,
+        { ...captured, stampValue: captured.stampValue ?? await this.replyStampWei(instance.wallet, paidWei) },
         async () => {
           linked = true;
           await instance.operations.markReplied(identity.digest);
         }
-      );
+      ))();
       replies.push(reply);
       void reply.catch(() => undefined);
       return reply;
@@ -2116,7 +2123,7 @@ export class FrankBotHost {
       throw new Error("Bot send admission unavailable");
     instance.operations.assertOpen();
     void namedAmount;
-    const wanted = options?.stampValueWei ?? this.options.stampValueWei;
+    const wanted = options?.stampValueWei ?? await this.defaultStampWei(wallet);
     // Money the bot owes (the outbox settling a payout or a refund) is paid whatever its size.
     // Anything else below the chain's fee floor (a reply stamp) goes out with no stamp.
     const settlement = options?.settlement === true && wanted > 0n;

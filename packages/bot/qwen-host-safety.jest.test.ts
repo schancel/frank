@@ -83,9 +83,10 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
   return {
     ...actual,
-    createEvmChain: () => ({
+    createEvmChain: (config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
       chainIdentifier: "monad-testnet",
       directMessages: {
+        defaultStampQuote: async ({ wallet }: { wallet: unknown }) => config.resolveDefaultStamp!({ chainIdentifier: "monad-testnet", minimumStamp: await mockMinimumStamp({ wallet }) }),
         send: mockSend,
         fetchSince: mockFetch,
         reconcileAttempts: mockReconcile,

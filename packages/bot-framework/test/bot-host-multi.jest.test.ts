@@ -40,13 +40,14 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
   return {
     ...actual,
-    createEvmChain: jest.fn(() => ({
+    createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
       chainIdentifier: "monad-testnet",
       // A unit no network has: what a bot prints can only have come from this chain object.
       unit: "UNIT",
       toDisplayAmount: (raw: bigint) => `${raw}`,
       fromDisplayAmount: (display: string) => BigInt(display),
       directMessages: {
+        defaultStampQuote: async () => config.resolveDefaultStamp!({ chainIdentifier: "monad-testnet", minimumStamp: 0n }),
         fetchSince: mockFetchSince,
         send: mockSend,
         reconcileAttempts: jest.fn().mockResolvedValue({}),

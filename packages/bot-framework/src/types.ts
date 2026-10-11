@@ -243,8 +243,8 @@ export interface BotHostOptions {
   stateDir?: string;
   rpcUrl?: string;
   fundingPrivateKeyHex?: string;
-  /** The stamp of a message a bot sends on its own initiative, and the most it puts on a reply.
-   * A reply carries what the sender paid, never more (see `replyStampWei` in the host). */
+  /** Explicit native amount override for proactive messages and the reply ceiling. When absent,
+   * use the shared fixed AVU default. A reply never pays more than confirmed incoming value. */
   stampValueWei?: bigint;
   /** The least the relay accepts for a paid message. Default: `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`,
    * else 1000000000000 wei. A message that paid less is answered at this amount. */

@@ -52,9 +52,10 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
   return {
     ...actual,
-    createEvmChain: jest.fn(() => ({
+    createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
       chainIdentifier: "monad-testnet",
       directMessages: {
+        defaultStampQuote: async () => config.resolveDefaultStamp!({ chainIdentifier: "monad-testnet", minimumStamp: 0n }),
         fetchSince: mockFetchSince,
         send: mockSend,
         reconcileAttempts: mockReconcile,
@@ -396,6 +397,28 @@ describe("FrankBotHost replies", () => {
     const MIN = 1_000_000_000_000n;
     const stampsSent = (): bigint[] =>
       mockSend.mock.calls.map(([params]) => params.stampValue);
+
+    it('uses the shared dynamic default as a ceiling and bypasses quotes for free incoming mail', async () => {
+      const { host, instance } = await start(bot('avu-reply-bot', async () => [{ type: 'text', text: 'answer' }]));
+      const quote = jest.fn(async () => ({ status: 'available', chainIdentifier: 'monad-testnet',
+        amount: 2n * STAMP, targetAmount: 2n * STAMP, minimumStamp: 0n, rateAt: 1 }));
+      (host as any).chain.directMessages.defaultStampQuote = quote;
+      await poll(host, [inbound('paid', { stampValueWei: 4n * STAMP })]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([2n * STAMP]);
+      expect(quote).toHaveBeenCalledTimes(1);
+      quote.mockClear();
+      await poll(host, [inbound('free', { stampValueWei: 0n })]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([2n * STAMP, 0n]);
+      expect(quote).not.toHaveBeenCalled();
+      // A lower configured AVU target must remain the ceiling; no old raw-stamp/wager floor.
+      quote.mockResolvedValue({ status: 'available', chainIdentifier: 'monad-testnet',
+        amount: STAMP / 100n, targetAmount: STAMP / 100n, minimumStamp: 0n, rateAt: 1 });
+      await poll(host, [inbound('small configured target', { stampValueWei: 4n * STAMP })]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([2n * STAMP, 0n, STAMP / 100n]);
+    });
 
     it.each([
       ["what the sender paid, when that is less than the bot's own stamp", 4_000_000_000_000_000n, 4_000_000_000_000_000n],

@@ -1,3 +1,4 @@
+import { stampPolicyConfig } from '@frank/wallet/oracle/stamp-policy'
 /**
  * Configuration for the one-command demo (#312), from environment variables and an optional
  * user-provided `.env` file ONLY. `DEMO_VARS` is the single list of every variable the launcher
@@ -466,6 +467,7 @@ export interface DemoConfig {
   solanaRpcUrl: string
   networkTag: string
   minStampWei: string
+  defaultStampAvu: string
   /** Burn address given to the relay, the bots and the app command (#364). */
   stampBurnAddress: string
   /** Wei the faucet sends each new profile (undefined when there is no faucet). */
@@ -669,6 +671,7 @@ export function resolveDemoConfig(params: {
     problems,
   )
 
+  const defaultStampAvu = stampPolicyConfig(merged.FRANK_DM_DEFAULT_STAMP_AVU).targetAvu
   const stampBurnAddress = merged.MONAD_STAMP_BURN_ADDRESS || DEMO_DEFAULT_BURN_ADDRESS
   if (!/^0x[0-9a-fA-F]{40}$/.test(stampBurnAddress)) {
     problems.push(`MONAD_STAMP_BURN_ADDRESS must be 0x followed by 40 hex characters, got "${stampBurnAddress}"`)
@@ -815,6 +818,7 @@ export function resolveDemoConfig(params: {
     solanaRpcUrl,
     networkTag,
     minStampWei,
+    defaultStampAvu,
     stampBurnAddress,
     faucetAmountWei: noFaucet ? undefined : faucetAmountWei,
     appPort: APP_DEV_PORT,

@@ -27,9 +27,10 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
   return {
     ...actual,
-    createEvmChain: jest.fn(() => ({
+    createEvmChain: jest.fn((config: import("@frank/wallet/chain/evm-chain-config").EvmChainConfig) => ({
       chainIdentifier: "monad-testnet",
       directMessages: {
+        defaultStampQuote: async () => config.resolveDefaultStamp!({ chainIdentifier: "monad-testnet", minimumStamp: 0n }),
         fetchSince: mockDirectMessagesFetchSince,
         send: mockDirectMessagesSend,
         // A wallet with no payment attempts: asked about none, it has nothing to report.

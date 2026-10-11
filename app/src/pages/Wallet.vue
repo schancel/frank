@@ -439,7 +439,10 @@
                                 · {{ token.name }}
                               </span>
                             </q-item-label>
-                            <q-item-label caption class="text-grey-6">
+                            <q-item-label
+                              caption
+                              class="text-grey-6 wallet-token-contract"
+                            >
                               {{ $t('walletPanel.tokenContract') }}:
                               <address-text :address="token.address" copyable />
                             </q-item-label>
@@ -1196,6 +1199,11 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.wallet-token-contract :deep(.address-text) {
+  width: fit-content;
+  max-width: 100%;
+}
+
 .wallet-header-unit {
   flex-shrink: 0;
 }

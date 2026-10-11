@@ -1665,6 +1665,7 @@ export default {
       'L’approbation n’a pas été confirmée : rien n’a été échangé. Réessayez.',
     errorAccountChanged: 'Le compte a changé. Vérifiez à nouveau l’échange.',
     errorQuote: 'Impossible d’obtenir un prix du réseau. Réessayez.',
+    failureDiagnostic: 'Détails de l’échec : {stage} · {code}',
     errorExecution:
       'L’état de l’échange n’a pas pu être confirmé. Consultez les échanges récents avant de réessayer ; un échange envoyé peut encore aboutir.',
     warnHighImpact:

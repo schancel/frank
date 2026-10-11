@@ -492,6 +492,58 @@ describe('confirming and executing', () => {
     }
   })
 
+  it('opens review while funds checks are pending and Back ignores the late answer', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    let release!: (
+      value: Awaited<ReturnType<typeof s.wallet.getContractCallFunds>>,
+    ) => void
+    s.wallet.getContractCallFunds.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          release = resolve
+        }),
+    )
+    await click(view, 'swap-review-btn')
+    expect(
+      view.get('[data-testid="swap-review"]').attributes('aria-busy'),
+    ).toBe('true')
+    expect(
+      view.get('[data-testid="swap-confirm-btn"]').attributes('disabled'),
+    ).toBeDefined()
+    await click(view, 'swap-back-btn')
+    release({
+      mainAddress: account.toLowerCase(),
+      mainBalance: E18,
+      otherBalance: 0n,
+      mainBusy: false,
+    })
+    await flushPromises()
+    expect(view.find('[data-testid="swap-review"]').exists()).toBe(false)
+    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
+    view.unmount()
+  })
+
+  it('reports an allowlisted failure stage without exposing provider details', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    s.wallet.sendContractCall.mockRejectedValueOnce(
+      Object.assign(new Error('SECRET provider payload'), {
+        code: 'INSUFFICIENT_FUNDS',
+      }),
+    )
+    await click(view, 'swap-confirm-btn')
+    expect(text(view, 'swap-failure-diagnostic')).toContain('signing')
+    expect(text(view, 'swap-failure-diagnostic')).toContain(
+      'Error/INSUFFICIENT_FUNDS',
+    )
+    expect(view.text()).not.toContain('SECRET')
+    view.unmount()
+  })
+
   it('does not claim nothing was swapped when result handling fails after submission', async () => {
     const s = scene()
     s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))

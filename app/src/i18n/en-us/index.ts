@@ -1610,6 +1610,7 @@ export default {
       'The approval did not confirm, so nothing was swapped. Try again.',
     errorAccountChanged: 'The account changed. Review the swap again.',
     errorQuote: 'Could not get a price from the network. Try again.',
+    failureDiagnostic: 'Failure details: {stage} · {code}',
     errorExecution:
       'The swap status could not be confirmed. Check Recent swaps before trying again; a submitted swap may still complete.',
     warnHighImpact:

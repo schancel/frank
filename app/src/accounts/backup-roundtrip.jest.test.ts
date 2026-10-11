@@ -5,7 +5,8 @@
 import { splitCodex32 } from '@frank/codex32'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
-import { AccountBackupUnavailableError } from './session'
+import { AccountBackupUnavailableError, stageBip39Recovery } from './session'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { CustodyError } from './custody'
 import {
   closeDevices,
@@ -37,6 +38,35 @@ jest.mock('@frank/cashweb/relay', () => ({
 
 beforeAll(prepareDevices)
 afterEach(closeDevices)
+
+test('a historical BIP39 phrase uses shared staging, activation and reopen without a name or reset', async () => {
+  const phrase = 'test test test test test test test test test test test junk'
+  const expected = MonadIdentity.fromSeed({ mnemonic: phrase })
+  const session = freshDevice()
+  await session.initialize()
+  await stageBip39Recovery(session, phrase)
+  expect(session.state.status).toBe('pending')
+  expect(session.state.account).toBeNull()
+  expect(session.state.pendingIdentityAddress).toBe(expected.displayAddress)
+  expect(session.state.pending?.account.displayName).toBe('')
+  await activate(session)
+  expect((await session.getWallet()).identity.compressedPubKey).toEqual(
+    expected.compressedPubKey,
+  )
+  await session.close()
+  const reopened = openSession()
+  await reopened.initialize()
+  expect(reopened.state.status).toBe('ready')
+  expect((await reopened.getWallet()).identity.compressedPubKey).toEqual(
+    expected.compressedPubKey,
+  )
+  await expect(
+    reopened.getActiveDomainRoot('evm-wallet'),
+  ).rejects.toMatchObject({ code: 'account-purpose-unavailable' })
+  await expect(reopened.backupCodex32(2, 3)).rejects.toMatchObject({
+    code: 'account-backup-unavailable',
+  })
+})
 
 test('recovered custody stays durable while required profile restoration gates activation and retry', async () => {
   const originalDevice = freshDevice()

@@ -22,7 +22,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import { webcrypto } from 'crypto'
 import type { VaultReceipt } from '@frank/account-vault'
 import { aad } from '../../../../packages/account-vault/src/encoding'
-import { DOMAIN_PURPOSES, type DomainRoot } from '@frank/domain-roots'
+import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { createAccountCeremony } from '../ceremony'
 import { openAccountCustody } from '../custody'
@@ -79,11 +79,12 @@ export function openSession(
   const session = createAccountSession({
     restoreApplicationState: options.restoreApplicationState,
     open: () => openAccountCustody({ namespace: NAMESPACE }),
-    createWallet: async (roots: {
-      authentication: DomainRoot<'identity-authentication'>
-    }) =>
+    createWallet: async roots =>
       ({
-        identity: MonadIdentity.fromDomainRoot(roots.authentication),
+        identity:
+          'derivation' in roots
+            ? MonadIdentity.fromBip39Seed(roots.seed)
+            : MonadIdentity.fromDomainRoot(roots.authentication),
         close: async () => undefined,
       } as unknown as RuntimeWallet),
   })

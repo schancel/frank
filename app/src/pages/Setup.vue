@@ -376,7 +376,7 @@
                   no-caps
                   :label="$t('accountRecovery.identify_legacy_account_locally')"
                   data-test="legacy-recovery"
-                  :disable="busy"
+                  :disable="!mayBegin || busy"
                   @click="changeMode('legacy')"
                 />
               </div>
@@ -411,23 +411,6 @@
                 :maxlength="512"
                 data-test="legacy-phrase"
               />
-              <p
-                v-if="detectedAccount"
-                role="status"
-                aria-live="polite"
-                class="q-mt-sm text-positive"
-                data-test="detected-account"
-              >
-                {{ detectedAccount }}
-              </p>
-              <p
-                v-if="legacyUnavailable"
-                role="status"
-                aria-live="polite"
-                data-test="legacy-unavailable"
-              >
-                {{ $t('accountRecovery.bip39_import_unavailable') }}
-              </p>
               <div class="row q-gutter-sm q-mt-md items-center">
                 <q-btn
                   type="submit"
@@ -781,14 +764,12 @@ import {
   accountSession,
   accountStatus as account,
   importBip39Wallet,
-  Bip39ImportUnavailableError,
 } from '../accounts/session'
 import {
   createAccountCeremony,
   recoveryErrorMessage,
 } from '../accounts/ceremony'
 import {
-  identifyLegacyAccount,
   legacyStatus as legacy,
   retryLegacyInspection,
 } from '../accounts/legacy'
@@ -916,8 +897,6 @@ const shareReportLines = computed(() =>
 const displayName = ref('')
 const legacyPhrase = ref('')
 const legacyAddress = ref('')
-const detectedAccount = ref('')
-const legacyUnavailable = ref(false)
 const replaceAccepted = ref(false)
 let alive = true
 let request = 0
@@ -945,8 +924,6 @@ function clearSecrets(preserveLegacyPhrase = false) {
   if (!preserveLegacyPhrase) {
     legacyPhrase.value = ''
   }
-  detectedAccount.value = ''
-  legacyUnavailable.value = false
 }
 function focus() {
   void nextTick(() => heading.value?.focus())
@@ -1124,19 +1101,15 @@ function submitLegacyPhrase() {
   return run(async () => {
     let phrase = legacyPhrase.value
     const token = request
-    detectedAccount.value = ''
-    legacyUnavailable.value = false
     try {
-      const { scanBip39Accounts } = await import('@frank/wallet/bip39-import')
-      const scanned = await scanBip39Accounts({ phrase })
+      await importBip39Wallet(
+        phrase,
+        undefined,
+        () => !alive || token !== request || mode.value !== 'legacy',
+      )
       if (!alive || token !== request || mode.value !== 'legacy') return
-      detectedAccount.value = `${scanned.address} (${scanned.path})`
-      try {
-        await importBip39Wallet(phrase, scanned.path)
-      } catch (failure) {
-        if (!(failure instanceof Bip39ImportUnavailableError)) throw failure
-        if (alive && token === request) legacyUnavailable.value = true
-      }
+      legacyPhrase.value = ''
+      mode.value = 'choice'
     } finally {
       phrase = ''
     }

@@ -10,6 +10,8 @@ import {
   type WalletHandle,
 } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
+import type { HistoricalBip39Seed } from '@frank/wallet/monad-wallet-material'
+import { BIP39_DERIVATION, BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { Platform } from 'quasar'
 import type { DomainRoot } from '@frank/domain-roots'
@@ -24,6 +26,7 @@ import {
   type CustodySnapshot,
   type PublicAccount,
   type StageAccount,
+  type StageBip39Account,
   type ExpectedActive,
 } from './custody'
 
@@ -83,6 +86,18 @@ async function pendingIdentityAddress(
   custody: AccountCustody,
   attemptId: string,
 ): Promise<string> {
+  const snapshot = await custody.snapshot()
+  if (
+    snapshot.pending?.account.receipt.context.recoveryFormat ===
+    BIP39_RECOVERY_FORMAT
+  ) {
+    const seed = await custody.openPendingBip39Seed(attemptId)
+    try {
+      return MonadIdentity.fromBip39Seed(seed).displayAddress
+    } finally {
+      seed.fill(0)
+    }
+  }
   const roots = await custody.openPending(attemptId)
   try {
     const root = roots.find(
@@ -100,7 +115,9 @@ async function pendingIdentityAddress(
 /** The only runtime owner. Its reactive projection contains public data only. */
 export function createAccountSession(deps: {
   open: () => Promise<AccountCustody>
-  createWallet: (roots: MonadRootBundle | any) => Promise<RuntimeWallet>
+  createWallet: (
+    roots: MonadRootBundle | HistoricalBip39Seed,
+  ) => Promise<RuntimeWallet>
   /** Required application restoration finishes before consumers can acquire the wallet. */
   restoreApplicationState?: (options: {
     wallet: RuntimeWallet
@@ -251,10 +268,16 @@ export function createAccountSession(deps: {
     check(token)
     const capability = await custody.openActive()
     let roots: readonly DomainRoot[] = []
+    let bip39Seed: Uint8Array | undefined
     let candidate: RuntimeWallet | undefined
     try {
       check(token)
-      roots = capability.takeRoots()
+      if (
+        capability.account.receipt.context.recoveryFormat ===
+        BIP39_RECOVERY_FORMAT
+      )
+        bip39Seed = capability.takeBip39Seed()
+      else roots = capability.takeRoots()
       const find = <P extends DomainRoot['purpose']>(
         purpose: P,
       ): DomainRoot<P> => {
@@ -262,11 +285,15 @@ export function createAccountSession(deps: {
         if (!root) throw new CustodyError('locked')
         return root as DomainRoot<P>
       }
-      candidate = await deps.createWallet({
-        evm: find('evm-wallet'),
-        authentication: find('identity-authentication'),
-        messaging: find('messaging-encryption'),
-      })
+      candidate = await deps.createWallet(
+        bip39Seed
+          ? { derivation: BIP39_DERIVATION, seed: bip39Seed }
+          : {
+              evm: find('evm-wallet'),
+              authentication: find('identity-authentication'),
+              messaging: find('messaging-encryption'),
+            },
+      )
       check(token)
       await deps.restoreApplicationState?.({
         wallet: candidate,
@@ -296,6 +323,7 @@ export function createAccountSession(deps: {
       state.error = null
     } finally {
       roots.forEach(root => root.bytes.fill(0))
+      bip39Seed?.fill(0)
       capability.close()
       if (candidate) await candidate.close()
     }
@@ -396,6 +424,11 @@ export function createAccountSession(deps: {
         checkCurrent()
         if (capability.account.receipt.context.accountId !== walletAccount)
           throw new CustodyError('conflict')
+        if (
+          capability.account.receipt.context.recoveryFormat ===
+          BIP39_RECOVERY_FORMAT
+        )
+          throw new AccountPurposeUnavailableError(purpose)
         roots = capability.takeRoots()
         const found = roots.find(r => r.purpose === purpose)
         if (!found) throw new AccountPurposeUnavailableError(purpose)
@@ -707,7 +740,7 @@ export function createAccountSession(deps: {
       if (!custody || closed) throw new CustodyError('unavailable')
       return custody.snapshot()
     },
-    async stage(input: StageAccount) {
+    async stage(input: StageAccount | StageBip39Account) {
       return exclusive(async () => {
         if (!custody || closed) throw new CustodyError('unavailable')
         const token = generation
@@ -888,20 +921,58 @@ export const accountSession = createAccountSession({
 })
 export const accountStatus = accountSession.state
 
-/** Standard-account activation needs its own identity-preserving custody contract. */
-export class Bip39ImportUnavailableError extends Error {
-  readonly code = 'bip39-import-unavailable'
-
-  constructor() {
-    super('BIP39 account import is currently unavailable')
-    this.name = 'Bip39ImportUnavailableError'
+/** Stage historical Frank recovery; activation remains a separate explicit user action. */
+export async function stageBip39Recovery(
+  session: ReturnType<typeof createAccountSession>,
+  phrase: string,
+  isCancelled: () => boolean = () => false,
+): Promise<void> {
+  if (typeof phrase !== 'string' || phrase.length > 512)
+    throw new CustodyError('invalid-input')
+  const expectedActive = {
+    revision: session.state.revision,
+    accountId: session.state.account?.receipt.context.accountId ?? null,
+  }
+  const { legacyStatus, assertLegacyUnchanged } = await import('./legacy')
+  const legacyRevision = legacyStatus.revision
+  const { validateMnemonic, mnemonicToSeedSync } = await import('bip39')
+  const normalized = phrase.trim().toLowerCase().replace(/\s+/g, ' ')
+  if (!validateMnemonic(normalized)) throw new CustodyError('invalid-input')
+  const seed = mnemonicToSeedSync(normalized)
+  const attemptId = crypto.randomUUID()
+  try {
+    const snapshot = await session.snapshot()
+    if (
+      snapshot.pending ||
+      snapshot.revision !== expectedActive.revision ||
+      (snapshot.active?.receipt.context.accountId ?? null) !==
+        expectedActive.accountId
+    )
+      throw new CustodyError('conflict')
+    await assertLegacyUnchanged(legacyRevision)
+    if (isCancelled()) throw new CustodyError('conflict')
+    await session.stage({
+      attemptId,
+      accountId: crypto.randomUUID(),
+      expectedActive,
+      displayName: '',
+      custodyEpoch: 1,
+      bip39Seed: seed,
+    })
+    if (isCancelled()) {
+      await session.cancelPending(attemptId)
+      throw new CustodyError('conflict')
+    }
+  } finally {
+    seed.fill(0)
   }
 }
 
-/** Identification is available separately; this unsupported capability never changes custody. */
 export async function importBip39Wallet(
-  _phrase: string,
-  _chosenPath?: string,
-): Promise<never> {
-  throw new Bip39ImportUnavailableError()
+  phrase: string,
+  chosenPath = "m/44'/60'/1'/0/0",
+  isCancelled?: () => boolean,
+): Promise<void> {
+  if (chosenPath !== "m/44'/60'/1'/0/0") throw new CustodyError('invalid-input')
+  await stageBip39Recovery(accountSession, phrase, isCancelled)
 }

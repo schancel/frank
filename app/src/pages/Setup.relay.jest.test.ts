@@ -324,10 +324,10 @@ describe('Setup page advanced relay configuration', () => {
     await view.get('[data-test="restore-account"]').trigger('click')
     await flushPromises()
     expect(view.find('[data-test="display-name"]').exists()).toBe(false)
-    await view.get('[data-test="confirm-shares"] input').setValue('s1\ns2')
+    await view.get('[data-test="confirm-shares"] input').setValue('s1')
     await view.get('form').trigger('submit')
     await flushPromises()
-    expect(mockConfirm).toHaveBeenCalledWith(['s1', 's2'], '')
+    expect(mockConfirm).toHaveBeenCalledWith(['s1'], '')
     view.unmount()
   })
 

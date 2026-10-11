@@ -3,6 +3,8 @@ import {
   activeChain,
   getChainRegistryEntry,
   resolveNetworkId,
+  getCustomRelayBaseUrl,
+  getDefaultRelayBaseUrl,
   type NativeWalletHandle,
   type SupportedCurve,
   type WalletHandle,
@@ -99,6 +101,12 @@ async function pendingIdentityAddress(
 export function createAccountSession(deps: {
   open: () => Promise<AccountCustody>
   createWallet: (roots: MonadRootBundle | any) => Promise<RuntimeWallet>
+  /** Required application restoration finishes before consumers can acquire the wallet. */
+  restoreApplicationState?: (options: {
+    wallet: RuntimeWallet
+    account: PublicAccount
+    isCancelled: () => boolean
+  }) => Promise<void>
   listen?: (invalidate: () => void, foreground: () => void) => () => void
   notify?: () => void
   reset?: () => Promise<void>
@@ -142,7 +150,9 @@ export function createAccountSession(deps: {
   const fail = (error: unknown) => {
     const code = error instanceof CustodyError ? error.code : 'unavailable'
     state.error = code
-    state.status = code === 'unavailable' ? 'unavailable' : 'locked'
+    state.status = ['unavailable', 'profile-unreachable'].includes(code)
+      ? 'unavailable'
+      : 'locked'
   }
   const exclusive = <T>(run: () => Promise<T>): Promise<T> => {
     const next = tail.then(run)
@@ -256,6 +266,12 @@ export function createAccountSession(deps: {
         evm: find('evm-wallet'),
         authentication: find('identity-authentication'),
         messaging: find('messaging-encryption'),
+      })
+      check(token)
+      await deps.restoreApplicationState?.({
+        wallet: candidate,
+        account: capability.account,
+        isCancelled: () => closed || token !== generation,
       })
       check(token)
       const latest = await custody.snapshot()
@@ -859,6 +875,16 @@ export const accountSession = createAccountSession({
     return openAccountCustody({ namespace: 'local-account-v1' })
   },
   createWallet: roots => activeChain.createWallet(roots),
+  async restoreApplicationState({ wallet, account, isCancelled }) {
+    if (account.displayName) return
+    const { restoreOwnProfileWithRelay } = await import('../utils/own-profile')
+    const outcome = await restoreOwnProfileWithRelay({
+      identity: wallet.identity as MonadIdentity,
+      relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
+      isCancelled,
+    })
+    if (outcome === 'unreachable') throw new CustodyError('profile-unreachable')
+  },
 })
 export const accountStatus = accountSession.state
 

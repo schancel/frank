@@ -6,6 +6,7 @@ import { splitCodex32 } from '@frank/codex32'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { AccountBackupUnavailableError } from './session'
+import { CustodyError } from './custody'
 import {
   closeDevices,
   activate,
@@ -36,6 +37,66 @@ jest.mock('@frank/cashweb/relay', () => ({
 
 beforeAll(prepareDevices)
 afterEach(closeDevices)
+
+test('recovered custody stays durable while required profile restoration gates activation and retry', async () => {
+  const originalDevice = freshDevice()
+  const shares = await signUp(originalDevice)
+  const original = await describeAccount(originalDevice)
+  await originalDevice.close()
+  let resolveProfile!: () => void
+  let beginProfile!: () => void
+  let profileStarted = new Promise<void>(resolve => {
+    beginProfile = resolve
+  })
+  let online = false
+  const restoring = freshDevice({
+    restoreApplicationState: async ({ account }) => {
+      expect(account.displayName).toBe('')
+      await new Promise<void>(resolve => {
+        resolveProfile = resolve
+        beginProfile()
+      })
+      if (!online) throw new CustodyError('profile-unreachable')
+    },
+  })
+  await restoring.initialize()
+  const ceremony = createAccountCeremony()
+  await ceremony.beginRestore()
+  await ceremony.confirm(shares.slice(0, 2), '')
+  const pending = restoring.state.pending!
+  const activating = restoring.activatePending(
+    pending.account.receipt.operationId,
+    pending.expectedActive,
+  )
+  // Real IndexedDB and WebCrypto must finish before the application restoration starts.
+  await Promise.race([
+    profileStarted,
+    activating.then(() => {
+      throw new Error(
+        'Account activation finished before required profile restoration',
+      )
+    }),
+  ])
+  expect(restoring.state.status).toBe('loading')
+  expect(restoring.state.account?.fingerprint).toBe(original.fingerprint)
+  resolveProfile()
+  await activating
+  expect(restoring.state.status).toBe('unavailable')
+  expect(restoring.state.error).toBe('profile-unreachable')
+  expect(restoring.state.pending).toBeNull()
+  expect(restoring.state.account?.fingerprint).toBe(original.fingerprint)
+  online = true
+  profileStarted = new Promise<void>(resolve => {
+    beginProfile = resolve
+  })
+  const retrying = restoring.retry()
+  await profileStarted
+  expect(restoring.state.status).toBe('loading')
+  resolveProfile()
+  await retrying
+  expect(restoring.state.status).toBe('ready')
+  expect(await describeAccount(restoring)).toEqual(original)
+})
 
 test('restore activates and reopens the same custody account without a display name', async () => {
   const originalDevice = freshDevice()

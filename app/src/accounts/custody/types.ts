@@ -10,6 +10,7 @@ export type CustodyErrorCode =
   | 'storage-failed'
   | 'closed'
   | 'capacity'
+  | 'profile-unreachable'
   /** A staged attempt saved before account roots were kept: it can only be cancelled and redone. */
   | 'outdated-attempt'
 

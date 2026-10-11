@@ -120,7 +120,13 @@
             "
           >
             <p>
-              {{ $t('accountRecovery.saved_account_data_could_not_be_opened') }}
+              {{
+                $t(
+                  account.error === 'profile-unreachable'
+                    ? 'accountRecovery.profile_restore_unreachable'
+                    : 'accountRecovery.saved_account_data_could_not_be_opened',
+                )
+              }}
             </p>
             <div class="row q-gutter-sm items-center q-my-md">
               <q-btn
@@ -150,6 +156,7 @@
                 @click="startLegacyLocked"
               />
               <q-btn
+                v-if="account.error !== 'profile-unreachable'"
                 flat
                 color="negative"
                 no-caps
@@ -1206,6 +1213,8 @@ function retry() {
   return run(async () => {
     await retryLegacyInspection()
     await accountSession.retry()
+    if (account.status === 'ready' && !account.account?.displayName)
+      await completeProfileRecovery()
   })
 }
 function startRestoreLocked() {

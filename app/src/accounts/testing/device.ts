@@ -62,13 +62,22 @@ export async function closeDevices() {
 }
 
 /** Switch to a new, empty browser profile and open the app's session on it. */
-export function freshDevice(): Session {
+export function freshDevice(
+  options: Parameters<typeof openSession>[0] = {},
+): Session {
   globalThis.indexedDB = new IDBFactory()
-  return openSession()
+  return openSession(options)
 }
 /** A later app start on the same device: nothing carried over in memory. */
-export function openSession(): Session {
+export function openSession(
+  options: {
+    restoreApplicationState?: Parameters<
+      typeof createAccountSession
+    >[0]['restoreApplicationState']
+  } = {},
+): Session {
   const session = createAccountSession({
+    restoreApplicationState: options.restoreApplicationState,
     open: () => openAccountCustody({ namespace: NAMESPACE }),
     createWallet: async (roots: {
       authentication: DomainRoot<'identity-authentication'>

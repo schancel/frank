@@ -24,6 +24,7 @@ export default {
     stampPreparationWaiting: 'Waiting for the previous payment to confirm…',
     stampPreparationWaitingBlocks:
       'Waiting for the previous payment to confirm ({blocks} blocks to go)…',
+    sendContextChanged: 'The account, chain or conversation changed. Review the action again.',
     chainUnreachable:
       'The network cannot be reached. Paid messages are queued and will be sent when it is back.',
     donationMessage:

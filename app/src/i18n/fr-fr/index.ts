@@ -63,6 +63,7 @@ export default {
       'En attente de la confirmation du paiement précédent…',
     stampPreparationWaitingBlocks:
       'En attente de la confirmation du paiement précédent (encore {blocks} blocs)…',
+    sendContextChanged: 'Le compte, la chaîne ou la conversation a changé. Vérifiez à nouveau cette action.',
     chainUnreachable:
       'Le réseau est injoignable. Les messages payants sont mis en file et partiront à son retour.',
     donationMessage:

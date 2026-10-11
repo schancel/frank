@@ -2,17 +2,25 @@
 // Wiring tests for Chat.vue's follow-up sends and its blackjack methods: the real component
 // methods run against a minimal `this`.
 
+let mockWallet = { id: 'wallet-a' }
+let mockStoredRead: Promise<void> | undefined
+let mockReadStarted: (() => void) | undefined
+jest.mock('../accounts/session', () => ({
+  accountStatus: { revision: 1, status: 'ready' },
+}))
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
     saveMessage: jest.fn(async () => undefined),
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
     getIterator: async function* () {
+      mockReadStarted?.()
+      await mockStoredRead
       /* none */
     },
   }),
 }))
-jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
+jest.mock('../utils/clients', () => ({ useMonadWallet: () => mockWallet }))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
   insufficientStampNotify: jest.fn(),
@@ -39,6 +47,7 @@ jest.mock('../utils/own-address', () => ({
 import ChatPage from './Chat.vue'
 import { errorNotify } from '../utils/notifications'
 import { activeChain } from '@frank/wallet/chain'
+import { accountStatus } from '../accounts/session'
 import {
   commitmentOf,
   dealerStep,
@@ -112,6 +121,29 @@ describe('Chat.vue sendFollowUpItems outcome (#310)', () => {
       false,
     )
     expect(self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+
+  it('reports a localized unavailable default before parsing or sending a card action', async () => {
+    const self = fakeThis({ stampAmount: '', stampUnavailable: 'localized missing rate' })
+    const settled = jest.fn()
+    await expect(methods.sendFollowUpItems.call(self, {
+      items: [{ type: 'text', text: 'card action' }], settled,
+    })).resolves.toBe(false)
+    expect(errorNotify).toHaveBeenCalledWith(new Error('localized missing rate'))
+    expect(self.sendDirectMessage).not.toHaveBeenCalled()
+    expect(settled).toHaveBeenCalledWith(false)
+    expect(self.sendingMessage).toBe(false)
+  })
+
+  it('sends an explicit free card action while the default quote is unavailable', async () => {
+    const self = fakeThis({ stampAmount: '', stampUnavailable: 'localized missing rate' })
+    await expect(methods.sendFollowUpItems.call(self, {
+      items: [{ type: 'text', text: 'free card action' }], stampValueWei: 0n,
+    })).resolves.toBe(true)
+    expect(self.sendDirectMessage).toHaveBeenCalledWith(expect.objectContaining({
+      wallet: mockWallet, stampValue: 0n,
+    }))
+    expect(errorNotify).not.toHaveBeenCalled()
   })
 })
 
@@ -300,6 +332,38 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
     commitment: 'b'.repeat(64),
   }
   beforeEach(() => jest.mocked(errorNotify).mockReset())
+
+  it('refuses a deferred hand action after the wallet session changes, without sending from either wallet', async () => {
+    let releaseRead!: () => void
+    let readStarted!: () => void
+    const started = new Promise<void>(resolve => { readStarted = resolve })
+    mockStoredRead = new Promise<void>(resolve => { releaseRead = resolve })
+    mockReadStarted = readStarted
+    const originalWallet = mockWallet
+    const revision = accountStatus.revision
+    const self = fakeThis({ address: '0xPeer', messages: [challenge] })
+    const settled = jest.fn()
+    try {
+      const pending = methods.sendFollowUpItems.call(self, {
+        items: [bet], stampValueWei: 300n, settled,
+      })
+      await started
+      mockWallet = { id: 'wallet-b' }
+      ;(accountStatus as { revision: number }).revision++
+      releaseRead()
+      await expect(pending).resolves.toBe(false)
+      expect(self.sendDirectMessage).not.toHaveBeenCalled()
+      expect(errorNotify).toHaveBeenCalledWith(new Error('chat.sendContextChanged'))
+      expect(settled).toHaveBeenCalledWith(false)
+      expect(self.sendingMessage).toBe(false)
+    } finally {
+      releaseRead()
+      mockStoredRead = undefined
+      mockReadStarted = undefined
+      mockWallet = originalWallet
+      ;(accountStatus as { revision: number }).revision = revision
+    }
+  })
 
   it('sends a bet once: with the bet already in the chat a second click sends nothing', async () => {
     const self = fakeThis({ address: '0xPeer', messages: [challenge] })

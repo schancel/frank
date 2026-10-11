@@ -882,44 +882,59 @@ export default defineComponent({
       if (this.sendingMessage) {
         return false
       }
-      const stampValue =
-        stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
-      // A blackjack message is sent only while it is still the hand's next message, judged on
-      // the messages saved on this device too, so a payout, refund, bet or deal that another
-      // tab already sent (or is still sending) is not sent a second time from this one.
-      const peer = this.recipientAddress || this.address
-      const handItem = soleHandItem(items)
-      if (handItem) {
-        this.sendingMessage = true
-        let stillNext = false
-        try {
-          const own = await getOwnCanonicalAddress()
-          stillNext =
-            !!own &&
-            (await handItemStillNext({
-              item: handItem,
-              stampWei: stampValue,
-              own,
-              peer,
-              memory: this.peerMessages,
-              stored: () => storedOutgoingMessages(peer),
-            }))
-        } finally {
-          this.sendingMessage = false
-        }
-        if (!stillNext) {
-          errorNotify(new Error(this.$t('blackjackP2p.notNext')))
-          return false
-        }
-      }
       this.sendingMessage = true
       let outcome: OutgoingOutcome
       try {
+        // Capture the displayed decision and its session before hand validation opens storage.
+        if (stampValueWei === undefined && this.stampUnavailable)
+          throw new Error(this.stampUnavailable)
+        const wallet = useMonadWallet()
+        const chainIdentifier = activeChain.chainIdentifier
+        const client = activeChain.directMessages
+        const revision = accountStatus.revision
+        const peer = this.recipientAddress || this.address
+        const conversationId = this.conversation?.id
+        const stampValue =
+          stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)
+        const capturedItems = items.slice()
+        const contextCurrent = () =>
+          revision === accountStatus.revision &&
+          chainIdentifier === activeChain.chainIdentifier &&
+          client === activeChain.directMessages &&
+          wallet === useMonadWallet() &&
+          peer === (this.recipientAddress || this.address) &&
+          conversationId === this.conversation?.id
+        const requireCurrentContext = () => {
+          if (!contextCurrent())
+            throw new Error(this.$t('chat.sendContextChanged'))
+        }
+        // Only the next saved hand action may leave this session. A changed session must
+        // review the action again rather than choose another wallet after these awaits.
+        const handItem = soleHandItem(capturedItems)
+        if (handItem) {
+          const memory = this.peerMessages
+          const own = await getOwnCanonicalAddress()
+          requireCurrentContext()
+          const stillNext = !!own && await handItemStillNext({
+            item: handItem,
+            stampWei: stampValue,
+            own,
+            peer,
+            memory,
+            stored: () => storedOutgoingMessages(peer),
+          })
+          requireCurrentContext()
+          if (!stillNext) {
+            errorNotify(new Error(this.$t('blackjackP2p.notNext')))
+            return false
+          }
+        }
+        requireCurrentContext()
         outcome = await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: peer,
-          conversationId: this.conversation?.id,
-          items,
+          conversationId,
+          items: capturedItems,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })

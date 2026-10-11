@@ -4223,11 +4223,16 @@ export const useChatStore = defineStore('chats', {
           for (const item of swaps) useSwapStore().handleSwapItem(item)
         }
       }
-      // What the account's other devices noted about its conversations; applied once this
-      // batch's messages are filed.
+      // What the account's other devices noted about its conversations.
       const conversationNotes = recordRows.flatMap(wrapper =>
         ownConversationStates(wrapper, ownAddress),
       )
+      // A later durable receipt is a restart frontier even before the poll advances its
+      // cursor. Commit authenticated note effects first, through the existing metadata
+      // owner, so a crash cannot skip a note whose raw row is intentionally not stored.
+      for (const note of conversationNotes)
+        await this.applyConversationStateExclusive(note, ownAddress)
+      if (conversationNotes.length > 0) await this.flushPersistence?.()
       const outboundMatches = new Map<string, OutboundDeliveryMatch>()
       const replacedAccountCollisions = new Map<
         string,
@@ -4784,8 +4789,6 @@ export const useChatStore = defineStore('chats', {
           }
         }
       }
-      for (const note of conversationNotes)
-        await this.applyConversationStateExclusive(note, ownAddress)
       const hasIncomingConfirmedStamps = deliverableWrappers.some(wrapper => {
         if (outboundMatches.has(wrapper.index) || wrapper.outbound) {
           return false

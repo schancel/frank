@@ -1,5 +1,6 @@
 export * from "./types";
 export * from "./claims";
+export * from "./amounts";
 export * from "./nonce-sequencer";
 export * from "./state-store";
 export * from "./directory-manager";

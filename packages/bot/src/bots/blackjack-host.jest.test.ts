@@ -42,10 +42,18 @@ let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
+  // How the real Monad testnet chain writes an amount: the dealer's text is made with it.
+  const testnet = actual.createEvmChain({
+    ...actual.loadMonadChainConfigFromEnv({ isTestnet: true }),
+    walletStorageLocation: false,
+  });
   return {
     ...actual,
     createEvmChain: jest.fn(() => ({
       chainIdentifier: "monad-testnet",
+      unit: testnet.unit,
+      toDisplayAmount: testnet.toDisplayAmount,
+      fromDisplayAmount: testnet.fromDisplayAmount,
       directMessages: { fetchSince: mockFetchSince, send: mockSend },
       topics: { post: jest.fn() },
       createWallet: jest.fn(async (roots: MonadRootBundle) => {

@@ -126,6 +126,13 @@ export interface BotContext {
   readonly subject: string;
   readonly relayBaseUrl: string;
   readonly networkTag: "MONT" | "MON1" | "MONR";
+  /** An amount of this bot's chain, in its base unit (wei), as a person reads it: the exact
+   * number and the chain's display unit, for example "0.01 MONT". Everything a bot says about
+   * money goes through this; a bot does not name a unit itself. */
+  formatAmount(raw: bigint): string;
+  /** The base-unit amount of a number typed in the chain's display unit ("0.01"). Throws when
+   * the text is not such a number. */
+  parseAmount(display: string): bigint;
   readonly provider: JsonRpcProvider;
   readonly state: BotStateStore;
   readonly subscriptions: BotSubscriptionManager;

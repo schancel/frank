@@ -6,12 +6,10 @@
  */
 import { request } from 'http'
 
-import { formatEther } from 'ethers'
-
+import { chainAmounts, type BotAmounts } from '@frank/bot-framework/amounts'
 import type { MessageItem, RpsItem, SatoshiDiceItem } from '@frank/cashweb/types/messages'
 import { BLACKJACK_DEFAULT_MIN_WAGER_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
 import { isGameId, type HandItem } from '@frank/wallet/message-item-plugins/blackjack/hand'
-import { formatMon } from '@frank/wallet/monad-amount'
 
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { DemoHandle } from './demo'
@@ -24,6 +22,9 @@ export interface SmokeCheck {
 }
 
 export interface ReplyExpectations {
+  /** How the bots' chain writes and reads an amount (`chainAmounts` of the chain the demo runs
+   * on): the bots' texts are checked against it, unit included. */
+  amounts: BotAmounts
   qwenMode: 'stub' | 'live'
   raffleEntryPriceWei?: string
   raffleMaxEntries?: number
@@ -48,12 +49,25 @@ const isCommitment = (value: unknown): value is string => typeof value === 'stri
 /** What each bot must answer, decided from the decoded items of its reply and what it paid. */
 export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpectations): SmokeCheck {
   const { items } = reply
+  const amount = expected.amounts.formatAmount
+  /** The amount `said` names after `lead`, when it is written as this chain writes it: its
+   * number followed by the chain's unit. An amount in another unit is not one. */
+  const namedAfter = (said: string, lead: string): string | undefined => {
+    const found = new RegExp(`${lead} ([0-9.]+) ([A-Za-z]+)`).exec(said)
+    if (!found) return undefined
+    const written = `${found[1].replace(/\.$/, '')} ${found[2]}`
+    try {
+      return amount(expected.amounts.parseAmount(written.split(' ')[0])) === written ? written : undefined
+    } catch {
+      return undefined
+    }
+  }
   const no = (detail: string): SmokeCheck => ({ name: bot, ok: false, detail })
   /** A game's opening message is free: only a payout or a refund carries money (#1384). */
   const paid = () =>
     reply.stampValueWei === 0n
       ? undefined
-      : no(`the message paid ${formatMon(reply.stampValueWei)}; an offer to play carries no money`)
+      : no(`the message paid ${amount(reply.stampValueWei)}; an offer to play carries no money`)
   const text = items.find(i => i.type === 'text') as { text: string } | undefined
   const kind = (type: string, action?: string) =>
     items.find(
@@ -114,19 +128,19 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
       const minWei = expected.blackjackMinWagerWei ?? BLACKJACK_DEFAULT_MIN_WAGER_WEI
       const maxBetWei = BigInt(challenge.maxBetWei)
       if (maxBetWei < minWei) {
-        return no(`the challenge offers bets up to ${formatMon(maxBetWei)}, below the table minimum of ${formatMon(minWei)}`)
+        return no(`the challenge offers bets up to ${amount(maxBetWei)}, below the table minimum of ${amount(minWei)}`)
       }
       const said = text?.text ?? ''
-      if (!said.includes(`bet between ${formatMon(minWei)} and ${formatMon(maxBetWei)}`)) {
+      if (!said.includes(`bet between ${amount(minWei)} and ${amount(maxBetWei)}`)) {
         return no(
-          `the challenge's text does not name the table (bet between ${formatMon(minWei)} and ${formatMon(maxBetWei)}): ${JSON.stringify(said.slice(0, 120))}`,
+          `the challenge's text does not name the table (bet between ${amount(minWei)} and ${amount(maxBetWei)}): ${JSON.stringify(said.slice(0, 120))}`,
         )
       }
       return (
         paid() ?? {
           name: bot,
           ok: true,
-          detail: `a free dealer challenge for game ${challenge.gameId.slice(0, 8)}, seed committed, bets from ${formatMon(minWei)} to ${formatMon(maxBetWei)}`,
+          detail: `a free dealer challenge for game ${challenge.gameId.slice(0, 8)}, seed committed, bets from ${amount(minWei)} to ${amount(maxBetWei)}`,
         }
       )
     }
@@ -139,8 +153,8 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
       if (!isCommitment(table.commitment)) return no('the table carries no commitment to the secret of its roll')
       if (table.serverSecret !== undefined) return no('the table gives away the secret of its roll before the bet')
       const said = text?.text ?? ''
-      const named = /The most one roll pays is ([0-9.]+ MON)/.exec(said)?.[1]
-      const limit = expected.diceMaxPayoutWei === undefined ? named : formatMon(expected.diceMaxPayoutWei)
+      const named = namedAfter(said, 'The most one roll pays is')
+      const limit = expected.diceMaxPayoutWei === undefined ? named : amount(expected.diceMaxPayoutWei)
       if (!named || named !== limit || !/Your stake is what your bet message pays/.test(said)) {
         return no(`the help does not name the table limit${limit ? ` of ${limit}` : ''} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
       }
@@ -163,8 +177,8 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
         return no('the start gives away the bot\'s move or its salt before the player has moved')
       }
       const said = text?.text ?? ''
-      const named = /Your stake is what your move message pays me, up to ([0-9.]+ MON)/.exec(said)?.[1]
-      const limit = expected.rpsMaxWagerWei === undefined ? named : formatMon(expected.rpsMaxWagerWei)
+      const named = namedAfter(said, 'Your stake is what your move message pays me, up to')
+      const limit = expected.rpsMaxWagerWei === undefined ? named : amount(expected.rpsMaxWagerWei)
       if (!named || named !== limit) {
         return no(`the help does not name the table limit${limit ? ` of ${limit}` : ''} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
       }
@@ -347,14 +361,15 @@ export async function runSmokeChecks(
   // A bot the launcher reported as not started or not funded fails the run by name.
   for (const problem of handle.botProblems) checks.push({ name: 'bots', ok: false, detail: problem })
 
-  const expected: ReplyExpectations = {
+  const expectedOf = (user: RealWallet): ReplyExpectations => ({
+    amounts: chainAmounts(user.chain),
     qwenMode: config.qwenMode,
     raffleEntryPriceWei: config.botProcess.env.RAFFLE_BOT_ENTRY_PRICE_WEI,
     raffleMaxEntries: Number(config.botProcess.env.RAFFLE_BOT_MAX_ENTRIES),
     blackjackMinWagerWei: config.botProcess.env.BLACKJACK_BOT_MIN_WAGER_WEI
       ? BigInt(config.botProcess.env.BLACKJACK_BOT_MIN_WAGER_WEI)
       : undefined,
-  }
+  })
   const stampValueWei = BigInt(config.minStampWei) * 10n
   let stack: RealStack | undefined
   try {
@@ -400,7 +415,7 @@ export async function runSmokeChecks(
       try {
         await user.receive(message => {
           if (message.senderAddress.raw.toLowerCase() !== handle.addresses[bot].toLowerCase()) return false
-          last = classifyReply(bot, message, expected)
+          last = classifyReply(bot, message, expectedOf(user))
           return last.ok
         }, options.timeoutMs)
       } catch {
@@ -411,6 +426,7 @@ export async function runSmokeChecks(
 
     if (config.faucetAmountWei) {
       const wanted = BigInt(config.faucetAmountWei)
+      const amount = chainAmounts(user.chain).formatAmount
       const deadline = Date.now() + options.timeoutMs
       let balance = 0n
       do {
@@ -423,10 +439,10 @@ export async function runSmokeChecks(
               name: 'faucet',
               ok: true,
               detail: user.reused
-                ? `the test profile ${user.address} holds ${formatEther(balance)} MON on chain from the faucet's grant on an earlier run (one grant per profile: this run did not exercise the faucet)`
-                : `the new profile ${user.address} holds ${formatEther(balance)} MON on chain`,
+                ? `the test profile ${user.address} holds ${amount(balance)} on chain from the faucet's grant on an earlier run (one grant per profile: this run did not exercise the faucet)`
+                : `the new profile ${user.address} holds ${amount(balance)} on chain`,
             }
-          : { name: 'faucet', ok: false, detail: `the profile ${user.address} holds ${formatEther(balance)} MON on chain, the faucet should have sent ${formatEther(wanted)}` },
+          : { name: 'faucet', ok: false, detail: `the profile ${user.address} holds ${amount(balance)} on chain, the faucet should have sent ${amount(wanted)}` },
       )
     }
     checks.push(await checkCors(handle))

@@ -2022,7 +2022,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
   };
   const name = config.name ?? (isTestnet ? "Monad Testnet" : "Monad");
-  const unit = config.unit ?? (isTestnet ? "MONT" : "MON");
+  // The display unit is a fact of the network: it comes from the chain registry, by canonical
+  // identifier. The Monad names after it are only for an identifier the registry does not list.
+  const unit =
+    config.unit ??
+    getChainRegistryEntry(chainIdentifier)?.unit ??
+    (isTestnet ? "MONT" : "MON");
   const network = isTestnet ? "testnet" : "mainnet";
 
   return {

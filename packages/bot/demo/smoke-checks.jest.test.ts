@@ -6,6 +6,7 @@ import { MessageItem } from '@frank/cashweb/types/messages'
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
 import { BlackjackDealerBot } from '../src/bots/blackjack-bot'
 import { harness } from '../src/bots/bot-harness.testutil'
+import { amountsOf } from '../src/bots/chain-amounts.testutil'
 import { RpsBot } from '../src/bots/rps-bot'
 import { SatoshiDiceBot } from '../src/bots/satoshi-dice-bot'
 import { overTheWire } from '../src/bots/wire.testutil'
@@ -41,7 +42,7 @@ function altered(reply: BotReply, type: string, change: (item: Record<string, un
   })
   return { ...reply, items }
 }
-const STUB: ReplyExpectations = { qwenMode: 'stub', raffleEntryPriceWei: '20000000000000000', raffleMaxEntries: 5 }
+const STUB: ReplyExpectations = { amounts: amountsOf('monad-testnet'), qwenMode: 'stub', raffleEntryPriceWei: '20000000000000000', raffleMaxEntries: 5 }
 const LIVE: ReplyExpectations = { ...STUB, qwenMode: 'live' }
 
 describe('classifyReply: each bot is judged on what it said', () => {
@@ -108,8 +109,8 @@ describe('classifyReply: each bot is judged on what it said', () => {
     expect(classifyReply('blackjack', reply, STUB)).toEqual({
       name: 'blackjack',
       ok: true,
-      // The harness dealer holds 1 MON: 0.02 kept back, a quarter of the rest covered.
-      detail: `a free dealer challenge for game ${challenge.gameId.slice(0, 8)}, seed committed, bets from 0.01 MON to 0.245 MON`,
+      // The harness dealer holds 1 MONT: 0.02 kept back, a quarter of the rest covered.
+      detail: `a free dealer challenge for game ${challenge.gameId.slice(0, 8)}, seed committed, bets from 0.01 MONT to 0.245 MONT`,
     })
   })
 
@@ -117,19 +118,19 @@ describe('classifyReply: each bot is judged on what it said', () => {
     const reply = await realReply(new BlackjackDealerBot(), 'deal me in')
     const fails = (changed: BotReply, why: string, expected: ReplyExpectations = STUB) =>
       expect(classifyReply('blackjack', changed, expected)).toMatchObject({ ok: false, detail: expect.stringContaining(why) })
-    fails(text('Blackjack: bet between 0.01 MON and 0.245 MON.'), 'expected a blackjack-hand challenge, got text')
+    fails(text('Blackjack: bet between 0.01 MONT and 0.245 MONT.'), 'expected a blackjack-hand challenge, got text')
     fails(altered(reply, 'blackjack-hand', i => (i.action = 'accept')), 'expected a blackjack-hand challenge, got blackjack-hand:accept,text')
     fails(altered(reply, 'blackjack-hand', i => delete i.gameId), 'no game ID')
     fails(altered(reply, 'blackjack-hand', i => (i.gameId = 'r1')), 'no game ID')
     fails(altered(reply, 'blackjack-hand', i => (i.role = 'player')), 'sent as the player')
     fails(altered(reply, 'blackjack-hand', i => delete i.commitment), 'no commitment')
-    fails(altered(reply, 'blackjack-hand', i => (i.maxBetWei = '1')), 'below the table minimum of 0.01 MON')
+    fails(altered(reply, 'blackjack-hand', i => (i.maxBetWei = '1')), 'below the table minimum of 0.01 MONT')
     fails({ ...reply, items: [reply.items[0]] }, 'does not name the table')
     fails(altered(reply, 'text', i => (i.text = 'Here is a fresh blackjack challenge!')), 'does not name the table')
     // The demo's configured minimum is the one the dealer must name.
-    fails(reply, 'does not name the table (bet between 0.05 MON and 0.245 MON)', { ...STUB, blackjackMinWagerWei: 50_000_000_000_000_000n })
+    fails(reply, 'does not name the table (bet between 0.05 MONT and 0.245 MONT)', { ...STUB, blackjackMinWagerWei: 50_000_000_000_000_000n })
     // Offering a hand costs the dealer nothing and pays the player nothing.
-    fails({ ...reply, stampValueWei: 10_000_000_000_000_000n }, 'the message paid 0.01 MON')
+    fails({ ...reply, stampValueWei: 10_000_000_000_000_000n }, 'the message paid 0.01 MONT')
   })
 
   it('blackjack: a dealer run with the demo\'s configured minimum passes against that minimum', async () => {
@@ -138,8 +139,8 @@ describe('classifyReply: each bot is judged on what it said', () => {
     expect(classifyReply('blackjack', reply, { ...STUB, blackjackMinWagerWei: minWagerWei }).ok).toBe(true)
   })
 
-  // The table's limit is what the bank has available: the test bank holds 1 MON, keeps 0.02 for
-  // its fees and owes nothing, so a roll pays up to 0.98 MON and a match is played for up to half.
+  // The table's limit is what the bank has available: the test bank holds 1 MONT, keeps 0.02 for
+  // its fees and owes nothing, so a roll pays up to 0.98 MONT and a match is played for up to half.
   it('dice: the real bot\'s answer to "help" passes, as a free table with its roll committed and the limit named', async () => {
     const reply = await realReply(new SatoshiDiceBot(), 'help')
     expect(reply.items.map(i => i.type)).toEqual(['dice', 'text'])
@@ -147,7 +148,7 @@ describe('classifyReply: each bot is judged on what it said', () => {
     expect(classifyReply('dice', reply, STUB)).toEqual({
       name: 'dice',
       ok: true,
-      detail: `a free table for roll ${table.rollId.slice(0, 8)}, secret committed, paying up to 0.98 MON a roll`,
+      detail: `a free table for roll ${table.rollId.slice(0, 8)}, secret committed, paying up to 0.98 MONT a roll`,
     })
   })
 
@@ -164,7 +165,11 @@ describe('classifyReply: each bot is judged on what it said', () => {
     const secret = (JSON.parse(h.data.get(`roll:${rollId}`)!) as { secret: string }).secret
     fails(altered(reply, 'dice', i => (i.serverSecret = secret)), 'gives away the secret')
     fails({ ...reply, items: [reply.items[0]] }, 'does not name the table limit and how a stake is paid')
-    fails(reply, 'does not name the table limit of 0.5 MON', { ...STUB, diceMaxPayoutWei: 500_000_000_000_000_000n })
+    fails(reply, 'does not name the table limit of 0.5 MONT', { ...STUB, diceMaxPayoutWei: 500_000_000_000_000_000n })
+    // A bot that writes another network's unit is not naming this network's table.
+    const mainnet = await realReply(new SatoshiDiceBot(), 'help', harness(new Map(), 'monad-mainnet'))
+    expect((mainnet.items[1] as { text: string }).text).toContain('The most one roll pays is 0.98 MON.')
+    fails(mainnet, 'does not name the table limit and how a stake is paid')
     fails({ ...reply, stampValueWei: 1n }, 'an offer to play carries no money')
   })
 
@@ -175,7 +180,7 @@ describe('classifyReply: each bot is judged on what it said', () => {
     expect(classifyReply('rps', reply, STUB)).toEqual({
       name: 'rps',
       ok: true,
-      detail: `a free start of match ${start.matchId.slice(0, 8)}, move committed, stakes up to 0.49 MON`,
+      detail: `a free start of match ${start.matchId.slice(0, 8)}, move committed, stakes up to 0.49 MONT`,
     })
   })
 
@@ -190,7 +195,7 @@ describe('classifyReply: each bot is judged on what it said', () => {
     fails(altered(reply, 'rps', i => (i.botMove = 'rock')), "gives away the bot's move")
     fails(altered(reply, 'rps', i => (i.secretSalt = 'ab'.repeat(16))), "gives away the bot's move")
     fails({ ...reply, items: [reply.items[0]] }, 'does not name the table limit and how a stake is paid')
-    fails(reply, 'does not name the table limit of 0.2 MON', { ...STUB, rpsMaxWagerWei: 200_000_000_000_000_000n })
+    fails(reply, 'does not name the table limit of 0.2 MONT', { ...STUB, rpsMaxWagerWei: 200_000_000_000_000_000n })
     fails({ ...reply, stampValueWei: 1n }, 'an offer to play carries no money')
   })
 

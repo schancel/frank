@@ -2,6 +2,7 @@
 // tests describe its pre-rebuild behaviour (no commitment, no buy-in, a malformed emit from the
 // card); they keep it compiling and are not a statement that it is fair or playable.
 import { LiarsDiceBot } from './liars-dice-bot'
+import { amountsOf } from './chain-amounts.testutil'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 
 // No deployment record: the registry has no GenericHTLC address for any network.
@@ -14,6 +15,7 @@ describe("Liar's Dice Bot Table Coordinator", () => {
   beforeEach(() => {
     bot = new LiarsDiceBot()
     mockBotCtx = {
+      ...amountsOf('monad-testnet'),
       sendMessage: jest.fn(),
       state: {
         get: jest.fn(),

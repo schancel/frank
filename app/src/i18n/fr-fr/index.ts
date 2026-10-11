@@ -517,11 +517,11 @@ export default {
     avuRatesRate: 'Calcul physique (AVU / kWh)',
     tabBalance: 'Solde & Transfert',
     priceHistoryTitle: 'Historique du prix de {symbol}',
-    priceHistoryAxisHash: 'AVU_hash par {symbol}',
-    priceHistoryAxisSpot: 'AVU_spot par {symbol}',
+    priceHistoryAxisHash: 'AVU (Hash) par {symbol}',
+    priceHistoryAxisSpot: 'AVU (Spot) par {symbol}',
     priceHistoryAxisGold: 'Onces troy d’or par {symbol}',
-    priceHistoryHash: 'AVU_hash',
-    priceHistorySpot: 'AVU_spot',
+    priceHistoryHash: 'AVU (Hash)',
+    priceHistorySpot: 'AVU (Spot)',
     priceHistoryGold: 'Or',
     priceHistoryPoints: '{count} observations de prix depuis le {first}.',
     priceHistorySinglePoint:
@@ -533,8 +533,8 @@ export default {
       'Aucune évaluation en {benchmark} n’est disponible pour cette monnaie sur cette période.',
     avuReferenceTitle: 'Valeur de l’AVU en dollars américains',
     avuReferenceAxis: 'USD par AVU',
-    avuReferenceHash: '1 AVU_hash',
-    avuReferenceSpot: '1 AVU_spot',
+    avuReferenceHash: '1 AVU (Hash)',
+    avuReferenceSpot: '1 AVU (Spot)',
     avuReferenceNoHistory:
       'Aucun historique de référence de l’AVU n’est disponible sur cette période.',
     avuReferenceSinglePoint:
@@ -542,12 +542,17 @@ export default {
     avuReferencePointCount: '{count} observations',
     avuReferenceMethod: 'Comment l’AVU est calculé',
     avuReferenceMethodText:
-      'AVU_hash évalue l’énergie à travers le minage par preuve de travail ; AVU_spot utilise les prix de gros de l’électricité. Leur valeur en dollars est l’inverse de leur énergie par dollar. Les données manquantes restent indisponibles.',
+      'AVU (Hash) évalue l’énergie à travers le minage par preuve de travail ; AVU (Spot) utilise les prix de gros de l’électricité. Leur valeur en dollars est l’inverse de leur énergie par dollar. Les données manquantes restent indisponibles.',
     aboutAvu: 'À propos de l’AVU',
     tabHistory: 'Historique',
     historyEmpty: 'Aucune activité enregistrée sur ce réseau.',
     historyPending: 'En attente ou non résolu',
     historyUndated: 'Date indisponible',
+    backToWallet: 'Retour au portefeuille',
+    avuReferenceMeasurement:
+      'Un AVU représente un kilowattheure. Ces courbes montrent sa valeur en dollars américains selon les mesures du minage et des prix de gros de l’électricité.',
+    avuReferenceSampling:
+      'La mesure du minage utilise les prix des monnaies, les récompenses de bloc, la difficulté, l’efficacité du matériel et les pondérations par capitalisation. Les données historiques incluent des moyennes mensuelles et des changements datés ; chaque valeur reste valable jusqu’à l’observation suivante. Les variations peuvent provenir de chacun de ces paramètres, et pas seulement de la difficulté.',
     tabParity: 'Historique des prix',
     tabSwap: 'Échange instantané',
     swapUnavailable: 'Échange instantané indisponible',

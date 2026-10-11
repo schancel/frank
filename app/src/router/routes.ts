@@ -46,6 +46,7 @@ export function createRoutes(): RouteRecordRaw[] {
         { path: 'changelog', component: () => import('pages/Changelog.vue') },
         { path: 'docs', component: () => import('pages/DocsView.vue') },
         { path: 'about', component: () => import('pages/About.vue') },
+        { path: 'avu', component: () => import('pages/AvuDetails.vue') },
         {
           path: 'chat',
           component: () => import('layouts/ChatLayout.vue'),

@@ -272,7 +272,7 @@ describe('Wallet detail page (#570)', () => {
     )
     expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe('(MONT)')
     await wrapper.get('[data-testid="wallet-about-avu"]').trigger('click')
-    expect(wrapper.vm.showAvuDialog).toBe(true)
+    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('1 MON')
     expect(region.attributes()).toMatchObject({
@@ -739,16 +739,22 @@ describe('Wallet detail page (#570)', () => {
     expect(unitRateBadge.exists()).toBe(true)
     expect(unitRateBadge.text()).toContain('1 MON ≈ 41.67 AVU')
 
-    // Click opens AvuExplainerDialog
+    // Click navigates to the full AVU details page
     await unitRateBadge.trigger('click')
-    expect(wrapper.vm.showAvuDialog).toBe(true)
+    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
 
     // AVU balance line becomes visible when balance is loaded
     balance.loaded.value = true
     await nextTick()
-    expect(wrapper.find('[data-testid="wallet-balance-avu"]').exists()).toBe(
-      true,
-    )
+    const balanceBadge = wrapper.get('[data-testid="wallet-balance-avu"]')
+    expect(balanceBadge.attributes('role')).toBe('button')
+    expect(balanceBadge.attributes('tabindex')).toBe('0')
+    jest.mocked(openPage).mockClear()
+    await balanceBadge.trigger('keydown', { key: 'Enter' })
+    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
+    jest.mocked(openPage).mockClear()
+    await unitRateBadge.trigger('keydown', { key: ' ' })
+    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/avu')
     wrapper.unmount()
   })
 

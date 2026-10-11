@@ -11,6 +11,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import enUS from 'src/i18n/en-us'
 import { useContactStore } from 'src/stores/contacts'
 import ContactList from './ContactList.vue'
+import ContactItem from './ContactItem.vue'
 
 jest.mock('../../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -103,6 +104,23 @@ describe('first-run Contacts with curated bots', () => {
       .map(label => label.text())
     expect(names).toEqual(BOTS.map(bot => bot.name))
     expect(wrapper.text()).not.toContain('Loading...')
+  })
+
+  it('moves hover with the pointer without selecting or highlighting the first contact', async () => {
+    const wrapper = mountList({
+      [BOTS[0].address]: { profile: { name: BOTS[0].name } },
+      [BOTS[1].address]: { profile: { name: BOTS[1].name } },
+    })
+    const rows = wrapper.findAllComponents(ContactItem)
+    expect(rows.every(row => !row.classes().includes('active'))).toBe(true)
+    await rows[1].trigger('mouseenter')
+    expect(rows[1].classes()).toContain('active')
+    expect(rows[0].classes()).not.toContain('active')
+    await rows[1].trigger('mouseleave')
+    expect(rows.every(row => !row.classes().includes('active'))).toBe(true)
+    const state = wrapper.vm as unknown as { activeAddress: string }
+    expect(state.activeAddress).toBe(BOTS[0].address)
+    wrapper.unmount()
   })
 
   it('after profile refresh a bot without a display name shows a short address, not Loading...', async () => {

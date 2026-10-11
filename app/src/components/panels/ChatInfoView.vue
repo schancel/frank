@@ -2,17 +2,9 @@
   <q-page-container>
     <q-page class="chat-page-background">
       <div
-        class="column items-center q-py-lg q-px-md"
+        class="column items-center q-py-sm q-px-md"
         data-test="contact-profile-card"
       >
-        <q-avatar
-          size="96px"
-          rounded
-          :style="contactColorStyle"
-          data-test="info-contact-avatar"
-        >
-          <img :src="profileAvatar(contact?.profile?.avatar, address)" />
-        </q-avatar>
         <div
           class="text-h6 q-mt-md"
           :style="contactNameColorStyle"
@@ -132,14 +124,15 @@
         <q-item
           clickable
           v-ripple
-          :disable="!conversationId"
-          @click="confirmDeleteOpen = !!conversationId"
+          :disable="!address"
+          data-test="info-delete-contact"
+          @click="confirmDeleteOpen = !!address"
         >
           <q-item-section avatar>
             <q-icon name="delete" color="negative" />
           </q-item-section>
           <q-item-section class="text-negative">
-            {{ $t('chatRightDrawer.deleteChat') }}
+            {{ $t('chatRightDrawer.deleteContactAndConversations') }}
           </q-item-section>
         </q-item>
       </q-list>
@@ -150,11 +143,13 @@
           :name="contact?.profile?.name ?? ''"
         />
       </q-dialog>
-      <q-dialog v-model="confirmDeleteOpen">
-        <delete-chat-dialog
-          :address="conversationId"
+      <q-dialog v-model="confirmDeleteOpen" persistent>
+        <delete-contact-dialog
+          v-if="confirmDeleteOpen"
+          :address="address"
           :name="contact?.profile?.name ?? ''"
-          @deleted="$emit('deleted')"
+          @cancel="confirmDeleteOpen = false"
+          @deleted="contactDeleted"
         />
       </q-dialog>
     </q-page>
@@ -166,7 +161,7 @@ import { defineComponent } from 'vue'
 import { copyToClipboard } from 'quasar'
 
 import ClearHistoryDialog from '../dialogs/ClearHistoryDialog.vue'
-import DeleteChatDialog from '../dialogs/DeleteChatDialog.vue'
+import DeleteContactDialog from '../dialogs/DeleteContactDialog.vue'
 import { useContactStore } from 'src/stores/contacts'
 import { activeChain } from '@frank/wallet/chain'
 import { pubKeyToColor } from 'src/utils/formatting'
@@ -185,7 +180,7 @@ export default defineComponent({
   name: 'ChatInfoView',
   components: {
     ClearHistoryDialog,
-    DeleteChatDialog,
+    DeleteContactDialog,
     UsernameHandle,
   },
   emits: ['deleted', 'chat'],
@@ -235,11 +230,6 @@ export default defineComponent({
     },
     // Same spoofing/impersonation cue as ChatLayout.vue's own header -- see that file's header
     // comment on `contactColorStyle` for the full "why."
-    contactColorStyle() {
-      const pubKey = this.contact?.profile?.pubKey
-      if (!pubKey) return {}
-      return { boxShadow: `0 0 0 3px ${pubKeyToColor(pubKey.toBuffer())}` }
-    },
     contactNameColorStyle() {
       const pubKey = this.contact?.profile?.pubKey
       if (!pubKey) return {}
@@ -247,6 +237,10 @@ export default defineComponent({
     },
   },
   methods: {
+    contactDeleted() {
+      this.confirmDeleteOpen = false
+      this.$emit('deleted')
+    },
     copyAddress() {
       copyToClipboard(this.displayAddress)
         .then(() => addressCopiedNotify())

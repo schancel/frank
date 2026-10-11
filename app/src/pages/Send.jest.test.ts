@@ -12,6 +12,7 @@ import {
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
 } from '@frank/wallet/chain'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { createSolanaChain } from '@frank/wallet/chain/solana-chain'
 import type { NativeAssetChain } from '@frank/wallet/chain'
 import { sentTransactionNotify, errorNotify } from 'src/utils/notifications'
@@ -181,6 +182,54 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     mockAssertCurrent.mockReset().mockResolvedValue(undefined)
   })
 
+  it.each(['monad-regtest', 'monad-testnet'])(
+    'keeps %s network, amount and fee metadata consistent before signing',
+    async id => {
+      const metadata = getChainRegistryEntry(id)!
+      mockRoute.query = { chainIdentifier: id }
+      const estimate = {
+        totalFee: 4_242_000_000_000_000n,
+        deliveryFee: 4_242_000_000_000_000n,
+        inputCount: 1,
+      }
+      mockSelectedChain = {
+        ...activeChain,
+        chainIdentifier: id,
+        unit: metadata.unit,
+        nativeTransfers: {
+          ...activeChain.nativeTransfers,
+          estimateLegacyFee: jest.fn().mockResolvedValue(estimate),
+        },
+      }
+      const wrapper = mountSend()
+      await flushPromises()
+      expect(
+        wrapper
+          .get('[data-test="send-amount-input"]')
+          .attributes('placeholder'),
+      ).toContain(metadata.unit)
+      await wrapper
+        .get('[data-test="send-address-input"]')
+        .setValue('0x000000000000000000000000000000000000dead')
+      await wrapper.get('[data-test="send-amount-input"]').setValue('0.01')
+      await wrapper.get('[data-test="send-review-button"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[data-test="review-network"]').text()).toBe(
+        metadata.name,
+      )
+      expect(wrapper.get('[data-test="review-amount"]').text()).toBe(
+        `0.01 ${metadata.unit}`,
+      )
+      expect(wrapper.get('[data-test="review-fee"]').text()).toBe(
+        `0.004242 ${metadata.unit}`,
+      )
+      expect(wrapper.get('[data-test="review-total"]').text()).toContain(
+        `0.01 ${metadata.unit}`,
+      )
+      expect(mockSend).not.toHaveBeenCalled()
+    },
+  )
+
   it('initial form action performs no signing or broadcast and opens review state', async () => {
     const wrapper = mountSend()
 
@@ -263,7 +312,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       messages: frFR,
       label: 'Montant + frais de réseau',
       unavailable: 'Indisponible',
-      network: 'Testnet Monad',
+      network: getChainRegistryEntry('monad-testnet')!.name,
       total: '0.01 MON (+ frais de réseau)',
     },
   ])(
@@ -546,7 +595,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       'Vérifier le transfert',
     )
     expect(reviewCard.get('[data-test="review-network"]').text()).toBe(
-      'Testnet Monad',
+      getChainRegistryEntry('monad-testnet')!.name,
     )
     expect(reviewCard.get('[data-test="review-fee"]').text()).toBe(
       'Indisponible',
@@ -797,7 +846,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         const outcome = wrapper.get('[data-test="native-operation-outcome"]')
         expect(outcome.text()).toContain(
           t(messages, 'nativeOperation.included', {
-            network: messages.setup.networkTitle,
+            network: getChainRegistryEntry(activeChain.chainIdentifier)!.name,
           }),
         )
         expect(outcome.text()).toContain(fixture.hash)
@@ -1041,12 +1090,12 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
           const payment = state === 'included-revert' ? 'reverted' : state
           expect(outcome.text()).toContain(
             t(messages, `nativeOperation.${payment}`, {
-              network: messages.setup.networkTitle,
+              network: getChainRegistryEntry(activeChain.chainIdentifier)!.name,
             }),
           )
           expect(outcome.text()).not.toContain(
             t(messages, 'nativeOperation.included', {
-              network: messages.setup.networkTitle,
+              network: getChainRegistryEntry(activeChain.chainIdentifier)!.name,
             }),
           )
           const coverage =

@@ -22,8 +22,10 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 
+const mockDeleteContact = jest.fn(async (..._args: unknown[]) => undefined)
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
+    deleteContact: (...args: unknown[]) => mockDeleteContact(...args),
     setNotify: jest.fn(),
     getNotify: () => true,
   }),
@@ -101,6 +103,9 @@ describe('ChatInfoView contact profile display and actions', () => {
         components: {
           QPageContainer: passthrough,
           QPage: passthrough,
+          QCard: passthrough,
+          QCardSection: passthrough,
+          QCardActions: passthrough,
           QAvatar: passthrough,
           QBtn: QBtnStub,
           QSeparator: passthrough,
@@ -127,15 +132,41 @@ describe('ChatInfoView contact profile display and actions', () => {
     })
   }
 
-  it('targets the selected thread for clearing and deletion while displaying the peer address', () => {
+  it('targets the selected thread for clearing while displaying the peer address', () => {
     const id = '11111111-1111-4111-8111-111111111111'
     const wrapper = mountView({ conversationId: id })
     const clear = wrapper.findComponent({ name: 'ClearHistoryDialog' })
-    const remove = wrapper.findComponent({ name: 'DeleteChatDialog' })
     expect(clear.attributes('address')).toBe(id)
-    expect(remove.attributes('address')).toBe(id)
     expect(wrapper.get('[data-test="info-contact-address"]').text()).toContain(
       'formatted-0x1111',
+    )
+  })
+
+  it('deletes the contact and conversations after confirmation even without a selected thread', async () => {
+    mockDeleteContact.mockClear()
+    const wrapper = mountView()
+    await wrapper.get('[data-test="info-delete-contact"]').trigger('click')
+    expect(wrapper.text()).toContain(
+      'chatRightDrawer.deleteContactAndConversations',
+    )
+    expect(mockDeleteContact).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="delete-contact-confirm"]').trigger('click')
+    await flushPromises()
+    expect(mockDeleteContact).toHaveBeenCalledWith(
+      '0x1111111111111111111111111111111111111111',
+    )
+    expect(wrapper.emitted('deleted')).toHaveLength(1)
+  })
+
+  it('cancels contact deletion and leaves the profile unchanged', async () => {
+    mockDeleteContact.mockClear()
+    const wrapper = mountView()
+    await wrapper.get('[data-test="info-delete-contact"]').trigger('click')
+    await wrapper.get('[data-test="delete-contact-cancel"]').trigger('click')
+    expect(mockDeleteContact).not.toHaveBeenCalled()
+    expect(wrapper.emitted('deleted')).toBeUndefined()
+    expect(wrapper.find('[data-test="contact-profile-card"]').exists()).toBe(
+      true,
     )
   })
 
@@ -149,10 +180,8 @@ describe('ChatInfoView contact profile display and actions', () => {
     )
 
     // Avatar
-    const avatar = wrapper.find('[data-test="info-contact-avatar"]')
-    expect(avatar.exists()).toBe(true)
-    expect(avatar.find('img').attributes('src')).toBe(
-      'https://example.com/alice.png',
+    expect(wrapper.find('[data-test="info-contact-avatar"]').exists()).toBe(
+      false,
     )
 
     // Name

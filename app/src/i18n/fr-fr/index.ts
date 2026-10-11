@@ -4,6 +4,24 @@
 import { fr as accountRecovery } from '../account-recovery'
 
 export default {
+  notificationPermission: {
+    title: 'Notifications',
+    default: 'Les notifications du navigateur ne sont pas activées.',
+    granted: 'Les notifications du navigateur sont activées.',
+    denied:
+      'Les notifications sont bloquées. Autorisez-les dans les paramètres du site de votre navigateur, puis revenez dans Frank.',
+    unsupported:
+      'Ce navigateur ne prend pas en charge les notifications de bureau.',
+    enable: 'Activer les notifications',
+    notNow: 'Plus tard',
+    offer: 'Soyez averti de l’arrivée des messages',
+    offerHint:
+      'Activez les notifications maintenant ou plus tard dans Paramètres → Notifications.',
+    contactHint:
+      'La préférence de notification de chaque contact est distincte de cette autorisation du navigateur.',
+    failed:
+      'Impossible d’activer les notifications. Vérifiez les paramètres du site dans votre navigateur.',
+  },
   startupFailure: {
     title: 'Impossible de charger les données enregistrées',
     message:
@@ -333,6 +351,7 @@ export default {
     },
   },
   a11y: {
+    contactActions: 'Options du contact {name}',
     openNavigation: 'Ouvrir le menu de navigation',
     addContact: 'Ajouter un contact',
     addTopic: 'Ajouter un sujet',
@@ -786,6 +805,7 @@ export default {
     viewAction: 'Voir',
   },
   chatRightDrawer: {
+    deleteContactAndConversations: 'Supprimer le contact et les conversations',
     stampPrice: 'Prix du timbre',
     sendLotus: 'Envoyer des Lotus',
     notifications: 'Notifications',
@@ -1378,6 +1398,12 @@ export default {
     clear: 'Effacer',
     message:
       "Êtes-vous sûr de vouloir effacer tout l'historique des discussions avec",
+  },
+  deleteContactDialog: {
+    message: 'Supprimer {name} et toutes les conversations avec ce contact ?',
+    cancel: 'Annuler',
+    delete: 'Supprimer le contact et les conversations',
+    failed: 'La suppression de ce contact a échoué. Réessayez.',
   },
   deleteChatDialog: {
     cancel: 'Annuler',

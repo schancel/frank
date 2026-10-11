@@ -4,6 +4,23 @@
 import { en as accountRecovery } from '../account-recovery'
 
 export default {
+  notificationPermission: {
+    title: 'Notifications',
+    default: 'Browser notifications are not enabled.',
+    granted: 'Browser notifications are enabled.',
+    denied:
+      'Browser notifications are blocked. Allow notifications in your browser’s site settings, then return to Frank.',
+    unsupported: 'This browser does not support desktop notifications.',
+    enable: 'Enable notifications',
+    notNow: 'Not now',
+    offer: 'Get notified when messages arrive',
+    offerHint:
+      'Enable browser notifications now, or later in Settings → Notifications.',
+    contactHint:
+      'Each contact’s notification preference is separate from this browser permission.',
+    failed:
+      'Could not enable notifications. Please check your browser’s site settings.',
+  },
   startupFailure: {
     title: 'Saved data could not be loaded',
     message: 'Startup has stopped. Your saved data has not been reset.',
@@ -324,6 +341,7 @@ export default {
     },
   },
   a11y: {
+    contactActions: 'Contact options for {name}',
     openNavigation: 'Open navigation menu',
     addContact: 'Add contact',
     addTopic: 'Add topic',
@@ -768,6 +786,7 @@ export default {
     viewAction: 'View',
   },
   chatRightDrawer: {
+    deleteContactAndConversations: 'Delete Contact and Conversations',
     stampPrice: 'Stamp Price',
     sendLotus: 'Send Lotus',
     notifications: 'Notifications',
@@ -1343,6 +1362,12 @@ export default {
     cancel: 'Cancel',
     clear: 'Clear',
     message: 'Are you sure you want to clear all chat history with',
+  },
+  deleteContactDialog: {
+    message: 'Delete {name} and all conversations with this contact?',
+    cancel: 'Cancel',
+    delete: 'Delete Contact and Conversations',
+    failed: 'Could not finish deleting this contact. Please try again.',
   },
   deleteChatDialog: {
     cancel: 'Cancel',

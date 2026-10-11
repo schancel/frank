@@ -58,15 +58,12 @@
           </p>
 
           <!-- Primary Call to Actions -->
-          <div
-            class="row q-gutter-md q-mt-md justify-center full-width"
-            style="max-width: 32rem"
-          >
+          <div class="welcome-actions q-mt-md">
             <q-btn
               color="primary"
               unelevated
-              size="lg"
-              class="col-12 col-sm full-width text-weight-bold"
+              no-caps
+              class="welcome-action"
               icon="login"
               :label="$t('welcome.createAccount')"
               to="/setup"
@@ -75,8 +72,8 @@
             <q-btn
               color="primary"
               outline
-              size="lg"
-              class="col-12 col-sm full-width text-weight-bold"
+              no-caps
+              class="welcome-action"
               icon="dynamic_feed"
               :label="$t('welcome.browseForum')"
               to="/forum"
@@ -90,6 +87,7 @@
               dense
               no-caps
               color="grey-8"
+              class="welcome-docs"
               icon="menu_book"
               :label="$t('welcome.readDocs')"
               to="/docs"
@@ -229,6 +227,34 @@ export default defineComponent({
 .welcome-intro-text {
   max-width: 42rem;
   line-height: 1.6;
+}
+.welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  max-width: 100%;
+}
+.welcome-action,
+.welcome-docs {
+  max-width: 100%;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.4;
+  :deep(.q-btn__content) {
+    flex-wrap: nowrap;
+  }
+  :deep(.q-icon) {
+    flex-shrink: 0;
+    font-size: 20px;
+  }
+}
+.welcome-action {
+  min-height: 40px;
+  padding: 8px 14px;
+}
+.welcome-docs {
+  min-height: 32px;
 }
 .feature-card {
   transition: transform 0.15s ease, box-shadow 0.15s ease;

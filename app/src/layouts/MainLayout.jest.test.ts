@@ -62,7 +62,9 @@ jest.mock('src/stores/my-profile', () => ({
 jest.mock('@frank/wallet/chain', () => ({
   onActiveChainChange: jest.fn(() => () => undefined),
   activeChain: {
-    unit: 'MON',
+    chainIdentifier: 'monad-testnet',
+    isTestnet: true,
+    unit: 'MONT',
     toDisplayAmount: (amount: bigint) => amount.toString(),
     nativeTransfers: { getBalance: jest.fn(async () => 0n) },
   },

@@ -3,6 +3,7 @@ import { relayHandleOf } from '../utils/contact-username'
 import { defineStore } from 'pinia'
 
 import { useChatStore } from './chats'
+import { accountSession } from '../accounts/session'
 
 import {
   defaultUpdateInterval,
@@ -18,7 +19,7 @@ import {
   safeToChainDisplayAddress,
   toChainDisplayAddress,
 } from '../utils/chain-address'
-import { isOwnAddress } from '../utils/own-address'
+import { isOwnAddress, sameCanonicalAddress } from '../utils/own-address'
 import {
   isProfilePubKey,
   profilePubKeyFromBytes,
@@ -419,8 +420,40 @@ export const useContactStore = defineStore('contacts', {
     async deleteContact(address: string) {
       const chats = useChatStore()
       const apiAddress = safeChainDisplayAddress(address)
+      const revision = accountSession.state.revision
+      const account = accountSession.state.account
+      const contacts = this.contacts
+      const assertCurrent = () => {
+        if (
+          accountSession.state.revision !== revision ||
+          accountSession.state.account !== account ||
+          this.contacts !== contacts
+        )
+          throw new Error('Account changed during contact deletion')
+      }
 
-      await chats.deleteChat(address)
+      // The contact is one peer; independent direct/email threads keep their identities until
+      // the user explicitly deletes the contact. Groups containing this peer are not theirs.
+      const conversationIds = chats
+        .getConversationsForAddress(address)
+        .filter(
+          conversation =>
+            (conversation.kind === 'direct' || conversation.kind === 'email') &&
+            sameCanonicalAddress(conversation.address, address) &&
+            new Set(
+              conversation.participants.map(
+                participant =>
+                  safeChainDisplayAddress(participant) || participant,
+              ),
+            ).size <= 2,
+        )
+        .map(conversation => conversation.id)
+      for (const id of conversationIds) {
+        assertCurrent()
+        await chats.deleteConversation(id)
+        assertCurrent()
+      }
+      assertCurrent()
       if (apiAddress && apiAddress in this.contacts) {
         delete this.contacts[apiAddress]
       }

@@ -151,7 +151,7 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
     )
   })
 
-  it('renders contact profile card with avatar, name, username, address, bio, and links in ChatInfoView', async () => {
+  it('renders compact contact profile details without duplicating the toolbar avatar', async () => {
     const wrapper = mount(ChatInfoView, {
       props: {
         address: '0x1111111111111111111111111111111111111111',
@@ -206,7 +206,7 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
       true,
     )
     expect(wrapper.find('[data-test="info-contact-avatar"]').exists()).toBe(
-      true,
+      false,
     )
     expect(wrapper.find('[data-test="info-contact-name"]').text()).toBe(
       'Alice Wonderland',
@@ -270,6 +270,10 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
     })
 
     await flushPromises()
+    expect(wrapper.get('[data-testid="info-header-name"]').text()).toBe('Alice')
+    expect(
+      wrapper.get('[data-testid="info-header-avatar"] img').attributes('src'),
+    ).toBe('alice.png')
     expect(wrapper.find('[data-testid="send-msg-btn"]').exists()).toBe(true)
     expect(
       wrapper.find('[data-testid="chat-conversation-view"]').exists(),

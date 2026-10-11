@@ -1,9 +1,4 @@
 <template>
-  <q-btn
-    v-show="false"
-    @click="promptNotificationPermission"
-    ref="buttonNotification"
-  />
   <q-dialog v-model="contactBookOpen">
     <contact-book-dialog :contact-click="contactClicked" />
   </q-dialog>
@@ -42,8 +37,8 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, watch } from 'vue'
-import { QBtn } from 'quasar'
+import { computed, defineComponent, ref, watch } from 'vue'
+import { useNotificationPermissionOffer } from 'src/composables/useNotificationPermissionOffer'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 
@@ -81,6 +76,12 @@ export default defineComponent({
     const { darkMode, locale, theme } = storeToRefs(appearanceStore)
     const myProfile = useProfileStore()
     const tabCoordinator = useTabCoordinatorStore()
+
+    useNotificationPermissionOffer(
+      computed(
+        () => accountStatus.status === 'ready' && !tabCoordinator.isYielded,
+      ),
+    )
 
     const takeoverHere = async () => {
       await tabCoordinator.requestTakeover()
@@ -166,7 +167,6 @@ export default defineComponent({
       getRelayData: myProfile,
       tabCoordinator,
       takeoverHere,
-      buttonNotification: ref<QBtn | null>(null),
       shortcutKeyListener(e: KeyboardEvent) {
         if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
           contactBookOpen.value = !contactBookOpen.value
@@ -175,34 +175,7 @@ export default defineComponent({
       contactBookOpen,
     }
   },
-  data() {
-    return {
-      notificationPermission:
-        typeof Notification !== 'undefined' ? Notification.permission : null,
-    }
-  },
   methods: {
-    promptNotificationPermission() {
-      if (typeof Notification === 'undefined') {
-        return
-      }
-      try {
-        Notification.requestPermission().then(
-          () => (this.notificationPermission = Notification.permission),
-        )
-      } catch (error) {
-        // Safari doesn't return a promise for requestPermissions and it
-        // throws a TypeError. It takes a callback as the first argument
-        // instead.
-        if (error instanceof TypeError) {
-          Notification.requestPermission(() => {
-            this.notificationPermission = Notification.permission
-          })
-        } else {
-          throw error
-        }
-      }
-    },
     loadCuratedDefaults() {
       fetchCuratedDefaultContacts({
         relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
@@ -241,16 +214,6 @@ export default defineComponent({
       locale: this.locale,
     })
     this.setupConnections()
-  },
-  updated() {
-    // Ask browser for notification permissions after any DOM update
-    switch (this.notificationPermission) {
-      case 'denied':
-      case 'granted':
-        break
-      default:
-        this.buttonNotification?.click()
-    }
   },
   beforeUnmount() {
     document.removeEventListener('keydown', this.shortcutKeyListener)

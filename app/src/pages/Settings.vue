@@ -45,6 +45,12 @@
                   :label="$t('settings.appearance')"
                 />
                 <q-tab
+                  name="notifications"
+                  icon="notifications"
+                  :label="$t('notificationPermission.title')"
+                  data-test="settings-tab-notifications"
+                />
+                <q-tab
                   name="storage"
                   icon="save"
                   :label="$t('persistentStorage.tab')"
@@ -219,6 +225,9 @@
                     />
                   </div>
                 </q-tab-panel>
+                <q-tab-panel name="notifications">
+                  <notification-permission-panel />
+                </q-tab-panel>
                 <q-tab-panel name="storage">
                   <persistent-storage-panel />
                 </q-tab-panel>
@@ -317,6 +326,7 @@ import { useAppearanceStore } from 'src/stores/appearance'
 import { useContactStore } from 'src/stores/contacts'
 import { useSettingsStore } from 'src/stores/settings'
 import { storeToRefs } from 'pinia'
+import NotificationPermissionPanel from 'src/components/settings/NotificationPermissionPanel.vue'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 import { activeChain } from '@frank/wallet/chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
@@ -324,7 +334,7 @@ import { walletSupport } from 'src/utils/wallet-support'
 const msToMinutes = 60000
 
 export default defineComponent({
-  components: { PersistentStoragePanel },
+  components: { PersistentStoragePanel, NotificationPermissionPanel },
   emits: [
     'toggleMyDrawerOpen',
     'toggleContactDrawerOpen',

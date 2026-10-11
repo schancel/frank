@@ -27,6 +27,7 @@ import {
 } from './chats'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 import { useContactStore } from './contacts'
+import { accountSession } from '../accounts/session'
 import { store as messageStorePromise } from '../adapters/level-message-store'
 import { activeChain, ContactPaymentReleasedError } from '@frank/wallet/chain'
 
@@ -64,6 +65,7 @@ const mockUnreachable = (name: string) => async () => {
 }
 jest.mock('../accounts/session', () => ({
   accountSession: {
+    state: { revision: 0, account: null },
     getWallet: async () => ({
       sweepReceivedCoins: mockUnreachable('sweepReceivedCoins'),
       settleContactPayment: mockUnreachable('settleContactPayment'),
@@ -209,6 +211,141 @@ describe('deleting messages leaves tombstones and asks the wallet nothing', () =
         .sort(),
     ).toEqual(['aa', 'bb', 'cc', 'dd'])
     expect(mockWalletCalls).toEqual([])
+  })
+
+  it('deletes every direct/email thread for the contact, excluding groups and other peers, then safely repeats', async () => {
+    const contacts = useContactStore()
+    const independent = chats.createConversation({
+      address: PEER,
+      participants: [OWN, PEER],
+      kind: 'direct',
+      name: 'Other subject',
+    })
+    const email = chats.createEmailConversation({
+      recipientEmail: 'alice@example.com',
+      gatewayAddress: PEER,
+      subject: 'Independent mail',
+    })
+    const group = chats.createConversation({
+      address: PEER,
+      participants: [OWN, PEER, OTHER],
+      kind: 'direct',
+      name: 'Direct thread joined by a third person',
+    })
+    const other = chats.openDirectConversation(OTHER)
+    for (const [thread, digest] of [
+      [independent, 'dd'],
+      [email, 'ee'],
+      [group, 'ff'],
+      [other, 'gg'],
+    ] as const) {
+      const message = received(digest)
+      message.conversationId = thread.id
+      thread.messages.push(message)
+      chats.messages[digest] = message
+    }
+    await contacts.addContact({
+      address: PEER,
+      contact: { profile: { name: 'Alice' } } as never,
+    })
+    await contacts.deleteContact(PEER)
+    for (const thread of [conv, independent, email]) {
+      expect(thread.deletedAt).toBeDefined()
+      expect(thread.messages).toEqual([])
+    }
+    expect(group.messages.map(message => message.payloadDigest)).toEqual(['ff'])
+    expect(other.messages.map(message => message.payloadDigest)).toEqual(['gg'])
+    expect(contacts.isContact(PEER)).toBe(false)
+    expect(
+      tombstones()
+        .map(item => item.payloadDigest)
+        .sort(),
+    ).toEqual(['aa', 'bb', 'cc', 'dd', 'ee'])
+    expect(mockWalletCalls).toEqual([])
+    await contacts.deleteContact(PEER)
+    expect(group.messages).toHaveLength(1)
+    expect(other.messages).toHaveLength(1)
+    expect(mockWalletCalls).toEqual([])
+  })
+
+  it('retains the contact when one thread deletion fails, and retry finishes the remaining tombstones', async () => {
+    const contacts = useContactStore()
+    await contacts.addContact({
+      address: PEER,
+      contact: { profile: { name: 'Alice' } } as never,
+    })
+    const independent = chats.createConversation({
+      address: PEER,
+      participants: [OWN, PEER],
+      kind: 'direct',
+    })
+    const original = chats.deleteConversation.bind(chats)
+    const deletion = jest
+      .spyOn(chats, 'deleteConversation')
+      .mockImplementationOnce(original)
+      .mockRejectedValueOnce(new Error('disk unavailable'))
+    await expect(contacts.deleteContact(PEER)).rejects.toThrow(
+      'disk unavailable',
+    )
+    expect(contacts.isContact(PEER)).toBe(true)
+    expect(conv.deletedAt).toBeDefined()
+    deletion.mockRestore()
+    await contacts.deleteContact(PEER)
+    expect(independent.deletedAt).toBeDefined()
+    expect(contacts.isContact(PEER)).toBe(false)
+    expect(mockWalletCalls).toEqual([])
+  })
+
+  it('refuses a queued account A deletion after replacement with B before the predecessor releases', async () => {
+    let release!: () => void
+    let started!: () => void
+    const admitted = new Promise<void>(resolve => {
+      started = resolve
+    })
+    messageStore.suppressAndDelete.mockImplementationOnce(async () => {
+      started()
+      await new Promise<void>(resolve => {
+        release = resolve
+      })
+    })
+    const predecessor = chats.deleteConversation(conv.id)
+    await admitted
+    const queued = chats.deleteConversation(conv.id)
+    // Observe both rejected promises immediately, before releasing the queue.
+    const outcomes = Promise.allSettled([predecessor, queued])
+    const sessionState = accountSession.state as { revision: number }
+    const originalRevision = sessionState.revision
+    const originalMessages = chats.messages
+    const aId = conv.id
+    const signed = received('signed-b')
+    signed.items = [
+      {
+        type: 'stealth',
+        amount: 5,
+        ephemeralPubKey: '02ab',
+        transactions: ['signed-financial-record-b'],
+      },
+    ] as never
+    const b = { ...conv, messages: [signed], deletedAt: undefined }
+    sessionState.revision++
+    installTestConversationIdSalt(
+      testConversationIdSalt(new Uint8Array(32).fill(0x11)),
+    )
+    chats.conversations = { [aId]: b }
+    chats.messages = { 'signed-b': signed }
+    try {
+      release()
+      const results = await outcomes
+      expect(results.every(result => result.status === 'rejected')).toBe(true)
+      expect(chats.conversations[aId].messages).toEqual([signed])
+      expect(chats.conversations[aId].deletedAt).toBeUndefined()
+      expect(chats.messages['signed-b'].items).toEqual(signed.items)
+      expect(messageStore.suppressAndDelete).toHaveBeenCalledTimes(1)
+      expect(mockWalletCalls).toEqual([])
+    } finally {
+      sessionState.revision = originalRevision
+      chats.messages = originalMessages
+    }
   })
 
   it('a message of ours is tombstoned under our own mailbox too; one not read back from the relay yet anchors no relay time', async () => {

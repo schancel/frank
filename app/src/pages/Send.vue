@@ -278,6 +278,7 @@
 </template>
 
 <script lang="ts">
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { navigateBack } from 'src/utils/navigate-back'
 import {
   computed,
@@ -394,10 +395,11 @@ export default defineComponent({
         ? chain.value.formatAddress(transfer.recipient)
         : ''
     })
-    const networkName = computed(() =>
-      chain.value?.name === 'monad'
-        ? $t('setup.networkTitle')
-        : chain.value?.name ?? '',
+    const networkName = computed(
+      () =>
+        getChainRegistryEntry(chain.value?.chainIdentifier ?? '')?.name ??
+        chain.value?.name ??
+        '',
     )
     const unit = computed(() => chain.value?.unit ?? '')
     const maxTotal = computed(() =>

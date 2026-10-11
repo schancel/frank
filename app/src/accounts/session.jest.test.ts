@@ -1,3 +1,4 @@
+import { EvmNativeJournalError } from '@frank/wallet/chain'
 import {
   AccountBackupUnavailableError,
   accountSession,
@@ -956,4 +957,22 @@ test('Monad receive-address errors propagate and a current retry publishes its a
   expect(f.session.getCachedChainAddress('monad-testnet')).toBe(
     'current-receive-address',
   )
+})
+
+test('network binding failure preserves the active account and retry reopens it without replacement', async () => {
+  const f = fixture()
+  f.createWallet.mockRejectedValueOnce(new EvmNativeJournalError('binding'))
+  await f.session.initialize()
+  expect(f.session.state.error).toBe('wallet-chain-mismatch')
+  expect(f.session.state.status).toBe('unavailable')
+  expect(f.session.state.revision).toBe(1)
+  expect(f.session.state.account?.receipt.context.accountId).toBe('a')
+  expect(f.session.state.pending).toBeNull()
+  await f.session.retry()
+  expect(f.session.state.status).toBe('ready')
+  expect(f.session.state.error).toBeNull()
+  expect(await f.session.getWallet()).toBe(f.wallet)
+  expect(f.custody.stage).not.toHaveBeenCalled()
+  expect(f.custody.activate).not.toHaveBeenCalled()
+  await f.session.close()
 })

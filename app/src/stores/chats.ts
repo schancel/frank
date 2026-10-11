@@ -3684,9 +3684,12 @@ export const useChatStore = defineStore('chats', {
     async tombstoneMessagesExclusive(
       chat: Conversation,
       clearingMessages: ChatMessage[],
+      assertCurrent?: () => void,
     ): Promise<void> {
+      assertCurrent?.()
       if (clearingMessages.length === 0) return
       const messageStore = await store
+      assertCurrent?.()
       const groups = new Map<
         string,
         { digests: Set<string>; suppressions: RelayDeliverySuppression[] }
@@ -3723,15 +3726,20 @@ export const useChatStore = defineStore('chats', {
         groups.set(recipientAddress, group)
       }
       for (const [recipientAddress, group] of groups) {
+        assertCurrent?.()
         await messageStore.suppressAndDelete(
           recipientAddress,
           [...group.digests],
           group.suppressions,
         )
+        assertCurrent?.()
       }
       for (const digest of unscopedDigests) {
+        assertCurrent?.()
         await messageStore.deleteMessage(digest)
+        assertCurrent?.()
       }
+      assertCurrent?.()
       chat.removedRelayTime = Math.max(
         chat.removedRelayTime ?? 0,
         newestRelayTime(clearingMessages),
@@ -3889,24 +3897,39 @@ export const useChatStore = defineStore('chats', {
      * it back.
      */
     async deleteConversation(conversationId: string) {
-      if (!this.conversations[conversationId]) return
+      const conv = this.conversations[conversationId]
+      if (!conv) return
+      // Admit against this exact account and store before waiting for any older mutation.
+      const revision = accountSession.state.revision
+      const account = accountSession.state.account
+      const salt = conversationIdSalt.value
+      const conversations = this.conversations
+      const messages = this.messages
+      const assertCurrent = () => {
+        if (
+          accountSession.state.revision !== revision ||
+          accountSession.state.account !== account ||
+          conversationIdSalt.value !== salt ||
+          this.conversations !== conversations ||
+          this.messages !== messages ||
+          this.conversations[conversationId] !== conv
+        )
+          throw new Error('Account changed during conversation deletion')
+      }
       return serializeDeliveryMutation(async () => {
-        const conv = this.conversations[conversationId]
-        if (!conv) return
+        assertCurrent()
         const deletedAt = Math.max(
           newestRelayTime(conv.messages),
           conv.removedRelayTime ?? 0,
           clearedUpTo(conv) ?? 0,
           1,
         )
-        // Apply the same boundary as the account's other devices. A send the relay has not
-        // timed remains visible and can reopen the conversation identically when echoed.
-        await this.applyClearedBeforeExclusive(conv, deletedAt)
+        await this.applyClearedBeforeExclusive(conv, deletedAt, assertCurrent)
+        assertCurrent()
         if (conv.messages.length === 0) conv.deletedAt = deletedAt
         conv.actedBy = accountTag()
         if (this.activeConversationId === conversationId)
           this.activeConversationId = null
-        // The account's other devices, and one restored later, delete it too.
         void this.noteConversationStates()
       })
     },
@@ -3977,7 +4000,9 @@ export const useChatStore = defineStore('chats', {
     async applyClearedBeforeExclusive(
       conv: Conversation,
       clearedBefore: number,
+      assertCurrent?: () => void,
     ): Promise<void> {
+      assertCurrent?.()
       if (clearedBefore <= (clearedUpTo(conv) ?? -Infinity)) return
       const kept = conv.messages.filter(
         message =>
@@ -3992,7 +4017,9 @@ export const useChatStore = defineStore('chats', {
       await this.tombstoneMessagesExclusive(
         conv,
         conv.messages.filter(message => !surviving.has(message)),
+        assertCurrent,
       )
+      assertCurrent?.()
       if (surviving.size > 0) {
         conv.clearedBefore = clearedBefore
         conv.deletedAt = undefined

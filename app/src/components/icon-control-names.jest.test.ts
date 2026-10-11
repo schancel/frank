@@ -300,7 +300,7 @@ describe.each(Object.keys(locales) as (keyof typeof locales)[])(
       expect(t('a11y.voteUp')).not.toBe(t('a11y.voteDown'))
     })
 
-    it('names destructive topic and contact delete controls with their target', () => {
+    it('names topic deletion and contact overflow actions with their target', () => {
       const topic = render(locale, TopicListLink, { props: { topic: 'alpha' } })
       expectNamedAndDistinct(buttonNames(topic), [
         t('a11y.deleteTopic', { topic: 'alpha' }),
@@ -315,6 +315,14 @@ describe.each(Object.keys(locales) as (keyof typeof locales)[])(
         },
       })
       expect(buttonNames(contact)).toContain(
+        t('a11y.contactActions', { name: 'Alice' }),
+      )
+      const actions = contact.get('[data-test="contact-item-actions"]')
+      expect(actions.attributes('aria-haspopup')).toBe('menu')
+      expect(contact.get('[role="menuitem"]').text()).toBe(
+        t('a11y.deleteContact', { name: 'Alice' }),
+      )
+      expect(buttonNames(contact)).not.toContain(
         t('a11y.deleteContact', { name: 'Alice' }),
       )
     })

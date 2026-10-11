@@ -1,5 +1,8 @@
 <template>
-  <div :mouseover="$emit('mouseover-contact', address)">
+  <div
+    @mouseenter="$emit('mouseover-contact', address)"
+    @mouseleave="$emit('mouseleave-contact', address)"
+  >
     <q-item v-if="contact === null">
       <q-item-section avatar>
         <q-icon color="negative" name="error" size="xl" />
@@ -22,13 +25,17 @@
         </q-item-label>
       </q-item-section>
     </q-item>
-    <q-item v-ripple v-else-if="contact" v-close-popup>
-      <q-item-section avatar @click="contactClick(address, contact)">
+    <q-item v-ripple v-else-if="contact">
+      <q-item-section
+        avatar
+        v-close-popup
+        @click="contactClick(address, contact)"
+      >
         <q-avatar rounded size="55px" :style="contactColorStyle">
           <img :src="profileAvatar(contact.profile.avatar, address)" />
         </q-avatar>
       </q-item-section>
-      <q-item-section @click="contactClick(address, contact)">
+      <q-item-section v-close-popup @click="contactClick(address, contact)">
         <div class="name-with-badge">
           <q-item-label lines="1">{{ contact.profile.name }}</q-item-label>
           <account-badge
@@ -51,30 +58,64 @@
           {{ contact.inbox.acceptancePrice }}
         </q-item-label>
       </q-item-section>
-      <q-item-section side @click="deleteContact(address)">
+      <q-item-section side>
         <q-btn
           flat
           round
-          icon="delete"
-          color="red"
-          :aria-label="$t('a11y.deleteContact', { name: contact.profile.name })"
-        />
+          dense
+          icon="more_vert"
+          :aria-label="
+            $t('a11y.contactActions', { name: contact.profile.name })
+          "
+          aria-haspopup="menu"
+          data-test="contact-item-actions"
+          @click.stop
+        >
+          <q-menu @click.stop @keydown.stop>
+            <q-list dense>
+              <q-item
+                clickable
+                v-close-popup
+                role="menuitem"
+                data-test="contact-item-delete"
+                @click.stop="confirmDeleteOpen = true"
+              >
+                <q-item-section avatar
+                  ><q-icon name="delete" color="negative"
+                /></q-item-section>
+                <q-item-section>{{
+                  $t('a11y.deleteContact', { name: contact.profile.name })
+                }}</q-item-section>
+              </q-item>
+            </q-list>
+          </q-menu>
+        </q-btn>
       </q-item-section>
     </q-item>
+    <q-dialog v-model="confirmDeleteOpen" persistent>
+      <delete-contact-dialog
+        v-if="confirmDeleteOpen"
+        :address="address"
+        :name="contact?.profile?.name || address"
+        @cancel="confirmDeleteOpen = false"
+        @deleted="confirmDeleteOpen = false"
+      />
+    </q-dialog>
   </div>
 </template>
 
 <script lang="ts">
-import { useContactStore } from 'src/stores/contacts'
 import { defineComponent } from 'vue'
 import type { ProfilePubKey } from 'src/utils/profile-pubkey'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
 import AccountBadge from './AccountBadge.vue'
+import DeleteContactDialog from '../dialogs/DeleteContactDialog.vue'
 
 export default defineComponent({
   components: {
     AccountBadge,
+    DeleteContactDialog,
   },
   props: {
     address: {
@@ -90,13 +131,12 @@ export default defineComponent({
       default: () => '',
     },
   },
-  emits: ['mouseover-contact'],
+  emits: ['mouseover-contact', 'mouseleave-contact'],
+  data() {
+    return { confirmDeleteOpen: false }
+  },
   setup() {
-    const contactStore = useContactStore()
-    return {
-      deleteContact: contactStore.deleteContact,
-      profileAvatar,
-    }
+    return { profileAvatar }
   },
   computed: {
     hasInboxPrice() {

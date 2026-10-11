@@ -1,4 +1,6 @@
 export const en = {
+  wallet_chain_mismatch:
+    'This saved wallet does not match the network or account configuration the app is using. Restore the previous network configuration and retry opening the existing account. Its saved data has not been changed.',
   profile_restore_unreachable:
     'Your account was recovered, but its profile could not be fetched. Check the relay connection and retry.',
   profile_restore_retry: 'Retry profile lookup',
@@ -159,6 +161,8 @@ export const en = {
 }
 
 export const fr = {
+  wallet_chain_mismatch:
+    'Ce portefeuille enregistré ne correspond pas au réseau ou à la configuration de compte utilisé par l’application. Rétablissez la configuration réseau précédente puis réessayez d’ouvrir le compte existant. Les données enregistrées n’ont pas été modifiées.',
   profile_restore_unreachable:
     'Votre compte a été récupéré, mais son profil n’a pas pu être chargé. Vérifiez la connexion au relais et réessayez.',
   profile_restore_retry: 'Réessayer de charger le profil',

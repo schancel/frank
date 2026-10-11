@@ -1,10 +1,9 @@
 import {
   activeChain,
-  getChainRegistryEntry,
-  resolveNetworkId,
   type NativeAssetChain,
   type ChainAddress,
 } from '@frank/wallet/chain'
+import { walletNetworkMetadata } from './wallet-support'
 
 /**
  * The canonical chain a wallet row can send on, or undefined when the app has no wallet there.
@@ -14,8 +13,13 @@ import {
 export function nativeSendChainIdentifier(
   wallet: string,
   isTestnet: boolean,
+  configuredChainIdentifier = activeChain.chainIdentifier,
 ): string | undefined {
-  const entry = getChainRegistryEntry(resolveNetworkId(wallet, isTestnet))
+  const entry = walletNetworkMetadata(
+    wallet,
+    isTestnet,
+    configuredChainIdentifier,
+  )
   if (!entry?.wallet) return undefined
   // The only EVM wallet the app builds is the active chain's.
   if (entry.family === 'evm' && entry.id !== activeChain.chainIdentifier)

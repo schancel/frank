@@ -57,6 +57,21 @@ function render(inbox: unknown) {
 }
 
 describe('ContactItem inbox price', () => {
+  it('keeps deletion inside a labelled overflow and emits pointer enter/leave independently', async () => {
+    const wrapper = render(undefined)
+    expect(wrapper.find('button[icon="delete"]').exists()).toBe(false)
+    expect(
+      wrapper
+        .get('[data-test="contact-item-actions"]')
+        .attributes('aria-haspopup'),
+    ).toBe('menu')
+    await wrapper.trigger('mouseenter')
+    expect(wrapper.emitted('mouseover-contact')).toEqual([['0xabc']])
+    await wrapper.trigger('mouseleave')
+    expect(wrapper.emitted('mouseleave-contact')).toEqual([['0xabc']])
+    wrapper.unmount()
+  })
+
   it.each([
     ['no inbox at all', undefined],
     ['no price', {}],

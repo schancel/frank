@@ -4,6 +4,15 @@ import { mount } from '@vue/test-utils'
 import OfferSwapDialog from './OfferSwapDialog.vue'
 import enUS from '../../i18n/en-us'
 
+// Wallet availability is scoped to the configured canonical primary network.
+jest.mock('@frank/wallet/chain', () => ({
+  activeChain: {
+    chainIdentifier: 'monad-testnet',
+    isTestnet: true,
+    unit: 'MONT',
+  },
+}))
+
 function translator(messages: unknown) {
   return (key: string, params?: Record<string, unknown>) => {
     let value: unknown = key
@@ -59,7 +68,7 @@ describe('OfferSwapDialog', () => {
     expect((wrapper.vm as any).requestedChain).toBe('solana-devnet')
   })
 
-  it('offers only the networks the app has a wallet for', () => {
+  it('offers the configured primary network and supported peer networks', () => {
     const wrapper = mountDialog()
     const offered = (wrapper.vm as any).chainOptions.map(
       (option: { value: string }) => option.value,
@@ -67,7 +76,6 @@ describe('OfferSwapDialog', () => {
     expect(offered.sort()).toEqual([
       'bch-testnet',
       'btc-testnet',
-      'monad-mainnet',
       'monad-testnet',
       'solana-devnet',
       'solana-mainnet',

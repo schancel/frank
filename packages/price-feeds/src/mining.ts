@@ -1,29 +1,17 @@
-/**
- * The chain facts the AVU_hash formula needs for one proof-of-work chain, read from the
- * chain's own published statistics (Blockchair's public /stats endpoint):
- *
- *   - coins per block: the coins newly minted in the last 24 hours divided by the blocks
- *     found in the same 24 hours. This is what the chain actually issued, so a halving is
- *     followed without a schedule being kept here. It is the whole subsidy, including any
- *     part a chain's rules send to someone other than the miner, and excludes fees.
- *   - hashes per block: the expected number of hashes to find a block at the current
- *     difficulty.
- *   - coins in existence, for the market capitalisation the basket is weighted by.
- *
- * No price is read here: prices come from the price oracle.
- */
-
+/** Observed 24-hour mining receipts and upstream estimated hashrate, never difficulty. */
 import { ORACLE_ENDPOINTS } from './config'
 
 export interface MiningStats {
   /** Blockchair chain name, e.g. "bitcoin-cash". */
   chain: string
-  /** Whole coins minted per block, averaged over the last 24 hours of blocks. */
-  subsidyCoinsPerBlock: number
-  /** The chain's current difficulty; for Dogecoin its 24-hour equivalent (see MINED_CHAINS). */
-  difficulty: number
-  /** Expected hashes to find one block at that difficulty. */
-  hashesPerBlock: number
+  /** Whole coins newly issued in the observed 24-hour block set. */
+  subsidyCoins24h: number
+  /** Fees in the same block set; zero is valid, absence is unavailable. */
+  feeCoins24h: number
+  /** Upstream observed-work estimate, hashes/second over 24 hours. */
+  hashrate24h: number
+  firstBlock: number
+  lastBlock: number
   /** Whole coins in existence; times the oracle's price it is the market capitalisation. */
   circulatingCoins: number
   fetchedAt: number
@@ -39,47 +27,16 @@ export const BLOCKCHAIR_API_BASE = ORACLE_ENDPOINTS.blockchair.stats
 export const HASHES_PER_DIFFICULTY = 2 ** 32
 
 export interface MinedChain {
-  /** Base units per coin are 10^decimals, needed to read Blockchair's coin amounts. */
+  /** Base units per whole coin; only used for actual observed receipt amounts. */
   decimals: number
-  /** Expected hashes per block for each unit of difficulty. */
-  hashesPerDifficulty: number
-  /**
-   * Coins per block where Blockchair publishes no issuance for the chain and the consensus
-   * rule is a constant.
-   */
-  fixedSubsidyCoinsPerBlock?: number
-  /**
-   * The chain's target seconds per block, set where its difficulty is retargeted every
-   * block and swings widely within a day. For such a chain the expected hashes per block
-   * are taken over the last 24 hours: Blockchair's `hashrate_24h` times this.
-   */
-  dailyMeanOverBlockSeconds?: number
 }
-
 export const MINED_CHAINS: Record<string, MinedChain> = {
-  bitcoin: { decimals: 8, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
-  'bitcoin-cash': { decimals: 8, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
-  ecash: { decimals: 2, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
-  litecoin: { decimals: 8, hashesPerDifficulty: HASHES_PER_DIFFICULTY },
-  // Dogecoin retargets every block (DigiShield) and its difficulty moves about 15%
-  // from one hour to the next, so the 24-hour figure is used: one-minute blocks.
-  dogecoin: {
-    decimals: 8,
-    hashesPerDifficulty: HASHES_PER_DIFFICULTY,
-    dailyMeanOverBlockSeconds: 60,
-  },
-  // Monero's difficulty is itself the expected number of hashes per block. Its subsidy is
-  // the tail emission: FINAL_SUBSIDY_PER_MINUTE = 3e11 atomic units a minute over
-  // DIFFICULTY_TARGET_V2 = 120-second blocks, with COIN = 1e12, is 0.6 XMR a block
-  // (monero-project/monero src/cryptonote_config.h, read 2026-10-09). The tail applies
-  // once the main emission curve pays less than that, which it has since the supply
-  // passed 2^64 - 1 atomic units less 0.6 XMR x 2^19 (get_block_reward,
-  // src/cryptonote_basic/cryptonote_basic_impl.cpp).
-  monero: {
-    decimals: 12,
-    hashesPerDifficulty: 1,
-    fixedSubsidyCoinsPerBlock: 0.6,
-  },
+  'bitcoin': { decimals: 8 },
+  'bitcoin-cash': { decimals: 8 },
+  'ecash': { decimals: 2 },
+  'litecoin': { decimals: 8 },
+  'dogecoin': { decimals: 8 },
+  'monero': { decimals: 12 },
 }
 
 export async function fetchMiningStats(
@@ -99,30 +56,54 @@ export async function fetchMiningStats(
     if (!response.ok) return null
     const stats = (await response.json())?.data
     const unit = 10 ** facts.decimals
-    const subsidyCoinsPerBlock =
-      facts.fixedSubsidyCoinsPerBlock ??
-      Number(stats?.inflation_24h) / unit / Number(stats?.blocks_24h)
-    // For a chain read over 24 hours, the difficulty reported is the one that would give
-    // those expected hashes per block: hashrate x block time / hashes per difficulty.
-    const difficulty = facts.dailyMeanOverBlockSeconds
-      ? (Number(stats?.hashrate_24h) * facts.dailyMeanOverBlockSeconds) /
-        facts.hashesPerDifficulty
-      : Number(stats?.difficulty)
-    const circulatingCoins = Number(stats?.circulation) / unit
+    const blocks = stats?.blocks_24h
+    const lastBlock = stats?.best_block_height
+    const hashrate24h = positive(stats?.hashrate_24h)
+    const circulatingCoins = positive(stats?.circulation)
     if (
-      !(subsidyCoinsPerBlock > 0) ||
-      !Number.isFinite(subsidyCoinsPerBlock) ||
-      !(difficulty > 0) ||
-      !(circulatingCoins > 0)
-    ) {
+      !Number.isSafeInteger(blocks) ||
+      blocks <= 0 ||
+      !Number.isSafeInteger(lastBlock) ||
+      lastBlock < blocks - 1 ||
+      hashrate24h === undefined ||
+      circulatingCoins === undefined
+    )
       return null
-    }
+    const firstBlock = lastBlock - blocks + 1
+    // An aggregate over an immutable height range, not rounded average fee x tx count.
+    // Verify issuance/count against the stats snapshot: missing or mismatched observations
+    // are unavailable, never silently subsidy-only or fee-free.
+    const query = new URLSearchParams({
+      a: 'sum(fee_total),sum(generation),count()',
+      q: `id(${firstBlock}..${lastBlock})`,
+    })
+    const aggregateResponse = await fetchFn(
+      `${BLOCKCHAIR_API_BASE}/${chain}/blocks?${query}`,
+      { signal: controller.signal, headers: { Accept: 'application/json' } },
+    )
+    if (!aggregateResponse.ok) return null
+    const rows = (await aggregateResponse.json())?.data
+    if (!Array.isArray(rows) || rows.length !== 1) return null
+    const row = rows[0]
+    const generation = positive(row?.['sum(generation)'])
+    const fees = nonnegative(row?.['sum(fee_total)'])
+    const issuance = positive(stats?.inflation_24h)
+    if (
+      generation === undefined ||
+      fees === undefined ||
+      issuance === undefined ||
+      row?.['count()'] !== blocks ||
+      generation !== issuance
+    )
+      return null
     return {
       chain,
-      subsidyCoinsPerBlock,
-      difficulty,
-      hashesPerBlock: difficulty * facts.hashesPerDifficulty,
-      circulatingCoins,
+      subsidyCoins24h: generation / unit,
+      feeCoins24h: fees / unit,
+      hashrate24h,
+      firstBlock,
+      lastBlock,
+      circulatingCoins: circulatingCoins / unit,
       fetchedAt: Date.now(),
     }
   } catch {
@@ -130,4 +111,17 @@ export async function fetchMiningStats(
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** Reject coercions such as null, empty strings and booleans as observations. */
+function nonnegative(value: unknown): number | undefined {
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined
+  if (typeof value === 'string' && !/^\d+(?:\.\d+)?$/.test(value))
+    return undefined
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 0 ? n : undefined
+}
+function positive(value: unknown): number | undefined {
+  const n = nonnegative(value)
+  return n !== undefined && n > 0 ? n : undefined
 }

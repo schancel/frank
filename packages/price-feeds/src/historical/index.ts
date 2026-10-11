@@ -54,6 +54,10 @@ export interface BtcMiningMonth {
   month: string
   /** US dollars per bitcoin. */
   btcUsd: number
+  /** Observed-work estimate averaged over the same calendar month as receipts. */
+  hashrate: number
+  /** Includes fees and subsidy; whole BTC per second over the month. */
+  minerRevenueCoinsPerSecond: number
   difficulty: number
   /** Bitcoin minted per block. Between two values in the month a halving fell in. */
   subsidyBtc: number
@@ -89,7 +93,15 @@ export const BTC_MINING_MONTHLY: readonly BtcMiningMonth[] = btcMining.monthly
  * minted per block (the whole subsidy), coins in existence]. Built by
  * scripts/build-mined-chains-history.py; each chain says where its figures come from.
  */
-export type MinedChainMonth = [string, number, number, number, number]
+export type MinedChainMonth = [
+  string,
+  number,
+  number,
+  number,
+  number,
+  number?,
+  number?,
+]
 
 export interface MinedChainHistory {
   source: string

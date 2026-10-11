@@ -29,7 +29,9 @@ describe('the basket the adapter declares', () => {
       'ltc-mainnet',
       'doge-mainnet',
     ])
-    expect(scrypt.chains.every(c => c.hashesPerDifficulty === 2 ** 32)).toBe(true)
+    expect(scrypt.chains.every(c => c.hashesPerDifficulty === 2 ** 32)).toBe(
+      true,
+    )
     expect(DIRECT_BASKET.entries[4].chains).toEqual([
       { chain: 'xmr-mainnet', hashesPerDifficulty: 1 },
     ])
@@ -100,12 +102,8 @@ describe('the dated miner share', () => {
     expect(at(reward, seconds('2020-11-20'))).toBeUndefined()
   })
 
-  it('is applied to the bundled eCash history', () => {
-    const all = bundledSeries()
-    const reward = all['blockReward/xec-mainnet']
-    const before = at(reward.points, seconds('2023-11-14'))![1]
-    const after = at(reward.points, seconds('2023-11-15'))![1]
-    expect(after / before).toBeCloseTo(0.58 / 0.92, 6)
+  it('does not synthesize fee-free eCash revenue from old subsidy-only history', () => {
+    expect(bundledSeries()['minerRevenue/xec-mainnet']).toBeUndefined()
   })
 })
 
@@ -131,9 +129,11 @@ describe('the latest answer, filled directly', () => {
   const NOW = Date.parse('2026-10-10T17:00:00Z')
   const stats = (chain: string): MiningStats => ({
     chain,
-    subsidyCoinsPerBlock: chain === 'ecash' ? 3_125_000 : 6.25,
-    difficulty: 1000,
-    hashesPerBlock: 1000,
+    subsidyCoins24h: chain === 'ecash' ? 3_125_000 : 6.25,
+    feeCoins24h: chain === 'ecash' ? 100_000 : 0,
+    hashrate24h: 1000,
+    firstBlock: 1,
+    lastBlock: 10,
     circulatingCoins: 1_000_000,
     fetchedAt: NOW,
   })
@@ -156,14 +156,18 @@ describe('the latest answer, filled directly', () => {
         points: [[t, 10]],
       })
     }
-    expect(feed.series['marketCap/ltc-mainnet'].points).toEqual([[t, 10_000_000]])
-    expect(feed.series['difficulty/xmr-mainnet'].points).toEqual([[t, 1000]])
+    expect(feed.series['marketCap/ltc-mainnet'].points).toEqual([
+      [t, 10_000_000],
+    ])
+    expect(feed.series['hashrate/xmr-mainnet'].points).toEqual([[t, 1000]])
     // 58% of 3,125,000 XEC.
-    expect(feed.series['blockReward/xec-mainnet'].points[0][1]).toBeCloseTo(
-      1_812_500,
+    expect(feed.series['minerRevenue/xec-mainnet'].points[0][1]).toBeCloseTo(
+      ((3_125_000 + 100_000) * 0.58) / 86_400,
       6,
     )
-    expect(feed.series['blockReward/ltc-mainnet'].points).toEqual([[t, 6.25]])
+    expect(feed.series['minerRevenue/ltc-mainnet'].points).toEqual([
+      [t, 6.25 / 86_400],
+    ])
     // A lookup at the feed's own time finds every point of it.
     expect(feed.generatedAt).toBe(t)
     // The efficiency step in force, and the electricity window.
@@ -198,7 +202,7 @@ describe('the latest answer, filled directly', () => {
     expect(price.points).toHaveLength(1)
     // The gap: the bundled history ends with September 2026's monthly point.
     expect(price.points[0][0]).toBe(seconds('2026-09-01'))
-    expect(feed.series['difficulty/ltc-mainnet'].stale).toBe(true)
+    expect(feed.series['hashrate/ltc-mainnet']).toBeUndefined()
     // A coin with no bundled history and no fetched price is simply absent.
     expect(feed.series['price/monad-mainnet']).toBeUndefined()
   })
@@ -211,14 +215,13 @@ describe('the latest answer, filled directly', () => {
       fetchPrices: everyPrice,
       fetchStats,
       // Every chain but Monero was read twenty minutes ago, before the restart.
-      heldAt: name =>
-        name === 'difficulty/xmr-mainnet' ? undefined : savedAt,
+      heldAt: name => (name === 'hashrate/xmr-mainnet' ? undefined : savedAt),
     })
     expect(fetchStats.mock.calls).toEqual([['monero']])
     // Nothing is said about the chains whose saved reading stands: no bundled value is
     // put in its place.
-    expect(feed.series['difficulty/btc-mainnet']).toBeUndefined()
-    expect(feed.series['difficulty/xmr-mainnet'].stale).toBe(false)
+    expect(feed.series['hashrate/btc-mainnet']).toBeUndefined()
+    expect(feed.series['hashrate/xmr-mainnet'].stale).toBe(false)
     expect(feed.series['price/btc-mainnet'].stale).toBe(false)
 
     resetDirectFeedCache()

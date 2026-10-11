@@ -221,8 +221,8 @@ describe('where the feed comes from', () => {
     fetchOracleFeed.mockResolvedValue({ status: 'not-served' })
     const held: Array<number | undefined> = []
     temporaryDirectFeed.mockImplementation(async (_request, options) => {
-      held.push(options.heldAt('difficulty/btc-mainnet'))
-      expect(options.heldAt('difficulty/unknown-mainnet')).toBeUndefined()
+      held.push(options.heldAt('hashrate/btc-mainnet'))
+      expect(options.heldAt('hashrate/unknown-mainnet')).toBeUndefined()
       return latestNow()
     })
     const store = useOracleStore()

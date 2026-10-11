@@ -21,8 +21,8 @@ There are two shapes, and only two.
 
 **Latest** is what the app polls, app-wide, every 10 minutes while its window is visible and
 never while it is hidden. The answer carries the current value of every series and nothing else:
-one point per series (the current smoothed price of each asset, the current difficulty, block
-reward and market capitalisation of each basket chain, the efficiency step in force, the
+one point per series (the current smoothed price of each asset, the observed hashrate, miner
+revenue and market capitalisation of each basket chain, the efficiency step in force, the
 latest `electricity/aggregate` point). That is about 35 series of one point: under 10 kB of
 JSON before compression. The client
 appends each latest answer to its local series, and computes the AVU rate of each asset from it
@@ -74,8 +74,8 @@ Values are JSON numbers. Times are whole seconds.
 | --- | --- | --- |
 | `price/<assetId>` | US dollars per whole coin | the relay's smoothed price |
 | `marketCap/<assetId>` | US dollars | coins in existence x price |
-| `difficulty/<chainId>` | the chain's difficulty | expected hashes per block = difficulty x the basket chain's `hashesPerDifficulty` |
-| `blockReward/<chainId>` | whole coins per block paid to the miner | subsidy only, no fees; where consensus sends part of the subsidy elsewhere (eCash) this is the miner's part |
+| `hashrate/<chainId>` | hashes per second | upstream observed-work estimate over the same window as miner revenue; never instantaneous difficulty |
+| `minerRevenue/<chainId>` | whole coins per second paid to the miner | subsidy plus actual fees, after consensus allocations (eCash applies its share to both); absent fee observations are unavailable, while observed zero fees are valid |
 | `efficiency/<algorithm>` | hashes per kWh | curated dated steps: the hardware assumed for the algorithm at each date |
 | `electricity/aggregate` | US dollars per kWh | REQUIRED for AVU_spot. One point per UTC day, stamped at the start of the day, and already windowed: the point for day d is the equally weighted mean, over the regions, of each region's mean daily wholesale day-ahead price in the `windowDays` days ending at d. A region with fewer than `minDays` daily prices in that window is left out of that day's point. A day on which no region qualifies has no point. |
 | `electricity/<regionId>` | US dollars per kWh | optional, for display: one region's daily mean price, one point per UTC day, not windowed. May be zero or negative. |
@@ -162,7 +162,7 @@ not in the current figure, and the client says so.
 All of it by the one lookup above, at any time `t` (now, or a point on a chart):
 
     $/kWh of an entry (t) = sum over its chains of
-        price(t) x blockReward(t) / (difficulty(t) x hashesPerDifficulty)
+        price(t) x minerRevenue(t) / hashrate(t)
       x efficiency(t)
 
     entry weight (t) = sum of its chains' marketCap(t), as a share of the entries that have
@@ -180,3 +180,9 @@ All of it by the one lookup above, at any time `t` (now, or a point on a chart):
     AVU value of an amount of a coin = amount x price(t) x AVU_hash(t)
 
 An entry missing any input at `t` is left out and the weights are taken over the rest.
+
+### Mining observation alignment
+
+Hashrate and minerRevenue points must have identical timestamps/windows. The consumer rejects unmatched observations rather than combining differently aged readings. Live block receipts are aggregated over the stats snapshot’s last `blocks_24h` heights ending at its best block, and the block count and issuance must agree. Hashrate is the provider’s 24-hour chainwork/time estimate, not a physical measurement of mining hardware. Historical block-work sums divided by calendar seconds are likewise observed-work estimates; they include actual block cadence instead of treating current target difficulty as a rate.
+
+AVU Hash uses `price × minerRevenue / hashrate × efficiency`. Merge-mined coins contribute receipts per hash to one entry, with energy counted once. Allocated miner shares model consensus percentages; rounding of individual coinbase outputs can create sub-base-unit aggregate differences. Existing historical rows without fees/work observations do not supply those series. Monero is unavailable until a provider supplies complete matching receipts/work data. BTC historical receipts use blockchain.com miners-revenue (including fees), same-day price and hashrate. Cambridge efficiency remains a modeled power/fleet estimate; this is not a measured miner electricity bill.

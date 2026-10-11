@@ -139,8 +139,8 @@ function twoEntryFeed(): OracleFeed {
   })
   // Monero: 500 x 0.6 / 1500 x 1 = 0.2 value per kWh, 5 kWh per unit of value.
   feed.series['marketCap/xmr-mainnet'] = series(at(1e12))
-  feed.series['difficulty/xmr-mainnet'] = series(at(1500))
-  feed.series['blockReward/xmr-mainnet'] = series(at(0.6))
+  feed.series['hashrate/xmr-mainnet'] = series(at(1500))
+  feed.series['minerRevenue/xmr-mainnet'] = series(at(0.6))
   feed.series['efficiency/randomx'] = series(at(1))
   return feed
 }

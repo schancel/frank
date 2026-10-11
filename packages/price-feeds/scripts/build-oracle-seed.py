@@ -61,11 +61,11 @@ def build():
     chain_source = "blockchain.com charts, monthly means"
     out["price/btc-mainnet"] = series(
         "USD", chain_source, retrieved, [(t, m.get("btcUsd")) for t, m in months])
-    out["difficulty/btc-mainnet"] = series(
-        "difficulty", chain_source, retrieved, [(t, m.get("difficulty")) for t, m in months])
-    out["blockReward/btc-mainnet"] = series(
-        "coins per block to the miner", "Bitcoin consensus subsidy schedule", retrieved,
-        [(t, m.get("subsidyBtc")) for t, m in months])
+    out["hashrate/btc-mainnet"] = series(
+        "hashes/s", chain_source, retrieved, [(t, m.get("hashrate")) for t, m in months])
+    out["minerRevenue/btc-mainnet"] = series(
+        "coins/s to the miner including fees", "blockchain.com miners-revenue", retrieved,
+        [(t, m.get("minerRevenueCoinsPerSecond")) for t, m in months])
     out["marketCap/btc-mainnet"] = series(
         "USD", "price x coins in existence (blockchain.com charts)", retrieved,
         [(t, m["btcUsd"] * m["supplyBtc"]) for t, m in months
@@ -108,11 +108,12 @@ def build():
             pick = lambda name: [(t, row[column[name]]) for t, row in rows]
             source = "Blockchair block aggregates, monthly"
             out[f"price/{chain}"] = series("USD", source, as_of, pick("priceUsd"))
-            out[f"difficulty/{chain}"] = series("difficulty", source, as_of, pick("difficulty"))
-            out[f"blockReward/{chain}"] = series(
-                "coins per block to the miner", source + "; miner's share of the subsidy", as_of,
-                [(t, value * miner_share(chain, t))
-                 for t, value in pick("subsidyCoinsPerBlock") if value is not None])
+            # Incomplete subsidy-only history is deliberately not a revenue/work source.
+            if "hashrate" in column and "minerRevenueCoinsPerSecond" in column:
+                out[f"hashrate/{chain}"] = series("hashes/s", source, as_of, pick("hashrate"))
+                out[f"minerRevenue/{chain}"] = series(
+                    "coins/s including fees, miner share", source, as_of,
+                    [(t, value * miner_share(chain, t)) for t, value in pick("minerRevenueCoinsPerSecond") if value is not None])
             out[f"marketCap/{chain}"] = series(
                 "USD", "price x coins in existence (Blockchair)", as_of,
                 [(t, row[column["priceUsd"]] * row[column["circulatingCoins"]]) for t, row in rows

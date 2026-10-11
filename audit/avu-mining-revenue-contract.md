@@ -1,0 +1,13 @@
+# AVU mining receipts and observed work (tier 3)
+
+Owner request: include mining fees on every supported basket chain and use observed hashrate rather than instantaneous difficulty. Source baseline ac340b63. The normalized oracle feed is authoritative; Rust collector and the temporary TypeScript direct provider are parallel writers, wallet/oracle is the sole AVU formula consumer. Neither custody nor transaction state changes.
+
+Replace difficulty/blockReward input series with hashrate (hashes/s) and minerRevenue (coins/s after consensus deductions). The formula is price × minerRevenue / hashrate × hashes/kWh. Revenue and hashrate must share an observation timestamp/window; incomplete observations are unavailable, never silently zero-fee. Zero observed fees are valid. Provider hashrates remain chainwork/time estimates, not physical hardware meters. Merge-mined chains contribute receipts per hash to one energy entry, never independent energy totals.
+
+Live Blockchair stats supplies 24-hour observed-work estimate. Aggregate fees and generation over the last blocks_24h heights ending at stats tip; reject mismatching counts/issuance and absent/malformed aggregate fields. eCash miner-share deductions apply the whole coinbase, including fees. Monero is unavailable where provider lacks actual receipts/work observations; never invent tail-reward-only receipts. Configured hardware efficiency remains unchanged.
+
+Historical BTC generator adds daily same-window mining revenue including fees and hash-rate observations, aligned with CBECI power. Existing source data lacking fee/work observations must not remain a subsidy-only fallback. Historical other-chain generator requires fee sums and observed work over a bounded calendar window; absent data leaves those terms unavailable until regenerated. No made-up historical fees. Seed generator is the only writer of docs/protocol/oracle/seed.json.
+
+Wire names change together across producers/parser/consumer; no migration or obsolete fallback. Existing relay cached old series do not satisfy new calculation; fresh collector observations rebuild. Keys, balances, spend journals and private browser data remain untouched.
+
+Acceptance: fee zero versus absent/malformed; BTC/BCH/LTC/DOGE/XEC unit conversion; eCash total reward deduction; observed hashrate effect independent of difficulty; mismatched observation timestamps rejected; merged-mining energy counted once; seed generation consistency; focused TS and Rust tests and all-project typecheck. Read-only public aggregate currently returns IP-limit code430, reported as a verification limitation; synthetic responses cannot substitute for actual upstream acceptance.

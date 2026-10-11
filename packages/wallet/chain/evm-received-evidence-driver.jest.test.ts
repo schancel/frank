@@ -537,9 +537,9 @@ it.each([
 it.each(["read", "final-anchor"] as const)(
   "deadline during %s never exposes unanchored evaluator blocks",
   async (location) => {
-    jest.useFakeTimers();
+    // Wallet Jest installs the `promise` polyfill, whose scheduler must remain live.
+    const clock = jest.spyOn(Date, "now").mockReturnValue(0);
     try {
-      jest.setSystemTime(0);
       const f = fixture();
       let entered = false;
       const actual = f.rpc.block.bind(f.rpc);
@@ -559,12 +559,12 @@ it.each(["read", "final-anchor"] as const)(
           maxCalls: 100,
           maxFundingBlocks: 8,
           maxTransactionsPerBlock: 100,
-          deadlineMs: 50,
+          deadlineMs: 20,
         },
       });
       for (let i = 0; i < 100 && !entered; i++) await Promise.resolve();
       expect(entered).toBe(true);
-      jest.advanceTimersByTime(51);
+      clock.mockReturnValue(21);
       const result = await run;
       expect(result.kind).toBe("unavailable");
       if (result.kind !== "unavailable")
@@ -572,7 +572,7 @@ it.each(["read", "final-anchor"] as const)(
       expect(result.issue.reason).toBe("deadline-exceeded");
       expect(result).not.toHaveProperty("canonicalBlocks");
     } finally {
-      jest.useRealTimers();
+      clock.mockRestore();
     }
   }
 );

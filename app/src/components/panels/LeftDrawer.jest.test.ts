@@ -178,6 +178,8 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     expect(vm(mountDrawer()).tab).toBe('chats')
     mockRoute.path = '/add-contact'
     expect(vm(mountDrawer()).tab).toBe('contacts')
+    mockRoute.path = '/new-conversation'
+    expect(vm(mountDrawer()).tab).toBe('chats')
   })
 
   it('keeps Contacts visible across profile clicks until explicitly opening chat', async () => {
@@ -187,7 +189,12 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     try {
       expect(vm.tab).toBe('contacts')
       // Existing and new contacts both use peer profile routes, independent of chat state.
-      for (const address of ['existing-peer', 'new-peer', 'new-peer', 'other-peer']) {
+      for (const address of [
+        'existing-peer',
+        'new-peer',
+        'new-peer',
+        'other-peer',
+      ]) {
         mockRoute.path = `/chat/${address}`
         mockRoute.query = { info: 'true' }
         await nextTick()

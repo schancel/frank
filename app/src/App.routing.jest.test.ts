@@ -433,7 +433,8 @@ describe('App exact conversation route authority (#1237)', () => {
   it.each([PEER, OTHER, '0x4444444444444444444444444444444444444444'])(
     'views profile %s without selecting, allocating or reading its conversation',
     async peer => {
-      const { chats, first, other, defaultThread, router, wrapper } = await mountedApp()
+      const { chats, first, other, defaultThread, router, wrapper } =
+        await mountedApp()
       try {
         await openChat(router, first.id)
         await settleNavigation()

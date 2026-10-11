@@ -6,6 +6,7 @@ export const settingsRoutes = [
   '/receive',
   '/send',
   '/add-contact',
+  '/new-conversation',
   '/backup',
 ]
 

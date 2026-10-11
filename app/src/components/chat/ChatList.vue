@@ -17,18 +17,10 @@
           <q-btn
             dense
             flat
-            icon="mail"
-            :aria-label="$t('a11y.composeEmail')"
-            data-testid="compose-email-btn"
-            @click="openComposeEmail"
-          />
-          <q-btn
-            dense
-            flat
             icon="add"
             :aria-label="$t('newContactDialog.startConversation')"
             data-testid="start-conversation-btn"
-            @click="openAddContact"
+            @click="openNewConversation"
           />
         </q-item>
         <q-separator />
@@ -90,24 +82,14 @@ export default defineComponent({
     return {
       getSortedChatOrder,
       openPage,
-      openAddContact() {
+      openNewConversation() {
         const from =
           router.currentRoute?.value?.fullPath ||
           router.currentRoute?.value?.path ||
           ''
         const target = from.startsWith('/chat')
-          ? `/add-contact?mode=conversation&from=${encodeURIComponent(from)}`
-          : '/add-contact?mode=conversation'
-        openPage(router, target)
-      },
-      openComposeEmail() {
-        const from =
-          router.currentRoute?.value?.fullPath ||
-          router.currentRoute?.value?.path ||
-          ''
-        const target = from.startsWith('/chat')
-          ? `/add-contact?compose=email&from=${encodeURIComponent(from)}`
-          : '/add-contact?compose=email'
+          ? `/new-conversation?from=${encodeURIComponent(from)}`
+          : '/new-conversation'
         openPage(router, target)
       },
       selectConversation(item: Conversation | string) {

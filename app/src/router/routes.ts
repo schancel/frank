@@ -69,6 +69,10 @@ export function createRoutes(): RouteRecordRaw[] {
           component: () => import('pages/Wallet.vue'),
         },
         {
+          path: 'new-conversation',
+          component: () => import('pages/AddContact.vue'),
+        },
+        {
           path: 'add-contact',
           component: () => import('pages/AddContact.vue'),
         },

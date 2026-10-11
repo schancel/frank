@@ -489,15 +489,10 @@ export default defineComponent({
           path.startsWith('/changelog')
         ) {
           tab.value = 'settings'
+        } else if (path.startsWith('/new-conversation')) {
+          tab.value = 'chats'
         } else if (path.startsWith('/add-contact')) {
-          if (
-            route.query?.mode === 'conversation' ||
-            route.query?.compose === 'email'
-          ) {
-            tab.value = 'chats'
-          } else {
-            tab.value = 'contacts'
-          }
+          tab.value = 'contacts'
         } else if (path.startsWith('/contacts')) {
           tab.value = 'contacts'
         } else if (path.startsWith('/chat')) {

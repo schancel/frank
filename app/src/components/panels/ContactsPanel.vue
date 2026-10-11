@@ -601,8 +601,8 @@ export default defineComponent({
         router.currentRoute?.value?.path ||
         ''
       const target = from
-        ? `/add-contact?mode=contact&from=${encodeURIComponent(from)}`
-        : '/add-contact?mode=contact'
+        ? `/add-contact?from=${encodeURIComponent(from)}`
+        : '/add-contact'
       openPage(router, target)
     }
 

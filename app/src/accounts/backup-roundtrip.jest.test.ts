@@ -367,6 +367,9 @@ test('two backups of one account each restore it; their shares do not mix, nor w
     const error = await failure(() => ceremony.confirm(mixed, 'Mixed'))
     expect((error as { code?: string }).code).toBe('inconsistent-share')
     expect(recoveryErrorMessage(error)).toMatch(/different backup sets/)
+    expect(recoveryErrorMessage(error)).toMatch(
+      /1 distinct shares available; 2 required/,
+    )
     // A refused restore leaves the device without an account, staged or active.
     expect(device.state.pending).toBeNull()
     expect(device.state.account).toBeNull()

@@ -253,12 +253,19 @@ export function createAccountCeremony() {
 export function recoveryErrorMessage(error: unknown): string {
   const code = (error as { code?: string })?.code
   if (error instanceof AccountRecoveryError && error.insufficientSets?.length) {
-    return error.insufficientSets
-      .map(
-        set =>
-          `Backup ${set.identifier}: ${set.available} distinct shares available; ${set.required} required.`,
-      )
-      .join(' ')
+    const explanation =
+      code === 'inconsistent-share'
+        ? 'These shares come from different backup sets and cannot be combined. '
+        : ''
+    return (
+      explanation +
+      error.insufficientSets
+        .map(
+          set =>
+            `Backup ${set.identifier}: ${set.available} distinct shares available; ${set.required} required.`,
+        )
+        .join(' ')
+    )
   }
   const messages: Record<string, string> = {
     'descriptor-mismatch':

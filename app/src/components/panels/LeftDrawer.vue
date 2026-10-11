@@ -721,6 +721,8 @@ export default defineComponent({
 }
 
 .list-column {
+  flex-wrap: nowrap;
+  min-height: 0;
   min-width: 0; // allow the flex child to shrink below its content's natural width, so long chat
   // names/previews ellipsize instead of forcing the whole drawer wider than intended.
 }

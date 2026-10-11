@@ -176,9 +176,11 @@ function openBackup() {
 .wallet-panel,
 .wallet-list-scroll {
   min-height: 0;
+  min-width: 0;
 }
 .wallet-panel {
   container-type: inline-size;
+  flex-wrap: nowrap;
 }
 .wallet-list-item {
   height: 64px;
@@ -256,12 +258,16 @@ function openBackup() {
 }
 .wallet-backup-footer {
   flex: 0 0 auto;
+  min-width: 0;
 }
 .wallet-backup-action {
   display: flex;
   align-items: center;
   gap: 12px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   min-height: 48px;
   padding: 12px 16px;
   border: 0;
@@ -270,6 +276,15 @@ function openBackup() {
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+.wallet-backup-action > .q-icon {
+  flex: 0 0 auto;
+}
+.wallet-backup-action > span {
+  flex: 1 1 0%;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .wallet-backup-action:hover {
   background: var(--q-color-bg-active);

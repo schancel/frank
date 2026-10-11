@@ -1,9 +1,10 @@
 import { describePluginContract } from '../shared/plugin-contract.testutil'
 import { initDicePlugin } from './plugin'
-import { encodeCanonical } from '@frank/codec'
+import { encodeCanonical, encodeFrame, standaloneItemBudget, toHex, validateFrame, type Encodable } from '@frank/codec'
 import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
-import { standaloneDecodeContext } from '../shared/plugin-contract.testutil'
+import { registryWith, standaloneDecodeContext } from '../shared/plugin-contract.testutil'
 import { diceCodec } from './codec'
+import { decodeItemFrames } from '../wire'
 
 describePluginContract({
   type: 'dice',
@@ -71,5 +72,19 @@ describe('dice rejection schema', () => {
   it('requires correlation and reason before encoding an outbound rejection', () => {
     expect(() => diceCodec.encode({ type: 'dice', action: 'rejected' }))
       .toThrow(MessageItemEncodeError)
+  })
+
+  it('retains an unknown envelope version without interpreting its rejection', () => {
+    const data = diceCodec.encode({ type: 'dice', action: 'rejected', rollId: 'r1', rejectionReason: 'payout-limit' })
+    const frame = encodeFrame({ typeId: 27, schemaVersion: 2, minReaderVersion: 2 },
+      new Map<number, Encodable>([[0, 'dice'], [1, data]]))
+    const revision = validateFrame(encodeFrame(
+      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      new Map<number, Encodable>([[0, 'frank'], [1, [frame]]]),
+    ))
+    if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+      throw new Error('expected a revision')
+    expect(decodeItemFrames(registryWith('dice', initDicePlugin), revision.typed.items, standaloneItemBudget()))
+      .toEqual([{ type: 'unsupported', reason: 'unknown-type', frameType: 27, frame: toHex(frame) }])
   })
 })

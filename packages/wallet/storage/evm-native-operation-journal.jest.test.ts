@@ -260,6 +260,32 @@ describe('durable EVM native journal', () => {
       }
     },
   )
+  it('a runtime network switch rejects the same stored namespace; restoring the original network reopens original claims', async () => {
+    const row = await signed()
+    await journal.markExposed(row.operationId, 0)
+    const before = JSON.stringify(journal.get(row.operationId))
+    await journal.Close()
+    const switched = new EvmNativeOperationJournal({
+      location: root,
+      binding: {
+        ...binding,
+        chainIdentifier: 'monad-regtest',
+        nativeChainId: '20143',
+      },
+    })
+    try {
+      await expect(switched.Open()).rejects.toMatchObject({
+        name: 'EvmNativeJournalError',
+        code: 'binding',
+      })
+    } finally {
+      await switched.Close()
+    }
+    journal = new EvmNativeOperationJournal({ location: root, binding })
+    await journal.Open()
+    expect(JSON.stringify(journal.get(row.operationId))).toBe(before)
+    expect(journal.canSelect(address, 0)).toBe(false)
+  })
   it('uses canonical chain binding and exact native chain signatures for peer EVM networks', async () => {
     const wrong = plan(0, 11155111n)
     await expect(journal.prepare(wrong)).rejects.toThrow()

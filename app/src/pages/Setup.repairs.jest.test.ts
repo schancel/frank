@@ -382,3 +382,24 @@ test.each(['en', 'fr'] as const)(
     expect(view.find('[data-test="cancel-pending"]').exists()).toBe(true)
   },
 )
+
+test('BIP39 recovery still offers existing-account retry with a truthful network mismatch', async () => {
+  Object.assign(mockAccount, {
+    status: 'unavailable',
+    error: 'wallet-chain-mismatch',
+  })
+  const view = render()
+  await view.find('[data-test="legacy-locked-recovery"]').trigger('click')
+  await flushPromises()
+  expect(view.find('[data-test="account-status"]').text()).toMatch(
+    /network or account configuration/,
+  )
+  const retry = view.find('[data-test="retry-existing-account"]')
+  expect(retry.exists()).toBe(true)
+  await retry.trigger('click')
+  await flushPromises()
+  expect(mockSession.retry).toHaveBeenCalledTimes(1)
+  expect(mockSession.stage).not.toHaveBeenCalled()
+  expect(mockSession.reset).not.toHaveBeenCalled()
+  view.unmount()
+})

@@ -46,6 +46,21 @@
             {{ error }}
           </p>
           <q-btn
+            v-if="
+              (account.status === 'locked' ||
+                account.status === 'unavailable') &&
+              mode !== 'choice' &&
+              !tabCoordinator.otherTabActive
+            "
+            outline
+            color="primary"
+            no-caps
+            :label="$t('accountRecovery.retry_opening_account')"
+            :disable="busy"
+            data-test="retry-existing-account"
+            @click="retry"
+          />
+          <q-btn
             v-if="profileRecoveryFailed && account.status === 'ready'"
             outline
             color="primary"
@@ -122,7 +137,9 @@
             <p>
               {{
                 $t(
-                  account.error === 'profile-unreachable'
+                  account.error === 'wallet-chain-mismatch'
+                    ? 'accountRecovery.wallet_chain_mismatch'
+                    : account.error === 'profile-unreachable'
                     ? 'accountRecovery.profile_restore_unreachable'
                     : 'accountRecovery.saved_account_data_could_not_be_opened',
                 )
@@ -156,7 +173,10 @@
                 @click="startLegacyLocked"
               />
               <q-btn
-                v-if="account.error !== 'profile-unreachable'"
+                v-if="
+                  account.error !== 'profile-unreachable' &&
+                  account.error !== 'wallet-chain-mismatch'
+                "
                 flat
                 color="negative"
                 no-caps
@@ -918,6 +938,8 @@ const statusText = computed(() =>
     ? 'Account pending explicit activation.'
     : account.status === 'loading'
     ? 'Opening account storage…'
+    : account.error === 'wallet-chain-mismatch'
+    ? t('accountRecovery.wallet_chain_mismatch')
     : 'Account storage locked or unavailable.',
 )
 function clearSecrets(preserveLegacyPhrase = false) {

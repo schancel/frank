@@ -72,7 +72,7 @@ export {
   EvmNativeOperationPendingError,
 } from "./evm-legacy-consolidator";
 export type { EvmLegacyConsolidatorConfig } from "./evm-legacy-consolidator";
-export { EvmNativeOperationJournal } from "../storage/evm-native-operation-journal";
+export { EvmNativeOperationJournal, EvmNativeJournalError } from "../storage/evm-native-operation-journal";
 export type {
   EvmNativeOperation,
   EvmNativeSource,

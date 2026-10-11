@@ -1,6 +1,7 @@
 import { reactive, readonly } from 'vue'
 import {
   activeChain,
+  EvmNativeJournalError,
   getChainRegistryEntry,
   resolveNetworkId,
   getCustomRelayBaseUrl,
@@ -165,9 +166,18 @@ export function createAccountSession(deps: {
     state.pending = snapshot.pending
   }
   const fail = (error: unknown) => {
-    const code = error instanceof CustodyError ? error.code : 'unavailable'
+    const code =
+      error instanceof EvmNativeJournalError && error.code === 'binding'
+        ? 'wallet-chain-mismatch'
+        : error instanceof CustodyError
+        ? error.code
+        : 'unavailable'
     state.error = code
-    state.status = ['unavailable', 'profile-unreachable'].includes(code)
+    state.status = [
+      'unavailable',
+      'profile-unreachable',
+      'wallet-chain-mismatch',
+    ].includes(code)
       ? 'unavailable'
       : 'locked'
   }

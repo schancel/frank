@@ -149,10 +149,7 @@
           :address="address"
           :name="contact?.profile?.name ?? ''"
           @cancel="confirmDeleteOpen = false"
-          @deleted="
-            confirmDeleteOpen = false
-            $emit('deleted')
-          "
+          @deleted="contactDeleted"
         />
       </q-dialog>
     </q-page>
@@ -240,6 +237,10 @@ export default defineComponent({
     },
   },
   methods: {
+    contactDeleted() {
+      this.confirmDeleteOpen = false
+      this.$emit('deleted')
+    },
     copyAddress() {
       copyToClipboard(this.displayAddress)
         .then(() => addressCopiedNotify())

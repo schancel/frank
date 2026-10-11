@@ -83,12 +83,11 @@ const bare = (hex: string): string => hex.replace(/^0x/i, "").toLowerCase();
 const hashOf = (hex: string): string | undefined =>
   /^[0-9a-f]{64}$/.test(bare(hex)) ? `0x${bare(hex)}` : undefined;
 const height = (n: number): boolean => Number.isSafeInteger(n) && n >= 0;
-function fingerprint(fact: ReceivedEvidenceFact): string {
+function receiptFingerprint(fact: ReceivedEvidenceFact): string {
   const receipt = fact.receipt;
   return JSON.stringify([
     fact.chainIdentifier,
     bare(fact.transactionHash),
-    fact.rawTransaction === undefined ? null : bare(fact.rawTransaction),
     receipt.kind,
     ...(receipt.kind === "included"
       ? [
@@ -181,15 +180,40 @@ export function evaluateReceivedEvidence(input: {
     let tx = candidate.tx;
     const index = candidate.index;
     const matches = factsByHash.get(hash) ?? [];
-    if (new Set(matches.map(fingerprint)).size > 1) {
+    // Missing bytes and failed lookups add no contradictory chain fact. Merge them
+    // with a successful lookup, but never choose between different asserted receipts
+    // or different supplied transaction bytes merely because one came first.
+    const asserted = matches.filter(
+      (entry) => entry.receipt.kind !== "unavailable"
+    );
+    const rawTransactions = new Set(
+      matches.flatMap((entry) =>
+        entry.rawTransaction === undefined ? [] : [bare(entry.rawTransaction)]
+      )
+    );
+    if (
+      new Set(matches.map((entry) => entry.chainIdentifier)).size > 1 ||
+      new Set(asserted.map(receiptFingerprint)).size > 1 ||
+      rawTransactions.size > 1
+    ) {
       issue("conflicting-chain-evidence", hash);
       continue;
     }
-    const fact = matches[0];
-    if (fact !== undefined && fact.chainIdentifier !== owner.chainIdentifier) {
+    const source = asserted[0] ?? matches[0];
+    if (
+      source !== undefined &&
+      source.chainIdentifier !== owner.chainIdentifier
+    ) {
       reject(index, "wrong-chain-context");
       continue;
     }
+    const fact =
+      source === undefined
+        ? undefined
+        : {
+            ...source,
+            rawTransaction: rawTransactions.values().next().value,
+          };
     if (fact?.rawTransaction !== undefined) {
       try {
         const actual = Transaction.from(`0x${bare(fact.rawTransaction)}`);
@@ -218,28 +242,29 @@ export function evaluateReceivedEvidence(input: {
     }
     if (tx.to?.toLowerCase() !== recipient) {
       reject(index, "wrong-recipient");
-      continue;
-    }
-    if (tx.from?.toLowerCase() === recipient) {
+    } else if (tx.from?.toLowerCase() === recipient) {
       reject(index, "self-transfer");
-      continue;
-    }
-    if (tx.data !== "0x" || tx.value <= 0n) {
+    } else if (tx.data !== "0x" || tx.value <= 0n) {
       reject(index, "not-plain-positive-transfer");
-      continue;
+    } else {
+      validTransactions.set(hash, tx);
     }
-    validTransactions.set(hash, tx);
+    // Even a noncontributing native transaction can contradict another canonical
+    // transaction at its sender nonce. Classify its receipt before excluding value.
     if (fact === undefined) {
       issue("receipt-unavailable", hash);
       continue;
     }
     const receipt = fact.receipt;
     if (receipt.kind === "unavailable") {
-      issue(receipt.reason, hash);
+      for (const entry of matches) {
+        if (entry.receipt.kind === "unavailable")
+          issue(entry.receipt.reason, hash);
+      }
       continue;
     }
     if (receipt.kind === "pending") {
-      pending.add(hash);
+      if (validTransactions.has(hash)) pending.add(hash);
       continue;
     }
     if (hashOf(receipt.transactionHash) !== hash) {
@@ -255,7 +280,7 @@ export function evaluateReceivedEvidence(input: {
       continue;
     }
     if (receipt.blockNumber > head.number) {
-      pending.add(hash);
+      if (validTransactions.has(hash)) pending.add(hash);
       continue;
     }
     const blocks = blocksByHeight.get(receipt.blockNumber) ?? [];
@@ -322,6 +347,7 @@ export function evaluateReceivedEvidence(input: {
   for (const [hash, { tx, status }] of [...known].sort(([a], [b]) =>
     a.localeCompare(b)
   )) {
+    if (!validTransactions.has(hash)) continue;
     if (status === 0) reverted.add(hash);
     else {
       verifiedReceivedWei += tx.value;

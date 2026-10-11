@@ -328,3 +328,148 @@ it("contradictory receipt facts never select whichever was supplied first", asyn
     expect(result.issues[0].reason).toBe("conflicting-chain-evidence");
   }
 });
+
+it("merges complementary receipt bytes in either order without losing verified value", async () => {
+  const raw = await sign();
+  const complete = fact(raw);
+  const { rawTransaction: _raw, ...withoutBytes } = complete;
+  for (const facts of [
+    [complete, withoutBytes],
+    [withoutBytes, complete],
+  ]) {
+    const result = evaluate([complete.transactionHash], facts);
+    expect(result.verifiedReceivedWei).toBe(10n);
+    expect(result.verifiedTransactions).toEqual([raw]);
+    expect(result.issues).toEqual([]);
+    expect(result.rejected).toEqual([]);
+  }
+});
+
+it.each(["rpc-unavailable", "receipt-unavailable"] as const)(
+  "resolves a duplicate %s lookup with a verified receipt in either order",
+  async (reason) => {
+    const raw = await sign();
+    const complete = fact(raw);
+    const unavailable = {
+      ...complete,
+      rawTransaction: undefined,
+      receipt: { kind: "unavailable" as const, reason },
+    };
+    for (const facts of [
+      [complete, unavailable],
+      [unavailable, complete],
+    ]) {
+      const result = evaluate([complete.transactionHash], facts);
+      expect(result.verifiedReceivedWei).toBe(10n);
+      expect(result.verifiedTransactions).toEqual([raw]);
+      expect(result.issues).toEqual([]);
+      expect(result.rejected).toEqual([]);
+    }
+  }
+);
+
+it.each(["status", "block", "hash", "raw"] as const)(
+  "excludes genuinely contradictory %s facts in either order",
+  async (field) => {
+    const raw = await sign();
+    const entry = fact(raw);
+    if (entry.receipt.kind !== "included")
+      throw new Error("Expected included fixture");
+    const conflicting =
+      field === "raw"
+        ? { ...entry, rawTransaction: await sign({ value: 11n }) }
+        : {
+            ...entry,
+            receipt: {
+              ...entry.receipt,
+              ...(field === "status"
+                ? { status: 0 as const }
+                : field === "block"
+                ? { blockHash: headHash }
+                : { transactionHash: headHash }),
+            },
+          };
+    for (const facts of [
+      [entry, conflicting],
+      [conflicting, entry],
+    ]) {
+      const result = evaluate([raw], facts);
+      expect(result.verifiedReceivedWei).toBe(0n);
+      expect(result.issues).toEqual([
+        {
+          reason: "conflicting-chain-evidence",
+          transactionHash: entry.transactionHash,
+        },
+      ]);
+    }
+  }
+);
+
+it.each(["recipient", "calldata"] as const)(
+  "detects a canonical noncontributing %s alternative at the same sender nonce in either order",
+  async (field) => {
+    const incoming = await sign();
+    const alternative = await sign(
+      field === "recipient" ? { to: otherPayer.address } : { data: "0x1234" }
+    );
+    const independent = await sign({ value: 19n }, otherPayer);
+    for (const alternatives of [
+      [incoming, alternative],
+      [alternative, incoming],
+    ]) {
+      const result = evaluate(
+        [...alternatives, independent],
+        [...alternatives.map((raw) => fact(raw)), fact(independent)]
+      );
+      expect(result.verifiedReceivedWei).toBe(19n);
+      expect(result.verifiedTransactions).toEqual([independent]);
+      expect(
+        result.rejected.filter(
+          (entry) => entry.reason === "conflicting-canonical-nonce"
+        )
+      ).toHaveLength(2);
+      expect(
+        result.issues.filter(
+          (entry) => entry.reason === "conflicting-chain-evidence"
+        )
+      ).toHaveLength(2);
+    }
+  }
+);
+
+it.each(["wrong-chain", "noncanonical", "malformed"] as const)(
+  "does not let a %s alternative poison a canonical incoming receipt",
+  async (kind) => {
+    const incoming = await sign();
+    const alternative = await sign({
+      to: otherPayer.address,
+      ...(kind === "wrong-chain" ? { chainId: 1n } : {}),
+    });
+    const alternativeFact = fact(alternative);
+    const facts = [
+      fact(incoming),
+      kind === "noncanonical" && alternativeFact.receipt.kind === "included"
+        ? {
+            ...alternativeFact,
+            receipt: { ...alternativeFact.receipt, blockHash: headHash },
+          }
+        : alternativeFact,
+    ];
+    for (const alternatives of [
+      [incoming, alternative],
+      [alternative, incoming],
+    ]) {
+      const result = evaluate(
+        kind === "malformed" ? [incoming, "0x1234"] : alternatives,
+        facts
+      );
+      expect(result.verifiedReceivedWei).toBe(10n);
+      expect(result.verifiedTransactions).toEqual([incoming]);
+      expect(
+        result.rejected.some(
+          (entry) => entry.reason === "conflicting-canonical-nonce"
+        )
+      ).toBe(false);
+    }
+  }
+);

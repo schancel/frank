@@ -679,16 +679,29 @@ export default defineComponent({
   }
 }
 
-// Fixed-width icon-only nav column (ticket #123) -- 72px matches the reference apps (Telegram/
-// WhatsApp/Signal) this pass drew from. A faint background tint (not the same flat color as the
-// list column) is what actually reads as "two columns" rather than "one column with icons on
-// top" -- color alone from `body--dark`/`body--light`'s `--q-color-bg-active` was tried first and
-// wasn't enough contrast against the list column's own background to register as a separate rail
-// at a glance.
+// Keep the icon rail compact while preserving 48px-tall pointer and keyboard targets.
 .icon-rail {
-  width: 72px;
-  min-width: 72px;
+  width: 56px;
+  min-width: 56px;
   background: var(--q-color-bg-active);
+}
+
+.icon-rail :deep(.q-tab) {
+  flex: 0 0 48px;
+  height: 48px;
+  min-height: 48px;
+  padding: 0 16px;
+}
+
+.icon-rail :deep(.q-tab__content) {
+  min-width: 24px;
+  padding: 0;
+}
+
+.icon-rail :deep(.q-tab__icon) {
+  width: 24px;
+  height: 24px;
+  font-size: 24px;
 }
 
 .wallet-rail-tab {

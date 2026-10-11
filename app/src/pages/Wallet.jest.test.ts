@@ -59,6 +59,7 @@ import { accountStatus } from '../accounts/session'
 import {
   activeChain,
   getActiveChain,
+  getChainRegistryEntry,
   setActiveChain,
 } from '@frank/wallet/chain'
 const session = accountStatus as { status: string; revision: number }
@@ -254,6 +255,45 @@ describe('Wallet detail page (#570)', () => {
     jest.mocked(errorNotify).mockClear()
   })
 
+  it.each([
+    ['monad-regtest', 'MONR'],
+    ['monad-testnet', 'MONT'],
+    ['monad-mainnet', 'MON'],
+  ])('uses configured %s metadata for header, balance and native Send', async (chainIdentifier, unit) => {
+    const original = getActiveChain()
+    const metadata = getChainRegistryEntry(chainIdentifier)!
+    try {
+      setActiveChain({ ...original, chainIdentifier, unit, isTestnet: metadata.isTestnet })
+      balance.formattedBalance.value = `0 ${unit}`
+      const wrapper = mountWallet()
+      await flush()
+      expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe(`(${unit})`)
+      expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(`0 ${unit}`)
+      const send = wrapper.get('[data-testid="wallet-send-action"]')
+      expect(send.text()).toBe(`walletPanel.sendAsset:${unit}`)
+      expect(send.attributes('disabled')).toBeUndefined()
+      await send.trigger('click')
+      expect(openPage).toHaveBeenCalledWith(expect.anything(), `/send?chainIdentifier=${chainIdentifier}`)
+      wrapper.unmount()
+    } finally { setActiveChain(original) }
+  })
+
+  it('updates canonical metadata when regtest changes to testnet without changing the testnet flag', async () => {
+    const original = getActiveChain()
+    try {
+      setActiveChain({ ...original, chainIdentifier: 'monad-regtest', unit: 'MONR', isTestnet: true })
+      const wrapper = mountWallet()
+      await flush()
+      expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe('(MONR)')
+      setActiveChain({ ...original, chainIdentifier: 'monad-testnet', unit: 'MONT', isTestnet: true })
+      await flush()
+      expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe('(MONT)')
+      await wrapper.get('[data-testid="wallet-send-action"]').trigger('click')
+      expect(openPage).toHaveBeenCalledWith(expect.anything(), '/send?chainIdentifier=monad-testnet')
+      wrapper.unmount()
+    } finally { setActiveChain(original) }
+  })
+
   it('shows the wallet, its chain, balance and address', async () => {
     const wrapper = mountWallet()
     await flush()
@@ -268,7 +308,7 @@ describe('Wallet detail page (#570)', () => {
       '0xabc',
     )
     expect(wrapper.get('[data-testid="wallet-send-action"]').text()).toBe(
-      'walletPanel.sendMont',
+      'walletPanel.sendAsset:MONT',
     )
     expect(wrapper.get('[data-testid="wallet-unit"]').text()).toBe('(MONT)')
     await wrapper.get('[data-testid="wallet-about-avu"]').trigger('click')

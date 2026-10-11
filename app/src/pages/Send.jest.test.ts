@@ -12,6 +12,7 @@ import {
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
 } from '@frank/wallet/chain'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { createSolanaChain } from '@frank/wallet/chain/solana-chain'
 import type { NativeAssetChain } from '@frank/wallet/chain'
 import { sentTransactionNotify, errorNotify } from 'src/utils/notifications'
@@ -179,6 +180,32 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       isCurrent: () => mockCurrent.value,
     })
     mockAssertCurrent.mockReset().mockResolvedValue(undefined)
+  })
+
+  it.each(['monad-regtest', 'monad-testnet'])('keeps %s network, amount and fee metadata consistent before signing', async id => {
+    const metadata = getChainRegistryEntry(id)!
+    mockRoute.query = { chainIdentifier: id }
+    mockSelectedChain = {
+      ...activeChain,
+      chainIdentifier: id,
+      unit: metadata.unit,
+      nativeTransfers: {
+        ...activeChain.nativeTransfers,
+        estimateLegacyFee: jest.fn().mockResolvedValue({ totalFee: 4_242_000_000_000_000n, deliveryFee: 4_242_000_000_000_000n, inputCount: 1 }),
+      },
+    }
+    const wrapper = mountSend()
+    await flushPromises()
+    expect(wrapper.get('[data-test="send-amount-input"]').attributes('placeholder')).toContain(metadata.unit)
+    await wrapper.get('[data-test="send-address-input"]').setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.01')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="review-network"]').text()).toBe(metadata.name)
+    expect(wrapper.get('[data-test="review-amount"]').text()).toBe(`0.01 ${metadata.unit}`)
+    expect(wrapper.get('[data-test="review-fee"]').text()).toBe(`0.004242 ${metadata.unit}`)
+    expect(wrapper.get('[data-test="review-total"]').text()).toContain(`0.01 ${metadata.unit}`)
+    expect(mockSend).not.toHaveBeenCalled()
   })
 
   it('initial form action performs no signing or broadcast and opens review state', async () => {

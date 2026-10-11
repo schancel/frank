@@ -1,7 +1,4 @@
-import {
-  getChainRegistryEntry,
-  resolveNetworkId,
-} from '@frank/wallet/chain/chains-registry'
+import { walletNetworkMetadata } from './wallet-support'
 
 export interface WalletItemConfig {
   id: string
@@ -191,13 +188,9 @@ export function getWalletNetworkLabel(
   isTestnet: boolean,
   translate: (key: string) => string,
 ): string {
-  if (wallet.id === 'solana') {
-    const metadata = getChainRegistryEntry(
-      resolveNetworkId(wallet.id, isTestnet),
-    )
-    if (metadata?.family !== 'solana')
-      throw new Error('Missing Solana network metadata')
+  const metadata = walletNetworkMetadata(wallet.id, isTestnet)
+  if (metadata?.family === 'solana' || metadata?.network === 'regtest')
     return metadata.name
-  }
+
   return translate(isTestnet ? wallet.testnetChainKey : wallet.chainKey)
 }

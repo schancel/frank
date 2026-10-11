@@ -734,7 +734,6 @@ import {
 import {
   activeChain,
   onActiveChainChange,
-  resolveNetworkId,
   findEvmNativeOperationStatus,
   getChainRegistryEntry,
   type EvmNativeOperationStatus,
@@ -820,24 +819,18 @@ export default defineComponent({
       WALLET_CONFIGS.find(w => w.id === selectedWallet.value),
     )
     const sendChainIdentifier = computed(() =>
-      nativeSendChainIdentifier(selectedWallet.value, isTestnet.value),
+      nativeSendChainIdentifier(selectedWallet.value, isTestnet.value, network.value.chainIdentifier),
     )
 
     // Whether the app has a wallet for this network, from the chain registry.
     const support = computed(() =>
-      walletSupport(selectedWallet.value, isTestnet.value),
+      walletSupport(selectedWallet.value, isTestnet.value, network.value.chainIdentifier),
     )
     const walletStatus = computed(() => support.value.status)
-    const sendLabel = computed(() =>
-      selectedWallet.value === 'monad'
-        ? {
-            key: isTestnet.value ? 'walletPanel.sendMont' : 'walletPanel.send',
-          }
-        : {
-            key: 'walletPanel.sendAsset',
-            params: { unit: support.value.entry?.unit ?? '' },
-          },
-    )
+    const sendLabel = computed(() => ({
+      key: 'walletPanel.sendAsset',
+      params: { unit: support.value.entry?.unit ?? '' },
+    }))
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
     const {
@@ -1027,6 +1020,7 @@ export default defineComponent({
         const capability = walletSupport(
           chain,
           capturedChain.isTestnet ?? false,
+          capturedChain.chainIdentifier,
         )
         if (capability.status === 'unsupported') {
           displayAddress.value = ''
@@ -1099,18 +1093,8 @@ export default defineComponent({
       sendChainIdentifier,
       walletStatus,
       sendLabel,
-      selectedWalletIsTestnet: computed(
-        () =>
-          getChainRegistryEntry(
-            resolveNetworkId(selectedWallet.value, isTestnet.value),
-          )?.isTestnet ?? false,
-      ),
-      walletUnit: computed(
-        () =>
-          getChainRegistryEntry(
-            resolveNetworkId(selectedWallet.value, isTestnet.value),
-          )?.unit ?? '',
-      ),
+      selectedWalletIsTestnet: computed(() => support.value.entry?.isTestnet ?? false),
+      walletUnit: computed(() => support.value.entry?.unit ?? ''),
       selectedChain: selectedWallet,
       currentWalletConfig,
       isTestnet,

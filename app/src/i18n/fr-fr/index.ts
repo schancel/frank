@@ -787,7 +787,7 @@ export default {
     deleteChat: 'Supprimer la discussion',
     unknownContact: 'Inconnu',
     usernameReassigned:
-      "Vous avez ajouté ce contact sous {'@'}{username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.",
+      'Vous avez ajouté ce contact sous {username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.',
   },
   sendStealthDialog: {
     sendStealthTo: 'Envoyer furtivement à',
@@ -1313,9 +1313,9 @@ export default {
     usernameNotHeld:
       "Votre identifiant enregistré n'est pas détenu par ce compte sur le relais. Ouvrez votre profil pour savoir pourquoi.",
     usernameStillHeld:
-      "Ce compte détient {'@'}{username}. Un identifiant ne peut pas être abandonné : il reste le vôtre jusqu'à ce que vous en preniez un autre.",
+      "Ce compte détient {username}. Un identifiant ne peut pas être abandonné : il reste le vôtre jusqu'à ce que vous en preniez un autre.",
     nameStartsWithAt:
-      "Un nom ne peut pas commencer par {'@'}. C'est ainsi que s'écrivent les identifiants ; définissez le vôtre dans le champ Identifiant.",
+      "Un nom ne peut pas commencer par {'@'}. Définissez votre identifiant dans le champ Identifiant.",
     location: 'Localisation',
     locationHint: 'Où vous vous situez (facultatif)',
     links: 'Liens et réseaux',

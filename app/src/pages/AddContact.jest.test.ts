@@ -1185,7 +1185,9 @@ describe('AddContact latest lookup', () => {
         const items = wrapper.findAll('[data-test="existing-contact-item"]')
         expect(items.length).toBe(1)
         expect(items[0].text()).toContain('Alice Smith')
-        expect(items[0].text()).toContain('@alice')
+        expect(items[0].find('[data-test="username-handle"]').text()).toBe(
+          'alice',
+        )
 
         // Click suggestion
         await items[0].trigger('click')
@@ -1336,7 +1338,7 @@ describe('AddContact latest lookup', () => {
       const accepted = (wrapper.vm as any).acceptedLookup
       expect(accepted.contact.profile.username).toBe('bee')
       expect(accepted.contact.profile.addedByUsername).toBeNull()
-      expect(wrapper.find('[data-test="username-handle"]').text()).toBe('@bee')
+      expect(wrapper.find('[data-test="username-handle"]').text()).toBe('bee')
     })
   })
 })

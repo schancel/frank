@@ -82,6 +82,24 @@ describe('Profile.vue component avatar handling', () => {
     window.Image = originalImage
   })
 
+  it('shows the username plainly in the editor and identity card', () => {
+    const wrapper = mount(ProfileComponent, {
+      props: {
+        avatar: 'data:image/webp;base64,EXISTING',
+        username: 'alice_99',
+      },
+      global: { mocks: { $t: (key: string) => key }, stubs: defaultStubs },
+    })
+    expect(
+      wrapper.get('[data-test="profile-input-username"]').attributes('prefix'),
+    ).toBeUndefined()
+    expect(wrapper.get('[data-panel="identity"]').text()).toContain('alice_99')
+    expect(wrapper.get('[data-panel="identity"]').text()).not.toContain(
+      '@alice_99',
+    )
+    wrapper.unmount()
+  })
+
   it('resizes default avatar on creation when no avatar is provided', async () => {
     const wrapper = mount(ProfileComponent, {
       props: {
@@ -228,7 +246,7 @@ describe('Profile.vue component avatar handling', () => {
     expect((wrapper.vm as any).usernameHint).toBe('profile.usernameHint')
   })
 
-  it('refuses a display name that starts with @, which is how usernames are written', async () => {
+  it('refuses a display name that starts with @, under the existing display-name rule', async () => {
     const wrapper = mount(ProfileComponent, {
       props: { name: 'Alice' },
       global: {

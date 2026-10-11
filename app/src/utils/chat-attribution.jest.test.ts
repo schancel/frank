@@ -161,7 +161,7 @@ describe('naming a sender', () => {
       { address: BOB, inContacts: true, name: ' qwen ' },
       { address: STRANGER, inContacts: true, name: 'Carol' },
     ])
-    expect(senderOf(senders, ALICE)?.label).toBe('Qwen (@qwen)')
+    expect(senderOf(senders, ALICE)?.label).toBe('Qwen (qwen)')
     expect(senderOf(senders, BOB)?.label).toBe(' qwen  (0x3333...3333)')
     expect(senderOf(senders, STRANGER)?.label).toBe('Carol')
   })

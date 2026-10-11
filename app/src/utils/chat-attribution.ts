@@ -113,7 +113,7 @@ export function resolveSenders(
     const short = shortAddress(record.address)
     const ambiguous = (count.get(comparable(name)) ?? 0) > 1 && name !== short
     const unique =
-      record.inContacts && record.username ? `@${record.username}` : short
+      record.inContacts && record.username ? record.username : short
     senders.set(key(record.address), {
       address: record.address,
       label: ambiguous ? `${name} (${unique})` : name,

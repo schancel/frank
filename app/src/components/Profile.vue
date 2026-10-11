@@ -51,7 +51,6 @@
                     v-model="internalUsername"
                     :label="$t('profile.username')"
                     :hint="usernameHint"
-                    prefix="@"
                     lazy-rules
                     style="width: 100%"
                     :rules="[usernameRule]"
@@ -274,7 +273,7 @@
                   v-if="internalUsername"
                   class="text-subtitle1 text-grey-7 q-mb-md"
                 >
-                  @{{ internalUsername }}
+                  {{ internalUsername }}
                 </div>
 
                 <div class="q-mb-md">

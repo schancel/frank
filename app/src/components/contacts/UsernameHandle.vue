@@ -1,12 +1,12 @@
 <template>
   <!-- A username the relay confirms this account holds. Drawn as a bordered pill with an icon,
-       which plain text such as a display name beginning with "@" cannot imitate. -->
+       which plain display-name text cannot imitate. -->
   <span
     class="username-handle"
     data-test="username-handle"
     :title="$t('profile.usernameConfirmedTitle')"
   >
-    <q-icon name="verified" size="12px" class="username-handle__icon" />@{{
+    <q-icon name="verified" size="12px" class="username-handle__icon" />{{
       username
     }}
   </span>
@@ -18,7 +18,7 @@ import { defineComponent } from 'vue'
 export default defineComponent({
   name: 'UsernameHandle',
   props: {
-    /** The name without its leading @, exactly as the relay returned it. */
+    /** The username exactly as the relay returned it. */
     username: {
       type: String,
       required: true,

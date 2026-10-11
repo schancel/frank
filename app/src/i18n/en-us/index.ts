@@ -769,7 +769,7 @@ export default {
     deleteChat: 'Delete Chat',
     unknownContact: 'Unknown',
     usernameReassigned:
-      "You added this contact as {'@'}{username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.",
+      'You added this contact as {username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.',
   },
   sendStealthDialog: {
     sendStealthTo: 'Send Stealth to',
@@ -1279,9 +1279,9 @@ export default {
     usernameNotHeld:
       'Your saved username is not held by this account on the relay. Open your profile to see why.',
     usernameStillHeld:
-      "This account holds {'@'}{username}. A username cannot be given up: it stays yours until you claim another one.",
+      'This account holds {username}. A username cannot be given up: it stays yours until you claim another one.',
     nameStartsWithAt:
-      "A name cannot start with {'@'}. That is how usernames are written; set yours in the Username field.",
+      "A name cannot start with {'@'}. Set your username in the Username field.",
     location: 'Location',
     locationHint: 'Where you are based (optional)',
     links: 'Links & Socials',

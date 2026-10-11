@@ -1427,18 +1427,32 @@ describe("with the real canonical wallet", () => {
       fetch,
     });
     install(botWallet);
-    /** The host's chain reports every payment it is asked about as confirmed. */
+    /** Incoming receipt evidence is a narrow unit seam: mockFetch below injects the prompt
+     * directly, bypassing wallet coin ingestion. Outgoing payment journals remain real. */
     const confirmPayments = () => {
-      (
-        host as unknown as { chain: { nativeTransfers?: unknown } }
-      ).chain.nativeTransfers = {
-        getTransactionStatus: async () => "confirmed",
-      };
-      (
-        host as unknown as { provider: { getTransaction: unknown } }
-      ).provider.getTransaction = async () => ({
-        to: "0x" + "5e".repeat(20),
-        value: 2_000_000_000_000n,
+      qwen().wallet.checkMessagePayment = jest.fn(async (digest: string) => {
+        if (digest !== prompt.payloadDigest)
+          return {
+            status: "none" as const,
+            receivedWei: 0n,
+            statedWei: 0n,
+            payments: [],
+          };
+        return {
+          status: "received" as const,
+          receivedWei: prompt.stampValueWei,
+          statedWei: prompt.stampValueWei,
+          payments: prompt.stampPayments!.map((payment) => ({
+            address: payment.destinationAddress.toLowerCase(),
+            origin: "stamp" as const,
+            status: "received" as const,
+            amountWei: payment.valueWei,
+            receivedAmountWei: payment.valueWei,
+            claimedAmountWei: payment.valueWei,
+            spendable: true,
+            payloadDigest: digest,
+          })),
+        };
       });
     };
     /** The process ends and starts again: a new host, and the wallet reopened from its disk. */

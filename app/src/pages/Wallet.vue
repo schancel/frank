@@ -1099,7 +1099,12 @@ export default defineComponent({
       sendChainIdentifier,
       walletStatus,
       sendLabel,
-      selectedWalletIsTestnet: computed(() => getChainRegistryEntry(resolveNetworkId(selectedWallet.value, isTestnet.value))?.isTestnet ?? false),
+      selectedWalletIsTestnet: computed(
+        () =>
+          getChainRegistryEntry(
+            resolveNetworkId(selectedWallet.value, isTestnet.value),
+          )?.isTestnet ?? false,
+      ),
       walletUnit: computed(
         () =>
           getChainRegistryEntry(

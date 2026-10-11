@@ -73,7 +73,9 @@ test('renders only available wallets with icon, name and one native balance line
       'Loading balance…',
     )
     expect(row.findAll('[data-test$="testnet-badge"]')).toHaveLength(1)
-    expect(row.get('[data-test$="testnet-badge"]').element.parentElement).toBe(row.get('[data-test$="wallet-name"]').element)
+    expect(row.get('[data-test$="testnet-badge"]').element.parentElement).toBe(
+      row.get('[data-test$="wallet-name"]').element,
+    )
     expect(row.findAll('button')).toHaveLength(0)
   }
   for (const id of ['dogecoin', 'ethereum', 'tempo', 'hyperliquid'])
@@ -192,11 +194,17 @@ test('marks configured test networks and removes badges when the selected networ
   const view = render()
   try {
     expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(5)
-    setActiveChain({ ...original, chainIdentifier: 'monad-mainnet', isTestnet: false })
+    setActiveChain({
+      ...original,
+      chainIdentifier: 'monad-mainnet',
+      isTestnet: false,
+    })
     await flushPromises()
     expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(0)
-    expect(view.findAll('[data-test$="wallet-name-text"]')).toHaveLength(5)
-    expect(view.findAll('[data-test$="wallet-balance"]')).toHaveLength(5)
+    expect(
+      view.findAll('[data-test$="wallet-name-text"]').map(row => row.text()),
+    ).toEqual(['Main wallet', 'Solana'])
+    expect(view.findAll('[data-test$="wallet-balance"]')).toHaveLength(2)
   } finally {
     view.unmount()
     setActiveChain(original)

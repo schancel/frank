@@ -102,7 +102,7 @@ test('restore without descriptor recovers valid roots and stages account', async
   await restore.confirm(f.shares.slice(0, 2), 'Restored Account')
   expect(accountSession.stage).toHaveBeenCalledTimes(1)
   const staged = jest.mocked(accountSession.stage).mock.calls[0][0]
-  expect(staged.displayName).toBe('Restored Account')
+  expect(staged.displayName).toBe('')
   f.ceremony.cancel()
 })
 test('stages the account root with the roots and wipes its own copy afterwards', async () => {

@@ -27,6 +27,7 @@ export interface ExpectedActive {
 }
 
 export interface PublicAccount {
+  /** Local presentation only; may be empty for a recovered account. */
   readonly displayName: string
   readonly descriptor: string
   readonly fingerprint: string

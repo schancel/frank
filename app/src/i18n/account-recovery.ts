@@ -1,4 +1,7 @@
 export const en = {
+  profile_restore_unreachable:
+    'Your account was recovered, but its profile could not be fetched. Check the relay connection and retry.',
+  profile_restore_retry: 'Retry profile lookup',
   pending_outdated_cancel_and_redo:
     'This attempt was saved by an earlier version of Frank and cannot be activated. Cancel it, then create or restore the account again. The shares you wrote down still restore the account.',
   pending_retry:
@@ -153,6 +156,9 @@ export const en = {
 }
 
 export const fr = {
+  profile_restore_unreachable:
+    'Votre compte a été récupéré, mais son profil n’a pas pu être chargé. Vérifiez la connexion au relais et réessayez.',
+  profile_restore_retry: 'Réessayer de charger le profil',
   pending_outdated_cancel_and_redo:
     'Cette tentative a été enregistrée par une version antérieure de Frank et ne peut pas être activée. Annulez-la, puis créez ou restaurez le compte à nouveau. Les parts que vous avez notées restaurent toujours le compte.',
   pending_retry:

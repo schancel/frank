@@ -177,7 +177,8 @@ export function createAccountCeremony() {
      * user picks one explicitly through `choose`. This never picks for them.
      */
     async confirm(shares: readonly string[], name: string) {
-      const displayName = requireValidProfileDisplayName(name)
+      // A name is profile presentation, never a prerequisite for recovering the account root.
+      const displayName = signup ? requireValidProfileDisplayName(name) : ''
       if (!attempt) throw new Error('Start an account ceremony first')
       if (signup) {
         return finish(
@@ -223,8 +224,7 @@ export function createAccountCeremony() {
       return { ...outcome, report: recovery.shares }
     },
     /** Stage the candidate the user picked after `confirm` returned several. */
-    async choose(index: number, name: string) {
-      const displayName = requireValidProfileDisplayName(name)
+    async choose(index: number, _name?: string) {
       const candidates = choice
       choice = undefined
       const chosen = candidates?.[index]
@@ -235,7 +235,7 @@ export function createAccountCeremony() {
         cancel()
         throw new Error('Start an account ceremony first')
       }
-      return finish(() => chosen, true, displayName)
+      return finish(() => chosen, true, '')
     },
   }
 }

@@ -8,6 +8,7 @@ import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { AccountBackupUnavailableError } from './session'
 import {
   closeDevices,
+  activate,
   describeAccount,
   failure,
   forgetAccountRoot,
@@ -35,6 +36,31 @@ jest.mock('@frank/cashweb/relay', () => ({
 
 beforeAll(prepareDevices)
 afterEach(closeDevices)
+
+test('restore activates and reopens the same custody account without a display name', async () => {
+  const originalDevice = freshDevice()
+  const shares = await signUp(originalDevice)
+  const original = await describeAccount(originalDevice)
+  await originalDevice.close()
+
+  const recoveredDevice = freshDevice()
+  await recoveredDevice.initialize()
+  const ceremony = createAccountCeremony()
+  await ceremony.beginRestore()
+  await ceremony.confirm(shares.slice(0, 2), '')
+  expect(recoveredDevice.state.pending?.account.displayName).toBe('')
+  expect(recoveredDevice.state.pendingIdentityAddress).toBe(
+    original.identityAddress,
+  )
+  await activate(recoveredDevice)
+  expect(await describeAccount(recoveredDevice)).toEqual(original)
+  await recoveredDevice.close()
+
+  const reopened = openSession()
+  await reopened.initialize()
+  expect(reopened.state.account?.displayName).toBe('')
+  expect(await describeAccount(reopened)).toEqual(original)
+})
 
 test('a backup made from Settings restores the same account on a fresh device', async () => {
   const first = freshDevice()

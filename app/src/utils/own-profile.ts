@@ -40,6 +40,8 @@ export type OwnProfileStore = ProfileState
 export type OwnProfileOutcome =
   /** The relay could not be asked; nothing was read or published. */
   | 'unreachable'
+  /** No published profile and no locally entered profile to publish. */
+  | 'missing'
   /** The relay's profile is now this device's copy. */
   | 'adopted'
   /** This device's profile was published: an unpublished edit, or the account's first. */
@@ -136,6 +138,8 @@ export async function syncOwnProfile(options: {
   const relayProfile = published ? storedProfileOf(published) : {}
   const relayHasProfile = hasContent(relayProfile)
 
+  if (!relayHasProfile && !hasContent(store.profile)) return 'missing'
+
   if (relayHasProfile && !store.unpublished) {
     if (sameProfile(store.profile, relayProfile)) return 'unchanged'
     store.profile = relayProfile
@@ -155,6 +159,39 @@ export async function syncOwnProfile(options: {
   // An edit made while this one was on its way is still unpublished.
   if (sameProfile(store.profile, sent)) store.unpublished = false
   return 'published'
+}
+
+/** Recover presentation after custody activation. This read never publishes a local copy. */
+export async function restoreOwnProfileWithRelay(options: {
+  relayBaseUrl: string
+  identity: MonadIdentity
+  isCancelled?: () => boolean
+}): Promise<'adopted' | 'missing' | 'unreachable'> {
+  const store = useProfileStore()
+  await store.restored
+  if (options.isCancelled?.()) return 'unreachable'
+  const address = options.identity.address.raw
+  claimProfileStore(store, address)
+  let published: ProfileInfo | undefined
+  try {
+    published = await fetchMonadProfile({
+      relayBaseUrl: options.relayBaseUrl,
+      address: options.identity.address,
+      signal: AbortSignal.timeout(PROFILE_RELAY_TIMEOUT_MS),
+    })
+  } catch {
+    return 'unreachable'
+  }
+  if (options.isCancelled?.() || !sameAddress(store.owner, address))
+    return 'unreachable'
+  if (!published) {
+    store.profile = {}
+    store.unpublished = false
+    return 'missing'
+  }
+  store.profile = storedProfileOf(published)
+  store.unpublished = false
+  return hasContent(store.profile) ? 'adopted' : 'missing'
 }
 
 // Serialise publishes for one account only. A stalled old account must not hold up the new

@@ -84,7 +84,6 @@ function hexText(value: unknown): string {
 function displayName(value: unknown): string {
   if (
     typeof value !== 'string' ||
-    !value.length ||
     value.length > 80 ||
     value !== value.trim() ||
     Array.from(value).some(character => {

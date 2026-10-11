@@ -1,6 +1,6 @@
 <template>
-  <div class="q-py-sm" data-testid="solana-swap-panel">
-    <q-card flat bordered>
+  <div class="solana-swap-panel" data-testid="solana-swap-panel">
+    <div>
       <q-card-section v-if="phase === 'loading'" class="text-center q-py-lg">
         <q-spinner color="primary" size="28px" />
         <div class="text-caption text-grey-7 q-mt-sm" role="status">
@@ -44,7 +44,7 @@
 
       <template v-else>
         <!-- Which exchange, on which network: always visible, never implied. -->
-        <q-card-section class="q-pb-none">
+        <q-card-section class="q-px-xs q-pt-none q-pb-sm">
           <div
             class="row items-center no-wrap q-gutter-x-sm"
             data-testid="solana-swap-venue"
@@ -245,64 +245,74 @@
           </div>
         </q-card-section>
 
-        <q-card-section v-else>
+        <q-card-section v-else class="q-pa-none">
           <!-- Pay -->
-          <div class="row items-center justify-between q-mb-xs">
-            <span class="text-caption text-grey-7">
-              {{ $t('swap.pay') }}
-            </span>
-            <span
-              class="text-caption text-grey-7"
-              data-testid="solana-swap-pay-balance"
-            >
-              {{ $t('swap.available') }}:
-              {{ payToken ? display(payToken.amount, payToken) : '' }}
-              <q-btn
-                flat
-                dense
-                no-caps
-                size="sm"
-                color="primary"
-                class="q-ml-xs"
-                :label="$t('swap.max')"
-                data-testid="solana-swap-max"
-                @click="useMax"
-              />
-            </span>
-          </div>
-          <div class="row no-wrap q-col-gutter-sm">
-            <div class="col">
-              <q-input
-                v-model="amountText"
-                outlined
-                dense
-                inputmode="decimal"
-                placeholder="0.0"
-                :aria-label="$t('swap.pay')"
-                :error="Boolean(inputProblem)"
-                :error-message="inputProblem"
-                data-testid="solana-swap-amount"
-              />
+          <q-card
+            flat
+            bordered
+            class="swap-card q-pa-md"
+            data-testid="solana-swap-pay-card"
+          >
+            <div class="row items-center justify-between q-mb-xs">
+              <span class="text-caption text-grey-7">
+                {{ $t('swap.pay') }}
+              </span>
+              <span
+                class="text-caption text-grey-7"
+                data-testid="solana-swap-pay-balance"
+              >
+                {{ $t('swap.available') }}:
+                {{ payToken ? display(payToken.amount, payToken) : '' }}
+              </span>
             </div>
-            <div class="col-5">
-              <q-select
-                v-model="payMint"
-                outlined
-                dense
-                emit-value
-                map-options
-                :options="payOptions"
-                :aria-label="$t('solanaSwap.payToken')"
-                data-testid="solana-swap-pay-token"
-              />
+            <div class="swap-asset-row">
+              <div class="swap-amount-box">
+                <q-input
+                  v-model="amountText"
+                  borderless
+                  dense
+                  class="swap-amount-input text-h5"
+                  input-class="text-weight-bold"
+                  hide-bottom-space
+                  inputmode="decimal"
+                  placeholder="0.0"
+                  :aria-label="$t('swap.pay')"
+                  :error="Boolean(inputProblem)"
+                  :error-message="inputProblem"
+                  data-testid="solana-swap-amount"
+                />
+                <q-btn
+                  flat
+                  dense
+                  no-caps
+                  size="sm"
+                  color="primary"
+                  class="swap-max-pill text-weight-bolder"
+                  :label="$t('swap.max')"
+                  data-testid="solana-swap-max"
+                  @click="useMax"
+                />
+              </div>
+              <div class="swap-token-select">
+                <q-select
+                  v-model="payMint"
+                  outlined
+                  dense
+                  emit-value
+                  map-options
+                  :options="payOptions"
+                  :aria-label="$t('solanaSwap.payToken')"
+                  data-testid="solana-swap-pay-token"
+                />
+              </div>
             </div>
-          </div>
+          </q-card>
 
-          <div class="row justify-center q-my-xs">
+          <div class="swap-flip-container">
             <q-btn
-              flat
               round
               dense
+              class="swap-flip-btn shadow-2"
               icon="swap_vert"
               color="primary"
               :aria-label="$t('solanaSwap.flip')"
@@ -312,38 +322,50 @@
           </div>
 
           <!-- Receive -->
-          <div class="text-caption text-grey-7 q-mb-xs">
-            {{ $t('swap.receive') }}
-          </div>
-          <div class="row no-wrap q-col-gutter-sm">
-            <div class="col">
-              <q-input
-                :model-value="quote ? display(quote.expectedOutputAmount) : ''"
-                outlined
-                dense
-                readonly
-                placeholder="0.0"
-                :loading="quoting"
-                :aria-label="$t('swap.receive')"
-                data-testid="solana-swap-receive-amount"
-              />
+          <q-card
+            flat
+            bordered
+            class="swap-card q-pa-md"
+            data-testid="solana-swap-receive-card"
+          >
+            <div class="text-caption text-grey-7 q-mb-xs">
+              {{ $t('swap.receive') }}
             </div>
-            <div class="col-5">
-              <q-select
-                v-model="receiveMint"
-                outlined
-                dense
-                emit-value
-                map-options
-                :options="receiveOptions"
-                :aria-label="$t('solanaSwap.receiveToken')"
-                data-testid="solana-swap-receive-token"
-              />
+            <div class="swap-asset-row">
+              <div class="swap-amount-box swap-amount-box--readonly">
+                <q-input
+                  :model-value="
+                    quote ? display(quote.expectedOutputAmount) : ''
+                  "
+                  borderless
+                  class="swap-amount-input text-h5"
+                  input-class="text-weight-bold"
+                  hide-bottom-space
+                  dense
+                  readonly
+                  placeholder="0.0"
+                  :loading="quoting"
+                  :aria-label="$t('swap.receive')"
+                  data-testid="solana-swap-receive-amount"
+                />
+              </div>
+              <div class="swap-token-select">
+                <q-select
+                  v-model="receiveMint"
+                  outlined
+                  dense
+                  emit-value
+                  map-options
+                  :options="receiveOptions"
+                  :aria-label="$t('solanaSwap.receiveToken')"
+                  data-testid="solana-swap-receive-token"
+                />
+              </div>
             </div>
-          </div>
+          </q-card>
 
           <!-- Slippage -->
-          <div class="row items-center justify-between q-mt-md">
+          <div class="swap-slippage row items-center justify-between q-mt-md">
             <span class="text-caption text-grey-7">
               {{ $t('solanaSwap.slippage') }}
             </span>
@@ -403,7 +425,7 @@
             unelevated
             no-caps
             color="primary"
-            class="full-width q-mt-md"
+            class="swap-action-btn full-width q-mt-md"
             :disable="!canReview"
             :loading="quoting && Boolean(quote)"
             :label="reviewLabel"
@@ -418,7 +440,7 @@
           </p>
         </q-card-section>
       </template>
-    </q-card>
+    </div>
   </div>
 </template>
 
@@ -1216,3 +1238,97 @@ onBeforeUnmount(() => {
   clearInterval(ticker)
 })
 </script>
+
+<style scoped>
+.solana-swap-panel {
+  width: 100%;
+  min-width: 0;
+  margin: 0 auto;
+}
+.swap-card {
+  border-radius: 12px;
+  min-width: 0;
+}
+.swap-asset-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.swap-amount-box {
+  display: flex;
+  align-items: flex-start;
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  padding: 2px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.03);
+}
+.swap-amount-input {
+  flex: 1;
+  min-width: 0;
+}
+.swap-amount-box:focus-within {
+  border-color: var(--q-primary);
+  box-shadow: 0 0 0 1px var(--q-primary);
+}
+.swap-amount-box--readonly,
+.swap-amount-box--readonly:focus-within {
+  background: rgba(0, 0, 0, 0.015);
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: none;
+}
+.swap-token-select {
+  flex: 0 1 140px;
+  min-width: 100px;
+  max-width: 40%;
+}
+.swap-max-pill {
+  align-self: center;
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 4px 6px;
+  background: rgba(25, 118, 210, 0.1);
+}
+.swap-flip-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: -14px auto;
+  height: 28px;
+  position: relative;
+  z-index: 3;
+}
+.swap-flip-btn {
+  width: 36px;
+  height: 36px;
+  background: #fff;
+  border: 2px solid var(--q-primary);
+  color: var(--q-primary);
+}
+.swap-slippage {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.swap-action-btn {
+  height: 50px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+.body--dark .swap-amount-box {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.body--dark .swap-amount-box--readonly {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.body--dark .swap-flip-btn {
+  background: #1d1d1d;
+}
+.body--dark .swap-max-pill {
+  background: rgba(255, 255, 255, 0.1);
+}
+</style>

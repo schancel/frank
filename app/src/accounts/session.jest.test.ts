@@ -30,6 +30,7 @@ jest.mock('@frank/wallet/chain', () => {
       createWallet: jest.fn(),
       isTestnet: true,
       chainIdentifier: 'monad-testnet',
+      addressToString: (address: { raw: string }) => address.raw,
     },
   }
 })

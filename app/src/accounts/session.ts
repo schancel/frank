@@ -18,6 +18,7 @@ import type { DomainRoot } from '@frank/domain-roots'
 import {
   decodeRecoveryDescriptor,
   exportCodex32Backup,
+  exportHistoricalCodex32Backup,
 } from '@frank/account-recovery'
 import {
   openAccountCustody,
@@ -70,14 +71,13 @@ export class AccountPurposeUnavailableError extends Error {
 }
 
 /**
- * This account was stored before the app kept account roots. Nothing held here can
- * reproduce the account, so no shares are issued: only the shares shown at signup restore it.
+ * The original backup secret is unavailable, so this account cannot issue new shares.
  */
 export class AccountBackupUnavailableError extends Error {
   readonly code = 'account-backup-unavailable'
 
   constructor() {
-    super('This account cannot issue new backup shares')
+    super('The original backup secret is unavailable')
     this.name = 'AccountBackupUnavailableError'
   }
 }
@@ -738,8 +738,8 @@ export function createAccountSession(deps: {
     },
     /**
      * Issue a new, independent set of backup shares for the active account. They are
-     * split from the stored account root, the same secret the signup shares carry, so
-     * they restore this account: same identity, same roots, same addresses.
+     * split from the retained original account secret and preserve its derivation:
+     * the same identity, keys, and addresses.
      */
     async backupCodex32(threshold: number, count: number): Promise<string[]> {
       const checkCurrent = captureDerivation()
@@ -747,6 +747,30 @@ export function createAccountSession(deps: {
       checkCurrent()
       if (!custody || closed || state.status !== 'ready')
         throw new CustodyError('locked')
+      if (
+        state.account?.receipt.context.recoveryFormat === BIP39_RECOVERY_FORMAT
+      ) {
+        const capability = await custody.openActive()
+        let seed: Uint8Array | undefined
+        try {
+          checkCurrent()
+          if (capability.account.receipt.context.accountId !== walletAccount)
+            throw new CustodyError('conflict')
+          seed = capability.takeBip39Seed()
+          return [
+            ...exportHistoricalCodex32Backup({
+              seed,
+              threshold: threshold as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+              shareCount: count,
+              randomBytes: length =>
+                crypto.getRandomValues(new Uint8Array(length)),
+            }),
+          ]
+        } finally {
+          seed?.fill(0)
+          capability.close()
+        }
+      }
       const exported = await custody.exportAccountRoot()
       try {
         checkCurrent()

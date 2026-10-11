@@ -549,6 +549,8 @@ export default {
     priceHistorySpot: 'AVU (Spot)',
     priceHistoryGold: 'Or',
     priceHistoryPoints: '{count} observations de prix depuis le {first}.',
+    priceHistoryCoverage:
+      '{count} observations de prix disponibles du {first} au {last}. Période demandée : {range}.',
     priceHistorySinglePoint:
       'Une seule observation de prix est disponible sur cette période ; aucune ligne n’est tracée.',
     priceHistoryGoldUnavailable:

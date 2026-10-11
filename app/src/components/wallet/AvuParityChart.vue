@@ -184,9 +184,10 @@
               :x="column.x"
               y="248"
               font-size="11"
-              text-anchor="middle"
+              :text-anchor="column.anchor"
               :fill="themeColors.text"
               class="unselectable"
+              data-test="chart-time-tick"
             >
               {{ column.tick }}
             </text>
@@ -564,18 +565,25 @@ const series = computed<Series[]>(() => {
 
 function formatAt(at: number): string {
   const date = new Date(at * 1000)
-  if (selectedRange.value === 'all' || selectedRange.value === '5y') {
+  const extent = timeExtent.value
+  const span = extent ? extent.max - extent.min : 0
+  if (span > 365 * DAY) {
     return date.toLocaleDateString(undefined, {
       month: 'short',
       year: 'numeric',
     })
   }
-  return selectedRange.value === '24h'
-    ? date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return span <= 2 * DAY
+    ? date.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
     : date.toLocaleDateString(undefined, {
         month: 'short',
         day: 'numeric',
-        ...(selectedRange.value === '1y' ? { year: '2-digit' } : {}),
+        ...(span > 90 * DAY ? { year: '2-digit' } : {}),
       })
 }
 
@@ -666,6 +674,7 @@ interface Column {
   x: number
   label: string
   tick: string
+  anchor: 'start' | 'middle' | 'end'
 }
 
 const columns = computed<Column[]>(() => {
@@ -673,13 +682,35 @@ const columns = computed<Column[]>(() => {
   const positions = Array.from(
     new Set(series.value.flatMap(s => s.points.map(p => p.at))),
   ).sort((a, b) => a - b)
-  const every = Math.max(1, Math.ceil(positions.length / 7))
-  return positions.map((at, index) => ({
+  // Choose by time position, not sample index: irregular observations must not bunch
+  // labels together. Three ticks and endpoint anchors fit the narrow SVG too.
+  const ticks = new Set<number>()
+  if (positions.length) {
+    ticks.add(positions[0])
+    const last = positions[positions.length - 1]
+    ticks.add(last)
+    const middle = positions.reduce((best, at) =>
+      Math.abs(xOf(at) - (X_MIN + X_MAX) / 2) <
+      Math.abs(xOf(best) - (X_MIN + X_MAX) / 2)
+        ? at
+        : best,
+    )
+    if (xOf(middle) - X_MIN >= 170 && X_MAX - xOf(middle) >= 170)
+      ticks.add(middle)
+  }
+  return positions.map<Column>((at, index) => ({
     key: at,
     x: Math.round(xOf(at) * 10) / 10,
     label: formatAt(at),
-    tick:
-      index % every === 0 || index === positions.length - 1 ? formatAt(at) : '',
+    tick: ticks.has(at) ? formatAt(at) : '',
+    anchor:
+      positions.length === 1
+        ? 'middle'
+        : index === 0
+        ? 'start'
+        : index === positions.length - 1
+        ? 'end'
+        : 'middle',
   }))
 })
 
@@ -757,13 +788,17 @@ const dataNote = computed(() => {
         })
       : t('walletPanel.chartNoteNoTokenPrice', { symbol: unit.value.symbol })
   const parts = [
-    drawn.length === 1
-      ? t('walletPanel.priceHistorySinglePoint')
-      : t('walletPanel.priceHistoryPoints', {
-          count: drawn.length,
-          first: drawn[0].label,
-        }),
+    t('walletPanel.priceHistoryCoverage', {
+      count: drawn.length,
+      first: drawn[0].label,
+      last: drawn[drawn.length - 1].label,
+      range:
+        rangeToggleOptions.value.find(
+          option => option.value === selectedRange.value,
+        )?.label ?? '',
+    }),
   ]
+  if (drawn.length === 1) parts.push(t('walletPanel.priceHistorySinglePoint'))
   if (series.value.some(line => line.points.some(point => point.estimated)))
     parts.push(t('walletPanel.avuHashEstimated'))
   if (oracle.valuesAreTestnet) parts.push(t('walletPanel.chartNoteTestnet'))
@@ -787,6 +822,21 @@ useOracleHistory(
   feeds => {
     if (zoom.value) detailedHistory.value = feeds
   },
+)
+
+// A newly collected coin can have its whole history in one monthly bucket. Keep the
+// full-range request above and also ask for recent observations at hourly resolution.
+// 30 days is at most 720 steps, within the feed's range bound. No timestamp is invented.
+useOracleHistory(() =>
+  timeRange.value.step > 3600 && !zoom.value
+    ? {
+        since: Math.max(
+          rangeStart.value,
+          Math.floor(Date.now() / 1000) - 30 * DAY,
+        ),
+        step: 3600,
+      }
+    : null,
 )
 </script>
 

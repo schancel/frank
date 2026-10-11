@@ -158,6 +158,66 @@ afterEach(() => {
 })
 
 describe('selected coin price history', () => {
+  it.each(['1y', '30d', '7d', '24h', 'all'])(
+    'labels short available history precisely within the requested %s window',
+    async range => {
+      const times = Array.from({ length: 132 }, (_, i) => NOW - (132 - i) * 600)
+      receive(testFeed(times, { prices: { 'monad-mainnet': 0.025 } }))
+      const wrapper = mountChart()
+      await openRange(wrapper, range)
+      expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(
+        132,
+      )
+      const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+      expect(ticks.length).toBeGreaterThanOrEqual(2)
+      expect(ticks.length).toBeLessThanOrEqual(3)
+      expect(new Set(ticks.map(tick => tick.text())).size).toBe(ticks.length)
+      expect(ticks.every(tick => /\d+:\d+/.test(tick.text()))).toBe(true)
+      expect(ticks[0].attributes('text-anchor')).toBe('start')
+      expect(ticks[ticks.length - 1].attributes('text-anchor')).toBe('end')
+      const note = wrapper.get('[data-test="chart-data-note"]').text()
+      expect(note).toContain('132 price observations available from')
+      expect(note).toContain('Requested window:')
+      expect(note).toContain(
+        wrapper.get(`[data-test-option="${range}"]`).text(),
+      )
+      wrapper.unmount()
+    },
+  )
+
+  it('keeps time ticks apart when most observations cluster at one end', () => {
+    const times = [
+      NOW - DAY,
+      ...Array.from({ length: 20 }, (_, i) => NOW - 3600 + i * 60),
+    ]
+    receive(testFeed(times, { prices: { 'monad-mainnet': 0.025 } }))
+    const wrapper = mountChart()
+    const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+    const xs = ticks.map(tick => Number(tick.attributes('x')))
+    expect(xs.every((x, i) => i === 0 || x - xs[i - 1] >= 170)).toBe(true)
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(21)
+    wrapper.unmount()
+  })
+
+  it('refines recent ALL history beyond a single monthly bucket through the real store query', async () => {
+    const oracle = receive(
+      testFeed([NOW - 60], { prices: { 'monad-mainnet': 0.025 } }),
+    )
+    const times = [NOW - 7200, NOW - 3600, NOW - 60]
+    const source = jest.fn(async () =>
+      testFeed(times, { prices: { 'monad-mainnet': 0.025 } }),
+    )
+    oracle.useFeedSource(source)
+    const wrapper = mountChart()
+    await flushPromises()
+    expect(source).toHaveBeenCalledWith(
+      { since: NOW - 30 * DAY, until: NOW, step: 3600 },
+      expect.any(Function),
+    )
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(3)
+    wrapper.unmount()
+  })
+
   it('shows an unavailable current value and no substitute curve before any feed', () => {
     const wrapper = mountChart()
     expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(

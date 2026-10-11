@@ -695,3 +695,71 @@ it("does not retry a failed underlying attempt or disguise budget-free work", as
     transactionHash: hashOf(raw),
   });
 });
+
+it("retires only an obsolete hash lookup gap after fresh discovery proves its canonical receipt", async () => {
+  const raw = await sign();
+  const f = fixture([{ raw, number: 4 }]);
+  f.rpc.balance = jest.fn(async (_address, number) => (number < 4 ? 0n : 10n));
+  const lookup = f.rpc.transaction.bind(f.rpc);
+  let attempts = 0;
+  f.rpc.transaction = jest.fn(async (hash) => {
+    if (hash === hashOf(raw) && ++attempts === 1)
+      throw new Error("transient lookup failure");
+    return lookup(hash);
+  });
+  const { result, value } = checked(
+    await f.collect([hashOf(raw)], { lowerBlock: 0 })
+  );
+  expect(attempts).toBe(2);
+  expect(value.verifiedReceivedWei).toBe(10n);
+  expect(result.discoveryWindow).toEqual({ fromBlock: 0, toBlock: 10 });
+  expect(result.coverageIssues).toEqual([]);
+  expect(value.issues).toEqual([]);
+});
+
+it.each(["unrelated", "wrong-recipient", "wrong-chain", "malformed"] as const)(
+  "does not retire an unresolved %s gap when another lookup succeeds",
+  async (kind) => {
+    const raw = await sign(
+      kind === "wrong-recipient"
+        ? { to: independent.address }
+        : kind === "wrong-chain"
+        ? { chainId: 1n }
+        : {}
+    );
+    const hash = hashOf(raw);
+    const unresolved = hashAt(44);
+    const f = fixture([{ raw, number: 4 }]);
+    f.rpc.balance = jest.fn(async (_address, number) =>
+      number < 4 ? 0n : 10n
+    );
+    const lookup = f.rpc.transaction.bind(f.rpc);
+    let attempts = 0;
+    f.rpc.transaction = jest.fn(async (target) => {
+      if (target === hash && ++attempts === 1)
+        throw new Error("transient lookup failure");
+      const tx = await lookup(target);
+      return kind === "malformed" && target === hash && tx !== null
+        ? { ...tx, gasPrice: undefined }
+        : tx;
+    });
+    const { result, value } = checked(
+      await f.collect(kind === "unrelated" ? [hash, unresolved] : [hash], {
+        lowerBlock: 0,
+      })
+    );
+    expect(attempts).toBe(2);
+    expect(value.verifiedReceivedWei).toBe(kind === "unrelated" ? 10n : 0n);
+    const expected = {
+      reason: "transaction-unavailable",
+      transactionHash: kind === "unrelated" ? unresolved : hash,
+    };
+    expect(result.coverageIssues).toContainEqual(expected);
+    expect(value.issues).toContainEqual(expected);
+    if (kind === "unrelated")
+      expect(result.coverageIssues).not.toContainEqual({
+        reason: "transaction-unavailable",
+        transactionHash: hash,
+      });
+  }
+);

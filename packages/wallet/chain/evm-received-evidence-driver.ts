@@ -613,6 +613,23 @@ export async function collectReceivedEvidence(input: {
       canonicalBlocks.push(current);
     }
     guard();
+    // Only independently valid incoming inclusion resolves a named transaction lookup
+    // gap. Reconstruction alone, unrelated receipts and broader discovery gaps do not.
+    const verifiedHashes = new Set(
+      evaluateReceivedEvidence({
+        owner,
+        head,
+        candidates: [...candidates.values()],
+        facts,
+        canonicalBlocks,
+      }).verifiedTransactions.map((raw) => Transaction.from(raw).hash!)
+    );
+    const coverageIssues = issues.filter(
+      (entry) =>
+        entry.reason !== "transaction-unavailable" ||
+        entry.transactionHash === undefined ||
+        !verifiedHashes.has(entry.transactionHash)
+    );
     return {
       kind: "checked",
       owner,
@@ -620,7 +637,7 @@ export async function collectReceivedEvidence(input: {
       candidates: [...candidates.values()],
       facts,
       canonicalBlocks,
-      coverageIssues: issues,
+      coverageIssues,
       ...(discoveryWindow === undefined ? {} : { discoveryWindow }),
       callsUsed,
     };

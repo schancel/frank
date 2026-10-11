@@ -9,6 +9,7 @@ import type {
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type {
+  DiceRejectionReason,
   MessageItem,
   SatoshiDiceItem,
 } from "@frank/cashweb/types/messages";
@@ -148,12 +149,14 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     received: Received
   ): Promise<void> {
     const peer = msgCtx.peerAddress.toLowerCase();
-    const refused = async (why: string) =>
+    const rollId = bet.rollId ?? "";
+    const refused = async (reason: DiceRejectionReason, why: string) =>
       refuse(this.outbox, msgCtx, ctx, received, why, [
+        ...(rollId ? [{ type: "dice" as const, action: "rejected" as const,
+          rollId, rejectionReason: reason }] : []),
         await this.offer(ctx, peer),
       ]);
 
-    const rollId = bet.rollId ?? "";
     const raw = rollId ? await ctx.state.get(`roll:${rollId}`) : undefined;
     const offered = raw ? (JSON.parse(raw) as OfferedRoll) : undefined;
     // One commitment, one roll: the secret is deleted once its roll is written down.
@@ -163,28 +166,31 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       (await this.outbox.has(ctx, `roll:${rollId}`))
     )
       return refused(
+        "roll-not-offered",
         "That roll is not on offer (each commitment is good for one roll). No roll was made."
       );
     const commitment = diceCommitment(offered.secret);
     if ((bet.commitment ?? "").replace(/^0x/, "").toLowerCase() !== commitment)
       return refused(
+        "commitment-mismatch",
         "Your bet names a different commitment than the one I published. No roll was made."
       );
     const clientSeed = (bet.clientSeed ?? "").toLowerCase();
     if (!/^(?:[0-9a-f]{2}){8,64}$/.test(clientSeed))
       return refused(
+        "invalid-client-seed",
         "Your bet carried no random value of your own, so the roll would not be fair. No roll was made."
       );
     const target = bet.target;
     if (!isDiceTarget(target))
-      return refused("That target is not between 1 and 65,535. No roll was made.");
+      return refused("invalid-target", "That target is not between 1 and 65,535. No roll was made.");
     let wagerWei: bigint;
     try {
       wagerWei = BigInt(bet.wagerWei ?? "0");
     } catch {
       wagerWei = -1n;
     }
-    if (wagerWei < 0n) return refused("That stake is not an amount. No roll was made.");
+    if (wagerWei < 0n) return refused("invalid-wager", "That stake is not an amount. No roll was made.");
     // A stake, and what it can win, must be worth moving: never below the chain's fee floor.
     const minWagerWei = await tableMinimumWei(ctx, this.minWagerWei);
     if (
@@ -192,6 +198,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       (wagerWei < minWagerWei || dicePayoutWei(wagerWei, target) < minWagerWei)
     )
       return refused(
+        "below-minimum",
         `The smallest stake at this table is ${ctx.formatAmount(
           minWagerWei
         )}, and a win must pay at least that. No roll was made.`
@@ -201,6 +208,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     const limitWei = await this.limit(ctx);
     if (wagerWei > 0n && dicePayoutWei(wagerWei, target) > limitWei)
       return refused(
+        "payout-limit",
         `That stake could win more than the table limit of ${ctx.formatAmount(
           limitWei
         )} per roll. No roll was made.`
@@ -208,6 +216,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     // The stake is what this message is confirmed, on chain, to have paid. Never what it says.
     if (received.unconfirmed.length > 0 || received.confirmedWei < wagerWei)
       return refused(
+        "payment-not-confirmed",
         `Your bet states a stake of ${ctx.formatAmount(wagerWei)} but ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with it. No roll was made.`

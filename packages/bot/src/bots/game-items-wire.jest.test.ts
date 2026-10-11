@@ -100,7 +100,7 @@ describe("game bot replies cross the canonical wire", () => {
     }
     // A bet on a roll that is not on offer: refused, with a new table.
     await say(bot, ALICE, { type: "dice", action: "roll", rollId: "gone" });
-    expectCarried(sent, "dice", ["table", "result"]);
+    expectCarried(sent, "dice", ["table", "result", "rejected"]);
   });
 
   it("rps: a staked match through every move, and a typed one", async () => {

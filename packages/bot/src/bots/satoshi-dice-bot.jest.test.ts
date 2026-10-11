@@ -7,6 +7,7 @@ import {
 } from "@frank/wallet/message-item-plugins/dice/fair";
 import { harness, PLAYER } from "./bot-harness.testutil";
 import { SatoshiDiceBot } from "./satoshi-dice-bot";
+import { overTheWire } from "./wire.testutil";
 
 const STAKE = 10_000_000_000_000_000n; // 0.01 MON
 const TARGET = 32768;
@@ -159,6 +160,17 @@ describe("SatoshiDiceBot", () => {
     await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
     expect(h.sent[0].valueWei).toBe(STAKE);
     expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+    // The real bot's response crosses the recipient codec with a terminal rejection for the
+    // original bet, independently of its next offer and the actual attached refund payment.
+    const received = overTheWire(h.sent[0].items);
+    const rejected = received.find(i => i.type === "dice" && i.action === "rejected");
+    expect(rejected).toEqual({ type: "dice", action: "rejected", rollId: bet.rollId,
+      rejectionReason: "payout-limit" });
+    const next = received.find(i => i.type === "dice" && i.action === "table") as SatoshiDiceItem;
+    expect(next.rollId).toBeTruthy();
+    expect(next.rollId).not.toBe(bet.rollId);
+    expect(next.commitment).toBeTruthy();
+    expect(rejected).not.toHaveProperty("payoutWei");
   });
 
   test("a payout that cannot be sent is kept and paid later, once", async () => {

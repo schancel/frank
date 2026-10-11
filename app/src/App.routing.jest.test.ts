@@ -9,6 +9,7 @@ import { defineComponent, h, nextTick } from 'vue'
 import { TextDecoder, TextEncoder } from 'util'
 import { setConversationIdSalt as installTestConversationIdSalt } from './stores/chats'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+import { useContactStore } from './stores/contacts'
 
 // An account that can open a chat always has its conversation-ID salt installed.
 beforeEach(() =>
@@ -27,7 +28,10 @@ jest.mock('./adapters/level-message-store', () => ({
 }))
 jest.mock('./accounts/session', () => ({
   accountStatus: { status: 'ready' },
-  accountSession: { initialize: jest.fn(async () => undefined) },
+  accountSession: {
+    state: { revision: 0, account: null },
+    initialize: jest.fn(async () => undefined),
+  },
 }))
 jest.mock('./router/routes', () => ({
   createRoutes: () => [
@@ -73,8 +77,8 @@ jest.mock('./stores/persistent-storage', () => ({
 jest.mock('./stores/my-profile', () => ({
   useProfileStore: () => ({ inbox: { acceptancePrice: 0 } }),
 }))
-jest.mock('./stores/contacts', () => ({
-  useContactStore: () => ({
+jest.mock('./stores/contacts', () => {
+  const contacts = {
     refresh: jest.fn(async () => undefined),
     refreshContacts: jest.fn(async () => undefined),
     fetchAndAddContact: jest.fn(async () => undefined),
@@ -84,8 +88,10 @@ jest.mock('./stores/contacts', () => ({
     getNotify: () => true,
     setNotify: jest.fn(),
     getContact: () => ({ notify: true, profile: { name: 'Peer' } }),
-  }),
-}))
+    deleteContact: jest.fn(async () => undefined),
+  }
+  return { useContactStore: () => contacts }
+})
 jest.mock('@frank/wallet/monad-identity', () => ({
   fetchCuratedDefaultContacts: async () => [],
 }))
@@ -112,8 +118,8 @@ const ChatLayout = require('./layouts/ChatLayout.vue').default
 const ChatInfoView = require('./components/panels/ChatInfoView.vue').default
 const ClearHistoryDialog =
   require('./components/dialogs/ClearHistoryDialog.vue').default
-const DeleteChatDialog =
-  require('./components/dialogs/DeleteChatDialog.vue').default
+const DeleteContactDialog =
+  require('./components/dialogs/DeleteContactDialog.vue').default
 const quasar = require('quasar')
 const { setStartupRestoration } = require('./boot/startup-state')
 const createAppRouter = require('./router').default
@@ -305,7 +311,7 @@ describe('App exact conversation route authority (#1237)', () => {
     'mounted info actions for a %s route',
     destination => {
       it.each(['clear', 'delete'])(
-        'passes the selected ID to %s confirmation',
+        'keeps %s confirmation scoped to its intended authority',
         async action => {
           const { chats, first, second, defaultThread, router, wrapper } =
             await mountedApp()
@@ -320,7 +326,9 @@ describe('App exact conversation route authority (#1237)', () => {
           const clear = jest
             .spyOn(chats, 'clearChat')
             .mockResolvedValue(undefined)
-          const remove = jest
+          const remove = useContactStore().deleteContact as jest.Mock
+          remove.mockClear()
+          const removeThread = jest
             .spyOn(chats, 'deleteChat')
             .mockResolvedValue(undefined)
           const simple = { template: '<div><slot /></div>' }
@@ -372,25 +380,28 @@ describe('App exact conversation route authority (#1237)', () => {
             const actionKey =
               action === 'clear'
                 ? 'chatRightDrawer.clearHistory'
-                : 'chatRightDrawer.deleteChat'
+                : 'chatRightDrawer.deleteContactAndConversations'
             const actionButton = info
               .findAll('button')
               .find(button => button.text() === actionKey)!
             expect(actionButton.element.disabled).toBe(false)
             await actionButton.trigger('click')
             const dialog = info.getComponent(
-              action === 'clear' ? ClearHistoryDialog : DeleteChatDialog,
+              action === 'clear' ? ClearHistoryDialog : DeleteContactDialog,
             )
-            expect(dialog.props('address')).toBe(selected.id)
+            expect(dialog.props('address')).toBe(
+              action === 'clear' ? selected.id : PEER,
+            )
             const label =
               action === 'clear'
                 ? 'clearHistoryDialog.clear'
-                : 'deleteChatDialog.delete'
+                : 'deleteContactDialog.delete'
             await dialog.get(`[label="${label}"]`).trigger('click')
             await flushPromises()
             expect(action === 'clear' ? clear : remove).toHaveBeenCalledWith(
-              selected.id,
+              action === 'clear' ? selected.id : PEER,
             )
+            expect(removeThread).not.toHaveBeenCalled()
             expect(action === 'clear' ? clear : remove).toHaveBeenCalledTimes(1)
             expect(action === 'clear' ? remove : clear).not.toHaveBeenCalled()
           } finally {

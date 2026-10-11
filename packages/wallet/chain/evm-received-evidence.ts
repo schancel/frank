@@ -38,6 +38,8 @@ export interface ReceivedEvidenceFact {
   readonly receipt: ReceivedEvidenceReceipt;
 }
 export type ReceivedEvidenceIssueReason =
+  | "request-budget-exhausted"
+  | "deadline-exceeded"
   | "rpc-unavailable"
   | "historical-state-unavailable"
   | "transaction-unavailable"

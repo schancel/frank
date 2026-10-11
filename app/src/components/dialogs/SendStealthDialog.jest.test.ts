@@ -47,6 +47,7 @@ describe('SendStealthDialog', () => {
         stubs: {
           QCard: { template: '<div><slot /></div>' },
           QForm: {
+            emits: ['submit'],
             template:
               '<form @submit.prevent="$emit(\'submit\', $event)"><slot /></form>',
           },

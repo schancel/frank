@@ -138,7 +138,7 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
     // A stamp large enough that funding its accounts ahead costs less than it moves: the wallet
     // refuses to fund ahead otherwise (a 1,000-wei stamp's funding transfer costs more than it
     // carries in this fixture).
-    f = await fixture({ resolveDefaultStamp: fixedStampDefault(10n ** 9n )})
+    f = await fixture({ resolveDefaultStamp: fixedStampDefault(10n ** 9n) })
     wallet = f.alice as unknown as WalletHandle
     installCanonicalDirectory(
       f.alice,

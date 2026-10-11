@@ -349,7 +349,10 @@ export default defineComponent({
   emits: ['giveLotusClicked'],
   mounted() {
     void this.refreshMinimumStamp()
-    this.stampQuoteTimer = setInterval(() => void this.refreshMinimumStamp(), 60_000)
+    this.stampQuoteTimer = setInterval(
+      () => void this.refreshMinimumStamp(),
+      60_000,
+    )
     if (
       this.address &&
       typeof this.chatStore?.setActiveConversation === 'function'
@@ -598,9 +601,14 @@ export default defineComponent({
       try {
         const wallet = useMonadWallet()
         const quote = await client.defaultStampQuote?.({ wallet })
-        if (sequence !== this.stampQuoteSequence || revision !== accountStatus.revision ||
-            client !== activeChain.directMessages || chainIdentifier !== activeChain.chainIdentifier ||
-            wallet !== useMonadWallet()) return
+        if (
+          sequence !== this.stampQuoteSequence ||
+          revision !== accountStatus.revision ||
+          client !== activeChain.directMessages ||
+          chainIdentifier !== activeChain.chainIdentifier ||
+          wallet !== useMonadWallet()
+        )
+          return
         if (quote?.status === 'available') {
           this.minimumStampWei = quote.minimumStamp
           this.defaultStampWei = quote.amount
@@ -617,10 +625,14 @@ export default defineComponent({
     },
     resetStampDefault() {
       const target = this.conversation?.id || this.recipientAddress
-      if (target) this.chatStore.setStampWei({ address: target, stampWei: undefined })
+      if (target)
+        this.chatStore.setStampWei({ address: target, stampWei: undefined })
     },
     async sendMessage(message: string) {
-      if (this.stampUnavailable) { errorNotify(new Error(this.stampUnavailable)); return }
+      if (this.stampUnavailable) {
+        errorNotify(new Error(this.stampUnavailable))
+        return
+      }
       const wallet = useMonadWallet()
       const recipient = this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
@@ -915,14 +927,16 @@ export default defineComponent({
           const memory = this.peerMessages
           const own = await getOwnCanonicalAddress()
           requireCurrentContext()
-          const stillNext = !!own && await handItemStillNext({
-            item: handItem,
-            stampWei: stampValue,
-            own,
-            peer,
-            memory,
-            stored: () => storedOutgoingMessages(peer),
-          })
+          const stillNext =
+            !!own &&
+            (await handItemStillNext({
+              item: handItem,
+              stampWei: stampValue,
+              own,
+              peer,
+              memory,
+              stored: () => storedOutgoingMessages(peer),
+            }))
           requireCurrentContext()
           if (!stillNext) {
             errorNotify(new Error(this.$t('blackjackP2p.notNext')))
@@ -1133,10 +1147,21 @@ export default defineComponent({
     stampUnavailable(): string {
       const target = this.conversation?.id || this.recipientAddress
       const explicit = target ? this.chatStore.getStampWei(target) : undefined
-      if (explicit !== undefined && explicit > 0n && explicit < this.minimumStampWei)
-        return this.$t('chatInput.stampBelowMinimum', { amount: activeChain.toDisplayAmount(this.minimumStampWei), unit: activeChain.unit })
+      if (
+        explicit !== undefined &&
+        explicit > 0n &&
+        explicit < this.minimumStampWei
+      )
+        return this.$t('chatInput.stampBelowMinimum', {
+          amount: activeChain.toDisplayAmount(this.minimumStampWei),
+          unit: activeChain.unit,
+        })
       return this.isDefaultStampMode && this.defaultStampWei === undefined
-        ? this.$t('chatInput.stampQuoteUnavailableReason', { reason: this.$t(`chatInput.stampQuoteReasons.${this.defaultStampFailure}`) })
+        ? this.$t('chatInput.stampQuoteUnavailableReason', {
+            reason: this.$t(
+              `chatInput.stampQuoteReasons.${this.defaultStampFailure}`,
+            ),
+          })
         : ''
     },
     isEmailThread(): boolean {
@@ -1275,15 +1300,23 @@ export default defineComponent({
       },
       get(): string {
         const target = this.conversation?.id || this.recipientAddress
-        const chosen = (target ? this.chatStore.getStampWei(target) : undefined) ?? this.defaultStampWei
+        const chosen =
+          (target ? this.chatStore.getStampWei(target) : undefined) ??
+          this.defaultStampWei
         return chosen === undefined ? '' : activeChain.toDisplayAmount(chosen)
       },
     },
   },
   watch: {
-    'accountStatus.revision'() { void this.refreshMinimumStamp() },
-    'accountStatus.status'() { void this.refreshMinimumStamp() },
-    'oracle.current'() { void this.refreshMinimumStamp() },
+    'accountStatus.revision'() {
+      void this.refreshMinimumStamp()
+    },
+    'accountStatus.status'() {
+      void this.refreshMinimumStamp()
+    },
+    'oracle.current'() {
+      void this.refreshMinimumStamp()
+    },
     'address'(newAddr: string) {
       if (
         newAddr &&

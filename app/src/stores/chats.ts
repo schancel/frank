@@ -1949,9 +1949,7 @@ export const useChatStore = defineStore('chats', {
             chat = undefined
           }
         }
-        return chat?.stampWei === undefined
-          ? undefined
-          : BigInt(chat.stampWei)
+        return chat?.stampWei === undefined ? undefined : BigInt(chat.stampWei)
       },
     getLatestMessage: state => (addressOrId: string) => {
       let chat: Conversation | undefined

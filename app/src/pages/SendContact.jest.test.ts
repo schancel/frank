@@ -322,7 +322,10 @@ describe('SendContact.vue (dual-send model)', () => {
   it('with a stamp chosen for the chat, the payment and its stamp are two separate amounts', async () => {
     mockStampWei = 20_000_000_000_000_000n // 0.02
     try {
-      mockPrepare.mockResolvedValueOnce({ ...PREPARED, stampValue: mockStampWei })
+      mockPrepare.mockResolvedValueOnce({
+        ...PREPARED,
+        stampValue: mockStampWei,
+      })
       mockSendMessage.mockResolvedValueOnce({
         state: 'sent',
         payloadDigest: 'dd',

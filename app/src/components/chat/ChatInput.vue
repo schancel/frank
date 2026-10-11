@@ -43,7 +43,14 @@
         {{ attachError }}
       </div>
     </div>
-    <div v-if="stampUnavailable" class="col-12 text-negative text-caption q-px-md" role="alert" data-testid="stamp-unavailable">{{ stampUnavailable }}</div>
+    <div
+      v-if="stampUnavailable"
+      class="col-12 text-negative text-caption q-px-md"
+      role="alert"
+      data-testid="stamp-unavailable"
+    >
+      {{ stampUnavailable }}
+    </div>
     <q-toolbar class="chat-input-toolbar full-width items-center">
       <q-btn
         dense
@@ -285,7 +292,10 @@ export default defineComponent({
       type: BigInt as unknown as PropType<bigint>,
       default: () => 0n,
     },
-    defaultStampWei: { type: BigInt as unknown as PropType<bigint>, default: undefined },
+    defaultStampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: undefined,
+    },
     defaultStampMode: { type: Boolean, default: true },
     stampUnavailable: { type: String, default: '' },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
@@ -524,7 +534,9 @@ export default defineComponent({
       return this.defaultStampMode
     },
     defaultStampText(): string {
-      return this.defaultStampWei === undefined ? this.$t('chatInput.stampQuoteUnavailable') : formatCompactAmount(activeChain, this.defaultStampWei)
+      return this.defaultStampWei === undefined
+        ? this.$t('chatInput.stampQuoteUnavailable')
+        : formatCompactAmount(activeChain, this.defaultStampWei)
     },
     /** The stamp on the chip: the amount in the chain's unit, compact ("14.14 mMONT"); a
      * message with no stamp reads "Free". */

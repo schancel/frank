@@ -16,7 +16,7 @@ jest.mock('../adapters/level-message-store', () => ({
     getIterator: async function* () {
       mockReadStarted?.()
       await mockStoredRead
-      /* none */
+      yield* []
     },
   }),
 }))
@@ -124,25 +124,42 @@ describe('Chat.vue sendFollowUpItems outcome (#310)', () => {
   })
 
   it('reports a localized unavailable default before parsing or sending a card action', async () => {
-    const self = fakeThis({ stampAmount: '', stampUnavailable: 'localized missing rate' })
+    const self = fakeThis({
+      stampAmount: '',
+      stampUnavailable: 'localized missing rate',
+    })
     const settled = jest.fn()
-    await expect(methods.sendFollowUpItems.call(self, {
-      items: [{ type: 'text', text: 'card action' }], settled,
-    })).resolves.toBe(false)
-    expect(errorNotify).toHaveBeenCalledWith(new Error('localized missing rate'))
+    await expect(
+      methods.sendFollowUpItems.call(self, {
+        items: [{ type: 'text', text: 'card action' }],
+        settled,
+      }),
+    ).resolves.toBe(false)
+    expect(errorNotify).toHaveBeenCalledWith(
+      new Error('localized missing rate'),
+    )
     expect(self.sendDirectMessage).not.toHaveBeenCalled()
     expect(settled).toHaveBeenCalledWith(false)
     expect(self.sendingMessage).toBe(false)
   })
 
   it('sends an explicit free card action while the default quote is unavailable', async () => {
-    const self = fakeThis({ stampAmount: '', stampUnavailable: 'localized missing rate' })
-    await expect(methods.sendFollowUpItems.call(self, {
-      items: [{ type: 'text', text: 'free card action' }], stampValueWei: 0n,
-    })).resolves.toBe(true)
-    expect(self.sendDirectMessage).toHaveBeenCalledWith(expect.objectContaining({
-      wallet: mockWallet, stampValue: 0n,
-    }))
+    const self = fakeThis({
+      stampAmount: '',
+      stampUnavailable: 'localized missing rate',
+    })
+    await expect(
+      methods.sendFollowUpItems.call(self, {
+        items: [{ type: 'text', text: 'free card action' }],
+        stampValueWei: 0n,
+      }),
+    ).resolves.toBe(true)
+    expect(self.sendDirectMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wallet: mockWallet,
+        stampValue: 0n,
+      }),
+    )
     expect(errorNotify).not.toHaveBeenCalled()
   })
 })
@@ -336,8 +353,12 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
   it('refuses a deferred hand action after the wallet session changes, without sending from either wallet', async () => {
     let releaseRead!: () => void
     let readStarted!: () => void
-    const started = new Promise<void>(resolve => { readStarted = resolve })
-    mockStoredRead = new Promise<void>(resolve => { releaseRead = resolve })
+    const started = new Promise<void>(resolve => {
+      readStarted = resolve
+    })
+    mockStoredRead = new Promise<void>(resolve => {
+      releaseRead = resolve
+    })
     mockReadStarted = readStarted
     const originalWallet = mockWallet
     const revision = accountStatus.revision
@@ -345,7 +366,9 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
     const settled = jest.fn()
     try {
       const pending = methods.sendFollowUpItems.call(self, {
-        items: [bet], stampValueWei: 300n, settled,
+        items: [bet],
+        stampValueWei: 300n,
+        settled,
       })
       await started
       mockWallet = { id: 'wallet-b' }
@@ -353,7 +376,9 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
       releaseRead()
       await expect(pending).resolves.toBe(false)
       expect(self.sendDirectMessage).not.toHaveBeenCalled()
-      expect(errorNotify).toHaveBeenCalledWith(new Error('chat.sendContextChanged'))
+      expect(errorNotify).toHaveBeenCalledWith(
+        new Error('chat.sendContextChanged'),
+      )
       expect(settled).toHaveBeenCalledWith(false)
       expect(self.sendingMessage).toBe(false)
     } finally {

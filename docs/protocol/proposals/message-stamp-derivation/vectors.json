@@ -1146,7 +1146,7 @@
     },
     {
       "path": "packages/wallet/monad-identity.ts",
-      "sha256": "10371b2f59aa87424d014cfb15c9e1ed1f270271a90141b8e947a836429b344e"
+      "sha256": "556d5436c1ebbc10a69e047d78c40c9afd8b04f069b6a9dd84d388380d3bc239"
     },
     {
       "path": "packages/wallet/monad-wallet-material.ts",

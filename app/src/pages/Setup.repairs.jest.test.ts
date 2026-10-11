@@ -313,6 +313,41 @@ test.each(['en', 'fr'] as const)(
   },
 )
 
+test.each([
+  ['en', 'codex32-public-descriptor'],
+  ['fr', 'codex32-public-descriptor'],
+  [
+    'en',
+    '{"derivation":"frank-bip39-bip32-v1","identityPath":"internal-path","identityPublicKey":"internal-public-key"}',
+  ],
+  [
+    'fr',
+    '{"derivation":"frank-bip39-bip32-v1","identityPath":"internal-path","identityPublicKey":"internal-public-key"}',
+  ],
+] as const)(
+  'pending recovery shows the account, not its descriptor (%s, %s)',
+  (locale, descriptor) => {
+    const address = '0x1234567890abcdef1234567890ABCDEF12345678'
+    Object.assign(mockAccount, {
+      status: 'pending',
+      pending: { ...pending, account: { ...pending.account, descriptor } },
+      pendingReady: true,
+      pendingIdentityAddress: address,
+    })
+    const view = render(locale)
+    const words = (locale === 'fr' ? fr : en).accountRecovery
+    expect(view.text()).not.toContain(descriptor)
+    expect(view.text()).toContain(words.account_found)
+    expect(view.get('[data-test="account-found"]').exists()).toBe(true)
+    expect(view.get('[data-test="pending-identity-address"]').text()).toBe(
+      address,
+    )
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+    expect(view.find('[data-test="cancel-pending"]').exists()).toBe(true)
+    view.unmount()
+  },
+)
+
 test('offers no Activate button while the identity of the attempt is unknown', async () => {
   Object.assign(mockAccount, {
     status: 'pending',

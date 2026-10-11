@@ -1281,7 +1281,7 @@ export default {
     chainUnsupported: 'Non pris en charge',
   },
   profile: {
-    name: 'Pseudonyme',
+    name: 'Nom affiché',
     seedEntry: 'Phrase de récupération',
     importSeed: 'Rappel des mémoires perdues', //? Recover past memories
     invalidSeed: 'Ce n’est pas une phrase de récupération valide.',

@@ -199,10 +199,9 @@
             <p>
               {{ $t('accountRecovery.a_saved_account_attempt_is_pending_it') }}
             </p>
-            <p>{{ account.pending.account.displayName }}</p>
-            <p class="recovery-text">
-              {{ account.pending.account.descriptor }}
-            </p>
+            <h2 class="text-h6" data-test="account-found">
+              {{ $t('accountRecovery.account_found') }}
+            </h2>
             <div
               v-if="account.pendingIdentityAddress"
               role="status"

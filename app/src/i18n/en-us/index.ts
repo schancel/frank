@@ -1248,7 +1248,7 @@ export default {
     chainUnsupported: 'Not supported',
   },
   profile: {
-    name: "Character's Public Name",
+    name: 'Display Name',
     seedEntry: 'Recovery phrase',
     importSeed: 'Recover past memories',
     invalidSeed: 'That is not a valid recovery phrase.',

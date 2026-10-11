@@ -310,14 +310,52 @@ describe("funding the next message ahead (#1235 Q4)", () => {
   });
 
   it("a pass racing a send funds one pair between them", async () => {
-    const [ahead, sent] = await Promise.all([fundAhead(), send("racing")]);
-    // The send pays from the main account and funds nothing; which of the two takes the
-    // account first is not fixed. The pass either funds its one pair or, coming second, finds
-    // it cannot and says so. Never more than one pair, never an account twice.
+    // Pause after both funding receipts, before the pass's final capacity scan. The paid
+    // sender can claim the completed pair independently and deliver its message meanwhile.
+    let releaseScan!: () => void;
+    const scanReleased = new Promise<void>((resolve) => (releaseScan = resolve));
+    let scanReady!: () => void;
+    const atFinalScan = new Promise<void>((resolve) => (scanReady = resolve));
+    let paused = false;
+    const capacities = alice.pool.fundedCapacities.bind(alice.pool);
+    jest
+      .spyOn(alice.pool, "fundedCapacities")
+      .mockImplementation(async (...args) => {
+        if (!paused && mockFunded.length === 2) {
+          paused = true;
+          scanReady();
+          await scanReleased;
+        }
+        return capacities(...args);
+      });
+    const funding = fundAhead();
+    await atFinalScan;
+    let sent: Awaited<ReturnType<typeof send>>;
+    try {
+      sent = await send("racing");
+    } finally {
+      releaseScan();
+    }
+    const ahead = await funding;
     expect(["funded", "not-funded"]).toContain(ahead.outcome);
     expect(sent.preparationTxHashes).toEqual([]);
-    expect(mockFunded).toHaveLength(ahead.outcome === "funded" ? 2 : 0);
+    // A pass can report not-funded after its completed pair was taken by this send. Its
+    // diagnostic outcome does not say that no funding transfer was made.
+    expect(mockFunded).toHaveLength(2);
     expect(new Set(mockFunded.map((tx) => tx.to)).size).toBe(mockFunded.length);
+    expect(mockFunded.map((tx) => [tx.from, tx.value])).toEqual([
+      [main, SMALL + RESERVE],
+      [main, LARGE + RESERVE],
+    ]);
+    expect(relayBodies).toHaveLength(1);
+    expect(payersAtRelay(0).sort()).toEqual(mockFunded.map((tx) => tx.to).sort());
+    expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n)).toBe(STAMP);
+    for (const payment of sent.stampPayments)
+      expect(offlineChain.mined.has(payment.txHash)).toBe(true);
+    expect(mailboxes.get(toHex(f.bob.identity.compressedPubKey))).toHaveLength(1);
+    await tick();
+    expect(rows("available")).toEqual([]);
+    expect(rows("spent")).toHaveLength(2);
   });
 
   it("moves at most two transfers and the stamp value plus two fee reserves in one call, and nothing when the main account cannot pay", async () => {

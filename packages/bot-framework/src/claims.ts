@@ -1,4 +1,5 @@
-import type { BotStateStore } from "./types";
+import type { ReceivedPayment } from "@frank/wallet/chain";
+import type { BotContext, BotStateStore } from "./types";
 
 /** Claims are made one at a time in this process, whoever makes them (the host for the stamp a
  * reply may carry, a bot for a stake or a price), so two messages naming one transfer can never
@@ -24,4 +25,20 @@ export function claimTransfer(
   const next = turn.then(run, run);
   turn = next.catch(() => undefined);
   return next;
+}
+
+/** Read the wallet's evidence, excluding stealth funds and records for another message.
+ * This does not infer receipt from a peer claim, a transaction hash or current spendability. */
+export async function checkStampPayments(
+  ctx: Pick<BotContext, "checkMessagePayment">,
+  digest: string
+): Promise<readonly ReceivedPayment[]> {
+  const evidence = await ctx.checkMessagePayment(digest);
+  const owner = digest.replace(/^0x/, "").toLowerCase();
+  return evidence.payments.filter(
+    (payment) =>
+      payment.origin === "stamp" &&
+      payment.payloadDigest !== undefined &&
+      payment.payloadDigest.replace(/^0x/, "").toLowerCase() === owner
+  );
 }

@@ -83,6 +83,7 @@ beforeEach(() => {
     buildAndSignTransfer: jest.fn(),
     waitForReceipt: jest.fn(),
     getBalance: jest.fn(),
+    checkMessagePayment: jest.fn(),
     stopping: new AbortController().signal,
   };
   msg = {

@@ -3,7 +3,7 @@
  *
  * 1. What a message paid is what is on chain (`confirmReceived`). The wallet reports the
  *    transfers that came with a message and that pay this bot's own stamp key; each is counted
- *    only once it is mined, succeeded, and is the transfer the wallet described, and it is
+ *    only from the wallet's verified stamp receipt evidence, and it is
  *    credited to one message only (the first for which it is confirmed).
  *
  * 2. A message that came with money is written down before anything else is done with it
@@ -18,7 +18,7 @@
  *    kept as FAILED, reported, and never counted as sent.
  */
 import { createHash } from "crypto";
-import { claimTransfer } from "@frank/bot-framework";
+import { claimTransfer, checkStampPayments } from "@frank/bot-framework";
 import type {
   BotContext,
   BotMessageContext,
@@ -41,35 +41,6 @@ type BatchOp =
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Whether one reported transfer is on chain as described. `unknown`: not mined yet. */
-async function landed(
-  ctx: BotContext,
-  payment: Payment,
-  untilMs: number
-): Promise<"yes" | "no" | "unknown"> {
-  for (;;) {
-    let receipt: { status?: number | null } | null = null;
-    try {
-      receipt = await ctx.provider.getTransactionReceipt(payment.txHash);
-    } catch {
-      // The node could not answer: not a statement about the transfer.
-    }
-    if (receipt) {
-      if (receipt.status !== 1) return "no";
-      const tx = await ctx.provider
-        .getTransaction(payment.txHash)
-        .catch(() => null);
-      if (!tx) return "unknown";
-      return tx.to?.toLowerCase() === payment.destinationAddress.toLowerCase() &&
-        tx.value === BigInt(payment.valueWei)
-        ? "yes"
-        : "no";
-    }
-    if (Date.now() >= untilMs) return "unknown";
-    await sleep(Math.min(1000, Math.max(0, untilMs - Date.now())));
-  }
-}
-
 export interface Received {
   /** Wei confirmed on chain as paid to this bot with the message. */
   confirmedWei: bigint;
@@ -79,35 +50,53 @@ export interface Received {
   unconfirmed: Payment[];
 }
 
-/** Credits a confirmed transfer to `digest` unless another message already has it: the host's
- * and every bot's claims go through the one queue (`claimTransfer`). */
-const claim = (ctx: BotContext, txHash: string, digest: string) =>
-  claimTransfer(ctx.state, txHash, digest);
-
+/** Wallet evidence proves receipt; delivery hashes retain the existing durable attribution ID. */
 async function confirm(
   digest: string,
   payments: readonly Payment[],
   ctx: BotContext,
   waitMs: number
 ): Promise<Received> {
+  // Free game actions must not wait on unrelated pending wallet payments.
+  if (payments.length === 0)
+    return { confirmedWei: 0n, confirmed: [], unconfirmed: [] };
   const untilMs = Date.now() + waitMs;
-  let confirmedWei = 0n;
-  const confirmed: Payment[] = [];
-  const unconfirmed: Payment[] = [];
-  const seen = new Set<string>();
-  for (const payment of payments) {
-    const hash = payment.txHash.toLowerCase();
-    if (seen.has(hash)) continue;
-    seen.add(hash);
-    const state = await landed(ctx, payment, untilMs);
-    if (state === "unknown") unconfirmed.push(payment);
-    // Credited only once it is confirmed: naming somebody else's transfer, which does not pay
-    // the address named with it, claims nothing and takes nothing from its real payer.
-    if (state !== "yes" || !(await claim(ctx, hash, digest))) continue;
-    confirmedWei += BigInt(payment.valueWei);
-    confirmed.push(payment);
+  for (;;) {
+    const evidence = await checkStampPayments(ctx, digest).catch(() => []);
+    const byAddress = new Map(
+      evidence.map((payment) => [payment.address.toLowerCase(), payment])
+    );
+    let confirmedWei = 0n;
+    const confirmed: Payment[] = [];
+    const unconfirmed: Payment[] = [];
+    const seen = new Set<string>();
+    for (const payment of payments) {
+      const address = payment.destinationAddress.toLowerCase();
+      if (seen.has(address)) continue;
+      seen.add(address);
+      const receipt = byAddress.get(address);
+      if (
+        !receipt ||
+        receipt.status === "pending" ||
+        receipt.status === "not-received"
+      ) {
+        unconfirmed.push(payment);
+        continue;
+      }
+      const amount = receipt.receivedAmountWei ?? 0n;
+      if (
+        receipt.status !== "received" ||
+        amount <= 0n ||
+        !(await claimTransfer(ctx.state, payment.txHash, digest))
+      )
+        continue;
+      confirmedWei += amount;
+      confirmed.push({ ...payment, valueWei: amount.toString() });
+    }
+    if (!unconfirmed.length || Date.now() >= untilMs)
+      return { confirmedWei, confirmed, unconfirmed };
+    await sleep(Math.min(1000, Math.max(0, untilMs - Date.now())));
   }
-  return { confirmedWei, confirmed, unconfirmed };
 }
 
 const payable = (payment: StampPaymentInfo): Payment => ({
@@ -585,20 +574,15 @@ export class Outbox {
     if (!owed.attempt) {
       if (owed.awaits?.length) {
         const expired = Date.now() - owed.sinceMs >= AWAIT_MS;
-        const still: Payment[] = [];
-        for (const payment of owed.awaits) {
-          const state = await landed(ctx, payment, 0);
-          if (state === "unknown" && !expired) return;
-          // Returned only if it is credited to the message it came with: the same transfer
-          // named by two messages, or played by another, is not returned twice.
-          if (
-            state === "yes" &&
-            (await claim(ctx, payment.txHash, owed.awaitsFor as string))
-          )
-            still.push(payment);
-        }
-        // Fixed before the first send: the value of a message never changes between attempts.
-        for (const payment of still) value += BigInt(payment.valueWei);
+        const received = await confirm(
+          owed.awaitsFor as string,
+          owed.awaits,
+          ctx,
+          0
+        );
+        if (received.unconfirmed.length && !expired) return;
+        // Fixed before the first send: the value never changes between attempts.
+        value += received.confirmedWei;
         owed.valueWei = value.toString();
         delete owed.awaits;
         await state.put(`${K}owed:${id}`, JSON.stringify(owed));

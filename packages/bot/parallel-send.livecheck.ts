@@ -1325,6 +1325,7 @@ async function main() {
         await sleep(1000);
       }
       const partsBefore = await wallet.handle.getBalanceParts?.();
+      const burstTap = intercept(wallet);
       const started = Date.now();
       const firstBlock = await provider.getBlockNumber();
       const outcomes = await Promise.all(
@@ -1338,6 +1339,7 @@ async function main() {
       const wallMs = Date.now() - started;
       const sent = outcomes.flatMap((o) => ("sent" in o ? [o.sent] : []));
       const settled = sent.length > 0 ? await settle(wallet, sent.map((x) => x.digest)) : undefined;
+      const settledMs = Date.now() - started;
       // Every transaction of the wallet's accounts since the burst began, from the chain.
       const ours = new Set([wallet.address.toLowerCase(), wallet.mainAccount.toLowerCase()]);
       const lastBlock = await provider.getBlockNumber();
@@ -1353,7 +1355,19 @@ async function main() {
           txs.push({ from: tx.from.toLowerCase(), nonce: tx.nonce, block: number, status: receipt?.status ?? undefined, toOwn: beforeBurst });
         }
       }
-      const burst = txs.filter((tx) => !tx.toOwn);
+      // Inspect exactly the signed stamp set handed to the real relay. Background transfers
+      // are not stamps, and counting arbitrary wallet transactions could hide an unpaid one.
+      const rawPayments = [...new Set(sent.flatMap(({ digest }) =>
+        burstTap.of(digest).flatMap(request => request.rawTransactions)
+      ))];
+      const paid = await Promise.all(rawPayments.map(raw => onChain(stack, raw)));
+      const burst = paid.map(payment => ({
+        from: payment.from, nonce: payment.nonce, block: payment.block!, status: payment.status,
+      })).sort((a, b) => a.block - b.block || a.nonce - b.nonce);
+      const recipientBalances = await Promise.all(rawPayments.map(raw => {
+        const tx = Transaction.from(raw);
+        return provider.getBalance(tx.to!).then(balance => balance === tx.value);
+      }));
       const partsAfter = await wallet.handle.getBalanceParts?.();
       const total = (parts?: { main: bigint; profile: bigint; received: bigint; sending: bigint }) =>
         parts ? mon(parts.main + parts.profile + parts.received + parts.sending) : "?";
@@ -1362,12 +1376,16 @@ async function main() {
         backgroundFunding: spreadMs > 0 ? { waitedMs: Date.now() - spreadStarted - wallMs, passes, transfers: txs.filter((tx) => tx.toOwn).length } : "not given time",
         balanceBeforeBurst: total(partsBefore),
         wallMs,
+        settledMs,
+        paymentFeesWei: paid.reduce((sum, tx) => sum + (tx.feeWei ?? 0n), 0n).toString(),
+        stampValueWei: paid.reduce((sum, tx) => sum + tx.valueWei, 0n).toString(),
         delivered: sent.length,
         failed: outcomes.flatMap((o) => ("error" in o ? [o.error] : [])),
         perSendMs: sent.map((x) => x.ms).sort((a, b) => a - b),
         paymentStates: settled?.payments.map((states) => states.join(",")),
         payingAccounts: new Set(burst.map((tx) => tx.from)).size,
         payments: burst.map((tx) => `${tx.from.slice(0, 8)}#${tx.nonce}@${tx.block}${tx.status === 1 ? "" : ` STATUS ${tx.status}`}`),
+        adjacentBlockGaps: burst.slice(1).map((tx, i) => tx.block - burst[i].block),
         blocksFirstToLast: burst.length ? burst[burst.length - 1].block - burst[0].block : undefined,
         reverted: burst.filter((tx) => tx.status !== 1).length,
         balanceAfter: total(partsAfter),
@@ -1378,7 +1396,11 @@ async function main() {
       const r = results[phase] as { wallMs: number; payments: string[]; blocksFirstToLast?: number; payingAccounts: number };
       say(`${phase}: ${messages} together from ${mon(fundWei)} at one ${where} address: ${r.wallMs} ms, ${r.payingAccounts} paying account(s), blocks first to last ${r.blocksFirstToLast}; ${r.payments.join(" ")}`);
       require_(phase, "every message delivered, one copy each", sent.length === messages && (results[phase] as { recipientCopies: number }).recipientCopies === messages);
-      require_(phase, "every payment mined with status 1 (zero reverts)", burst.length >= messages && burst.every((tx) => tx.status === 1));
+      require_(phase, "distinct message digests", new Set(sent.map(x => x.digest)).size === messages);
+      require_(phase, "every payment settled as spent", settled?.payments.length === messages && settled.payments.every(states => states.length === 1 && states[0] === "spent"));
+      require_(phase, "exactly one signed payment per message, all mined with status 1", paid.length === messages && paid.every(tx => tx.mined && tx.status === 1));
+      require_(phase, "no account and nonce spent twice", new Set(paid.map(tx => `${tx.from}:${tx.nonce}`)).size === messages);
+      require_(phase, "the intended stamp amount is at every recipient address", recipientBalances.length === messages && recipientBalances.every(Boolean));
     };
     const runS = () => burstFrom("s", `small-${Date.now()}`, "profile", 100_000_000_000_000_000n);
     const runT = () => burstFrom("t", `rich-${Date.now()}`, "main", 20n * 10n ** 18n);
@@ -1635,22 +1657,31 @@ async function main() {
       const { JsonRpcProvider } = await import("ethers");
       const reader = new JsonRpcProvider(rpcUrl.split(",")[0]);
       const after = await reader.getBalance(address);
+      const notBroadcast = relayLines?.filter(line => /payment not broadcast/i.test(line)) ?? [];
+      const unresolvedBroadcasts = (await Promise.all(notBroadcast.map(async line => {
+        const clean = line.replace(/\u001b\[[0-9;]*m/g, "");
+        const hash = /tx_hash=(?:0x)?([0-9a-f]{64})/i.exec(clean)?.[1];
+        if (!hash) return line;
+        const receipt = await reader.getTransactionReceipt(`0x${hash}`);
+        if (receipt?.status !== 1) return line;
+        const block = await reader.getBlock(receipt.blockNumber);
+        return block?.hash === receipt.blockHash ? undefined : line;
+      }))).filter(line => line !== undefined);
       reader.destroy();
       say("RESULTS", JSON.stringify(results, null, 1));
       if (relayLines !== undefined) {
-        const notBroadcast = relayLines.filter((line) =>
-          /payment not broadcast/i.test(line)
-        );
         say(
           `relay log: ${notBroadcast.length} "payment not broadcast" line(s)${
             notBroadcast.length > 0 ? `: ${notBroadcast[0].slice(0, 300)}` : ""
           }`
         );
-        // Phase n hands the relay a payment the node refuses, on purpose; nothing else may.
+        // A cut connection can lose the broadcast answer while the original transaction
+        // still lands. A successful receipt proves recovery; an unresolved warning fails.
+        // Phase n deliberately supplies one refused transaction and proves its replacement.
         (verdicts["relay log"] ??= []).push(
-          ...(notBroadcast.length <= (phases.includes("n") ? 1 : 0)
+          ...(unresolvedBroadcasts.length <= (phases.includes("n") ? 1 : 0)
             ? []
-            : [`${notBroadcast.length} payments the relay could not broadcast`])
+            : [`${unresolvedBroadcasts.length} relay broadcast warnings still lack a successful receipt`])
         );
       }
       for (const [phase, failed] of Object.entries(verdicts))

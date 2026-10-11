@@ -20,7 +20,10 @@ const key = (n: number) => '0x' + n.toString(16).padStart(64, '0')
 const main = new Wallet(key(1))
 const coins = [2, 3, 4].map(n => new Wallet(key(n)))
 
-function payer(balances: Record<string, bigint>) {
+function payer(balances: Record<string, bigint>, options: {
+  provider?: Partial<Provider>
+  spendSpacingBlocks?: number
+} = {}) {
   const held = new Map<string, string>()
   const provider = {
     getBlockNumber: async () => 1000,
@@ -31,6 +34,7 @@ function payer(balances: Record<string, bigint>) {
       maxFeePerGas: 202n * GWEI,
       maxPriorityFeePerGas: 2n * GWEI,
     }),
+    ...options.provider,
   } as unknown as Provider
   const pool = {
     accountClaimedBy: (address: string) => held.get(address.toLowerCase()),
@@ -55,6 +59,7 @@ function payer(balances: Record<string, bigint>) {
     provider,
     httpClient: {} as never,
     watcher,
+    spendSpacingBlocks: options.spendSpacingBlocks,
     accounts: [
       { source: 'main', address: main.address, privateKey: () => main.privateKey },
     ],
@@ -184,5 +189,61 @@ describe('which coins pay a stamp', () => {
     const made = await claim
     watcher.stop()
     expect(made.accounts).toHaveLength(2)
+  })
+})
+
+
+describe('settling a stamp from its actual receipt', () => {
+  async function payment() {
+    return main.signTransaction({
+      chainId: 10143n, nonce: 0, to: coins[0]!.address, value: MON / 100n,
+      gasLimit: 21_000n, maxFeePerGas: 202n * GWEI, maxPriorityFeePerGas: 2n * GWEI,
+    })
+  }
+
+  it('nonce zero uses the mined block: the next send waits only the remaining spacing', async () => {
+    const state = { head: 1001 }
+    const { stampPayer, watcher } = payer({ [at(main)]: MON }, {
+      spendSpacingBlocks: 3,
+      provider: {
+        getBlockNumber: async () => state.head,
+        getTransactionCount: async (_address, block) => typeof block === 'number' && block < 1000 ? 0 : 1,
+        getTransaction: async () => null,
+        getTransactionReceipt: async () => ({ status: 1, blockNumber: 1000 }) as never,
+      },
+    })
+    try {
+      expect(await stampPayer.observe(await payment())).toMatchObject({ state: 'included' })
+      const waits: (number | undefined)[] = []
+      const claim = stampPayer.claim({ holder: 'next', stampValueWei: MON / 100n,
+        sources: ['main'], onWaiting: blocks => waits.push(blocks) })
+      void claim.catch(() => undefined)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(waits).toEqual([1])
+      state.head = 1002
+      expect((await claim).accounts[0]!.nonce).toBe(1)
+    } finally { watcher.stop() }
+  })
+
+  it('a reverted receipt stays pending until three confirmations on the canonical block', async () => {
+    const state = { head: 1000, hash: 'canonical' }
+    const { stampPayer, watcher } = payer({}, { provider: {
+      getBlockNumber: async () => state.head,
+      getTransactionCount: async () => 1,
+      getTransaction: async () => null,
+      getTransactionReceipt: async () => ({ status: 0, blockNumber: 1000, blockHash: 'canonical' }) as never,
+      getBlock: async () => ({ hash: state.hash }) as never,
+    } })
+    try {
+      const raw = await payment()
+      expect(await stampPayer.observe(raw)).toEqual({ state: 'pending', where: 'included' })
+      state.head = 1001
+      expect(await stampPayer.observe(raw)).toEqual({ state: 'pending', where: 'included' })
+      state.head = 1002
+      state.hash = 'other-fork'
+      expect(await stampPayer.observe(raw)).toEqual({ state: 'pending', where: 'included' })
+      state.hash = 'canonical'
+      expect(await stampPayer.observe(raw)).toEqual({ state: 'included', reverted: true, block: 1000 })
+    } finally { watcher.stop() }
   })
 })

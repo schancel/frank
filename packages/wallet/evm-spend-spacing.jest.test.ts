@@ -133,14 +133,17 @@ describe('a stamp paid from the main account right after its last transaction', 
     expect(waits).toEqual([])
   })
 
-  it('from an account the payment takes below the reserve: waits the three blocks, says how many remain, then signs', async () => {
+  it('below the reserve: cannot offer at b+1, can offer at b+2 for earliest inclusion b+3', async () => {
     const { state, claim, waits, watcher } = payer(5n * MON)
     let done = false
     void claim.then(() => (done = true))
     await new Promise(resolve => setTimeout(resolve, 200))
     expect(done).toBe(false)
-    expect(waits).toEqual([3])
-    state.head = 103
+    expect(waits).toEqual([2])
+    state.head = 101
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(done).toBe(false)
+    state.head = 102
     const made = await claim
     watcher.stop()
     expect(made.accounts[0]).toEqual(expect.objectContaining({ nonce: 1 }))

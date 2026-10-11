@@ -46,7 +46,7 @@ const clientKeys = new Set([
   "gasChargedOn",
   "reserveBalanceWei",
   "spendSpacingBlocks",
-  "blockTimeMs",
+  "paymentPollIntervalMs",
   "exchange",
   "wallet",
 ]);

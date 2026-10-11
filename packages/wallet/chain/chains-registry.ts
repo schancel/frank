@@ -120,10 +120,8 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   /** Decimal wei (a string: the registry is plain data). */
   readonly reserveBalanceWei?: string;
   readonly spendSpacingBlocks?: number;
-  /** About how long the network takes to make a block, in milliseconds (Monad: 400). A wallet
-   * looks at the chain about twice a block while something of its own is waiting for one.
-   * Absent: half a second between looks. */
-  readonly blockTimeMs?: number;
+  /** Client wallet polling policy while payments wait for this network. Absent: 500 ms. */
+  readonly paymentPollIntervalMs?: number;
   readonly exchange?: ChainExchangeConfig;
   /** What the app's own wallet does on this network. Absent: nothing, and no address is shown. */
   readonly wallet?: ChainWalletSupport;
@@ -167,7 +165,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
       spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
-      blockTimeMs: 400,
+      paymentPollIntervalMs: 200,
       dex: MONAD_TESTNET_DEX,
     }),
     // A local Monad network (monad-solonet, packages/bot/demo/regtest). Each run is a new
@@ -183,7 +181,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
       spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
-      blockTimeMs: 400,
+      paymentPollIntervalMs: 200,
     }),
     "monad-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -197,7 +195,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
       spendSpacingBlocks: MONAD_SPEND_SPACING_BLOCKS,
-      blockTimeMs: 400,
+      paymentPollIntervalMs: 200,
     }),
     "xec-testnet": Object.freeze({
       // The eCash SDK wallet on the relay's Chronik proxy.

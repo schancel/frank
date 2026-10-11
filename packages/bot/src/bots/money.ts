@@ -57,6 +57,9 @@ async function confirm(
   ctx: BotContext,
   waitMs: number
 ): Promise<Received> {
+  // Free game actions must not wait on unrelated pending wallet payments.
+  if (payments.length === 0)
+    return { confirmedWei: 0n, confirmed: [], unconfirmed: [] };
   const untilMs = Date.now() + waitMs;
   for (;;) {
     const evidence = await checkStampPayments(ctx, digest).catch(() => []);

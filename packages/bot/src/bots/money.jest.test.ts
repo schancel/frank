@@ -66,6 +66,17 @@ describe("confirmReceived", () => {
 });
 
 describe("wallet-owned stamp evidence", () => {
+  test("unpaid actions never wait on unrelated pending wallet evidence", async () => {
+    const h = harness();
+    // A pending stealth payment may make the serialized wallet read wait on RPC.
+    const check = jest.fn(() => new Promise<never>(() => undefined));
+    h.ctx.checkMessagePayment = check;
+    expect(await confirmReceived(h.message([]), h.ctx, 0)).toEqual({
+      confirmedWei: 0n, confirmed: [], unconfirmed: [],
+    });
+    expect(check).not.toHaveBeenCalled();
+  });
+
   test("uses actual stamp receipts despite failed aggregate; ignores stealth and RPC hash checks", async () => {
     const h = harness();
     const payment = h.pay(100n);

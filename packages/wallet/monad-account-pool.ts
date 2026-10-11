@@ -436,8 +436,12 @@ export class MonadSubAccountPool {
    * the account's new state from chain evidence, or never let a signature leave the wallet. */
   releaseClaim(holder: string, indices?: readonly number[]): void {
     for (const [index, claimant] of [...this.claims])
-      if (claimant === holder && (indices === undefined || indices.includes(index)))
+      if (claimant === holder && (indices === undefined || indices.includes(index))) {
         this.claims.delete(index);
+        const address = this.store.getByIndex(index)?.address.toLowerCase();
+        if (address !== undefined)
+          this.accountGenerations.set(address, (this.accountGenerations.get(address) ?? 0) + 1);
+      }
     if (indices === undefined)
       for (const [address, claimant] of [...this.accountClaims])
         if (claimant === holder) this.releaseAccountClaim(holder, address);
@@ -526,13 +530,16 @@ export class MonadSubAccountPool {
   claimStampAccounts(
     holder: string,
     stampValueWei: bigint,
-    feeReserveWei: bigint
+    feeReserveWei: bigint,
+    /** Current-chain eligibility captured before this atomic claim, rechecked for stale reads. */
+    eligible?: (index: number, address: string) => boolean
   ): SelectedStampAccount[] | undefined {
     let selected: SelectedStampAccount[] | undefined;
     this.claim(holder, (free) => {
       const accounts = free.flatMap((record) => {
         const balanceWei = this.capacityCache.get(record.index)?.balanceWei;
         return record.status === "available" &&
+          eligible?.(record.index, record.address) !== false &&
           balanceWei !== undefined &&
           balanceWei > feeReserveWei
           ? [

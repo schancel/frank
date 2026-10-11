@@ -4635,6 +4635,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // only be paid from it is refused at once (the payment may be waiting for that
               // very message), exactly as its funding used to be.
               accountHeld: (address) => sourceIsHeld(wallet, address),
+              canSelectAccount: (address, nonce) =>
+                topicOwner!.nativeJournal!.canSelect(address, nonce),
               heldRefusal: () => new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT),
               accounts: [
                 {

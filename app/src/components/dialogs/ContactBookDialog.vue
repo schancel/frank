@@ -3,7 +3,6 @@
     <q-card-section class="row items-center q-pb-none">
       <div class="text-h6">{{ $t('contactBookDialog.contacts') }}</div>
       <q-space />
-
     </q-card-section>
 
     <q-card-section class="q-pb-none">

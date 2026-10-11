@@ -261,7 +261,7 @@ describe('Wallet detail page (#570)', () => {
       'walletPanel.mainWallet',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
-      false,
+      true,
     )
     expect(wrapper.find('[data-testid="wallet-chain"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
@@ -467,7 +467,7 @@ describe('Wallet detail page (#570)', () => {
       'walletPanel.ecash',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
-      false,
+      true,
     )
     expect(wrapper.find('[data-testid="wallet-chain"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
@@ -587,7 +587,7 @@ describe('Wallet detail page (#570)', () => {
       'walletPanel.solana',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
-      false,
+      true,
     )
     expect(wrapper.find('[data-testid="wallet-chain"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe('15 dSOL')

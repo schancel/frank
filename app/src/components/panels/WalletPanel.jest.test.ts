@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
+import { getActiveChain, setActiveChain } from '@frank/wallet/chain'
 import type { BalancePresentation } from '../../composables/useChainBalance'
 import Panel from './WalletPanel.vue'
 import { useWalletNames } from '../../composables/useWalletNames'
@@ -71,7 +72,8 @@ test('renders only available wallets with icon, name and one native balance line
     expect(row.get('[data-test$="wallet-balance"]').text()).toBe(
       'Loading balance…',
     )
-    expect(row.findAll('[data-test$="testnet-badge"]')).toHaveLength(0)
+    expect(row.findAll('[data-test$="testnet-badge"]')).toHaveLength(1)
+    expect(row.get('[data-test$="testnet-badge"]').element.parentElement).toBe(row.get('[data-test$="wallet-name"]').element)
     expect(row.findAll('button')).toHaveLength(0)
   }
   for (const id of ['dogecoin', 'ethereum', 'tempo', 'hyperliquid'])
@@ -95,7 +97,7 @@ test('clicking wallet rows preserves their respective routes', async () => {
   }
 })
 
-test('renders concise default names without network labels or badges', () => {
+test('renders concise default names with inline testnet badges instead of network subtitles', () => {
   const view = render()
   expect(view.get('[data-test="wallet-name-text"]').text()).toBe('Main wallet')
   expect(view.get('[data-test="bitcoin-wallet-name-text"]').text()).toBe(
@@ -183,4 +185,20 @@ test('updates the reserved native balance line without adding rows or hiding a w
   expect(row.find('[data-test="monad-balance-stale-indicator"]').exists()).toBe(
     false,
   )
+})
+
+test('marks configured test networks and removes badges when the selected networks are mainnets', async () => {
+  const original = getActiveChain()
+  const view = render()
+  try {
+    expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(5)
+    setActiveChain({ ...original, chainIdentifier: 'monad-mainnet', isTestnet: false })
+    await flushPromises()
+    expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(0)
+    expect(view.findAll('[data-test$="wallet-name-text"]')).toHaveLength(5)
+    expect(view.findAll('[data-test$="wallet-balance"]')).toHaveLength(5)
+  } finally {
+    view.unmount()
+    setActiveChain(original)
+  }
 })

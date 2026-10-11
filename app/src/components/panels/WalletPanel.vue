@@ -42,6 +42,14 @@
                 >
                   {{ getCustomName(wallet.id) || $t(wallet.defaultNameKey) }}
                 </span>
+                <q-badge
+                  v-if="walletIsTestnet(wallet.id)"
+                  outline
+                  color="amber-9"
+                  class="wallet-network-badge"
+                  :label="$t('walletPanel.testnet')"
+                  :data-test="wallet.badgeDataTest"
+                />
               </q-item-label>
               <q-item-label
                 caption
@@ -110,6 +118,10 @@ const route = useRoute()
 const instance = getCurrentInstance()
 const { getCustomName } = useWalletNames()
 const { getPresentation } = useMultichainBalance()
+function walletIsTestnet(wallet: string): boolean {
+  return walletSupport(wallet, isTestnet.value).entry?.isTestnet ?? false
+}
+
 function nativeBalance(wallet: string): string {
   const presentation = getPresentation(wallet)
   const observation =
@@ -190,9 +202,23 @@ function openBackup() {
   min-width: 0;
 }
 .wallet-row-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 15px;
   line-height: 20px;
   height: 20px;
+}
+.wallet-row-name > span {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.wallet-network-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 12px;
+  padding: 2px 4px;
+  height: 16px;
 }
 .wallet-row-balance {
   font-size: 13px;

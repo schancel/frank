@@ -31,6 +31,14 @@
               data-testid="wallet-unit"
               >({{ walletUnit }})</span
             >
+            <q-badge
+              v-if="selectedWalletIsTestnet"
+              outline
+              color="white"
+              class="q-ml-sm wallet-header-unit"
+              :label="$t('walletPanel.testnet')"
+              data-testid="wallet-testnet-badge"
+            />
           </div>
         </q-toolbar-title>
         <q-btn
@@ -1091,6 +1099,7 @@ export default defineComponent({
       sendChainIdentifier,
       walletStatus,
       sendLabel,
+      selectedWalletIsTestnet: computed(() => getChainRegistryEntry(resolveNetworkId(selectedWallet.value, isTestnet.value))?.isTestnet ?? false),
       walletUnit: computed(
         () =>
           getChainRegistryEntry(

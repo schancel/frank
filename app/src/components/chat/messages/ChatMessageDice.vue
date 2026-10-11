@@ -14,6 +14,16 @@
       />
     </div>
 
+    <div
+      v-if="rejection"
+      role="status"
+      class="text-body2 q-my-xs"
+      data-testid="dice-rejected"
+    >
+      {{ $t('gameFairness.diceRejected') }}
+      {{ $t(`gameFairness.diceRejectionReasons.${rejection.rejectionReason}`) }}
+    </div>
+
     <!-- The player's own bet -->
     <template v-if="item.action === 'roll'">
       <div class="text-body2" data-testid="dice-bet">
@@ -333,9 +343,23 @@ export default defineComponent({
         short: carried < owed,
       }
     },
+    /** A terminal game answer, separate from any payment or refund settlement. */
+    rejection(): SatoshiDiceItem | undefined {
+      if (!this.item.rollId) return undefined
+      if (this.item.action === 'rejected')
+        return this.item.rejectionReason ? this.item : undefined
+      if (this.item.action !== 'roll') return undefined
+      return chatGameItems('dice', this.address).find(
+        entry =>
+          !entry.outbound &&
+          entry.item.action === 'rejected' &&
+          !!entry.item.rejectionReason &&
+          entry.item.rollId === this.item.rollId,
+      )?.item
+    },
     /** The player's own bet, while the bot has not answered it: how long it has waited. */
     waiting(): { seconds: number; late: boolean } | null {
-      if (this.item.action !== 'roll') return null
+      if (this.item.action !== 'roll' || this.rejection) return null
       const all = chatGameItems('dice', this.address)
       if (
         all.some(

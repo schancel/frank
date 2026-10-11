@@ -1266,13 +1266,16 @@ export default defineComponent({
           amount: activeChain.toDisplayAmount(this.minimumStampWei),
           unit: activeChain.unit,
         })
-      return this.isDefaultStampMode && this.defaultStampWei === undefined
-        ? this.$t('chatInput.stampQuoteUnavailableReason', {
-            reason: this.$t(
-              `chatInput.stampQuoteReasons.${this.defaultStampFailure}`,
-            ),
-          })
-        : ''
+      if (!this.isDefaultStampMode || this.defaultStampWei !== undefined)
+        return ''
+      // A fresh quote can be pending before it has supplied a failure reason.
+      if (!this.defaultStampFailure)
+        return this.$t('chatInput.stampQuoteUnavailable')
+      return this.$t('chatInput.stampQuoteUnavailableReason', {
+        reason: this.$t(
+          `chatInput.stampQuoteReasons.${this.defaultStampFailure}`,
+        ),
+      })
     },
     isEmailThread(): boolean {
       if (this.conversation?.kind === 'email') {

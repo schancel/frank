@@ -195,6 +195,18 @@ export default {
     balanceUnknown: 'Votre solde n’est pas encore connu.',
   },
   gameFairness: {
+    diceRejected: 'Aucun lancer n’a été effectué.',
+    diceRejectionReasons: {
+      'roll-not-offered': 'Ce lancer n’a pas été proposé.',
+      'commitment-mismatch':
+        'L’engagement ne correspond pas au lancer proposé.',
+      'invalid-client-seed': 'La valeur aléatoire du joueur est invalide.',
+      'invalid-target': 'La cible du lancer est invalide.',
+      'invalid-wager': 'La mise est invalide.',
+      'below-minimum': 'La mise est inférieure au minimum.',
+      'payout-limit': 'Le gain possible dépasse la limite de la table.',
+      'payment-not-confirmed': 'Le paiement de la mise n’a pas été confirmé.',
+    },
     dicePractice: 'Entraînement',
     dicePracticeDescription:
       'Mise nulle, aucun gain. L’entraînement utilise les mêmes règles de tirage sans miser de fonds.',

@@ -154,11 +154,13 @@ function chat(
     item: SatoshiDiceItem
     paid?: bigint
     status?: string
+    senderAddress?: string
   }[]
 ) {
   store.activeConversation = {
     messages: messages.map(m => ({
       outbound: m.outbound,
+      senderAddress: m.senderAddress,
       status: m.status ?? 'confirmed',
       items: [m.item],
       stampValueWei: m.paid ?? 0n,
@@ -318,6 +320,74 @@ describe('ChatMessageDice.vue', () => {
     )
     late.unmount()
   })
+
+  test.each([0n, STAKE / 2n, STAKE])(
+    'a matching rejection stops waiting without asserting refund settlement (carried %s)',
+    async paid => {
+      const { bet } = played()
+      const rejected: SatoshiDiceItem = {
+        type: 'dice',
+        action: 'rejected',
+        rollId: 'r1',
+        rejectionReason: 'payout-limit',
+      }
+      chat({ outbound: true, item: bet })
+      const wrapper = mountCard(bet)
+      expect(wrapper.find('[data-testid="dice-waiting"]').exists()).toBe(true)
+      chat(
+        { outbound: true, item: bet },
+        { outbound: false, item: rejected, senderAddress: '0x123', paid },
+      )
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="dice-waiting"]').exists()).toBe(false)
+      expect(wrapper.get('[data-testid="dice-rejected"]').text()).toContain(
+        'No roll was made.',
+      )
+      expect(wrapper.text()).toContain(
+        'possible payout exceeds the table limit',
+      )
+      expect(wrapper.text()).not.toMatch(
+        /YOU LOSE|refund|paid in full|verified/i,
+      )
+      expect(wrapper.emitted('sendFollowUp')).toBeUndefined()
+      const answer = mountCard(rejected)
+      expect(answer.get('[data-testid="dice-rejected"]').text()).toContain(
+        'No roll was made.',
+      )
+      expect(answer.find('[data-testid="dice-roll-btn"]').exists()).toBe(false)
+      expect(answer.find('[data-testid="dice-payout"]').exists()).toBe(false)
+      answer.unmount()
+      wrapper.unmount()
+    },
+  )
+
+  test.each(['other-roll', 'other-peer', 'outbound', 'fresh-table'])(
+    '%s cannot answer the pending bet',
+    kind => {
+      const { bet } = played()
+      const answer: SatoshiDiceItem =
+        kind === 'fresh-table'
+          ? { type: 'dice', action: 'table', rollId: 'r2', commitment }
+          : {
+              type: 'dice',
+              action: 'rejected',
+              rollId: kind === 'other-roll' ? 'r9' : 'r1',
+              rejectionReason: 'payout-limit',
+            }
+      chat(
+        { outbound: true, item: bet },
+        {
+          outbound: kind === 'outbound',
+          item: answer,
+          senderAddress: kind === 'other-peer' ? '0xSomeoneElse' : '0x123',
+        },
+      )
+      const wrapper = mountCard(bet)
+      expect(wrapper.find('[data-testid="dice-waiting"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="dice-rejected"]').exists()).toBe(false)
+      wrapper.unmount()
+    },
+  )
 
   test('a roll already bet on cannot be bet on again from the card', () => {
     const { bet } = played()

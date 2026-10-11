@@ -190,6 +190,17 @@ export default {
     balanceUnknown: 'Your balance is not known yet.',
   },
   gameFairness: {
+    diceRejected: 'No roll was made.',
+    diceRejectionReasons: {
+      'roll-not-offered': 'This roll was not offered.',
+      'commitment-mismatch': 'The commitment does not match the offered roll.',
+      'invalid-client-seed': 'The player random value is invalid.',
+      'invalid-target': 'The roll target is invalid.',
+      'invalid-wager': 'The stake is invalid.',
+      'below-minimum': 'The stake is below the minimum.',
+      'payout-limit': 'The possible payout exceeds the table limit.',
+      'payment-not-confirmed': 'The bet payment was not confirmed.',
+    },
     dicePractice: 'Practice',
     dicePracticeDescription:
       'Zero stake, no payout. Practice uses the same roll rules without wagering funds.',

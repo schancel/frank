@@ -122,6 +122,7 @@ async function mountChat(
     realInput?: boolean
     address?: string
     seedMessage?: boolean
+    translate?: (key: string) => string
   } = {},
 ) {
   const address = options.address ?? DEALER
@@ -165,7 +166,7 @@ async function mountChat(
       mocks: {
         $route: { params: { address } },
         $q: { dark: { isActive: false } },
-        $t: (key: string) => key,
+        $t: options.translate ?? ((key: string) => key),
       },
     },
   })
@@ -323,6 +324,30 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
       wrapper.unmount()
     },
   )
+
+  it('keeps a pending default quote visible without translating an empty failure key', async () => {
+    const translate = jest.fn((key: string) => key)
+    const { wrapper, chats } = await mountChat({}, { translate })
+    const vm = wrapper.vm as any
+    vm.defaultStampWei = undefined
+    vm.defaultStampFailure = ''
+    await wrapper.vm.$nextTick()
+    expect(vm.stampUnavailable).toBe('chatInput.stampQuoteUnavailable')
+    expect(translate).not.toHaveBeenCalledWith('chatInput.stampQuoteReasons.')
+    vm.defaultStampFailure = 'missing-fee'
+    await wrapper.vm.$nextTick()
+    expect(vm.stampUnavailable).toBe('chatInput.stampQuoteUnavailableReason')
+    expect(translate).toHaveBeenCalledWith(
+      'chatInput.stampQuoteReasons.missing-fee',
+    )
+    chats.setStampWei({
+      address: vm.conversation?.id || vm.recipientAddress,
+      stampWei: 0n,
+    })
+    await wrapper.vm.$nextTick()
+    expect(vm.stampUnavailable).toBe('')
+    wrapper.unmount()
+  })
 
   it('submits the mounted composer to the ordinary stamped store path for self-chat', async () => {
     const send = jest

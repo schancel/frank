@@ -2,6 +2,7 @@
 
 import { mount } from '@vue/test-utils'
 import TransactionDialog from './TransactionDialog.vue'
+import { activeChain } from '@frank/wallet/chain'
 import enUS from '../../i18n/en-us'
 import * as explorer from 'src/utils/explorer'
 import { copyToClipboard } from 'quasar'
@@ -48,6 +49,23 @@ describe('TransactionDialog', () => {
       props: {
         title: 'Transaction Details',
         stampPayments,
+        stampStatus: 'failed',
+        stealthGroups: [
+          {
+            chainIdentifier: activeChain.chainIdentifier,
+            state: 'paid',
+            transactions: [
+              {
+                txHash: '0x' + 'aa'.repeat(32),
+                valueWei: 1000000000000000000n,
+              },
+              {
+                txHash: '0x' + 'bb'.repeat(32),
+                valueWei: 2000000000000000000n,
+              },
+            ],
+          },
+        ],
       },
       global: {
         mocks: { $t: translator(enUS) },
@@ -74,6 +92,25 @@ describe('TransactionDialog', () => {
       'a[href="https://testnet.monadscan.com/tx/0x71f8b14d1234567890abcdef"]',
     )
     expect(link.exists()).toBe(true)
+    expect(
+      wrapper.get('[data-testid="stealth-transaction-status"]').text(),
+    ).toBe('Paid')
+    expect(
+      wrapper.get('[data-testid="stealth-transaction-total"]').text(),
+    ).toBe(
+      `${activeChain.toDisplayAmount(3000000000000000000n)} ${
+        activeChain.unit
+      }`,
+    )
+    expect(
+      wrapper.get('[data-testid="stealth-transaction-group"]').text(),
+    ).toContain('0x' + 'aa'.repeat(32))
+    expect(
+      wrapper.get('[data-testid="stealth-transaction-group"]').text(),
+    ).toContain('0x' + 'bb'.repeat(32))
+    expect(
+      wrapper.get('[data-testid="stamp-transaction-status"]').text(),
+    ).toContain('Failed')
     expect(wrapper.find('[data-testid="local-chain-notice"]').exists()).toBe(
       false,
     )

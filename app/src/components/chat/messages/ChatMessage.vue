@@ -7,6 +7,8 @@
         :title="$t('transactionDialog.backingTransactions')"
         :outpoints="message.outpoints"
         :stamp-payments="message.stampPayments"
+        :stamp-status="paymentSummary"
+        :stealth-groups="stealthTransactionGroups"
       />
     </q-dialog>
 
@@ -106,6 +108,11 @@
               :transactions="item.transactions"
               :memo="item.memo"
               :outbound="message.outbound"
+              :outbound-state="
+                stealthTransactionGroups.find(
+                  group => group.ephemeralPubKey === item.ephemeralPubKey,
+                )?.state
+              "
             />
             <!-- A picture the text shows where it is referenced is not shown a second time. -->
             <template v-else-if="item.type == 'image'">
@@ -235,6 +242,12 @@ import {
   sendsWaitingBlocks,
 } from 'src/utils/outgoing-payments'
 
+import { useSentContactPayments } from 'src/composables/useSentContactPayments'
+import {
+  contactPaymentState,
+  stealthTransactionDetails,
+} from 'src/utils/stealth-transaction-details'
+import { resolveChainIdentifier } from '@frank/wallet/chain/chains-registry'
 import moment from 'moment'
 import ChatMessageReply from './ChatMessageReply.vue'
 import ChatMessageText from './ChatMessageText.vue'
@@ -310,9 +323,15 @@ export default defineComponent({
       openedImage: '',
     }
   },
-  setup() {
+  setup(props) {
+    const { sentContactPayments } = useSentContactPayments(
+      () =>
+        props.message.outbound &&
+        props.message.items.some(item => item.type === 'stealth'),
+    )
     const chats = useChatStore()
     return {
+      sentContactPayments,
       deleteMessage: chats.deleteMessage,
       sendDirectMessage: chats.sendMessage,
       retryOutgoing: chats.retryOutgoing,
@@ -546,6 +565,43 @@ export default defineComponent({
       return sendsWaitingBlocks.get(this.payloadDigest) ?? -1
     },
     /** What the chain has shown of this sent message's payment, in one word; '' if unknown. */
+    stealthTransactionGroups() {
+      return this.message.items
+        .filter(item => item.type === 'stealth')
+        .map(item => {
+          const chain = resolveChainIdentifier(
+            item.networkTag || item.chainId || '',
+          )
+          const transactions = stealthTransactionDetails(
+            item.transactions ?? [],
+          ).map(tx => ({
+            ...tx,
+            state:
+              this.message.outbound && chain?.id === activeChain.chainIdentifier
+                ? contactPaymentState(
+                    this.sentContactPayments,
+                    item.ephemeralPubKey ?? '',
+                    [tx.txHash],
+                  )
+                : 'unknown',
+          }))
+          const state =
+            this.message.outbound && chain?.id === activeChain.chainIdentifier
+              ? contactPaymentState(
+                  this.sentContactPayments,
+                  item.ephemeralPubKey ?? '',
+                  transactions.map(tx => tx.txHash),
+                )
+              : 'unknown'
+          return {
+            ephemeralPubKey: item.ephemeralPubKey,
+            chainIdentifier: chain?.id,
+            unit: chain?.unit,
+            state,
+            transactions,
+          }
+        })
+    },
     paymentSummary(): string {
       if (!this.message.outbound) return ''
       return (

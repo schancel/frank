@@ -50,6 +50,15 @@
                   @senderClicked="openSenderProfile"
                 />
               </template>
+              <q-chat-message
+                v-if="visibleStealthPreparation"
+                sent
+                :text="[visibleStealthPreparation]"
+                :stamp="$t('outgoing.sending')"
+                role="status"
+                aria-live="polite"
+                data-testid="stealth-preparing-bubble"
+              />
             </div>
           </q-scroll-area>
           <!-- Overlaying the bounded viewport keeps banner changes from resizing the scroll box. -->
@@ -314,6 +323,13 @@ export default defineComponent({
       activeSendCount: 0,
       blackjackDialog: false,
       stealthDialog: false,
+      stealthPreparation: null as null | {
+        recipient: string
+        conversationId?: string
+        revision: number
+        chainIdentifier: string
+        amount: string
+      },
       swapDialog: false,
       forwardDialogOpen: false,
       messageToForward: null as ChatMessage | null,
@@ -786,6 +802,8 @@ export default defineComponent({
       value: bigint
       memo?: string
     }) {
+      if (this.sendingMessage) return
+      this.stealthDialog = false
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
@@ -813,6 +831,13 @@ export default defineComponent({
             )
               throw new Error(this.$t('chat.sendContextChanged'))
           }
+          this.stealthPreparation = {
+            recipient,
+            conversationId,
+            revision,
+            chainIdentifier,
+            amount: `${activeChain.toDisplayAmount(value)} ${activeChain.unit}`,
+          }
           const activeWallet = await useActiveWallet()
           requireCurrentContext()
           if (activeWallet !== wallet)
@@ -834,6 +859,7 @@ export default defineComponent({
         }
         try {
           requireCurrentContext()
+          this.stealthPreparation = null
           await this.sendDirectMessage({
             wallet,
             address: recipient,
@@ -849,6 +875,7 @@ export default defineComponent({
           errorNotify(err, { fallbackKey: 'sendStealthDialog.messageEnded' })
         }
       } finally {
+        this.stealthPreparation = null
         this.stampPreparationStatus = null
         this.sendingMessage = false
       }
@@ -1260,6 +1287,18 @@ export default defineComponent({
         }
       }
       return this.address
+    },
+    visibleStealthPreparation(): string {
+      const intent = this.stealthPreparation
+      if (
+        !intent ||
+        intent.revision !== accountStatus.revision ||
+        intent.chainIdentifier !== activeChain.chainIdentifier ||
+        intent.recipient !== (this.recipientAddress || this.address) ||
+        intent.conversationId !== this.conversation?.id
+      )
+        return ''
+      return this.$t('sendStealthDialog.preparing', { amount: intent.amount })
     },
     contact() {
       return this.getContactVuex(this.recipientAddress)

@@ -262,10 +262,16 @@ describe('Chat.vue priced action availability and custody affinity', () => {
     const self = fakeThis()
     try {
       const sending = methods.sendStealthPayment.call(self, { value: 1n })
+      expect(self.stealthPreparation).toMatchObject({
+        recipient: self.recipientAddress || self.address,
+        amount: '1 MON',
+      })
+      expect(self.sendDirectMessage).not.toHaveBeenCalled()
       expect(useActiveWallet).toHaveBeenCalledTimes(1)
       mockWallet = { id: 'b', ...{ prepareContactPayment: prepareB } }
       release()
       await sending
+      expect(self.stealthPreparation).toBeNull()
       expect(prepareA).not.toHaveBeenCalled()
       expect(prepareB).not.toHaveBeenCalled()
       expect(self.sendDirectMessage).not.toHaveBeenCalled()

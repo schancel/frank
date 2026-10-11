@@ -241,12 +241,26 @@ describe('ChatMessageStealth', () => {
     })
   })
 
-  it('a payment this wallet sent claims nothing about the chain and does not ask the wallet', () => {
+  it.each([
+    ['prepared', 'Pending'],
+    ['delivered', 'Pending'],
+    ['paid', 'Paid'],
+    ['failed', 'Transfer delivery failed'],
+    ['released', 'Cancelled before sending'],
+  ])(
+    'uses the transfer owner state %s without borrowing the message stamp state',
+    (state, label) => {
+      const wrapper = mountComponent({ outbound: true, outboundState: state })
+      expect(text(wrapper, 'stealth-status-badge')).toBe(label)
+    },
+  )
+
+  it('an outbound item alone does not claim a payment settled', () => {
     mockPayment.value = coin({ status: 'received', spendable: true })
     const wrapper = mountComponent({ outbound: true, memo: 'lunch' })
     expect(mockAskedFor).toEqual([undefined])
-    expect(text(wrapper, 'stealth-title')).toBe('Sent Stealth Payment')
-    expect(text(wrapper, 'stealth-status-badge')).toBe('Sent')
+    expect(text(wrapper, 'stealth-title')).toBe('Stealth Payment')
+    expect(text(wrapper, 'stealth-status-badge')).toBe('Not checked')
     expect(wrapper.find('[data-testid="stealth-status-hint"]').exists()).toBe(
       false,
     )

@@ -19,11 +19,7 @@ import {
   type DomainRoot,
 } from '@frank/domain-roots'
 import { getMeraAccountRoot, type MeraAccountAction } from './mera-passkey'
-import {
-  activeChain,
-  onActiveChainChange,
-  setCustomRelayBaseUrl,
-} from '@frank/wallet/chain'
+import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { toHex } from '@frank/codec'
@@ -111,8 +107,6 @@ export function createAccountCeremony() {
           const address = identity.displayAddress
           identityDetails = { subject, address }
           discoveredRelayUrl = await probeDirectoryRelay({ subject, address })
-          if (discoveredRelayUrl && token === epoch && isCurrent())
-            setCustomRelayBaseUrl(discoveredRelayUrl)
         } catch {
           // probe failure should never block account recovery
         }

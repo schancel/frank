@@ -1,4 +1,11 @@
 /** @jest-environment jsdom */
+import {
+  getActiveChain,
+  setActiveChain,
+  getCustomRelayBaseUrl,
+  setCustomRelayBaseUrl,
+} from '@frank/wallet/chain'
+import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { reactive, toRaw } from 'vue'
@@ -11,6 +18,10 @@ import fr from '../i18n/fr-fr'
 import Setup from './Setup.vue'
 import { inspectLegacyWallet } from '../accounts/legacy'
 import en from '../i18n/en-us'
+
+jest.mock('@frank/cashweb/relay', () => ({
+  probeDirectoryRelay: jest.fn(async () => undefined),
+}))
 
 const mockPasskey = jest.fn()
 const mockCancel = jest.fn()
@@ -212,5 +223,99 @@ test('successful passkey login enters pending review without activation or navig
     expect(view.emitted('setupCompleted')).toBeUndefined()
   } finally {
     view.unmount()
+  }
+})
+
+test.each([
+  'cancel',
+  'unmount',
+  'chain',
+  'chain-roundtrip',
+  'replacement',
+  'close-reopen',
+] as const)(
+  'late directory result after %s cannot select a relay or activate',
+  async race => {
+    const home = 'https://current-account-relay.example'
+    setCustomRelayBaseUrl(home)
+    const previousChain = getActiveChain()
+    const probe = jest.mocked(probeDirectoryRelay)
+    probe.mockClear()
+    let answer!: (result: {
+      isRestore: boolean
+      subject: string
+      discoveredRelayUrl?: string
+    }) => void
+    mockPasskey.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          answer = resolve
+        }),
+    )
+    const view = render()
+    let unmounted = false
+    try {
+      await view.get('[data-test="mera-login"]').trigger('click')
+      if (race === 'cancel') (view.vm as unknown as { cancel(): void }).cancel()
+      if (race === 'unmount') {
+        view.unmount()
+        unmounted = true
+      }
+      if (race === 'chain' || race === 'chain-roundtrip')
+        setActiveChain({
+          ...previousChain,
+          chainIdentifier: 'ethereum-sepolia',
+        })
+      if (race === 'chain-roundtrip') setActiveChain(previousChain)
+      if (race === 'replacement')
+        Object.assign(mockAccount, {
+          revision: 1,
+          account: { ...pending.account },
+        })
+      if (race === 'close-reopen') {
+        mockAccount.status = 'locked'
+        mockAccount.status = 'fresh'
+      }
+      answer({
+        isRestore: true,
+        subject: '02' + 'dd'.repeat(32),
+        discoveredRelayUrl: 'https://stale-account-relay.example',
+      })
+      await flushPromises()
+      expect(getCustomRelayBaseUrl()).toBe(home)
+      expect(probe).not.toHaveBeenCalled()
+      expect(mockSession.activatePending).not.toHaveBeenCalled()
+      expect(mockPush).not.toHaveBeenCalled()
+    } finally {
+      if (!unmounted) view.unmount()
+      probe.mockClear()
+      setActiveChain(previousChain)
+      setCustomRelayBaseUrl(undefined)
+    }
+  },
+)
+
+test('a completed negative directory lookup is not retried by presentation', async () => {
+  const home = 'https://current-account-relay.example'
+  setCustomRelayBaseUrl(home)
+  const probe = jest.mocked(probeDirectoryRelay)
+  probe.mockClear()
+  probe.mockResolvedValueOnce('https://unexpected-second-lookup.example')
+  mockPasskey.mockResolvedValueOnce({
+    isRestore: true,
+    subject: '02' + 'dd'.repeat(32),
+    discoveredRelayUrl: undefined,
+  })
+  const view = render()
+  try {
+    await view.get('[data-test="mera-login"]').trigger('click')
+    await flushPromises()
+    expect(probe).not.toHaveBeenCalled()
+    expect(getCustomRelayBaseUrl()).toBe(home)
+    expect(mockSession.activatePending).not.toHaveBeenCalled()
+  } finally {
+    view.unmount()
+    probe.mockReset()
+    setCustomRelayBaseUrl(undefined)
   }
 })

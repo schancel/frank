@@ -1,4 +1,10 @@
-import { getActiveChain, setActiveChain } from '@frank/wallet/chain'
+import { probeDirectoryRelay } from '@frank/cashweb/relay'
+import {
+  getActiveChain,
+  setActiveChain,
+  getCustomRelayBaseUrl,
+  setCustomRelayBaseUrl,
+} from '@frank/wallet/chain'
 import { createAccountCeremony } from './ceremony'
 import { MeraAccountError } from './mera-passkey'
 import {
@@ -126,5 +132,46 @@ test.each([
     } finally {
       setActiveChain(previousChain)
     }
+  },
+)
+
+test.each(['replacement', 'close'] as const)(
+  'a deferred directory lookup after %s never changes relay routing or activates the stale login',
+  async race => {
+    const session = freshDevice()
+    await session.initialize()
+    const home = 'https://current-account-relay.example'
+    setCustomRelayBaseUrl(home)
+    let answer!: (relay: string) => void
+    let entered!: () => void
+    const probing = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    jest.mocked(probeDirectoryRelay).mockImplementationOnce(() => {
+      entered()
+      return new Promise(resolve => {
+        answer = resolve
+      })
+    })
+    const login = createAccountCeremony().beginPasskey('login', async () =>
+      syntheticRoot(),
+    )
+    await probing
+    let replacement: Awaited<ReturnType<typeof describeAccount>> | undefined
+    if (race === 'replacement') {
+      await createAccountCeremony().beginPasskey('create', async () =>
+        new Uint8Array(32).fill(9),
+      )
+      await activate(session)
+      replacement = await describeAccount(session)
+    } else await session.close()
+    answer('https://stale-account-relay.example')
+    await expect(login).rejects.toThrow()
+    expect(getCustomRelayBaseUrl()).toBe(home)
+    if (race === 'replacement') {
+      expect((await session.snapshot()).pending).toBeNull()
+      expect(await describeAccount(session)).toEqual(replacement)
+    }
+    setCustomRelayBaseUrl(undefined)
   },
 )

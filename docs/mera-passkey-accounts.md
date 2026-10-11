@@ -81,3 +81,11 @@ probe without that mapping reports TS2307; the adapter and synthetic node test
 compile with the app mapping. No app-wide resolver or runtime target changes are
 required. The repository fast typecheck covers the configured library projects
 and custody; it does not typecheck Vue templates.
+
+Relay discovery is read-only in the account ceremony. It returns one directory
+lookup result with the staged account; presentation never retries a negative
+lookup. Setup alone selects the discovered relay after checking the same request,
+component lifetime, public account object and revision, chain context, and session
+status. Chain changes and session close/reopen permanently invalidate that request.
+No delayed lookup can redirect a replacement account's relay. Existing explicit
+activation still applies the displayed relay choice.

@@ -841,8 +841,9 @@ import {
   getDefaultRelayBaseUrl,
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
+  activeChain,
+  onActiveChainChange,
 } from '@frank/wallet/chain'
-import { probeDirectoryRelay } from '@frank/cashweb/relay'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits([
@@ -1025,13 +1026,39 @@ watch(
     replaceAccepted.value = false
   },
 )
-async function run(work: () => Promise<void>) {
+async function run(work: (isCurrent: () => boolean) => Promise<void>) {
   if (busy.value) return
   const token = ++request
+  const expectedRevision = account.revision
+  const expectedLegacyRevision = legacy.revision
+  const expectedAccount = account.account
+  const chainIdentifier = activeChain.chainIdentifier
+  let invalidated = false
+  const stopChain = onActiveChainChange(() => {
+    invalidated = true
+  })
+  // A closed/reopened session must stay invalid even if its revision did not change.
+  const stopStatus = watch(
+    () => account.status,
+    status => {
+      if (['loading', 'locked', 'unavailable', 'standby'].includes(status))
+        invalidated = true
+    },
+    { flush: 'sync' },
+  )
+  const isCurrent = () =>
+    alive &&
+    token === request &&
+    !invalidated &&
+    account.revision === expectedRevision &&
+    legacy.revision === expectedLegacyRevision &&
+    (account.account?.receipt.context.accountId ?? null) ===
+      expectedAccountId &&
+    activeChain.chainIdentifier === chainIdentifier
   busy.value = true
   error.value = ''
   try {
-    await work()
+    await work(isCurrent)
   } catch (failure) {
     ceremony.cancel()
     const wasLegacy = mode.value === 'legacy'
@@ -1050,15 +1077,19 @@ async function run(work: () => Promise<void>) {
       focus()
     }
   } finally {
+    stopChain()
+    stopStatus()
     if (alive && token === request) busy.value = false
   }
 }
 function beginPasskey(action: MeraAccountAction) {
-  return run(async () => {
+  return run(async isCurrent => {
     if (!mayBegin.value) return
     shareReport.value = []
-    await applyDiscoveredRelay(await ceremony.beginPasskey(action))
-    if (alive) changeMode('choice')
+    const outcome = await ceremony.beginPasskey(action)
+    if (!isCurrent()) return
+    applyDiscoveredRelay(outcome, isCurrent)
+    changeMode('choice')
   })
 }
 function beginNew() {
@@ -1114,12 +1145,13 @@ function pinDescriptor() {
   })
 }
 function confirm() {
-  return run(async () => {
+  return run(async isCurrent => {
     let shares = parseAccountBackupShareInput(shareInput.value)
     shareInput.value = ''
     shownShare.value = ''
     try {
       const outcome = (await ceremony.confirm(shares, displayName.value)) as any
+      if (!isCurrent()) return
       shareReport.value = outcome?.report ?? []
       insufficientSets.value = outcome?.insufficientSets ?? []
       reportCandidate.value = 0
@@ -1129,7 +1161,7 @@ function confirm() {
         if (alive) changeMode('restore-choose')
         return
       }
-      await applyDiscoveredRelay(outcome)
+      applyDiscoveredRelay(outcome, isCurrent)
     } finally {
       shares = []
     }
@@ -1140,41 +1172,29 @@ function confirm() {
   })
 }
 function chooseCandidate(index: number) {
-  return run(async () => {
+  return run(async isCurrent => {
     restoreCandidates.value = []
     reportCandidate.value = index
-    await applyDiscoveredRelay(await ceremony.choose(index, displayName.value))
+    const outcome = await ceremony.choose(index, displayName.value)
+    if (!isCurrent()) return
+    applyDiscoveredRelay(outcome, isCurrent)
     if (alive) {
       changeMode('choice')
       focus()
     }
   })
 }
-async function applyDiscoveredRelay(outcome: any) {
-  {
-    {
-      let discovered = outcome?.discoveredRelayUrl
-      if (
-        outcome?.isRestore &&
-        !discovered &&
-        (outcome.subject || outcome.address)
-      ) {
-        try {
-          discovered = await probeDirectoryRelay({
-            subject: outcome.subject,
-            address: outcome.address,
-          })
-        } catch {
-          // ignore probe error
-        }
-      }
-      if (discovered) {
-        setCustomRelayBaseUrl(discovered)
-        customRelayUrl.value = discovered
-        discoveredRelay.value = discovered
-      }
-    }
-  }
+/** Discovery is read-only in the ceremony; this is its only selection effect. */
+function applyDiscoveredRelay(
+  outcome: { readonly discoveredRelayUrl?: string } | undefined,
+  isCurrent: () => boolean,
+) {
+  if (!isCurrent()) return
+  const discovered = outcome?.discoveredRelayUrl
+  if (!discovered) return
+  setCustomRelayBaseUrl(discovered)
+  customRelayUrl.value = discovered
+  discoveredRelay.value = discovered
 }
 function submitLegacyPhrase() {
   return run(async () => {

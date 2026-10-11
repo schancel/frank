@@ -1138,7 +1138,7 @@
   "frozen_sha256": [
     {
       "path": "packages/domain-roots/src/index.ts",
-      "sha256": "35e09bdf95c9b6baa9dd6120479b0dbd1f6669f1235ca384e5cd9ce5a9b68b0a"
+      "sha256": "90a7d9006ebe2b63e5c340a5d311febace549483b2869871f8036c51a055db90"
     },
     {
       "path": "packages/domain-roots/vectors/domain-roots-v1.json",
@@ -1146,11 +1146,11 @@
     },
     {
       "path": "packages/wallet/monad-identity.ts",
-      "sha256": "556d5436c1ebbc10a69e047d78c40c9afd8b04f069b6a9dd84d388380d3bc239"
+      "sha256": "13725223295396025d081a6d2516ac9df67218af0a5843f3d92b259ae0305d13"
     },
     {
       "path": "packages/wallet/monad-wallet-material.ts",
-      "sha256": "c2fc3a42591a4d1df86093171e2d2b737c164f6a4e5a6f503be73e7ad7cec66c"
+      "sha256": "c9f2b5b64d1cf7fb8f1f6c0c6fc633462a7c850917d2167be0a80003bc49940b"
     },
     {
       "path": "packages/wallet/monad-hd-keyring.ts",

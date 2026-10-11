@@ -720,11 +720,13 @@ export default defineComponent({
       const originalName = conversation.name
       const recipient =
         payload.targetAddress || this.recipientAddress || this.address
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {
+        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
+        const wallet = useMonadWallet()
+        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
         await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: recipient,
           conversationId: conversation.id,
           items: payload.items,
@@ -766,18 +768,42 @@ export default defineComponent({
       value: bigint
       memo?: string
     }) {
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
         let prepared
+        let stampValue: bigint
+        let wallet: ReturnType<typeof useMonadWallet>
+        let conversationId: string | undefined
+        let requireCurrentContext: () => void
         try {
-          const wallet = await useActiveWallet()
-          if (!wallet.prepareContactPayment)
+          if (this.stampUnavailable) throw new Error(this.stampUnavailable)
+          stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+          wallet = useMonadWallet()
+          const chainIdentifier = activeChain.chainIdentifier
+          const client = activeChain.directMessages
+          const revision = accountStatus.revision
+          conversationId = this.conversation?.id
+          requireCurrentContext = () => {
+            if (
+              revision !== accountStatus.revision ||
+              chainIdentifier !== activeChain.chainIdentifier ||
+              client !== activeChain.directMessages ||
+              wallet !== useMonadWallet() ||
+              recipient !== (this.recipientAddress || this.address) ||
+              conversationId !== this.conversation?.id
+            )
+              throw new Error(this.$t('chat.sendContextChanged'))
+          }
+          const activeWallet = await useActiveWallet()
+          requireCurrentContext()
+          if (activeWallet !== wallet)
+            throw new Error(this.$t('chat.sendContextChanged'))
+          if (!activeWallet.prepareContactPayment)
             throw new Error(
               'Payments to a contact are not available on this chain',
             )
-          prepared = await wallet.prepareContactPayment({
+          prepared = await activeWallet.prepareContactPayment({
             recipient: { raw: recipient },
             value,
             memo: memo || undefined,
@@ -789,10 +815,11 @@ export default defineComponent({
           return
         }
         try {
+          requireCurrentContext()
           await this.sendDirectMessage({
-            wallet: useMonadWallet(),
+            wallet,
             address: recipient,
-            conversationId: this.conversation?.id,
+            conversationId,
             items: [prepared.item],
             stampValue,
             onPreparationProgress: this.showStampPreparation,
@@ -812,13 +839,15 @@ export default defineComponent({
       }
     },
     async sendSwapOffer(item: MessageItem) {
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const items: MessageItem[] = [item]
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
+        if (this.stampUnavailable) throw new Error(this.stampUnavailable)
+        const wallet = useMonadWallet()
+        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
         await this.sendDirectMessage({
-          wallet: useMonadWallet(),
+          wallet,
           address: recipient,
           conversationId: this.conversation?.id,
           items,
@@ -1050,7 +1079,11 @@ export default defineComponent({
           own,
           messages: this.peerMessages,
           attempted: this.blackjackAttempted,
-          ordinaryStampWei: activeChain.fromDisplayAmount(this.stampAmount),
+          // Without a quote, every positive stamp is money: settle its original attempt.
+          // Free recovery still proceeds; no new default is invented.
+          ordinaryStampWei: this.stampUnavailable
+            ? 0n
+            : activeChain.fromDisplayAmount(this.stampAmount),
         })
       } finally {
         this.resumingHand = false

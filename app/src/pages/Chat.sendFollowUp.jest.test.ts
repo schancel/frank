@@ -48,6 +48,7 @@ import ChatPage from './Chat.vue'
 import { errorNotify } from '../utils/notifications'
 import { activeChain } from '@frank/wallet/chain'
 import { accountStatus } from '../accounts/session'
+import { useActiveWallet } from '../composables/useActiveWallet'
 import {
   commitmentOf,
   dealerStep,
@@ -161,6 +162,166 @@ describe('Chat.vue sendFollowUpItems outcome (#310)', () => {
       }),
     )
     expect(errorNotify).not.toHaveBeenCalled()
+  })
+})
+
+describe('Chat.vue priced action availability and custody affinity', () => {
+  beforeEach(() => {
+    jest.mocked(errorNotify).mockReset()
+    jest.mocked(useActiveWallet).mockReset()
+  })
+
+  it.each(['email', 'stealth', 'swap'])(
+    'handles an unavailable automatic default before %s financial preparation',
+    async action => {
+      const conversation = { id: 'email-1', name: 'alice@example.com' }
+      const self = fakeThis({
+        stampAmount: '',
+        stampUnavailable: 'localized missing rate',
+        conversation,
+        chatStore: { conversations: { 'email-1': conversation } },
+        message: 'retained draft',
+      })
+      if (action === 'email')
+        await methods.sendEmailReply.call(self, {
+          conversationId: conversation.id,
+          items: [],
+        })
+      else if (action === 'stealth')
+        await methods.sendStealthPayment.call(self, { value: 1n })
+      else
+        await methods.sendSwapOffer.call(self, { type: 'text', text: 'offer' })
+      expect(errorNotify).toHaveBeenCalledWith(
+        new Error('localized missing rate'),
+        ...(action === 'stealth'
+          ? [{ fallbackKey: 'sendStealthDialog.notSent' }]
+          : []),
+      )
+      expect(self.sendDirectMessage).not.toHaveBeenCalled()
+      expect(useActiveWallet).not.toHaveBeenCalled()
+      expect(self.message).toBe('retained draft')
+      expect(self.sendingMessage).toBe(false)
+    },
+  )
+
+  it.each(['email', 'stealth', 'swap'])(
+    'keeps an explicit zero stamp available for %s',
+    async action => {
+      const original = mockWallet
+      const prepareContactPayment = jest
+        .fn()
+        .mockResolvedValue({ item: { type: 'text', text: 'payment' } })
+      mockWallet = { id: 'explicit-free', ...{ prepareContactPayment } }
+      jest
+        .mocked(useActiveWallet)
+        .mockImplementation(async () => mockWallet as never)
+      const conversation = { id: 'email-1', name: 'alice@example.com' }
+      const self = fakeThis({
+        stampAmount: '0',
+        stampUnavailable: '',
+        conversation,
+        chatStore: { conversations: { 'email-1': conversation } },
+      })
+      try {
+        if (action === 'email')
+          await methods.sendEmailReply.call(self, {
+            conversationId: conversation.id,
+            items: [],
+          })
+        else if (action === 'stealth')
+          await methods.sendStealthPayment.call(self, { value: 1n })
+        else
+          await methods.sendSwapOffer.call(self, {
+            type: 'text',
+            text: 'offer',
+          })
+        expect(self.sendDirectMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ wallet: mockWallet, stampValue: 0n }),
+        )
+        expect(errorNotify).not.toHaveBeenCalled()
+      } finally {
+        mockWallet = original
+      }
+    },
+  )
+
+  it('refuses current wallet B returned after a custody await for quote A, before preparation', async () => {
+    const original = mockWallet
+    let release!: () => void
+    const waiting = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const prepareA = jest.fn(),
+      prepareB = jest.fn()
+    mockWallet = { id: 'a', ...{ prepareContactPayment: prepareA } }
+    // Production getWallet returns the current shared wallet after initialization, not stale A.
+    jest.mocked(useActiveWallet).mockImplementation(async () => {
+      await waiting
+      return mockWallet as never
+    })
+    const self = fakeThis()
+    try {
+      const sending = methods.sendStealthPayment.call(self, { value: 1n })
+      expect(useActiveWallet).toHaveBeenCalledTimes(1)
+      mockWallet = { id: 'b', ...{ prepareContactPayment: prepareB } }
+      release()
+      await sending
+      expect(prepareA).not.toHaveBeenCalled()
+      expect(prepareB).not.toHaveBeenCalled()
+      expect(self.sendDirectMessage).not.toHaveBeenCalled()
+      expect(errorNotify).toHaveBeenCalledWith(
+        new Error('chat.sendContextChanged'),
+        { fallbackKey: 'sendStealthDialog.notSent' },
+      )
+    } finally {
+      mockWallet = original
+    }
+  })
+
+  it('retains A prepared authorization after a switch and never sends it with B', async () => {
+    const original = mockWallet
+    let release!: () => void
+    let started!: () => void
+    const prepared = new Promise<void>(resolve => {
+      started = resolve
+    })
+    const waiting = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const retained = {
+      item: { type: 'text', text: 'original A payment' },
+      stampValue: 10n ** 16n,
+    }
+    const journal: unknown[] = []
+    const prepareA = jest.fn(async () => {
+      journal.push(retained)
+      started()
+      await waiting
+      return retained
+    })
+    const prepareB = jest.fn()
+    mockWallet = { id: 'a', ...{ prepareContactPayment: prepareA } }
+    jest
+      .mocked(useActiveWallet)
+      .mockImplementation(async () => mockWallet as never)
+    const self = fakeThis()
+    try {
+      const sending = methods.sendStealthPayment.call(self, { value: 1n })
+      await prepared
+      mockWallet = { id: 'b', ...{ prepareContactPayment: prepareB } }
+      release()
+      await sending
+      expect(prepareA).toHaveBeenCalledTimes(1)
+      expect(prepareB).not.toHaveBeenCalled()
+      expect(self.sendDirectMessage).not.toHaveBeenCalled()
+      expect(journal).toEqual([retained])
+      expect(errorNotify).toHaveBeenCalledWith(
+        new Error('chat.sendContextChanged'),
+        { fallbackKey: 'sendStealthDialog.messageEnded' },
+      )
+    } finally {
+      mockWallet = original
+    }
   })
 })
 
@@ -568,6 +729,77 @@ describe('Chat.vue automatic dealer steps', () => {
     expect(self.sendFollowUpItems).not.toHaveBeenCalled()
     expect(chatStore.resumeOutgoing).not.toHaveBeenCalled()
   })
+
+  it.each([0n, 1n])(
+    'recovers an existing hand stamp %s while the default quote is unavailable',
+    async stampValueWei => {
+      const bet = hand(challenge, [false, betItem, 300n])
+      const step = dealerStep(
+        foldHand(
+          bet.map(m => ({
+            item: m.items[0] as never,
+            from: m.outbound ? '0xMe' : '0xPeer',
+            to: m.outbound ? '0xPeer' : '0xMe',
+            stampWei: m.stampValueWei,
+            digest: m.payloadDigest,
+          })),
+        ).state,
+        SEED,
+      )
+      const messages = [
+        ...bet.map(m => ({ ...m, status: 'confirmed' })),
+        {
+          outbound: true,
+          status: 'error',
+          delivery: {
+            failureReason: 'interrupted',
+            ...(stampValueWei > 0n
+              ? { attemptDigest: 'original-attempt' }
+              : {}),
+          },
+          items: [step?.item],
+          stampValueWei,
+          payloadDigest: 'pending:offline',
+        },
+      ]
+      const chatStore = {
+        retryOutgoing: jest.fn().mockResolvedValue({ state: 'sent' }),
+        resumeOutgoing: jest.fn().mockResolvedValue({ state: 'sent' }),
+      }
+      const self = dealerThis(messages, {
+        chatStore,
+        stampAmount: '',
+        stampUnavailable: 'localized missing rate',
+      })
+      self.runBlackjackDealer = () => methods.runBlackjackDealer.call(self)
+      const info = jest
+        .spyOn(console, 'info')
+        .mockImplementation(() => undefined)
+      try {
+        await methods.runBlackjackDealer.call(self)
+        await new Promise(resolve => setTimeout(resolve, 0))
+        const selected =
+          stampValueWei > 0n
+            ? chatStore.resumeOutgoing
+            : chatStore.retryOutgoing
+        const other =
+          stampValueWei > 0n
+            ? chatStore.retryOutgoing
+            : chatStore.resumeOutgoing
+        expect(selected).toHaveBeenCalledWith({
+          wallet: mockWallet,
+          address: '0xPeer',
+          payloadDigest: 'pending:offline',
+          ...(stampValueWei === 0n ? { automatic: true } : {}),
+        })
+        expect(selected).toHaveBeenCalledTimes(1)
+        expect(other).not.toHaveBeenCalled()
+        expect(self.sendFollowUpItems).not.toHaveBeenCalled()
+      } finally {
+        info.mockRestore()
+      }
+    },
+  )
 
   it('while a message is being resumed no other trigger sends a step, and the hand waits until it is delivered', async () => {
     // An own failed message of the hand that the fold does not advance on (a dealer cannot

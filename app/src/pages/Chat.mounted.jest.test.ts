@@ -6,6 +6,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
 import { defineComponent, h } from 'vue'
+import type { DefaultStampQuote } from '@frank/wallet/oracle'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -176,7 +177,19 @@ async function mountChat(
 }
 
 describe('Chat.vue blackjack wiring (mounted)', () => {
+  afterEach(() => jest.restoreAllMocks())
   beforeEach(() => {
+    const quote: DefaultStampQuote = {
+      status: 'available',
+      chainIdentifier: activeChain.chainIdentifier,
+      amount: 10n ** 16n,
+      targetAmount: 10n ** 16n,
+      minimumStamp: 1n,
+      rateAt: Date.now(),
+    }
+    jest
+      .spyOn(activeChain.directMessages, 'defaultStampQuote')
+      .mockResolvedValue(quote)
     mockUseMonadWallet.mockReset()
     mockUseMonadWallet.mockReturnValue({
       identity: { address: { raw: SELF }, displayAddress: SELF },

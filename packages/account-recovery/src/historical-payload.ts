@@ -8,8 +8,10 @@ import {
 } from '@frank/codex32'
 
 export const HISTORICAL_SHARE_PREFIX = 'frank-bip39-v1:'
-const CONTEXT = new TextEncoder().encode(
+// This protocol context is ASCII, so its UTF-8 bytes need no host text encoder.
+const CONTEXT = Uint8Array.from(
   `frank/bip39-backup/v1\0${BIP39_DERIVATION}\0`,
+  character => character.charCodeAt(0),
 )
 
 /** Integrity binds the entire original seed to its historical derivation, never a root conversion. */

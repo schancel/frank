@@ -561,11 +561,9 @@ export async function collectReceivedEvidence(input: {
         } catch (error) {
           if (
             error instanceof CollectionStop &&
-            ![
-              "cancelled",
-              "deadline-exceeded",
-              "request-budget-exhausted",
-            ].includes(error.reason)
+            error.reason !== "cancelled" &&
+            error.reason !== "deadline-exceeded" &&
+            error.reason !== "request-budget-exhausted"
           )
             addIssue(error.reason, hash);
           else throw error;

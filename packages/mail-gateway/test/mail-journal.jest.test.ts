@@ -1675,6 +1675,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
       'mta/journaled-outbound-worker.ts',
       'mta/resend-outbound-reconciler.ts',
       'relay/journaled-frank-mailbox.ts',
+      'relay/journaled-frank-outbound.ts',
       'relay/journaled-inbound-send.ts',
       'smtp/issued-mailbox-lookup.ts',
     ]);

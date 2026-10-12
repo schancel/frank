@@ -44,6 +44,13 @@ past unresolved older jobs. A host must continue those cursors and start a new
 pass at job ID zero later; keeping only the first page would starve later jobs.
 Only a
 confirmed rejection can return a claimed job to `pending` or mark it `failed`.
+`JournaledFrankOutbound` is the headless Frank-to-email intake handler for one
+plain-text recipient. It derives a stable private-salt reply alias per Frank
+account and conversation, and commits the Frank disposition, mailbox issuance,
+and exact outbound bytes in one SQLite transaction before the mailbox cursor
+advances. Rich HTML, attachments, multiple recipients and custom Reply-To are
+rejected as unsupported rather than partly forwarded. The salt must be derived
+from the restored gateway root and remain stable across hosts and restarts.
 Archive the journal together with its gateway wallet stores before starting a new
 prelaunch format 7 instance; do not discard a funded gateway wallet or replay
 an ambiguous payment as a new one.

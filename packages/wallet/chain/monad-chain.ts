@@ -3446,6 +3446,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           const financialPayments = createEvmStealthPayments({
             chainIdentifier,
             nativeChainId: BigInt(config.chainId),
+            coordinationKey: JSON.stringify(topicOwner!.nativeJournal!.binding),
+            refreshJournal: async id => { await topicOwner!.nativeJournal!.refreshPreparation(id); },
             store: preparations!,
             assertActive: assertFinancialActive,
             derive: (recipientSpendPubKey) => deriveEvmStealthAddress({ recipientSpendPubKey }),

@@ -141,6 +141,7 @@ export type NativeJournalReader = Pick<
   EvmNativeOperationJournal,
   | 'binding'
   | 'list'
+  | 'refreshPreparation'
   | 'get'
   | 'sourceReferences'
   | 'referencesSpendIndex'
@@ -895,6 +896,7 @@ export function nativeJournalReader(
   return Object.freeze({
     binding: Object.freeze({ ...journal.binding }),
     list: () => journal.list(),
+    refreshPreparation: id => journal.refreshPreparation(id),
     get: id => journal.get(id),
     sourceReferences: () => journal.sourceReferences(),
     referencesSpendIndex: index => journal.referencesSpendIndex(index),
@@ -1043,7 +1045,8 @@ export function poolSpendAdmission(
     }
     // 2. The row: the caller's, which the transaction must have been signed by, or the live row
     // the signer owns.
-    if (expectedAddress !== undefined && expectedAddress !== tx.sender) invalid()
+    if (expectedAddress !== undefined && expectedAddress !== tx.sender)
+      invalid()
     const index =
       expected?.index ??
       pool.records().find(record => address(record.address) === tx.sender)
@@ -1171,7 +1174,8 @@ export function poolSpendAdmission(
           : 'no-pool-row'
       if (record.status === 'retired') return 'held-terminal'
       if (record.status === 'spent')
-        return record.lifecycle?.spend?.rawTx === member.signed.rawTransaction &&
+        return record.lifecycle?.spend?.rawTx ===
+          member.signed.rawTransaction &&
           record.lifecycle.legacyTerminal === undefined
           ? 'applied'
           : 'held-terminal'

@@ -1,4 +1,5 @@
 /** Wallet-owned financial preparation. No message encoding, encryption or transport. */
+import { runNativeTransactionExclusive } from './chain-wallet'
 import { getAddress, getBytes, hexlify, Interface, Transaction } from 'ethers'
 import type {
   StealthPaymentAsset,
@@ -42,6 +43,8 @@ export interface EvmStealthPreparation {
 export interface EvmStealthPaymentDriver {
   chainIdentifier: string
   nativeChainId: bigint
+  coordinationKey: string
+  refreshJournal(preparationId: string): Promise<void>
   store: RecordStore<EvmStealthPreparation>
   assertActive(): void
   derive(publicKey: Uint8Array): {
@@ -104,13 +107,15 @@ function matches(
   )
     return false
   const member = row.members[0]!
-  if (!member.signed) return false
-  const tx = Transaction.from(member.signed.rawTransaction)
+  const tx = Transaction.from(
+    member.signed?.rawTransaction ?? member.unsignedTransaction,
+  )
   if (
     tx.chainId !== chainId ||
-    tx.from?.toLowerCase() !== member.source.address ||
+    (member.signed !== null &&
+      tx.from?.toLowerCase() !== member.source.address) ||
     (preparation.sourceAddress !== undefined &&
-      tx.from?.toLowerCase() !== preparation.sourceAddress) ||
+      member.source.address !== preparation.sourceAddress) ||
     nativeMaximumFee(tx) > BigInt(preparation.maxNativeFeeAtomic)
   )
     return false
@@ -141,19 +146,19 @@ export function createEvmStealthPayments(
   holdsForHost(id: string): boolean
   recoverReleases(): Promise<void>
 } {
-  // Only duplicate calls of THIS capability wait on each other; no wallet/message send queue.
-  const active = new Map<string, Promise<unknown>>()
-  const exclusive = <T>(id: string, work: () => Promise<T>): Promise<T> => {
-    const prior = active.get(id) ?? Promise.resolve()
-    const next = prior.catch(() => undefined).then(work)
-    active.set(id, next)
-    void next
-      .finally(() => {
-        if (active.get(id) === next) active.delete(id)
-      })
-      .catch(() => undefined)
-    return next
-  }
+  // The lock spans this business operation's lookup/sign/link, never another payment's RPC.
+  const exclusive = <T>(id: string, work: () => Promise<T>): Promise<T> =>
+    runNativeTransactionExclusive(
+      `evm-stealth-preparation:${driver.coordinationKey}:${id}`,
+      'single-realm',
+      async () => {
+        driver.assertActive()
+        await driver.store.refresh()
+        await driver.refreshJournal(`stealth-payment:${id}`)
+        driver.assertActive()
+        return work()
+      },
+    )
   const read = (id: string): EvmStealthPreparation => {
     driver.assertActive()
     const row = driver.store.get(id)
@@ -170,7 +175,11 @@ export function createEvmStealthPayments(
   ): EvmNativeOperation | undefined => {
     const candidates = driver
       .operations()
-      .filter(candidate => matches(candidate, row, driver.nativeChainId))
+      .filter(
+        candidate =>
+          candidate.preparationId === `stealth-payment:${row.operationId}` &&
+          matches(candidate, row, driver.nativeChainId),
+      )
     if (row.journalOperationId !== undefined) {
       const linked = candidates.find(
         candidate => candidate.operationId === row.journalOperationId,
@@ -306,10 +315,11 @@ export function createEvmStealthPayments(
             throw new Error('Stealth operation intent conflict')
         if (row.released) throw new Error('Stealth preparation released')
         let journal = operation(row)
-        if (!journal) {
+        if (!journal || journal.members.some(member => !member.signed)) {
           if (row.payloadDigest !== undefined)
             throw new Error('Exposed preparation lost its signed operation')
           const common = {
+            preparationId: `stealth-payment:${intent.operationId}`,
             value: intent.asset.kind === 'native' ? intent.amountAtomic : 0n,
             maxNativeFeeWei: intent.maxNativeFeeAtomic,
             sourceAddress: row.sourceAddress,
@@ -359,7 +369,12 @@ export function createEvmStealthPayments(
         if (!/^[0-9a-fA-F]{64}$/.test(binding.payloadDigest))
           throw new Error('Invalid sealed payload digest')
         const row = read(binding.operationId)
-        if (row.released || !operation(row))
+        const journal = operation(row)
+        if (
+          row.released ||
+          !journal ||
+          journal.members.some(member => !member.signed)
+        )
           throw new Error('Stealth preparation unavailable')
         const digest = binding.payloadDigest.toLowerCase()
         if (row.payloadDigest !== undefined) {
@@ -422,6 +437,8 @@ export function createEvmStealthPayments(
       }),
     async list() {
       driver.assertActive()
+      await driver.store.refresh()
+      driver.assertActive()
       return driver.store
         .all()
         .filter(row => !row.released)
@@ -440,13 +457,16 @@ export function createEvmStealthPayments(
         if (journal) await driver.release(journal.operationId)
       }
     },
-    async get(id) {
-      const row = driver.store.get(id)
-      driver.assertActive()
-      if (!row || row.released) return undefined
-      const journal = operation(row)
-      return journal === undefined ? undefined : manifest(row, journal)
-    },
+    get: id =>
+      exclusive(id, async () => {
+        const row = driver.store.get(id)
+        if (!row || row.released) return undefined
+        const journal = operation(row)
+        return journal === undefined ||
+          journal.members.some(member => !member.signed)
+          ? undefined
+          : manifest(row, journal)
+      }),
     heldSources() {
       const held = new Set<string>()
       for (const row of driver.store.all()) {

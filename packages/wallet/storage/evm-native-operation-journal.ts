@@ -2,6 +2,7 @@ import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import { getAddress, keccak256, Transaction } from 'ethers'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
+import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 
 /** Public derivation provenance only. Custody resolves and address-checks these references. */
@@ -142,6 +143,8 @@ export interface EvmNativeOperation {
   /** An intentionally prepared contract call: preserve signed bytes at wallet open until its
    * owner explicitly submits or releases it. Ordinary calls retain their existing cleanup. */
   submissionPolicy?: 'explicit'
+  /** Stable financial intent identity; distinct from this journal's sequential operation ID. */
+  preparationId?: string
   recipient: string
   intendedValueWei: string
   maximumFeeWei: string
@@ -159,6 +162,8 @@ export interface EvmNativeOperation {
 export interface EvmNativePlan {
   kind: EvmNativeOperationKind
   submissionPolicy?: 'explicit'
+  /** Stable financial intent identity; distinct from this journal's sequential operation ID. */
+  preparationId?: string
   recipient: string
   intendedValueWei: string
   members: EvmNativeMemberPlan[]
@@ -397,6 +402,8 @@ function validateRow(
   const hasRecord = !!value && typeof value === 'object' && 'record' in value
   const hasSubmissionPolicy =
     !!value && typeof value === 'object' && 'submissionPolicy' in value
+  const hasPreparationId =
+    !!value && typeof value === 'object' && 'preparationId' in value
   const row = object(value, [
     'version',
     'operationId',
@@ -408,9 +415,20 @@ function validateRow(
     'members',
     'cancelled',
     'reservedBytes',
+    ...(hasPreparationId ? ['preparationId'] : []),
     ...(hasRecord ? ['record'] : []),
     ...(hasSubmissionPolicy ? ['submissionPolicy'] : []),
   ])
+  if (
+    hasPreparationId &&
+    (typeof row.preparationId !== 'string' ||
+      !/^stealth-payment:[a-zA-Z0-9_-]{1,128}$/.test(row.preparationId) ||
+      !(
+        row.kind === 'native' ||
+        (row.kind === 'contract' && row.submissionPolicy === 'explicit')
+      ))
+  )
+    fail()
   if (hasRecord) checked('record', () => validateRecord(row.record, row.kind))
   if (
     hasSubmissionPolicy &&
@@ -613,82 +631,110 @@ export class EvmNativeOperationJournal {
     this.tail = run.catch(() => undefined)
     return run
   }
+  private coordinated<T>(task: () => Promise<T>): Promise<T> {
+    return runNativeTransactionExclusive(
+      `evm-native-journal-create:${
+        this.options.location ?? JSON.stringify(this.binding)
+      }`,
+      'single-realm',
+      task,
+    )
+  }
+  private async reloadRows(initialize: boolean): Promise<void> {
+    if (!this.database) return
+    const rows = new Map<string, EvmNativeOperation>()
+    let manifest: unknown
+    for await (const [key, value] of this.database.iterator()) {
+      const name = String(key),
+        text = String(value)
+      if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
+      if (name === 'manifest') manifest = JSON.parse(text) as unknown
+      else if (name.startsWith('operation:')) {
+        const row = validateRow(JSON.parse(text) as unknown, this.binding)
+        if (
+          name !== `operation:${row.operationId}` ||
+          rows.has(row.operationId)
+        )
+          fail()
+        rows.set(row.operationId, row)
+      } else fail()
+    }
+    let nextSequence = 1
+    if (manifest !== undefined) {
+      const m = object(manifest, ['version', 'binding', 'nextSequence'])
+      if (m.version !== 1) fail()
+      if (
+        JSON.stringify(validateBinding(m.binding)) !==
+        JSON.stringify(this.binding)
+      )
+        fail('binding')
+      integer(m.nextSequence)
+      if (m.nextSequence < 1) fail()
+      nextSequence = m.nextSequence
+    } else if (rows.size || !initialize) fail()
+    if (rows.size !== nextSequence - 1) fail()
+    const pairs = new Set<string>(),
+      preparations = new Set<string>()
+    for (const row of rows.values()) {
+      const sequence = parseInt(row.operationId.split(':')[1]!, 16)
+      if (sequence < 1 || sequence >= nextSequence) fail()
+      if (row.preparationId !== undefined) {
+        if (preparations.has(row.preparationId)) fail('conflict')
+        preparations.add(row.preparationId)
+      }
+      if (!row.cancelled)
+        for (const member of row.members) {
+          const pair = `${member.source.address}:${
+            Transaction.from(member.unsignedTransaction).nonce
+          }`
+          if (pairs.has(pair)) fail('conflict')
+          pairs.add(pair)
+        }
+    }
+    if (
+      rows.size > this.maxRecords ||
+      [...rows.values()].reduce((n, r) => n + r.reservedBytes, 0) >
+        this.maxBytes
+    )
+      fail('capacity')
+    this.rows = rows
+    this.nextSequence = nextSequence
+    if (manifest === undefined)
+      await durablePut(
+        this.database,
+        'manifest',
+        JSON.stringify(this.manifest()),
+      )
+  }
   async Open(): Promise<void> {
     if (this.lifecycle !== 'closed') fail('conflict')
     this.closing = false
-    const rows = new Map<string, EvmNativeOperation>()
-    let manifest: unknown
     try {
       if (this.options.location) {
         const database: LevelDB = level(join(this.options.location, COMPONENT))
         this.database = database
         await openDurableLevel(database, this.options.location, COMPONENT)
-        for await (const [key, value] of database.iterator()) {
-          const name = String(key)
-          const text = String(value)
-          if (Buffer.byteLength(text) > MAX_ROW) fail('capacity')
-          if (name === 'manifest') manifest = JSON.parse(text) as unknown
-          else if (name.startsWith('operation:')) {
-            const row = validateRow(JSON.parse(text) as unknown, this.binding)
-            if (
-              name !== `operation:${row.operationId}` ||
-              rows.has(row.operationId)
-            )
-              fail()
-            rows.set(row.operationId, row)
-          } else fail()
-        }
+        await this.coordinated(() => this.reloadRows(true))
       }
-      if (manifest !== undefined) {
-        const m = object(manifest, ['version', 'binding', 'nextSequence'])
-        if (m.version !== 1) fail()
-        if (
-          JSON.stringify(validateBinding(m.binding)) !==
-          JSON.stringify(this.binding)
-        )
-          fail('binding')
-        integer(m.nextSequence)
-        if (m.nextSequence < 1) fail()
-        this.nextSequence = m.nextSequence
-      } else if (rows.size) fail()
-      // Rows are never deleted, including cancelled plans. The manifest therefore
-      // commits to every allocated sequence, not merely an upper bound.
-      if (rows.size !== this.nextSequence - 1) fail()
-      for (const row of rows.values()) {
-        const sequence = parseInt(row.operationId.split(':')[1]!, 16)
-        if (sequence < 1 || sequence >= this.nextSequence) fail()
-      }
-      if (
-        rows.size > this.maxRecords ||
-        [...rows.values()].reduce((n, r) => n + r.reservedBytes, 0) >
-          this.maxBytes
-      )
-        fail('capacity')
-      this.rows = rows
-      if (manifest === undefined && this.database)
-        await durablePut(
-          this.database,
-          'manifest',
-          JSON.stringify(this.manifest()),
-        )
       this.lifecycle = 'open'
-      // Detect corrupt competing claims even before any input can be selected.
-      const pairs = new Set<string>()
-      for (const row of rows.values())
-        if (!row.cancelled)
-          for (const m of row.members) {
-            const pair = `${m.source.address}:${
-              Transaction.from(m.unsignedTransaction).nonce
-            }`
-            if (pairs.has(pair)) fail('conflict')
-            pairs.add(pair)
-          }
     } catch (error) {
       this.lifecycle = 'closed'
       await this.database?.close()
       this.database = undefined
       throw error
     }
+  }
+  /** Read current durable authority before resuming an intent from a different wrapper/tab. */
+  refreshPreparation(
+    preparationId: string,
+  ): Promise<EvmNativeOperation | undefined> {
+    return this.exclusive(() =>
+      this.coordinated(async () => {
+        await this.reloadRows(false)
+        this.assertOpen()
+        return this.list().find(row => row.preparationId === preparationId)
+      }),
+    )
   }
   private manifest() {
     return {
@@ -746,90 +792,128 @@ export class EvmNativeOperationJournal {
   }
   async prepare(plan: EvmNativePlan): Promise<EvmNativeOperation> {
     const frozen = clone(plan)
-    return this.exclusive(async () => {
-      if (
-        !Array.isArray(frozen.members) ||
-        !frozen.members.length ||
-        frozen.members.length > MAX_MEMBERS ||
-        this.nextSequence >= Number.MAX_SAFE_INTEGER ||
-        this.rows.size >= this.maxRecords
-      )
-        fail('capacity')
-      const row: EvmNativeOperation = {
-        version: 1,
-        operationId: `evm-native-v1:${this.nextSequence
-          .toString(16)
-          .padStart(16, '0')}`,
-        binding: this.binding,
-        kind: frozen.kind,
-        ...(frozen.submissionPolicy === undefined
-          ? {}
-          : { submissionPolicy: frozen.submissionPolicy }),
-        recipient: frozen.recipient,
-        intendedValueWei: frozen.intendedValueWei,
-        maximumFeeWei: frozen.members
-          .reduce(
-            (n, m) =>
-              n +
-              nativeMaximumFee(
-                checked('unsigned', () =>
-                  unsigned(m.unsignedTransaction, this.binding),
+    return this.exclusive(() =>
+      this.coordinated(async () => {
+        await this.reloadRows(false)
+        if (frozen.preparationId !== undefined) {
+          const existing = [...this.rows.values()].find(
+            row => row.preparationId === frozen.preparationId,
+          )
+          if (existing) {
+            if (
+              existing.cancelled ||
+              existing.kind !== frozen.kind ||
+              existing.submissionPolicy !== frozen.submissionPolicy ||
+              existing.recipient !== frozen.recipient ||
+              existing.intendedValueWei !== frozen.intendedValueWei ||
+              JSON.stringify(existing.record ?? null) !==
+                JSON.stringify(frozen.record ?? null) ||
+              JSON.stringify(
+                existing.members.map(
+                  ({ source, unsignedTransaction, dependencies }) => ({
+                    source,
+                    unsignedTransaction,
+                    dependencies,
+                  }),
                 ),
-              ),
-            0n,
-          )
-          .toString(),
-        members: frozen.members.map(m => ({
-          ...m,
-          signed: null,
-          exposed: false,
-          observation: { state: 'unknown' },
-          account: null,
-          syncApplied: false,
-        })),
-        cancelled: false,
-        reservedBytes: 0,
-        ...(frozen.record ? { record: frozen.record } : {}),
-      }
-      row.reservedBytes = reservation(row)
-      const validated = validateRow(row, this.binding)
-      if (
-        [...this.rows.values()].reduce((n, r) => n + r.reservedBytes, 0) +
-          row.reservedBytes >
-        this.maxBytes
-      )
-        fail('capacity')
-      for (const m of row.members)
+              ) !==
+                JSON.stringify(
+                  frozen.members.map(
+                    ({ source, unsignedTransaction, dependencies }) => ({
+                      source,
+                      unsignedTransaction,
+                      dependencies,
+                    }),
+                  ),
+                )
+            )
+              fail('conflict')
+            return clone(existing)
+          }
+        }
         if (
-          !this.canSelect(
-            m.source.address,
-            Transaction.from(m.unsignedTransaction).nonce,
-          )
+          !Array.isArray(frozen.members) ||
+          !frozen.members.length ||
+          frozen.members.length > MAX_MEMBERS ||
+          this.nextSequence >= Number.MAX_SAFE_INTEGER ||
+          this.rows.size >= this.maxRecords
         )
-          fail('conflict')
-      const nextSequence = this.nextSequence + 1
-      try {
-        if (this.database)
-          await durableBatch(this.database, [
-            {
-              type: 'put',
-              key: `operation:${row.operationId}`,
-              value: JSON.stringify(validated),
-            },
-            {
-              type: 'put',
-              key: 'manifest',
-              value: JSON.stringify({ ...this.manifest(), nextSequence }),
-            },
-          ])
-      } catch (error) {
-        this.lifecycle = 'uncertain'
-        throw error
-      }
-      this.rows.set(row.operationId, validated)
-      this.nextSequence = nextSequence
-      return clone(validated)
-    })
+          fail('capacity')
+        const row: EvmNativeOperation = {
+          version: 1,
+          operationId: `evm-native-v1:${this.nextSequence
+            .toString(16)
+            .padStart(16, '0')}`,
+          binding: this.binding,
+          kind: frozen.kind,
+          ...(frozen.preparationId === undefined
+            ? {}
+            : { preparationId: frozen.preparationId }),
+          ...(frozen.submissionPolicy === undefined
+            ? {}
+            : { submissionPolicy: frozen.submissionPolicy }),
+          recipient: frozen.recipient,
+          intendedValueWei: frozen.intendedValueWei,
+          maximumFeeWei: frozen.members
+            .reduce(
+              (n, m) =>
+                n +
+                nativeMaximumFee(checked('unsigned', () => unsigned(m.unsignedTransaction, this.binding))),
+              0n,
+            )
+            .toString(),
+          members: frozen.members.map(m => ({
+            ...m,
+            signed: null,
+            exposed: false,
+            observation: { state: 'unknown' },
+            account: null,
+            syncApplied: false,
+          })),
+          cancelled: false,
+          reservedBytes: 0,
+          ...(frozen.record ? { record: frozen.record } : {}),
+        }
+        row.reservedBytes = reservation(row)
+        const validated = validateRow(row, this.binding)
+        if (
+          [...this.rows.values()].reduce((n, r) => n + r.reservedBytes, 0) +
+            row.reservedBytes >
+          this.maxBytes
+        )
+          fail('capacity')
+        for (const m of row.members)
+          if (
+            !this.canSelect(
+              m.source.address,
+              Transaction.from(m.unsignedTransaction).nonce,
+            )
+          )
+            fail('conflict')
+        const nextSequence = this.nextSequence + 1
+        try {
+          if (this.database)
+            await durableBatch(this.database, [
+              {
+                type: 'put',
+                key: `operation:${row.operationId}`,
+                value: JSON.stringify(validated),
+              },
+              {
+                type: 'put',
+                key: 'manifest',
+                value: JSON.stringify({ ...this.manifest(), nextSequence }),
+              },
+            ])
+        } catch (error) {
+          this.lifecycle = 'uncertain'
+          throw error
+        }
+        this.rows.set(row.operationId, validated)
+        this.nextSequence = nextSequence
+        return clone(validated)
+      }),
+    )
   }
   private async mutate(
     id: string,

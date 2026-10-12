@@ -78,6 +78,7 @@ export type PreparedNativeTransferParams = Omit<
   SendLegacyParams,
   'onSigned'
 > & {
+  preparationId?: string
   sourceAddress?: string
   maxNativeFeeWei?: bigint
 }
@@ -90,6 +91,7 @@ export type PreparedContractCallParams = Omit<
   'onSigned'
 > & {
   maxNativeFeeWei?: bigint
+  preparationId?: string
   /** Resolve this owned source through the bound wallet. Omitted: the main account. */
   sourceAddress?: string
 }
@@ -501,7 +503,8 @@ export class EvmLegacyConsolidator {
    * what became of it (mined, or its nonce consumed by another). Journal only: no request. This
    * is what holds the main or identity account in the wallet's one claim after a native send, a
    * contract call or a consolidation returns. An explicitly prepared call holds its source
-   * before exposure too; a discarded or cancelled operation holds nothing.
+   * before exposure too. An authorized stable preparation also retains its unsigned source
+   * through signing interruptions; a discarded or cancelled operation holds nothing.
    */
   holdsSource(address: string): boolean {
     try {
@@ -511,12 +514,13 @@ export class EvmLegacyConsolidator {
         .list()
         .some(
           row =>
-            row.submissionPolicy === 'explicit' &&
+            (row.submissionPolicy === 'explicit' ||
+              row.preparationId !== undefined) &&
             !row.cancelled &&
             row.members.some(
               member =>
                 member.source.address === key &&
-                member.signed !== null &&
+                (member.signed !== null || row.preparationId !== undefined) &&
                 !member.exposed &&
                 member.observation.state !== 'included-success' &&
                 member.observation.state !== 'included-revert' &&
@@ -705,7 +709,11 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
     /** An address that must not pay: the account a consolidation is funding. */
     excludedSource?: string,
-    preparation?: { sourceAddress?: string; maxNativeFeeWei?: bigint },
+    preparation?: {
+      sourceAddress?: string
+      maxNativeFeeWei?: bigint
+      preparationId?: string
+    },
   ): Promise<EvmNativeOperation> {
     const recipient = getAddress(params.recipient.raw).toLowerCase()
     if (params.value <= 0n)
@@ -777,6 +785,9 @@ export class EvmLegacyConsolidator {
         continue
       return this.reserve(lifetime, {
         kind,
+        ...(preparation?.preparationId === undefined
+          ? {}
+          : { preparationId: preparation.preparationId }),
         recipient,
         intendedValueWei: params.value.toString(),
         members: [
@@ -1194,7 +1205,12 @@ export class EvmLegacyConsolidator {
   ): Promise<void> {
     try {
       const row = read()
-      if (row.cancelled || row.members.some(m => m.signed || m.exposed)) return
+      if (
+        row.preparationId !== undefined ||
+        row.cancelled ||
+        row.members.some(m => m.signed || m.exposed)
+      )
+        return
       await this.journal(lifetime).cancelUnsigned(row.operationId)
     } catch {
       /* Left as it was: the next wallet open cancels it. */
@@ -1231,6 +1247,7 @@ export class EvmLegacyConsolidator {
     return this.run(async () => {
       try {
         for (const row of this.config.journal.list()) {
+          if (row.preparationId !== undefined) continue
           await this.discardIfUnexposed(row.operationId, lifetime)
           await this.cancelIfNeverSigned(
             () => this.config.journal.get(row.operationId),
@@ -1707,6 +1724,35 @@ export class EvmLegacyConsolidator {
   ): Promise<EvmNativeOperation> {
     params = { ...params, recipient: { ...params.recipient } }
     return this.runWithLocalPass(lifetime, async planned => {
+      const existing =
+        params.preparationId === undefined
+          ? undefined
+          : await this.journal(lifetime).refreshPreparation(
+              params.preparationId,
+            )
+      if (existing) {
+        const member = existing.members[0]!,
+          tx = Transaction.from(member.unsignedTransaction)
+        if (
+          existing.cancelled ||
+          existing.kind !== 'native' ||
+          existing.members.length !== 1 ||
+          tx.to?.toLowerCase() !==
+            getAddress(params.recipient.raw).toLowerCase() ||
+          tx.value !== params.value ||
+          tx.data !== '0x' ||
+          (params.sourceAddress !== undefined &&
+            member.source.address !==
+              getAddress(params.sourceAddress).toLowerCase()) ||
+          (params.maxNativeFeeWei !== undefined &&
+            nativeMaximumFee(tx) > params.maxNativeFeeWei)
+        )
+          throw new Error(
+            'Financial preparation conflicts with its original journal intent',
+          )
+        planned(existing.operationId)
+        return this.sign(existing, lifetime)
+      }
       const row = await this.plan(params, 'native', lifetime, undefined, params)
       planned(row.operationId)
       return this.sign(row, lifetime)
@@ -2007,6 +2053,7 @@ export class EvmLegacyConsolidator {
     submissionPolicy?: 'explicit',
     sourceAddress?: string,
     maxNativeFeeWei?: bigint,
+    preparationId?: string,
   ): Promise<EvmNativeOperation> {
     if (maxNativeFeeWei !== undefined && maxNativeFeeWei < 0n)
       throw new RangeError('Native fee ceiling must not be negative')
@@ -2061,6 +2108,7 @@ export class EvmLegacyConsolidator {
       throw new RangeError('Insufficient unreserved native funds')
     return this.journal(lifetime).prepare({
       kind: 'contract',
+      ...(preparationId === undefined ? {} : { preparationId }),
       ...(submissionPolicy === undefined ? {} : { submissionPolicy }),
       recipient: to,
       intendedValueWei: params.value.toString(),
@@ -2097,12 +2145,42 @@ export class EvmLegacyConsolidator {
   ): Promise<EvmNativeOperation> {
     params = { ...params, to: { ...params.to } }
     return this.runWithLocalPass(lifetime, async planned => {
+      const existing =
+        params.preparationId === undefined
+          ? undefined
+          : await this.journal(lifetime).refreshPreparation(
+              params.preparationId,
+            )
+      if (existing) {
+        const member = existing.members[0]!,
+          tx = Transaction.from(member.unsignedTransaction)
+        if (
+          existing.cancelled ||
+          existing.kind !== 'contract' ||
+          existing.submissionPolicy !== 'explicit' ||
+          existing.members.length !== 1 ||
+          tx.to?.toLowerCase() !== getAddress(params.to.raw).toLowerCase() ||
+          tx.value !== params.value ||
+          tx.data.toLowerCase() !== params.data.toLowerCase() ||
+          (params.sourceAddress !== undefined &&
+            member.source.address !==
+              getAddress(params.sourceAddress).toLowerCase()) ||
+          (params.maxNativeFeeWei !== undefined &&
+            nativeMaximumFee(tx) > params.maxNativeFeeWei)
+        )
+          throw new Error(
+            'Financial preparation conflicts with its original journal intent',
+          )
+        planned(existing.operationId)
+        return this.sign(existing, lifetime)
+      }
       const row = await this.planContractCall(
         params,
         lifetime,
         'explicit',
         params.sourceAddress,
         params.maxNativeFeeWei,
+        params.preparationId,
       )
       planned(row.operationId)
       return this.sign(row, lifetime)

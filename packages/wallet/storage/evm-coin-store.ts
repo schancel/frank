@@ -537,6 +537,8 @@ export interface ContactPayment {
 export interface RecordStore<T> {
   get(key: string): T | undefined
   all(): T[]
+  /** Refresh this wrapper's read cache from its one durable owner; no default writes. */
+  refresh(): Promise<void>
   put(key: string, row: T): Promise<void>
   /** Compare against durable state, not this wrapper's cache. A miss refreshes its cache. */
   compareAndPut(key: string, expected: T | undefined, row: T): Promise<boolean>
@@ -551,6 +553,9 @@ export class MemoryRecordStore<T> implements RecordStore<T> {
   }
   all(): T[] {
     return [...this.rows.values()]
+  }
+  async refresh(): Promise<void> {
+    return undefined
   }
   async put(key: string, row: T): Promise<void> {
     this.rows.set(key, { ...row })
@@ -603,6 +608,19 @@ export class LevelRecordStore<T> implements RecordStore<T> {
   }
   all(): T[] {
     return [...this.rows.values()]
+  }
+  async refresh(): Promise<void> {
+    await runNativeTransactionExclusive(
+      this.coordinationKey,
+      'single-realm',
+      async () => {
+        const rows = new Map<string, T>()
+        for await (const [key, value] of this.db.iterator())
+          rows.set(String(key), JSON.parse(String(value)) as T)
+        this.rows.clear()
+        for (const [key, value] of rows) this.rows.set(key, value)
+      },
+    )
   }
   async put(key: string, row: T): Promise<void> {
     const bytes = JSON.stringify(row)

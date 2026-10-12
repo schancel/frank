@@ -545,6 +545,7 @@ test('a crash after signing before the manifest journal link recovers the origin
     const signed = wallet.getNativeOperations!().find(
       row => row.kind === 'native',
     )!
+    expect(signed.preparationId).toBe('stealth-payment:interrupted-native')
     expect(signed.members[0]!.signed).not.toBeNull()
     expect(state.broadcast).not.toHaveBeenCalled()
     await wallet.close()

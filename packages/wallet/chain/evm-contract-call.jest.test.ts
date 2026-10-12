@@ -177,6 +177,56 @@ describe('contract calls through the native operation journal', () => {
   }
   const call = { to: { raw: router }, data: calldata, value: 1_000n }
 
+  it('retains an authorized unsigned stable plan across restart and never signs a replacement', async () => {
+    const state = node({ main: 10_000_000n })
+    let active = owner(state)
+    active.sign.mockRejectedValueOnce(new Error('interrupted signing'))
+    const params = {
+      ...call,
+      preparationId: 'stealth-payment:unsigned-restart',
+      maxNativeFeeWei: 230_000n,
+    }
+    await expect(active.executor.signContractCall(params)).rejects.toThrow(
+      /interrupted signing/,
+    )
+    const original = journal.list()[0]!
+    expect(original.members[0]!.signed).toBeNull()
+    expect(active.executor.holdsSource(main.address.toLowerCase())).toBe(true)
+    await active.executor.cancelUnsignedOperations()
+    expect(journal.get(original.operationId).cancelled).toBe(false)
+    await journal.Close()
+    await open()
+    active = owner(state)
+    await active.executor.cancelUnsignedOperations()
+    await active.executor.lookAtSource(main.address.toLowerCase())
+    await active.executor.reobservePending()
+    await active.executor.resendMissingContractCalls()
+    expect(active.sign).not.toHaveBeenCalled()
+    expect(state.raws).toEqual([])
+    await expect(
+      active.executor.signContractCall({ ...params, data: '0x1234' }),
+    ).rejects.toThrow(/conflict/)
+    await expect(
+      active.executor.signContractCall({
+        ...params,
+        maxNativeFeeWei: 229_999n,
+      }),
+    ).rejects.toThrow(/conflict/)
+    const resumed = await active.executor.signContractCall(params)
+    expect(resumed.operationId).toBe(original.operationId)
+    expect(resumed.members[0]!.unsignedTransaction).toBe(
+      original.members[0]!.unsignedTransaction,
+    )
+    expect(active.sign).toHaveBeenCalledTimes(1)
+    expect(journal.list()).toHaveLength(1)
+    await active.executor.releaseUnexposed(original.operationId)
+    await expect(active.executor.signContractCall(params)).rejects.toThrow(
+      /conflict/,
+    )
+    expect(active.sign).toHaveBeenCalledTimes(1)
+    expect(state.raws).toEqual([])
+  })
+
   it('enforces the current contract fee ceiling before any journal claim or signature', async () => {
     const state = node({ main: 10_000_000n })
     const { executor, sign } = owner(state)
@@ -191,13 +241,11 @@ describe('contract calls through the native operation journal', () => {
     })
     expect(exact.members[0]!.exposed).toBe(false)
     await executor.releaseUnexposed(exact.operationId)
-    jest
-      .spyOn(state.provider, 'getFeeData')
-      .mockResolvedValue({
-        maxFeePerGas: 3n,
-        maxPriorityFeePerGas: 1n,
-        gasPrice: 3n,
-      } as never)
+    jest.spyOn(state.provider, 'getFeeData').mockResolvedValue({
+      maxFeePerGas: 3n,
+      maxPriorityFeePerGas: 1n,
+      gasPrice: 3n,
+    } as never)
     await expect(
       executor.signContractCall({ ...call, maxNativeFeeWei: 230_000n }),
     ).rejects.toThrow(/ceiling/)

@@ -587,6 +587,31 @@ export interface WalletSyncItem {
 
 export type PaymentTransferItem = WalletSyncItem
 
+/** A recipient's payment claim, distinct from the sender's wallet synchronization facts.
+ * This is a projection of a protocol payment-transfer record, not a MessageItem or evidence
+ * of settlement. Amounts exclude fees and stamps. Family adapters verify destinations,
+ * transaction effects and spend authority before applying it to wallet state.
+ */
+export interface RecipientPaymentTransfer {
+  chainIdentifier: string
+  txId: string
+  /** Canonical lowercase hex protocol destination bytes; interpretation belongs to the adapter. */
+  destination: string
+  /** Exact positive decimal atomic units, without a display-unit conversion. */
+  amountAtomic: string
+  /** Protocol token bytes: EVM contract or SPL mint. An SPL mint is NOT a complete asset
+   * identity: the enclosing schema must bind its token program before runtime use. */
+  asset: { kind: 'native' } | { kind: 'token'; identifier: string }
+  vout?: number
+  stealthMetadata: {
+    keyType: 1 | 2
+    ephemeralPubKey: string
+    viewTag?: number | string
+  }
+  commitment?: string
+  rawTx?: string
+}
+
 /**
  * A received item this reader could not interpret, kept exactly as it arrived. It is shown as an
  * unsupported message and is never executed, and no plugin is registered for it. `unknown-type`:

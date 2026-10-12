@@ -596,7 +596,13 @@ impl Collector {
         ];
         let mut next = u64::MAX;
         for (kind, interval) in schedule {
-            let key = format!("last-round/{kind}");
+            // A difficulty-era statistics round did not collect the observed-mining
+            // contract. Keep its metadata/history, but give this contract its own schedule.
+            let key = if kind == "stats" {
+                "last-round/observed-mining-v1".to_owned()
+            } else {
+                format!("last-round/{kind}")
+            };
             let last = self.feed.store().meta(&key).ok().flatten();
             let due = last.map_or(0, |last| last + interval);
             if now < due {
@@ -1488,6 +1494,80 @@ fx_url = "http://stub/fx"
         Ok(())
     }
 
+    /// A recent difficulty-era poll is not evidence that the observed-mining inputs exist.
+    /// Preserve its history, collect the new contract immediately, then honor its own schedule
+    /// across reopening the same store.
+    #[tokio::test]
+    async fn observed_mining_refreshes_immediately_after_a_difficulty_era_restart() -> Result<()> {
+        const ONLY_BTC: &str = r#"
+[chain_stats]
+id = "blockchair"
+api_url = "http://stub/stats"
+[chain_stats.chains.btc-mainnet]
+name = "bitcoin"
+decimals = 8
+"#;
+        let now = 1_791_651_900;
+        let dir = tempdir::TempDir::new("oracle-observed-mining-restart")?;
+        {
+            let old = feed(&dir, ONLY_BTC);
+            old.store().set_meta("last-round/stats", now - 1)?;
+            old.store().write(
+                &[],
+                &[
+                    ("difficulty/btc-mainnet".to_owned(), now - 1, 100.0),
+                    ("blockReward/btc-mainnet".to_owned(), now - 1, 3.125),
+                ],
+            )?;
+        }
+        let upstream = || -> Arc<dyn Upstream> {
+            Arc::new(Canned(vec![
+                ("/stats", include_bytes!("fixtures/blockchair.json")),
+                ("/bitcoin/blocks", BTC_TOTALS),
+            ]))
+        };
+        {
+            let feed = Arc::new(feed(&dir, ONLY_BTC));
+            let mut collector = Collector::new(plan(ONLY_BTC), Arc::clone(&feed), upstream());
+            collector.tick(now, &mut StdRng::seed_from_u64(1)).await;
+            for name in ["hashrate/btc-mainnet", "minerRevenue/btc-mainnet"] {
+                assert_eq!(
+                    feed.store().floor(name, u64::MAX)?.map(|(at, _)| at),
+                    Some(now),
+                    "the first new-contract poll must not wait for the old hourly schedule"
+                );
+            }
+            assert_eq!(feed.store().meta("last-round/stats")?, Some(now - 1));
+            assert_eq!(
+                feed.store().floor("difficulty/btc-mainnet", u64::MAX)?,
+                Some((now - 1, 100.0))
+            );
+            assert_eq!(
+                feed.store().meta("last-round/observed-mining-v1")?,
+                Some(now)
+            );
+        }
+        {
+            let feed = Arc::new(feed(&dir, ONLY_BTC));
+            let mut collector = Collector::new(plan(ONLY_BTC), Arc::clone(&feed), upstream());
+            collector
+                .tick(now + 60, &mut StdRng::seed_from_u64(1))
+                .await;
+            assert_eq!(
+                feed.store()
+                    .floor("hashrate/btc-mainnet", u64::MAX)?
+                    .map(|(at, _)| at),
+                Some(now),
+                "a restart within the new contract must retain its hourly schedule"
+            );
+            assert_eq!(
+                feed.store().meta("last-round/observed-mining-v1")?,
+                Some(now)
+            );
+        }
+        Ok(())
+    }
+
     /// A statistics provider that is down for two rounds and then answers: the round stays due
     /// and is retried when each rest ends, so the reading arrives half an hour late, not after
     /// the hour (or more) a round marked as run would have cost.
@@ -1532,8 +1612,13 @@ fx_url = "http://stub/fx"
         let mut rng = StdRng::seed_from_u64(1);
         let asked = || *flaky.asked.lock().unwrap();
 
-        let due =
-            || -> Result<u64> { Ok(feed.store().meta("last-round/stats")?.expect("ran") + 3600) };
+        let due = || -> Result<u64> {
+            Ok(feed
+                .store()
+                .meta("last-round/observed-mining-v1")?
+                .expect("ran")
+                + 3600)
+        };
 
         // Fails: rests ten minutes, and the round is due again then.
         collector.tick(T0, &mut rng).await;

@@ -128,6 +128,28 @@ export class TempoPathUsdReceiveScanner {
     }
   }
 
+  private loadCursor(recipient: string, startBlock: bigint): {
+    rows: TempoReceiveBatch[]
+    next: bigint
+    seen: Set<string>
+    pending: TempoReceiveBatch[]
+  } {
+    const rows = this.rows(recipient)
+    let next = startBlock
+    const seen = new Set<string>()
+    const pending: TempoReceiveBatch[] = []
+    for (const row of rows) {
+      if (quantity(row.fromBlock) !== next) throw new Error('Tempo receive cursor has a gap or changed start block')
+      next = quantity(row.toBlock) + 1n
+      for (const item of row.items) {
+        if (seen.has(item.id)) throw new Error('Duplicate Tempo receive transfer across batches')
+        seen.add(item.id)
+      }
+      if (row.items.some(item => !item.applied)) pending.push(row)
+    }
+    return { rows, next, seen, pending }
+  }
+
   /** Scans one durable page of at most 10,000 finalized blocks. */
   syncOnce(recipientAddress: string, startBlock: bigint, apply: (item: TempoReceiveItem) => Promise<void>): Promise<{
     nextBlock: bigint
@@ -137,17 +159,17 @@ export class TempoPathUsdReceiveScanner {
     if (startBlock < 0n) return Promise.reject(new RangeError('Invalid Tempo receive start block'))
     return this.withRecipientLock(recipient, async () => {
       await this.store.refresh?.()
-      const rows = this.rows(recipient)
-      let next = startBlock
-      const seen = new Set<string>()
-      for (const row of rows) {
-        if (quantity(row.fromBlock) !== next) throw new Error('Tempo receive cursor has a gap or changed start block')
-        next = quantity(row.toBlock) + 1n
-        for (const item of row.items) {
-          if (seen.has(item.id)) throw new Error('Duplicate Tempo receive transfer across batches')
-          seen.add(item.id)
-        }
-      }
+      return this.syncPage(recipient, this.loadCursor(recipient, startBlock), apply)
+    })
+  }
+
+  private async syncPage(
+    recipient: string,
+    cursor: ReturnType<TempoPathUsdReceiveScanner['loadCursor']>,
+    apply: (item: TempoReceiveItem) => Promise<void>,
+  ): Promise<{ nextBlock: bigint; delivered: number }> {
+      const { rows, seen, pending } = cursor
+      const next = cursor.next
       const finalized = await this.rpc.finalizedHead()
       if (!HASH.test(finalized.hash)) throw new Error('Invalid Tempo finalized head')
       const hashes = new Map<bigint, string>()
@@ -176,7 +198,8 @@ export class TempoPathUsdReceiveScanner {
           delivered++
         }
       }
-      for (const row of rows) await deliver(row)
+      for (const row of pending) await deliver(row)
+      pending.length = 0
       if (next > finalized.number) return { nextBlock: next, delivered }
       let end = next + 9_999n < finalized.number ? next + 9_999n : finalized.number
       let transfers: Transfer[]
@@ -210,9 +233,12 @@ export class TempoPathUsdReceiveScanner {
       const items: TempoReceiveItem[] = []
       for (const transfer of transfers) {
         if (transfer.recipient !== recipient || BigInt(transfer.blockNumber) < next || BigInt(transfer.blockNumber) > end ||
-          await blockHash(BigInt(transfer.blockNumber)) !== transfer.blockHash)
+          await blockHash(BigInt(transfer.blockNumber)) !== transfer.blockHash ||
+          seen.has(transferId(this.chainIdentifier, transfer)))
           throw new Error('Tempo receive RPC returned a noncanonical transfer')
-        items.push({ ...transfer, amountAtomic: transfer.amountAtomic.toString(), id: transferId(this.chainIdentifier, transfer), applied: false })
+        const id = transferId(this.chainIdentifier, transfer)
+        seen.add(id)
+        items.push({ ...transfer, amountAtomic: transfer.amountAtomic.toString(), id, applied: false })
       }
       const row: TempoReceiveBatch = {
         version: 1,
@@ -226,8 +252,9 @@ export class TempoPathUsdReceiveScanner {
       }
       await this.write(row)
       await deliver(row)
+      rows.push(row)
+      cursor.next = end + 1n
       return { nextBlock: end + 1n, delivered }
-    })
   }
 
   /** Bounded catch-up for callers that can display progress and schedule another pass. */
@@ -239,18 +266,23 @@ export class TempoPathUsdReceiveScanner {
   ): Promise<{ nextBlock: bigint; finalizedBlock: bigint; delivered: number; complete: boolean }> {
     if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 32)
       throw new RangeError('Invalid Tempo catch-up page budget')
-    let nextBlock = startBlock
-    let delivered = 0
-    for (let page = 0; page < maxPages; page++) {
-      const before = nextBlock
-      const result = await this.syncOnce(recipientAddress, startBlock, apply)
-      nextBlock = result.nextBlock
-      delivered += result.delivered
-      if (nextBlock === before) break
-    }
+    const recipient = canonical(recipientAddress)
+    if (startBlock < 0n) throw new RangeError('Invalid Tempo receive start block')
+    const result = await this.withRecipientLock(recipient, async () => {
+      await this.store.refresh?.()
+      const cursor = this.loadCursor(recipient, startBlock)
+      let delivered = 0
+      for (let page = 0; page < maxPages; page++) {
+        const before = cursor.next
+        const outcome = await this.syncPage(recipient, cursor, apply)
+        delivered += outcome.delivered
+        if (cursor.next === before) break
+      }
+      return { nextBlock: cursor.next, delivered }
+    })
     // This target is informational. The scanner checks finality again under the recipient lock
     // for every page, and never counts a page that failed before its durable write.
     const finalizedBlock = (await this.rpc.finalizedHead()).number
-    return { nextBlock, finalizedBlock, delivered, complete: nextBlock > finalizedBlock }
+    return { ...result, finalizedBlock, complete: result.nextBlock > finalizedBlock }
   }
 }

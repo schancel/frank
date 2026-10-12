@@ -26,12 +26,18 @@ jest.mock('@frank/wallet/monad-provider', () => ({
   createMonadJsonRpcProvider: jest.fn(),
 }))
 
+beforeEach(() => jest.clearAllMocks())
+
 test('Tempo host rejects a wrong RPC chain before opening financial stores', async () => {
   const identity = {
     address: { raw: '0x1111111111111111111111111111111111111111' },
     signHash: jest.fn(),
   }
-  const owner = { identity }
+  const owner = {
+    identity,
+    chainIdentifier: 'monad-testnet',
+    networkId: 'monad-testnet',
+  }
   jest.mocked(accountSession.getWallet).mockResolvedValue(owner as never)
   jest.mocked(accountSession.peekWallet).mockReturnValue(owner as never)
   jest.mocked(accountSession.createTempoMainAccountSigner).mockResolvedValue({
@@ -66,6 +72,25 @@ test('Tempo host rejects a wrong RPC chain before opening financial stores', asy
     )
     expect(storage).not.toHaveBeenCalled()
     expect(destroy).toHaveBeenCalledTimes(1)
+  } finally {
+    storage.mockRestore()
+  }
+})
+
+test('Tempo host refuses a primary account from another directory network before opening custody or RPC', async () => {
+  const owner = {
+    chainIdentifier: 'monad-mainnet',
+    networkId: 'monad-mainnet',
+  }
+  jest.mocked(accountSession.getWallet).mockResolvedValue(owner as never)
+  const storage = jest.spyOn(LevelRecordStore, 'open')
+  try {
+    await expect(openTempoPathUsdWallet('tempo-testnet')).rejects.toThrow(
+      'Tempo relay identity does not match the active account',
+    )
+    expect(accountSession.createTempoMainAccountSigner).not.toHaveBeenCalled()
+    expect(createMonadJsonRpcProvider).not.toHaveBeenCalled()
+    expect(storage).not.toHaveBeenCalled()
   } finally {
     storage.mockRestore()
   }

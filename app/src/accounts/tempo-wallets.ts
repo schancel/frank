@@ -50,6 +50,11 @@ export async function openTempoPathUsdWallet(
   if (host.walletStorageLocation === false)
     throw new Error('Tempo requires durable wallet storage')
   const sessionWallet = await accountSession.getWallet()
+  if (
+    sessionWallet.chainIdentifier !== home.id ||
+    sessionWallet.networkId !== home.id
+  )
+    throw new Error('Tempo relay identity does not match the active account')
   const signer = await accountSession.createTempoMainAccountSigner(
     chainIdentifier,
   )

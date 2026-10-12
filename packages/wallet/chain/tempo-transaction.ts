@@ -192,7 +192,7 @@ export function decodeSignedTempoTransaction(
   if (encodeRlp(payload(transaction)) !== encodeRlp(decoded.slice(0, 13)))
     throw new Error("Noncanonical Tempo transaction payload");
   const signatureBytes = getBytes(decoded[13]);
-  if (signatureBytes.length !== 65 || signatureBytes[64]! > 1)
+  if (signatureBytes.length !== 65 || (signatureBytes[64]! > 1 && signatureBytes[64]! !== 27 && signatureBytes[64]! !== 28))
     throw new Error("Invalid Tempo transaction signature");
   const unsigned = `0x76${encodeRlp(decoded.slice(0, 13)).slice(2)}`;
   const sender = recoverAddress(keccak256(unsigned), {

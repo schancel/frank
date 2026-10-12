@@ -3464,6 +3464,36 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               topicOwner!.runLifetime((lifetime) => nativeOwner.observe(id, 0, lifetime)),
             release: (id) =>
               topicOwner!.runLifetime((lifetime) => nativeOwner.releaseUnexposed(id, lifetime)),
+            async quote(input) {
+              const facts = await topicOwner!.runLifetime((lifetime) =>
+                input.asset.kind === "native"
+                  ? nativeOwner.quoteNative(
+                      {
+                        recipient: { raw: input.recipientAddress },
+                        value: input.amountAtomic,
+                        sourceAddress: input.sourceAddress,
+                      },
+                      lifetime
+                    )
+                  : nativeOwner.quoteContractCall(
+                      {
+                        to: { raw: input.asset.contractAddress },
+                        data: financialAbi.encodeFunctionData("transfer", [
+                          input.recipientAddress,
+                          input.amountAtomic,
+                        ]),
+                        value: 0n,
+                        sourceAddress: input.sourceAddress,
+                      },
+                      lifetime
+                    )
+              );
+              const assetBalanceAtomic =
+                input.asset.kind === "native"
+                  ? facts.nativeBalanceAtomic
+                  : await tokenBalance(input.asset.contractAddress, facts.sourceAddress);
+              return { ...facts, assetBalanceAtomic };
+            },
             tokenBalance,
             tokenReceipt: verifiedFinancialReceipt,
             async selectTokenSource(contract, amount) {

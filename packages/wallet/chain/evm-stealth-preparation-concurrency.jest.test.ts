@@ -126,6 +126,9 @@ test('two stale Level capabilities share one business preparation while another 
         submit: id => executor.resumeOperation(id),
         observe: async () => undefined,
         release: id => executor.releaseUnexposed(id),
+        quote: async () => {
+          throw new Error('unused quote')
+        },
         tokenBalance: async () => 0n,
         selectTokenSource: async () => {
           throw new Error('unused')

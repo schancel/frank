@@ -174,7 +174,42 @@ test('production native preparation retains exact bytes and claims until bound e
       maxNativeFeeAtomic: 100_000n,
       sourceAddress: MAIN,
     }
+    const {
+      maxNativeFeeAtomic: _ceiling,
+      sourceAddress: _source,
+      ...unsignedIntent
+    } = intent
+    const quote = await wallet.stealthPayments!.quote!(unsignedIntent)
+    expect(quote).toMatchObject({
+      sourceAddress: MAIN.toLowerCase(),
+      amountAtomic: 1000n,
+      nativeBalanceAtomic: 1000000n,
+      assetBalanceAtomic: 1000000n,
+      estimatedNativeFeeAtomic: 21000n,
+    })
+    expect(wallet.getNativeOperations!()).toEqual([])
+    expect(
+      await wallet.stealthPayments!.get(intent.operationId),
+    ).toBeUndefined()
+    expect(state.broadcast).not.toHaveBeenCalled()
+    await expect(
+      wallet.stealthPayments!.expose({
+        operationId: intent.operationId,
+        payloadDigest: 'aa'.repeat(32),
+      }),
+    ).rejects.toThrow(/unavailable/)
+    await wallet.close()
+    wallet = (await createEvmChain(cfg).createWallet(
+      roots(),
+    )) as EvmChainWalletHandle
+    state = stubNode(wallet, 1_000_000n)
+    expect(await wallet.stealthPayments!.quote!(unsignedIntent)).toEqual(quote)
+    expect(wallet.getNativeOperations!()).toEqual([])
+    intent.maxNativeFeeAtomic = quote.estimatedNativeFeeAtomic
     const prepared = await wallet.stealthPayments!.prepare(intent)
+    expect(prepared.recipientDestination).toEqual(quote.recipientDestination)
+    expect(prepared.ephemeralPublicKey).toEqual(quote.ephemeralPublicKey)
+
     expect(prepared.recipientSpendPublicKey).toEqual(
       new Uint8Array(intent.recipientSpendPublicKey),
     )
@@ -431,7 +466,33 @@ test('production ERC20 receipt retains a gasless account and later signs from th
     })
     // An external native deposit makes this same account usable; no sender funding is inferred.
     state.balances.set(derived.stealthAddress.toLowerCase(), 1_000_000n)
+    const { maxNativeFeeAtomic: _ceiling, ...unsignedTokenIntent } = intent
+    const quote = await wallet.stealthPayments!.quote!(unsignedTokenIntent)
+    expect(quote).toMatchObject({
+      sourceAddress: derived.stealthAddress.toLowerCase(),
+      assetBalanceAtomic: amount,
+      nativeBalanceAtomic: 1000000n,
+      estimatedNativeFeeAtomic: 24150n,
+    })
+    expect(
+      wallet.getNativeOperations!().filter(
+        row => row.preparationId === 'stealth-payment:erc20-financial-1',
+      ),
+    ).toEqual([])
+    expect(state.broadcast).not.toHaveBeenCalled()
+    const estimatedCall = jest
+      .mocked(wallet.provider.estimateGas)
+      .mock.calls.at(-1)![0]
+    expect(estimatedCall).toMatchObject({
+      from: derived.stealthAddress.toLowerCase(),
+      to: token.toLowerCase(),
+      value: 0n,
+    })
+    expect(abi.decodeFunctionData('transfer', estimatedCall.data!)[1]).toBe(
+      amount,
+    )
     const prepared = await wallet.stealthPayments!.prepare(intent)
+    expect(prepared.recipientDestination).toEqual(quote.recipientDestination)
     const tx = Transaction.from(prepared.members[0]!.rawTransaction)
     expect(tx.from!.toLowerCase()).toBe(derived.stealthAddress.toLowerCase())
     expect(tx.to!.toLowerCase()).toBe(token.toLowerCase())

@@ -6,6 +6,8 @@ import type {
   StealthPaymentCapability,
   PreparedStealthPayment,
   StealthPaymentProgress,
+  StealthPaymentIntent,
+  StealthPaymentQuote,
 } from '../stealth-payment'
 import type { RecordStore } from '../storage/evm-coin-store'
 import {
@@ -32,7 +34,9 @@ export interface EvmStealthPreparation {
   asset: StealthPaymentAsset
   recipientSpendPublicKey: string
   amountAtomic: string
-  maxNativeFeeAtomic: string
+  feeAuthorization:
+    | { status: 'unapproved' }
+    | { status: 'approved'; maxNativeFeeAtomic: string }
   sourceAddress?: string
   recipientAddress: string
   ephemeralPublicKey: string
@@ -45,6 +49,17 @@ export interface EvmStealthPaymentDriver {
   nativeChainId: bigint
   coordinationKey: string
   refreshJournal(preparationId: string): Promise<void>
+  quote(input: {
+    asset: StealthPaymentAsset
+    recipientAddress: string
+    amountAtomic: bigint
+    sourceAddress?: string
+  }): Promise<{
+    sourceAddress: string
+    nativeBalanceAtomic: bigint
+    assetBalanceAtomic: bigint
+    estimatedNativeFeeAtomic: bigint
+  }>
   store: RecordStore<EvmStealthPreparation>
   assertActive(): void
   derive(publicKey: Uint8Array): {
@@ -79,6 +94,17 @@ export function configuredEvmStealthToken(
     throw new Error('Unsupported configured ERC20 asset')
   return normalized
 }
+function validateFeeAuthorization(row: EvmStealthPreparation): void {
+  const authorization = row.feeAuthorization
+  if (
+    !authorization ||
+    (authorization.status !== 'unapproved' &&
+      authorization.status !== 'approved') ||
+    (authorization.status === 'approved' &&
+      !/^(0|[1-9][0-9]{0,77})$/.test(authorization.maxNativeFeeAtomic))
+  )
+    throw new Error('Unsupported stealth preparation fee authorization format')
+}
 function assetOf(
   chainIdentifier: string,
   asset: StealthPaymentAsset,
@@ -100,8 +126,10 @@ function matches(
   preparation: EvmStealthPreparation,
   chainId: bigint,
 ): boolean {
+  validateFeeAuthorization(preparation)
   if (
     row.cancelled ||
+    preparation.feeAuthorization.status !== 'approved' ||
     row.binding.chainIdentifier !== preparation.chainIdentifier ||
     row.members.length !== 1
   )
@@ -116,7 +144,8 @@ function matches(
       tx.from?.toLowerCase() !== member.source.address) ||
     (preparation.sourceAddress !== undefined &&
       member.source.address !== preparation.sourceAddress) ||
-    nativeMaximumFee(tx) > BigInt(preparation.maxNativeFeeAtomic)
+    nativeMaximumFee(tx) >
+      BigInt(preparation.feeAuthorization.maxNativeFeeAtomic)
   )
     return false
   if (preparation.asset.kind === 'native')
@@ -168,6 +197,7 @@ export function createEvmStealthPayments(
       row.operationId !== id
     )
       throw new Error('Unknown stealth preparation')
+    validateFeeAuthorization(row)
     return row
   }
   const operation = (
@@ -254,7 +284,95 @@ export function createEvmStealthPayments(
       nativeFeeAtomic: BigInt(observation.feeWei),
     }
   }
+  const ensureIntent = async (
+    intent: Omit<StealthPaymentIntent, 'maxNativeFeeAtomic'>,
+  ): Promise<EvmStealthPreparation> => {
+    if (
+      !/^[a-zA-Z0-9_-]{1,128}$/.test(intent.operationId) ||
+      intent.chainIdentifier !== driver.chainIdentifier ||
+      intent.amountAtomic <= 0n ||
+      intent.amountAtomic >= 1n << 256n
+    )
+      throw new Error('Invalid stealth payment intent')
+    const asset = assetOf(driver.chainIdentifier, intent.asset)
+    const immutable = {
+      operationId: intent.operationId,
+      chainIdentifier: intent.chainIdentifier,
+      asset,
+      recipientSpendPublicKey: hexlify(intent.recipientSpendPublicKey),
+      amountAtomic: intent.amountAtomic.toString(),
+      ...(intent.sourceAddress === undefined
+        ? {}
+        : {
+            sourceAddress: getAddress(intent.sourceAddress).toLowerCase(),
+          }),
+    }
+    let row = driver.store.get(intent.operationId)
+    if (row === undefined) {
+      const derived = driver.derive(intent.recipientSpendPublicKey)
+      const selected =
+        asset.kind === 'erc20' && immutable.sourceAddress === undefined
+          ? await driver.selectTokenSource(
+              asset.contractAddress,
+              intent.amountAtomic,
+            )
+          : immutable.sourceAddress
+      driver.assertActive()
+      const created = {
+        ...immutable,
+        feeAuthorization: { status: 'unapproved' as const },
+        ...(selected === undefined ? {} : { sourceAddress: selected }),
+        recipientAddress: getAddress(derived.stealthAddress).toLowerCase(),
+        ephemeralPublicKey: hexlify(derived.ephemeralPubKey),
+      }
+      await driver.store.compareAndPut(intent.operationId, undefined, created)
+      driver.assertActive()
+      row = read(intent.operationId)
+    }
+    for (const key of Object.keys(immutable) as (keyof typeof immutable)[])
+      if (JSON.stringify(row[key]) !== JSON.stringify(immutable[key]))
+        throw new Error('Stealth operation intent conflict')
+    validateFeeAuthorization(row)
+    if (row.released) throw new Error('Stealth preparation released')
+    return row
+  }
   return {
+    quote: input => {
+      const intent = {
+        ...input,
+        asset: { ...input.asset },
+        recipientSpendPublicKey: new Uint8Array(input.recipientSpendPublicKey),
+      }
+      return exclusive(intent.operationId, async () => {
+        const row = await ensureIntent(intent)
+        const facts = await driver.quote({
+          asset: row.asset,
+          recipientAddress: row.recipientAddress,
+          amountAtomic: BigInt(row.amountAtomic),
+          sourceAddress: row.sourceAddress,
+        })
+        driver.assertActive()
+        if (row.sourceAddress === undefined) {
+          const selected = { ...row, sourceAddress: facts.sourceAddress }
+          if (
+            !(await driver.store.compareAndPut(row.operationId, row, selected))
+          )
+            throw new Error('Stealth quote source changed')
+        } else if (row.sourceAddress !== facts.sourceAddress)
+          throw new Error('Stealth quote source conflict')
+        return {
+          operationId: row.operationId,
+          chainIdentifier: row.chainIdentifier,
+          asset: { ...row.asset },
+          amountAtomic: BigInt(row.amountAtomic),
+          recipientAddress: row.recipientAddress,
+          recipientDestination: getBytes(row.recipientAddress),
+          recipientSpendPublicKey: getBytes(row.recipientSpendPublicKey),
+          ephemeralPublicKey: getBytes(row.ephemeralPublicKey),
+          ...facts,
+        } satisfies StealthPaymentQuote
+      })
+    },
     prepare: input => {
       const intent = {
         ...input,
@@ -264,56 +382,32 @@ export function createEvmStealthPayments(
       return exclusive(intent.operationId, async () => {
         driver.assertActive()
         if (
-          !/^[a-zA-Z0-9_-]{1,128}$/.test(intent.operationId) ||
-          intent.chainIdentifier !== driver.chainIdentifier ||
-          intent.amountAtomic <= 0n ||
-          intent.amountAtomic >= 1n << 256n ||
-          intent.maxNativeFeeAtomic < 0n
+          intent.maxNativeFeeAtomic < 0n ||
+          intent.maxNativeFeeAtomic >= 1n << 256n
         )
-          throw new Error('Invalid stealth payment intent')
-        const asset = assetOf(driver.chainIdentifier, intent.asset)
-        const immutable = {
-          operationId: intent.operationId,
-          chainIdentifier: intent.chainIdentifier,
-          asset,
-          recipientSpendPublicKey: hexlify(intent.recipientSpendPublicKey),
-          amountAtomic: intent.amountAtomic.toString(),
-          maxNativeFeeAtomic: intent.maxNativeFeeAtomic.toString(),
-          ...(intent.sourceAddress === undefined
-            ? {}
-            : {
-                sourceAddress: getAddress(intent.sourceAddress).toLowerCase(),
-              }),
-        }
-        let row = driver.store.get(intent.operationId)
-        if (row === undefined) {
-          const derived = driver.derive(intent.recipientSpendPublicKey)
-          const selected =
-            asset.kind === 'erc20' && immutable.sourceAddress === undefined
-              ? await driver.selectTokenSource(
-                  asset.contractAddress,
-                  intent.amountAtomic,
-                )
-              : immutable.sourceAddress
-          driver.assertActive()
-          const created = {
-            ...immutable,
-            ...(selected === undefined ? {} : { sourceAddress: selected }),
-            recipientAddress: getAddress(derived.stealthAddress).toLowerCase(),
-            ephemeralPublicKey: hexlify(derived.ephemeralPubKey),
-          }
-          await driver.store.compareAndPut(
-            intent.operationId,
-            undefined,
-            created,
+          throw new Error('Invalid stealth fee ceiling')
+        let row = await ensureIntent(intent)
+        if (row.feeAuthorization.status === 'approved') {
+          if (
+            BigInt(row.feeAuthorization.maxNativeFeeAtomic) !==
+            intent.maxNativeFeeAtomic
           )
-          driver.assertActive()
-          row = read(intent.operationId)
+            throw new Error('Stealth operation fee authorization conflict')
+        } else {
+          const approved = {
+            ...row,
+            feeAuthorization: {
+              status: 'approved' as const,
+              maxNativeFeeAtomic: intent.maxNativeFeeAtomic.toString(),
+            },
+          }
+          if (
+            !(await driver.store.compareAndPut(row.operationId, row, approved))
+          )
+            throw new Error('Stealth fee authorization changed')
+          row = approved
         }
-        for (const key of Object.keys(immutable) as (keyof typeof immutable)[])
-          if (JSON.stringify(row[key]) !== JSON.stringify(immutable[key]))
-            throw new Error('Stealth operation intent conflict')
-        if (row.released) throw new Error('Stealth preparation released')
+        const asset = row.asset
         let journal = operation(row)
         if (!journal || journal.members.some(member => !member.signed)) {
           if (row.payloadDigest !== undefined)

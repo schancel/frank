@@ -227,6 +227,37 @@ describe('contract calls through the native operation journal', () => {
     expect(state.raws).toEqual([])
   })
 
+  it('quotes exact call fees without reservations and rejects a later fee increase before signing', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor, sign } = owner(state)
+    const quote = await executor.quoteContractCall(call)
+    expect(quote).toEqual({
+      sourceAddress: main.address.toLowerCase(),
+      nativeBalanceAtomic: 10000000n,
+      estimatedNativeFeeAtomic: 230000n,
+    })
+    expect(journal.list()).toEqual([])
+    expect(sign).not.toHaveBeenCalled()
+    expect(state.raws).toEqual([])
+    jest.spyOn(state.provider, 'getFeeData').mockResolvedValue({
+      maxFeePerGas: 3n,
+      maxPriorityFeePerGas: 1n,
+      gasPrice: 3n,
+    } as never)
+    await expect(
+      executor.signContractCall({
+        ...call,
+        preparationId: 'stealth-payment:requote',
+        maxNativeFeeWei: quote.estimatedNativeFeeAtomic,
+      }),
+    ).rejects.toThrow(/ceiling/)
+    expect(journal.list()).toEqual([])
+    expect(sign).not.toHaveBeenCalled()
+    await expect(
+      executor.quoteContractCall({ ...call, sourceAddress: router }),
+    ).rejects.toThrow(/owned/)
+  })
+
   it('enforces the current contract fee ceiling before any journal claim or signature', async () => {
     const state = node({ main: 10_000_000n })
     const { executor, sign } = owner(state)

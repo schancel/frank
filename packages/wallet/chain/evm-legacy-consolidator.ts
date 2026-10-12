@@ -36,6 +36,7 @@ import {
   type EvmContractCallRecord,
   nativeMaximumFee,
   type EvmNativeSource,
+  type EvmNativePlan,
   type EvmNativeMemberPlan,
   type EvmNativeOperation,
   type EvmNativeAccountObservation,
@@ -570,6 +571,7 @@ export class EvmLegacyConsolidator {
   }
   private async sources(
     lifetime?: WalletOperationLifetime,
+    observe = true,
   ): Promise<AvailableSource[]> {
     const journal = this.journal(lifetime)
     const sources = new Map<string, EvmNativeSource>()
@@ -579,7 +581,7 @@ export class EvmLegacyConsolidator {
     ])
       sources.set(source.address, source)
     // Revalidate evidence used for source/dependent eligibility; observations do not release rows.
-    for (const row of journal.list())
+    for (const row of observe ? journal.list() : [])
       if (!row.cancelled)
         for (let i = 0; i < row.members.length; i++) {
           if (
@@ -2047,14 +2049,15 @@ export class EvmLegacyConsolidator {
       ),
     }
   }
-  private async planContractCall(
+  private async contractCallPlan(
     params: ContractCallParams,
     lifetime?: WalletOperationLifetime,
     submissionPolicy?: 'explicit',
     sourceAddress?: string,
     maxNativeFeeWei?: bigint,
     preparationId?: string,
-  ): Promise<EvmNativeOperation> {
+    readOnly = false,
+  ): Promise<{ plan: EvmNativePlan; nativeBalanceAtomic: bigint }> {
     if (maxNativeFeeWei !== undefined && maxNativeFeeWei < 0n)
       throw new RangeError('Native fee ceiling must not be negative')
     const to = getAddress(params.to.raw).toLowerCase()
@@ -2074,7 +2077,7 @@ export class EvmLegacyConsolidator {
       )
     )
       throw new Error('Contract source is not owned by this wallet')
-    const source = (await this.sources(lifetime)).find(
+    const source = (await this.sources(lifetime, !readOnly)).find(
       a => a.source.address === address,
     )
     // Absent when it holds nothing, or while an earlier transaction of its own is unresolved.
@@ -2106,31 +2109,140 @@ export class EvmLegacyConsolidator {
       params.value + gasLimit * maxFeePerGas
     )
       throw new RangeError('Insufficient unreserved native funds')
-    return this.journal(lifetime).prepare({
-      kind: 'contract',
-      ...(preparationId === undefined ? {} : { preparationId }),
-      ...(submissionPolicy === undefined ? {} : { submissionPolicy }),
-      recipient: to,
-      intendedValueWei: params.value.toString(),
-      ...(params.record ? { record: params.record } : {}),
-      members: [
-        {
-          source: source.source,
-          unsignedTransaction: Transaction.from({
-            type: 2,
-            to,
-            chainId: BigInt(this.config.journal.binding.nativeChainId),
-            nonce: source.account.nonce,
-            value: params.value,
-            data,
-            gasLimit,
-            maxFeePerGas,
-            maxPriorityFeePerGas,
-          }).unsignedSerialized,
-          dependencies: [],
-        },
-      ],
-    })
+    return {
+      nativeBalanceAtomic: BigInt(source.account.balanceWei),
+      plan: {
+        kind: 'contract',
+        ...(preparationId === undefined ? {} : { preparationId }),
+        ...(submissionPolicy === undefined ? {} : { submissionPolicy }),
+        recipient: to,
+        intendedValueWei: params.value.toString(),
+        ...(params.record ? { record: params.record } : {}),
+        members: [
+          {
+            source: source.source,
+            unsignedTransaction: Transaction.from({
+              type: 2,
+              to,
+              chainId: BigInt(this.config.journal.binding.nativeChainId),
+              nonce: source.account.nonce,
+              value: params.value,
+              data,
+              gasLimit,
+              maxFeePerGas,
+              maxPriorityFeePerGas,
+            }).unsignedSerialized,
+            dependencies: [],
+          },
+        ],
+      },
+    }
+  }
+  private async planContractCall(
+    params: ContractCallParams,
+    lifetime?: WalletOperationLifetime,
+    submissionPolicy?: 'explicit',
+    sourceAddress?: string,
+    maxNativeFeeWei?: bigint,
+    preparationId?: string,
+  ): Promise<EvmNativeOperation> {
+    const { plan } = await this.contractCallPlan(
+      params,
+      lifetime,
+      submissionPolicy,
+      sourceAddress,
+      maxNativeFeeWei,
+      preparationId,
+    )
+    return this.journal(lifetime).prepare(plan)
+  }
+  /** Reads the same contract call terms without reserving, observing journals, or signing. */
+  async quoteContractCall(
+    params: PreparedContractCallParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<{
+    sourceAddress: string
+    nativeBalanceAtomic: bigint
+    estimatedNativeFeeAtomic: bigint
+  }> {
+    const { plan, nativeBalanceAtomic } = await this.contractCallPlan(
+      params,
+      lifetime,
+      'explicit',
+      params.sourceAddress,
+      undefined,
+      undefined,
+      true,
+    )
+    return {
+      sourceAddress: plan.members[0]!.source.address,
+      nativeBalanceAtomic,
+      estimatedNativeFeeAtomic: nativeMaximumFee(
+        Transaction.from(plan.members[0]!.unsignedTransaction),
+      ),
+    }
+  }
+  /** Reads native transfer construction using eligible owned accounts, without a journal mutation. */
+  async quoteNative(
+    params: PreparedNativeTransferParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<{
+    sourceAddress: string
+    nativeBalanceAtomic: bigint
+    estimatedNativeFeeAtomic: bigint
+  }> {
+    if (params.value <= 0n)
+      throw new RangeError('Transfer value must be positive')
+    const recipient = getAddress(params.recipient.raw).toLowerCase()
+    const requested =
+      params.sourceAddress === undefined
+        ? undefined
+        : getAddress(params.sourceAddress).toLowerCase()
+    if (
+      requested !== undefined &&
+      !(await this.config.getSources()).some(
+        source => source.address === requested,
+      )
+    )
+      throw new Error('Native source is not owned by this wallet')
+    const accounts = (await this.sources(lifetime, false)).filter(
+      account =>
+        requested === undefined || account.source.address === requested,
+    )
+    accounts.sort((a, b) =>
+      a.spendableValue === b.spendableValue
+        ? a.source.address.localeCompare(b.source.address)
+        : a.spendableValue > b.spendableValue
+        ? -1
+        : 1,
+    )
+    const fee = await this.config.provider.getFeeData()
+    const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
+    if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
+    const fees = {
+      maxFeePerGas,
+      maxPriorityFeePerGas: fee.maxPriorityFeePerGas ?? maxFeePerGas,
+    }
+    if (fees.maxPriorityFeePerGas > maxFeePerGas)
+      throw new Error('Invalid native fee quote')
+    for (const account of accounts) {
+      if (account.spendableValue < params.value) continue
+      const tx = Transaction.from(
+        await this.transaction(account, recipient, params.value, fees, true),
+      )
+      const estimatedNativeFeeAtomic = nativeMaximumFee(tx)
+      if (
+        BigInt(account.account.balanceWei) <
+        tx.value + estimatedNativeFeeAtomic
+      )
+        continue
+      return {
+        sourceAddress: account.source.address,
+        nativeBalanceAtomic: BigInt(account.account.balanceWei),
+        estimatedNativeFeeAtomic,
+      }
+    }
+    throw new RangeError('Insufficient unreserved native funds')
   }
   /**
    * Plans and signs an owned-account contract call without broadcasting or marking its bytes

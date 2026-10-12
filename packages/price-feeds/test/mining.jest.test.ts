@@ -1,172 +1,137 @@
-import {
-  fetchMiningStats,
-  BLOCKCHAIR_API_BASE,
-  HASHES_PER_DIFFICULTY,
-} from '../src'
+import { fetchMiningStats } from '../src'
 
-function statsResponse(data: unknown, ok = true) {
-  return jest.fn(async () => ({
-    ok,
-    json: async () => ({ data }),
+function responses(
+  overrides: Record<string, unknown> = {},
+  aggregate: Record<string, unknown> = {},
+) {
+  return jest.fn(async (url: string) => ({
+    ok: true,
+    json: async () => ({
+      data: url.includes('/stats')
+        ? {
+            inflation_24h: 1_000_000_000,
+            blocks_24h: 10,
+            best_block_height: 109,
+            best_block_time: '2026-10-10 17:00:00',
+            circulation: 2_000_000_000_000_000,
+            hashrate_24h: '123456789',
+            difficulty: -100,
+            ...overrides,
+          }
+        : [
+            {
+              'sum(generation)': 1_000_000_000,
+              'sum(fee_total)': 100_000,
+              'count()': 10,
+              ...aggregate,
+            },
+          ],
+    }),
   })) as unknown as typeof fetch
 }
 
-describe('fetchMiningStats', () => {
-  it('reads coins per block and hashes per block from the chain’s own statistics', async () => {
-    // The figures Blockchair returned for bitcoin on 2026-10-10: issuance in satoshis.
-    const fetchFn = statsResponse({
-      inflation_24h: 44_062_500_000,
-      blocks_24h: 141,
-      difficulty: 132716002350731.3,
-      circulation: 2009602416655096,
-      hashrate_24h: '931390342732432625315',
-      market_price_usd: 82738,
-    })
-    const stats = await fetchMiningStats('bitcoin', { fetchFn })
-    expect((fetchFn as jest.Mock).mock.calls[0][0]).toBe(
-      `${BLOCKCHAIR_API_BASE}/bitcoin/stats`,
-    )
-    // 440.625 BTC minted in 141 blocks is 3.125 BTC a block.
-    expect(stats?.subsidyCoinsPerBlock).toBeCloseTo(3.125, 9)
-    expect(stats?.difficulty).toBe(132716002350731.3)
-    // difficulty x 2^32 = 5.70e23 hashes expected per block
-    expect(HASHES_PER_DIFFICULTY).toBe(4294967296)
-    expect(stats?.hashesPerBlock).toBe(132716002350731.3 * 4294967296)
-    expect(stats?.hashesPerBlock).toBeCloseTo(5.7e23, -21)
-    expect(stats?.circulatingCoins).toBeCloseTo(20_096_024.16655096, 6)
-  })
-
-  it('reads eCash issuance at two decimals: the whole subsidy, before any split', async () => {
-    const stats = await fetchMiningStats('ecash', {
-      fetchFn: statsResponse({
-        inflation_24h: 43_750_000_000,
-        blocks_24h: 140,
-        difficulty: 5833105685.4014,
-        circulation: 2009500839678193,
-      }),
-    })
-    expect(stats?.subsidyCoinsPerBlock).toBeCloseTo(3_125_000, 6)
-    expect(stats?.circulatingCoins).toBeCloseTo(20_095_008_396_781.93, 0)
-  })
-
-  it('takes no price from the chain statistics', async () => {
-    const stats = await fetchMiningStats('bitcoin', {
-      fetchFn: statsResponse({
-        inflation_24h: 312_500_000,
-        blocks_24h: 1,
-        difficulty: 1,
-        circulation: 100_000_000,
-        market_price_usd: 0,
-      }),
-    })
-    expect(stats).toMatchObject({ subsidyCoinsPerBlock: 3.125, difficulty: 1 })
-    expect(Object.keys(stats ?? {}).sort()).toEqual([
-      'chain',
-      'circulatingCoins',
-      'difficulty',
-      'fetchedAt',
-      'hashesPerBlock',
-      'subsidyCoinsPerBlock',
-    ])
-  })
-
+describe('observed mining receipts and work', () => {
   it.each([
-    ['a failed request', statsResponse({}, false)],
-    [
-      'a missing difficulty',
-      statsResponse({ inflation_24h: 1, blocks_24h: 1, circulation: 1 }),
-    ],
-    [
-      'no blocks in the day',
-      statsResponse({
-        inflation_24h: 1,
-        blocks_24h: 0,
-        difficulty: 1,
-        circulation: 1,
-      }),
-    ],
-    [
-      'a dead network',
-      jest
-        .fn()
-        .mockRejectedValue(new Error('offline')) as unknown as typeof fetch,
-    ],
+    ['bitcoin', 1e8],
+    ['bitcoin-cash', 1e8],
+    ['litecoin', 1e8],
+    ['dogecoin', 1e8],
+    ['ecash', 100],
   ])(
-    'answers nothing for %s instead of a baseline figure',
-    async (_name, fetchFn) => {
-      expect(await fetchMiningStats('bitcoin', { fetchFn })).toBeNull()
+    'normalizes %s receipts in native coins and uses observed hashrate even with invalid difficulty',
+    async (chain, unit) => {
+      const fetchFn = responses()
+      const stats = await fetchMiningStats(chain as string, { fetchFn })
+      expect(stats).toMatchObject({
+        subsidyCoins24h: 1e9 / Number(unit),
+        feeCoins24h: 1e5 / Number(unit),
+        hashrate24h: 123456789,
+        observationEnd: Date.parse('2026-10-10T17:00:00Z') / 1000,
+        firstBlock: 100,
+        lastBlock: 109,
+      })
+      const query = new URL((fetchFn as jest.Mock).mock.calls[1][0])
+        .searchParams
+      expect(query.get('q')).toBe('id(100..109)')
+      expect(query.get('a')).toBe('sum(fee_total),sum(generation),count()')
     },
   )
-
-  it('reads Monero, whose difficulty is hashes per block and whose subsidy is the tail emission', async () => {
-    // The figures Blockchair returned for monero on 2026-10-10: it publishes no issuance.
-    const stats = await fetchMiningStats('monero', {
-      fetchFn: statsResponse({
-        inflation_24h: null,
-        blocks_24h: null,
-        difficulty: 753447676646,
-        circulation: 1.881567909076546e19,
+  it.each([
+    undefined,
+    null,
+    '',
+    '2026-02-30 12:00:00',
+    '2026-10-10 24:00:00',
+    123,
+  ])('rejects absent or invalid provider block time %p', async time => {
+    expect(
+      await fetchMiningStats('ecash', {
+        fetchFn: responses({ best_block_time: time }),
       }),
-    })
-    expect(stats?.subsidyCoinsPerBlock).toBe(0.6)
-    expect(stats?.hashesPerBlock).toBe(753447676646)
-    expect(stats?.circulatingCoins).toBeCloseTo(18_815_679.09, 2)
+    ).toBeNull()
   })
-
-  it('answers nothing for a chain it has no unit scale for', async () => {
-    const fetchFn = jest.fn() as unknown as typeof fetch
-    expect(await fetchMiningStats('kaspa', { fetchFn })).toBeNull()
-    expect(fetchFn).not.toHaveBeenCalled()
+  it('accepts explicitly observed zero fees', async () => {
+    expect(
+      (
+        await fetchMiningStats('bitcoin', {
+          fetchFn: responses({}, { 'sum(fee_total)': 0 }),
+        })
+      )?.feeCoins24h,
+    ).toBe(0)
   })
-})
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const recorded = require('./fixtures/blockchair-stats-2026-10-10.json')
-
-describe('the scrypt and RandomX chains, against what Blockchair answered on 2026-10-10', () => {
-  it('reads Litecoin: 8 decimals, and difficulty x 2^32 expected hashes per block', async () => {
-    const stats = await fetchMiningStats('litecoin', {
-      fetchFn: statsResponse(recorded.litecoin),
-    })
-    // 3,518.75851979 LTC minted in 563 blocks: 6.25 LTC a block (halved August 2023).
-    expect(stats?.subsidyCoinsPerBlock).toBeCloseTo(6.25, 4)
-    expect(stats?.circulatingCoins).toBeCloseTo(77_700_417.14498554, 3)
-    expect(stats?.hashesPerBlock).toBe(95937773.26992714 * 2 ** 32)
-    // Unit check against the hashrate the same answer reports: expected hashes per block
-    // over the 150-second block time is 2.75e15 H/s; Blockchair says 2.69e15.
-    const impliedHashrate = stats!.hashesPerBlock / 150
-    expect(impliedHashrate / Number(recorded.litecoin.hashrate_24h)).toBeCloseTo(1, 0)
+  it.each([null, undefined, '', 'bad', -1, Infinity, true])(
+    'rejects missing/malformed fee data %p',
+    async fee => {
+      expect(
+        await fetchMiningStats('bitcoin', {
+          fetchFn: responses({}, { 'sum(fee_total)': fee }),
+        }),
+      ).toBeNull()
+    },
+  )
+  it.each([
+    { 'count()': 9 },
+    { 'sum(generation)': 999 },
+    { 'sum(generation)': null },
+  ])('rejects a mismatched block observation %p', async aggregate => {
+    expect(
+      await fetchMiningStats('bitcoin', { fetchFn: responses({}, aggregate) }),
+    ).toBeNull()
   })
-
-  it('reads Dogecoin: 8 decimals, 10,000 DOGE a block, the same difficulty rule', async () => {
-    const stats = await fetchMiningStats('dogecoin', {
-      fetchFn: statsResponse(recorded.dogecoin),
-    })
-    expect(stats?.subsidyCoinsPerBlock).toBe(10_000)
-    expect(stats?.circulatingCoins).toBeCloseTo(156_268_596_383.7, 0)
-    // Dogecoin retargets every block, so the 24-hour figure is used, not the difficulty
-    // of the moment (45,261,326 here): 3,085,649,443,549,118 H/s x 60 s
-    // = 1.8514e17 expected hashes per block, a difficulty of 43,106,000.
-    expect(stats?.hashesPerBlock).toBeCloseTo(3085649443549118 * 60, -6)
-    expect(stats?.difficulty).toBeCloseTo((3085649443549118 * 60) / 2 ** 32, 3)
-    expect(stats!.difficulty / 1e6).toBeCloseTo(43.106, 2)
+  it.each([0, null, undefined, Infinity, 'NaN'])(
+    'never substitutes difficulty for absent hashrate %p',
+    async h => {
+      expect(
+        await fetchMiningStats('bitcoin', {
+          fetchFn: responses({ hashrate_24h: h }),
+        }),
+      ).toBeNull()
+    },
+  )
+  it('does not invent Monero receipts from tail subsidy', async () => {
+    expect(
+      await fetchMiningStats('monero', {
+        fetchFn: responses({ inflation_24h: null, blocks_24h: null }),
+      }),
+    ).toBeNull()
   })
-
-  it('reads Monero: 12 decimals, and the difficulty itself is the expected hashes per block', async () => {
-    const stats = await fetchMiningStats('monero', {
-      fetchFn: statsResponse(recorded.monero),
-    })
-    // No 2^32 factor.
-    expect(stats?.hashesPerBlock).toBe(735582551412)
-    // Unit check: 735,582,551,412 hashes over the 120-second block time is
-    // 6,129,854,595 H/s, exactly the hashrate the same answer reports.
-    expect(Math.round(stats!.hashesPerBlock / 120)).toBe(
-      recorded.monero.hashrate_24h,
-    )
-    expect(stats?.circulatingCoins).toBeCloseTo(18_815_849.49018812, 3)
-    // Blockchair publishes no issuance for Monero (no inflation_24h, no blocks_24h): the
-    // block reward is the consensus tail emission, 0.6 XMR.
-    expect(recorded.monero.inflation_24h).toBeUndefined()
-    expect(stats?.subsidyCoinsPerBlock).toBe(0.6)
+  it('returns unavailable on failed aggregate, not subsidy-only stats', async () => {
+    const fetchFn = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: {
+            blocks_24h: 10,
+            best_block_height: 109,
+            best_block_time: '2026-10-10 17:00:00',
+            hashrate_24h: 100,
+            circulation: 100,
+            inflation_24h: 100,
+          },
+        }),
+      })
+      .mockResolvedValueOnce({ ok: false }) as unknown as typeof fetch
+    expect(await fetchMiningStats('bitcoin', { fetchFn })).toBeNull()
   })
 })

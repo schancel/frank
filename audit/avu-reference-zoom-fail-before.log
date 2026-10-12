@@ -1,0 +1,74 @@
+FAIL src/pages/AvuDetails.jest.test.ts
+  ● AVU dollar reference details › zooms both references by mouse drag at mobile width and resets
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      100 |       expect(
+      101 |         wrapper.find('[data-test="avu-reference-selection"]').exists(),
+    > 102 |       ).toBe(true)
+          |         ^
+      103 |       await chart.trigger('pointerup', { ...pointer, clientX: 124 })
+      104 |       for (const id of ['hash', 'spot'])
+      105 |         expect(
+
+      at src/pages/AvuDetails.jest.test.ts:102:9
+
+  ● AVU dollar reference details › zooms both references by touch drag at mobile width and resets
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      100 |       expect(
+      101 |         wrapper.find('[data-test="avu-reference-selection"]').exists(),
+    > 102 |       ).toBe(true)
+          |         ^
+      103 |       await chart.trigger('pointerup', { ...pointer, clientX: 124 })
+      104 |       for (const id of ['hash', 'spot'])
+      105 |         expect(
+
+      at src/pages/AvuDetails.jest.test.ts:102:9
+
+  ● AVU dollar reference details › reverse drag clamps to plot bounds and range changes clear zoom
+
+    expect(received).toHaveLength(expected)
+
+    Expected length: 3
+    Received length: 4
+    Received array:  [{"isDisabled": [Function anonymous], "subTree": undefined, "wrapperElement": <circle cx="60" cy="41.25" data-test="avu-reference-point-hash" fill="#7c3aed" r="3"><title>1 AVU (Hash) · Oct 10, 2026 · $0.10</title></circle>}, {"isDisabled": [Function anonymous], "subTree": undefined, "wrapperElement": <circle cx="226.66666666666666" cy="41.25" data-test="avu-reference-point-hash" fill="#7c3aed" r="3"><title>1 AVU (Hash) · Oct 10, 2026 · $0.10</title></circle>}, {"isDisabled": [Function anonymous], "subTree": undefined, "wrapperElement": <circle cx="393.3333333333333" cy="41.25" data-test="avu-reference-point-hash" fill="#7c3aed" r="3"><title>1 AVU (Hash) · Oct 10, 2026 · $0.10</title></circle>}, {"isDisabled": [Function anonymous], "subTree": undefined, "wrapperElement": <circle cx="560" cy="41.25" data-test="avu-reference-point-hash" fill="#7c3aed" r="3"><title>1 AVU (Hash) · Oct 10, 2026 · $0.10</title></circle>}]
+
+      129 |     expect(
+      130 |       wrapper.findAll('[data-test="avu-reference-point-hash"]'),
+    > 131 |     ).toHaveLength(3)
+          |       ^
+      132 |     await wrapper.get('[data-range="7d"]').trigger('click')
+      133 |     expect(wrapper.find('[data-test="avu-reference-reset"]').exists()).toBe(
+      134 |       false,
+
+      at Object.<anonymous> (src/pages/AvuDetails.jest.test.ts:131:7)
+
+  ● AVU dollar reference details › labels actual short history with times and keeps endpoint text inside the plot
+
+    expect(received).toMatch(expected)
+
+    Expected pattern: /:/
+    Received string:  "Oct 10, 2026"
+
+      167 |       .filter(label => label.attributes('y') === '246')
+      168 |     expect(labels).toHaveLength(2)
+    > 169 |     expect(labels[0].text()).toMatch(/:/)
+          |                              ^
+      170 |     expect(labels[1].text()).toMatch(/:/)
+      171 |     expect(labels[0].attributes('x')).toBe('60')
+      172 |     expect(labels[1].attributes('text-anchor')).toBe('end')
+
+      at Object.<anonymous> (src/pages/AvuDetails.jest.test.ts:169:30)
+
+Test Suites: 1 failed, 1 total
+Tests:       4 failed, 8 skipped, 12 total
+Snapshots:   0 total
+Time:        1.535 s, estimated 2 s

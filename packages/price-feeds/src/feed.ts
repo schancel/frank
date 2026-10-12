@@ -82,8 +82,8 @@ export interface OracleFeed {
 export type SeriesKind =
   | 'price'
   | 'marketCap'
-  | 'difficulty'
-  | 'blockReward'
+  | 'hashrate'
+  | 'minerRevenue'
   | 'efficiency'
   | 'electricity'
 
@@ -92,7 +92,7 @@ export function seriesName(kind: SeriesKind, id: string): string {
 }
 
 const SERIES_NAME =
-  /^(price|marketCap|difficulty|blockReward|efficiency|electricity)\/[a-z0-9-]+$/
+  /^(price|marketCap|hashrate|minerRevenue|efficiency|electricity)\/[a-z0-9-]+$/
 const ALGORITHMS: readonly string[] = ['sha256', 'scrypt', 'randomx']
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -234,16 +234,16 @@ export function parseOracleFeed(value: unknown): OracleFeed | undefined {
     electricity: {
       windowDays: electricity.windowDays as number,
       minDays: electricity.minDays as number,
-      regions: (
-        electricity.regions as FeedElectricity['regions']
-      ).map(region => ({
-        id: region.id,
-        label: region.label,
-        attribution: region.attribution,
-        ...(region.lastContributed === undefined
-          ? {}
-          : { lastContributed: region.lastContributed }),
-      })),
+      regions: (electricity.regions as FeedElectricity['regions']).map(
+        region => ({
+          id: region.id,
+          label: region.label,
+          attribution: region.attribution,
+          ...(region.lastContributed === undefined
+            ? {}
+            : { lastContributed: region.lastContributed }),
+        }),
+      ),
     },
     series: parsed,
   }

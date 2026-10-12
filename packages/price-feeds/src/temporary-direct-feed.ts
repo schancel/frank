@@ -15,6 +15,8 @@
  */
 import basketDefinition from './historical/basket.json'
 import { PriceFeedsClient } from './client'
+import { ChainlinkProvider } from './providers/chainlink'
+import type { PriceSample } from './types'
 import { CHAIN_STATS_REFRESH_INTERVAL_MS } from './config'
 import { windowedElectricityAggregate } from './electricity-aggregate'
 import {
@@ -37,7 +39,12 @@ import {
   hashesPerKwh,
 } from './historical'
 import { fetchMiningStats, type MiningStats } from './mining'
-import { at, sliceSeries, type SeriesPoint, type Timeseries } from './timeseries'
+import {
+  at,
+  sliceSeries,
+  type SeriesPoint,
+  type Timeseries,
+} from './timeseries'
 
 /**
  * The basket. Its one definition is src/historical/basket.json, which the relay's seed
@@ -52,7 +59,10 @@ export const DIRECT_BASKET: FeedBasket = {
  * What each feed asset id is asked of the price providers as, and of Blockchair as.
  * Assets with no Blockchair name are priced only (they are not in the basket).
  */
-export const DIRECT_ASSETS: Record<string, { symbol: string; blockchair?: string }> = {
+export const DIRECT_ASSETS: Record<
+  string,
+  { symbol: string; blockchair?: string }
+> = {
   'btc-mainnet': { symbol: 'BTC', blockchair: 'bitcoin' },
   'bch-mainnet': { symbol: 'BCH', blockchair: 'bitcoin-cash' },
   'xec-mainnet': { symbol: 'XEC', blockchair: 'ecash' },
@@ -67,7 +77,11 @@ export const DIRECT_ASSETS: Record<string, { symbol: string; blockchair?: string
 
 function seconds(date: string): number {
   // "YYYY-MM" is the start of the month, "YYYY-MM-DD" the start of the day, UTC.
-  return Date.parse(date.length === 7 ? `${date}-01T00:00:00Z` : `${date}T00:00:00Z`) / 1000
+  return (
+    Date.parse(
+      date.length === 7 ? `${date}-01T00:00:00Z` : `${date}T00:00:00Z`,
+    ) / 1000
+  )
 }
 
 /** The product of two step series, at every time either changes and both have a value. */
@@ -88,7 +102,10 @@ export function multiplySeries(a: Timeseries, b: Timeseries): SeriesPoint[] {
 function minerShare(chain: string): Timeseries {
   const steps = MINER_SHARE_STEPS[chain]
   // Before the first curated step the miner was paid the whole subsidy.
-  return [[0, 1], ...(steps ?? []).map(step => [seconds(step.from), step.share] as const)]
+  return [
+    [0, 1],
+    ...(steps ?? []).map(step => [seconds(step.from), step.share] as const),
+  ]
 }
 
 function series(
@@ -100,7 +117,14 @@ function series(
 ): FeedSeries {
   // Bundled history is as old as its file: it is stale by definition once anything
   // newer could be fetched. A live point replaces it and clears the flag.
-  return { unit, source, asOf: seconds(retrieved), stale: true, ...extra, points }
+  return {
+    unit,
+    source,
+    asOf: seconds(retrieved),
+    stale: true,
+    ...extra,
+    points,
+  }
 }
 
 let bundled: Record<string, FeedSeries> | undefined
@@ -110,7 +134,10 @@ export function bundledSeries(): Record<string, FeedSeries> {
   if (bundled) return bundled
   const all: Record<string, FeedSeries> = {}
   const btcRetrieved = BTC_MINING_SOURCES.retrieved
-  const btc = BTC_MINING_MONTHLY.map(month => ({ ...month, t: seconds(month.month) }))
+  const btc = BTC_MINING_MONTHLY.map(month => ({
+    ...month,
+    t: seconds(month.month),
+  }))
   all[seriesName('price', 'btc-mainnet')] = series(
     'USD',
     'blockchain.com, monthly mean',
@@ -123,17 +150,17 @@ export function bundledSeries(): Record<string, FeedSeries> {
     btcRetrieved,
     btc.map(m => [m.t, m.btcUsd * m.supplyBtc]),
   )
-  all[seriesName('difficulty', 'btc-mainnet')] = series(
-    'difficulty',
-    'blockchain.com, monthly mean',
+  all[seriesName('hashrate', 'btc-mainnet')] = series(
+    'hashes/s',
+    'blockchain.com observed-work estimate, monthly mean',
     btcRetrieved,
-    btc.map(m => [m.t, m.difficulty]),
+    btc.map(m => [m.t, m.hashrate]),
   )
-  all[seriesName('blockReward', 'btc-mainnet')] = series(
-    'coins per block to the miner',
-    'Bitcoin consensus rule',
+  all[seriesName('minerRevenue', 'btc-mainnet')] = series(
+    'coins/s to the miner including fees',
+    'blockchain.com miners-revenue, monthly',
     btcRetrieved,
-    btc.map(m => [m.t, m.subsidyBtc]),
+    btc.map(m => [m.t, m.minerRevenueCoinsPerSecond]),
   )
   // Bitcoin Cash and eCash are mined on the same machines as Bitcoin.
   all[seriesName('efficiency', 'sha256')] = series(
@@ -170,8 +197,13 @@ export function bundledSeries(): Record<string, FeedSeries> {
       difficulty: row[2],
       subsidy: row[3],
       coins: row[4],
+      hashrate: row[5],
+      receipts: row[6],
     }))
-    const label = chain === 'xmr-mainnet' ? 'Kraken and a Monero node, monthly mean' : 'Blockchair, monthly mean'
+    const label =
+      chain === 'xmr-mainnet'
+        ? 'Kraken and a Monero node, monthly mean'
+        : 'Blockchair, monthly mean'
     all[seriesName('price', chain)] = series(
       'USD',
       label,
@@ -184,21 +216,31 @@ export function bundledSeries(): Record<string, FeedSeries> {
       MINED_CHAINS_RETRIEVED,
       months.map(m => [m.t, m.price * m.coins]),
     )
-    all[seriesName('difficulty', chain)] = series(
-      'difficulty',
-      label,
-      MINED_CHAINS_RETRIEVED,
-      months.map(m => [m.t, m.difficulty]),
+    // Older source rows cannot satisfy these: no invented historical fees.
+    const observations = months.filter(
+      m =>
+        typeof m.hashrate === 'number' &&
+        typeof m.receipts === 'number' &&
+        m.hashrate > 0 &&
+        m.receipts > 0,
     )
-    all[seriesName('blockReward', chain)] = series(
-      'coins per block to the miner',
-      label,
-      MINED_CHAINS_RETRIEVED,
-      multiplySeries(
-        months.map(m => [m.t, m.subsidy]),
-        minerShare(chain),
-      ),
-    )
+    if (observations.length) {
+      all[seriesName('hashrate', chain)] = series(
+        'hashes/s',
+        label,
+        MINED_CHAINS_RETRIEVED,
+        observations.map(m => [m.t, m.hashrate!]),
+      )
+      all[seriesName('minerRevenue', chain)] = series(
+        'coins/s including fees, miner share',
+        label,
+        MINED_CHAINS_RETRIEVED,
+        multiplySeries(
+          observations.map(m => [m.t, m.receipts!]),
+          minerShare(chain),
+        ),
+      )
+    }
   }
   all[ELECTRICITY_AGGREGATE] = series(
     'USD/kWh',
@@ -240,14 +282,16 @@ const electricityAggregate = windowedElectricityAggregate(
 export const DIRECT_ELECTRICITY: FeedElectricity = {
   windowDays: ELECTRICITY_WINDOW_DAYS,
   minDays: ELECTRICITY_MIN_DAYS,
-  regions: Object.entries(WHOLESALE_ELECTRICITY.regions).map(([id, region]) => ({
-    id,
-    label: region.label,
-    attribution: region.attribution,
-    ...(electricityAggregate.lastContributed[id] === undefined
-      ? {}
-      : { lastContributed: electricityAggregate.lastContributed[id] }),
-  })),
+  regions: Object.entries(WHOLESALE_ELECTRICITY.regions).map(
+    ([id, region]) => ({
+      id,
+      label: region.label,
+      attribution: region.attribution,
+      ...(electricityAggregate.lastContributed[id] === undefined
+        ? {}
+        : { lastContributed: electricityAggregate.lastContributed[id] }),
+    }),
+  ),
 }
 
 /** The bundled history for a range, cut as the contract says a range answer is. */
@@ -280,6 +324,8 @@ export interface DirectFeedOptions {
   now?: () => number
   /** Stand-ins for the two direct fetches, for tests. */
   fetchPrices?: (symbols: string[]) => Promise<Record<string, number>>
+  /** Dated XAU/USD observation, separate from collection-time coin sampling. */
+  fetchGold?: () => Promise<PriceSample | null>
   fetchStats?: (blockchairChain: string) => Promise<MiningStats | null>
   /**
    * The time (unix seconds) of the latest point the caller already holds for a series,
@@ -296,6 +342,21 @@ const statsCache = new Map<string, MiningStats>()
 /** Forgets the fetched chain statistics. For tests. */
 export function resetDirectFeedCache(): void {
   statsCache.clear()
+}
+
+async function datedGold(
+  options: DirectFeedOptions,
+): Promise<PriceSample | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 4000)
+  try {
+    return await new ChainlinkProvider({ fetchFn: options.fetchFn }).fetchPrice(
+      'GOLD',
+      controller.signal,
+    )
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function medianPrices(
@@ -342,23 +403,27 @@ export async function directLatestFeed(
   const symbols = Object.values(DIRECT_ASSETS).map(asset => asset.symbol)
   /** Chains the caller holds a reading of that is still inside the hour. */
   const heldFresh = new Set<string>()
-  const due = Object.entries(DIRECT_ASSETS).flatMap(([asset, { blockchair }]) => {
-    if (!blockchair) return []
-    const held = statsCache.get(blockchair)
-    if (held && now - held.fetchedAt < CHAIN_STATS_REFRESH_INTERVAL_MS) return []
-    const heldAt = options.heldAt?.(seriesName('difficulty', asset))
-    if (
-      !held &&
-      heldAt !== undefined &&
-      now - heldAt * 1000 < CHAIN_STATS_REFRESH_INTERVAL_MS
-    ) {
-      heldFresh.add(asset)
-      return []
-    }
-    return [blockchair]
-  })
-  const [prices] = await Promise.all([
+  const due = Object.entries(DIRECT_ASSETS).flatMap(
+    ([asset, { blockchair }]) => {
+      if (!blockchair) return []
+      const held = statsCache.get(blockchair)
+      if (held && now - held.fetchedAt < CHAIN_STATS_REFRESH_INTERVAL_MS)
+        return []
+      const heldAt = options.heldAt?.(seriesName('hashrate', asset))
+      if (
+        !held &&
+        heldAt !== undefined &&
+        now - heldAt * 1000 < CHAIN_STATS_REFRESH_INTERVAL_MS
+      ) {
+        heldFresh.add(asset)
+        return []
+      }
+      return [blockchair]
+    },
+  )
+  const [prices, gold] = await Promise.all([
     (options.fetchPrices ?? (s => medianPrices(s, options)))(symbols),
+    (options.fetchGold ?? (() => datedGold(options)))().catch(() => null),
     ...due.map(async chain => {
       const stats = await fetchStats(chain).catch(() => null)
       if (stats) statsCache.set(chain, stats)
@@ -370,7 +435,12 @@ export async function directLatestFeed(
   const nowSeconds = Math.ceil(clock() / 1000)
   const history = bundledSeries()
   const out: Record<string, FeedSeries> = {}
-  const live = (unit: string, source: string, time: number, value: number): FeedSeries => ({
+  const live = (
+    unit: string,
+    source: string,
+    time: number,
+    value: number,
+  ): FeedSeries => ({
     unit,
     source,
     asOf: time,
@@ -383,11 +453,31 @@ export async function directLatestFeed(
     if (one && last) out[name] = { ...one, points: [last] }
   }
 
+  if (
+    gold &&
+    Number.isFinite(gold.price) &&
+    gold.price > 0 &&
+    Number.isSafeInteger(gold.timestamp) &&
+    gold.timestamp > 0 &&
+    gold.timestamp <= clock()
+  ) {
+    out[seriesName('price', 'gold')] = live(
+      'USD/troy ounce',
+      'Chainlink XAU/USD (Arbitrum)',
+      Math.floor(gold.timestamp / 1000),
+      gold.price,
+    )
+  }
   for (const [asset, { symbol, blockchair }] of Object.entries(DIRECT_ASSETS)) {
     const price = prices[symbol]
     const priceName = seriesName('price', asset)
     if (price !== undefined) {
-      out[priceName] = live('USD', 'median of public price providers', nowSeconds, price)
+      out[priceName] = live(
+        'USD',
+        'median of public price providers',
+        nowSeconds,
+        price,
+      )
     } else {
       fallback(priceName)
     }
@@ -396,24 +486,28 @@ export async function directLatestFeed(
     // The caller's own series already hold this hour's reading: nothing to add to it.
     if (!stats && heldFresh.has(asset)) continue
     if (!stats) {
-      for (const kind of ['marketCap', 'difficulty', 'blockReward'] as const) {
+      for (const kind of ['marketCap', 'hashrate', 'minerRevenue'] as const) {
         fallback(seriesName(kind, asset))
       }
       continue
     }
     const statsSeconds = Math.min(nowSeconds, Math.ceil(stats.fetchedAt / 1000))
-    const share = at(minerShare(asset), statsSeconds)?.[1] ?? 1
-    out[seriesName('difficulty', asset)] = live(
-      'difficulty',
-      'Blockchair',
+    const shares = minerShare(asset)
+    const share = at(shares, stats.observationEnd)?.[1] ?? 1
+    // Do not apply one share to a window spanning a consensus allocation change.
+    if ((at(shares, stats.observationEnd - 86_400)?.[1] ?? 1) !== share)
+      continue
+    out[seriesName('hashrate', asset)] = live(
+      'hashes/s',
+      'Blockchair observed-work estimate, 24h',
       statsSeconds,
-      stats.difficulty,
+      stats.hashrate24h,
     )
-    out[seriesName('blockReward', asset)] = live(
-      'coins per block to the miner',
-      'Blockchair',
+    out[seriesName('minerRevenue', asset)] = live(
+      'coins/s to the miner including fees',
+      'Blockchair exact block receipts, 24h',
       statsSeconds,
-      stats.subsidyCoinsPerBlock * share,
+      ((stats.subsidyCoins24h + stats.feeCoins24h) * share) / 86_400,
     )
     // The market capitalisation is a price times a supply; it has the older time of the two.
     const pricePoint = out[priceName]?.points[0]

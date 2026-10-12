@@ -139,8 +139,8 @@ function twoEntryFeed(): OracleFeed {
   })
   // Monero: 500 x 0.6 / 1500 x 1 = 0.2 value per kWh, 5 kWh per unit of value.
   feed.series['marketCap/xmr-mainnet'] = series(at(1e12))
-  feed.series['difficulty/xmr-mainnet'] = series(at(1500))
-  feed.series['blockReward/xmr-mainnet'] = series(at(0.6))
+  feed.series['hashrate/xmr-mainnet'] = series(at(1500))
+  feed.series['minerRevenue/xmr-mainnet'] = series(at(0.6))
   feed.series['efficiency/randomx'] = series(at(1))
   return feed
 }
@@ -336,6 +336,76 @@ describe('selected coin price history', () => {
     expect(wrapper.get('[data-test="denomination-toggle"]').text()).toContain(
       'AVU (Spot)',
     )
+  })
+
+  it('values the coin in dated troy ounces, never AVU or an annual average', async () => {
+    const feed = twoEntryFeed()
+    feed.series['price/gold'] = {
+      unit: 'USD/troy ounce',
+      source: 'Chainlink XAU/USD',
+      asOf: NOW - 3600,
+      stale: false,
+      points: [[NOW - 3600, 4000]],
+    }
+    receive(feed)
+    const wrapper = mountChart()
+    await wrapper.get('[data-test-option="gold"]').trigger('click')
+    expect(
+      wrapper.get('[data-test="metric-value-token-rate"]').text(),
+    ).toContain('0.00000625 oz')
+    expect(
+      wrapper.get('[data-test="metric-value-token-rate"]').text(),
+    ).not.toContain('AVU')
+    expect(wrapper.findAll('[data-test^="chart-point-"]')).toHaveLength(2)
+    expect(wrapper.get('[data-test="chart-data-note"]').text()).not.toContain(
+      en.walletPanel.priceHistoryGoldUnavailable,
+    )
+    wrapper.unmount()
+  })
+
+  it.each([
+    { at: NOW + 1, unit: 'USD/troy ounce' },
+    { at: NOW - 8 * DAY, unit: 'USD/troy ounce' },
+    { at: NOW - 3600, unit: 'USD' },
+  ])(
+    'leaves unsupported or uncovered Gold dates unavailable (%s)',
+    async ({ at, unit }) => {
+      const feed = twoEntryFeed()
+      feed.series['price/gold'] = {
+        unit,
+        source: 'test',
+        asOf: at,
+        stale: false,
+        points: [[at, 4000]],
+      }
+      receive(feed)
+      const wrapper = mountChart()
+      await wrapper.get('[data-test-option="gold"]').trigger('click')
+      expect(wrapper.get('[data-test="metric-value-token-rate"]').text()).toBe(
+        'Unavailable',
+      )
+      expect(wrapper.findAll('[data-test^="chart-point-"]')).toHaveLength(0)
+      wrapper.unmount()
+    },
+  )
+
+  it('does not price observations before the first dated Gold round', async () => {
+    const feed = twoEntryFeed()
+    feed.series['price/gold'] = {
+      unit: 'USD/troy ounce',
+      source: 'test',
+      asOf: NOW - 60,
+      stale: false,
+      points: [[NOW - 60, 4000]],
+    }
+    receive(feed)
+    const wrapper = mountChart()
+    await wrapper.get('[data-test-option="gold"]').trigger('click')
+    expect(wrapper.findAll('[data-test^="chart-point-"]')).toHaveLength(1)
+    expect(wrapper.findAll('path[data-test="chart-path-token"]')).toHaveLength(
+      0,
+    )
+    wrapper.unmount()
   })
 
   it('does not claim dated gold valuation from an old annual average', async () => {

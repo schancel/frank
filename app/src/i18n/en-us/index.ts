@@ -564,7 +564,7 @@ export default {
     priceHistorySinglePoint:
       'Only one price observation is available in this range; no line is drawn.',
     priceHistoryGoldUnavailable:
-      'Dated gold prices are unavailable. Annual averages cannot price this coin at these dates.',
+      'No recent dated Gold price is available for these observations.',
     priceHistorySource: 'Price source: {source}.',
     priceHistoryBenchmarkUnavailable:
       'No {benchmark} valuation is available for this coin in this range.',

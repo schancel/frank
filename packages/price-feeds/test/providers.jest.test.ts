@@ -30,6 +30,58 @@ describe('Price Feed Providers', () => {
       expect(sample?.provider).toBe('chainlink')
       expect(sample?.asset).toBe('ETH')
       expect(sample?.price).toBe(2650.5)
+      expect(sample?.timestamp).toBe(Number(0x67039200) * 1000)
+    })
+  })
+
+  describe('dated Chainlink rounds', () => {
+    const now = 1_800_000_000
+    const encode = (words: bigint[]) =>
+      '0x' + words.map(word => word.toString(16).padStart(64, '0')).join('')
+    const valid = [
+      2n,
+      4000n * 100_000_000n,
+      BigInt(now - 3600),
+      BigInt(now - 3600),
+      2n,
+    ]
+    async function read(words: bigint[] | string) {
+      const fetchFn = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: typeof words === 'string' ? words : encode(words),
+        }),
+      })
+      return new ChainlinkProvider({ fetchFn }).fetchPrice('GOLD')
+    }
+    beforeEach(() => jest.spyOn(Date, 'now').mockReturnValue(now * 1000))
+    afterEach(() => jest.restoreAllMocks())
+    it('retains the original observation timestamp on repeated fetches', async () => {
+      const first = await read(valid)
+      jest.spyOn(Date, 'now').mockReturnValue((now + 600) * 1000)
+      expect(await read(valid)).toMatchObject({
+        price: 4000,
+        timestamp: (now - 3600) * 1000,
+      })
+      expect(first?.timestamp).toBe((now - 3600) * 1000)
+    })
+    it.each([
+      [0, 0n],
+      [1, 0n],
+      [1, 1n << 255n],
+      [2, 0n],
+      [2, BigInt(now)],
+      [3, 0n],
+      [3, BigInt(now + 1)],
+      [4, 1n],
+    ])('rejects invalid word %s (%s)', async (index, value) => {
+      const words = [...valid]
+      words[Number(index)] = BigInt(value)
+      expect(await read(words)).toBeNull()
+    })
+    it('rejects truncated and nonhex ABI', async () => {
+      expect(await read(encode(valid).slice(0, 130))).toBeNull()
+      expect(await read('0x' + 'z'.repeat(320))).toBeNull()
     })
   })
 

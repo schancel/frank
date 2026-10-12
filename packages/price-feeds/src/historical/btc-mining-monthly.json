@@ -5,16 +5,20 @@
    "https://api.blockchain.info/charts/market-price?timespan=all&sampled=false&format=json",
    "https://api.blockchain.info/charts/difficulty?timespan=all&sampled=false&format=json",
    "https://api.blockchain.info/charts/hash-rate?timespan=all&sampled=false&format=json",
-   "https://api.blockchain.info/charts/total-bitcoins?timespan=all&sampled=false&format=json"
+   "https://api.blockchain.info/charts/total-bitcoins?timespan=all&sampled=false&format=json",
+   "https://api.blockchain.info/charts/miners-revenue?timespan=all&sampled=false&format=json"
   ],
+  "revenue": "blockchain.com miners-revenue daily USD (subsidy plus transaction fees), divided by same-day market price, summed over the complete calendar month and divided by its seconds.",
   "subsidy": "Bitcoin consensus rule GetBlockSubsidy (50 BTC halved every 210,000 blocks), applied to the supply in the total-bitcoins chart.",
   "efficiency": "Cambridge Bitcoin Electricity Consumption Index (CBECI), daily estimated network power demand, divided by the hash-rate chart: joules drawn per terahash. An estimate of the hardware in use, not a chain reading. Average electricity cost assumption: 0.05 USD/kWh.",
   "efficiencyUrl": "https://ccaf.io/cbeci/api/v1.4.0/download/data?price=0.05",
-  "retrieved": "2026-10-10"
+  "retrieved": "2026-10-11"
  },
  "monthly": [
   {
    "month": "2010-09",
+   "hashrate": 7420243003.33,
+   "minerRevenueCoinsPerSecond": 0.110436728243,
    "btcUsd": 0.064,
    "difficulty": 800.702991,
    "subsidyBtc": 50.0,
@@ -25,6 +29,8 @@
   },
   {
    "month": "2010-10",
+   "hashrate": 15944653213.9,
+   "minerRevenueCoinsPerSecond": 0.11426635428,
    "btcUsd": 0.113871,
    "difficulty": 1660.95416,
    "subsidyBtc": 50.0,
@@ -35,6 +41,8 @@
   },
   {
    "month": "2010-11",
+   "hashrate": 48724758508.6,
+   "minerRevenueCoinsPerSecond": 0.117228055556,
    "btcUsd": 0.282333,
    "difficulty": 5123.71709,
    "subsidyBtc": 50.0,
@@ -45,6 +53,8 @@
   },
   {
    "month": "2010-12",
+   "hashrate": 102611624686.0,
+   "minerRevenueCoinsPerSecond": 0.1114108271,
    "btcUsd": 0.25129,
    "difficulty": 11760.3025,
    "subsidyBtc": 50.0,
@@ -55,6 +65,8 @@
   },
   {
    "month": "2011-01",
+   "hashrate": 147946963823.0,
+   "minerRevenueCoinsPerSecond": 0.0984014470278,
    "btcUsd": 0.376129,
    "difficulty": 17934.5489,
    "subsidyBtc": 50.0,
@@ -65,6 +77,8 @@
   },
   {
    "month": "2011-02",
+   "hashrate": 307566030396.0,
+   "minerRevenueCoinsPerSecond": 0.117399661791,
    "btcUsd": 0.956429,
    "difficulty": 30477.9817,
    "subsidyBtc": 50.0,
@@ -75,6 +89,8 @@
   },
   {
    "month": "2011-03",
+   "hashrate": 531564192394.0,
+   "minerRevenueCoinsPerSecond": 0.0929785443644,
    "btcUsd": 0.883871,
    "difficulty": 69479.2704,
    "subsidyBtc": 50.0,
@@ -85,6 +101,8 @@
   },
   {
    "month": "2011-04",
+   "hashrate": 715917510869.0,
+   "minerRevenueCoinsPerSecond": 0.102264095635,
    "btcUsd": 1.21967,
    "difficulty": 85029.2626,
    "subsidyBtc": 50.0,
@@ -95,6 +113,8 @@
   },
   {
    "month": "2011-05",
+   "hashrate": 2214239170280.0,
+   "minerRevenueCoinsPerSecond": 0.127377924929,
    "btcUsd": 6.48129,
    "difficulty": 210679.482,
    "subsidyBtc": 50.0,
@@ -105,6 +125,8 @@
   },
   {
    "month": "2011-06",
+   "hashrate": 8345550338050.0,
+   "minerRevenueCoinsPerSecond": 0.121506411015,
    "btcUsd": 19.4423,
    "difficulty": 827558.249,
    "subsidyBtc": 50.0,
@@ -115,6 +137,8 @@
   },
   {
    "month": "2011-07",
+   "hashrate": 12441228968100.0,
+   "minerRevenueCoinsPerSecond": 0.0923995704532,
    "btcUsd": 14.8232,
    "difficulty": 1576944.11,
    "subsidyBtc": 50.0,
@@ -125,6 +149,8 @@
   },
   {
    "month": "2011-08",
+   "hashrate": 12976260248300.0,
+   "minerRevenueCoinsPerSecond": 0.0889349311798,
    "btcUsd": 11.1329,
    "difficulty": 1847683.02,
    "subsidyBtc": 50.0,
@@ -135,6 +161,8 @@
   },
   {
    "month": "2011-09",
+   "hashrate": 12133860229300.0,
+   "minerRevenueCoinsPerSecond": 0.0851532725201,
    "btcUsd": 6.53333,
    "difficulty": 1760703.9,
    "subsidyBtc": 50.0,
@@ -145,6 +173,8 @@
   },
   {
    "month": "2011-10",
+   "hashrate": 9451903642960.0,
+   "minerRevenueCoinsPerSecond": 0.0751845340888,
    "btcUsd": 3.94645,
    "difficulty": 1568064.64,
    "subsidyBtc": 50.0,
@@ -155,6 +185,8 @@
   },
   {
    "month": "2011-11",
+   "hashrate": 8146547064640.0,
+   "minerRevenueCoinsPerSecond": 0.0911108530971,
    "btcUsd": 2.83733,
    "difficulty": 1194221.63,
    "subsidyBtc": 50.0,
@@ -165,6 +197,8 @@
   },
   {
    "month": "2011-12",
+   "hashrate": 8328986895780.0,
+   "minerRevenueCoinsPerSecond": 0.104636489052,
    "btcUsd": 3.55097,
    "difficulty": 1130928.14,
    "subsidyBtc": 50.0,
@@ -175,6 +209,8 @@
   },
   {
    "month": "2012-01",
+   "hashrate": 9470238149410.0,
+   "minerRevenueCoinsPerSecond": 0.107128212496,
    "btcUsd": 6.41161,
    "difficulty": 1245695.81,
    "subsidyBtc": 50.0,
@@ -185,6 +221,8 @@
   },
   {
    "month": "2012-02",
+   "hashrate": 10232931059400.0,
+   "minerRevenueCoinsPerSecond": 0.0946732281166,
    "btcUsd": 5.33276,
    "difficulty": 1370938.68,
    "subsidyBtc": 50.0,
@@ -195,6 +233,8 @@
   },
   {
    "month": "2012-03",
+   "hashrate": 11249482822200.0,
+   "minerRevenueCoinsPerSecond": 0.103277885442,
    "btcUsd": 5.01194,
    "difficulty": 1506177.09,
    "subsidyBtc": 50.0,
@@ -205,6 +245,8 @@
   },
   {
    "month": "2012-04",
+   "hashrate": 11059863562100.0,
+   "minerRevenueCoinsPerSecond": 0.0942832055421,
    "btcUsd": 5.05033,
    "difficulty": 1590437.1,
    "subsidyBtc": 50.0,
@@ -215,6 +257,8 @@
   },
   {
    "month": "2012-05",
+   "hashrate": 11626230559300.0,
+   "minerRevenueCoinsPerSecond": 0.0935257472824,
    "btcUsd": 5.11677,
    "difficulty": 1643147.17,
    "subsidyBtc": 50.0,
@@ -225,6 +269,8 @@
   },
   {
    "month": "2012-06",
+   "hashrate": 12290747050200.0,
+   "minerRevenueCoinsPerSecond": 0.101955399676,
    "btcUsd": 6.06133,
    "difficulty": 1637859.61,
    "subsidyBtc": 50.0,
@@ -235,6 +281,8 @@
   },
   {
    "month": "2012-07",
+   "hashrate": 13900571131500.0,
+   "minerRevenueCoinsPerSecond": 0.111196314248,
    "btcUsd": 8.04258,
    "difficulty": 1815646.38,
    "subsidyBtc": 50.0,
@@ -245,6 +293,8 @@
   },
   {
    "month": "2012-08",
+   "hashrate": 17138697412600.0,
+   "minerRevenueCoinsPerSecond": 0.111909947745,
    "btcUsd": 11.4439,
    "difficulty": 2192552.83,
    "subsidyBtc": 50.0,
@@ -255,6 +305,8 @@
   },
   {
    "month": "2012-09",
+   "hashrate": 21079681095500.0,
+   "minerRevenueCoinsPerSecond": 0.122296238697,
    "btcUsd": 11.659,
    "difficulty": 2714181.0,
    "subsidyBtc": 50.0,
@@ -265,6 +317,8 @@
   },
   {
    "month": "2012-10",
+   "hashrate": 22691239988200.0,
+   "minerRevenueCoinsPerSecond": 0.116705687889,
    "btcUsd": 12.0152,
    "difficulty": 3065869.73,
    "subsidyBtc": 50.0,
@@ -275,6 +329,8 @@
   },
   {
    "month": "2012-11",
+   "hashrate": 24650388605500.0,
+   "minerRevenueCoinsPerSecond": 0.10835617248,
    "btcUsd": 11.586,
    "difficulty": 3356840.17,
    "subsidyBtc": 47.5,
@@ -285,6 +341,8 @@
   },
   {
    "month": "2012-12",
+   "hashrate": 22412983825400.0,
+   "minerRevenueCoinsPerSecond": 0.0479176644719,
    "btcUsd": 13.4623,
    "difficulty": 3329360.69,
    "subsidyBtc": 25.0,
@@ -295,6 +353,8 @@
   },
   {
    "month": "2013-01",
+   "hashrate": 22138463493600.0,
+   "minerRevenueCoinsPerSecond": 0.0470651140772,
    "btcUsd": 15.6548,
    "difficulty": 3125200.86,
    "subsidyBtc": 25.0,
@@ -305,6 +365,8 @@
   },
   {
    "month": "2013-02",
+   "hashrate": 28031538783700.0,
+   "minerRevenueCoinsPerSecond": 0.053883260579,
    "btcUsd": 25.8264,
    "difficulty": 3379188.17,
    "subsidyBtc": 25.0,
@@ -315,6 +377,8 @@
   },
   {
    "month": "2013-03",
+   "hashrate": 43773955596100.0,
+   "minerRevenueCoinsPerSecond": 0.0534867701179,
    "btcUsd": 55.7687,
    "difficulty": 5123402.25,
    "subsidyBtc": 25.0,
@@ -325,6 +389,8 @@
   },
   {
    "month": "2013-04",
+   "hashrate": 67335565186100.0,
+   "minerRevenueCoinsPerSecond": 0.0505481829092,
    "btcUsd": 129.015,
    "difficulty": 8186714.84,
    "subsidyBtc": 25.0,
@@ -335,6 +401,8 @@
   },
   {
    "month": "2013-05",
+   "hashrate": 87657469422600.0,
+   "minerRevenueCoinsPerSecond": 0.0484210800204,
    "btcUsd": 120.218,
    "difficulty": 10975370.5,
    "subsidyBtc": 25.0,
@@ -345,6 +413,8 @@
   },
   {
    "month": "2013-06",
+   "hashrate": 144956348954000.0,
+   "minerRevenueCoinsPerSecond": 0.0528466675206,
    "btcUsd": 108.935,
    "difficulty": 17020766.6,
    "subsidyBtc": 25.0,
@@ -355,6 +425,8 @@
   },
   {
    "month": "2013-07",
+   "hashrate": 224519206485000.0,
+   "minerRevenueCoinsPerSecond": 0.0531451226779,
    "btcUsd": 90.2558,
    "difficulty": 26248855.8,
    "subsidyBtc": 25.0,
@@ -365,6 +437,8 @@
   },
   {
    "month": "2013-08",
+   "hashrate": 455473140563000.0,
+   "minerRevenueCoinsPerSecond": 0.0605775020095,
    "btcUsd": 107.033,
    "difficulty": 49075993.3,
    "subsidyBtc": 25.0,
@@ -375,6 +449,8 @@
   },
   {
    "month": "2013-09",
+   "hashrate": 979471616367000.0,
+   "minerRevenueCoinsPerSecond": 0.0596623522692,
    "btcUsd": 125.082,
    "difficulty": 105757135.0,
    "subsidyBtc": 25.0,
@@ -385,6 +461,8 @@
   },
   {
    "month": "2013-10",
+   "hashrate": 2445633117440000.0,
+   "minerRevenueCoinsPerSecond": 0.0732113302765,
    "btcUsd": 154.286,
    "difficulty": 247090120.0,
    "subsidyBtc": 25.0,
@@ -395,6 +473,8 @@
   },
   {
    "month": "2013-11",
+   "hashrate": 4643528334560000.0,
+   "minerRevenueCoinsPerSecond": 0.0562309934899,
    "btcUsd": 516.083,
    "difficulty": 543449326.0,
    "subsidyBtc": 25.0,
@@ -405,6 +485,8 @@
   },
   {
    "month": "2013-12",
+   "hashrate": 8454268340490000.0,
+   "minerRevenueCoinsPerSecond": 0.0629992926254,
    "btcUsd": 803.144,
    "difficulty": 946731909.0,
    "subsidyBtc": 25.0,
@@ -415,6 +497,8 @@
   },
   {
    "month": "2014-01",
+   "hashrate": 1.51906615695e+16,
+   "minerRevenueCoinsPerSecond": 0.0612831393558,
    "btcUsd": 816.259,
    "difficulty": 1742581220.0,
    "subsidyBtc": 25.0,
@@ -425,6 +509,8 @@
   },
   {
    "month": "2014-02",
+   "hashrate": 2.44251547655e+16,
+   "minerRevenueCoinsPerSecond": 0.062360194533,
    "btcUsd": 670.233,
    "difficulty": 2802616920.0,
    "subsidyBtc": 25.0,
@@ -435,6 +521,8 @@
   },
   {
    "month": "2014-03",
+   "hashrate": 3.48348181094e+16,
+   "minerRevenueCoinsPerSecond": 0.0613278673772,
    "btcUsd": 597.274,
    "difficulty": 4252881440.0,
    "subsidyBtc": 25.0,
@@ -445,6 +533,8 @@
   },
   {
    "month": "2014-04",
+   "hashrate": 5.32474235827e+16,
+   "minerRevenueCoinsPerSecond": 0.0619679123096,
    "btcUsd": 463.502,
    "difficulty": 6406332730.0,
    "subsidyBtc": 25.0,
@@ -455,6 +545,8 @@
   },
   {
    "month": "2014-05",
+   "hashrate": 7.22296529793e+16,
+   "minerRevenueCoinsPerSecond": 0.0579635600827,
    "btcUsd": 482.311,
    "difficulty": 8964398400.0,
    "subsidyBtc": 25.0,
@@ -465,6 +557,8 @@
   },
   {
    "month": "2014-06",
+   "hashrate": 1.06026307768e+17,
+   "minerRevenueCoinsPerSecond": 0.0595167332255,
    "btcUsd": 612.716,
    "difficulty": 12502750900.0,
    "subsidyBtc": 25.0,
@@ -475,6 +569,8 @@
   },
   {
    "month": "2014-07",
+   "hashrate": 1.32135929508e+17,
+   "minerRevenueCoinsPerSecond": 0.0529317687236,
    "btcUsd": 620.287,
    "difficulty": 17406848600.0,
    "subsidyBtc": 25.0,
@@ -485,6 +581,8 @@
   },
   {
    "month": "2014-08",
+   "hashrate": 1.7330095745e+17,
+   "minerRevenueCoinsPerSecond": 0.0586031974684,
    "btcUsd": 540.216,
    "difficulty": 21098286500.0,
    "subsidyBtc": 25.0,
@@ -495,6 +593,8 @@
   },
   {
    "month": "2014-09",
+   "hashrate": 2.32529297655e+17,
+   "minerRevenueCoinsPerSecond": 0.0551248525655,
    "btcUsd": 446.9,
    "difficulty": 29594537600.0,
    "subsidyBtc": 25.0,
@@ -505,6 +605,8 @@
   },
   {
    "month": "2014-10",
+   "hashrate": 2.62930237525e+17,
+   "minerRevenueCoinsPerSecond": 0.0504107158014,
    "btcUsd": 365.827,
    "difficulty": 35199900600.0,
    "subsidyBtc": 25.0,
@@ -515,6 +617,8 @@
   },
   {
    "month": "2014-11",
+   "hashrate": 2.88575400864e+17,
+   "minerRevenueCoinsPerSecond": 0.049062745213,
    "btcUsd": 364.609,
    "difficulty": 39399808400.0,
    "subsidyBtc": 25.0,
@@ -525,6 +629,8 @@
   },
   {
    "month": "2014-12",
+   "hashrate": 2.87326443995e+17,
+   "minerRevenueCoinsPerSecond": 0.0498086764868,
    "btcUsd": 343.904,
    "difficulty": 39825656700.0,
    "subsidyBtc": 25.0,
@@ -535,6 +641,8 @@
   },
   {
    "month": "2015-01",
+   "hashrate": 3.07269759692e+17,
+   "minerRevenueCoinsPerSecond": 0.0507934698758,
    "btcUsd": 252.628,
    "difficulty": 42441567500.0,
    "subsidyBtc": 25.0,
@@ -545,6 +653,8 @@
   },
   {
    "month": "2015-02",
+   "hashrate": 3.29676847021e+17,
+   "minerRevenueCoinsPerSecond": 0.0511123508744,
    "btcUsd": 233.325,
    "difficulty": 44023752600.0,
    "subsidyBtc": 25.0,
@@ -555,6 +665,8 @@
   },
   {
    "month": "2015-03",
+   "hashrate": 3.43595612393e+17,
+   "minerRevenueCoinsPerSecond": 0.049141555993,
    "btcUsd": 268.894,
    "difficulty": 47052539700.0,
    "subsidyBtc": 25.0,
@@ -565,6 +677,8 @@
   },
   {
    "month": "2015-04",
+   "hashrate": 3.41947621113e+17,
+   "minerRevenueCoinsPerSecond": 0.0476496773065,
    "btcUsd": 235.343,
    "difficulty": 48470603200.0,
    "subsidyBtc": 25.0,
@@ -575,6 +689,8 @@
   },
   {
    "month": "2015-05",
+   "hashrate": 3.44306694659e+17,
+   "minerRevenueCoinsPerSecond": 0.0479988441373,
    "btcUsd": 236.465,
    "difficulty": 48203489600.0,
    "subsidyBtc": 25.0,
@@ -585,6 +701,8 @@
   },
   {
    "month": "2015-06",
+   "hashrate": 3.54257146032e+17,
+   "minerRevenueCoinsPerSecond": 0.0487531352711,
    "btcUsd": 236.315,
    "difficulty": 48802413500.0,
    "subsidyBtc": 25.0,
@@ -595,6 +713,8 @@
   },
   {
    "month": "2015-07",
+   "hashrate": 3.72456751439e+17,
+   "minerRevenueCoinsPerSecond": 0.0488776179449,
    "btcUsd": 278.898,
    "difficulty": 50753647100.0,
    "subsidyBtc": 25.0,
@@ -605,6 +725,8 @@
   },
   {
    "month": "2015-08",
+   "hashrate": 3.91718735949e+17,
+   "minerRevenueCoinsPerSecond": 0.0493642104817,
    "btcUsd": 252.741,
    "difficulty": 53106846200.0,
    "subsidyBtc": 25.0,
@@ -615,6 +737,8 @@
   },
   {
    "month": "2015-09",
+   "hashrate": 4.2763069416e+17,
+   "minerRevenueCoinsPerSecond": 0.0500834077394,
    "btcUsd": 233.278,
    "difficulty": 57717884500.0,
    "subsidyBtc": 25.0,
@@ -625,6 +749,8 @@
   },
   {
    "month": "2015-10",
+   "hashrate": 4.45402181053e+17,
+   "minerRevenueCoinsPerSecond": 0.0488956068855,
    "btcUsd": 262.823,
    "difficulty": 60984536800.0,
    "subsidyBtc": 25.0,
@@ -635,6 +761,8 @@
   },
   {
    "month": "2015-11",
+   "hashrate": 5.09663590839e+17,
+   "minerRevenueCoinsPerSecond": 0.0513590365555,
    "btcUsd": 346.494,
    "difficulty": 66254220200.0,
    "subsidyBtc": 25.0,
@@ -645,6 +773,8 @@
   },
   {
    "month": "2015-12",
+   "hashrate": 6.84293461256e+17,
+   "minerRevenueCoinsPerSecond": 0.0526556394164,
    "btcUsd": 422.443,
    "difficulty": 84220311100.0,
    "subsidyBtc": 25.0,
@@ -655,6 +785,8 @@
   },
   {
    "month": "2016-01",
+   "hashrate": 8.64238808653e+17,
+   "minerRevenueCoinsPerSecond": 0.0483818928114,
    "btcUsd": 412.464,
    "difficulty": 110979678000.0,
    "subsidyBtc": 25.0,
@@ -665,6 +797,8 @@
   },
   {
    "month": "2016-02",
+   "hashrate": 1.13604298712e+18,
+   "minerRevenueCoinsPerSecond": 0.0489069015506,
    "btcUsd": 400.517,
    "difficulty": 146482952000.0,
    "subsidyBtc": 25.0,
@@ -675,6 +809,8 @@
   },
   {
    "month": "2016-03",
+   "hashrate": 1.19057274013e+18,
+   "minerRevenueCoinsPerSecond": 0.0440460300809,
    "btcUsd": 415.774,
    "difficulty": 162436787000.0,
    "subsidyBtc": 25.0,
@@ -685,6 +821,8 @@
   },
   {
    "month": "2016-04",
+   "hashrate": 1.2809728805e+18,
+   "minerRevenueCoinsPerSecond": 0.0449970058216,
    "btcUsd": 432.998,
    "difficulty": 173551687000.0,
    "subsidyBtc": 25.0,
@@ -695,6 +833,8 @@
   },
   {
    "month": "2016-05",
+   "hashrate": 1.41018869165e+18,
+   "minerRevenueCoinsPerSecond": 0.0451014873,
    "btcUsd": 458.043,
    "difficulty": 190261557000.0,
    "subsidyBtc": 25.0,
@@ -705,6 +845,8 @@
   },
   {
    "month": "2016-06",
+   "hashrate": 1.49321121347e+18,
+   "minerRevenueCoinsPerSecond": 0.0451438597797,
    "btcUsd": 636.451,
    "difficulty": 201191001000.0,
    "subsidyBtc": 25.0,
@@ -715,6 +857,8 @@
   },
   {
    "month": "2016-07",
+   "hashrate": 1.49448680565e+18,
+   "minerRevenueCoinsPerSecond": 0.0276052214858,
    "btcUsd": 662.134,
    "difficulty": 212932509000.0,
    "subsidyBtc": 15.7258,
@@ -725,6 +869,8 @@
   },
   {
    "month": "2016-08",
+   "hashrate": 1.57725418351e+18,
+   "minerRevenueCoinsPerSecond": 0.0228445417297,
    "btcUsd": 578.777,
    "difficulty": 210849298000.0,
    "subsidyBtc": 12.5,
@@ -735,6 +881,8 @@
   },
   {
    "month": "2016-09",
+   "hashrate": 1.71552755128e+18,
+   "minerRevenueCoinsPerSecond": 0.0229660030587,
    "btcUsd": 602.888,
    "difficulty": 226790707000.0,
    "subsidyBtc": 12.5,
@@ -745,6 +893,8 @@
   },
   {
    "month": "2016-10",
+   "hashrate": 1.84494921579e+18,
+   "minerRevenueCoinsPerSecond": 0.022377072316,
    "btcUsd": 637.299,
    "difficulty": 252904058000.0,
    "subsidyBtc": 12.5,
@@ -755,6 +905,8 @@
   },
   {
    "month": "2016-11",
+   "hashrate": 1.99471284958e+18,
+   "minerRevenueCoinsPerSecond": 0.0230232167805,
    "btcUsd": 722.213,
    "difficulty": 265930958000.0,
    "subsidyBtc": 12.5,
@@ -765,6 +917,8 @@
   },
   {
    "month": "2016-12",
+   "hashrate": 2.26190234325e+18,
+   "minerRevenueCoinsPerSecond": 0.0236309471759,
    "btcUsd": 816.908,
    "difficulty": 300144417000.0,
    "subsidyBtc": 12.5,
@@ -775,6 +929,8 @@
   },
   {
    "month": "2017-01",
+   "hashrate": 2.75696857399e+18,
+   "minerRevenueCoinsPerSecond": 0.0245008253876,
    "btcUsd": 910.667,
    "difficulty": 347120363000.0,
    "subsidyBtc": 12.5,
@@ -785,6 +941,8 @@
   },
   {
    "month": "2017-02",
+   "hashrate": 3.22521834345e+18,
+   "minerRevenueCoinsPerSecond": 0.0242475561866,
    "btcUsd": 1056.73,
    "difficulty": 425050647000.0,
    "subsidyBtc": 12.5,
@@ -795,6 +953,8 @@
   },
   {
    "month": "2017-03",
+   "hashrate": 3.48216557452e+18,
+   "minerRevenueCoinsPerSecond": 0.0247418385923,
    "btcUsd": 1130.24,
    "difficulty": 467030540000.0,
    "subsidyBtc": 12.5,
@@ -805,6 +965,8 @@
   },
   {
    "month": "2017-04",
+   "hashrate": 3.77001129117e+18,
+   "minerRevenueCoinsPerSecond": 0.024690392079,
    "btcUsd": 1203.84,
    "difficulty": 512390535000.0,
    "subsidyBtc": 12.5,
@@ -815,6 +977,8 @@
   },
   {
    "month": "2017-05",
+   "hashrate": 4.35555950519e+18,
+   "minerRevenueCoinsPerSecond": 0.0281616116507,
    "btcUsd": 1845.51,
    "difficulty": 558840063000.0,
    "subsidyBtc": 12.5,
@@ -825,6 +989,8 @@
   },
   {
    "month": "2017-06",
+   "hashrate": 5.0674639837e+18,
+   "minerRevenueCoinsPerSecond": 0.026796309005,
    "btcUsd": 2613.89,
    "difficulty": 683098541000.0,
    "subsidyBtc": 12.5,
@@ -835,6 +1001,8 @@
   },
   {
    "month": "2017-07",
+   "hashrate": 6.04543708808e+18,
+   "minerRevenueCoinsPerSecond": 0.0255795129651,
    "btcUsd": 2496.39,
    "difficulty": 771256981000.0,
    "subsidyBtc": 12.5,
@@ -845,6 +1013,8 @@
   },
   {
    "month": "2017-08",
+   "hashrate": 6.33617433892e+18,
+   "minerRevenueCoinsPerSecond": 0.0242323320487,
    "btcUsd": 3810.51,
    "difficulty": 896901929000.0,
    "subsidyBtc": 12.5,
@@ -855,6 +1025,8 @@
   },
   {
    "month": "2017-09",
+   "hashrate": 7.94846188611e+18,
+   "minerRevenueCoinsPerSecond": 0.0257088490865,
    "btcUsd": 4098.41,
    "difficulty": 992904773000.0,
    "subsidyBtc": 12.5,
@@ -865,6 +1037,8 @@
   },
   {
    "month": "2017-10",
+   "hashrate": 9.32696014717e+18,
+   "minerRevenueCoinsPerSecond": 0.0248230589074,
    "btcUsd": 5283.22,
    "difficulty": 1205232540000.0,
    "subsidyBtc": 12.5,
@@ -875,6 +1049,8 @@
   },
   {
    "month": "2017-11",
+   "hashrate": 9.87471115658e+18,
+   "minerRevenueCoinsPerSecond": 0.0256564142054,
    "btcUsd": 7653.44,
    "difficulty": 1389346260000.0,
    "subsidyBtc": 12.5,
@@ -885,6 +1061,8 @@
   },
   {
    "month": "2017-12",
+   "hashrate": 1.34302846406e+19,
+   "minerRevenueCoinsPerSecond": 0.0313044483913,
    "btcUsd": 14845.9,
    "difficulty": 1668105340000.0,
    "subsidyBtc": 12.5,
@@ -895,6 +1073,8 @@
   },
   {
    "month": "2018-01",
+   "hashrate": 1.77489147882e+19,
+   "minerRevenueCoinsPerSecond": 0.0291869497184,
    "btcUsd": 13038.7,
    "difficulty": 2189829310000.0,
    "subsidyBtc": 12.5,
@@ -905,6 +1085,8 @@
   },
   {
    "month": "2018-02",
+   "hashrate": 2.22131627257e+19,
+   "minerRevenueCoinsPerSecond": 0.0237975600134,
    "btcUsd": 9396.76,
    "difficulty": 2857890930000.0,
    "subsidyBtc": 12.5,
@@ -915,6 +1097,8 @@
   },
   {
    "month": "2018-03",
+   "hashrate": 2.48281350084e+19,
+   "minerRevenueCoinsPerSecond": 0.0221526351555,
    "btcUsd": 9107.57,
    "difficulty": 3327262510000.0,
    "subsidyBtc": 12.5,
@@ -925,6 +1109,8 @@
   },
   {
    "month": "2018-04",
+   "hashrate": 2.83871341929e+19,
+   "minerRevenueCoinsPerSecond": 0.0228856690905,
    "btcUsd": 7958.29,
    "difficulty": 3716824710000.0,
    "subsidyBtc": 12.5,
@@ -935,6 +1121,8 @@
   },
   {
    "month": "2018-05",
+   "hashrate": 3.13892947444e+19,
+   "minerRevenueCoinsPerSecond": 0.0225684962433,
    "btcUsd": 8484.08,
    "difficulty": 4143646640000.0,
    "subsidyBtc": 12.5,
@@ -945,6 +1133,8 @@
   },
   {
    "month": "2018-06",
+   "hashrate": 3.73778911095e+19,
+   "minerRevenueCoinsPerSecond": 0.0227395177304,
    "btcUsd": 6810.04,
    "difficulty": 4891653030000.0,
    "subsidyBtc": 12.5,
@@ -955,6 +1145,8 @@
   },
   {
    "month": "2018-07",
+   "hashrate": 3.97359594558e+19,
+   "minerRevenueCoinsPerSecond": 0.0222595849203,
    "btcUsd": 7089.22,
    "difficulty": 5322630750000.0,
    "subsidyBtc": 12.5,
@@ -965,6 +1157,8 @@
   },
   {
    "month": "2018-08",
+   "hashrate": 4.86707386955e+19,
+   "minerRevenueCoinsPerSecond": 0.0228183950761,
    "btcUsd": 6700.59,
    "difficulty": 6321278500000.0,
    "subsidyBtc": 12.5,
@@ -975,6 +1169,8 @@
   },
   {
    "month": "2018-09",
+   "hashrate": 5.13134720912e+19,
+   "minerRevenueCoinsPerSecond": 0.0217051170922,
    "btcUsd": 6603.38,
    "difficulty": 7004086130000.0,
    "subsidyBtc": 12.5,
@@ -985,6 +1181,8 @@
   },
   {
    "month": "2018-10",
+   "hashrate": 5.12940077369e+19,
+   "minerRevenueCoinsPerSecond": 0.02058716199,
    "btcUsd": 6487.02,
    "difficulty": 7307780750000.0,
    "subsidyBtc": 12.5,
@@ -995,6 +1193,8 @@
   },
   {
    "month": "2018-11",
+   "hashrate": 4.45603887196e+19,
+   "minerRevenueCoinsPerSecond": 0.0188112870172,
    "btcUsd": 5486.05,
    "difficulty": 6936230050000.0,
    "subsidyBtc": 12.5,
@@ -1005,6 +1205,8 @@
   },
   {
    "month": "2018-12",
+   "hashrate": 3.83495316644e+19,
+   "minerRevenueCoinsPerSecond": 0.0205922044747,
    "btcUsd": 3719.29,
    "difficulty": 5506353320000.0,
    "subsidyBtc": 12.5,
@@ -1015,6 +1217,8 @@
   },
   {
    "month": "2019-01",
+   "hashrate": 4.17955433508e+19,
+   "minerRevenueCoinsPerSecond": 0.0214768046326,
    "btcUsd": 3690.99,
    "difficulty": 5763769390000.0,
    "subsidyBtc": 12.5,
@@ -1025,6 +1229,8 @@
   },
   {
    "month": "2019-02",
+   "hashrate": 4.37537592851e+19,
+   "minerRevenueCoinsPerSecond": 0.0216107470332,
    "btcUsd": 3684.35,
    "difficulty": 5977756320000.0,
    "subsidyBtc": 12.5,
@@ -1035,6 +1241,8 @@
   },
   {
    "month": "2019-03",
+   "hashrate": 4.48571895692e+19,
+   "minerRevenueCoinsPerSecond": 0.0217808021186,
    "btcUsd": 3942.5,
    "difficulty": 6149587040000.0,
    "subsidyBtc": 12.5,
@@ -1045,6 +1253,8 @@
   },
   {
    "month": "2019-04",
+   "hashrate": 4.58376257042e+19,
+   "minerRevenueCoinsPerSecond": 0.0222772643701,
    "btcUsd": 5120.99,
    "difficulty": 6377107260000.0,
    "subsidyBtc": 12.5,
@@ -1055,6 +1265,8 @@
   },
   {
    "month": "2019-05",
+   "hashrate": 5.05838714115e+19,
+   "minerRevenueCoinsPerSecond": 0.0240702028134,
    "btcUsd": 7182.94,
    "difficulty": 6690415300000.0,
    "subsidyBtc": 12.5,
@@ -1065,6 +1277,8 @@
   },
   {
    "month": "2019-06",
+   "hashrate": 5.61728112303e+19,
+   "minerRevenueCoinsPerSecond": 0.0234863613278,
    "btcUsd": 9324.07,
    "difficulty": 7499079540000.0,
    "subsidyBtc": 12.5,
@@ -1075,6 +1289,8 @@
   },
   {
    "month": "2019-07",
+   "hashrate": 6.66813156263e+19,
+   "minerRevenueCoinsPerSecond": 0.0231756307629,
    "btcUsd": 10674.0,
    "difficulty": 8743312440000.0,
    "subsidyBtc": 12.5,
@@ -1085,6 +1301,8 @@
   },
   {
    "month": "2019-08",
+   "hashrate": 7.44702963944e+19,
+   "minerRevenueCoinsPerSecond": 0.0225381061167,
    "btcUsd": 10648.5,
    "difficulty": 9941022660000.0,
    "subsidyBtc": 12.5,
@@ -1095,6 +1313,8 @@
   },
   {
    "month": "2019-09",
+   "hashrate": 8.83647314836e+19,
+   "minerRevenueCoinsPerSecond": 0.0228380890432,
    "btcUsd": 9835.23,
    "difficulty": 11529335200000.0,
    "subsidyBtc": 12.5,
@@ -1105,6 +1325,8 @@
   },
   {
    "month": "2019-10",
+   "hashrate": 9.49731432598e+19,
+   "minerRevenueCoinsPerSecond": 0.0216899539773,
    "btcUsd": 8356.32,
    "difficulty": 13110038200000.0,
    "subsidyBtc": 12.5,
@@ -1115,6 +1337,8 @@
   },
   {
    "month": "2019-11",
+   "hashrate": 9.15504636275e+19,
+   "minerRevenueCoinsPerSecond": 0.0209498269949,
    "btcUsd": 8389.16,
    "difficulty": 13024458500000.0,
    "subsidyBtc": 12.5,
@@ -1125,6 +1349,8 @@
   },
   {
    "month": "2019-12",
+   "hashrate": 9.53726233563e+19,
+   "minerRevenueCoinsPerSecond": 0.0218241500143,
    "btcUsd": 7257.9,
    "difficulty": 12920122600000.0,
    "subsidyBtc": 12.5,
@@ -1135,6 +1361,8 @@
   },
   {
    "month": "2020-01",
+   "hashrate": 1.09227664331e+20,
+   "minerRevenueCoinsPerSecond": 0.0225650600342,
    "btcUsd": 8299.39,
    "difficulty": 14391321100000.0,
    "subsidyBtc": 12.5,
@@ -1145,6 +1373,8 @@
   },
   {
    "month": "2020-02",
+   "hashrate": 1.10430000731e+20,
+   "minerRevenueCoinsPerSecond": 0.0211317941961,
    "btcUsd": 9668.46,
    "difficulty": 15508511200000.0,
    "subsidyBtc": 12.5,
@@ -1155,6 +1385,8 @@
   },
   {
    "month": "2020-03",
+   "hashrate": 1.06860986701e+20,
+   "minerRevenueCoinsPerSecond": 0.0204740813383,
    "btcUsd": 6943.32,
    "difficulty": 15758872400000.0,
    "subsidyBtc": 12.5,
@@ -1165,6 +1397,8 @@
   },
   {
    "month": "2020-04",
+   "hashrate": 1.11378882074e+20,
+   "minerRevenueCoinsPerSecond": 0.0223004582632,
    "btcUsd": 7148.32,
    "difficulty": 14920681100000.0,
    "subsidyBtc": 12.5,
@@ -1175,6 +1409,8 @@
   },
   {
    "month": "2020-05",
+   "hashrate": 1.0572974267e+20,
+   "minerRevenueCoinsPerSecond": 0.0150938140283,
    "btcUsd": 9232.09,
    "difficulty": 15713352400000.0,
    "subsidyBtc": 8.26613,
@@ -1185,6 +1421,8 @@
   },
   {
    "month": "2020-06",
+   "hashrate": 1.11608587384e+20,
+   "minerRevenueCoinsPerSecond": 0.0115024589486,
    "btcUsd": 9490.44,
    "difficulty": 14873312000000.0,
    "subsidyBtc": 6.25,
@@ -1195,6 +1433,8 @@
   },
   {
    "month": "2020-07",
+   "hashrate": 1.22209850545e+20,
+   "minerRevenueCoinsPerSecond": 0.0117590498879,
    "btcUsd": 9526.26,
    "difficulty": 16650894900000.0,
    "subsidyBtc": 6.25,
@@ -1205,6 +1445,8 @@
   },
   {
    "month": "2020-08",
+   "hashrate": 1.23695006348e+20,
+   "minerRevenueCoinsPerSecond": 0.0118675234121,
    "btcUsd": 11638.0,
    "difficulty": 17066712500000.0,
    "subsidyBtc": 6.25,
@@ -1215,6 +1457,8 @@
   },
   {
    "month": "2020-09",
+   "hashrate": 1.35714690107e+20,
+   "minerRevenueCoinsPerSecond": 0.0119381702887,
    "btcUsd": 10674.7,
    "difficulty": 18108004000000.0,
    "subsidyBtc": 6.25,
@@ -1225,6 +1469,8 @@
   },
   {
    "month": "2020-10",
+   "hashrate": 1.31975112709e+20,
+   "minerRevenueCoinsPerSecond": 0.0112205909586,
    "btcUsd": 11796.4,
    "difficulty": 19623035900000.0,
    "subsidyBtc": 6.25,
@@ -1235,6 +1481,8 @@
   },
   {
    "month": "2020-11",
+   "hashrate": 1.29011154192e+20,
+   "minerRevenueCoinsPerSecond": 0.0123251197327,
    "btcUsd": 16474.9,
    "difficulty": 17494373200000.0,
    "subsidyBtc": 6.25,
@@ -1245,6 +1493,8 @@
   },
   {
    "month": "2020-12",
+   "hashrate": 1.36513660605e+20,
+   "minerRevenueCoinsPerSecond": 0.0118311532565,
    "btcUsd": 21688.2,
    "difficulty": 18864893500000.0,
    "subsidyBtc": 6.25,
@@ -1255,6 +1505,8 @@
   },
   {
    "month": "2021-01",
+   "hashrate": 1.49196971652e+20,
+   "minerRevenueCoinsPerSecond": 0.0121506609292,
    "btcUsd": 34630.8,
    "difficulty": 20109151100000.0,
    "subsidyBtc": 6.25,
@@ -1265,6 +1517,8 @@
   },
   {
    "month": "2021-02",
+   "hashrate": 1.55100116469e+20,
+   "minerRevenueCoinsPerSecond": 0.0124136516044,
    "btcUsd": 45921.0,
    "difficulty": 21417403500000.0,
    "subsidyBtc": 6.25,
@@ -1275,6 +1529,8 @@
   },
   {
    "month": "2021-03",
+   "hashrate": 1.59601624846e+20,
+   "minerRevenueCoinsPerSecond": 0.01197580803,
    "btcUsd": 54451.0,
    "difficulty": 21657574000000.0,
    "subsidyBtc": 6.25,
@@ -1285,6 +1541,8 @@
   },
   {
    "month": "2021-04",
+   "hashrate": 1.57234579392e+20,
+   "minerRevenueCoinsPerSecond": 0.0115916525342,
    "btcUsd": 57126.4,
    "difficulty": 23317562600000.0,
    "subsidyBtc": 6.25,
@@ -1295,6 +1553,8 @@
   },
   {
    "month": "2021-05",
+   "hashrate": 1.61245122607e+20,
+   "minerRevenueCoinsPerSecond": 0.0113441899828,
    "btcUsd": 47108.0,
    "difficulty": 23094676700000.0,
    "subsidyBtc": 6.25,
@@ -1305,6 +1565,8 @@
   },
   {
    "month": "2021-06",
+   "hashrate": 1.20098018765e+20,
+   "minerRevenueCoinsPerSecond": 0.00900963181952,
    "btcUsd": 35900.5,
    "difficulty": 20408892700000.0,
    "subsidyBtc": 6.25,
@@ -1315,6 +1577,8 @@
   },
   {
    "month": "2021-07",
+   "hashrate": 1.003553906e+20,
+   "minerRevenueCoinsPerSecond": 0.010547729814,
    "btcUsd": 34225.6,
    "difficulty": 14471974300000.0,
    "subsidyBtc": 6.25,
@@ -1325,6 +1589,8 @@
   },
   {
    "month": "2021-08",
+   "hashrate": 1.20709404399e+20,
+   "minerRevenueCoinsPerSecond": 0.0114981607688,
    "btcUsd": 45537.1,
    "difficulty": 15565175700000.0,
    "subsidyBtc": 6.25,
@@ -1335,6 +1601,8 @@
   },
   {
    "month": "2021-09",
+   "hashrate": 1.36607014369e+20,
+   "minerRevenueCoinsPerSecond": 0.0110162562524,
    "btcUsd": 46045.9,
    "difficulty": 18410092300000.0,
    "subsidyBtc": 6.25,
@@ -1345,6 +1613,8 @@
   },
   {
    "month": "2021-10",
+   "hashrate": 1.49109956013e+20,
+   "minerRevenueCoinsPerSecond": 0.0112120131986,
    "btcUsd": 57352.7,
    "difficulty": 19864683000000.0,
    "subsidyBtc": 6.25,
@@ -1355,6 +1625,8 @@
   },
   {
    "month": "2021-11",
+   "hashrate": 1.60886124652e+20,
+   "minerRevenueCoinsPerSecond": 0.0107206506887,
    "btcUsd": 60854.6,
    "difficulty": 22196881400000.0,
    "subsidyBtc": 6.25,
@@ -1365,6 +1637,8 @@
   },
   {
    "month": "2021-12",
+   "hashrate": 1.73191888581e+20,
+   "minerRevenueCoinsPerSecond": 0.0108348164717,
    "btcUsd": 49668.6,
    "difficulty": 23588401600000.0,
    "subsidyBtc": 6.25,
@@ -1375,6 +1649,8 @@
   },
   {
    "month": "2022-01",
+   "hashrate": 1.87537302886e+20,
+   "minerRevenueCoinsPerSecond": 0.0110019460745,
    "btcUsd": 41355.1,
    "difficulty": 25144523100000.0,
    "subsidyBtc": 6.25,
@@ -1385,6 +1661,8 @@
   },
   {
    "month": "2022-02",
+   "hashrate": 1.97750077963e+20,
+   "minerRevenueCoinsPerSecond": 0.0107990384594,
    "btcUsd": 40588.9,
    "difficulty": 27209428900000.0,
    "subsidyBtc": 6.25,
@@ -1395,6 +1673,8 @@
   },
   {
    "month": "2022-03",
+   "hashrate": 2.00788560643e+20,
+   "minerRevenueCoinsPerSecond": 0.0107848891694,
    "btcUsd": 41890.7,
    "difficulty": 27569749700000.0,
    "subsidyBtc": 6.25,
@@ -1405,6 +1685,8 @@
   },
   {
    "month": "2022-04",
+   "hashrate": 2.09052528931e+20,
+   "minerRevenueCoinsPerSecond": 0.0108070847199,
    "btcUsd": 41681.0,
    "difficulty": 28561641400000.0,
    "subsidyBtc": 6.25,
@@ -1415,6 +1697,8 @@
   },
   {
    "month": "2022-05",
+   "hashrate": 2.18665650427e+20,
+   "minerRevenueCoinsPerSecond": 0.0106789622251,
    "btcUsd": 31871.2,
    "difficulty": 30502528400000.0,
    "subsidyBtc": 6.25,
@@ -1425,6 +1709,8 @@
   },
   {
    "month": "2022-06",
+   "hashrate": 2.13562475678e+20,
+   "minerRevenueCoinsPerSecond": 0.0104745216658,
    "btcUsd": 24756.5,
    "difficulty": 29992443000000.0,
    "subsidyBtc": 6.25,
@@ -1435,6 +1721,8 @@
   },
   {
    "month": "2022-07",
+   "hashrate": 1.99946546808e+20,
+   "minerRevenueCoinsPerSecond": 0.0103864907821,
    "btcUsd": 21417.3,
    "difficulty": 28752118400000.0,
    "subsidyBtc": 6.25,
@@ -1445,6 +1733,8 @@
   },
   {
    "month": "2022-08",
+   "hashrate": 2.10615395894e+20,
+   "minerRevenueCoinsPerSecond": 0.0110416801611,
    "btcUsd": 22462.6,
    "difficulty": 28259747500000.0,
    "subsidyBtc": 6.25,
@@ -1455,6 +1745,8 @@
   },
   {
    "month": "2022-09",
+   "hashrate": 2.28316858741e+20,
+   "minerRevenueCoinsPerSecond": 0.0107663127832,
    "btcUsd": 19821.5,
    "difficulty": 31520862000000.0,
    "subsidyBtc": 6.25,
@@ -1465,6 +1757,8 @@
   },
   {
    "month": "2022-10",
+   "hashrate": 2.62442533063e+20,
+   "minerRevenueCoinsPerSecond": 0.0112697364456,
    "btcUsd": 19615.2,
    "difficulty": 34633070500000.0,
    "subsidyBtc": 6.25,
@@ -1475,6 +1769,8 @@
   },
   {
    "month": "2022-11",
+   "hashrate": 2.55260717235e+20,
+   "minerRevenueCoinsPerSecond": 0.0104040815323,
    "btcUsd": 17698.4,
    "difficulty": 36840192900000.0,
    "subsidyBtc": 6.25,
@@ -1485,6 +1781,8 @@
   },
   {
    "month": "2022-12",
+   "hashrate": 2.48429889573e+20,
+   "minerRevenueCoinsPerSecond": 0.0105699364162,
    "btcUsd": 16962.3,
    "difficulty": 35133054000000.0,
    "subsidyBtc": 6.25,
@@ -1495,6 +1793,8 @@
   },
   {
    "month": "2023-01",
+   "hashrate": 2.73452683901e+20,
+   "minerRevenueCoinsPerSecond": 0.0112927511117,
    "btcUsd": 20032.5,
    "difficulty": 36154520400000.0,
    "subsidyBtc": 6.25,
@@ -1505,6 +1805,8 @@
   },
   {
    "month": "2023-02",
+   "hashrate": 2.9694376958e+20,
+   "minerRevenueCoinsPerSecond": 0.0111865305258,
    "btcUsd": 23296.6,
    "difficulty": 39784302900000.0,
    "subsidyBtc": 6.25,
@@ -1515,6 +1817,8 @@
   },
   {
    "month": "2023-03",
+   "hashrate": 3.31518401501e+20,
+   "minerRevenueCoinsPerSecond": 0.0113485717472,
    "btcUsd": 24949.5,
    "difficulty": 44249906400000.0,
    "subsidyBtc": 6.25,
@@ -1525,6 +1829,8 @@
   },
   {
    "month": "2023-04",
+   "hashrate": 3.42490075932e+20,
+   "minerRevenueCoinsPerSecond": 0.0107696169974,
    "btcUsd": 28825.0,
    "difficulty": 47978944300000.0,
    "subsidyBtc": 6.25,
@@ -1535,6 +1841,8 @@
   },
   {
    "month": "2023-05",
+   "hashrate": 3.60796640336e+20,
+   "minerRevenueCoinsPerSecond": 0.0124705867688,
    "btcUsd": 27563.7,
    "difficulty": 48786288500000.0,
    "subsidyBtc": 6.25,
@@ -1545,6 +1853,8 @@
   },
   {
    "month": "2023-06",
+   "hashrate": 3.69581672783e+20,
+   "minerRevenueCoinsPerSecond": 0.0110160353541,
    "btcUsd": 27652.4,
    "difficulty": 51736188400000.0,
    "subsidyBtc": 6.25,
@@ -1555,6 +1865,8 @@
   },
   {
    "month": "2023-07",
+   "hashrate": 3.7820071526e+20,
+   "minerRevenueCoinsPerSecond": 0.0108248707825,
    "btcUsd": 30095.8,
    "difficulty": 52462896100000.0,
    "subsidyBtc": 6.25,
@@ -1565,6 +1877,8 @@
   },
   {
    "month": "2023-08",
+   "hashrate": 3.86262794104e+20,
+   "minerRevenueCoinsPerSecond": 0.0108130536917,
    "btcUsd": 27960.3,
    "difficulty": 53350355500000.0,
    "subsidyBtc": 6.25,
@@ -1575,6 +1889,8 @@
   },
   {
    "month": "2023-09",
+   "hashrate": 4.07134984596e+20,
+   "minerRevenueCoinsPerSecond": 0.0111220237613,
    "btcUsd": 26272.6,
    "difficulty": 55544894800000.0,
    "subsidyBtc": 6.25,
@@ -1585,6 +1901,8 @@
   },
   {
    "month": "2023-10",
+   "hashrate": 4.43576825659e+20,
+   "minerRevenueCoinsPerSecond": 0.0113047201306,
    "btcUsd": 29506.8,
    "difficulty": 59251964500000.0,
    "subsidyBtc": 6.25,
@@ -1595,6 +1913,8 @@
   },
   {
    "month": "2023-11",
+   "hashrate": 4.73034865381e+20,
+   "minerRevenueCoinsPerSecond": 0.0122953880389,
    "btcUsd": 36496.0,
    "difficulty": 64363260300000.0,
    "subsidyBtc": 6.25,
@@ -1605,6 +1925,8 @@
   },
   {
    "month": "2023-12",
+   "hashrate": 5.07231585037e+20,
+   "minerRevenueCoinsPerSecond": 0.0138274129196,
    "btcUsd": 42354.5,
    "difficulty": 68813730400000.0,
    "subsidyBtc": 6.25,
@@ -1615,6 +1937,8 @@
   },
   {
    "month": "2024-01",
+   "hashrate": 5.21328534993e+20,
+   "minerRevenueCoinsPerSecond": 0.0117970028691,
    "btcUsd": 42905.0,
    "difficulty": 71959513500000.0,
    "subsidyBtc": 6.25,
@@ -1625,6 +1949,8 @@
   },
   {
    "month": "2024-02",
+   "hashrate": 5.74948990834e+20,
+   "minerRevenueCoinsPerSecond": 0.0115163031999,
    "btcUsd": 49232.1,
    "difficulty": 78290815400000.0,
    "subsidyBtc": 6.25,
@@ -1635,6 +1961,8 @@
   },
   {
    "month": "2024-03",
+   "hashrate": 5.98545912734e+20,
+   "minerRevenueCoinsPerSecond": 0.0112052527957,
    "btcUsd": 67381.0,
    "difficulty": 81887846600000.0,
    "subsidyBtc": 6.25,
@@ -1645,6 +1973,8 @@
   },
   {
    "month": "2024-04",
+   "hashrate": 6.25347668845e+20,
+   "minerRevenueCoinsPerSecond": 0.0104703145125,
    "btcUsd": 66247.1,
    "difficulty": 85681862700000.0,
    "subsidyBtc": 5.10417,
@@ -1655,6 +1985,8 @@
   },
   {
    "month": "2024-05",
+   "hashrate": 5.99394997056e+20,
+   "minerRevenueCoinsPerSecond": 0.00560213415866,
    "btcUsd": 65043.1,
    "difficulty": 84839971800000.0,
    "subsidyBtc": 3.125,
@@ -1665,6 +1997,8 @@
   },
   {
    "month": "2024-06",
+   "hashrate": 5.80422980256e+20,
+   "minerRevenueCoinsPerSecond": 0.00565604743646,
    "btcUsd": 66057.2,
    "difficulty": 83819982800000.0,
    "subsidyBtc": 3.125,
@@ -1675,6 +2009,8 @@
   },
   {
    "month": "2024-07",
+   "hashrate": 6.14470139147e+20,
+   "minerRevenueCoinsPerSecond": 0.00572253663186,
    "btcUsd": 62739.0,
    "difficulty": 81326219700000.0,
    "subsidyBtc": 3.125,
@@ -1685,6 +2021,8 @@
   },
   {
    "month": "2024-08",
+   "hashrate": 6.30871337346e+20,
+   "minerRevenueCoinsPerSecond": 0.00536309227522,
    "btcUsd": 60095.4,
    "difficulty": 88870446300000.0,
    "subsidyBtc": 3.125,
@@ -1695,6 +2033,8 @@
   },
   {
    "month": "2024-09",
+   "hashrate": 6.41432212441e+20,
+   "minerRevenueCoinsPerSecond": 0.00530227595594,
    "btcUsd": 60212.4,
    "difficulty": 90851271200000.0,
    "subsidyBtc": 3.125,
@@ -1705,6 +2045,8 @@
   },
   {
    "month": "2024-10",
+   "hashrate": 7.03575581994e+20,
+   "minerRevenueCoinsPerSecond": 0.00590454620181,
    "btcUsd": 65361.6,
    "difficulty": 92160626100000.0,
    "subsidyBtc": 3.125,
@@ -1715,6 +2057,8 @@
   },
   {
    "month": "2024-11",
+   "hashrate": 7.31119377441e+20,
+   "minerRevenueCoinsPerSecond": 0.00551097533975,
    "btcUsd": 85698.0,
    "difficulty": 101121849000000.0,
    "subsidyBtc": 3.125,
@@ -1725,6 +2069,8 @@
   },
   {
    "month": "2024-12",
+   "hashrate": 7.78452176061e+20,
+   "minerRevenueCoinsPerSecond": 0.00553161866935,
    "btcUsd": 98343.7,
    "difficulty": 106284721000000.0,
    "subsidyBtc": 3.125,
@@ -1735,6 +2081,8 @@
   },
   {
    "month": "2025-01",
+   "hashrate": 7.80850163224e+20,
+   "minerRevenueCoinsPerSecond": 0.0053047149225,
    "btcUsd": 99706.1,
    "difficulty": 109831886000000.0,
    "subsidyBtc": 3.125,
@@ -1745,6 +2093,8 @@
   },
   {
    "month": "2025-02",
+   "hashrate": 8.10191944393e+20,
+   "minerRevenueCoinsPerSecond": 0.00537384304783,
    "btcUsd": 95924.7,
    "difficulty": 111690987000000.0,
    "subsidyBtc": 3.125,
@@ -1755,6 +2105,8 @@
   },
   {
    "month": "2025-03",
+   "hashrate": 8.16732714572e+20,
+   "minerRevenueCoinsPerSecond": 0.00540715729321,
    "btcUsd": 85138.1,
    "difficulty": 112150727000000.0,
    "subsidyBtc": 3.125,
@@ -1765,6 +2117,8 @@
   },
   {
    "month": "2025-04",
+   "hashrate": 8.6954883417e+20,
+   "minerRevenueCoinsPerSecond": 0.00536058949748,
    "btcUsd": 86067.8,
    "difficulty": 120975057000000.0,
    "subsidyBtc": 3.125,
@@ -1775,6 +2129,8 @@
   },
   {
    "month": "2025-05",
+   "hashrate": 8.97114687971e+20,
+   "minerRevenueCoinsPerSecond": 0.00553267503013,
    "btcUsd": 103315.0,
    "difficulty": 120845800000000.0,
    "subsidyBtc": 3.125,
@@ -1785,6 +2141,8 @@
   },
   {
    "month": "2025-06",
+   "hashrate": 8.68214200213e+20,
+   "minerRevenueCoinsPerSecond": 0.00508346145254,
    "btcUsd": 105737.0,
    "difficulty": 126080463000000.0,
    "subsidyBtc": 3.125,
@@ -1795,6 +2153,8 @@
   },
   {
    "month": "2025-07",
+   "hashrate": 9.0213102087e+20,
+   "minerRevenueCoinsPerSecond": 0.00548115080148,
    "btcUsd": 115090.0,
    "difficulty": 123150639000000.0,
    "subsidyBtc": 3.125,
@@ -1805,6 +2165,8 @@
   },
   {
    "month": "2025-08",
+   "hashrate": 9.49401703696e+20,
+   "minerRevenueCoinsPerSecond": 0.00551266849085,
    "btcUsd": 115076.0,
    "difficulty": 129050660000000.0,
    "subsidyBtc": 3.125,
@@ -1815,6 +2177,8 @@
   },
   {
    "month": "2025-09",
+   "hashrate": 1.03465688958e+21,
+   "minerRevenueCoinsPerSecond": 0.00574447908463,
    "btcUsd": 112980.0,
    "difficulty": 137752307000000.0,
    "subsidyBtc": 3.125,
@@ -1825,6 +2189,8 @@
   },
   {
    "month": "2025-10",
+   "hashrate": 1.08462171028e+21,
+   "minerRevenueCoinsPerSecond": 0.00552725445926,
    "btcUsd": 114218.0,
    "difficulty": 149278712000000.0,
    "subsidyBtc": 3.125,
@@ -1835,6 +2201,8 @@
   },
   {
    "month": "2025-12",
+   "hashrate": 1.04846790313e+21,
+   "minerRevenueCoinsPerSecond": 0.00533109712509,
    "btcUsd": 89010.2,
    "difficulty": 148570824000000.0,
    "subsidyBtc": 3.125,
@@ -1845,6 +2213,8 @@
   },
   {
    "month": "2026-01",
+   "hashrate": 9.80992002298e+20,
+   "minerRevenueCoinsPerSecond": 0.005198912956,
    "btcUsd": 90749.6,
    "difficulty": 145467806000000.0,
    "subsidyBtc": 3.125,
@@ -1855,6 +2225,8 @@
   },
   {
    "month": "2026-02",
+   "hashrate": 1.01610017585e+21,
+   "minerRevenueCoinsPerSecond": 0.00576334723891,
    "btcUsd": 69229.6,
    "difficulty": 135661526000000.0,
    "subsidyBtc": 3.125,
@@ -1865,6 +2237,8 @@
   },
   {
    "month": "2026-03",
+   "hashrate": 9.80900622946e+20,
+   "minerRevenueCoinsPerSecond": 0.00532559259339,
    "btcUsd": 69447.3,
    "difficulty": 140916546000000.0,
    "subsidyBtc": 3.125,
@@ -1875,6 +2249,8 @@
   },
   {
    "month": "2026-04",
+   "hashrate": 9.58128509132e+20,
+   "minerRevenueCoinsPerSecond": 0.00538968555776,
    "btcUsd": 73476.7,
    "difficulty": 137066227000000.0,
    "subsidyBtc": 3.125,
@@ -1885,6 +2261,8 @@
   },
   {
    "month": "2026-05",
+   "hashrate": 9.87714181173e+20,
+   "minerRevenueCoinsPerSecond": 0.00567260871279,
    "btcUsd": 78066.5,
    "difficulty": 134948784000000.0,
    "subsidyBtc": 3.125,
@@ -1895,6 +2273,8 @@
   },
   {
    "month": "2026-06",
+   "hashrate": 9.21731674984e+20,
+   "minerRevenueCoinsPerSecond": 0.00547351597582,
    "btcUsd": 63502.7,
    "difficulty": 132182455000000.0,
    "subsidyBtc": 3.125,
@@ -1905,6 +2285,8 @@
   },
   {
    "month": "2026-07",
+   "hashrate": 8.99608882776e+20,
+   "minerRevenueCoinsPerSecond": 0.00555770586175,
    "btcUsd": 63723.9,
    "difficulty": 129317314000000.0,
    "subsidyBtc": 3.125,
@@ -1915,6 +2297,8 @@
   },
   {
    "month": "2026-08",
+   "hashrate": 9.09173398746e+20,
+   "minerRevenueCoinsPerSecond": 0.00567986328855,
    "btcUsd": 68978.2,
    "difficulty": 126678085000000.0,
    "subsidyBtc": 3.125,
@@ -1925,6 +2309,8 @@
   },
   {
    "month": "2026-09",
+   "hashrate": 9.44694034032e+20,
+   "minerRevenueCoinsPerSecond": 0.00590372130655,
    "btcUsd": 80308.2,
    "difficulty": 129242778000000.0,
    "subsidyBtc": 3.125,

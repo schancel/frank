@@ -8,7 +8,7 @@
  * AVU_hash(t) is read off proof-of-work mining. For each entry of the feed's basket (one
  * body of hashing and every chain it is paid by), one kWh of mining earns
  *
- *   sum over its chains of price(t) x blockReward(t) / (difficulty(t) x hashesPerDifficulty)
+ *   sum over its chains of price(t) x minerRevenue(t) [coins/s] / hashrate(t) [hashes/s]
  *     x efficiency(t)                                                   [value per kWh]
  *
  * and the inverse is kWh per unit of value. AVU_hash is the average of those inverses
@@ -36,7 +36,8 @@ export interface OracleInputs {
   electricity: FeedElectricity
   series: Record<
     string,
-    { points: Timeseries; stale?: boolean; estimatedBefore?: number } | undefined
+    | { points: Timeseries; stale?: boolean; estimatedBefore?: number }
+    | undefined
   >
 }
 
@@ -59,10 +60,7 @@ export function basketWeights(
   return Object.fromEntries(
     ids.map(id => {
       if (!capApplies) return [id, marketCaps[id] / total]
-      return [
-        id,
-        id === cappedId ? cap : ((1 - cap) * marketCaps[id]) / others,
-      ]
+      return [id, id === cappedId ? cap : ((1 - cap) * marketCaps[id]) / others]
     }),
   )
 }
@@ -92,7 +90,7 @@ export interface AvuHash {
   basketSize: number
   /**
    * The time (unix seconds) of the oldest market or chain reading used: a price, a
-   * difficulty or a market capitalisation. Curated steps (efficiency, block reward) are
+   * revenue/work observation or market capitalisation. Curated steps (efficiency) are
    * not readings and do not count.
    */
   oldestInputAt: number
@@ -101,22 +99,30 @@ export interface AvuHash {
 }
 
 /** AVU_hash at a time. Undefined when no basket entry has all its inputs then. */
-export function avuHashAt(inputs: OracleInputs, t: number): AvuHash | undefined {
+export function avuHashAt(
+  inputs: OracleInputs,
+  t: number,
+): AvuHash | undefined {
   const used: Array<Omit<AvuHashEntry, 'weight'>> = []
   const leftOut: AvuHash['leftOut'] = []
   let oldestInputAt = Infinity
   let stale = false
 
   for (const entry of inputs.basket.entries) {
-    const efficiencySeries = inputs.series[seriesName('efficiency', entry.algorithm)]
+    const efficiencySeries =
+      inputs.series[seriesName('efficiency', entry.algorithm)]
     const efficiency = at(efficiencySeries?.points, t)
-    let reason: LeftOutReason | undefined = efficiency ? undefined : 'efficiency'
+    let reason: LeftOutReason | undefined = efficiency
+      ? undefined
+      : 'efficiency'
     let valuePerHash = 0
     let marketCap = 0
     let entryOldest = Infinity
     let entryStale = false
     for (const chain of reason ? [] : entry.chains) {
-      const read = (kind: 'price' | 'marketCap' | 'difficulty' | 'blockReward') => {
+      const read = (
+        kind: 'price' | 'marketCap' | 'hashrate' | 'minerRevenue',
+      ) => {
         const one = inputs.series[seriesName(kind, chain.chain)]
         const point = at(one?.points, t)
         if (point && one?.stale) entryStale = true
@@ -128,26 +134,32 @@ export function avuHashAt(inputs: OracleInputs, t: number): AvuHash | undefined 
         break
       }
       const cap = read('marketCap')
-      const difficulty = read('difficulty')
-      const reward = read('blockReward')
+      const hashrate = read('hashrate')
+      const reward = read('minerRevenue')
       if (
         !cap ||
-        !difficulty ||
+        !hashrate ||
         !reward ||
         !(cap[1] > 0) ||
-        !(difficulty[1] > 0) ||
-        !(reward[1] > 0)
+        !(hashrate[1] > 0) ||
+        !(reward[1] > 0) ||
+        reward[0] !== hashrate[0] ||
+        !Number.isFinite(reward[1]) ||
+        !Number.isFinite(hashrate[1])
       ) {
         reason = 'chain'
         break
       }
-      valuePerHash +=
-        (price[1] * reward[1]) / (difficulty[1] * chain.hashesPerDifficulty)
+      valuePerHash += (price[1] * reward[1]) / hashrate[1]
       marketCap += cap[1]
-      entryOldest = Math.min(entryOldest, price[0], cap[0], difficulty[0])
+      entryOldest = Math.min(entryOldest, price[0], cap[0], hashrate[0])
     }
     if (reason || !efficiency || !(valuePerHash > 0)) {
-      leftOut.push({ id: entry.id, label: entry.label, reason: reason ?? 'chain' })
+      leftOut.push({
+        id: entry.id,
+        label: entry.label,
+        reason: reason ?? 'chain',
+      })
       continue
     }
     const valuePerKwh = valuePerHash * efficiency[1]
@@ -216,7 +228,17 @@ export function avuSpotAt(inputs: OracleInputs, t: number): AvuSpot {
   const stale = Boolean(series?.stale)
   if (!point) return { stale, unavailable: 'no-data' }
   if (!(point[1] > 0)) {
-    return { pricePerKwh: point[1], at: point[0], stale, unavailable: 'not-positive' }
+    return {
+      pricePerKwh: point[1],
+      at: point[0],
+      stale,
+      unavailable: 'not-positive',
+    }
   }
-  return { kwhPerValue: 1 / point[1], pricePerKwh: point[1], at: point[0], stale }
+  return {
+    kwhPerValue: 1 / point[1],
+    pricePerKwh: point[1],
+    at: point[0],
+    stale,
+  }
 }

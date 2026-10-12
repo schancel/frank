@@ -16,8 +16,8 @@ const inputs: OracleInputs = {
   series: {
     'price/btc-mainnet': { points: [[T - 60, 80_000]] },
     'marketCap/btc-mainnet': { points: [[T - 60, 1.6e12]] },
-    'difficulty/btc-mainnet': { points: [[T - 60, 1.3e14]] },
-    'blockReward/btc-mainnet': { points: [[T - 60, 3.125]] },
+    'hashrate/btc-mainnet': { points: [[T - 60, 1.3e14 * 2 ** 32]] },
+    'minerRevenue/btc-mainnet': { points: [[T - 60, 3.125]] },
     'efficiency/sha256': { points: [[T - 60, 1.9e17]] },
     'price/monad-mainnet': { points: [[T - 30, 0.025]], stale: true },
     'price/solana-mainnet': { points: [[T + 30, 110]] },
@@ -77,7 +77,10 @@ describe('the rates computed once from the feed', () => {
 
 describe('amounts in AVU', () => {
   it('converts a raw amount at a rate, and has no value without a rate', () => {
-    expect(convertRawToAvu(1_500_000_000_000_000_000n, 'monad', 2)).toBeCloseTo(3, 9)
+    expect(convertRawToAvu(1_500_000_000_000_000_000n, 'monad', 2)).toBeCloseTo(
+      3,
+      9,
+    )
     expect(convertRawToAvu(150n, 'ecash', 4)).toBeCloseTo(6, 9)
     expect(convertRawToAvu(0n, 'monad', 2)).toBe(0)
     expect(convertRawToAvu(5n, 'monad', undefined)).toBeUndefined()

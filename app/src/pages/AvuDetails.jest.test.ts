@@ -28,7 +28,11 @@ function mountPage() {
         QIcon: { template: '<i class="icon-stub" />' },
         QSpace: { template: '<span />' },
         QMarkupTable: { template: '<table><slot /></table>' },
-        QBtnToggle: { props: ['modelValue', 'options'], template: '<div />' },
+        QBtnToggle: {
+          props: ['modelValue', 'options'],
+          template: `<div><button v-for="option in options" :key="option.value"
+            :data-range="option.value" @click="$emit('update:modelValue', option.value)">{{ option.label }}</button></div>`,
+        },
         QBtn: {
           props: ['label', 'disable', 'to'],
           template:
@@ -60,6 +64,115 @@ afterEach(() => {
 })
 
 describe('AVU dollar reference details', () => {
+  function chartWithHistory(times = [NOW - 3600, NOW - 2400, NOW - 1200, NOW]) {
+    const oracle = receive(
+      testFeed(times, { electricity: times.map(at => [at, 0.05]) }),
+    )
+    const ensure = jest
+      .spyOn(oracle, 'ensureHistory')
+      .mockImplementation(async () => undefined)
+    const wrapper = mountPage()
+    const chart = wrapper.get('[data-test="avu-reference-chart"]')
+    jest.spyOn(chart.element, 'getBoundingClientRect').mockReturnValue({
+      left: 10,
+      width: 300,
+      top: 0,
+      height: 130,
+      right: 310,
+      bottom: 130,
+      x: 10,
+      y: 0,
+      toJSON: () => ({}),
+    })
+    return { wrapper, chart, ensure }
+  }
+
+  test.each(['mouse', 'touch'])(
+    'zooms both references by %s drag at mobile width and resets',
+    async pointerType => {
+      const { wrapper, chart, ensure } = chartWithHistory()
+      const current = wrapper
+        .get('[data-test="avu-reference-current-hash"]')
+        .text()
+      const pointer = { pointerId: 1, pointerType, button: 0 }
+      await chart.trigger('pointerdown', { ...pointer, clientX: 40 })
+      await chart.trigger('pointermove', { ...pointer, clientX: 124 })
+      expect(
+        wrapper.find('[data-test="avu-reference-selection"]').exists(),
+      ).toBe(true)
+      await chart.trigger('pointerup', { ...pointer, clientX: 124 })
+      for (const id of ['hash', 'spot'])
+        expect(
+          wrapper.findAll(`[data-test="avu-reference-point-${id}"]`),
+        ).toHaveLength(2)
+      expect(
+        wrapper.get('[data-test="avu-reference-current-hash"]').text(),
+      ).toBe(current)
+      await wrapper.vm.$nextTick()
+      expect(ensure).toHaveBeenCalledWith(NOW - 3600, 60, NOW - 2400)
+      await wrapper.get('[data-test="avu-reference-reset"]').trigger('click')
+      expect(
+        wrapper.findAll('[data-test="avu-reference-point-hash"]'),
+      ).toHaveLength(4)
+      expect(wrapper.find('[data-test="avu-reference-reset"]').exists()).toBe(
+        false,
+      )
+      wrapper.unmount()
+    },
+  )
+
+  test('reverse drag clamps to plot bounds and range changes clear zoom', async () => {
+    const { wrapper, chart } = chartWithHistory()
+    const pointer = { pointerId: 2, pointerType: 'touch' }
+    await chart.trigger('pointerdown', { ...pointer, clientX: 207 })
+    await chart.trigger('pointerup', { ...pointer, clientX: -100 })
+    expect(
+      wrapper.findAll('[data-test="avu-reference-point-hash"]'),
+    ).toHaveLength(3)
+    await wrapper.get('[data-range="7d"]').trigger('click')
+    expect(wrapper.find('[data-test="avu-reference-reset"]').exists()).toBe(
+      false,
+    )
+    expect(
+      wrapper.findAll('[data-test="avu-reference-point-hash"]'),
+    ).toHaveLength(4)
+    wrapper.unmount()
+  })
+
+  test('cancelled and single-point selections cannot zoom', async () => {
+    const { wrapper, chart } = chartWithHistory()
+    await chart.trigger('pointerdown', { pointerId: 1, clientX: 40 })
+    await chart.trigger('pointermove', { pointerId: 1, clientX: 200 })
+    await chart.trigger('pointercancel', { pointerId: 1 })
+    await chart.trigger('pointerup', { pointerId: 1, clientX: 200 })
+    expect(wrapper.find('[data-test="avu-reference-reset"]').exists()).toBe(
+      false,
+    )
+    wrapper.unmount()
+    setActivePinia(createPinia())
+    useOracleStore().useFeedSource(async () => undefined)
+    const single = chartWithHistory([NOW])
+    await single.chart.trigger('pointerdown', { pointerId: 1, clientX: 40 })
+    await single.chart.trigger('pointerup', { pointerId: 1, clientX: 200 })
+    expect(
+      single.wrapper.find('[data-test="avu-reference-reset"]').exists(),
+    ).toBe(false)
+    single.wrapper.unmount()
+  })
+
+  test('labels actual short history with times and keeps endpoint text inside the plot', () => {
+    const { wrapper, chart } = chartWithHistory()
+    const labels = chart
+      .findAll('text')
+      .filter(label => label.attributes('y') === '246')
+    expect(labels).toHaveLength(2)
+    expect(labels[0].text()).toMatch(/:/)
+    expect(labels[1].text()).toMatch(/:/)
+    expect(labels[0].attributes('x')).toBe('60')
+    expect(labels[1].attributes('text-anchor')).toBe('end')
+    wrapper.unmount()
+  })
+
   test('puts the shared USD-per-AVU chart before collapsed neutral methodology', () => {
     const wrapper = mountPage()
     expect(wrapper.get('[data-test="avu-explainer-card"]').text()).toContain(

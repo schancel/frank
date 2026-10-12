@@ -277,24 +277,34 @@ impl Feed {
                     [only] => format!("relay: {only} only (single source)"),
                     many => format!("relay: smoothed over {}", many.join(", ")),
                 };
-                ("USD", source, conf.price_interval_s, !providers.is_empty())
+                (
+                    if id == "gold" {
+                        "USD/troy ounce"
+                    } else {
+                        "USD"
+                    },
+                    source,
+                    conf.price_interval_s,
+                    !providers.is_empty(),
+                )
             }
-            "marketCap" | "difficulty" | "blockReward" => {
+            "marketCap" | "hashrate" | "minerRevenue" => {
                 let unit = match kind {
                     "marketCap" => "USD",
-                    "difficulty" => "difficulty",
-                    _ => "coins per block to the miner",
+                    "hashrate" => "hashes/s",
+                    _ => "coins/s",
                 };
                 let collected = stats.filter(|stats| stats.chains.contains_key(id));
                 let source = match (collected, kind) {
                     (Some(stats), "marketCap") => {
                         format!("price x coins in existence ({})", stats.id)
                     }
-                    (Some(stats), _) => stats.id.clone(),
+                    (Some(stats), "minerRevenue") => format!("{}: exact 24h block fees + issuance; consensus miner-share model (base-unit rounding not modelled)", stats.id),
+                    (Some(stats), _) => format!("{}: observed 24h hashes/s", stats.id),
                     (None, _) => seed_source().unwrap_or_default(),
                 };
-                // Only difficulty is certain to be collected for a configured chain.
-                let promised = collected.is_some() && kind == "difficulty";
+                // Only hash rate is certain to be collected for a configured chain.
+                let promised = collected.is_some() && kind == "hashrate";
                 (unit, source, conf.stats_interval_s, promised)
             }
             "electricity" if name == ELECTRICITY_AGGREGATE => {
@@ -702,7 +712,7 @@ fx_url = "http://127.0.0.1:1/fx"
             &[
                 point("price/btc-mainnet", now - 1200, 300.0),
                 point("price/btc-mainnet", now - 600, 301.0),
-                point("difficulty/btc-mainnet", now - 5 * 3600, 7.0),
+                point("hashrate/btc-mainnet", now - 5 * 3600, 7.0),
                 point("electricity/de-lu", 59 * DAY_S, 0.1),
                 point("electricity/de-lu", 60 * DAY_S, 0.2),
             ],
@@ -721,7 +731,7 @@ fx_url = "http://127.0.0.1:1/fx"
         assert_eq!(price["stale"], false);
         assert_eq!(price["source"], "relay: smoothed over a, b");
         // Five hours without chain statistics on an hourly round: stale, and it says so.
-        assert_eq!(series["difficulty/btc-mainnet"]["stale"], true);
+        assert_eq!(series["hashrate/btc-mainnet"]["stale"], true);
         // Curated steps are bundled: the bundle's date, never stale, estimates marked.
         let efficiency = &series["efficiency/sha256"];
         assert_eq!(efficiency["points"], serde_json::json!([[DAY_S, 5e16]]));

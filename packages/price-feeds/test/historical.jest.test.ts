@@ -27,7 +27,9 @@ describe('bundled long-range history', () => {
     expect(HISTORICAL_SOURCES.centsPerKwh).toMatch(/EIA.*Table 9\.8.*ESICUUS/)
     expect(HISTORICAL_SOURCES.goldUsd).toMatch(/World Bank.*Pink Sheet/)
     // The file says where each source was downloaded from and on what date.
-    expect(HISTORICAL_SOURCES.centsPerKwhUrl).toMatch(/^https:\/\/www\.eia\.gov\//)
+    expect(HISTORICAL_SOURCES.centsPerKwhUrl).toMatch(
+      /^https:\/\/www\.eia\.gov\//,
+    )
     expect(HISTORICAL_SOURCES.goldUsdUrl).toMatch(
       /^https:\/\/thedocs\.worldbank\.org\//,
     )
@@ -85,7 +87,7 @@ describe('bundled Bitcoin mining history (the inputs of AVU_hash)', () => {
 
   it('states where each input came from and when it was downloaded', () => {
     expect(BTC_MINING_SOURCES.chain).toMatch(/blockchain\.com charts API/)
-    expect(BTC_MINING_SOURCES.chainUrls).toHaveLength(4)
+    expect(BTC_MINING_SOURCES.chainUrls).toHaveLength(5)
     for (const url of BTC_MINING_SOURCES.chainUrls) {
       expect(url).toMatch(/^https:\/\/api\.blockchain\.info\/charts\//)
     }
@@ -106,6 +108,8 @@ describe('bundled Bitcoin mining history (the inputs of AVU_hash)', () => {
       expect(m.month).toMatch(/^\d{4}-\d{2}$/)
       expect(m.btcUsd).toBeGreaterThan(0)
       expect(m.difficulty).toBeGreaterThan(0)
+      expect(m.hashrate).toBeGreaterThan(0)
+      expect(m.minerRevenueCoinsPerSecond).toBeGreaterThan(0)
       expect(m.joulesPerTerahashLow).toBeGreaterThan(0)
       expect(m.joulesPerTerahash).toBeGreaterThan(m.joulesPerTerahashLow)
       expect(m.joulesPerTerahashHigh).toBeGreaterThan(m.joulesPerTerahash)
@@ -126,7 +130,8 @@ describe('bundled Bitcoin mining history (the inputs of AVU_hash)', () => {
   })
 
   it('is not a smooth generated curve: difficulty and price both rise and fall', () => {
-    const steps = (values: number[]) => values.slice(1).map((v, i) => v - values[i])
+    const steps = (values: number[]) =>
+      values.slice(1).map((v, i) => v - values[i])
     for (const column of ['btcUsd', 'difficulty'] as const) {
       const moves = steps(BTC_MINING_MONTHLY.map(m => m[column]))
       expect(moves.some(s => s < 0)).toBe(true)
@@ -200,12 +205,12 @@ describe('curated hardware efficiency steps', () => {
 describe('the eCash miner share', () => {
   it('is the split read from the coinbases, with the block each began at', () => {
     const steps = MINER_SHARE_STEPS['xec-mainnet']
-    expect(
-      steps.map(step => [step.from, step.fromHeight, step.share]),
-    ).toEqual([
-      ['2020-11-15', 661648, 0.92],
-      ['2023-11-15', 818670, 0.58],
-    ])
+    expect(steps.map(step => [step.from, step.fromHeight, step.share])).toEqual(
+      [
+        ['2020-11-15', 661648, 0.92],
+        ['2023-11-15', 818670, 0.58],
+      ],
+    )
     // The two coinbases the owner named are the evidence of the current split.
     expect(steps[1].evidence).toContain(
       '27038d63376fd9ab0dc0fa18bff95f99ab0353b197c97e2578e1e0549ad56d6f',

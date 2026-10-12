@@ -2,7 +2,7 @@
 """Builds src/historical/btc-mining-monthly.json: the monthly inputs of AVU_hash for Bitcoin.
 
 AVU_hash for a mined coin is the inverse of the dollars one kWh of mining earns:
-  price [$/coin] x subsidy [coins/block] / hashes per block x efficiency [hashes/kWh]
+  price [$/coin] x receipts [coins/s] / observed work [hashes/s] x efficiency [hashes/kWh]
 This file holds each input per calendar month, so the app can apply that formula itself
 (packages/wallet/oracle/energy-basket.ts). Nothing is typed by hand, interpolated or
 estimated here: every figure is the plain mean of the daily values a source published
@@ -14,6 +14,10 @@ Sources (download them first, no key needed):
        https://api.blockchain.info/charts/difficulty?timespan=all&sampled=false&format=json
        https://api.blockchain.info/charts/hash-rate?timespan=all&sampled=false&format=json
        https://api.blockchain.info/charts/total-bitcoins?timespan=all&sampled=false&format=json
+       https://api.blockchain.info/charts/miners-revenue?timespan=all&sampled=false&format=json
+     miners-revenue is subsidy plus fees in USD per day, converted to native receipts
+     using the same UTC day's price. Hash-rate is an observed-work/time estimate, not
+     a physical measurement of mining hardware. Monthly inputs are calendar aggregates.
   2. Cambridge Bitcoin Electricity Consumption Index (CBECI), "Download data" CSV, daily
      estimated network power demand in GW (lower bound, best guess, upper bound):
        https://ccaf.io/cbeci/api/v1.4.0/download/data?price=0.05
@@ -34,7 +38,7 @@ What is derived, and how:
 
 Regenerate (from packages/price-feeds):
   python3 -I scripts/build-btc-mining-history.py <market-price.json> <difficulty.json> \
-    <hash-rate.json> <total-bitcoins.json> <cbeci-data.csv> \
+    <hash-rate.json> <total-bitcoins.json> <cbeci-data.csv> <miners-revenue.json> \
     <YYYY-MM-DD the files were downloaded> > src/historical/btc-mining-monthly.json
 Check: yarn jest --runInBand historical
 """
@@ -110,9 +114,12 @@ def main():
     hashrate, hashrate_unit = chart_by_day(sys.argv[3])
     supply, _ = chart_by_day(sys.argv[4])
     power, assumption = cbeci_by_day(sys.argv[5])
-    retrieved = sys.argv[6]
+    revenue, revenue_unit = chart_by_day(sys.argv[6])
+    retrieved = sys.argv[7]
+    if revenue_unit != 'USD':
+        sys.exit('miners-revenue must be USD including fees')
     if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', retrieved):
-        sys.exit('sixth argument: the date the source files were downloaded, YYYY-MM-DD')
+        sys.exit('seventh argument: the date the source files were downloaded, YYYY-MM-DD')
     if price_unit != 'USD' or hashrate_unit != 'Hash Rate TH/s':
         sys.exit('unexpected chart units: %s, %s' % (price_unit, hashrate_unit))
 
@@ -126,7 +133,7 @@ def main():
         # Only months every source covers on every day, with a market price on each.
         if not all(
             d in power and d in difficulty and d in hashrate and d in supply
-            and price.get(d, 0) > 0 and hashrate[d] > 0
+            and price.get(d, 0) > 0 and hashrate[d] > 0 and revenue.get(d, 0) > 0
             for d in days
         ):
             continue
@@ -138,6 +145,8 @@ def main():
 
         monthly.append({
             'month': '%04d-%02d' % (year, month),
+            'hashrate': significant(terahash_per_second * 1e12, 12),
+            'minerRevenueCoinsPerSecond': significant(sum(revenue[d] / price[d] for d in days) / (len(days) * 86400), 12),
             'btcUsd': significant(mean([price[d] for d in days])),
             'difficulty': significant(mean([difficulty[d] for d in days]), 9),
             'subsidyBtc': significant(mean([subsidy_at_supply(supply[d]) for d in days])),
@@ -151,7 +160,8 @@ def main():
         {
             'sources': {
                 'chain': 'blockchain.com charts API, daily values: market-price (USD), difficulty, hash-rate (TH/s), total-bitcoins. Each monthly figure is the mean of the days in that month.',
-                'chainUrls': [CHARTS % name for name in ('market-price', 'difficulty', 'hash-rate', 'total-bitcoins')],
+                'chainUrls': [CHARTS % name for name in ('market-price', 'difficulty', 'hash-rate', 'total-bitcoins', 'miners-revenue')],
+                'revenue': 'blockchain.com miners-revenue daily USD (subsidy plus transaction fees), divided by same-day market price, summed over the complete calendar month and divided by its seconds.',
                 'subsidy': 'Bitcoin consensus rule GetBlockSubsidy (50 BTC halved every 210,000 blocks), applied to the supply in the total-bitcoins chart.',
                 'efficiency': 'Cambridge Bitcoin Electricity Consumption Index (CBECI), daily estimated network power demand, divided by the hash-rate chart: joules drawn per terahash. An estimate of the hardware in use, not a chain reading. %s.' % assumption.strip(),
                 'efficiencyUrl': CBECI_URL,
@@ -165,4 +175,5 @@ def main():
     sys.stdout.write('\n')
 
 
-main()
+if __name__ == '__main__':
+    main()

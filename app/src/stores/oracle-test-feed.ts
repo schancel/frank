@@ -59,11 +59,11 @@ export function testFeed(
     series: {
       'price/btc-mainnet': series(at(100), 'test prices'),
       'marketCap/btc-mainnet': series(at(1e12)),
-      'difficulty/btc-mainnet': series(
+      'hashrate/btc-mainnet': series(
         at(100 * kwhPerValue),
         'test chain statistics',
       ),
-      'blockReward/btc-mainnet': series(at(1)),
+      'minerRevenue/btc-mainnet': series(at(1)),
       'efficiency/sha256': series(at(1), 'test efficiency'),
     },
   }

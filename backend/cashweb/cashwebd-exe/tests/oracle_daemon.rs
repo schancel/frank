@@ -156,7 +156,8 @@ fn with_collection_off_no_provider_is_asked_and_the_seed_is_served() {
     assert_eq!(status, 200);
     for series in [
         "price/btc-mainnet",
-        "difficulty/xec-mainnet",
+        "hashrate/btc-mainnet",
+        "minerRevenue/btc-mainnet",
         "efficiency/scrypt",
         "electricity/aggregate",
     ] {

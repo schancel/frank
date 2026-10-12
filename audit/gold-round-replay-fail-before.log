@@ -1,0 +1,20 @@
+running 1 test
+test oracle::collector::tests::mixed_coinbase_and_dated_chainlink_rounds_replay_after_reopening ... FAILED
+
+failures:
+
+---- oracle::collector::tests::mixed_coinbase_and_dated_chainlink_rounds_replay_after_reopening stdout ----
+
+thread 'oracle::collector::tests::mixed_coinbase_and_dated_chainlink_rounds_replay_after_reopening' (4838132) panicked at cashweb-registry/src/oracle/collector.rs:947:9:
+assertion `left == right` failed: each derived round must retain both provider inputs
+  left: []
+ right: [(1800000000, 101.0), (1800000600, 101.0), (1800001200, 101.0)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    oracle::collector::tests::mixed_coinbase_and_dated_chainlink_rounds_replay_after_reopening
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 472 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p cashweb-registry --lib`

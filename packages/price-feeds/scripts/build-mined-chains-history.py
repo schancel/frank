@@ -2,7 +2,8 @@
 """Builds src/historical/mined-chains-monthly.json: the monthly inputs of AVU_hash for the
 basket's chains other than Bitcoin (Bitcoin has its own file, btc-mining-monthly.json).
 
-For each chain and calendar month: price (USD per coin), difficulty, subsidy (coins minted
+For each chain and calendar month: price (USD per coin), observed-work/time hashrate, total
+receipts including actual fees, plus archival difficulty/subsidy (coins minted
 per block, the whole subsidy before any consensus split) and coins in existence. Nothing is
 typed by hand or interpolated. A month a source does not cover completely is left out, and
 the month the files were downloaded in is never included (it is not over).
@@ -10,7 +11,7 @@ the month the files were downloaded in is never included (it is not over).
 Sources (download them into one directory first; no key needed):
 
   Litecoin, Dogecoin, Bitcoin Cash, eCash: Blockchair's block aggregates, one row a month:
-      https://api.blockchair.com/<chain>/blocks?a=month,count(),avg(difficulty),sum(generation),sum(generation_usd)&limit=100&offset=<0,100,...>
+      https://api.blockchair.com/<chain>/blocks?a=month,count(),avg(difficulty),sum(generation),sum(generation_usd),sum(fee_total),sum(difficulty)&limit=100&offset=<0,100,...>
     saved as blockchair-<chain>.json = {"url": ..., "data": [all pages' rows]}, and the
     chain's coins in existence on the download day from
       https://api.blockchair.com/<chain>/stats   (field "circulation")
@@ -27,7 +28,11 @@ Sources (download them into one directory first; no key needed):
                      15% in 74 of the months before 2020 (0.01 USD throughout 2013-14).
                      eCash: Kraken does not list it, so its price is Blockchair's
                      sum(generation_usd) / sum(generation); nothing here cross-checks it.
-      - difficulty = avg(difficulty) over the month's blocks.
+      - hashrate   = sum(difficulty) * 2^32 / seconds in this calendar month, an
+                     observed chainwork/time estimate (includes actual block cadence).
+      - receipts   = (sum(generation) + sum(fee_total)) / native unit / month seconds.
+                     Missing fees/work sums abort, never assumed zero.
+      - difficulty = avg(difficulty) over the month's blocks (archival only).
       - subsidy    = sum(generation) / count().
       - coins      = the "circulation" on the download day less everything minted after the
                      end of the month (the later rows of the same file).
@@ -58,13 +63,14 @@ Regenerate (from packages/price-feeds):
     <YYYY-MM-DD they were downloaded> > src/historical/mined-chains-monthly.json
 Check: npx jest --runInBand historical
 """
+import calendar
 import datetime
 import json
 import os
 import re
 import sys
 
-BLOCKCHAIR = 'https://api.blockchair.com/%s/blocks?a=month,count(),avg(difficulty),sum(generation),sum(generation_usd)'
+BLOCKCHAIR = 'https://api.blockchair.com/%s/blocks?a=month,count(),avg(difficulty),sum(generation),sum(generation_usd),sum(fee_total),sum(difficulty)'
 # Feed chain id, Blockchair name, base units per coin, first month used and why.
 BLOCKCHAIR_CHAINS = [
     ('ltc-mainnet', 'litecoin', 1e8, '2013-11', 'first full month of Kraken LTCUSD candles', 'LTCUSD'),
@@ -119,6 +125,15 @@ def blockchair_chain(directory, name, unit, first_month, download_month, pair):
     for row in reversed(rows):
         if row['month'] != download_month and row['month'] >= first_month:
             generation = float(row['sum(generation)'])
+            # Fail closed on obsolete source files: no silently assumed zero fees.
+            if 'sum(fee_total)' not in row or 'sum(difficulty)' not in row:
+                sys.exit('%s: download fee_total and difficulty work sums before regeneration' % name)
+            fees = float(row['sum(fee_total)'])
+            work = float(row['sum(difficulty)']) * 2 ** 32
+            year, month = map(int, row['month'].split('-'))
+            window_seconds = calendar.monthrange(year, month)[1] * 86400
+            if fees < 0 or not (work > 0):
+                sys.exit('%s: invalid fee or work observation' % name)
             usd = float(row['sum(generation_usd)'])
             blocks = float(row['count()'])
             price = prices.get(row['month'], 0) if prices else (usd / (generation / unit) if generation > 0 else 0)
@@ -129,6 +144,8 @@ def blockchair_chain(directory, name, unit, first_month, download_month, pair):
                     significant(float(row['avg(difficulty)']), 9),
                     significant(generation / unit / blocks),
                     significant((circulation - minted_after) / unit, 9),
+                    significant(work / window_seconds, 12),
+                    significant((generation + fees) / unit / window_seconds, 12),
                 ])
         minted_after += float(row['sum(generation)'])
     monthly.reverse()
@@ -176,6 +193,7 @@ def monero(directory, download_month):
             significant(mean([float(h['difficulty']) for h in samples]), 9),
             significant(mean([emission[h['height']][0] for h in samples])),
             significant(mean([emission[h['height']][1] for h in samples]), 9),
+            None, None,
         ])
     return monthly, sampled.get('node', '')
 
@@ -206,7 +224,7 @@ def main():
         }
     json.dump(
         {
-            'columns': ['month', 'priceUsd', 'difficulty', 'subsidyCoinsPerBlock', 'circulatingCoins'],
+            'columns': ['month', 'priceUsd', 'difficulty', 'subsidyCoinsPerBlock', 'circulatingCoins', 'hashrate', 'minerRevenueCoinsPerSecond'],
             'retrieved': retrieved,
             'chains': chains,
         },
@@ -217,4 +235,5 @@ def main():
     sys.stdout.write('\n')
 
 
-main()
+if __name__ == '__main__':
+    main()

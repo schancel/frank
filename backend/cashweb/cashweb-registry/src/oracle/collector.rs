@@ -239,7 +239,7 @@ impl Collector {
                 })
                 .count()
         };
-        let mut answers = BTreeMap::<String, Vec<(String, f64)>>::new();
+        let mut answers = BTreeMap::<String, Vec<(String, providers::PriceObservation)>>::new();
         // The two providers of the round carry every asset they list.
         let mut wanted: Option<HashSet<String>> = None;
         loop {
@@ -267,6 +267,9 @@ impl Collector {
                 failed.insert(provider.id.clone());
             }
             for (asset, price) in quotes.unwrap_or_default() {
+                if price.observed_at.is_some_and(|at| at == 0 || at > now) {
+                    continue;
+                }
                 answers
                     .entry(asset)
                     .or_default()
@@ -295,12 +298,24 @@ impl Collector {
         let mut points = Vec::new();
         for asset in &assets {
             let name = format!("price/{asset}");
+            let sole_source = self
+                .plan
+                .price_providers()
+                .filter(|provider| provider.symbols.contains_key(asset))
+                .count()
+                == 1;
             for (provider, value) in answers.get(asset).into_iter().flatten() {
                 raw.push(RawSample {
                     name: name.clone(),
-                    time: now,
+                    // Mixed prices are derived per collection round; its inputs must keep
+                    // that association for replay, even when a source reuses an earlier quote.
+                    time: if sole_source {
+                        value.observed_at.unwrap_or(now)
+                    } else {
+                        now
+                    },
                     provider: provider.clone(),
-                    value: *value,
+                    value: value.value,
                 });
             }
             // Kept beside the answers so the series can be recomputed from them.
@@ -314,7 +329,15 @@ impl Collector {
             if let Verdict::Sample(sample) =
                 self.verdict(asset, &answers, listed, false, previous[asset], now)
             {
-                points.push((name, now, smooth(previous[asset], now, sample, &self.rules)));
+                // A sole dated provider is an observation, not a collection-time EWMA.
+                // Repeated reads of the same round must not create extra historical points.
+                let dated = answers
+                    .get(asset)
+                    .filter(|quotes| quotes.len() == 1 && sole_source)
+                    .and_then(|quotes| quotes[0].1.observed_at.map(|at| (at, quotes[0].1.value)));
+                let (at, value) = dated
+                    .unwrap_or_else(|| (now, smooth(previous[asset], now, sample, &self.rules)));
+                points.push((name, at, value));
             }
         }
         report.points = points.len();
@@ -325,7 +348,7 @@ impl Collector {
     fn verdict(
         &self,
         asset: &str,
-        answers: &BTreeMap<String, Vec<(String, f64)>>,
+        answers: &BTreeMap<String, Vec<(String, providers::PriceObservation)>>,
         listed: usize,
         can_ask: bool,
         previous: Option<(u64, f64)>,
@@ -333,14 +356,18 @@ impl Collector {
     ) -> Verdict {
         let values = answers
             .get(asset)
-            .map(|answers| answers.iter().map(|(_, value)| *value).collect::<Vec<_>>())
+            .map(|answers| {
+                answers
+                    .iter()
+                    .map(|(_, value)| value.value)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         judge(&values, listed, can_ask, previous, now, &self.rules)
     }
 
-    /// One chain-statistics round at `now`: difficulty, block reward (the miner's part of the
-    /// subsidy the chain paid) and market capitalisation (coins in existence times the relay's
-    /// current smoothed price) of every configured chain.
+    /// One chain-statistics round at `now`: observed hash rate, total miner revenue, and
+    /// market capitalisation (supply times the relay's smoothed price) per configured chain.
     pub async fn stats_round(&mut self, now: u64) -> Result<RoundReport> {
         let mut report = RoundReport::default();
         let Some(stats) = self.plan.conf.chain_stats.clone() else {
@@ -361,22 +388,61 @@ impl Collector {
         let mut raw = Vec::new();
         let mut points = Vec::new();
         for (chain, answer) in chains {
-            let mut record = |kind: &str, value: f64| {
-                raw.push(RawSample {
-                    name: format!("{kind}/{chain}"),
-                    time: now,
-                    provider: stats.id.clone(),
-                    value,
-                });
-            };
-            record("difficulty", answer.difficulty);
-            record("supply", answer.supply);
-            points.push((format!("difficulty/{chain}"), now, answer.difficulty));
-            if let Some(subsidy) = answer.subsidy {
-                record("subsidy", subsidy);
-                // The miner's part comes from the bundled dated steps, the one source of it.
-                let share = self.feed.seed().miner_share(&chain, now);
-                points.push((format!("blockReward/{chain}"), now, subsidy * share));
+            raw.push(RawSample {
+                name: format!("hashrate/{chain}"),
+                time: now,
+                provider: stats.id.clone(),
+                value: answer.hashrate,
+            });
+            raw.push(RawSample {
+                name: format!("supply/{chain}"),
+                time: now,
+                provider: stats.id.clone(),
+                value: answer.supply,
+            });
+            points.push((format!("hashrate/{chain}"), now, answer.hashrate));
+            if let Some(window) = &answer.window {
+                // Consensus share is a model of the miner's total coinbase, including fees.
+                // A boundary-spanning window needs per-block splits; do not apply today's
+                // share to yesterday's different rules. Satoshi rounding is not modelled.
+                let share = self.feed.seed().miner_share(&chain, window.end);
+                let start_share = self
+                    .feed
+                    .seed()
+                    .miner_share(&chain, window.end.saturating_sub(DAY_S));
+                if share == start_share {
+                    let row = &stats.chains[&chain];
+                    if let Some(request) =
+                        providers::blockchair::totals_request(&stats.api_url, &row.name, window)
+                    {
+                        // Independent chain failures must not erase another chain's reading.
+                        let provider = format!("{}/{}", stats.id, chain);
+                        if self.rested(&provider, now) {
+                            if let Some(total) = self
+                                .ask(&provider, request, now, &mut report, |body| {
+                                    providers::blockchair::parse_totals(body, window)
+                                })
+                                .await
+                            {
+                                for (kind, value) in
+                                    [("fees", total.fees), ("issuance", total.issuance)]
+                                {
+                                    raw.push(RawSample {
+                                        name: format!("{kind}/{chain}"),
+                                        time: now,
+                                        provider: stats.id.clone(),
+                                        value: value as f64,
+                                    });
+                                }
+                                let revenue = (total.issuance + total.fees) as f64
+                                    / 10f64.powi(row.decimals as i32)
+                                    * share
+                                    / DAY_S as f64;
+                                points.push((format!("minerRevenue/{chain}"), now, revenue));
+                            }
+                        }
+                    }
+                }
             }
             let price = self
                 .feed
@@ -750,6 +816,151 @@ symbols = { btc-mainnet = "BTC", xec-mainnet = "XEC" }
 
     const T0: u64 = 1_800_000_000;
 
+    #[tokio::test]
+    async fn dated_gold_rounds_keep_exact_source_dates_and_do_not_multiply_on_polling() -> Result<()>
+    {
+        struct Dated;
+        #[async_trait]
+        impl Upstream for Dated {
+            async fn fetch(
+                &self,
+                _request: &UpstreamRequest,
+            ) -> std::result::Result<Vec<u8>, UpstreamError> {
+                let words = [
+                    2u128,
+                    400_000_000_000,
+                    u128::from(T0 - 3600),
+                    u128::from(T0 - 3600),
+                    2,
+                ];
+                let hex = words
+                    .iter()
+                    .map(|word| format!("{word:064x}"))
+                    .collect::<String>();
+                Ok(
+                    serde_json::json!([{ "id": 1, "result": format!("0x{hex}") }])
+                        .to_string()
+                        .into_bytes(),
+                )
+            }
+        }
+        let conf = r#"non_network_ids = ["gold"]
+[[price_providers]]
+id = "chainlink"
+adapter = "chainlink"
+api_url = "http://stub/chainlink"
+symbols = { gold = "proxy" }
+"#;
+        let dir = tempdir::TempDir::new("dated-gold")?;
+        let feed = Arc::new(feed(&dir, conf));
+        let mut collector = Collector::new(plan(conf), Arc::clone(&feed), Arc::new(Dated));
+        let mut rng = StdRng::seed_from_u64(1);
+        collector.price_round(T0 - 4000, &mut rng).await?;
+        assert!(
+            feed.store().points("price/gold", 0, u64::MAX)?.is_empty(),
+            "future round must not enter history"
+        );
+        feed.store()
+            .write(&[], &[("price/gold".to_owned(), T0 - 4200, 3900.0)])?;
+        collector.price_round(T0, &mut rng).await?;
+        collector.price_round(T0 + 600, &mut rng).await?;
+        assert_eq!(
+            feed.store().points("price/gold", 0, u64::MAX)?,
+            vec![(T0 - 4200, 3900.0), (T0 - 3600, 4000.0)]
+        );
+        let raw = feed.store().raw("price/gold", 0, u64::MAX)?;
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].time, T0 - 3600);
+        feed.rebuild_latest(T0 + 600);
+        let latest: serde_json::Value = serde_json::from_slice(&feed.latest().body)?;
+        assert_eq!(latest["series"]["price/gold"]["unit"], "USD/troy ounce");
+        assert_eq!(latest["series"]["price/gold"]["asOf"], T0 - 3600);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mixed_coinbase_and_dated_chainlink_rounds_replay_after_reopening() -> Result<()> {
+        struct Mixed;
+        #[async_trait]
+        impl Upstream for Mixed {
+            async fn fetch(
+                &self,
+                request: &UpstreamRequest,
+            ) -> std::result::Result<Vec<u8>, UpstreamError> {
+                if request.body.is_none() {
+                    return Ok(br#"{"data":{"rates":{"BTC":"0.01"}}}"#.to_vec());
+                }
+                let words = [
+                    2u128,
+                    10_200_000_000,
+                    u128::from(T0 - 3600),
+                    u128::from(T0 - 3600),
+                    2,
+                ];
+                let hex = words
+                    .iter()
+                    .map(|word| format!("{word:064x}"))
+                    .collect::<String>();
+                Ok(
+                    serde_json::json!([{ "id": 1, "result": format!("0x{hex}") }])
+                        .to_string()
+                        .into_bytes(),
+                )
+            }
+        }
+        let conf = r#"
+[[price_providers]]
+id = "coinbase"
+adapter = "coinbase"
+api_url = "http://stub/coinbase"
+symbols = { btc-mainnet = "BTC" }
+[[price_providers]]
+id = "chainlink"
+adapter = "chainlink"
+api_url = "http://stub/chainlink"
+symbols = { btc-mainnet = "proxy" }
+"#;
+        let dir = tempdir::TempDir::new("mixed-dated-prices")?;
+        let rules = Rules::from(&plan(conf).conf);
+        {
+            let feed = Arc::new(feed(&dir, conf));
+            let mut collector = Collector::new(plan(conf), Arc::clone(&feed), Arc::new(Mixed));
+            let mut rng = StdRng::seed_from_u64(1);
+            for at in [T0, T0 + 600, T0 + 1200] {
+                collector.price_round(at, &mut rng).await?;
+            }
+        }
+        let feed = feed(&dir, conf);
+        let raw = feed.store().raw("price/btc-mainnet", 0, u64::MAX)?;
+        let listed = feed.store().raw("providers/btc-mainnet", 0, u64::MAX)?;
+        let rounds = listed
+            .iter()
+            .map(|round| {
+                (
+                    round.time,
+                    round.value as usize,
+                    raw.iter()
+                        .filter(|answer| answer.time == round.time)
+                        .map(|answer| answer.value)
+                        .collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let stored = feed.store().points("price/btc-mainnet", 0, u64::MAX)?;
+        assert_eq!(stored.len(), 3);
+        assert_eq!(
+            replay(&rounds, None, &rules),
+            stored,
+            "each derived round must retain both provider inputs"
+        );
+        assert_eq!(
+            raw.len(),
+            6,
+            "re-reading one Chainlink round must not overwrite earlier derived-round inputs"
+        );
+        Ok(())
+    }
+
     /// With a smoothed value in place and providers that agree, a round costs two requests:
     /// two providers, each asked once for everything it lists. Which two changes with the seed.
     #[tokio::test]
@@ -1058,6 +1269,14 @@ symbols = { btc-mainnet = "BTC", xec-mainnet = "XEC" }
         }
     }
 
+    // Synthetic exact aggregates paired with the recorded stats snapshot. These are
+    // parser/collector boundary fixtures, not claimed live upstream observations.
+    const BTC_TOTALS: &[u8] =
+        br#"{"data":[{"sum(fee_total)":100000000,"sum(generation)":42812500000,"count()":137}]}"#;
+    const XEC_TOTALS: &[u8] =
+        br#"{"data":[{"sum(fee_total)":1000000,"sum(generation)":46875000000,"count()":150}]}"#;
+    const DOGE_TOTALS: &[u8] = br#"{"data":[{"sum(fee_total)":500000000,"sum(generation)":1354000000000000,"count()":1354}]}"#;
+
     const STATS_AND_POWER: &str = r#"
 non_network_ids = ["xmr-mainnet"]
 
@@ -1076,7 +1295,6 @@ decimals = 12
 [chain_stats.chains.doge-mainnet]
 name = "dogecoin"
 decimals = 8
-hashrate_block_seconds = 60
 
 [[electricity]]
 region = "de-lu"
@@ -1097,6 +1315,9 @@ fx_url = "http://stub/fx"
         let feed = Arc::new(feed(&dir, STATS_AND_POWER));
         let upstream: Arc<dyn Upstream> = Arc::new(Canned(vec![
             ("/stats", include_bytes!("fixtures/blockchair.json")),
+            ("/bitcoin/blocks", BTC_TOTALS),
+            ("/ecash/blocks", XEC_TOTALS),
+            ("/dogecoin/blocks", DOGE_TOTALS),
             ("/price", include_bytes!("fixtures/energy_charts.json")),
             ("/fx", include_bytes!("fixtures/ecb_hist_90d.xml")),
         ]));
@@ -1110,13 +1331,29 @@ fx_url = "http://stub/fx"
         )?;
 
         let report = collector.stats_round(now).await?;
-        assert_eq!(report.requests, [("blockchair".to_owned(), 1)].into());
+        assert_eq!(
+            report.requests,
+            [
+                ("blockchair".to_owned(), 1),
+                ("blockchair/btc-mainnet".to_owned(), 1),
+                ("blockchair/xec-mainnet".to_owned(), 1),
+                ("blockchair/doge-mainnet".to_owned(), 1)
+            ]
+            .into()
+        );
         let at = |name: &str| store.floor(name, now).unwrap().map(|(_, value)| value);
-        assert_eq!(at("difficulty/btc-mainnet"), Some(132_716_002_350_731.3));
-        assert_eq!(at("blockReward/btc-mainnet"), Some(3.125));
-        // eCash paid 3,125,000 XEC a block; the miner's 58% (the bundled step in force) is
-        // what the feed carries.
-        assert_eq!(at("blockReward/xec-mainnet"), Some(3_125_000.0 * 0.58));
+        assert_eq!(
+            at("hashrate/btc-mainnet"),
+            Some(904_779_190_082_934_550_306.0)
+        );
+        assert_eq!(at("minerRevenue/btc-mainnet"), Some(429.125 / 86400.0));
+        // eCash's split applies to subsidy AND fees, converted from 2-decimal base units.
+        assert_eq!(
+            at("minerRevenue/xec-mainnet"),
+            Some((46875000000.0 + 1000000.0) / 100.0 * 0.58 / 86400.0)
+        );
+        let raw_fees = store.raw("fees/xec-mainnet", now, now)?;
+        assert_eq!(raw_fees[0].value, 1000000.0);
         // 20,096,217.9 BTC in existence at the relay's own price.
         let cap = at("marketCap/btc-mainnet").expect("market cap");
         assert!(
@@ -1125,14 +1362,19 @@ fx_url = "http://stub/fx"
         );
         // No price collected for eCash: no market cap is made up.
         assert_eq!(at("marketCap/xec-mainnet"), None);
-        // Dogecoin retargets every block (56.1M at that moment): the feed carries the 24-hour
-        // hash rate, 3,826,509,895,446,723 H/s over 60-second blocks, as difficulty.
-        let doge = at("difficulty/doge-mainnet").expect("doge difficulty");
-        assert_eq!(doge, 3_826_509_895_446_723.0 * 60.0 / 4_294_967_296.0);
-        assert!((53.0e6..54.0e6).contains(&doge), "{doge}");
-        // Monero: difficulty, and no block reward because Blockchair publishes no issuance.
-        assert_eq!(at("difficulty/xmr-mainnet"), Some(740_020_798_194.0));
-        assert_eq!(at("blockReward/xmr-mainnet"), None);
+        // Every chain uses observed H/s, never nominal difficulty/target block time.
+        assert_eq!(at("hashrate/doge-mainnet"), Some(3_826_509_895_446_723.0));
+        assert_eq!(
+            at("minerRevenue/doge-mainnet"),
+            Some((1354000000000000.0 + 500000000.0) / 1e8 / 86400.0)
+        );
+        assert_eq!(at("hashrate/xmr-mainnet"), Some(6_166_839_984.0));
+        // Monero has no compatible exact fee/issuance aggregate: no invented revenue.
+        assert_eq!(at("minerRevenue/xmr-mainnet"), None);
+        assert_eq!(
+            store.floor("hashrate/btc-mainnet", now)?.unwrap().0,
+            store.floor("minerRevenue/btc-mainnet", now)?.unwrap().0
+        );
 
         let report = collector.electricity_round(now).await?;
         assert_eq!(
@@ -1160,6 +1402,50 @@ fx_url = "http://stub/fx"
         Ok(())
     }
 
+    /// A missing/different fee window never becomes subsidy-only revenue, and does not
+    /// hide a usable independent chain. The newly observed hash rate makes an old revenue
+    /// point mismatched; the client rejects that pair instead of silently reusing it.
+    #[tokio::test]
+    async fn missing_fees_preserve_old_revenue_without_fabricating_a_new_pair() -> Result<()> {
+        let dir = tempdir::TempDir::new("oracle-fees-missing")?;
+        let feed = Arc::new(feed(&dir, STATS_AND_POWER));
+        let now = 1_791_651_900;
+        feed.store().write(
+            &[],
+            &[("minerRevenue/btc-mainnet".to_owned(), now - 3600, 0.005)],
+        )?;
+        let upstream: Arc<dyn Upstream> = Arc::new(Canned(vec![
+            ("/stats", include_bytes!("fixtures/blockchair.json")),
+            ("/ecash/blocks", XEC_TOTALS),
+            ("/dogecoin/blocks", DOGE_TOTALS),
+        ]));
+        let mut collector = Collector::new(plan(STATS_AND_POWER), Arc::clone(&feed), upstream);
+        let report = collector.stats_round(now).await?;
+        assert_eq!(
+            report.failures.get("blockchair/btc-mainnet"),
+            Some(&UpstreamError::Status(404))
+        );
+        assert_eq!(
+            feed.store().floor("hashrate/btc-mainnet", now)?.unwrap().0,
+            now
+        );
+        assert_eq!(
+            feed.store()
+                .floor("minerRevenue/btc-mainnet", now)?
+                .unwrap()
+                .0,
+            now - 3600
+        );
+        assert_eq!(
+            feed.store()
+                .floor("minerRevenue/xec-mainnet", now)?
+                .unwrap()
+                .0,
+            now
+        );
+        Ok(())
+    }
+
     /// A statistics provider that is down for two rounds and then answers: the round stays due
     /// and is retried when each rest ends, so the reading arrives half an hour late, not after
     /// the hour (or more) a round marked as run would have cost.
@@ -1173,11 +1459,20 @@ fx_url = "http://stub/fx"
         impl Upstream for Flaky {
             async fn fetch(
                 &self,
-                _request: &UpstreamRequest,
+                request: &UpstreamRequest,
             ) -> std::result::Result<Vec<u8>, UpstreamError> {
                 *self.asked.lock().unwrap() += 1;
                 if *self.up.lock().unwrap() {
-                    Ok(include_bytes!("fixtures/blockchair.json").to_vec())
+                    Ok(if request.url.contains("/bitcoin/blocks") {
+                        BTC_TOTALS
+                    } else if request.url.contains("/ecash/blocks") {
+                        XEC_TOTALS
+                    } else if request.url.contains("/dogecoin/blocks") {
+                        DOGE_TOTALS
+                    } else {
+                        include_bytes!("fixtures/blockchair.json")
+                    }
+                    .to_vec())
                 } else {
                     Err(UpstreamError::Status(430))
                 }
@@ -1209,17 +1504,17 @@ fx_url = "http://stub/fx"
         // Back up when the rest ends: asked at once, and the reading is stored.
         *flaky.up.lock().unwrap() = true;
         collector.tick(T0 + 1800, &mut rng).await;
-        assert_eq!(asked(), 3);
+        assert_eq!(asked(), 6);
         assert_eq!(
             feed.store()
-                .floor("difficulty/btc-mainnet", u64::MAX)?
+                .floor("hashrate/btc-mainnet", u64::MAX)?
                 .map(|(time, _)| time),
             Some(T0 + 1800)
         );
         // From here the statistics round keeps its hour.
         assert_eq!(due()?, T0 + 1800 + 3600);
         collector.tick(T0 + 1860, &mut rng).await;
-        assert_eq!(asked(), 3);
+        assert_eq!(asked(), 6);
         Ok(())
     }
 

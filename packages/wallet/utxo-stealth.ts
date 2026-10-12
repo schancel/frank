@@ -25,6 +25,8 @@ export interface UtxoStealthDerivation {
  * scalars internally, and invalidates signing capabilities when the captured session closes. */
 export interface UtxoStealthCustody {
   readonly identityPublicKey: Uint8Array;
+  /** Synchronous captured-session guard, checked immediately before signing or mutation. */
+  assertActive(): void;
   deriveStealthSigner(derivation: UtxoStealthDerivation): Promise<SigningKey>;
 }
 

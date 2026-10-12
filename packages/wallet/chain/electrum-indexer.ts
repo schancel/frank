@@ -51,6 +51,18 @@ export function electrumIndexer(client: ElectrumClient): UtxoIndexer {
       );
       return history.length > 0;
     },
+    async transactionConfirmation(txid, scriptPubKey) {
+      const history = await client.getHistory(
+        toElectrumScriptHash(scriptPubKey)
+      );
+      const matches = history.filter((item) => item.tx_hash === txid);
+      if (
+        matches.length > 1 ||
+        matches.some((item) => !Number.isSafeInteger(item.height))
+      )
+        throw new Error("Invalid Electrum transaction confirmation");
+      return matches[0]?.height > 0 ? { height: matches[0].height } : undefined;
+    },
     async hasTransaction(txid) {
       try {
         await client.request<string>("blockchain.transaction.get", txid);

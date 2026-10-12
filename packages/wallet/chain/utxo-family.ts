@@ -174,14 +174,21 @@ export function openRelayUtxoChain(params: {
         const source = options?.stealthCustody;
         const guarded: UtxoStealthCustody | undefined = source && {
           identityPublicKey: new Uint8Array(source.identityPublicKey),
+          assertActive() {
+            requireOpen();
+            source.assertActive();
+          },
           async deriveStealthSigner(derivation) {
             requireOpen();
+            source.assertActive();
             const signer = await source.deriveStealthSigner(derivation);
             requireOpen();
+            source.assertActive();
             return {
               publicKey: new Uint8Array(signer.publicKey),
               sign(digest) {
                 requireOpen();
+                source.assertActive();
                 return signer.sign(digest);
               },
             };

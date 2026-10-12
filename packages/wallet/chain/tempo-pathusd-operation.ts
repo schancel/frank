@@ -4,7 +4,7 @@ import type { EvmNativeSource } from '../storage/evm-native-operation-journal'
 import { PROTOCOL_CHAINS } from './chains-registry'
 import {
   decodeSignedTempoTransaction,
-  encodeSignedTempoTransaction,
+  encodeSignedTempoTransaction, canonicalTempoHash,
   tempoPathUsdMaximumFee,
   tempoSigningHash,
   type TempoTransaction,
@@ -210,10 +210,12 @@ function validate(row: TempoPathUsdOperation): TempoPathUsdOperation {
     throw new Error('Invalid Tempo submission state')
   if ('feeAtomic' in row.observation) {
     const included = row.observation
-    const includedAttempt = attempts.find(attempt => attempt.transactionHash === included.transactionHash)
+    const includedAttempt = attempts.find(attempt => 
+      attempt.transactionHash === included.transactionHash ||
+      (attempt.signedRaw && canonicalTempoHash(attempt.signedRaw) === included.transactionHash)
+    )
     if (
       !row.exposed ||
-      !hashes.has(included.transactionHash) ||
       !includedAttempt ||
       typeof included.finalized !== 'boolean' ||
       !HASH.test(included.blockHash) ||
@@ -231,7 +233,7 @@ function validate(row: TempoPathUsdOperation): TempoPathUsdOperation {
 
 function receiptObservation(row: TempoPathUsdOperation, attempt: TempoSignedAttempt, receipt: TempoReceipt, finalized: boolean): TempoPathUsdOperation['observation'] {
   if (
-    receipt.transactionHash !== attempt.transactionHash ||
+    (receipt.transactionHash !== attempt.transactionHash && (!attempt.signedRaw || receipt.transactionHash !== canonicalTempoHash(attempt.signedRaw))) ||
     canonicalAddress(receipt.feeToken) !== PATHUSD ||
     canonicalAddress(receipt.feePayer) !== row.source.address ||
     !HASH.test(receipt.blockHash) ||
@@ -264,7 +266,7 @@ function receiptObservation(row: TempoPathUsdOperation, attempt: TempoSignedAtte
   }
   return {
     state,
-    transactionHash: attempt.transactionHash,
+    transactionHash: receipt.transactionHash,
     finalized,
     blockHash: receipt.blockHash,
     blockNumber: receipt.blockNumber,
@@ -614,7 +616,13 @@ export class TempoPathUsdTransfers {
     await this.rpc.verifyChain(this.chainIdentifier)
     let observation: TempoPathUsdOperation['observation'] = { state: 'pending' }
     for (const attempt of signedAttempts(row)) {
-      const receipt = await this.rpc.getReceipt(attempt.transactionHash)
+      let receipt = await this.rpc.getReceipt(attempt.transactionHash)
+      if (!receipt && attempt.signedRaw) {
+        const canonical = canonicalTempoHash(attempt.signedRaw)
+        if (canonical !== attempt.transactionHash) {
+          receipt = await this.rpc.getReceipt(canonical)
+        }
+      }
       if (!receipt) continue
       if (observation.state !== 'pending') throw new Error('Multiple Tempo candidates included for one nonce')
       observation = receiptObservation(row, attempt, receipt, await this.rpc.isFinalizedReceipt(receipt))

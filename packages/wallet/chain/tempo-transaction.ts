@@ -192,13 +192,31 @@ export function decodeSignedTempoTransaction(
   if (encodeRlp(payload(transaction)) !== encodeRlp(decoded.slice(0, 13)))
     throw new Error("Noncanonical Tempo transaction payload");
   const signatureBytes = getBytes(decoded[13]);
-  if (signatureBytes.length !== 65 || signatureBytes[64]! > 1)
+  if (signatureBytes.length !== 65 || (signatureBytes[64]! > 1 && signatureBytes[64]! !== 27 && signatureBytes[64]! !== 28))
     throw new Error("Invalid Tempo transaction signature");
   const unsigned = `0x76${encodeRlp(decoded.slice(0, 13)).slice(2)}`;
   const sender = recoverAddress(keccak256(unsigned), {
     r: hexlify(signatureBytes.slice(0, 32)),
     s: hexlify(signatureBytes.slice(32, 64)),
-    yParity: signatureBytes[64]! as 0 | 1,
+    yParity: (signatureBytes[64]! === 27 || signatureBytes[64]! === 28) ? (signatureBytes[64]! - 27) as 0|1 : signatureBytes[64]! as 0|1,
   });
   return { sender, transactionHash: keccak256(rawTransaction), transaction };
+}
+
+/** Recomputes the node's canonical hash for old stored bytes that used 0/1 instead of 27/28. */
+export function canonicalTempoHash(rawTransaction: string): string {
+  if (!rawTransaction.startsWith("0x76")) return keccak256(rawTransaction);
+  const decoded = decodeRlp(`0x${rawTransaction.slice(4)}`);
+  if (!Array.isArray(decoded) || decoded.length !== 14 || typeof decoded[13] !== "string") return keccak256(rawTransaction);
+  const signatureBytes = getBytes(decoded[13]);
+  if (signatureBytes.length !== 65) return keccak256(rawTransaction);
+  const yParity = signatureBytes[64]!;
+  const v = (yParity === 27 || yParity === 28) ? yParity : (yParity ? 28 : 27);
+  const envelope = hexlify(
+    Uint8Array.from([
+      ...signatureBytes.slice(0, 64),
+      v,
+    ])
+  );
+  return keccak256(`0x76${encodeRlp([...decoded.slice(0, 13), envelope]).slice(2)}`);
 }

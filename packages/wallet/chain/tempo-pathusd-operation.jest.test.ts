@@ -391,3 +391,60 @@ describe('Tempo PathUSD transfer ownership', () => {
     expect(tempoPathUsdReceivedTransfer({ ...transferLog(), address: SOURCE }, RECIPIENT)).toBeNull()
   })
 })
+
+it('reconciles an old-format (00/01) signed transaction to the canonical (1b/1c) hash', async () => {
+  const store = new MemoryRecordStore<TempoPathUsdOperation>()
+  const journal = new TempoPathUsdJournal(store)
+  const opId = '0x45b1098860ed94ffcda30151b4bf2b1d2ce26329f673e69097f88d22e5c0c185'
+  const oldRaw = '0x76f8cc82a5bf018447868c018309efbaf85ef85c9420c000000000000000000000000000000000000080b844a9059cbb0000000000000000000000006957dffd08e109296ccdc0738e4695832e6e59ee0000000000000000000000000000000000000000000000000000000000002710c0808080809420c000000000000000000000000000000000000080c0b841b4737576e2692135c61f899d7d82bc22bbb8d198cd9667e8f3cf998056fc2e4f466942711a93a266aa852833b18bc99ad5dbc83b03afc5b7b521db59c865f42800'
+  const oldHash = '0x9f15b9bc4b4b2e0255d9e79197c35ad4aacf1fd81078a2d0129761fddb2a7f70'
+  const canonicalHash = '0x77529f6ba14bba266a6bf8d95ca793acd8b43883ad8d38ffed958c534527234f'
+
+  const record: TempoPathUsdOperation = {
+    version: 1,
+    operationId: opId,
+    chainIdentifier: 'tempo-testnet',
+    source: { kind: 'main', address: '0x79fac89646a851c6a43dd298bba40e4e20fcc6cc' },
+    recipient: '0x6957dffd08e109296ccdc0738e4695832e6e59ee',
+    amountAtomic: '10000',
+    nonce: '0',
+    gasLimit: '651194',
+    maxFeePerGas: '1200000001',
+    maxPriorityFeePerGas: '1',
+    maximumFeeAtomic: '782',
+    signedRaw: oldRaw,
+    transactionHash: oldHash,
+    priorAttempts: [],
+    exposed: true,
+    submission: { state: 'inconsistent-rpc' },
+    observation: { state: 'nonce-consumed-unknown', finalizedNonce: '1' }
+  }
+  await store.compareAndPut(opId, undefined, record)
+
+  const rpc = {
+    getReceipt: jest.fn(async (hash) => {
+      if (hash === canonicalHash) {
+        return {
+          transactionHash: canonicalHash,
+          from: record.source.address,
+          feePayer: record.source.address,
+          status: 1,
+          blockHash: '0x1234567890123456789012345678901234567890123456789012345678901234',
+          blockNumber: 123456,
+          gasUsed: 1234n,
+          effectiveGasPrice: 1234n,
+          feeToken: PATHUSD,
+          feeAtomic: '172',
+          logs: [{ address: PATHUSD, topics: abi.encodeEventLog(event, [record.source.address, record.recipient, 10000n]).topics, data: abi.encodeEventLog(event, [record.source.address, record.recipient, 10000n]).data }]
+        }
+      }
+      return null
+    }),
+    isFinalizedReceipt: async () => true,
+    verifyChain: async () => {},
+  }
+
+  const transfers = new TempoPathUsdTransfers('tempo-testnet', journal, rpc as any, async (_, task) => task())
+  const reconciled = await transfers.reconcile(opId)
+  expect(reconciled.observation).toMatchObject({ state: 'included-success', transactionHash: canonicalHash, feeAtomic: '1', finalized: true })
+})

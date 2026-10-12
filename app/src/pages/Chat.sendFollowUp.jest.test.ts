@@ -3,10 +3,22 @@
 // methods run against a minimal `this`.
 
 let mockWallet = { id: 'wallet-a' }
+const mockAccountState = { revision: 1, status: 'ready', account: {} }
+const mockCaptureFinancialWallet = jest.fn()
+const mockCreateFinancialContext = jest.fn(async (chainIdentifier: string) => ({
+  chain: { chainIdentifier },
+  captureWallet: mockCaptureFinancialWallet,
+}))
 let mockStoredRead: Promise<void> | undefined
 let mockReadStarted: (() => void) | undefined
 jest.mock('../accounts/session', () => ({
-  accountStatus: { revision: 1, status: 'ready' },
+  accountStatus: mockAccountState,
+  accountSession: {
+    get state() {
+      return mockAccountState
+    },
+    getWallet: async () => mockWallet,
+  },
 }))
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -20,6 +32,10 @@ jest.mock('../adapters/level-message-store', () => ({
     },
   }),
 }))
+jest.mock('../accounts/native-transfer', () => ({
+  createNativeTransferContext: (chainIdentifier: string) =>
+    mockCreateFinancialContext(chainIdentifier),
+}))
 jest.mock('../utils/clients', () => ({ useMonadWallet: () => mockWallet }))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -29,6 +45,10 @@ jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     fromDisplayAmount: (s: string) => BigInt(Math.round(Number(s) * 1e18)),
     unit: 'MON',
+    chainIdentifier: 'monad-testnet',
+    parseAddress: (raw: string) => ({ raw }),
+    fetchProfile: jest.fn(),
+    directMessages: { quoteStamp: jest.fn() },
 
     nativeTransfers: { getBalance: jest.fn() },
     toDisplayAmount: (n: bigint) => n.toString(),
@@ -44,10 +64,21 @@ jest.mock('../utils/own-address', () => ({
   useReactiveOwnCanonicalAddress: () => ({ value: '0xMe' }),
 }))
 
+import { randomUUID } from 'node:crypto'
 import ChatPage from './Chat.vue'
+import type {
+  PreparedStealthPayment,
+  StealthPaymentCapability,
+  StealthPaymentIntent,
+  StealthPaymentQuote,
+} from '@frank/wallet/stealth-payment'
+import type {
+  ReviewedStealthDialogIntent,
+  StealthDialogRequest,
+} from '../stealth-payments/options'
 import { errorNotify } from '../utils/notifications'
 import { activeChain } from '@frank/wallet/chain'
-import { accountStatus } from '../accounts/session'
+import { accountStatus, accountSession } from '../accounts/session'
 import { useActiveWallet } from '../composables/useActiveWallet'
 import {
   commitmentOf,
@@ -171,7 +202,7 @@ describe('Chat.vue priced action availability and custody affinity', () => {
     jest.mocked(useActiveWallet).mockReset()
   })
 
-  it.each(['email', 'stealth', 'swap'])(
+  it.each(['email', 'swap'])(
     'handles an unavailable automatic default before %s financial preparation',
     async action => {
       const conversation = { id: 'email-1', name: 'alice@example.com' }
@@ -187,15 +218,10 @@ describe('Chat.vue priced action availability and custody affinity', () => {
           conversationId: conversation.id,
           items: [],
         })
-      else if (action === 'stealth')
-        await methods.sendStealthPayment.call(self, { value: 1n })
       else
         await methods.sendSwapOffer.call(self, { type: 'text', text: 'offer' })
       expect(errorNotify).toHaveBeenCalledWith(
         new Error('localized missing rate'),
-        ...(action === 'stealth'
-          ? [{ fallbackKey: 'sendStealthDialog.notSent' }]
-          : []),
       )
       expect(self.sendDirectMessage).not.toHaveBeenCalled()
       expect(useActiveWallet).not.toHaveBeenCalled()
@@ -204,14 +230,11 @@ describe('Chat.vue priced action availability and custody affinity', () => {
     },
   )
 
-  it.each(['email', 'stealth', 'swap'])(
+  it.each(['email', 'swap'])(
     'keeps an explicit zero stamp available for %s',
     async action => {
       const original = mockWallet
-      const prepareContactPayment = jest
-        .fn()
-        .mockResolvedValue({ item: { type: 'text', text: 'payment' } })
-      mockWallet = { id: 'explicit-free', ...{ prepareContactPayment } }
+      mockWallet = { id: 'explicit-free' }
       jest
         .mocked(useActiveWallet)
         .mockImplementation(async () => mockWallet as never)
@@ -228,8 +251,6 @@ describe('Chat.vue priced action availability and custody affinity', () => {
             conversationId: conversation.id,
             items: [],
           })
-        else if (action === 'stealth')
-          await methods.sendStealthPayment.call(self, { value: 1n })
         else
           await methods.sendSwapOffer.call(self, {
             type: 'text',
@@ -244,90 +265,443 @@ describe('Chat.vue priced action availability and custody affinity', () => {
       }
     },
   )
+})
 
-  it('refuses current wallet B returned after a custody await for quote A, before preparation', async () => {
-    const original = mockWallet
-    let release!: () => void
-    const waiting = new Promise<void>(resolve => {
-      release = resolve
+// These exercise Chat + the real review/prepare-to-wire handoff. The financial capability
+// below is an explicit boundary fixture, not evidence of SDK signing or owner composition.
+describe('Chat.vue reviewed stealth financial handoff', () => {
+  const uuidDescriptor = Object.getOwnPropertyDescriptor(
+    globalThis.crypto,
+    'randomUUID',
+  )
+  beforeAll(() => {
+    // jsdom lacks this standard browser API; use the real platform UUID implementation.
+    Object.defineProperty(globalThis.crypto, 'randomUUID', {
+      configurable: true,
+      value: randomUUID,
     })
-    const prepareA = jest.fn(),
-      prepareB = jest.fn()
-    mockWallet = { id: 'a', ...{ prepareContactPayment: prepareA } }
-    // Production getWallet returns the current shared wallet after initialization, not stale A.
-    jest.mocked(useActiveWallet).mockImplementation(async () => {
-      await waiting
-      return mockWallet as never
+  })
+  afterAll(() => {
+    if (uuidDescriptor)
+      Object.defineProperty(globalThis.crypto, 'randomUUID', uuidDescriptor)
+    else Reflect.deleteProperty(globalThis.crypto, 'randomUUID')
+  })
+  const publicKey = Uint8Array.from([2, ...Array<number>(32).fill(17)])
+  const request: StealthDialogRequest = {
+    address: '0xDealer',
+    chainIdentifier: 'xec-testnet',
+    assetKey: 'xec-testnet:native',
+    asset: { kind: 'native' },
+    amountAtomic: 100n,
+    memo: 'lunch',
+  }
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(done => {
+      resolve = done
     })
-    const self = fakeThis()
-    try {
-      const sending = methods.sendStealthPayment.call(self, { value: 1n })
-      expect(self.stealthPreparation).toMatchObject({
-        recipient: self.recipientAddress || self.address,
-        amount: '1 MON',
-      })
-      expect(self.sendDirectMessage).not.toHaveBeenCalled()
-      expect(useActiveWallet).toHaveBeenCalledTimes(1)
-      mockWallet = { id: 'b', ...{ prepareContactPayment: prepareB } }
-      release()
-      await sending
-      expect(self.stealthPreparation).toBeNull()
-      expect(prepareA).not.toHaveBeenCalled()
-      expect(prepareB).not.toHaveBeenCalled()
-      expect(self.sendDirectMessage).not.toHaveBeenCalled()
-      expect(errorNotify).toHaveBeenCalledWith(
-        new Error('chat.sendContextChanged'),
-        { fallbackKey: 'sendStealthDialog.notSent' },
-      )
-    } finally {
-      mockWallet = original
+    return { promise, resolve }
+  }
+  function fixture(over: Record<string, unknown> = {}) {
+    const self = fakeThis({
+      conversation: { id: 'conversation-a' },
+      stampUnavailable: '',
+      stealthDialog: true,
+      stealthReviewSequence: 0,
+      stealthReview: null,
+      stealthReviewedRequest: null,
+      stealthQuote: { status: 'idle' },
+      ...over,
+    })
+    const prepared = (operationId: string): PreparedStealthPayment => ({
+      operationId,
+      chainIdentifier: request.chainIdentifier,
+      asset: request.asset,
+      amountAtomic: request.amountAtomic,
+      recipientAddress: 'ectest:reviewed-destination',
+      recipientDestination: Uint8Array.from(
+        Buffer.from(`76a914${'12'.repeat(20)}88ac`, 'hex'),
+      ),
+      recipientSpendPublicKey: publicKey.slice(),
+      ephemeralPublicKey: publicKey.slice(),
+      members: [
+        {
+          rawTransaction: '010203',
+          txHash: 'ab'.repeat(32),
+          recipientAmountAtomic: 100n,
+          vout: 2,
+        },
+      ],
+    })
+    const quote = jest.fn(
+      async (
+        intent: Omit<StealthPaymentIntent, 'maxNativeFeeAtomic'>,
+      ): Promise<StealthPaymentQuote> => ({
+        ...prepared(intent.operationId),
+        nativeBalanceAtomic: 1000n,
+        assetBalanceAtomic: 1000n,
+        estimatedNativeFeeAtomic: 10n,
+      }),
+    )
+    const prepare = jest.fn(async (intent: StealthPaymentIntent) =>
+      prepared(intent.operationId),
+    )
+    const release = jest.fn(async () => true)
+    const expose = jest.fn(async () => undefined),
+      submit = jest.fn(async () => ({
+        status: 'pending' as const,
+        intendedAmountAtomic: request.amountAtomic,
+      }))
+    const payments: StealthPaymentCapability = {
+      quote,
+      prepare,
+      release,
+      expose,
+      submit,
+      reconcile: jest.fn(async () => ({
+        status: 'pending',
+        intendedAmountAtomic: request.amountAtomic,
+      })),
+      get: jest.fn(async () => undefined),
+      list: jest.fn(async () => []),
     }
+    const wallet = {
+      chainIdentifier: request.chainIdentifier,
+      stealthPayments: payments,
+    }
+    mockCaptureFinancialWallet.mockImplementation(async () => {
+      const messagingWallet = mockWallet
+      const revision = mockAccountState.revision
+      return {
+        wallet,
+        assertCurrent: async () => {
+          if (
+            mockWallet !== messagingWallet ||
+            mockAccountState.revision !== revision
+          )
+            throw new Error('Captured financial owner changed')
+        },
+      }
+    })
+    return {
+      self,
+      wallet,
+      payments,
+      quote,
+      prepare,
+      prepared,
+      release,
+      expose,
+      submit,
+    }
+  }
+  async function review(f: ReturnType<typeof fixture>) {
+    await methods.reviewStealthPayment.call(f.self, request)
+    expect(
+      f.self.stealthQuote.status === 'error'
+        ? f.self.stealthQuote.message
+        : f.self.stealthQuote.status,
+    ).toBe('ready')
+    const state = f.self.stealthQuote
+    const intent: ReviewedStealthDialogIntent = {
+      ...request,
+      quote: state.payment,
+      maxNativeFeeAtomic: state.maxNativeFeeAtomic,
+      stampValue: state.stampValueAtomic,
+    }
+    return intent
+  }
+  beforeEach(() => {
+    jest.restoreAllMocks()
+    jest.mocked(errorNotify).mockReset()
+    mockAccountState.status = 'ready'
+    mockAccountState.revision = 1
+    mockAccountState.account = {}
+    mockWallet = { id: 'messaging-owner-a' }
+    mockCaptureFinancialWallet.mockReset()
+    mockCreateFinancialContext.mockClear()
+    jest
+      .mocked(activeChain.fetchProfile)
+      .mockReset()
+      .mockResolvedValue({ pubKey: publicKey } as never)
+    jest
+      .mocked(activeChain.directMessages.quoteStamp!)
+      .mockReset()
+      .mockImplementation(async params => ({
+        status: 'available',
+        chainIdentifier: 'monad-testnet',
+        stampValueAtomic: params.stampValue,
+        spendableCapacityAtomic: params.stampValue + 2n,
+        maximumNativeFeeAtomic: params.stampValue === 0n ? 0n : 2n,
+      }))
+  })
+  afterEach(() => {
+    jest.restoreAllMocks()
+    mockWallet = { id: 'wallet-a' }
+    mockAccountState.status = 'ready'
+    mockAccountState.revision = 1
   })
 
-  it('retains A prepared authorization after a switch and never sends it with B', async () => {
-    const original = mockWallet
-    let release!: () => void
-    let started!: () => void
-    const prepared = new Promise<void>(resolve => {
-      started = resolve
+  it('reports an unavailable default during review before opening either financial or messaging custody', async () => {
+    const f = fixture({
+      stampAmount: '',
+      stampUnavailable: 'localized missing rate',
     })
-    const waiting = new Promise<void>(resolve => {
-      release = resolve
+    const getWallet = jest.spyOn(accountSession, 'getWallet')
+    await methods.reviewStealthPayment.call(f.self, request)
+    expect(f.self.stealthQuote).toEqual({
+      status: 'error',
+      message: 'Error: localized missing rate',
     })
-    const retained = {
-      item: { type: 'text', text: 'original A payment' },
-      stampValue: 10n ** 16n,
-    }
-    const journal: unknown[] = []
-    const prepareA = jest.fn(async () => {
-      journal.push(retained)
-      started()
-      await waiting
-      return retained
+    expect(getWallet).not.toHaveBeenCalled()
+    expect(mockCaptureFinancialWallet).not.toHaveBeenCalled()
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+
+  it('reviews an explicit zero stamp without signing, then hands exact payment bytes and financial refs to the captured messaging wallet', async () => {
+    const f = fixture({ stampAmount: '0' })
+    const messagingWallet = mockWallet
+    const intent = await review(f)
+    expect(f.quote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chainIdentifier: request.chainIdentifier,
+        amountAtomic: 100n,
+        recipientSpendPublicKey: publicKey,
+      }),
+    )
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+    expect(mockCreateFinancialContext).toHaveBeenCalledWith('xec-testnet')
+    expect(intent.stampValue).toBe(0n)
+    expect(intent.maxNativeFeeAtomic).toBe(10n)
+    await methods.sendStealthPayment.call(f.self, intent)
+    expect(f.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: intent.quote.operationId,
+        chainIdentifier: request.chainIdentifier,
+        amountAtomic: 100n,
+        maxNativeFeeAtomic: 10n,
+        recipientSpendPublicKey: publicKey,
+      }),
+    )
+    expect(f.self.sendDirectMessage).toHaveBeenCalledTimes(1)
+    expect(f.self.sendDirectMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        wallet: messagingWallet,
+        address: request.address,
+        conversationId: 'conversation-a',
+        stampValue: 0n,
+        financialOperations: [
+          {
+            chainIdentifier: 'xec-testnet',
+            operationId: intent.quote.operationId,
+          },
+        ],
+        items: [
+          {
+            type: 'stealth-asset',
+            memo: 'lunch',
+            transfers: [
+              expect.objectContaining({
+                chainIdentifier: 'xec-testnet',
+                rawTx: '010203',
+                txId: 'ab'.repeat(32),
+                vout: 2,
+                amountAtomic: '100',
+                destination: `76a914${'12'.repeat(20)}88ac`,
+              }),
+            ],
+          },
+        ],
+      }),
+    )
+    expect(f.release).not.toHaveBeenCalled()
+    expect(f.expose).not.toHaveBeenCalled()
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(f.self.stealthDialog).toBe(false)
+    expect(f.self.sendingMessage).toBe(false)
+    expect(errorNotify).not.toHaveBeenCalled()
+  })
+
+  it('shows pending quote state across profile lookup and ignores a quote for a route that changed', async () => {
+    const f = fixture()
+    const profile = deferred<never>()
+    const started = deferred<void>()
+    jest.mocked(activeChain.fetchProfile).mockImplementationOnce(() => {
+      started.resolve()
+      return profile.promise
     })
-    const prepareB = jest.fn()
-    mockWallet = { id: 'a', ...{ prepareContactPayment: prepareA } }
-    jest
-      .mocked(useActiveWallet)
-      .mockImplementation(async () => mockWallet as never)
-    const self = fakeThis()
-    try {
-      const sending = methods.sendStealthPayment.call(self, { value: 1n })
-      await prepared
-      mockWallet = { id: 'b', ...{ prepareContactPayment: prepareB } }
-      release()
-      await sending
-      expect(prepareA).toHaveBeenCalledTimes(1)
-      expect(prepareB).not.toHaveBeenCalled()
-      expect(self.sendDirectMessage).not.toHaveBeenCalled()
-      expect(journal).toEqual([retained])
-      expect(errorNotify).toHaveBeenCalledWith(
-        new Error('chat.sendContextChanged'),
-        { fallbackKey: 'sendStealthDialog.messageEnded' },
-      )
-    } finally {
-      mockWallet = original
-    }
+    const pending = methods.reviewStealthPayment.call(f.self, request)
+    await started.promise
+    expect(f.self.stealthQuote.status).toBe('pending')
+    expect(f.prepare).not.toHaveBeenCalled()
+    f.self.address = '0xAnotherPeer'
+    profile.resolve({ pubKey: publicKey } as never)
+    await pending
+    expect(f.self.stealthQuote.status).toBe('error')
+    expect(f.self.stealthReview).toBeNull()
+    expect(f.quote).not.toHaveBeenCalled()
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+
+  it.each(['route', 'account'])(
+    'invalidates an accepted review after %s changes before preparation',
+    async change => {
+      const f = fixture()
+      const intent = await review(f)
+      if (change === 'route') f.self.conversation = { id: 'conversation-b' }
+      else {
+        mockWallet = { id: 'messaging-owner-b' }
+        mockAccountState.revision++
+      }
+      await methods.sendStealthPayment.call(f.self, intent)
+      expect(f.prepare).not.toHaveBeenCalled()
+      expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+      expect(f.self.stealthReview).toBeNull()
+      expect(f.self.sendingMessage).toBe(false)
+      expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+        fallbackKey: 'sendStealthDialog.messageEnded',
+      })
+    },
+  )
+
+  it('rejects a current wallet returned after account replacement during the custody await, before quoting or preparation', async () => {
+    const f = fixture()
+    const waiting = deferred<never>()
+    const started = deferred<void>()
+    jest.spyOn(accountSession, 'getWallet').mockImplementationOnce(() => {
+      started.resolve()
+      return waiting.promise
+    })
+    const reviewing = methods.reviewStealthPayment.call(f.self, request)
+    await started.promise
+    mockWallet = { id: 'messaging-owner-b' }
+    mockAccountState.revision++
+    waiting.resolve(mockWallet as never)
+    await reviewing
+    expect(f.self.stealthQuote.status).toBe('error')
+    expect(f.self.stealthReview).toBeNull()
+    expect(f.quote).not.toHaveBeenCalled()
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+  })
+
+  it('clears busy state after preparation fails and requires a fresh review for a deliberate retry', async () => {
+    const f = fixture()
+    const intent = await review(f)
+    f.prepare.mockRejectedValueOnce(new Error('construction unavailable'))
+    await methods.sendStealthPayment.call(f.self, intent)
+    expect(f.self.sendingMessage).toBe(false)
+    expect(f.self.stealthDialog).toBe(true)
+    expect(f.self.stealthReview).toBeNull()
+    expect(f.release).toHaveBeenCalledWith(intent.quote.operationId)
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+    await methods.sendStealthPayment.call(f.self, intent)
+    expect(f.prepare).toHaveBeenCalledTimes(1)
+    const retry = await review(f)
+    expect(retry.quote.operationId).not.toBe(intent.quote.operationId)
+    await methods.sendStealthPayment.call(f.self, retry)
+    expect(f.prepare).toHaveBeenCalledTimes(2)
+    expect(f.self.sendDirectMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses changed amount or fee approval without preparing or discarding the accepted review', async () => {
+    const f = fixture()
+    const intent = await review(f)
+    await methods.sendStealthPayment.call(f.self, {
+      ...intent,
+      amountAtomic: 101n,
+    })
+    await methods.sendStealthPayment.call(f.self, {
+      ...intent,
+      maxNativeFeeAtomic: 11n,
+    })
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+    expect(f.self.stealthReview).not.toBeNull()
+  })
+
+  it('keeps the dialog busy during asynchronous preparation and drops a duplicate send', async () => {
+    const f = fixture()
+    const intent = await review(f)
+    const signed = deferred<PreparedStealthPayment>()
+    const started = deferred<void>()
+    f.prepare.mockImplementationOnce(() => {
+      started.resolve()
+      return signed.promise
+    })
+    const sending = methods.sendStealthPayment.call(f.self, intent)
+    await started.promise
+    expect(f.self.sendingMessage).toBe(true)
+    expect(f.self.stealthDialog).toBe(true)
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+    await methods.sendStealthPayment.call(f.self, intent)
+    expect(f.prepare).toHaveBeenCalledTimes(1)
+    signed.resolve(f.prepared(intent.quote.operationId))
+    await sending
+    expect(f.self.sendDirectMessage).toHaveBeenCalledTimes(1)
+    expect(f.self.sendingMessage).toBe(false)
+  })
+
+  it('never hands A prepared authorization to B after custody changes while preparation awaits', async () => {
+    const f = fixture()
+    const intent = await review(f)
+    const signed = deferred<PreparedStealthPayment>()
+    const started = deferred<void>()
+    const original = f.prepared(intent.quote.operationId)
+    f.prepare.mockImplementationOnce(() => {
+      started.resolve()
+      return signed.promise
+    })
+    const sending = methods.sendStealthPayment.call(f.self, intent)
+    await started.promise
+    mockWallet = { id: 'messaging-owner-b' }
+    mockAccountState.revision++
+    signed.resolve(original)
+    await sending
+    expect(f.prepare).toHaveBeenCalledTimes(1)
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
+    // Expired custody cannot prove safe release. The owner remains responsible for the operation.
+    expect(f.release).not.toHaveBeenCalled()
+    expect(f.expose).not.toHaveBeenCalled()
+    expect(f.submit).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendStealthDialog.messageEnded',
+    })
+  })
+
+  it('leaves an adopted failed delivery for the outgoing owner and requires a new review rather than preparing again', async () => {
+    const f = fixture()
+    const intent = await review(f)
+    f.self.sendDirectMessage.mockRejectedValueOnce(
+      new Error('relay down after adoption'),
+    )
+    await methods.sendStealthPayment.call(f.self, intent)
+    expect(f.self.sendDirectMessage).toHaveBeenCalledTimes(1)
+    expect(f.release).not.toHaveBeenCalled()
+    expect(f.self.stealthReview).toBeNull()
+    await methods.sendStealthPayment.call(f.self, intent)
+    expect(f.prepare).toHaveBeenCalledTimes(1)
+    expect(f.self.sendDirectMessage).toHaveBeenCalledTimes(1)
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendStealthDialog.messageEnded',
+    })
+  })
+
+  it('reports unsupported concrete owner capability instead of falling back to a legacy contact payment', async () => {
+    const f = fixture()
+    const legacy = jest.fn()
+    mockCaptureFinancialWallet.mockResolvedValueOnce({
+      wallet: { prepareContactPayment: legacy },
+      assertCurrent: async () => undefined,
+    })
+    await methods.reviewStealthPayment.call(f.self, request)
+    expect(f.self.stealthQuote.status).toBe('error')
+    expect(f.self.stealthQuote.message).toContain('quoting is unavailable')
+    expect(legacy).not.toHaveBeenCalled()
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(f.self.sendDirectMessage).not.toHaveBeenCalled()
   })
 })
 

@@ -47,6 +47,98 @@ function harness(store = new MemoryRecordStore<TempoReceiveBatch>()) {
 }
 
 describe('Tempo finalized PathUSD receive cursor', () => {
+  test('bounded catch-up persists contiguous pages and resumes after reopen', async () => {
+    const h = harness()
+    h.setHead(25_000n)
+    h.setTransfers([])
+    expect(await h.scanner.syncCatchUp(RECIPIENT, 0n, async () => undefined, 2)).toEqual({
+      nextBlock: 20_000n, finalizedBlock: 25_000n, delivered: 0, complete: false,
+    })
+    expect(h.ranges).toEqual([[0n, 9_999n], [10_000n, 19_999n]])
+    const reopened = harness(h.store)
+    reopened.setHead(25_000n)
+    reopened.setTransfers([])
+    expect(await reopened.scanner.syncCatchUp(RECIPIENT, 0n, async () => undefined, 2)).toEqual({
+      nextBlock: 25_001n, finalizedBlock: 25_000n, delivered: 0, complete: true,
+    })
+    expect(reopened.ranges).toEqual([[20_000n, 25_000n]])
+  })
+
+  test('transient range failure halves same cursor and never skips the failed range', async () => {
+    const store = new MemoryRecordStore<TempoReceiveBatch>()
+    const calls: [bigint, bigint][] = []
+    const applied: string[] = []
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: 10_000n, hash: BLOCK }),
+      blockHash: async () => BLOCK,
+      receivedTransfers: async (_recipient, from, to) => {
+        calls.push([from, to])
+        if (to - from >= 5_000n) throw new Error('HTTP 502')
+        return from <= 9_000n && to >= 9_000n ? [{
+          transactionHash: TX, logIndex: 0, blockHash: BLOCK, blockNumber: 9_000,
+          sender: SOURCE, recipient: RECIPIENT, amountAtomic: 1_000_000n,
+        }] : []
+      },
+    }
+    const scanner = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    expect(await scanner.syncCatchUp(RECIPIENT, 0n, async item => { applied.push(item.id) }, 3)).toEqual({
+      nextBlock: 10_001n, finalizedBlock: 10_000n, delivered: 1, complete: true,
+    })
+    expect(applied).toEqual([`tempo-testnet:${TX}:0`])
+    expect(calls).toEqual([[0n, 9_999n], [0n, 4_999n], [5_000n, 10_000n], [5_000n, 7_500n], [7_501n, 10_000n]])
+    expect(store.all().map(row => [row.fromBlock, row.toBlock])).toEqual([
+      ['0', '4999'], ['5000', '7500'], ['7501', '10000'],
+    ])
+    const reopened = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    expect(await reopened.syncCatchUp(RECIPIENT, 0n, async () => { throw new Error('duplicate') })).toEqual({
+      nextBlock: 10_001n, finalizedBlock: 10_000n, delivered: 0, complete: true,
+    })
+  })
+
+  test('persistent rate limit leaves durable cursor unchanged and can retry later', async () => {
+    const store = new MemoryRecordStore<TempoReceiveBatch>()
+    let blocked = true
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: 10_000n, hash: BLOCK }),
+      blockHash: async () => BLOCK,
+      receivedTransfers: async () => {
+        if (blocked) throw new Error('HTTP 429 rate limit')
+        return []
+      },
+    }
+    const scanner = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    await expect(scanner.syncCatchUp(RECIPIENT, 0n, async () => undefined, 1)).rejects.toThrow('429')
+    expect(store.all()).toEqual([])
+    blocked = false
+    expect((await scanner.syncCatchUp(RECIPIENT, 0n, async () => undefined, 2)).nextBlock).toBe(10_001n)
+  })
+
+  test('changed finalized page during log query cannot record an empty page', async () => {
+    const store = new MemoryRecordStore<TempoReceiveBatch>()
+    let hashCalls = 0
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: 9n, hash: BLOCK }),
+      blockHash: async () => ++hashCalls === 1 ? BLOCK : OTHER,
+      receivedTransfers: async () => [],
+    }
+    const scanner = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    await expect(scanner.syncOnce(RECIPIENT, 0n, async () => undefined)).rejects.toThrow('changed during scan')
+    expect(store.all()).toEqual([])
+  })
+
+  test('lagging upstream finality cannot acknowledge an otherwise unchanged page', async () => {
+    const store = new MemoryRecordStore<TempoReceiveBatch>()
+    let headCalls = 0
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: ++headCalls === 1 ? 9n : 8n, hash: BLOCK }),
+      blockHash: async () => BLOCK,
+      receivedTransfers: async () => [],
+    }
+    const scanner = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    await expect(scanner.syncOnce(RECIPIENT, 0n, async () => undefined)).rejects.toThrow('no longer finalized')
+    expect(store.all()).toEqual([])
+  })
+
   test('two cached tabs refresh under the recipient lock before extending one cursor', async () => {
     const backing = new MemoryRecordStore<TempoReceiveBatch>()
     const cached = () => {

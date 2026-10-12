@@ -53,7 +53,7 @@ function validate(row: TempoReceiveBatch): TempoReceiveBatch {
   if (canonical(row.recipient) !== row.recipient) throw new Error('Invalid Tempo receive recipient')
   const from = quantity(row.fromBlock)
   const to = quantity(row.toBlock)
-  if (to < from || to - from >= 2_000n || row.id !== batchId(row.chainIdentifier, row.recipient, from) || !HASH.test(row.endBlockHash))
+  if (to < from || to - from >= 10_000n || row.id !== batchId(row.chainIdentifier, row.recipient, from) || !HASH.test(row.endBlockHash))
     throw new Error('Invalid Tempo receive batch range')
   const ids = new Set<string>()
   for (const item of row.items) {
@@ -128,7 +128,7 @@ export class TempoPathUsdReceiveScanner {
     }
   }
 
-  /** Scans at most 2,000 finalized blocks, then delivers all unapplied items. */
+  /** Scans one durable page of at most 10,000 finalized blocks. */
   syncOnce(recipientAddress: string, startBlock: bigint, apply: (item: TempoReceiveItem) => Promise<void>): Promise<{
     nextBlock: bigint
     delivered: number
@@ -155,14 +155,12 @@ export class TempoPathUsdReceiveScanner {
         if (!hashes.has(height)) hashes.set(height, await this.rpc.blockHash(height))
         return hashes.get(height)!
       }
-      for (const row of rows) {
-        if (quantity(row.toBlock) > finalized.number || await blockHash(quantity(row.toBlock)) !== row.endBlockHash)
-          throw new Error('Finalized Tempo receive batch was reorganized')
-        for (const item of row.items) {
-          if (await blockHash(BigInt(item.blockNumber)) !== item.blockHash)
-            throw new Error('Finalized Tempo receive transfer was reorganized')
-        }
-      }
+      // A matching latest finalized checkpoint commits to all earlier blocks. Rechecking every
+      // historical page on each catch-up step would turn a long genesis scan quadratic.
+      const previous = rows.at(-1)
+      if (previous && (quantity(previous.toBlock) > finalized.number ||
+        await blockHash(quantity(previous.toBlock)) !== previous.endBlockHash))
+        throw new Error('Finalized Tempo receive batch was reorganized')
       let delivered = 0
       const deliver = async (row: TempoReceiveBatch): Promise<void> => {
         let current = row
@@ -180,8 +178,35 @@ export class TempoPathUsdReceiveScanner {
       }
       for (const row of rows) await deliver(row)
       if (next > finalized.number) return { nextBlock: next, delivered }
-      const end = next + 1_999n < finalized.number ? next + 1_999n : finalized.number
-      const transfers = await this.rpc.receivedTransfers(recipient, next, end)
+      let end = next + 9_999n < finalized.number ? next + 9_999n : finalized.number
+      let transfers: Transfer[]
+      let endBlockHash: string
+      let attempts = 0
+      for (;;) {
+        try {
+          const before = await this.rpc.blockHash(end)
+          if (!HASH.test(before)) throw new Error('Invalid Tempo receive checkpoint')
+          transfers = await this.rpc.receivedTransfers(recipient, next, end)
+          endBlockHash = await this.rpc.blockHash(end)
+          if (before !== endBlockHash)
+            throw new Error('Finalized Tempo receive page changed during scan')
+          const confirmed = await this.rpc.finalizedHead()
+          if (!HASH.test(confirmed.hash) || confirmed.number < end ||
+            (confirmed.number === end && confirmed.hash !== endBlockHash))
+            throw new Error('Tempo receive page is no longer finalized')
+          break
+        } catch (error) {
+          // Only transient upstream failures may change the page size. No failed range is
+          // acknowledged, and the retry always starts at the same durable cursor.
+          const message = String(error)
+          if (!/\b(429|502|503|504)\b|rate.limit|too.many|timeout|timed.out|range.limit/i.test(message) ||
+            attempts >= 5 || end === next)
+            throw error
+          attempts++
+          end = next + (end - next) / 2n
+          await new Promise(resolve => setTimeout(resolve, Math.min(100 * attempts, 500)))
+        }
+      }
       const items: TempoReceiveItem[] = []
       for (const transfer of transfers) {
         if (transfer.recipient !== recipient || BigInt(transfer.blockNumber) < next || BigInt(transfer.blockNumber) > end ||
@@ -196,12 +221,36 @@ export class TempoPathUsdReceiveScanner {
         recipient,
         fromBlock: next.toString(),
         toBlock: end.toString(),
-        endBlockHash: await blockHash(end),
+        endBlockHash,
         items,
       }
       await this.write(row)
       await deliver(row)
       return { nextBlock: end + 1n, delivered }
     })
+  }
+
+  /** Bounded catch-up for callers that can display progress and schedule another pass. */
+  async syncCatchUp(
+    recipientAddress: string,
+    startBlock: bigint,
+    apply: (item: TempoReceiveItem) => Promise<void>,
+    maxPages = 8,
+  ): Promise<{ nextBlock: bigint; finalizedBlock: bigint; delivered: number; complete: boolean }> {
+    if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 32)
+      throw new RangeError('Invalid Tempo catch-up page budget')
+    let nextBlock = startBlock
+    let delivered = 0
+    for (let page = 0; page < maxPages; page++) {
+      const before = nextBlock
+      const result = await this.syncOnce(recipientAddress, startBlock, apply)
+      nextBlock = result.nextBlock
+      delivered += result.delivered
+      if (nextBlock === before) break
+    }
+    // This target is informational. The scanner checks finality again under the recipient lock
+    // for every page, and never counts a page that failed before its durable write.
+    const finalizedBlock = (await this.rpc.finalizedHead()).number
+    return { nextBlock, finalizedBlock, delivered, complete: nextBlock > finalizedBlock }
   }
 }

@@ -519,7 +519,7 @@ function validateRow(
     const call = (row.members as EvmNativeMember[])[0]!
     const tx = Transaction.from(call.unsignedTransaction)
     if (
-      call.source.kind !== 'main' ||
+      (call.source.kind !== 'main' && row.submissionPolicy !== 'explicit') ||
       tx.to?.toLowerCase() !== row.recipient ||
       tx.value.toString() !== row.intendedValueWei ||
       tx.data === '0x'

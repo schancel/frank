@@ -78,6 +78,13 @@ export interface ContractCallResult {
   operationId: string
   txHash: string
 }
+export type PreparedContractCallParams = Omit<
+  ContractCallParams,
+  'onSigned'
+> & {
+  /** Resolve this owned source through the bound wallet. Omitted: the main account. */
+  sourceAddress?: string
+}
 export interface EvmLegacyConsolidatorConfig {
   provider: Provider
   journal: NativeJournalReader | EvmNativeOperationJournal
@@ -1966,6 +1973,7 @@ export class EvmLegacyConsolidator {
     params: ContractCallParams,
     lifetime?: WalletOperationLifetime,
     submissionPolicy?: 'explicit',
+    sourceAddress?: string,
   ): Promise<EvmNativeOperation> {
     const to = getAddress(params.to.raw).toLowerCase()
     if (params.value < 0n)
@@ -1974,9 +1982,18 @@ export class EvmLegacyConsolidator {
       throw new Error('A contract call needs calldata')
     if (this.config.transactionBuilder.supportsNativeConsolidation !== true)
       throw new Error('Contract calls are unavailable on this network')
-    const main = await this.mainSource()
+    const address =
+      sourceAddress === undefined
+        ? (await this.mainSource()).address
+        : getAddress(sourceAddress).toLowerCase()
+    if (
+      !(await this.config.getSources()).some(
+        source => source.address === address,
+      )
+    )
+      throw new Error('Contract source is not owned by this wallet')
     const source = (await this.sources(lifetime)).find(
-      a => a.source.address === main.address,
+      a => a.source.address === address,
     )
     // Absent when it holds nothing, or while an earlier transaction of its own is unresolved.
     if (!source) throw new RangeError('Insufficient unreserved native funds')
@@ -2028,19 +2045,24 @@ export class EvmLegacyConsolidator {
     })
   }
   /**
-   * Plans and signs a main-account contract call without broadcasting or marking its bytes
+   * Plans and signs an owned-account contract call without broadcasting or marking its bytes
    * exposed. The journal holds its source and exact signed bytes just as `signNative` does.
    * The caller owns durable recording of any external hand-off before it begins;
    * `resumeOperation` submits these same bytes and `releaseUnexposed` is only for a call
    * whose bytes were handed to nobody. Preparation does not invoke a broadcast callback.
    */
   signContractCall(
-    params: Omit<ContractCallParams, 'onSigned'>,
+    params: PreparedContractCallParams,
     lifetime?: WalletOperationLifetime,
   ): Promise<EvmNativeOperation> {
     params = { ...params, to: { ...params.to } }
     return this.runWithLocalPass(lifetime, async planned => {
-      const row = await this.planContractCall(params, lifetime, 'explicit')
+      const row = await this.planContractCall(
+        params,
+        lifetime,
+        'explicit',
+        params.sourceAddress,
+      )
       planned(row.operationId)
       return this.sign(row, lifetime)
     })

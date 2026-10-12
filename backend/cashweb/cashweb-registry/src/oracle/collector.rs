@@ -298,10 +298,22 @@ impl Collector {
         let mut points = Vec::new();
         for asset in &assets {
             let name = format!("price/{asset}");
+            let sole_source = self
+                .plan
+                .price_providers()
+                .filter(|provider| provider.symbols.contains_key(asset))
+                .count()
+                == 1;
             for (provider, value) in answers.get(asset).into_iter().flatten() {
                 raw.push(RawSample {
                     name: name.clone(),
-                    time: value.observed_at.unwrap_or(now),
+                    // Mixed prices are derived per collection round; its inputs must keep
+                    // that association for replay, even when a source reuses an earlier quote.
+                    time: if sole_source {
+                        value.observed_at.unwrap_or(now)
+                    } else {
+                        now
+                    },
                     provider: provider.clone(),
                     value: value.value,
                 });
@@ -321,15 +333,7 @@ impl Collector {
                 // Repeated reads of the same round must not create extra historical points.
                 let dated = answers
                     .get(asset)
-                    .filter(|quotes| {
-                        quotes.len() == 1
-                            && self
-                                .plan
-                                .price_providers()
-                                .filter(|provider| provider.symbols.contains_key(asset))
-                                .count()
-                                == 1
-                    })
+                    .filter(|quotes| quotes.len() == 1 && sole_source)
                     .and_then(|quotes| quotes[0].1.observed_at.map(|at| (at, quotes[0].1.value)));
                 let (at, value) = dated
                     .unwrap_or_else(|| (now, smooth(previous[asset], now, sample, &self.rules)));
@@ -871,6 +875,89 @@ symbols = { gold = "proxy" }
         let latest: serde_json::Value = serde_json::from_slice(&feed.latest().body)?;
         assert_eq!(latest["series"]["price/gold"]["unit"], "USD/troy ounce");
         assert_eq!(latest["series"]["price/gold"]["asOf"], T0 - 3600);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mixed_coinbase_and_dated_chainlink_rounds_replay_after_reopening() -> Result<()> {
+        struct Mixed;
+        #[async_trait]
+        impl Upstream for Mixed {
+            async fn fetch(
+                &self,
+                request: &UpstreamRequest,
+            ) -> std::result::Result<Vec<u8>, UpstreamError> {
+                if request.body.is_none() {
+                    return Ok(br#"{"data":{"rates":{"BTC":"0.01"}}}"#.to_vec());
+                }
+                let words = [
+                    2u128,
+                    10_200_000_000,
+                    u128::from(T0 - 3600),
+                    u128::from(T0 - 3600),
+                    2,
+                ];
+                let hex = words
+                    .iter()
+                    .map(|word| format!("{word:064x}"))
+                    .collect::<String>();
+                Ok(
+                    serde_json::json!([{ "id": 1, "result": format!("0x{hex}") }])
+                        .to_string()
+                        .into_bytes(),
+                )
+            }
+        }
+        let conf = r#"
+[[price_providers]]
+id = "coinbase"
+adapter = "coinbase"
+api_url = "http://stub/coinbase"
+symbols = { btc-mainnet = "BTC" }
+[[price_providers]]
+id = "chainlink"
+adapter = "chainlink"
+api_url = "http://stub/chainlink"
+symbols = { btc-mainnet = "proxy" }
+"#;
+        let dir = tempdir::TempDir::new("mixed-dated-prices")?;
+        let rules = Rules::from(&plan(conf).conf);
+        {
+            let feed = Arc::new(feed(&dir, conf));
+            let mut collector = Collector::new(plan(conf), Arc::clone(&feed), Arc::new(Mixed));
+            let mut rng = StdRng::seed_from_u64(1);
+            for at in [T0, T0 + 600, T0 + 1200] {
+                collector.price_round(at, &mut rng).await?;
+            }
+        }
+        let feed = feed(&dir, conf);
+        let raw = feed.store().raw("price/btc-mainnet", 0, u64::MAX)?;
+        let listed = feed.store().raw("providers/btc-mainnet", 0, u64::MAX)?;
+        let rounds = listed
+            .iter()
+            .map(|round| {
+                (
+                    round.time,
+                    round.value as usize,
+                    raw.iter()
+                        .filter(|answer| answer.time == round.time)
+                        .map(|answer| answer.value)
+                        .collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let stored = feed.store().points("price/btc-mainnet", 0, u64::MAX)?;
+        assert_eq!(stored.len(), 3);
+        assert_eq!(
+            replay(&rounds, None, &rules),
+            stored,
+            "each derived round must retain both provider inputs"
+        );
+        assert_eq!(
+            raw.len(),
+            6,
+            "re-reading one Chainlink round must not overwrite earlier derived-round inputs"
+        );
         Ok(())
     }
 

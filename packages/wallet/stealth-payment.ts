@@ -22,6 +22,8 @@ export interface PreparedStealthPayment {
   readonly asset: StealthPaymentAsset
   readonly amountAtomic: bigint
   readonly recipientAddress: string
+  /** Wire destination: EVM address bytes, or the Bitcoin-family output locking script. */
+  readonly recipientDestination: Uint8Array
   readonly ephemeralPublicKey: Uint8Array
   readonly members: readonly {
     readonly rawTransaction: string
@@ -59,7 +61,8 @@ export interface StealthPaymentCapability {
 export interface StealthPaymentReceiptClaim {
   readonly chainIdentifier: string
   readonly asset: StealthPaymentAsset
-  readonly recipientAddress: string
+  /** Family-native wire destination bytes, compared with the derived address/script by its owner. */
+  readonly recipientDestination: Uint8Array
   readonly ephemeralPublicKey: Uint8Array
   readonly amountAtomic: bigint
   readonly rawTransactions: readonly string[]

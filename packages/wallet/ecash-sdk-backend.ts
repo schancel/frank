@@ -13,7 +13,17 @@
  * Reopening requires custody to re-import keys; this backend never persists private keys.
  */
 import type { ChronikClient, ScriptUtxo } from "chronik-client";
-import { Address, Ecc, Script, shaRmd160, Tx, sha256d } from "ecash-lib";
+import type { TxBuilderInput, SigHashType } from "ecash-lib";
+import {
+  Address,
+  Ecc,
+  EccDummy,
+  Script,
+  shaRmd160,
+  Tx,
+  sha256d,
+} from "ecash-lib";
+import { NativeFeeExceededError } from "./chain/chain-wallet";
 import type { EcashNativeOperation } from "./ecash-operation-store";
 import type { ChainTransaction } from "./chain/chain-wallet";
 import type { EcashAddressPrefix, EcashWalletBackend } from "./ecash-wallet";
@@ -21,6 +31,7 @@ import { ecashStealthPoint, assertEcashStealthChain } from "./ecash-stealth";
 import type {
   EcashStealthCustody,
   EcashStealthDerivation,
+  EcashStealthReceipt,
 } from "./ecash-stealth";
 
 interface Keypair {
@@ -33,6 +44,10 @@ interface Keypair {
 
 /** Only the pinned SDK's public surface, asserted once at its loading boundary. */
 export interface EcashSdkWallet extends EcashWalletBackend {
+  utxoToBuilderInput(
+    utxo: ScriptUtxo & { address: string },
+    sighash?: SigHashType
+  ): TxBuilderInput;
   changeIndex: number;
   utxos: Array<ScriptUtxo & { address: string }>;
   keypairs: Map<string, Keypair>;
@@ -172,6 +187,112 @@ export class EcashSdkBackend implements EcashWalletBackend {
 
   private assertCustodyActive(): void {
     this.stealthCustody?.assertActive();
+  }
+
+  assertActive(): void {
+    this.assertCustodyActive();
+  }
+
+  /** Fresh confirmed transaction facts are distinct from indexer-owned spendable UTXOs. */
+  observeStealthReceipt(
+    receipt: EcashStealthReceipt,
+    excluded: ReadonlyArray<EcashInputReference>
+  ) {
+    return this.observeNativeOutputs(receipt, excluded);
+  }
+
+  async observeNativeOutputs(
+    receipt: Pick<
+      EcashStealthReceipt,
+      "address" | "transactions" | "claimedAmount"
+    >,
+    excluded: ReadonlyArray<EcashInputReference>
+  ): Promise<import("./stealth-payment").StealthPaymentReceiptObservation> {
+    this.assertCustodyActive();
+    const before = await this.chronik.blockchainInfo();
+    if (
+      !/^[0-9a-f]{64}$/.test(before.tipHash) ||
+      !Number.isSafeInteger(before.tipHeight)
+    )
+      throw new Error("Invalid eCash observation tip");
+    const script = Address.fromCashAddress(receipt.address).toScript().toHex();
+    let received = 0n,
+      allSpent = true;
+    const receiptOutpoints = new Set<string>();
+    for (const raw of receipt.transactions) {
+      this.assertCustodyActive();
+      const parsed = Tx.fromHex(raw);
+      const txid = Buffer.from(sha256d(parsed.ser())).reverse().toString("hex");
+      const tx = await this.chronik.tx(txid);
+      const actual = await this.chronik.rawTx(txid);
+      if (
+        tx.txid !== txid ||
+        actual.rawTx !== raw ||
+        tx.outputs.length !== parsed.outputs.length ||
+        tx.outputs.some(
+          (output, i) =>
+            output.sats !== parsed.outputs[i].sats ||
+            output.outputScript !== parsed.outputs[i].script.toHex()
+        )
+      )
+        throw new Error("Chronik eCash receipt transaction mismatch");
+      if (tx.block !== undefined) {
+        if (
+          !Number.isSafeInteger(tx.block.height) ||
+          tx.block.height < 0 ||
+          !/^[0-9a-f]{64}$/.test(tx.block.hash)
+        )
+          throw new Error("Invalid eCash receipt block");
+        const block = await this.chronik.block(tx.block.height);
+        if (
+          tx.block.height > before.tipHeight ||
+          block.blockInfo.height !== tx.block.height ||
+          block.blockInfo.hash !== tx.block.hash
+        )
+          throw new Error("eCash receipt block is not canonical");
+      }
+      tx.outputs.forEach((output, vout) => {
+        if (output.outputScript !== script || output.sats <= 0n) return;
+        if (output.spentBy === undefined)
+          receiptOutpoints.add(`${txid}:${vout}`);
+        allSpent = allSpent && output.spentBy !== undefined;
+        if (tx.block !== undefined) received += output.sats;
+      });
+    }
+    const after = await this.chronik.blockchainInfo();
+    this.assertCustodyActive();
+    if (
+      after.tipHash !== before.tipHash ||
+      after.tipHeight !== before.tipHeight
+    )
+      throw new Error("eCash chain changed during receipt observation");
+    const excludedSet = new Set(excluded.map(outpointKey));
+    const coins = this.sdk
+      .spendableSatsOnlyUtxos()
+      .filter((coin) =>
+        receiptOutpoints.has(`${coin.outpoint.txid}:${coin.outpoint.outIdx}`)
+      );
+    const spendable = coins.some(
+      (coin) =>
+        !excludedSet.has(`${coin.outpoint.txid}:${coin.outpoint.outIdx}`)
+    );
+    return {
+      status:
+        received === BigInt(receipt.claimedAmount)
+          ? "succeeded"
+          : received > 0n
+          ? "partial"
+          : "pending",
+      intendedAmountAtomic: BigInt(receipt.claimedAmount),
+      ...(received > 0n ? { verifiedReceivedAmountAtomic: received } : {}),
+      spendability: spendable
+        ? "spendable"
+        : coins.length > 0
+        ? "reserved"
+        : allSpent
+        ? "empty"
+        : "pending",
+    };
   }
 
   get balanceSats(): bigint {
@@ -360,6 +481,8 @@ export class EcashSdkBackend implements EcashWalletBackend {
     value: bigint;
     excludedInputs: ReadonlyArray<EcashInputReference>;
     changeIndexFloor?: number;
+    maxFee?: bigint;
+    unsignedOnly?: boolean;
   }): EcashNativeConstruction {
     this.assertCustodyActive();
     const recipient = Address.fromCashAddress(params.recipient);
@@ -389,16 +512,76 @@ export class EcashSdkBackend implements EcashWalletBackend {
         coin,
       ])
     );
-    const built = view
+    // SDK inspect() signs. Build the exact same deterministic selection with dummy ECC instead.
+    // Native P2PKH/BCH Schnorr signatures are fixed 64 bytes, so dummy and real shape/fee match.
+    const feeView = view.clone();
+    const dummy = new EccDummy();
+    // Native SDK TxBuilder.sign uses default ECC, ignoring wallet.ecc. Substitute only this
+    // clone's public input callback, leaving exact SDK coin selection/change derivation intact.
+    const toInput = feeView.utxoToBuilderInput.bind(feeView);
+    feeView.utxoToBuilderInput = (utxo, sighash) => {
+      const input = toInput(utxo, sighash);
+      const signatory = input.signatory;
+      if (signatory === undefined)
+        throw new Error("Missing eCash fee-plan input callback");
+      return {
+        input: input.input,
+        signatory: (_ecc, unsignedInput) => signatory(dummy, unsignedInput),
+      };
+    };
+    const planned = feeView
       .action({
         outputs: [{ address: recipient.toString(), sats: params.value }],
       })
       .build(undefined, { skipAutoConsolidateOnMaxTxSize: true });
+    if (planned.builtTxs.length !== 1)
+      throw new Error("eCash fee plan must be a single transaction");
+    const plannedTx = planned.builtTxs[0].tx;
+    const plannedInputSum = plannedTx.inputs.reduce((sum, input) => {
+      const txid =
+        typeof input.prevOut.txid === "string"
+          ? input.prevOut.txid
+          : Buffer.from(input.prevOut.txid).reverse().toString("hex");
+      const coin = available.get(
+        outpointKey({ txid, vout: input.prevOut.outIdx })
+      );
+      if (coin === undefined)
+        throw new Error("Fee plan selected an unavailable eCash input");
+      return sum + coin.sats;
+    }, 0n);
+    const plannedFee =
+      plannedInputSum -
+      plannedTx.outputs.reduce((sum, output) => sum + output.sats, 0n);
+    if (params.maxFee !== undefined && plannedFee > params.maxFee)
+      throw new NativeFeeExceededError(plannedFee);
+    const built = params.unsignedOnly
+      ? planned
+      : view
+          .action({
+            outputs: [{ address: recipient.toString(), sats: params.value }],
+          })
+          .build(undefined, { skipAutoConsolidateOnMaxTxSize: true });
     if (built.builtTxs.length !== 1)
       throw new Error(
         "eCash construction must not add consolidation transactions"
       );
     const transaction = built.builtTxs[0];
+    const shape = (tx: Tx) =>
+      JSON.stringify({
+        inputs: tx.inputs.map((input) => ({
+          txid: input.prevOut.txid,
+          vout: input.prevOut.outIdx,
+          length: input.script?.bytecode.length,
+        })),
+        outputs: tx.outputs.map((output) => ({
+          sats: output.sats.toString(),
+          script: output.script.toHex(),
+        })),
+      });
+    if (shape(transaction.tx) !== shape(plannedTx))
+      throw new Error(
+        "eCash signed transaction differs from unsigned fee plan"
+      );
     const selectedInputs = transaction.tx.inputs.map(({ prevOut }) => {
       const reference = {
         txid:

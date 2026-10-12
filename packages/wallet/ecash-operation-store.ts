@@ -22,6 +22,10 @@ export interface EcashOperationExposureBinding {
 }
 
 export interface EcashNativeOperation {
+  readonly stealth?: {
+    readonly recipientSpendPublicKey: string;
+    readonly ephemeralPublicKey: string;
+  };
   readonly operationId: string;
   readonly intent: EcashNativeIntent;
   readonly state:
@@ -180,6 +184,17 @@ export function parseEcashOperationLedger(
     )
       throw new Error("Invalid eCash operation record");
     ids.add(operation.operationId);
+    if (
+      operation.stealth !== undefined &&
+      (!object(operation.stealth) ||
+        typeof operation.stealth.recipientSpendPublicKey !== "string" ||
+        !/^(02|03)[0-9a-f]{64}$/.test(
+          operation.stealth.recipientSpendPublicKey
+        ) ||
+        typeof operation.stealth.ephemeralPublicKey !== "string" ||
+        !/^(02|03)[0-9a-f]{64}$/.test(operation.stealth.ephemeralPublicKey))
+    )
+      throw new Error("Invalid eCash stealth operation metadata");
     if (operation.state !== "released") {
       for (const input of operation.inputs) {
         const key = `${input.txid}:${input.vout}`;

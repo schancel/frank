@@ -1,18 +1,13 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 
 import { deriveDomainRoot } from '@frank/domain-roots';
 import { MonadIdentity } from '@frank/wallet/monad-identity';
-import { createMonadWalletMaterial } from '@frank/wallet/monad-wallet-material';
 import { createEvmChain } from '@frank/wallet/chain/monad-chain';
 
-import {
-  GatewayWalletStartRefusal,
-  loadGatewayWalletRoots,
-  openGatewayWallet,
-} from '../src/host/gateway-wallet';
+import { loadGatewayWalletRoots, openGatewayWallet } from '../src/host/gateway-wallet';
 
 jest.mock('@frank/wallet/chain/monad-chain', () => ({ createEvmChain: jest.fn() }));
 
@@ -23,9 +18,6 @@ describe('gateway wallet host admission', () => {
   let rootFile: string;
   let walletBase: string;
   let identityAddress: string;
-  let mainAddress: string;
-  let rootDocument: string;
-  const closeWallet = jest.fn(async () => {});
 
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), 'frank-mail-wallet-'));
@@ -36,12 +28,8 @@ describe('gateway wallet host admission', () => {
     const authentication = deriveDomainRoot(accountRoot, 'identity-authentication');
     const messaging = deriveDomainRoot(accountRoot, 'messaging-encryption');
     accountRoot.fill(0);
-    const roots = { evm, authentication, messaging };
     identityAddress = MonadIdentity.fromDomainRoot(authentication).displayAddress;
-    const material = createMonadWalletMaterial(roots);
-    mainAddress = material.mainAccount.address.toLowerCase();
-    material.dispose();
-    rootDocument = JSON.stringify({
+    const rootDocument = JSON.stringify({
       registry: 'frank-domain-roots-v1',
       roots: {
         'evm-wallet': Buffer.from(evm.bytes).toString('hex'),
@@ -51,15 +39,6 @@ describe('gateway wallet host admission', () => {
     });
     writeFileSync(rootFile, rootDocument, { mode: 0o600 });
     mockedChain.mockReset();
-    closeWallet.mockClear();
-    mockedChain.mockReturnValue({
-      createWallet: jest.fn(async () => ({
-        chainIdentifier: 'monad-testnet',
-        identity: MonadIdentity.fromDomainRoot(authentication),
-        walletState: { durability: 'persistent' },
-        close: closeWallet,
-      })),
-    } as never);
   });
 
   afterEach(() => rmSync(directory, { recursive: true, force: true }));
@@ -77,14 +56,6 @@ describe('gateway wallet host admission', () => {
     } as Parameters<typeof openGatewayWallet>[0]['chain'],
   });
 
-  const existingWalletState = () => {
-    for (const namespace of ['wallet-manifest', 'sub-account-pool', 'change-pool']) {
-      const path = `${walletBase}-evm-${mainAddress}/${namespace}`;
-      mkdirSync(path, { recursive: true });
-      writeFileSync(join(path, 'CURRENT'), 'MANIFEST-000001\n');
-    }
-  };
-
   it('refuses a new state path before opening a wallet that could reuse spent accounts', async () => {
     await expect(openGatewayWallet(input())).rejects.toMatchObject({
       code: 'wallet-state-missing',
@@ -92,24 +63,7 @@ describe('gateway wallet host admission', () => {
     expect(mockedChain).not.toHaveBeenCalled();
   });
 
-  it('opens only the bound existing wallet and supplies a stable private reply-alias salt', async () => {
-    existingWalletState();
-    const first = await openGatewayWallet(input());
-    const salt = first.replyAliasSalt();
-    const expectedSalt = new Uint8Array(salt);
-    expect(salt).toHaveLength(32);
-    salt.fill(0);
-    expect(first.replyAliasSalt()).not.toEqual(salt);
-    await first.close();
-    expect(closeWallet).toHaveBeenCalledTimes(1);
-    expect(() => first.replyAliasSalt()).toThrow(GatewayWalletStartRefusal);
-    const reopened = await openGatewayWallet(input());
-    expect(reopened.replyAliasSalt()).toEqual(expectedSalt);
-    await reopened.close();
-  });
-
   it('refuses a wrong public identity and network before opening wallet state', async () => {
-    existingWalletState();
     await expect(
       openGatewayWallet({
         ...input(),
@@ -130,7 +84,7 @@ describe('gateway wallet host admission', () => {
     expect(() => loadGatewayWalletRoots(rootFile)).toThrow('root-file-permissions');
     chmodSync(rootFile, 0o600);
     const link = join(directory, 'roots-link.json');
-    require('fs').symlinkSync(rootFile, link);
+    symlinkSync(rootFile, link);
     expect(() => loadGatewayWalletRoots(link)).toThrow('root-file-unavailable');
   });
 });

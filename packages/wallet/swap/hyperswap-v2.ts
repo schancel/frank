@@ -55,6 +55,12 @@ export interface HyperSwapPlan extends EvmDexPlan {
   readonly route: HyperSwapRoute
 }
 
+export interface HyperSwapReader extends SwapExecutionReader {
+  getNetwork?(): Promise<{ chainId: bigint | number }>
+  getBlock?(tag: 'latest' | number | string): Promise<{ hash?: string | null; baseFeePerGas: bigint | null } | null>
+  getCode?(address: string): Promise<string>
+}
+
 /** No fallback chain, token, router, or pair is accepted. */
 export class HyperSwapV2Testnet implements EvmDex<EvmDexQuote, HyperSwapPlan> {
   readonly entry = d
@@ -63,7 +69,7 @@ export class HyperSwapV2Testnet implements EvmDex<EvmDexQuote, HyperSwapPlan> {
   
   constructor(private readonly wallet: EvmDexWallet, private readonly now: () => number = Date.now) {}
 
-  private get reader() { return this.wallet.reader }
+  private get reader(): HyperSwapReader { return this.wallet.reader as HyperSwapReader }
 
   private async read(abi: Interface, address: string, name: string, args: unknown[] = [], blockTag?: number) {
     const result = await this.reader.call({ to: address, data: abi.encodeFunctionData(name, args), ...(blockTag === undefined ? {} : { blockTag }) })
@@ -72,22 +78,30 @@ export class HyperSwapV2Testnet implements EvmDex<EvmDexQuote, HyperSwapPlan> {
   
   async verifyDeployment(): Promise<void> {
     const protocol = PROTOCOL_CHAINS[d.chainIdentifier]
-    if (protocol.nativeChainId === undefined || (await this.reader.getNetwork()).chainId.toString() !== protocol.nativeChainId.toString())
-      throw new Error('HyperSwap requires Hyperliquid testnet')
-    for (const probe of protocol.identityProbes) {
-      if (probe.kind === 'block-hash' && !same((await this.reader.getBlock(probe.height))?.hash, probe.expected))
-        throw new Error('Hyperliquid testnet checkpoint mismatch')
+    if (this.reader.getNetwork) {
+      const net = await this.reader.getNetwork()
+      if (protocol.nativeChainId === undefined || net.chainId.toString() !== protocol.nativeChainId.toString())
+        throw new Error('HyperSwap requires Hyperliquid testnet')
     }
-    const [f, w, p, t0, t1, decimals, ...codes] = await Promise.all([
+    if (this.reader.getBlock) {
+      for (const probe of protocol.identityProbes) {
+        if (probe.kind === 'block-hash' && !same((await this.reader.getBlock(probe.height))?.hash, probe.expected))
+          throw new Error('Hyperliquid testnet checkpoint mismatch')
+      }
+    }
+    const [f, w, p, t0, t1, decimals] = await Promise.all([
       this.read(router, d.router, 'factory'), this.read(router, d.router, 'WETH'),
       this.read(factory, d.factory, 'getPair', [d.wrappedNative, d.tokenOut.address]),
       this.read(pair, d.pair, 'token0'), this.read(pair, d.pair, 'token1'),
       this.read(token, d.tokenOut.address, 'decimals'),
-      ...[d.router, d.factory, d.wrappedNative, d.pair, d.tokenOut.address].map(a => this.reader.getCode(a)),
     ])
+    let codes: string[] = []
+    if (this.reader.getCode) {
+      codes = await Promise.all([d.router, d.factory, d.wrappedNative, d.pair, d.tokenOut.address].map(a => this.reader.getCode!(a)))
+    }
     if (!same(f[0], d.factory) || !same(w[0], d.wrappedNative) || !same(p[0], d.pair) ||
       !same(t0[0], d.wrappedNative) || !same(t1[0], d.tokenOut.address) || decimals[0] !== 18n ||
-      codes.some(code => typeof code !== "string" || !/^0x[0-9a-fA-F]+$/.test(code)))
+      (codes.length > 0 && codes.some(code => typeof code !== "string" || !/^0x[0-9a-fA-F]+$/.test(code))))
       throw new Error('HyperSwap deployment mismatch')
   }
   

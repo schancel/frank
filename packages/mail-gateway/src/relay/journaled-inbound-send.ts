@@ -4,7 +4,7 @@ import type { MessageItem } from '@frank/cashweb/types/messages';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { MailJournal } from '../ledger/mail-journal';
 import { mailKey } from '../rfc/mail-keys';
-import { parseMessageId } from '../rfc/message-headers';
+import { readThreadHeaders } from '../rfc/message-headers';
 import { parseRawRfc822 } from '../smtp/smtp-listener';
 import type { BlobStore } from '../storage/blob-store';
 import type { FrankSendRecord, InboundEmail, StoredMailBytes } from '../types';
@@ -72,6 +72,8 @@ export class JournaledInboundSend {
     }
     const key = mailKey(mail.email.rawRfc822);
     const dataSha256 = crypto.createHash('sha256').update(mail.email.rawRfc822).digest('hex');
+    const threadHeaders = readThreadHeaders(mail.email.rawRfc822);
+    if (!threadHeaders.ok) throw new Error(`Invalid mail thread headers: ${threadHeaders.reason}`);
 
     return this.ledger.atomic((): InboundAdmission => {
       const principalHasCredit =
@@ -79,7 +81,7 @@ export class JournaledInboundSend {
       const admitted = this.journal.admitInboundEmail({
         scopeAccount: scope,
         mailKey: key,
-        messageIdHeader: parseMessageId(mail.email.messageId),
+        messageIdHeader: threadHeaders.messageId,
         senderEmail: sender,
         dataSha256,
         raw: { kind: 'inline', bytes: mail.email.rawRfc822 },
@@ -103,11 +105,8 @@ export class JournaledInboundSend {
         scopeAccount: scope,
         mailKey: key,
         stampValue: stampValue.toString(),
-        inReplyTo: mail.email.inReplyTo && parseMessageId(mail.email.inReplyTo),
-        references: mail.email.references?.flatMap((id) => {
-          const parsed = parseMessageId(id);
-          return parsed ? [parsed] : [];
-        }),
+        inReplyTo: threadHeaders.inReplyTo,
+        references: threadHeaders.references,
       });
       return { kind: 'queued', slot: relayed.slot, duplicate: false };
     });

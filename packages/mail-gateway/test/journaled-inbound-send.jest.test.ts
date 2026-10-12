@@ -8,6 +8,7 @@ import { MailJournal } from '../src/ledger/mail-journal';
 import { JournaledInboundSend } from '../src/relay/journaled-inbound-send';
 import { LocalFsBlobStore } from '../src/storage/local-fs-blob-store';
 import { parseRawRfc822 } from '../src/smtp/smtp-listener';
+import { mailKey } from '../src/rfc/mail-keys';
 
 const GATEWAY = `0x${'9'.repeat(40)}`;
 const RECIPIENT = `0x${'a'.repeat(40)}`;
@@ -140,6 +141,27 @@ describe('journal-backed inbound Frank send', () => {
     expect(admitted.kind).toBe('queued');
     expect(ledger.getBalance(SENDER)).toBe(0);
     expect(admit(sender)).toMatchObject({ kind: 'queued', duplicate: true });
+    expect(ledger.getBalance(SENDER)).toBe(0);
+  });
+
+  it('uses the raw header and a deterministic synthetic ID when the mail has no Message-ID', () => {
+    ledger.addCredits(SENDER, 1);
+    const raw = Buffer.from(RAW.toString('utf8').replace('Message-ID: <mail-1@mail.example>\r\n', ''));
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const first = sender.admit(
+      { email: parseRawRfc822(raw), verifiedTransportId: 'smtp:no-id', authenticatedSenderEmail: SENDER },
+      RECIPIENT, 1000n
+    );
+    expect(first.kind).toBe('queued');
+    const key = mailKey(raw);
+    const expected = journal.noMessageIdFor(key);
+    expect(journal.findInboundEmail(RECIPIENT, key)?.rfcMessageId).toBe(expected);
+    const reopened = restart();
+    expect(reopened.admit(
+      { email: parseRawRfc822(raw), verifiedTransportId: 'smtp:no-id-replay', authenticatedSenderEmail: SENDER },
+      RECIPIENT, 1000n
+    )).toMatchObject({ kind: 'queued', duplicate: true });
+    expect(journal.findInboundEmail(RECIPIENT, key)?.rfcMessageId).toBe(expected);
     expect(ledger.getBalance(SENDER)).toBe(0);
   });
 

@@ -240,20 +240,17 @@
                     data-test="email-gateway-status"
                   >
                     <template v-if="emailGatewayStatus === 'ready'">
-                      Relay gateway: {{ emailGatewayDomain }} ({{
-                        emailGatewayAddress
-                      }})
+                      {{ $t('settings.emailGatewayRelayLabel') }}
+                      {{ emailGatewayDomain }} ({{ emailGatewayAddress }})
                     </template>
                     <template v-else-if="emailGatewayStatus === 'changed'">
-                      The relay or its email gateway identity changed. Review
-                      the new address before using it.
+                      {{ $t('settings.emailGatewayChanged') }}
                     </template>
                     <template v-else-if="emailGatewayStatus === 'loading'">
-                      Checking this relay for an email gateway…
+                      {{ $t('settings.emailGatewayChecking') }}
                     </template>
                     <template v-else>
-                      This relay has no available email gateway. Email sending
-                      is unavailable unless you set an explicit address.
+                      {{ $t('settings.emailGatewayUnavailable') }}
                     </template>
                   </div>
                   <q-input
@@ -263,7 +260,7 @@
                     outlined
                     :error="!!emailGatewayError"
                     :error-message="emailGatewayError"
-                    hint="Optional address override for the selected network"
+                    :hint="$t('settings.emailGatewayOverrideHint')"
                     data-test="email-gateway-input"
                     data-testid="email-gateway-input"
                     class="full-width q-mb-xs"
@@ -286,8 +283,8 @@
                       color="grey-7"
                       :label="
                         emailGatewayStatus === 'changed'
-                          ? 'Accept relay gateway'
-                          : 'Use relay gateway'
+                          ? $t('settings.acceptRelayGateway')
+                          : $t('settings.useRelayGateway')
                       "
                       data-test="reset-email-gateway-btn"
                       data-testid="reset-email-gateway-btn"

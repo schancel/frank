@@ -17,7 +17,7 @@
     "prebuild": "yarn prepare:packages",
     "prebuild:pwa": "yarn prepare:packages",
     "build:pwa": "quasar build -m pwa",
-    "serve:pwa": "quasar serve dist/pwa",
+    "serve:pwa": "node scripts/serve-pwa.mjs",
     "check:pwa": "node scripts/check-pwa-build.mjs",
     "test": "echo \"See package.json => scripts for available tests.\" && exit 0",
     "generate:protobuffers": "/bin/sh ./generate_protobufs.sh",

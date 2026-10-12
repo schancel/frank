@@ -28,7 +28,9 @@ register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
   },
 
   updated(/* registration */) {
-    console.log('New content is available; please refresh.')
+    console.log(
+      'An update is ready. Close all Frank windows and reopen to use the new version.',
+    )
   },
 
   offline() {

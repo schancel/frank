@@ -1,6 +1,6 @@
 <template>
   <q-page-container>
-    <q-page class="q-ma-none q-pa-none column full-height">
+    <q-page class="q-ma-none q-pa-none column no-wrap" :style-fn="pageStyle">
       <q-card flat class="col column full-width full-height bg-transparent">
         <q-card-section class="q-px-md q-pt-md q-pb-none">
           <div class="text-h6">
@@ -53,6 +53,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { accountStatus } from '../accounts/session'
+import { viewportPageStyle } from 'src/utils/layout'
 
 import { useProfileStore } from 'src/stores/my-profile'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -98,6 +99,7 @@ export default defineComponent({
   setup() {
     const myProfile = useProfileStore()
     return {
+      pageStyle: viewportPageStyle,
       setRelayData: myProfile.setRelayData,
       storedRelayData: myProfile,
     }

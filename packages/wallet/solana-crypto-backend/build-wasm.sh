@@ -15,6 +15,12 @@ case "$("$rustc_bin" --version)" in
   'rustc 1.93.0 '*) ;;
   *) echo 'Rust 1.93.0 is required' >&2; exit 1 ;;
 esac
+# Cargo includes host build-script/proc-macro identities in target crate metadata.
+# Source path remapping alone does not make cross-host builds byte-identical.
+if [[ "$("$rustc_bin" -vV | sed -n 's/^host: //p')" != x86_64-unknown-linux-gnu ]]; then
+  echo 'Canonical Solana WASM generation requires Rust host x86_64-unknown-linux-gnu; other hosts consume the tracked package' >&2
+  exit 1
+fi
 test "$("$bindgen_bin" --version)" = 'wasm-bindgen 0.2.129'
 # Panic locations otherwise contain machine-specific registry/source paths.
 # Pin these flags too: caller flags cannot silently change the packaged implementation.

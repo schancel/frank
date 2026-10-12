@@ -284,7 +284,7 @@ export interface OutgoingMessageStore {
    * in `all()`: it stands for no payment. */
   unpaid(messageId: string): UnpaidEnvelope | undefined
   /** Read-only linear lookup of host-bound free envelopes; no second recovery index. */
-  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined
+  unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined
   /** `undefined` drops the record. */
   setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined): Promise<void>
 }
@@ -324,9 +324,10 @@ export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
   }
-  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined {
-    return [...this.envelopes.values()].find(envelope =>
+  unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined {
+    const found = [...this.envelopes.entries()].find(([, envelope]) =>
       envelope.hostBound && envelope.digest === payloadDigest)
+    return found ? { ...found[1], messageId: found[0] } : undefined
   }
   async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
     if (envelope) this.envelopes.set(messageId, { ...envelope })
@@ -430,9 +431,10 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
   }
-  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined {
-    return [...this.envelopes.values()].find(envelope =>
+  unpaidByDigest(payloadDigest: string): (UnpaidEnvelope & { messageId: string }) | undefined {
+    const found = [...this.envelopes.entries()].find(([, envelope]) =>
       envelope.hostBound && envelope.digest === payloadDigest)
+    return found ? { ...found[1], messageId: found[0] } : undefined
   }
   async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
     if (envelope) {
@@ -700,8 +702,10 @@ function statusOf(
   digest: string,
 ): DirectMessageAttemptStatus {
   const row = owner.messages.all().find(r => r.digest === digest)
-  if (!row) return 'unknown'
-  return row.outcome ?? 'live'
+  const unpaid = row ? undefined : owner.messages.unpaidByDigest(digest)
+  if (!row && !unpaid) return 'unknown'
+  const original = (row ?? unpaid)!
+  return original.exposurePending ? 'live' : original.outcome ?? 'live'
 }
 
 /** Durably marks delivered attempts as accounted for. An attempt with no outcome is never marked:
@@ -1313,12 +1317,68 @@ async function settleHolder(
 async function authorizeEnvelope(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
-  callback: (digest: string) => void | Promise<void>,
+  callback: (digest: string, messageId?: string) => void | Promise<void>,
 ): Promise<StoredMessage> {
-  await owner.lifetime(async () => callback(row.digest))
+  await owner.lifetime(async () =>
+    callback(row.digest, formatUuid(fromHex(row.consumerId.slice('frank-dm:'.length)))),
+  )
   const { exposurePending: _pending, ...authorized } = row
   await owner.lifetime(() => owner.messages.put(authorized))
   return authorized
+}
+
+async function validateOriginalEnvelope(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  envelope: Pick<
+    UnpaidEnvelope,
+    'delivery' | 'context' | 'digest' | 'recipientSubject'
+  > & { messageId: string },
+): Promise<void> {
+  const delivery = parseFrame(fromHex(envelope.delivery))
+  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+    throw new Error('Invalid original delivery')
+  const payload = delivery.typed.payloadFrame.typed
+  if (
+    payload?.type !== 5 ||
+    payload.network !== directory.network ||
+    toHex(payload.sender.keyBytes) !== owner.subject ||
+    toHex(payload.recipient.keyBytes) !== envelope.recipientSubject ||
+    toHex(delivery.typed.payloadDigest) !== envelope.digest ||
+    toHex(
+      recipientPayloadDigest(
+        directory.network,
+        delivery.typed.payloadFrame.frame,
+      ),
+    ) !== envelope.digest
+  )
+    throw new Error('Original envelope affinity mismatch')
+  const self = await directory.selfCurrent()
+  const peer = await directory.peerCurrent({
+    subject: envelope.recipientSubject,
+  })
+  if (!peer) throw new Error('Original recipient unavailable')
+  const context = fromHex(envelope.context)
+  const evidence = await resolveHistoricalEvidence(
+    directory,
+    context,
+    true,
+    self,
+    owner.subject,
+    peer,
+  )
+  const opened = openOwnDirectMessage({
+    mode: 'send',
+    network: directory.network,
+    payload: delivery.typed.payloadFrame.frame,
+    context,
+    roles: owner.roles.create(directory.network, self),
+    senderCurrent: self,
+    recipientCurrent: peer.current,
+    ...evidence,
+  })
+  if (toHex(opened.messageId) !== envelope.messageId)
+    throw new Error('Original stable identity mismatch')
 }
 
 /**
@@ -1339,10 +1399,71 @@ async function resend(
   options: {
     digests?: ReadonlySet<string>
     now?: boolean
-    onEnvelopeDurable?: (digest: string) => void | Promise<void>
+    onEnvelopeDurable?: (
+      digest: string,
+      messageId?: string,
+    ) => void | Promise<void>
   } = {},
 ): Promise<void> {
-  await Promise.all(
+  // Free originals are resumed only when explicitly named, never reconstructed from UI data.
+  const freeResends = Promise.all(
+    [...(options.digests ?? [])].map(async digest => {
+      const found = owner.messages.unpaidByDigest(digest)
+      if (!found || found.outcome !== undefined) return
+      const consumerId = consumerOf(fromHex(found.messageId))
+      const work = workOf(owner, consumerId)
+      if (work.creating) return
+      if (work.busy) {
+        await work.busy
+        return
+      }
+      let ended!: () => void
+      work.busy = new Promise<void>(resolve => (ended = resolve))
+      try {
+        await validateOriginalEnvelope(owner, directory, found)
+        let envelope = owner.messages.unpaid(found.messageId)!
+        if (envelope.exposurePending) {
+          if (!options.onEnvelopeDurable) return
+          await owner.lifetime(async () =>
+            options.onEnvelopeDurable!(
+              digest,
+              formatUuid(fromHex(found.messageId)),
+            ),
+          )
+          const { exposurePending: _pending, ...authorized } = envelope
+          await owner.lifetime(() =>
+            owner.messages.setUnpaid(found.messageId, authorized),
+          )
+          envelope = authorized
+        }
+        const accepted = await submitCanonicalRequest({
+          installedRelayOrigin: owner.relayBaseUrl,
+          expectedNetworkTag: owner.installedNetworkTag,
+          request: freezeCanonicalRequest(
+            {
+              delivery: fromHex(envelope.delivery),
+              context: fromHex(envelope.context),
+              transactions: [],
+            },
+            envelope.boundary,
+          ),
+          fetch: directory.fetch,
+        })
+        if (accepted.phase === 'delivered' || accepted.phase === 'dead')
+          await owner.lifetime(() =>
+            owner.messages.setUnpaid(found.messageId, {
+              ...envelope,
+              outcome: accepted.phase as 'delivered' | 'dead',
+              ...(accepted.phase === 'dead' ? { reason: accepted.reason } : {}),
+            }),
+          )
+      } finally {
+        work.busy = undefined
+        ended()
+      }
+    }),
+  )
+  const paidResends = Promise.all(
     owner.messages
       .all()
       .filter(isUnresolved)
@@ -1408,6 +1529,7 @@ async function resend(
         }
       }),
   )
+  await Promise.all([freeResends, paidResends])
 }
 
 /** At open, before the wallet is handed out: the accounts every stored message with a pending
@@ -2358,16 +2480,63 @@ export function canonicalDirectMessages(
     reconcileAttempts: async (
       params: Parameters<DirectMessageClient['reconcileAttempts']>[0],
     ) => {
+      const messageIds = [...(params.messageIds ?? [])]
+      if (
+        messageIds.length > 64 ||
+        new Set(messageIds).size !== messageIds.length ||
+        messageIds.some(
+          id =>
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+              id,
+            ),
+        )
+      )
+        throw new DirectMessageArgumentError('messageId')
+      const digests = new Set(params.payloadDigests)
+      for (const id of messageIds) {
+        const name = id.replace(/-/g, '')
+        const paid = owner.messages.get(consumerOf(fromHex(name)))
+        const unpaid = owner.messages.unpaid(name)
+        if (paid && unpaid)
+          throw new Error('Conflicting original message identity')
+        if (paid) digests.add(paid.digest)
+        if (unpaid?.hostBound) digests.add(unpaid.digest)
+      }
       const directory = requireDirectory(owner)
-      await owner.lifetime(() =>
-        resend(owner, directory, {
-          digests: new Set(params.payloadDigests),
+      await owner.lifetime(async () => {
+        // Validate the whole named stable-ID set before any callback, marker clear or handoff.
+        for (const id of messageIds) {
+          const name = id.replace(/-/g, '')
+          const paid = owner.messages.get(consumerOf(fromHex(name)))
+          const unpaid = owner.messages.unpaid(name)
+          if (paid?.request) {
+            const request = restoreCanonicalRequest({
+              body: fromHex(paid.request.body),
+              contentType: paid.request.contentType,
+            })
+            await validateOriginalEnvelope(owner, directory, {
+              delivery: toHex(request.parts.delivery),
+              context: toHex(request.parts.context),
+              digest: paid.digest,
+              recipientSubject: paid.recipientSubject,
+              messageId: name,
+            })
+          } else if (paid?.exposurePending)
+            throw new Error('Held original message bytes unavailable')
+          if (unpaid?.hostBound)
+            await validateOriginalEnvelope(owner, directory, {
+              ...unpaid,
+              messageId: name,
+            })
+        }
+        await resend(owner, directory, {
+          digests,
           now: (params.maxPutAttempts ?? 1) > 1,
           onEnvelopeDurable: params.onEnvelopeDurable,
-        }),
-      )
+        })
+      })
       return Object.fromEntries(
-        params.payloadDigests.map(digest => [digest, statusOf(owner, digest)]),
+        [...digests].map(digest => [digest, statusOf(owner, digest)]),
       )
     },
     /** One look at the chain for the message that holds a coin another operation is waiting

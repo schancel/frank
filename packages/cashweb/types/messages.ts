@@ -9,6 +9,12 @@ import type {
 
 import { Utxo } from './utxo'
 
+/** Public host reference to an existing operation; its financial journal owns all funds and bytes. */
+export interface OutgoingFinancialOperation {
+  chainIdentifier: string
+  operationId: string
+}
+
 export interface ReplyItem {
   type: 'reply'
   payloadDigest: string

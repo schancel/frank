@@ -1,3 +1,6 @@
+import type { OutgoingFinancialOperation } from "../../types/messages";
+import protocol from "../../../../docs/protocol/chains/v1.json";
+import { MAX_PAYMENT_MEMBERS } from "@frank/codec";
 import { MessageWrapper } from "../../types/messages";
 
 /** Relay receipt clocks may be slightly ahead of the client, but never arbitrarily far ahead. */
@@ -58,7 +61,110 @@ export class MessageReturnResult
   }
 }
 
+/** Host-owned binding to the messaging owner's original envelope. No funds or bytes live here.
+ * Kept independently of chat rows, including UI deletion and history clearing. */
+interface FinancialEnvelopeIntent {
+  readonly version: 1;
+  readonly accountId: string;
+  readonly messagingChainIdentifier: string;
+  readonly messageId: string;
+  readonly financialOperations: readonly OutgoingFinancialOperation[];
+}
+export type FinancialEnvelopeBinding = FinancialEnvelopeIntent &
+  (
+    | { readonly phase: "pending"; readonly payloadDigest?: never }
+    | { readonly phase: "bound"; readonly payloadDigest: string }
+  );
+export function financialEnvelopeBinding(
+  value: unknown
+): FinancialEnvelopeBinding {
+  if (!value || typeof value !== "object")
+    throw new Error("Invalid financial envelope binding");
+  const row = value as Record<string, unknown>;
+  if (
+    Object.keys(row).some(
+      (key) =>
+        ![
+          "version",
+          "phase",
+          "accountId",
+          "messagingChainIdentifier",
+          "messageId",
+          "payloadDigest",
+          "financialOperations",
+        ].includes(key)
+    )
+  )
+    throw new Error("Unknown financial envelope binding field");
+  const canonical = (id: unknown): id is string =>
+    typeof id === "string" && protocol.chains.some((chain) => chain.id === id);
+  if (
+    row.version !== 1 ||
+    typeof row.accountId !== "string" ||
+    !row.accountId.length ||
+    row.accountId.length > 512 ||
+    !canonical(row.messagingChainIdentifier) ||
+    typeof row.messageId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+      row.messageId
+    ) ||
+    (row.phase !== "pending" && row.phase !== "bound") ||
+    (row.phase === "pending"
+      ? row.payloadDigest !== undefined
+      : typeof row.payloadDigest !== "string" ||
+        !/^[0-9a-f]{64}$/.test(row.payloadDigest)) ||
+    !Array.isArray(row.financialOperations) ||
+    !row.financialOperations.length ||
+    row.financialOperations.length > MAX_PAYMENT_MEMBERS
+  )
+    throw new Error("Invalid financial envelope binding");
+  const seen = new Set<string>();
+  const financialOperations = row.financialOperations.map((entry: unknown) => {
+    if (!entry || typeof entry !== "object")
+      throw new Error("Invalid financial operation reference");
+    const ref = entry as Record<string, unknown>;
+    if (
+      Object.keys(ref).some(
+        (key) => !["chainIdentifier", "operationId"].includes(key)
+      )
+    )
+      throw new Error("Unknown financial operation reference field");
+    if (
+      !canonical(ref.chainIdentifier) ||
+      typeof ref.operationId !== "string" ||
+      !ref.operationId.length ||
+      ref.operationId.length > 512
+    )
+      throw new Error("Invalid financial operation reference");
+    const key = JSON.stringify([ref.chainIdentifier, ref.operationId]);
+    if (seen.has(key))
+      throw new Error("Duplicate financial operation reference");
+    seen.add(key);
+    return {
+      chainIdentifier: ref.chainIdentifier,
+      operationId: ref.operationId,
+    };
+  });
+  return {
+    version: 1,
+    accountId: row.accountId,
+    messagingChainIdentifier: row.messagingChainIdentifier,
+    messageId: row.messageId,
+    ...(row.phase === "bound"
+      ? { phase: "bound" as const, payloadDigest: row.payloadDigest as string }
+      : { phase: "pending" as const }),
+    financialOperations,
+  };
+}
+
 export interface MessageStore {
+  /** Immutable intent with one pending-to-bound transition; conflicts reject before exposure. */
+  bindFinancialEnvelope(binding: FinancialEnvelopeBinding): Promise<void>;
+  /** Read-only host recovery facts; never opens custody or initializes defaults. */
+  financialEnvelopeBindings(scope: {
+    accountId: string;
+    messagingChainIdentifier: string;
+  }): Promise<readonly FinancialEnvelopeBinding[]>;
   getMessage(payloadDigest: string): Promise<MessageWrapper | undefined>;
   saveMessage(
     message: MessageWrapper,

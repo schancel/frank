@@ -482,9 +482,7 @@ export interface DirectMessageClient {
     onBeforeExposure?: (payloadDigest: string) => void | Promise<void>;
     /** Idempotent host barrier after the complete envelope and signed stamp are durable, before
      * replay or handoff. Requires messageId. A rejection holds the stored bytes and claims;
-     * retry with this callback or reconcileAttempts to authorize the same paid envelope. Free
-     * messages resume via send with the same messageId and explicit stampValue 0n; their terminal
-     * receipt is retained so a later repeat cannot reseal or expose another envelope. */
+     * retry with this callback or reconcileAttempts to authorize the same envelope. Free terminal receipts are retained so a later repeat cannot reseal. */
     onEnvelopeDurable?: (payloadDigest: string) => void | Promise<void>;
   }): Promise<DirectMessageSendResult>;
   /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
@@ -493,10 +491,12 @@ export interface DirectMessageClient {
   reconcileAttempts(params: {
     wallet: WalletHandle;
     payloadDigests: string[];
+    /** Lookup only existing originals by canonical stable ID; absent IDs create nothing. */
+    messageIds?: readonly string[];
     /** Idempotent re-PUT budget per live attempt; defaults to a single try (callers back off). */
     maxPutAttempts?: number;
     /** Authorizes only the explicitly named digests held behind their durability barrier. */
-    onEnvelopeDurable?: (payloadDigest: string) => void | Promise<void>;
+    onEnvelopeDurable?: (payloadDigest: string, messageId?: string) => void | Promise<void>;
   }): Promise<Record<string, DirectMessageAttemptStatus>>;
   /** Read-only durable delivery truth for paid attempts and host-bound free envelopes.
    * Held or unresolved bytes return live; only a stored relay receipt returns delivered/dead.

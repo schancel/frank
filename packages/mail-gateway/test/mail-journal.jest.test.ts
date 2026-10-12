@@ -1563,16 +1563,16 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     expect(columns).not.toEqual(expect.arrayContaining(['outbound_job.conversation_id']));
   });
 
-  // 21.6 rule 4 and "still inert". Prevents: a holder's row being rewritten by a later edit, and a
-  // caller composing the journal before the stages that are allowed to.
-  it('has no UPDATE or DELETE on mail_message, and nothing outside the ledger directory uses the journal', () => {
+  // 21.6 rule 4 and the first accepted runtime consumer. Prevents a holder's
+  // row being rewritten or the legacy SMTP/mailbox paths bypassing the journal.
+  it('never rewrites a mail_message, and only the journaled inbound coordinator uses it', () => {
     const journalSource = fs.readFileSync(path.join(SRC, 'ledger', 'mail-journal.ts'), 'utf8');
     expect(journalSource).not.toMatch(/UPDATE\s+mail_message|DELETE\s+FROM\s+mail_message|REPLACE\s+INTO\s+mail_message/i);
     const outside = sourceFiles(SRC).filter((f) => !f.startsWith(path.join(SRC, 'ledger') + path.sep));
     const users = outside.filter((f) =>
       /MailJournal|\.atomic\(|expireHeldMessage|LedgerPoisonedError/.test(fs.readFileSync(f, 'utf8'))
     );
-    expect(users).toEqual([]);
+    expect(users).toEqual([path.join(SRC, 'relay', 'journaled-inbound-send.ts')]);
   });
 });
 

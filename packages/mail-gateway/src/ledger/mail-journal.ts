@@ -6,7 +6,8 @@
  * gateway accepted and what became of it, the gateway's own send slots, every
  * Frank message it has bridged or refused, and the outbound email jobs.
  *
- * Nothing calls this yet. Later stages (G2, G3a, G3b) are its only callers.
+ * The journaled inbound-send coordinator is its first runtime caller. The
+ * legacy SMTP and outbound-mail paths still await their replacement stages.
  *
  * Scope: every lookup and every key is inside one `scopeAccount`, the Frank
  * account on the Frank side of the thread (lowercase `0x` + 40 hex). A thread is
@@ -631,6 +632,13 @@ export class MailJournal {
   private readonly now: () => number;
   private readonly statements = new Map<string, StatementSync>();
 
+  /** A credit decision and journal transition are atomic only on this exact connection. */
+  assertCreditLedger(ledger: CreditLedger): void {
+    if (ledger !== this.ledger) {
+      throw new MailJournalStateError('Mail journal and credit ledger use different connections');
+    }
+  }
+
   /**
    * Opens the journal on the ledger's SQLite connection, in one transaction.
    *
@@ -869,6 +877,21 @@ export class MailJournal {
     return this.get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM frank_send WHERE state IN ('staged', 'sending', 'linked')"
     )!.n;
+  }
+
+  /** Pending send slots in stable order for a host recovery pass. Never mutates them. */
+  listUnfinishedFrankSends(limit = 100, afterSlotId = 0): FrankSendRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+      refuse('limit: not an integer from 1 to 1000');
+    }
+    if (!Number.isSafeInteger(afterSlotId) || afterSlotId < 0) {
+      refuse('afterSlotId: not a non-negative integer');
+    }
+    return this.all<FrankSendRow>(
+      "SELECT * FROM frank_send WHERE state IN ('staged', 'sending', 'linked') AND slot_id > ? ORDER BY slot_id LIMIT ?",
+      afterSlotId,
+      limit
+    ).map(toSlot);
   }
 
   /** Conversations a Frank user opened in this scope at or after `sinceMs`: the quota's count. */

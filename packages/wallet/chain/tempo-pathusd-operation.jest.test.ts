@@ -446,5 +446,5 @@ it('reconciles an old-format (00/01) signed transaction to the canonical (1b/1c)
 
   const transfers = new TempoPathUsdTransfers('tempo-testnet', journal, rpc as any, async (_, task) => task())
   const reconciled = await transfers.reconcile(opId)
-  expect(reconciled.observation).toMatchObject({ state: 'included-success', transactionHash: oldHash, feeAtomic: '1', finalized: true })
+  expect(reconciled.observation).toMatchObject({ state: 'included-success', transactionHash: canonicalHash, feeAtomic: '1', finalized: true })
 })

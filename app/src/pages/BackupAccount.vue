@@ -25,7 +25,7 @@
         />
       </q-toolbar>
     </q-header>
-    <q-page-container>
+    <q-page-container class="backup-page-container">
       <q-page class="backup-page q-ma-none" data-test="backup-account-page">
         <q-card flat class="backup-card bg-transparent">
           <q-card-section class="backup-section">
@@ -321,7 +321,19 @@ onBeforeUnmount(clearShares)
 </script>
 
 <style lang="scss" scoped>
+.backup-page-container {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
 .backup-page {
+  flex: 1;
+  min-height: 0 !important; // Override Quasar's inline page min-height to allow inner scrolling.
+  overflow-y: auto;
   padding: 16px;
   min-width: 0;
 }

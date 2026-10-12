@@ -22,69 +22,24 @@
           @scroll="scrollHandler"
           class="q-px-sm absolute full-width full-height"
         >
-          <div class="text-h6">v0.3.0 — Interim update — 2026-10-11</div>
+          <div class="text-h6">v0.3.0 — 2026-10-12</div>
           <div class="text-body1">
             <ul>
-              <li>
-                Bring message payments into the wallet history alongside
-                transfers and swaps, with clearer payment and delivery states.
-              </li>
-              <li>
-                Improve the wallet overview, balance breakdown, and controls for
-                sending and receiving funds.
-              </li>
-              <li>
-                Restore historical BIP39 account identities and show the
-                recovered account before activation. Restore its profile before
-                enabling messaging, with an explicit profile setup step when
-                needed.
-              </li>
-              <li>
-                Add AVU value displays and price history. Default message stamps
-                use a configured AVU amount; explicit amounts and free messages
-                remain available.
-              </li>
-              <li>
-                Improve the swap interface, quote details, progress, and wallet
-                history entries.
-              </li>
-              <li>
-                Improve contact discovery and new conversations, including
-                username display and separate conversations with the same
-                contact.
-              </li>
+              <li>Bring direct messages, topic posts, and voting to Monad testnet, with recipient-controlled stealth stamp payments and relay verification.</li>
+              <li>Add Mera passkey sign-in, recovery shares, and restoration of historical BIP39 identities. Show the recovered account and its published profile before activation.</li>
+              <li>Improve profile and username discovery, curated contacts, and independent conversations with the same contact.</li>
+              <li>Add Qwen replies, welcome messages, and game bots.</li>
+              <li>Bring message payments into wallet history alongside transfers and swaps, with clearer payment and delivery states.</li>
+              <li>Improve wallet balances, asset lists, and send and receive controls across the supported test networks.</li>
+              <li>Add AVU values and price history with timeframe and range selection. Message stamps support AVU defaults, explicit amounts, and free messages.</li>
+              <li>Improve swap quotes, fee details, confirmation, progress, and history.</li>
+              <li>Add an app update prompt for installed PWAs and remember dismissed notification offers.</li>
             </ul>
             <p>
-              Still in progress: retrieving old mailbox history, complete
-              recovery of wallet funds and history from a seed or backup, and
-              equivalent recovery across other chain families.
+              Still in progress: complete recovery of wallet funds and history
+              from a seed or backup, older mailbox history, additional network
+              support, email gateway delivery, and background push notifications.
             </p>
-          </div>
-
-          <div class="text-h6">2026-09-28 — Frank Monad Preview</div>
-          <div class="text-body1">
-            <ul>
-              <li>
-                Port direct messages and topic broadcasts to Monad testnet.
-              </li>
-              <li>
-                Pay direct-message stamps to recipient-controlled stealth
-                addresses, split across disposable sender accounts.
-              </li>
-              <li>
-                Add Monad identity registration, profile discovery, name search,
-                and curated default contacts.
-              </li>
-              <li>Add Qwen bot replies and automatic welcome messages.</li>
-              <li>
-                Add Monad topic discovery, posting, voting, and relay-side
-                verification.
-              </li>
-              <li>
-                Restore fresh-account setup and remove dead Lotus services from
-                the default Monad startup path.
-              </li>
-            </ul>
           </div>
 
           <div class="text-h6">v0.0.23 Changelog</div>

@@ -552,6 +552,9 @@ export class MemoryRecordStore<T> implements RecordStore<T> {
   all(): T[] {
     return [...this.rows.values()]
   }
+  async refresh(): Promise<void> {
+    // This store has one in-memory authority shared by its readers.
+  }
   async put(key: string, row: T): Promise<void> {
     this.rows.set(key, { ...row })
   }
@@ -603,6 +606,20 @@ export class LevelRecordStore<T> implements RecordStore<T> {
   }
   all(): T[] {
     return [...this.rows.values()]
+  }
+  /** Reload durable rows before a cross-context admission decision. */
+  async refresh(): Promise<void> {
+    await runNativeTransactionExclusive(
+      this.coordinationKey,
+      'single-realm',
+      async () => {
+        const rows = new Map<string, T>()
+        for await (const [key, value] of (this.db as any).iterator({}))
+          rows.set(String(key), JSON.parse(String(value)) as T)
+        this.rows.clear()
+        for (const [key, row] of rows) this.rows.set(key, row)
+      },
+    )
   }
   async put(key: string, row: T): Promise<void> {
     const bytes = JSON.stringify(row)

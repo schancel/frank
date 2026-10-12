@@ -29,19 +29,35 @@ const fields = cborItemCodec<SatoshiDiceItem>('dice', {
   commitment: opt(10, hash32),
   nextRollId: opt(11, id),
   nextCommitment: opt(12, hash32),
-  rejectionReason: opt(13, oneOf(
-    'roll-not-offered', 'commitment-mismatch', 'invalid-client-seed',
-    'invalid-target', 'invalid-wager', 'below-minimum', 'payout-limit',
-    'payment-not-confirmed',
-  )),
+  rejectionReason: opt(
+    13,
+    oneOf(
+      'roll-not-offered',
+      'commitment-mismatch',
+      'invalid-client-seed',
+      'invalid-target',
+      'invalid-wager',
+      'below-minimum',
+      'payout-limit',
+      'payment-not-confirmed',
+    ),
+  ),
 })
 
 function refusal(item: SatoshiDiceItem): string | undefined {
   if (item.action === 'rejected') {
     if (!item.rollId || !item.rejectionReason)
       return 'item: a rejected roll requires its original rollId and rejectionReason'
-    if ([item.luckyNumber, item.isWin, item.serverSecret, item.payoutWei,
-      item.nextRollId, item.nextCommitment].some(value => value !== undefined))
+    if (
+      [
+        item.luckyNumber,
+        item.isWin,
+        item.serverSecret,
+        item.payoutWei,
+        item.nextRollId,
+        item.nextCommitment,
+      ].some(value => value !== undefined)
+    )
       return 'item: a rejected roll cannot state a result or next offer'
   } else if (item.rejectionReason !== undefined) {
     return 'item.rejectionReason: only a rejected roll has a rejection reason'

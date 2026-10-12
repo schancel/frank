@@ -90,7 +90,12 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.offer(ctx, user.address),
-        { type: "text", text: `Welcome to Satoshi Dice.\n\n${diceHelp(ctx.formatAmount(await this.limit(ctx)))}` },
+        {
+          type: "text",
+          text: `Welcome to Satoshi Dice.\n\n${diceHelp(
+            ctx.formatAmount(await this.limit(ctx))
+          )}`,
+        },
       ]);
     } catch (err) {
       console.warn(`[dice] Failed to welcome ${user.address}:`, err);
@@ -152,8 +157,16 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     const rollId = bet.rollId ?? "";
     const refused = async (reason: DiceRejectionReason, why: string) =>
       refuse(this.outbox, msgCtx, ctx, received, why, [
-        ...(rollId ? [{ type: "dice" as const, action: "rejected" as const,
-          rollId, rejectionReason: reason }] : []),
+        ...(rollId
+          ? [
+              {
+                type: "dice" as const,
+                action: "rejected" as const,
+                rollId,
+                rejectionReason: reason,
+              },
+            ]
+          : []),
         await this.offer(ctx, peer),
       ]);
 
@@ -183,14 +196,21 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       );
     const target = bet.target;
     if (!isDiceTarget(target))
-      return refused("invalid-target", "That target is not between 1 and 65,535. No roll was made.");
+      return refused(
+        "invalid-target",
+        "That target is not between 1 and 65,535. No roll was made."
+      );
     let wagerWei: bigint;
     try {
       wagerWei = BigInt(bet.wagerWei ?? "0");
     } catch {
       wagerWei = -1n;
     }
-    if (wagerWei < 0n) return refused("invalid-wager", "That stake is not an amount. No roll was made.");
+    if (wagerWei < 0n)
+      return refused(
+        "invalid-wager",
+        "That stake is not an amount. No roll was made."
+      );
     // A stake, and what it can win, must be worth moving: never below the chain's fee floor.
     const minWagerWei = await tableMinimumWei(ctx, this.minWagerWei);
     if (
@@ -217,7 +237,9 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     if (received.unconfirmed.length > 0 || received.confirmedWei < wagerWei)
       return refused(
         "payment-not-confirmed",
-        `Your bet states a stake of ${ctx.formatAmount(wagerWei)} but ${ctx.formatAmount(
+        `Your bet states a stake of ${ctx.formatAmount(
+          wagerWei
+        )} but ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with it. No roll was made.`
       );
@@ -255,7 +277,9 @@ export class SatoshiDiceBot implements FrankBotDefinition {
         ? ` This message pays you ${ctx.formatAmount(payoutWei)}.`
         : ` Your stake of ${ctx.formatAmount(wagerWei)} is lost.`) +
       (excessWei > 0n
-        ? ` You paid ${ctx.formatAmount(excessWei)} more than your stake; it is returned with this message.`
+        ? ` You paid ${ctx.formatAmount(
+            excessWei
+          )} more than your stake; it is returned with this message.`
         : "");
     const items: MessageItem[] = [result, { type: "text", text }];
     // The result, with its payout, is written down before the secret is given up and before

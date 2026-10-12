@@ -24,7 +24,7 @@ async function table(
   let n = 0;
   let clientSeed = "";
   do clientSeed = (n++).toString(16).padStart(32, "0");
-  while ((diceRoll(secret, clientSeed) < TARGET) !== (want === "win"));
+  while (diceRoll(secret, clientSeed) < TARGET !== (want === "win"));
   const bet: SatoshiDiceItem = {
     type: "dice",
     action: "roll",
@@ -65,7 +65,11 @@ describe("SatoshiDiceBot", () => {
     const { bet } = await table(h, bot);
     await bot.onMessage(h.message([bet]), h.ctx);
     expect(h.paidOut()).toBe(0n);
-    expect(h.sent.flatMap((m) => m.items).some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+    expect(
+      h.sent
+        .flatMap((m) => m.items)
+        .some((i) => i.type === "dice" && i.action === "result")
+    ).toBe(false);
     expect(h.sent[0].items.find((i) => i.type === "text")).toMatchObject({
       text: expect.stringContaining("No roll was made"),
     });
@@ -123,7 +127,9 @@ describe("SatoshiDiceBot", () => {
     await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].valueWei).toBe(STAKE); // the stake back, no second payout
-    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+    expect(
+      h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")
+    ).toBe(false);
   });
 
   test("the same payment cannot fund two bets", async () => {
@@ -159,14 +165,24 @@ describe("SatoshiDiceBot", () => {
     const { bet } = await table(h, bot);
     await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
     expect(h.sent[0].valueWei).toBe(STAKE);
-    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+    expect(
+      h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")
+    ).toBe(false);
     // The real bot's response crosses the recipient codec with a terminal rejection for the
     // original bet, independently of its next offer and the actual attached refund payment.
     const received = overTheWire(h.sent[0].items);
-    const rejected = received.find(i => i.type === "dice" && i.action === "rejected");
-    expect(rejected).toEqual({ type: "dice", action: "rejected", rollId: bet.rollId,
-      rejectionReason: "payout-limit" });
-    const next = received.find(i => i.type === "dice" && i.action === "table") as SatoshiDiceItem;
+    const rejected = received.find(
+      (i) => i.type === "dice" && i.action === "rejected"
+    );
+    expect(rejected).toEqual({
+      type: "dice",
+      action: "rejected",
+      rollId: bet.rollId,
+      rejectionReason: "payout-limit",
+    });
+    const next = received.find(
+      (i) => i.type === "dice" && i.action === "table"
+    ) as SatoshiDiceItem;
     expect(next.rollId).toBeTruthy();
     expect(next.rollId).not.toBe(bet.rollId);
     expect(next.commitment).toBeTruthy();
@@ -194,7 +210,9 @@ describe("SatoshiDiceBot", () => {
   });
 
   test("a result the relay ended is not counted as sent, and a pending one is sent when it arrives", async () => {
-    const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    const errors = jest
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
     const h = harness();
     const bot = new SatoshiDiceBot();
     const { bet } = await table(h, bot, "win");
@@ -234,7 +252,9 @@ describe("SatoshiDiceBot", () => {
     const { bet } = await table(h, bot, "win");
     await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
     expect(h.sent[0].valueWei).toBe(STAKE);
-    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+    expect(
+      h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")
+    ).toBe(false);
   });
 
   test("an error or a crash after the stake arrived and before a result is written refunds the stake once", async () => {
@@ -260,7 +280,8 @@ describe("SatoshiDiceBot", () => {
   test("the bank does not promise what it already owes: a bet it could cover alone is refused while a payout is outstanding", async () => {
     const h = harness();
     const payout = dicePayoutWei(STAKE, TARGET);
-    (h.ctx as any).getBalance = async () => payout + 20_000_000_000_000_000n + 1n;
+    (h.ctx as any).getBalance = async () =>
+      payout + 20_000_000_000_000_000n + 1n;
     const bot = new SatoshiDiceBot();
     const first = await table(h, bot, "win");
     // The first win cannot go out yet: it stays owed.
@@ -285,7 +306,9 @@ describe("SatoshiDiceBot", () => {
     const said = async () => {
       h.sent.length = 0;
       await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
-      return (h.sent[0].items.find((i) => i.type === "text") as { text: string }).text;
+      return (
+        h.sent[0].items.find((i) => i.type === "text") as { text: string }
+      ).text;
     };
     expect(await said()).toContain("The most one roll pays is 3.0 MONT.");
     // The bank shrinks: the next statement of the table says so.
@@ -297,11 +320,15 @@ describe("SatoshiDiceBot", () => {
     balance = dicePayoutWei(STAKE, TARGET) + RESERVE - 1n;
     await bot.onMessage(h.message([bet], [h.pay(STAKE)]), h.ctx);
     expect(h.sent[0].valueWei).toBe(STAKE);
-    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(false);
+    expect(
+      h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")
+    ).toBe(false);
     // One wei more in the bank and the same bet is taken.
     const again = await table(h, bot, "win");
     balance = dicePayoutWei(STAKE, TARGET) + RESERVE;
     await bot.onMessage(h.message([again.bet], [h.pay(STAKE)]), h.ctx);
-    expect(h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")).toBe(true);
+    expect(
+      h.sent[0].items.some((i) => i.type === "dice" && i.action === "result")
+    ).toBe(true);
   });
 });

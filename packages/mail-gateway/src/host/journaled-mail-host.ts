@@ -118,12 +118,11 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       webhook,
       close: async () => {
         await webhook.stop();
-        await ledger.db.destroy();
-        ledger.sqlite?.close();
+        ledger.closeSqlite();
       },
     };
   } catch (error) {
-    ledger.sqlite?.close();
+    ledger.closeSqlite();
     throw error;
   }
 }

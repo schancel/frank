@@ -75,6 +75,30 @@ describe('durable EVM native journal', () => {
       ),
     )
   }
+  it('persists explicit contract submission policy and rejects it on native transfers', async () => {
+    await expect(
+      journal.prepare({ ...plan(), submissionPolicy: 'explicit' }),
+    ).rejects.toThrow(/invalid/)
+    const contract: EvmNativePlan = {
+      ...plan(),
+      kind: 'contract',
+      submissionPolicy: 'explicit',
+    }
+    contract.members[0]!.unsignedTransaction = Transaction.from({
+      ...Transaction.from(contract.members[0]!.unsignedTransaction).toJSON(),
+      data: '0xa9059cbb',
+    }).unsignedSerialized
+    await expect(
+      journal.prepare({
+        ...contract,
+        submissionPolicy: 'automatic',
+      } as unknown as EvmNativePlan),
+    ).rejects.toThrow(/invalid/)
+    const row = await journal.prepare(contract)
+    await reopen()
+    expect(journal.get(row.operationId).submissionPolicy).toBe('explicit')
+    expect(journal.canSelect(address, 0)).toBe(false)
+  })
   it('persists signed bytes and claims before exposure; contains no private keys', async () => {
     const row = await signed()
     await journal.markExposed(row.operationId, 0)

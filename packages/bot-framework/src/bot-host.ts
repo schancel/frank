@@ -70,6 +70,7 @@ import { LoopGuard } from "./loop-guard";
 import { PeerLaneQueue } from "./peer-queue";
 import { LevelSubscriptionManager } from "./subscription-manager";
 import { BotScheduler } from "./scheduler";
+import { NativeGrants } from "./native-grants";
 
 // A retained message that fetches stop returning is never dropped on a guess; it waits. Twenty
 // default poll intervals is past any brief relay or directory lapse and soon enough to act on.
@@ -550,6 +551,9 @@ export class FrankBotHost {
       );
 
       const context: BotContext = {
+        ...(definition.id === "faucet"
+          ? { nativeGrants: new NativeGrants(state.sublevel("native-grants"), wallet) }
+          : {}),
         botId: definition.id,
         address: botAddress,
         subject: botSubject,

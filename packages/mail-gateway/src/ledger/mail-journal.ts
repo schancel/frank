@@ -106,7 +106,7 @@ import type {
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 6;
+export const MAIL_JOURNAL_FORMAT = 7;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
@@ -233,6 +233,7 @@ const MAIL_JOURNAL_DDL = `
     state TEXT NOT NULL CHECK (state IN ('pending', 'submitting', 'uncertain', 'sent', 'failed', 'bounced')),
     attempts INTEGER NOT NULL DEFAULT 0,
     submission_started_at INTEGER,
+    provider_email_id TEXT UNIQUE,
     next_attempt_at INTEGER NOT NULL,
     last_error TEXT,
     created_at INTEGER NOT NULL,
@@ -662,6 +663,7 @@ function toJob(row: OutboundJobJoinedRow): OutboundJobRecord {
     state: row.state,
     attempts: row.attempts,
     submissionStartedAtMs: optional(row.submission_started_at),
+    providerEmailId: optional(row.provider_email_id),
     nextAttemptAtMs: row.next_attempt_at,
     lastError: optional(row.last_error),
     createdAtMs: row.created_at,
@@ -1647,6 +1649,24 @@ export class MailJournal {
     );
   }
 
+  /** Positive provider evidence settles an ambiguous SMTP attempt without resending it. */
+  confirmOutboundJobAccepted(jobId: number, providerEmailId: string): OutboundJobRecord {
+    const id = requireMatch('providerEmailId', providerEmailId, /^[a-zA-Z0-9-]{1,128}$/);
+    return this.ledger.atomic(() => {
+      const job = this.jobRow(jobId);
+      if (job.state !== 'submitting' && job.state !== 'uncertain') {
+        if (job.state === 'sent' && job.provider_email_id === id) return toJob(job);
+        throw new MailJournalStateError(`Outbound job ${jobId} is ${job.state}; provider acceptance cannot change it`);
+      }
+      this.run(
+        "UPDATE outbound_job SET state = 'sent', provider_email_id = ?, attempts = CASE WHEN state = 'submitting' THEN attempts + 1 ELSE attempts END WHERE job_id = ?",
+        id,
+        jobId
+      );
+      return toJob(this.jobRow(jobId));
+    });
+  }
+
   /**
    * A temporary failure: stays `pending`, counts the attempt, stores the next
    * time and the error. One transaction. Not repeat-safe by itself: each call
@@ -1688,10 +1708,11 @@ export class MailJournal {
   }
 
   /** Operator reconciliation queue; `submitting` includes crashes during provider calls. */
-  listUncertainOutboundJobs(limit = 100): OutboundJobRecord[] {
+  listUncertainOutboundJobs(limit = 100, afterJobId = 0): OutboundJobRecord[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');
+    if (!Number.isSafeInteger(afterJobId) || afterJobId < 0) refuse('afterJobId: not a nonnegative integer');
     return this.all<OutboundJobJoinedRow>(
-      `${JOB_SELECT} WHERE j.state IN ('submitting', 'uncertain') ORDER BY j.submission_started_at, j.job_id LIMIT ?`, limit
+      `${JOB_SELECT} WHERE j.state IN ('submitting', 'uncertain') AND j.job_id > ? ORDER BY j.job_id LIMIT ?`, afterJobId, limit
     ).map(toJob);
   }
 

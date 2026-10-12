@@ -20,6 +20,7 @@ export * from './mta/dkim-signer';
 export * from './mta/outbound-worker';
 export * from './mta/journaled-outbound-worker';
 export * from './mta/resend-smtp-port';
+export * from './mta/resend-outbound-reconciler';
 export * from './relay/mailbox-listener';
 export * from './relay/journaled-inbound-send';
 export * from './relay/journaled-frank-mailbox';

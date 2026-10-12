@@ -1,5 +1,5 @@
 /**
- * Mail journal (#1237 G1, format 6 with issued outbound aliases). File-backed SQLite in a temp
+ * Mail journal (#1237 G1, format 7 with issued aliases and provider evidence). File-backed SQLite in a temp
  * directory, real close and reopen, no database mocks. Each test names the
  * later-stage failure it prevents. `J1`..`J25` are the acceptance tests of the
  * contract's section 21.6.
@@ -326,7 +326,7 @@ describe('open, format marker and the single connection', () => {
     expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
     expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' });
     expect(db.prepare('PRAGMA locking_mode').get()).toEqual({ locking_mode: 'exclusive' });
-    expect(MAIL_JOURNAL_FORMAT).toBe(6);
+    expect(MAIL_JOURNAL_FORMAT).toBe(7);
     expect(journal.frankCursor()).toEqual({});
   });
 
@@ -364,8 +364,8 @@ describe('open, format marker and the single connection', () => {
   // Prevents: a build silently re-creating or reinterpreting a journal it cannot read, which
   // would forget which mails were already relayed and pay for them again.
   it.each([
-    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 6 only/],
-    ['a later format', 'UPDATE mail_journal_meta SET format = 7', /format 7 is not supported/],
+    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 7 only/],
+    ['a later format', 'UPDATE mail_journal_meta SET format = 8', /format 8 is not supported/],
     ['no marker row', 'DELETE FROM mail_journal_meta', /format marker is missing/],
     ['no marker table', 'DROP TABLE mail_journal_meta', /format marker is missing/],
     ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (3), (3)', /format marker is missing/],
@@ -1365,6 +1365,24 @@ describe('Frank → email and the cross-direction rule', () => {
 });
 
 describe('outbound jobs and send slots', () => {
+  it('settles an ambiguous SMTP attempt only with durable positive provider evidence', () => {
+    const first = open();
+    const message = bridged(first.journal, ALICE, 'provider', '<provider@frank.org>').message;
+    const job = createdJob(first.journal, ALICE, message.rfcMessageId, 'dave@mail.example');
+    expect(() => first.journal.confirmOutboundJobAccepted(job.jobId, 'provider-1')).toThrow(MailJournalStateError);
+    first.journal.claimOutboundJob(job.jobId);
+    first.journal.markOutboundJobUncertain(job.jobId, 'SMTP DATA result lost');
+    const journal = reopen().journal;
+    expect(journal.confirmOutboundJobAccepted(job.jobId, 'provider-1')).toMatchObject({
+      state: 'sent',
+      providerEmailId: 'provider-1',
+      attempts: 1,
+    });
+    expect(journal.confirmOutboundJobAccepted(job.jobId, 'provider-1')).toMatchObject({ state: 'sent', attempts: 1 });
+    expect(() => journal.confirmOutboundJobAccepted(job.jobId, 'provider-2')).toThrow(MailJournalStateError);
+    expect(reopen().journal.listUncertainOutboundJobs()).toEqual([]);
+  });
+
   it('persists an exclusive send claim before any provider effect and holds ambiguous outcomes for reconciliation', () => {
     const first = open();
     const message = bridged(first.journal, ALICE, 'claim', '<claim@frank.org>').message;
@@ -1594,7 +1612,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     for (let i = 0; i < 2; i++) {
       expect(() => open()).toThrow(MailJournalOpenError);
       expect(() => open()).toThrow(
-        /format 1 is not supported; this build reads format 6 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
+        /format 1 is not supported; this build reads format 7 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
       );
     }
     expect(fileHash()).toBe(before);
@@ -1619,7 +1637,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
 
     expect('MAIL_JOURNAL_DDL' in packageIndex).toBe(false);
     expect(Object.keys(packageIndex).filter((name) => /DDL/.test(name))).toEqual([]);
-    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(6);
+    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(7);
     expect(packageIndex.MAIL_JOURNAL_TABLES).toBe(MAIL_JOURNAL_TABLES);
 
     const { db } = open();
@@ -1655,6 +1673,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     );
     expect(users.map((f) => path.relative(SRC, f))).toEqual([
       'mta/journaled-outbound-worker.ts',
+      'mta/resend-outbound-reconciler.ts',
       'relay/journaled-frank-mailbox.ts',
       'relay/journaled-inbound-send.ts',
       'smtp/issued-mailbox-lookup.ts',

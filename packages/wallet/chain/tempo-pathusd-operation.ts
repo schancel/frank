@@ -277,10 +277,14 @@ export class TempoPathUsdJournal {
   private tail: Promise<unknown> = Promise.resolve()
   private uncertain = false
 
-  constructor(private readonly store: RecordStore<TempoPathUsdOperation>) {
+  constructor(private readonly store: RecordStore<TempoPathUsdOperation> & { refresh(): Promise<void> }) {
+    this.validateRows()
+  }
+
+  private validateRows(): void {
     const claims = new Set<string>()
     const ids = new Set<string>()
-    for (const row of store.all()) {
+    for (const row of this.store.all()) {
       validate(row)
       if (ids.has(row.operationId)) throw new Error('Duplicate Tempo operation ID')
       ids.add(row.operationId)
@@ -288,6 +292,13 @@ export class TempoPathUsdJournal {
       if (claims.has(claim)) throw new Error('Duplicate Tempo source nonce claim')
       claims.add(claim)
     }
+  }
+
+  /** Refresh inside the host's source lock before relying on cached source claims. */
+  async refresh(): Promise<void> {
+    if (this.uncertain) throw new Error('Tempo journal write outcome is uncertain')
+    await this.store.refresh()
+    this.validateRows()
   }
 
   get(operationId: string): TempoPathUsdOperation | undefined {
@@ -331,6 +342,7 @@ export class TempoPathUsdJournal {
 
   prepare(row: TempoPathUsdOperation): Promise<TempoPathUsdOperation> {
     return this.exclusive(async () => {
+      await this.refresh()
       if (this.get(row.operationId)) throw new Error('Tempo operation already exists')
       if (this.list().some(existing =>
         existing.chainIdentifier === row.chainIdentifier &&
@@ -432,6 +444,7 @@ export class TempoPathUsdTransfers {
     if (maximumFeeAtomic > params.authorizedFeeCeilingAtomic)
       throw new Error('Tempo fee exceeds authorized PathUSD ceiling')
     return this.withSourceLock(source, async () => {
+      await this.journal.refresh()
       const retry = this.journal.get(params.operationId)
       if (retry) {
         assertExistingAuthorization(retry)

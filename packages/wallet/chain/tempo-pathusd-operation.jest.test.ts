@@ -28,7 +28,10 @@ function transferLog(amount = 2_000_000n, recipient = RECIPIENT) {
   return { address: PATHUSD, topics: encoded.topics, data: encoded.data }
 }
 
-function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
+function harness(
+  store = new MemoryRecordStore<TempoPathUsdOperation>(),
+  sourceLock?: <T>(source: string, task: () => Promise<T>) => Promise<T>,
+) {
   const receipts = new Map<string, TempoReceipt>()
   let finalized = false
   let finalizedNonce = 0n
@@ -65,11 +68,12 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
   }
   const journal = new TempoPathUsdJournal(store)
   let sourceTail: Promise<unknown> = Promise.resolve()
-  const transfers = new TempoPathUsdTransfers('tempo-testnet', journal, rpc, (_source, task) => {
+  const localSourceLock = <T>(_source: string, task: () => Promise<T>): Promise<T> => {
     const run = sourceTail.then(task)
     sourceTail = run.catch(() => undefined)
     return run
-  })
+  }
+  const transfers = new TempoPathUsdTransfers('tempo-testnet', journal, rpc, sourceLock ?? localSourceLock)
   const included = (row: TempoPathUsdOperation, status = 1, logs = [transferLog()]): TempoReceipt => ({
     transactionHash: row.transactionHash!, blockHash: BLOCK, blockNumber: 100, status,
     gasUsed: 80_000n, effectiveGasPrice: 1_000_000_000n,
@@ -192,6 +196,49 @@ describe('Tempo PathUSD transfer ownership', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test('two already-open stores cannot reserve the same Tempo source and nonce', async () => {
+    const durable = new Map<string, TempoPathUsdOperation>()
+    const openTab = () => {
+      const cache = new Map(durable)
+      return {
+        get: (key: string) => cache.get(key),
+        all: () => [...cache.values()],
+        put: async (key: string, row: TempoPathUsdOperation) => {
+          durable.set(key, structuredClone(row))
+          cache.set(key, structuredClone(row))
+        },
+        compareAndPut: async (key: string, expected: TempoPathUsdOperation | undefined, row: TempoPathUsdOperation) => {
+          if (JSON.stringify(durable.get(key)) !== JSON.stringify(expected)) return false
+          durable.set(key, structuredClone(row))
+          cache.set(key, structuredClone(row))
+          return true
+        },
+        delete: async (key: string) => { durable.delete(key); cache.delete(key) },
+        close: async () => undefined,
+        refresh: async () => {
+          cache.clear()
+          for (const [key, row] of durable) cache.set(key, structuredClone(row))
+        },
+      }
+    }
+    let sourceTail: Promise<unknown> = Promise.resolve()
+    const sharedSourceLock = <T>(_source: string, task: () => Promise<T>): Promise<T> => {
+      const run = sourceTail.then(task)
+      sourceTail = run.catch(() => undefined)
+      return run
+    }
+    const first = harness(openTab(), sharedSourceLock)
+    const second = harness(openTab(), sharedSourceLock)
+    const request = { authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, signer: first.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n }
+    const attempts = await Promise.allSettled([
+      first.transfers.prepare({ ...request, operationId: ID }),
+      second.transfers.prepare({ ...request, signer: second.signer, operationId: '0x' + '66'.repeat(32) }),
+    ])
+    expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(attempts.filter(result => result.status === 'rejected')).toHaveLength(1)
+    expect(durable.size).toBe(1)
   })
 
   test('prepared or ambiguous spend holds PathUSD source balance across concurrent operations and restart', async () => {

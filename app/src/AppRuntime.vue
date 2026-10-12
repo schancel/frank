@@ -156,14 +156,21 @@ export default defineComponent({
       { immediate: true },
     )
 
+    let gatewayDiscoveryWasActive = false
     watch(
       [() => accountStatus.status, () => messagingState.status],
       ([account, messaging]) => {
         const wallet = messaging === 'ready' ? messagingWallet() : undefined
         if (account !== 'ready' || !wallet) {
-          settings.clearEmailGatewayDiscovery()
+          // Initial hydration is read-only. Only clear a discovery that this
+          // runtime actually started after an active session ends.
+          if (gatewayDiscoveryWasActive) {
+            settings.clearEmailGatewayDiscovery()
+            gatewayDiscoveryWasActive = false
+          }
           return
         }
+        gatewayDiscoveryWasActive = true
         const relayBaseUrl =
           (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
           loadMonadChainConfigFromEnv().relayBaseUrl

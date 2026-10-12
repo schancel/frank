@@ -1,6 +1,8 @@
 /** One configured EVM owner per canonical network and account session. This cache owns no keys. */
 import {
+  activeChain,
   createNativeOnlyEvmChain,
+  DirectMessageAlreadyAttemptedError,
   getChainRegistryEntry,
   loadMonadChainConfigFromEnv,
   type EvmChainConfig,
@@ -8,6 +10,7 @@ import {
   type NativeAssetChain,
   type NativeWalletHandle,
 } from '@frank/wallet/chain'
+import type { SwapRecordItem, WalletSyncItem } from '@frank/cashweb/types/messages'
 import { accountSession } from './session'
 import {
   validateEvmWalletConfiguration,
@@ -111,7 +114,62 @@ export function openEvmWallet(
   operatorCheckpoint?: EvmOperatorCheckpoint,
 ): Promise<OpenEvmWallet> {
   const checkpointInput = operatorCheckpoint && { ...operatorCheckpoint }
-  const config = configured(chainIdentifier)
+  // A secondary chain emits a transport-free sync event. Capture the primary messaging service
+  // now, so a later UI network change cannot redirect a pending operation's self note.
+  const messenger = { ...activeChain }
+  const baseConfig = configured(chainIdentifier)
+  const emitWalletSync = async (
+    item: WalletSyncItem,
+    swapRecord: SwapRecordItem | undefined,
+    messageId: Uint8Array,
+  ): Promise<void> => {
+    const requireBoundOwner = () => {
+      if (
+        item.chainIdentifier !== chainIdentifier ||
+        !sameSessionOwner(entry) ||
+        entry.cancellation.signal.aborted ||
+        opened.get(chainIdentifier) !== entry ||
+        scopeOf(baseConfig.relayBaseUrl) !== scope
+      )
+        throw new Error('EVM wallet sync owner changed')
+    }
+    requireBoundOwner()
+    const primary = entry.sessionWallet
+    if (
+      !primary ||
+      messenger.chainIdentifier !== primary.chainIdentifier ||
+      !messenger.capabilities.directMessages ||
+      (primary.family === 'evm' &&
+        normalizedRelay((primary as EvmChainWalletHandle).relayBaseUrl) !==
+          normalizedRelay(baseConfig.relayBaseUrl))
+    )
+      throw new Error('Primary wallet messaging is unavailable')
+    try {
+      await messenger.directMessages.send({
+        wallet: primary,
+        recipient: primary.identity.address,
+        items: swapRecord ? [item, swapRecord] : [item],
+        stampValue: 0n,
+        messageId,
+      })
+    } catch (error) {
+      if (!(error instanceof DirectMessageAlreadyAttemptedError)) throw error
+      const status = (
+        await messenger.directMessages.reconcileAttempts({
+          wallet: primary,
+          payloadDigests: [error.payloadDigest],
+        })
+      )[error.payloadDigest]
+      if (status !== 'delivered') throw error
+    }
+    requireBoundOwner()
+  }
+  const config: EvmChainConfig = {
+    ...baseConfig,
+    ...(getChainRegistryEntry(chainIdentifier)?.kind === 'monad'
+      ? {}
+      : { emitWalletSync }),
+  }
   validateEvmWalletConfiguration(config, checkpointInput)
   const scope = scopeOf(config.relayBaseUrl)
   const checkpoint = JSON.stringify(checkpointInput ?? null)

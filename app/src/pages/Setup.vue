@@ -21,7 +21,18 @@
           class="account-setup q-mx-auto"
           aria-labelledby="account-heading"
         >
-          <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
+          <h1
+            id="account-heading"
+            ref="heading"
+            tabindex="-1"
+            :class="
+              tabCoordinator.otherTabActive ||
+              account.status === 'standby' ||
+              mode === 'legacy'
+                ? 'text-h5'
+                : 'q-sr-only'
+            "
+          >
             {{
               tabCoordinator.otherTabActive || account.status === 'standby'
                 ? $t('accountRecovery.frank_is_open_in_another_tab')

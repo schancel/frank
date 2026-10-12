@@ -378,7 +378,14 @@ export default defineComponent({
       this.address &&
       typeof this.chatStore?.setActiveConversation === 'function'
     ) {
-      this.chatStore.setActiveConversation(this.address)
+      if (
+        isChainAddress(this.address) &&
+        typeof this.chatStore?.setActiveChat === 'function'
+      ) {
+        this.chatStore.setActiveChat(this.address)
+      } else {
+        this.chatStore.setActiveConversation(this.address)
+      }
     }
     this.scrollBottom()
     // set the chat width
@@ -1324,13 +1331,22 @@ export default defineComponent({
         : undefined
     },
     conversation(): Conversation | null {
-      return (
+      const byIdOrAddress =
         this.chatStore.conversations[this.address] ??
         (isChainAddress(this.address)
           ? this.chatStore.chats[toChainDisplayAddress(this.address)]
-          : null) ??
-        null
-      )
+          : null)
+      if (byIdOrAddress) return byIdOrAddress
+      const active = this.chatStore.activeConversation
+      if (
+        active &&
+        (active.id === this.address ||
+          (isChainAddress(this.address) &&
+            sameCanonicalAddress(active.address, this.address)))
+      ) {
+        return active
+      }
+      return null
     },
     recipientAddress(): string {
       if (this.conversation?.address) {
@@ -1479,7 +1495,14 @@ export default defineComponent({
         newAddr &&
         typeof this.chatStore?.setActiveConversation === 'function'
       ) {
-        this.chatStore.setActiveConversation(newAddr)
+        if (
+          isChainAddress(newAddr) &&
+          typeof this.chatStore?.setActiveChat === 'function'
+        ) {
+          this.chatStore.setActiveChat(newAddr)
+        } else {
+          this.chatStore.setActiveConversation(newAddr)
+        }
       }
       void this.refreshMinimumStamp()
       // Another conversation opens on its newest message, wherever the last one was left.

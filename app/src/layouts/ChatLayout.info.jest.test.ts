@@ -27,6 +27,17 @@ jest.mock('../components/dialogs/ClearHistoryDialog.vue', () => ({
 jest.mock('../components/dialogs/DeleteChatDialog.vue', () => ({
   template: '<i />',
 }))
+const mockSetActiveChat = jest.fn()
+const mockSetActiveConversation = jest.fn()
+jest.mock('src/stores/chats', () => ({
+  useChatStore: () => ({
+    conversations: {},
+    chats: {},
+    activeConversation: null,
+    setActiveChat: mockSetActiveChat,
+    setActiveConversation: mockSetActiveConversation,
+  }),
+}))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
     getContact: () => mockContact,
@@ -106,10 +117,57 @@ describe('ChatLayout info mode with ?info=true query', () => {
     expect(mockReplace).toHaveBeenCalledWith({ query: {} })
     ;(wrapper.vm as unknown as { openInfo(): void }).openInfo()
     await flushPromises()
-    // Clicking chat on ChatInfoView closes info and removes ?info=true
+    // Clicking chat on ChatInfoView closes info and activates chat for address
     await wrapper.find('[data-testid="info-chat-btn"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(true)
+    expect(mockReplace).toHaveBeenCalledWith({ query: {} })
+    expect(mockSetActiveChat).toHaveBeenCalledWith(
+      '0x1111111111111111111111111111111111111111',
+    )
+  })
+
+  it('allocates and activates target chat when ChatInfoView emits chat with address', async () => {
+    mockSetActiveChat.mockClear()
+    const mockReplace = jest.fn()
+    const wrapper = mount(ChatLayout, {
+      global: {
+        mocks: {
+          $route: {
+            params: { address: '0x1111111111111111111111111111111111111111' },
+            query: { info: 'true' },
+          },
+          $router: { push: jest.fn(), replace: mockReplace },
+          $t: (key: string) => key,
+        },
+        stubs: {
+          QHeader: passthrough,
+          QToolbar: passthrough,
+          QToolbarTitle: passthrough,
+          QAvatar: passthrough,
+          QBtn: passthrough,
+          QSpace: passthrough,
+          QMenu: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QIcon: passthrough,
+          QSeparator: passthrough,
+          QDialog: true,
+          RouterView: { template: '<div data-testid="chat-view" />' },
+          ClearHistoryDialog: true,
+          DeleteChatDialog: true,
+        },
+      },
+    })
+    await flushPromises()
+    ;(wrapper.vm as any).onStartChatFromInfo(
+      '0xf4482A16DC05A4fDBa94592B19fbD40e6953d063',
+    )
+    await flushPromises()
+    expect(mockSetActiveChat).toHaveBeenCalledWith(
+      '0xf4482A16DC05A4fDBa94592B19fbD40e6953d063',
+    )
     expect(mockReplace).toHaveBeenCalledWith({ query: {} })
   })
 

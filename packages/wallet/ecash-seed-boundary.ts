@@ -6,11 +6,8 @@ import {
 import type { DomainRoot, HistoricalBip39Seed } from "../domain-roots/src";
 import type { ChronikClient } from "chronik-client";
 import type { HdNode } from "ecash-lib/dist/hdwallet";
-import type {
-  EcashAddressPrefix,
-  EcashWalletBackend,
-  EcashWalletFactory,
-} from "./ecash-wallet";
+import type { EcashSdkBackend, EcashSdkWallet } from "./ecash-sdk-backend";
+import type { EcashAddressPrefix, EcashWalletFactory } from "./ecash-wallet";
 
 /** Validate the frozen registry interpretation, then copy before asynchronous effects. */
 export function snapshotEcashDomainRoot(
@@ -44,14 +41,14 @@ interface EcashSdkHdConstructor {
     baseHdNode: HdNode,
     accountNumber: number,
     prefix: EcashAddressPrefix
-  ): EcashWalletBackend;
+  ): EcashSdkWallet;
 }
 
-export const createEcashSeedBackend: EcashWalletFactory = async ({
+export const createEcashSeedBackend = async ({
   domainRoot,
   chronik,
   addressPrefix,
-}) => {
+}: Parameters<EcashWalletFactory>[0]): Promise<EcashSdkBackend> => {
   const root = snapshotEcashDomainRoot(domainRoot);
   try {
     return await createBackend(root.bytes, chronik, addressPrefix);
@@ -64,7 +61,7 @@ export async function createEcashBip39SeedBackend(
   material: HistoricalBip39Seed,
   chronik: ChronikClient,
   addressPrefix: EcashAddressPrefix
-): Promise<EcashWalletBackend> {
+): Promise<EcashSdkBackend> {
   if (
     material.derivation !== BIP39_DERIVATION ||
     !(material.seed instanceof Uint8Array) ||
@@ -83,9 +80,10 @@ async function createBackend(
   seed: Uint8Array,
   chronik: ChronikClient,
   addressPrefix: EcashAddressPrefix
-): Promise<EcashWalletBackend> {
+): Promise<EcashSdkBackend> {
   const imported = await import("ecash-wallet/dist/index.js");
   const { HdNode } = await import("ecash-lib");
+  const { EcashSdkBackend } = await import("./ecash-sdk-backend");
   const sdk = imported as unknown as {
     Wallet?: unknown;
     default?: { Wallet?: unknown };
@@ -98,11 +96,15 @@ async function createBackend(
   const secretKey = account.seckey();
   if (secretKey === undefined)
     throw new Error("eCash seed did not produce a private HD account");
-  return new (Wallet as EcashSdkHdConstructor)(
-    secretKey,
+  return new EcashSdkBackend(
+    new (Wallet as EcashSdkHdConstructor)(
+      secretKey,
+      chronik,
+      account,
+      0,
+      addressPrefix
+    ),
     chronik,
-    account,
-    0,
     addressPrefix
   );
 }

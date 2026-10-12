@@ -333,6 +333,7 @@ import {
   discoverFrankDomain,
   splitDomainHandle,
 } from 'src/utils/frank-domain-discovery'
+import { discoverWellKnown } from 'src/utils/frank-wellknown-discovery'
 import { assertDiscoveryRelay } from 'src/utils/frank-discovery-relay'
 import { relayHandleOf, resolveUsername } from 'src/utils/contact-username'
 
@@ -674,7 +675,9 @@ export default defineComponent({
         // A reachable native service that has no such username may offer email explicitly.
         // A failed discovery/relay/profile check never downgrades to email.
         let failure: unknown
-        for (const relay of relays) {
+        let triedWellKnown = false
+        for (let index = 0; index < relays.length; index++) {
+          const relay = relays[index]
           try {
             await assertDiscoveryRelay(relay.endpoint, chainIdentifier)
             if (!current()) return
@@ -697,6 +700,28 @@ export default defineComponent({
             return
           } catch (error) {
             failure = error
+            if (index === relays.length - 1 && !triedWellKnown) {
+              triedWellKnown = true
+              try {
+                const fallback = await discoverWellKnown(
+                  domain,
+                  globalThis.fetch,
+                )
+                if (!current()) return
+                // A failing SRV target can still have a valid domain-authenticated HTTPS
+                // route (for example behind a reverse proxy). Never retry the same target.
+                const known = new Set(
+                  relays.map(candidate => candidate.endpoint),
+                )
+                relays.push(
+                  ...(fallback?.relays ?? []).filter(
+                    candidate => !known.has(candidate.endpoint),
+                  ),
+                )
+              } catch {
+                /* Preserve native failure; this is never email absence. */
+              }
+            }
           }
         }
         throw failure ?? new Error('No reachable relay')

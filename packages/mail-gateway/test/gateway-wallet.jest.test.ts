@@ -53,6 +53,7 @@ describe('gateway wallet host admission', () => {
       networkTag: 'MONT',
       chainId: 10143,
       walletStorageLocation: walletBase,
+      requireBoundWalletState: true,
     } as Parameters<typeof openGatewayWallet>[0]['chain'],
   });
 

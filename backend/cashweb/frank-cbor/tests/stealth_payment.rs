@@ -265,3 +265,78 @@ fn unallocated_key_types_fail_allocated_stage() {
         result => panic!("expected allocated-key rejection, got {result:?}"),
     }
 }
+
+#[test]
+fn shared_typescript_stealth_assets_vectors_agree() {
+    // Generated and owned by packages/frank-codec fixtures/stealth-assets.ts. This test
+    // intentionally requires that wire predecessor's corpus in the integration candidate.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../docs/protocol/cbor/vectors/stealth-assets.json");
+    let source = std::fs::read_to_string(path).expect("shared TypeScript stealth-assets corpus");
+    let corpus: serde_json::Value = serde_json::from_str(&source).expect("shared corpus JSON");
+    let cases = corpus["cases"].as_array().expect("shared cases");
+    assert_eq!(cases.len(), 8);
+    for case in cases {
+        let id = case["id"].as_str().unwrap();
+        let bytes = hex::decode(case["frame_hex"].as_str().unwrap()).unwrap();
+        match case["expectation"].as_str().unwrap() {
+            "accepted" => {
+                let ValidationResult::Parsed(p) = validate_frame(&bytes, &default_context())
+                    .unwrap_or_else(|e| panic!("{id}: {e:?}"))
+                else {
+                    panic!("{id}: expected parsed")
+                };
+                assert_eq!(
+                    p.schema_version,
+                    case["schema_version"].as_u64().unwrap() as u32,
+                    "{id}"
+                );
+                assert_eq!(
+                    frank_cbor::encode_canonical(&p.payload).unwrap(),
+                    p.payload_bytes,
+                    "{id}: byte identity"
+                );
+                if p.schema_version == 2 {
+                    assert!(
+                        matches!(
+                            p.typed.as_deref(),
+                            Some(TypedPayload::StealthPaymentItem(_))
+                        ),
+                        "{id}"
+                    );
+                    let mut old = default_context();
+                    old.supported_schemas
+                        .iter_mut()
+                        .find(|s| s.type_id == 19)
+                        .unwrap()
+                        .schema_version = 1;
+                    assert!(
+                        validate_frame(&bytes, &old).is_err(),
+                        "{id}: old schema projection accepted"
+                    );
+                } else {
+                    assert!(
+                        matches!(p.typed.as_deref(), Some(TypedPayload::NativeStealthItem(_))),
+                        "{id}"
+                    );
+                }
+            }
+            "rejected" => match validate_frame(&bytes, &default_context()) {
+                Err(frank_cbor::Error::Codec(e)) => {
+                    assert_eq!(
+                        e.category.as_str(),
+                        case["error_category"].as_str().unwrap(),
+                        "{id}"
+                    );
+                    assert_eq!(
+                        e.stage.as_str(),
+                        case["error_stage"].as_str().unwrap(),
+                        "{id}"
+                    );
+                }
+                result => panic!("{id}: expected rejection, got {result:?}"),
+            },
+            other => panic!("{id}: unknown expectation {other}"),
+        }
+    }
+}

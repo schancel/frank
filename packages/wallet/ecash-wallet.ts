@@ -1174,10 +1174,13 @@ export class EcashWallet implements NativeWalletHandle {
 
   async sendNative(params: {
     recipient: ChainAddress;
+    minimumRemainingBalance?: bigint;
     value: bigint;
     maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
+    if (params.minimumRemainingBalance !== undefined)
+      throw new Error("Minimum native reserve is unsupported by this wallet");
     const onSigned = params.onSigned;
     const operation = await this.prepareNativeOperation({
       ...params,

@@ -807,8 +807,13 @@ those records or reuse a previously funded identity with empty state.
 The grant path uses the faucet's own wallet, rather than the optional shared funding key. It does
 not create new keys during recovery or copy signed transactions into a second journal.
 
-**Funded deployment is gated:** the native wallet must enforce an authorized maximum network fee
-and retain the faucet reserve after that fee. The existing reserve precheck alone does not establish
-this. The public `sendNative.maxFee` parameter is not yet enforced by its native executor; its
-implementation and boundary tests are a separate wallet prerequisite. Until that predecessor is
-reviewed, do not launch this faucet with spendable funds on GKE or mainnet.
+Each grant has an immutable `FAUCET_MAX_FEE_WEI` authorization (default 0.01 MON). The EVM wallet
+checks the actual maximum fee before reservation or signing. Its reserve calculation uses fresh
+unreserved source observations and includes both the grant and that fee; pending accounts cannot
+satisfy a second grant's reserve. Resume reuses the original fee-capped signed bytes and does not
+reprice a potentially submitted transaction. The fee authorization is part of grant intent version 2;
+older intent versions fail visibly and remain retained for explicit reconciliation.
+
+**Funded deployment remains gated on independent review of this budget prerequisite.** Do not fund
+or launch on GKE/mainnet merely because local tests pass. Other wallet families explicitly reject
+the optional native reserve constraint until their owners implement it.

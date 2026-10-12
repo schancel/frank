@@ -85,6 +85,21 @@ describe("FaucetBot", () => {
     expect(f.transfers).toHaveLength(1);
   });
 
+  test("configured fee and reserve are passed to the durable wallet authorization", async () => {
+    const f = faucet();
+    await new FaucetBot({
+      amountWei: AMOUNT,
+      minReserveWei: RESERVE,
+      maxFeeWei: 123n,
+    }).onNewUser({ address: PLAYER, registeredAtMs: 1 }, f.ctx);
+    expect(f.ctx.nativeGrants!.grant).toHaveBeenCalledWith({
+      to: PLAYER,
+      valueWei: AMOUNT,
+      minReserveWei: RESERVE,
+      maxFeeWei: 123n,
+    });
+  });
+
   test("the reserve is kept on both paths", async () => {
     const f = faucet(AMOUNT + RESERVE - 1n);
     const b = bot();
@@ -125,6 +140,9 @@ describe("FaucetBot", () => {
   test("every setting is enforced: there is no cap that is read and ignored", () => {
     expect(() => new FaucetBot({ amountWei: MAX_AMOUNT_WEI + 1n })).toThrow();
     expect(() => new FaucetBot({ amountWei: 0n })).toThrow();
+    expect(() => new FaucetBot({ minReserveWei: -1n })).toThrow();
+    expect(() => new FaucetBot({ maxFeeWei: -1n })).toThrow();
+    expect(() => new FaucetBot({ maxFeeWei: MAX_AMOUNT_WEI + 1n })).toThrow();
     expect(Object.keys(bot())).not.toEqual(
       expect.arrayContaining(["maxPerDay", "maxPerRun"])
     );

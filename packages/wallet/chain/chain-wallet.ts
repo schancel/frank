@@ -66,6 +66,14 @@ export class NativeFeeExceededError extends Error {
   }
 }
 
+/** A budgeted native transfer would leave less unreserved value than its authorized floor. */
+export class NativeReserveExceededError extends Error {
+  constructor(readonly available: bigint, readonly required: bigint) {
+    super("Native transfer would spend the required reserve");
+    this.name = "NativeReserveExceededError";
+  }
+}
+
 /** Durable guard record; signed replay material may remain wallet-specific and in memory. */
 export interface NativeTransactionAttemptStore {
   /** Coordination reach of this store. Cross-process stores require a host lock not yet exposed. */
@@ -273,6 +281,9 @@ export interface NativeWalletHandle {
     value: bigint;
     /** The fee the user reviewed, as a ceiling; wallets that support it throw NativeFeeExceededError. */
     maxFee?: bigint;
+    /** Minimum unreserved native value left after amount and maximum fee. EVM native-gas
+     * owners enforce it before signing; unsupported families reject it explicitly. */
+    minimumRemainingBalance?: bigint;
     /** Invoked after signing and before broadcast so callers can durably record the exact id. */
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     /** While an earlier payment from the main account has not been seen on chain this send

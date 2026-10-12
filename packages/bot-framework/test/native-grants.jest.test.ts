@@ -11,6 +11,7 @@ import { NativeEvmTransactionBuilder } from "@frank/wallet/chain/evm-transaction
 import type { NativeWalletHandle } from "@frank/wallet/chain/chain-wallet";
 
 const signer = new Wallet("0x" + "11".repeat(32));
+const secondSigner = new Wallet("0x" + "44".repeat(32));
 const recipient = new Wallet("0x" + "22".repeat(32)).address.toLowerCase();
 const other = new Wallet("0x" + "33".repeat(32)).address.toLowerCase();
 const binding = {
@@ -18,7 +19,12 @@ const binding = {
   nativeChainId: "10143",
   publicTuple: "synthetic-faucet-test",
 };
-const request = { to: recipient, valueWei: 100_000n, minReserveWei: 20_000n };
+const request = {
+  to: recipient,
+  valueWei: 100_000n,
+  minReserveWei: 20_000n,
+  maxFeeWei: 21_000n,
+};
 
 /** Real durable wallet owner and bot LevelDB. Only the external chain is simulated; transactions
  * are actually built, signed, journalled and replayed by the production native executor. */
@@ -32,6 +38,10 @@ describe("durable faucet grant / native wallet boundary", () => {
   let raws: string[];
   let recipientBalance: bigint;
   let nonce: number;
+  let secondNonce: number;
+  let senderBalance: bigint;
+  let secondBalance: bigint;
+  let feePerGas: bigint;
   let mine: boolean;
   let loseResponse: boolean;
   let receipts: Map<string, object>;
@@ -46,13 +56,18 @@ describe("durable faucet grant / native wallet boundary", () => {
     },
     getBalance: async (address: string) =>
       address.toLowerCase() === signer.address.toLowerCase()
-        ? 10_000_000n
+        ? senderBalance
+        : address.toLowerCase() === secondSigner.address.toLowerCase()
+        ? secondBalance
         : recipientBalance,
-    getTransactionCount: async () => nonce,
+    getTransactionCount: async (address: string) =>
+      address.toLowerCase() === secondSigner.address.toLowerCase()
+        ? secondNonce
+        : nonce,
     getFeeData: async () => ({
-      maxFeePerGas: 1n,
-      maxPriorityFeePerGas: 1n,
-      gasPrice: 1n,
+      maxFeePerGas: feePerGas,
+      maxPriorityFeePerGas: feePerGas,
+      gasPrice: feePerGas,
     }),
     estimateGas: async () => 21_000n,
     call: async () => "0x",
@@ -62,7 +77,14 @@ describe("durable faucet grant / native wallet boundary", () => {
       raws.push(raw);
       const tx = Transaction.from(raw);
       if (mine && !receipts.has(tx.hash!)) {
-        nonce = tx.nonce + 1;
+        const cost = tx.value + tx.gasLimit * (tx.maxFeePerGas ?? tx.gasPrice!);
+        if (tx.from!.toLowerCase() === secondSigner.address.toLowerCase()) {
+          secondNonce = tx.nonce + 1;
+          secondBalance -= cost;
+        } else {
+          nonce = tx.nonce + 1;
+          senderBalance -= cost;
+        }
         recipientBalance += tx.value;
         transactions.set(
           tx.hash!,
@@ -77,7 +99,7 @@ describe("durable faucet grant / native wallet boundary", () => {
           blockNumber: 1,
           index: 0,
           gasUsed: 21_000n,
-          gasPrice: 1n,
+          gasPrice: feePerGas,
         });
       }
       if (loseResponse) throw new Error("RPC response lost after handoff");
@@ -99,14 +121,26 @@ describe("durable faucet grant / native wallet boundary", () => {
       transactionBuilder: new NativeEvmTransactionBuilder(),
       getSources: async () => [
         {
-          kind: "identity",
+          kind: "identity" as const,
           address: signer.address.toLowerCase(),
           identityPublicKey: signer.signingKey.publicKey,
         },
+        ...(secondBalance > 0n
+          ? [
+              {
+                kind: "main" as const,
+                address: secondSigner.address.toLowerCase(),
+              },
+            ]
+          : []),
       ],
-      sign: async (_source, raw) => {
+      sign: async (source, raw) => {
         signCount++;
-        return signer.signTransaction(Transaction.from(raw));
+        const key =
+          source.address === secondSigner.address.toLowerCase()
+            ? secondSigner
+            : signer;
+        return key.signTransaction(Transaction.from(raw));
       },
     });
     wallet = {
@@ -118,7 +152,7 @@ describe("durable faucet grant / native wallet boundary", () => {
         displayAddress: signer.address,
       },
       getReceiveAddress: async () => ({ raw: signer.address }),
-      getBalance: async () => provider.getBalance(signer.address),
+      getBalance: async () => senderBalance + secondBalance,
       getNativeOperations: () => owner.listOperations(),
       resumeNativeOperation: (id) => owner.resumeOperation(id),
       sendNative: (params) => owner.sendNative(params),
@@ -136,6 +170,10 @@ describe("durable faucet grant / native wallet boundary", () => {
     raws = [];
     recipientBalance = 0n;
     nonce = 0;
+    secondNonce = 0;
+    senderBalance = 10_000_000n;
+    secondBalance = 0n;
+    feePerGas = 1n;
     mine = true;
     loseResponse = false;
     receipts = new Map();
@@ -365,6 +403,70 @@ describe("durable faucet grant / native wallet boundary", () => {
       expect(signCount).toBe(1);
     }
   );
+
+  test("an RPC fee above the configured ceiling is refused before reservation or signing", async () => {
+    feePerGas = 2n;
+    await expect(grants.grant(request)).rejects.toThrow("network fee rose");
+    expect(signCount).toBe(0);
+    expect(raws).toHaveLength(0);
+    expect(journal.list()).toHaveLength(0);
+    await restart();
+    await expect(
+      grants.grant({ ...request, maxFeeWei: request.maxFeeWei + 1n })
+    ).rejects.toThrow("authorization changed");
+    feePerGas = 1n;
+    await grants.grant(request);
+    expect(journal.list()[0]!.maximumFeeWei).toBe(request.maxFeeWei.toString());
+    expect(signCount).toBe(1);
+  });
+
+  test("fresh owner balance includes the maximum fee in the reserve despite a stale host balance", async () => {
+    senderBalance =
+      request.valueWei + request.minReserveWei + request.maxFeeWei - 1n;
+    wallet.getBalance = async () => 10_000_000n; // A display balance is not allocation authority.
+    expect((await grants.grant(request)).state).toBe("low");
+    expect(signCount).toBe(0);
+    expect(journal.list()).toHaveLength(0);
+    senderBalance++;
+    loseResponse = true;
+    await grants.grant(request);
+    expect(senderBalance).toBe(request.minReserveWei);
+    await restart();
+    loseResponse = false;
+    expect((await grants.grant(request)).state).toBe("confirmed");
+    expect(senderBalance).toBe(request.minReserveWei);
+    expect(signCount).toBe(1);
+    expect(raws).toHaveLength(1);
+  });
+
+  test("concurrent grants cannot use another pending account to satisfy the reserve", async () => {
+    senderBalance = 100_000n;
+    secondBalance = 100_000n;
+    mine = false;
+    loseResponse = true;
+    const budget = { ...request, valueWei: 40_000n, minReserveWei: 100_000n };
+    const results = await Promise.all([
+      grants.grant(budget),
+      grants.grant({ ...budget, to: other }),
+    ]);
+    expect(results.map((result) => result.state).sort()).toEqual([
+      "low",
+      "pending",
+    ]);
+    const original = raws[0]!;
+    expect(signCount).toBe(1);
+    expect(journal.list()).toHaveLength(1);
+    await restart();
+    loseResponse = false;
+    await grants.resume();
+    expect(raws.every((raw) => raw === original)).toBe(true);
+    expect(signCount).toBe(1);
+    expect(journal.list()).toHaveLength(1);
+    mine = true;
+    await grants.resume();
+    expect(senderBalance + secondBalance).toBe(139_000n);
+    expect(signCount).toBe(1);
+  });
 
   test("caller mutation cannot change an already authorized grant", async () => {
     const mutable = { ...request };

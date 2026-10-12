@@ -50,11 +50,12 @@ function requireJournalMode(input: JournaledMailHostOptions): void {
   if (!present) throw new Error('Existing mail journal is missing');
   const database = new DatabaseSync(input.journalFile, { readOnly: true });
   try {
-    const row = database.prepare('SELECT format, chain_identifier, gateway_account FROM mail_journal_meta WHERE id = 1')
-      .get() as { format: number; chain_identifier: string; gateway_account: string } | undefined;
+    const row = database.prepare('SELECT format, chain_identifier, gateway_account, gateway_domain FROM mail_journal_meta WHERE id = 1')
+      .get() as { format: number; chain_identifier: string; gateway_account: string; gateway_domain: string } | undefined;
     if (!row || row.format !== MAIL_JOURNAL_FORMAT ||
       row.chain_identifier !== input.chain.chainIdentifier ||
-      row.gateway_account !== input.wallet.identity.address.raw.toLowerCase()) {
+      row.gateway_account !== input.wallet.identity.address.raw.toLowerCase() ||
+      row.gateway_domain !== input.gatewayDomain) {
       throw new Error('Existing mail journal identity or format differs');
     }
   } finally {

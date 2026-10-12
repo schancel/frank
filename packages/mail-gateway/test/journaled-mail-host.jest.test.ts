@@ -36,6 +36,9 @@ describe('journaled mail host admission', () => {
     const reopened = createJournaledMailHost(options(dir, 'existing'));
     await reopened.close();
     expect(() => createJournaledMailHost({ ...options(dir, 'existing'),
+      gatewayDomain: 'other.example',
+    })).toThrow('identity or format differs');
+    expect(() => createJournaledMailHost({ ...options(dir, 'existing'),
       wallet: { identity: { address: { raw: `0x${'8'.repeat(40)}` } } } as WalletHandle,
     })).toThrow('identity or format differs');
   });

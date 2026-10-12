@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 import { enableAutoUnmount, flushPromises, shallowMount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import TempoPathUsdPanel from './TempoPathUsdPanel.vue'
 import { accountStatus } from '../../accounts/session'
 
@@ -73,10 +74,12 @@ function controls(wrapper: ReturnType<typeof shallowMount>) {
     amount: string
     reviewPayment(): Promise<void>
     confirmPayment(): Promise<void>
-    refresh(): Promise<void>
+    scheduleOpen(): void
+    scanMore(): Promise<void>
     unresolved: boolean
     review: typeof quote | null
     operations: unknown[]
+    catchUp: { nextBlock: bigint; complete: boolean } | null
   }
 }
 const stubs = {
@@ -137,4 +140,73 @@ test('an uncertain submission prevents a fresh payment and keeps its operation v
   expect(state.operations).toHaveLength(1)
   await state.reviewPayment()
   expect(wallet.quote).toHaveBeenCalledTimes(1)
+})
+
+test('refresh reopens the durable journal and clears an uncertainty only after final reconciliation', async () => {
+  const { wallet, close } = fixture()
+  wallet.submit.mockRejectedValueOnce(new Error('timeout'))
+  const wrapper = shallowMount(TempoPathUsdPanel, { global: { stubs } })
+  await flushPromises()
+  const state = controls(wrapper)
+  state.recipient = recipient
+  state.amount = '1'
+  await state.reviewPayment()
+  await state.confirmPayment()
+  expect(state.unresolved).toBe(true)
+  mockOpen.mockResolvedValueOnce({
+    wallet,
+    close,
+    pendingOperations: [
+      {
+        operationId: '0x' + 'ab'.repeat(32),
+        amountAtomic: '1000000',
+        recipient,
+        exposed: true,
+        observation: { state: 'included-success', finalized: true },
+      },
+    ],
+  })
+  state.scheduleOpen()
+  await flushPromises()
+  expect(close).toHaveBeenCalledTimes(1)
+  expect(state.unresolved).toBe(false)
+  expect(state.operations).toHaveLength(1)
+})
+
+test('account revision waits for an in-flight submit before closing and clears old draft/history', async () => {
+  const { wallet, close } = fixture()
+  let resolveSubmit: ((value: unknown) => void) | undefined
+  wallet.submit.mockImplementationOnce(
+    () =>
+      new Promise(resolve => {
+        resolveSubmit = resolve
+      }),
+  )
+  const wrapper = shallowMount(TempoPathUsdPanel, { global: { stubs } })
+  await flushPromises()
+  const state = controls(wrapper)
+  state.recipient = recipient
+  state.amount = '1'
+  await state.scanMore()
+  expect(state.catchUp?.nextBlock).toBe(2000n)
+  await state.reviewPayment()
+  const sending = state.confirmPayment()
+  await nextTick()
+  await nextTick()
+  mockStatus.revision++
+  await nextTick()
+  expect(close).not.toHaveBeenCalled()
+  expect(state.recipient).toBe('')
+  expect(state.amount).toBe('')
+  expect(state.catchUp).toBeNull()
+  resolveSubmit?.({
+    operationId: '0x' + 'ab'.repeat(32),
+    amountAtomic: '1000000',
+    recipient,
+    exposed: true,
+    observation: { state: 'pending' },
+  })
+  await sending
+  await flushPromises()
+  expect(close).toHaveBeenCalledTimes(1)
 })

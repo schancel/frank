@@ -1,4 +1,7 @@
-import { openTempoPathUsdWallet } from './tempo-wallets'
+import {
+  openTempoPathUsdWallet,
+  readTempoPathUsdBalance,
+} from './tempo-wallets'
 import { accountSession } from './session'
 import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
 import { LevelRecordStore } from '@frank/wallet/storage/evm-coin-store'
@@ -70,6 +73,59 @@ test('Tempo host rejects a wrong RPC chain before opening financial stores', asy
         }),
       }),
     )
+    expect(storage).not.toHaveBeenCalled()
+    expect(destroy).toHaveBeenCalledTimes(1)
+  } finally {
+    storage.mockRestore()
+  }
+})
+
+test('PathUSD balance read verifies Moderato and never opens a financial journal', async () => {
+  const identity = {
+    address: { raw: '0x1111111111111111111111111111111111111111' },
+    signHash: jest.fn(),
+  }
+  const owner = {
+    identity,
+    chainIdentifier: 'monad-testnet',
+    networkId: 'monad-testnet',
+  }
+  jest.mocked(accountSession.getWallet).mockResolvedValue(owner as never)
+  jest.mocked(accountSession.peekWallet).mockReturnValue(owner as never)
+  jest.mocked(accountSession.createTempoMainAccountSigner).mockResolvedValue({
+    source: {
+      kind: 'main',
+      address: '0x2222222222222222222222222222222222222222',
+    },
+    signDigest: jest.fn(),
+  })
+  jest
+    .mocked(accountSession.getCurvePublicKey)
+    .mockResolvedValue(new Uint8Array(33).fill(2))
+  const destroy = jest.fn()
+  const send = jest.fn(async (method: string) => {
+    if (method === 'eth_chainId') return '0xa5bf'
+    if (method === 'eth_getBlockByNumber')
+      return {
+        hash: '0xba49153e6f3996a340f3fe3d69e7c0826b717ae672cb115cf0527cada0b78e9e',
+      }
+    if (method === 'eth_call')
+      return '0x' + 1_234_567n.toString(16).padStart(64, '0')
+    throw new Error(`Unexpected Tempo RPC method ${method}`)
+  })
+  jest
+    .mocked(createMonadJsonRpcProvider)
+    .mockReturnValue({ send, destroy } as never)
+  const storage = jest.spyOn(LevelRecordStore, 'open')
+  try {
+    await expect(readTempoPathUsdBalance('tempo-testnet')).resolves.toBe(
+      1_234_567n,
+    )
+    expect(send.mock.calls.map(([method]) => method)).toEqual([
+      'eth_chainId',
+      'eth_getBlockByNumber',
+      'eth_call',
+    ])
     expect(storage).not.toHaveBeenCalled()
     expect(destroy).toHaveBeenCalledTimes(1)
   } finally {

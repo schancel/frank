@@ -127,7 +127,7 @@
         label="Refresh activity"
         :loading="busy"
         data-testid="tempo-refresh"
-        @click="refresh"
+        @click="scheduleOpen"
       />
       <q-list bordered separator>
         <q-item
@@ -243,6 +243,17 @@ const uncertain = ref(false)
 let opened: OpenTempoPathUsdWallet | null = null
 let generation = 0
 let lifecycle: Promise<void> = Promise.resolve()
+let idleWaiters: Array<() => void> = []
+function whenIdle(): Promise<void> {
+  return busy.value
+    ? new Promise(resolve => idleWaiters.push(resolve))
+    : Promise.resolve()
+}
+function finishBusy(): void {
+  busy.value = false
+  for (const wake of idleWaiters) wake()
+  idleWaiters = []
+}
 const unresolved = computed(
   () =>
     uncertain.value ||
@@ -293,10 +304,16 @@ async function open(current: number): Promise<void> {
   balance.value = null
   operations.value = []
   received.value = []
+  catchUp.value = null
+  recipient.value = ''
+  amount.value = ''
   error.value = ''
   uncertain.value = false
   loading.value = true
-  if (old) await old.close()
+  if (old) {
+    await whenIdle()
+    await old.close()
+  }
   if (accountStatus.status !== 'ready' || current !== generation) {
     loading.value = false
     return
@@ -330,28 +347,12 @@ onBeforeUnmount(() => {
     .then(async () => {
       const old = opened
       opened = null
-      if (old) await old.close()
+      if (old) {
+        await whenIdle()
+        await old.close()
+      }
     })
 })
-
-async function refresh(): Promise<void> {
-  const host = opened
-  if (!host || busy.value) return
-  busy.value = true
-  error.value = ''
-  try {
-    const rows = await Promise.all(
-      operations.value.map(row => host.wallet.reconcile(row.operationId)),
-    )
-    if (host !== opened) return
-    operations.value = rows
-    balance.value = await host.wallet.balanceAtomic()
-  } catch (cause) {
-    if (host === opened) error.value = String(cause)
-  } finally {
-    busy.value = false
-  }
-}
 async function scanMore(): Promise<void> {
   const host = opened
   if (!host || busy.value) return
@@ -366,7 +367,7 @@ async function scanMore(): Promise<void> {
   } catch (cause) {
     if (host === opened) error.value = String(cause)
   } finally {
-    busy.value = false
+    finishBusy()
   }
 }
 async function reviewPayment(): Promise<void> {
@@ -391,7 +392,7 @@ async function reviewPayment(): Promise<void> {
   } catch (cause) {
     if (host === opened) error.value = String(cause)
   } finally {
-    busy.value = false
+    finishBusy()
   }
 }
 async function confirmPayment(): Promise<void> {
@@ -427,7 +428,7 @@ async function confirmPayment(): Promise<void> {
       )}`
     }
   } finally {
-    busy.value = false
+    finishBusy()
   }
 }
 async function retryOperation(operationId: string): Promise<void> {
@@ -446,7 +447,7 @@ async function retryOperation(operationId: string): Promise<void> {
     if (host === opened)
       error.value = `The same payment is still unresolved. ${String(cause)}`
   } finally {
-    busy.value = false
+    finishBusy()
   }
 }
 async function copyAddress(): Promise<void> {

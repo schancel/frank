@@ -26,10 +26,8 @@ export interface OpenTempoPathUsdWallet {
   close(): Promise<void>
 }
 
-/** Caller explicitly selects a canonical Tempo network; the current registry only has Moderato. */
-export async function openTempoPathUsdWallet(
-  chainIdentifier: 'tempo-testnet',
-): Promise<OpenTempoPathUsdWallet> {
+/** Both the wallet and read-only balance use the same authenticated canonical relay. */
+async function openVerifiedTempoRpc(chainIdentifier: 'tempo-testnet') {
   const entry = getChainRegistryEntry(chainIdentifier)
   if (
     entry?.kind !== 'tempo' ||
@@ -47,8 +45,6 @@ export async function openTempoPathUsdWallet(
     home.networkTag !== host.networkTag
   )
     throw new Error('Tempo relay identity network is unavailable')
-  if (host.walletStorageLocation === false)
-    throw new Error('Tempo requires durable wallet storage')
   const sessionWallet = await accountSession.getWallet()
   if (
     sessionWallet.chainIdentifier !== home.id ||
@@ -94,6 +90,44 @@ export async function openTempoPathUsdWallet(
     { send: (method, params) => provider.send(method, [...params]) },
     chainIdentifier,
   )
+  try {
+    await rpc.verifyChain(chainIdentifier)
+    if (accountSession.peekWallet() !== sessionWallet)
+      throw new Error('Account changed')
+    return { sessionWallet, signer, provider, rpc }
+  } catch (error) {
+    provider.destroy()
+    throw error
+  }
+}
+
+/** Current token balance only: no journal opens or wallet-state mutation. */
+export async function readTempoPathUsdBalance(
+  chainIdentifier: 'tempo-testnet',
+): Promise<bigint> {
+  const { sessionWallet, signer, provider, rpc } = await openVerifiedTempoRpc(
+    chainIdentifier,
+  )
+  try {
+    const balance = await rpc.getPathUsdBalance(signer.source.address)
+    if (accountSession.peekWallet() !== sessionWallet)
+      throw new Error('Account changed while reading Tempo balance')
+    return balance
+  } finally {
+    provider.destroy()
+  }
+}
+
+/** Caller explicitly selects a canonical Tempo network; the current registry only has Moderato. */
+export async function openTempoPathUsdWallet(
+  chainIdentifier: 'tempo-testnet',
+): Promise<OpenTempoPathUsdWallet> {
+  const host = loadMonadChainConfigFromEnv()
+  if (host.walletStorageLocation === false)
+    throw new Error('Tempo requires durable wallet storage')
+  const { sessionWallet, signer, provider, rpc } = await openVerifiedTempoRpc(
+    chainIdentifier,
+  )
   // The canonical network and owned address partition durable facts. Source locks span tabs;
   // store-level CAS protects transitions even when a second tab opened before the first wrote.
   const location = `${host.walletStorageLocation}-${chainIdentifier}-${signer.source.address}`
@@ -110,7 +144,6 @@ export async function openTempoPathUsdWallet(
   let operationStore: LevelRecordStore<TempoPathUsdOperation> | undefined
   let receiveStore: LevelRecordStore<TempoReceiveBatch> | undefined
   try {
-    await rpc.verifyChain(chainIdentifier)
     if (accountSession.peekWallet() !== sessionWallet)
       throw new Error('Account changed')
     operationStore = await LevelRecordStore.open<TempoPathUsdOperation>(
@@ -149,6 +182,10 @@ export async function openTempoPathUsdWallet(
     }
     if (accountSession.peekWallet() !== sessionWallet)
       throw new Error('Account changed')
+    if (!operationStore || !receiveStore)
+      throw new Error('Tempo stores were not opened')
+    const openedOperationStore = operationStore
+    const openedReceiveStore = receiveStore
     let closed = false
     return {
       wallet,
@@ -157,7 +194,10 @@ export async function openTempoPathUsdWallet(
         if (closed) return
         closed = true
         provider.destroy()
-        await Promise.all([operationStore!.close(), receiveStore!.close()])
+        await Promise.all([
+          openedOperationStore.close(),
+          openedReceiveStore.close(),
+        ])
       },
     }
   } catch (error) {

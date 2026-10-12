@@ -2,9 +2,10 @@
  * Balances for every wallet row, read by the chain's family.
  *
  * The registry's `wallet` setting decides whether a row has a balance at all. Bitcoin-family
- * rows (eCash, Bitcoin, Bitcoin Cash) and secondary EVM networks ask the session's wallet for that chain, which sums every
- * address it owns through the relay. Solana reads its address over the relay's RPC proxy. The active EVM network
- * keeps its own reader (./useBalance). Anything else is explicitly unsupported.
+ * rows (eCash, Bitcoin, Bitcoin Cash) and secondary native EVM networks ask the session's wallet
+ * for that chain. Solana reads its address over the relay's RPC proxy. Tempo reads the PathUSD
+ * TIP-20 balance through its verified relay route; it has no native coin. The active Monad
+ * network keeps its own reader (./useBalance). Anything else is explicitly unsupported.
  */
 import {
   computed,
@@ -28,6 +29,8 @@ import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { accountSession, accountStatus } from '../accounts/session'
 import { openUtxoWallet } from '../accounts/utxo-wallets'
 import { openEvmWallet } from '../accounts/evm-wallets'
+import { readTempoPathUsdBalance } from '../accounts/tempo-wallets'
+import { formatUnits } from 'ethers'
 import { useBalance, APP_STATE_EVENT, BALANCE_POLL_MS } from './useBalance'
 import { useSafeOracleStore } from '../stores/oracle'
 import { walletSupport } from '../utils/wallet-support'
@@ -151,7 +154,8 @@ function supportedEntry(chain: string) {
   return support.status === 'unsupported' ? undefined : support.entry
 }
 function isPrimaryChain(chain: string): boolean {
-  return supportedEntry(chain)?.id === activeChain.chainIdentifier
+  const entry = supportedEntry(chain)
+  return entry?.kind !== 'tempo' && entry?.id === activeChain.chainIdentifier
 }
 function isSolanaChain(chain: string): boolean {
   const entry = supportedEntry(chain)
@@ -169,7 +173,9 @@ function secondaryState(chain: string): ChainBalanceState {
 function secondaryChainIdentifier(chain: string): string | undefined {
   const entry = supportedEntry(chain)
   return entry &&
-    (entry.family === 'bitcoin' || entry.family === 'evm') &&
+    (entry.family === 'bitcoin' ||
+      (entry.family === 'evm' && entry.kind !== 'tempo') ||
+      entry.id === 'tempo-testnet') &&
     !isPrimaryChain(chain)
     ? entry.id
     : undefined
@@ -271,6 +277,18 @@ export async function fetchChainBalance(
       }
       const entry = supportedEntry(chainIdentifier)
       if (!entry) throw new Error(`Wallet unavailable for ${chainIdentifier}`)
+      if (entry.id === 'tempo-testnet') {
+        const balance = await readTempoPathUsdBalance(entry.id)
+        if (!isCurrent()) return
+        secondaryStates[chainIdentifier] = {
+          revision,
+          balance,
+          formattedBalance: `${formatUnits(balance, 6)} PathUSD`,
+          loaded: true,
+          hasError: false,
+        }
+        return
+      }
       const { chain: network, wallet } = await (entry.family === 'evm'
         ? openEvmWallet(chainIdentifier)
         : openUtxoWallet(chainIdentifier))

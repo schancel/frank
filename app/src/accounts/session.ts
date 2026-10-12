@@ -1054,6 +1054,10 @@ export function createAccountSession(deps: {
       chainAddressInFlight.set(netId, promise)
       return promise
     },
+    /** Existing ready owner only; never initializes custody or performs network work. */
+    peekWallet(): RuntimeWallet | undefined {
+      return state.status === 'ready' ? wallet : undefined
+    },
     getCachedCurvePublicKey(curve: SupportedCurve): Uint8Array | undefined {
       if (curve === 'secp256k1') {
         const cached = curveKeyCache.get('secp256k1')

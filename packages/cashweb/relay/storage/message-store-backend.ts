@@ -96,7 +96,7 @@ export function messageMetadataBackend(
   const db = level(location, {}, error => callback(error ?? undefined))
   return {
     db,
-    async bindImmutable(key, value) {
+    async bindImmutable(key, value, marker) {
       // The caller's mutation queue plus LevelDB's exclusive handle serialize this CAS.
       let previous: string | undefined
       try {
@@ -114,7 +114,13 @@ export function messageMetadataBackend(
       }
       if (previous !== undefined && previous !== value)
         throw new Error('Financial envelope binding conflict')
-      if (previous === undefined) await db.put(key, value, { sync: true })
+      await db.batch(
+        [
+          { type: 'put', key: marker[0], value: marker[1] },
+          { type: 'put', key, value },
+        ],
+        { sync: true },
+      )
     },
   }
 }

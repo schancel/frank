@@ -26,5 +26,19 @@ jobs:
           targets: wasm32-unknown-unknown
       - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
       - run: cargo fetch --locked --manifest-path packages/wallet/solana-crypto-backend/Cargo.toml
-      - run: bash packages/wallet/solana-crypto-backend/build-wasm.sh --check
+      - id: reproduce
+        run: bash packages/wallet/solana-crypto-backend/build-wasm.sh --check
+      - name: Capture mismatched generated package
+        if: failure() && steps.reproduce.outcome == 'failure'
+        run: |
+          rustc -vV
+          cargo -vV
+          wasm-bindgen --version
+          ls "$CARGO_HOME/registry/src"
+          bash packages/wallet/solana-crypto-backend/build-wasm.sh
+      - uses: actions/upload-artifact@v4
+        if: failure() && steps.reproduce.outcome == 'failure'
+        with:
+          name: solana-generated-reproducibility-diagnostic
+          path: packages/wallet/solana-crypto-backend/generated/
       - run: node packages/wallet/solana-crypto-backend/package-test.mjs

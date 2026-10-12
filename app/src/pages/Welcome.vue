@@ -17,7 +17,11 @@
     </q-header>
 
     <q-page-container>
-      <q-page class="q-pa-md welcome-page">
+      <q-page
+        class="q-pa-md welcome-page"
+        :style-fn="pageStyle"
+        data-test="welcome-scroll"
+      >
         <!-- Hero Section -->
         <div
           class="column items-center q-mb-xl text-center welcome-hero"
@@ -211,6 +215,10 @@ export default defineComponent({
   setup(_, { emit }) {
     return {
       myDrawerOpen: useMyDrawerOpen(),
+      pageStyle(offset: number, viewportHeight: number) {
+        const height = `${Math.max(0, viewportHeight - offset)}px`
+        return { height, minHeight: height }
+      },
       toggleSettingsDrawerOpen() {
         emit('toggleMyDrawerOpen')
       },
@@ -221,8 +229,13 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .welcome-page {
+  // Keep the document and its desktop drawer anchored while this page scrolls.
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+.welcome-page > div {
   max-width: 56rem;
-  margin: 0 auto;
+  margin-inline: auto;
 }
 .welcome-intro-text {
   max-width: 42rem;

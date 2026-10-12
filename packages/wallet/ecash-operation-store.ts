@@ -53,12 +53,23 @@ export interface EcashNativeOperation {
       };
 }
 
+/** Public unsigned intent only. This does not claim inputs or allocate HD change. */
+export interface EcashUnsignedStealthIntent {
+  readonly operationId: string;
+  readonly state: "quoted" | "released";
+  readonly recipient: string;
+  readonly value: string;
+  readonly recipientSpendPublicKey: string;
+  readonly ephemeralPublicKey: string;
+}
+
 export interface EcashOperationLedger {
   readonly version: 1;
   readonly chainIdentifier: string;
   readonly walletAddress: string;
   readonly nextChangeIndex: number;
   readonly operations: ReadonlyArray<EcashNativeOperation>;
+  readonly unsignedStealthIntents?: ReadonlyArray<EcashUnsignedStealthIntent>;
   /** Confirmed prior-obligation inputs. No lifecycle or signed bytes are copied here. */
   readonly consumedInputs?: ReadonlyArray<{
     readonly txid: string;
@@ -142,6 +153,27 @@ export function parseEcashOperationLedger(
   )
     throw new Error("Invalid eCash stealth receipt record");
   const ids = new Set<string>();
+  if (value.unsignedStealthIntents !== undefined) {
+    if (!Array.isArray(value.unsignedStealthIntents))
+      throw new Error("Invalid eCash unsigned intent records");
+    for (const intent of value.unsignedStealthIntents) {
+      if (
+        !object(intent) ||
+        !text(intent.operationId) ||
+        ids.has(intent.operationId) ||
+        !["quoted", "released"].includes(String(intent.state)) ||
+        !text(intent.recipient) ||
+        !quantity(intent.value) ||
+        intent.value === "0" ||
+        typeof intent.recipientSpendPublicKey !== "string" ||
+        !/^(02|03)[0-9a-f]{64}$/.test(intent.recipientSpendPublicKey) ||
+        typeof intent.ephemeralPublicKey !== "string" ||
+        !/^(02|03)[0-9a-f]{64}$/.test(intent.ephemeralPublicKey)
+      )
+        throw new Error("Invalid eCash unsigned stealth intent");
+      ids.add(intent.operationId);
+    }
+  }
   const claimed = new Set<string>();
   for (const operation of value.operations) {
     if (

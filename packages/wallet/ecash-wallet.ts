@@ -561,22 +561,158 @@ export class EcashWallet implements NativeWalletHandle {
     };
   }
 
+  private unsignedStealthIntent(
+    intent: Omit<StealthPaymentIntent, "maxNativeFeeAtomic">
+  ) {
+    if (
+      intent.chainIdentifier !== this.chainIdentifier ||
+      intent.asset.kind !== "native" ||
+      intent.sourceAddress !== undefined ||
+      typeof intent.amountAtomic !== "bigint" ||
+      intent.amountAtomic <= 0n ||
+      typeof intent.operationId !== "string" ||
+      intent.operationId.length === 0
+    )
+      throw new Error("Unsupported eCash stealth payment intent");
+    const identity = Buffer.from(intent.recipientSpendPublicKey).toString(
+      "hex"
+    );
+    ecashStealthPoint(identity);
+    return {
+      operationId: intent.operationId,
+      value: intent.amountAtomic.toString(),
+      identity,
+    };
+  }
+
+  private async quoteStealth(
+    intent: Omit<StealthPaymentIntent, "maxNativeFeeAtomic">
+  ): Promise<import("./stealth-payment").StealthPaymentQuote> {
+    this.assertFinancialActive();
+    const snapshot = this.unsignedStealthIntent(intent);
+    await this.exclusive(() => {
+      this.assertFinancialActive();
+      const ledger = this.loadLedger();
+      const existing = ledger.operations.find(
+        (op) => op.operationId === snapshot.operationId
+      );
+      const unsigned = ledger.unsignedStealthIntents?.find(
+        (op) => op.operationId === snapshot.operationId
+      );
+      if (existing || unsigned) {
+        if (
+          existing
+            ? existing.state === "released" ||
+              existing.stealth?.recipientSpendPublicKey !== snapshot.identity ||
+              existing.intent.value !== snapshot.value
+            : unsigned!.state === "released" ||
+              unsigned!.recipientSpendPublicKey !== snapshot.identity ||
+              unsigned!.value !== snapshot.value
+        )
+          throw new Error("eCash operation id is bound to another intent");
+        return;
+      }
+      const secret = secp256k1.utils.randomPrivateKey();
+      try {
+        const destination = deriveEcashStealthDestination({
+          chainIdentifier: this.chainIdentifier,
+          addressPrefix:
+            ECASH_ADDRESS_PREFIXES[
+              this.chainIdentifier as CanonicalEcashNetworkId
+            ],
+          identityPublicKey: snapshot.identity,
+          ephemeralSecret: secret,
+        });
+        secret.fill(0);
+        this.operationStore.put(this.nativeAttemptKey, {
+          ...ledger,
+          unsignedStealthIntents: [
+            ...(ledger.unsignedStealthIntents ?? []),
+            {
+              operationId: snapshot.operationId,
+              state: "quoted",
+              recipient: destination.address,
+              value: snapshot.value,
+              recipientSpendPublicKey: snapshot.identity,
+              ephemeralPublicKey: destination.ephemeralPubKey,
+            },
+          ],
+        });
+      } finally {
+        secret.fill(0);
+      }
+    });
+    await this.restoreStealthReceipts();
+    await this.backend.sync();
+    return this.exclusive(() => {
+      this.assertFinancialActive();
+      const ledger = this.loadLedger();
+      const existing = ledger.operations.find(
+        (op) => op.operationId === snapshot.operationId
+      );
+      const unsigned = ledger.unsignedStealthIntents?.find(
+        (op) => op.operationId === snapshot.operationId
+      );
+      if (existing?.state === "released" || unsigned?.state === "released")
+        throw new Error("Released eCash operation cannot be quoted");
+      const recipient = existing?.intent.recipient ?? unsigned!.recipient;
+      const metadata = existing?.stealth ?? unsigned!;
+      const backend = this.preparationBackend();
+      const excludedInputs = this.exclusions(ledger);
+      const balance = backend.getAvailableBalance(excludedInputs);
+      const fee = existing
+        ? BigInt(existing.fee)
+        : backend.buildNativeConstruction({
+            recipient,
+            value: BigInt(snapshot.value),
+            excludedInputs,
+            changeIndexFloor: ledger.nextChangeIndex,
+            unsignedOnly: true,
+          }).fee;
+      return {
+        operationId: snapshot.operationId,
+        chainIdentifier: this.chainIdentifier,
+        asset: { kind: "native" },
+        amountAtomic: BigInt(snapshot.value),
+        recipientAddress: recipient,
+        recipientDestination:
+          Address.fromCashAddress(recipient).toScript().bytecode,
+        recipientSpendPublicKey: Buffer.from(
+          metadata.recipientSpendPublicKey,
+          "hex"
+        ),
+        ephemeralPublicKey: Buffer.from(metadata.ephemeralPublicKey, "hex"),
+        nativeBalanceAtomic: balance,
+        assetBalanceAtomic: balance,
+        estimatedNativeFeeAtomic: fee,
+      };
+    });
+  }
+
   readonly stealthPayments: StealthPaymentCapability = {
+    quote: (intent) => this.quoteStealth(intent),
     list: async () => {
       this.assertFinancialActive();
-      return this.loadLedger()
-        .operations.filter(
-          (operation) =>
-            operation.stealth !== undefined && operation.state !== "released"
-        )
-        .map((operation) => ({
-          operationId: operation.operationId,
-          ...(operation.exposure?.kind === "external-payload"
-            ? {
-                payloadDigest: operation.exposure.binding.externalPayloadDigest,
-              }
-            : {}),
-        }));
+      const ledger = this.loadLedger();
+      return [
+        ...(ledger.unsignedStealthIntents ?? [])
+          .filter((intent) => intent.state === "quoted")
+          .map((intent) => ({ operationId: intent.operationId })),
+        ...ledger.operations
+          .filter(
+            (operation) =>
+              operation.stealth !== undefined && operation.state !== "released"
+          )
+          .map((operation) => ({
+            operationId: operation.operationId,
+            ...(operation.exposure?.kind === "external-payload"
+              ? {
+                  payloadDigest:
+                    operation.exposure.binding.externalPayloadDigest,
+                }
+              : {}),
+          })),
+      ];
     },
     prepare: async (intent) => {
       this.assertFinancialActive();
@@ -655,6 +791,26 @@ export class EcashWallet implements NativeWalletHandle {
       return this.stealthProgress(this.financialOperation(id));
     },
     release: async (id) => {
+      this.assertFinancialActive();
+      const unsigned = await this.exclusive(() => {
+        this.assertFinancialActive();
+        const ledger = this.loadLedger();
+        const current = ledger.unsignedStealthIntents?.find(
+          (intent) => intent.operationId === id
+        );
+        if (current === undefined) return false;
+        if (current.state === "released") return true;
+        this.operationStore.put(this.nativeAttemptKey, {
+          ...ledger,
+          unsignedStealthIntents: ledger.unsignedStealthIntents?.map((intent) =>
+            intent.operationId === id
+              ? { ...intent, state: "released" }
+              : intent
+          ),
+        });
+        return true;
+      });
+      if (unsigned) return true;
       const operation = this.financialOperation(id);
       if (operation.state !== "prepared" && operation.state !== "released")
         return false;
@@ -972,6 +1128,19 @@ export class EcashWallet implements NativeWalletHandle {
         "eCash operation ledger belongs to another wallet or chain"
       );
     const backend = this.preparationBackend();
+    for (const unsigned of ledger.unsignedStealthIntents ?? []) {
+      ecashStealthPoint(unsigned.recipientSpendPublicKey);
+      ecashStealthPoint(unsigned.ephemeralPublicKey);
+      if (
+        canonicalEcashAddress(
+          unsigned.recipient,
+          ECASH_ADDRESS_PREFIXES[
+            this.chainIdentifier as CanonicalEcashNetworkId
+          ]
+        ) !== unsigned.recipient
+      )
+        throw new Error("Invalid eCash unsigned recipient");
+    }
     for (const operation of ledger.operations) {
       backend.validateNativeOperation(operation);
       if (operation.stealth !== undefined) {
@@ -1137,6 +1306,28 @@ export class EcashWallet implements NativeWalletHandle {
       value: value.toString(),
       ...(maxFee === undefined ? {} : { maxFee: maxFee.toString() }),
     };
+    const bindUnsigned = (ledger: EcashOperationLedger) => {
+      const unsigned = ledger.unsignedStealthIntents?.find(
+        (item) => item.operationId === operationId
+      );
+      if (unsigned === undefined) return;
+      if (
+        unsigned.state === "released" ||
+        stealth === undefined ||
+        unsigned.recipientSpendPublicKey !== stealth.recipientSpendPublicKey ||
+        unsigned.value !== intent.value
+      )
+        throw new Error(
+          "eCash operation id is bound to another unsigned intent"
+        );
+      recipient = unsigned.recipient;
+      intent.recipient = recipient;
+      stealth = {
+        recipientSpendPublicKey: unsigned.recipientSpendPublicKey,
+        ephemeralPublicKey: unsigned.ephemeralPublicKey,
+      };
+    };
+    bindUnsigned(this.loadLedger());
     const existing = this.loadLedger().operations.find(
       (operation) => operation.operationId === operationId
     );
@@ -1162,6 +1353,7 @@ export class EcashWallet implements NativeWalletHandle {
     await this.backend.sync();
     return this.exclusive(() => {
       const ledger = this.loadLedger();
+      bindUnsigned(ledger);
       const repeated = ledger.operations.find(
         (operation) => operation.operationId === operationId
       );
@@ -1208,6 +1400,9 @@ export class EcashWallet implements NativeWalletHandle {
           construction.nextChangeIndex
         ),
         operations: [...ledger.operations, operation],
+        unsignedStealthIntents: ledger.unsignedStealthIntents?.filter(
+          (item) => item.operationId !== operationId
+        ),
       });
       backend.restoreChangeIndex(construction.nextChangeIndex);
       return operation;

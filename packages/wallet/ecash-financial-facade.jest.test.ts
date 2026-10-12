@@ -98,6 +98,7 @@ function run(body: string): void {
 }
 const financialFixture = `
 const intent = id => ({ operationId: id, chainIdentifier: 'xec-mainnet', asset: { kind: 'native' }, recipientSpendPublicKey: Buffer.from(identityPublicKey, 'hex'), amountAtomic: 1000n, maxNativeFeeAtomic: 1000n });
+const unsignedIntent = id => { const { maxNativeFeeAtomic, ...unsigned } = intent(id); return unsigned; };
 async function sender(options = {}) {
   const chronik = options.chronik ?? chronikFor();
   const account = HdNode.fromSeed(root.bytes).derivePath("m/44'/1899'/0'");
@@ -127,6 +128,83 @@ function chainEvidence(chronik, txs) {
   return { set: change => { ({ tip = tip, canonical = canonical, mined = mined, spent = spent, unavailable = unavailable, rawMismatch = rawMismatch, txMismatch = txMismatch, tipChanges = tipChanges, unmined = unmined } = change); } };
 }
 `;
+
+it(
+  "retains unsigned quote intent across reopen without signatures, claims or change allocation",
+  () =>
+    run(`
+  const host = await sender();
+  let signs = 0; const sign = Ecc.prototype.schnorrSign;
+  Ecc.prototype.schnorrSign = function(...args) { signs++; return sign.apply(this, args); };
+  const change = host.sdk.changeIndex;
+  const quoted = await host.wallet.stealthPayments.quote(unsignedIntent('quote'));
+  assert.equal(signs, 0); assert.equal(host.sent.length, 0); assert.equal(host.sdk.changeIndex, change);
+  assert.equal(quoted.nativeBalanceAtomic, 80000n); assert.equal(quoted.assetBalanceAtomic, 80000n);
+  assert(quoted.estimatedNativeFeeAtomic > 0n);
+  assert.equal(host.wallet.getEcashOperations().length, 0); assert.equal(host.store.get(host.key).nextChangeIndex, 0);
+  assert.equal(host.store.get(host.key).unsignedStealthIntents.length, 1);
+  assert.equal(await host.wallet.stealthPayments.get('quote'), undefined);
+  const persisted = JSON.stringify(host.store.get(host.key));
+  const reopened = await sender({ store: host.store });
+  assert.equal(JSON.stringify(host.store.get(host.key)), persisted);
+  const again = await reopened.wallet.stealthPayments.quote(unsignedIntent('quote'));
+  assert.deepEqual(again, quoted); assert.equal(signs, 0);
+  const valid = host.store.get(host.key);
+  host.store.put(host.key, { ...valid, unsignedStealthIntents: valid.unsignedStealthIntents.map(record => ({ ...record, ephemeralPublicKey: '02' + '00'.repeat(32) })) });
+  const invalid = JSON.stringify(host.store.get(host.key));
+  await assert.rejects(reopened.wallet.stealthPayments.get('quote'));
+  assert.equal(JSON.stringify(host.store.get(host.key)), invalid);
+  host.store.put(host.key, valid);
+  await assert.rejects(reopened.wallet.stealthPayments.quote({ ...unsignedIntent('quote'), amountAtomic: 2000n }), /another intent/);
+  await assert.rejects(reopened.wallet.stealthPayments.prepare({ ...intent('quote'), amountAtomic: 2000n }), /another unsigned intent/);
+  await assert.rejects(reopened.wallet.prepareNativeOperation({ operationId: 'quote', recipient, value: 1000n }), /another unsigned intent/);
+  await assert.rejects(reopened.wallet.stealthPayments.prepare({ ...intent('quote'), maxNativeFeeAtomic: 0n }));
+  assert.equal(signs, 0); assert.equal(JSON.stringify(host.store.get(host.key)), persisted);
+  const prepared = await reopened.wallet.stealthPayments.prepare({ ...intent('quote'), maxNativeFeeAtomic: quoted.estimatedNativeFeeAtomic });
+  assert(signs > 0); assert.equal(prepared.recipientAddress, quoted.recipientAddress);
+  assert.deepEqual(prepared.ephemeralPublicKey, quoted.ephemeralPublicKey);
+  assert.deepEqual(prepared.recipientDestination, quoted.recipientDestination);
+  assert.equal(reopened.store.get(reopened.key).unsignedStealthIntents.length, 0);
+  await assert.rejects(reopened.wallet.stealthPayments.submit('quote'), /requires bound/);
+  assert.equal(reopened.sent.length, 0);
+`),
+  35_000
+);
+
+it(
+  "serializes only unsigned intent mutation and respects fresh claims and release",
+  () =>
+    run(`
+  const host = await sender();
+  const concurrent = await sender({ store: host.store });
+  const [first, second] = await Promise.all([host.wallet.stealthPayments.quote(unsignedIntent('shared')), concurrent.wallet.stealthPayments.quote(unsignedIntent('shared'))]);
+  assert.equal(first.recipientAddress, second.recipientAddress);
+  assert.equal(host.store.get(host.key).unsignedStealthIntents.length, 1);
+  const other = await host.wallet.stealthPayments.prepare(intent('other'));
+  const observed = await concurrent.wallet.stealthPayments.quote(unsignedIntent('shared'));
+  assert.equal(observed.nativeBalanceAtomic, 70000n);
+  const prepared = await host.wallet.stealthPayments.prepare(intent('shared'));
+  assert.equal(prepared.recipientAddress, first.recipientAddress);
+  let start, proceed; const begun = new Promise(resolve => start = resolve), gate = new Promise(resolve => proceed = resolve);
+  const utxos = host.chronik.batchUtxos;
+  host.chronik.batchUtxos = async scripts => { start(); await gate; return utxos(scripts); };
+  const waiting = host.wallet.stealthPayments.quote(unsignedIntent('network-race'));
+  await begun;
+  const raced = await concurrent.wallet.stealthPayments.prepare(intent('network-race'));
+  proceed(); const networkQuote = await waiting;
+  assert.equal(networkQuote.recipientAddress, raced.recipientAddress);
+  assert.deepEqual(networkQuote.ephemeralPublicKey, raced.ephemeralPublicKey);
+  await host.wallet.stealthPayments.quote(unsignedIntent('discard'));
+  assert.equal(await host.wallet.stealthPayments.release('discard'), true);
+  await assert.rejects(host.wallet.stealthPayments.quote(unsignedIntent('discard')), /another intent/);
+  await assert.rejects(host.wallet.stealthPayments.prepare(intent('discard')), /another unsigned intent/);
+  assert(!((await host.wallet.stealthPayments.list()).some(row => row.operationId === 'discard')));
+  const failure = await sender(); failure.store.put = () => { throw new Error('quote persistence failed'); };
+  await assert.rejects(failure.wallet.stealthPayments.quote(unsignedIntent('failure')), /quote persistence failed/);
+  assert.equal(failure.store.get(failure.key), undefined); assert.equal(failure.sent.length, 0);
+`),
+  35_000
+);
 
 it(
   "checks unsigned fees before any real signer and quotes without signing",
@@ -261,6 +339,7 @@ it(
   await host.wallet.stealthPayments.expose({ operationId: 'lifetime', payloadDigest: 'cd'.repeat(32) });
   const saved = JSON.stringify(host.store.get(host.key)); options.expired = true;
   for (const invoke of [() => host.wallet.stealthPayments.get('lifetime'), () => host.wallet.stealthPayments.list(),
+    () => host.wallet.stealthPayments.quote(unsignedIntent('expired-quote')),
     () => host.wallet.stealthPayments.prepare(intent('expired')), () => host.wallet.stealthPayments.expose({ operationId: 'lifetime', payloadDigest: 'cd'.repeat(32) }),
     () => host.wallet.stealthPayments.submit('lifetime'), () => host.wallet.stealthPayments.reconcile('lifetime'), () => host.wallet.stealthPayments.release('lifetime')]) await assert.rejects(invoke(), /expired/);
   assert.equal(JSON.stringify(host.store.get(host.key)), saved); assert.equal(host.sent.length, 0);

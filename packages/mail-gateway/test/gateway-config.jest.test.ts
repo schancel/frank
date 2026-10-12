@@ -43,6 +43,7 @@ describe('mail executable configuration', () => {
     const config = loadGatewayHostConfig(settings(dir));
     expect(config.chain.chainIdentifier).toBe('monad-testnet');
     expect(config.chain.walletStorageLocation).toBe(path.join(dir, 'wallet'));
+    expect(config.chain.requireBoundWalletState).toBe(true);
     expect(config.journalMode).toBe('existing');
     expect(config.resendApiKey).toBe('re_test');
     expect(config.inboundStampValue).toBe(10_000_000_000_000_000n);

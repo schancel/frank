@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 describe('mail gateway executable', () => {
-  it('refuses to start rather than accepting mail with invented stamps', () => {
+  it('refuses to start without an admitted wallet and host configuration', () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'frank-mail-entry-'));
     const database = join(stateDir, 'mail.sqlite3');
     try {
@@ -26,7 +26,7 @@ describe('mail gateway executable', () => {
 
       expect(result.error).toBeUndefined();
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain('no production host yet');
+      expect(result.stderr).toContain('FRANK_MAIL_WALLET_STATE_DIR is missing');
       expect(existsSync(database)).toBe(false);
       expect(readdirSync(stateDir)).toEqual([]);
     } finally {

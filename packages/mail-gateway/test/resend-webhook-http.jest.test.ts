@@ -12,6 +12,11 @@ describe('journaled Resend HTTP host', () => {
     await server.start();
     try {
       const base = server.address();
+      expect((await fetch(`${base}/healthz`)).status).toBe(200);
+      server.setReady(false);
+      expect((await fetch(`${base}/healthz`)).status).toBe(503);
+      server.setReady(true);
+      expect((await fetch(`${base}/healthz`)).status).toBe(200);
       expect((await fetch(`${base}/other`, { method: 'POST', body: 'event' })).status).toBe(404);
       expect((await fetch(`${base}/webhooks/resend`, { method: 'GET' })).status).toBe(405);
       const headers = { 'svix-id': 'e1', 'svix-timestamp': '1', 'svix-signature': 'signature' };

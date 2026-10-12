@@ -6,8 +6,8 @@ Source: the JSON files in packages/price-feeds/src/historical (each made by its 
 this directory). This script fetches nothing; it only reshapes those files into feed series:
 
     basket.json                       -> basket (verbatim, without "about")
-    btc-mining-monthly.json           -> price/, difficulty/, blockReward/, marketCap/ for
-                                         btc-mainnet and efficiency/sha256, one point a month
+    btc-mining-monthly.json           -> price/, hashrate/, minerRevenue/, marketCap/ for
+                                         btc-mainnet and efficiency/sha256, daily points
     mined-chains-monthly.json         -> the same four series for the other basket chains, one
       (if present)                       point a month; block reward times the dated miner share
                                          from curated-steps.json
@@ -57,22 +57,33 @@ def build():
 
     btc = load("btc-mining-monthly.json")
     retrieved = unix(btc["sources"]["retrieved"])
-    months = [(unix(m["month"]), m) for m in btc["monthly"]]
-    chain_source = "blockchain.com charts, monthly means"
+    points_source = btc.get("daily") or btc["monthly"]
+    date_key = "date" if "daily" in btc and btc["daily"] else "month"
+    rows = [(unix(m[date_key]), m) for m in points_source]
+    chain_source = (
+        "blockchain.com charts, daily"
+        if date_key == "date"
+        else "blockchain.com charts, monthly means"
+    )
+    efficiency_source = (
+        "Cambridge CBECI, daily"
+        if date_key == "date"
+        else "Cambridge CBECI, monthly"
+    )
     out["price/btc-mainnet"] = series(
-        "USD", chain_source, retrieved, [(t, m.get("btcUsd")) for t, m in months])
+        "USD", chain_source, retrieved, [(t, m.get("btcUsd")) for t, m in rows])
     out["hashrate/btc-mainnet"] = series(
-        "hashes/s", chain_source, retrieved, [(t, m.get("hashrate")) for t, m in months])
+        "hashes/s", chain_source, retrieved, [(t, m.get("hashrate")) for t, m in rows])
     out["minerRevenue/btc-mainnet"] = series(
         "coins/s to the miner including fees", "blockchain.com miners-revenue", retrieved,
-        [(t, m.get("minerRevenueCoinsPerSecond")) for t, m in months])
+        [(t, m.get("minerRevenueCoinsPerSecond")) for t, m in rows])
     out["marketCap/btc-mainnet"] = series(
         "USD", "price x coins in existence (blockchain.com charts)", retrieved,
-        [(t, m["btcUsd"] * m["supplyBtc"]) for t, m in months
+        [(t, m["btcUsd"] * m["supplyBtc"]) for t, m in rows
          if m.get("btcUsd") and m.get("supplyBtc")])
     out["efficiency/sha256"] = series(
-        "hashes/kWh", "Cambridge CBECI, monthly", retrieved,
-        [(t, JOULES_PER_KWH / (m["joulesPerTerahash"] * 1e-12)) for t, m in months
+        "hashes/kWh", efficiency_source, retrieved,
+        [(t, JOULES_PER_KWH / (m["joulesPerTerahash"] * 1e-12)) for t, m in rows
          if m.get("joulesPerTerahash")])
 
     steps = load("curated-steps.json")

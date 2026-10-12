@@ -354,10 +354,10 @@ describe('modernized chat input interface (#1003)', () => {
         stampUnavailable: '',
       })
       expect((amount.element as HTMLInputElement).value).toBe('0.4')
-      // No absent quote should be represented by a slider apparently selecting Free.
+      // The slider is always visible and functional using network static fallback.
       expect(
         wrapper.find('[data-testid="chat-input-stamp-slider"]').exists(),
-      ).toBe(false)
+      ).toBe(true)
       await wrapper
         .get('[data-testid="chat-input-stamp-free"]')
         .trigger('click')

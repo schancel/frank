@@ -395,6 +395,11 @@ export default defineComponent({
 .frank-main-drawer {
   max-height: 100vh;
   max-height: 100dvh;
+
+  .q-drawer__content {
+    height: 100%;
+    overflow: hidden;
+  }
 }
 
 // The main region is only a programmatic focus target (restoreFocusAfterOverlay); it must not

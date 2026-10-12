@@ -198,8 +198,8 @@
                 :disable="disable"
                 @click="chooseFreeStamp"
               />
-              <!-- Multipliers require a real quote; an absent quote is not a Free selection. -->
-              <div v-if="defaultStampWei !== undefined" class="q-mt-sm q-px-md">
+              <!-- Multipliers use the current quote or network static fallback. -->
+              <div class="q-mt-sm q-px-md">
                 <q-slider
                   v-model="decadeIndex"
                   class="q-mt-md"
@@ -222,10 +222,7 @@
               >
                 {{ sliderLabelValue }}
               </div>
-              <div
-                v-if="defaultStampWei !== undefined"
-                class="text-caption text-grey-7 q-mt-sm"
-              >
+              <div class="text-caption text-grey-7 q-mt-sm">
                 {{ $t('chatInput.stampQuickSelection') }}
               </div>
 
@@ -289,6 +286,7 @@ import {
   type PostAttachment,
 } from '../../utils/post-editor'
 import { activeChain } from '@frank/wallet/chain'
+import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import {
   formatCompactAmount,
   formatDisplayAmount,

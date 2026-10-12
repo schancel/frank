@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
+  BTC_MINING_DAILY,
   BTC_MINING_MONTHLY,
   BTC_MINING_SOURCES,
   HISTORICAL_SOURCES,
@@ -136,6 +137,23 @@ describe('bundled Bitcoin mining history (the inputs of AVU_hash)', () => {
       const moves = steps(BTC_MINING_MONTHLY.map(m => m[column]))
       expect(moves.some(s => s < 0)).toBe(true)
       expect(moves.some(s => s > 0)).toBe(true)
+    }
+  })
+
+  it('holds daily points in order with every input present and positive', () => {
+    expect(BTC_MINING_DAILY.length).toBeGreaterThan(5000)
+    const dates = BTC_MINING_DAILY.map(d => d.date)
+    expect(dates).toEqual([...dates].sort())
+    expect(new Set(dates).size).toBe(dates.length)
+    for (const d of BTC_MINING_DAILY) {
+      expect(d.date).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(d.btcUsd).toBeGreaterThan(0)
+      expect(d.difficulty).toBeGreaterThan(0)
+      expect(d.hashrate).toBeGreaterThan(0)
+      expect(d.minerRevenueCoinsPerSecond).toBeGreaterThan(0)
+      expect(d.joulesPerTerahashLow).toBeGreaterThan(0)
+      expect(d.joulesPerTerahash).toBeGreaterThan(d.joulesPerTerahashLow)
+      expect(d.joulesPerTerahashHigh).toBeGreaterThan(d.joulesPerTerahash)
     }
   })
 })

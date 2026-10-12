@@ -249,8 +249,8 @@
               >{{ balanceText
               }}<template v-if="balanceStale">
                 {{ ' ' + $t('chatList.balanceStale') }}</template
-              ><mailbox-status-indicator class="q-ml-xs"
-            /></q-item-label>
+              ></q-item-label
+            >
           </q-item-section>
           <q-item-section
             v-if="legacyRelayEnabled && !relayConnected"
@@ -266,6 +266,9 @@
               color="red"
               :aria-label="$t('a11y.connectRelay')"
             />
+          </q-item-section>
+          <q-item-section side class="drawer-balance-status-side">
+            <mailbox-status-indicator />
           </q-item-section>
         </q-item>
       </q-list>
@@ -681,11 +684,28 @@ export default defineComponent({
   }
 }
 
+.left-drawer-root {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  min-height: 0;
+}
+
 // Keep the icon rail compact while preserving 48px-tall pointer and keyboard targets.
 .icon-rail {
   width: 56px;
   min-width: 56px;
+  height: 100%;
+  max-height: 100%;
+  flex-shrink: 0;
+  overflow: hidden;
   background: var(--q-color-bg-active);
+}
+
+.icon-rail :deep(.q-tabs) {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
 }
 
 .icon-rail :deep(.q-tab) {
@@ -719,14 +739,28 @@ export default defineComponent({
 .icon-rail :deep(.settings-pin-content) {
   display: flex !important;
   flex-direction: column;
+  height: 100%;
+  max-height: 100%;
   overflow-y: auto;
 }
 
 .list-column {
-  flex-wrap: nowrap;
+  height: 100%;
+  max-height: 100%;
   min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
   min-width: 0; // allow the flex child to shrink below its content's natural width, so long chat
   // names/previews ellipsize instead of forcing the whole drawer wider than intended.
+}
+
+.list-column > div:not(.drawer-balance-footer),
+.list-column > [role='tabpanel'] {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .drawer-header-item {
@@ -744,11 +778,22 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   justify-content: center;
+  flex-shrink: 0;
+  margin-top: auto;
 }
 
 .drawer-balance-item {
   min-height: 63px;
   height: 63px;
+}
+
+.drawer-balance-status-side {
+  padding-left: 0;
+  min-width: 0;
+
+  &:empty {
+    display: none;
+  }
 }
 
 .drawer-resize-handle {

@@ -22,6 +22,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
+import { computeAddress, getAddress, Interface, Transaction } from 'ethers'
+import { PROTOCOL_CHAINS } from '../chain/chains-registry'
+import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import type { ReceivedCoinItem } from '@frank/cashweb/types/messages'
 import { durableDelete, durablePut, openDurableLevel } from './level-durability'
 
@@ -61,6 +64,391 @@ export interface EvmCoin {
    * derived: this wallet sent it, or read it. Absent: not written yet. */
   readonly notedAtMs?: number
   readonly discoveredAtMs: number
+  /** Distinct ERC20 facts at this same owned account. Native fields above remain native-only.
+   * Absence means no discovered ERC20 positions; zero native balance never deletes these. */
+  readonly erc20Positions?: readonly EvmErc20Position[]
+}
+
+export interface EvmErc20Claim {
+  readonly txHash: string
+  readonly rawTransaction: string
+  readonly amountBaseUnits: string
+  readonly payloadDigests: readonly string[]
+  readonly discoveredAtMs: number
+  readonly execution?: 'succeeded' | 'reverted'
+}
+export interface EvmErc20Receipt {
+  readonly txHash: string
+  readonly logIndex: number
+  readonly from: string
+  readonly amountBaseUnits: string
+  readonly blockHash: string
+  readonly blockNumber: number
+}
+export interface EvmErc20Position {
+  readonly contractAddress: string
+  /** Latest successful balanceOf read. Never a sum of receipts or claimed amounts. */
+  readonly balanceBaseUnits: string
+  readonly checkedAtMs?: number
+  readonly observedBlockHash?: string
+  readonly observedBlockNumber?: number
+  readonly claims: readonly EvmErc20Claim[]
+  /** Identity within this position: [txHash, logIndex]. The position owns token identity. */
+  readonly receipts: readonly EvmErc20Receipt[]
+}
+
+const erc20 = new Interface([
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function balanceOf(address owner) view returns (uint256)',
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
+])
+const transferTopic = erc20.getEvent('Transfer')!.topicHash
+const uint256 = (value: bigint): bigint => {
+  if (value < 0n || value >= 1n << 256n)
+    throw new RangeError('Invalid ERC20 quantity')
+  return value
+}
+
+function configuredErc20(chainIdentifier: string, contractAddress: string) {
+  const chain = Object.prototype.hasOwnProperty.call(
+    PROTOCOL_CHAINS,
+    chainIdentifier,
+  )
+    ? PROTOCOL_CHAINS[chainIdentifier]
+    : undefined
+  const contract = getAddress(contractAddress).toLowerCase()
+  if (!chain || chain.family !== 'evm')
+    throw new Error('Unsupported canonical EVM chain')
+  const supported = (chain.dex ?? []).some(
+    venue =>
+      venue.adapter === 'uniswap-v4' &&
+      venue.enabled &&
+      venue.tokens.some(token => token.address?.toLowerCase() === contract),
+  )
+  if (!supported) throw new Error('Unsupported configured ERC20 contract')
+  return { contract, nativeChainId: BigInt(chain.nativeChainId!) }
+}
+
+function paymentTransaction(
+  coin: EvmCoin,
+  chainIdentifier: string,
+  contractAddress: string,
+  rawTransaction: string,
+  amountBaseUnits: bigint,
+) {
+  const { contract, nativeChainId } = configuredErc20(
+    chainIdentifier,
+    contractAddress,
+  )
+  const transaction = Transaction.from(rawTransaction)
+  uint256(amountBaseUnits)
+  if (
+    amountBaseUnits === 0n ||
+    !transaction.isSigned() ||
+    transaction.chainId !== nativeChainId ||
+    transaction.value !== 0n ||
+    transaction.to?.toLowerCase() !== contract ||
+    transaction.data.toLowerCase() !==
+      erc20
+        .encodeFunctionData('transfer', [
+          getAddress(coin.address),
+          amountBaseUnits,
+        ])
+        .toLowerCase()
+  )
+    throw new Error('ERC20 transaction does not match the claimed payment')
+  return transaction
+}
+
+/** Register exact signed evidence, not value. Repeated messages add membership without another
+ * payment; a later token or transaction at a known account adds a distinct claim. */
+export function registerEvmErc20Payment(
+  coin: EvmCoin,
+  payment: {
+    chainIdentifier: string
+    contractAddress: string
+    rawTransaction: string
+    amountBaseUnits: bigint
+    payloadDigest?: string
+    discoveredAtMs: number
+  },
+): EvmCoin {
+  const tx = paymentTransaction(
+    coin,
+    payment.chainIdentifier,
+    payment.contractAddress,
+    payment.rawTransaction,
+    payment.amountBaseUnits,
+  )
+  const contract = tx.to!.toLowerCase()
+  const digest = payment.payloadDigest?.replace(/^0x/, '').toLowerCase()
+  if (digest !== undefined && !/^[0-9a-f]{64}$/.test(digest))
+    throw new Error('Invalid payment membership')
+  const positions = [...(coin.erc20Positions ?? [])]
+  const index = positions.findIndex(
+    position => position.contractAddress === contract,
+  )
+  const position: EvmErc20Position =
+    index < 0
+      ? {
+          contractAddress: contract,
+          balanceBaseUnits: '0',
+          claims: [],
+          receipts: [],
+        }
+      : positions[index]!
+  const claims = [...position.claims]
+  const previous = claims.findIndex(claim => claim.txHash === tx.hash)
+  const known = previous < 0 ? undefined : claims[previous]
+  const claim: EvmErc20Claim = {
+    ...known,
+    txHash: tx.hash!,
+    rawTransaction: tx.serialized,
+    amountBaseUnits: payment.amountBaseUnits.toString(),
+    payloadDigests: [
+      ...new Set([
+        ...(known?.payloadDigests ?? []),
+        ...(digest === undefined ? [] : [digest]),
+      ]),
+    ].sort(),
+    discoveredAtMs: Math.min(
+      known?.discoveredAtMs ?? payment.discoveredAtMs,
+      payment.discoveredAtMs,
+    ),
+  }
+  if (previous < 0) claims.push(claim)
+  else claims[previous] = claim
+  const next = { ...position, claims }
+  if (index < 0) positions.push(next)
+  else positions[index] = next
+  return { ...coin, erc20Positions: positions }
+}
+
+export interface EvmErc20Reader {
+  call(tx: { to: string; data: string; blockTag?: number }): Promise<string>
+  getBlock(
+    tag: 'latest' | number,
+  ): Promise<{ hash: string | null; number: number } | null>
+  getTransactionReceipt(hash: string): Promise<{
+    hash: string
+    from: string
+    to: string | null
+    status: number | null
+    blockHash: string
+    blockNumber: number
+    logs: readonly {
+      address: string
+      topics: readonly string[]
+      data: string
+      index: number
+    }[]
+  } | null>
+}
+
+/** Read-only RPC evidence. No rebroadcast, signing, native funding or persistence side effects;
+ * the existing owner must durably save the returned account before acknowledging receive. */
+export async function refreshEvmErc20Position(
+  coin: EvmCoin,
+  options: {
+    chainIdentifier: string
+    contractAddress: string
+    reader: EvmErc20Reader
+    atMs: number
+  },
+): Promise<EvmCoin> {
+  options = { ...options }
+  const { contract } = configuredErc20(
+    options.chainIdentifier,
+    options.contractAddress,
+  )
+  const position = coin.erc20Positions?.find(
+    item => item.contractAddress === contract,
+  )
+  if (!position) throw new Error('ERC20 position has not been discovered')
+  const block = await options.reader.getBlock('latest')
+  if (
+    !block?.hash ||
+    !/^0x[0-9a-fA-F]{64}$/.test(block.hash) ||
+    !Number.isSafeInteger(block.number) ||
+    block.number < 0
+  )
+    throw new Error('ERC20 observation block unavailable')
+  const encodedBalance = await options.reader.call({
+    to: contract,
+    data: erc20.encodeFunctionData('balanceOf', [getAddress(coin.address)]),
+    blockTag: block.number,
+  })
+  if (!/^0x[0-9a-fA-F]{64}$/.test(encodedBalance))
+    throw new Error('Invalid ERC20 balance response')
+  const balance = uint256(BigInt(encodedBalance))
+  const claims: EvmErc20Claim[] = []
+  let receipts = [...position.receipts]
+  for (const claim of position.claims) {
+    const tx = paymentTransaction(
+      coin,
+      options.chainIdentifier,
+      contract,
+      claim.rawTransaction,
+      BigInt(claim.amountBaseUnits),
+    )
+    if (tx.hash !== claim.txHash)
+      throw new Error('ERC20 claim transaction hash mismatch')
+    const receipt = await options.reader.getTransactionReceipt(claim.txHash)
+    if (receipt === null) {
+      claims.push(claim)
+      continue
+    }
+    const included = await options.reader.getBlock(receipt.blockNumber)
+    if (
+      receipt.hash.toLowerCase() !== tx.hash ||
+      receipt.from.toLowerCase() !== tx.from!.toLowerCase() ||
+      receipt.to?.toLowerCase() !== contract ||
+      !included?.hash ||
+      included.hash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+      included.number !== receipt.blockNumber ||
+      receipt.blockNumber > block.number ||
+      (receipt.status !== 0 && receipt.status !== 1)
+    )
+      throw new Error('Invalid ERC20 inclusion evidence')
+    const effects: EvmErc20Receipt[] = []
+    const indexes = new Set<number>()
+    if (receipt.status === 1)
+      for (const log of receipt.logs) {
+        if (
+          log.address.toLowerCase() !== contract ||
+          log.topics[0]?.toLowerCase() !== transferTopic.toLowerCase()
+        )
+          continue
+        if (
+          !Number.isSafeInteger(log.index) ||
+          log.index < 0 ||
+          indexes.has(log.index)
+        )
+          throw new Error('Invalid ERC20 receipt log index')
+        indexes.add(log.index)
+        if (log.topics.length !== 3 || !/^0x[0-9a-fA-F]{64}$/.test(log.data))
+          throw new Error('Invalid ERC20 Transfer log')
+        const event = erc20.decodeEventLog('Transfer', log.data, [
+          ...log.topics,
+        ])
+        if (
+          getAddress(event.from).toLowerCase() !== tx.from!.toLowerCase() ||
+          getAddress(event.to).toLowerCase() !== coin.address.toLowerCase()
+        )
+          continue
+        effects.push({
+          txHash: claim.txHash,
+          logIndex: log.index,
+          from: tx.from!.toLowerCase(),
+          amountBaseUnits: uint256(event.value).toString(),
+          blockHash: receipt.blockHash.toLowerCase(),
+          blockNumber: receipt.blockNumber,
+        })
+      }
+    // Re-observing this transaction replaces its evidence; it never adds value twice.
+    receipts = [
+      ...receipts.filter(item => item.txHash !== claim.txHash),
+      ...effects,
+    ]
+    claims.push({
+      ...claim,
+      execution: receipt.status === 1 ? 'succeeded' : 'reverted',
+    })
+  }
+  // Recheck the snapshot after RPC awaits. An inconsistent/reorganized block commits nothing.
+  const current = await options.reader.getBlock(block.number)
+  if (current?.hash?.toLowerCase() !== block.hash.toLowerCase())
+    throw new Error('ERC20 observation block changed')
+  const next = {
+    ...position,
+    balanceBaseUnits: balance.toString(),
+    checkedAtMs: options.atMs,
+    observedBlockHash: block.hash.toLowerCase(),
+    observedBlockNumber: block.number,
+    claims,
+    receipts,
+  }
+  return {
+    ...coin,
+    erc20Positions: coin.erc20Positions!.map(item =>
+      item.contractAddress === contract ? next : item,
+    ),
+  }
+}
+
+/** Receipt amount and current position are separate quantities. Native fees are supplied by
+ * the bound owner from its current read/quote, never taken from the token or a message stamp. */
+export function receivedErc20Payments(
+  coin: EvmCoin,
+  options: {
+    nativeBalanceWei: bigint
+    requiredNativeFeeWei: bigint
+    reserved?: boolean
+  },
+) {
+  uint256(options.nativeBalanceWei)
+  uint256(options.requiredNativeFeeWei)
+  return (coin.erc20Positions ?? []).flatMap(position =>
+    position.claims.map(claim => {
+      const received = position.receipts
+        .filter(receipt => receipt.txHash === claim.txHash)
+        .reduce((sum, receipt) => sum + BigInt(receipt.amountBaseUnits), 0n)
+      const status: 'pending' | 'received' | 'partial' | 'failed' =
+        claim.execution === 'reverted'
+          ? 'failed'
+          : claim.execution !== 'succeeded'
+          ? 'pending'
+          : received === BigInt(claim.amountBaseUnits)
+          ? 'received'
+          : 'partial'
+      const spendability:
+        | 'empty'
+        | 'unverified'
+        | 'reserved'
+        | 'needs-native-gas'
+        | 'spendable' =
+        BigInt(position.balanceBaseUnits) === 0n
+          ? 'empty'
+          : !position.receipts.some(
+              receipt => BigInt(receipt.amountBaseUnits) > 0n,
+            )
+          ? 'unverified'
+          : options.reserved
+          ? 'reserved'
+          : options.nativeBalanceWei < options.requiredNativeFeeWei ||
+            options.nativeBalanceWei === 0n
+          ? 'needs-native-gas'
+          : 'spendable'
+      return {
+        address: coin.address,
+        contractAddress: position.contractAddress,
+        txHash: claim.txHash,
+        payloadDigests: claim.payloadDigests,
+        claimedAmountBaseUnits: BigInt(claim.amountBaseUnits),
+        receivedAmountBaseUnits: received,
+        balanceBaseUnits: BigInt(position.balanceBaseUnits),
+        status,
+        spendability,
+      }
+    }),
+  )
+}
+
+/** Account discovery for token preparation, independent of native gas availability. Selection
+ * still checks the chosen source's nonce claim and native fee cap before signing anything. */
+export function fundedErc20Coins(
+  coins: readonly EvmCoin[],
+  contractAddress: string,
+): EvmCoin[] {
+  const contract = getAddress(contractAddress).toLowerCase()
+  return coins.filter(coin =>
+    coin.erc20Positions?.some(
+      position =>
+        position.contractAddress === contract &&
+        BigInt(position.balanceBaseUnits) > 0n &&
+        position.receipts.some(receipt => BigInt(receipt.amountBaseUnits) > 0n),
+    ),
+  )
 }
 
 /** The note to self for a coin: the chain, the account, and what its key is derived from. No key
@@ -146,6 +534,8 @@ export interface RecordStore<T> {
   get(key: string): T | undefined
   all(): T[]
   put(key: string, row: T): Promise<void>
+  /** Compare against durable state, not this wrapper's cache. A miss refreshes its cache. */
+  compareAndPut(key: string, expected: T | undefined, row: T): Promise<boolean>
   delete(key: string): Promise<void>
   close(): Promise<void>
 }
@@ -161,6 +551,16 @@ export class MemoryRecordStore<T> implements RecordStore<T> {
   async put(key: string, row: T): Promise<void> {
     this.rows.set(key, { ...row })
   }
+  async compareAndPut(
+    key: string,
+    expected: T | undefined,
+    row: T,
+  ): Promise<boolean> {
+    if (JSON.stringify(this.rows.get(key)) !== JSON.stringify(expected))
+      return false
+    this.rows.set(key, { ...row })
+    return true
+  }
   async delete(key: string): Promise<void> {
     this.rows.delete(key)
   }
@@ -171,7 +571,10 @@ export class MemoryRecordStore<T> implements RecordStore<T> {
 
 export class LevelRecordStore<T> implements RecordStore<T> {
   private readonly rows = new Map<string, T>()
-  private constructor(private readonly db: LevelDB) {}
+  private constructor(
+    private readonly db: LevelDB,
+    private readonly coordinationKey: string,
+  ) {}
   static async open<T>(
     location: string,
     namespace: string,
@@ -179,7 +582,10 @@ export class LevelRecordStore<T> implements RecordStore<T> {
     const database = level(join(location, namespace))
     try {
       await openDurableLevel(database, location, namespace)
-      const store = new LevelRecordStore<T>(database)
+      const store = new LevelRecordStore<T>(
+        database,
+        `received-record-store:${join(location, namespace)}`,
+      )
       for await (const [key, value] of (database as any).iterator({}))
         store.rows.set(String(key), JSON.parse(String(value)) as T)
       return store
@@ -195,12 +601,59 @@ export class LevelRecordStore<T> implements RecordStore<T> {
     return [...this.rows.values()]
   }
   async put(key: string, row: T): Promise<void> {
-    await durablePut(this.db, key, JSON.stringify(row))
-    this.rows.set(key, { ...row })
+    const bytes = JSON.stringify(row)
+    await runNativeTransactionExclusive(
+      this.coordinationKey,
+      'single-realm',
+      async () => {
+        await durablePut(this.db, key, bytes)
+        this.rows.set(key, JSON.parse(bytes) as T)
+      },
+    )
+  }
+  async compareAndPut(
+    key: string,
+    expected: T | undefined,
+    row: T,
+  ): Promise<boolean> {
+    const expectedBytes = JSON.stringify(expected)
+    const bytes = JSON.stringify(row)
+    return runNativeTransactionExclusive(
+      this.coordinationKey,
+      'single-realm',
+      async () => {
+        let current: T | undefined
+        try {
+          current = JSON.parse(String(await this.db.get(key))) as T
+        } catch (error) {
+          if (
+            !(
+              error &&
+              typeof error === 'object' &&
+              'notFound' in error &&
+              error.notFound === true
+            )
+          )
+            throw error
+        }
+        if (current === undefined) this.rows.delete(key)
+        else this.rows.set(key, current)
+        if (JSON.stringify(current) !== expectedBytes) return false
+        await durablePut(this.db, key, bytes)
+        this.rows.set(key, JSON.parse(bytes) as T)
+        return true
+      },
+    )
   }
   async delete(key: string): Promise<void> {
-    await durableDelete(this.db, key)
-    this.rows.delete(key)
+    await runNativeTransactionExclusive(
+      this.coordinationKey,
+      'single-realm',
+      async () => {
+        await durableDelete(this.db, key)
+        this.rows.delete(key)
+      },
+    )
   }
   async close(): Promise<void> {
     await (this.db as any).close()
@@ -209,6 +662,144 @@ export class LevelRecordStore<T> implements RecordStore<T> {
 
 export const EVM_COIN_NAMESPACE = 'received-coins'
 export const CONTACT_PAYMENT_NAMESPACE = 'contact-payments'
+
+/** First discovery keeps derivation ownership; repeated discovery cannot replace another key
+ * or discard positions. Later asset/payment facts enter through their own typed operations. */
+export async function recordStoredEvmCoin(
+  store: RecordStore<EvmCoin>,
+  coin: EvmCoin,
+): Promise<EvmCoin> {
+  coin = copyCoin(coin)
+  const key = getAddress(coin.address).toLowerCase()
+  if (key !== coin.address)
+    throw new Error('Received account address must be normalized')
+  if (computeAddress(coin.privateKey).toLowerCase() !== key)
+    throw new Error('Received account key does not open its address')
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const known = store.get(key)
+    if (
+      known &&
+      (known.privateKey !== coin.privateKey ||
+        known.origin !== coin.origin ||
+        known.ephemeralPubKey !== coin.ephemeralPubKey ||
+        known.stampSharedPoint !== coin.stampSharedPoint ||
+        known.childIndex !== coin.childIndex)
+    )
+      throw new Error('Received account derivation conflicts with its owner')
+    const next = known ?? coin
+    if (await store.compareAndPut(key, known, next)) return next
+  }
+  throw new Error('Received account changed during discovery; retry required')
+}
+
+type Erc20PaymentInput = Parameters<typeof registerEvmErc20Payment>[1]
+type Erc20RefreshOptions = Parameters<typeof refreshEvmErc20Position>[1]
+const copyCoin = (coin: EvmCoin): EvmCoin =>
+  JSON.parse(JSON.stringify(coin)) as EvmCoin
+
+async function changeStoredCoin(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  change: (coin: EvmCoin) => EvmCoin,
+): Promise<EvmCoin> {
+  const key = getAddress(address).toLowerCase()
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const current = store.get(key)
+    if (!current) throw new Error('Received account has not been discovered')
+    const captured = copyCoin(current)
+    const next = change(captured)
+    if (await store.compareAndPut(key, captured, next)) return next
+  }
+  throw new Error('Received account changed during update; retry required')
+}
+
+/** Native observations merge against current durable state and preserve every token position.
+ * All observations at this owner boundary must use CAS, not put an earlier full-row snapshot. */
+export function applyStoredNativeCoinObservation(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  observation: EvmCoinObservation,
+): Promise<EvmCoin> {
+  observation = { ...observation }
+  return changeStoredCoin(store, address, current =>
+    current.checkedAtMs !== undefined && current.checkedAtMs > observation.atMs
+      ? current
+      : observeEvmCoin(current, observation),
+  )
+}
+
+export function markStoredEvmCoinNoted(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  notedAtMs: number,
+): Promise<EvmCoin> {
+  if (!Number.isFinite(notedAtMs))
+    throw new Error('Invalid received account note time')
+  return changeStoredCoin(store, address, current =>
+    current.notedAtMs === undefined ? { ...current, notedAtMs } : current,
+  )
+}
+
+export function registerStoredEvmErc20Payment(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  payment: Erc20PaymentInput,
+): Promise<EvmCoin> {
+  payment = { ...payment }
+  return changeStoredCoin(store, address, current =>
+    registerEvmErc20Payment(current, payment),
+  )
+}
+
+/** RPC never holds the write lock. A changed target position is observable, and must be retried
+ * from its current claims; the stale result cannot erase new discovery or newer chain evidence.
+ * Updates to native facts or another token are merged from current durable state. */
+export async function refreshStoredEvmErc20Position(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  options: Erc20RefreshOptions,
+): Promise<{ applied: boolean; coin: EvmCoin }> {
+  options = { ...options }
+  const key = getAddress(address).toLowerCase()
+  const known = store.get(key)
+  if (!known) throw new Error('Received account has not been discovered')
+  const captured = copyCoin(known)
+  const { contract } = configuredErc20(
+    options.chainIdentifier,
+    options.contractAddress,
+  )
+  const before = JSON.stringify(
+    captured.erc20Positions?.find(
+      position => position.contractAddress === contract,
+    ),
+  )
+  const observed = await refreshEvmErc20Position(captured, options)
+  const refreshed = observed.erc20Positions!.find(
+    position => position.contractAddress === contract,
+  )!
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const current = store.get(key)
+    if (!current) throw new Error('Received account disappeared during refresh')
+    const snapshot = copyCoin(current)
+    if (
+      JSON.stringify(
+        snapshot.erc20Positions?.find(
+          position => position.contractAddress === contract,
+        ),
+      ) !== before
+    )
+      return { applied: false, coin: snapshot }
+    const next = {
+      ...snapshot,
+      erc20Positions: snapshot.erc20Positions!.map(position =>
+        position.contractAddress === contract ? refreshed : position,
+      ),
+    }
+    if (await store.compareAndPut(key, snapshot, next))
+      return { applied: true, coin: next }
+  }
+  throw new Error('Received account changed during refresh; retry required')
+}
 
 /** What the chain says about the transfer a coin's message named.
  * - `none`: the message named no transfer; only the balance can speak.

@@ -6,7 +6,13 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Transaction, Wallet, keccak256, type Provider } from 'ethers'
+import {
+  Interface,
+  Transaction,
+  Wallet,
+  keccak256,
+  type Provider,
+} from 'ethers'
 import {
   EvmLegacyConsolidator,
   EvmNativeOperationPendingError,
@@ -170,6 +176,99 @@ describe('contract calls through the native operation journal', () => {
     }
   }
   const call = { to: { raw: router }, data: calldata, value: 1_000n }
+
+  it('signs an ERC20 transfer from the selected owned source and resumes identical bytes after reopen', async () => {
+    const token = getEvmDexDeployment('monad-testnet')!.tokens.find(
+      item => item.symbol === 'USDC',
+    )!
+    const data = new Interface([
+      'function transfer(address,uint256) returns (bool)',
+    ]).encodeFunctionData('transfer', [main.address, (1n << 200n) + 123n])
+    const state = node({ main: 10_000_000n, spend: 1_000_000n })
+    const owned: EvmNativeSource[] = [
+      sources[0]!,
+      { kind: 'coin', address: spend.address.toLowerCase() },
+    ]
+    const { executor } = owner(state, owned)
+    const prepared = await executor.signContractCall({
+      to: { raw: token.address! },
+      data,
+      value: 0n,
+      sourceAddress: spend.address,
+    })
+    const raw = prepared.members[0]!.signed!.rawTransaction
+    expect(prepared.members[0]!.source.kind).toBe('coin')
+    expect(Transaction.from(raw)).toMatchObject({
+      from: spend.address,
+      to: token.address,
+      data,
+      value: 0n,
+      nonce: 0,
+    })
+    expect(executor.holdsSource(spend.address)).toBe(true)
+    expect(executor.holdsSource(main.address)).toBe(false)
+    // A different source remains usable while the token transfer is prepared.
+    await executor.sendContractCall(call)
+    expect(Transaction.from(state.raws[0]!).from).toBe(main.address)
+    await journal.Close()
+    await open()
+    const reopened = owner(state, owned)
+    await reopened.executor.cancelUnsignedOperations()
+    expect(reopened.executor.holdsSource(spend.address)).toBe(true)
+    await reopened.executor.resumeOperation(prepared.operationId)
+    expect(state.raws[1]).toBe(raw)
+    expect(reopened.sign).not.toHaveBeenCalled()
+  })
+
+  it('refuses unknown or gas-empty sources without using main funds or signing', async () => {
+    const state = node({ main: 10_000_000n, spend: 0n })
+    const { executor, sign } = owner(state)
+    await expect(
+      executor.signContractCall({
+        ...call,
+        sourceAddress: Wallet.createRandom().address,
+      }),
+    ).rejects.toThrow(/not owned/)
+    await expect(
+      executor.signContractCall({ ...call, sourceAddress: spend.address }),
+    ).rejects.toThrow(/Insufficient unreserved native funds/)
+    expect(sign).not.toHaveBeenCalled()
+    expect(journal.list()).toEqual([])
+    expect(state.raws).toEqual([])
+  })
+
+  it('concurrent token preparations reserve the selected account nonce only once', async () => {
+    const tokens = getEvmDexDeployment('monad-testnet')!.tokens.filter(
+      item => item.address !== null,
+    )
+    const state = node({ main: 10_000_000n, spend: 1_000_000n })
+    const { executor, sign } = owner(state, [
+      sources[0]!,
+      { kind: 'coin', address: spend.address.toLowerCase() },
+    ])
+    const abi = new Interface([
+      'function transfer(address,uint256) returns (bool)',
+    ])
+    const results = await Promise.allSettled(
+      tokens.slice(0, 2).map(token =>
+        executor.signContractCall({
+          to: { raw: token.address! },
+          sourceAddress: spend.address,
+          value: 0n,
+          data: abi.encodeFunctionData('transfer', [main.address, 123n]),
+        }),
+      ),
+    )
+    expect(
+      results.filter(result => result.status === 'fulfilled'),
+    ).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(
+      1,
+    )
+    expect(journal.list()).toHaveLength(1)
+    expect(sign).toHaveBeenCalledTimes(1)
+    expect(state.raws).toEqual([])
+  })
 
   it('prepares a durable unexposed call and holds its nonce without broadcasting', async () => {
     const state = node({ main: 10_000_000n })

@@ -12,7 +12,8 @@ import { defaultNativeEvmTransactionBuilder as nativeStampTransfer } from "./evm
 import type { StampDefaultResolver } from "../oracle/stamp-policy";
 import { stampPolicyConfig } from "../oracle/stamp-policy";
 import { readViteEnv } from "./vite-env";
-export { createRelayPricedEvmChain } from "./evm-host";
+export { createRelayPricedEvmChain, createNativeOnlyEvmChain } from "./evm-host";
+export type { NativeOnlyEvmChain } from "./evm-host";
 const defaultHostConfig = loadMonadChainConfigFromEnv();
 const MonadChain = createEvmChain(defaultHostConfig);
 defaultHostConfig.resolveDefaultStamp = createRelayStampDefaultResolver(defaultHostConfig, MonadChain, stampPolicyConfig(

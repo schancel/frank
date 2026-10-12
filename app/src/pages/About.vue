@@ -28,7 +28,9 @@
           <div class="text-h4 text-weight-bold">
             {{ $t('about.appName') }}
           </div>
-          <div class="text-caption text-grey-8" data-test="about-commit-hash">v{{ appVersion }} ({{ commitHash }})</div>
+          <div class="text-caption text-grey-8" data-test="about-commit-hash">
+            v{{ appVersion }} ({{ commitHash }})
+          </div>
           <div class="text-subtitle1 text-grey-8 q-mt-xs">
             {{ $t('about.tagline') }}
           </div>

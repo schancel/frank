@@ -220,6 +220,7 @@ export interface OutboundJobRecord {
   /** The identifier the email goes out under; with the scope and the recipient, the job's key. */
   readonly rfcMessageId: string;
   readonly recipientEmail: string;
+  readonly senderLocalPart: string;
   /** Read from the job's `mail_message` row, as are `conversationId` and `payloadDigest`. */
   readonly frankMessageId: string;
   readonly conversationId: string;

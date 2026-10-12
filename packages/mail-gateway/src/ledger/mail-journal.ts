@@ -106,7 +106,7 @@ import type {
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 5;
+export const MAIL_JOURNAL_FORMAT = 6;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
@@ -227,6 +227,7 @@ const MAIL_JOURNAL_DDL = `
     scope_account TEXT NOT NULL,
     rfc_message_id TEXT NOT NULL,
     recipient_email TEXT NOT NULL,
+    sender_local_part TEXT NOT NULL,
     bounce_token TEXT NOT NULL UNIQUE,
     signed_rfc822 BLOB NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('pending', 'submitting', 'uncertain', 'sent', 'failed', 'bounced')),
@@ -236,7 +237,8 @@ const MAIL_JOURNAL_DDL = `
     last_error TEXT,
     created_at INTEGER NOT NULL,
     UNIQUE (scope_account, rfc_message_id, recipient_email),
-    FOREIGN KEY (scope_account, rfc_message_id) REFERENCES mail_message(scope_account, rfc_message_id)
+    FOREIGN KEY (scope_account, rfc_message_id) REFERENCES mail_message(scope_account, rfc_message_id),
+    FOREIGN KEY (sender_local_part) REFERENCES issued_mailbox(local_part)
   );
   CREATE INDEX idx_outbound_job_due ON outbound_job(state, next_attempt_at);
 `;
@@ -427,6 +429,8 @@ export interface AddOutboundJobInput {
   /** `message.rfcMessageId` from this unit's `bridged` result: the identifier the email goes out under. */
   readonly rfcMessageId: string;
   readonly recipientEmail: string;
+  /** Issued alias for this exact scoped conversation; replies return through it. */
+  readonly senderLocalPart: string;
   readonly signedRfc822: StoredMailBytes;
   readonly nextAttemptAtMs: number;
 }
@@ -649,6 +653,7 @@ function toJob(row: OutboundJobJoinedRow): OutboundJobRecord {
     scopeAccount: row.scope_account,
     rfcMessageId: row.rfc_message_id,
     recipientEmail: row.recipient_email,
+    senderLocalPart: row.sender_local_part,
     frankMessageId: row.frank_message_id,
     conversationId: row.conversation_id,
     payloadDigest: row.payload_digest,
@@ -1588,6 +1593,7 @@ export class MailJournal {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
     const rfcId = requireRfcId('rfcMessageId', input.rfcMessageId);
     const recipient = requireAddress('recipientEmail', input.recipientEmail);
+    const senderLocalPart = requireMailboxLocalPart(input.senderLocalPart);
     const digest = requireStoredBytes('signedRfc822', input.signedRfc822);
     const nextAttemptAt = requireTime('nextAttemptAtMs', input.nextAttemptAtMs);
 
@@ -1596,19 +1602,24 @@ export class MailJournal {
       if (message?.direction !== 'frank_to_email') {
         throw new MailJournalStateError('No bridged message under this identifier in this scope');
       }
+      const issued = this.issuedMailbox(senderLocalPart);
+      if (issued?.scopeAccount !== scope || issued.conversationId !== message.conversation_id) {
+        throw new MailJournalStateError('Outbound sender must be an issued alias for this conversation');
+      }
       const key = [scope, rfcId, recipient] as const;
       const select = `${JOB_SELECT} WHERE j.scope_account = ? AND j.rfc_message_id = ? AND j.recipient_email = ?`;
       const stored = this.get<OutboundJobJoinedRow>(select, ...key);
       if (stored) {
-        const same = storedDigest(stored.signed_rfc822) === digest;
+        const same = storedDigest(stored.signed_rfc822) === digest && stored.sender_local_part === senderLocalPart;
         return { kind: same ? 'existing' : 'key_taken', job: toJob(stored) };
       }
       this.run(
         `INSERT INTO outbound_job
-           (scope_account, rfc_message_id, recipient_email, bounce_token, signed_rfc822,
+           (scope_account, rfc_message_id, recipient_email, sender_local_part, bounce_token, signed_rfc822,
             state, next_attempt_at, created_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
         ...key,
+        senderLocalPart,
         crypto.randomBytes(16).toString('hex'),
         encodeStoredBytes(input.signedRfc822),
         nextAttemptAt,

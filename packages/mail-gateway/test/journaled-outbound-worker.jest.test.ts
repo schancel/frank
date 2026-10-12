@@ -17,9 +17,10 @@ const RECIPIENT = 'recipient@example.test';
 const ID = '00000000-0000-0000-0000-000000000001';
 const CONVERSATION = '00000000-0000-0000-0000-000000000002';
 const RFC_ID = `<outbound@gw.example>`;
+const SENDER_LOCAL_PART = 'threadreply001';
 const sha = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
-function makeJob(journal: MailJournal): number {
+function makeJob(journal: MailJournal, rawMail?: string): number {
   const input = {
     outcome: 'bridged' as const,
     payloadDigest: sha('payload'),
@@ -38,13 +39,20 @@ function makeJob(journal: MailJournal): number {
     emitted: { rfcMessageId: render.rfcMessageId, mailKey: sha('mail') },
   });
   if (bridged.kind !== 'bridged') throw new Error('Expected bridged message');
+  journal.issueMailbox({
+    localPart: SENDER_LOCAL_PART,
+    scopeAccount: ACCOUNT,
+    conversationId: CONVERSATION,
+  });
   const mail = Buffer.from(
-    `From: ${ACCOUNT}@${DOMAIN}\r\nTo: ${RECIPIENT}\r\nSubject: Test\r\nMessage-ID: ${RFC_ID}\r\n\r\nHello`
+    rawMail ??
+      `From: ${SENDER_LOCAL_PART}@${DOMAIN}\r\nReply-To: ${SENDER_LOCAL_PART}@${DOMAIN}\r\nTo: ${RECIPIENT}\r\nSubject: Test\r\nMessage-ID: ${RFC_ID}\r\n\r\nHello`
   );
   const job = journal.addOutboundJob({
     scopeAccount: ACCOUNT,
     rfcMessageId: bridged.message.rfcMessageId,
     recipientEmail: RECIPIENT,
+    senderLocalPart: SENDER_LOCAL_PART,
     signedRfc822: { kind: 'inline', bytes: mail },
     nextAttemptAtMs: 0,
   });
@@ -93,10 +101,22 @@ describe('journaled outbound worker', () => {
     expect(journal.findOutboundJob(jobId)?.state).toBe('sent');
     expect(submit).toHaveBeenCalledWith(
       expect.objectContaining({
-        fromAddress: `${ACCOUNT}@${DOMAIN}`,
+        fromAddress: `${SENDER_LOCAL_PART}@${DOMAIN}`,
         recipientEmail: RECIPIENT,
       })
     );
+  });
+
+  it.each([
+    [`From: other@${DOMAIN}\r\nReply-To: ${SENDER_LOCAL_PART}@${DOMAIN}`, 'from'],
+    [`From: ${SENDER_LOCAL_PART}@${DOMAIN}\r\nReply-To: other@${DOMAIN}`, 'reply-to'],
+  ])('refuses mail whose issued sender headers differ before claiming', async (headers, field) => {
+    const jobId = makeJob(journal, `${headers}\r\nTo: ${RECIPIENT}\r\nMessage-ID: ${RFC_ID}\r\n\r\nHello`);
+    const submit = jest.fn();
+    const worker = new JournaledOutboundWorker({ journal, gatewayDomain: DOMAIN, port: { submit } });
+    await expect(worker.dispatch(jobId)).rejects.toThrow(field);
+    expect(journal.findOutboundJob(jobId)?.state).toBe('pending');
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it('keeps an ambiguous provider outcome out of the due queue after restart', async () => {

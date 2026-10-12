@@ -1,6 +1,6 @@
 import * as crypto from 'node:crypto';
 import { MailJournal } from '../ledger/mail-journal';
-import { parseRawRfc822 } from '../smtp/smtp-listener';
+import { readHeaderSection } from '../rfc/message-headers';
 import type { BlobStore } from '../storage/blob-store';
 import type { StoredMailBytes } from '../types';
 
@@ -45,9 +45,13 @@ export class JournaledOutboundWorker {
     const job = this.journal.findOutboundJob(jobId);
     if (!job) throw new Error('Unknown outbound job');
     const bytes = await this.resolveBytes(job.signedRfc822);
-    const fromAddress = `${job.scopeAccount}@${this.gatewayDomain}`;
-    if (parseRawRfc822(bytes).fromAddress !== fromAddress) {
-      throw new Error('Signed outbound mail From differs from the journal account');
+    const fromAddress = `${job.senderLocalPart}@${this.gatewayDomain}`;
+    const fields = readHeaderSection(bytes).fields;
+    for (const name of ['from', 'reply-to']) {
+      const values = fields.filter(([field]) => field === name).map(([, value]) => value.trim().toLowerCase());
+      if (values.length !== 1 || values[0] !== fromAddress) {
+        throw new Error(`Signed outbound mail ${name} differs from its issued mailbox`);
+      }
     }
     this.journal.claimOutboundJob(jobId);
     try {

@@ -25,12 +25,15 @@
     </q-header>
     <q-page-container>
       <q-page class="q-ma-none q-pa-none column no-wrap" :style-fn="pageStyle">
-        <q-card flat class="col column full-width full-height bg-transparent">
+        <q-card
+          flat
+          class="settings-content col column full-width full-height bg-transparent"
+        >
           <q-splitter
             :model-value="120"
             unit="px"
             disable
-            class="col full-height"
+            class="settings-splitter col full-height"
           >
             <template #before>
               <q-tabs v-model="tab" vertical class="text-primary">
@@ -141,7 +144,7 @@
                     <q-item
                       v-for="chain in supportedChains"
                       :key="chain.id"
-                      class="q-px-none"
+                      class="settings-chain-item q-px-none"
                     >
                       <q-item-section avatar style="min-width: 36px">
                         <q-icon
@@ -547,3 +550,41 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.settings-content,
+.settings-splitter,
+.settings-splitter :deep(.q-splitter__after),
+.settings-splitter :deep(.q-tab-panels) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 600px) {
+  .settings-chain-item {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .settings-chain-item :deep(.q-item__section--avatar) {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .settings-chain-item :deep(.q-item__section--main) {
+    grid-column: 2;
+    grid-row: 1;
+    min-width: 0;
+  }
+
+  .settings-chain-item
+    :deep(.q-item__section--side:not(.q-item__section--avatar)) {
+    grid-column: 2;
+    grid-row: 2;
+    padding-left: 0;
+    justify-self: start;
+    align-items: flex-start;
+  }
+}
+</style>

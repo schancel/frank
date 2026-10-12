@@ -175,6 +175,60 @@ it.each([
   expect(() => openEvmWallet(chain)).toThrow(/unavailable/)
   expect(mockCreate).not.toHaveBeenCalled()
 })
+
+it('keeps Hyperliquid custody closed until the relay advertises its exact route', async () => {
+  mockEnabledPeerNetworks.add('hyperliquid-testnet')
+  const originalFetch = globalThis.fetch
+  const request = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({ schema_version: 1, chains: [] }),
+  })) as unknown as typeof fetch
+  globalThis.fetch = request
+  try {
+    await expect(openEvmWallet('hyperliquid-testnet')).rejects.toThrow(
+      'EVM relay route unavailable for hyperliquid-testnet',
+    )
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(peekOpenedEvmWallets()).toEqual([])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+it('opens Hyperliquid custody only after the relay advertises the canonical RPC route', async () => {
+  mockEnabledPeerNetworks.add('hyperliquid-testnet')
+  const originalFetch = globalThis.fetch
+  const request = jest.fn(async () => ({
+    ok: true,
+    json: async () => ({
+      schema_version: 1,
+      chains: [
+        {
+          id: 'hyperliquid-testnet',
+          family: 'evm',
+          network: 'testnet',
+          caip2: 'eip155:998',
+          native_chain_id: '998',
+          capabilities: ['json-rpc'],
+        },
+      ],
+    }),
+  })) as unknown as typeof fetch
+  globalThis.fetch = request
+  try {
+    const open = await openEvmWallet('hyperliquid-testnet')
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(mockCreate.mock.calls[0][0].config).toMatchObject({
+      chainIdentifier: 'hyperliquid-testnet',
+      chainId: 998n,
+      networkTag: 'HYPT',
+    })
+    expect(open.wallet.chainIdentifier).toBe('hyperliquid-testnet')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
 it('does not reuse another account or relay context and cancels an in-flight open on teardown', async () => {
   const first = await openEvmWallet('monad-mainnet')
   const close = jest.spyOn(first.wallet, 'close')

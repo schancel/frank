@@ -18,6 +18,7 @@ import type {
 import { accountSession } from './session'
 import {
   validateEvmWalletConfiguration,
+  verifyEvmRelayRoute,
   verifyEvmWalletRpcIdentity,
 } from './evm-wallet-verification'
 
@@ -216,6 +217,8 @@ export function openEvmWallet(
         opened.get(chainIdentifier) !== entry
       )
         throw new Error('Account changed')
+      if (chainIdentifier === 'hyperliquid-testnet')
+        await verifyEvmRelayRoute(config, cancellation.signal)
       const primary =
         (await accountSession.getWallet()) as NativeWalletHandle & {
           close(): Promise<void>

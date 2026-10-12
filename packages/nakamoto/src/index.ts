@@ -1,5 +1,5 @@
 // @frank/nakamoto public surface. Browser-safe: no Node built-ins.
-// Per-chain entries: ./btc ./bch ./xec ./xpi ./doge.
+// Per-chain entries: ./btc ./bch ./xec ./xpi.
 // Feature entries: ./integer ./script ./script-num ./base58 ./base58check
 // ./varint ./reader ./convert-bits ./base32 ./encoding-error ./constructors
 // ./bech32 ./cashaddr ./address ./backend ./keys ./hd ./transaction ./sign

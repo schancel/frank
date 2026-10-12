@@ -71,7 +71,8 @@ jest.mock('../accounts/session', () => ({
       return mockFinancialState
     },
     getWallet: async () => mockFinancialWallet,
-    peekWallet: () => mockFinancialState.status === 'ready' ? mockFinancialWallet : undefined,
+    peekWallet: () =>
+      mockFinancialState.status === 'ready' ? mockFinancialWallet : undefined,
     getCurvePublicKey: async () => PUB_KEY_BYTES.slice(),
   },
 }))
@@ -667,7 +668,8 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         createdOutputs: [],
         timestamp: 100,
       }
-      const fetch = jest.spyOn(activeChain.directMessages, 'fetchSince')
+      const fetch = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
         .mockImplementation(async ({ onForeignWalletSync }) => {
           await onForeignWalletSync!(note)
           return []
@@ -677,7 +679,9 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         await advanceUntil(() => fetch.mock.calls.length >= 2)
         expect(fetch.mock.calls[0]![0].sinceMs).toBe(0)
         expect(fetch.mock.calls[1]![0].sinceMs).toBe(0)
-        expect(mockOpenForeignEvmWallet).toHaveBeenCalledWith('ethereum-sepolia')
+        expect(mockOpenForeignEvmWallet).toHaveBeenCalledWith(
+          'ethereum-sepolia',
+        )
         expect(apply).toHaveBeenCalledTimes(1)
         expect(apply).toHaveBeenCalledWith(note)
       } finally {

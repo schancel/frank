@@ -629,6 +629,7 @@ export default defineComponent({
         name?: unknown
         code?: unknown
         reason?: unknown
+        validation?: unknown
       } | null
       const name =
         typeof value?.name === 'string' && names.includes(value.name)
@@ -639,7 +640,22 @@ export default defineComponent({
         typeof reason === 'string' && codes.includes(reason)
           ? `${name}/${reason}`
           : name
-      failureDiagnostic.value = { stage, code }
+      const categories = [
+        'record',
+        'source',
+        'unsigned',
+        'signature',
+        'observation',
+        'account',
+        'contract-binding',
+      ]
+      const validation =
+        name === 'EvmNativeJournalError' &&
+        typeof value?.validation === 'string' &&
+        categories.includes(value.validation)
+          ? `/${value.validation}`
+          : ''
+      failureDiagnostic.value = { stage, code: code + validation }
     }
 
     const phase = ref<'form' | 'review' | 'working' | 'done'>('form')

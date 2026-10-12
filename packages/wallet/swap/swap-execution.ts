@@ -104,7 +104,7 @@ export type SwapProgress =
   | { stage: 'recovering' }
   | { stage: 'consolidating' }
   | { stage: 'approving'; step: number; of: number; txHash?: string }
-  | { stage: 'signing' }
+  | { stage: 'submitting' }
   | { stage: 'submitted'; txHash: string }
 
 export type SwapResult =
@@ -583,7 +583,7 @@ export async function executeSwap(params: {
     account,
     params.gasChargedOn,
   )
-  onProgress?.({ stage: 'signing' })
+  onProgress?.({ stage: 'submitting' })
   const handle = await send(
     wallet,
     plan.swap,

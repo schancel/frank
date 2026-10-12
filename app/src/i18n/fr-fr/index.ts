@@ -1786,7 +1786,7 @@ export default {
     checkAgain: 'Vérifier à nouveau',
     newSwap: 'Nouvel échange',
     stage: {
-      signing: 'Signature…',
+      submitting: 'Préparation et envoi…',
       submitted: 'Envoyé. En attente de confirmation par le réseau…',
       confirmed: 'Échange terminé',
       failed: 'Échange échoué',
@@ -1794,8 +1794,8 @@ export default {
       unknown: 'Vérification de cet échange en cours',
     },
     stageNote: {
-      signing:
-        'Votre portefeuille signe l’échange. Rien n’a encore été envoyé.',
+      submitting:
+        'Votre portefeuille vérifie les fonds, enregistre l’opération, signe et envoie l’échange.',
       submitted:
         'Cela prend généralement quelques secondes. Vous pouvez quitter cette page ; l’échange est enregistré et son suivi continue.',
       confirmed:

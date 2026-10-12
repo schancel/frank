@@ -1728,7 +1728,7 @@ export default {
     checkAgain: 'Check again',
     newSwap: 'New swap',
     stage: {
-      signing: 'Signing…',
+      submitting: 'Preparing and submitting…',
       submitted: 'Sent. Waiting for the network to confirm…',
       confirmed: 'Swap complete',
       failed: 'Swap failed',
@@ -1736,7 +1736,8 @@ export default {
       unknown: 'Still checking this swap',
     },
     stageNote: {
-      signing: 'Your wallet is signing the swap. Nothing has been sent yet.',
+      submitting:
+        'Your wallet is checking funds, recording the operation, signing and submitting the swap.',
       submitted:
         'This usually takes a few seconds. You can leave this page; the swap is recorded and keeps being followed.',
       confirmed:

@@ -190,7 +190,7 @@ describe('executing a swap', () => {
     expect([...new Set(stages)]).toEqual([
       'approving 1/2',
       'approving 2/2',
-      'signing',
+      'submitting',
       'submitted',
     ])
     expect(result).toMatchObject({

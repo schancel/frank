@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 import { nextTick, reactive, ref } from 'vue'
+import { activeChain } from '@frank/wallet/chain'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useOracleStore } from '../stores/oracle'
@@ -70,6 +71,19 @@ const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => {
 jest.mock('../accounts/utxo-wallets', () => ({
   openUtxoWallet: (chainIdentifier: string) =>
     mockOpenUtxoWallet(chainIdentifier),
+}))
+
+const mockEvmBalances: Record<string, jest.Mock> = {
+  'monad-mainnet': jest.fn().mockResolvedValue(7n),
+  'monad-regtest': jest.fn().mockResolvedValue(9n),
+}
+const mockOpenEvmWallet = jest.fn(async (chainIdentifier: string) => ({
+  chain: { unit: 'MON', toDisplayAmount: (value: bigint) => value.toString() },
+  wallet: { getBalance: mockEvmBalances[chainIdentifier] },
+}))
+jest.mock('../accounts/evm-wallets', () => ({
+  openEvmWallet: (chainIdentifier: string) =>
+    mockOpenEvmWallet(chainIdentifier),
 }))
 
 const mockFetchSolanaBalance = jest.fn().mockResolvedValue({
@@ -314,14 +328,116 @@ describe('useChainBalance', () => {
     'says %s is unsupported and opens no wallet for it',
     async chain => {
       mockOpenUtxoWallet.mockClear()
+      mockOpenEvmWallet.mockClear()
       await fetchChainBalance(chain, true)
       expect(mockOpenUtxoWallet).not.toHaveBeenCalled()
+      expect(mockOpenEvmWallet).not.toHaveBeenCalled()
       expect(useChainBalance(chain).presentation.value).toEqual({
         status: 'unavailable',
         reason: 'unsupported',
       })
     },
   )
+
+  it('shares canonical and alias observations without opening custody from read-only views', async () => {
+    mockOpenEvmWallet.mockClear()
+    const canonicalPrimary = useChainBalance(activeChain.chainIdentifier)
+    expect(canonicalPrimary.balance.value).toBe(mockMonadBalance.total.value)
+    expect(
+      useMultichainBalance().getRawBalance(activeChain.chainIdentifier),
+    ).toBe(mockMonadBalance.total.value)
+    const peer = useChainBalance('monad-mainnet')
+    expect(peer.presentation.value.status).toBe('loading')
+    expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+    await peer.refresh()
+    expect(mockOpenEvmWallet).toHaveBeenCalledWith('monad-mainnet')
+    expect(peer.balance.value).toBe(7n)
+    expect(canonicalPrimary.balance.value).toBe(mockMonadBalance.total.value)
+    await fetchChainBalance('xec-testnet', true)
+    expect(useChainBalance('xec-testnet').balance.value).toBe(
+      useChainBalance('ecash').balance.value,
+    )
+    await fetchChainBalance('solana-devnet', true)
+    expect(useChainBalance('solana-devnet').balance.value).toBe(
+      useChainBalance('solana').balance.value,
+    )
+  })
+
+  it('opens a requested secondary EVM only during the mounted balance lifecycle', async () => {
+    mockOpenEvmWallet.mockClear()
+    const selected = ref('monad-mainnet')
+    const wrapper = shallowMount({
+      setup() {
+        return useChainBalance(selected)
+      },
+      template: '<div />',
+    })
+    try {
+      await flushPromises()
+      expect(mockOpenEvmWallet).toHaveBeenCalledWith('monad-mainnet')
+      mockOpenEvmWallet.mockClear()
+      selected.value = activeChain.chainIdentifier
+      await nextTick()
+      expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+      expect(useChainBalance(selected).balance.value).toBe(
+        mockMonadBalance.total.value,
+      )
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('keeps regtest unavailable when its configured wallet cannot open without an operator anchor', async () => {
+    mockOpenEvmWallet.mockRejectedValueOnce(
+      new Error('Required operator checkpoint'),
+    )
+    const error = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+    try {
+      await fetchChainBalance('monad-regtest', true)
+      expect(mockOpenEvmWallet).toHaveBeenLastCalledWith('monad-regtest')
+      expect(useChainBalance('monad-regtest').presentation.value).toMatchObject(
+        { status: 'unavailable', reason: 'fetch-error' },
+      )
+    } finally {
+      error.mockRestore()
+    }
+  })
+
+  it('fences late EVM reads and hides prior-account observations immediately', async () => {
+    let finish!: (value: bigint) => void
+    mockEvmBalances['monad-mainnet'].mockImplementationOnce(
+      () =>
+        new Promise<bigint>(resolve => {
+          finish = resolve
+        }),
+    )
+    const old = fetchChainBalance('monad-mainnet', true)
+    await flushPromises()
+    mockAccountStatus.revision++
+    expect(useChainBalance('monad-mainnet').balance.value).toBeNull()
+    await fetchChainBalance('monad-mainnet', true)
+    finish(99n)
+    await old
+    expect(useChainBalance('monad-mainnet').balance.value).toBe(7n)
+  })
+
+  it('keeps a newer forced EVM read when the older read finishes last', async () => {
+    let finish!: (value: bigint) => void
+    mockEvmBalances['monad-mainnet'].mockImplementationOnce(
+      () =>
+        new Promise<bigint>(resolve => {
+          finish = resolve
+        }),
+    )
+    const old = fetchChainBalance('monad-mainnet', true)
+    await flushPromises()
+    await fetchChainBalance('monad-mainnet', true)
+    finish(88n)
+    await old
+    expect(useChainBalance('monad-mainnet').balance.value).toBe(7n)
+  })
 
   it('fetches solana balance and makes it reactive', async () => {
     await fetchChainBalance('solana', true)

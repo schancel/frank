@@ -6,6 +6,7 @@ const mockCreateWallet = jest.fn(async () => ({
   chainIdentifier: "btc-testnet",
 }));
 let mockConfig: UtxoChainConfig;
+let mockEcashConfig: import("./ecash-chain").EcashChainConfig;
 jest.mock("./electrum-client", () => ({
   ElectrumClient: jest.fn(() => ({ close: mockClose })),
 }));
@@ -23,10 +24,10 @@ jest.mock("./utxo-chain", () => ({
   },
 }));
 jest.mock("./ecash-chain", () => ({
-  createEcashChain: () => ({
-    chainIdentifier: "xec-testnet",
-    createWallet: mockCreateWallet,
-  }),
+  createEcashChain: (config: import("./ecash-chain").EcashChainConfig) => {
+    mockEcashConfig = config;
+    return { chainIdentifier: "xec-testnet", createWallet: mockCreateWallet };
+  },
 }));
 import { openRelayUtxoChain } from "./utxo-family";
 
@@ -139,4 +140,45 @@ test("Chronik explicitly refuses requested unsupported custody instead of ignori
     relay.createWallet(new Uint8Array(32).fill(7), { stealthCustody: custody })
   ).toThrow("unsupported");
   expect(mockCreateWallet).not.toHaveBeenCalled();
+});
+
+test("Chronik privately forwards explicit domain-root and historical SDK factories without changing seed material", async () => {
+  const relay = openRelayUtxoChain({
+    chainIdentifier: "xec-testnet",
+    relayBaseUrl: "https://relay.invalid",
+  });
+  const factory = jest.fn(),
+    historicalFactory = jest.fn();
+  const root = new Uint8Array(32).fill(7);
+  let copied: Uint8Array | undefined;
+  mockCreateWallet.mockImplementationOnce(async (material) => {
+    copied = material.bytes;
+    return { chainIdentifier: "xec-testnet" };
+  });
+  await relay.createWallet(root, {
+    ecashWalletFactory: factory,
+    ecashBip39WalletFactory: historicalFactory,
+  });
+  expect(mockEcashConfig.walletFactory).toBe(factory);
+  expect(mockEcashConfig.bip39WalletFactory).toBe(historicalFactory);
+  expect(copied).not.toBe(root);
+  expect(copied!.every((byte) => byte === 0)).toBe(true);
+  expect(root.every((byte) => byte === 7)).toBe(true);
+  const seed = new Uint8Array(64).fill(8);
+  mockCreateWallet.mockImplementationOnce(async (material) => {
+    copied = material.seed;
+    return { chainIdentifier: "xec-testnet" };
+  });
+  await relay.createWallet(
+    { derivation: "frank-bip39-bip32-v1", seed },
+    { ecashWalletFactory: factory, ecashBip39WalletFactory: historicalFactory }
+  );
+  expect(copied).not.toBe(seed);
+  expect(copied!.every((byte) => byte === 0)).toBe(true);
+  expect(seed.every((byte) => byte === 8)).toBe(true);
+});
+test("Electrum refuses eCash construction factories", async () => {
+  await expect(
+    open().createWallet(new Uint8Array(32), { ecashWalletFactory: jest.fn() })
+  ).rejects.toThrow("unsupported");
 });

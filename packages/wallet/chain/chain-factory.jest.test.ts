@@ -64,7 +64,7 @@ describe("createChain", () => {
       createChain({
         family: "evm",
         config: {
-          networkId: "monad-test",
+          networkId: "monad-testnet",
           chainId: 10143,
           rpcChain: "monad-testnet",
           relayBaseUrl: "http://127.0.0.1:8098",

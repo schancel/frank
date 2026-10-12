@@ -172,9 +172,9 @@ export const useSettingsStore = defineStore('settings', {
           this.emailGatewayStatus = 'unavailable'
         } else if (
           this.acceptedEmailGateway?.chainIdentifier === chainIdentifier &&
-          this.acceptedEmailGateway.relayOrigin === origin &&
-          this.acceptedEmailGateway.address.toLowerCase() !==
-            gateway.address.toLowerCase()
+          (this.acceptedEmailGateway.relayOrigin !== origin ||
+            this.acceptedEmailGateway.address.toLowerCase() !==
+              gateway.address.toLowerCase())
         ) {
           this.emailGatewayStatus = 'changed'
         } else {

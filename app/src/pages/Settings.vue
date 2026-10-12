@@ -245,8 +245,8 @@
                       }})
                     </template>
                     <template v-else-if="emailGatewayStatus === 'changed'">
-                      The relay changed its email gateway identity. Review the
-                      new address before using it.
+                      The relay or its email gateway identity changed. Review
+                      the new address before using it.
                     </template>
                     <template v-else-if="emailGatewayStatus === 'loading'">
                       Checking this relay for an email gateway…
@@ -284,7 +284,7 @@
                       no-caps
                       size="sm"
                       color="grey-7"
-                      label="Use relay gateway"
+                      :label="emailGatewayStatus === 'changed' ? 'Accept relay gateway' : 'Use relay gateway'"
                       data-test="reset-email-gateway-btn"
                       data-testid="reset-email-gateway-btn"
                       @click="resetEmailGateway"

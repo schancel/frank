@@ -93,6 +93,22 @@ describe('email gateway settings', () => {
     )
   })
 
+  it('blocks a changed relay origin even when the gateway address matches', async () => {
+    const store = useSettingsStore()
+    discover.mockResolvedValue(advertised)
+    await store.refreshEmailGateway(
+      'https://first-relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    expect(store.emailGatewayAddress).toBe(advertised.address)
+    await store.refreshEmailGateway(
+      'https://other-relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    expect(store.emailGatewayStatus).toBe('changed')
+    expect(store.emailGatewayAddress).toBe('')
+  })
+
   it('keeps a deliberate override scoped to its canonical chain', () => {
     const store = useSettingsStore()
     store.setEmailGatewayAddress('0x4444444444444444444444444444444444444444')

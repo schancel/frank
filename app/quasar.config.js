@@ -497,9 +497,12 @@ export default configure(ctx => {
     // https://quasar.dev/quasar-cli/developing-pwa/configuring-pwa
     pwa: {
       workboxMode: 'GenerateSW', // 'GenerateSW' or 'InjectManifest'
-      extendPWAGenerateSWOptions() {
+      extendPWAGenerateSWOptions(options) {
         return {
-          skipWaiting: true,
+          // Keep an open wallet on its current bundle until the user reloads.
+          skipWaiting: false,
+          // Cache only shipped application assets, never source maps or live API responses.
+          globIgnores: [...options.globIgnores, '**/*.map'],
           clientsClaim: true,
           cleanupOutdatedCaches: true,
         }

@@ -6,10 +6,10 @@
 
 <p align="center">
   <strong>Private, economically spam-resistant messaging for Monad.</strong><br />
-  Every direct message carries a real payment to its recipient. Public topic posts and votes burn value.
+  Paid direct messages carry real payments to their recipients. Public topic posts and votes burn value.
 </p>
 
-Frank is a Monad port and continuation of Stamp, a cryptomessenger built around a simple rule: **free speech is not free**. A sender must attach an on-chain stamp transaction to every message, and the relay independently verifies that transaction before accepting the message.
+Frank is a Monad port and continuation of Stamp, a cryptomessenger built around a simple rule: **free speech is not free**. Paid direct messages carry signed on-chain stamp transactions, and the relay independently validates their payment evidence. Relay delivery and chain settlement are tracked separately.
 
 That economic primitive makes Frank more than chat. It is a candidate transport for any Ethereum-family protocol that needs private, asynchronous negotiation before on-chain settlement: agent coordination, swaps, payment channels, threshold signing, credentials, escrow, games, and other multi-round protocols.
 
@@ -23,12 +23,12 @@ Most encrypted messengers still require an account from one operator. Most block
 Frank combines:
 
 - **Permissionless accounts:** generate a secp256k1 identity locally without a phone number, email address, legal name, or central account issuer.
-- **Paid delivery:** a relay accepts a direct message only after verifying its recipient payment on Monad.
+- **Paid delivery:** recipient stamp payments give unsolicited direct messages an economic cost; delivery and payment confirmation remain distinct states.
 - **Burn-weighted broadcasts:** public topic posts and votes burn MON because there is no single recipient to compensate.
 - **Transaction-carrying messages:** the raw stamp transaction travels with the off-chain message, so relays can validate and submit it directly instead of relying on a chain-wide transaction indexer to discover it.
 - **End-to-end encrypted content:** relays route and validate delivery without receiving the plaintext.
 - **User-run infrastructure:** Stamp's architecture lets users choose or run mailbox relays; restoring per-profile relay discovery and migration on Monad is an active design gap.
-- **Parallel nonce lanes:** disposable funding accounts avoid forcing unrelated outgoing stamps through one EVM account's ordered nonce queue.
+- **Parallel nonce lanes:** a pool of funding accounts lets unrelated outgoing stamps use separate EVM nonce sequences. Funding-account reuse is permitted; automatic balance diversification is unfinished.
 - **Wallet and agent primitives:** the protocol client is separated from Vue/Pinia, and the repository includes a headless Qwen bot with its own Frank identity.
 
 The distinction between payments and burns is fundamental:
@@ -53,28 +53,37 @@ These links are context, not endorsements. Frank's contribution is to combine id
 
 The current branch demonstrates a complete Monad testnet path:
 
-1. A wallet generates a local identity and registers its public profile with the relay.
-2. The sender resolves the recipient's registered public key.
-3. The client encrypts the message content using ECDH-derived key material.
-4. The client builds and signs a Monad stamp transaction from a leased funding sub-account.
-5. The relay validates the envelope and raw transaction before broadcasting it.
-6. The relay waits for confirmation, verifies the payment, and stores the message.
-7. The recipient discovers the message, resolves the sender's registered key, and decrypts it.
+1. The client creates or restores a local account and publishes its public profile.
+2. The sender resolves the recipient's public messaging and payment keys.
+3. The client encrypts the message using authenticated XChaCha20-Poly1305 with ECDH-derived key material.
+4. The wallet reserves funding inputs and signs one or more stamp transactions to recipient-controlled destinations.
+5. The wallet persists the encrypted message, signed transactions, and payment state before submission.
+6. The relay validates the submission and retains/routes the encrypted envelope; payment broadcasting and chain reconciliation continue independently.
+7. The recipient fetches and decrypts the message, and checks the attached payments.
 
-The same stack also supports Monad-native topic posts, burn-weighted votes, a browser UI, and a headless Qwen-backed bot.
+The same stack also supports Monad-native topic posts, burn-weighted votes, a browser UI, and headless bots including Qwen. The wallet UI exposes additional configured EVM, Bitcoin-family, and Solana networks; their balances and sending depend on the relay's configured upstream capabilities. This does not make cross-chain atomic swaps available.
 
 ```text
-┌──────────────┐     encrypted envelope      ┌──────────────────┐
-│ Frank client │ ───────────────────────────▶ │ CashWeb relay    │
-│              │     signed stamp tx         │                  │
-└──────┬───────┘                              └────────┬─────────┘
-       │                                               │
-       │ local identity + funding account pool        │ verify / broadcast
-       │                                               ▼
-       │                                      ┌──────────────────┐
-       └─────────────────────────────────────▶│ Monad testnet    │
-                                              └──────────────────┘
+┌─────────────────────────────────────┐
+│ Frank client                        │
+│ Local keys + funding account pool   │
+└──────────────────┬──────────────────┘
+                   │ encrypted envelope
+                   │ + signed stamp transactions
+                   ▼
+┌─────────────────────────────────────┐
+│ CashWeb relay                       │
+│ Validate + retain + route envelope  │
+└──────────────────┬──────────────────┘
+                   │ verify / broadcast / reconcile
+                   ▼
+┌─────────────────────────────────────┐
+│ Monad testnet                       │
+│ Recipient payments + public burns   │
+└─────────────────────────────────────┘
 ```
+
+The client also reconciles and can rebroadcast retained payment transactions. A message may carry a bundle: no single transaction hash represents every stamp or an additional stealth payment.
 
 ### Honest status
 
@@ -84,16 +93,16 @@ Frank is a port of a deeper protocol, not a finished security product. This tabl
 | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | Local account creation without required PII                      | Working                                                                                                    |
 | Signed Monad-native profile registration                         | Working                                                                                                    |
-| Encrypted direct-message content                                 | Working; legacy CBC construction needs an authenticated-encryption redesign                                |
+| Encrypted direct-message content                                 | Authenticated XChaCha20-Poly1305; no recipient-key forward secrecy or ratchet                              |
 | Direct-message stamp pays the recipient                          | Working; paid to one-time stamp-child destinations rather than the recipient's known EOA                   |
 | Topic posts and votes burn MON                                   | Working                                                                                                    |
 | Relay-side transaction broadcast, confirmation, and verification | Working                                                                                                    |
-| Single-use sender funding accounts and change handling           | Working                                                                                                    |
+| Multiple sender funding accounts and nonce tracking              | Implemented; account reuse is allowed and automatic diversification remains unfinished                     |
 | Recipient one-time stamp-child destinations                      | Working; restored on Monad in [#60](https://github.com/schancel/frank/issues/60)                           |
 | Split multi-transaction stamp construction                       | Working; restored on Monad in [#60](https://github.com/schancel/frank/issues/60); one payment is permitted |
 | Per-profile relay discovery and mailbox migration                | Original Stamp behavior; not yet restored on Monad                                                         |
 | Cross-device checkpoints and safe state compaction               | Design work ([#58](https://github.com/schancel/frank/issues/58))                                           |
-| True simultaneous multichain operation                           | Design work ([#59](https://github.com/schancel/frank/issues/59))                                           |
+| Cross-chain atomic settlement                                    | Not available in the demo                                                                                  |
 
 ## The original Stamp privacy construction
 
@@ -109,7 +118,7 @@ The recipient reconstructs the matching private key:
 stamp private key = H(payload digest) + recipient private key  (mod n)
 ```
 
-Stamp then derives child destinations and greedily builds at least two transactions from distinct funding sources. No single transaction or address needs to reveal the complete stamp amount. Frank's Monad path restores this construction, aiming for two or more payments and accepting one: [#60](https://github.com/schancel/frank/issues/60) delivered the EVM stamp-child derivation, the split-payment wire format, and relay verification of each payment. Spending received stamp-child payments is available in the wallet library and to bots; the app does not sweep them yet.
+Original Stamp then derives child destinations and splits value across funding sources. Frank retains recipient-controlled derived destinations and supports multi-transaction stamps, including payments gathered from several accounts. A single sufficient funding account is also permitted. The current canonical implementation is in [`monad-canonical-dm.ts`](packages/wallet/chain/monad-canonical-dm.ts) and [`canonical-dm-stamp.ts`](packages/cashweb/relay/canonical-dm-stamp.ts); the equations above describe the original construction, not the current wire format. Splitting payments does not by itself unlink funding accounts or prevent address reuse.
 
 For EVM, a derived secp256k1 public key becomes an address through:
 
@@ -123,15 +132,18 @@ keccak256(uncompressed_public_key[1:])[12:]
 frank/
 ├── app/                  Quasar/Vue browser and desktop client
 ├── packages/
-│   ├── wallet/           Monad wallet, account pool, stamp/topic clients
-│   ├── cashweb/          Protocol, envelope, feed, and legacy Stamp code
-│   └── bot/              Headless Qwen agent and live-demo scripts
+│   ├── wallet/           Custody adapters, chain wallets, spend state and sync
+│   ├── cashweb/          Relay/protocol clients and transport records
+│   ├── frank-codec/      Canonical encoding and validation
+│   ├── crypto-box/       Deniable authenticated encryption
+│   ├── account-recovery/ Recovery-share ceremonies
+│   └── bot/              Headless bots and live-demo scripts
 └── backend/
     ├── cashweb/          Rust registry/relay workspace
     └── bitcoinsuite/     Vendored chain/protocol dependencies
 ```
 
-The UI talks through an `ActiveChain` boundary rather than importing chain-specific clients directly. The current runtime selects Monad; [#59](https://github.com/schancel/frank/issues/59) tracks a unified multichain event stream and chain-as-data wire design.
+Application composition selects chain adapters through an `ActiveChain` boundary. Canonical network identities and protocol capabilities come from the [shared chain registry](docs/protocol/chains/README.md); UI selection and relay configuration determine which supported networks are available. Wallet inventory, reservations, and signing remain separate from message delivery.
 
 [`docs/CASHWEB-PROTOCOL-SPEC.md`](docs/CASHWEB-PROTOCOL-SPEC.md) is the normative human protocol and
 status index. [`docs/backend-topology.md`](docs/backend-topology.md) and
@@ -252,7 +264,7 @@ yarn test:unit:ci
 
 Smart contracts are excellent at deterministic settlement, but many useful protocols are interactive before they settle. Participants need to exchange commitments, negotiate terms, acknowledge state, or privately provide evidence.
 
-Stamp was also designed to avoid making a general-purpose blockchain indexer part of the messaging path. A message carries the transaction needed to justify its delivery; the receiver or relay can validate that supplied transaction and query only the relevant chain state. On Monad, using multiple single-use funding accounts also creates independent nonce lanes, allowing unrelated stamp payments to progress without sharing one account's strictly ordered transaction queue.
+Stamp was also designed to avoid making a general-purpose blockchain indexer part of the messaging path. A message carries the transaction needed to justify its delivery; the receiver or relay can validate that supplied transaction and query only the relevant chain state. On Monad, multiple funding accounts create independent nonce lanes, allowing unrelated stamp payments to progress without sharing one account's ordered transaction queue.
 
 Frank offers a reusable channel with four unusual properties:
 
@@ -263,17 +275,17 @@ Frank offers a reusable channel with four unusual properties:
 
 That makes the messenger a reference application for a broader primitive: **private, metered interactive protocol transport for the Monad and Ethereum ecosystem**.
 
-The longer-term multichain direction separates the network that supplies the mandatory stamp from the networks and assets negotiated inside a message. Lotus could eventually serve as the stamp or “gas” layer while the same encrypted conversation coordinates atomic settlement on Monad, Ethereum, or other chains. Reaching that design requires restoring Lotus infrastructure and specifying the atomic-swap or proof protocol; it is not part of the current Monad-only hackathon runtime.
+The longer-term multichain direction separates the network that supplies the mandatory stamp from the networks and assets negotiated inside a message. Lotus could eventually serve as the stamp or “gas” layer while the same encrypted conversation coordinates atomic settlement on Monad, Ethereum, or other chains. Reaching that design requires restoring Lotus infrastructure and specifying the atomic-swap or proof protocol; cross-chain atomic settlement is not currently available in the demo.
 
 ## Development priorities
 
 The immediate goal is correctness, not expansive claims:
 
-- Replace the legacy encryption envelope with reviewed deniable authenticated encryption.
+- Review the current deniable authenticated encryption and its key-compromise limits.
 - Restore federated per-profile relay routing and migration.
 - Separate logical message IDs from recipient-specific payload digests.
 - Make deletion, checkpoints, wallet effects, accounts, and nonces safe across devices.
-- Generalize the Pinia store around conversations before implementing group mailboxes.
+- Complete and verify conversation threading, group mailboxes, and cross-device recovery.
 
 See the [open issues](https://github.com/schancel/frank/issues) and [PLAN.md](PLAN.md) for implementation history and current constraints.
 

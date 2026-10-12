@@ -1,5 +1,5 @@
 /**
- * Mail gateway journal (#1237, stage G1; format 2 from stage G1b).
+ * Mail gateway journal (#1237, stage G1; format 3 with issued mailbox ownership).
  *
  * The durable owner of: which email threads exist in a Frank account's scope,
  * which message holds each RFC Message-ID there, every inbound email the
@@ -78,6 +78,7 @@ import {
   StoredMailBytes,
 } from '../types';
 import type { CreditLedger } from './credit-ledger';
+import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
 import type {
   FrankInboundRow,
   FrankSendRow,
@@ -103,11 +104,12 @@ import type {
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 2;
+export const MAIL_JOURNAL_FORMAT = 3;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
   'mail_thread',
+  'issued_mailbox',
   'mail_message',
   'inbound_email',
   'frank_send',
@@ -132,6 +134,15 @@ const MAIL_JOURNAL_DDL = `
     created_at INTEGER NOT NULL,
     PRIMARY KEY (scope_account, conversation_id)
   );
+
+  CREATE TABLE issued_mailbox (
+    local_part TEXT PRIMARY KEY,
+    scope_account TEXT NOT NULL,
+    conversation_id TEXT,
+    created_at INTEGER NOT NULL,
+    CHECK (local_part = lower(local_part))
+  );
+  CREATE INDEX idx_issued_mailbox_owner ON issued_mailbox(scope_account, conversation_id);
 
   CREATE TABLE mail_message (
     scope_account TEXT NOT NULL,
@@ -436,6 +447,7 @@ const DECIMAL = /^(0|[1-9][0-9]{0,77})$/;
 const DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 // Printable ASCII with one or more `@`, no space; the recipient grammar itself is the ingest stage's.
 const ADDRESS = /^[\x21-\x7e]+@[\x21-\x7e]+$/;
+const MAILBOX_LOCAL_PART = /^[a-z0-9][a-z0-9_-]{2,31}$/;
 
 const CONTESTED_LABEL = 'contested';
 const NO_MESSAGE_ID_LABEL = 'no-message-id';
@@ -447,6 +459,15 @@ function refuse(what: string): never {
 function requireMatch(label: string, value: unknown, pattern: RegExp): string {
   if (typeof value !== 'string' || !pattern.test(value)) refuse(`${label}: not in the required form`);
   return value as string;
+}
+
+function requireMailboxLocalPart(value: unknown): string {
+  if (typeof value !== 'string') refuse('mailbox local part: not a string');
+  const canonical = (value as string).trim().toLowerCase();
+  if (!MAILBOX_LOCAL_PART.test(canonical) || isOperationalLocalPart(canonical)) {
+    refuse('mailbox local part: invalid or reserved');
+  }
+  return canonical;
 }
 
 function requireHeldMessageId(value: unknown): string {
@@ -645,9 +666,9 @@ export class MailJournal {
    * - `chainIdentifier` must be an `id` of the protocol chain registry, exactly:
    *   an alias, another spelling or an inherited property name is refused
    *   before any pragma or statement, because the first open stores it for good.
-   * - No journal table present: creates all seven and the marker row.
-   * - Journal tables present: the marker row must exist, say format 2 and name
-   *   the same chain identifier and gateway account, and all seven tables must
+   * - No journal table present: creates all eight and the marker row.
+   * - Journal tables present: the marker row must exist, say format 3 and name
+   *   the same chain identifier and gateway account, and all eight tables must
    *   be there. Anything else throws `MailJournalOpenError` and changes nothing.
    * - A ledger with no SQLite connection (Postgres) is refused.
    * - A refused open leaves the connection as it found it: the busy timeout and
@@ -814,6 +835,44 @@ export class MailJournal {
   // -------------------------------------------------------------------------
   // Reads (one statement each)
   // -------------------------------------------------------------------------
+
+  /** Only rows explicitly issued by this journal can resolve inbound SMTP recipients. */
+  issuedMailbox(localPart: string): { scopeAccount: string; conversationId?: string } | undefined {
+    const canonical = requireMailboxLocalPart(localPart);
+    const row = this.get<{ scope_account: string; conversation_id: string | null }>(
+      'SELECT scope_account, conversation_id FROM issued_mailbox WHERE local_part = ?',
+      canonical
+    );
+    return row && {
+      scopeAccount: row.scope_account,
+      ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+    };
+  }
+
+  /** Explicit, immutable issuance. Repeating the same assignment is safe; changing its owner is refused. */
+  issueMailbox(input: { localPart: string; scopeAccount: string; conversationId?: string }): void {
+    const localPart = requireMailboxLocalPart(input.localPart);
+    const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
+    const conversation = input.conversationId === undefined
+      ? null
+      : requireMatch('conversationId', input.conversationId, FRANK_ID);
+    this.ledger.atomic(() => {
+      const existing = this.get<{ scope_account: string; conversation_id: string | null }>(
+        'SELECT scope_account, conversation_id FROM issued_mailbox WHERE local_part = ?',
+        localPart
+      );
+      if (existing) {
+        if (existing.scope_account !== scope || existing.conversation_id !== conversation) {
+          throw new MailJournalStateError('Mailbox local part is already issued to another owner or conversation');
+        }
+        return;
+      }
+      this.run(
+        'INSERT INTO issued_mailbox (local_part, scope_account, conversation_id, created_at) VALUES (?, ?, ?, ?)',
+        localPart, scope, conversation, this.now()
+      );
+    });
+  }
 
   findMailThread(scopeAccount: string, conversationId: string): MailThreadRecord | undefined {
     requireMatch('scopeAccount', scopeAccount, SCOPE_ACCOUNT);

@@ -4,10 +4,12 @@ import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
 import { InboundEmail } from '../types';
 import { BlobStore } from '../storage/blob-store';
 import type { MessageItem } from '@frank/cashweb/types/messages';
-import { isOperationalLocalPart } from './operational-local-parts';
+import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
 
 export interface InboundRecipientResolution {
   readonly accountAddress: string;
+  /** An issued thread alias fixes conversation routing, regardless of email headers or subject. */
+  readonly conversationId?: string;
   readonly isTombstoned?: boolean;
   readonly isMoved?: boolean;
   readonly redirectTo?: string;
@@ -150,10 +152,10 @@ export class InboundEmailHandler {
     const frankRecipientAddress = recipientResolution.accountAddress;
 
     // 2. Resolve or establish thread mapping (bridging Frank conversationId & threadId)
-    let conversationId: string | undefined;
+    let conversationId: string | undefined = recipientResolution.conversationId;
     let inReplyToFrankMessageId: string | undefined;
 
-    if (email.inReplyTo) {
+    if (!conversationId && email.inReplyTo) {
       const parent = this.ledger.getThreadMappingByRfc822Id(email.inReplyTo);
       if (parent) {
         conversationId = parent.conversationId;

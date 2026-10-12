@@ -68,6 +68,10 @@ export class TempoPathUsdJsonRpc implements TempoPathUsdRpc {
     return hex(await this.transport.send('eth_getTransactionCount', [address(owner), 'pending']))
   }
 
+  async getFinalizedNonce(owner: string): Promise<bigint> {
+    return hex(await this.transport.send('eth_getTransactionCount', [address(owner), 'finalized']))
+  }
+
   async getPathUsdBalance(owner: string): Promise<bigint> {
     const data = abi.encodeFunctionData('balanceOf', [address(owner)])
     const result = await this.transport.send('eth_call', [{ to: PATHUSD, data }, 'latest'])
@@ -135,9 +139,22 @@ export class TempoPathUsdJsonRpc implements TempoPathUsdRpc {
     return hash(canonical.hash) === hash(receipt.blockHash)
   }
 
+  async finalizedHead(): Promise<{ number: bigint; hash: string }> {
+    await this.verifyChain(this.chainIdentifier)
+    const block = record(await this.transport.send('eth_getBlockByNumber', ['finalized', false]))
+    return { number: hex(block.number), hash: hash(block.hash) }
+  }
+
+  async blockHash(number: bigint): Promise<string> {
+    if (number < 0n) throw new RangeError('Invalid Tempo block number')
+    const block = record(await this.transport.send('eth_getBlockByNumber', [`0x${number.toString(16)}`, false]))
+    return hash(block.hash)
+  }
+
   /** Caller owns the durable scan cursor and finality policy. */
   async receivedTransfers(recipient: string, fromBlock: bigint, toBlock: bigint): Promise<{
     transactionHash: string
+    logIndex: number
     blockHash: string
     blockNumber: number
     sender: string
@@ -167,6 +184,7 @@ export class TempoPathUsdJsonRpc implements TempoPathUsdRpc {
       if (!transfer) throw new Error('Tempo RPC returned an unexpected transfer')
       return {
         transactionHash: hash(log.transactionHash),
+        logIndex: blockNumber(log.logIndex),
         blockHash: hash(log.blockHash),
         blockNumber: blockNumber(log.blockNumber),
         ...transfer,

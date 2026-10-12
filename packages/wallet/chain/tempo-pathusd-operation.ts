@@ -48,6 +48,7 @@ export interface TempoPathUsdOperation {
   readonly submission: { state: 'never' | 'accepted' | 'ambiguous' | 'inconsistent-rpc' }
   readonly observation:
     | { state: 'unknown' | 'pending' }
+    | { state: 'nonce-consumed-unknown'; finalizedNonce: string }
     | {
         state: 'included-success' | 'included-revert' | 'included-mismatch'
         transactionHash: string
@@ -78,6 +79,7 @@ export interface TempoPathUsdRpc {
   /** Verifies both chain ID and the registry's genesis checkpoint. */
   verifyChain(chainIdentifier: 'tempo-testnet' | 'tempo-mainnet'): Promise<void>
   getPendingNonce(address: string): Promise<bigint>
+  getFinalizedNonce(address: string): Promise<bigint>
   getPathUsdBalance(address: string): Promise<bigint>
   quoteTransfer(params: {
     from: string
@@ -205,6 +207,9 @@ function validate(row: TempoPathUsdOperation): TempoPathUsdOperation {
       atomic(included.feeAtomic, 'observed fee') > atomic(includedAttempt.maximumFeeAtomic, 'attempt fee hold')
     )
       throw new Error('Invalid Tempo inclusion observation')
+  } else if (row.observation.state === 'nonce-consumed-unknown') {
+    if (!row.exposed || atomic(row.observation.finalizedNonce, 'finalized nonce') <= atomic(row.nonce, 'operation nonce'))
+      throw new Error('Invalid Tempo consumed nonce observation')
   }
   return structuredClone(row)
 }
@@ -286,7 +291,8 @@ export class TempoPathUsdJournal {
     return this.list().some(row =>
       row.chainIdentifier === chainIdentifier &&
       row.source.address === source &&
-      (!row.observation.state.startsWith('included-') || !('finalized' in row.observation) || !row.observation.finalized)
+      (row.observation.state !== 'nonce-consumed-unknown' &&
+        (!row.observation.state.startsWith('included-') || !('finalized' in row.observation) || !row.observation.finalized))
     )
   }
 
@@ -325,6 +331,21 @@ export class TempoPathUsdJournal {
       const previous = this.get(operationId)
       if (!previous) throw new Error('Unknown Tempo operation')
       return this.write(change(previous))
+    })
+  }
+
+  /** Only a row whose signed bytes never crossed a broadcast boundary may release its claim. */
+  abandonUnexposed(operationId: string): Promise<void> {
+    return this.exclusive(async () => {
+      const row = this.get(operationId)
+      if (!row) throw new Error('Unknown Tempo operation')
+      if (row.exposed) throw new Error('Exposed Tempo operation cannot be abandoned')
+      try {
+        await this.store.delete(operationId)
+      } catch (error) {
+        this.uncertain = true
+        throw error
+      }
     })
   }
 
@@ -412,6 +433,13 @@ export class TempoPathUsdTransfers {
     return this.withSourceLock(operation.source.address, () => this.submitLocked(operationId, signer))
   }
 
+  async abandonUnexposed(operationId: string): Promise<void> {
+    const row = this.journal.get(operationId)
+    if (!row || row.chainIdentifier !== this.chainIdentifier)
+      throw new Error('Unknown Tempo operation for this chain')
+    return this.withSourceLock(row.source.address, () => this.journal.abandonUnexposed(operationId))
+  }
+
   private async submitLocked(operationId: string, signer: TempoPathUsdSigner): Promise<TempoPathUsdOperation> {
     let row = this.journal.get(operationId)
     if (!row || row.chainIdentifier !== this.chainIdentifier)
@@ -419,6 +447,7 @@ export class TempoPathUsdTransfers {
     if (canonicalAddress(signer.source.address) !== row.source.address)
       throw new Error('Tempo signer does not own operation source')
     await this.rpc.verifyChain(this.chainIdentifier)
+    if (row.observation.state === 'nonce-consumed-unknown') return this.reconcile(operationId)
     if (row.observation.state.startsWith('included-')) return this.reconcile(operationId)
     if (!row.signedRaw) {
       const tx = transaction(row)
@@ -455,7 +484,7 @@ export class TempoPathUsdTransfers {
       throw new Error('Invalid Tempo replacement authorization')
     return this.withSourceLock(source, async () => {
       const row = await this.reconcile(operationId)
-      if (row.observation.state.startsWith('included-'))
+      if (row.observation.state.startsWith('included-') || row.observation.state === 'nonce-consumed-unknown')
         throw new Error('Tempo operation has an included candidate')
       const quote = await this.rpc.quoteTransfer({
         from: source, to: PATHUSD,
@@ -507,6 +536,11 @@ export class TempoPathUsdTransfers {
       if (!receipt) continue
       if (observation.state !== 'pending') throw new Error('Multiple Tempo candidates included for one nonce')
       observation = receiptObservation(row, attempt, receipt, await this.rpc.isFinalizedReceipt(receipt))
+    }
+    if (observation.state === 'pending') {
+      const finalizedNonce = await this.rpc.getFinalizedNonce(row.source.address)
+      if (finalizedNonce > atomic(row.nonce, 'operation nonce'))
+        observation = { state: 'nonce-consumed-unknown', finalizedNonce: finalizedNonce.toString() }
     }
     if (JSON.stringify(row.observation) === JSON.stringify(observation)) return row
     return this.journal.mutate(operationId, current => ({ ...current, observation }))

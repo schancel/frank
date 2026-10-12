@@ -30,6 +30,7 @@ function transferLog(amount = 2_000_000n, recipient = RECIPIENT) {
 function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
   const receipts = new Map<string, TempoReceipt>()
   let finalized = false
+  let finalizedNonce = 0n
   let quoteMaxFee = 2_000_000_000n
   let failBroadcast = false
   let wrongHash = false
@@ -39,6 +40,7 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
   const rpc: TempoPathUsdRpc = {
     verifyChain: async chain => { events.push('verify:' + chain) },
     getPendingNonce: async () => 7n,
+    getFinalizedNonce: async () => finalizedNonce,
     getPathUsdBalance: async () => 3_000_000n,
     quoteTransfer: async () => ({ gasLimit: 100_000n, maxFeePerGas: quoteMaxFee, maxPriorityFeePerGas: 1_000_000_000n }),
     sendRawTransaction: async raw => {
@@ -79,6 +81,7 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
       else receipts.clear()
     },
     setFinalized: (value: boolean) => { finalized = value },
+    setFinalizedNonce: (value: bigint) => { finalizedNonce = value },
     raiseFee: () => { quoteMaxFee = 3_000_000_000n },
     failBroadcast: () => { failBroadcast = true },
     wrongHash: () => { wrongHash = true },
@@ -167,6 +170,18 @@ describe('Tempo PathUSD transfer ownership', () => {
     })).rejects.toThrow('unresolved PathUSD operation')
   })
 
+  test('unexposed plan can release source; exposed signed payment cannot', async () => {
+    const h = harness()
+    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    expect(h.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(true)
+    await h.transfers.abandonUnexposed(ID)
+    expect(h.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(false)
+    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.submit(ID, h.signer)
+    await expect(h.transfers.abandonUnexposed(ID)).rejects.toThrow('cannot be abandoned')
+    expect(h.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(true)
+  })
+
   test('inconsistent RPC hash is visible while exact signed payment remains claimed', async () => {
     const h = harness()
     h.wrongHash()
@@ -220,6 +235,23 @@ describe('Tempo PathUSD transfer ownership', () => {
     const final = await reopened.transfers.reconcile(ID)
     expect('finalized' in final.observation && final.observation.finalized).toBe(true)
     expect(reopened.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(false)
+  })
+
+  test('finalized consumed nonce without receipt reports unknown outcome, never retries payment', async () => {
+    const h = harness()
+    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const pending = await h.transfers.submit(ID, h.signer)
+    h.setFinalizedNonce(8n)
+    const consumed = await h.transfers.reconcile(ID)
+    expect(consumed.observation).toEqual({ state: 'nonce-consumed-unknown', finalizedNonce: '8' })
+    expect(consumed.signedRaw).toBe(pending.signedRaw)
+    const sendsBefore = h.sends()
+    const signsBefore = h.signs()
+    await h.transfers.submit(ID, h.signer)
+    expect(h.sends()).toBe(sendsBefore)
+    expect(h.signs()).toBe(signsBefore)
+    expect(h.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(false)
+    await expect(h.transfers.replaceFee(ID, h.signer, 500n)).rejects.toThrow('included candidate')
   })
 
   test('receipt confirms exact token transfer, and reorg to unknown retains nonce claim', async () => {

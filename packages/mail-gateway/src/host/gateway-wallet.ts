@@ -1,13 +1,15 @@
-import { closeSync, fstatSync, openSync, readFileSync, statSync } from 'fs';
+import { closeSync, fstatSync, openSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { constants } from 'fs';
 import { isAbsolute, join } from 'path';
-import { getAddress } from 'ethers';
+import { getAddress, hexlify, randomBytes } from 'ethers';
+import level from 'level';
 
 import { hmacSha256 } from '@frank/crypto-box';
 import { createEvmChain } from '@frank/wallet/chain/monad-chain';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle';
 import {
+  canonicalWalletPublicBinding,
   createMonadWalletMaterial,
   type MonadRootBundle,
 } from '@frank/wallet/monad-wallet-material';
@@ -15,6 +17,28 @@ import {
 const ROOT_REGISTRY = 'frank-domain-roots-v1';
 const NETWORK = 'monad-testnet';
 const ALIAS_LABEL = new TextEncoder().encode('frank/mail-reply-alias/v1');
+
+async function existingLevelValue(location: string, key: string): Promise<string> {
+  const database = level(location, { createIfMissing: false });
+  try {
+    return await database.get(key);
+  } catch {
+    throw new GatewayWalletStartRefusal('wallet-state-incomplete');
+  } finally {
+    await database.close().catch(() => undefined);
+  }
+}
+
+function parsedObject(value: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>;
+  } catch {
+    // Never include persisted content in an error.
+  }
+  throw new GatewayWalletStartRefusal('wallet-state-incomplete');
+}
 
 export class GatewayWalletStartRefusal extends Error {
   constructor(readonly code: string) {
@@ -97,6 +121,21 @@ export interface OpenGatewayWalletResult {
 export async function openGatewayWallet(
   input: OpenGatewayWalletInput
 ): Promise<OpenGatewayWalletResult> {
+  return openGatewayWalletMode(input, 'open');
+}
+
+/** Explicit first provisioning only, after the operator has established that these roots have
+ * no prior spend history. Creates the host continuity marker with exclusive creation. */
+export async function provisionGatewayWalletAdmission(
+  input: OpenGatewayWalletInput
+): Promise<OpenGatewayWalletResult> {
+  return openGatewayWalletMode(input, 'provision');
+}
+
+async function openGatewayWalletMode(
+  input: OpenGatewayWalletInput,
+  mode: 'open' | 'provision'
+): Promise<OpenGatewayWalletResult> {
   const config = input.chain;
   if (
     config.chainIdentifier !== NETWORK ||
@@ -117,6 +156,8 @@ export async function openGatewayWallet(
 
   const roots = loadGatewayWalletRoots(input.rootFile);
   let salt: Uint8Array | undefined;
+  let markerPath = '';
+  let canonicalBindingId = '';
   try {
     const material = createMonadWalletMaterial(roots);
     try {
@@ -126,7 +167,13 @@ export async function openGatewayWallet(
         config.walletStorageLocation
       }-evm-${material.mainAccount.address.toLowerCase()}`;
       try {
-        for (const namespace of ['wallet-manifest', 'sub-account-pool', 'change-pool']) {
+        for (const namespace of [
+          'wallet-manifest',
+          'sub-account-pool',
+          'change-pool',
+          'evm-native-operations-v1',
+          'canonical-stamp-attempts-v1',
+        ]) {
           if (
             !statSync(join(walletLocation, namespace)).isDirectory() ||
             !statSync(join(walletLocation, namespace, 'CURRENT')).isFile()
@@ -136,6 +183,80 @@ export async function openGatewayWallet(
       } catch {
         throw new GatewayWalletStartRefusal('wallet-state-missing');
       }
+      const nativeBinding = {
+        version: 1,
+        registry: ROOT_REGISTRY,
+        chainIdentifier: NETWORK,
+        nativeChainId: '10143',
+        mainAddress: material.mainAccount.address.toLowerCase(),
+        spend: material.keyring.publicBranchDescriptor(),
+        change: material.changeKeyring.publicBranchDescriptor(),
+      };
+      const branch = (descriptor: {
+        path: string;
+        publicKey: Uint8Array;
+        chainCode: Uint8Array;
+      }) => ({
+        path: descriptor.path,
+        publicKey: hexlify(descriptor.publicKey),
+        chainCode: hexlify(descriptor.chainCode),
+      });
+      const nativeTuple = JSON.stringify({
+        ...nativeBinding,
+        spend: branch(nativeBinding.spend),
+        change: branch(nativeBinding.change),
+      });
+      const nativeManifest = parsedObject(
+        await existingLevelValue(join(walletLocation, 'evm-native-operations-v1'), 'manifest')
+      );
+      if (
+        nativeManifest.version !== 1 ||
+        JSON.stringify(nativeManifest.binding) !==
+          JSON.stringify({
+            chainIdentifier: NETWORK,
+            nativeChainId: '10143',
+            publicTuple: nativeTuple,
+          })
+      )
+        throw new GatewayWalletStartRefusal('wallet-state-binding-mismatch');
+      const canonical = canonicalWalletPublicBinding(material, NETWORK, 10143n);
+      const canonicalBinding = parsedObject(
+        await existingLevelValue(
+          join(walletLocation, 'canonical-stamp-attempts-v1'),
+          'metadata:binding'
+        )
+      );
+      if (canonicalBinding.version !== 1 || canonicalBinding.tuple !== canonical.tuple)
+        throw new GatewayWalletStartRefusal('wallet-state-binding-mismatch');
+      markerPath = join(walletLocation, 'mail-host-admission.json');
+      canonicalBindingId = canonical.id;
+      if (mode === 'open') {
+        let marker: Record<string, unknown>;
+        try {
+          marker = parsedObject(readFileSync(markerPath, 'utf8'));
+        } catch {
+          throw new GatewayWalletStartRefusal('host-admission-missing');
+        }
+        if (
+          Object.keys(marker).length !== 5 ||
+          marker.version !== 1 ||
+          marker.chainIdentifier !== NETWORK ||
+          marker.identityAddress !== expectedAddress ||
+          marker.canonicalBindingId !== canonical.id ||
+          typeof marker.stateId !== 'string' ||
+          !/^[0-9a-f]{64}$/i.test(marker.stateId)
+        )
+          throw new GatewayWalletStartRefusal('host-admission-mismatch');
+      } else {
+        try {
+          statSync(markerPath);
+          throw new GatewayWalletStartRefusal('host-already-provisioned');
+        } catch (error) {
+          if (error instanceof GatewayWalletStartRefusal) throw error;
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
+            throw new GatewayWalletStartRefusal('host-admission-unavailable');
+        }
+      }
       salt = hmacSha256(ALIAS_LABEL, roots.messaging.bytes);
     } finally {
       material.dispose();
@@ -144,11 +265,26 @@ export async function openGatewayWallet(
     try {
       if (
         wallet.chainIdentifier !== NETWORK ||
-        getAddress(wallet.identity.displayAddress) !== expectedAddress ||
-        wallet.walletState?.durability !== 'persistent' ||
-        wallet.walletState.canonicalUnavailable
+        getAddress(wallet.identity.displayAddress) !== expectedAddress
       )
         throw new GatewayWalletStartRefusal('opened-wallet-binding-mismatch');
+      if (mode === 'provision') {
+        try {
+          writeFileSync(
+            markerPath,
+            JSON.stringify({
+              version: 1,
+              chainIdentifier: NETWORK,
+              identityAddress: expectedAddress,
+              canonicalBindingId,
+              stateId: Buffer.from(randomBytes(32)).toString('hex'),
+            }),
+            { mode: 0o600, flag: 'wx' }
+          );
+        } catch {
+          throw new GatewayWalletStartRefusal('host-admission-unavailable');
+        }
+      }
       let closed = false;
       const ownedSalt = salt;
       salt = undefined;

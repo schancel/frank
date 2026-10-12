@@ -477,8 +477,15 @@ export interface DirectMessageClient {
      * written from which its bytes could be submitted (the payment intent of a paid message) and
      * before any byte is handed to the relay (a free message). Awaited; if it rejects, nothing was
      * recorded or sent. After it resolves the message may leave at any time, also after a restart:
-     * a caller that must know "no byte of this ever left the device" records the digest here. */
+     * a caller that must know "no byte of this ever left the device" records the digest here.
+     * onEnvelopeDurable, when supplied, additionally holds replay until its barrier clears. */
     onBeforeExposure?: (payloadDigest: string) => void | Promise<void>;
+    /** Idempotent host barrier after the complete envelope and signed stamp are durable, before
+     * replay or handoff. Requires messageId. A rejection holds the stored bytes and claims;
+     * retry with this callback or reconcileAttempts to authorize the same paid envelope. Free
+     * messages resume via send with the same messageId and explicit stampValue 0n; their terminal
+     * receipt is retained so a later repeat cannot reseal or expose another envelope. */
+    onEnvelopeDurable?: (payloadDigest: string) => void | Promise<void>;
   }): Promise<DirectMessageSendResult>;
   /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
    * relay answers 200 for an already-delivered set, and 503 while it is pending), then reports
@@ -488,6 +495,8 @@ export interface DirectMessageClient {
     payloadDigests: string[];
     /** Idempotent re-PUT budget per live attempt; defaults to a single try (callers back off). */
     maxPutAttempts?: number;
+    /** Authorizes only the explicitly named digests held behind their durability barrier. */
+    onEnvelopeDurable?: (payloadDigest: string) => void | Promise<void>;
   }): Promise<Record<string, DirectMessageAttemptStatus>>;
   /** Payload hashes of every attempt the wallet can still account for that is not in
    * `knownDigests`: payments no message points at. Re-sends live attempts first, so a

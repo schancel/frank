@@ -63,7 +63,7 @@ jest.mock('@frank/cashweb/relay/monad-mailbox-client', () =>
 )
 /** How the next durable write of a sent-message record behaves. The real write runs unless
  * dropped. */
-const mockMessageWrite: { mode: 'ok' | 'dropped' | 'written-then-reported-failed' } =
+const mockMessageWrite: { mode: 'ok' | 'dropped' | 'written-then-reported-failed'; unpaid?: boolean } =
   { mode: 'ok' }
 jest.mock('../storage/level-durability', () => {
   const actual = jest.requireActual<
@@ -75,8 +75,9 @@ jest.mock('../storage/level-durability', () => {
       ...args: Parameters<typeof actual.durablePut>
     ): Promise<void> => {
       const isMessage =
-        typeof args[2] === 'string' &&
-        args[2].includes('"consumerId":"frank-dm:')
+        (typeof args[2] === 'string' &&
+        args[2].includes('"consumerId":"frank-dm:')) ||
+        (mockMessageWrite.unpaid && String(args[1]).startsWith('unpaid-envelope:'))
       if (!isMessage || mockMessageWrite.mode === 'ok')
         return actual.durablePut(...args)
       const mode = mockMessageWrite.mode
@@ -138,6 +139,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     mockFunded.length = 0
     mailboxes.clear()
     mockMessageWrite.mode = 'ok'
+    mockMessageWrite.unpaid = false
     relayBodies = []
     relayMode = 'fixture'
     openMessages = jest.spyOn(LevelOutgoingMessageStore, 'open')
@@ -270,6 +272,135 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   }
   const received = () =>
     f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 })
+
+  describe('durable envelope exposure barrier', () => {
+    it.each(['delivered', 'dead'] as const)('retains the free %s receipt after relay acceptance and caller interruption', async outcome => {
+      if (outcome === 'dead') relayMode = 'ended'
+      let digest: string | undefined
+      const first = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async value => { digest = value } })
+      expect(first.requests).toBe(1)
+      if (outcome === 'delivered') expect(first.result?.payloadDigest).toBe(digest)
+      else expect(first.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
+      // Model interruption before the caller records this answer, then lose directory access.
+      await reopen({ directory: false })
+      const callback = jest.fn()
+      const replay = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: callback })
+      expect(replay.requests).toBe(0)
+      expect(replay.signed).toBe(0)
+      expect(callback).not.toHaveBeenCalled()
+      if (outcome === 'delivered') expect(replay.result?.payloadDigest).toBe(digest)
+      else expect(replay.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
+      expect(relayBodies).toHaveLength(1)
+    })
+    it('holds free exact bytes after a successful host hook and failed durable marker clear', async () => {
+      let digest: string | undefined
+      const first = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async value => {
+        digest = value
+        mockMessageWrite.unpaid = true
+        mockMessageWrite.mode = 'dropped'
+      } })
+      expect(first.requests).toBe(0)
+      await reopen()
+      expect((await attempt({ messageId: ID_A, stampValue: 0n })).requests).toBe(0)
+      const resumed = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async value => expect(value).toBe(digest) })
+      expect(resumed.result?.payloadDigest).toBe(digest)
+      expect(resumed.requests).toBe(1)
+      expect(resumed.signed).toBe(0)
+    })
+
+    it('keeps the barrier when the account closes during the host callback', async () => {
+      let entered!: () => void
+      const started = new Promise<void>(resolve => { entered = resolve })
+      let release!: () => void
+      const blocked = new Promise<void>(resolve => { release = resolve })
+      const sending = attempt({ messageId: ID_A, onEnvelopeDurable: async () => {
+        entered()
+        await blocked
+      } })
+      await started
+      const closing = alice.close()
+      // Allow close to mark the lifetime closing before the host effect finishes.
+      await new Promise(resolve => setTimeout(resolve, 0))
+      release()
+      const result = await sending
+      await closing
+      expect(result.requests).toBe(0)
+      expect(result.error).toBeDefined()
+      await reopen()
+      expect((await rows())[0].exposurePending).toBe(true)
+      expect(claimed()).toContain('main')
+    })
+    it('holds a paid row across failure after its durable write, then authorizes the exact stored request', async () => {
+      mockMessageWrite.mode = 'written-then-reported-failed'
+      const hook = jest.fn()
+      const first = await attempt({ messageId: ID_A, onEnvelopeDurable: hook })
+      expect(first.requests).toBe(0)
+      expect(hook).not.toHaveBeenCalled()
+      await reopen()
+      const [row] = await rows()
+      expect(row.exposurePending).toBe(true)
+      expect(claimed()).toContain('main')
+      await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [row.digest], maxPutAttempts: 2 })
+      expect(relayBodies).toHaveLength(0)
+      const signedBefore = sign.mock.calls.length
+      await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [row.digest], maxPutAttempts: 2, onEnvelopeDurable: hook })
+      expect(hook).toHaveBeenCalledWith(row.digest)
+      expect(sign.mock.calls.length).toBe(signedBefore)
+      expect(toHex(relayBodies[0].body)).toBe(row.request!.body)
+      expect(relayBodies[0].contentType).toBe(row.request!.contentType)
+      expect((await rows())[0].exposurePending).toBeUndefined()
+    })
+
+    it('keeps a paid row held when the host succeeds but marker clearing fails, including restart', async () => {
+      let captured: Awaited<ReturnType<typeof rows>>[number] | undefined
+      const hook = jest.fn(async () => {
+        captured = (await rows())[0]
+        expect(captured.exposurePending).toBe(true)
+        expect(captured.request?.body).toBeTruthy()
+        expect(captured.payments.every(payment => payment.rawTx.length > 0)).toBe(true)
+        mockMessageWrite.mode = 'dropped'
+      })
+      const first = await attempt({ messageId: ID_A, onEnvelopeDurable: hook })
+      expect(first.requests).toBe(0)
+      expect((await rows())[0].exposurePending).toBe(true)
+      await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [captured!.digest], maxPutAttempts: 2 })
+      expect(relayBodies).toHaveLength(0)
+      await reopen()
+      expect((await rows())[0].exposurePending).toBe(true)
+      const wrongRecipient = jest.fn()
+      const refused = await attempt({ messageId: ID_A, recipient: alice.identity.address, onEnvelopeDurable: wrongRecipient })
+      expect(refused.error).toBeInstanceOf(DirectMessageArgumentError)
+      expect(wrongRecipient).not.toHaveBeenCalled()
+      expect(relayBodies).toHaveLength(0)
+      const retried = await attempt({ messageId: ID_A, onEnvelopeDurable: async () => undefined })
+      expect(retried.error).toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+      expect(retried.signed).toBe(0)
+      expect(toHex(relayBodies[0].body)).toBe(captured!.request!.body)
+    })
+
+    it('requires a stable ID before sealing and preserves a free envelope after a rejected hook', async () => {
+      const missing = await attempt({ stampValue: 0n, onEnvelopeDurable: async () => undefined })
+      expect(missing.error).toBeInstanceOf(DirectMessageArgumentError)
+      expect(missing.requests).toBe(0)
+      expect(missing.signed).toBe(0)
+      let digest: string | undefined
+      const first = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async value => {
+        digest = value
+        throw new Error('host binding interrupted')
+      } })
+      expect(first.requests).toBe(0)
+      await reopen()
+      const held = await f.chain.directMessages.attemptOf({ wallet: alice, messageId: ID_A })
+      expect(held).toEqual({ payloadDigest: digest, paid: false })
+      expect((await attempt({ messageId: ID_A, stampValue: 0n })).requests).toBe(0)
+      const resumed = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async value => {
+        expect(value).toBe(digest)
+      } })
+      expect(resumed.result?.payloadDigest).toBe(digest)
+      expect(resumed.requests).toBe(1)
+      expect(resumed.signed).toBe(0)
+    })
+  })
   /** The repeat answer: the original attempt, unlabelled, and this call did nothing at all. */
   function expectAlreadyAttempted(
     repeat: Awaited<ReturnType<typeof attempt>>,

@@ -345,7 +345,7 @@
           "kind": "block-hash",
           "capability": "json-rpc",
           "height": 0,
-          "expected": "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6fa9"
+          "expected": "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9"
         }
       ]
     },

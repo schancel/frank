@@ -3729,7 +3729,7 @@ mod tests {
     }
 
     const SEPOLIA_CHECKPOINT_HASH: &str =
-        "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6fa9";
+        "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6dd9";
 
     /// A node reporting this chain id and checkpoint block. `forwarded` counts every call
     /// other than the two identity checks.

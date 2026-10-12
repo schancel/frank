@@ -57,6 +57,13 @@ jest.mock('@frank/wallet/chain', () => ({
     relayBaseUrl: 'https://relay.invalid',
   }),
 }))
+const mockOpenEvmWallet = jest.fn()
+const mockPeekEvmWallets = jest.fn()
+jest.mock('./evm-wallets', () => ({
+  openEvmWallet: (chainIdentifier: string) =>
+    mockOpenEvmWallet(chainIdentifier),
+  peekOpenedEvmWallets: () => mockPeekEvmWallets(),
+}))
 const mockOpenUtxoWallet = jest.fn()
 jest.mock('./utxo-wallets', () => ({
   openUtxoWallet: (chainIdentifier: string) =>
@@ -313,4 +320,32 @@ describe('Bitcoin-family chains', () => {
       expect(mockOpenUtxoWallet).toHaveBeenCalledWith(chainIdentifier)
     },
   )
+})
+
+it('captures one configured peer EVM owner and never reopens or replaces it when the UI changes', async () => {
+  const peer = { chainIdentifier: 'monad-mainnet', family: 'evm' }
+  const chain = { chainIdentifier: 'monad-mainnet', family: 'evm' }
+  const open = { chain, wallet: peer }
+  mockOpenEvmWallet.mockResolvedValueOnce(open)
+  mockPeekEvmWallets.mockReturnValue([open])
+  const context = await createNativeTransferContext('monad-mainnet')
+  const binding = await context.captureWallet()
+  const original = activeChain.chainIdentifier
+  Object.assign(activeChain, { chainIdentifier: 'solana-devnet' })
+  try {
+    expect((await context.captureWallet()).wallet).toBe(peer)
+    await binding.assertCurrent()
+    expect(binding.isCurrent()).toBe(true)
+    expect(mockOpenEvmWallet).toHaveBeenCalledTimes(1)
+    expect(mockGetWallet).toHaveBeenLastCalledWith()
+    mockPeekEvmWallets.mockReturnValue([])
+    expect(binding.isCurrent()).toBe(false)
+    await expect(binding.assertCurrent()).rejects.toThrow(/Account changed/)
+    mockPeekEvmWallets.mockReturnValue([open])
+    mockState.revision++
+    expect(binding.isCurrent()).toBe(false)
+    await expect(binding.assertCurrent()).rejects.toThrow(/Account changed/)
+  } finally {
+    Object.assign(activeChain, { chainIdentifier: original })
+  }
 })

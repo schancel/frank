@@ -68,6 +68,7 @@ export async function createNativeTransferContext(
   const primaryChain = { ...activeChain }
   let chain: NativeAssetChain
   let createWallet: (() => Promise<NativeWalletHandle>) | undefined
+  let contextIsCurrent: (() => boolean) | undefined
   if (chainIdentifier === primaryChain.chainIdentifier) {
     chain = primaryChain
   } else if (
@@ -118,6 +119,15 @@ export async function createNativeTransferContext(
         ),
       })
     }
+  } else if (entry.family === 'evm' && entry.wallet) {
+    const { openEvmWallet, peekOpenedEvmWallets } = await import(
+      './evm-wallets'
+    )
+    const open = await openEvmWallet(chainIdentifier)
+    chain = open.chain
+    contextIsCurrent = () => peekOpenedEvmWallets().includes(open)
+    // Capture this owner once. UI network changes never reopen or redirect this context.
+    createWallet = async () => open.wallet
   } else if (entry.family === 'bitcoin' && entry.wallet) {
     // eCash on Chronik, Bitcoin and Bitcoin Cash on Electrum: one wallet per chain for the
     // session, shared with the balance reader.
@@ -137,6 +147,7 @@ export async function createNativeTransferContext(
       const check = () => {
         const state = accountSession.state
         if (
+          contextIsCurrent?.() === false ||
           state.status !== 'ready' ||
           state.account !== account ||
           state.revision !== revision

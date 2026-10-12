@@ -26,7 +26,11 @@ import {
   getCustomRelayBaseUrl,
 } from '@frank/wallet/chain'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
-import { MonadIdentity, fetchMonadProfile } from '@frank/wallet/monad-identity'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
+import {
+  verifyMeraLoginProfile,
+  type MeraLoginVerification,
+} from './mera-login-proof'
 import { toHex } from '@frank/codec'
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { accountSession } from './session'
@@ -104,8 +108,7 @@ export function createAccountCeremony() {
     try {
       recovered = take()
       if (!recovered) throw new Error('Start an account ceremony first')
-      let loginVerification: 'existing' | 'unverified' | 'unreachable' =
-        'unverified'
+      let loginVerification: MeraLoginVerification = 'unverified'
       let discoveredRelayUrl: string | undefined
       let identityDetails: { subject: string; address: string } | undefined
       if (isRestore) {
@@ -123,17 +126,10 @@ export function createAccountCeremony() {
         if (discoveredRelayUrl) loginVerification = 'existing'
         else {
           // Read only: adopting a profile before activation could overwrite another account.
-          try {
-            const identity = identityOf(recovered)
-            const profile = await fetchMonadProfile({
-              relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
-              address: identity.address,
-              signal: AbortSignal.timeout(10000),
-            })
-            if (profile) loginVerification = 'existing'
-          } catch {
-            loginVerification = 'unreachable'
-          }
+          loginVerification = await verifyMeraLoginProfile(
+            getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
+            identityOf(recovered).address.raw,
+          )
         }
       }
       await assertLegacyUnchanged(captured.legacyRevision)

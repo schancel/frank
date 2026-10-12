@@ -47,8 +47,9 @@ chain change, or session closure must prevent late results from staging. Staging
 only creates an inactive pending attempt. The first primary entry, “Continue with
 Mera (Passkey),” invokes existing-passkey login; creation remains a secondary
 explicit action. On a device without a local or legacy account, login may activate
-that exact pending attempt when a verified signed directory entry or signed,
-address-checked profile proves the account already exists. Network failure is
+that exact pending attempt when a verified signed directory entry or fully verified CBOR,
+address-checked profile proves the account already exists. Legacy protobuf profiles are not automatic-login evidence: their decoder does
+not verify signatures. Network failure is
 observable and never evidence of absence. Without positive evidence, confirmation
 remains visible. Any existing local-account replacement still requires consent
 and explicit pending activation. An interrupted staged login reopens as pending

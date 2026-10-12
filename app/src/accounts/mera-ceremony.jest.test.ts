@@ -1,4 +1,14 @@
-import { fetchMonadProfile } from '@frank/wallet/monad-identity'
+import axios from 'axios'
+import {
+  MonadIdentity,
+  buildSignedDirectoryStatement,
+} from '@frank/wallet/monad-identity'
+import {
+  verifyMeraLoginProfile,
+  type MeraLoginVerification,
+} from './mera-login-proof'
+import payloadPb from '@frank/cashweb/signed_payload/payload_pb'
+import metadataPb from '@frank/cashweb/registry/metadata_pb'
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import {
   getActiveChain,
@@ -19,9 +29,9 @@ import {
 } from './testing/device'
 
 jest.setTimeout(15000)
-jest.mock('@frank/wallet/monad-identity', () => ({
-  ...jest.requireActual('@frank/wallet/monad-identity'),
-  fetchMonadProfile: jest.fn(async () => undefined),
+jest.mock('axios')
+jest.mock('./mera-login-proof', () => ({
+  verifyMeraLoginProfile: jest.fn(async () => 'unverified'),
 }))
 jest.mock('./session', () => ({
   ...jest.requireActual('./session'),
@@ -186,14 +196,8 @@ test.each(['existing', 'unverified', 'unreachable'] as const)(
   async verification => {
     const session = freshDevice()
     await session.initialize()
-    const fetchProfile = jest.mocked(fetchMonadProfile)
-    if (verification === 'existing')
-      fetchProfile.mockResolvedValueOnce({
-        name: 'Synthetic profile',
-      } as Awaited<ReturnType<typeof fetchMonadProfile>>)
-    else if (verification === 'unreachable')
-      fetchProfile.mockRejectedValueOnce(new Error('Offline'))
-    else fetchProfile.mockResolvedValueOnce(undefined)
+    const fetchProfile = jest.mocked(verifyMeraLoginProfile)
+    fetchProfile.mockResolvedValueOnce(verification)
     const ceremony = createAccountCeremony()
     try {
       const result = await ceremony.beginPasskey('login', async () =>
@@ -213,12 +217,12 @@ test.each(['replacement', 'close', 'cancel', 'chain'] as const)(
     const session = freshDevice()
     await session.initialize()
     const previousChain = getActiveChain()
-    let answer!: (value: Awaited<ReturnType<typeof fetchMonadProfile>>) => void
+    let answer!: (value: MeraLoginVerification) => void
     let entered!: () => void
     const probing = new Promise<void>(resolve => {
       entered = resolve
     })
-    jest.mocked(fetchMonadProfile).mockImplementationOnce(() => {
+    jest.mocked(verifyMeraLoginProfile).mockImplementationOnce(() => {
       entered()
       return new Promise(resolve => {
         answer = resolve
@@ -242,9 +246,7 @@ test.each(['replacement', 'close', 'cancel', 'chain'] as const)(
         })
         setActiveChain(previousChain)
       }
-      answer({ name: 'Synthetic profile' } as Awaited<
-        ReturnType<typeof fetchMonadProfile>
-      >)
+      answer('existing')
       await expect(login).rejects.toThrow()
       if (race !== 'close')
         expect((await session.snapshot()).pending).toBeNull()
@@ -252,5 +254,56 @@ test.each(['replacement', 'close', 'cancel', 'chain'] as const)(
       setActiveChain(previousChain)
       ceremony.cancel()
     }
+  },
+)
+
+test.each([
+  'unsigned',
+  'bogus-signature',
+  'verified-cbor',
+  'tampered-cbor',
+] as const)(
+  'actual profile proof boundary accepts only verified evidence: %s',
+  async fixture => {
+    const session = freshDevice()
+    await session.initialize()
+    const setup = createAccountCeremony()
+    await setup.beginPasskey('create', async () => syntheticRoot())
+    await activate(session)
+    const wallet = await session.getWallet()
+    const identity = wallet.identity as MonadIdentity
+    let raw: Uint8Array
+    if (fixture === 'verified-cbor' || fixture === 'tampered-cbor')
+      raw = buildSignedDirectoryStatement(identity, {
+        network: 'monad-testnet',
+        profile: { name: 'Synthetic profile' },
+      })
+    else {
+      const payload = new payloadPb.SignedPayload()
+      payload.setPublicKey(identity.compressedPubKey)
+      payload.setScheme(payloadPb.SignedPayload.SignatureScheme.ECDSA)
+      payload.setPayload(new metadataPb.AddressMetadata().serializeBinary())
+      if (fixture === 'bogus-signature')
+        payload.setSignature(new Uint8Array(64).fill(1))
+      raw = payload.serializeBinary()
+    }
+    if (fixture === 'tampered-cbor') raw[raw.length - 1] ^= 1
+    jest.mocked(axios).mockResolvedValueOnce({ data: raw })
+    jest
+      .mocked(verifyMeraLoginProfile)
+      .mockImplementationOnce(
+        jest.requireActual('./mera-login-proof').verifyMeraLoginProfile,
+      )
+    const fresh = freshDevice()
+    await fresh.initialize()
+    const result = await createAccountCeremony().beginPasskey(
+      'login',
+      async () => syntheticRoot(),
+    )
+    expect(result.loginVerification).toBe(
+      fixture === 'verified-cbor' ? 'existing' : 'unverified',
+    )
+    expect(fresh.state.status).toBe('pending')
+    expect((await fresh.snapshot()).active).toBeNull()
   },
 )

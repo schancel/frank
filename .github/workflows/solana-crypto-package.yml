@@ -4,12 +4,14 @@ on:
     paths:
       - "packages/wallet/solana-crypto-backend/**"
       - "packages/wallet/solana-stealth-vectors/**"
+      - "docs/protocol/chains/v1.json"
       - ".github/workflows/solana-crypto-package.yml"
   push:
     branches: [main]
     paths:
       - "packages/wallet/solana-crypto-backend/**"
       - "packages/wallet/solana-stealth-vectors/**"
+      - "docs/protocol/chains/v1.json"
       - ".github/workflows/solana-crypto-package.yml"
 jobs:
   reproduce:

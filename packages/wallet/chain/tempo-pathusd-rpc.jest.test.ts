@@ -77,4 +77,18 @@ describe('Tempo PathUSD JSON-RPC boundary', () => {
     h.set('eth_getBlockByNumber', { hash: BLOCK })
     await expect(h.rpc.receivedTransfers(RECIPIENT, 0n, 1n)).rejects.toThrow('checkpoint mismatch')
   })
+
+  test('finality checks canonical receipt block hash at finalized height', async () => {
+    const h = transport()
+    const receipt = {
+      transactionHash: HASH, blockHash: BLOCK, blockNumber: 100, status: 1,
+      gasUsed: 1n, effectiveGasPrice: 1n, feeToken: PATHUSD, feePayer: SOURCE, logs: [],
+    }
+    h.set('eth_getBlockByNumber', { number: '0x63', hash: BLOCK })
+    expect(await h.rpc.isFinalizedReceipt(receipt)).toBe(false)
+    h.set('eth_getBlockByNumber', { number: '0x64', hash: BLOCK })
+    expect(await h.rpc.isFinalizedReceipt(receipt)).toBe(true)
+    h.set('eth_getBlockByNumber', { number: '0x64', hash: HASH })
+    expect(await h.rpc.isFinalizedReceipt(receipt)).toBe(false)
+  })
 })

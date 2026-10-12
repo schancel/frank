@@ -128,6 +128,13 @@ export class TempoPathUsdJsonRpc implements TempoPathUsdRpc {
     }
   }
 
+  async isFinalizedReceipt(receipt: TempoReceipt): Promise<boolean> {
+    const finalized = record(await this.transport.send('eth_getBlockByNumber', ['finalized', false]))
+    if (blockNumber(finalized.number) < receipt.blockNumber) return false
+    const canonical = record(await this.transport.send('eth_getBlockByNumber', [`0x${receipt.blockNumber.toString(16)}`, false]))
+    return hash(canonical.hash) === hash(receipt.blockHash)
+  }
+
   /** Caller owns the durable scan cursor and finality policy. */
   async receivedTransfers(recipient: string, fromBlock: bigint, toBlock: bigint): Promise<{
     transactionHash: string

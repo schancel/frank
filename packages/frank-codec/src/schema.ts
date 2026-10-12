@@ -78,6 +78,7 @@ import type {
   PaymentTransfer,
   TokenTransfer,
   StealthMetadata,
+  StealthAssetTransfer,
   ProfileEntry,
   ProfileHeader,
   RelayBinding,
@@ -199,6 +200,7 @@ function endpoint(v: FrankValue | undefined, path: string): string {
 }
 
 const FORBIDDEN_TEXT_CONTROL_CHARACTER =
+  // eslint-disable-next-line no-control-regex -- Conversation names deliberately reject controls.
   /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u
 
 function conversationName(v: FrankValue | undefined, path: string): string {
@@ -834,6 +836,54 @@ export function paymentTransfer(
       : undefined,
     commitment: m.has(7) ? bstr(m.get(7), `${path}.7`, 32, 32) : undefined,
     ...(rawTx !== undefined ? { rawTx } : {}),
+  }
+}
+
+function stealthAssetTransfer(
+  v: FrankValue | undefined,
+  path: string,
+): StealthAssetTransfer {
+  const m = fields(v, path, [0, 1, 2], [3, 4], false, false)
+  const transfer = paymentTransfer(m.get(0), `${path}.0`)
+  if (transfer.stealthMetadata === undefined)
+    throw bad(`${path}.0.6`, 'a recipient payment requires stealth metadata')
+  if (
+    typeof transfer.value === 'bigint'
+      ? transfer.value === 0n
+      : transfer.value.every(byte => byte === 0)
+  )
+    throw bad(`${path}.0.4`, 'a recipient payment requires a positive amount')
+  const derivationScheme = u32ish(m.get(1), `${path}.1`, 1, U32_MAX)
+  const recipientSpendKey = account(m.get(2), `${path}.2`)
+  if (
+    recipientSpendKey.keyType !==
+    transfer.stealthMetadata.ephemeralPubKey.keyType
+  )
+    throw bad(`${path}.2`, 'recipient and ephemeral key types differ')
+  const tokenProgram = m.has(3)
+    ? bstr(m.get(3), `${path}.3`, 32, 32)
+    : undefined
+  const derivationContext = m.has(4)
+    ? bstr(m.get(4), `${path}.4`, 1, 1024)
+    : undefined
+  if (tokenProgram !== undefined && transfer.token === undefined)
+    throw bad(`${path}.3`, 'a token program requires a token identifier')
+  if (
+    derivationScheme === 1 &&
+    (recipientSpendKey.keyType !== 1 ||
+      tokenProgram !== undefined ||
+      derivationContext !== undefined)
+  )
+    throw bad(
+      path,
+      'secp256k1-ecdh-add-v1 requires secp keys and no program or context',
+    )
+  return {
+    transfer,
+    derivationScheme,
+    recipientSpendKey,
+    tokenProgram,
+    derivationContext,
   }
 }
 
@@ -1630,6 +1680,17 @@ export function parseDraft(
         : blackjackPayload(payload)
     }
     case TYPE_STEALTH_MESSAGE_ITEM: {
+      if (schema.effective >= 2) {
+        const m = fields(payload, P, [0], [1], true, allow)
+        return {
+          type: 19,
+          transfers: asList(m.get(0), `${P}.0`, 1, 16).map((entry, index) =>
+            stealthAssetTransfer(entry, `${P}.0[${index}]`),
+          ),
+          memo: m.has(1) ? tstr(m.get(1), `${P}.1`, 0, 1024) : undefined,
+          unknownFields: m.unknown,
+        }
+      }
       const m = fields(payload, P, [0, 1, 2, 3], [4], true, allow)
       return {
         type: 19,
@@ -1853,7 +1914,15 @@ export function checkAllocated(d: DraftPayload): void {
       checkKeyType(d.newKey, `${P}.4`)
       break
     case 19:
-      checkKeyType(d.ephemeralPubKey, `${P}.1`)
+      if ('transfers' in d) {
+        d.transfers.forEach((entry, index) => {
+          checkKeyType(entry.recipientSpendKey, `${P}.0[${index}].2`)
+          checkKeyType(
+            entry.transfer.stealthMetadata!.ephemeralPubKey,
+            `${P}.0[${index}].0.6.0`,
+          )
+        })
+      } else checkKeyType(d.ephemeralPubKey, `${P}.1`)
       break
     case 24:
       d.allocations.forEach((a, i) => {

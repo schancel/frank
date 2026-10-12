@@ -139,7 +139,7 @@ text-message-item = {
   * uint => frank-value,
 }
 
-; Active type 19 / schema 1 / min-reader 1: stealth payment item.
+; Type 19 / schema 1 / min-reader 1: existing native payment recovery.
 stealth-message-item = {
   0: network-tag,
   1: account-ref, ; ephemeral pubkey (key type 1 or 2)
@@ -148,6 +148,26 @@ stealth-message-item = {
   ? 4: tstr .size (0..1024), ; optional memo
   * uint => frank-value,
 }
+
+; Type 19 / schema 2 / min-reader 2: exact recipient asset payments.
+; Field 0 is deliberately an array rather than the schema-1 network string:
+; older readers cannot silently interpret a token payment as native currency.
+stealth-asset-message-item = {
+  0: [1*16 stealth-asset-transfer],
+  ? 1: tstr .size (0..1024),
+  * uint => frank-value,
+}
+
+stealth-asset-transfer = {
+  0: payment-transfer, ; positive value; stealth-metadata is required
+  1: uint .ge 1 .le 4294967295, ; derivation scheme; currently only 1 is allocated
+  2: account-ref, ; authenticated recipient spending key
+  ? 3: bstr .size 32, ; SPL token program; requires transfer.token
+  ? 4: bstr .size (1..1024), ; scheme-specific context
+}
+; Recipient and ephemeral key types must match. Scheme 1 is secp256k1-ecdh-add-v1:
+; key type 1, no token program or context. Unknown positive schemes are retained
+; structurally but MUST NOT acquire a signer or execute a payment effect.
 
 ; Active type 24 / schema 1 / min-reader 1: universal state channel update item.
 channel-update-item = {

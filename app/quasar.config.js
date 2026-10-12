@@ -23,6 +23,27 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const { filterPublicClientEnv } = publicClientEnv
 const { relayDevProxy } = relayDevProxyConfig
 
+import { execSync } from 'node:child_process'
+function resolveGitCommitHash() {
+  if (process.env.QCLI_GIT_COMMIT_HASH) return process.env.QCLI_GIT_COMMIT_HASH
+  for (const p of [
+    path.join(__dirname, 'private-build/source.json'),
+    path.join(__dirname, '../private-build/source.json'),
+  ]) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8'))
+      if (parsed.commitSha) return parsed.commitSha
+      if (parsed.resolvedOrigin) return parsed.resolvedOrigin // sometimes used in GCP
+    } catch (err) {}
+  }
+  try {
+    return execSync('git rev-parse HEAD', { cwd: __dirname }).toString().trim()
+  } catch (err) {
+    return 'unknown'
+  }
+}
+process.env.QCLI_GIT_COMMIT_HASH = resolveGitCommitHash()
+
 // Ticket #51 (Vite migration): `vite-plugin-node-polyfills` (tried first) is a documented,
 // known-broken combination with Vite 8's Rolldown-based dependency optimizer -- confirmed via a
 // real-world report of the exact same "Module 'x' has been externalized for browser

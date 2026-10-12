@@ -919,24 +919,28 @@ export class EvmNativeOperationJournal {
     id: string,
     change: (row: EvmNativeOperation) => void | boolean,
   ): Promise<EvmNativeOperation> {
-    return this.exclusive(async () => {
-      const row = this.get(id)
-      if (change(row) === false) return row
-      const validated = validateRow(row, this.binding)
-      try {
-        if (this.database)
-          await durablePut(
-            this.database,
-            `operation:${id}`,
-            JSON.stringify(validated),
-          )
-      } catch (error) {
-        this.lifecycle = 'uncertain'
-        throw error
-      }
-      this.rows.set(id, validated)
-      return clone(validated)
-    })
+    return this.exclusive(() =>
+      this.coordinated(async () => {
+        // Mutation owns only its changed fields; the current durable row owns all other facts.
+        await this.reloadRows(false)
+        const row = this.get(id)
+        if (change(row) === false) return row
+        const validated = validateRow(row, this.binding)
+        try {
+          if (this.database)
+            await durablePut(
+              this.database,
+              `operation:${id}`,
+              JSON.stringify(validated),
+            )
+        } catch (error) {
+          this.lifecycle = 'uncertain'
+          throw error
+        }
+        this.rows.set(id, validated)
+        return clone(validated)
+      }),
+    )
   }
   checkpointSigned(
     id: string,
@@ -1021,7 +1025,8 @@ export class EvmNativeOperationJournal {
     let recorded = false
     await this.mutate(capture.operationId, row => {
       if (this.captures.get(key) !== capture.token) return false
-      const m = row.members[capture.memberIndex]!
+      const m = row.members[capture.memberIndex]
+      if (row.cancelled || !m?.signed) return false
       // `unknown` is the absence of an answer (a failed or inconsistent read), not evidence.
       // It never replaces what the chain has already been seen to say: a member recorded
       // included stays included, and one recorded missing or pending stays so, until a read

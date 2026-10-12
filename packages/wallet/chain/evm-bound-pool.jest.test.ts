@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
@@ -33,10 +33,16 @@ it.each(['sub-account-pool', 'change-pool'] as const)(
       subAccountPoolSize: 2,
       walletStorageLocation: join(directory, 'wallet'),
       requireBoundWalletState: true,
+      walletStateExists: existsSync,
     };
     try {
+      await expect(createEvmChain({ ...config, walletStateExists: undefined }).createWallet(roots))
+        .rejects.toThrow('host-owned presence check');
+      expect(readdirSync(directory)).toEqual([]);
       const first = await createEvmChain(config).createWallet(roots);
       await first.close();
+      const reopened = await createEvmChain(config).createWallet(roots);
+      await reopened.close();
       const material = createMonadWalletMaterial(roots);
       const statePath = `${config.walletStorageLocation}-evm-${material.mainAccount.address.toLowerCase()}`;
       material.dispose();

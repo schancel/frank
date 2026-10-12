@@ -1,4 +1,4 @@
-import { constants, closeSync, fstatSync, openSync, readFileSync } from 'node:fs';
+import { constants, closeSync, existsSync, fstatSync, openSync, readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { getAddress } from 'ethers';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
@@ -84,6 +84,7 @@ function loadGatewayIdentityConfig(env: NodeJS.ProcessEnv): GatewayIdentityConfi
     chainIdentifier: 'monad-testnet',
     walletStorageLocation,
     requireBoundWalletState: true,
+    walletStateExists: existsSync,
     relayBaseUrl,
   } satisfies EvmChainConfig;
   return { chain, rootFile, expectedIdentityAddress, journalFile, blobDirectory, gatewayDomain, relayBaseUrl };

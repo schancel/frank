@@ -96,7 +96,6 @@ import {
   randomBytes,
   toUtf8Bytes,
 } from "ethers";
-import { existsSync } from "fs";
 
 import {
   ActiveChain,
@@ -2191,8 +2190,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           material.canonicalRoles === undefined
             ? undefined
             : evmWalletPoolBindingId(material, chainIdentifier, BigInt(config.chainId));
+        if (config.requireBoundWalletState === true) {
+          if (storageLocation === undefined) {
+            throw new Error('Bound wallet state requires durable storage');
+          }
+          if (config.walletStateExists === undefined) {
+            throw new Error('Bound wallet state requires a host-owned presence check');
+          }
+        }
         const freshWalletState =
-          storageLocation !== undefined && !existsSync(storageLocation);
+          config.requireBoundWalletState === true &&
+          storageLocation !== undefined &&
+          !config.walletStateExists!(storageLocation);
         const allowUnboundPool =
           freshWalletState || config.requireBoundWalletState !== true;
         const subAccountStore =

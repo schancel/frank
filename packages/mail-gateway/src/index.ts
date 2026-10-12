@@ -11,18 +11,24 @@ export * from './ledger/credit-ledger';
 export * from './ledger/mail-journal';
 export * from './http/checkout-server';
 export * from './smtp/inbound-server';
+export * from './smtp/issued-mailbox-lookup';
+export * from './smtp/resend-inbound-webhook';
 export * from './smtp/smtp-listener';
 export * from './mta/outbound-delivery';
 export * from './mta/mx-transport';
 export * from './mta/dkim-signer';
 export * from './mta/outbound-worker';
+export * from './mta/journaled-outbound-worker';
+export * from './mta/resend-smtp-port';
 export * from './relay/mailbox-listener';
+export * from './relay/journaled-inbound-send';
+export * from './relay/journaled-frank-mailbox';
 export * from './dns/domain-resolver';
 
 import { BlobStore, createBlobStore } from './storage/blob-store';
 import { CreditLedger } from './ledger/credit-ledger';
 import { CheckoutServer } from './http/checkout-server';
-import { InboundEmailHandler } from './smtp/inbound-server';
+import { InboundEmailHandler, type InboundRecipientResolution } from './smtp/inbound-server';
 import { SmtpListener } from './smtp/smtp-listener';
 import { OutboundEmailDelivery } from './mta/outbound-delivery';
 import { MxDirectTransport } from './mta/mx-transport';
@@ -54,6 +60,8 @@ export class EmailGatewayDaemon {
       blobStore?: BlobStore;
       activeChain?: ActiveChain;
       wallet?: WalletHandle;
+      /** Only explicitly issued mailbox local parts may resolve. */
+      issuedMailboxLookup?: (localPart: string) => Promise<InboundRecipientResolution | undefined>;
     }
   ) {
     this.config = config;
@@ -76,10 +84,10 @@ export class EmailGatewayDaemon {
     });
     this.inboundHandler = new InboundEmailHandler({
       gatewayDomain: config.gatewayDomain,
-      relayUrl: config.gatewayRelayUrl,
       ledger: this.ledger,
       stampProvider,
       blobStore: this.blobStore,
+      relayLookup: options?.issuedMailboxLookup,
     });
     this.smtpListener = new SmtpListener({
       gatewayDomain: config.gatewayDomain,

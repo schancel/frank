@@ -104,6 +104,9 @@ export const MAILBOX_AUTH_DOMAIN = "frank:mailbox-http-auth:v2";
 /** `MAX_PRIVATE_MAILBOX_PAGE` in `monad_message.rs`. */
 export const MAILBOX_MAX_PAGE_LIMIT = 100;
 export const MAILBOX_NEXT_CURSOR_HEADER = "x-frank-mailbox-next-cursor";
+// The relay issues 60-second challenges using its own clock. Allow a small
+// positive clock skew without accepting an unbounded future expiry.
+const MAX_CANONICAL_CHALLENGE_FUTURE_MS = 65_000;
 
 export type MailboxResource =
   | "inbox"
@@ -1374,13 +1377,15 @@ async function canonicalSignedRequestWithin(
       );
       const challenge = raw as unknown as MailboxChallenge;
       validateChallenge(challenge, request);
+      const challengeNow = Date.now();
       if (
         !canonicalHex32(challenge.epoch) ||
         !canonicalHex32(challenge.nonce) ||
         !canonicalHex32(challenge.token) ||
         !Number.isSafeInteger(challenge.expires_at_ms) ||
-        challenge.expires_at_ms <= Date.now() ||
-        challenge.expires_at_ms > Date.now() + 60000 ||
+        challenge.expires_at_ms <= challengeNow ||
+        challenge.expires_at_ms >
+          challengeNow + MAX_CANONICAL_CHALLENGE_FUTURE_MS ||
         challenge.network_tag !==
           bytesToHex(new TextEncoder().encode(descriptor.tag))
       )

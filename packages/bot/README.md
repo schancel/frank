@@ -794,3 +794,26 @@ validated once at startup and a bad one is a one-line error naming the item: unk
 bad prices, files outside the directory, non-image bytes, and any image (or the whole catalog
 message) that would not fit the relay's 2 MiB request cap. To change the bundled art, edit and run
 `yarn tsx scripts/generate-demo-pictures.ts`; to sell your own, point the variable at your directory.
+
+### Faucet grant recovery and funded deployment gate
+
+The unified faucet target records once-per-recipient authorization in its retained bot state and
+binds it to the wallet's native operation journal before broadcast. Keep **both** stores with the
+same bot identity. Startup and scheduled recovery resume the original operation; recipient balance,
+RPC timeouts and a missing receipt never authorize another payment. Old `funded:*` records have no
+reliable operation binding and are retained with an explicit reconciliation error; do not erase
+those records or reuse a previously funded identity with empty state.
+
+The grant path uses the faucet's own wallet, rather than the optional shared funding key. It does
+not create new keys during recovery or copy signed transactions into a second journal.
+
+Each grant has an immutable `FAUCET_MAX_FEE_WEI` authorization (default 0.01 MON). The EVM wallet
+checks the actual maximum fee before reservation or signing. Its reserve calculation uses fresh
+unreserved source observations and includes both the grant and that fee; pending accounts cannot
+satisfy a second grant's reserve. Resume reuses the original fee-capped signed bytes and does not
+reprice a potentially submitted transaction. The fee authorization is part of grant intent version 2;
+older intent versions fail visibly and remain retained for explicit reconciliation.
+
+**Funded deployment remains gated on independent review of this budget prerequisite.** Do not fund
+or launch on GKE/mainnet merely because local tests pass. Other wallet families explicitly reject
+the optional native reserve constraint until their owners implement it.

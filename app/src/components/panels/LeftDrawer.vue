@@ -249,8 +249,8 @@
               >{{ balanceText
               }}<template v-if="balanceStale">
                 {{ ' ' + $t('chatList.balanceStale') }}</template
-              ></q-item-label
-            >
+              ><mailbox-status-indicator class="q-ml-xs"
+            /></q-item-label>
           </q-item-section>
           <q-item-section
             v-if="legacyRelayEnabled && !relayConnected"
@@ -292,6 +292,7 @@ import ContactsPanel from '../panels/ContactsPanel.vue'
 import SettingsPanel from '../panels/SettingsPanel.vue'
 import WalletPanel from '../panels/WalletPanel.vue'
 import RelayConnectDialog from '../dialogs/RelayConnectDialog.vue'
+import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
 
 import { isNarrowWidth } from '../../utils/layout'
 import { openChat, openPage } from '../../utils/routes'
@@ -545,6 +546,7 @@ export default defineComponent({
     SettingsPanel,
     WalletPanel,
     RelayConnectDialog,
+    MailboxStatusIndicator,
   },
   data() {
     return {

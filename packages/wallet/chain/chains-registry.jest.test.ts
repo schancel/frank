@@ -177,7 +177,7 @@ describe("chains-registry", () => {
       network: "testnet",
       isTestnet: true,
       name: "Sepolia",
-      unit: "SEP",
+      unit: "ETH",
       caip2: "eip155:11155111",
       nativeChainId: 11155111,
       networkTag: "SEPO",
@@ -401,7 +401,7 @@ describe("chains-registry", () => {
     expect(getChainRegistryByKind("ecash", false).unit).toBe("XEC");
     expect(getChainRegistryByKind("solana", true).unit).toBe("dSOL");
     expect(getChainRegistryByKind("solana", false).unit).toBe("SOL");
-    expect(getChainRegistryByKind("ethereum", true).unit).toBe("SEP");
+    expect(getChainRegistryByKind("ethereum", true).unit).toBe("ETH");
     expect(getChainRegistryByKind("ethereum", false).unit).toBe("ETH");
     expect(getChainRegistryByKind("hyperliquid", true).unit).toBe("tHYPE");
     expect(getChainRegistryByKind("hyperliquid", false).unit).toBe("HYPE");

@@ -25,7 +25,11 @@ import type {
   LegacySendProgress,
   LegacySendResult,
 } from './chain-wallet'
-import { NativeTransactionSubmissionError } from './chain-wallet'
+import {
+  NativeFeeExceededError,
+  NativeReserveExceededError,
+  NativeTransactionSubmissionError,
+} from './chain-wallet'
 import type { EvmTransactionBuilder } from './evm-transaction-builder'
 import type {
   SwapRecordItem,
@@ -40,11 +44,14 @@ import {
   type EvmNativeOperation,
   type EvmNativeAccountObservation,
   type EvmNativeObservation,
+  type EvmNativeInclusionContradiction,
 } from '../storage/evm-native-operation-journal'
 
 export interface SendLegacyParams {
   recipient: ChainAddress
   value: bigint
+  maxFee?: bigint
+  minimumRemainingBalance?: bigint
   onProgress?: (progress: LegacySendProgress) => void
   onSigned?: (signed: ChainTransaction) => Promise<void>
   /**
@@ -402,7 +409,28 @@ export class EvmLegacyConsolidator {
     const capture = journal.beginCapture(operationId, index)
     let observation: EvmNativeObservation = { state: 'unknown' }
     let account: EvmNativeAccountObservation | null = null
+    let contradiction: EvmNativeInclusionContradiction | undefined
     try {
+      if (
+        member.observation.state === 'included-success' ||
+        member.observation.state === 'included-revert'
+      ) {
+        const canonical = await provider.getBlock(
+          member.observation.blockNumber,
+        )
+        const canonicalHash = canonical?.hash?.toLowerCase()
+        if (
+          canonicalHash &&
+          canonical?.number === member.observation.blockNumber &&
+          /^0x[0-9a-f]{64}$/.test(canonicalHash) &&
+          canonicalHash !== member.observation.blockHash
+        )
+          contradiction = {
+            blockNumber: member.observation.blockNumber,
+            orphanedBlockHash: member.observation.blockHash,
+            canonicalBlockHash: canonicalHash,
+          }
+      }
       const expected = Transaction.from(member.signed.rawTransaction)
       const hash = member.signed.transactionHash
       let [transaction, receipt] = await Promise.all([
@@ -457,7 +485,12 @@ export class EvmLegacyConsolidator {
       /* Missing/unavailable/inconsistent evidence never proves nonexecution. */
     }
     if (wanted && !wanted()) return
-    await journal.recordObservation(capture, observation, account)
+    await journal.recordObservation(
+      capture,
+      observation,
+      account,
+      contradiction,
+    )
   }
   /** The signed, exposed members spending `address` that the chain has not answered for: not seen in a
    * block (successful or reverted), and the account's nonce not seen past theirs. */
@@ -691,6 +724,20 @@ export class EvmLegacyConsolidator {
       accessList: unsigned.accessList,
     }).unsignedSerialized
   }
+  private checkNativeBudget(
+    params: SendLegacyParams,
+    maximumFee: bigint,
+    available: bigint,
+  ): void {
+    if (params.maxFee !== undefined && maximumFee > params.maxFee)
+      throw new NativeFeeExceededError(maximumFee)
+    if (params.minimumRemainingBalance !== undefined) {
+      const required =
+        params.value + maximumFee + params.minimumRemainingBalance
+      if (available < required)
+        throw new NativeReserveExceededError(available, required)
+    }
+  }
   private async plan(
     params: SendLegacyParams,
     kind: 'native' | 'legacy',
@@ -702,12 +749,29 @@ export class EvmLegacyConsolidator {
     if (params.value <= 0n)
       throw new RangeError('Transfer value must be positive')
     if (
+      (params.maxFee !== undefined && params.maxFee < 0n) ||
+      (params.minimumRemainingBalance !== undefined &&
+        params.minimumRemainingBalance < 0n)
+    )
+      throw new RangeError('Native budget must be nonnegative')
+    if (
+      params.minimumRemainingBalance !== undefined &&
+      this.config.transactionBuilder.feeAsset === 'transfer'
+    )
+      throw new Error(
+        'Native reserve is unsupported for a transfer-token gas asset',
+      )
+    if (
       kind === 'legacy' &&
       this.config.transactionBuilder.supportsNativeConsolidation !== true
     )
       throw new Error('Builder does not support native consolidation')
     const accounts = (await this.sources(lifetime)).filter(
       account => account.source.address !== excludedSource,
+    )
+    const available = accounts.reduce(
+      (sum, account) => sum + BigInt(account.account.balanceWei),
+      0n,
     )
     const fee = await this.config.provider.getFeeData()
     const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
@@ -743,6 +807,7 @@ export class EvmLegacyConsolidator {
           : BigInt(account.account.balanceWei) < tx.value + maximumFee
       )
         continue
+      this.checkNativeBudget(params, maximumFee, available)
       return this.reserve(lifetime, {
         kind,
         recipient,
@@ -813,6 +878,15 @@ export class EvmLegacyConsolidator {
       unsignedTransaction: drain,
       dependencies: members.map((_, i) => i),
     })
+    this.checkNativeBudget(
+      params,
+      members.reduce(
+        (sum, member) =>
+          sum + nativeMaximumFee(Transaction.from(member.unsignedTransaction)),
+        0n,
+      ),
+      available,
+    )
     return this.reserve(lifetime, {
       kind,
       recipient,

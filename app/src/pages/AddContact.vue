@@ -329,6 +329,12 @@ import {
 } from 'src/utils/directory-peer'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
 import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
+import {
+  discoverFrankDomain,
+  splitDomainHandle,
+} from 'src/utils/frank-domain-discovery'
+import { discoverWellKnown } from 'src/utils/frank-wellknown-discovery'
+import { assertDiscoveryRelay } from 'src/utils/frank-discovery-relay'
 import { relayHandleOf, resolveUsername } from 'src/utils/contact-username'
 
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
@@ -354,6 +360,7 @@ export default defineComponent({
       // generation is still the latest, which is the single staleness mechanism.
       lookupGeneration: 0,
       lookupPending: false,
+      emailFallbackAllowed: false,
       // Why the directory has no usable entry for the typed address, when it said so.
       lookupFailure: null as ContactLookupFailure | null,
     }
@@ -380,7 +387,12 @@ export default defineComponent({
       return !this.isConversationMode
     },
     isEmailRecipient(): boolean {
-      return this.isConversationMode && EMAIL_REGEX.test(this.address.trim())
+      return (
+        this.isConversationMode &&
+        this.emailFallbackAllowed &&
+        !this.lookupPending &&
+        EMAIL_REGEX.test(this.address.trim())
+      )
     },
     emailAddress(): string {
       return this.address.trim()
@@ -496,11 +508,21 @@ export default defineComponent({
       this.acceptedLookup = null
       this.lookupPending = false
       this.lookupFailure = null
+      this.emailFallbackAllowed = false
 
       if (newAddress.trim() === '') {
         return
       }
       if (EMAIL_REGEX.test(newAddress.trim())) {
+        this.lookupPending = true
+        const fire = () => {
+          this.lookupSchedule.timer = null
+          this.lookupSchedule.lastFiredAt = Date.now()
+          void this.lookupDomainHandle(generation, newAddress.trim())
+        }
+        if (busy)
+          this.lookupSchedule.timer = setTimeout(fire, LOOKUP_DEBOUNCE_MS)
+        else fire()
         return
       }
 
@@ -637,6 +659,75 @@ export default defineComponent({
         this.lookupSchedule.timer = null
       }
     },
+    async lookupDomainHandle(generation: number, typed: string) {
+      const chainIdentifier = activeChain.chainIdentifier
+      const current = () =>
+        generation === this.lookupGeneration &&
+        activeChain.chainIdentifier === chainIdentifier
+      try {
+        const { username, domain } = splitDomainHandle(typed)
+        const relays = await discoverFrankDomain(domain)
+        if (!current()) return
+        if (!relays.length) {
+          this.emailFallbackAllowed = true
+          return
+        }
+        // A reachable native service that has no such username may offer email explicitly.
+        // A failed discovery/relay/profile check never downgrades to email.
+        let failure: unknown
+        let triedWellKnown = false
+        for (let index = 0; index < relays.length; index++) {
+          const relay = relays[index]
+          try {
+            await assertDiscoveryRelay(relay.endpoint, chainIdentifier)
+            if (!current()) return
+            const holder = await resolveUsername(username, relay.endpoint)
+            if (!current()) return
+            if (!holder) {
+              this.emailFallbackAllowed = true
+              return
+            }
+            const normalized = this.canonicalizeAddress(holder.address)
+            if (!normalized || holder.username !== username)
+              throw new Error('Invalid username response')
+            await this.lookup(
+              generation,
+              normalized.chainAddress,
+              normalized.resolvedAddress,
+              undefined,
+              relay.endpoint,
+            )
+            return
+          } catch (error) {
+            failure = error
+            if (index === relays.length - 1 && !triedWellKnown) {
+              triedWellKnown = true
+              try {
+                const fallback = await discoverWellKnown(domain)
+                if (!current()) return
+                // A failing SRV target can still have a valid domain-authenticated HTTPS
+                // route (for example behind a reverse proxy). Never retry the same target.
+                const known = new Set(
+                  relays.map(candidate => candidate.endpoint),
+                )
+                relays.push(
+                  ...(fallback?.relays ?? []).filter(
+                    candidate => !known.has(candidate.endpoint),
+                  ),
+                )
+              } catch {
+                /* Preserve native failure; this is never email absence. */
+              }
+            }
+          }
+        }
+        throw failure ?? new Error('No reachable relay')
+      } catch {
+        if (current()) this.lookupFailure = 'unreachable'
+      } finally {
+        if (current()) this.lookupPending = false
+      }
+    },
     /** Resolve a typed "@name" through the relay's name store, then look that address up. */
     async lookupByUsername(generation: number, typed: string) {
       try {
@@ -678,13 +769,21 @@ export default defineComponent({
       chainAddress: ChainAddress,
       resolvedAddress: string,
       resolvedUsername?: string,
+      relayBaseUrl?: string,
     ) {
+      const chainIdentifier = activeChain.chainIdentifier
+      const current = () =>
+        generation === this.lookupGeneration &&
+        activeChain.chainIdentifier === chainIdentifier
       try {
-        if (generation !== this.lookupGeneration) {
+        if (!current()) {
           return
         }
-        const profileInfo = await fetchContactProfile(chainAddress)
-        if (generation !== this.lookupGeneration) {
+        const profileInfo = await fetchContactProfile(
+          chainAddress,
+          relayBaseUrl ? { relayBaseUrl } : undefined,
+        )
+        if (!current()) {
           return
         }
         this.lookupPending = false
@@ -704,7 +803,7 @@ export default defineComponent({
           resolvedUsername ??
           (await relayHandleOf(resolvedAddress))?.username ??
           null
-        if (generation !== this.lookupGeneration) {
+        if (!current()) {
           return
         }
         this.acceptedLookup = {
@@ -724,7 +823,7 @@ export default defineComponent({
           },
         }
       } catch {
-        if (generation === this.lookupGeneration) {
+        if (current()) {
           this.lookupPending = false
         }
       }
@@ -854,9 +953,17 @@ export default defineComponent({
     },
   },
   mounted() {
+    if (this.address.trim()) {
+      const initial = this.address
+      this.address = ''
+      void this.$nextTick(() => {
+        this.address = initial
+      })
+    }
     this.addressRef?.$el.focus()
   },
   beforeUnmount() {
+    ++this.lookupGeneration
     this.cancelScheduledLookup()
   },
 })

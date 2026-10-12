@@ -1525,6 +1525,35 @@ describe("canonical private mailbox", () => {
     expect(auth.signDigest).not.toHaveBeenCalled();
     expect(requests).toHaveLength(1);
   });
+  test.each([
+    {
+      name: "11 ms of positive relay clock skew",
+      offsetMs: 60_011,
+      valid: true,
+    },
+    { name: "an exaggerated future expiry", offsetMs: 65_001, valid: false },
+    { name: "an expired challenge", offsetMs: -1, valid: false },
+  ])(
+    "handles $name without weakening the challenge bound",
+    async ({ offsetMs, valid }) => {
+      const now = Date.now();
+      const nowSpy = jest.spyOn(Date, "now").mockReturnValue(now);
+      challengeOverrides = { expires_at_ms: now + offsetMs };
+      try {
+        if (valid) {
+          await expect(fetchCanonicalInboxPage(auth)).resolves.toBeDefined();
+          expect(auth.signDigest).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow(
+            /Malformed or foreign canonical challenge/
+          );
+          expect(auth.signDigest).not.toHaveBeenCalled();
+        }
+      } finally {
+        nowSpy.mockRestore();
+      }
+    }
+  );
   test("fresh challenge on request401, no profile-registration request", async () => {
     const original = auth.fetch!;
     let reads = 0;

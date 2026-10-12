@@ -97,6 +97,12 @@ describe("ChatRoomBot", () => {
     expect(sentDirectMessages.length).toBe(1);
     expect(sentDirectMessages[0].to).toBe(user.address);
     expect(sentDirectMessages[0].items[0].text).toContain("Welcome to Frank! I host community group chat rooms");
+    expect(mockContext.sendMessage).toHaveBeenCalledWith(
+      user.address,
+      expect.any(Array),
+      undefined,
+      { stampValueWei: 0n }
+    );
   });
 
   test("handles /help and /nick", async () => {

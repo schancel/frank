@@ -124,25 +124,6 @@
           </q-card-section>
         </q-card>
 
-        <!-- Links Card -->
-        <q-card flat bordered class="q-mb-lg" data-test="about-links">
-          <q-card-section>
-            <div class="text-h6 q-mb-sm">{{ $t('about.linksTitle') }}</div>
-            <div class="row q-gutter-sm">
-              <q-btn
-                outline
-                no-caps
-                color="primary"
-                icon="code"
-                :label="$t('about.githubRepo')"
-                href="https://github.com/schancel/frank"
-                target="_blank"
-                rel="noopener noreferrer"
-              />
-            </div>
-          </q-card-section>
-        </q-card>
-
         <section data-test="third-party-notices">
           <h2 class="text-h6 q-mt-none">{{ $t('about.thirdPartyTitle') }}</h2>
 

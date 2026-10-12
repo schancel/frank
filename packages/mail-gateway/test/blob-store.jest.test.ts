@@ -477,6 +477,10 @@ describe('Issue #983: Hybrid BlobStorage (S3/MinIO/LocalFS)', () => {
         ledger,
         stampProvider,
         blobStore,
+        relayLookup: async localPart =>
+          localPart === 'alice'
+            ? { accountAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
+            : undefined,
       });
       checkoutServer = new CheckoutServer({
         port: 0,

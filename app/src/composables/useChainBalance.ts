@@ -2,8 +2,8 @@
  * Balances for every wallet row, read by the chain's family.
  *
  * The registry's `wallet` setting decides whether a row has a balance at all. Bitcoin-family
- * rows (eCash, Bitcoin, Bitcoin Cash) ask the session's wallet for that chain, which sums every
- * address it owns through the relay. Solana reads its address over the relay's RPC proxy. Monad
+ * rows (eCash, Bitcoin, Bitcoin Cash) and secondary EVM networks ask the session's wallet for that chain, which sums every
+ * address it owns through the relay. Solana reads its address over the relay's RPC proxy. The active EVM network
  * keeps its own reader (./useBalance). Anything else is explicitly unsupported.
  */
 import {
@@ -27,6 +27,7 @@ import {
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { accountSession, accountStatus } from '../accounts/session'
 import { openUtxoWallet } from '../accounts/utxo-wallets'
+import { openEvmWallet } from '../accounts/evm-wallets'
 import { useBalance, APP_STATE_EVENT, BALANCE_POLL_MS } from './useBalance'
 import { useSafeOracleStore } from '../stores/oracle'
 import { walletSupport } from '../utils/wallet-support'
@@ -97,7 +98,7 @@ function getBalancePresentation(
 ): BalancePresentation {
   let state: ChainBalanceState
   let exactBalance: string | undefined
-  if (chain === 'monad') {
+  if (isPrimaryChain(chain)) {
     exactBalance = monad.exactBalance?.value
     state = {
       balance: shownMonadBalance(monad),
@@ -105,8 +106,8 @@ function getBalancePresentation(
       loaded: monad.loaded.value,
       hasError: monad.hasError.value,
     }
-  } else if (chain === 'solana') state = solanaState.value
-  else if (utxoChainIdentifier(chain)) state = utxoState(chain)
+  } else if (isSolanaChain(chain)) state = solanaState.value
+  else if (secondaryChainIdentifier(chain)) state = secondaryState(chain)
   else return { status: 'unavailable', reason: 'unsupported' }
 
   const observation =
@@ -136,30 +137,54 @@ const EMPTY_STATE: ChainBalanceState = {
   hasError: false,
 }
 
-// One state per Bitcoin-family wallet row, keyed by the row's id (`ecash`, `bitcoin`, ...).
-const utxoStates = reactive<Record<string, ChainBalanceState>>({})
-const utxoPending = new Set<string>()
+// Derived owner observations, keyed by canonical network, never an inventory.
+const secondaryStates = reactive<
+  Record<string, ChainBalanceState & { revision: number }>
+>({})
+const secondaryPending = new Map<string, number>()
+let secondaryRequestGeneration = 0
+// Mounted balance consumers only; read-only getters never acquire a context.
+const requestedChains = new Set<Readonly<Ref<string>>>()
 
-function utxoState(chain: string): ChainBalanceState {
-  return utxoStates[chain] ?? EMPTY_STATE
-}
-
-/** The canonical chain a row reads as a Bitcoin-family wallet, if the registry gives it one. */
-function utxoChainIdentifier(chain: string): string | undefined {
+function supportedEntry(chain: string) {
   const support = walletSupport(chain, activeChain.isTestnet ?? false)
-  return support.status !== 'unsupported' && support.entry.family === 'bitcoin'
-    ? support.entry.id
+  return support.status === 'unsupported' ? undefined : support.entry
+}
+function isPrimaryChain(chain: string): boolean {
+  return supportedEntry(chain)?.id === activeChain.chainIdentifier
+}
+function isSolanaChain(chain: string): boolean {
+  const entry = supportedEntry(chain)
+  return entry?.family === 'solana' && entry.id === solanaNetworkId()
+}
+function secondaryState(chain: string): ChainBalanceState {
+  const id = secondaryChainIdentifier(chain)
+  const state = id && secondaryStates[id]
+  return state &&
+    accountStatus.status === 'ready' &&
+    state.revision === accountStatus.revision
+    ? state
+    : EMPTY_STATE
+}
+function secondaryChainIdentifier(chain: string): string | undefined {
+  const entry = supportedEntry(chain)
+  return entry &&
+    (entry.family === 'bitcoin' || entry.family === 'evm') &&
+    !isPrimaryChain(chain)
+    ? entry.id
     : undefined
 }
-
-function utxoRows(): string[] {
-  return WALLET_CONFIGS.map(wallet => wallet.id).filter(
-    id => utxoChainIdentifier(id) !== undefined,
-  )
+function secondaryRows(): string[] {
+  return [
+    ...new Set([
+      ...WALLET_CONFIGS.map(wallet => wallet.id),
+      ...[...requestedChains].map(chain => chain.value),
+    ]),
+  ].filter(id => secondaryChainIdentifier(id) !== undefined)
 }
 
 function fetchSecondaryBalances(force: boolean) {
-  for (const chain of utxoRows()) void fetchChainBalance(chain, force)
+  for (const chain of secondaryRows()) void fetchChainBalance(chain, force)
   void fetchChainBalance('solana', force)
 }
 
@@ -190,7 +215,7 @@ function resetSolanaObservations() {
 }
 
 function getTokenObservation(chain: string): TokenObservation | undefined {
-  return chain === 'solana' ? solanaTokenObservation.value : undefined
+  return isSolanaChain(chain) ? solanaTokenObservation.value : undefined
 }
 
 let multichainConsumers = 0
@@ -216,7 +241,7 @@ function schedulePolling() {
     return
   multichainTimer = setTimeout(() => {
     multichainTimer = undefined
-    if (utxoPending.size > 0 || solanaPending) schedulePolling()
+    if (secondaryPending.size > 0 || solanaPending) schedulePolling()
     else fetchSecondaryBalances(true)
   }, BALANCE_POLL_MS)
 }
@@ -225,28 +250,36 @@ export async function fetchChainBalance(
   chain: string,
   force = false,
 ): Promise<void> {
-  if (chain === 'monad') return
-  if (chain !== 'solana') {
-    const chainIdentifier = utxoChainIdentifier(chain)
+  if (isPrimaryChain(chain)) return
+  if (!isSolanaChain(chain)) {
+    const chainIdentifier = secondaryChainIdentifier(chain)
     if (!chainIdentifier) return
-    if (utxoPending.has(chain) && !force) return
-    utxoPending.add(chain)
+    if (secondaryPending.has(chainIdentifier) && !force) return
+    const generation = ++secondaryRequestGeneration
+    secondaryPending.set(chainIdentifier, generation)
     schedulePolling()
     const revision = accountStatus.revision
     const isCurrent = () =>
+      secondaryPending.get(chainIdentifier) === generation &&
       accountStatus.status === 'ready' &&
       accountStatus.revision === revision &&
-      utxoChainIdentifier(chain) === chainIdentifier
+      secondaryChainIdentifier(chain) === chainIdentifier
     try {
       if (accountStatus.status !== 'ready') {
-        utxoStates[chain] = { ...EMPTY_STATE }
+        secondaryStates[chainIdentifier] = { ...EMPTY_STATE, revision }
         return
       }
-      const { chain: network, wallet } = await openUtxoWallet(chainIdentifier)
+      const entry = supportedEntry(chainIdentifier)
+      if (!entry) throw new Error(`Wallet unavailable for ${chainIdentifier}`)
+      const { chain: network, wallet } = await (entry.family === 'evm'
+        ? openEvmWallet(chainIdentifier)
+        : openUtxoWallet(chainIdentifier))
+      if (!isCurrent()) return
       // Every address the wallet owns, not one address.
       const balance = await wallet.getBalance()
       if (!isCurrent()) return
-      utxoStates[chain] = {
+      secondaryStates[chainIdentifier] = {
+        revision,
         balance,
         formattedBalance: `${network.toDisplayAmount(balance)} ${network.unit}`,
         loaded: true,
@@ -255,12 +288,17 @@ export async function fetchChainBalance(
     } catch (err) {
       if (!isCurrent()) return
       console.error(`Failed to fetch ${chainIdentifier} balance`, err)
-      utxoStates[chain] = { ...utxoState(chain), hasError: true }
+      secondaryStates[chainIdentifier] = {
+        ...secondaryState(chain),
+        revision,
+        hasError: true,
+      }
     } finally {
-      utxoPending.delete(chain)
+      if (secondaryPending.get(chainIdentifier) === generation)
+        secondaryPending.delete(chainIdentifier)
       schedulePolling()
     }
-  } else if (chain === 'solana') {
+  } else if (isSolanaChain(chain)) {
     if (solanaPending && !force) return
     const generation = ++solanaRequestGeneration
     const scope = {
@@ -400,38 +438,48 @@ function releaseMultichain() {
  */
 export function useChainBalance(chainRef: Ref<string> | string) {
   const monad = useBalance()
-
-  if (getCurrentInstance()) {
-    onMounted(acquireMultichain)
-    onUnmounted(releaseMultichain)
-  }
-
   const chain = computed(() =>
     typeof chainRef === 'string' ? chainRef : chainRef.value,
   )
+  if (getCurrentInstance()) {
+    let stopChainWatch: (() => void) | undefined
+    onMounted(() => {
+      requestedChains.add(chain)
+      acquireMultichain()
+      void fetchChainBalance(chain.value)
+      stopChainWatch = watch(chain, value => {
+        void fetchChainBalance(value)
+      })
+    })
+    onUnmounted(() => {
+      requestedChains.delete(chain)
+      stopChainWatch?.()
+      releaseMultichain()
+    })
+  }
 
   const balance = computed<bigint | null>(() => {
-    if (chain.value === 'monad') return shownMonadBalance(monad)
-    if (chain.value === 'solana') return solanaState.value.balance
-    return utxoState(chain.value).balance
+    if (isPrimaryChain(chain.value)) return shownMonadBalance(monad)
+    if (isSolanaChain(chain.value)) return solanaState.value.balance
+    return secondaryState(chain.value).balance
   })
 
   const formattedBalance = computed<string>(() => {
-    if (chain.value === 'monad') return monad.formattedBalance.value
-    if (chain.value === 'solana') return solanaState.value.formattedBalance
-    return utxoState(chain.value).formattedBalance
+    if (isPrimaryChain(chain.value)) return monad.formattedBalance.value
+    if (isSolanaChain(chain.value)) return solanaState.value.formattedBalance
+    return secondaryState(chain.value).formattedBalance
   })
 
   const loaded = computed<boolean>(() => {
-    if (chain.value === 'monad') return monad.loaded.value
-    if (chain.value === 'solana') return solanaState.value.loaded
-    return utxoState(chain.value).loaded
+    if (isPrimaryChain(chain.value)) return monad.loaded.value
+    if (isSolanaChain(chain.value)) return solanaState.value.loaded
+    return secondaryState(chain.value).loaded
   })
 
   const hasError = computed<boolean>(() => {
-    if (chain.value === 'monad') return monad.hasError.value
-    if (chain.value === 'solana') return solanaState.value.hasError
-    return utxoState(chain.value).hasError
+    if (isPrimaryChain(chain.value)) return monad.hasError.value
+    if (isSolanaChain(chain.value)) return solanaState.value.hasError
+    return secondaryState(chain.value).hasError
   })
 
   const tokens = computed<TokenItem[]>(() => getChainTokens(chain.value))
@@ -450,9 +498,9 @@ export function useChainBalance(chainRef: Ref<string> | string) {
     hasError,
     /** Reads the cordoned (profile address) amount now instead of at its slow cadence. */
     refreshCordoned: () =>
-      chain.value === 'monad' ? monad.refreshCordoned?.() : undefined,
+      isPrimaryChain(chain.value) ? monad.refreshCordoned?.() : undefined,
     refresh: () => {
-      if (chain.value === 'monad') return monad.refresh()
+      if (isPrimaryChain(chain.value)) return monad.refresh()
       return fetchChainBalance(chain.value, true)
     },
   }
@@ -462,7 +510,7 @@ export function useChainBalance(chainRef: Ref<string> | string) {
  * Returns available native and sub-token assets for a given chain.
  */
 export function getChainTokens(chainName: string): TokenItem[] {
-  if (chainName === 'solana') {
+  if (isSolanaChain(chainName)) {
     const items: TokenItem[] = []
     const metadata = solanaScope && getChainRegistryEntry(solanaScope.networkId)
     if (
@@ -529,39 +577,39 @@ export function useMultichainBalance() {
     solana: readonly(solanaState),
     getTokens: (chain: string) => getChainTokens(chain),
     getFormattedBalance(chain: string): string | undefined {
-      if (chain === 'monad') {
+      if (isPrimaryChain(chain)) {
         return monad.loaded.value ? monad.formattedBalance.value : undefined
       }
-      if (chain === 'solana') {
+      if (isSolanaChain(chain)) {
         return solanaState.value.loaded
           ? solanaState.value.formattedBalance
           : undefined
       }
-      const state = utxoState(chain)
+      const state = secondaryState(chain)
       return state.loaded ? state.formattedBalance : undefined
     },
     getRawBalance(chain: string): bigint | null {
-      if (chain === 'monad') return shownMonadBalance(monad)
-      if (chain === 'solana') {
+      if (isPrimaryChain(chain)) return shownMonadBalance(monad)
+      if (isSolanaChain(chain)) {
         return solanaState.value.loaded ? solanaState.value.balance : null
       }
-      const state = utxoState(chain)
+      const state = secondaryState(chain)
       return state.loaded ? state.balance : null
     },
     isChainLoaded(chain: string): boolean {
-      if (chain === 'monad') return monad.loaded.value
-      if (chain === 'solana') return solanaState.value.loaded
-      return utxoState(chain).loaded
+      if (isPrimaryChain(chain)) return monad.loaded.value
+      if (isSolanaChain(chain)) return solanaState.value.loaded
+      return secondaryState(chain).loaded
     },
     hasChainError(chain: string): boolean {
-      if (chain === 'monad') return monad.hasError.value
-      if (chain === 'solana') return solanaState.value.hasError
-      return utxoState(chain).hasError
+      if (isPrimaryChain(chain)) return monad.hasError.value
+      if (isSolanaChain(chain)) return solanaState.value.hasError
+      return secondaryState(chain).hasError
     },
     refreshAll: async () => {
       await Promise.all([
         monad.refresh(),
-        ...utxoRows().map(chain => fetchChainBalance(chain, true)),
+        ...secondaryRows().map(chain => fetchChainBalance(chain, true)),
         fetchChainBalance('solana', true),
       ])
     },

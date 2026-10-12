@@ -35,9 +35,6 @@ jest.mock('./ChatListItem.vue', () => ({
   template:
     '<div data-testid="chat-item"><span data-testid="unread-value">{{ valueUnread }}</span></div>',
 }))
-jest.mock('./MailboxStatusBanner.vue', () => ({
-  template: '<div data-testid="mailbox-status" />',
-}))
 
 let mockWidth = 0
 jest.mock('quasar', () => ({
@@ -212,6 +209,6 @@ describe('ChatList mailbox status', () => {
         mocks: { $status: { setup: true }, $t: (k: string) => k },
       },
     })
-    expect(wrapper.find('[data-testid="mailbox-status"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="mailbox-status"]').exists()).toBe(false)
   })
 })

@@ -86,6 +86,9 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   readonly enabled?: boolean;
   readonly name: string;
   readonly unit: string;
+  /** Native coin base-unit precision; null means this network has no native coin.
+   * Token denominations (including Tempo's TIP-20 USD) have separate asset ownership. */
+  readonly nativeDecimals: number | null;
   readonly networkTag?: string;
   readonly addressPrefix?: string;
   readonly rpcUrl?: string;
@@ -160,6 +163,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Monad Testnet",
       unit: "MONT",
+      nativeDecimals: 18,
       networkTag: "MONT",
       ...deployedContracts("monad-testnet"),
       gasChargedOn: "limit",
@@ -177,6 +181,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Monad Regtest",
       unit: "MONR",
+      nativeDecimals: 18,
       networkTag: "MONR",
       gasChargedOn: "limit",
       reserveBalanceWei: MONAD_RESERVE_BALANCE_WEI,
@@ -190,6 +195,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Monad",
       unit: "MON",
+      nativeDecimals: 18,
       networkTag: "MON1",
       ...deployedContracts("monad-mainnet"),
       gasChargedOn: "limit",
@@ -205,6 +211,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "eCash Testnet",
       unit: "tXEC",
+      nativeDecimals: 2,
       addressPrefix: "ectest",
       networkTag: "XECT",
     }),
@@ -217,6 +224,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "eCash Regtest",
       unit: "rXEC",
+      nativeDecimals: 2,
       addressPrefix: "ecregtest",
       networkTag: "XECR",
     }),
@@ -226,6 +234,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "eCash",
       unit: "XEC",
+      nativeDecimals: 2,
       addressPrefix: "ecash",
       networkTag: "XEC1",
     }),
@@ -236,6 +245,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 2,
       name: "Solana Devnet",
       unit: "dSOL",
+      nativeDecimals: 9,
       networkTag: "SOLD",
       contracts: CANONICAL_SOLANA_CONTRACTS,
       dex: SOLANA_DEVNET_DEX,
@@ -246,6 +256,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 2,
       name: "Solana Testnet",
       unit: "tSOL",
+      nativeDecimals: 9,
       networkTag: "SOLT",
       contracts: CANONICAL_SOLANA_CONTRACTS,
     }),
@@ -256,6 +267,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 2,
       name: "Solana",
       unit: "SOL",
+      nativeDecimals: 9,
       networkTag: "SOL1",
       contracts: CANONICAL_SOLANA_CONTRACTS,
       dex: SOLANA_MAINNET_DEX,
@@ -265,7 +277,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       curve: "secp256k1",
       keyType: 1,
       name: "Sepolia",
-      unit: "SEP",
+      unit: "ETH",
+      nativeDecimals: 18,
       networkTag: "SEPO",
       rpcUrls: Object.freeze([
         "https://ethereum-sepolia-rpc.publicnode.com",
@@ -279,6 +292,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Ethereum",
       unit: "ETH",
+      nativeDecimals: 18,
       networkTag: "ETH1",
       ...deployedContracts("ethereum-mainnet"),
     }),
@@ -288,6 +302,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Hyperliquid",
       unit: "HYPE",
+      nativeDecimals: 18,
       networkTag: "HYPE",
       ...deployedContracts("hyperliquid-mainnet"),
     }),
@@ -297,6 +312,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Hyperliquid Testnet",
       unit: "tHYPE",
+      nativeDecimals: 18,
       networkTag: "HYPT",
       ...deployedContracts("hyperliquid-testnet"),
     }),
@@ -306,6 +322,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Tempo",
       unit: "USD",
+      // USD names a TIP-20 asset; Tempo has no native coin.
+      nativeDecimals: null,
       networkTag: "TMPO",
       ...deployedContracts("tempo-mainnet"),
     }),
@@ -315,6 +333,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Tempo Moderato",
       unit: "tUSD",
+      // USD names a TIP-20 asset; Tempo has no native coin.
+      nativeDecimals: null,
       networkTag: "TMPT",
       ...deployedContracts("tempo-testnet"),
     }),
@@ -324,6 +344,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Bitcoin",
       unit: "BTC",
+      nativeDecimals: 8,
       networkTag: "BTC1",
     }),
     "btc-testnet": Object.freeze({
@@ -334,6 +355,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Bitcoin Testnet",
       unit: "tBTC",
+      nativeDecimals: 8,
       networkTag: "BTCT",
     }),
     "btc-testnet4": Object.freeze({
@@ -342,6 +364,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Bitcoin Testnet4",
       unit: "tBTC",
+      nativeDecimals: 8,
       networkTag: "BTC4",
     }),
     "bch-mainnet": Object.freeze({
@@ -350,6 +373,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Bitcoin Cash",
       unit: "BCH",
+      nativeDecimals: 8,
       addressPrefix: "bitcoincash",
       networkTag: "BCH1",
     }),
@@ -361,6 +385,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Bitcoin Cash Chipnet",
       unit: "tBCH",
+      nativeDecimals: 8,
       addressPrefix: "bchtest",
       networkTag: "BCHT",
     }),
@@ -370,6 +395,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Dogecoin",
       unit: "DOGE",
+      nativeDecimals: 8,
       networkTag: "DOGE",
     }),
     "doge-testnet": Object.freeze({
@@ -378,6 +404,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       keyType: 1,
       name: "Dogecoin Testnet",
       unit: "tDOGE",
+      nativeDecimals: 8,
       networkTag: "DOGT",
     }),
   });

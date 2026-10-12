@@ -1,53 +1,75 @@
 <template>
-  <q-page-container>
-    <q-page class="q-ma-none q-pa-none column no-wrap" :style-fn="pageStyle">
-      <q-card flat class="col column full-width full-height bg-transparent">
-        <q-card-section class="q-px-md q-pt-md q-pb-none">
-          <div class="text-h6">
-            {{ $t('profileDialog.profile') }}
-          </div>
-        </q-card-section>
-        <profile
-          v-model:name="name"
-          v-model:username="username"
-          :username-error="usernameError"
-          :held-username="heldUsername"
-          v-model:location="location"
-          v-model:bio="bio"
-          v-model:avatar="avatar"
-          v-model:links="links"
-          v-model:acceptancePrice="acceptancePrice"
-          v-model:accountType="accountType"
-          v-model:botRole="botRole"
-          class="col full-height"
+  <div>
+    <q-header>
+      <q-toolbar class="q-pl-sm">
+        <q-btn
+          flat
+          dense
+          class="q-px-sm"
+          icon="arrow_back"
+          :aria-label="$t('settings.back')"
+          data-test="profile-back"
+          @click="cancel"
         />
-        <q-separator />
-        <q-card-actions align="right" class="q-pa-md bg-transparent">
-          <q-btn
-            :label="$t('profileDialog.cancel')"
-            color="negative"
-            flat
-            no-caps
-            data-test="profile-cancel"
-            class="q-mr-sm"
-            @click="cancel"
+        <q-toolbar-title class="h6">{{
+          $t('profileDialog.profile')
+        }}</q-toolbar-title>
+        <q-btn
+          flat
+          dense
+          class="q-px-sm"
+          icon="menu"
+          :aria-label="$t('settings.openMenu')"
+          data-test="profile-menu"
+          @click="$emit('toggleMyDrawerOpen')"
+        />
+      </q-toolbar>
+    </q-header>
+    <q-page-container>
+      <q-page class="q-ma-none q-pa-none column no-wrap" :style-fn="pageStyle">
+        <q-card flat class="col column full-width full-height bg-transparent">
+          <profile
+            v-model:name="name"
+            v-model:username="username"
+            :username-error="usernameError"
+            :held-username="heldUsername"
+            v-model:location="location"
+            v-model:bio="bio"
+            v-model:avatar="avatar"
+            v-model:links="links"
+            v-model:acceptancePrice="acceptancePrice"
+            v-model:accountType="accountType"
+            v-model:botRole="botRole"
+            class="col full-height"
           />
-          <q-btn
-            :label="
-              identical
-                ? $t('profileDialog.republish')
-                : $t('profileDialog.update')
-            "
-            color="primary"
-            unelevated
-            no-caps
-            data-test="profile-update"
-            @click="updateRelayData"
-          />
-        </q-card-actions>
-      </q-card>
-    </q-page>
-  </q-page-container>
+          <q-separator />
+          <q-card-actions align="right" class="q-pa-md bg-transparent">
+            <q-btn
+              :label="$t('profileDialog.cancel')"
+              color="negative"
+              flat
+              no-caps
+              data-test="profile-cancel"
+              class="q-mr-sm"
+              @click="cancel"
+            />
+            <q-btn
+              :label="
+                identical
+                  ? $t('profileDialog.republish')
+                  : $t('profileDialog.update')
+              "
+              color="primary"
+              unelevated
+              no-caps
+              data-test="profile-update"
+              @click="updateRelayData"
+            />
+          </q-card-actions>
+        </q-card>
+      </q-page>
+    </q-page-container>
+  </div>
 </template>
 
 <script lang="ts">
@@ -93,6 +115,7 @@ type RelayData = {
 }
 
 export default defineComponent({
+  emits: ['toggleMyDrawerOpen'],
   components: {
     Profile,
   },

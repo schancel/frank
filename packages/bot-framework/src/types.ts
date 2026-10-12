@@ -162,6 +162,8 @@ export interface BotContext {
   ): void;
 
   // --- Financial & Transaction Operations ---
+  /** Faucet-only once-per-recipient grants through the wallet operation owner. */
+  readonly nativeGrants?: import("./native-grants").NativeGrantCapability;
   /** Wallet-owned receipt evidence for this chain and message; stated amounts are not receipts. */
   checkMessagePayment(payloadDigest: string): Promise<MessagePayment>;
   sendTransfer(params: {

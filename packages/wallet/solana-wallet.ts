@@ -750,10 +750,13 @@ export class SolanaWallet
 
   async sendNative(params: {
     recipient: ChainAddress
+    minimumRemainingBalance?: bigint
     value: bigint
     onSigned?: (signed: ChainTransaction) => Promise<void>
     fromAddress?: string
   }): Promise<ChainTransaction> {
+    if (params.minimumRemainingBalance !== undefined)
+      throw new Error('Minimum native reserve is unsupported by this wallet')
     await this.verifyNetwork()
     return runNativeTransactionExclusive(
       this.nativeAttemptKey,

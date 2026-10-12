@@ -157,16 +157,26 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
     view.unmount()
   })
 
-  it('clicking "Switch to open tab" requests tab focus via broadcast', async () => {
+  it('offers a manual way to find the open tab when browser focus is denied', async () => {
     const tabStore = useTabCoordinatorStore()
     tabStore.otherTabActive = true
     const focusSpy = jest.spyOn(tabStore, 'requestTabFocus')
 
     const view = render()
     await flushPromises()
+    expect(view.get('[data-test="switch-tab-btn"]').text()).toBe(
+      'Find open Frank tab',
+    )
+    expect(view.find('[data-test="switch-tab-help"]').exists()).toBe(false)
 
     await view.get('[data-test="switch-tab-btn"]').trigger('click')
     expect(focusSpy).toHaveBeenCalledTimes(1)
+    expect(view.get('[data-test="switch-tab-help"]').text()).toContain(
+      'Select the Frank tab in your browser',
+    )
+    expect(tabStore.otherTabActive).toBe(true)
+    expect(mockSession.retry).not.toHaveBeenCalled()
+    expect(mockPush).not.toHaveBeenCalled()
 
     view.unmount()
   })

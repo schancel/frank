@@ -434,7 +434,8 @@ pub struct ClusterNatsConf {
     pub url: String,
 }
 
-/// The open directory: accounts publish their own signed entries, the relay only names itself.
+/// The open directory: accounts publish their own signed entries; the relay
+/// names itself and may advertise its operator-owned email gateway.
 ///
 /// There is no per-account configuration. `clock_file` and `principals` from the earlier
 /// operator-installed design are still recognised so an old file fails with a clear message
@@ -484,12 +485,25 @@ pub struct DirectoryConf {
     /// has claimed it yet. For names people would trust, such as an operator's bots.
     #[serde(default)]
     pub reserved_usernames: std::collections::BTreeMap<String, String>,
+    /// Optional operator-owned email gateway advertised by this relay.
+    #[serde(default)]
+    pub email_gateway: Option<EmailGatewayConf>,
     /// Removed. Present only to explain the change to operators with an old file.
     #[serde(default, skip_serializing)]
     pub clock_file: Option<RemovedSetting>,
     /// Removed. Present only to explain the change to operators with an old file.
     #[serde(default, skip_serializing)]
     pub principals: Option<RemovedSetting>,
+}
+
+/// Public identity and domain of the relay's email bridge.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EmailGatewayConf {
+    /// Frank EVM identity address. Key material is never stored here.
+    pub address: String,
+    /// Email domain served by the gateway, without a leading `@`.
+    pub domain: String,
 }
 
 const fn default_directory_max_subjects() -> u64 {
@@ -533,6 +547,8 @@ pub enum DirectoryConfError {
     RemovedSettings,
     /// A required relay field is absent.
     Missing(&'static str),
+    /// Invalid email gateway advertisement.
+    InvalidEmailGateway,
 }
 
 impl fmt::Display for DirectoryConfError {
@@ -545,6 +561,9 @@ impl fmt::Display for DirectoryConfError {
                  endpoint and binding_expiry_ns",
             ),
             Self::Missing(field) => write!(formatter, "registry.directory.{field} is required"),
+            Self::InvalidEmailGateway => formatter.write_str(
+                "registry.directory.email_gateway must provide a 0x-prefixed 20-byte address and a valid lowercase email domain",
+            ),
         }
     }
 }
@@ -566,6 +585,32 @@ impl DirectoryConf {
         ] {
             if value.is_empty() {
                 return Err(DirectoryConfError::Missing(field));
+            }
+        }
+        if let Some(gateway) = &self.email_gateway {
+            let valid_domain = gateway.domain.len() <= 253
+                && gateway.domain.contains('.')
+                && gateway.domain.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && label
+                            .bytes()
+                            .next()
+                            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                        && label
+                            .bytes()
+                            .last()
+                            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+                        && label
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+                });
+            if gateway.address.len() != 42
+                || !gateway.address.starts_with("0x")
+                || !gateway.address[2..].bytes().all(|b| b.is_ascii_hexdigit())
+                || !valid_domain
+            {
+                return Err(DirectoryConfError::InvalidEmailGateway);
             }
         }
         Ok(())
@@ -1569,7 +1614,7 @@ mod tests {
     };
 
     #[test]
-    fn directory_section_is_only_the_relay_tuple_and_old_files_get_a_plain_error() {
+    fn directory_section_validates_relay_and_optional_gateway_and_rejects_old_files() {
         let minimal: crate::DirectoryConf = toml::from_str(
             r#"
 network = "monad-testnet"
@@ -1583,6 +1628,52 @@ binding_expiry_ns = "1893456000000000000"
         minimal.validate().unwrap();
         assert_eq!(minimal.max_subjects, 1_000_000);
         assert_eq!(minimal.enrollments_per_source_per_hour, 100_000);
+        assert!(minimal.email_gateway.is_none());
+
+        let mut with_gateway = minimal.clone();
+        with_gateway.email_gateway = Some(crate::EmailGatewayConf {
+            address: format!("0x{}", "a".repeat(40)),
+            domain: "signet.mx".into(),
+        });
+        assert_eq!(with_gateway.validate(), Ok(()));
+        let parsed: crate::DirectoryConf = toml::from_str(
+            r#"
+network = "monad-testnet"
+relay_id = "000102030405060708090a0b0c0d0e0f"
+relay_identity = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"
+endpoint = "https://relay.example.org"
+binding_expiry_ns = "1893456000000000000"
+
+[email_gateway]
+address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+domain = "signet.mx"
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.email_gateway, with_gateway.email_gateway);
+        assert_eq!(parsed.validate(), Ok(()));
+        // The bridge identity is independent of the relay's settlement network.
+        let mut bitcoin_relay = with_gateway.clone();
+        bitcoin_relay.network = "btc-testnet".into();
+        assert_eq!(bitcoin_relay.validate(), Ok(()));
+        assert!(toml::from_str::<crate::EmailGatewayConf>(
+            "chain_identifier = 'monad-testnet'\naddress = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\ndomain = 'signet.mx'"
+        )
+        .is_err());
+        for (address, domain) in [
+            ("0x123".into(), "signet.mx"),
+            (format!("0x{}", "a".repeat(40)), "bad_domain"),
+        ] {
+            let mut invalid = with_gateway.clone();
+            invalid.email_gateway = Some(crate::EmailGatewayConf {
+                address,
+                domain: domain.into(),
+            });
+            assert_eq!(
+                invalid.validate(),
+                Err(crate::DirectoryConfError::InvalidEmailGateway)
+            );
+        }
 
         let old: crate::DirectoryConf = toml::from_str(
             r#"

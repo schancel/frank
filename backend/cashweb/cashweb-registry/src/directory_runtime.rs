@@ -15,7 +15,7 @@ pub struct FirstAccepted {
     /// When this relay accepted the account's first entry, in Unix milliseconds.
     pub accepted_ms: u64,
 }
-use cashweb_config::DirectoryConf;
+use cashweb_config::{DirectoryConf, EmailGatewayConf};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -171,6 +171,8 @@ pub struct RelayInfo {
     pub network: String,
     /// Exact relay binding: id, endpoint, key and expiry.
     pub binding: RelayBinding,
+    /// Optional operator-owned email gateway for this canonical network.
+    pub email_gateway: Option<EmailGatewayConf>,
 }
 impl RelayInfo {
     fn from_config(config: &DirectoryConf) -> Result<Self> {
@@ -198,6 +200,7 @@ impl RelayInfo {
         }
         Ok(Self {
             network: config.network.clone(),
+            email_gateway: config.email_gateway.clone(),
             binding: RelayBinding {
                 relay_id: exact(&config.relay_id, 16)?,
                 endpoint: config.endpoint.clone(),

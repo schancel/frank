@@ -159,3 +159,55 @@ flowchart TD
    - Frank clients MUST reject plaintext HTTP connections. All relay communication MUST use TLS 1.3 on port 443 with valid X.509 server certificates matching the SRV target FQDN.
 4. **Content-Oblivious Relay Boundary**:
    - Relays process encrypted envelopes without access to message text. Resolution of `user@domain` happens exclusively at envelope creation; inner Type 6 encrypted payloads remain end-to-end encrypted to $K_{\text{msg}}$.
+
+## Browser implementation status
+
+The contact picker queries `_frank._tcp` using RFC 8484 wire-format HTTPS GET
+requests. `app/src/utils/frank-domain-discovery.ts` configures Cloudflare and
+Google as trusted resolver defaults; composition can supply a different resolver
+list. Queries omit credentials, refuse redirects, have a five-second deadline per
+resolver, and accept bounded DNS responses. Positive SRV results are cached for
+at most their TTL (capped at five minutes); negative answers are not cached.
+
+A discovered relay must use HTTPS port 443 and describe the same origin and the
+active canonical chain identifier in `/relay/v1/info`. The username lookup then
+uses that relay. Identity acceptance still goes through the session's existing
+signed directory admission; DNS never supplies a messaging key. Display profiles
+may be read from the discovered relay. The resulting conversation remains bound
+to the resolved account address. Domain handles are not stored as local-relay
+username claims.
+
+### HTTPS fallback and email precedence
+
+The recipient domain operator owns `https://<domain>/.well-known/frank-relay`.
+Version 1 is a JSON object with `version: 1` and 1–8 `relays`, each containing an
+HTTPS origin `endpoint` (default port 443) and an unsigned 16-bit `priority`.
+Paths, credentials, duplicate origins, IP addresses, and unknown versions are
+rejected. Serve `Content-Type: application/json` and
+`Access-Control-Allow-Origin: *` so other browser frontends can discover it.
+The response is limited to 4 KiB and five seconds; credentials and redirects are
+disabled. Explicit public `Cache-Control: max-age` is respected up to five
+minutes; `private`, `no-store`, or `no-cache` disables document caching.
+
+Usable SRV targets take precedence. Empty, failed, or malformed SRV discovery
+tries the domain's HTTPS document. If advertised SRV targets cannot be reached
+or fail relay-origin/network validation, additional authenticated well-known
+targets can be tried once. Every target still passes the same canonical-network,
+HTTPS-origin, and signed-directory checks; a failed target is never retried via
+an insecure scheme. A valid document takes precedence over an email suggestion.
+
+Authoritative empty/NXDOMAIN SRV with no positive well-known advertisement may
+show the existing **explicit** email action, including when an ordinary email
+domain blocks cross-origin well-known requests. Nothing is automatically created
+or sent. An HTTP 200 well-known response is a positive advertisement: invalid
+JSON, schema, endpoint, or a failed advertised native target remains an error.
+Failed DNS with no usable HTTPS discovery also remains an error. A reachable
+native relay reporting no such username can offer the explicit email action.
+This supersedes the permissive automatic-error-fallback arrows in the original
+draft above. MX lookup is not yet implemented in the browser.
+
+Remote accounts whose evidence is unavailable through the session's replicated
+directory remain visibly unavailable; discovery does not introduce a second
+directory admission store or bypass first-contact verification. The verified
+account address, rather than a mutable domain handle, remains the conversation's
+identity.

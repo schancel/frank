@@ -624,10 +624,13 @@ export class UtxoWallet implements NativeWalletHandle {
    */
   async sendNative(params: {
     recipient: ChainAddress;
+    minimumRemainingBalance?: bigint;
     value: bigint;
     maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction> {
+    if (params.minimumRemainingBalance !== undefined)
+      throw new Error("Minimum native reserve is unsupported by this wallet");
     if (params.value <= 0n) {
       throw new RangeError("Transfer value must be greater than zero");
     }

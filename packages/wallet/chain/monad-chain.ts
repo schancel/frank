@@ -87,12 +87,12 @@ import {
   Transaction,
   Wallet,
   computeAddress,
-  formatEther,
+  formatUnits,
   getAddress,
   getBytes,
   hexlify,
   keccak256,
-  parseEther,
+  parseUnits,
   randomBytes,
   toUtf8Bytes,
 } from "ethers";
@@ -982,18 +982,39 @@ function asNothingSent(err: unknown): never {
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createEvmChain(config: EvmChainConfig): ActiveChain {
-  const isTestnet =
-    config.rpcChain === "monad-testnet" ||
-    (config.rpcChain?.includes("testnet") ?? false) ||
-    (config.rpcChain?.includes("devnet") ?? false) ||
-    (config.rpcChain?.includes("regtest") ?? false) ||
-    config.chainId === 10143 ||
-    config.chainId === 10143n ||
-    config.networkTag === "MONT";
-  const chainIdentifier =
-    config.chainIdentifier ??
-    config.rpcChain ??
-    (isTestnet ? "monad-testnet" : "monad-mainnet");
+  const chainIdentifier = config.chainIdentifier ?? config.rpcChain;
+  if (config.rpcChain !== chainIdentifier) {
+    throw new Error(`EVM network mismatch: ${chainIdentifier} / ${config.rpcChain}`);
+  }
+  if (config.networkId !== chainIdentifier) {
+    throw new Error(`EVM wallet network mismatch: ${chainIdentifier} / ${config.networkId}`);
+  }
+  const chainEntry = getChainRegistryEntry(chainIdentifier);
+  if (!chainEntry || chainEntry.family !== "evm") {
+    throw new Error(`Unsupported EVM network: ${chainIdentifier}`);
+  }
+  if (config.networkTag !== chainEntry.networkTag) {
+    throw new Error(`EVM network tag mismatch for ${chainIdentifier}`);
+  }
+  if (
+    chainEntry.nativeChainId === undefined ||
+    BigInt(config.chainId) !== BigInt(chainEntry.nativeChainId)
+  ) {
+    throw new Error(`EVM chain ID mismatch for ${chainIdentifier}`);
+  }
+  if (chainEntry.nativeDecimals === null) {
+    throw new Error(
+      `${chainIdentifier} has no native coin; use its token payment adapter`
+    );
+  }
+  if (config.unit !== undefined && config.unit !== chainEntry.unit) {
+    throw new Error(`EVM unit mismatch for ${chainIdentifier}`);
+  }
+  if (config.name !== undefined && config.name !== chainEntry.name) {
+    throw new Error(`EVM name mismatch for ${chainIdentifier}`);
+  }
+  const nativeDecimals = chainEntry.nativeDecimals;
+  const isTestnet = chainEntry.isTestnet;
   // A configured network tag that names no registered network must not fall back to
   // another network's contracts.
   const contractChainIdentifier = (): string =>
@@ -2041,13 +2062,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       });
     },
   };
-  const name = config.name ?? (isTestnet ? "Monad Testnet" : "Monad");
-  // The display unit is a fact of the network: it comes from the chain registry, by canonical
-  // identifier. The Monad names after it are only for an identifier the registry does not list.
-  const unit =
-    config.unit ??
-    getChainRegistryEntry(chainIdentifier)?.unit ??
-    (isTestnet ? "MONT" : "MON");
+  const name = chainEntry.name;
+  const unit = chainEntry.unit;
   const network = isTestnet ? "testnet" : "mainnet";
 
   return {
@@ -2069,11 +2085,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     defaultTopicVoteValue: config.defaultTopicVoteValueWei,
 
     toDisplayAmount(raw: bigint): string {
-      return formatEther(raw);
+      return formatUnits(raw, nativeDecimals);
     },
 
     fromDisplayAmount(display: string): bigint {
-      return parseEther(display);
+      return parseUnits(display, nativeDecimals);
     },
 
     addressToString(addr: ChainAddress): string {
@@ -2289,7 +2305,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
             },
             canonicalBinding:
-              material.canonicalRoles === undefined
+              material.canonicalRoles === undefined || chainEntry.kind !== "monad"
                 ? undefined
                 : canonicalWalletPublicBinding(
                     material,
@@ -3656,14 +3672,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             hostDelivers: boolean
           ): Promise<ContactSendResult | PreparedContactPayment> => {
             requireOpenWallet(wallet);
+            // This legacy payment is delivered by directMessages. Refuse before reserving or
+            // signing funds on networks without the canonical messaging service; the separate
+            // typed financial payment owner does not use this transport-coupled path.
+            if (!canonicalMessagingFor(wallet))
+              throw new CanonicalMessagingPendingError(
+                "Contact payments require canonical direct messaging."
+              );
             if (params.value <= 0n)
               throw new RangeError("Transfer value must be positive");
             // The message item states the amount in an unsigned 64-bit field. A larger payment
             // could be signed and then never described to the contact, so it is refused here.
             if (params.value > MAX_STEALTH_ITEM_AMOUNT)
               throw new ContactPaymentTooLargeError(
-                `This payment is larger than a single contact payment can carry (about ${formatEther(
-                  MAX_STEALTH_ITEM_AMOUNT
+                `This payment is larger than a single contact payment can carry (about ${formatUnits(
+                  MAX_STEALTH_ITEM_AMOUNT,
+                  nativeDecimals
                 ).slice(0, 4)} ${unit}); send it in parts`
               );
             const recipientAddress = getAddress(

@@ -511,7 +511,6 @@ export default {
     zeroUsd: '0 USD',
     zeroTusd: '0 tUSD',
     zeroEth: '0 ETH',
-    zeroSep: '0 SEP',
     zeroHype: '0 HYPE',
     zeroThype: '0 tHYPE',
     zeroBtc: '0 BTC',
@@ -1542,8 +1541,6 @@ export default {
     badgeStamp: 'Stamp Protocol',
     badgeEncrypted: 'End-to-End Encrypted',
     badgePermissionless: 'Permissionless Identity',
-    linksTitle: 'Links & Source Code',
-    githubRepo: 'Frank GitHub Repository',
     thirdPartyTitle: 'Third-party software',
     dklsName: 'DKLs23 two-party signing library (Silence Laboratories)',
     dklsModified:

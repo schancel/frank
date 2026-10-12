@@ -1,12 +1,13 @@
 /**
- * Mail gateway journal (#1237, stage G1; format 2 from stage G1b).
+ * Mail gateway journal (#1237, stage G1; format 4 with issued mailbox ownership).
  *
  * The durable owner of: which email threads exist in a Frank account's scope,
  * which message holds each RFC Message-ID there, every inbound email the
  * gateway accepted and what became of it, the gateway's own send slots, every
  * Frank message it has bridged or refused, and the outbound email jobs.
  *
- * Nothing calls this yet. Later stages (G2, G3a, G3b) are its only callers.
+ * The journaled inbound-send coordinator is its first runtime caller. The
+ * legacy SMTP and outbound-mail paths still await their replacement stages.
  *
  * Scope: every lookup and every key is inside one `scopeAccount`, the Frank
  * account on the Frank side of the thread (lowercase `0x` + 40 hex). A thread is
@@ -24,10 +25,12 @@
  * Two keys (contract section 21.2), both opaque 64-hex values computed by the
  * caller. This module stores and compares them and computes neither.
  *
- * - The **mail key** identifies one RFC 5322 message. It is the key of an
- *   inbound email, the regenerated identifier of a contested inbound mail, the
- *   synthetic identifier of a mail with no usable Message-ID, and the only thing
- *   that decides whether an arriving mail is the scope's own mail coming back.
+ * - The **mail key** identifies an inbound delivery or an outbound RFC 5322
+ *   message. For an issued inbound mailbox, its delivery key binds the canonical
+ *   content mail key to the envelope local part, so two aliases never share a
+ *   row or send slot. The canonical content key alone decides whether an
+ *   arriving mail is the scope's own outbound mail coming back. The delivery
+ *   key supplies regenerated identifiers for contested or ID-less inbound mail.
  * - The **item key** identifies what a Frank user authored, whatever seal it
  *   arrived under. It decides whether a Frank message is a re-seal of one
  *   already bridged, and it is the regenerated identifier of a contested
@@ -77,6 +80,7 @@ import {
   StoredMailBytes,
 } from '../types';
 import type { CreditLedger } from './credit-ledger';
+import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
 import type {
   FrankInboundRow,
   FrankSendRow,
@@ -102,11 +106,12 @@ import type {
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 2;
+export const MAIL_JOURNAL_FORMAT = 6;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
   'mail_thread',
+  'issued_mailbox',
   'mail_message',
   'inbound_email',
   'frank_send',
@@ -132,6 +137,15 @@ const MAIL_JOURNAL_DDL = `
     PRIMARY KEY (scope_account, conversation_id)
   );
 
+  CREATE TABLE issued_mailbox (
+    local_part TEXT PRIMARY KEY,
+    scope_account TEXT NOT NULL,
+    conversation_id TEXT,
+    created_at INTEGER NOT NULL,
+    CHECK (local_part = lower(local_part))
+  );
+  CREATE INDEX idx_issued_mailbox_owner ON issued_mailbox(scope_account, conversation_id);
+
   CREATE TABLE mail_message (
     scope_account TEXT NOT NULL,
     rfc_message_id TEXT NOT NULL,
@@ -156,6 +170,9 @@ const MAIL_JOURNAL_DDL = `
   CREATE TABLE inbound_email (
     scope_account TEXT NOT NULL,
     mail_key TEXT NOT NULL,
+    mailbox_local_part TEXT,
+    conversation_id TEXT,
+    stamp_value TEXT NOT NULL,
     rfc_message_id TEXT NOT NULL,
     sender_email TEXT NOT NULL,
     data_sha256 TEXT NOT NULL,
@@ -210,15 +227,18 @@ const MAIL_JOURNAL_DDL = `
     scope_account TEXT NOT NULL,
     rfc_message_id TEXT NOT NULL,
     recipient_email TEXT NOT NULL,
+    sender_local_part TEXT NOT NULL,
     bounce_token TEXT NOT NULL UNIQUE,
     signed_rfc822 BLOB NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'sent', 'failed', 'bounced')),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'submitting', 'uncertain', 'sent', 'failed', 'bounced')),
     attempts INTEGER NOT NULL DEFAULT 0,
+    submission_started_at INTEGER,
     next_attempt_at INTEGER NOT NULL,
     last_error TEXT,
     created_at INTEGER NOT NULL,
     UNIQUE (scope_account, rfc_message_id, recipient_email),
-    FOREIGN KEY (scope_account, rfc_message_id) REFERENCES mail_message(scope_account, rfc_message_id)
+    FOREIGN KEY (scope_account, rfc_message_id) REFERENCES mail_message(scope_account, rfc_message_id),
+    FOREIGN KEY (sender_local_part) REFERENCES issued_mailbox(local_part)
   );
   CREATE INDEX idx_outbound_job_due ON outbound_job(state, next_attempt_at);
 `;
@@ -271,6 +291,14 @@ export interface AdmitInboundEmailInput {
   readonly scopeAccount: string;
   /** Mail key of the DATA bytes. It is the row key: the same key is the same mail. */
   readonly mailKey: string;
+  /** Exact stamp intended when this delivery is accepted; retained while held. */
+  readonly stampValue: string;
+  /** Envelope recipient for an issued mailbox. Part of the caller's delivery key. */
+  readonly mailboxLocalPart?: string;
+  /** Immutable conversation assignment of the issued mailbox, including while held. */
+  readonly conversationId?: string;
+  /** Canonical RFC-content key for echo detection when mailKey includes an envelope recipient. */
+  readonly echoMailKey?: string;
   /**
    * The sole valid ID of the `Message-ID` header; undefined when absent or `bad_message_id`.
    * The journal derives the stored identifier: this value, or `noMessageIdFor(mailKey)` when
@@ -318,6 +346,8 @@ export type AdmitInboundEmailResult =
 export interface RelayInboundEmailInput {
   readonly scopeAccount: string;
   readonly mailKey: string;
+  /** Explicitly issued mailbox conversation. It overrides unrelated RFC reply headers. */
+  readonly conversationId?: string;
   /** Value the gateway will stamp the send with, as decimal text. */
   readonly stampValue: string;
   /** First valid ID of `In-Reply-To`, if any. */
@@ -399,6 +429,8 @@ export interface AddOutboundJobInput {
   /** `message.rfcMessageId` from this unit's `bridged` result: the identifier the email goes out under. */
   readonly rfcMessageId: string;
   readonly recipientEmail: string;
+  /** Issued alias for this exact scoped conversation; replies return through it. */
+  readonly senderLocalPart: string;
   readonly signedRfc822: StoredMailBytes;
   readonly nextAttemptAtMs: number;
 }
@@ -435,6 +467,7 @@ const DECIMAL = /^(0|[1-9][0-9]{0,77})$/;
 const DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 // Printable ASCII with one or more `@`, no space; the recipient grammar itself is the ingest stage's.
 const ADDRESS = /^[\x21-\x7e]+@[\x21-\x7e]+$/;
+const MAILBOX_LOCAL_PART = /^[a-z0-9][a-z0-9_-]{2,31}$/;
 
 const CONTESTED_LABEL = 'contested';
 const NO_MESSAGE_ID_LABEL = 'no-message-id';
@@ -446,6 +479,15 @@ function refuse(what: string): never {
 function requireMatch(label: string, value: unknown, pattern: RegExp): string {
   if (typeof value !== 'string' || !pattern.test(value)) refuse(`${label}: not in the required form`);
   return value as string;
+}
+
+function requireMailboxLocalPart(value: unknown): string {
+  if (typeof value !== 'string') refuse('mailbox local part: not a string');
+  const canonical = (value as string).trim().toLowerCase();
+  if (!MAILBOX_LOCAL_PART.test(canonical) || isOperationalLocalPart(canonical)) {
+    refuse('mailbox local part: invalid or reserved');
+  }
+  return canonical;
 }
 
 function requireHeldMessageId(value: unknown): string {
@@ -545,6 +587,9 @@ function toInboundEmail(row: InboundEmailRow): InboundEmailRecord {
   return {
     scopeAccount: row.scope_account,
     mailKey: row.mail_key,
+    mailboxLocalPart: optional(row.mailbox_local_part),
+    conversationId: optional(row.conversation_id),
+    stampValue: row.stamp_value,
     rfcMessageId: row.rfc_message_id,
     senderEmail: row.sender_email,
     dataSha256: row.data_sha256,
@@ -608,6 +653,7 @@ function toJob(row: OutboundJobJoinedRow): OutboundJobRecord {
     scopeAccount: row.scope_account,
     rfcMessageId: row.rfc_message_id,
     recipientEmail: row.recipient_email,
+    senderLocalPart: row.sender_local_part,
     frankMessageId: row.frank_message_id,
     conversationId: row.conversation_id,
     payloadDigest: row.payload_digest,
@@ -615,6 +661,7 @@ function toJob(row: OutboundJobJoinedRow): OutboundJobRecord {
     signedRfc822: decodeStoredBytes(row.signed_rfc822),
     state: row.state,
     attempts: row.attempts,
+    submissionStartedAtMs: optional(row.submission_started_at),
     nextAttemptAtMs: row.next_attempt_at,
     lastError: optional(row.last_error),
     createdAtMs: row.created_at,
@@ -631,15 +678,22 @@ export class MailJournal {
   private readonly now: () => number;
   private readonly statements = new Map<string, StatementSync>();
 
+  /** A credit decision and journal transition are atomic only on this exact connection. */
+  assertCreditLedger(ledger: CreditLedger): void {
+    if (ledger !== this.ledger) {
+      throw new MailJournalStateError('Mail journal and credit ledger use different connections');
+    }
+  }
+
   /**
    * Opens the journal on the ledger's SQLite connection, in one transaction.
    *
    * - `chainIdentifier` must be an `id` of the protocol chain registry, exactly:
    *   an alias, another spelling or an inherited property name is refused
    *   before any pragma or statement, because the first open stores it for good.
-   * - No journal table present: creates all seven and the marker row.
-   * - Journal tables present: the marker row must exist, say format 2 and name
-   *   the same chain identifier and gateway account, and all seven tables must
+   * - No journal table present: creates all eight and the marker row.
+   * - Journal tables present: the marker row must exist, say format 3 and name
+   *   the same chain identifier and gateway account, and all eight tables must
    *   be there. Anything else throws `MailJournalOpenError` and changes nothing.
    * - A ledger with no SQLite connection (Postgres) is refused.
    * - A refused open leaves the connection as it found it: the busy timeout and
@@ -807,6 +861,44 @@ export class MailJournal {
   // Reads (one statement each)
   // -------------------------------------------------------------------------
 
+  /** Only rows explicitly issued by this journal can resolve inbound SMTP recipients. */
+  issuedMailbox(localPart: string): { scopeAccount: string; conversationId?: string } | undefined {
+    const canonical = requireMailboxLocalPart(localPart);
+    const row = this.get<{ scope_account: string; conversation_id: string | null }>(
+      'SELECT scope_account, conversation_id FROM issued_mailbox WHERE local_part = ?',
+      canonical
+    );
+    return row && {
+      scopeAccount: row.scope_account,
+      ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+    };
+  }
+
+  /** Explicit, immutable issuance. Repeating the same assignment is safe; changing its owner is refused. */
+  issueMailbox(input: { localPart: string; scopeAccount: string; conversationId?: string }): void {
+    const localPart = requireMailboxLocalPart(input.localPart);
+    const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
+    const conversation = input.conversationId === undefined
+      ? null
+      : requireMatch('conversationId', input.conversationId, FRANK_ID);
+    this.ledger.atomic(() => {
+      const existing = this.get<{ scope_account: string; conversation_id: string | null }>(
+        'SELECT scope_account, conversation_id FROM issued_mailbox WHERE local_part = ?',
+        localPart
+      );
+      if (existing) {
+        if (existing.scope_account !== scope || existing.conversation_id !== conversation) {
+          throw new MailJournalStateError('Mailbox local part is already issued to another owner or conversation');
+        }
+        return;
+      }
+      this.run(
+        'INSERT INTO issued_mailbox (local_part, scope_account, conversation_id, created_at) VALUES (?, ?, ?, ?)',
+        localPart, scope, conversation, this.now()
+      );
+    });
+  }
+
   findMailThread(scopeAccount: string, conversationId: string): MailThreadRecord | undefined {
     requireMatch('scopeAccount', scopeAccount, SCOPE_ACCOUNT);
     requireMatch('conversationId', conversationId, FRANK_ID);
@@ -848,6 +940,35 @@ export class MailJournal {
     return row && toInboundEmail(row);
   }
 
+  /** Bounded, stable page for a host to revisit authenticated mail after credit arrives. */
+  listHeldInboundEmails(limit = 100, after?: { scopeAccount: string; mailKey: string }): InboundEmailRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');
+    const scope = after === undefined ? '' : requireMatch('after.scopeAccount', after.scopeAccount, SCOPE_ACCOUNT);
+    const key = after === undefined ? '' : requireMatch('after.mailKey', after.mailKey, HEX_64);
+    return this.all<InboundEmailRow>(
+      `SELECT * FROM inbound_email WHERE disposition = 'held' AND expires_at > ?
+         AND (scope_account > ? OR (scope_account = ? AND mail_key > ?))
+       ORDER BY scope_account, mail_key LIMIT ?`,
+      this.now(), scope, scope, key, limit
+    ).map(toInboundEmail);
+  }
+
+  /** One atomic credit debit and original-slot creation for a previously held mail. */
+  releaseHeldInboundEmail(input: Omit<RelayInboundEmailInput, 'stampValue'>): RelayInboundEmailResult | undefined {
+    const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
+    const key = requireMatch('mailKey', input.mailKey, HEX_64);
+    return this.ledger.atomic(() => {
+      const row = this.inboundEmailRow(scope, key);
+      if (!row || row.disposition !== 'held') return undefined;
+      if (row.expires_at === null || row.expires_at <= this.now()) {
+        this.expireHeldRow(row);
+        return undefined;
+      }
+      if (!this.ledger.consumeCredit(row.sender_email, scope)) return undefined;
+      return this.relayInboundEmail({ ...input, stampValue: row.stamp_value });
+    });
+  }
+
   findFrankInbound(payloadDigest: string): FrankInboundRecord | undefined {
     requireMatch('payloadDigest', payloadDigest, HEX_64);
     const row = this.frankInboundRow(payloadDigest);
@@ -869,6 +990,21 @@ export class MailJournal {
     return this.get<{ n: number }>(
       "SELECT COUNT(*) AS n FROM frank_send WHERE state IN ('staged', 'sending', 'linked')"
     )!.n;
+  }
+
+  /** Pending send slots in stable order for a host recovery pass. Never mutates them. */
+  listUnfinishedFrankSends(limit = 100, afterSlotId = 0): FrankSendRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+      refuse('limit: not an integer from 1 to 1000');
+    }
+    if (!Number.isSafeInteger(afterSlotId) || afterSlotId < 0) {
+      refuse('afterSlotId: not a non-negative integer');
+    }
+    return this.all<FrankSendRow>(
+      "SELECT * FROM frank_send WHERE state IN ('staged', 'sending', 'linked') AND slot_id > ? ORDER BY slot_id LIMIT ?",
+      afterSlotId,
+      limit
+    ).map(toSlot);
   }
 
   /** Conversations a Frank user opened in this scope at or after `sinceMs`: the quota's count. */
@@ -936,6 +1072,13 @@ export class MailJournal {
   admitInboundEmail(input: AdmitInboundEmailInput): AdmitInboundEmailResult {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
     const mailKey = requireMatch('mailKey', input.mailKey, HEX_64);
+    const stampValue = requireMatch('stampValue', input.stampValue, DECIMAL);
+    const mailboxLocalPart = input.mailboxLocalPart === undefined ? null
+      : requireMatch('mailboxLocalPart', input.mailboxLocalPart, /^[a-z0-9][a-z0-9_-]{2,31}$/);
+    const conversationId = input.conversationId === undefined ? null
+      : requireMatch('conversationId', input.conversationId, FRANK_ID);
+    const echoMailKey = input.echoMailKey === undefined ? mailKey
+      : requireMatch('echoMailKey', input.echoMailKey, HEX_64);
     const header =
       input.messageIdHeader === undefined ? undefined : requireRfcId('messageIdHeader', input.messageIdHeader);
     const rfcId =
@@ -960,6 +1103,8 @@ export class MailJournal {
       for (const row of due) this.expireHeldRow(row);
 
       const stored = this.inboundEmailRow(scope, mailKey);
+      if (stored && (stored.mailbox_local_part !== mailboxLocalPart || stored.conversation_id !== conversationId))
+        throw new MailJournalStateError('Inbound delivery key has a different mailbox assignment');
       if (stored && stored.disposition !== 'expired') return { kind: 'duplicate', email: toInboundEmail(stored) };
 
       // Mail key against mail key. An outbound row's item key is never consulted here.
@@ -967,7 +1112,7 @@ export class MailJournal {
         this.get<{ n: number }>(
           "SELECT 1 AS n FROM mail_message WHERE scope_account = ? AND mail_key = ? AND direction = 'frank_to_email' LIMIT 1",
           scope,
-          mailKey
+          echoMailKey
         ) !== undefined;
 
       let displaced: InboundEmailRecord | undefined;
@@ -1002,10 +1147,11 @@ export class MailJournal {
       if (stored) {
         this.run(
           `UPDATE inbound_email
-              SET rfc_message_id = ?, sender_email = ?, data_sha256 = ?, raw = ?, disposition = ?,
+              SET rfc_message_id = ?, stamp_value = ?, sender_email = ?, data_sha256 = ?, raw = ?, disposition = ?,
                   held_message_id = NULL, expires_at = ?
             WHERE scope_account = ? AND mail_key = ? AND disposition = 'expired'`,
           rfcId,
+          stampValue,
           sender,
           dataSha256,
           encodeStoredBytes(input.raw),
@@ -1017,10 +1163,13 @@ export class MailJournal {
       } else {
         this.run(
           `INSERT INTO inbound_email
-             (scope_account, mail_key, rfc_message_id, sender_email, data_sha256, raw, disposition, expires_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (scope_account, mail_key, mailbox_local_part, conversation_id, stamp_value, rfc_message_id, sender_email, data_sha256, raw, disposition, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           scope,
           mailKey,
+          mailboxLocalPart,
+          conversationId,
+          stampValue,
           rfcId,
           sender,
           dataSha256,
@@ -1117,6 +1266,8 @@ export class MailJournal {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
     const mailKey = requireMatch('mailKey', input.mailKey, HEX_64);
     const stampValue = requireMatch('stampValue', input.stampValue, DECIMAL);
+    const issuedConversationId = input.conversationId === undefined
+      ? undefined : requireMatch('conversationId', input.conversationId, FRANK_ID);
     const inReplyTo =
       input.inReplyTo === undefined ? undefined : requireRfcId('inReplyTo', input.inReplyTo);
     const references = (input.references ?? []).map((id, i) => requireRfcId(`references[${i}]`, id));
@@ -1125,6 +1276,10 @@ export class MailJournal {
     return this.ledger.atomic((): RelayInboundEmailResult => {
       const email = this.inboundEmailRow(scope, mailKey);
       if (!email) throw new MailJournalStateError('No inbound email with this scope and mail key');
+      if (stampValue !== email.stamp_value)
+        throw new MailJournalStateError('Inbound send stamp differs from admitted intent');
+      if (issuedConversationId && email.conversation_id && issuedConversationId !== email.conversation_id)
+        throw new MailJournalStateError('Issued mailbox conversation differs from stored inbound email');
 
       const existing = this.slotBySource('inbound_email', sourceKey);
       if (existing) {
@@ -1146,9 +1301,12 @@ export class MailJournal {
         throw new MailJournalStateError(`Inbound email is ${email.disposition}; it cannot be relayed`);
       }
 
-      const parent = this.resolveParent(scope, inReplyTo, references);
+      const resolvedParent = this.resolveParent(scope, inReplyTo, references);
+      const assignedConversationId = email.conversation_id ?? issuedConversationId;
+      const parent = assignedConversationId && resolvedParent?.conversation_id !== assignedConversationId
+        ? undefined : resolvedParent;
       const frankMessageId = randomFrankId();
-      const conversationId = parent?.conversation_id ?? frankMessageId;
+      const conversationId = assignedConversationId ?? parent?.conversation_id ?? frankMessageId;
       const contested = this.messageRow(scope, email.rfc_message_id) !== undefined;
       const rfcId = contested ? this.contestedIdFor(mailKey) : email.rfc_message_id;
       if (contested && this.messageRow(scope, rfcId)) {
@@ -1182,7 +1340,7 @@ export class MailJournal {
         in_reply_to: inReplyTo ?? null,
         created_at: now,
       });
-      if (!parent) {
+      if (!this.get('SELECT 1 AS n FROM mail_thread WHERE scope_account = ? AND conversation_id = ?', scope, conversationId)) {
         this.run(
           "INSERT INTO mail_thread (scope_account, conversation_id, origin, created_at) VALUES (?, ?, 'email', ?)",
           scope,
@@ -1435,6 +1593,7 @@ export class MailJournal {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
     const rfcId = requireRfcId('rfcMessageId', input.rfcMessageId);
     const recipient = requireAddress('recipientEmail', input.recipientEmail);
+    const senderLocalPart = requireMailboxLocalPart(input.senderLocalPart);
     const digest = requireStoredBytes('signedRfc822', input.signedRfc822);
     const nextAttemptAt = requireTime('nextAttemptAtMs', input.nextAttemptAtMs);
 
@@ -1443,19 +1602,24 @@ export class MailJournal {
       if (message?.direction !== 'frank_to_email') {
         throw new MailJournalStateError('No bridged message under this identifier in this scope');
       }
+      const issued = this.issuedMailbox(senderLocalPart);
+      if (issued?.scopeAccount !== scope || issued.conversationId !== message.conversation_id) {
+        throw new MailJournalStateError('Outbound sender must be an issued alias for this conversation');
+      }
       const key = [scope, rfcId, recipient] as const;
       const select = `${JOB_SELECT} WHERE j.scope_account = ? AND j.rfc_message_id = ? AND j.recipient_email = ?`;
       const stored = this.get<OutboundJobJoinedRow>(select, ...key);
       if (stored) {
-        const same = storedDigest(stored.signed_rfc822) === digest;
+        const same = storedDigest(stored.signed_rfc822) === digest && stored.sender_local_part === senderLocalPart;
         return { kind: same ? 'existing' : 'key_taken', job: toJob(stored) };
       }
       this.run(
         `INSERT INTO outbound_job
-           (scope_account, rfc_message_id, recipient_email, bounce_token, signed_rfc822,
+           (scope_account, rfc_message_id, recipient_email, sender_local_part, bounce_token, signed_rfc822,
             state, next_attempt_at, created_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
         ...key,
+        senderLocalPart,
         crypto.randomBytes(16).toString('hex'),
         encodeStoredBytes(input.signedRfc822),
         nextAttemptAt,
@@ -1465,9 +1629,20 @@ export class MailJournal {
     });
   }
 
-  /** `pending` → `sent`, counting the attempt. One transaction. Already `sent`: nothing written. */
+  /** Persist the externally visible send attempt before handing bytes to any provider. */
+  claimOutboundJob(jobId: number): OutboundJobRecord {
+    return this.ledger.atomic(() => {
+      const job = this.jobRow(jobId);
+      if (job.state !== 'pending')
+        throw new MailJournalStateError(`Outbound job ${jobId} is ${job.state}; it cannot be claimed again`);
+      this.run("UPDATE outbound_job SET state = 'submitting', submission_started_at = ? WHERE job_id = ?", this.now(), job.job_id);
+      return toJob(this.jobRow(jobId));
+    });
+  }
+
+  /** `submitting` → `sent` after the provider confirms acceptance. */
   markOutboundJobSent(jobId: number): OutboundJobRecord {
-    return this.moveJob(jobId, 'sent', ['pending'], (job) =>
+    return this.moveJob(jobId, 'sent', ['submitting'], (job) =>
       this.run("UPDATE outbound_job SET state = 'sent', attempts = attempts + 1 WHERE job_id = ?", job.job_id)
     );
   }
@@ -1481,11 +1656,11 @@ export class MailJournal {
     requireTime('nextAttemptAtMs', nextAttemptAtMs);
     return this.ledger.atomic(() => {
       const job = this.jobRow(jobId);
-      if (job.state !== 'pending') {
+      if (job.state !== 'submitting') {
         throw new MailJournalStateError(`Outbound job ${jobId} is ${job.state}; not changed`);
       }
       this.run(
-        'UPDATE outbound_job SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE job_id = ?',
+        "UPDATE outbound_job SET state = 'pending', attempts = attempts + 1, next_attempt_at = ?, last_error = ?, submission_started_at = NULL WHERE job_id = ?",
         nextAttemptAtMs,
         String(error),
         jobId
@@ -1494,15 +1669,30 @@ export class MailJournal {
     });
   }
 
-  /** `pending` → `failed`, counting the attempt. One transaction. Already `failed`: nothing written. */
+  /** `submitting` → `failed` after explicit permanent provider rejection. */
   markOutboundJobFailed(jobId: number, error: string): OutboundJobRecord {
-    return this.moveJob(jobId, 'failed', ['pending'], (job) =>
+    return this.moveJob(jobId, 'failed', ['submitting'], (job) =>
       this.run(
         "UPDATE outbound_job SET state = 'failed', attempts = attempts + 1, last_error = ? WHERE job_id = ?",
         String(error),
         job.job_id
       )
     );
+  }
+
+  /** Ambiguous outcome: never automatically retry this job, even after a restart. */
+  markOutboundJobUncertain(jobId: number, error: string): OutboundJobRecord {
+    return this.moveJob(jobId, 'uncertain', ['submitting'], (job) =>
+      this.run("UPDATE outbound_job SET state = 'uncertain', attempts = attempts + 1, last_error = ? WHERE job_id = ?", String(error), job.job_id)
+    );
+  }
+
+  /** Operator reconciliation queue; `submitting` includes crashes during provider calls. */
+  listUncertainOutboundJobs(limit = 100): OutboundJobRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');
+    return this.all<OutboundJobJoinedRow>(
+      `${JOB_SELECT} WHERE j.state IN ('submitting', 'uncertain') ORDER BY j.submission_started_at, j.job_id LIMIT ?`, limit
+    ).map(toJob);
   }
 
   /**
@@ -1515,7 +1705,7 @@ export class MailJournal {
     return this.ledger.atomic(() => {
       const job = this.get<OutboundJobRow>('SELECT * FROM outbound_job WHERE bounce_token = ?', bounceToken);
       if (!job) return undefined;
-      if (job.state === 'pending' || job.state === 'sent') {
+      if (job.state === 'pending' || job.state === 'submitting' || job.state === 'uncertain' || job.state === 'sent') {
         this.run("UPDATE outbound_job SET state = 'bounced' WHERE job_id = ?", job.job_id);
       }
       return toJob(this.jobRow(job.job_id));

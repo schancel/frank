@@ -49,6 +49,10 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
           mockLocalAddress = identity.address.raw;
           mockLocalSubject = identity.compressedPubKey.toString("hex");
           return {
+            family: "evm",
+            chainIdentifier: "monad-testnet",
+            getNativeOperations: () => [],
+            resumeNativeOperation: jest.fn(),
             identity,
             getReceiveAddress: mockGetReceiveAddress,
             close: jest.fn().mockResolvedValue(undefined),
@@ -624,8 +628,8 @@ describe("FrankBotHost Reliability Features", () => {
   });
 
   describe("Faucet messaging account funding", () => {
-    // The faucet pays grants straight from the funding wallet, but its welcome message is paid
-    // like any bot's: from stamp accounts funded by its own receive address.
+    // Grants use the faucet's durable native wallet. Existing optional top-ups still fund
+    // its receive address like any bot's; they are outside grant authorization.
     it("funds the faucet's receive address so its welcome message can be paid, and nothing else", async () => {
       const faucet: FrankBotDefinition = {
         id: "faucet",

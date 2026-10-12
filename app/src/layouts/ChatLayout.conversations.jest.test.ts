@@ -68,6 +68,12 @@ jest.mock('quasar', () => ({
   ...jest.requireActual('quasar'),
   useQuasar: () => ({ screen: { width: 1024 }, dark: { isActive: false } }),
 }))
+// These conversation-identity fixtures are ordinary email domains, with no native service.
+// DNS transport/error behavior is covered by discovery and contact-picker regressions.
+jest.mock('../utils/frank-domain-discovery', () => ({
+  ...jest.requireActual('../utils/frank-domain-discovery'),
+  discoverFrankDomain: jest.fn(async () => []),
+}))
 jest.mock('../utils/directory-peer', () => ({
   fetchContactProfile: jest.fn(async () => undefined),
   contactLookupFailure: () => 'not-found',
@@ -650,6 +656,7 @@ it('New conversation infers email and creates independent equal and blank roots,
       const page = app.root.getComponent(AddContact)
       await page.get('[data-test="address-input"]').setValue(recipient)
       await page.get('[data-test="topic-input"]').setValue(subject)
+      await settle()
       await page.get('[data-test="start-email-thread-btn"]').trigger('click')
       await settle()
       const id = app.chats.activeConversationId as string

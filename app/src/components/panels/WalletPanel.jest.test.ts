@@ -47,6 +47,7 @@ function render() {
         QBadge: true,
         Codex32BackupDialog: true,
         RenameWalletDialog: true,
+        MailboxStatusIndicator: true,
       },
       directives: { ripple: {} },
     },

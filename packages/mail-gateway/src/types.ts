@@ -143,6 +143,9 @@ export type InboundEmailDisposition = 'relay' | 'held' | 'released' | 'echo' | '
 export interface InboundEmailRecord {
   readonly scopeAccount: string;
   readonly mailKey: string;
+  readonly mailboxLocalPart?: string;
+  readonly conversationId?: string;
+  readonly stampValue: string;
   /** The identifier the mail claimed (its Message-ID, or the synthetic one). */
   readonly rfcMessageId: string;
   readonly senderEmail: string;
@@ -209,7 +212,7 @@ export interface FrankInboundRecord {
   readonly reason?: string;
 }
 
-export type OutboundJobState = 'pending' | 'sent' | 'failed' | 'bounced';
+export type OutboundJobState = 'pending' | 'submitting' | 'uncertain' | 'sent' | 'failed' | 'bounced';
 
 export interface OutboundJobRecord {
   readonly jobId: number;
@@ -217,6 +220,7 @@ export interface OutboundJobRecord {
   /** The identifier the email goes out under; with the scope and the recipient, the job's key. */
   readonly rfcMessageId: string;
   readonly recipientEmail: string;
+  readonly senderLocalPart: string;
   /** Read from the job's `mail_message` row, as are `conversationId` and `payloadDigest`. */
   readonly frankMessageId: string;
   readonly conversationId: string;
@@ -225,6 +229,7 @@ export interface OutboundJobRecord {
   readonly signedRfc822: StoredMailBytes;
   readonly state: OutboundJobState;
   readonly attempts: number;
+  readonly submissionStartedAtMs?: number;
   readonly nextAttemptAtMs: number;
   readonly lastError?: string;
   readonly createdAtMs: number;

@@ -1,5 +1,5 @@
 /**
- * Mail journal (#1237 G1, format 2 from G1b). File-backed SQLite in a temp
+ * Mail journal (#1237 G1, format 6 with issued outbound aliases). File-backed SQLite in a temp
  * directory, real close and reopen, no database mocks. Each test names the
  * later-stage failure it prevents. `J1`..`J25` are the acceptance tests of the
  * contract's section 21.6.
@@ -139,6 +139,7 @@ function admit(journal: MailJournal, scope: string, name: string, messageIdHeade
   return journal.admitInboundEmail({
     scopeAccount: scope,
     mailKey: key(name),
+    stampValue: '1000',
     messageIdHeader,
     senderEmail: over.sender ?? SENDER,
     dataSha256: sha(bytes),
@@ -151,7 +152,7 @@ function relay(
   journal: MailJournal,
   scope: string,
   name: string,
-  parents: { inReplyTo?: string; references?: string[] } = {}
+  parents: { inReplyTo?: string; references?: string[]; conversationId?: string } = {}
 ) {
   return journal.relayInboundEmail({ scopeAccount: scope, mailKey: key(name), stampValue: '1000', ...parents });
 }
@@ -201,10 +202,17 @@ function bridged(journal: MailJournal, scope: string, name: string, authoredMess
 }
 
 function addJob(journal: MailJournal, scope: string, rfcMessageId: string, recipient: string, body = 'signed bytes') {
+  const message = journal.findMailMessage(scope, rfcMessageId);
+  const senderLocalPart = message
+    ? `thread${sha(`${scope}:${message.conversationId}`).slice(0, 26)}`
+    : 'threadmissing';
+  if (message?.direction === 'frank_to_email')
+    journal.issueMailbox({ localPart: senderLocalPart, scopeAccount: scope, conversationId: message.conversationId });
   return journal.addOutboundJob({
     scopeAccount: scope,
     rfcMessageId,
     recipientEmail: recipient,
+    senderLocalPart,
     signedRfc822: { kind: 'inline', bytes: Buffer.from(body) },
     nextAttemptAtMs: 100,
   });
@@ -300,7 +308,7 @@ afterEach(() => {
 
 describe('open, format marker and the single connection', () => {
   // Prevents: a later stage writing through a connection that loses a committed row on power loss.
-  it('creates the seven tables and the marker in a durable, exclusively locked database', () => {
+  it('creates the eight tables and the marker in a durable, exclusively locked database', () => {
     const { db, journal } = open();
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -318,7 +326,7 @@ describe('open, format marker and the single connection', () => {
     expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
     expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' });
     expect(db.prepare('PRAGMA locking_mode').get()).toEqual({ locking_mode: 'exclusive' });
-    expect(MAIL_JOURNAL_FORMAT).toBe(2);
+    expect(MAIL_JOURNAL_FORMAT).toBe(6);
     expect(journal.frankCursor()).toEqual({});
   });
 
@@ -356,11 +364,11 @@ describe('open, format marker and the single connection', () => {
   // Prevents: a build silently re-creating or reinterpreting a journal it cannot read, which
   // would forget which mails were already relayed and pay for them again.
   it.each([
-    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 2 only/],
-    ['a later format', 'UPDATE mail_journal_meta SET format = 3', /format 3 is not supported/],
+    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 6 only/],
+    ['a later format', 'UPDATE mail_journal_meta SET format = 7', /format 7 is not supported/],
     ['no marker row', 'DELETE FROM mail_journal_meta', /format marker is missing/],
     ['no marker table', 'DROP TABLE mail_journal_meta', /format marker is missing/],
-    ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (2), (2)', /format marker is missing/],
+    ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (3), (3)', /format marker is missing/],
     ['a missing table', 'DROP TABLE outbound_job', /missing tables \(outbound_job\)/],
   ])('refuses a database with %s and leaves every row as it was', (_name, damage, message) => {
     const first = open();
@@ -440,6 +448,39 @@ describe('open, format marker and the single connection', () => {
     const raw = new DatabaseSync(file);
     expect(count(raw, "sqlite_master WHERE name LIKE 'mail_%'")).toBe(0);
     raw.close();
+  });
+});
+
+describe('explicit mailbox issuance', () => {
+  it('resolves only durable issued local parts and keeps their owner after reopen', async () => {
+    const { journal, db } = open();
+    expect(journal.issuedMailbox('alice')).toBeUndefined();
+    expect(await packageIndex.createIssuedMailboxLookup(journal)('alice')).toBeUndefined();
+    journal.issueMailbox({ localPart: 'Alice', scopeAccount: ALICE, conversationId: frankId(11) });
+    const afterIssue = dump(db);
+    journal.issueMailbox({ localPart: 'alice', scopeAccount: ALICE, conversationId: frankId(11) });
+    expect(dump(db)).toBe(afterIssue);
+    expect(journal.issuedMailbox('ALICE')).toEqual({ scopeAccount: ALICE, conversationId: frankId(11) });
+    expect(await packageIndex.createIssuedMailboxLookup(journal)('ALICE')).toEqual({
+      accountAddress: ALICE,
+      conversationId: frankId(11),
+    });
+    expect(reopen().journal.issuedMailbox('alice')).toEqual({
+      scopeAccount: ALICE,
+      conversationId: frankId(11),
+    });
+  });
+
+  it('refuses conflicts, raw account addresses and operational aliases without changing ownership', () => {
+    const { journal, db } = open();
+    journal.issueMailbox({ localPart: 'alice', scopeAccount: ALICE });
+    const before = dump(db);
+    expect(() => journal.issueMailbox({ localPart: 'ALICE', scopeAccount: BOB })).toThrow(MailJournalStateError);
+    expect(() => journal.issueMailbox({ localPart: 'alice', scopeAccount: ALICE, conversationId: frankId(12) })).toThrow(MailJournalStateError);
+    expect(() => journal.issueMailbox({ localPart: 'SeCuRiTy', scopeAccount: BOB })).toThrow(MailJournalArgumentError);
+    expect(() => journal.issueMailbox({ localPart: `0x${'1'.repeat(40)}`, scopeAccount: BOB })).toThrow(MailJournalArgumentError);
+    expect(journal.issuedMailbox('unknown')).toBeUndefined();
+    expect(dump(db)).toBe(before);
   });
 });
 
@@ -926,6 +967,26 @@ describe('email → Frank: holder, repeat and contested', () => {
     expect(bobReply.message.conversationId).toBe(bobReply.slot.frankMessageId);
   });
 
+  it('routes issued aliases to their own conversation despite cross-thread RFC headers', () => {
+    let { journal } = open();
+    const firstId = frankId(401);
+    const secondId = frankId(402);
+    journal.issueMailbox({ localPart: 'first', scopeAccount: ALICE, conversationId: firstId });
+    journal.issueMailbox({ localPart: 'second', scopeAccount: ALICE, conversationId: secondId });
+    admit(journal, ALICE, 'first-mail', '<first@x.example>');
+    const first = relay(journal, ALICE, 'first-mail', { conversationId: journal.issuedMailbox('first')!.conversationId });
+    journal = reopen().journal;
+    admit(journal, ALICE, 'second-mail', '<second@x.example>');
+    const second = relay(journal, ALICE, 'second-mail', {
+      conversationId: journal.issuedMailbox('second')!.conversationId,
+      inReplyTo: '<first@x.example>',
+    });
+    expect(first.slot.conversationId).toBe(firstId);
+    expect(second.slot.conversationId).toBe(secondId);
+    expect(journal.findMailThread(ALICE, firstId)).toBeDefined();
+    expect(journal.findMailThread(ALICE, secondId)).toBeDefined();
+  });
+
   // Prevents: two arrivals of one ID both becoming its holder. Only one connection can exist
   // (see the lock test), and on it each decision is one transaction.
   it('two different mails claiming one ID, admitted together and relayed back to back, give exactly one holder', () => {
@@ -950,7 +1011,7 @@ describe('email → Frank: holder, repeat and contested', () => {
     admit(journal, ALICE, 'one', '<m1@x.example>');
     admit(journal, ALICE, 'two', '<m1@x.example>');
     const tricky = Buffer.from('blob://looks-like-a-pointer');
-    const common = { scopeAccount: ALICE, senderEmail: SENDER, principalHasCredit: false };
+    const common = { scopeAccount: ALICE, senderEmail: SENDER, stampValue: '1000', principalHasCredit: false };
     journal.admitInboundEmail({
       ...common,
       mailKey: key('tricky'),
@@ -1077,6 +1138,7 @@ describe('boundary refusals', () => {
     const good = {
       scopeAccount: ALICE,
       mailKey: key('m1'),
+      stampValue: '1000',
       messageIdHeader: '<m1@x.example>',
       senderEmail: SENDER,
       dataSha256: sha('x'),
@@ -1093,6 +1155,7 @@ describe('boundary refusals', () => {
       { senderEmail: 'carol' },
       { senderEmail: 'carol @mail.example' },
       { dataSha256: 'zz' },
+      { stampValue: '01' },
       { principalHasCredit: undefined as never },
       { principalHasCredit: 1 as never },
     ]) {
@@ -1277,6 +1340,8 @@ describe('Frank → email and the cross-direction rule', () => {
 
     const one = createdJob(first.journal, ALICE, '<f1@frank.org>', 'dave@mail.example').jobId;
     const two = createdJob(first.journal, ALICE, '<f1@frank.org>', 'erin@mail.example').jobId;
+    first.journal.claimOutboundJob(one);
+    first.journal.claimOutboundJob(two);
     first.journal.markOutboundJobFailed(one, '550 no');
     first.journal.markOutboundJobFailed(two, '550 no');
 
@@ -1300,6 +1365,19 @@ describe('Frank → email and the cross-direction rule', () => {
 });
 
 describe('outbound jobs and send slots', () => {
+  it('persists an exclusive send claim before any provider effect and holds ambiguous outcomes for reconciliation', () => {
+    const first = open();
+    const message = bridged(first.journal, ALICE, 'claim', '<claim@frank.org>').message;
+    const job = createdJob(first.journal, ALICE, message.rfcMessageId, 'dave@mail.example');
+    expect(first.journal.claimOutboundJob(job.jobId)).toMatchObject({ state: 'submitting', submissionStartedAtMs: expect.any(Number) });
+    expect(() => first.journal.claimOutboundJob(job.jobId)).toThrow(MailJournalStateError);
+    const again = reopen().journal;
+    expect(again.listDueOutboundJobs(100000, 10)).toEqual([]);
+    expect(again.listUncertainOutboundJobs().map((row) => row.jobId)).toEqual([job.jobId]);
+    expect(again.markOutboundJobUncertain(job.jobId, 'provider timeout')).toMatchObject({ state: 'uncertain', attempts: 1 });
+    expect(reopen().journal.listDueOutboundJobs(100000, 10)).toEqual([]);
+    expect(() => reopen().journal.claimOutboundJob(job.jobId)).toThrow(MailJournalStateError);
+  });
   // C5, C6. Prevents: a job re-created with new bytes (a second, different email for one
   // message), an email with no recorded message, and a guessable bounce address changing state.
   it('adds one job per recipient, never replaces its bytes, and moves it only along its states', () => {
@@ -1333,15 +1411,18 @@ describe('outbound jobs and send slots', () => {
 
     expect(journal.listDueOutboundJobs(99, 10)).toEqual([]);
     expect(journal.listDueOutboundJobs(100, 10).map((j) => j.jobId)).toEqual([one.job.jobId, two.job.jobId]);
+    expect(journal.claimOutboundJob(one.job.jobId)).toMatchObject({ state: 'submitting' });
     expect(journal.deferOutboundJob(one.job.jobId, 500, '451 later')).toMatchObject({
       state: 'pending',
       attempts: 1,
       nextAttemptAtMs: 500,
       lastError: '451 later',
     });
+    journal.claimOutboundJob(one.job.jobId);
     expect(journal.markOutboundJobSent(one.job.jobId)).toMatchObject({ state: 'sent', attempts: 2 });
     expect(journal.markOutboundJobSent(one.job.jobId)).toMatchObject({ state: 'sent', attempts: 2 });
     expect(() => journal.markOutboundJobFailed(one.job.jobId, 'late')).toThrow(MailJournalStateError);
+    journal.claimOutboundJob(two.job.jobId);
     expect(journal.markOutboundJobFailed(two.job.jobId, '550 no')).toMatchObject({ state: 'failed', attempts: 1 });
     expect(journal.markOutboundJobFailed(two.job.jobId, 'again')).toMatchObject({ lastError: '550 no' });
     expect(() => journal.markOutboundJobSent(two.job.jobId)).toThrow(MailJournalStateError);
@@ -1513,7 +1594,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     for (let i = 0; i < 2; i++) {
       expect(() => open()).toThrow(MailJournalOpenError);
       expect(() => open()).toThrow(
-        /format 1 is not supported; this build reads format 2 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
+        /format 1 is not supported; this build reads format 6 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
       );
     }
     expect(fileHash()).toBe(before);
@@ -1538,7 +1619,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
 
     expect('MAIL_JOURNAL_DDL' in packageIndex).toBe(false);
     expect(Object.keys(packageIndex).filter((name) => /DDL/.test(name))).toEqual([]);
-    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(2);
+    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(6);
     expect(packageIndex.MAIL_JOURNAL_TABLES).toBe(MAIL_JOURNAL_TABLES);
 
     const { db } = open();
@@ -1563,16 +1644,21 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     expect(columns).not.toEqual(expect.arrayContaining(['outbound_job.conversation_id']));
   });
 
-  // 21.6 rule 4 and "still inert". Prevents: a holder's row being rewritten by a later edit, and a
-  // caller composing the journal before the stages that are allowed to.
-  it('has no UPDATE or DELETE on mail_message, and nothing outside the ledger directory uses the journal', () => {
+  // 21.6 rule 4 and explicitly admitted runtime callers. Prevents a holder's
+  // row being rewritten or a new, unreviewed path taking journal ownership.
+  it('has no UPDATE or DELETE on mail_message, and only accepted coordinators use the journal', () => {
     const journalSource = fs.readFileSync(path.join(SRC, 'ledger', 'mail-journal.ts'), 'utf8');
     expect(journalSource).not.toMatch(/UPDATE\s+mail_message|DELETE\s+FROM\s+mail_message|REPLACE\s+INTO\s+mail_message/i);
     const outside = sourceFiles(SRC).filter((f) => !f.startsWith(path.join(SRC, 'ledger') + path.sep));
     const users = outside.filter((f) =>
       /MailJournal|\.atomic\(|expireHeldMessage|LedgerPoisonedError/.test(fs.readFileSync(f, 'utf8'))
     );
-    expect(users).toEqual([]);
+    expect(users.map((f) => path.relative(SRC, f))).toEqual([
+      'mta/journaled-outbound-worker.ts',
+      'relay/journaled-frank-mailbox.ts',
+      'relay/journaled-inbound-send.ts',
+      'smtp/issued-mailbox-lookup.ts',
+    ]);
   });
 });
 
@@ -1642,8 +1728,8 @@ describe('G1b: an outbound job is keyed by the email it carries (21.1)', () => {
     // The table itself refuses a job with no message row, whatever the code above it does.
     expect(() =>
       db.exec(
-        `INSERT INTO outbound_job (scope_account, rfc_message_id, recipient_email, bounce_token, signed_rfc822, state, next_attempt_at, created_at)
-         VALUES ('${ALICE}', '<nothing@frank.org>', 'r@x.example', 't', x'00', 'pending', 0, 0)`
+        `INSERT INTO outbound_job (scope_account, rfc_message_id, recipient_email, sender_local_part, bounce_token, signed_rfc822, state, next_attempt_at, created_at)
+         VALUES ('${ALICE}', '<nothing@frank.org>', 'r@x.example', 'threadmissing', 't', x'00', 'pending', 0, 0)`
       )
     ).toThrow(/FOREIGN KEY/);
   });
@@ -1655,6 +1741,7 @@ describe('G1b: an outbound job is keyed by the email it carries (21.1)', () => {
     const { jobA, inputB } = twoMessagesOneSealedId(first.journal);
     first.journal.recordFrankMessage({ ...inputB, emitted: { rfcMessageId: contestedId(ikey('B')), mailKey: key('B') } });
     const jobB = createdJob(first.journal, ALICE, contestedId(ikey('B')), R, 'email of B');
+    first.journal.claimOutboundJob(jobA.jobId);
     first.journal.markOutboundJobFailed(jobA.jobId, '550 no');
     first.journal.markOutboundJobBounced(jobB.bounceToken);
     const spent = (journal: MailJournal) => ['A', 'B'].map((name) => journal.findFrankInbound(digest(name))!.spent);
@@ -1703,6 +1790,7 @@ describe('G1b: an outbound job is keyed by the email it carries (21.1)', () => {
     const message = bridged(journal, ALICE, 'A', '<f1@frank.org>', { stampValue: '100' }).message;
     const pending = createdJob(journal, ALICE, message.rfcMessageId, 'p@x.example').jobId;
     const sent = createdJob(journal, ALICE, message.rfcMessageId, 's@x.example').jobId;
+    journal.claimOutboundJob(sent);
     journal.markOutboundJobSent(sent);
     bridge(journal, ALICE, 'A', '<f1@frank.org>', { digestName: 'A-resealed', stampValue: '100' });
     const base = { receivedTimeMs: 1, stampValue: '100' };
@@ -2067,6 +2155,7 @@ describe('G1b: two keys, re-seals and echoes (21.2)', () => {
       journal.admitInboundEmail({
         scopeAccount: ALICE,
         mailKey,
+        stampValue: '1',
         messageIdHeader,
         senderEmail: SENDER,
         dataSha256: sha(body),

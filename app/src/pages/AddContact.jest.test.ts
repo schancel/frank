@@ -81,6 +81,20 @@ jest.mock('src/utils/contact-username', () => ({
   resolveUsername: (...args: unknown[]) => mockResolveUsername(...args),
   relayHandleOf: (...args: unknown[]) => mockRelayHandleOf(...args),
 }))
+const mockDiscoverFrankDomain = jest.fn()
+const mockDiscoverWellKnown = jest.fn()
+jest.mock('src/utils/frank-wellknown-discovery', () => ({
+  discoverWellKnown: (...args: unknown[]) => mockDiscoverWellKnown(...args),
+}))
+const mockAssertDiscoveryRelay = jest.fn()
+jest.mock('src/utils/frank-domain-discovery', () => ({
+  ...jest.requireActual('src/utils/frank-domain-discovery'),
+  discoverFrankDomain: (...args: unknown[]) => mockDiscoverFrankDomain(...args),
+}))
+jest.mock('src/utils/frank-discovery-relay', () => ({
+  assertDiscoveryRelay: (...args: unknown[]) =>
+    mockAssertDiscoveryRelay(...args),
+}))
 const mockOwnAddress = jest.fn()
 jest.mock('src/utils/own-address', () => ({
   getOwnCanonicalAddress: () => mockOwnAddress(),
@@ -242,6 +256,9 @@ describe('AddContact latest lookup', () => {
 
   beforeEach(() => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    mockDiscoverWellKnown.mockReset().mockResolvedValue(null)
+    mockDiscoverFrankDomain.mockReset().mockResolvedValue([])
+    mockAssertDiscoveryRelay.mockReset().mockResolvedValue(undefined)
     mockExistingContacts = {}
     mockAddContactToStore.mockReset()
     mockOpenChat.mockReset()
@@ -835,7 +852,7 @@ describe('AddContact latest lookup', () => {
       wrapper.unmount()
       wrapper = mountPage({ path: '/new-conversation' })
     })
-    it('recognizes email address matching regex and shows affordance card without chain lookup', async () => {
+    it('offers email only after domain discovery confirms no native service', async () => {
       await type(wrapper, 'alice@example.com')
       jest.advanceTimersByTime(DEBOUNCE_MS)
       await settle()
@@ -859,6 +876,131 @@ describe('AddContact latest lookup', () => {
       expect(startBtn.text()).toBe(translate('newContactDialog.startEmail'))
     })
 
+    it('resolves alice@native.example to a verified native contact before offering email', async () => {
+      mockDiscoverFrankDomain.mockResolvedValue([
+        { endpoint: 'https://relay.native.example', priority: 10, weight: 0 },
+      ])
+      mockResolveUsername.mockResolvedValue({
+        username: 'alice',
+        address: ADDRESS_A,
+      })
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+      await typeAndFire(wrapper, 'alice@native.example')
+      expect(mockResolveUsername).toHaveBeenCalledWith(
+        'alice',
+        'https://relay.native.example',
+      )
+      expect(chain.fetchProfile).toHaveBeenCalledWith(parsedAddresses.a, {
+        relayBaseUrl: 'https://relay.native.example',
+      })
+      expect(
+        wrapper.find('[data-test="start-email-thread-btn"]').exists(),
+      ).toBe(false)
+      await wrapper
+        .find('[data-test="start-conversation-btn"]')
+        .trigger('click')
+      expect(mockCreateEmailConversation).not.toHaveBeenCalled()
+      expect(mockCreateConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'direct', address: ADDRESS_A }),
+      )
+    })
+    it('never offers email on a failed DNS or relay lookup', async () => {
+      mockDiscoverFrankDomain.mockRejectedValue(new Error('CORS or timeout'))
+      await typeAndFire(wrapper, 'alice@native.example')
+      expect(
+        wrapper.find('[data-test="start-email-thread-btn"]').exists(),
+      ).toBe(false)
+      expect(
+        wrapper.find('[data-test="contact-lookup-reason"]').text(),
+      ).toContain("Can't reach")
+      await wrapper.find('[data-test="address-input"]').trigger('keydown.enter')
+      expect(mockCreateEmailConversation).not.toHaveBeenCalled()
+    })
+    it('does not offer email when the discovered relay fails origin or network validation', async () => {
+      mockDiscoverFrankDomain.mockResolvedValue([
+        { endpoint: 'https://relay.example.com', priority: 0, weight: 0 },
+      ])
+      mockAssertDiscoveryRelay.mockRejectedValue(
+        new Error('Wrong canonical network'),
+      )
+      mockResolveUsername.mockClear()
+      await typeAndFire(wrapper, 'alice@native.example')
+      expect(mockResolveUsername).not.toHaveBeenCalled()
+      expect(
+        wrapper.find('[data-test="start-email-thread-btn"]').exists(),
+      ).toBe(false)
+    })
+    it('tries authenticated well-known after an advertised SRV target fails TLS or origin checks', async () => {
+      mockDiscoverFrankDomain.mockResolvedValue([
+        { endpoint: 'https://broken.example.com', priority: 0, weight: 0 },
+      ])
+      mockAssertDiscoveryRelay
+        .mockRejectedValueOnce(new Error('TLS failure'))
+        .mockResolvedValue(undefined)
+      mockDiscoverWellKnown.mockResolvedValue({
+        relays: [
+          { endpoint: 'https://relay.example.com', priority: 0, weight: 0 },
+        ],
+        ttl: 60,
+      })
+      mockResolveUsername.mockResolvedValue({
+        username: 'alice',
+        address: ADDRESS_A,
+      })
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+      await typeAndFire(wrapper, 'alice@native.example')
+      expect(mockDiscoverWellKnown).toHaveBeenCalled()
+      expect(mockResolveUsername).toHaveBeenCalledWith(
+        'alice',
+        'https://relay.example.com',
+      )
+      expect(
+        wrapper.find('[data-test="start-email-thread-btn"]').exists(),
+      ).toBe(false)
+      await wrapper
+        .find('[data-test="start-conversation-btn"]')
+        .trigger('click')
+      expect(mockCreateConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'direct', address: ADDRESS_A }),
+      )
+    })
+    it('keeps signed directory refusal visible even after a username was resolved', async () => {
+      mockDiscoverFrankDomain.mockResolvedValue([
+        { endpoint: 'https://relay.example.com', priority: 0, weight: 0 },
+      ])
+      mockResolveUsername.mockResolvedValue({
+        username: 'alice',
+        address: ADDRESS_A,
+      })
+      setDirectoryLookup(async () => {
+        throw { code: 'invalid' }
+      })
+      try {
+        await typeAndFire(wrapper, 'alice@native.example')
+        expect(
+          wrapper.find('[data-test="start-email-thread-btn"]').exists(),
+        ).toBe(false)
+        expect(
+          wrapper.find('[data-test="contact-lookup-reason"]').text(),
+        ).toContain('not signed')
+        expect(mockAddContactToStore).not.toHaveBeenCalled()
+      } finally {
+        setDirectoryLookup(null)
+      }
+    })
+    it('ignores a domain result after the user changes recipients', async () => {
+      const pending = deferred<never[]>()
+      mockDiscoverFrankDomain.mockReturnValueOnce(pending.promise)
+      await typeAndFire(wrapper, 'alice@native.example')
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_B, 'Bob'))
+      await typeAndFire(wrapper, 'b')
+      pending.resolve([])
+      await settle()
+      expect(
+        wrapper.find('[data-test="start-email-thread-btn"]').exists(),
+      ).toBe(false)
+      expect(status(wrapper)).toContain('Bob')
+    })
     it('starts email thread and navigates to conversation on button click', async () => {
       await type(wrapper, 'alice@example.com')
       await settle()

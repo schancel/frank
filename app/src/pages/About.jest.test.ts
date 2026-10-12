@@ -144,17 +144,6 @@ describe('About: Frank & Stamp protocol overview', () => {
     expect(stamp).toContain('End-to-End Encryption')
   })
 
-  it('renders link to GitHub repository', () => {
-    const en = mountAbout(enUS)
-    const links = en.find('[data-test="about-links"]')
-    expect(links.text()).toContain('Links & Source Code')
-    const buttons = links.findAll('button')
-    expect(buttons.length).toBe(1)
-    expect(buttons[0].attributes('href')).toBe(
-      'https://github.com/schancel/frank',
-    )
-  })
-
   it('renders localized Frank & Stamp content in French', () => {
     const fr = mountAbout(frFR)
     expect(text(fr, 'about-hero')).toContain(
@@ -164,6 +153,5 @@ describe('About: Frank & Stamp protocol overview', () => {
     expect(text(fr, 'about-stamp')).toContain(
       'Le protocole Stamp : la liberté d’expression n’est pas gratuite',
     )
-    expect(text(fr, 'about-links')).toContain('Liens et code source')
   })
 })

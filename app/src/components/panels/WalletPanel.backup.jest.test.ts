@@ -73,6 +73,7 @@ function render() {
           template: '<button :disabled="disable">{{ label }}<slot /></button>',
         },
         RenameWalletDialog: true,
+        MailboxStatusIndicator: true,
       },
       directives: { ripple: {} },
     },

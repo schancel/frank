@@ -213,6 +213,9 @@ export class SmtpListener {
               case 'rejected_unknown':
                 socket.write('550 5.1.1 User unknown\r\n');
                 break;
+              case 'rejected_reserved':
+                socket.write('550 5.1.1 Reserved recipient address\r\n');
+                break;
               case 'rejected_unauthenticated':
                 socket.write('550 5.7.1 Message authentication failed\r\n');
                 break;

@@ -451,6 +451,30 @@ async fn relay_info_is_the_single_configured_tuple() {
     runtime.wait_stopped().await;
 }
 
+#[tokio::test]
+async fn relay_info_advertises_only_its_configured_gateway() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, mut config, clock) = setup(root.path());
+    config.email_gateway = Some(cashweb_config::EmailGatewayConf {
+        address: format!("0x{}", "a".repeat(40)),
+        domain: "signet.mx".into(),
+    });
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let (status, _, body) = get(&routes, "/relay/v1/info").await;
+    assert_eq!(status, StatusCode::OK);
+    let info: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        info["emailGateway"],
+        serde_json::json!({
+            "address": format!("0x{}", "a".repeat(40)),
+            "domain": "signet.mx",
+        })
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
 const DISPOSITION: &str = "x-frank-directory-disposition";
 
 #[tokio::test]

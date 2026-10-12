@@ -847,7 +847,8 @@ export default {
   },
   sendStealthDialog: {
     nativeBalance: 'Solde natif',
-    insufficientFunds: 'Solde de l’actif ou solde natif insuffisant pour ce paiement et ses frais réseau.',
+    insufficientFunds:
+      'Solde de l’actif ou solde natif insuffisant pour ce paiement et ses frais réseau.',
 
     assetLabel: 'Actif et réseau',
     reviewBtnLabel: 'Vérifier le paiement',
@@ -855,6 +856,7 @@ export default {
     recipientAmount: 'Montant au destinataire',
     nativeFee: 'Frais du réseau',
     feeCeiling: 'Frais réseau maximum',
+    messageStampFee: 'Frais réseau estimés du message',
     messageStamp: 'Timbre du message',
 
     preparing: 'Préparation du paiement furtif : {amount}',

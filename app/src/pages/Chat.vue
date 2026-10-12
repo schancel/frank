@@ -50,15 +50,6 @@
                   @senderClicked="openSenderProfile"
                 />
               </template>
-              <q-chat-message
-                v-if="visibleStealthPreparation"
-                sent
-                :text="[visibleStealthPreparation]"
-                :stamp="$t('outgoing.sending')"
-                role="status"
-                aria-live="polite"
-                data-testid="stealth-preparing-bubble"
-              />
             </div>
           </q-scroll-area>
           <!-- Overlaying the bounded viewport keeps banner changes from resizing the scroll box. -->
@@ -136,7 +127,7 @@
       <chat-input
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
-        @sendStealthClicked="stealthDialog = true"
+        @sendStealthClicked="openStealthDialog"
         ref="chatInput"
         v-model:message="message"
         v-model:attachments="attachments"
@@ -161,12 +152,15 @@
       </q-card>
     </q-dialog>
     <!-- Send Stealth dialog: multi-chain encrypted stealth payment -->
-    <q-dialog v-model="stealthDialog">
+    <q-dialog v-model="stealthDialog" :persistent="sendingMessage">
       <send-stealth-dialog
         v-if="stealthDialog"
         :contact="contact"
         :address="recipientAddress"
         :busy="sendingMessage"
+        :options="stealthAssets"
+        :quote="stealthQuote"
+        @review="reviewStealthPayment"
         @send="sendStealthPayment"
       />
     </q-dialog>
@@ -192,7 +186,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, onUnmounted } from 'vue'
+import { defineComponent, ref, onUnmounted, markRaw } from 'vue'
 import { accountStatus } from '../accounts/session'
 import { messagingState } from '../utils/messaging-state'
 import { useSafeOracleStore } from '../stores/oracle'
@@ -205,6 +199,23 @@ import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
 import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
+import {
+  configuredStealthAssets,
+  nativeDecimals,
+} from '../stealth-payments/configured-assets'
+import {
+  reviewStealthPayment,
+  sendReviewedStealthPayment,
+  type CapturedStealthReview,
+} from '../stealth-payments/review-payment'
+import {
+  sameStealthRequest,
+  type StealthAssetOption,
+  type StealthDialogQuoteState,
+  type StealthDialogRequest,
+  type ReviewedStealthDialogIntent,
+} from '../stealth-payments/options'
+
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
@@ -252,7 +263,6 @@ import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
-import { useActiveWallet } from '../composables/useActiveWallet'
 import { formatDisplayNumber } from '../utils/chain-amount'
 import { nextFollowBottom } from '../utils/follow-bottom'
 import { composeChatItems, fitsOneMessage } from '../utils/chat-attachments'
@@ -329,13 +339,11 @@ export default defineComponent({
       blackjackPreparing: false,
       blackjackPreparationSequence: 0,
       stealthDialog: false,
-      stealthPreparation: null as null | {
-        recipient: string
-        conversationId?: string
-        revision: number
-        chainIdentifier: string
-        amount: string
-      },
+      stealthAssets: [] as StealthAssetOption[],
+      stealthQuote: { status: 'idle' } as StealthDialogQuoteState,
+      stealthReview: null as CapturedStealthReview | null,
+      stealthReviewedRequest: null as StealthDialogRequest | null,
+      stealthReviewSequence: 0,
       swapDialog: false,
       forwardDialogOpen: false,
       messageToForward: null as ChatMessage | null,
@@ -801,98 +809,125 @@ export default defineComponent({
         this.sendingMessage = false
       }
     },
-    /** A payment to this contact. The wallet signs and saves the transfer (nothing is broadcast)
-     * and returns the item; the message carrying it goes through the conversation's ordinary
-     * send, so it has its outgoing bubble, its pending state and its Retry like any message.
-     * The wallet broadcasts the transfer when the relay has stored that message. The stamp is the
-     * message's price; the amount is the payment's own. */
-    async sendStealthPayment({
-      value,
-      memo,
-    }: {
-      value: bigint
-      memo?: string
-    }) {
-      if (this.sendingMessage) return
-      this.stealthDialog = false
+    async openStealthDialog() {
+      this.stealthReviewSequence += 1
+      const sequence = this.stealthReviewSequence
+      this.stealthReview = null
+      this.stealthReviewedRequest = null
+      this.stealthQuote = { status: 'pending' }
+      this.stealthDialog = true
+      try {
+        const { options, unavailable } = await configuredStealthAssets()
+        if (!this.stealthDialog || sequence !== this.stealthReviewSequence)
+          return
+        this.stealthAssets = options
+        this.stealthQuote =
+          options.length > 0
+            ? { status: 'idle' }
+            : {
+                status: 'error',
+                message: String(
+                  unavailable[0]?.error || this.$t('sendStealthDialog.notSent'),
+                ),
+              }
+      } catch (error) {
+        if (sequence === this.stealthReviewSequence)
+          this.stealthQuote = { status: 'error', message: String(error) }
+      }
+    },
+    async reviewStealthPayment(request: StealthDialogRequest) {
+      const sequence = ++this.stealthReviewSequence
+      const recipient = this.recipientAddress || this.address
+      const conversationId = this.conversation?.id
+      this.stealthReview = null
+      this.stealthReviewedRequest = null
+      this.stealthQuote = { status: 'pending' }
+      try {
+        if (request.address !== recipient || this.stampUnavailable)
+          throw new Error(
+            this.stampUnavailable || this.$t('chat.sendContextChanged'),
+          )
+        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+        const captured = await reviewStealthPayment({
+          request,
+          stampValue,
+          isCurrent: () =>
+            sequence === this.stealthReviewSequence &&
+            recipient === (this.recipientAddress || this.address) &&
+            conversationId === this.conversation?.id,
+        })
+        if (!this.stealthDialog || sequence !== this.stealthReviewSequence)
+          return
+        this.stealthReview = markRaw(captured)
+        this.stealthReviewedRequest = {
+          ...request,
+          asset: { ...request.asset },
+        }
+        this.stealthQuote = {
+          status: 'ready',
+          request: this.stealthReviewedRequest,
+          payment: captured.quote,
+          maxNativeFeeAtomic: captured.maxNativeFeeAtomic,
+          stampValueAtomic: captured.stampValue,
+          stampFeeAtomic: captured.stampFeeAtomic,
+          stampUnit: activeChain.unit,
+          stampDecimals: nativeDecimals(value =>
+            activeChain.fromDisplayAmount(value),
+          ),
+        }
+      } catch (error) {
+        if (sequence === this.stealthReviewSequence)
+          this.stealthQuote = { status: 'error', message: String(error) }
+      }
+    },
+    /** The financial owner saves the original signed payment; the message owner then binds
+     * its complete sealed envelope before delivery and submits that same authorized operation. */
+    async sendStealthPayment(intent: ReviewedStealthDialogIntent) {
+      const captured = this.stealthReview
+      if (this.sendingMessage || !captured || !this.stealthReviewedRequest)
+        return
+      if (
+        !sameStealthRequest(intent, this.stealthReviewedRequest) ||
+        intent.quote.operationId !== captured.quote.operationId ||
+        intent.maxNativeFeeAtomic !== captured.maxNativeFeeAtomic ||
+        intent.stampValue !== captured.stampValue
+      )
+        return
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
+      const conversationId = this.conversation?.id
       try {
-        let prepared
-        let stampValue: bigint
-        let wallet: ReturnType<typeof useMonadWallet>
-        let conversationId: string | undefined
-        let requireCurrentContext: () => void
-        try {
-          if (this.stampUnavailable) throw new Error(this.stampUnavailable)
-          stampValue = activeChain.fromDisplayAmount(this.stampAmount)
-          wallet = useMonadWallet()
-          const chainIdentifier = activeChain.chainIdentifier
-          const client = activeChain.directMessages
-          const revision = accountStatus.revision
-          conversationId = this.conversation?.id
-          requireCurrentContext = () => {
-            if (
-              revision !== accountStatus.revision ||
-              chainIdentifier !== activeChain.chainIdentifier ||
-              client !== activeChain.directMessages ||
-              wallet !== useMonadWallet() ||
-              recipient !== (this.recipientAddress || this.address) ||
-              conversationId !== this.conversation?.id
-            )
-              throw new Error(this.$t('chat.sendContextChanged'))
-          }
-          this.stealthPreparation = {
-            recipient,
-            conversationId,
-            revision,
-            chainIdentifier,
-            amount: `${activeChain.toDisplayAmount(value)} ${activeChain.unit}`,
-          }
-          const activeWallet = await useActiveWallet()
-          requireCurrentContext()
-          if (activeWallet !== wallet)
-            throw new Error(this.$t('chat.sendContextChanged'))
-          if (!activeWallet.prepareContactPayment)
-            throw new Error(
-              'Payments to a contact are not available on this chain',
-            )
-          prepared = await activeWallet.prepareContactPayment({
-            recipient: { raw: recipient },
-            value,
-            memo: memo || undefined,
-            stampValue,
-          })
-        } catch (err) {
-          // Refused before anything was signed: nothing was sent.
-          errorNotify(err, { fallbackKey: 'sendStealthDialog.notSent' })
-          return
-        }
-        try {
-          requireCurrentContext()
-          this.stealthPreparation = null
-          await this.sendDirectMessage({
-            wallet,
-            address: recipient,
-            conversationId,
-            items: [prepared.item],
-            stampValue,
-            onPreparationProgress: this.showStampPreparation,
-          })
-        } catch (err) {
-          // The payment is signed and saved by now. Whatever stopped the message, this is not
-          // "nothing was sent": the wallet releases the payment if no byte of it left, and
-          // finishes it otherwise.
-          errorNotify(err, { fallbackKey: 'sendStealthDialog.messageEnded' })
-        }
+        await sendReviewedStealthPayment(
+          captured,
+          intent.memo || undefined,
+          async (prepared, item) => {
+            this.stealthDialog = false
+            return this.sendDirectMessage({
+              wallet: captured.messagingWallet,
+              address: recipient,
+              conversationId,
+              items: [item],
+              stampValue: captured.stampValue,
+              financialOperations: [
+                {
+                  chainIdentifier: prepared.chainIdentifier,
+                  operationId: prepared.operationId,
+                },
+              ],
+              onPreparationProgress: this.showStampPreparation,
+            })
+          },
+        )
+      } catch (error) {
+        errorNotify(error, { fallbackKey: 'sendStealthDialog.messageEnded' })
       } finally {
-        this.stealthPreparation = null
+        this.stealthReview = null
+        this.stealthReviewedRequest = null
+        this.stealthQuote = { status: 'idle' }
         this.stampPreparationStatus = null
         this.sendingMessage = false
       }
-      if (!this.bottom) {
-        this.$nextTick(this.buttonScrollBottom)
-      }
+      if (!this.bottom) this.$nextTick(this.buttonScrollBottom)
     },
     async sendSwapOffer(item: MessageItem) {
       const items: MessageItem[] = [item]
@@ -1329,18 +1364,6 @@ export default defineComponent({
         }
       }
       return this.address
-    },
-    visibleStealthPreparation(): string {
-      const intent = this.stealthPreparation
-      if (
-        !intent ||
-        intent.revision !== accountStatus.revision ||
-        intent.chainIdentifier !== activeChain.chainIdentifier ||
-        intent.recipient !== (this.recipientAddress || this.address) ||
-        intent.conversationId !== this.conversation?.id
-      )
-        return ''
-      return this.$t('sendStealthDialog.preparing', { amount: intent.amount })
     },
     contact() {
       return this.getContactVuex(this.recipientAddress)

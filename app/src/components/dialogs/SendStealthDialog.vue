@@ -143,6 +143,15 @@
             {{ matchingQuote.stampUnit }}</span
           >
         </div>
+        <div>
+          {{ $t('sendStealthDialog.messageStampFee') }}:
+          <span data-testid="stealth-message-stamp-fee"
+            >{{
+              format(matchingQuote.stampFeeAtomic, matchingQuote.stampDecimals)
+            }}
+            {{ matchingQuote.stampUnit }}</span
+          >
+        </div>
       </q-card-section>
       <q-card-section
         v-if="matchingQuote && !readyQuote"
@@ -283,7 +292,8 @@ export default defineComponent({
         payment.nativeBalanceAtomic < 0n ||
         payment.estimatedNativeFeeAtomic < 0n ||
         quote.maxNativeFeeAtomic < payment.estimatedNativeFeeAtomic ||
-        quote.stampValueAtomic < 0n
+        quote.stampValueAtomic < 0n ||
+        quote.stampFeeAtomic < 0n
       )
         return undefined
       return quote

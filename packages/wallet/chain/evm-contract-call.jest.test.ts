@@ -221,6 +221,7 @@ describe('contract calls through the native operation journal', () => {
       journal.get(prepared.operationId).members[0]!.signed!.rawTransaction,
     ).toBe(raw)
     expect((await second.executor.contractCallFunds()).mainBusy).toBe(true)
+    expect(second.executor.holdsSource(main.address)).toBe(true)
     expect(state.raws).toEqual([])
     await second.executor.resumeOperation(prepared.operationId)
     expect(state.raws).toEqual([raw])
@@ -235,9 +236,16 @@ describe('contract calls through the native operation journal', () => {
     const state = node({ main: 10_000_000n })
     const { executor } = owner(state)
     const prepared = await executor.signContractCall(call)
+    expect(executor.holdsSource(main.address)).toBe(true)
+    await executor.lookAtSource(main.address)
+    await executor.lookAtSource(main.address)
+    await executor.reobservePending()
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toEqual([])
     await executor.releaseUnexposed(prepared.operationId)
     expect(journal.get(prepared.operationId).cancelled).toBe(true)
     expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(executor.holdsSource(main.address)).toBe(false)
     expect(state.raws).toEqual([])
     await expect(
       executor.resumeOperation(prepared.operationId),

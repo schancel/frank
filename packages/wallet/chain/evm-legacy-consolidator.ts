@@ -464,8 +464,8 @@ export class EvmLegacyConsolidator {
         : row.members.flatMap((member, index) =>
             member.source.address === key &&
             member.signed !== null &&
-            // Bytes that never left this device cannot land: only a member handed to the
-            // network holds its account.
+            // Only bytes already handed to the network may be re-broadcast by lookAtSource.
+            // A preparation reserves its source separately, without submission eligibility.
             member.exposed &&
             member.observation.state !== 'included-success' &&
             member.observation.state !== 'included-revert' &&
@@ -482,20 +482,42 @@ export class EvmLegacyConsolidator {
     )
   }
   /**
-   * True while a signed transaction of this journal spends `address` and the chain has not shown
+   * True while a signed transaction of this journal reserves `address` and the chain has not shown
    * what became of it (mined, or its nonce consumed by another). Journal only: no request. This
    * is what holds the main or identity account in the wallet's one claim after a native send, a
-   * contract call or a consolidation returns; a discarded or cancelled operation holds nothing.
+   * contract call or a consolidation returns. An explicitly prepared call holds its source
+   * before exposure too; a discarded or cancelled operation holds nothing.
    */
   holdsSource(address: string): boolean {
     try {
-      return this.unsettledAt(address).length > 0
+      if (this.unsettledAt(address).length > 0) return true
+      const key = address.toLowerCase()
+      return this.config.journal
+        .list()
+        .some(
+          row =>
+            row.submissionPolicy === 'explicit' &&
+            !row.cancelled &&
+            row.members.some(
+              member =>
+                member.source.address === key &&
+                member.signed !== null &&
+                !member.exposed &&
+                member.observation.state !== 'included-success' &&
+                member.observation.state !== 'included-revert' &&
+                !(
+                  member.account !== null &&
+                  member.account.nonce >
+                    Transaction.from(member.unsignedTransaction).nonce
+                ),
+            ),
+        )
     } catch {
       // A journal that cannot be read frees nothing.
       return true
     }
   }
-  /** One look at the chain for each transaction `holdsSource(address)` is true for; one the node
+  /** One look at the chain for each exposed unsettled transaction from `address`; one the node
    * does not know is handed to it again (the same bytes). Never rejects: a read that fails
    * records nothing and the account stays held. */
   async lookAtSource(address: string): Promise<void> {

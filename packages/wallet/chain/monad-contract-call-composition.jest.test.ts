@@ -147,6 +147,78 @@ function stubNode(
 
 afterEach(() => jest.restoreAllMocks())
 
+test('a sign-only call retains the composed main claim and blocks an unjournalled transfer', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  const wallet = (await createEvmChain(cfg).createWallet(
+    roots(),
+  )) as EvmChainWalletHandle
+  let reopened: EvmChainWalletHandle | undefined
+  try {
+    const node = stubNode(wallet, 1_000_000n)
+    // No public preparation caller exists yet. Substitute only the owner entry under the
+    // real wallet admission/main-account claim; planning, signing and persistence stay real.
+    jest
+      .spyOn(EvmLegacyConsolidator.prototype, 'sendContractCall')
+      .mockImplementationOnce(async function (params, lifetime) {
+        const row = await this.signContractCall(params, lifetime)
+        return {
+          operationId: row.operationId,
+          txHash: row.members[0]!.signed!.transactionHash,
+        }
+      })
+    const prepared = await wallet.sendContractCall!({
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 0n,
+      gasLimit: 250_000n,
+    })
+    expect(
+      wallet.getNativeOperations!().find(
+        row => row.operationId === prepared.operationId,
+      ),
+    ).toMatchObject({ submissionPolicy: 'explicit', cancelled: false })
+    expect(wallet.pool.accountClaimedBy(MAIN)).toBeDefined()
+    const sign = jest.fn(async () => ({
+      txHash: '0x' + '11'.repeat(32),
+      from: MAIN,
+      nonce: 0,
+    }))
+    await expect(
+      wallet.runOwnTransfer!(sign, { mainAccountWaitMs: 0 }),
+    ).rejects.toThrow()
+    expect(sign).not.toHaveBeenCalled()
+    expect(node.broadcast).not.toHaveBeenCalled()
+    const before = wallet.getNativeOperations!().find(
+      row => row.operationId === prepared.operationId,
+    )!
+    await wallet.close()
+    reopened = (await createEvmChain(cfg).createWallet(
+      roots(),
+    )) as EvmChainWalletHandle
+    expect(reopened.pool.accountClaimedBy(MAIN)).toBeDefined()
+    expect(
+      reopened.getNativeOperations!().find(
+        row => row.operationId === prepared.operationId,
+      ),
+    ).toEqual(before)
+    const again = node.carryOver(reopened)
+    await expect(
+      reopened.runOwnTransfer!(sign, { mainAccountWaitMs: 0 }),
+    ).rejects.toThrow()
+    expect(sign).not.toHaveBeenCalled()
+    expect(again.broadcast).not.toHaveBeenCalled()
+  } finally {
+    await reopened?.close()
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('the wallet handle sends a contract call from its main account and reports its funds', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
   const wallet = (await createEvmChain({

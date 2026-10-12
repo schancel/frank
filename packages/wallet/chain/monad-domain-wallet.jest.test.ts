@@ -609,6 +609,7 @@ test('native signed bytes survive restart and authentication changes without an 
 })
 
 test('a real Sepolia owner retries the original sync event without signing or broadcasting twice', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-sepolia-sync-restart-'))
   const emitWalletSync = jest.fn()
     .mockRejectedValueOnce(new Error('primary mailbox unavailable'))
     .mockResolvedValue(undefined)
@@ -619,10 +620,11 @@ test('a real Sepolia owner retries the original sync event without signing or br
     chainIdentifier: 'ethereum-sepolia',
     chainId: 11155111,
     networkTag: 'SEPO',
+    walletStorageLocation: join(dir, 'wallet'),
     emitWalletSync,
   }
   const chain = createEvmChain(cfg)
-  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  let wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
   try {
     const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n })
     jest.spyOn(wallet.provider, 'getNetwork')
@@ -642,8 +644,13 @@ test('a real Sepolia owner retries the original sync event without signing or br
       .toBe('included-success')
     expect(emitWalletSync).toHaveBeenCalledTimes(1)
     expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
-    await wallet.resumeNativeOperation!(operationId)
+    await wallet.close()
+    wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+    const restartedBroadcast = jest.spyOn(wallet.provider, 'broadcastTransaction')
+    const remaining = await wallet.flushNativeSync!()
     await notesSettled()
+    expect(remaining).toEqual([])
+    expect(restartedBroadcast).not.toHaveBeenCalled()
     expect(rpc.broadcast).toHaveBeenCalledTimes(1)
     expect(emitWalletSync).toHaveBeenCalledTimes(2)
     const [item, swapRecord, messageId] = emitWalletSync.mock.calls[0]!
@@ -665,6 +672,7 @@ test('a real Sepolia owner retries the original sync event without signing or br
     expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(true)
   } finally {
     await wallet.close()
+    await rm(dir, { recursive: true, force: true })
   }
 })
 

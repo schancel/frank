@@ -59,6 +59,7 @@ jest.mock('./level-message-store', () => ({
 }))
 
 const mockFinancialRecord = jest.fn(async () => undefined)
+const mockOpenForeignEvmWallet = jest.fn()
 let mockFinancialWallet: WalletHandle
 const mockFinancialState = { status: 'ready', revision: 1, account: {} }
 jest.mock('../accounts/session', () => ({
@@ -70,8 +71,12 @@ jest.mock('../accounts/session', () => ({
       return mockFinancialState
     },
     getWallet: async () => mockFinancialWallet,
+    peekWallet: () => mockFinancialState.status === 'ready' ? mockFinancialWallet : undefined,
     getCurvePublicKey: async () => PUB_KEY_BYTES.slice(),
   },
+}))
+jest.mock('../accounts/evm-wallets', () => ({
+  openEvmWallet: (...args: unknown[]) => mockOpenForeignEvmWallet(...args),
 }))
 jest.mock('../accounts/native-transfer', () => ({
   createNativeTransferContext: async (chainIdentifier: string) => ({
@@ -155,6 +160,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       .mockReset()
       .mockResolvedValue(undefined)
     mockMessageStore.mostRecentMessageTime.mockReset().mockResolvedValue(0)
+    mockOpenForeignEvmWallet.mockReset()
     useContactStore().addContact({
       address: SENDER_ADDRESS,
       contact: {
@@ -638,6 +644,45 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     afterEach(() => {
       pollers.splice(0).forEach(polling => polling.stop())
       jest.useRealTimers()
+    })
+
+    it('holds the mailbox cursor until the exact secondary owner applies a self sync note', async () => {
+      mockFinancialState.status = 'ready'
+      mockFinancialWallet = wallet
+      const apply = jest.fn(async () => ({ affectedIndices: [3] }))
+      const target = {
+        chainIdentifier: 'ethereum-sepolia',
+        pool: { processSyncTransaction: apply },
+      }
+      mockOpenForeignEvmWallet
+        .mockRejectedValueOnce(new Error('secondary RPC unavailable'))
+        .mockResolvedValue({ wallet: target })
+      const note = {
+        type: 'wallet-sync' as const,
+        direction: 'out' as const,
+        chainIdentifier: 'ethereum-sepolia',
+        txHash: '0x' + '4'.repeat(64),
+        rawTx: '0x01',
+        spentInputs: [],
+        createdOutputs: [],
+        timestamp: 100,
+      }
+      const fetch = jest.spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ onForeignWalletSync }) => {
+          await onForeignWalletSync!(note)
+          return []
+        })
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetch.mock.calls.length >= 2)
+        expect(fetch.mock.calls[0]![0].sinceMs).toBe(0)
+        expect(fetch.mock.calls[1]![0].sinceMs).toBe(0)
+        expect(mockOpenForeignEvmWallet).toHaveBeenCalledWith('ethereum-sepolia')
+        expect(apply).toHaveBeenCalledTimes(1)
+        expect(apply).toHaveBeenCalledWith(note)
+      } finally {
+        polling.stop()
+      }
     })
 
     it('feeds fetchSince results into chats.receiveMessages and advances sinceMs', async () => {

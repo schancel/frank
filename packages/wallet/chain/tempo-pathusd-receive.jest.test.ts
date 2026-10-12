@@ -113,6 +113,19 @@ describe('Tempo finalized PathUSD receive cursor', () => {
     expect((await scanner.syncCatchUp(RECIPIENT, 0n, async () => undefined, 2)).nextBlock).toBe(10_001n)
   })
 
+  test('changed finalized page during log query cannot record an empty page', async () => {
+    const store = new MemoryRecordStore<TempoReceiveBatch>()
+    let hashCalls = 0
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: 9n, hash: BLOCK }),
+      blockHash: async () => ++hashCalls === 1 ? BLOCK : OTHER,
+      receivedTransfers: async () => [],
+    }
+    const scanner = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    await expect(scanner.syncOnce(RECIPIENT, 0n, async () => undefined)).rejects.toThrow('changed during scan')
+    expect(store.all()).toEqual([])
+  })
+
   test('two cached tabs refresh under the recipient lock before extending one cursor', async () => {
     const backing = new MemoryRecordStore<TempoReceiveBatch>()
     const cached = () => {

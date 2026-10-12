@@ -180,10 +180,16 @@ export class TempoPathUsdReceiveScanner {
       if (next > finalized.number) return { nextBlock: next, delivered }
       let end = next + 9_999n < finalized.number ? next + 9_999n : finalized.number
       let transfers: Transfer[]
+      let endBlockHash: string
       let attempts = 0
       for (;;) {
         try {
+          const before = await this.rpc.blockHash(end)
+          if (!HASH.test(before)) throw new Error('Invalid Tempo receive checkpoint')
           transfers = await this.rpc.receivedTransfers(recipient, next, end)
+          endBlockHash = await this.rpc.blockHash(end)
+          if (before !== endBlockHash)
+            throw new Error('Finalized Tempo receive page changed during scan')
           break
         } catch (error) {
           // Only transient upstream failures may change the page size. No failed range is
@@ -211,7 +217,7 @@ export class TempoPathUsdReceiveScanner {
         recipient,
         fromBlock: next.toString(),
         toBlock: end.toString(),
-        endBlockHash: await blockHash(end),
+        endBlockHash,
         items,
       }
       await this.write(row)

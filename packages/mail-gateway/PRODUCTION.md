@@ -79,3 +79,20 @@ It does not activate the executable or the legacy SMTP path. Its unfinished
 slot listing is read-only; any failed recovery slot stays in the journal and
 is reported while other slots continue. The remaining host/transport stages
 must be reviewed before mail can be offered to judges.
+
+## Gateway discovery
+
+The operator must advertise the gateway's public Frank identity and email
+domain from the selected relay's API, keyed by exact canonical
+`chainIdentifier`. This is operator configuration, not a protocol-wide chain
+fact and not a key embedded in the PWA. The relay must validate the configured
+identity and domain and refuse a mismatched network. The client must verify the
+relay response against its selected canonical chain, reject missing or malformed
+advertisements, and expose an explicit unavailable state. A changed advertised
+identity must not silently retarget an existing email conversation or an
+in-flight payment; show the new identity for confirmation or bind it only to
+new conversations. An explicit user override may remain, scoped to its chain
+and visibly distinct from the relay default. Remove the compiled
+`0x1111111111111111111111111111111111111111` fallback from production
+resolution when this discovery path lands. Profile-owned
+`emailBridgeGatewayAddress` is not an operator advertisement.

@@ -74,6 +74,13 @@ export interface ContractCallParams {
   /** As `SendLegacyParams.mainAccountWaitMs`. */
   mainAccountWaitMs?: number
 }
+export type PreparedNativeTransferParams = Omit<
+  SendLegacyParams,
+  'onSigned'
+> & {
+  sourceAddress?: string
+  maxNativeFeeWei?: bigint
+}
 export interface ContractCallResult {
   operationId: string
   txHash: string
@@ -82,6 +89,7 @@ export type PreparedContractCallParams = Omit<
   ContractCallParams,
   'onSigned'
 > & {
+  maxNativeFeeWei?: bigint
   /** Resolve this owned source through the bound wallet. Omitted: the main account. */
   sourceAddress?: string
 }
@@ -697,6 +705,7 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
     /** An address that must not pay: the account a consolidation is funding. */
     excludedSource?: string,
+    preparation?: { sourceAddress?: string; maxNativeFeeWei?: bigint },
   ): Promise<EvmNativeOperation> {
     const recipient = getAddress(params.recipient.raw).toLowerCase()
     if (params.value <= 0n)
@@ -706,8 +715,26 @@ export class EvmLegacyConsolidator {
       this.config.transactionBuilder.supportsNativeConsolidation !== true
     )
       throw new Error('Builder does not support native consolidation')
+    const requested =
+      preparation?.sourceAddress === undefined
+        ? undefined
+        : getAddress(preparation.sourceAddress).toLowerCase()
+    if (
+      requested !== undefined &&
+      !(await this.config.getSources()).some(
+        source => source.address === requested,
+      )
+    )
+      throw new Error('Native source is not owned by this wallet')
+    if (
+      preparation?.maxNativeFeeWei !== undefined &&
+      preparation.maxNativeFeeWei < 0n
+    )
+      throw new RangeError('Native fee ceiling must not be negative')
     const accounts = (await this.sources(lifetime)).filter(
-      account => account.source.address !== excludedSource,
+      account =>
+        account.source.address !== excludedSource &&
+        (requested === undefined || account.source.address === requested),
     )
     const fee = await this.config.provider.getFeeData()
     const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
@@ -736,6 +763,11 @@ export class EvmLegacyConsolidator {
       )
       const tx = Transaction.from(raw)
       const maximumFee = nativeMaximumFee(tx)
+      if (
+        preparation?.maxNativeFeeWei !== undefined &&
+        maximumFee > preparation.maxNativeFeeWei
+      )
+        throw new RangeError('Native fee exceeds authorized ceiling')
       if (
         this.config.transactionBuilder.feeAsset === 'transfer'
           ? BigInt(account.account.balanceWei) < tx.value ||
@@ -1670,12 +1702,12 @@ export class EvmLegacyConsolidator {
    * left. Nothing ever signs another transfer for the same operation.
    */
   signNative(
-    params: SendLegacyParams,
+    params: PreparedNativeTransferParams,
     lifetime?: WalletOperationLifetime,
   ): Promise<EvmNativeOperation> {
     params = { ...params, recipient: { ...params.recipient } }
     return this.runWithLocalPass(lifetime, async planned => {
-      const row = await this.plan(params, 'native', lifetime)
+      const row = await this.plan(params, 'native', lifetime, undefined, params)
       planned(row.operationId)
       return this.sign(row, lifetime)
     })
@@ -1974,7 +2006,10 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
     submissionPolicy?: 'explicit',
     sourceAddress?: string,
+    maxNativeFeeWei?: bigint,
   ): Promise<EvmNativeOperation> {
+    if (maxNativeFeeWei !== undefined && maxNativeFeeWei < 0n)
+      throw new RangeError('Native fee ceiling must not be negative')
     const to = getAddress(params.to.raw).toLowerCase()
     if (params.value < 0n)
       throw new RangeError('Call value must not be negative')
@@ -2014,6 +2049,11 @@ export class EvmLegacyConsolidator {
       })) *
         115n) /
         100n
+    if (
+      maxNativeFeeWei !== undefined &&
+      gasLimit * maxFeePerGas > maxNativeFeeWei
+    )
+      throw new RangeError('Native fee exceeds authorized ceiling')
     if (
       BigInt(source.account.balanceWei) <
       params.value + gasLimit * maxFeePerGas
@@ -2062,6 +2102,7 @@ export class EvmLegacyConsolidator {
         lifetime,
         'explicit',
         params.sourceAddress,
+        params.maxNativeFeeWei,
       )
       planned(row.operationId)
       return this.sign(row, lifetime)

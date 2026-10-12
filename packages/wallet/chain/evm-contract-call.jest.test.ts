@@ -177,6 +177,74 @@ describe('contract calls through the native operation journal', () => {
   }
   const call = { to: { raw: router }, data: calldata, value: 1_000n }
 
+  it('enforces the current contract fee ceiling before any journal claim or signature', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor, sign } = owner(state)
+    await expect(
+      executor.signContractCall({ ...call, maxNativeFeeWei: 229_999n }),
+    ).rejects.toThrow(/ceiling/)
+    expect(journal.list()).toEqual([])
+    expect(sign).not.toHaveBeenCalled()
+    const exact = await executor.signContractCall({
+      ...call,
+      maxNativeFeeWei: 230_000n,
+    })
+    expect(exact.members[0]!.exposed).toBe(false)
+    await executor.releaseUnexposed(exact.operationId)
+    jest
+      .spyOn(state.provider, 'getFeeData')
+      .mockResolvedValue({
+        maxFeePerGas: 3n,
+        maxPriorityFeePerGas: 1n,
+        gasPrice: 3n,
+      } as never)
+    await expect(
+      executor.signContractCall({ ...call, maxNativeFeeWei: 230_000n }),
+    ).rejects.toThrow(/ceiling/)
+    expect(sign).toHaveBeenCalledTimes(1)
+    expect(journal.list()).toHaveLength(1)
+    expect(state.raws).toEqual([])
+  })
+
+  it('binds native preparation to an owned source and checks its final fee before signing', async () => {
+    const state = node({ main: 10_000_000n, spend: 1_000_000n })
+    const { executor, sign } = owner(state)
+    const request = {
+      recipient: { raw: router },
+      value: 1_000n,
+      sourceAddress: spend.address,
+    }
+    await expect(
+      executor.signNative({
+        ...request,
+        sourceAddress: Wallet.createRandom().address,
+        maxNativeFeeWei: 1_000_000n,
+      }),
+    ).rejects.toThrow(/not owned/)
+    await expect(
+      owner(state, [sources[0]!]).executor.signNative({
+        ...request,
+        maxNativeFeeWei: 1_000_000n,
+      }),
+    ).rejects.toThrow(/not owned/)
+    await expect(
+      executor.signNative({ ...request, maxNativeFeeWei: 0n }),
+    ).rejects.toThrow(/ceiling/)
+    expect(journal.list()).toEqual([])
+    expect(sign).not.toHaveBeenCalled()
+    const prepared = await executor.signNative({
+      ...request,
+      maxNativeFeeWei: 1_000_000n,
+    })
+    expect(
+      Transaction.from(
+        prepared.members[0]!.signed!.rawTransaction,
+      ).from!.toLowerCase(),
+    ).toBe(spend.address.toLowerCase())
+    expect(prepared.members[0]!.exposed).toBe(false)
+    expect(state.raws).toEqual([])
+  })
+
   it('signs an ERC20 transfer from the selected owned source and resumes identical bytes after reopen', async () => {
     const token = getEvmDexDeployment('monad-testnet')!.tokens.find(
       item => item.symbol === 'USDC',

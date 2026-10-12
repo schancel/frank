@@ -130,7 +130,7 @@ async function shownShares(wrapper: Mounted, count: number) {
   const shares = wrapper
     .findAll('[data-test="codex32-share"]')
     .map(node => node.text())
-  expect(shares).toHaveLength(count)
+  expect(shares.length).toBe(count)
   return shares
 }
 async function settled(wrapper: Mounted) {
@@ -142,7 +142,7 @@ async function settled(wrapper: Mounted) {
 }
 
 async function applyScheme(wrapper: Mounted, threshold: number, count: number) {
-  await wrapper.find('[data-test="codex32-scheme-btn"]').trigger('click')
+  await wrapper.find('[data-test="codex32-custom-scheme-btn"]').trigger('click')
   await wrapper.find('[data-test="input-threshold"]').setValue(threshold)
   await wrapper.find('[data-test="input-count"]').setValue(count)
   await wrapper.find('[data-test="apply-custom-scheme"]').trigger('click')
@@ -250,10 +250,15 @@ describe('BackupAccount page', () => {
       expect(wrapper.find('[data-test="backup_check_line"]').exists()).toBe(
         false,
       )
+      await wrapper.get('[data-test="codex32-scheme-btn"]').trigger('click')
+      await shownShares(wrapper, 5)
+      expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(
+        false,
+      )
       const envelopes: string[] = []
       for (const button of wrapper
         .findAll('[data-test="copy-share"]')
-        .slice(0, 2)) {
+        .slice(0, 3)) {
         await button.trigger('click')
         const calls = jest.mocked(navigator.clipboard.writeText).mock.calls
         envelopes.push(String(calls[calls.length - 1]![0]))
@@ -288,7 +293,9 @@ describe('BackupAccount page', () => {
     expect(wrapper.find('[data-test="backup-privacy"]').text()).toBe(
       'accountRecovery.recovery_shares_privacy',
     )
-    await wrapper.find('[data-test="codex32-scheme-btn"]').trigger('click')
+    await wrapper
+      .find('[data-test="codex32-custom-scheme-btn"]')
+      .trigger('click')
     expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(
       true,
     )
@@ -298,7 +305,9 @@ describe('BackupAccount page', () => {
     await wrapper.find('[data-test="cancel-custom-scheme"]').trigger('click')
     expect(await shownShares(wrapper, 3)).toEqual(initial)
     expect(mockRootReads).toBe(1)
-    await wrapper.find('[data-test="codex32-scheme-btn"]').trigger('click')
+    await wrapper
+      .find('[data-test="codex32-custom-scheme-btn"]')
+      .trigger('click')
     await wrapper.find('[data-test="apply-custom-scheme"]').trigger('click')
     expect(await shownShares(wrapper, 3)).toEqual(initial)
     expect(mockRootReads).toBe(1)
@@ -333,6 +342,36 @@ describe('BackupAccount page', () => {
     expect(mockRootReads).toBe(0)
     expect(wrapper.findAll('[data-test="codex32-share"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="backup-error"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('cycles presets on N of K and generates exactly one complete same-account set per click', async () => {
+    const { original } = await device()
+    const wrapper = mountPage()
+    let previous = await shownShares(wrapper, 3)
+    expect(mockRootReads).toBe(1)
+    const presets = [
+      [3, 5],
+      [6, 10],
+      [1, 1],
+      [2, 3],
+    ] as const
+    for (const [index, [threshold, count]] of presets.entries()) {
+      await wrapper.get('[data-test="codex32-scheme-btn"]').trigger('click')
+      const shares = await shownShares(wrapper, count)
+      expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(
+        false,
+      )
+      expect(wrapper.get('[data-test="codex32-scheme-btn"]').text()).toBe(
+        `${threshold} of ${count}`,
+      )
+      expect(mockRootReads).toBe(index + 2)
+      expect(shares).not.toEqual(previous)
+      expect(
+        identityOf(recoverCodex32Shares(shares.slice(0, threshold))),
+      ).toEqual(original)
+      previous = shares
+    }
     wrapper.unmount()
   })
 

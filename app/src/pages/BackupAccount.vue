@@ -38,7 +38,7 @@
                 :label="`${threshold} of ${count}`"
                 :disable="backupLoading"
                 data-test="codex32-scheme-btn"
-                @click="toggleCustomConfig"
+                @click="cyclePreset"
               />
               <q-btn
                 flat
@@ -239,6 +239,7 @@ const {
   backupShares,
   threshold,
   count,
+  cycleScheme,
   setScheme,
   generateShares,
   clearShares,
@@ -270,6 +271,14 @@ const isCustomValid = computed(() => {
     (t !== 1 || c === 1)
   )
 })
+
+function cyclePreset() {
+  if (backupLoading.value) return
+  showCustomConfig.value = false
+  copyStatus.value = ''
+  cycleScheme()
+  void generateShares()
+}
 
 function toggleCustomConfig() {
   showCustomConfig.value = !showCustomConfig.value

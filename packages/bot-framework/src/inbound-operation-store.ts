@@ -30,7 +30,7 @@ export interface InboundIdentity {
  * wallet owns the payment; `digest` is the wallet's attempt for it once the host knows it. */
 export interface StagedReply {
   stampValue: string;
-  /** When it was staged, in milliseconds: a reply is not retried for ever. */
+  /** When staged, in milliseconds; bounds the conversation wait once the wallet owns it. */
   since: number;
   digest?: string;
 }

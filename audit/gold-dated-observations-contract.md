@@ -1,0 +1,15 @@
+# Dated Gold reference — Tier 3 data-boundary prerequisite
+
+Base: combined zoom/revenue 5def1e7e plus Rust collector 8b1e4fcf. Monetary workers retain mining/statistics/formula and generator hunks. This candidate owns Chainlink price parsing, date-aware price collection, configured Gold reference, temporary direct Gold composition, chart Gold valuation, and focused tests.
+
+Current ownership: Chainlink adapters parse price but discard on-chain updatedAt. The collector stores collection time and smooths values; the direct adapter also synthesizes collection-time prices. The chart always disables Gold. Target: providers carry validated observed timestamps; storage preserves actual dated single-source observations exactly. Existing multi-source price sampling remains an explicitly derived series, with raw observations dated at their source times. No wallet/custody/balance/payment changes.
+
+Wire/persistence: existing feed version/point shape remains unchanged; add price/gold (USD per troy ounce), with asOf and point timestamps from the source. There is no fabricated seed/history, migration, annual fallback or current-value backfill. Repeated round observations retain one timestamp. Invalid/incomplete/nonpositive/future rounds yield no sample. Historical chart uses latest-at-or-before actual Gold observations within a declared seven-day maximum age, preserves uncovered dates as gaps, and displays ounces (never AVU). Current values use the same conversion and age rule.
+
+Validation: Chainlink ABI complete/negative/zero/future/date-preservation tests; direct Gold actual timestamp and missing-data behavior; relay parser and collection repeated-round exact-date/no-smoothing tests; chart actual dated Gold ratio, no look-ahead, stale/missing gaps and correct units. Focused TS/Rust/page suites plus affected type/lint/format checks. No live funds or owner browser/state. Long-range historical round import is a separate data collection task; uncovered history remains unavailable.
+
+## Verification and limitations
+
+Price-feed provider/direct suites: 33 PASS. App chart/details/locale parity: 58 PASS. New parser regressions fail 8 cases against unchanged provider; two positive dated-chart regressions fail against unchanged chart, then restored suites pass (gold-dated-fail-before.log). All 22 TypeScript projects PASS in 3.05s. Scoped app/package lint: zero errors with existing warnings; package files use explicit app semantic config and separate explicit-config formatting. Prettier and Rust formatting checked. Rust oracle37 and configuration19 PASS, including shipped Gold configuration, actual round-time validation, repeated-poll deduplication and exact no-smoothing output.
+
+Actual official read-only XAU/USD RPC quote and contract metadata were verified; see gold-public-observation.md. No live funds, owner browser, profile, keys or signing. Gold history begins with actual collected observations; long-range historical round import remains deliberately unimplemented. This candidate does not resolve the monetary worker's separately pending share-window/seed review findings and must not imply those predecessors are approved.

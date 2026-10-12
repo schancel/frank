@@ -575,7 +575,7 @@ export default {
     priceHistorySinglePoint:
       'Une seule observation de prix est disponible sur cette période ; aucune ligne n’est tracée.',
     priceHistoryGoldUnavailable:
-      'Les prix datés de l’or sont indisponibles. Les moyennes annuelles ne permettent pas d’évaluer cette monnaie à ces dates.',
+      'Aucun prix daté récent de l’or n’est disponible pour ces observations.',
     priceHistorySource: 'Source du prix : {source}.',
     priceHistoryBenchmarkUnavailable:
       'Aucune évaluation en {benchmark} n’est disponible pour cette monnaie sur cette période.',

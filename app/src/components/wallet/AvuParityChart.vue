@@ -419,8 +419,37 @@ const axisTitle = computed(() =>
     { symbol: quoteUnit.value },
   ),
 )
+const GOLD_MAX_AGE_SECONDS = 7 * DAY
+function goldAt(feed: OracleInputs | undefined, time: number) {
+  const series = feed?.series[seriesName('price', 'gold')]
+  if (!series || !('unit' in series) || series.unit !== 'USD/troy ounce')
+    return undefined
+  const point = valueAt(series.points, time)
+  return point && point[1] > 0 && time - point[0] <= GOLD_MAX_AGE_SECONDS
+    ? point
+    : undefined
+}
+function formatGold(value: number): string {
+  return `${value.toLocaleString(undefined, {
+    maximumSignificantDigits: 6,
+  })} oz`
+}
 const currentRate = computed(() => {
-  if (denomination.value === 'gold') return ''
+  if (denomination.value === 'gold') {
+    const now = Math.floor(Date.now() / 1000)
+    const price = valueAt(
+      inputs.value?.series[tokenPriceSeries.value]?.points,
+      now,
+    )
+    const gold = goldAt(inputs.value, now)
+    if (!price || !gold || price[1] <= 0) return ''
+    const value = (price[1] / gold[1]) * unit.value.multiplier
+    if (!Number.isFinite(value) || value <= 0) return ''
+    const rate = `${unit.value.symbol} ≈ ${formatGold(value)}`
+    return oracle.valuesAreTestnet
+      ? t('walletPanel.avuTestnetValue', { rate })
+      : rate
+  }
   if (denomination.value === 'hash')
     return oracle.formatUnitRate?.(asset.value) ?? ''
   const price = valueAt(
@@ -438,8 +467,21 @@ const currentRate = computed(() => {
     : rate
 })
 const currentNote = computed(() => {
-  if (denomination.value === 'gold')
-    return t('walletPanel.priceHistoryGoldUnavailable')
+  if (denomination.value === 'gold') {
+    const gold = goldAt(inputs.value, Math.floor(Date.now() / 1000))
+    const age = Math.max(
+      gold ? Date.now() - gold[0] * 1000 : 0,
+      oracle.priceAgeMs?.(asset.value) ?? 0,
+    )
+    return gold && currentRate.value
+      ? t(
+          age > STALE_AFTER_MS
+            ? 'walletPanel.avuPriceStaleNote'
+            : 'walletPanel.avuPriceFreshNote',
+          { age: formatAge(age) },
+        )
+      : t('walletPanel.priceHistoryGoldUnavailable')
+  }
   const age = oracle.priceAgeMs?.(asset.value)
   if (!currentRate.value) return t('walletPanel.avuUnavailable')
   const parts =
@@ -514,7 +556,7 @@ const sampleTimes = computed<number[]>(() => {
 
 const rangeSeries = computed<Series[]>(() => {
   const feed = historyInputs.value
-  if (!feed || denomination.value === 'gold') return []
+  if (!feed) return []
   const points: DataPoint[] = []
   const gaps: number[] = []
   for (const time of sampleTimes.value) {
@@ -522,8 +564,15 @@ const rangeSeries = computed<Series[]>(() => {
     const hash =
       denomination.value === 'hash' ? avuHashAt(feed, time) : undefined
     const basis = denomination.value === 'hash' ? hash : avuSpotAt(feed, time)
+    const gold = denomination.value === 'gold' ? goldAt(feed, time) : undefined
     const value =
-      price && basis?.kwhPerValue ? price[1] * basis.kwhPerValue : undefined
+      denomination.value === 'gold'
+        ? price && gold
+          ? price[1] / gold[1]
+          : undefined
+        : price && basis?.kwhPerValue
+        ? price[1] * basis.kwhPerValue
+        : undefined
     if (value !== undefined && Number.isFinite(value) && value > 0)
       points.push({
         at: time,
@@ -538,7 +587,8 @@ const rangeSeries = computed<Series[]>(() => {
       label: axisTitle.value,
       color: themeColors.value.token,
       axis: 'right',
-      format: value => formatAvu(value),
+      format: value =>
+        denomination.value === 'gold' ? formatGold(value) : formatAvu(value),
       points,
       gaps,
     },
@@ -773,7 +823,7 @@ const inspectedCells = computed(() => {
 
 /** Missing or single observations never become a substitute series or a fabricated line. */
 const dataNote = computed(() => {
-  if (denomination.value === 'gold')
+  if (denomination.value === 'gold' && columns.value.length === 0)
     return t('walletPanel.priceHistoryGoldUnavailable')
   if (!inputs.value) return t('walletPanel.chartNoteNoFeed')
   const drawn = columns.value

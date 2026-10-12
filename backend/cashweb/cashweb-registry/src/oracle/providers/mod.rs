@@ -43,6 +43,18 @@ pub struct Unreadable;
 /// Asset identifier -> US dollars per whole coin.
 pub type Quotes = BTreeMap<String, f64>;
 
+/// One price with an optional authoritative source timestamp (unix seconds).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PriceObservation {
+    /// US dollars per configured asset unit.
+    pub value: f64,
+    /// Actual source update time, absent for collection-time spot endpoints.
+    pub observed_at: Option<u64>,
+}
+
+/// Asset identifier to parsed price observation.
+pub type ObservedQuotes = BTreeMap<String, PriceObservation>;
+
 /// `base?key=value&...` with values percent-encoded; `base` may already carry a query.
 pub(crate) fn with_query(base: &url::Url, pairs: &[(&str, &str)]) -> String {
     let mut url = base.clone();
@@ -79,14 +91,29 @@ pub fn parse_prices(
     adapter: OraclePriceAdapter,
     body: &[u8],
     symbols: &BTreeMap<String, String>,
-) -> Result<Quotes, Unreadable> {
-    match adapter {
+) -> Result<ObservedQuotes, Unreadable> {
+    if adapter == OraclePriceAdapter::Chainlink {
+        return chainlink::parse(body, symbols);
+    }
+    let quotes = match adapter {
         OraclePriceAdapter::Coinbase => coinbase::parse(body, symbols),
         OraclePriceAdapter::Kraken => kraken::parse(body, symbols),
         OraclePriceAdapter::Binance => binance::parse(body, symbols),
         OraclePriceAdapter::Coingecko => coingecko::parse(body, symbols),
-        OraclePriceAdapter::Chainlink => chainlink::parse(body, symbols),
-    }
+        OraclePriceAdapter::Chainlink => unreachable!("handled above"),
+    }?;
+    Ok(quotes
+        .into_iter()
+        .map(|(asset, value)| {
+            (
+                asset,
+                PriceObservation {
+                    value,
+                    observed_at: None,
+                },
+            )
+        })
+        .collect())
 }
 
 /// Days since 1970-01-01 of a proleptic Gregorian date.
@@ -181,9 +208,14 @@ mod tests {
                 continue;
             }
             let quotes = parsed.unwrap_or_else(|_| panic!("{} answer is readable", provider.id));
+            // Recorded fixture predates adding the Gold reference; its parser is tested separately.
             assert_eq!(
                 quotes.keys().collect::<Vec<_>>(),
-                provider.symbols.keys().collect::<Vec<_>>(),
+                provider
+                    .symbols
+                    .keys()
+                    .filter(|asset| asset.as_str() != "gold")
+                    .collect::<Vec<_>>(),
                 "{} answered for every asset it is configured to list",
                 provider.id
             );
@@ -191,7 +223,7 @@ mod tests {
                 by_asset
                     .entry(asset)
                     .or_default()
-                    .push((provider.id.clone(), price));
+                    .push((provider.id.clone(), price.value));
             }
         }
         let price = |asset: &str, provider: &str| {
@@ -267,8 +299,13 @@ mod tests {
         assert!(request("coingecko").url.ends_with("&vs_currencies=usd"));
         let chainlink = request("chainlink");
         let calls: serde_json::Value = serde_json::from_str(&chainlink.body.unwrap()).unwrap();
-        assert_eq!(calls.as_array().map(Vec::len), Some(2));
+        assert_eq!(calls.as_array().map(Vec::len), Some(3));
         assert_eq!(calls[0]["params"][0]["data"], "0xfeaf968c");
+        assert!(calls
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|call| call["params"][0]["to"] == "0x1F954Dc24a49708C26E0C1777f16750B5C6d5a2c"));
     }
 
     #[test]

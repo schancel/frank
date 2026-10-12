@@ -49,7 +49,7 @@ export class ChainlinkProvider implements PriceFeedProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Accept: 'application/json',
+          'Accept': 'application/json',
         },
         body: JSON.stringify({
           jsonrpc: '2.0',
@@ -70,27 +70,33 @@ export class ChainlinkProvider implements PriceFeedProvider {
       const data = await response.json()
       const rawHex = typeof data?.result === 'string' ? data.result : ''
 
-      // Clean 0x prefix
       const hex = rawHex.startsWith('0x') ? rawHex.slice(2) : rawHex
-      // Result has 5 * 32-byte words (roundId, answer, startedAt, updatedAt, answeredInRound)
-      if (hex.length < 128) return null
-
-      // Word 1: index 64..128 (answer)
-      const answerHex = hex.slice(64, 128)
-      let answerBig = BigInt('0x' + answerHex)
-      // Check 256-bit signed negative bit
-      if (answerBig >= 1n << 255n) {
-        answerBig -= 1n << 256n
-      }
-
-      if (answerBig <= 0n) return null
-      const price = Number(answerBig) / Math.pow(10, config.decimals)
+      if (!/^[0-9a-fA-F]{320}$/.test(hex)) return null
+      const word = (index: number) =>
+        BigInt('0x' + hex.slice(index * 64, (index + 1) * 64))
+      const round = word(0),
+        answer = word(1),
+        startedAt = word(2),
+        updatedAt = word(3)
+      if (
+        round === 0n ||
+        answer <= 0n ||
+        answer >= 1n << 255n ||
+        startedAt === 0n ||
+        startedAt > updatedAt ||
+        updatedAt > BigInt(Math.floor(Date.now() / 1000)) ||
+        updatedAt * 1000n > BigInt(Number.MAX_SAFE_INTEGER) ||
+        word(4) < round
+      )
+        return null
+      const price = Number(answer) / Math.pow(10, config.decimals)
+      if (!Number.isFinite(price) || price <= 0) return null
 
       return {
         provider: 'chainlink',
         asset: asset.toUpperCase(),
         price,
-        timestamp: Date.now(),
+        timestamp: Number(updatedAt) * 1000,
         latencyMs: Date.now() - startTime,
       }
     } catch {

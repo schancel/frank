@@ -239,7 +239,7 @@ impl Collector {
                 })
                 .count()
         };
-        let mut answers = BTreeMap::<String, Vec<(String, f64)>>::new();
+        let mut answers = BTreeMap::<String, Vec<(String, providers::PriceObservation)>>::new();
         // The two providers of the round carry every asset they list.
         let mut wanted: Option<HashSet<String>> = None;
         loop {
@@ -267,6 +267,9 @@ impl Collector {
                 failed.insert(provider.id.clone());
             }
             for (asset, price) in quotes.unwrap_or_default() {
+                if price.observed_at.is_some_and(|at| at == 0 || at > now) {
+                    continue;
+                }
                 answers
                     .entry(asset)
                     .or_default()
@@ -298,9 +301,9 @@ impl Collector {
             for (provider, value) in answers.get(asset).into_iter().flatten() {
                 raw.push(RawSample {
                     name: name.clone(),
-                    time: now,
+                    time: value.observed_at.unwrap_or(now),
                     provider: provider.clone(),
-                    value: *value,
+                    value: value.value,
                 });
             }
             // Kept beside the answers so the series can be recomputed from them.
@@ -314,7 +317,23 @@ impl Collector {
             if let Verdict::Sample(sample) =
                 self.verdict(asset, &answers, listed, false, previous[asset], now)
             {
-                points.push((name, now, smooth(previous[asset], now, sample, &self.rules)));
+                // A sole dated provider is an observation, not a collection-time EWMA.
+                // Repeated reads of the same round must not create extra historical points.
+                let dated = answers
+                    .get(asset)
+                    .filter(|quotes| {
+                        quotes.len() == 1
+                            && self
+                                .plan
+                                .price_providers()
+                                .filter(|provider| provider.symbols.contains_key(asset))
+                                .count()
+                                == 1
+                    })
+                    .and_then(|quotes| quotes[0].1.observed_at.map(|at| (at, quotes[0].1.value)));
+                let (at, value) = dated
+                    .unwrap_or_else(|| (now, smooth(previous[asset], now, sample, &self.rules)));
+                points.push((name, at, value));
             }
         }
         report.points = points.len();
@@ -325,7 +344,7 @@ impl Collector {
     fn verdict(
         &self,
         asset: &str,
-        answers: &BTreeMap<String, Vec<(String, f64)>>,
+        answers: &BTreeMap<String, Vec<(String, providers::PriceObservation)>>,
         listed: usize,
         can_ask: bool,
         previous: Option<(u64, f64)>,
@@ -333,7 +352,12 @@ impl Collector {
     ) -> Verdict {
         let values = answers
             .get(asset)
-            .map(|answers| answers.iter().map(|(_, value)| *value).collect::<Vec<_>>())
+            .map(|answers| {
+                answers
+                    .iter()
+                    .map(|(_, value)| value.value)
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         judge(&values, listed, can_ask, previous, now, &self.rules)
     }
@@ -787,6 +811,68 @@ symbols = { btc-mainnet = "BTC", xec-mainnet = "XEC" }
     }
 
     const T0: u64 = 1_800_000_000;
+
+    #[tokio::test]
+    async fn dated_gold_rounds_keep_exact_source_dates_and_do_not_multiply_on_polling() -> Result<()>
+    {
+        struct Dated;
+        #[async_trait]
+        impl Upstream for Dated {
+            async fn fetch(
+                &self,
+                _request: &UpstreamRequest,
+            ) -> std::result::Result<Vec<u8>, UpstreamError> {
+                let words = [
+                    2u128,
+                    400_000_000_000,
+                    u128::from(T0 - 3600),
+                    u128::from(T0 - 3600),
+                    2,
+                ];
+                let hex = words
+                    .iter()
+                    .map(|word| format!("{word:064x}"))
+                    .collect::<String>();
+                Ok(
+                    serde_json::json!([{ "id": 1, "result": format!("0x{hex}") }])
+                        .to_string()
+                        .into_bytes(),
+                )
+            }
+        }
+        let conf = r#"non_network_ids = ["gold"]
+[[price_providers]]
+id = "chainlink"
+adapter = "chainlink"
+api_url = "http://stub/chainlink"
+symbols = { gold = "proxy" }
+"#;
+        let dir = tempdir::TempDir::new("dated-gold")?;
+        let feed = Arc::new(feed(&dir, conf));
+        let mut collector = Collector::new(plan(conf), Arc::clone(&feed), Arc::new(Dated));
+        let mut rng = StdRng::seed_from_u64(1);
+        collector.price_round(T0 - 4000, &mut rng).await?;
+        assert!(
+            feed.store().points("price/gold", 0, u64::MAX)?.is_empty(),
+            "future round must not enter history"
+        );
+        feed.store()
+            .write(&[], &[("price/gold".to_owned(), T0 - 4200, 3900.0)])?;
+        collector.price_round(T0, &mut rng).await?;
+        collector.price_round(T0 + 600, &mut rng).await?;
+        assert_eq!(
+            feed.store().points("price/gold", 0, u64::MAX)?,
+            vec![(T0 - 4200, 3900.0), (T0 - 3600, 4000.0)]
+        );
+        let raw = feed.store().raw("price/gold", 0, u64::MAX)?;
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].time, T0 - 3600);
+        feed.rebuild_latest(T0 + 600);
+        let latest: serde_json::Value = serde_json::from_slice(&feed.latest().body)?;
+        assert_eq!(latest["series"]["price/gold"]["unit"], "USD/troy ounce");
+        assert_eq!(latest["series"]["price/gold"]["asOf"], T0 - 3600);
+        Ok(())
+    }
 
     /// With a smoothed value in place and providers that agree, a round costs two requests:
     /// two providers, each asked once for everything it lists. Which two changes with the seed.

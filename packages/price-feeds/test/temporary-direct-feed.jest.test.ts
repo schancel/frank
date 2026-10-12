@@ -1,3 +1,8 @@
+jest.mock('../src/providers/chainlink', () => ({
+  ChainlinkProvider: jest
+    .fn()
+    .mockImplementation(() => ({ fetchPrice: async () => null })),
+}))
 import {
   CHAIN_STATS_REFRESH_INTERVAL_MS,
   DIRECT_ASSETS,
@@ -287,4 +292,42 @@ describe('the latest answer, filled directly', () => {
     await directLatestFeed(options)
     expect(fetchStats).toHaveBeenCalledTimes(12)
   })
+})
+
+describe('dated direct Gold observations', () => {
+  const now = 1_800_000_000_000
+  const sample = {
+    provider: 'chainlink' as const,
+    asset: 'GOLD',
+    price: 4000,
+    timestamp: now - 3600_000,
+    latencyMs: 1,
+  }
+  const options = {
+    now: () => now,
+    fetchPrices: async () => ({}),
+    fetchStats: async () => null,
+  }
+  it('stores actual observation time, unit and price without backfill', async () => {
+    const feed = await directLatestFeed({
+      ...options,
+      fetchGold: async () => sample,
+    })
+    expect(feed.series['price/gold']).toMatchObject({
+      unit: 'USD/troy ounce',
+      asOf: sample.timestamp / 1000,
+      points: [[sample.timestamp / 1000, 4000]],
+    })
+    expect(parseOracleFeed(feed)).toBeDefined()
+  })
+  it.each([null, { ...sample, timestamp: now + 1 }, { ...sample, price: 0 }])(
+    'omits unavailable or invalid Gold rather than substituting annual history',
+    async gold => {
+      const feed = await directLatestFeed({
+        ...options,
+        fetchGold: async () => gold,
+      })
+      expect(feed.series['price/gold']).toBeUndefined()
+    },
+  )
 })

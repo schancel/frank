@@ -140,7 +140,7 @@ expected_genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
 # Frank networks. Each provider's `symbols` maps an identifier to that provider's own name for it.
 # Remove this section and its sub-tables to run a relay without the feed.
 [registry.oracle]
-non_network_ids = ["ltc-mainnet", "xmr-mainnet", "usdc", "usdt"]
+non_network_ids = ["gold", "ltc-mainnet", "xmr-mainnet", "usdc", "usdt"]
 
 [[registry.oracle.price_providers]]
 id = "coinbase"
@@ -180,7 +180,7 @@ symbols = { btc-mainnet = "BTCUSDT", bch-mainnet = "BCHUSDT", ltc-mainnet = "LTC
 id = "chainlink"
 adapter = "chainlink"
 api_url = "https://arb1.arbitrum.io/rpc"
-symbols = { btc-mainnet = "0x6ce185860a4963106506C203335A2910413708e9", ethereum-mainnet = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612" }
+symbols = { btc-mainnet = "0x6ce185860a4963106506C203335A2910413708e9", ethereum-mainnet = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612", gold = "0x1F954Dc24a49708C26E0C1777f16750B5C6d5a2c" }
 
 # Difficulty, coins in existence and block subsidy of the mined chains: one request an hour.
 [registry.oracle.chain_stats]

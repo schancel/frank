@@ -277,7 +277,16 @@ impl Feed {
                     [only] => format!("relay: {only} only (single source)"),
                     many => format!("relay: smoothed over {}", many.join(", ")),
                 };
-                ("USD", source, conf.price_interval_s, !providers.is_empty())
+                (
+                    if id == "gold" {
+                        "USD/troy ounce"
+                    } else {
+                        "USD"
+                    },
+                    source,
+                    conf.price_interval_s,
+                    !providers.is_empty(),
+                )
             }
             "marketCap" | "hashrate" | "minerRevenue" => {
                 let unit = match kind {

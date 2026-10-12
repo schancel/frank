@@ -15,6 +15,8 @@
  */
 import basketDefinition from './historical/basket.json'
 import { PriceFeedsClient } from './client'
+import { ChainlinkProvider } from './providers/chainlink'
+import type { PriceSample } from './types'
 import { CHAIN_STATS_REFRESH_INTERVAL_MS } from './config'
 import { windowedElectricityAggregate } from './electricity-aggregate'
 import {
@@ -322,6 +324,8 @@ export interface DirectFeedOptions {
   now?: () => number
   /** Stand-ins for the two direct fetches, for tests. */
   fetchPrices?: (symbols: string[]) => Promise<Record<string, number>>
+  /** Dated XAU/USD observation, separate from collection-time coin sampling. */
+  fetchGold?: () => Promise<PriceSample | null>
   fetchStats?: (blockchairChain: string) => Promise<MiningStats | null>
   /**
    * The time (unix seconds) of the latest point the caller already holds for a series,
@@ -338,6 +342,21 @@ const statsCache = new Map<string, MiningStats>()
 /** Forgets the fetched chain statistics. For tests. */
 export function resetDirectFeedCache(): void {
   statsCache.clear()
+}
+
+async function datedGold(
+  options: DirectFeedOptions,
+): Promise<PriceSample | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 4000)
+  try {
+    return await new ChainlinkProvider({ fetchFn: options.fetchFn }).fetchPrice(
+      'GOLD',
+      controller.signal,
+    )
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 async function medianPrices(
@@ -402,8 +421,9 @@ export async function directLatestFeed(
       return [blockchair]
     },
   )
-  const [prices] = await Promise.all([
+  const [prices, gold] = await Promise.all([
     (options.fetchPrices ?? (s => medianPrices(s, options)))(symbols),
+    (options.fetchGold ?? (() => datedGold(options)))().catch(() => null),
     ...due.map(async chain => {
       const stats = await fetchStats(chain).catch(() => null)
       if (stats) statsCache.set(chain, stats)
@@ -433,6 +453,21 @@ export async function directLatestFeed(
     if (one && last) out[name] = { ...one, points: [last] }
   }
 
+  if (
+    gold &&
+    Number.isFinite(gold.price) &&
+    gold.price > 0 &&
+    Number.isSafeInteger(gold.timestamp) &&
+    gold.timestamp > 0 &&
+    gold.timestamp <= clock()
+  ) {
+    out[seriesName('price', 'gold')] = live(
+      'USD/troy ounce',
+      'Chainlink XAU/USD (Arbitrum)',
+      Math.floor(gold.timestamp / 1000),
+      gold.price,
+    )
+  }
   for (const [asset, { symbol, blockchair }] of Object.entries(DIRECT_ASSETS)) {
     const price = prices[symbol]
     const priceName = seriesName('price', asset)

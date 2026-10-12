@@ -1,6 +1,6 @@
 import { ActiveChain, NativeAssetChain } from "./active-chain";
 import type { EcashChain, EcashChainConfig } from "./ecash-chain";
-import { defaultTempoTransactionBuilder } from "./evm-transaction-builder";
+import { getChainRegistryEntry } from "./chains-registry";
 import { createEvmChain } from "./monad-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
 
@@ -34,12 +34,26 @@ export async function createChain(
 ): Promise<NativeAssetChain | EcashChain> {
   switch (params.family) {
     case "evm": {
-      const isTempo =
-        params.chainIdentifier?.startsWith("tempo-") ||
-        params.config.rpcChain?.startsWith("tempo-");
-      const defaultBuilder = isTempo ? defaultTempoTransactionBuilder : undefined;
+      const chainIdentifier = params.chainIdentifier ?? params.config.rpcChain;
+      if (
+        params.config.rpcChain !== chainIdentifier ||
+        (params.config.chainIdentifier !== undefined &&
+          params.config.chainIdentifier !== chainIdentifier)
+      ) {
+        throw new Error("EVM chain identifier and RPC chain must match");
+      }
+      const chain = getChainRegistryEntry(chainIdentifier);
+      if (!chain || chain.family !== "evm") {
+        throw new Error(
+          `Unsupported EVM chain identifier "${chainIdentifier}"`
+        );
+      }
+      if (chain.kind === "tempo") {
+        throw new Error(
+          `Tempo wallet on ${chainIdentifier} is unavailable until its signed 0x76 transaction and fee-token recovery path is installed`
+        );
+      }
       return createEvmChain({
-        ...(defaultBuilder ? { transactionBuilder: defaultBuilder } : {}),
         ...params.config,
         ...(params.chainIdentifier !== undefined
           ? { chainIdentifier: params.chainIdentifier }

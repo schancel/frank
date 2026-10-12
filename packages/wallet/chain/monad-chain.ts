@@ -96,6 +96,7 @@ import {
   randomBytes,
   toUtf8Bytes,
 } from "ethers";
+import { existsSync } from "fs";
 
 import {
   ActiveChain,
@@ -132,6 +133,7 @@ import {
 import {
   createMonadWalletMaterial,
   canonicalWalletPublicBinding,
+  evmWalletPoolBindingId,
 } from "../monad-wallet-material";
 import type {
   MonadRootBundle,
@@ -2138,6 +2140,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       seed: HDSeed | MonadRootBundle | HistoricalBip39Seed
     ): Promise<EvmChainWalletHandle> {
       const material = createMonadWalletMaterial(seed);
+      if (config.requireBoundWalletState === true && material.canonicalRoles === undefined) {
+        material.dispose();
+        throw new Error("Bound EVM wallet state requires typed domain roots");
+      }
       const { identity, mainAccount, keyring, changeKeyring } = material;
       const identityKey = identity.address.raw.toLowerCase();
       const mainAccountKey = mainAccount.address.toLowerCase();
@@ -2177,14 +2183,34 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           config.walletStorageLocation === false
             ? undefined
             : `${config.walletStorageLocation}-${storageKey}`;
+        // Typed roots own a durable public state tuple. A previously opened state path must
+        // retain both spend-pool bindings: recreating either empty pool could reuse an account.
+        // Only an entirely absent path is eligible for first-time binding. Existing pre-baseline
+        // unbound state fails closed rather than silently adopting potentially funded roots.
+        const typedPoolBinding =
+          material.canonicalRoles === undefined
+            ? undefined
+            : evmWalletPoolBindingId(material, chainIdentifier, BigInt(config.chainId));
+        const freshWalletState =
+          storageLocation !== undefined && !existsSync(storageLocation);
+        const allowUnboundPool =
+          freshWalletState || config.requireBoundWalletState !== true;
         const subAccountStore =
           storageLocation === undefined
             ? undefined
-            : new LevelSubAccountPoolStore(storageLocation);
+            : new LevelSubAccountPoolStore(
+                storageLocation,
+                typedPoolBinding,
+                allowUnboundPool
+              );
         const changeStore =
           storageLocation === undefined
             ? undefined
-            : new LevelChangePoolStore(storageLocation);
+            : new LevelChangePoolStore(
+                storageLocation,
+                typedPoolBinding,
+                allowUnboundPool
+              );
         const stampPaymentJournal =
           storageLocation === undefined
             ? new InMemoryStampPaymentJournal()
@@ -2284,6 +2310,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 (result) => result.status === "rejected"
               );
               if (openFailure?.status === "rejected") throw openFailure.reason;
+              if (typedPoolBinding !== undefined && freshWalletState) {
+                if (subAccountStore?.bindingId() === undefined)
+                  await subAccountStore!.Bind();
+                if (changeStore?.bindingId() === undefined)
+                  await changeStore!.Bind();
+              }
               for (const record of pool.records()) {
                 const derived = keyring.deriveSubAccount(record.index);
                 const cached = pool.capacityCache.get(record.index);

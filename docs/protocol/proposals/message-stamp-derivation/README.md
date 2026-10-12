@@ -58,6 +58,13 @@ Purposes 1, 2, 4, 5 remain BIP32 secp256k1 master seeds; purpose 3 remains an
 Ed25519 keypair seed and is never passed to this proposal's BIP32 role schedule.
 `vectors.json` records the literal salt/info/PRK/output bytes for every purpose
 and both public account roots: 32 zero bytes and ascending `00..1f`.
+The generator is `packages/domain-roots/proposals/message-stamp-derivation/check.ts`
+through `run.cjs`; its output is
+`docs/protocol/proposals/message-stamp-derivation/vectors.json`. Regenerate with
+`node packages/domain-roots/proposals/message-stamp-derivation/run.cjs --emit > docs/protocol/proposals/message-stamp-derivation/vectors.json`
+and verify with `node packages/domain-roots/proposals/message-stamp-derivation/run.cjs`.
+The output also freezes hashes of the listed source files; a source-only change
+requires regenerating and confirming that its intended hash is the only vector delta.
 
 For each role, **the BIP32 seed is exactly the selected domain-root output**.
 `m` means that seed's BIP32 master, not the account-root master and not an EVM

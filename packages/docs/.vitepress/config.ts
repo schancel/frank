@@ -218,9 +218,6 @@ export default withMermaid(
         },
       ],
 
-      socialLinks: [
-        { icon: 'github', link: 'https://github.com/schancel/frank' },
-      ],
 
       footer: {
         message: 'Frank & Cashweb High-Assurance Protocol Documentation',

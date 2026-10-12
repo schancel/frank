@@ -1542,8 +1542,6 @@ export default {
     badgeStamp: 'Stamp Protocol',
     badgeEncrypted: 'End-to-End Encrypted',
     badgePermissionless: 'Permissionless Identity',
-    linksTitle: 'Links & Source Code',
-    githubRepo: 'Frank GitHub Repository',
     thirdPartyTitle: 'Third-party software',
     dklsName: 'DKLs23 two-party signing library (Silence Laboratories)',
     dklsModified:

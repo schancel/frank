@@ -132,6 +132,7 @@ describe('the latest answer, filled directly', () => {
     subsidyCoins24h: chain === 'ecash' ? 3_125_000 : 6.25,
     feeCoins24h: chain === 'ecash' ? 100_000 : 0,
     hashrate24h: 1000,
+    observationEnd: NOW / 1000,
     firstBlock: 1,
     lastBlock: 10,
     circulatingCoins: 1_000_000,
@@ -141,6 +142,39 @@ describe('the latest answer, filled directly', () => {
     Object.fromEntries(symbols.map(symbol => [symbol, 10]))
 
   beforeEach(() => resetDirectFeedCache())
+
+  it('checks the consensus split against provider block time, not delayed fetch time', async () => {
+    const fetched = Date.parse('2023-11-17T12:00:00Z')
+    const providerEnd = seconds('2023-11-15') + 12 * 3600
+    const feed = await directLatestFeed({
+      now: () => fetched,
+      fetchPrices: everyPrice,
+      fetchStats: async chain => ({
+        ...stats(chain),
+        fetchedAt: fetched,
+        observationEnd: providerEnd,
+      }),
+    })
+    // Provider's trailing day spans the split even though fetch day's trailing day does not.
+    expect(feed.series['minerRevenue/xec-mainnet']).toBeUndefined()
+  })
+
+  it('uses the historical share when an old observation arrives after the split', async () => {
+    const fetched = Date.parse('2023-11-17T12:00:00Z')
+    const feed = await directLatestFeed({
+      now: () => fetched,
+      fetchPrices: everyPrice,
+      fetchStats: async chain => ({
+        ...stats(chain),
+        fetchedAt: fetched,
+        observationEnd: seconds('2023-11-14'),
+      }),
+    })
+    expect(feed.series['minerRevenue/xec-mainnet'].points[0][1]).toBeCloseTo(
+      ((3_125_000 + 100_000) * 0.92) / 86_400,
+      6,
+    )
+  })
 
   it('carries one live point per series, and the miner’s part of the eCash reward', async () => {
     const feed = await directLatestFeed({

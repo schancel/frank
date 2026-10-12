@@ -458,9 +458,10 @@ export async function directLatestFeed(
     }
     const statsSeconds = Math.min(nowSeconds, Math.ceil(stats.fetchedAt / 1000))
     const shares = minerShare(asset)
-    const share = at(shares, statsSeconds)?.[1] ?? 1
+    const share = at(shares, stats.observationEnd)?.[1] ?? 1
     // Do not apply one share to a window spanning a consensus allocation change.
-    if ((at(shares, statsSeconds - 86_400)?.[1] ?? 1) !== share) continue
+    if ((at(shares, stats.observationEnd - 86_400)?.[1] ?? 1) !== share)
+      continue
     out[seriesName('hashrate', asset)] = live(
       'hashes/s',
       'Blockchair observed-work estimate, 24h',

@@ -12,6 +12,7 @@ function responses(
             inflation_24h: 1_000_000_000,
             blocks_24h: 10,
             best_block_height: 109,
+            best_block_time: '2026-10-10 17:00:00',
             circulation: 2_000_000_000_000_000,
             hashrate_24h: '123456789',
             difficulty: -100,
@@ -45,6 +46,7 @@ describe('observed mining receipts and work', () => {
         subsidyCoins24h: 1e9 / Number(unit),
         feeCoins24h: 1e5 / Number(unit),
         hashrate24h: 123456789,
+        observationEnd: Date.parse('2026-10-10T17:00:00Z') / 1000,
         firstBlock: 100,
         lastBlock: 109,
       })
@@ -54,6 +56,20 @@ describe('observed mining receipts and work', () => {
       expect(query.get('a')).toBe('sum(fee_total),sum(generation),count()')
     },
   )
+  it.each([
+    undefined,
+    null,
+    '',
+    '2026-02-30 12:00:00',
+    '2026-10-10 24:00:00',
+    123,
+  ])('rejects absent or invalid provider block time %p', async time => {
+    expect(
+      await fetchMiningStats('ecash', {
+        fetchFn: responses({ best_block_time: time }),
+      }),
+    ).toBeNull()
+  })
   it('accepts explicitly observed zero fees', async () => {
     expect(
       (
@@ -108,6 +124,7 @@ describe('observed mining receipts and work', () => {
           data: {
             blocks_24h: 10,
             best_block_height: 109,
+            best_block_time: '2026-10-10 17:00:00',
             hashrate_24h: 100,
             circulation: 100,
             inflation_24h: 100,

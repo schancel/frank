@@ -10,6 +10,8 @@ export interface MiningStats {
   feeCoins24h: number
   /** Upstream observed-work estimate, hashes/second over 24 hours. */
   hashrate24h: number
+  /** Provider block-time endpoint of the trailing observation, Unix seconds. */
+  observationEnd: number
   firstBlock: number
   lastBlock: number
   /** Whole coins in existence; times the oracle's price it is the market capitalisation. */
@@ -58,6 +60,7 @@ export async function fetchMiningStats(
     const unit = 10 ** facts.decimals
     const blocks = stats?.blocks_24h
     const lastBlock = stats?.best_block_height
+    const observationEnd = utcTimestamp(stats?.best_block_time)
     const hashrate24h = positive(stats?.hashrate_24h)
     const circulatingCoins = positive(stats?.circulation)
     if (
@@ -65,6 +68,7 @@ export async function fetchMiningStats(
       blocks <= 0 ||
       !Number.isSafeInteger(lastBlock) ||
       lastBlock < blocks - 1 ||
+      observationEnd === undefined ||
       hashrate24h === undefined ||
       circulatingCoins === undefined
     )
@@ -101,6 +105,7 @@ export async function fetchMiningStats(
       subsidyCoins24h: generation / unit,
       feeCoins24h: fees / unit,
       hashrate24h,
+      observationEnd,
       firstBlock,
       lastBlock,
       circulatingCoins: circulatingCoins / unit,
@@ -124,4 +129,21 @@ function nonnegative(value: unknown): number | undefined {
 function positive(value: unknown): number | undefined {
   const n = nonnegative(value)
   return n !== undefined && n > 0 ? n : undefined
+}
+
+/** Blockchair dates are UTC; reject malformed dates rather than using fetch time. */
+function utcTimestamp(value: unknown): number | undefined {
+  if (
+    typeof value !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+  )
+    return undefined
+  const iso = `${value.replace(' ', 'T')}Z`
+  const milliseconds = Date.parse(iso)
+  if (
+    !Number.isFinite(milliseconds) ||
+    new Date(milliseconds).toISOString() !== iso.replace('Z', '.000Z')
+  )
+    return undefined
+  return milliseconds / 1000
 }

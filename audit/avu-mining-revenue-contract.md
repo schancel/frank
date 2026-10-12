@@ -17,3 +17,13 @@ Acceptance: fee zero versus absent/malformed; BTC/BCH/LTC/DOGE/XEC unit conversi
 Focused gates: price-feeds 4 suites/61 tests; wallet oracle 2 suites/23 tests; app oracle and parity chart 2 suites/48 tests; generator Python 4 tests. All passed. `yarn typecheck:fast` equivalent node runner: all 22 projects pass using isolated links to the frozen Mera candidate dependency installation, with its package-specific Chronik versions (wallet4.3.1; legacy0.8.5). No shared dependency mutation. Initial use of root dependencies failed on obsolete package exports; corrected environment rerun passed.
 
 Seed generation check, Python compilation, explicit app Prettier configuration and git diff whitespace check pass. Scoped ESLint semantics: zero errors, two non-null assertion warnings; formatting rule checked separately with explicit app config because files outside app otherwise resolve default Prettier options conflicting with their existing single-quote style. No live Blockchair aggregate acceptance claimed: public response remains code430. Production Rust counterpart remains a separately reviewed candidate. AvuDetails.vue selector names must change with this feed schema; chart worker owns that file.
+
+## Review boundary follow-up
+
+Independent review confirmed the TypeScript direct writer used retrieval time for consensus-share window checks while Rust uses the source block timestamp. The correction parses Blockchair best_block_time strictly as UTC and applies both endpoint share checks to that observation. Retrieval time still timestamps normalized live pairs, matching Rust. Delayed retrieval cannot reclassify a boundary-spanning observation as a stable one.
+
+The proposed null-seed issue was independently disproven: unavailable observations are filtered by series(), and build() removes empty series. No repair or fallback was added.
+
+Remaining inactive historical-source limitation: future other-chain fee/work monthly rows spanning a miner-share transition need per-period miner receipts or explicit omission with gap semantics; applying a month-start split is insufficient. Current bundled other-chain rows contain no fee/work observations, so this path supplies no AVU mining contribution. Do not claim regenerated eCash transition-month acceptance until that source treatment is resolved.
+
+Follow-up verification: two affected price-feeds suites pass (42 tests); price-feeds TypeScript check passes. Replacing only the two observation-end lookups with the prior retrieval-time lookups makes both new allocation-window regressions fail; source restored afterward. Formatting and diff checks pass.

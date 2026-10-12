@@ -3852,6 +3852,13 @@
   dependencies:
     undici-types "~8.9.0"
 
+"@types/nodemailer@^8.0.2":
+  version "8.0.2"
+  resolved "https://registry.yarnpkg.com/@types/nodemailer/-/nodemailer-8.0.2.tgz#0f57798b2753dbad314f1ad9952713a4a9954f12"
+  integrity sha512-c7M5ox8p0nEOfbJ2E9Qcmt8/QCu/VzsiAhzBiZbvky2PhKZDHpKB3sQHBM5MEZNkCfBOaS6S9//AGPRTNB7IaA==
+  dependencies:
+    "@types/node" "*"
+
 "@types/pg@^8.23.1":
   version "8.23.1"
   resolved "https://registry.yarnpkg.com/@types/pg/-/pg-8.23.1.tgz#7e712ce02cf44ad100862127f10f52e9c6b9d227"
@@ -13689,6 +13696,11 @@ node-stdlib-browser@^1.3.1:
     url "^0.11.4"
     util "^0.12.4"
     vm-browserify "^1.0.1"
+
+nodemailer@^10.1.0:
+  version "10.1.0"
+  resolved "https://registry.yarnpkg.com/nodemailer/-/nodemailer-10.1.0.tgz#315f81d5ebe08f0627e4539727b50c27e9730803"
+  integrity sha512-fXW8AulB25aOTuwfRYV6lqHyfz2VM4rr4SGXH03mE7x5znEUpzL5mu6anARUpZN7744Ziwkmr4AxSLPJsBQspg==
 
 non-layered-tidy-tree-layout@^2.0.2:
   version "2.0.2"

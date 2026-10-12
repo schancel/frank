@@ -18,6 +18,8 @@ export * from './mta/outbound-delivery';
 export * from './mta/mx-transport';
 export * from './mta/dkim-signer';
 export * from './mta/outbound-worker';
+export * from './mta/journaled-outbound-worker';
+export * from './mta/resend-smtp-port';
 export * from './relay/mailbox-listener';
 export * from './relay/journaled-inbound-send';
 export * from './relay/journaled-frank-mailbox';

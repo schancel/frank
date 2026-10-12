@@ -9,6 +9,7 @@ const extensions: Readonly<Record<string, ClientChainExtension>> = {
     keyType: 1,
     name: "EVM fixture",
     unit: "MON",
+    nativeDecimals: 18,
   },
   "solana-devnet": {
     kind: "solana",
@@ -16,6 +17,7 @@ const extensions: Readonly<Record<string, ClientChainExtension>> = {
     keyType: 2,
     name: "Solana fixture",
     unit: "dSOL",
+    nativeDecimals: 9,
   },
   "btc-mainnet": {
     kind: "bitcoin",
@@ -23,6 +25,7 @@ const extensions: Readonly<Record<string, ClientChainExtension>> = {
     keyType: 1,
     name: "Bitcoin fixture",
     unit: "BTC",
+    nativeDecimals: 8,
   },
 };
 function fixture(): typeof source {

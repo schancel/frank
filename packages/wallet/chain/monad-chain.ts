@@ -2816,6 +2816,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 operationId
               );
             },
+            async flushNativeSync() {
+              const owner = nativeOperationOwner(wallet);
+              await owner.flushSync();
+              return owner.listOperations()
+                .filter((row) => !row.cancelled && row.members.some(
+                  (member) => member.signed &&
+                    member.observation.state === "included-success" &&
+                    !member.syncApplied
+                ))
+                .map((row) => row.operationId);
+            },
             async resumeNativeOperation(operationId) {
               // A payment to a contact is broadcast only once the relay has its message.
               if (heldForItsMessage(operationId))

@@ -5,6 +5,7 @@ import {
   DirectMessageAlreadyAttemptedError,
   getChainRegistryEntry,
   loadMonadChainConfigFromEnv,
+  PROTOCOL_CHAINS,
   type EvmChainConfig,
   type EvmChainWalletHandle,
   type NativeAssetChain,
@@ -301,6 +302,31 @@ export function peekOpenedEvmWallets(): readonly OpenEvmWallet[] {
       ? [entry.value]
       : [],
   )
+}
+/** Active-session recovery of secondary EVM journals. Network looks and self-note retries use
+ * the original signed members; this path never constructs or authorizes another payment. */
+export async function recoverSecondaryEvmWallets(
+  primary: NativeWalletHandle,
+): Promise<void> {
+  const peers = Object.values(PROTOCOL_CHAINS).filter(
+    entry => entry.family === 'evm' && entry.kind !== 'monad' && entry.wallet,
+  )
+  if (peers.length === 0) return
+  if (accountSession.peekWallet() !== primary)
+    throw new Error('EVM recovery owner changed')
+  const results = await Promise.allSettled(peers.map(async peer => {
+    const opened = await openEvmWallet(peer.id)
+    if (accountSession.peekWallet() !== primary ||
+        opened.wallet.chainIdentifier !== peer.id)
+      throw new Error(`EVM recovery owner changed for ${peer.id}`)
+    await opened.wallet.reobserveNativeOperations?.()
+    const remaining = await opened.wallet.flushNativeSync?.()
+    if (remaining?.length)
+      throw new Error(`Wallet sync remains pending for ${peer.id}: ${remaining.join(', ')}`)
+  }))
+  const errors = results.flatMap((result, index) => result.status === 'rejected'
+    ? [`${peers[index]!.id}: ${String(result.reason)}`] : [])
+  if (errors.length) throw new Error(`Secondary EVM recovery incomplete: ${errors.join('; ')}`)
 }
 /** Host teardown closes owned secondary handles; the session retains ownership of its primary.
  * A cancelled secondary opening closes its late result before publishing it. */

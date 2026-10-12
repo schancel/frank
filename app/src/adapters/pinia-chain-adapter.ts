@@ -36,7 +36,7 @@ import { refreshOutgoingPaymentSummaries } from '../utils/outgoing-payments'
 import { activeChain } from '@frank/wallet/chain'
 import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
 import { accountSession } from '../accounts/session'
-import { openEvmWallet } from '../accounts/evm-wallets'
+import { openEvmWallet, recoverSecondaryEvmWallets } from '../accounts/evm-wallets'
 import type {
   DirectMessageAttemptStatus,
   DirectMessageReceived,
@@ -599,6 +599,7 @@ export function startOutgoingReconciliation({
   let stopped = false
   let timer: ReturnType<typeof setTimeout> | undefined
   let delayMs = intervalMs
+  let secondaryRecovery: Promise<void> | undefined
   let knownPending = new Set<string>()
 
   const pendingIds = () => {
@@ -764,6 +765,17 @@ export function startOutgoingReconciliation({
     // Not awaited, so a slow node never delays the next tick, and a handle without the method
     // has nothing to do.
     if (!stopped) reobserveNativeOperations(wallet)
+    if (!stopped && secondaryRecovery === undefined) {
+      const recovery = recoverSecondaryEvmWallets(wallet as NativeWalletHandle)
+      secondaryRecovery = recovery
+      void recovery.then(
+        () => { if (secondaryRecovery === recovery) secondaryRecovery = undefined },
+        error => {
+          if (secondaryRecovery === recovery) secondaryRecovery = undefined
+          if (!stopped) console.warn('Secondary EVM recovery remains pending', error)
+        },
+      )
+    }
     ticking = false
     if (stopped) return
     knownPending = pendingIds()

@@ -1,6 +1,6 @@
 /** One configured EVM owner per canonical network and account session. This cache owns no keys. */
 import {
-  createEvmChain,
+  createNativeOnlyEvmChain,
   getChainRegistryEntry,
   loadMonadChainConfigFromEnv,
   type EvmChainConfig,
@@ -140,7 +140,7 @@ export function openEvmWallet(
     ...(retirements.get(chainIdentifier) ?? []),
     ...(retiring ? [retiring] : []),
   ])
-  const chain = createEvmChain(config)
+  const chain = createNativeOnlyEvmChain(config)
   const cancellation = new AbortController()
   const entry: Opened = {
     scope,

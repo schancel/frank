@@ -250,7 +250,7 @@
                     flat
                     no-caps
                     size="sm"
-                    label="Clear"
+                    :label="$t('accountRecovery.verify_shards_clear')"
                     data-test="clear-verify-input"
                     @click="clearVerify"
                   />

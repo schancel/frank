@@ -176,6 +176,7 @@ export const en = {
   verify_shards_explainer:
     'Test your saved shards by entering at least the threshold number to verify they reconstruct your account.',
   verify_shards_button: 'Verify shards',
+  verify_shards_clear: 'Clear',
   verify_shards_success: 'Shards verified successfully! Your backup is valid.',
   advanced_details: 'Advanced details',
   advanced_options: 'Advanced options',
@@ -378,6 +379,7 @@ export const fr = {
   verify_shards_explainer:
     'Testez vos parts enregistrées en saisissant au moins le nombre seuil pour vérifier qu’elles permettent de reconstituer votre compte.',
   verify_shards_button: 'Vérifier les parts',
+  verify_shards_clear: 'Effacer',
   verify_shards_success:
     'Parts vérifiées avec succès ! Votre sauvegarde est valide.',
   advanced_details: 'Détails avancés',

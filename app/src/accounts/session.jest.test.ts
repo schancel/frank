@@ -27,7 +27,9 @@ jest.mock('ecash-lib/dist/ffi/ecash_lib_wasm_bg_browser.js', () => {
 import * as ecashSeedBoundary from '@frank/wallet/ecash-seed-boundary'
 import type { EcashStealthCustody } from '@frank/wallet/ecash-stealth'
 import { secp256k1 } from '@noble/curves/secp256k1'
-import { Transaction, keccak256 } from 'ethers'
+import { Transaction, Wallet, keccak256 } from 'ethers'
+import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/monad-identity'
 import { lockingScript, parseTransaction } from '@frank/nakamoto'
 import { BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
 import { createUtxoChain } from '@frank/wallet/chain/utxo-chain'
@@ -192,6 +194,38 @@ test('opens the active capability once, maps typed roots, wipes copies and reval
   )
   await f.session.close()
   expect(f.wallet.close).toHaveBeenCalledTimes(1)
+})
+test('Tempo signer uses the existing EVM main path and is revoked with its session', async () => {
+  const f = fixture()
+  f.capability.takeRoots.mockImplementation(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+  const root = {
+    purpose: 'evm-wallet' as const,
+    bytes: new Uint8Array(32).fill(DOMAIN_PURPOSES.indexOf('evm-wallet') + 1),
+  }
+  const expected = new Wallet(
+    bip32MasterFromDomainRoot(root, 'evm-wallet').derivePath(
+      MONAD_IDENTITY_DERIVATION_PATH,
+    ).privateKey,
+  )
+  const signer = await f.session.createTempoMainAccountSigner('tempo-testnet')
+  expect(signer.source).toEqual({
+    kind: 'main',
+    address: expected.address.toLowerCase(),
+  })
+  const digest = keccak256('0x1234')
+  const signature = await signer.signDigest(digest)
+  expect(signature).toMatchObject(expected.signingKey.sign(digest))
+  await f.session.close()
+  await expect(signer.signDigest(digest)).rejects.toMatchObject({
+    code: 'closed',
+  })
 })
 test('a synchronous status watcher cannot reacquire before retired-wallet teardown completes', async () => {
   const f = fixture(),
@@ -1947,13 +1981,11 @@ test('privately opens real EVM owners with the same Frank identity and separate 
         .mockResolvedValue(peerCheckpoint(config.networkId) as never)
       jest.spyOn(candidate.provider, 'getBalance').mockResolvedValue(1000000n)
       jest.spyOn(candidate.provider, 'getTransactionCount').mockResolvedValue(0)
-      jest
-        .spyOn(candidate.provider, 'getFeeData')
-        .mockResolvedValue({
-          maxFeePerGas: 1n,
-          maxPriorityFeePerGas: 1n,
-          gasPrice: 1n,
-        } as never)
+      jest.spyOn(candidate.provider, 'getFeeData').mockResolvedValue({
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+        gasPrice: 1n,
+      } as never)
       jest.spyOn(candidate.provider, 'estimateGas').mockResolvedValue(21000n)
       jest
         .spyOn(candidate.provider, 'getTransactionReceipt')

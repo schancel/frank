@@ -47,6 +47,46 @@ function harness(store = new MemoryRecordStore<TempoReceiveBatch>()) {
 }
 
 describe('Tempo finalized PathUSD receive cursor', () => {
+  test('two cached tabs refresh under the recipient lock before extending one cursor', async () => {
+    const backing = new MemoryRecordStore<TempoReceiveBatch>()
+    const cached = () => {
+      const rows = new Map<string, TempoReceiveBatch>()
+      return {
+        get: (key: string) => rows.get(key), all: () => [...rows.values()],
+        refresh: async () => {
+          rows.clear()
+          for (const row of backing.all()) rows.set(row.id, structuredClone(row))
+        },
+        put: async (key: string, row: TempoReceiveBatch) => {
+          await backing.put(key, row)
+          rows.set(key, structuredClone(row))
+        },
+        delete: async (key: string) => { await backing.delete(key); rows.delete(key) },
+        close: async () => undefined,
+      }
+    }
+    let tail: Promise<unknown> = Promise.resolve()
+    const lock = <T>(_recipient: string, task: () => Promise<T>) => {
+      const run = tail.then(task)
+      tail = run.catch(() => undefined)
+      return run
+    }
+    const calls: [bigint, bigint][] = []
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: 12n, hash: BLOCK }),
+      blockHash: async () => BLOCK,
+      receivedTransfers: async (_recipient, from, to) => { calls.push([from, to]); return [] },
+    }
+    const first = new TempoPathUsdReceiveScanner('tempo-testnet', cached(), rpc, lock)
+    const second = new TempoPathUsdReceiveScanner('tempo-testnet', cached(), rpc, lock)
+    expect(await Promise.all([
+      first.syncOnce(RECIPIENT, 10n, async () => undefined),
+      second.syncOnce(RECIPIENT, 10n, async () => undefined),
+    ])).toEqual([{ nextBlock: 13n, delivered: 0 }, { nextBlock: 13n, delivered: 0 }])
+    expect(calls).toEqual([[10n, 12n]])
+    expect(backing.all()).toHaveLength(1)
+  })
+
   test('persists the scan and applies each transfer once by deterministic ID', async () => {
     const h = harness()
     const applied: TempoReceiveItem[] = []

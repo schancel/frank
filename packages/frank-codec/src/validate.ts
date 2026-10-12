@@ -138,6 +138,7 @@ export function defaultContext(
           ? 3
           : typeId === TYPE_DIRECT_MESSAGE_DELIVERY ||
             typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
+            typeId === TYPE_STEALTH_MESSAGE_ITEM ||
             typeId === TYPE_TOPIC_POST
           ? 2
           : 1,
@@ -335,6 +336,20 @@ function processFrame(
       'unsupported-min-reader',
       `min_reader_version ${env.minReaderVersion} exceeds reader version (V6.1)`,
     )
+  }
+  if (env.typeId === TYPE_STEALTH_MESSAGE_ITEM && env.schemaVersion >= 2) {
+    if (env.minReaderVersion < 2)
+      throw fail(
+        'unsupported',
+        '7',
+        'asset payments require min_reader_version at least 2',
+        location,
+      )
+    if (highest < 2)
+      return keep(
+        'unsupported-min-reader',
+        'asset payments require per-type schema-2 support',
+      )
   }
   if (env.typeId === TYPE_TOPIC_POST && env.schemaVersion >= 2) {
     if (env.minReaderVersion < 2)

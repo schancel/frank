@@ -85,13 +85,14 @@ pub(crate) const TYPE_TEXT_ITEM: u32 = 17;
 /// Type18 frame limit at both root and nested positions.
 pub(crate) const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
 pub(crate) const TYPE_BLACKJACK_ITEM: u32 = 18;
+pub(crate) const TYPE_STEALTH_ITEM: u32 = 19;
 /// Type 25 forwarding envelope frame limit (32 MiB).
 pub const MAX_FORWARDING_DELIVERY_FRAME_BYTES: usize = 33_554_432;
 /// Type 25: outer relay forwarding delivery envelope.
 pub const TYPE_FORWARDING_DELIVERY: u32 = 25;
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.
-pub const KNOWN_TYPES: [u32; 19] = [
+pub const KNOWN_TYPES: [u32; 20] = [
     TYPE_DIRECT_MESSAGE,
     TYPE_DIRECTORY_ATTESTATION,
     TYPE_MAILBOX_CHECKPOINT,
@@ -110,6 +111,7 @@ pub const KNOWN_TYPES: [u32; 19] = [
     TYPE_CONTAINER_ITEM,
     TYPE_TEXT_ITEM,
     TYPE_BLACKJACK_ITEM,
+    TYPE_STEALTH_ITEM,
     TYPE_FORWARDING_DELIVERY,
 ];
 

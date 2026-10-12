@@ -12,8 +12,7 @@ import {
 } from '../src'
 
 describe('stealth message items (Type 19, schema 1)', () => {
-  const sampleSecpPub =
-    '02' + '11'.repeat(32) // 33 bytes compressed secp256k1
+  const sampleSecpPub = '02' + '11'.repeat(32) // 33 bytes compressed secp256k1
   const sampleEdPub = '22'.repeat(32) // 32 bytes ed25519
   const sampleTx1 = 'aabbccddeeff00112233445566778899'
   const sampleTx2 = '11223344556677889900aabbccddeeff'
@@ -36,7 +35,7 @@ describe('stealth message items (Type 19, schema 1)', () => {
       expect(parsed.schemaVersion).toBe(1)
       expect(parsed.minReaderVersion).toBe(1)
       expect(parsed.typed?.type).toBe(19)
-      if (parsed.typed?.type === 19) {
+      if (isStealthMessageItemFrame(parsed)) {
         expect(parsed.typed.networkTag).toBe('MONT')
         expect(parsed.typed.ephemeralPubKey.keyType).toBe(1)
         expect(toHex(parsed.typed.ephemeralPubKey.keyBytes)).toBe(sampleSecpPub)
@@ -73,7 +72,7 @@ describe('stealth message items (Type 19, schema 1)', () => {
 
     const parsed = parseFrame(rawFrame)
     expect(parsed.kind).toBe('parsed')
-    if (parsed.kind === 'parsed' && parsed.typed?.type === 19) {
+    if (parsed.kind === 'parsed' && isStealthMessageItemFrame(parsed)) {
       expect(parsed.typed.networkTag).toBe('SOLD')
       expect(parsed.typed.ephemeralPubKey.keyType).toBe(2)
       expect(toHex(parsed.typed.ephemeralPubKey.keyBytes)).toBe(sampleEdPub)

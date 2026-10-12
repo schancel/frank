@@ -82,9 +82,10 @@ pub use limits::{
 };
 pub use model::{
     AccountRef, AccountType, BotRole, ChildFrame, FrameOnly, JournalFact, KeyTransition,
-    OpaqueSection, ParsedFrame, PaymentMember, PaymentValue, PreviewDirectoryRoles, ProfileEntry,
-    ProfileHeader, Projection, RelayBinding, RetainedFrame, RetentionReason, SignatureEntry,
-    Timestamp, TopicPostAuthor, TypedPayload, ValidationResult,
+    NativeStealthItem, OpaqueSection, ParsedFrame, PaymentMember, PaymentValue,
+    PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection, RelayBinding, RetainedFrame,
+    RetentionReason, SignatureEntry, StealthPaymentEntry, StealthPaymentItem, StealthQuantity,
+    StealthTransfer, Timestamp, TopicPostAuthor, TypedPayload, ValidationResult,
 };
 pub use model::{BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome};
 pub use model::{BlackjackHandAction, BlackjackHandFields, BlackjackHandMessageItem};

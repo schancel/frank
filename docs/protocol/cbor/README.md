@@ -772,7 +772,42 @@ vectors reach a message-item graph through a type 6, 8, or 16 root. The
 proof fixture MUST contain at least two levels and the permanently reserved
 proof-only unknown type `0xffff0001`.
 
-Type 19 (`stealth-message-item`) delivers stealth payment announcements and ephemeral keys directly to the recipient over the secure channel.
+Type 19 delivers stealth payment announcements and ephemeral keys directly to the
+recipient over the secure channel. Schema 1 (`stealth-message-item`) remains valid
+for existing native financial recovery. Schema 2/min-reader 2
+(`stealth-asset-message-item`) carries 1–16 recipient transfer entries in field 0
+and an optional memo in field 1. Its array-valued field 0 is structurally disjoint
+from schema 1's network string: a reader projecting against schema 1 rejects the
+new payload rather than silently treating a token payment as native. Readers
+supporting schema 2 must also require per-type schema-2 support and min-reader 2.
+
+Each entry contains the existing `payment-transfer` record (field 0), a positive
+uint32 derivation scheme (field 1), the authenticated recipient spending
+`account-ref` (field 2), an optional 32-byte token program (field 3), and optional
+1–1024-byte scheme context (field 4). The transfer owns the canonical network,
+destination, exact uint64 or 256-bit quantity, token identifier, transaction
+evidence and ephemeral key. Its amount must be positive and stealth metadata is
+required. Recipient and ephemeral key types must match. A token program requires
+a token identifier; no program is inferred from a mint or display symbol.
+
+Scheme 1 is allocated to `secp256k1-ecdh-add-v1`, the existing recipient-public-key
+plus ECDH-derived additive tweak. It requires key type 1 and forbids token-program
+and context fields. Other positive scheme values remain unallocated and may be
+preserved structurally, but MUST NOT execute or acquire a signing capability.
+In particular, accepting unknown scheme bytes does not approve or enable the
+proposed Solana construction. Asset/family affinity, authenticated recipient key
+binding, actual receipt verification and custody authorization remain semantic
+responsibilities; parsing a signed-byte claim does not establish receipt.
+
+The shared structural corpus is
+`vectors/stealth-assets.json`, generated solely by
+`packages/frank-codec/fixtures/stealth-assets.ts`. Regenerate from the repository
+root with `FRANK_UPDATE_STEALTH_ASSET_VECTORS=1 node_modules/.bin/jest --config packages/frank-codec/jest.config.js --runInBand packages/frank-codec/test/stealth-assets.jest.test.ts`.
+Run the same command without the environment assignment to check it. Rust checks
+the identical bytes with `cargo test --manifest-path backend/cashweb/frank-cbor/Cargo.toml --test stealth_payment`.
+The example raw transaction bytes are structural fixtures, not valid financial
+transactions. Both implementations consume the existing enclosing validation
+budget; nested transfers do not start a new decoder or reset resource counters.
 
 Type 27 (`plugin-message-item`) is the one generic container for an application
 message item that has no frame of its own. Its payload names the item's type

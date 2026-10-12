@@ -500,6 +500,22 @@ export interface StealthMessageItem {
   unknownFields: UnknownFields
 }
 
+/** A schema-2 recipient payment. Its token identifier is owned by `transfer.token`. */
+export interface StealthAssetTransfer {
+  transfer: PaymentTransfer
+  derivationScheme: number
+  recipientSpendKey: AccountRef
+  tokenProgram?: Uint8Array
+  derivationContext?: Uint8Array
+}
+
+export interface StealthAssetMessageItem {
+  type: 19
+  transfers: StealthAssetTransfer[]
+  memo?: string
+  unknownFields: UnknownFields
+}
+
 export interface ParticipantBalance {
   participant: AccountRef
   /** 32-byte big-endian EVM quantity (C8) or satoshi / native uint64 bigint. */
@@ -738,6 +754,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | BlackjackHandMessageItem
   | BlackjackHandV3MessageItem
   | StealthMessageItem
+  | StealthAssetMessageItem
   | ChannelUpdateItem
   | ForwardingDeliveryEnvelope<F>
   | EmailMessageItem

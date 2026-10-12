@@ -99,7 +99,10 @@ pub fn default_context() -> ValidationContext {
                     || type_id == crate::limits::TYPE_BLACKJACK_ITEM
                 {
                     3
-                } else if type_id == TYPE_RECIPIENT_PAYLOAD || type_id == TYPE_TOPIC_POST {
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD
+                    || type_id == TYPE_TOPIC_POST
+                    || type_id == crate::limits::TYPE_STEALTH_ITEM
+                {
                     2
                 } else {
                     1
@@ -404,6 +407,27 @@ fn process_frame(
                 &mode,
                 RetentionReason::UnsupportedMinReader,
                 "structured Forum content requires per-type schema-2 support".to_string(),
+                frame,
+                Some(&env),
+                location,
+            );
+        }
+    }
+    if env.type_id == crate::limits::TYPE_STEALTH_ITEM && env.schema_version >= 2 {
+        if env.min_reader_version < 2 {
+            return Err(fail(
+                ErrorCategory::Unsupported,
+                ErrorStage::S7,
+                "type 19 schema 2 requires min_reader_version at least 2",
+                location,
+            ));
+        }
+        if highest_schema < 2 {
+            return keep_or_reject(
+                shared,
+                &mode,
+                RetentionReason::UnsupportedMinReader,
+                "asset payments require per-type schema-2 support".to_string(),
                 frame,
                 Some(&env),
                 location,
@@ -1289,6 +1313,8 @@ fn open_children(
         Draft::Blackjack(item) => Ok(TypedPayload::BlackjackItem(item)),
         Draft::BlackjackHand(item) => Ok(TypedPayload::BlackjackHandItem(item)),
         Draft::BlackjackHandV3(item) => Ok(TypedPayload::BlackjackHandV3Item(item)),
+        Draft::NativeStealth(item) => Ok(TypedPayload::NativeStealthItem(item)),
+        Draft::StealthPayment(item) => Ok(TypedPayload::StealthPaymentItem(item)),
         Draft::Text { text, unknown } => Ok(TypedPayload::TextItem { text, unknown }),
     }
 }

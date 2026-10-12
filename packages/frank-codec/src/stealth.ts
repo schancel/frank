@@ -129,7 +129,11 @@ export function encodeStealthMessageItem(
 export function isStealthMessageItemFrame(
   frame: ParsedFrame,
 ): frame is ParsedFrame & { typed: StealthMessageItem } {
-  return frame.typeId === TYPE_STEALTH_MESSAGE_ITEM && frame.typed?.type === 19
+  return (
+    frame.typeId === TYPE_STEALTH_MESSAGE_ITEM &&
+    frame.typed?.type === 19 &&
+    !('transfers' in frame.typed)
+  )
 }
 
 export function projectStealthMessageItem(

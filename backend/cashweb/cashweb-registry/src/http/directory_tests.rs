@@ -452,11 +452,10 @@ async fn relay_info_is_the_single_configured_tuple() {
 }
 
 #[tokio::test]
-async fn relay_info_advertises_only_its_configured_gateway_for_its_network() {
+async fn relay_info_advertises_only_its_configured_gateway() {
     let root = tempfile::tempdir().unwrap();
     let (registry, mut config, clock) = setup(root.path());
     config.email_gateway = Some(cashweb_config::EmailGatewayConf {
-        chain_identifier: "monad-testnet".into(),
         address: format!("0x{}", "a".repeat(40)),
         domain: "signet.mx".into(),
     });
@@ -468,7 +467,6 @@ async fn relay_info_advertises_only_its_configured_gateway_for_its_network() {
     assert_eq!(
         info["emailGateway"],
         serde_json::json!({
-            "chainIdentifier": "monad-testnet",
             "address": format!("0x{}", "a".repeat(40)),
             "domain": "signet.mx",
         })

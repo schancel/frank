@@ -198,8 +198,8 @@
                 :disable="disable"
                 @click="chooseFreeStamp"
               />
-              <!-- Multipliers require a real quote; an absent quote is not a Free selection. -->
-              <div v-if="defaultStampWei !== undefined" class="q-mt-sm q-px-md">
+              <!-- Multipliers use the current quote or network static fallback. -->
+              <div class="q-mt-sm q-px-md">
                 <q-slider
                   v-model="decadeIndex"
                   class="q-mt-md"
@@ -222,10 +222,7 @@
               >
                 {{ sliderLabelValue }}
               </div>
-              <div
-                v-if="defaultStampWei !== undefined"
-                class="text-caption text-grey-7 q-mt-sm"
-              >
+              <div class="text-caption text-grey-7 q-mt-sm">
                 {{ $t('chatInput.stampQuickSelection') }}
               </div>
 
@@ -289,6 +286,7 @@ import {
   type PostAttachment,
 } from '../../utils/post-editor'
 import { activeChain } from '@frank/wallet/chain'
+import { defaultStaticStampForChain } from '@frank/wallet/oracle'
 import {
   formatCompactAmount,
   formatDisplayAmount,
@@ -364,7 +362,8 @@ export default defineComponent({
   methods: {
     /** Scale the AVU quote, retaining the adapter floor for paid presets and explicit zero. */
     multipliedStamp(tenths: number): bigint {
-      const raw = ((this.defaultStampWei ?? 0n) * BigInt(tenths)) / 10n
+      const base = this.effectiveDefaultStampWei
+      const raw = (base * BigInt(tenths)) / 10n
       return tenths === 0
         ? 0n
         : raw < this.minimumStampWei
@@ -512,15 +511,33 @@ export default defineComponent({
         17: '10k×',
       }
     },
+    fallbackStaticStampWei(): bigint {
+      const fallbackCoin = defaultStaticStampForChain(
+        activeChain.chainIdentifier,
+      )
+      try {
+        return activeChain.fromDisplayAmount(fallbackCoin)
+      } catch {
+        return 0n
+      }
+    },
+    effectiveDefaultStampWei(): bigint {
+      return this.defaultStampWei ?? this.fallbackStaticStampWei
+    },
     decadeIndex: {
       get(): number {
-        if (this.defaultStampWei === undefined || this.stampWei === undefined)
+        if (
+          this.effectiveDefaultStampWei === undefined ||
+          this.stampWei === undefined
+        )
           return 0
         let closest = 0
         let distance: bigint | undefined
         for (let i = 0; i < STAMP_MULTIPLIER_TENTHS.length; i++) {
           const raw =
-            (this.defaultStampWei * BigInt(STAMP_MULTIPLIER_TENTHS[i])) / 10n
+            (this.effectiveDefaultStampWei *
+              BigInt(STAMP_MULTIPLIER_TENTHS[i])) /
+            10n
           const delta =
             raw > this.stampWei ? raw - this.stampWei : this.stampWei - raw
           if (distance === undefined || delta < distance) {
@@ -531,7 +548,10 @@ export default defineComponent({
         return closest
       },
       set(index: number) {
-        if (this.defaultStampWei === undefined || !Number.isFinite(index))
+        if (
+          this.effectiveDefaultStampWei === undefined ||
+          !Number.isFinite(index)
+        )
           return
         const i = Math.max(
           0,
@@ -558,7 +578,7 @@ export default defineComponent({
     },
     stampMultiplier(): string {
       const selected = this.stampWei
-      const reference = this.defaultStampWei
+      const reference = this.effectiveDefaultStampWei
       if (
         selected === undefined ||
         selected === 0n ||
@@ -589,9 +609,10 @@ export default defineComponent({
       return this.defaultStampMode
     },
     defaultStampText(): string {
-      return this.defaultStampWei === undefined
+      const stamp = this.effectiveDefaultStampWei
+      return stamp === undefined || stamp <= 0n
         ? this.$t('chatInput.stampQuoteUnavailable')
-        : formatCompactAmount(activeChain, this.defaultStampWei)
+        : formatCompactAmount(activeChain, stamp)
     },
     /** The stamp on the chip: the amount in the chain's unit, compact ("14.14 mMONT"); a
      * message with no stamp reads "Free". */

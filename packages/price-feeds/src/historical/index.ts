@@ -86,6 +86,35 @@ export const BTC_MINING_SOURCES: {
 
 export const BTC_MINING_MONTHLY: readonly BtcMiningMonth[] = btcMining.monthly
 
+/**
+ * One UTC day of the inputs of Bitcoin's AVU_hash.
+ */
+export interface BtcMiningDay {
+  /** YYYY-MM-DD */
+  date: string
+  /** US dollars per bitcoin. */
+  btcUsd: number
+  /** Observed-work estimate. */
+  hashrate: number
+  /** Includes fees and subsidy; whole BTC per second over the day. */
+  minerRevenueCoinsPerSecond: number
+  difficulty: number
+  /** Bitcoin minted per block. */
+  subsidyBtc: number
+  /** Bitcoin in existence. */
+  supplyBtc: number
+  /**
+   * Electricity the mining fleet drew per terahash, in joules: Cambridge's best-guess
+   * network power demand divided by the network hashrate.
+   */
+  joulesPerTerahash: number
+  joulesPerTerahashLow: number
+  joulesPerTerahashHigh: number
+}
+
+export const BTC_MINING_DAILY: readonly BtcMiningDay[] =
+  (btcMining as unknown as { daily?: BtcMiningDay[] }).daily ?? []
+
 // ---- Inputs of the basket beyond Bitcoin -----------------------------------------------
 
 /**

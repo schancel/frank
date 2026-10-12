@@ -12,12 +12,19 @@ import enUS from '../../i18n/en-us'
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
+    chainIdentifier: 'monad-testnet',
     unit: 'MON',
     // Most tests here pass amounts as whole base units; the chip tests switch to real decimals.
     toDisplayAmount: (n: bigint) =>
       mockDecimals ? jest.requireActual('ethers').formatEther(n) : n.toString(),
-    fromDisplayAmount: (s: string) =>
-      mockDecimals ? jest.requireActual('ethers').parseEther(s) : BigInt(s),
+    fromDisplayAmount: (s: string) => {
+      if (mockDecimals) return jest.requireActual('ethers').parseEther(s)
+      try {
+        return BigInt(s)
+      } catch {
+        return BigInt(Math.round(Number(s) * 1000))
+      }
+    },
   },
 }))
 let mockDecimals = false
@@ -354,10 +361,10 @@ describe('modernized chat input interface (#1003)', () => {
         stampUnavailable: '',
       })
       expect((amount.element as HTMLInputElement).value).toBe('0.4')
-      // No absent quote should be represented by a slider apparently selecting Free.
+      // The slider is always visible and functional using network static fallback.
       expect(
         wrapper.find('[data-testid="chat-input-stamp-slider"]').exists(),
-      ).toBe(false)
+      ).toBe(true)
       await wrapper
         .get('[data-testid="chat-input-stamp-free"]')
         .trigger('click')
@@ -499,11 +506,12 @@ describe('modernized chat input interface (#1003)', () => {
     vm.decadeIndex = 0
     expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
     await wrapper.setProps({ defaultStampWei: undefined, stampAmount: '777' })
-    expect(vm.sliderLabelValue).toBe('777 MON')
-    expect(vm.stampMultiplier).toBe('')
-    const before = wrapper.emitted('update:stampAmount')?.length
+    expect(vm.sliderLabelValue).toContain('777 MON')
+    expect(vm.stampMultiplier).toBe('77.7')
     vm.decadeIndex = 5
-    expect(wrapper.emitted('update:stampAmount')?.length).toBe(before)
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['900'])
+    vm.decadeIndex = 11
+    expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['1000'])
     vm.innerStampAmount = '0'
     expect(wrapper.emitted('update:stampAmount')?.at(-1)).toEqual(['0'])
   })

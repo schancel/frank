@@ -1611,6 +1611,7 @@ export interface CanonicalMailboxStreamParams
   readonly onRecord: (record: CanonicalMailboxRecord) => void;
   readonly onError?: (error: Error) => void;
   readonly onReady?: () => void;
+  readonly onClose?: () => void;
 }
 
 export interface CanonicalMailboxStreamHandle {
@@ -1686,10 +1687,15 @@ export async function connectCanonicalMailboxStream(
 
   const ws = new WebSocket(wsUrl);
   let closed = false;
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
 
   const cleanup = () => {
     if (!closed) {
       closed = true;
+      if (heartbeatTimer !== undefined) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = undefined;
+      }
       try {
         ws.close();
       } catch {
@@ -1704,6 +1710,27 @@ export async function connectCanonicalMailboxStream(
 
   ws.onopen = () => {
     params.onReady?.();
+    if (heartbeatTimer !== undefined) {
+      clearInterval(heartbeatTimer);
+    }
+    heartbeatTimer = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          if (typeof (ws as any).ping === "function") {
+            (ws as any).ping();
+          } else {
+            ws.send(JSON.stringify({ type: "ping" }));
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }, 15_000);
+  };
+
+  ws.onclose = () => {
+    cleanup();
+    params.onClose?.();
   };
 
   ws.onerror = (event: unknown) => {
@@ -1731,6 +1758,9 @@ export async function connectCanonicalMailboxStream(
         }
         return;
       }
+      if (parsed.type === "pong") {
+        return;
+      }
       if (parsed.direction === "in" || parsed.direction === "out") {
         const record: CanonicalMailboxRecord = {
           direction: parsed.direction,
@@ -1745,6 +1775,23 @@ export async function connectCanonicalMailboxStream(
       params.onError?.(err instanceof Error ? err : new Error(String(err)));
     }
   };
+
+  if (typeof (ws as any).on === "function") {
+    try {
+      (ws as any).on("ping", (data: any) => {
+        try {
+          (ws as any).pong(data);
+        } catch {
+          // ignore
+        }
+      });
+      (ws as any).on("pong", () => {
+        // clean pong handling
+      });
+    } catch {
+      // ignore
+    }
+  }
 
   return {
     close: cleanup,

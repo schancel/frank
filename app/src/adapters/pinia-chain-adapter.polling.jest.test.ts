@@ -32,6 +32,7 @@ import { useMailboxStatusStore } from '../stores/mailbox-status'
 import {
   BACKGROUND_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS,
+  MAX_MAILBOX_TRANSIENT_BACKOFF_MS,
   MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
   MIN_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   startDirectMessagePolling,
@@ -293,8 +294,8 @@ describe('direct-message polling: cadence, backoff and status', () => {
     mailbox.inject(serverError(), serverError(), serverError())
     const polling = startDirectMessagePolling({ wallet })
     const times = await pollTimeline(mailbox, 80)
-    // Attempts at 0 (fail, 7 s), 7 (fail, 14 s), 21 (fail, 28 s), 49 (success), then 56...
-    expect(times.slice(0, 5)).toEqual([7, 21, 49, 56, 63])
+    // Attempts at 0 (fail, 7 s), 7 (fail, 10 s max), 17 (fail, 10 s max), 27 (success), then 34, 41...
+    expect(times.slice(0, 5)).toEqual([7, 17, 27, 34, 41])
     expect(errorSpy).toHaveBeenCalledTimes(1) // identical consecutive errors log once
     polling.stop()
   })

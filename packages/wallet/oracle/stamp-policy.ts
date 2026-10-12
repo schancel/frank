@@ -9,6 +9,40 @@ export const DEFAULT_STAMP_TARGET_AVU = "0.1";
 /** Fixed native-coin amount used by EVM hosts only while AVU conversion is unavailable. */
 export const DEFAULT_EVM_STAMP_FALLBACK_COIN = "0.01";
 
+/** Static fallback amount per network in native coin units, used whenever dynamic quote is unavailable. */
+export const DEFAULT_CHAIN_STATIC_STAMP_COIN: Readonly<Record<string, string>> =
+  Object.freeze({
+    "monad-testnet": "0.01",
+    "monad-mainnet": "0.01",
+    "monad-regtest": "0.01",
+    "hyperliquid-testnet": "0.01",
+    "hyperliquid-mainnet": "0.01",
+    "tempo-testnet": "0.01",
+    "tempo-mainnet": "0.01",
+    "ethereum-sepolia": "0.001",
+    "ethereum-mainnet": "0.001",
+    "solana-devnet": "0.001",
+    "solana-testnet": "0.001",
+    "solana-mainnet": "0.001",
+    "btc-testnet": "0.00001",
+    "btc-testnet4": "0.00001",
+    "btc-mainnet": "0.00001",
+    "bch-testnet": "0.0001",
+    "bch-mainnet": "0.0001",
+    "xec-testnet": "100",
+    "xec-regtest": "100",
+    "xec-mainnet": "100",
+    "doge-testnet": "1",
+    "doge-mainnet": "1",
+  });
+
+export function defaultStaticStampForChain(chainIdentifier: string): string {
+  return (
+    DEFAULT_CHAIN_STATIC_STAMP_COIN[chainIdentifier] ??
+    DEFAULT_EVM_STAMP_FALLBACK_COIN
+  );
+}
+
 interface Ratio {
   numerator: bigint;
   denominator: bigint;
@@ -135,17 +169,21 @@ export function quoteDefaultStamp(input: {
 
 /** Bound by host composition to the installed chain and its observed oracle data. */
 export interface StampPricingContext {
-  readonly chainIdentifier: string
-  readonly minimumStamp?: bigint
+  readonly chainIdentifier: string;
+  readonly minimumStamp?: bigint;
 }
 
 export type StampDefaultResolver = (
-  context: StampPricingContext,
-) => Promise<DefaultStampQuote>
+  context: StampPricingContext
+) => Promise<DefaultStampQuote>;
 
 export class DefaultStampUnavailableError extends Error {
-  constructor(readonly quote: Extract<DefaultStampQuote, { status: 'unavailable' }>) {
-    super(`Default stamp unavailable for ${quote.chainIdentifier}: ${quote.reason}. Nothing was paid or sent.`)
-    this.name = 'DefaultStampUnavailableError'
+  constructor(
+    readonly quote: Extract<DefaultStampQuote, { status: "unavailable" }>
+  ) {
+    super(
+      `Default stamp unavailable for ${quote.chainIdentifier}: ${quote.reason}. Nothing was paid or sent.`
+    );
+    this.name = "DefaultStampUnavailableError";
   }
 }

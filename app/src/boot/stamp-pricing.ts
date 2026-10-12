@@ -6,7 +6,7 @@ import {
 } from '@frank/wallet/chain'
 import {
   createStampDefaultResolver,
-  DEFAULT_EVM_STAMP_FALLBACK_COIN,
+  defaultStaticStampForChain,
   stampPolicyConfig,
 } from '@frank/wallet/oracle'
 import { useOracleStore } from '../stores/oracle'
@@ -18,6 +18,7 @@ export default boot(() => {
   if (!entry)
     throw new Error('Stamp pricing requires a configured canonical chain')
   const oracle = useOracleStore()
+  const fallbackCoin = defaultStaticStampForChain(chain.chainIdentifier)
   installDefaultStampResolver(
     chain.chainIdentifier,
     createStampDefaultResolver({
@@ -25,10 +26,7 @@ export default boot(() => {
       asset: entry.kind,
       supportsDirectMessages: chain.capabilities.directMessages,
       baseUnitsPerCoin: chain.fromDisplayAmount('1'),
-      fallbackStamp:
-        entry.family === 'evm'
-          ? chain.fromDisplayAmount(DEFAULT_EVM_STAMP_FALLBACK_COIN)
-          : undefined,
+      fallbackStamp: chain.fromDisplayAmount(fallbackCoin),
       config: stampPolicyConfig(
         import.meta.env.QCLI_FRANK_DM_DEFAULT_STAMP_AVU,
       ),

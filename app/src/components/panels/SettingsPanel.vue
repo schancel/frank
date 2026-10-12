@@ -3,7 +3,7 @@
     ref="panelRoot"
     role="region"
     :aria-label="$t('SettingPanel.panelLabel')"
-    class="full-width column col"
+    class="settings-panel full-width column col"
     tabindex="-1"
     data-test="settings-panel"
   >
@@ -17,7 +17,7 @@
 
     <div class="flex-break" />
     <!-- Drawer -->
-    <q-scroll-area class="col">
+    <q-scroll-area class="settings-scroll-area col">
       <q-list>
         <q-item clickable v-ripple @click="openProfile">
           <q-item-section avatar>
@@ -218,3 +218,16 @@ export default defineComponent({
   },
 })
 </script>
+
+<style lang="scss" scoped>
+.settings-panel {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.settings-scroll-area {
+  min-height: 0;
+  flex: 1 1 auto;
+}
+</style>

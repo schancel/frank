@@ -505,6 +505,7 @@ export default configure(ctx => {
           globIgnores: [...options.globIgnores, '**/*.map'],
           clientsClaim: true,
           cleanupOutdatedCaches: true,
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         }
       },
     },

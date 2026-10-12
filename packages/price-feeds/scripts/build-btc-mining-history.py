@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Builds src/historical/btc-mining-monthly.json: the monthly inputs of AVU_hash for Bitcoin.
+"""Builds src/historical/btc-mining-monthly.json: the monthly and daily inputs of AVU_hash for Bitcoin.
 
 AVU_hash for a mined coin is the inverse of the dollars one kWh of mining earns:
   price [$/coin] x receipts [coins/s] / observed work [hashes/s] x efficiency [hashes/kWh]
-This file holds each input per calendar month, so the app can apply that formula itself
-(packages/wallet/oracle/energy-basket.ts). Nothing is typed by hand, interpolated or
-estimated here: every figure is the plain mean of the daily values a source published
-for that month. A month a source does not fully cover is left out.
+This file holds each input per calendar month and per UTC day, so the app can apply that formula
+itself (packages/wallet/oracle/energy-basket.ts). Nothing is typed by hand, interpolated or
+estimated here: every monthly figure is the plain mean of the daily values a source published
+for that month. A month a source does not fully cover is left out. A day any required source
+does not cover is left out.
 
 Sources (download them first, no key needed):
   1. blockchain.com charts API, daily, unsampled:
@@ -156,6 +157,33 @@ def main():
             'joulesPerTerahashHigh': joules_per_terahash('max'),
         })
 
+    retrieved_date = datetime.date.fromisoformat(retrieved)
+    valid_days = sorted(
+        d for d in power
+        if d <= retrieved_date and d in difficulty and d in hashrate and d in supply
+        and price.get(d, 0) > 0 and hashrate[d] > 0 and revenue.get(d, 0) > 0
+    )
+    daily = []
+    for d in valid_days:
+        terahash_per_second = hashrate[d]
+
+        def joules_per_terahash_day(bound):
+            watts = power[d][bound] * 1e9
+            return significant(watts / terahash_per_second, 5)
+
+        daily.append({
+            'date': d.isoformat(),
+            'hashrate': significant(terahash_per_second * 1e12, 12),
+            'minerRevenueCoinsPerSecond': significant((revenue[d] / price[d]) / 86400, 12),
+            'btcUsd': significant(price[d]),
+            'difficulty': significant(difficulty[d], 9),
+            'subsidyBtc': significant(subsidy_at_supply(supply[d])),
+            'supplyBtc': significant(supply[d], 9),
+            'joulesPerTerahash': joules_per_terahash_day('guess'),
+            'joulesPerTerahashLow': joules_per_terahash_day('min'),
+            'joulesPerTerahashHigh': joules_per_terahash_day('max'),
+        })
+
     json.dump(
         {
             'sources': {
@@ -168,6 +196,7 @@ def main():
                 'retrieved': retrieved,
             },
             'monthly': monthly,
+            'daily': daily,
         },
         sys.stdout,
         indent=1,

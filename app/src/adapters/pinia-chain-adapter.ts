@@ -77,6 +77,9 @@ export const BACKGROUND_DIRECT_MESSAGE_POLL_INTERVAL_MS = 30_000
  * the poll interval, doubling, capped here. */
 export const MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS = 60_000
 
+/** Capped maximum backoff for transient network and other unexpected failures so recovery is rapid. */
+export const MAX_MAILBOX_TRANSIENT_BACKOFF_MS = 10_000
+
 /** Adapts one `DirectMessageReceived` record into a `ReceivedMessageWrapper`, or `undefined` if
  * the sender's profile/pubkey can't be resolved right now (logged, not thrown -- one bad/
  * unreachable sender shouldn't drop an entire poll batch). */
@@ -428,7 +431,7 @@ export function startDirectMessagePolling({
         if (otherFailures > 1) {
           steady = false
           nextDelayMs = Math.min(
-            MAX_MAILBOX_UNAVAILABLE_BACKOFF_MS,
+            MAX_MAILBOX_TRANSIENT_BACKOFF_MS,
             intervalMs * 2 ** (otherFailures - 1),
           )
         }

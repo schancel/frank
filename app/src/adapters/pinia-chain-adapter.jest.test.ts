@@ -321,7 +321,9 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     })
 
     it('holds the mailbox cursor until the exact secondary owner applies a self sync note', async () => {
-      const peek = jest.spyOn(accountSession, 'peekWallet').mockReturnValue(wallet)
+      const peek = jest
+        .spyOn(accountSession, 'peekWallet')
+        .mockReturnValue(wallet)
       const apply = jest.fn(async () => ({ affectedIndices: [3] }))
       const target = {
         chainIdentifier: 'ethereum-sepolia',

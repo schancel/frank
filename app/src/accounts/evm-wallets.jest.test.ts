@@ -1,5 +1,6 @@
 import {
   createEvmChain,
+  activeChain,
   getChainRegistryEntry,
   type EvmChainWalletHandle,
   type EvmChainConfig,
@@ -9,6 +10,7 @@ import {
   peekOpenedEvmWallets,
   closeOpenedEvmWallets,
 } from './evm-wallets'
+import { createNativeTransferContext } from './native-transfer'
 const mockState = {
   status: 'ready',
   account: { receipt: { context: { accountId: 'a' } } },
@@ -160,8 +162,7 @@ it('does not reuse another account or relay context and cancels an in-flight ope
     blockNumber: 7,
     blockHash: '0x' + 'ab'.repeat(32),
   })
-  await Promise.resolve()
-  await Promise.resolve()
+  await new Promise(done => setTimeout(done, 0))
   const failure = expect(pending).rejects.toThrow(/changed/)
   const closing = closeOpenedEvmWallets()
   expect(signal.aborted).toBe(true)
@@ -187,8 +188,7 @@ it('closes an opening account A result instead of publishing it to account B', a
       }),
   )
   const pending = openEvmWallet('monad-mainnet')
-  await Promise.resolve()
-  await Promise.resolve()
+  await new Promise(done => setTimeout(done, 0))
   const rejected = expect(pending).rejects.toThrow(/changed/)
   mockState.account = { receipt: { context: { accountId: 'b' } } }
   const close = jest.fn(async () => undefined)
@@ -360,17 +360,6 @@ it('waits for actual old custody retirement before same-chain relay replacement 
   }
 })
 
-it('surfaces retirement failure and never constructs a replacement owner', async () => {
-  const first = await openEvmWallet('monad-mainnet')
-  jest
-    .spyOn(first.wallet, 'close')
-    .mockRejectedValueOnce(new Error('close failed'))
-  mockRelay = 'https://replacement.invalid'
-  await expect(openEvmWallet('monad-mainnet')).rejects.toThrow('close failed')
-  expect(mockCreate).toHaveBeenCalledTimes(1)
-  expect(peekOpenedEvmWallets()).toEqual([])
-})
-
 it('does not publish an actual primary after account replacement during its checkpoint RPC', async () => {
   const primary = await actualEvmOwner('monad-testnet')
   mockPrimary = primary as unknown as typeof mockPrimary
@@ -399,4 +388,91 @@ it('does not publish an actual primary after account replacement during its chec
   } finally {
     await primary.close()
   }
+})
+
+it.each(['public', 'direct'])(
+  'retains actual custody retirement through %s cache eviction and concurrent reopen',
+  async mode => {
+    let release!: () => void
+    const deferredClose = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const owners: EvmChainWalletHandle[] = []
+    mockCreate.mockImplementation(async ({ config }) => {
+      const owner = await actualEvmOwner(config.networkId)
+      owners.push(owner)
+      if (owners.length === 1) {
+        const close = owner.close.bind(owner)
+        owner.close = async () => {
+          await deferredClose
+          await close()
+        }
+      }
+      return owner
+    })
+    try {
+      const first = await openEvmWallet('monad-mainnet')
+      const closing =
+        mode === 'public' ? closeOpenedEvmWallets() : first.wallet.close()
+      const reopen = openEvmWallet('monad-mainnet')
+      await new Promise(done => setTimeout(done, 0))
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      expect((await openEvmWallet('monad-testnet')).wallet).toBe(mockPrimary)
+      release()
+      await closing
+      expect((await reopen).wallet).not.toBe(first.wallet)
+      expect(mockCreate).toHaveBeenCalledTimes(2)
+    } finally {
+      release()
+      await closeOpenedEvmWallets()
+      await Promise.all(owners.map(owner => owner.close()))
+    }
+  },
+)
+
+it('rejects an active financial context with an actual primary on the wrong checkpoint', async () => {
+  const primary = await actualEvmOwner('monad-testnet')
+  mockPrimary = primary as unknown as typeof mockPrimary
+  try {
+    expect(activeChain.chainIdentifier).toBe('monad-testnet')
+    jest.mocked(primary.provider.getBlock).mockResolvedValueOnce({
+      number: 0,
+      hash: '0x' + '00'.repeat(32),
+    } as never)
+    await expect(
+      createNativeTransferContext(activeChain.chainIdentifier),
+    ).rejects.toThrow(/checkpoint mismatch/)
+    expect(peekOpenedEvmWallets()).toEqual([])
+    expect(mockCreate).not.toHaveBeenCalled()
+  } finally {
+    await primary.close()
+  }
+})
+
+it('rejects an active regtest financial context without its operator anchor', async () => {
+  const primary = await actualEvmOwner('monad-regtest')
+  mockPrimary = primary as unknown as typeof mockPrimary
+  const original = activeChain.chainIdentifier
+  try {
+    Object.assign(activeChain, { chainIdentifier: 'monad-regtest' })
+    await expect(createNativeTransferContext('monad-regtest')).rejects.toThrow(
+      /operator checkpoint is required/,
+    )
+    expect(peekOpenedEvmWallets()).toEqual([])
+    expect(mockCreate).not.toHaveBeenCalled()
+  } finally {
+    Object.assign(activeChain, { chainIdentifier: original })
+    await primary.close()
+  }
+})
+
+it('surfaces retirement failure and never constructs a replacement owner', async () => {
+  const first = await openEvmWallet('monad-mainnet')
+  jest
+    .spyOn(first.wallet, 'close')
+    .mockRejectedValueOnce(new Error('close failed'))
+  mockRelay = 'https://replacement.invalid'
+  await expect(openEvmWallet('monad-mainnet')).rejects.toThrow('close failed')
+  expect(mockCreate).toHaveBeenCalledTimes(1)
+  expect(peekOpenedEvmWallets()).toEqual([])
 })

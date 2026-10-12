@@ -31,6 +31,25 @@ interface Opened {
   ownsWallet?: boolean
 }
 const opened = new Map<string, Opened>()
+// Lifecycle barriers outlive cache eviction; failed retirement remains fail-closed.
+const retirements = new Map<string, Set<Promise<void>>>()
+function retainRetirement(
+  chainIdentifier: string,
+  closing: Promise<void>,
+): Promise<void> {
+  let pending = retirements.get(chainIdentifier)
+  if (!pending) retirements.set(chainIdentifier, (pending = new Set()))
+  pending.add(closing)
+  void closing.then(
+    () => {
+      pending.delete(closing)
+      if (pending.size === 0 && retirements.get(chainIdentifier) === pending)
+        retirements.delete(chainIdentifier)
+    },
+    () => undefined,
+  )
+  return closing
+}
 function scopeOf(relayBaseUrl: string): string {
   const { status, account, revision } = accountSession.state
   if (status !== 'ready' || !account) throw new Error('No account is open')
@@ -103,6 +122,10 @@ export function openEvmWallet(
           },
           () => undefined,
         )
+  const retirementBarrier = Promise.all([
+    ...(retirements.get(chainIdentifier) ?? []),
+    ...(retiring ? [retiring] : []),
+  ])
   const chain = createEvmChain(config)
   const cancellation = new AbortController()
   const entry: Opened = {
@@ -110,7 +133,7 @@ export function openEvmWallet(
     checkpoint,
     cancellation,
     opening: Promise.resolve().then(async () => {
-      await retiring
+      await retirementBarrier
       if (
         cancellation.signal.aborted ||
         scopeOf(config.relayBaseUrl) !== scope ||
@@ -150,10 +173,17 @@ export function openEvmWallet(
       }
       if (ownsWallet) {
         const close = wallet.close.bind(wallet)
-        wallet.close = async () => {
+        let closing: Promise<void> | undefined
+        wallet.close = () => {
+          if (closing) return closing
           if (opened.get(chainIdentifier) === entry)
             opened.delete(chainIdentifier)
-          await close()
+          try {
+            closing = close()
+          } catch (error) {
+            closing = Promise.reject(error)
+          }
+          return retainRetirement(chainIdentifier, closing)
         }
       }
       if (
@@ -190,18 +220,20 @@ export function peekOpenedEvmWallets(): readonly OpenEvmWallet[] {
 /** Host teardown closes owned secondary handles; the session retains ownership of its primary.
  * A cancelled secondary opening closes its late result before publishing it. */
 export async function closeOpenedEvmWallets(): Promise<void> {
-  const entries = [...opened.values()]
+  const entries = [...opened.entries()]
+  for (const [, entry] of entries) entry.cancellation.abort()
+  const closing = entries.map(([chainIdentifier, entry]) => {
+    if (entry.value && entry.ownsWallet) return entry.value.wallet.close()
+    return retainRetirement(
+      chainIdentifier,
+      entry.opening.then(
+        async value => {
+          if (entry.ownsWallet) await value.wallet.close()
+        },
+        () => undefined,
+      ),
+    )
+  })
   opened.clear()
-  for (const entry of entries) entry.cancellation.abort()
-  await Promise.all(
-    entries.map(async entry => {
-      let value: OpenEvmWallet
-      try {
-        value = await entry.opening
-      } catch {
-        return
-      }
-      if (entry.ownsWallet) await value.wallet.close()
-    }),
-  )
+  await Promise.all(closing)
 }

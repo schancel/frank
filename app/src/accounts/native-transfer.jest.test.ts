@@ -98,6 +98,9 @@ beforeEach(() => {
   mockState.account = { id: 'account-a' }
   mockState.revision = 1
   mockGetWallet.mockReset().mockResolvedValue(mockPrimaryWallet)
+  const primaryOpen = { chain: { ...activeChain }, wallet: mockPrimaryWallet }
+  mockOpenEvmWallet.mockReset().mockResolvedValue(primaryOpen)
+  mockPeekEvmWallets.mockReset().mockReturnValue([primaryOpen])
   mockGetRoot
     .mockReset()
     .mockImplementation(async () => new Uint8Array(32).fill(7))
@@ -202,14 +205,15 @@ it.each(['revision', 'account', 'locked', 'wallet'])(
   },
 )
 
-it('snapshots the primary adapter and rejects a primary wallet with a different network', async () => {
+it('uses the verified primary context and rejects account replacement', async () => {
   const original = activeChain.chainIdentifier
   const context = await createNativeTransferContext(original)
   expect(context.chain).not.toBe(activeChain)
+  expect(mockOpenEvmWallet).toHaveBeenCalledWith(original)
+  const binding = await context.captureWallet()
+  expect(binding.wallet).toBe(mockPrimaryWallet)
   mockGetWallet.mockResolvedValue({ chainIdentifier: 'monad-mainnet' })
-  await expect(context.captureWallet()).rejects.toThrow(
-    'Wallet network differs',
-  )
+  await expect(binding.assertCurrent()).rejects.toThrow('Account changed')
 })
 
 it('keeps the exact signed hash after a broadcast timeout and blocks a fresh transaction on retry', async () => {

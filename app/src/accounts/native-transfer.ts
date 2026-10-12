@@ -69,7 +69,10 @@ export async function createNativeTransferContext(
   let chain: NativeAssetChain
   let createWallet: (() => Promise<NativeWalletHandle>) | undefined
   let contextIsCurrent: (() => boolean) | undefined
-  if (chainIdentifier === primaryChain.chainIdentifier) {
+  if (
+    chainIdentifier === primaryChain.chainIdentifier &&
+    entry.family !== 'evm'
+  ) {
     chain = primaryChain
   } else if (
     entry.family === 'solana' &&

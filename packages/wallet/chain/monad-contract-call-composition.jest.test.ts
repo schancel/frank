@@ -22,6 +22,10 @@ import type { EvmChainConfig } from './evm-chain-config'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import type { MonadRootBundle } from './active-chain'
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
+import { getEvmDexDeployment } from './dex-deployments'
+import { UniswapV4Dex } from '../swap/uniswap-v4-dex'
+import { cannedNode } from '../swap/swap-reader.testutil'
+import { findToken, poolId, routesFor } from '../swap/uniswap-v4'
 import { EvmLegacyConsolidator, swapRecordId } from './evm-legacy-consolidator'
 
 const config: EvmChainConfig = {
@@ -125,6 +129,7 @@ function stubNode(
         status: 1,
         gasPrice: 1n,
         gasUsed: tx.gasLimit,
+        logs: [],
       } as TransactionReceipt)
       return { hash: keccak256(raw) } as TransactionResponse
     })
@@ -415,7 +420,10 @@ test('a swap is recorded by the wallet: journaled with the call before signing, 
       wallet.identity.address.raw.toLowerCase(),
     )
     expect(note.items).toEqual([
-      expect.objectContaining({ type: 'wallet-sync', txHash: sent.txHash }),
+      expect.objectContaining({
+        type: 'wallet-sync',
+        txHash: sent.txHash,
+      }),
       {
         type: 'swap-record',
         swapId: swapRecordId('monad-testnet', sent.txHash),
@@ -532,6 +540,62 @@ test('the move into the main account notes itself like any legacy send', async (
       }),
     ])
     expect((await wallet.getContractCallFunds!()).mainBalance).toBe(400_000n)
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('production CHOMP adapter journals through the composed wallet', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-chomp-composition-'))
+  const wallet = (await createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 10n ** 18n)
+    const deployment = getEvmDexDeployment('monad-testnet')!
+    const native = findToken(deployment, 'MON')!,
+      chomp = findToken(deployment, 'CHOMP')!
+    const canned = cannedNode(deployment)
+    canned.node.pools.set(
+      poolId(routesFor(deployment, native, chomp)[0]!.key).toLowerCase(),
+      {
+        sqrtPriceX96: 2n ** 96n,
+        liquidity: 10n ** 24n,
+        lpFee: 3000,
+        quote: () => 946795342000000000000n,
+      },
+    )
+    jest
+      .spyOn(wallet.provider, 'call')
+      .mockImplementation(tx => canned.reader.call(tx as never))
+    const dex = new UniswapV4Dex('monad-testnet', deployment, {
+      reader: wallet.provider,
+      sendContractCall: params => wallet.sendContractCall!(params),
+      getContractCallFunds: () => wallet.getContractCallFunds!(),
+    })
+    const quote = await dex.quote({
+      tokenIn: native,
+      tokenOut: chomp,
+      amountIn: 10n ** 15n,
+    })
+    const plan = await dex.plan({ quote, slippageBps: 50, account: MAIN })
+    await dex.execute({
+      plan,
+      account: MAIN,
+      consolidateWei: 0n,
+      timing: {
+        inclusionTimeoutMs: 0,
+        pollMs: 1,
+        sleep: async () => undefined,
+      },
+    })
+    expect(node.broadcast).toHaveBeenCalledTimes(1)
+    expect(wallet.getNativeOperations!()[0]!.record?.assetOut.symbol).toBe(
+      'CHOMP',
+    )
   } finally {
     await wallet.close()
     await rm(dir, { recursive: true, force: true })

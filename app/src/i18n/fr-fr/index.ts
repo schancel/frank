@@ -1665,7 +1665,7 @@ export default {
     newSwap: 'Nouvel échange',
     progressConsolidating: 'Transfert des fonds vers le compte d’échange…',
     progressApproving: 'Approbation du montant exact ({step} sur {of})…',
-    progressSigning: 'Signature de l’échange…',
+    progressSigning: 'Préparation et envoi de l’échange…',
     progressSubmitted: 'Envoyé. En attente de la confirmation du réseau…',
     progressKeepOpen:
       'Vous pouvez quitter cette page : l’échange est enregistré et apparaît dans les échanges récents.',

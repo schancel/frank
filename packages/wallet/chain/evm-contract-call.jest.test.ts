@@ -16,6 +16,7 @@ import { summarizeEvmNativeOperation } from './evm-native-operation-status'
 import { getEvmDexDeployment } from './dex-deployments'
 import { fetchSwapQuote, planSwap } from '../swap/evm-swap'
 import { executeSwap } from '../swap/swap-execution'
+import { UniswapV4Dex } from '../swap/uniswap-v4-dex'
 import { cannedNode } from '../swap/swap-reader.testutil'
 import { findToken, poolId, routesFor } from '../swap/uniswap-v4'
 import {
@@ -365,7 +366,11 @@ describe('contract calls through the native operation journal', () => {
         recipient: router,
         intendedValueWei: '0',
         members: [
-          { source, unsignedTransaction: unsigned(data), dependencies: [] },
+          {
+            source,
+            unsignedTransaction: unsigned(data),
+            dependencies: [],
+          },
         ],
       })
     await expect(plan(sources[1]!, calldata)).rejects.toBeInstanceOf(
@@ -448,6 +453,105 @@ describe('contract calls through the native operation journal', () => {
     await executor.resendMissingContractCalls()
     expect(state.raws).toHaveLength(3)
     expect(executor.unresolvedContractCalls()).toEqual([])
+  })
+
+  it('categorizes a rejected record before signing or exposure', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor, sign } = owner(state)
+    await expect(
+      executor.sendContractCall({
+        ...call,
+        record: { kind: 'swap' } as never,
+      }),
+    ).rejects.toMatchObject({
+      name: 'EvmNativeJournalError',
+      code: 'invalid',
+      validation: 'record',
+    })
+    expect(sign).not.toHaveBeenCalled()
+    expect(state.raws).toEqual([])
+    expect(journal.list()).toEqual([])
+  })
+
+  it('categorizes bad account evidence without releasing an exposed attempt across restart', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor, sign } = owner(state)
+    state.setMode('lost')
+    const failure = await executor
+      .sendContractCall({ ...call, gasLimit: 250_000n })
+      .catch(error => error)
+    const id = failure.operation.operationId as string
+    const before = journal.get(id)
+    expect(before.members[0]!.exposed).toBe(true)
+    state.balances.set(main.address.toLowerCase(), -1n)
+    await expect(executor.contractCallFunds()).rejects.toMatchObject({
+      code: 'invalid',
+      validation: 'account',
+    })
+    expect(journal.get(id)).toEqual(before)
+    expect(journal.canSelect(main.address.toLowerCase(), 0)).toBe(false)
+    await journal.Close()
+    await open()
+    expect(journal.get(id)).toEqual(before)
+    state.balances.set(main.address.toLowerCase(), 10_000_000n)
+    state.setMode('mine')
+    await owner(state).executor.resumeOperation(id)
+    expect(state.raws).toHaveLength(2)
+    expect(state.raws[1]).toBe(state.raws[0])
+    expect(sign).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs the production CHOMP adapter record through the native journal', async () => {
+    const state = node({ main: 10n ** 18n })
+    const { executor, sign } = owner(state)
+    const deployment = getEvmDexDeployment('monad-testnet')!
+    const native = findToken(deployment, 'MON')!
+    const chomp = findToken(deployment, 'CHOMP')!
+    const canned = cannedNode(deployment)
+    canned.node.pools.set(
+      poolId(routesFor(deployment, native, chomp)[0]!.key).toLowerCase(),
+      {
+        sqrtPriceX96: 2n ** 96n,
+        liquidity: 10n ** 24n,
+        lpFee: 3000,
+        quote: () => 946795342000000000000n,
+      },
+    )
+    const reader = {
+      ...canned.reader,
+      getFeeData: () => state.provider.getFeeData(),
+      getTransactionReceipt: (hash: string) =>
+        state.provider.getTransactionReceipt(hash) as never,
+      getTransaction: (hash: string) => state.provider.getTransaction(hash),
+    }
+    const dex = new UniswapV4Dex('monad-testnet', deployment, {
+      reader,
+      sendContractCall: params => executor.sendContractCall(params),
+      getContractCallFunds: () => executor.contractCallFunds(),
+    })
+    const quote = await dex.quote({
+      tokenIn: native,
+      tokenOut: chomp,
+      amountIn: 10n ** 15n,
+    })
+    const plan = await dex.plan({
+      quote,
+      slippageBps: 50,
+      account: main.address,
+    })
+    await dex.execute({
+      plan,
+      account: main.address,
+      consolidateWei: 0n,
+      timing: {
+        inclusionTimeoutMs: 0,
+        pollMs: 1,
+        sleep: async () => undefined,
+      },
+    })
+    expect(sign).toHaveBeenCalledTimes(1)
+    expect(state.raws).toHaveLength(1)
+    expect(journal.list()[0]!.record?.assetOut.symbol).toBe('CHOMP')
   })
 
   it('a swap whose first approval was lost in broadcast: the approval is re-sent, lands, the swap goes on, and the account can send afterwards', async () => {

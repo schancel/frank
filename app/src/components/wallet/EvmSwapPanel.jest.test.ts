@@ -536,9 +536,29 @@ describe('confirming and executing', () => {
       }),
     )
     await click(view, 'swap-confirm-btn')
-    expect(text(view, 'swap-failure-diagnostic')).toContain('signing')
+    expect(text(view, 'swap-failure-diagnostic')).toContain('submitting')
     expect(text(view, 'swap-failure-diagnostic')).toContain(
       'Error/INSUFFICIENT_FUNDS',
+    )
+    expect(view.text()).not.toContain('SECRET')
+    view.unmount()
+  })
+
+  it('shows only known journal validation categories', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    s.wallet.sendContractCall.mockRejectedValueOnce(
+      Object.assign(new Error('SECRET record'), {
+        name: 'EvmNativeJournalError',
+        code: 'invalid',
+        validation: 'record',
+      }),
+    )
+    await click(view, 'swap-confirm-btn')
+    expect(text(view, 'swap-failure-diagnostic')).toContain(
+      'submitting · EvmNativeJournalError/invalid/record',
     )
     expect(view.text()).not.toContain('SECRET')
     view.unmount()
@@ -690,6 +710,22 @@ describe('confirming and executing', () => {
       status: 'failed',
       reason: 'reverted',
     })
+  })
+
+  it('describes the wallet submission wait without claiming that it is only signing', async () => {
+    const s = scene()
+    s.wallet.sendContractCall.mockImplementationOnce(
+      () => new Promise(() => undefined),
+    )
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    await view.get('[data-testid="swap-confirm-btn"]').trigger('click')
+    await flushPromises()
+    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
+    expect(text(view, 'swap-progress')).toContain(
+      'Preparing and submitting the swap…',
+    )
   })
 
   it('shows a swap the network has not confirmed as pending and tells the user not to resend', async () => {

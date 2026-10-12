@@ -99,10 +99,7 @@ export interface EvmContractCallRecord {
   route: unknown
 }
 const MAX_RECORD_BYTES = 8 * 1024
-function validateRecord(
-  value: unknown,
-  kind: unknown,
-): EvmContractCallRecord {
+function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
   if (kind !== 'contract') fail()
   const row = object(value, [
     'kind',
@@ -163,6 +160,15 @@ export interface EvmNativePlan {
   members: EvmNativeMemberPlan[]
   record?: EvmContractCallRecord | null
 }
+export type EvmNativeValidation =
+  | 'record'
+  | 'source'
+  | 'unsigned'
+  | 'signature'
+  | 'observation'
+  | 'account'
+  | 'contract-binding'
+
 export class EvmNativeJournalError extends Error {
   constructor(
     readonly code:
@@ -172,6 +178,7 @@ export class EvmNativeJournalError extends Error {
       | 'conflict'
       | 'closed'
       | 'uncertain',
+    readonly validation?: EvmNativeValidation,
   ) {
     super(`EVM native operation journal: ${code}`)
     this.name = 'EvmNativeJournalError'
@@ -185,8 +192,25 @@ const MAX_ROW = 16 * 1024 * 1024
 const MAX_ROWS = 1024
 const MAX_BYTES = 64 * 1024 * 1024
 const HASH = /^0x[0-9a-f]{64}$/
-function fail(code: EvmNativeJournalError['code'] = 'invalid'): never {
-  throw new EvmNativeJournalError(code)
+function fail(
+  code: EvmNativeJournalError['code'] = 'invalid',
+  validation?: EvmNativeValidation,
+): never {
+  throw new EvmNativeJournalError(code, validation)
+}
+/** Fixed validation categories only: never retain rejected data or provider payloads. */
+function checked<T>(validation: EvmNativeValidation, validate: () => T): T {
+  try {
+    return validate()
+  } catch (error) {
+    if (
+      error instanceof EvmNativeJournalError &&
+      error.code === 'invalid' &&
+      !error.validation
+    )
+      throw new EvmNativeJournalError(error.code, validation)
+    throw error
+  }
 }
 function object(value: unknown, keys: string[]): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail()
@@ -366,8 +390,7 @@ function validateRow(
   value: unknown,
   binding: EvmNativeBinding,
 ): EvmNativeOperation {
-  const hasRecord =
-    !!value && typeof value === 'object' && 'record' in value
+  const hasRecord = !!value && typeof value === 'object' && 'record' in value
   const row = object(value, [
     'version',
     'operationId',
@@ -381,7 +404,7 @@ function validateRow(
     'reservedBytes',
     ...(hasRecord ? ['record'] : []),
   ])
-  if (hasRecord) validateRecord(row.record, row.kind)
+  if (hasRecord) checked('record', () => validateRecord(row.record, row.kind))
   if (
     row.version !== 1 ||
     typeof row.operationId !== 'string' ||
@@ -418,10 +441,12 @@ function validateRow(
       'account',
       'syncApplied',
     ])
-    const source = validateSource(member.source)
+    const source = checked('source', () => validateSource(member.source))
     if (sourceAddresses.has(source.address)) fail()
     sourceAddresses.add(source.address)
-    const tx = unsigned(member.unsignedTransaction, binding)
+    const tx = checked('unsigned', () =>
+      unsigned(member.unsignedTransaction, binding),
+    )
     fee += nativeMaximumFee(tx)
     const claim = `${source.address}:${tx.nonce}`
     if (claims.has(claim)) fail()
@@ -460,9 +485,11 @@ function validateRow(
         parsed.from?.toLowerCase() !== source.address ||
         parsed.hash !== signed.transactionHash
       )
-        fail()
+        fail('invalid', 'signature')
     } else if (member.exposed || member.syncApplied) fail()
-    const observation = validateObservation(member.observation)
+    const observation = checked('observation', () =>
+      validateObservation(member.observation),
+    )
     if (
       'transactionHash' in observation &&
       (member.signed === null ||
@@ -471,7 +498,7 @@ function validateRow(
     )
       fail()
     if (member.syncApplied && observation.state !== 'included-success') fail()
-    validateAccount(member.account)
+    checked('account', () => validateAccount(member.account))
     if (row.cancelled && (member.signed !== null || member.exposed)) fail()
   }
   if (fee.toString() !== row.maximumFeeWei) fail()
@@ -485,7 +512,7 @@ function validateRow(
       tx.value.toString() !== row.intendedValueWei ||
       tx.data === '0x'
     )
-      fail()
+      fail('invalid', 'contract-binding')
   }
   if (row.kind === 'legacy') {
     const members = row.members as EvmNativeMember[]
@@ -729,7 +756,11 @@ export class EvmNativeOperationJournal {
           .reduce(
             (n, m) =>
               n +
-              nativeMaximumFee(unsigned(m.unsignedTransaction, this.binding)),
+              nativeMaximumFee(
+                checked('unsigned', () =>
+                  unsigned(m.unsignedTransaction, this.binding),
+                ),
+              ),
             0n,
           )
           .toString(),
@@ -821,7 +852,10 @@ export class EvmNativeOperationJournal {
         (m.signed && m.signed.rawTransaction !== rawTransaction)
       )
         fail('conflict')
-      m.signed = { rawTransaction, transactionHash: keccak256(rawTransaction) }
+      m.signed = {
+        rawTransaction,
+        transactionHash: keccak256(rawTransaction),
+      }
     })
   }
   markExposed(id: string, index: number): Promise<EvmNativeOperation> {
@@ -880,8 +914,10 @@ export class EvmNativeOperationJournal {
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
   ): Promise<boolean> {
-    const frozenObservation = validateObservation(observation)
-    const frozenAccount = validateAccount(account)
+    const frozenObservation = checked('observation', () =>
+      validateObservation(observation),
+    )
+    const frozenAccount = checked('account', () => validateAccount(account))
     const key = `${capture.operationId}:${capture.memberIndex}`
     let recorded = false
     await this.mutate(capture.operationId, row => {

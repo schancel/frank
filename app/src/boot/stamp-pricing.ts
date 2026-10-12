@@ -6,6 +6,7 @@ import {
 } from '@frank/wallet/chain'
 import {
   createStampDefaultResolver,
+  DEFAULT_EVM_STAMP_FALLBACK_COIN,
   stampPolicyConfig,
 } from '@frank/wallet/oracle'
 import { useOracleStore } from '../stores/oracle'
@@ -24,6 +25,10 @@ export default boot(() => {
       asset: entry.kind,
       supportsDirectMessages: chain.capabilities.directMessages,
       baseUnitsPerCoin: chain.fromDisplayAmount('1'),
+      fallbackStamp:
+        entry.family === 'evm'
+          ? chain.fromDisplayAmount(DEFAULT_EVM_STAMP_FALLBACK_COIN)
+          : undefined,
       config: stampPolicyConfig(
         import.meta.env.QCLI_FRANK_DM_DEFAULT_STAMP_AVU,
       ),

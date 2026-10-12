@@ -141,6 +141,8 @@ export default {
     stampBelowMinimum:
       'Ce montant est inférieur au minimum actuel de {amount} {unit}. Choisissez un autre montant ou un message gratuit.',
     stampQuoteUnavailable: 'Timbre par défaut indisponible',
+    fixedStampFallback:
+      'Montant temporaire : {amount} {unit}, calculé à partir d’un montant de base fixe et du minimum lié aux frais actuels. Le taux AVU est indisponible.',
     stampQuoteUnavailableReason:
       'Timbre par défaut indisponible : {reason}. Choisissez un montant explicite ou un message gratuit.',
     stampQuoteReasons: {

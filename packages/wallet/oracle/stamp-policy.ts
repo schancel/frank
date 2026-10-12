@@ -6,6 +6,8 @@ export interface StampPolicyConfig {
 
 /** Fixed AVU target calibrated near one cent; never recalibrated on feed refresh. */
 export const DEFAULT_STAMP_TARGET_AVU = "0.1";
+/** Fixed native-coin amount used by EVM hosts only while AVU conversion is unavailable. */
+export const DEFAULT_EVM_STAMP_FALLBACK_COIN = "0.01";
 
 interface Ratio {
   numerator: bigint;
@@ -60,7 +62,10 @@ export type DefaultStampQuote =
       readonly targetAmount: bigint;
       /** Adapter minimum; not a quote of the complete multi-input network fee. */
       readonly minimumStamp: bigint;
-      readonly rateAt: number;
+      /** Only present when an observed AVU rate produced this quote. */
+      readonly rateAt?: number;
+      /** A fixed native-unit fallback is not an AVU conversion. */
+      readonly pricingBasis?: "configured-fallback";
       /** Observed mining basis; absent for host-supplied non-oracle fixed quotes. */
       readonly rateFeeCoverage?: MiningFeeCoverage;
     }

@@ -137,6 +137,8 @@ export default {
     stampBelowMinimum:
       'This amount is below the current minimum of {amount} {unit}. Choose another amount or a free message.',
     stampQuoteUnavailable: 'Default stamp unavailable',
+    fixedStampFallback:
+      'Temporary default: {amount} {unit}, based on a fixed base amount and the current fee floor. The AVU rate is unavailable.',
     stampQuoteUnavailableReason:
       'Default stamp unavailable: {reason}. Choose an explicit amount or a free message.',
     stampQuoteReasons: {

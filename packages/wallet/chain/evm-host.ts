@@ -6,6 +6,7 @@ import { getChainRegistryEntry } from "./chains-registry";
 import { createStampDefaultResolver } from "../oracle/stamp-rate";
 import { createRelayStampRateReader } from "../oracle/relay-stamp-pricing";
 import {
+  DEFAULT_EVM_STAMP_FALLBACK_COIN,
   stampPolicyConfig,
   type StampPolicyConfig,
 } from "../oracle/stamp-policy";
@@ -28,6 +29,7 @@ export function createRelayStampDefaultResolver(
       (config.transactionBuilder === undefined ||
         config.transactionBuilder === defaultNativeEvmTransactionBuilder),
     baseUnitsPerCoin: adapter.fromDisplayAmount("1"),
+    fallbackStamp: adapter.fromDisplayAmount(DEFAULT_EVM_STAMP_FALLBACK_COIN),
     config: pricing,
     getRates: createRelayStampRateReader({ relayBaseUrl: config.relayBaseUrl }),
   });

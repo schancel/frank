@@ -7,6 +7,7 @@ import {
 } from "./price-oracle";
 import {
   quoteDefaultStamp,
+  type DefaultStampQuote,
   type StampDefaultResolver,
   type StampPolicyConfig,
 } from "./stamp-policy";
@@ -23,6 +24,8 @@ export function createStampDefaultResolver(options: {
   /** Actual amount unit of the configured transfer adapter, not a display-name guess. */
   baseUnitsPerCoin: bigint;
   config: StampPolicyConfig;
+  /** Host-configured native base units used only until a fresh AVU quote exists. */
+  fallbackStamp?: bigint;
   getRates(): OracleRates | Promise<OracleRates>;
   now?: () => number;
 }): StampDefaultResolver {
@@ -39,21 +42,40 @@ export function createStampDefaultResolver(options: {
         chainIdentifier: context.chainIdentifier,
         reason: "unsupported",
       };
-    if (context.minimumStamp === undefined)
+    if (context.minimumStamp === undefined || context.minimumStamp < 0n)
       return {
         status: "unavailable",
         chainIdentifier: context.chainIdentifier,
         reason: "missing-fee",
       };
+    const minimumStamp = context.minimumStamp;
+    const withFallback = (quote: DefaultStampQuote): DefaultStampQuote => {
+      const fixed = options.fallbackStamp;
+      if (
+        quote.status !== "unavailable" ||
+        (quote.reason !== "missing-rate" && quote.reason !== "stale-rate") ||
+        fixed === undefined ||
+        fixed <= 0n
+      )
+        return quote;
+      return {
+        status: "available",
+        chainIdentifier: context.chainIdentifier,
+        amount: fixed > minimumStamp ? fixed : minimumStamp,
+        targetAmount: fixed,
+        minimumStamp,
+        pricingBasis: "configured-fallback",
+      };
+    };
     let rates: OracleRates;
     try {
       rates = await options.getRates();
     } catch {
-      return {
+      return withFallback({
         status: "unavailable",
         chainIdentifier: context.chainIdentifier,
         reason: "missing-rate",
-      };
+      });
     }
     const now = (options.now ?? Date.now)();
     const priceAt = rates.priceAt[options.asset];
@@ -64,16 +86,18 @@ export function createStampDefaultResolver(options: {
         (priceAt !== undefined && now - priceAt * 1000 > STALE_AFTER_MS) ||
         (hash && now - hash.oldestInputAt * 1000 > MINING_STALE_AFTER_MS)
     );
-    return quoteDefaultStamp({
-      chainIdentifier: context.chainIdentifier,
-      supportsDirectMessages: options.supportsDirectMessages,
-      decimals,
-      config: options.config,
-      avuPerCoin: hash ? rates.rates[options.asset] : undefined,
-      rateAt: priceAt,
-      rateFeeCoverage: hash ? miningFeeCoverage(hash) : undefined,
-      rateStale: stale,
-      minimumStamp: context.minimumStamp,
-    });
+    return withFallback(
+      quoteDefaultStamp({
+        chainIdentifier: context.chainIdentifier,
+        supportsDirectMessages: options.supportsDirectMessages,
+        decimals,
+        config: options.config,
+        avuPerCoin: hash ? rates.rates[options.asset] : undefined,
+        rateAt: priceAt,
+        rateFeeCoverage: hash ? miningFeeCoverage(hash) : undefined,
+        rateStale: stale,
+        minimumStamp: context.minimumStamp,
+      })
+    );
   };
 }

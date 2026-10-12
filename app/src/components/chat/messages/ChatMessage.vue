@@ -114,6 +114,14 @@
                 )?.state
               "
             />
+            <chat-message-stealth-asset
+              v-else-if="item.type === 'stealth-asset'"
+              :item="item"
+              :asset-options="recipientAssetOptions"
+              :observation-context="recipientAssetObservationContext"
+              :outbound="message.outbound"
+              :outbound-state="recipientAssetDeliveryState"
+            />
             <!-- A picture the text shows where it is referenced is not shown a second time. -->
             <template v-else-if="item.type == 'image'">
               <chat-message-image
@@ -230,7 +238,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, PropType } from 'vue'
+import { computed, defineComponent, PropType } from 'vue'
 
 import { useChatStore } from '../../../stores/chats'
 import {
@@ -253,6 +261,12 @@ import ChatMessageReply from './ChatMessageReply.vue'
 import ChatMessageText from './ChatMessageText.vue'
 import ChatMessageImage from './ChatMessageImage.vue'
 import ChatMessageStealth from './ChatMessageStealth.vue'
+import ChatMessageStealthAsset from './ChatMessageStealthAsset.vue'
+import {
+  cachedRecipientAssetOptions,
+  createRecipientAssetObservationContext,
+  recipientAssetOutboundState,
+} from '../../../stealth-payments/observation-context'
 import ChatMessageBlackjack from './ChatMessageBlackjack.vue'
 import ChatMessageDigitalGoods from './ChatMessageDigitalGoods.vue'
 import ChatMessageRaffle from './ChatMessageRaffle.vue'
@@ -302,6 +316,7 @@ export default defineComponent({
     ChatMessageChannel,
     ChatMessageImage,
     ChatMessageStealth,
+    ChatMessageStealthAsset,
     ChatMessageSuffix,
     TransactionDialog,
     DeleteMessageDialog,
@@ -330,7 +345,24 @@ export default defineComponent({
         props.message.items.some(item => item.type === 'stealth'),
     )
     const chats = useChatStore()
+    const hasRecipientAsset = computed(() =>
+      props.message.items.some(item => item.type === 'stealth-asset'),
+    )
+    const recipientAssetObservationContext = computed(() =>
+      hasRecipientAsset.value && !props.message.outbound
+        ? createRecipientAssetObservationContext(props.payloadDigest ?? '')
+        : undefined,
+    )
+    const recipientAssetOptions = computed(() =>
+      hasRecipientAsset.value ? cachedRecipientAssetOptions() : [],
+    )
+    const recipientAssetDeliveryState = computed(() =>
+      recipientAssetOutboundState(props.message.status),
+    )
     return {
+      recipientAssetObservationContext,
+      recipientAssetOptions,
+      recipientAssetDeliveryState,
       sentContactPayments,
       deleteMessage: chats.deleteMessage,
       sendDirectMessage: chats.sendMessage,

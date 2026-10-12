@@ -928,6 +928,10 @@ export function createAccountSession(deps: {
       chainAddressInFlight.set(netId, promise)
       return promise
     },
+    /** Returns only the initialized owner of the ready session; never activates custody. */
+    peekWallet(): RuntimeWallet | undefined {
+      return state.status === 'ready' ? wallet : undefined
+    },
     getCachedCurvePublicKey(curve: SupportedCurve): Uint8Array | undefined {
       if (curve === 'secp256k1') {
         const cached = curveKeyCache.get('secp256k1')

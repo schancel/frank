@@ -30,6 +30,7 @@ function transferLog(amount = 2_000_000n, recipient = RECIPIENT) {
 function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
   let receipt: TempoReceipt | null = null
   let failBroadcast = false
+  let wrongHash = false
   let sends = 0
   let signs = 0
   const events: string[] = []
@@ -43,6 +44,7 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
       events.push('send')
       expect(raw.startsWith('0x76')).toBe(true)
       if (failBroadcast) throw new Error('RPC timeout after submission')
+      if (wrongHash) return '0x' + '99'.repeat(32)
       return decodeSignedTempoTransaction(raw, 42431n).transactionHash
     },
     getReceipt: async () => receipt,
@@ -56,7 +58,12 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
     },
   }
   const journal = new TempoPathUsdJournal(store)
-  const transfers = new TempoPathUsdTransfers('tempo-testnet', journal, rpc, async (_source, task) => task())
+  let sourceTail: Promise<unknown> = Promise.resolve()
+  const transfers = new TempoPathUsdTransfers('tempo-testnet', journal, rpc, (_source, task) => {
+    const run = sourceTail.then(task)
+    sourceTail = run.catch(() => undefined)
+    return run
+  })
   const included = (row: TempoPathUsdOperation, status = 1, logs = [transferLog()]): TempoReceipt => ({
     transactionHash: row.transactionHash!, blockHash: BLOCK, blockNumber: 100, status,
     gasUsed: 80_000n, effectiveGasPrice: 1_000_000_000n,
@@ -66,6 +73,7 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
     store, journal, transfers, signer, events, included,
     setReceipt: (value: TempoReceipt | null) => { receipt = value },
     failBroadcast: () => { failBroadcast = true },
+    wrongHash: () => { wrongHash = true },
     sends: () => sends, signs: () => signs,
   }
 }
@@ -80,6 +88,7 @@ describe('Tempo PathUSD transfer ownership', () => {
     expect(row.exposed).toBe(false)
     const sent = await h.transfers.submit(ID, h.signer)
     expect(sent.observation.state).toBe('pending')
+    expect(sent.submission.state).toBe('accepted')
     expect(h.signs()).toBe(1)
     expect(h.sends()).toBe(1)
     const decoded = decodeSignedTempoTransaction(sent.signedRaw!, 42431n)
@@ -95,6 +104,7 @@ describe('Tempo PathUSD transfer ownership', () => {
     await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const first = await h.transfers.submit(ID, h.signer)
     expect(first.observation.state).toBe('pending')
+    expect(first.submission.state).toBe('ambiguous')
     expect(first.exposed).toBe(true)
     const reopened = harness(h.store)
     const second = await reopened.transfers.submit(ID, reopened.signer)
@@ -126,6 +136,33 @@ describe('Tempo PathUSD transfer ownership', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test('prepared or ambiguous spend holds PathUSD source balance across concurrent operations and restart', async () => {
+    const h = harness()
+    const first = h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const second = h.transfers.prepare({ operationId: '0x' + '66'.repeat(32), signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const results = await Promise.allSettled([first, second])
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1)
+    const reopened = harness(h.store)
+    await expect(reopened.transfers.prepare({
+      operationId: '0x' + '77'.repeat(32), signer: reopened.signer,
+      recipient: RECIPIENT, amountAtomic: 2_000_000n,
+    })).rejects.toThrow('unresolved PathUSD operation')
+  })
+
+  test('inconsistent RPC hash is visible while exact signed payment remains claimed', async () => {
+    const h = harness()
+    h.wrongHash()
+    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const row = await h.transfers.submit(ID, h.signer)
+    expect(row.submission.state).toBe('inconsistent-rpc')
+    expect(row.observation.state).toBe('pending')
+    expect(row.signedRaw).toMatch(/^0x76/)
+    await expect(h.transfers.prepare({
+      operationId: '0x' + '88'.repeat(32), signer: h.signer, recipient: RECIPIENT, amountAtomic: 1n,
+    })).rejects.toThrow('unresolved PathUSD operation')
   })
 
   test('receipt confirms exact token transfer, and reorg to unknown retains nonce claim', async () => {

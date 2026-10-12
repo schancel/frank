@@ -44,9 +44,13 @@ function blockNumber(value: unknown): number {
 }
 
 export class TempoPathUsdJsonRpc implements TempoPathUsdRpc {
-  constructor(private readonly transport: TempoJsonRpcTransport) {}
+  constructor(
+    private readonly transport: TempoJsonRpcTransport,
+    private readonly chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',
+  ) {}
 
   async verifyChain(chainIdentifier: 'tempo-testnet' | 'tempo-mainnet'): Promise<void> {
+    if (chainIdentifier !== this.chainIdentifier) throw new Error('Tempo RPC binding mismatch')
     const chain = PROTOCOL_CHAINS[chainIdentifier]
     if (chain?.kind !== 'tempo' || !chain.nativeChainId)
       throw new Error('Unknown Tempo chain')
@@ -134,6 +138,8 @@ export class TempoPathUsdJsonRpc implements TempoPathUsdRpc {
     amountAtomic: bigint
   }[]> {
     if (fromBlock < 0n || toBlock < fromBlock) throw new RangeError('Invalid Tempo scan range')
+    if (toBlock - fromBlock >= 2_000n) throw new RangeError('Tempo scan range exceeds 2,000 blocks')
+    await this.verifyChain(this.chainIdentifier)
     const target = address(recipient)
     const transferTopic = new Interface(['event Transfer(address indexed from, address indexed to, uint256 amount)']).getEvent('Transfer')!.topicHash
     const result = await this.transport.send('eth_getLogs', [{

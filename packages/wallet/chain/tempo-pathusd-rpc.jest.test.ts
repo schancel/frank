@@ -30,7 +30,7 @@ function transport() {
       default: throw new Error('Unexpected RPC method ' + method)
     }
   }
-  return { rpc: new TempoPathUsdJsonRpc({ send } satisfies TempoJsonRpcTransport), calls, set: (method: string, value: unknown) => { override[method] = value } }
+  return { rpc: new TempoPathUsdJsonRpc({ send } satisfies TempoJsonRpcTransport, 'tempo-testnet'), calls, set: (method: string, value: unknown) => { override[method] = value } }
 }
 
 describe('Tempo PathUSD JSON-RPC boundary', () => {
@@ -42,6 +42,7 @@ describe('Tempo PathUSD JSON-RPC boundary', () => {
     await expect(h.rpc.verifyChain('tempo-testnet')).rejects.toThrow('checkpoint mismatch')
     h.set('eth_chainId', '0x1')
     await expect(h.rpc.verifyChain('tempo-testnet')).rejects.toThrow('chain ID mismatch')
+    await expect(h.rpc.verifyChain('tempo-mainnet')).rejects.toThrow('binding mismatch')
   })
 
   test('queries PathUSD balance and quotes 0x76 token-paid gas with margin', async () => {
@@ -71,5 +72,9 @@ describe('Tempo PathUSD JSON-RPC boundary', () => {
     expect(filter.fromBlock).toBe('0x5a')
     expect(filter.toBlock).toBe('0x64')
     expect((filter.topics as unknown[])[2]).toBe(zeroPadValue(RECIPIENT, 32))
+    expect(h.calls.slice(-3).map(call => call.method)).toEqual(['eth_chainId', 'eth_getBlockByNumber', 'eth_getLogs'])
+    await expect(h.rpc.receivedTransfers(RECIPIENT, 0n, 2_000n)).rejects.toThrow('exceeds')
+    h.set('eth_getBlockByNumber', { hash: BLOCK })
+    await expect(h.rpc.receivedTransfers(RECIPIENT, 0n, 1n)).rejects.toThrow('checkpoint mismatch')
   })
 })

@@ -14,6 +14,7 @@
  * on the model streams its reasoning before the answer, which is most of the wait.
  */
 import axios from 'axios'
+import { StringDecoder } from 'string_decoder'
 
 export interface QwenChatMessage {
   role: 'system' | 'user' | 'assistant'
@@ -42,7 +43,11 @@ export interface QwenClientOptions {
 }
 
 interface QwenStreamChunk {
+  id?: string
+  error?: unknown
   choices?: Array<{
+    index?: number
+    finish_reason?: string | null
     delta?: {
       content?: string
       reasoning_content?: string
@@ -74,10 +79,12 @@ export class QwenClient {
     options: { signal?: AbortSignal } = {},
   ): Promise<QwenChatResult> {
     const controller = new AbortController()
-    let stream: (NodeJS.ReadableStream & { destroy?: (error?: Error) => void }) | undefined
+    let stream:
+      | (NodeJS.ReadableStream & { destroy?: (error?: Error) => void })
+      | undefined
     let end: (error: Error) => void = () => undefined
     const ended = new Promise<never>((_, reject) => {
-      end = error => {
+      end = (error) => {
         reject(error)
         controller.abort()
         stream?.destroy?.(error)
@@ -87,7 +94,12 @@ export class QwenClient {
     const timer =
       this.timeoutMs > 0
         ? setTimeout(
-            () => end(new Error(`Qwen model call timed out after ${this.timeoutMs} ms`)),
+            () =>
+              end(
+                new Error(
+                  `Qwen model call timed out after ${this.timeoutMs} ms`,
+                ),
+              ),
             this.timeoutMs,
           )
         : undefined
@@ -97,7 +109,7 @@ export class QwenClient {
     try {
       return await Promise.race([
         ended,
-        this.stream(messages, controller.signal, opened => {
+        this.stream(messages, controller.signal, (opened) => {
           stream = opened
           // The limit passed while the response was arriving: nothing reads this stream.
           if (controller.signal.aborted) stream.destroy?.()
@@ -118,7 +130,7 @@ export class QwenClient {
       method: 'post',
       url: `${this.endpoint}/chat/completions`,
       headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${this.apiKey}`,
         'Content-Type': 'application/json',
       },
       data: {
@@ -133,51 +145,109 @@ export class QwenClient {
     opened(response.data as NodeJS.ReadableStream)
 
     return new Promise<QwenChatResult>((resolve, reject) => {
+      const decoder = new StringDecoder('utf8')
       let buffer = ''
+      let eventData: string[] = []
       let content = ''
       let reasoning = ''
+      let completionId: string | undefined
+      let finished = false
+      let done = false
       let settled = false
-
-      const stream = response.data as NodeJS.ReadableStream
-
-      const handleLine = (rawLine: string) => {
-        const line = rawLine.trim()
-        if (!line.startsWith('data:')) return
-        const data = line.slice('data:'.length).trim()
-        if (data === '' || data === '[DONE]') return
+      const stream = response.data as NodeJS.ReadableStream & {
+        destroy?: () => void
+      }
+      const fail = (message: string) => {
+        if (settled) return
+        settled = true
+        reject(new Error(message))
+        stream.destroy?.()
+      }
+      const dispatch = () => {
+        if (!eventData.length || settled) return
+        const data = eventData.join('\n')
+        eventData = []
+        if (done) return fail('Qwen stream continued after completion')
+        if (data === '[DONE]') {
+          done = true
+          return
+        }
         let parsed: QwenStreamChunk
         try {
           parsed = JSON.parse(data)
+          if (!parsed || typeof parsed !== 'object') throw new Error()
         } catch {
-          // A malformed/partial SSE data line shouldn't happen on a well-formed stream, but one
-          // bad chunk shouldn't sink an otherwise-successful response either.
-          return
+          return fail('Qwen stream contained invalid JSON')
         }
-        const delta = parsed.choices?.[0]?.delta
-        if (delta?.content) content += delta.content
-        if (delta?.reasoning_content) reasoning += delta.reasoning_content
+        if (parsed.error) return fail('Qwen stream reported a provider error')
+        if (parsed.id !== undefined) {
+          if (typeof parsed.id !== 'string')
+            return fail('Qwen stream contained an invalid completion ID')
+          if (completionId !== undefined && completionId !== parsed.id)
+            return fail('Qwen stream changed completion ID during the answer')
+          completionId = parsed.id
+        }
+        // Usage-only events have no choices. Never combine separate choices into one reply.
+        if (parsed.choices === undefined)
+          return fail('Qwen stream contained no choices or usage event')
+        if (
+          !Array.isArray(parsed.choices) ||
+          parsed.choices.some((item) => !item || typeof item !== 'object')
+        )
+          return fail('Qwen stream contained invalid choices')
+        if (!parsed.choices.length) return
+        const choice = parsed.choices.find((item) => (item.index ?? 0) === 0)
+        if (!choice) return
+        const delta = choice.delta
+        if (finished && (delta?.content || delta?.reasoning_content))
+          return fail('Qwen stream continued after the answer finished')
+        if (delta?.content !== undefined) {
+          if (typeof delta.content !== 'string')
+            return fail('Qwen stream contained invalid answer content')
+          content += delta.content
+        }
+        if (delta?.reasoning_content !== undefined) {
+          if (typeof delta.reasoning_content !== 'string')
+            return fail('Qwen stream contained invalid reasoning content')
+          reasoning += delta.reasoning_content
+        }
+        if (choice.finish_reason != null) {
+          if (choice.finish_reason !== 'stop')
+            return fail('Qwen stream did not finish a complete text answer')
+          finished = true
+        }
       }
-
-      stream.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString('utf8')
+      const handleLine = (rawLine: string) => {
+        const line = rawLine.replace(/\r$/, '')
+        if (line === '') return dispatch()
+        if (!line.startsWith('data:')) return
+        const value = line.slice(5)
+        eventData.push(value.startsWith(' ') ? value.slice(1) : value)
+      }
+      const consume = (text: string) => {
+        buffer += text
         let newlineIndex = buffer.indexOf('\n')
-        while (newlineIndex >= 0) {
+        while (newlineIndex >= 0 && !settled) {
           handleLine(buffer.slice(0, newlineIndex))
           buffer = buffer.slice(newlineIndex + 1)
           newlineIndex = buffer.indexOf('\n')
         }
-      })
+      }
+      stream.on('data', (chunk: Buffer) => consume(decoder.write(chunk)))
       stream.on('end', () => {
         if (settled) return
+        consume(decoder.end())
+        // SSE dispatches events at blank lines, not at EOF. A missing final delimiter or
+        // [DONE] means an interrupted answer; the bot may retry with a fresh accumulator.
+        if (!done || buffer.length || eventData.length)
+          return fail('Qwen stream ended before completion')
         settled = true
-        if (buffer.trim().length > 0) handleLine(buffer)
         resolve({ content, reasoning })
       })
-      stream.on('error', (err: Error) => {
-        if (settled) return
-        settled = true
-        reject(err)
+      stream.on('close', () => {
+        if (!settled) fail('Qwen stream closed before completion')
       })
+      stream.on('error', () => fail('Qwen model response stream failed'))
     })
   }
 }

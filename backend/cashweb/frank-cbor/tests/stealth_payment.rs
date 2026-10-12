@@ -340,3 +340,88 @@ fn shared_typescript_stealth_assets_vectors_agree() {
         }
     }
 }
+
+fn shared_native_uint64_frame() -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../docs/protocol/cbor/vectors/stealth-assets.json");
+    let source = std::fs::read_to_string(path).expect("shared TypeScript stealth-assets corpus");
+    let corpus: serde_json::Value = serde_json::from_str(&source).expect("shared corpus JSON");
+    let case = corpus["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["id"] == "native-uint64-max")
+        .unwrap();
+    hex::decode(case["frame_hex"].as_str().unwrap()).unwrap()
+}
+
+fn old_stealth_schema_context() -> frank_cbor::ValidationContext {
+    let mut ctx = default_context();
+    // A high semantic reader version must not imply per-type schema support.
+    ctx.reader_version = 4;
+    ctx.supported_schemas
+        .iter_mut()
+        .find(|s| s.type_id == 19)
+        .unwrap()
+        .schema_version = 1;
+    ctx
+}
+
+#[test]
+fn old_stealth_schema_retains_root_when_opaque_retention_is_allowed() {
+    let bytes = shared_native_uint64_frame();
+    let mut ctx = old_stealth_schema_context();
+    ctx.opaque_retention_allowed = true;
+    let ValidationResult::Retained(retained) = validate_frame(&bytes, &ctx).unwrap() else {
+        panic!("expected opaque root")
+    };
+    assert_eq!(
+        retained.reason,
+        frank_cbor::RetentionReason::UnsupportedMinReader
+    );
+    assert_eq!(retained.frame, bytes);
+    assert_eq!(retained.type_id, Some(19));
+    assert_eq!(retained.schema_version, Some(2));
+    assert_eq!(retained.min_reader_version, Some(2));
+    ctx.opaque_retention_allowed = false;
+    match validate_frame(&bytes, &ctx) {
+        Err(frank_cbor::Error::Codec(e)) => {
+            assert_eq!(e.category, frank_cbor::ErrorCategory::Unsupported);
+            assert_eq!(e.stage, frank_cbor::ErrorStage::S7);
+        }
+        result => panic!("expected unsupported root, got {result:?}"),
+    }
+}
+
+#[test]
+fn old_stealth_schema_retains_open_child_without_rejecting_parent() {
+    let bytes = shared_native_uint64_frame();
+    let container = fr(
+        16,
+        &cbor_map(vec![(
+            0,
+            CborValue::Array(vec![CborValue::Bytes(bytes.clone())]),
+        )]),
+    );
+    let ctx = old_stealth_schema_context();
+    assert!(!ctx.opaque_retention_allowed);
+    let ValidationResult::Parsed(parsed) = validate_frame(&container, &ctx).unwrap() else {
+        panic!("expected parsed container")
+    };
+    assert_eq!(parsed.type_id, 16);
+    let TypedPayload::ContainerItem { items, .. } = parsed.typed.as_deref().unwrap() else {
+        panic!("expected container projection")
+    };
+    assert_eq!(items.len(), 1);
+    let frank_cbor::ChildFrame::Retained(retained) = &items[0] else {
+        panic!("expected retained open child")
+    };
+    assert_eq!(
+        retained.reason,
+        frank_cbor::RetentionReason::UnsupportedMinReader
+    );
+    assert_eq!(retained.frame, bytes);
+    assert_eq!(retained.type_id, Some(19));
+    assert_eq!(retained.schema_version, Some(2));
+    assert_eq!(retained.min_reader_version, Some(2));
+}

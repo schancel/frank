@@ -413,16 +413,26 @@ fn process_frame(
             );
         }
     }
-    if env.type_id == crate::limits::TYPE_STEALTH_ITEM
-        && env.schema_version >= 2
-        && env.min_reader_version < 2
-    {
-        return Err(fail(
-            ErrorCategory::Unsupported,
-            ErrorStage::S7,
-            "type 19 schema 2 requires min_reader_version at least 2",
-            location,
-        ));
+    if env.type_id == crate::limits::TYPE_STEALTH_ITEM && env.schema_version >= 2 {
+        if env.min_reader_version < 2 {
+            return Err(fail(
+                ErrorCategory::Unsupported,
+                ErrorStage::S7,
+                "type 19 schema 2 requires min_reader_version at least 2",
+                location,
+            ));
+        }
+        if highest_schema < 2 {
+            return keep_or_reject(
+                shared,
+                &mode,
+                RetentionReason::UnsupportedMinReader,
+                "asset payments require per-type schema-2 support".to_string(),
+                frame,
+                Some(&env),
+                location,
+            );
+        }
     }
     // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
     // updated authenticated context before this reader may project or retain its extensions.

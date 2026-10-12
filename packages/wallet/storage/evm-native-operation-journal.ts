@@ -59,6 +59,13 @@ export type EvmNativeObservation =
       transactionIndex: number
       feeWei: string
     }
+/** Fresh canonical evidence contradicting a specific previously observed inclusion. This is
+ * capture-bound evidence for a journal update, not a second persisted settlement record. */
+export interface EvmNativeInclusionContradiction {
+  blockNumber: number
+  orphanedBlockHash: string
+  canonicalBlockHash: string
+}
 /**
  * `native`: one transfer from one account. `legacy`: fan-in transfers into one account, then one
  * transfer out of it. `contract`: one call with calldata from the main account, which holds the
@@ -928,11 +935,26 @@ export class EvmNativeOperationJournal {
     capture: EvmNativeCapture,
     observation: EvmNativeObservation,
     account: EvmNativeAccountObservation | null,
+    contradiction?: EvmNativeInclusionContradiction,
   ): Promise<boolean> {
     const frozenObservation = checked('observation', () =>
       validateObservation(observation),
     )
     const frozenAccount = checked('account', () => validateAccount(account))
+    const frozenContradiction =
+      contradiction &&
+      checked('observation', () => {
+        const proof = object(contradiction, [
+          'blockNumber',
+          'orphanedBlockHash',
+          'canonicalBlockHash',
+        ])
+        integer(proof.blockNumber)
+        hash(proof.orphanedBlockHash)
+        hash(proof.canonicalBlockHash)
+        if (proof.orphanedBlockHash === proof.canonicalBlockHash) fail()
+        return clone(contradiction)
+      })
     const key = `${capture.operationId}:${capture.memberIndex}`
     let recorded = false
     await this.mutate(capture.operationId, row => {
@@ -940,11 +962,19 @@ export class EvmNativeOperationJournal {
       const m = row.members[capture.memberIndex]!
       // `unknown` is the absence of an answer (a failed or inconsistent read), not evidence.
       // It never replaces what the chain has already been seen to say: a member recorded
-      // included stays included, and one recorded missing or pending stays so, until a read
-      // that did answer says otherwise.
+      // included stays included unless fresh canonical evidence contradicts THAT inclusion.
+      // An unavailable RPC is never such evidence. The capture and exact block binding prevent
+      // a late observation from invalidating a newer inclusion.
       if (
         frozenObservation.state === 'unknown' &&
-        m.observation.state !== 'unknown'
+        m.observation.state !== 'unknown' &&
+        !(
+          frozenContradiction &&
+          (m.observation.state === 'included-success' ||
+            m.observation.state === 'included-revert') &&
+          m.observation.blockNumber === frozenContradiction.blockNumber &&
+          m.observation.blockHash === frozenContradiction.orphanedBlockHash
+        )
       )
         return false
       m.observation = frozenObservation

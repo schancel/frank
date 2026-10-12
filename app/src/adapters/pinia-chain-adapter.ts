@@ -184,6 +184,61 @@ export async function autoRecoverProfile(
   }
 }
 
+/** Apply recipient derivation evidence before persisting the ordinary relay receipt.
+ * Both poll and stream use this boundary; replay remains safe under financial owners. */
+export async function recordReceivedAssetPayments(
+  record: DirectMessageReceived,
+  wallet: WalletHandle,
+  isCancelled: () => boolean,
+): Promise<void> {
+  if (record.outbound === true) return
+  const items = record.items.filter(item => item.type === 'stealth-asset')
+  if (items.length === 0) return
+  const [
+    { accountSession },
+    { createNativeTransferContext },
+    { recordRecipientAssetPayment },
+  ] = await Promise.all([
+    import('../accounts/session'),
+    import('../accounts/native-transfer'),
+    import('../stealth-payments/receive'),
+  ])
+  const { account, revision } = accountSession.state
+  const assertCurrent = () => {
+    const state = accountSession.state
+    if (
+      isCancelled() ||
+      state.status !== 'ready' ||
+      state.account !== account ||
+      state.revision !== revision
+    )
+      throw new Error('Account changed while receiving a payment')
+  }
+  assertCurrent()
+  if ((await accountSession.getWallet()) !== wallet)
+    throw new Error('Account changed while receiving a payment')
+  assertCurrent()
+  const spendPublicKey = await accountSession.getCurvePublicKey('secp256k1')
+  assertCurrent()
+  for (const item of items) {
+    await recordRecipientAssetPayment(item, {
+      payloadDigest: record.payloadDigest,
+      spendPublicKey,
+      assertCurrent,
+      async openWallet(chainIdentifier) {
+        assertCurrent()
+        const context = await createNativeTransferContext(chainIdentifier)
+        assertCurrent()
+        const binding = await context.captureWallet()
+        await binding.assertCurrent()
+        assertCurrent()
+        return binding.wallet
+      },
+    })
+    assertCurrent()
+  }
+}
+
 export function startDirectMessagePolling({
   wallet,
   intervalMs = DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS,
@@ -207,6 +262,36 @@ export function startDirectMessagePolling({
   let lastErrorKey: string | undefined
   let profileRefresh: Promise<void> | undefined
   const profileAbort = new AbortController()
+  // Unresolved claims block later durable receipt frontiers in both delivery paths.
+  // The relay remains their durable source; this map only tracks this poller's unresolved work.
+  const pendingPayments = new Map<string, DirectMessageReceived>()
+  const rememberPayment = (record: DirectMessageReceived) => {
+    if (
+      record.outbound !== true &&
+      record.items.some(item => item.type === 'stealth-asset')
+    )
+      pendingPayments.set(record.payloadDigest, record)
+  }
+  const beforePersist = async () => {
+    for (const record of pendingPayments.values()) {
+      await recordReceivedAssetPayments(record, wallet, () => stopped)
+      if (stopped) throw new Error('Payment receiver stopped')
+    }
+  }
+
+  const withPendingPayments = async (wrappers: ReceivedMessageWrapper[]) => {
+    const indices = new Set(wrappers.map(wrapper => wrapper.index))
+    for (const [digest, record] of pendingPayments) {
+      if (indices.has(digest)) continue
+      const wrapper = await toReceivedMessageWrapper(record)
+      if (!wrapper) throw new Error('Payment sender identity is unavailable')
+      wrappers.push(wrapper)
+    }
+    return wrappers
+  }
+  const forgetPersistedPayments = (wrappers: ReceivedMessageWrapper[]) => {
+    for (const wrapper of wrappers) pendingPayments.delete(wrapper.index)
+  }
 
   // Polls are chained (next one is scheduled when this one settles), never overlapping, so the
   // delay can adapt to what the relay just told us.
@@ -315,6 +400,7 @@ export function startDirectMessagePolling({
         const group = groupFor(receivedTime)
         group.records += 1
         timestampGroups.set(receivedTime, group)
+        rememberPayment(record)
         const wrapper = await toReceivedMessageWrapper(record)
         if (stopped) return
         if (wrapper !== undefined) {
@@ -338,6 +424,7 @@ export function startDirectMessagePolling({
         nextSinceMs = Math.max(nextSinceMs, receivedTime + 1)
       }
 
+      await withPendingPayments(wrappers)
       if (stopped) return
       if (wrappers.length > 0) {
         const receiveResult = await chats.receiveMessages(
@@ -345,13 +432,16 @@ export function startDirectMessagePolling({
           recipientAddress,
           // Delivery is queued behind a module-global mutation boundary; a poller the wallet
           // replaced while queued must not persist, mutate shared state, or notify.
-          { isCancelled: () => stopped },
+          { isCancelled: () => stopped, beforePersist },
         )
         // The queued boundary ran after replacement: nothing was delivered, so nothing may
         // advance -- the replacement poller replays this window from its own cursor.
         if (receiveResult.cancelled) return
+        forgetPersistedPayments(wrappers)
       }
       if (stopped) return
+      // A quarantine-only poll must not move past an unresolved financial receipt either.
+      if (pendingPayments.size > 0) await beforePersist()
       if (quarantined.length > 0) {
         // Terminal rows are anchored durably before the in-session replay moves past them, so a
         // restart derives a frontier that does not re-pin the poisoned prefix.
@@ -484,9 +574,19 @@ export function startDirectMessagePolling({
       wallet,
       onRecord: async record => {
         if (stopped) return
+        rememberPayment(record)
         const wrapper = await toReceivedMessageWrapper(record)
         if (wrapper && !stopped) {
-          await chats.receiveMessages([wrapper])
+          const wrappers = await withPendingPayments([wrapper])
+          const result = await chats.receiveMessages(
+            wrappers,
+            recipientAddress,
+            {
+              isCancelled: () => stopped,
+              beforePersist,
+            },
+          )
+          if (!result.cancelled) forgetPersistedPayments(wrappers)
         }
       },
       onError: err => {

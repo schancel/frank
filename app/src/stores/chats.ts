@@ -931,7 +931,11 @@ let noteConversationsAgain = false
  * before every notification step, so an old generation never persists into the message store,
  * mutates the shared chats state, or notifies through the current session's stores.
  */
-export type DeliveryLease = { isCancelled: () => boolean }
+export type DeliveryLease = {
+  isCancelled: () => boolean
+  /** Composition's durable receipt effects, serialized before any later receipt write. */
+  beforePersist?: () => Promise<void>
+}
 
 export type ReceivedDeliveryResult = {
   suppressedReceipts: RelayReceiptIdentity[]
@@ -4292,6 +4296,10 @@ export const useChatStore = defineStore('chats', {
       // The lease is checked HERE, after the serialized boundary has been acquired: a
       // replacement that stopped this poller while the delivery was queued leaves the queue
       // holding this work, and only this check prevents the old generation from persisting.
+      if (lease?.isCancelled()) {
+        return { suppressedReceipts: [], cancelled: true }
+      }
+      await lease?.beforePersist?.()
       if (lease?.isCancelled()) {
         return { suppressedReceipts: [], cancelled: true }
       }

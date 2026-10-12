@@ -36,6 +36,9 @@ beforeEach(() =>
     testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
   ),
 )
+jest.mock('../composables/useBalance', () => ({
+  useBalance: () => ({ refresh: jest.fn() }),
+}))
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))
@@ -52,6 +55,33 @@ jest.mock('./level-message-store', () => ({
     getIterator: async function* () {
       /* no persisted Lotus-era messages in tests */
     },
+  }),
+}))
+
+const mockFinancialRecord = jest.fn(async () => undefined)
+let mockFinancialWallet: WalletHandle
+const mockFinancialState = { status: 'ready', revision: 1, account: {} }
+jest.mock('../accounts/session', () => ({
+  get accountStatus() {
+    return mockFinancialState
+  },
+  accountSession: {
+    get state() {
+      return mockFinancialState
+    },
+    getWallet: async () => mockFinancialWallet,
+    getCurvePublicKey: async () => PUB_KEY_BYTES.slice(),
+  },
+}))
+jest.mock('../accounts/native-transfer', () => ({
+  createNativeTransferContext: async (chainIdentifier: string) => ({
+    captureWallet: async () => ({
+      wallet: {
+        chainIdentifier,
+        stealthReceipts: { record: mockFinancialRecord },
+      },
+      assertCurrent: async () => undefined,
+    }),
   }),
 }))
 
@@ -113,6 +143,7 @@ jest.setTimeout(30_000)
 describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
+    mockFinancialState.status = 'loading'
     jest.restoreAllMocks()
     mockMessageStore =
       (await messageStorePromise) as unknown as MockMessageStore
@@ -128,6 +159,79 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         profile: { name: 'Sender', bio: '', avatar: '', pubKey: null },
       },
     })
+  })
+
+  it('replays an interrupted streamed financial receipt before a later durable frontier', async () => {
+    const wallet: WalletHandle = {
+      identity: {
+        address: { raw: RECIPIENT_ADDRESS },
+        displayAddress: RECIPIENT_ADDRESS,
+      },
+    }
+    mockFinancialWallet = wallet
+    mockFinancialState.status = 'ready'
+    mockFinancialRecord
+      .mockReset()
+      .mockRejectedValue(new Error('receipt write unavailable'))
+    const fetch = jest
+      .spyOn(activeChain.directMessages, 'fetchSince')
+      .mockResolvedValue([])
+    let onRecord!: (record: DirectMessageReceived) => Promise<void>
+    jest
+      .spyOn(activeChain.directMessages, 'subscribeMailboxStream')
+      .mockImplementation(params => {
+        onRecord = params.onRecord
+        return () => undefined
+      })
+    const key = PUB_KEY_HEX
+    const claim = makeRecord({
+      receivedTime: 100,
+      payloadDigest: 'a'.repeat(64),
+      senderPublicKey: PUB_KEY_BYTES,
+      items: [
+        {
+          type: 'stealth-asset',
+          transfers: [
+            {
+              chainIdentifier: 'monad-testnet',
+              txId: 'ab'.repeat(32),
+              destination: '12'.repeat(20),
+              amountAtomic: '20000000',
+              asset: { kind: 'token', identifier: '34'.repeat(20) },
+              recipientSpendKey: { keyType: 1, publicKey: key },
+              stealthMetadata: { keyType: 1, ephemeralPubKey: key },
+              derivationScheme: 1,
+              rawTx: '010203',
+            },
+          ],
+        },
+      ],
+    })
+    const later = makeRecord({
+      receivedTime: 200,
+      payloadDigest: 'b'.repeat(64),
+      senderPublicKey: PUB_KEY_BYTES,
+    })
+    const polling = startDirectMessagePolling({ wallet })
+    try {
+      await expect(onRecord(claim)).rejects.toThrow('receipt write unavailable')
+      await expect(onRecord(later)).rejects.toThrow('receipt write unavailable')
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      mockFinancialRecord.mockResolvedValue(undefined)
+      await onRecord(later)
+      const saved = mockMessageStore.saveMessage.mock.calls.map(
+        call => call[0].index,
+      )
+      expect(new Set(saved)).toEqual(
+        new Set([claim.payloadDigest, later.payloadDigest]),
+      )
+      expect(mockFinancialRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ amountAtomic: 20000000n }),
+      )
+      expect(fetch).toHaveBeenCalled()
+    } finally {
+      polling.stop()
+    }
   })
 
   describe('toReceivedMessageWrapper', () => {
@@ -572,7 +676,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
           [expect.objectContaining({ index: 'valid-after-poison' })],
           RECIPIENT_ADDRESS,
-          { isCancelled: expect.any(Function) },
+          {
+            isCancelled: expect.any(Function),
+            beforePersist: expect.any(Function),
+          },
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
@@ -709,7 +816,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
           [expect.objectContaining({ index: 'same-time' })],
           RECIPIENT_ADDRESS,
-          { isCancelled: expect.any(Function) },
+          {
+            isCancelled: expect.any(Function),
+            beforePersist: expect.any(Function),
+          },
         )
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {
           wallet,
@@ -758,7 +868,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(receiveMessagesSpy).toHaveBeenCalledWith(
           [expect.objectContaining({ index: 'later-valid' })],
           RECIPIENT_ADDRESS,
-          { isCancelled: expect.any(Function) },
+          {
+            isCancelled: expect.any(Function),
+            beforePersist: expect.any(Function),
+          },
         )
         expect(consoleErrorSpy).not.toHaveBeenCalled()
         expect(fetchSinceSpy).toHaveBeenNthCalledWith(2, {

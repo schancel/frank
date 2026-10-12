@@ -229,6 +229,7 @@ function mountWallet(
               : key),
       },
       stubs: {
+        WalletHistory: false,
         AddressText: {
           props: ['address'],
           template: '<span>{{ address }}</span>',
@@ -1180,7 +1181,7 @@ describe('Wallet detail page (#570)', () => {
           translate('nativeOperation.included', { network: 'Monad Testnet' }),
         )
         expect(history.text()).toContain(fixture.hash)
-        expect(history.text()).toContain(fixture.operationId)
+        expect(history.text()).not.toContain(fixture.operationId)
         // Included reads as sent; the sharing state is a muted note in every case, and recovery
         // is not mentioned for a transfer that needs none.
         expect(translate('nativeOperation.included', { network: 'n' })).toMatch(
@@ -1283,7 +1284,7 @@ describe('Wallet detail page (#570)', () => {
           .map(row => row.attributes('data-activity-id')),
       ).toEqual(['swap:pending', 'swap:shared', 'swap:old', 'native:transfer'])
       expect(history.text()).toContain('walletPanel.historyPending')
-      expect(history.text()).toContain('walletPanel.historyUndated')
+      expect(history.text()).toContain('walletHistory.transfers')
       expect(
         history.findAll('[data-testid="wallet-native-operation"]'),
       ).toHaveLength(2)
@@ -1293,7 +1294,7 @@ describe('Wallet detail page (#570)', () => {
       const summary = history.get(
         '[data-activity-id="native:transfer"] summary',
       )
-      expect(summary.text()).toBe('nativeOperation.viewTransfer')
+      expect(summary.text()).toBe('walletHistory.details')
       expect(summary.classes()).toContain('wallet-history-action')
       expect(
         history.get('[data-activity-id="native:transfer"]').text(),

@@ -44,7 +44,7 @@ function normalizedHex(value: string, min: number, max: number): string {
  * and chain effects; this function never signs, submits, or establishes receipt of funds. */
 export function recipientAssetPaymentFromPrepared(
   prepared: PreparedStealthPayment,
-  memo?: string
+  memo?: string,
 ): RecipientAssetPaymentItem {
   const chain = getChainRegistryEntry(prepared.chainIdentifier)
   if (
@@ -53,7 +53,7 @@ export function recipientAssetPaymentFromPrepared(
     (chain.family !== 'evm' && chain.family !== 'bitcoin')
   )
     throw new Error(
-      `Unsupported prepared payment chain: ${prepared.chainIdentifier}`
+      `Unsupported prepared payment chain: ${prepared.chainIdentifier}`,
     )
   positiveQuantity(prepared.amountAtomic)
   if (
@@ -79,7 +79,7 @@ export function recipientAssetPaymentFromPrepared(
       : undefined
   if (!asset) throw new Error('Unsupported prepared payment asset/family')
   let total = 0n
-  const transfers = prepared.members.map((member) => {
+  const transfers = prepared.members.map(member => {
     positiveQuantity(member.recipientAmountAtomic)
     total += member.recipientAmountAtomic
     if (chain.family === 'bitcoin') {
@@ -108,7 +108,7 @@ export function recipientAssetPaymentFromPrepared(
   })
   if (total !== prepared.amountAtomic)
     throw new Error(
-      'Signed member quantities differ from intended recipient amount'
+      'Signed member quantities differ from intended recipient amount',
     )
   return {
     type: 'stealth-asset',

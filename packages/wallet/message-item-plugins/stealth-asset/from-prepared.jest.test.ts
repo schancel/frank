@@ -34,11 +34,11 @@ function prepared(): PreparedStealthPayment {
   }
 }
 const registry = createDefaultMessageItemRegistry(
-  pluginCapabilitiesNotYetAvailable
+  pluginCapabilitiesNotYetAvailable,
 )
 function roundTrip(item: ReturnType<typeof recipientAssetPaymentFromPrepared>) {
   const frames = encodeItemFrames(registry, [item])
-  const children = frames.map((bytes) => {
+  const children = frames.map(bytes => {
     const parsed = validateFrame(bytes)
     if (parsed.kind !== 'parsed') throw new Error('Expected parsed child')
     expect([parsed.typeId, parsed.schemaVersion]).toEqual([19, 2])
@@ -52,14 +52,17 @@ function roundTrip(item: ReturnType<typeof recipientAssetPaymentFromPrepared>) {
 
 it('projects independent signed members with exact uint256 sum and original recipient binding through the composed codec', () => {
   const item = roundTrip(
-    recipientAssetPaymentFromPrepared(prepared(), 'fees and stamp are separate')
+    recipientAssetPaymentFromPrepared(
+      prepared(),
+      'fees and stamp are separate',
+    ),
   )
   expect(item.memo).toBe('fees and stamp are separate')
-  expect(item.transfers.map((t) => t.amountAtomic)).toEqual([
+  expect(item.transfers.map(t => t.amountAtomic)).toEqual([
     (maxQuantity - 1n).toString(),
     '1',
   ])
-  expect(item.transfers.map((t) => t.rawTx)).toEqual(['0102ab', '0304ef'])
+  expect(item.transfers.map(t => t.rawTx)).toEqual(['0102ab', '0304ef'])
   expect(item.transfers[0]).toMatchObject({
     chainIdentifier: 'monad-testnet',
     txId: 'cd'.repeat(32),
@@ -76,7 +79,7 @@ it('projects independent signed members with exact uint256 sum and original reci
 
 it.each(['btc-testnet', 'bch-testnet', 'xec-testnet'])(
   'preserves %s locking script and output indices for native members',
-  (chainIdentifier) => {
+  chainIdentifier => {
     const p: PreparedStealthPayment = {
       ...prepared(),
       chainIdentifier,
@@ -97,11 +100,11 @@ it.each(['btc-testnet', 'bch-testnet', 'xec-testnet'])(
       })),
     }
     const item = roundTrip(recipientAssetPaymentFromPrepared(p))
-    expect(item.transfers.map((t) => t.vout)).toEqual([0, 1])
+    expect(item.transfers.map(t => t.vout)).toEqual([0, 1])
     expect(item.transfers[0].destination).toBe(`76a914${'05'.repeat(20)}88ac`)
     expect(item.transfers[0].asset).toEqual({ kind: 'native' })
     expect(item).not.toHaveProperty('memo')
-  }
+  },
 )
 
 it('projects native EVM payment without token metadata', () => {
@@ -109,12 +112,12 @@ it('projects native EVM payment without token metadata', () => {
     recipientAssetPaymentFromPrepared({
       ...prepared(),
       asset: { kind: 'native' },
-    })
+    }),
   )
   expect(
     item.transfers.every(
-      (t) => t.asset.kind === 'native' && !('tokenProgram' in t)
-    )
+      t => t.asset.kind === 'native' && !('tokenProgram' in t),
+    ),
   ).toBe(true)
 })
 
@@ -163,7 +166,7 @@ it('rejects missing or malformed signed bytes, hashes and family-incompatible ou
     { ...p.members[0], vout: 0 },
   ])
     expect(() =>
-      recipientAssetPaymentFromPrepared({ ...p, members: [member] })
+      recipientAssetPaymentFromPrepared({ ...p, members: [member] }),
     ).toThrow()
   for (const vout of [undefined, -1, 0.5, 0x100000000]) {
     expect(() =>
@@ -172,7 +175,7 @@ it('rejects missing or malformed signed bytes, hashes and family-incompatible ou
         chainIdentifier: 'btc-testnet',
         asset: { kind: 'native' },
         members: [{ ...p.members[0], vout }],
-      })
+      }),
     ).toThrow()
   }
 })

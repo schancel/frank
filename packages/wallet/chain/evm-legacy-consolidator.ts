@@ -40,6 +40,7 @@ import {
   type EvmNativeOperation,
   type EvmNativeAccountObservation,
   type EvmNativeObservation,
+  type EvmNativeInclusionContradiction,
 } from '../storage/evm-native-operation-journal'
 
 export interface SendLegacyParams {
@@ -402,7 +403,28 @@ export class EvmLegacyConsolidator {
     const capture = journal.beginCapture(operationId, index)
     let observation: EvmNativeObservation = { state: 'unknown' }
     let account: EvmNativeAccountObservation | null = null
+    let contradiction: EvmNativeInclusionContradiction | undefined
     try {
+      if (
+        member.observation.state === 'included-success' ||
+        member.observation.state === 'included-revert'
+      ) {
+        const canonical = await provider.getBlock(
+          member.observation.blockNumber,
+        )
+        const canonicalHash = canonical?.hash?.toLowerCase()
+        if (
+          canonicalHash &&
+          canonical?.number === member.observation.blockNumber &&
+          /^0x[0-9a-f]{64}$/.test(canonicalHash) &&
+          canonicalHash !== member.observation.blockHash
+        )
+          contradiction = {
+            blockNumber: member.observation.blockNumber,
+            orphanedBlockHash: member.observation.blockHash,
+            canonicalBlockHash: canonicalHash,
+          }
+      }
       const expected = Transaction.from(member.signed.rawTransaction)
       const hash = member.signed.transactionHash
       let [transaction, receipt] = await Promise.all([
@@ -457,7 +479,12 @@ export class EvmLegacyConsolidator {
       /* Missing/unavailable/inconsistent evidence never proves nonexecution. */
     }
     if (wanted && !wanted()) return
-    await journal.recordObservation(capture, observation, account)
+    await journal.recordObservation(
+      capture,
+      observation,
+      account,
+      contradiction,
+    )
   }
   /** The signed, exposed members spending `address` that the chain has not answered for: not seen in a
    * block (successful or reverted), and the account's nonce not seen past theirs. */

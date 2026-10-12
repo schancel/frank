@@ -238,6 +238,61 @@ describe('durable EVM native journal', () => {
       await journal.recordObservation(next, { state: 'missing' }, account),
     ).toBe(false)
   })
+  it('invalidates only the exact captured inclusion and retains original exposure and nonce claims', async () => {
+    const row = await signed()
+    await journal.markExposed(row.operationId, 0)
+    await journal.recordObservation(
+      journal.beginCapture(row.operationId, 0),
+      {
+        state: 'included-success',
+        transactionHash: row.members[0]!.signed!.transactionHash,
+        blockHash: hash,
+        blockNumber: 1,
+        transactionIndex: 0,
+        feeWei: '21000',
+      },
+      account,
+    )
+    const proof = {
+      blockNumber: 1,
+      orphanedBlockHash: hash,
+      canonicalBlockHash: '0x' + '34'.repeat(32),
+    }
+    const old = journal.beginCapture(row.operationId, 0)
+    const current = journal.beginCapture(row.operationId, 0)
+    expect(
+      await journal.recordObservation(old, { state: 'unknown' }, null, proof),
+    ).toBe(false)
+    expect(
+      await journal.recordObservation(current, { state: 'unknown' }, null, {
+        ...proof,
+        blockNumber: 2,
+      }),
+    ).toBe(false)
+    await expect(
+      journal.recordObservation(current, { state: 'unknown' }, null, {
+        ...proof,
+        canonicalBlockHash: hash,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid' })
+    expect(
+      await journal.recordObservation(
+        current,
+        { state: 'unknown' },
+        null,
+        proof,
+      ),
+    ).toBe(true)
+    await reopen()
+    expect(journal.get(row.operationId).members[0]).toMatchObject({
+      signed: row.members[0]!.signed,
+      exposed: true,
+      observation: { state: 'unknown' },
+      syncApplied: false,
+    })
+    expect(journal.canSelect(address, 0)).toBe(false)
+    expect(journal.canSelect(address, 1)).toBe(false)
+  })
   it('releases only unsigned claims while retaining public derivation provenance and capacity', async () => {
     const input = plan()
     input.members[0]!.source = {

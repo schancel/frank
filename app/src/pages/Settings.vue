@@ -29,14 +29,8 @@
           flat
           class="settings-content col column full-width full-height bg-transparent"
         >
-          <q-splitter
-            :model-value="120"
-            unit="px"
-            disable
-            class="settings-splitter col full-height"
-          >
-            <template #before>
-              <q-tabs v-model="tab" vertical class="text-primary">
+          <div class="col full-height overflow-hidden" :class="$q.screen.gt.xs ? 'row' : 'column'">
+              <q-tabs v-model="tab" :vertical="$q.screen.gt.xs" class="text-primary col-auto" outside-arrows mobile-arrows>
                 <q-tab
                   name="networking"
                   icon="cloud"
@@ -65,13 +59,12 @@
                   data-test="settings-tab-gateways"
                 />
               </q-tabs>
-            </template>
-            <template #after>
               <q-tab-panels
                 v-model="tab"
                 animated
                 swipeable
-                vertical
+                :vertical="$q.screen.gt.xs"
+                class="col"
                 transition-prev="jump-up"
                 transition-next="jump-up"
               >
@@ -307,8 +300,7 @@
                   </div>
                 </q-tab-panel>
               </q-tab-panels>
-            </template>
-          </q-splitter>
+            </div>
           <q-separator />
           <q-card-actions align="right" class="q-pa-md bg-transparent">
             <q-btn
@@ -553,9 +545,7 @@ export default defineComponent({
 
 <style scoped>
 .settings-content,
-.settings-splitter,
-.settings-splitter :deep(.q-splitter__after),
-.settings-splitter :deep(.q-tab-panels) {
+.settings-content :deep(.q-tab-panels) {
   min-width: 0;
   max-width: 100%;
 }

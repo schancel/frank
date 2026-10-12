@@ -248,6 +248,13 @@ async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
         // relay and forwards it there. While false such a message is answered as undeliverable.
         "forwarding": false,
     });
+    if let Some(gateway) = &info.email_gateway {
+        val["emailGateway"] = serde_json::json!({
+            "chainIdentifier": gateway.chain_identifier,
+            "address": gateway.address,
+            "domain": gateway.domain,
+        });
+    }
     if let Some(fed) = routes.runtime.federation() {
         if let Some(coord) = fed.cluster_coordinator() {
             if let Ok(lock) = coord.try_lock() {

@@ -60,6 +60,9 @@ export interface EvmChainConfig {
   /** Require the typed wallet's spend and change stores to retain their EVM-root binding.
    * Production hosts use this to refuse incomplete legacy or partially restored state. */
   requireBoundWalletState?: boolean;
+  /** Host-owned read-only presence check for the complete wallet-state root. Strict bound-state
+   * admission needs this to distinguish first creation from a damaged existing store. */
+  walletStateExists?: (location: string) => boolean;
   nativeAttemptStore?: NativeTransactionAttemptStore;
 
   /** Unique chain identifier, e.g. "monad-testnet", "monad-mainnet", "hyperliquid-mainnet", "tempo-mainnet". */

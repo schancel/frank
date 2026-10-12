@@ -73,6 +73,7 @@ jest.mock('../composables/useBalance', () => ({
 
 /* eslint-disable @typescript-eslint/no-var-requires */
 const { useChatStore } = require('../stores/chats')
+const { useSettingsStore } = require('../stores/settings')
 const { setStartupRestoration } = require('../boot/startup-state')
 const createAppRouter = require('../router').default
 const Chat = require('./Chat.vue').default
@@ -150,6 +151,7 @@ async function settle() {
 async function mountedEmails() {
   const pinia = createPinia()
   setActivePinia(pinia)
+  useSettingsStore().setEmailGatewayAddress(PEER)
   setStartupRestoration({ phase: 'restored' })
   const chats = useChatStore()
   const roots = [

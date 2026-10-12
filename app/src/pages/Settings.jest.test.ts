@@ -20,8 +20,6 @@ jest.mock('src/accounts/session', () => ({
   accountSession: mockAccountSession,
 }))
 
-import { defaultEmailGatewayAddress } from 'src/utils/constants'
-
 // See navigate-back.jest.test.ts: vue-router 5's ESM-only dev-only dependencies.
 // The panel's own behaviour is covered by its test; Settings only mounts it.
 jest.mock('../utils/monad-identity-session', () => ({
@@ -77,12 +75,23 @@ const mockSetEmailGatewayAddress = jest.fn((address: string) => {
     )
   }
   mockSettingsStore.emailGatewayAddress = address
+  mockSettingsStore.emailGatewayOverride = {
+    chainIdentifier: 'monad-testnet',
+    address,
+  }
 })
 const mockResetEmailGatewayAddress = jest.fn(() => {
-  mockSettingsStore.emailGatewayAddress = defaultEmailGatewayAddress
+  mockSettingsStore.emailGatewayAddress = ''
+  mockSettingsStore.emailGatewayOverride = null
 })
 const mockSettingsStore = jest.requireActual('vue').reactive({
-  emailGatewayAddress: defaultEmailGatewayAddress,
+  emailGatewayAddress: '',
+  emailGatewayOverride: null as {
+    chainIdentifier: string
+    address: string
+  } | null,
+  advertisedEmailGateway: null,
+  emailGatewayStatus: 'unavailable',
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
 })
@@ -360,7 +369,8 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
   beforeEach(() => {
     mockSetEmailGatewayAddress.mockClear()
     mockResetEmailGatewayAddress.mockClear()
-    mockSettingsStore.emailGatewayAddress = defaultEmailGatewayAddress
+    mockSettingsStore.emailGatewayAddress = ''
+    mockSettingsStore.emailGatewayOverride = null
   })
 
   it('renders the gateways tab with proper icon and data-test attribute', async () => {
@@ -373,14 +383,12 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     wrapper.unmount()
   })
 
-  it('initializes input with defaultEmailGatewayAddress from settings store', async () => {
+  it('starts without an override or compiled payment destination', async () => {
     const router = await openDirectly('#/settings')
     const wrapper = mountSettings(router)
     const input = wrapper.find('[data-test="email-gateway-input"]')
     expect(input.exists()).toBe(true)
-    expect((input.element as HTMLInputElement).value).toBe(
-      defaultEmailGatewayAddress,
-    )
+    expect((input.element as HTMLInputElement).value).toBe('')
     wrapper.unmount()
   })
 
@@ -421,11 +429,15 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     wrapper.unmount()
   })
 
-  it('resets email gateway address to default when reset button is clicked', async () => {
+  it('clears the override when relay gateway is selected', async () => {
     const router = await openDirectly('#/settings')
     const wrapper = mountSettings(router)
     const customAddr = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     mockSettingsStore.emailGatewayAddress = customAddr
+    mockSettingsStore.emailGatewayOverride = {
+      chainIdentifier: 'monad-testnet',
+      address: customAddr,
+    }
     ;(wrapper.vm as any).emailGatewayInput = customAddr
     await wrapper.vm.$nextTick()
 
@@ -434,12 +446,8 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     await resetBtn.trigger('click')
 
     expect(mockResetEmailGatewayAddress).toHaveBeenCalled()
-    expect(mockSettingsStore.emailGatewayAddress).toBe(
-      defaultEmailGatewayAddress,
-    )
-    expect((wrapper.vm as any).emailGatewayInput).toBe(
-      defaultEmailGatewayAddress,
-    )
+    expect(mockSettingsStore.emailGatewayAddress).toBe('')
+    expect((wrapper.vm as any).emailGatewayInput).toBe('')
     wrapper.unmount()
   })
 
@@ -448,6 +456,10 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     const wrapper = mountSettings(router)
     const newAddress = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
     mockSettingsStore.emailGatewayAddress = newAddress
+    mockSettingsStore.emailGatewayOverride = {
+      chainIdentifier: 'monad-testnet',
+      address: newAddress,
+    }
     await wrapper.vm.$nextTick()
 
     expect((wrapper.vm as any).emailGatewayInput).toBe(newAddress)

@@ -34,7 +34,3 @@ export const defaultUpdateInterval = 1000 * 60 * 60 * 1 * 1
 // Formatting constants
 // TODO: Generate this
 export const colorSalt = Buffer.from('salt')
-
-// Email Gateway constants
-export const defaultEmailGatewayAddress =
-  '0x1111111111111111111111111111111111111111'

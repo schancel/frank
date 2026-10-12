@@ -1,127 +1,135 @@
 /** @jest-environment jsdom */
 
-import { createApp } from 'vue'
-import { setActivePinia, createPinia } from 'pinia'
-import { getActiveChain, onActiveChainChange } from '@frank/wallet/chain'
+import { createPinia, setActivePinia } from 'pinia'
+import { activeChain } from '@frank/wallet/chain'
 import { useSettingsStore, saveSettings, restoreSettings } from './settings'
-import { defaultEmailGatewayAddress } from '../utils/constants'
+import { discoverEmailGateway } from 'src/utils/email-gateway-discovery'
 
-describe('settings store', () => {
+jest.mock('src/utils/email-gateway-discovery', () => ({
+  discoverEmailGateway: jest.fn(),
+}))
+
+const advertised = {
+  chainIdentifier: 'monad-testnet',
+  address: '0x2222222222222222222222222222222222222222',
+  domain: 'mail.example.test',
+}
+const discover = discoverEmailGateway as jest.MockedFunction<
+  typeof discoverEmailGateway
+>
+
+describe('email gateway settings', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    discover.mockReset()
   })
 
-  it('initializes with defaultEmailGatewayAddress', () => {
+  it('has no compiled payment destination or restored unscoped fallback', async () => {
     const store = useSettingsStore()
-    expect(store.emailGatewayAddress).toBe(defaultEmailGatewayAddress)
+    expect(store.emailGatewayAddress).toBe('')
+    expect(
+      await restoreSettings({
+        get: async () =>
+          JSON.stringify({
+            emailGatewayAddress: '0x1111111111111111111111111111111111111111',
+          }),
+      } as any),
+    ).toEqual({})
   })
 
-  it('sets valid Ethereum address', () => {
+  it('uses only the selected relay and exact canonical network advertisement', async () => {
     const store = useSettingsStore()
-    const validAddr = '0x1234567890123456789012345678901234567890'
-    store.setEmailGatewayAddress(validAddr)
-    expect(store.emailGatewayAddress).toBe(validAddr)
+    discover.mockResolvedValueOnce(advertised)
+    await store.refreshEmailGateway(
+      'https://relay.example.test/path',
+      activeChain.chainIdentifier,
+    )
+    expect(discover).toHaveBeenCalledWith({
+      relayBaseUrl: 'https://relay.example.test/path',
+      chainIdentifier: activeChain.chainIdentifier,
+    })
+    expect(store.emailGatewayAddress).toBe(advertised.address)
+    expect(store.emailGatewayStatus).toBe('ready')
   })
 
-  it('throws on invalid address formats', () => {
+  it('leaves sending unavailable when the relay has no service or cannot be checked', async () => {
     const store = useSettingsStore()
-    expect(() => store.setEmailGatewayAddress('not-an-address')).toThrow(
+    discover.mockResolvedValueOnce(null)
+    await store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    expect(store.emailGatewayAddress).toBe('')
+    expect(store.emailGatewayStatus).toBe('unavailable')
+    discover.mockRejectedValueOnce(new Error('wrong network'))
+    await store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    expect(store.emailGatewayAddress).toBe('')
+    expect(store.emailGatewayStatus).toBe('error')
+  })
+
+  it('blocks an advertised identity change until the user accepts it', async () => {
+    const store = useSettingsStore()
+    discover.mockResolvedValueOnce(advertised)
+    await store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    discover.mockResolvedValueOnce({
+      ...advertised,
+      address: '0x3333333333333333333333333333333333333333',
+    })
+    await store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    expect(store.emailGatewayStatus).toBe('changed')
+    expect(store.emailGatewayAddress).toBe('')
+    store.resetEmailGatewayAddress()
+    expect(store.emailGatewayAddress).toBe(
+      '0x3333333333333333333333333333333333333333',
+    )
+  })
+
+  it('keeps a deliberate override scoped to its canonical chain', () => {
+    const store = useSettingsStore()
+    store.setEmailGatewayAddress('0x4444444444444444444444444444444444444444')
+    expect(store.emailGatewayAddress).toBe(
+      '0x4444444444444444444444444444444444444444',
+    )
+    expect(store.emailGatewayOverride?.chainIdentifier).toBe(
+      activeChain.chainIdentifier,
+    )
+    store.emailGatewayOverride = {
+      chainIdentifier: 'ethereum-sepolia',
+      address: '0x5555555555555555555555555555555555555555',
+    }
+    expect(store.emailGatewayAddress).toBe('')
+    expect(() => store.setEmailGatewayAddress('0x123')).toThrow(
       /Invalid Ethereum address/,
     )
-    expect(
-      () => store.setEmailGatewayAddress('0x123'), // too short
-    ).toThrow(/Invalid Ethereum address/)
-    expect(() =>
-      store.setEmailGatewayAddress(
-        '0xGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG', // non-hex
-      ),
-    ).toThrow(/Invalid Ethereum address/)
   })
 
-  it('resets email gateway address to default', () => {
-    const store = useSettingsStore()
-    const validAddr = '0xabcdefabcdefabcdefabcdefabcdefabcdefabcd'
-    store.setEmailGatewayAddress(validAddr)
-    expect(store.emailGatewayAddress).toBe(validAddr)
-
-    store.resetEmailGatewayAddress()
-    expect(store.emailGatewayAddress).toBe(defaultEmailGatewayAddress)
-  })
-
-  // The app is testnet-only for now. A mainnet choice saved by an earlier build must not swap
-  // the global chain under a wallet that is bound to testnet: every balance, send and message
-  // call would then throw.
-  it('does not change the active chain when a mainnet choice is found in storage', async () => {
-    let storageOptions:
-      | { restore(storage: unknown): Promise<Record<string, unknown>> }
-      | undefined
-    const pinia = createPinia()
-    pinia.use(({ options }) => {
-      storageOptions = options.storage as typeof storageOptions
-    })
-    createApp({}).use(pinia)
-    setActivePinia(pinia)
-    const store = useSettingsStore()
-    const before = getActiveChain()
-    const changes = jest.fn()
-    const stop = onActiveChainChange(changes)
-
-    const put = jest.fn(async () => undefined)
-    const restored = await storageOptions!.restore({
-      get: async () =>
-        JSON.stringify({
-          emailGatewayAddress: '0x2222222222222222222222222222222222222222',
-          networkMode: 'mainnet',
-        }),
-      put,
-    })
-    store.$patch(restored)
-    stop()
-
-    expect(getActiveChain()).toBe(before)
-    expect(changes).not.toHaveBeenCalled()
-    expect(store.$state).toEqual({
-      emailGatewayAddress: '0x2222222222222222222222222222222222222222',
-      networkMode: 'testnet',
-    })
-    // Loading rewrites nothing: the stored value is simply not used.
-    expect(put).not.toHaveBeenCalled()
-    expect('setNetworkMode' in store).toBe(false)
-  })
-
-  it('keeps the default gateway when the stored one is not an address', async () => {
+  it('persists only override and accepted identity, without fetching or mutating on hydration', async () => {
+    const values: Record<string, string> = {}
     const storage = {
-      get: async () => JSON.stringify({ emailGatewayAddress: 'nope' }),
-    } as any
-    expect(await restoreSettings(storage)).toEqual({})
-  })
-
-  it('saves and restores settings to LevelDB storage', async () => {
-    const fakeStore: Record<string, string> = {}
-    const mockStorage = {
-      put: jest.fn((key: string, val: string) => {
-        fakeStore[key] = val
-        return Promise.resolve()
+      put: jest.fn(async (key: string, value: string) => {
+        values[key] = value
       }),
-      get: jest.fn((key: string) => {
-        if (key in fakeStore) return Promise.resolve(fakeStore[key])
-        return Promise.reject(new Error('not found'))
-      }),
+      get: jest.fn(async (key: string) => values[key]),
     } as any
-
-    const state = {
-      emailGatewayAddress: '0x2222222222222222222222222222222222222222',
-      networkMode: 'testnet' as const,
-    }
-    await saveSettings(mockStorage, state)
-    expect(mockStorage.put).toHaveBeenCalledWith(
-      'settings',
-      JSON.stringify(state),
-    )
-
-    expect(await restoreSettings(mockStorage)).toEqual({
-      emailGatewayAddress: state.emailGatewayAddress,
+    const store = useSettingsStore()
+    store.setEmailGatewayAddress('0x4444444444444444444444444444444444444444')
+    await saveSettings(storage, store.$state)
+    expect(await restoreSettings(storage)).toEqual({
+      emailGatewayOverride: {
+        chainIdentifier: activeChain.chainIdentifier,
+        address: '0x4444444444444444444444444444444444444444',
+      },
     })
-    expect(mockStorage.put).toHaveBeenCalledTimes(1)
+    expect(storage.put).toHaveBeenCalledTimes(1)
+    expect(discover).not.toHaveBeenCalled()
   })
 })

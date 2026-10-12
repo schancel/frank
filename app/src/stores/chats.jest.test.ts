@@ -65,7 +65,8 @@ import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageWrapper, EmailItem } from '@frank/cashweb/types/messages'
 import { desktopNotify } from '../utils/notifications'
-import { defaultEmailGatewayAddress } from '../utils/constants'
+import { useSettingsStore } from './settings'
+const defaultEmailGatewayAddress = '0x3333333333333333333333333333333333333333'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -3910,6 +3911,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         chats.createEmailConversation({
           recipientEmail: '  Alice@Example.com  ',
           subject,
+          gatewayAddress: defaultEmailGatewayAddress,
         }),
       )
       expect(new Set(roots.map(root => root.id)).size).toBe(4)
@@ -3931,9 +3933,11 @@ describe('stores/chats.ts (ticket #42)', () => {
       const chats = useChatStore()
       const first = chats.createEmailConversation({
         recipientEmail: 'alice@example.com',
+        gatewayAddress: defaultEmailGatewayAddress,
       })
       const other = chats.createEmailConversation({
         recipientEmail: 'bob@example.com',
+        gatewayAddress: defaultEmailGatewayAddress,
       })
       const custom = chats.createEmailConversation({
         recipientEmail: 'alice@example.com',
@@ -3963,7 +3967,10 @@ describe('stores/chats.ts (ticket #42)', () => {
   describe('unverified peer email frames defense (ticket-unverified-peer-email-frames)', () => {
     const UNTRUSTED_PEER = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
     const GATEWAY_ADDRESS = defaultEmailGatewayAddress
-    const CUSTOM_GATEWAY = '0x3333333333333333333333333333333333333333'
+    const CUSTOM_GATEWAY = '0x4444444444444444444444444444444444444444'
+    beforeEach(() => {
+      useSettingsStore().setEmailGatewayAddress(GATEWAY_ADDRESS)
+    })
 
     const emailPayload: EmailItem = {
       type: 'email',
@@ -4144,12 +4151,14 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(conv?.verifiedGateway).toBe(false)
     })
 
-    it('respects configured custom email gateway in profile store', async () => {
+    it('respects an explicit gateway override instead of profile metadata', async () => {
       const chats = useChatStore()
       const profile = useProfileStore()
       mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
 
       profile.emailBridgeGatewayAddress = CUSTOM_GATEWAY
+      expect(getTrustedEmailGatewayAddress()).toBe(GATEWAY_ADDRESS)
+      useSettingsStore().setEmailGatewayAddress(CUSTOM_GATEWAY)
       expect(getTrustedEmailGatewayAddress()).toBe(CUSTOM_GATEWAY)
 
       // Message from custom gateway should now be verified

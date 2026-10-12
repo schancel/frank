@@ -235,6 +235,27 @@
                   <div class="text-subtitle2 q-mb-sm">
                     {{ $t('settings.networkSettings') }}
                   </div>
+                  <div
+                    class="text-caption q-mb-sm"
+                    data-test="email-gateway-status"
+                  >
+                    <template v-if="emailGatewayStatus === 'ready'">
+                      Relay gateway: {{ emailGatewayDomain }} ({{
+                        emailGatewayAddress
+                      }})
+                    </template>
+                    <template v-else-if="emailGatewayStatus === 'changed'">
+                      The relay changed its email gateway identity. Review the
+                      new address before using it.
+                    </template>
+                    <template v-else-if="emailGatewayStatus === 'loading'">
+                      Checking this relay for an email gateway…
+                    </template>
+                    <template v-else>
+                      This relay has no available email gateway. Email sending
+                      is unavailable unless you set an explicit address.
+                    </template>
+                  </div>
                   <q-input
                     v-model="emailGatewayInput"
                     :label="$t('settings.emailGatewayAddress')"
@@ -242,7 +263,7 @@
                     outlined
                     :error="!!emailGatewayError"
                     :error-message="emailGatewayError"
-                    hint="0x-prefixed 40-character hex address"
+                    hint="Optional address override for the selected network"
                     data-test="email-gateway-input"
                     data-testid="email-gateway-input"
                     class="full-width q-mb-xs"
@@ -263,7 +284,7 @@
                       no-caps
                       size="sm"
                       color="grey-7"
-                      :label="$t('settings.resetDefault')"
+                      label="Use relay gateway"
                       data-test="reset-email-gateway-btn"
                       data-testid="reset-email-gateway-btn"
                       @click="resetEmailGateway"
@@ -371,13 +392,21 @@ export default defineComponent({
     })
 
     const settingsStore = useSettingsStore()
-    const emailGatewayInput = ref(settingsStore.emailGatewayAddress)
+    const emailGatewayInput = ref(
+      settingsStore.emailGatewayOverride?.chainIdentifier ===
+        activeChain.chainIdentifier
+        ? settingsStore.emailGatewayOverride.address
+        : '',
+    )
     const emailGatewayError = ref('')
 
     watch(
-      () => settingsStore.emailGatewayAddress,
+      () => settingsStore.emailGatewayOverride,
       newVal => {
-        emailGatewayInput.value = newVal
+        emailGatewayInput.value =
+          newVal?.chainIdentifier === activeChain.chainIdentifier
+            ? newVal.address
+            : ''
       },
     )
 
@@ -385,7 +414,8 @@ export default defineComponent({
       emailGatewayError.value = ''
       try {
         settingsStore.setEmailGatewayAddress(emailGatewayInput.value.trim())
-        emailGatewayInput.value = settingsStore.emailGatewayAddress
+        emailGatewayInput.value =
+          settingsStore.emailGatewayOverride?.address ?? ''
       } catch (err: any) {
         emailGatewayError.value =
           err?.message || 'Invalid Ethereum address format'
@@ -395,7 +425,7 @@ export default defineComponent({
     function resetEmailGateway() {
       emailGatewayError.value = ''
       settingsStore.resetEmailGatewayAddress()
-      emailGatewayInput.value = settingsStore.emailGatewayAddress
+      emailGatewayInput.value = ''
     }
 
     // Stated, not chosen: the toggle shows the network the app is running on and cannot be
@@ -423,6 +453,13 @@ export default defineComponent({
       localeOptions,
       emailGatewayInput,
       emailGatewayError,
+      emailGatewayStatus: computed(() => settingsStore.emailGatewayStatus),
+      emailGatewayDomain: computed(
+        () => settingsStore.advertisedEmailGateway?.domain ?? '',
+      ),
+      emailGatewayAddress: computed(
+        () => settingsStore.advertisedEmailGateway?.address ?? '',
+      ),
       saveEmailGateway,
       resetEmailGateway,
       getWalletNetworkLabel,

@@ -36,7 +36,7 @@ describe("durable faucet grant / native wallet boundary", () => {
   let receipts: Map<string, object>;
   let transactions: Map<string, object>;
   let signCount: number;
-  const blockHash = "0x" + "aa".repeat(32);
+  let blockHash = "0x" + "aa".repeat(32);
   const provider = {
     getBlock: async () => ({ hash: blockHash, number: 1 }),
     getBalance: async (address: string) =>
@@ -127,6 +127,7 @@ describe("durable faucet grant / native wallet boundary", () => {
   }
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), "frank-faucet-recovery-"));
+    blockHash = "0x" + "aa".repeat(32);
     raws = [];
     recipientBalance = 0n;
     nonce = 0;
@@ -268,6 +269,35 @@ describe("durable faucet grant / native wallet boundary", () => {
     expect(signCount).toBe(1);
     expect(raws).toHaveLength(1);
   });
+
+  test.each([1, 0])(
+    "rechecks an orphaned cached receipt (status %s) and replays only original bytes",
+    async (status) => {
+      await grants.grant(request);
+      const original = raws[0]!;
+      const hash = keccak256(original);
+      receipts.set(hash, { ...receipts.get(hash), status });
+      expect((await grants.grant(request)).state).toBe(
+        status === 1 ? "confirmed" : "failed"
+      );
+      expect(journal.list()[0]!.members[0]!.observation.state).toBe(
+        status === 1 ? "included-success" : "included-revert"
+      );
+      // The old block is orphaned. Neither the receipt nor transaction remains canonical.
+      receipts.clear();
+      transactions.clear();
+      nonce = 0;
+      recipientBalance = 0n;
+      blockHash = "0x" + "bb".repeat(32);
+      mine = false;
+      await restart();
+      const result = await grants.grant(request);
+      expect(["confirmed", "failed"]).not.toContain(result.state);
+      expect(raws).toEqual([original, original]);
+      expect(signCount).toBe(1);
+      expect(journal.list()).toHaveLength(1);
+    }
+  );
 
   test("caller mutation cannot change an already authorized grant", async () => {
     const mutable = { ...request };

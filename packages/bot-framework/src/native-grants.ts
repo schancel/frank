@@ -216,17 +216,10 @@ export class NativeGrants implements NativeGrantCapability {
       throw new Error(
         "Faucet wallet operation does not match its authorization"
       );
-    if (
-      operation &&
-      (operation.cancelled ||
-        operation.members.some(
-          (m) => m.observation.state === "included-revert"
-        ) ||
-        operation.members.every(
-          (m) => m.observation.state === "included-success"
-        ))
-    )
-      return this.result(operation, already);
+    // Cancellation is an owner decision; chain inclusion is only an observation. Recheck even
+    // successful or reverted receipts through the wallet so an orphaned block cannot freeze
+    // the business intent as settled or cause a newly signed replacement.
+    if (operation?.cancelled) return this.result(operation, already);
 
     let bindingPersisted = intent.operationId !== null;
     try {

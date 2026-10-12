@@ -991,6 +991,39 @@ describe("Qwen answers every message", () => {
     expect(await turns()).toEqual(["Hello again", "better now"]);
   });
 
+  it("discards an interrupted model prefix and delivers one complete retried answer with one payment", async () => {
+    Object.assign(process.env, {
+      QWEN_API_KEY: "dummy-key",
+      QWEN_OPENAI_COMPATIBLE_ENDPOINT: "http://model.invalid/v1",
+      QWEN_MODEL_TIMEOUT_MS: "1000",
+      QWEN_MODEL_TRIES: "2",
+    });
+    const event = (content: string, id: string) =>
+      `data: ${JSON.stringify({
+        id,
+        choices: [{ index: 0, delta: { content } }],
+      })}\n\n`;
+    for (const wire of [
+      event("Hey Shamm", "interrupted"),
+      event("Hey Shammah!", "complete") + "data: [DONE]\n\n",
+    ]) {
+      mockModel.mockImplementationOnce(async () => {
+        const stream = new PassThrough();
+        stream.end(wire);
+        return { data: stream };
+      });
+    }
+    jest.spyOn(console, "log").mockImplementation(() => {});
+    await open(new QwenBot({ retryDelayMs: 1 }));
+    await pass(3);
+    expect(mockModel).toHaveBeenCalledTimes(2);
+    expect(delivered()).toEqual(["Hey Shammah!"]);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(intents.size).toBe(1);
+    expect(await turns()).toEqual(["Hello", "Hey Shammah!"]);
+    expect(qwen().operations.listStarted()).toEqual([]);
+  });
+
   it("when the model hangs: each call is ended at the time limit and the failure reply is delivered", async () => {
     Object.assign(process.env, {
       QWEN_API_KEY: "dummy-key",

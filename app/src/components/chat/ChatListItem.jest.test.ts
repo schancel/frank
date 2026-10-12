@@ -388,52 +388,49 @@ describe('ChatListItem title line', () => {
     [3, 'Official Game'],
     [2, 'Official Faucet'],
     [5, 'Official Merchant'],
-  ])(
-    'lets the complete official role %s use the title width before the name',
-    (role, label) => {
-      const address = '0x1111111111111111111111111111111111111111'
-      mockCurated.add(address)
-      mockRoles[address] = { accountType: 2, botRole: role as number }
-      const style = document.createElement('style')
-      const source = readFileSync(join(__dirname, 'ChatListItem.vue'), 'utf8')
-      style.textContent = source
-        .split('<style scoped>')[1]
-        .split('</style>')[0]
-        .replace(/:deep\(([^)]+)\)/g, '$1')
-        // jsdom does not implement container queries; the title's flex rules are outside them.
-        .replace(/@container[^{]*\{[\s\S]*?\n\}/g, '')
-      document.head.append(style)
-      try {
-        const wrapper = shallowMount(ChatListItem, {
-          attachTo: document.body,
-          props: { chatAddress: address, compact: false },
-          global: {
-            mocks: {
-              $t: translator('en-us'),
-              $status: { setup: true },
-              $route: { params: {} },
-            },
-            stubs: {
-              AccountBadge: false,
-              QBadge: { template: '<span class="q-badge"><slot /></span>' },
-              QIcon: { template: '<i class="q-icon" />' },
-            },
+  ])('keeps the complete official role %s below the name', (role, label) => {
+    const address = '0x1111111111111111111111111111111111111111'
+    mockCurated.add(address)
+    mockRoles[address] = { accountType: 2, botRole: role as number }
+    const style = document.createElement('style')
+    const source = readFileSync(join(__dirname, 'ChatListItem.vue'), 'utf8')
+    style.textContent = source
+      .split('<style scoped>')[1]
+      .split('</style>')[0]
+      .replace(/:deep\(([^)]+)\)/g, '$1')
+      // jsdom does not implement container queries; the title's flex rules are outside them.
+      .replace(/@container[^{]*\{[\s\S]*?\n\}/g, '')
+    document.head.append(style)
+    try {
+      const wrapper = shallowMount(ChatListItem, {
+        attachTo: document.body,
+        props: { chatAddress: address, compact: false },
+        global: {
+          mocks: {
+            $t: translator('en-us'),
+            $status: { setup: true },
+            $route: { params: {} },
           },
-        })
-        const badge = wrapper.get('.chat-list-title .account-badge')
-        expect(badge.text()).toBe(label)
-        const css = getComputedStyle(badge.element)
-        expect(css.flexShrink).toBe('0')
-        expect(css.maxWidth).not.toBe('40%')
-        expect(css.whiteSpace).toBe('normal')
-        expect(css.overflow).not.toBe('hidden')
-      } finally {
-        style.remove()
-        mockCurated.delete(address)
-        delete mockRoles[address]
-      }
-    },
-  )
+          stubs: {
+            AccountBadge: false,
+            QBadge: { template: '<span class="q-badge"><slot /></span>' },
+            QIcon: { template: '<i class="q-icon" />' },
+          },
+        },
+      })
+      const badge = wrapper.get('.chat-list-title .account-badge')
+      expect(badge.text()).toBe(label)
+      const css = getComputedStyle(badge.element)
+      expect(css.flexShrink).toBe('0')
+      expect(css.maxWidth).not.toBe('40%')
+      expect(css.whiteSpace).toBe('normal')
+      expect(css.overflow).not.toBe('hidden')
+    } finally {
+      style.remove()
+      mockCurated.delete(address)
+      delete mockRoles[address]
+    }
+  })
 
   it.each(['0.4068 MONR', '12.34 SOL', '0 SOL'])(
     'renders separate unread count and configured value chips for %s',
@@ -519,6 +516,15 @@ describe('ChatListItem title line', () => {
     // Metadata stays out of the title so narrow rows can hide it independently.
     expect(title.text()).toContain('Alice Profile')
     expect(title.findComponent({ name: 'AccountBadge' }).exists()).toBe(true)
+    expect(
+      title
+        .get('.chat-list-name-line')
+        .findComponent({ name: 'AccountBadge' })
+        .exists(),
+    ).toBe(false)
+    expect(title.get('.chat-list-name').attributes('title')).toBe(
+      title.get('.chat-list-name').text(),
+    )
     expect(title.find('[data-testid="chat-timestamp"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="chat-timestamp"]').exists()).toBe(true)
     expect(

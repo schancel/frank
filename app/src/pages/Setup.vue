@@ -252,6 +252,42 @@
               <p class="recovery-text" data-test="pending-identity-address">
                 {{ account.pendingIdentityAddress }}
               </p>
+              <p v-if="pendingProfile?.name" data-test="pending-display-name">
+                {{ $t('accountRecovery.display_name') }}:
+                {{ pendingProfile.name }}
+              </p>
+              <p v-if="pendingProfile?.username" data-test="pending-username">
+                {{ $t('accountRecovery.pending_username') }}: @{{
+                  pendingProfile.username
+                }}
+              </p>
+              <p v-if="pendingProfileStatus === 'loading'" role="status">
+                {{ $t('accountRecovery.pending_profile_loading') }}
+              </p>
+              <div
+                v-else-if="
+                  pendingProfileStatus === 'unreachable' ||
+                  pendingProfileStatus === 'unverified'
+                "
+                role="alert"
+                data-test="pending-profile-error"
+              >
+                <p>
+                  {{
+                    $t(
+                      'accountRecovery.pending_profile_' + pendingProfileStatus,
+                    )
+                  }}
+                </p>
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.profile_restore_retry')"
+                  data-test="retry-pending-profile"
+                  @click="pendingProfileRetry++"
+                />
+              </div>
               <p class="text-negative">
                 {{ $t('accountRecovery.pending_identity_stop_if_unexpected') }}
               </p>
@@ -879,6 +915,10 @@ import {
 import { usePersistentStorageStore } from '../stores/persistent-storage'
 import { nameOwnProfile } from '../utils/monad-identity-session'
 import { restoreOwnProfileWithRelay } from '../utils/own-profile'
+import {
+  PendingProfilePreviewError,
+  readPendingProfilePreview,
+} from '../accounts/pending-profile-preview'
 import type { MonadIdentity } from '@frank/wallet/monad-identity'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import {
@@ -905,6 +945,56 @@ const tabCoordinator = useTabCoordinatorStore()
 const defaultRelayUrl = getDefaultRelayBaseUrl()
 const customRelayUrl = ref(getCustomRelayBaseUrl() ?? defaultRelayUrl)
 const discoveredRelay = ref<string | null>(null)
+const pendingProfile = ref<{ name?: string; username?: string } | null>(null)
+const pendingProfileStatus = ref<
+  'idle' | 'loading' | 'missing' | 'found' | 'unreachable' | 'unverified'
+>('idle')
+const pendingProfileRetry = ref(0)
+
+watch(
+  () =>
+    [
+      account.pending?.account.receipt?.operationId,
+      account.pendingIdentityAddress,
+      customRelayUrl.value,
+      pendingProfileRetry.value,
+    ] as const,
+  ([attemptId, address, relay], _previous, onCleanup) => {
+    pendingProfile.value = null
+    pendingProfileStatus.value = 'idle'
+    if (!attemptId || !address || !relay) return
+    const abort = new AbortController()
+    let stale = false
+    const deadline = setTimeout(() => abort.abort(), 10_000)
+    onCleanup(() => {
+      stale = true
+      clearTimeout(deadline)
+      abort.abort()
+    })
+    pendingProfileStatus.value = 'loading'
+    void readPendingProfilePreview({
+      relayBaseUrl: relay.trim(),
+      address,
+      signal: abort.signal,
+    }).then(
+      profile => {
+        if (stale) return
+        clearTimeout(deadline)
+        pendingProfile.value = profile ?? null
+        pendingProfileStatus.value = profile ? 'found' : 'missing'
+      },
+      error => {
+        if (stale) return
+        clearTimeout(deadline)
+        pendingProfileStatus.value =
+          error instanceof PendingProfilePreviewError
+            ? error.code
+            : 'unreachable'
+      },
+    )
+  },
+  { immediate: true },
+)
 
 async function takeoverHere() {
   await tabCoordinator.requestTakeover()

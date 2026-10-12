@@ -47,6 +47,12 @@ export const en = {
   activate_account: 'Activate',
   pending_identity_address:
     'Activating opens the account with this identity address. Its published profile will be loaded separately:',
+  pending_username: 'Username',
+  pending_profile_loading: 'Checking the published profile…',
+  pending_profile_unreachable:
+    'The published profile could not be checked. Verify the relay connection and retry. You can still confirm the identity address.',
+  pending_profile_unverified:
+    'The returned profile could not be verified for this identity. Check the identity address before activating.',
   pending_identity_stop_if_unexpected:
     'If you are restoring an account and this is not the address you expect, stop: do not activate. Cancel the attempt instead.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
@@ -230,6 +236,12 @@ export const fr = {
   activate_account: 'Activer',
   pending_identity_address:
     'L’activation ouvre le compte ayant cette adresse d’identité. Son profil publié sera chargé séparément :',
+  pending_username: 'Identifiant',
+  pending_profile_loading: 'Vérification du profil publié…',
+  pending_profile_unreachable:
+    'Le profil publié n’a pas pu être vérifié. Vérifiez la connexion au relais et réessayez. Vous pouvez toujours confirmer l’adresse d’identité.',
+  pending_profile_unverified:
+    'Le profil reçu n’a pas pu être vérifié pour cette identité. Vérifiez l’adresse avant de l’activer.',
   pending_identity_stop_if_unexpected:
     'Si vous restaurez un compte et que ce n’est pas l’adresse attendue, arrêtez : n’activez pas. Annulez plutôt la tentative.',
   the_attempt_is_incomplete_or_awaiting_cleanup:

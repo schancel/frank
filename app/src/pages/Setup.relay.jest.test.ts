@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 import { mount, flushPromises } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import Setup from './Setup.vue'
 import { inspectLegacyWallet } from '../accounts/legacy'
@@ -12,6 +13,12 @@ import en from '../i18n/en-us'
 import { useProfileStore } from '../stores/my-profile'
 import * as ownProfile from '../utils/own-profile'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { readPendingProfilePreview } from '../accounts/pending-profile-preview'
+
+jest.mock('../accounts/pending-profile-preview', () => ({
+  ...jest.requireActual('../accounts/pending-profile-preview'),
+  readPendingProfilePreview: jest.fn(async () => undefined),
+}))
 
 jest.mock('../accounts/session', () => ({
   accountStatus: jest.requireActual('vue').reactive({
@@ -151,6 +158,121 @@ function render() {
     },
   })
 }
+
+describe('pending identity profile preview', () => {
+  const address = '0x00000000000000000000000000000000000000Aa'
+  const pending = {
+    status: 'staging',
+    account: {
+      displayName: '',
+      descriptor: 'PUBLIC',
+      receipt: { operationId: 'preview-attempt' },
+    },
+    expectedActive: { revision: 0, accountId: null },
+  }
+  beforeEach(async () => {
+    setActivePinia(createPinia())
+    Object.assign(mockAccount, {
+      status: 'pending',
+      revision: 0,
+      account: null,
+      pending,
+      pendingReady: true,
+      pendingIdentityAddress: address,
+      pendingError: null,
+    })
+    jest.mocked(readPendingProfilePreview).mockReset()
+    await inspectLegacyWallet({
+      get: async () => {
+        throw { notFound: true }
+      },
+    })
+  })
+  afterEach(() => {
+    jest.mocked(readPendingProfilePreview).mockReset()
+    jest.mocked(readPendingProfilePreview).mockResolvedValue(undefined)
+  })
+
+  test('displays verified names beside the identity address', async () => {
+    jest.mocked(readPendingProfilePreview).mockResolvedValue({
+      name: 'Alice',
+      username: 'alice',
+    })
+    const view = render()
+    await flushPromises()
+    expect(view.get('[data-test="pending-identity-address"]').text()).toBe(
+      address,
+    )
+    expect(view.get('[data-test="pending-display-name"]').text()).toContain(
+      'Alice',
+    )
+    expect(view.get('[data-test="pending-username"]').text()).toContain(
+      '@alice',
+    )
+    view.unmount()
+  })
+
+  test('keeps missing names hidden and makes failures visible with retry', async () => {
+    jest
+      .mocked(readPendingProfilePreview)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ name: 'Alice' })
+    const view = render()
+    await flushPromises()
+    expect(view.find('[data-test="pending-display-name"]').exists()).toBe(false)
+    expect(view.find('[data-test="pending-username"]').exists()).toBe(false)
+    expect(view.get('[data-test="pending-identity-address"]').text()).toBe(
+      address,
+    )
+    await view.get('[data-test="advanced-relay-expansion"]').trigger('click')
+    // A new request can also be triggered by a relay selection change.
+    const input = view.get('[data-test="custom-relay-input"] input')
+    await input.setValue('https://second-relay.example.test')
+    await flushPromises()
+    expect(view.get('[data-test="pending-profile-error"]').text()).toContain(
+      en.accountRecovery.pending_profile_unreachable,
+    )
+    await view.get('[data-test="retry-pending-profile"]').trigger('click')
+    await flushPromises()
+    expect(view.get('[data-test="pending-display-name"]').text()).toContain(
+      'Alice',
+    )
+    view.unmount()
+  })
+
+  test('discards a late profile result after the pending identity changes', async () => {
+    let resolveOld!: (value: { name: string }) => void
+    jest
+      .mocked(readPendingProfilePreview)
+      .mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            resolveOld = resolve
+          }),
+      )
+      .mockResolvedValueOnce({ name: 'Bob' })
+    const view = render()
+    Object.assign(mockAccount, {
+      pending: {
+        ...pending,
+        account: {
+          ...pending.account,
+          receipt: { operationId: 'second-attempt' },
+        },
+      },
+      pendingIdentityAddress: '0x00000000000000000000000000000000000000Bb',
+    })
+    await nextTick()
+    resolveOld({ name: 'Alice' })
+    await flushPromises()
+    expect(view.get('[data-test="pending-display-name"]').text()).toContain(
+      'Bob',
+    )
+    expect(view.text()).not.toContain('Alice')
+    view.unmount()
+  })
+})
 
 describe('Setup page advanced relay configuration', () => {
   beforeEach(async () => {

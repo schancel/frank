@@ -6,6 +6,7 @@ import { NativeGrants } from "../src/native-grants";
 import { LevelBotStateStore } from "../src/state-store";
 import { EvmNativeOperationJournal } from "@frank/wallet/storage/evm-native-operation-journal";
 import { EvmLegacyConsolidator } from "@frank/wallet/chain/evm-legacy-consolidator";
+import { summarizeEvmNativeOperation } from "@frank/wallet/chain/evm-native-operation-status";
 import { NativeEvmTransactionBuilder } from "@frank/wallet/chain/evm-transaction-builder";
 import type { NativeWalletHandle } from "@frank/wallet/chain/chain-wallet";
 
@@ -36,9 +37,13 @@ describe("durable faucet grant / native wallet boundary", () => {
   let receipts: Map<string, object>;
   let transactions: Map<string, object>;
   let signCount: number;
+  let blockUnavailable: boolean;
   let blockHash = "0x" + "aa".repeat(32);
   const provider = {
-    getBlock: async () => ({ hash: blockHash, number: 1 }),
+    getBlock: async () => {
+      if (blockUnavailable) throw new Error("Block RPC unavailable");
+      return { hash: blockHash, number: 1 };
+    },
     getBalance: async (address: string) =>
       address.toLowerCase() === signer.address.toLowerCase()
         ? 10_000_000n
@@ -136,6 +141,7 @@ describe("durable faucet grant / native wallet boundary", () => {
     receipts = new Map();
     transactions = new Map();
     signCount = 0;
+    blockUnavailable = false;
     await open();
   });
   afterEach(async () => {
@@ -296,6 +302,67 @@ describe("durable faucet grant / native wallet boundary", () => {
       expect(raws).toEqual([original, original]);
       expect(signCount).toBe(1);
       expect(journal.list()).toHaveLength(1);
+    }
+  );
+
+  test.each([1, 0])(
+    "canonical contradiction invalidates retained orphan receipt status %s across restarts",
+    async (status) => {
+      await grants.grant(request);
+      const original = raws[0]!;
+      const hash = keccak256(original);
+      receipts.set(hash, { ...receipts.get(hash), status });
+      expect((await grants.grant(request)).state).toBe(
+        status === 1 ? "confirmed" : "failed"
+      );
+      // The RPC still serves the old transaction and receipt, but its canonical block changed.
+      nonce = 0;
+      recipientBalance = 0n;
+      blockHash = "0x" + "bb".repeat(32);
+      mine = false;
+      await restart();
+      expect((await grants.grant(request)).state).toBe("submitted");
+      expect(journal.list()[0]!.members[0]!.observation.state).toBe("unknown");
+      expect(journal.list()[0]!.members[0]!.exposed).toBe(true);
+      expect(journal.canSelect(signer.address.toLowerCase(), 0)).toBe(false);
+      expect(summarizeEvmNativeOperation(journal.list()[0]!).payment).toBe("unknown");
+      await restart();
+      expect((await grants.grant(request)).state).toBe("submitted");
+      expect(raws).toEqual([original, original, original]);
+      expect(signCount).toBe(1);
+      expect(journal.list()).toHaveLength(1);
+      // The original transaction may then land on the replacement canonical chain.
+      receipts.clear();
+      transactions.clear();
+      mine = true;
+      expect((await grants.grant(request)).state).toBe("submitted");
+      expect((await grants.grant(request)).state).toBe("confirmed");
+      expect(raws).toEqual([original, original, original, original]);
+      expect(signCount).toBe(1);
+      expect(summarizeEvmNativeOperation(journal.list()[0]!).payment).toBe("included");
+      await restart();
+      expect((await grants.grant(request)).state).toBe("confirmed");
+      expect(raws).toHaveLength(4);
+    }
+  );
+
+  test.each([1, 0])(
+    "unavailable canonical block reads preserve cached receipt status %s across restart",
+    async (status) => {
+      await grants.grant(request);
+      const original = raws[0]!;
+      receipts.set(keccak256(original), {
+        ...receipts.get(keccak256(original)),
+        status,
+      });
+      await grants.grant(request);
+      blockUnavailable = true;
+      await restart();
+      expect((await grants.grant(request)).state).toBe(
+        status === 1 ? "confirmed" : "failed"
+      );
+      expect(raws).toEqual([original]);
+      expect(signCount).toBe(1);
     }
   );
 

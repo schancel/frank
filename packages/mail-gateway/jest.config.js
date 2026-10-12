@@ -6,6 +6,7 @@ module.exports = {
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
     '^@frank/directory-admission$': '<rootDir>/../directory-admission/src/index.ts',
+    '^@frank/domain-roots$': '<rootDir>/../domain-roots/src/index.ts',
     '^@frank/nakamoto/(.*)$': '<rootDir>/../nakamoto/src/$1',
     '^@frank/nakamoto$': '<rootDir>/../nakamoto/src/index.ts',
     '^@frank/crypto-box/(.*)$': '<rootDir>/../crypto-box/src/$1',

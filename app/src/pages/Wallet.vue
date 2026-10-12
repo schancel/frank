@@ -368,11 +368,15 @@
                       <q-list separator class="rounded-borders">
                         <q-item
                           v-if="nativeAsset"
-                          class="q-px-none q-py-sm"
+                          class="wallet-asset-row"
                           :data-testid="`wallet-token-item-${nativeAsset.unit.toLowerCase()}`"
                           data-native-asset
                         >
-                          <q-item-section avatar top>
+                          <q-item-section
+                            avatar
+                            top
+                            class="wallet-asset-avatar"
+                          >
                             <q-avatar
                               size="36px"
                               color="primary"
@@ -380,20 +384,25 @@
                               icon="toll"
                             />
                           </q-item-section>
-                          <q-item-section>
-                            <q-item-label class="text-weight-bold">
+                          <q-item-section class="wallet-asset-description">
+                            <q-item-label
+                              class="wallet-asset-title text-weight-bold"
+                            >
                               {{ nativeAsset.unit }}
                               <span
-                                class="text-caption text-grey-7 font-weight-normal q-ml-xs"
+                                class="text-caption text-grey-7 font-weight-normal"
                               >
                                 · {{ nativeAsset.name }}
                               </span>
                             </q-item-label>
-                            <q-item-label caption class="text-grey-6">
+                            <q-item-label
+                              caption
+                              class="wallet-asset-helper text-grey-6"
+                            >
                               {{ $t('walletPanel.nativeCoin') }}
                             </q-item-label>
                           </q-item-section>
-                          <q-item-section side>
+                          <q-item-section side class="wallet-asset-amount">
                             <q-item-label
                               class="text-weight-bolder text-right"
                               :title="balanceTitle"
@@ -425,10 +434,14 @@
                         <q-item
                           v-for="token in nonNativeTokens"
                           :key="token.id"
-                          class="q-px-none q-py-sm"
+                          class="wallet-asset-row"
                           :data-testid="`wallet-token-item-${token.symbol.toLowerCase()}`"
                         >
-                          <q-item-section avatar top>
+                          <q-item-section
+                            avatar
+                            top
+                            class="wallet-asset-avatar"
+                          >
                             <q-avatar
                               size="36px"
                               :color="
@@ -440,31 +453,38 @@
                               "
                             />
                           </q-item-section>
-                          <q-item-section>
-                            <q-item-label class="text-weight-bold">
+                          <q-item-section class="wallet-asset-description">
+                            <q-item-label
+                              class="wallet-asset-title text-weight-bold"
+                            >
                               {{ token.symbol }}
                               <span
-                                class="text-caption text-grey-7 font-weight-normal q-ml-xs"
+                                class="text-caption text-grey-7 font-weight-normal"
                               >
                                 · {{ token.name }}
                               </span>
                             </q-item-label>
-                            <q-item-label caption class="text-grey-6">
-                              <span
+                            <q-item-label
+                              caption
+                              class="wallet-asset-helper text-grey-6"
+                            >
+                              <template
                                 v-if="!token.isNative && token.mintOrAddress"
                               >
-                                {{ $t('walletPanel.tokenMint') }}:
+                                <span class="wallet-asset-helper-label"
+                                  >{{ $t('walletPanel.tokenMint') }}:</span
+                                >
                                 <address-text
                                   :address="token.mintOrAddress"
                                   copyable
                                 />
-                              </span>
+                              </template>
                               <span v-else>
                                 {{ $t('walletPanel.nativeCoin') }}
                               </span>
                             </q-item-label>
                           </q-item-section>
-                          <q-item-section side>
+                          <q-item-section side class="wallet-asset-amount">
                             <q-item-label class="text-weight-bolder text-right">
                               {{ token.balanceFormatted }}
                             </q-item-label>
@@ -480,10 +500,14 @@
                         <q-item
                           v-for="token in evmTokens"
                           :key="token.address"
-                          class="q-px-none q-py-sm"
+                          class="wallet-asset-row"
                           :data-testid="`wallet-token-item-${token.symbol.toLowerCase()}`"
                         >
-                          <q-item-section avatar top>
+                          <q-item-section
+                            avatar
+                            top
+                            class="wallet-asset-avatar"
+                          >
                             <q-avatar
                               size="36px"
                               color="deep-purple"
@@ -491,24 +515,28 @@
                               icon="generating_tokens"
                             />
                           </q-item-section>
-                          <q-item-section>
-                            <q-item-label class="text-weight-bold">
+                          <q-item-section class="wallet-asset-description">
+                            <q-item-label
+                              class="wallet-asset-title text-weight-bold"
+                            >
                               {{ token.symbol }}
                               <span
-                                class="text-caption text-grey-7 font-weight-normal q-ml-xs"
+                                class="text-caption text-grey-7 font-weight-normal"
                               >
                                 · {{ token.name }}
                               </span>
                             </q-item-label>
                             <q-item-label
                               caption
-                              class="text-grey-6 wallet-token-contract"
+                              class="wallet-asset-helper text-grey-6 wallet-token-contract"
                             >
-                              {{ $t('walletPanel.tokenContract') }}:
+                              <span class="wallet-asset-helper-label"
+                                >{{ $t('walletPanel.tokenContract') }}:</span
+                              >
                               <address-text :address="token.address" copyable />
                             </q-item-label>
                           </q-item-section>
-                          <q-item-section side>
+                          <q-item-section side class="wallet-asset-amount">
                             <q-item-label
                               class="text-weight-bolder text-right"
                               :title="token.exact"
@@ -1053,11 +1081,50 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.wallet-token-contract :deep(.address-text) {
-  width: fit-content;
-  max-width: 100%;
+.wallet-asset-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) fit-content(30%);
+  align-items: start;
+  gap: 12px;
+  padding: 12px 0;
 }
-
+.wallet-asset-row > .q-item__section {
+  min-width: 0;
+  margin-left: 0;
+  padding: 0;
+}
+.wallet-asset-avatar {
+  width: 36px;
+}
+.wallet-asset-title {
+  min-height: 20px;
+  line-height: 20px;
+}
+.wallet-asset-title > span {
+  margin-left: 4px;
+}
+.wallet-asset-helper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  min-width: 0;
+  margin-top: 4px;
+}
+.wallet-asset-helper-label {
+  flex: 0 0 auto;
+}
+.wallet-asset-helper :deep(.address-text) {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+}
+.wallet-asset-amount {
+  align-items: flex-end;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  line-height: 20px;
+}
 .wallet-header-unit {
   flex-shrink: 0;
 }

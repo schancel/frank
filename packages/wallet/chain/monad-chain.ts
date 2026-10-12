@@ -1422,7 +1422,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   };
   const consumeSelfNotes = async (
     wallet: EvmChainWalletHandle,
-    message: DirectMessageReceived
+    message: DirectMessageReceived,
+    onForeignWalletSync?: (item: WalletSyncItem) => Promise<void>
   ): Promise<
     | { kind: "none" }
     | { kind: "consumed"; rest: DirectMessageReceived | undefined }
@@ -1453,9 +1454,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     if (waiting === undefined)
       waitingSelfNotes.set(wallet, (waiting = new Map()));
     try {
-      for (const note of notes)
-        await applyWalletSyncItem(wallet, note as WalletSyncItem);
+      for (const note of notes) {
+        const item = note as WalletSyncItem;
+        if (item.chainIdentifier === wallet.chainIdentifier)
+          await applyWalletSyncItem(wallet, item);
+        else {
+          if (!onForeignWalletSync)
+            throw new Error(`Wallet sync owner unavailable for ${item.chainIdentifier}`);
+          await onForeignWalletSync(item);
+        }
+      }
     } catch (error) {
+      // A foreign owner's availability is a host concern, not a terminal rejection by this
+      // wallet. Keep the relay cursor before this row and retry after that owner recovers.
+      if (notes.some((note) => (note as WalletSyncItem).chainIdentifier !== wallet.chainIdentifier))
+        throw error;
       const detail = error instanceof Error ? error.message : String(error);
       const since = waiting.get(digest) ?? Date.now();
       const final = selfNoteRefusalIsFinal(error);
@@ -1737,7 +1750,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           });
         }
         for (const msg of canonicalReceived) {
-          const taken = await consumeSelfNotes(wallet, msg);
+          const taken = await consumeSelfNotes(wallet, msg, params.onForeignWalletSync);
           if (taken.kind === "none") received.push(msg);
           else if (taken.kind === "retry")
             params.onIncompleteTimestamp?.(msg.receivedTime);

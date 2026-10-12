@@ -335,6 +335,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
         onQuarantinedTimestamp: expect.any(Function),
+        onForeignWalletSync: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -346,6 +347,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
         onQuarantinedTimestamp: expect.any(Function),
+        onForeignWalletSync: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -386,6 +388,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
         onQuarantinedTimestamp: expect.any(Function),
+        onForeignWalletSync: expect.any(Function),
       })
       expect(useChatStore().messages['same-time-a']).toBeDefined()
       expect(useChatStore().messages['same-time-b']).toBeDefined()
@@ -580,6 +583,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -676,6 +680,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -717,6 +722,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -767,6 +773,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -804,6 +811,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()

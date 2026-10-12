@@ -16,7 +16,10 @@
     </q-header>
 
     <q-page-container class="col full-height overflow-hidden">
-      <q-page class="q-pa-md col full-height overflow-y-auto about-page" :style-fn="pageStyle">
+      <q-page
+        class="q-pa-md col full-height overflow-y-auto about-page"
+        :style-fn="pageStyle"
+      >
         <!-- Hero section -->
         <div
           class="column items-center q-mb-lg text-center about-hero"

@@ -202,7 +202,10 @@
             </div>
           </q-card-section>
 
-          <q-card-section v-if="!backupUnavailable" class="backup-section q-pt-none">
+          <q-card-section
+            v-if="!backupUnavailable"
+            class="backup-section q-pt-none"
+          >
             <q-expansion-item
               v-model="showVerifySection"
               icon="verified"
@@ -219,7 +222,9 @@
                   type="textarea"
                   outlined
                   dense
-                  :label="$t('accountRecovery.saved_codex32_shares_one_per_line')"
+                  :label="
+                    $t('accountRecovery.saved_codex32_shares_one_per_line')
+                  "
                   :maxlength="7000"
                   autocomplete="off"
                   autocorrect="off"
@@ -234,7 +239,9 @@
                     color="primary"
                     :label="$t('accountRecovery.verify_shards_button')"
                     data-test="verify-shards-btn"
-                    :disable="!String(verifyInput || '').trim() || verifyLoading"
+                    :disable="
+                      !String(verifyInput || '').trim() || verifyLoading
+                    "
                     :loading="verifyLoading"
                     @click="verifyShards"
                   />

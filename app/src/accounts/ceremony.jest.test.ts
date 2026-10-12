@@ -396,4 +396,3 @@ test('createDirect stages new account root immediately without backup shares', a
     ceremony.cancel()
   }
 })
-

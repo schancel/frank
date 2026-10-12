@@ -24,7 +24,10 @@
       </q-toolbar>
     </q-header>
     <q-page-container class="col full-height overflow-hidden">
-      <q-page class="settings-page q-ma-none q-pa-none column no-wrap col full-height overflow-hidden" :style-fn="pageStyle">
+      <q-page
+        class="settings-page q-ma-none q-pa-none column no-wrap col full-height overflow-hidden"
+        :style-fn="pageStyle"
+      >
         <q-card
           flat
           class="settings-content col column full-width full-height bg-transparent"

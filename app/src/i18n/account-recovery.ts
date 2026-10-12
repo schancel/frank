@@ -352,7 +352,7 @@ export const fr = {
   not_backed_up_tooltip:
     "Vous n'avez pas encore sauvegardé votre portefeuille ou identité. Appuyez pour sauvegarder maintenant.",
   backup_account_codex32:
-    "Sauvegarder le compte (Partage de clés de Shamir (basé sur Codex32))",
+    'Sauvegarder le compte (Partage de clés de Shamir (basé sur Codex32))',
   codex32_threshold_explainer:
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:

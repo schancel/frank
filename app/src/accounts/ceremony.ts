@@ -335,17 +335,8 @@ export function createAccountCeremony() {
       const displayName = signup ? requireValidProfileDisplayName(name) : ''
       if (!attempt) throw new Error('Start an account ceremony first')
       if (signup) {
-        let recovered: RecoveredAccountBackup | undefined
-        try {
-          recovered = signup.confirmWithMetadata(shares)
-        } catch (error) {
-          throw error
-        }
-        const outcome = await finish(
-          () => recovered,
-          false,
-          displayName,
-        )
+        const recovered = signup.confirmWithMetadata(shares)
+        const outcome = await finish(() => recovered, false, displayName)
         signup = undefined
         return outcome
       }

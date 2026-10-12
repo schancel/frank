@@ -520,8 +520,8 @@ export default configure(ctx => {
       workboxMode: 'GenerateSW', // 'GenerateSW' or 'InjectManifest'
       extendPWAGenerateSWOptions(options) {
         return {
-          // Keep an open wallet on its current bundle until the user reloads.
-          skipWaiting: false,
+          // Activate the new bundle immediately so a reload gets the updated application.
+          skipWaiting: true,
           // Cache only shipped application assets, never source maps or live API responses.
           globIgnores: [...options.globIgnores, '**/*.map'],
           clientsClaim: true,

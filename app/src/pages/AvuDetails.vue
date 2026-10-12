@@ -1,5 +1,8 @@
 <template>
-  <div data-test="avu-details-page" class="avu-container column full-height overflow-hidden">
+  <div
+    data-test="avu-details-page"
+    class="avu-container column full-height overflow-hidden"
+  >
     <q-header>
       <q-toolbar>
         <q-btn
@@ -17,7 +20,10 @@
       </q-toolbar>
     </q-header>
     <q-page-container class="col full-height overflow-hidden">
-      <q-page class="q-pa-md avu-page col full-height overflow-y-auto" :style-fn="pageStyle">
+      <q-page
+        class="q-pa-md avu-page col full-height overflow-y-auto"
+        :style-fn="pageStyle"
+      >
         <q-card flat class="avu-details-card" data-test="avu-explainer-card">
           <q-card-section class="row items-center q-pb-none">
             <h2 class="text-h6 text-weight-bold q-my-none">

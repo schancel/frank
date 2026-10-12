@@ -412,8 +412,9 @@ async function confirmPayment(): Promise<void> {
       authorizedFeeCeilingAtomic: quote.maximumFeeAtomic,
       quotedNonce: quote.nonce,
     })
-    if (host !== opened) return
-    operations.value = [prepared, ...operations.value]
+    // The user already confirmed this exact operation. An account-view change
+    // must not abandon it after its reservation has been persisted.
+    if (host === opened) operations.value = [prepared, ...operations.value]
     const submitted = await host.wallet.submit(operationId)
     if (host !== opened) return
     operations.value = operations.value.map(row =>

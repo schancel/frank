@@ -210,3 +210,36 @@ test('account revision waits for an in-flight submit before closing and clears o
   await flushPromises()
   expect(close).toHaveBeenCalledTimes(1)
 })
+
+test('account revision during prepare still submits the confirmed operation before closing', async () => {
+  const { wallet, close } = fixture()
+  let finishPrepare: ((value: unknown) => void) | undefined
+  wallet.prepare.mockImplementationOnce(
+    () =>
+      new Promise(resolve => {
+        finishPrepare = resolve
+      }),
+  )
+  const wrapper = shallowMount(TempoPathUsdPanel, { global: { stubs } })
+  await flushPromises()
+  const state = controls(wrapper)
+  state.recipient = recipient
+  state.amount = '1'
+  await state.reviewPayment()
+  const sending = state.confirmPayment()
+  await nextTick()
+  mockStatus.revision++
+  await nextTick()
+  expect(close).not.toHaveBeenCalled()
+  finishPrepare?.({
+    operationId: '0x' + 'ab'.repeat(32),
+    amountAtomic: '1000000',
+    recipient,
+    exposed: false,
+    observation: { state: 'unknown' },
+  })
+  await sending
+  await flushPromises()
+  expect(wallet.submit).toHaveBeenCalledTimes(1)
+  expect(close).toHaveBeenCalledTimes(1)
+})

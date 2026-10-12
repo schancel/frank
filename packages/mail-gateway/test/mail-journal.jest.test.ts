@@ -1647,6 +1647,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
       /MailJournal|\.atomic\(|expireHeldMessage|LedgerPoisonedError/.test(fs.readFileSync(f, 'utf8'))
     );
     expect(users.map((f) => path.relative(SRC, f))).toEqual([
+      'mta/journaled-outbound-worker.ts',
       'relay/journaled-frank-mailbox.ts',
       'relay/journaled-inbound-send.ts',
       'smtp/issued-mailbox-lookup.ts',

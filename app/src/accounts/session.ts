@@ -1,3 +1,5 @@
+import type { Ed25519Node } from '@frank/wallet/ed25519-hd-keyring'
+import type { ExperimentalCustody } from '@frank/wallet/solana-crypto-backend/runtime.mjs'
 import {
   validateEvmWalletConfiguration,
   verifyEvmWalletRpcIdentity,
@@ -160,6 +162,8 @@ export function createAccountSession(deps: {
     config: EvmChainConfig,
     material: MonadRootBundle | HistoricalBip39Seed,
   ) => Promise<EvmChainWalletHandle>
+  /** Private closed-WASM construction seam; the production default is the packaged runtime. */
+  openSolanaPaymentCustody?: typeof import('@frank/wallet/solana-crypto-backend/runtime.mjs').openExperimentalRecipientCustody
   /** Required application restoration finishes before consumers can acquire the wallet. */
   restoreApplicationState?: (options: {
     wallet: RuntimeWallet
@@ -231,8 +235,11 @@ export function createAccountSession(deps: {
     return next
   }
   const secondaryEvmWallets = new Set<EvmChainWalletHandle>()
+  const solanaPaymentCustody = new Set<ExperimentalCustody>()
   const revokeUtxoCustody = new Set<() => void>()
   const release = async () => {
+    for (const child of solanaPaymentCustody) child.close()
+    solanaPaymentCustody.clear()
     for (const revoke of revokeUtxoCustody) revoke()
     revokeUtxoCustody.clear()
     const secondaryClosing = [...secondaryEvmWallets].map(secondary =>
@@ -571,6 +578,145 @@ export function createAccountSession(deps: {
         if (candidate && !retained) {
           secondaryEvmWallets.delete(candidate)
           await candidate.close()
+        }
+      }
+    },
+    /** Ingests the existing Solana seed into closed WASM custody on explicit request only. */
+    async createSolanaPaymentCustody(input: {
+      readonly chainIdentifier: string
+      readonly wasm: URL | string
+      readonly signal?: AbortSignal
+    }): Promise<ExperimentalCustody> {
+      const { chainIdentifier, wasm, signal } = input
+      const entry = getChainRegistryEntry(chainIdentifier)
+      if (!entry || entry.family !== 'solana' || !entry.wallet)
+        throw new Error('Unsupported canonical Solana custody network')
+      const currentWallet = wallet
+      if (state.status !== 'ready' || !currentWallet)
+        throw new CustodyError('locked')
+      const checkCurrent = captureDerivation()
+      const requireCurrent = () => {
+        checkCurrent()
+        if (
+          signal?.aborted ||
+          state.status !== 'ready' ||
+          wallet !== currentWallet
+        )
+          throw new CustodyError('closed')
+      }
+      requireCurrent()
+      const published = new Uint8Array(
+        await session.getCurvePublicKey('ed25519'),
+      )
+      requireCurrent()
+      if (published.length !== 32) throw new CustodyError('conflict')
+      const open =
+        deps.openSolanaPaymentCustody ??
+        (await import('@frank/wallet/solana-crypto-backend/runtime.mjs'))
+          .openExperimentalRecipientCustody
+      requireCurrent()
+      const material = await session.getActiveFamilyMaterial('solana-wallet')
+      let masterNode: Ed25519Node | undefined
+      let leafNode: Ed25519Node | undefined
+      let handoff: Uint8Array | undefined
+      let candidate: ExperimentalCustody | undefined
+      let retained = false
+      let childClosed = false
+      let child: ExperimentalCustody | undefined
+      const wipeMaterial = () => {
+        if ('seed' in material) material.seed.fill(0)
+        else material.bytes.fill(0)
+        masterNode?.key.fill(0)
+        masterNode?.chainCode.fill(0)
+        leafNode?.key.fill(0)
+        leafNode?.chainCode.fill(0)
+        handoff?.fill(0)
+      }
+      const revoke = () => {
+        if (childClosed) return
+        childClosed = true
+        signal?.removeEventListener('abort', revoke)
+        if (child) solanaPaymentCustody.delete(child)
+        candidate?.close()
+      }
+      signal?.addEventListener('abort', revoke, { once: true })
+      try {
+        requireCurrent()
+        if ('seed' in material) {
+          const { SolanaHdKeyring } = await import(
+            '@frank/wallet/ed25519-hd-keyring'
+          )
+          const keyring = SolanaHdKeyring.fromSeed(material.seed)
+          masterNode = keyring.masterNode
+          leafNode = keyring.deriveNode(keyring.subAccountPath(0)).node
+        }
+        requireCurrent()
+        const seedBytes =
+          leafNode?.key ?? ('seed' in material ? undefined : material.bytes)
+        if (!seedBytes || seedBytes.length !== 32)
+          throw new CustodyError('conflict')
+        handoff = new Uint8Array(seedBytes)
+        requireCurrent()
+        // Public handle label only: this changes neither derivation nor application account ID.
+        const opening = open({
+          accountId: new Uint8Array(published),
+          chainIdentifier,
+          seed: handoff,
+          wasm,
+          signal,
+        })
+        // The opener consumes the handoff synchronously; no seed waits on WASM initialization.
+        wipeMaterial()
+        candidate = await opening
+        requireCurrent()
+        const actual = candidate.primaryPublicKey()
+        if (
+          actual.length !== published.length ||
+          !actual.every((byte, index) => byte === published[index])
+        )
+          throw new CustodyError('conflict')
+        const live = () => {
+          requireCurrent()
+          if (childClosed) throw new CustodyError('closed')
+        }
+        const owned = candidate
+        child = Object.freeze<ExperimentalCustody>({
+          primaryPublicKey() {
+            live()
+            return owned.primaryPublicKey()
+          },
+          deriveDestination(intent) {
+            live()
+            return owned.deriveDestination(intent)
+          },
+          validateReceivedDescriptor(received) {
+            live()
+            return owned.validateReceivedDescriptor(received)
+          },
+          signReceivedTransfer(received, descriptor, spend, authorization) {
+            live()
+            return owned.signReceivedTransfer(
+              received,
+              descriptor,
+              spend,
+              authorization,
+            )
+          },
+          signPrimaryTransfer(descriptor, spend, authorization) {
+            live()
+            return owned.signPrimaryTransfer(descriptor, spend, authorization)
+          },
+          close: revoke,
+        })
+        solanaPaymentCustody.add(child)
+        requireCurrent()
+        retained = true
+        return child
+      } finally {
+        wipeMaterial()
+        if (!retained) {
+          if (childClosed) candidate?.close()
+          else revoke()
         }
       }
     },

@@ -1,3 +1,9 @@
+import type {
+  SolanaPaymentRequest,
+  SolanaPaymentOperation,
+} from './solana-contact-payments/types'
+import type { ExperimentalSolanaContactPayments } from './solana-contact-payments/engine'
+
 /** Financial operations only. The host owns message encoding, encryption and delivery. */
 export type StealthPaymentAsset =
   | { readonly kind: 'native' }
@@ -116,4 +122,50 @@ export interface StealthPaymentReceiptCapability {
   observe(
     claim: StealthPaymentReceiptClaim,
   ): Promise<StealthPaymentReceiptObservation>
+}
+
+/** Additive Solana host declarations only. UI family-discriminated composition remains
+ * a separate prerequisite; existing SECP interfaces retain their current public API. */
+/** Recovery consumes owner operations without assuming a family's construction model. */
+export interface StealthPaymentLifecycleCapability {
+  /** The host binds the immutable sealed message digest before any external handoff. */
+  expose(binding: {
+    readonly operationId: string
+    readonly payloadDigest: string
+  }): Promise<void>
+  submit(operationId: string): Promise<StealthPaymentProgress>
+  reconcile(operationId: string): Promise<StealthPaymentProgress>
+  /** Releases only an operation proven never exposed. Exposed uncertainty remains reserved. */
+  release(operationId: string): Promise<boolean>
+  /** Read-only recovery index under the operation owner; independent of chat/UI retention. */
+  list(): Promise<
+    readonly { readonly operationId: string; readonly payloadDigest?: string }[]
+  >
+}
+
+/** Per-member derivation and explicit fee/rent policy remain with the Solana owner.
+ * This declaration does not install an adapter or enable an application flow. */
+export interface SolanaStealthPaymentCapability
+  extends StealthPaymentLifecycleCapability {
+  readonly family: 'solana'
+  quoteReview(
+    request: SolanaPaymentRequest,
+  ): Promise<Readonly<SolanaPaymentOperation>>
+  prepare(operationId: string): Promise<Readonly<SolanaPaymentOperation>>
+  get(
+    operationId: string,
+  ): Promise<Readonly<SolanaPaymentOperation> | undefined>
+}
+
+/** Incoming Solana evidence is recorded and reconciled per original/member context.
+ * The existing owner's methods keep its durable format and finality rules authoritative. */
+export interface SolanaStealthPaymentReceiptCapability
+  extends Pick<
+    ExperimentalSolanaContactPayments,
+    | 'recordIncomingClaim'
+    | 'rebroadcastIncoming'
+    | 'reconcileIncoming'
+    | 'incomingProgress'
+  > {
+  readonly family: 'solana'
 }

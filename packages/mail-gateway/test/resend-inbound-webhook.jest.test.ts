@@ -60,6 +60,25 @@ describe('signed Resend inbound admission', () => {
     expect(result).toEqual({ kind: 'admitted', admissions: [{ kind: 'held' }] });
   });
 
+  it('short-circuits when event data.to has only foreign recipients', async () => {
+    verify.mockReturnValueOnce({ type: 'email.received', data: { email_id: 'email-1', to: ['other@example.com'] } });
+    expect(await make().handle('signed', HEADERS)).toEqual({ kind: 'ignored', admissions: [] });
+    expect(retrieve).not.toHaveBeenCalled();
+  });
+
+  it('ignores mail when retrieved received_for has only foreign recipients', async () => {
+    retrieve.mockResolvedValueOnce({ ...RECEIVED, received_for: ['other@example.com'] });
+    expect(await make().handle('signed', HEADERS)).toEqual({ kind: 'ignored', admissions: [] });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('admits only own-domain recipients when received_for is mixed', async () => {
+    retrieve.mockResolvedValueOnce({ ...RECEIVED, received_for: ['other@example.com', 'alice@signet.mx', 123] });
+    expect((await make().handle('signed', HEADERS)).admissions).toHaveLength(1);
+    expect(admit).toHaveBeenCalledWith(expect.anything(), expect.anything(), 1000n, expect.anything(), 'alice');
+  });
+
   it('passes each verified envelope alias separately even when both resolve to one account', async () => {
     const secondConversation = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     retrieve.mockResolvedValueOnce({ ...RECEIVED, received_for: ['alice@signet.mx', 'bob@signet.mx'] });

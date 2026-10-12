@@ -60,12 +60,12 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function envelopeRecipient(value: unknown, domain: string): string {
-  if (typeof value !== 'string') throw new Error('Malformed Resend envelope recipient');
+function envelopeRecipient(value: unknown, domain: string): string | undefined {
+  if (typeof value !== 'string') return undefined;
   const address = value.trim().toLowerCase();
   const parts = address.split('@');
   if (parts.length !== 2 || parts[1] !== domain || !/^[a-z0-9][a-z0-9._+-]*$/.test(parts[0])) {
-    throw new Error('Resend envelope recipient is outside the configured mail domain');
+    return undefined;
   }
   return parts[0];
 }
@@ -145,6 +145,17 @@ export class ResendInboundWebhook {
     if (event.type !== 'email.received') return { kind: 'ignored', admissions: [] };
     const data = record(event.data);
     if (typeof data.email_id !== 'string' || !data.email_id) throw new Error('Missing Resend email ID');
+    
+    if (Array.isArray(data.to)) {
+      const hasOwnDomain = data.to.some(value => {
+        if (typeof value !== 'string') return false;
+        const address = value.trim().toLowerCase();
+        const parts = address.split('@');
+        return parts.length === 2 && parts[1] === this.domain;
+      });
+      if (!hasOwnDomain) return { kind: 'ignored', admissions: [] };
+    }
+
     const retrieved = record(await this.port.retrieve(data.email_id));
     if (retrieved.id !== data.email_id) throw new Error('Resend retrieved email ID differs from signed event');
 
@@ -153,7 +164,14 @@ export class ResendInboundWebhook {
     if (auth.dmarc !== 'pass') return { kind: 'rejected_unauthenticated', admissions: [] };
     const receivedFor = retrieved.received_for;
     if (!Array.isArray(receivedFor) || receivedFor.length === 0) throw new Error('Missing Resend envelope recipients');
-    const recipients = [...new Set(receivedFor.map(value => envelopeRecipient(value, this.domain)))];
+    
+    const validRecipients: string[] = [];
+    for (const value of receivedFor) {
+      const localPart = envelopeRecipient(value, this.domain);
+      if (localPart) validRecipients.push(localPart);
+    }
+    if (validRecipients.length === 0) return { kind: 'ignored', admissions: [] };
+    const recipients = [...new Set(validRecipients)];
     const scopes = await Promise.all(recipients.map(async localPart => {
       if (isOperationalLocalPart(localPart) || localPart.startsWith('bounce+')) return undefined;
       return this.issuedMailboxLookup(localPart);

@@ -9,8 +9,8 @@
       <q-list class="full-width">
         <q-separator />
         <q-item class="wallet-header-item">
-          <q-item-section class="text-subtitle1 text-weight-bold">
-            {{ $t('walletPanel.title') }}
+          <q-item-section>
+            <q-item-label>{{ $t('walletPanel.title') }}</q-item-label>
           </q-item-section>
         </q-item>
         <q-separator />

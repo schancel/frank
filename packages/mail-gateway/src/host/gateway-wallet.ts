@@ -6,11 +6,13 @@ import level from 'level';
 
 import { hmacSha256 } from '@frank/crypto-box';
 import { createEvmChain } from '@frank/wallet/chain/monad-chain';
+import type { ActiveChain } from '@frank/wallet/chain/active-chain';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle';
 import {
   canonicalWalletPublicBinding,
   createMonadWalletMaterial,
+  evmWalletPoolBindingId,
   type MonadRootBundle,
 } from '@frank/wallet/monad-wallet-material';
 
@@ -109,6 +111,7 @@ export interface OpenGatewayWalletInput {
 }
 
 export interface OpenGatewayWalletResult {
+  readonly chain: ActiveChain;
   readonly wallet: EvmChainWalletHandle;
   readonly identityAddress: string;
   /** Private, domain-separated HMAC key for deterministic per-conversation reply aliases. */
@@ -147,6 +150,8 @@ async function openGatewayWalletMode(
     throw new GatewayWalletStartRefusal('network-mismatch');
   if (config.walletStorageLocation === false || !isAbsolute(config.walletStorageLocation))
     throw new GatewayWalletStartRefusal('wallet-state-not-durable');
+  if (config.requireBoundWalletState !== true)
+    throw new GatewayWalletStartRefusal('wallet-state-binding-not-required');
   let expectedAddress: string;
   try {
     expectedAddress = getAddress(input.expectedIdentityAddress);
@@ -183,6 +188,17 @@ async function openGatewayWalletMode(
       } catch {
         throw new GatewayWalletStartRefusal('wallet-state-missing');
       }
+      const poolBinding = await existingLevelValue(
+        join(walletLocation, 'sub-account-pool'),
+        '__wallet_binding__'
+      );
+      const changeBinding = await existingLevelValue(
+        join(walletLocation, 'change-pool'),
+        '__wallet_binding__'
+      );
+      const expectedPoolBinding = evmWalletPoolBindingId(material, NETWORK, 10143n);
+      if (poolBinding !== expectedPoolBinding || changeBinding !== expectedPoolBinding)
+        throw new GatewayWalletStartRefusal('wallet-state-binding-mismatch');
       const nativeBinding = {
         version: 1,
         registry: ROOT_REGISTRY,
@@ -261,7 +277,8 @@ async function openGatewayWalletMode(
     } finally {
       material.dispose();
     }
-    const wallet = (await createEvmChain(config).createWallet(roots)) as EvmChainWalletHandle;
+    const chain = createEvmChain(config);
+    const wallet = (await chain.createWallet(roots)) as EvmChainWalletHandle;
     try {
       if (
         wallet.chainIdentifier !== NETWORK ||
@@ -289,6 +306,7 @@ async function openGatewayWalletMode(
       const ownedSalt = salt;
       salt = undefined;
       return {
+        chain,
         wallet,
         identityAddress: expectedAddress,
         replyAliasSalt() {

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
@@ -49,6 +49,7 @@ it('real wallet factory refuses empty LevelDB namespaces, then reopens a provisi
         networkTag: 'MONT',
         chainId: 10143,
         walletStorageLocation: walletBase,
+        requireBoundWalletState: true,
         relayBaseUrl: 'http://127.0.0.1:1',
         stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
         defaultStampValueWei: 1n,
@@ -77,6 +78,7 @@ it('real wallet factory refuses empty LevelDB namespaces, then reopens a provisi
     });
 
     // Explicit initial wallet creation is separate from ordinary mail-host startup.
+    rmSync(walletLocation, { recursive: true });
     const first = await createEvmChain(input.chain).createWallet(roots);
     expect({
       chainIdentifier: first.chainIdentifier,
@@ -100,9 +102,38 @@ it('real wallet factory refuses empty LevelDB namespaces, then reopens a provisi
     await opened.close();
     expect(() => opened.replyAliasSalt()).toThrow('wallet-closed');
     const markerPath = join(walletLocation, 'mail-host-admission.json');
-    const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as Record<string, unknown>;
+    const originalMarker = readFileSync(markerPath, 'utf8');
+    const marker = JSON.parse(originalMarker) as Record<string, unknown>;
     writeFileSync(markerPath, JSON.stringify({ ...marker, canonicalBindingId: '0'.repeat(64) }));
     await expect(openGatewayWallet(input)).rejects.toMatchObject({ code: 'host-admission-mismatch' });
+    writeFileSync(markerPath, originalMarker);
+
+    // A partial restore that loses only a spend pool must not silently start a fresh pool.
+    const spendPath = join(walletLocation, 'sub-account-pool');
+    const spendBackup = join(directory, 'spend-backup');
+    cpSync(spendPath, spendBackup, { recursive: true });
+    rmSync(spendPath, { recursive: true });
+    const emptySpend = level(spendPath);
+    await emptySpend.put('temporary', '1');
+    await emptySpend.del('temporary');
+    await emptySpend.close();
+    await expect(openGatewayWallet(input)).rejects.toMatchObject({ code: 'wallet-state-incomplete' });
+    await expect(createEvmChain(input.chain).createWallet(roots)).rejects.toThrow(
+      'Refusing to open an unbound sub-account store'
+    );
+    rmSync(spendPath, { recursive: true });
+    cpSync(spendBackup, spendPath, { recursive: true });
+
+    const changePath = join(walletLocation, 'change-pool');
+    rmSync(changePath, { recursive: true });
+    const emptyChange = level(changePath);
+    await emptyChange.put('temporary', '1');
+    await emptyChange.del('temporary');
+    await emptyChange.close();
+    await expect(openGatewayWallet(input)).rejects.toMatchObject({ code: 'wallet-state-incomplete' });
+    await expect(createEvmChain(input.chain).createWallet(roots)).rejects.toThrow(
+      'Refusing to open an unbound change store'
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

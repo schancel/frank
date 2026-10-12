@@ -612,6 +612,24 @@ export interface RecipientPaymentTransfer {
   rawTx?: string
 }
 
+/** Dedicated type-19 schema-2 recipient claims. Receipt and spendability require adapter
+ * verification; unknown positive schemes remain displayable and must never trigger custody.
+ */
+export interface RecipientAssetPaymentItem {
+  type: 'stealth-asset'
+  transfers: RecipientAssetPaymentTransfer[]
+  memo?: string
+}
+
+export interface RecipientAssetPaymentTransfer extends RecipientPaymentTransfer {
+  derivationScheme: number
+  recipientSpendKey: { keyType: 1 | 2; publicKey: string }
+  /** SPL token-program bytes, stored once alongside the mint in asset.identifier. An absent
+   * program on an unknown scheme remains incomplete metadata, never a runtime asset default. */
+  tokenProgram?: string
+  derivationContext?: string
+}
+
 /**
  * A received item this reader could not interpret, kept exactly as it arrived. It is shown as an
  * unsupported message and is never executed, and no plugin is registered for it. `unknown-type`:
@@ -633,6 +651,7 @@ export interface UnsupportedItem {
 
 export type MessageItem =
   | StealthItem
+  | RecipientAssetPaymentItem
   | P2PKHSendItem
   | TextItem
   | ReplyItem

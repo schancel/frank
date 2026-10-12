@@ -28,6 +28,7 @@ import {
   encodeFrame,
   encodePluginMessageItem,
   isPluginMessageItemFrame,
+  isStealthAssetMessageItemFrame,
   standaloneItemBudget,
   toHex,
   validateFrame,
@@ -52,12 +53,15 @@ export const DEDICATED_ITEM_FRAMES: ReadonlyMap<string, number> = new Map([
   ['text', TYPE_TEXT_MESSAGE_ITEM],
   ['blackjack-hand', TYPE_BLACKJACK_MESSAGE_ITEM],
   ['stealth', TYPE_STEALTH_MESSAGE_ITEM],
+  ['stealth-asset', TYPE_STEALTH_MESSAGE_ITEM],
   ['channel-update', TYPE_CHANNEL_UPDATE],
   ['email', TYPE_EMAIL_MESSAGE_ITEM],
 ])
 
 const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
-  [...DEDICATED_ITEM_FRAMES].map(([type, frameType]) => [frameType, type]),
+  [...DEDICATED_ITEM_FRAMES]
+    .filter(([type]) => type !== 'stealth-asset')
+    .map(([type, frameType]) => [frameType, type]),
 )
 
 /**
@@ -354,7 +358,9 @@ function readItemFrame(
         'this type travels in its own frame',
       )
   } else {
-    const owner = ITEM_TYPE_OF_FRAME.get(child.typeId)
+    const owner = isStealthAssetMessageItemFrame(child)
+      ? 'stealth-asset'
+      : ITEM_TYPE_OF_FRAME.get(child.typeId)
     if (owner === undefined) return unsupported(child, 'unknown-type')
     type = owner
     bytes = child.frame

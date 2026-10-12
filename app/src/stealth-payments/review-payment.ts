@@ -105,19 +105,50 @@ export async function reviewStealthPayment({
     throw new Error(
       'Payment quote does not match the requested amount or available funds',
     )
+  const sources = quote.sources
+  if (sources !== undefined) {
+    const sum = (
+      field: keyof Omit<
+        NonNullable<StealthPaymentQuote['sources']>[number],
+        'sourceAddress'
+      >,
+    ) => sources.reduce((total, source) => total + source[field], 0n)
+    if (
+      sources.length === 0 ||
+      sources.some(
+        source =>
+          !source.sourceAddress ||
+          source.recipientAmountAtomic <= 0n ||
+          source.estimatedNativeFeeAtomic < 0n ||
+          source.nativeBalanceAtomic < source.estimatedNativeFeeAtomic ||
+          source.assetBalanceAtomic <
+            source.recipientAmountAtomic +
+              (quote.asset.kind === 'native'
+                ? source.estimatedNativeFeeAtomic
+                : 0n),
+      ) ||
+      sum('recipientAmountAtomic') !== quote.amountAtomic ||
+      sum('nativeBalanceAtomic') !== quote.nativeBalanceAtomic ||
+      sum('assetBalanceAtomic') !== quote.assetBalanceAtomic ||
+      sum('estimatedNativeFeeAtomic') !== quote.estimatedNativeFeeAtomic ||
+      (quote.sourceAddress !== undefined &&
+        (sources.length !== 1 ||
+          sources[0]?.sourceAddress !== quote.sourceAddress))
+    )
+      throw new Error(
+        'Payment source allocations do not match the reviewed quote',
+      )
+  }
+  const paymentSources =
+    quote.sources?.map(source => source.sourceAddress) ??
+    (quote.sourceAddress === undefined ? [] : [quote.sourceAddress])
   const excludedAddresses =
     stampValue > 0n && quote.chainIdentifier === messagingChain.chainIdentifier
-      ? quote.sourceAddress
-        ? [quote.sourceAddress]
-        : undefined
+      ? [...new Set(paymentSources)]
       : undefined
-  if (
-    stampValue > 0n &&
-    quote.chainIdentifier === messagingChain.chainIdentifier &&
-    !excludedAddresses
-  )
+  if (excludedAddresses?.length === 0)
     throw new Error(
-      'Payment source must be known before reviewing message stamp funding',
+      'Payment sources must be known before reviewing message stamp funding',
     )
   const quoteStamp = async () => {
     await binding.assertCurrent()
@@ -163,6 +194,11 @@ export async function reviewStealthPayment({
     quote: {
       ...quote,
       asset: { ...quote.asset },
+      ...(quote.sources === undefined
+        ? {}
+        : {
+            sources: quote.sources.map(source => ({ ...source })),
+          }),
       recipientDestination: quote.recipientDestination.slice(),
       recipientSpendPublicKey: quote.recipientSpendPublicKey.slice(),
       ephemeralPublicKey: quote.ephemeralPublicKey.slice(),

@@ -5,11 +5,11 @@ jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({ loaded: false, formattedSpendable: '' }),
 }))
 import enUS from '../../i18n/en-us'
-import {
-  stealthAssetKey,
-  type StealthAssetOption,
-  type StealthDialogRequest,
-  type StealthDialogQuoteState,
+import { stealthAssetKey } from '../../stealth-payments/options'
+import type {
+  StealthAssetOption,
+  StealthDialogRequest,
+  StealthDialogQuoteState,
 } from '../../stealth-payments/options'
 
 const assetMetadata: Omit<StealthAssetOption, 'key'>[] = [

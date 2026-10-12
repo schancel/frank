@@ -302,3 +302,68 @@ test('an unfunded messaging wallet prevents confirmation despite funded financia
   ).rejects.toThrow('Messaging wallet cannot fund')
   expect(mockPrepare).not.toHaveBeenCalled()
 })
+
+test('a gathered payment excludes every frozen source from same-chain message funding', async () => {
+  const addresses = ['0x' + '56'.repeat(20), '0x' + '78'.repeat(20)]
+  mockQuote.mockImplementation(async intent => ({
+    ...quote(intent.operationId),
+    sourceAddress: undefined,
+    sources: addresses.map(sourceAddress => ({
+      sourceAddress,
+      recipientAmountAtomic: 10000000n,
+      nativeBalanceAtomic: 50n,
+      assetBalanceAtomic: 10500000n,
+      estimatedNativeFeeAtomic: 5n,
+    })),
+  }))
+  const captured = await reviewStealthPayment({
+    request,
+    stampValue: 7n,
+    isCurrent: () => true,
+  })
+  expect(mockStampQuote).toHaveBeenCalledWith({
+    wallet: mockWallet,
+    stampValue: 7n,
+    excludedAddresses: addresses,
+  })
+  expect(captured.maxNativeFeeAtomic).toBe(10n)
+  // Public display data cannot redirect the private source exclusion on confirmation.
+  Object.assign(captured.quote.sources![0], { sourceAddress: request.address })
+  await captured.prepare()
+  expect(mockStampQuote).toHaveBeenLastCalledWith({
+    wallet: mockWallet,
+    stampValue: 7n,
+    excludedAddresses: addresses,
+  })
+  expect(mockPrepare).toHaveBeenCalledWith(
+    expect.objectContaining({ maxNativeFeeAtomic: 10n }),
+  )
+})
+
+test('an aggregate balance cannot conceal a source without its own transaction fees', async () => {
+  mockQuote.mockImplementation(async intent => ({
+    ...quote(intent.operationId),
+    sourceAddress: undefined,
+    sources: [
+      {
+        sourceAddress: '0x' + '56'.repeat(20),
+        recipientAmountAtomic: 10000000n,
+        nativeBalanceAtomic: 0n,
+        assetBalanceAtomic: 10500000n,
+        estimatedNativeFeeAtomic: 5n,
+      },
+      {
+        sourceAddress: '0x' + '78'.repeat(20),
+        recipientAmountAtomic: 10000000n,
+        nativeBalanceAtomic: 100n,
+        assetBalanceAtomic: 10500000n,
+        estimatedNativeFeeAtomic: 5n,
+      },
+    ],
+  }))
+  await expect(
+    reviewStealthPayment({ request, stampValue: 7n, isCurrent: () => true }),
+  ).rejects.toThrow('source allocations')
+  expect(mockStampQuote).not.toHaveBeenCalled()
+  expect(mockPrepare).not.toHaveBeenCalled()
+})

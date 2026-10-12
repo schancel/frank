@@ -1497,7 +1497,8 @@ function hashTypeAccepted(hashType: number, family: ChainFamily): boolean {
   const base = hashType & 0x1f
   if (base < 1 || base > 3) return false
   const extra = hashType & ~0x1f
-  if (family === 'btc') return extra === 0 || extra === 0x80
+  if (family === 'btc' || family === 'doge')
+    return extra === 0 || extra === 0x80
   const withoutFork = extra & ~0x40
   return (extra & 0x40) === 0x40 && (withoutFork === 0 || withoutFork === 0x80)
 }
@@ -1608,7 +1609,7 @@ function digestFor(
   if (tx === undefined || inputIndex === undefined) return null
   const xpiMask = hashType & 0x60
   const algorithm: SighashAlgorithm =
-    chain.family === 'btc'
+    chain.family === 'btc' || chain.family === 'doge'
       ? 'legacy'
       : chain.family === 'xpi'
       ? xpiMask === 0x40

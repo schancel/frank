@@ -1,5 +1,5 @@
 // @frank/nakamoto public surface. Browser-safe: no Node built-ins.
-// Per-chain entries: ./btc ./bch ./xec ./xpi.
+// Per-chain entries: ./btc ./bch ./xec ./xpi ./doge.
 // Feature entries: ./integer ./script ./script-num ./base58 ./base58check
 // ./varint ./reader ./convert-bits ./base32 ./encoding-error ./constructors
 // ./bech32 ./cashaddr ./address ./backend ./keys ./hd ./transaction ./sign
@@ -22,6 +22,7 @@ export {
   BTC_MAINNET,
   BTC_REGTEST,
   BTC_TESTNET,
+  DOGE_TESTNET,
   CHAINS,
   XEC_MAINNET,
   XEC_REGTEST,

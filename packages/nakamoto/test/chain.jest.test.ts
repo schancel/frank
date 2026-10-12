@@ -5,6 +5,7 @@ import {
   BCH_MAINNET,
   BTC_MAINNET,
   BTC_TESTNET,
+  DOGE_TESTNET,
   CHAINS,
   XEC_MAINNET,
   XPI_MAINNET,
@@ -15,12 +16,29 @@ import {
 } from '../src'
 
 describe('chain descriptors', () => {
-  test('there are twelve chains and no default', () => {
-    expect(CHAINS).toHaveLength(12)
+  test('there are thirteen chains and no default', () => {
+    expect(CHAINS).toHaveLength(13)
     expect(Object.isFrozen(CHAINS)).toBe(true)
     const keys = CHAINS.map(chain => `${chain.family}:${chain.network}`)
-    expect(new Set(keys).size).toBe(12)
+    expect(new Set(keys).size).toBe(13)
     expect(getChain('btc', 'mainnet')).toBe(BTC_MAINNET)
+  })
+
+  test('Doge testnet uses Dogecoin Core versions and legacy signatures only', () => {
+    expect(DOGE_TESTNET).toMatchObject({
+      protocolId: 'doge-testnet',
+      family: 'doge',
+      network: 'testnet',
+      pubkeyHashVersion: 113,
+      scriptHashVersion: 196,
+      wifVersion: 241,
+      p2pMagic: 0xfcc1b7dc,
+      p2pPort: 44556,
+      registeredSlip44: 3,
+      sighash: { kind: 'legacy-only' },
+    })
+    expect(DOGE_TESTNET.bech32Hrp).toBeNull()
+    expect(DOGE_TESTNET.cashaddrPrefix).toBeNull()
   })
 
   test('Nakamoto descriptors conform to the shared protocol registry', () => {

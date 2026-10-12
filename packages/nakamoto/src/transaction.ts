@@ -1015,7 +1015,11 @@ function sighashLotus(
 
 function allowed(chain: ChainDescriptor, algorithm: SighashAlgorithm): boolean {
   if (algorithm === 'legacy') {
-    return chain.family === 'btc' || chain.family === 'xpi'
+    return (
+      chain.family === 'btc' ||
+      chain.family === 'doge' ||
+      chain.family === 'xpi'
+    )
   }
   if (algorithm === 'bip143' || algorithm === 'bip341') {
     return chain.sighash.kind === 'btc-legacy-and-segwit'

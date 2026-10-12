@@ -2,7 +2,7 @@
 // Bytes below are copied from the cited node sources. Fields that were not
 // pinned stay `unpinned` instead of inheriting another chain's value.
 
-export type ChainFamily = 'btc' | 'bch' | 'xec' | 'xpi'
+export type ChainFamily = 'btc' | 'bch' | 'xec' | 'xpi' | 'doge'
 export type NetworkKind = 'mainnet' | 'testnet' | 'regtest'
 
 export type MessageMagic =
@@ -29,6 +29,7 @@ export type DisplayUnit =
 
 export type SighashFamily =
   | { readonly kind: 'btc-legacy-and-segwit' }
+  | { readonly kind: 'legacy-only'; readonly source: string }
   | {
       readonly kind: 'forkid'
       readonly forkId: 0
@@ -39,6 +40,7 @@ export type SighashFamily =
 
 export type HeaderShape =
   | { readonly kind: 'bitcoin-80' }
+  | { readonly kind: 'auxpow-variable'; readonly source: string }
   | {
       readonly kind: 'not-bitcoin-80'
       readonly genesisSizeBytes: number

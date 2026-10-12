@@ -25,6 +25,7 @@ import {
   BTC_MAINNET,
   BTC_REGTEST,
   BTC_TESTNET,
+  DOGE_TESTNET,
   XEC_MAINNET,
   XEC_TESTNET,
   XPI_MAINNET,
@@ -140,6 +141,24 @@ function lotusAddressWithType(type: number): string {
 }
 
 describe('address codecs', () => {
+  test('Doge testnet P2PKH is Base58Check with its own version', () => {
+    const hash = pubkeyHashFromBytes(fromHex(LOTUS_PKH))
+    if (!hash.ok) throw new Error('hash')
+    const destination: Destination = { kind: 'p2pkh', hash: hash.value }
+    const address = must(
+      encodeAddress(destination, DOGE_TESTNET, 'base58check'),
+    )
+    expect(address.startsWith('n')).toBe(true)
+    expect(must(decodeAddress(address, DOGE_TESTNET)).destination).toEqual(
+      destination,
+    )
+    expect(decodeAddress(address, BTC_TESTNET)).toMatchObject({
+      ok: false,
+      error: { code: 'wrong-prefix' },
+    })
+    expect(encodeAddress(destination, DOGE_TESTNET, 'bech32').ok).toBe(false)
+  })
+
   test('Lotus address vectors for a pubkey hash', () => {
     const hash = pubkeyHashFromBytes(fromHex(LOTUS_PKH))
     if (!hash.ok) throw new Error('hash')

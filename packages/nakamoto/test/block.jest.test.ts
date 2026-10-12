@@ -4,6 +4,7 @@ import { crypto as oldCrypto } from 'bitcore-lib-xpi'
 import {
   BCH_MAINNET,
   BTC_MAINNET,
+  DOGE_TESTNET,
   XEC_MAINNET,
   XPI_MAINNET,
 } from '../src/chain/index.js'
@@ -111,6 +112,18 @@ function bitcoinGenesis(): BitcoinHeader {
 }
 
 describe('block headers and merkle roots', () => {
+  test('Dogecoin AuxPoW headers are rejected until their variable proof is parsed', () => {
+    const prefix = fromHex(BTC_GENESIS_HEADER)
+    expect(parseHeader(prefix, DOGE_TESTNET)).toMatchObject({
+      ok: false,
+      error: { code: 'block-header-shape' },
+    })
+    expect(parseMerkleBlock(prefix, DOGE_TESTNET)).toMatchObject({
+      ok: false,
+      error: { code: 'block-header-shape' },
+    })
+  })
+
   test('bitcoin genesis header round-trips and matches Core', () => {
     const bytes = fromHex(BTC_GENESIS_HEADER)
     expect(bytes.length).toBe(BITCOIN_HEADER_BYTES)

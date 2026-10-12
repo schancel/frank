@@ -46,6 +46,7 @@ import {
   BTC_TESTNET,
   BCH_MAINNET,
   BCH_TESTNET,
+  DOGE_TESTNET,
 } from "@frank/nakamoto";
 import type {
   ChainDescriptor,
@@ -123,15 +124,6 @@ const DOGE_MAINNET: ChainDescriptor = Object.freeze({
   bech32Hrp: null,
   cashaddrPrefix: null,
   registeredSlip44: 3,
-});
-
-const DOGE_TESTNET: ChainDescriptor = Object.freeze({
-  ...BTC_TESTNET,
-  pubkeyHashVersion: 0x71,
-  scriptHashVersion: 0xc4,
-  bech32Hrp: null,
-  cashaddrPrefix: null,
-  registeredSlip44: 1,
 });
 
 const LTC_MAINNET: ChainDescriptor = Object.freeze({
@@ -223,13 +215,13 @@ export const UTXO_NETWORKS: Readonly<Record<string, UtxoNetwork>> =
       accountPath: "m/44'/3'/0'",
       sighashAlgorithm: "legacy",
       sighashType: SIGHASH_ALL,
-      inputVbytes: 148,
+      inputVbytes: 149,
       overheadVbytes: 10,
       minFeeRate: 1000n,
-      estimateFee: true,
+      estimateFee: false,
       dust: 1_000_000n,
     }),
-    // Dogecoin testnet: P2PKH base58check (BIP44 coin 3), legacy sighash.
+    // Dogecoin Core testnet: legacy P2PKH; keep the already published BIP44 coin-3 path.
     "doge-testnet": Object.freeze({
       chainIdentifier: "doge-testnet",
       descriptor: DOGE_TESTNET,
@@ -238,10 +230,11 @@ export const UTXO_NETWORKS: Readonly<Record<string, UtxoNetwork>> =
       accountPath: "m/44'/3'/0'",
       sighashAlgorithm: "legacy",
       sighashType: SIGHASH_ALL,
-      inputVbytes: 148,
+      inputVbytes: 149,
       overheadVbytes: 10,
+      // Core wallet recommendation: 0.01 DOGE/kB, 0.01 DOGE discard threshold.
       minFeeRate: 1000n,
-      estimateFee: true,
+      estimateFee: false,
       dust: 1_000_000n,
     }),
     // Litecoin mainnet: native segwit (BIP84 coin 2), BIP143 signatures.

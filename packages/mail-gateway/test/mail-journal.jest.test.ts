@@ -1,5 +1,5 @@
 /**
- * Mail journal (#1237 G1, format 4 with mailbox issuance). File-backed SQLite in a temp
+ * Mail journal (#1237 G1, format 5 with mailbox issuance). File-backed SQLite in a temp
  * directory, real close and reopen, no database mocks. Each test names the
  * later-stage failure it prevents. `J1`..`J25` are the acceptance tests of the
  * contract's section 21.6.
@@ -319,7 +319,7 @@ describe('open, format marker and the single connection', () => {
     expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
     expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' });
     expect(db.prepare('PRAGMA locking_mode').get()).toEqual({ locking_mode: 'exclusive' });
-    expect(MAIL_JOURNAL_FORMAT).toBe(4);
+    expect(MAIL_JOURNAL_FORMAT).toBe(5);
     expect(journal.frankCursor()).toEqual({});
   });
 
@@ -357,8 +357,8 @@ describe('open, format marker and the single connection', () => {
   // Prevents: a build silently re-creating or reinterpreting a journal it cannot read, which
   // would forget which mails were already relayed and pay for them again.
   it.each([
-    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 4 only/],
-    ['a later format', 'UPDATE mail_journal_meta SET format = 5', /format 5 is not supported/],
+    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 5 only/],
+    ['a later format', 'UPDATE mail_journal_meta SET format = 6', /format 6 is not supported/],
     ['no marker row', 'DELETE FROM mail_journal_meta', /format marker is missing/],
     ['no marker table', 'DROP TABLE mail_journal_meta', /format marker is missing/],
     ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (3), (3)', /format marker is missing/],
@@ -1333,6 +1333,8 @@ describe('Frank → email and the cross-direction rule', () => {
 
     const one = createdJob(first.journal, ALICE, '<f1@frank.org>', 'dave@mail.example').jobId;
     const two = createdJob(first.journal, ALICE, '<f1@frank.org>', 'erin@mail.example').jobId;
+    first.journal.claimOutboundJob(one);
+    first.journal.claimOutboundJob(two);
     first.journal.markOutboundJobFailed(one, '550 no');
     first.journal.markOutboundJobFailed(two, '550 no');
 
@@ -1356,6 +1358,19 @@ describe('Frank → email and the cross-direction rule', () => {
 });
 
 describe('outbound jobs and send slots', () => {
+  it('persists an exclusive send claim before any provider effect and holds ambiguous outcomes for reconciliation', () => {
+    const first = open();
+    const message = bridged(first.journal, ALICE, 'claim', '<claim@frank.org>').message;
+    const job = createdJob(first.journal, ALICE, message.rfcMessageId, 'dave@mail.example');
+    expect(first.journal.claimOutboundJob(job.jobId)).toMatchObject({ state: 'submitting', submissionStartedAtMs: expect.any(Number) });
+    expect(() => first.journal.claimOutboundJob(job.jobId)).toThrow(MailJournalStateError);
+    const again = reopen().journal;
+    expect(again.listDueOutboundJobs(100000, 10)).toEqual([]);
+    expect(again.listUncertainOutboundJobs().map((row) => row.jobId)).toEqual([job.jobId]);
+    expect(again.markOutboundJobUncertain(job.jobId, 'provider timeout')).toMatchObject({ state: 'uncertain', attempts: 1 });
+    expect(reopen().journal.listDueOutboundJobs(100000, 10)).toEqual([]);
+    expect(() => reopen().journal.claimOutboundJob(job.jobId)).toThrow(MailJournalStateError);
+  });
   // C5, C6. Prevents: a job re-created with new bytes (a second, different email for one
   // message), an email with no recorded message, and a guessable bounce address changing state.
   it('adds one job per recipient, never replaces its bytes, and moves it only along its states', () => {
@@ -1389,15 +1404,18 @@ describe('outbound jobs and send slots', () => {
 
     expect(journal.listDueOutboundJobs(99, 10)).toEqual([]);
     expect(journal.listDueOutboundJobs(100, 10).map((j) => j.jobId)).toEqual([one.job.jobId, two.job.jobId]);
+    expect(journal.claimOutboundJob(one.job.jobId)).toMatchObject({ state: 'submitting' });
     expect(journal.deferOutboundJob(one.job.jobId, 500, '451 later')).toMatchObject({
       state: 'pending',
       attempts: 1,
       nextAttemptAtMs: 500,
       lastError: '451 later',
     });
+    journal.claimOutboundJob(one.job.jobId);
     expect(journal.markOutboundJobSent(one.job.jobId)).toMatchObject({ state: 'sent', attempts: 2 });
     expect(journal.markOutboundJobSent(one.job.jobId)).toMatchObject({ state: 'sent', attempts: 2 });
     expect(() => journal.markOutboundJobFailed(one.job.jobId, 'late')).toThrow(MailJournalStateError);
+    journal.claimOutboundJob(two.job.jobId);
     expect(journal.markOutboundJobFailed(two.job.jobId, '550 no')).toMatchObject({ state: 'failed', attempts: 1 });
     expect(journal.markOutboundJobFailed(two.job.jobId, 'again')).toMatchObject({ lastError: '550 no' });
     expect(() => journal.markOutboundJobSent(two.job.jobId)).toThrow(MailJournalStateError);
@@ -1569,7 +1587,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     for (let i = 0; i < 2; i++) {
       expect(() => open()).toThrow(MailJournalOpenError);
       expect(() => open()).toThrow(
-        /format 1 is not supported; this build reads format 4 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
+        /format 1 is not supported; this build reads format 5 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
       );
     }
     expect(fileHash()).toBe(before);
@@ -1594,7 +1612,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
 
     expect('MAIL_JOURNAL_DDL' in packageIndex).toBe(false);
     expect(Object.keys(packageIndex).filter((name) => /DDL/.test(name))).toEqual([]);
-    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(4);
+    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(5);
     expect(packageIndex.MAIL_JOURNAL_TABLES).toBe(MAIL_JOURNAL_TABLES);
 
     const { db } = open();
@@ -1715,6 +1733,7 @@ describe('G1b: an outbound job is keyed by the email it carries (21.1)', () => {
     const { jobA, inputB } = twoMessagesOneSealedId(first.journal);
     first.journal.recordFrankMessage({ ...inputB, emitted: { rfcMessageId: contestedId(ikey('B')), mailKey: key('B') } });
     const jobB = createdJob(first.journal, ALICE, contestedId(ikey('B')), R, 'email of B');
+    first.journal.claimOutboundJob(jobA.jobId);
     first.journal.markOutboundJobFailed(jobA.jobId, '550 no');
     first.journal.markOutboundJobBounced(jobB.bounceToken);
     const spent = (journal: MailJournal) => ['A', 'B'].map((name) => journal.findFrankInbound(digest(name))!.spent);
@@ -1763,6 +1782,7 @@ describe('G1b: an outbound job is keyed by the email it carries (21.1)', () => {
     const message = bridged(journal, ALICE, 'A', '<f1@frank.org>', { stampValue: '100' }).message;
     const pending = createdJob(journal, ALICE, message.rfcMessageId, 'p@x.example').jobId;
     const sent = createdJob(journal, ALICE, message.rfcMessageId, 's@x.example').jobId;
+    journal.claimOutboundJob(sent);
     journal.markOutboundJobSent(sent);
     bridge(journal, ALICE, 'A', '<f1@frank.org>', { digestName: 'A-resealed', stampValue: '100' });
     const base = { receivedTimeMs: 1, stampValue: '100' };

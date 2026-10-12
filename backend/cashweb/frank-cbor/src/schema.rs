@@ -23,7 +23,8 @@ use crate::model::{
     AccountRef, BlackjackAction, BlackjackFields, BlackjackHandAction, BlackjackHandFields,
     BlackjackHandMessageItem, BlackjackHandV3Action, BlackjackHandV3Fields,
     BlackjackHandV3MessageItem, BlackjackHandV3Move, BlackjackMessageItem, BlackjackOutcome,
-    PaymentValue, PreviewDirectoryRoles, Timestamp, TopicPostAuthor,
+    NativeStealthItem, PaymentValue, PreviewDirectoryRoles, StealthPaymentEntry,
+    StealthPaymentItem, StealthQuantity, StealthTransfer, Timestamp, TopicPostAuthor,
 };
 use crate::model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
@@ -639,6 +640,8 @@ pub(crate) enum Draft {
     Blackjack(BlackjackMessageItem),
     BlackjackHand(BlackjackHandMessageItem),
     BlackjackHandV3(BlackjackHandV3MessageItem),
+    NativeStealth(NativeStealthItem),
+    StealthPayment(StealthPaymentItem),
     Text {
         text: String,
         unknown: Vec<(u64, CborValue)>,
@@ -1506,6 +1509,7 @@ pub(crate) fn parse_draft(
         crate::limits::TYPE_BLACKJACK_ITEM => {
             Ok(Draft::Blackjack(blackjack_payload(payload, path)?))
         }
+        crate::limits::TYPE_STEALTH_ITEM => parse_stealth(payload, allow, schema.effective, path),
         crate::limits::TYPE_TEXT_ITEM => {
             let map = fields(Some(payload), path, &[0], &[], true, allow)?;
             Ok(Draft::Text {
@@ -1651,6 +1655,14 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             check_key_type(subject, &format!("{path}.1"))?;
             check_key_type(prior_authority, &format!("{path}.2"))?;
             check_key_type(new_key, &format!("{path}.4"))?;
+            Ok(())
+        }
+        Draft::NativeStealth(item) => check_key_type(&item.ephemeral, &format!("{path}.1")),
+        Draft::StealthPayment(item) => {
+            for (i, entry) in item.entries.iter().enumerate() {
+                check_key_type(&entry.recipient, &format!("{path}.0[{i}].2"))?;
+                check_key_type(&entry.transfer.ephemeral, &format!("{path}.0[{i}].0.6.0"))?;
+            }
             Ok(())
         }
         Draft::Encrypted { .. }
@@ -1952,5 +1964,140 @@ fn blackjack_hand_v3_payload(
         game_id,
         seq,
         action,
+    })
+}
+
+fn parse_stealth(
+    payload: &CborValue,
+    allow: bool,
+    version: u32,
+    path: &str,
+) -> Result<Draft, CodecError> {
+    if version < 2 {
+        let m = fields(Some(payload), path, &[0, 1, 2, 3], &[4], true, allow)?;
+        return Ok(Draft::NativeStealth(NativeStealthItem {
+            network: tstr(m.get(0), path, 1, 64)?,
+            ephemeral: account(m.get(1), path)?,
+            transactions: as_list(m.get(2), path, 1, 16)?
+                .iter()
+                .map(|v| bstr(Some(v), path, 1, 16384))
+                .collect::<Result<_, _>>()?,
+            amount: u64_in(m.get(3), path, 0, u64::MAX)?,
+            memo: if m.has(4) {
+                Some(tstr(m.get(4), path, 0, 1024)?)
+            } else {
+                None
+            },
+            unknown: m.unknown,
+        }));
+    }
+    let m = fields(Some(payload), path, &[0], &[1], true, allow)?;
+    let entries = as_list(m.get(0), path, 1, 16)?
+        .iter()
+        .enumerate()
+        .map(|(i, v)| stealth_entry(v, &format!("{path}.0[{i}]")))
+        .collect::<Result<_, _>>()?;
+    Ok(Draft::StealthPayment(StealthPaymentItem {
+        entries,
+        memo: if m.has(1) {
+            Some(tstr(m.get(1), path, 0, 1024)?)
+        } else {
+            None
+        },
+        unknown: m.unknown,
+    }))
+}
+
+fn stealth_entry(v: &CborValue, path: &str) -> Result<StealthPaymentEntry, CodecError> {
+    let m = fields(Some(v), path, &[0, 1, 2], &[3, 4], false, false)?;
+    let t = fields(
+        m.get(0),
+        path,
+        &[0, 1, 3, 4, 6],
+        &[2, 5, 7, 8],
+        false,
+        false,
+    )?;
+    let metadata = fields(t.get(6), path, &[0], &[1], false, false)?;
+    let ephemeral = account(metadata.get(0), path)?;
+    let recipient = account(m.get(2), path)?;
+    if ephemeral.key_type != recipient.key_type {
+        return Err(bad(path, "recipient and ephemeral key types differ"));
+    }
+    let value = match t.get(4) {
+        Some(CborValue::Bytes(b)) if b.len() == 32 && b.iter().any(|v| *v != 0) => {
+            StealthQuantity::Quantity256(b.as_slice().try_into().expect("validated length"))
+        }
+        Some(CborValue::Int(n)) if *n > 0 && *n <= u64::MAX as i128 => {
+            StealthQuantity::Uint64(*n as u64)
+        }
+        _ => {
+            return Err(bad(
+                path,
+                "transfer value must be a positive uint64 or 32-byte quantity",
+            ))
+        }
+    };
+    let view_tag = if metadata.has(1) {
+        match metadata.get(1) {
+            Some(CborValue::Int(n)) if *n >= 0 && *n <= 65535 => {}
+            Some(CborValue::Bytes(b)) if !b.is_empty() && b.len() <= 32 => {}
+            _ => return Err(bad(path, "invalid view tag")),
+        }
+        metadata.get(1).cloned()
+    } else {
+        None
+    };
+    let scheme = u32_in(m.get(1), path, 1, u32::MAX)?;
+    if m.has(3) && !t.has(5) {
+        return Err(bad(path, "token program requires token"));
+    }
+    if scheme == 1 && (recipient.key_type != 1 || m.has(3) || m.has(4)) {
+        return Err(bad(
+            path,
+            "scheme 1 requires secp256k1 keys and no program/context",
+        ));
+    }
+    Ok(StealthPaymentEntry {
+        transfer: StealthTransfer {
+            network: tstr(t.get(0), path, 1, 64)?,
+            tx_id: bstr(t.get(1), path, 1, 128)?,
+            vout: if t.has(2) {
+                Some(u32_in(t.get(2), path, 0, u32::MAX)?)
+            } else {
+                None
+            },
+            destination: bstr(t.get(3), path, 1, 128)?,
+            value,
+            token: if t.has(5) {
+                Some(bstr(t.get(5), path, 1, 128)?)
+            } else {
+                None
+            },
+            ephemeral,
+            view_tag,
+            commitment: if t.has(7) {
+                Some(bstr(t.get(7), path, 32, 32)?)
+            } else {
+                None
+            },
+            raw_tx: if t.has(8) {
+                Some(bstr(t.get(8), path, 1, 16384)?)
+            } else {
+                None
+            },
+        },
+        scheme,
+        recipient,
+        token_program: if m.has(3) {
+            Some(bstr(m.get(3), path, 32, 32)?)
+        } else {
+            None
+        },
+        scheme_context: if m.has(4) {
+            Some(bstr(m.get(4), path, 1, 1024)?)
+        } else {
+            None
+        },
     })
 }

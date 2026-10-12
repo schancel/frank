@@ -776,6 +776,10 @@ pub enum TypedPayload {
     BlackjackHandItem(BlackjackHandMessageItem),
     /// Type 18 schema 3, the closed hand shapes with entropy from both sides.
     BlackjackHandV3Item(BlackjackHandV3MessageItem),
+    /// Type 19 schema 1, native recovery.
+    NativeStealthItem(NativeStealthItem),
+    /// Type 19 schema 2, exact multiasset transfer descriptions.
+    StealthPaymentItem(StealthPaymentItem),
     /// Type 17.
     TextItem {
         /// Field 0.
@@ -1036,3 +1040,76 @@ pub struct BlackjackHandV3Fields<H, Q> {
 
 /// Closed type-18 schema-3 wire projection; exact frame bytes stay on ParsedFrame.
 pub type BlackjackHandV3MessageItem = BlackjackHandV3Fields<Vec<u8>, Vec<u8>>;
+
+/// Exact transfer quantity without a chain-family interpretation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StealthQuantity {
+    /// Positive uint64 base units.
+    Uint64(u64),
+    /// Positive unsigned 256-bit big-endian base units.
+    Quantity256([u8; 32]),
+}
+/// Native schema-1 recovery data, with exact uint64 amount.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeStealthItem {
+    /// Exact wire network tag; interpreted by chain composition.
+    pub network: String,
+    /// Published ephemeral account reference.
+    pub ephemeral: AccountRef,
+    /// Signed transaction bytes, without broadcast authority.
+    pub transactions: Vec<Vec<u8>>,
+    /// Exact native amount.
+    pub amount: u64,
+    /// Optional author text.
+    pub memo: Option<String>,
+    /// Compatible future outer fields, preserved as data.
+    pub unknown: Vec<(u64, CborValue)>,
+}
+/// Structurally validated nested payment transfer; chain settlement is not established.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StealthTransfer {
+    /// Exact wire network tag; interpreted by chain composition.
+    pub network: String,
+    /// Chain-specific transaction identifier bytes.
+    pub tx_id: Vec<u8>,
+    /// Optional UTXO output index.
+    pub vout: Option<u32>,
+    /// Chain-specific destination bytes.
+    pub destination: Vec<u8>,
+    /// Exact positive transfer quantity.
+    pub value: StealthQuantity,
+    /// Optional chain-specific token identifier.
+    pub token: Option<Vec<u8>>,
+    /// Published ephemeral account reference.
+    pub ephemeral: AccountRef,
+    /// Optional uint16 or bounded byte-string view tag.
+    pub view_tag: Option<CborValue>,
+    /// Optional 32-byte commitment.
+    pub commitment: Option<Vec<u8>>,
+    /// Optional original signed transaction bytes.
+    pub raw_tx: Option<Vec<u8>>,
+}
+/// Schema-2 entry. Unknown schemes are data, never execution authorization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StealthPaymentEntry {
+    /// Validated nested transfer description.
+    pub transfer: StealthTransfer,
+    /// Numeric scheme; only 1 is allocated here.
+    pub scheme: u32,
+    /// Intended recipient spend public key.
+    pub recipient: AccountRef,
+    /// Optional 32-byte token program, requiring a token identifier.
+    pub token_program: Option<Vec<u8>>,
+    /// Optional opaque context for a future scheme.
+    pub scheme_context: Option<Vec<u8>>,
+}
+/// Bounded schema-2 stealth payment set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StealthPaymentItem {
+    /// Ordered bounded transfer entries.
+    pub entries: Vec<StealthPaymentEntry>,
+    /// Optional author text.
+    pub memo: Option<String>,
+    /// Compatible future outer fields, preserved as data.
+    pub unknown: Vec<(u64, CborValue)>,
+}

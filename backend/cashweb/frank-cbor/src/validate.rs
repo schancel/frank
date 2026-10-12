@@ -99,7 +99,10 @@ pub fn default_context() -> ValidationContext {
                     || type_id == crate::limits::TYPE_BLACKJACK_ITEM
                 {
                     3
-                } else if type_id == TYPE_RECIPIENT_PAYLOAD || type_id == TYPE_TOPIC_POST {
+                } else if type_id == TYPE_RECIPIENT_PAYLOAD
+                    || type_id == TYPE_TOPIC_POST
+                    || type_id == crate::limits::TYPE_STEALTH_ITEM
+                {
                     2
                 } else {
                     1
@@ -409,6 +412,17 @@ fn process_frame(
                 location,
             );
         }
+    }
+    if env.type_id == crate::limits::TYPE_STEALTH_ITEM
+        && env.schema_version >= 2
+        && env.min_reader_version < 2
+    {
+        return Err(fail(
+            ErrorCategory::Unsupported,
+            ErrorStage::S7,
+            "type 19 schema 2 requires min_reader_version at least 2",
+            location,
+        ));
     }
     // Suite 1 authenticates the complete schema-2 field set. A future type-5 schema needs an
     // updated authenticated context before this reader may project or retain its extensions.
@@ -1289,6 +1303,8 @@ fn open_children(
         Draft::Blackjack(item) => Ok(TypedPayload::BlackjackItem(item)),
         Draft::BlackjackHand(item) => Ok(TypedPayload::BlackjackHandItem(item)),
         Draft::BlackjackHandV3(item) => Ok(TypedPayload::BlackjackHandV3Item(item)),
+        Draft::NativeStealth(item) => Ok(TypedPayload::NativeStealthItem(item)),
+        Draft::StealthPayment(item) => Ok(TypedPayload::StealthPaymentItem(item)),
         Draft::Text { text, unknown } => Ok(TypedPayload::TextItem { text, unknown }),
     }
 }

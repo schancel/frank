@@ -183,7 +183,9 @@ export const en = {
   multi_tab_notice:
     'To protect your wallet and prevent conflicting transactions, only one tab can access your account at a time.',
   use_frank_here: 'Use Frank here',
-  switch_to_open_tab: 'Switch to open tab',
+  switch_to_open_tab: 'Find open Frank tab',
+  manual_tab_switch_hint:
+    'Select the Frank tab in your browser’s tab bar or tab overview. If you cannot find it, choose “Use Frank here” to move your account to this tab.',
   tab_yielded_notice: 'Frank is active in another tab or window.',
 }
 
@@ -375,7 +377,9 @@ export const fr = {
   multi_tab_notice:
     'Pour protéger votre portefeuille et éviter les transactions contradictoires, un seul onglet peut accéder à votre compte à la fois.',
   use_frank_here: 'Utiliser Frank ici',
-  switch_to_open_tab: 'Basculer vers l’onglet ouvert',
+  switch_to_open_tab: 'Retrouver l’onglet Frank ouvert',
+  manual_tab_switch_hint:
+    'Sélectionnez l’onglet Frank dans la barre d’onglets ou la vue d’ensemble du navigateur. Si vous ne le trouvez pas, choisissez « Utiliser Frank ici » pour déplacer votre compte vers cet onglet.',
   tab_yielded_notice:
     'Frank est actif dans un autre onglet ou une autre fenêtre.',
 }

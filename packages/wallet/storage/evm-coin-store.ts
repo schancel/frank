@@ -761,6 +761,105 @@ async function changeStoredCoin(
   throw new Error('Received account changed during update; retry required')
 }
 
+/** Registers the first exact native payment after an account-only recovery note. This changes
+ * claim evidence only, never observed native balances or ERC20 positions. The store is already
+ * bound to the wallet/chain by composition; caller derivation must match its immutable account. */
+export async function registerStoredEvmNativePayment(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  payment: {
+    chainIdentifier: string
+    ephemeralPubKey: string
+    rawTransaction: string
+    amountWei: bigint
+    payloadDigest: string
+  },
+): Promise<EvmCoin> {
+  return registerStoredEvmNativePaymentSet(store, address, {
+    ...payment,
+    rawTransactions: [payment.rawTransaction],
+  })
+}
+
+/** One complete immutable claim, registered atomically; values are claim evidence, never funds. */
+export async function registerStoredEvmNativePaymentSet(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  payment: {
+    chainIdentifier: string
+    ephemeralPubKey: string
+    rawTransactions: readonly string[]
+    amountWei: bigint
+    payloadDigest: string
+  },
+): Promise<EvmCoin> {
+  payment = { ...payment, rawTransactions: [...payment.rawTransactions] }
+  const chain = Object.prototype.hasOwnProperty.call(
+    PROTOCOL_CHAINS,
+    payment.chainIdentifier,
+  )
+    ? PROTOCOL_CHAINS[payment.chainIdentifier]
+    : undefined
+  if (!chain || chain.family !== 'evm')
+    throw new Error('Unsupported canonical EVM chain')
+  if (
+    !payment.rawTransactions.length ||
+    payment.rawTransactions.length > 16 ||
+    payment.amountWei <= 0n ||
+    payment.amountWei >= 1n << 256n
+  )
+    throw new Error('Invalid native payment set')
+  const key = getAddress(address).toLowerCase()
+  const hashes = new Set<string>(),
+    sources = new Set<string>()
+  let value = 0n
+  const raws = payment.rawTransactions.map(raw => {
+    const tx = Transaction.from(raw)
+    if (
+      !tx.isSigned() ||
+      tx.chainId !== BigInt(chain.nativeChainId!) ||
+      tx.to?.toLowerCase() !== key ||
+      tx.data !== '0x' ||
+      tx.value <= 0n
+    )
+      throw new Error('Native transaction does not match the claimed payment')
+    const source = `${tx.from!.toLowerCase()}:${tx.nonce}`
+    if (hashes.has(tx.hash!) || sources.has(source))
+      throw new Error('Duplicate native payment transaction or source nonce')
+    hashes.add(tx.hash!)
+    sources.add(source)
+    value += tx.value
+    return tx.serialized.slice(2).toLowerCase()
+  })
+  if (value !== payment.amountWei)
+    throw new Error('Native transaction set does not match the claimed amount')
+  if (!/^[0-9a-fA-F]{64}$/.test(payment.payloadDigest))
+    throw new Error('Invalid native payment digest')
+  const digest = payment.payloadDigest.toLowerCase()
+  return changeStoredCoin(store, key, coin => {
+    if (
+      coin.origin !== 'stealth' ||
+      coin.ephemeralPubKey !== payment.ephemeralPubKey ||
+      computeAddress(coin.privateKey).toLowerCase() !== key
+    )
+      throw new Error('Native payment derivation conflicts with its owner')
+    if (
+      JSON.stringify(coin.transactions) === JSON.stringify(raws) &&
+      coin.claimedAmountWei === payment.amountWei.toString() &&
+      coin.payloadDigest === digest
+    )
+      return coin
+    if (coin.transactions.length !== 0 || coin.claimedAmountWei !== '0')
+      throw new Error('Conflicting native receipt account claim')
+    return {
+      ...coin,
+      transactions: raws,
+      claimedAmountWei: payment.amountWei.toString(),
+      payloadDigest: digest,
+    }
+  })
+}
+
 /** Native observations merge against current durable state and preserve every token position.
  * All observations at this owner boundary must use CAS, not put an earlier full-row snapshot. */
 export function applyStoredNativeCoinObservation(

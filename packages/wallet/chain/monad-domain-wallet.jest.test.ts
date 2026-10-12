@@ -719,6 +719,34 @@ test.each([false, true])(
   },
 )
 
+test('secondary EVM RPC auth uses the captured home directory tag while retaining the target chain', async () => {
+  const provider = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
+  const wallet = (await createEvmChain({
+    ...config,
+    networkId: 'hyperliquid-testnet',
+    rpcChain: 'hyperliquid-testnet',
+    chainIdentifier: 'hyperliquid-testnet',
+    chainId: 998,
+    networkTag: 'HYPT',
+    relayAuthNetworkTag: 'MONT',
+    emitWalletSync: async () => undefined,
+  }).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    expect(provider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        relayAuth: expect.objectContaining({
+          chain: 'hyperliquid-testnet',
+          networkTag: 'MONT',
+          customer: wallet.identity.address.raw,
+        }),
+      }),
+    )
+    expect(wallet.chainIdentifier).toBe('hyperliquid-testnet')
+  } finally {
+    await wallet.close()
+  }
+})
+
 test('close drains an in-flight native operation and rejects further work', async () => {
     const chain = createEvmChain({
       ...config,

@@ -79,8 +79,12 @@ function scopeOf(relayBaseUrl: string): string {
   ])
 }
 /** Explicit network facts come from the canonical registry; these are existing host policies. */
-function configured(chainIdentifier: string): EvmChainConfig {
+function configured(
+  chainIdentifier: string,
+  primary: NativeWalletHandle,
+): EvmChainConfig {
   const entry = getChainRegistryEntry(chainIdentifier)
+  const home = getChainRegistryEntry(primary.chainIdentifier)
   if (
     !entry ||
     entry.family !== 'evm' ||
@@ -90,6 +94,8 @@ function configured(chainIdentifier: string): EvmChainConfig {
     !entry.allowedProxyCapabilities.includes('json-rpc')
   )
     throw new Error(`EVM wallet unavailable for ${chainIdentifier}`)
+  if (!home?.networkTag || home.family !== 'evm')
+    throw new Error('Account directory network is unavailable')
   const host = loadMonadChainConfigFromEnv()
   if (host.walletStorageLocation === false)
     throw new Error('EVM wallet persistence is required')
@@ -99,6 +105,7 @@ function configured(chainIdentifier: string): EvmChainConfig {
     rpcChain: entry.id,
     chainId: BigInt(entry.nativeChainId),
     networkTag: entry.networkTag,
+    relayAuthNetworkTag: home.networkTag,
     name: entry.name,
     unit: entry.unit,
     relayBaseUrl: normalizedRelay(host.relayBaseUrl),
@@ -122,7 +129,9 @@ export function openEvmWallet(
   // A secondary chain emits a transport-free sync event. Capture the primary messaging service
   // now, so a later UI network change cannot redirect a pending operation's self note.
   const messenger = { ...activeChain }
-  const baseConfig = configured(chainIdentifier)
+  const homeWallet = accountSession.peekWallet()
+  if (!homeWallet) throw new Error('No account wallet is open')
+  const baseConfig = configured(chainIdentifier, homeWallet)
   const emitWalletSync = async (
     item: WalletSyncItem,
     swapRecord: SwapRecordItem | undefined,
@@ -223,6 +232,8 @@ export function openEvmWallet(
         (await accountSession.getWallet()) as NativeWalletHandle & {
           close(): Promise<void>
         }
+      if (primary !== homeWallet || primary !== accountSession.peekWallet())
+        throw new Error('Account changed')
       entry.sessionWallet = primary
       if (!sameSessionOwner(entry)) throw new Error('Account changed')
       const ownsWallet =

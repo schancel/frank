@@ -1478,6 +1478,242 @@ describe.each([BTC, BCH])(
       ],
       payloadDigest: digest,
     });
+    test("unsigned quote retains derivation across concurrent instances and reopen without spending", async () => {
+      const f = await fixture();
+      const other = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      const before = JSON.parse(f.store.load()!);
+      const coins = f.sender.coins().slice();
+      const [first, concurrent] = await Promise.all([
+        f.sender.stealthPayments!.quote!(f.intent),
+        other.stealthPayments!.quote!(f.intent),
+      ]);
+      expect(first).toEqual(concurrent);
+      expect(first).toMatchObject({
+        nativeBalanceAtomic: 70_000n,
+        assetBalanceAtomic: 70_000n,
+      });
+      expect(first.estimatedNativeFeeAtomic).toBeGreaterThan(0n);
+      const unsigned = JSON.parse(f.store.load()!);
+      expect(unsigned.changeIndex).toBe(before.changeIndex);
+      expect(unsigned.receiveIndex).toBe(before.receiveIndex);
+      expect(unsigned.pending).toEqual(before.pending);
+      expect(unsigned.operations ?? []).toEqual([]);
+      expect(unsigned.unsignedOperations).toHaveLength(1);
+      expect(unsigned.unsignedOperations[0].raw).toBeUndefined();
+      expect(unsigned.unsignedOperations[0].inputs).toBeUndefined();
+      expect(unsigned.unsignedOperations[0].maxNativeFeeAtomic).toBeUndefined();
+      expect(await f.sender.getBalance()).toBe(70_000n);
+      expect(f.backend.broadcasts).toEqual([]);
+      const reopened = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      expect(await reopened.stealthPayments!.quote!(f.intent)).toEqual(first);
+      const prepared = await reopened.stealthPayments!.prepare({
+        ...f.intent,
+        maxNativeFeeAtomic: first.estimatedNativeFeeAtomic,
+      });
+      expect(prepared.recipientDestination).toEqual(first.recipientDestination);
+      expect(prepared.ephemeralPublicKey).toEqual(first.ephemeralPublicKey);
+      expectValidSignatures(prepared.members[0].rawTransaction, network, coins);
+      expect(JSON.parse(f.store.load()!).unsignedOperations).toEqual([]);
+      expect((await reopened.getNativePayments())[0].fee).toBe(
+        first.estimatedNativeFeeAtomic
+      );
+      expect(
+        (await reopened.stealthPayments!.quote!(f.intent)).nativeBalanceAtomic
+      ).toBe(0n);
+      expect(f.backend.broadcasts).toEqual([]);
+    });
+
+    test("unsigned quote never advances a newly paid receive index and excludes durable reservations", async () => {
+      const f = await fixture();
+      const address = f.sender.identity.address.raw;
+      fund(f.backend, network, address, 30_000n, "b");
+      const before = JSON.parse(f.store.load()!);
+      const quote = await f.sender.stealthPayments!.quote!(f.intent);
+      expect(quote.nativeBalanceAtomic).toBe(100_000n);
+      expect(JSON.parse(f.store.load()!).receiveIndex).toBe(
+        before.receiveIndex
+      );
+      const other = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      await other.prepareNativePayment({
+        operationId: "native-claim",
+        recipient: f.receiver.identity.address,
+        value: 50_000n,
+      });
+      const observed = await f.sender.stealthPayments!.quote!(f.intent);
+      expect(observed.nativeBalanceAtomic).toBe(30_000n);
+      expect(observed.assetBalanceAtomic).toBe(30_000n);
+      expect(observed.ephemeralPublicKey).toEqual(quote.ephemeralPublicKey);
+      expect(f.backend.broadcasts).toEqual([]);
+    });
+
+    test("fee rejection keeps the quoted destination unsigned and permits only the same intent", async () => {
+      const f = await fixture(),
+        cap = f.sender.stealthPayments!;
+      const quote = await cap.quote!(f.intent);
+      const before = f.store.load();
+      const signingBoundary = f.sender as unknown as {
+        sign: (...args: unknown[]) => unknown;
+      };
+      const sign = jest.spyOn(signingBoundary, "sign");
+      await expect(
+        cap.prepare({ ...f.intent, maxNativeFeeAtomic: 0n })
+      ).rejects.toBeInstanceOf(NativeFeeExceededError);
+      expect(f.store.load()).toBe(before);
+      expect(sign).not.toHaveBeenCalled();
+      expect(await f.sender.getBalance()).toBe(70_000n);
+      await expect(
+        cap.quote!({ ...f.intent, amountAtomic: 9_000n })
+      ).rejects.toThrow("another stealth intent");
+      await expect(
+        cap.prepare({
+          ...f.intent,
+          recipientSpendPublicKey: f.senderCustody.custody.identityPublicKey,
+        })
+      ).rejects.toThrow("another stealth intent");
+      const prepared = await cap.prepare(f.intent);
+      expect(prepared.ephemeralPublicKey).toEqual(quote.ephemeralPublicKey);
+      expect(prepared.recipientDestination).toEqual(quote.recipientDestination);
+    });
+
+    test("released unsigned intent stays a tombstone across reopen and both preparation APIs", async () => {
+      const f = await fixture(),
+        cap = f.sender.stealthPayments!;
+      const quote = await cap.quote!(f.intent);
+      expect(await cap.release(f.intent.operationId)).toBe(true);
+      expect(await cap.release(f.intent.operationId)).toBe(false);
+      const reopened = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      await expect(reopened.stealthPayments!.quote!(f.intent)).rejects.toThrow(
+        "released"
+      );
+      await expect(reopened.stealthPayments!.prepare(f.intent)).rejects.toThrow(
+        "released"
+      );
+      await expect(
+        reopened.prepareNativePayment({
+          operationId: f.intent.operationId,
+          recipient: { raw: quote.recipientAddress },
+          value: f.intent.amountAtomic,
+        })
+      ).rejects.toThrow("released");
+      expect(await reopened.getBalance()).toBe(70_000n);
+      expect(f.backend.broadcasts).toEqual([]);
+    });
+
+    test("unsigned reopen rejects foreign-chain and colliding operation evidence", async () => {
+      const f = await fixture();
+      await f.sender.stealthPayments!.quote!(f.intent);
+      const valid = f.store.load()!;
+      const foreign = JSON.parse(valid);
+      foreign.unsignedOperations[0].chainIdentifier =
+        network === BTC ? BCH.chainIdentifier : BTC.chainIdentifier;
+      f.store.save(JSON.stringify(foreign));
+      await expect(
+        open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).rejects.toThrow("this chain");
+      f.store.save(valid);
+      await f.sender.stealthPayments!.prepare(f.intent);
+      const signed = JSON.parse(f.store.load()!);
+      signed.unsignedOperations = JSON.parse(valid).unsignedOperations;
+      f.store.save(JSON.stringify(signed));
+      await expect(
+        open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).rejects.toThrow("Duplicate");
+      expect(f.backend.broadcasts).toEqual([]);
+    });
+
+    test("quote RPC waits do not block another operation and stale reads exclude its claim", async () => {
+      const f = await fixture();
+      fund(f.backend, network, f.sender.identity.address.raw, 30_000n, "b");
+      const other = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      let entered!: () => void, resume!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const barrier = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      const read = f.backend.indexer.listUnspent;
+      let paused = false;
+      f.backend.indexer.listUnspent = async (script) => {
+        const result = await read(script);
+        if (!paused) {
+          paused = true;
+          entered();
+          await barrier;
+        }
+        return result;
+      };
+      const quotePromise = f.sender.stealthPayments!.quote!(f.intent);
+      await waiting;
+      await other.prepareNativePayment({
+        operationId: "while-quote-waits",
+        recipient: f.receiver.identity.address,
+        value: 50_000n,
+      });
+      resume();
+      const quote = await quotePromise;
+      expect(quote.nativeBalanceAtomic).toBe(30_000n);
+      expect(f.backend.broadcasts).toEqual([]);
+    });
+
+    test("concurrent quote and preparation consume one fixed unsigned derivation", async () => {
+      const f = await fixture();
+      const other = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      const [quote, prepared] = await Promise.all([
+        f.sender.stealthPayments!.quote!(f.intent),
+        other.stealthPayments!.prepare(f.intent),
+      ]);
+      expect(quote.ephemeralPublicKey).toEqual(prepared.ephemeralPublicKey);
+      expect(quote.recipientDestination).toEqual(prepared.recipientDestination);
+      const stored = JSON.parse(f.store.load()!);
+      expect(stored.operations).toHaveLength(1);
+      expect(stored.unsignedOperations).toEqual([]);
+      expect(await f.sender.stealthPayments!.prepare(f.intent)).toEqual(
+        prepared
+      );
+      expect(f.backend.broadcasts).toEqual([]);
+    });
+
+    test("release and custody expiry during quote observation fail closed without signing", async () => {
+      const f = await fixture();
+      const other = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      const read = f.backend.indexer.listUnspent;
+      f.backend.indexer.listUnspent = async (script) => {
+        await other.stealthPayments!.release(f.intent.operationId);
+        return read(script);
+      };
+      await expect(f.sender.stealthPayments!.quote!(f.intent)).rejects.toThrow(
+        "released"
+      );
+      expect(JSON.parse(f.store.load()!).operations ?? []).toEqual([]);
+      f.backend.indexer.listUnspent = async (script) => {
+        f.senderCustody.close();
+        return read(script);
+      };
+      await expect(
+        f.sender.stealthPayments!.quote!({
+          ...f.intent,
+          operationId: "expired-quote",
+        })
+      ).rejects.toThrow();
+      expect(JSON.parse(f.store.load()!).operations ?? []).toEqual([]);
+      expect(f.backend.broadcasts).toEqual([]);
+    });
+
     test.each(["submit", "reconcile", "reopen"])(
       "rechecks a formerly known transaction and replays the original bytes after eviction through %s",
       async (recovery) => {
@@ -1732,7 +1968,6 @@ describe.each([BTC, BCH])(
         { ...f.intent, amountAtomic: 2n ** 64n },
         { ...f.intent, maxNativeFeeAtomic: -1n },
         { ...f.intent, sourceAddress: f.sender.identity.address.raw },
-        { ...f.intent, maxNativeFeeAtomic: 0n },
       ])
         await expect(cap.prepare(intent)).rejects.toThrow();
       expect(f.store.load()).toBe(before);

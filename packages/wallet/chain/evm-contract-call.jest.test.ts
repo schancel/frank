@@ -177,6 +177,28 @@ describe('contract calls through the native operation journal', () => {
   }
   const call = { to: { raw: router }, data: calldata, value: 1_000n }
 
+  it('swaps from the main account when the legacy identity uses the same address', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor } = owner(state, [
+      sources[0]!,
+      {
+        kind: 'identity',
+        address: main.address.toLowerCase(),
+        identityPublicKey: main.signingKey.compressedPublicKey,
+      },
+    ])
+    const sent = await executor.sendContractCall(call)
+    expect(journal.get(sent.operationId).members[0]!.source).toEqual(
+      sources[0],
+    )
+    expect(state.raws).toHaveLength(1)
+    expect(Transaction.from(state.raws[0]!)).toMatchObject({
+      from: main.address,
+      value: call.value,
+      data: call.data,
+    })
+  })
+
   it('signs an ERC20 transfer from the selected owned source and resumes identical bytes after reopen', async () => {
     const token = getEvmDexDeployment('monad-testnet')!.tokens.find(
       item => item.symbol === 'USDC',

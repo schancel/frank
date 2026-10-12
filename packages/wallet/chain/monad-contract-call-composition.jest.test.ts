@@ -7,6 +7,8 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
  */
 import {
   Transaction,
+  Mnemonic,
+  getBytes,
   keccak256,
   type Block,
   type TransactionReceipt,
@@ -66,9 +68,10 @@ function stubNode(
   wallet: EvmChainWalletHandle,
   mainBalance: bigint,
   others: Record<string, bigint> = {},
+  mainAddress = MAIN,
 ) {
   const balances = new Map([
-    [MAIN.toLowerCase(), mainBalance],
+    [mainAddress.toLowerCase(), mainBalance],
     ...Object.entries(others).map(
       ([address, value]) => [address.toLowerCase(), value] as [string, bigint],
     ),
@@ -139,13 +142,71 @@ function stubNode(
       lose = value
     },
     carryOver: (next: EvmChainWalletHandle) => {
-      const again = stubNode(next, balances.get(MAIN.toLowerCase())!)
+      const again = stubNode(next, balances.get(mainAddress.toLowerCase())!, {}, mainAddress)
       return again
     },
   }
 }
 
 afterEach(() => jest.restoreAllMocks())
+
+test('a historical BIP39 wallet swaps when main and identity share an address, retaining recovery after restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-legacy-swap-'))
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  const seed = {
+    derivation: 'frank-bip39-bip32-v1' as const,
+    seed: getBytes(
+      Mnemonic.fromPhrase(
+        'test test test test test test test test test test test junk',
+      ).computeSeed(),
+    ),
+  }
+  const wallet = (await createEvmChain(cfg).createWallet(
+    seed,
+  )) as EvmChainWalletHandle
+  let reopened: EvmChainWalletHandle | undefined
+  try {
+    const account = (await wallet.getReceiveAddress()).raw
+    expect(wallet.identity.address.raw).toBe(account)
+    const node = stubNode(wallet, 1_000_000n, {}, account)
+    node.loseReplies(true)
+    await expect(
+      wallet.sendContractCall!({
+        to: { raw: ROUTER },
+        data: CALLDATA,
+        value: 5000n,
+        gasLimit: 250_000n,
+      }),
+    ).rejects.toThrow(/outcome is unknown/)
+    const row = wallet.getNativeOperations!()[0]!
+    expect(row.members[0]!.source).toEqual({
+      kind: 'main',
+      address: account.toLowerCase(),
+    })
+    const raw = row.members[0]!.signed!.rawTransaction
+    expect(node.broadcast).toHaveBeenCalledWith(raw)
+    await wallet.close()
+    reopened = (await createEvmChain(cfg).createWallet(
+      seed,
+    )) as EvmChainWalletHandle
+    const again = stubNode(reopened, 1_000_000n, {}, account)
+    await reopened.resumeNativeOperation!(row.operationId)
+    expect(again.broadcast).toHaveBeenCalledTimes(1)
+    expect(again.broadcast).toHaveBeenCalledWith(raw)
+    await reopened.reobserveNativeOperations!()
+    expect(
+      reopened.getNativeOperations!()[0]!.members[0]!.observation.state,
+    ).toBe('included-success')
+  } finally {
+    await reopened?.close()
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
 
 test('a sign-only call retains the composed main claim and blocks an unjournalled transfer', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))

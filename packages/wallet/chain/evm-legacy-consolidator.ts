@@ -2056,10 +2056,8 @@ export class EvmLegacyConsolidator {
       throw new Error('A contract call needs calldata')
     if (this.config.transactionBuilder.supportsNativeConsolidation !== true)
       throw new Error('Contract calls are unavailable on this network')
-    const address =
-      sourceAddress === undefined
-        ? (await this.mainSource()).address
-        : getAddress(sourceAddress).toLowerCase()
+    const main = sourceAddress === undefined ? await this.mainSource() : undefined
+    const address = main?.address ?? getAddress(sourceAddress!).toLowerCase()
     if (
       !(await this.config.getSources()).some(
         source => source.address === address,
@@ -2101,7 +2099,11 @@ export class EvmLegacyConsolidator {
       ...(params.record ? { record: params.record } : {}),
       members: [
         {
-          source: source.source,
+          // Historical accounts can use the same key for main and identity. Source
+          // deduplication may return the identity reference for this address, but an
+          // implicit contract call is authorized through the main custody reference.
+          // Eligibility and reservations remain keyed by the same address and nonce.
+          source: main ?? source.source,
           unsignedTransaction: Transaction.from({
             type: 2,
             to,

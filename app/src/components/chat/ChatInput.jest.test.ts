@@ -335,6 +335,55 @@ describe('modernized chat input interface (#1003)', () => {
       )
     })
 
+    it('allows a native amount and an explicit free choice without an AVU default', async () => {
+      const wrapper = mount(ChatInput, {
+        props: {
+          stampAmount: '',
+          defaultStampMode: true,
+          stampUnavailable: 'The conversion rate is unavailable',
+        },
+        global: globalOptions,
+      })
+      const amount = wrapper.get('[data-testid="chat-input-stamp-amount"]')
+      expect(amount.attributes('disabled')).toBeUndefined()
+      await amount.setValue('0.4')
+      expect(wrapper.emitted('update:stampAmount')?.[0]).toEqual(['0.4'])
+      await wrapper.setProps({
+        stampAmount: '0.4',
+        defaultStampMode: false,
+        stampUnavailable: '',
+      })
+      expect((amount.element as HTMLInputElement).value).toBe('0.4')
+      // No absent quote should be represented by a slider apparently selecting Free.
+      expect(
+        wrapper.find('[data-testid="chat-input-stamp-slider"]').exists(),
+      ).toBe(false)
+      await wrapper
+        .get('[data-testid="chat-input-stamp-free"]')
+        .trigger('click')
+      expect(wrapper.emitted('update:stampAmount')?.[1]).toEqual(['0'])
+      await wrapper.setProps({ stampAmount: '0.0' })
+      expect(
+        wrapper.get('[data-testid="chat-input-stamp-selection"]').text(),
+      ).toBe('Free')
+    })
+
+    it('does not change the stamp through the Free action while busy', async () => {
+      const wrapper = mount(ChatInput, {
+        props: { stampAmount: '0.4', disable: true },
+        global: globalOptions,
+      })
+      expect(
+        wrapper
+          .get('[data-testid="chat-input-stamp-free"]')
+          .attributes('disable'),
+      ).toBe('true')
+      await wrapper
+        .get('[data-testid="chat-input-stamp-free"]')
+        .trigger('click')
+      expect(wrapper.emitted('update:stampAmount')).toBeUndefined()
+    })
+
     it('the amount box takes 0, and keeps what was typed while it is the chosen amount', async () => {
       const wrapper = mount(ChatInput, {
         props: {

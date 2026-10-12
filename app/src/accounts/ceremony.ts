@@ -19,9 +19,14 @@ import {
   type DomainRoot,
 } from '@frank/domain-roots'
 import { getMeraAccountRoot, type MeraAccountAction } from './mera-passkey'
-import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
+import {
+  activeChain,
+  onActiveChainChange,
+  getDefaultRelayBaseUrl,
+  getCustomRelayBaseUrl,
+} from '@frank/wallet/chain'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
-import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { MonadIdentity, fetchMonadProfile } from '@frank/wallet/monad-identity'
 import { toHex } from '@frank/codec'
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { accountSession } from './session'
@@ -90,6 +95,7 @@ export function createAccountCeremony() {
     isRestore: boolean,
     displayName: string,
     isCurrent: () => boolean = () => true,
+    verifyLogin = false,
   ) {
     if (!attempt) throw new Error('Start an account ceremony first')
     const captured = attempt
@@ -98,6 +104,8 @@ export function createAccountCeremony() {
     try {
       recovered = take()
       if (!recovered) throw new Error('Start an account ceremony first')
+      let loginVerification: 'existing' | 'unverified' | 'unreachable' =
+        'unverified'
       let discoveredRelayUrl: string | undefined
       let identityDetails: { subject: string; address: string } | undefined
       if (isRestore) {
@@ -109,6 +117,23 @@ export function createAccountCeremony() {
           discoveredRelayUrl = await probeDirectoryRelay({ subject, address })
         } catch {
           // probe failure should never block account recovery
+        }
+      }
+      if (verifyLogin) {
+        if (discoveredRelayUrl) loginVerification = 'existing'
+        else {
+          // Read only: adopting a profile before activation could overwrite another account.
+          try {
+            const identity = identityOf(recovered)
+            const profile = await fetchMonadProfile({
+              relayBaseUrl: getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
+              address: identity.address,
+              signal: AbortSignal.timeout(10000),
+            })
+            if (profile) loginVerification = 'existing'
+          } catch {
+            loginVerification = 'unreachable'
+          }
         }
       }
       await assertLegacyUnchanged(captured.legacyRevision)
@@ -128,6 +153,8 @@ export function createAccountCeremony() {
         await accountSession.cancelPending(captured.attemptId)
       return {
         isRestore,
+        attemptId: captured.attemptId,
+        loginVerification,
         subject: identityDetails?.subject,
         address: identityDetails?.address,
         discoveredRelayUrl,
@@ -142,7 +169,7 @@ export function createAccountCeremony() {
   }
   return {
     cancel,
-    /** Passkeys stage the same root32 account as backup recovery; activation stays explicit. */
+    /** Passkeys stage the same root32 account as backup recovery; composition owns activation. */
     async beginPasskey(
       action: MeraAccountAction,
       readRoot: (
@@ -187,6 +214,7 @@ export function createAccountCeremony() {
           '',
           () =>
             !chainChanged && chainIdentifier === activeChain.chainIdentifier,
+          action === 'login',
         )
         if (token !== epoch || chainChanged)
           throw new Error('Ceremony cancelled')

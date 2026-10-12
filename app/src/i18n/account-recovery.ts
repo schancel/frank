@@ -1,7 +1,9 @@
 export const en = {
   mera_title: 'Mera',
   mera_create: 'Create with Mera',
-  mera_login: 'Log in with Mera',
+  mera_login: 'Continue with Mera (Passkey)',
+  mera_verification_unreachable:
+    'Could not verify your existing account. Your passkey account is ready for confirmation; check your connection before continuing.',
   mera_description:
     'A new passkey creates a new Frank account. Log in with your existing passkey to return to the same account on this website. You can also save recovery shares from account backup.',
   mera_unsupported:
@@ -178,7 +180,9 @@ export const en = {
 export const fr = {
   mera_title: 'Mera',
   mera_create: 'Créer avec Mera',
-  mera_login: 'Se connecter avec Mera',
+  mera_login: 'Continuer avec Mera (clé d’accès)',
+  mera_verification_unreachable:
+    'Impossible de vérifier votre compte existant. Votre compte est prêt à être confirmé ; vérifiez votre connexion avant de continuer.',
   mera_description:
     'Une nouvelle clé d’accès crée un nouveau compte Frank. Connectez-vous avec votre clé existante pour retrouver le même compte sur ce site. Vous pouvez aussi enregistrer des parts de récupération dans la sauvegarde du compte.',
   mera_unsupported:

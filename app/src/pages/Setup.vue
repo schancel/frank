@@ -379,34 +379,6 @@
                   data-test="replace-ack"
                 />
               </div>
-              <div class="row q-gutter-sm items-center">
-                <q-btn
-                  color="primary"
-                  no-caps
-                  :label="$t('accountRecovery.new_account')"
-                  data-test="new-account"
-                  :disable="!mayBegin || busy"
-                  @click="changeMode('policy')"
-                />
-                <q-btn
-                  outline
-                  color="primary"
-                  no-caps
-                  :label="$t('accountRecovery.restore_account')"
-                  data-test="restore-account"
-                  :disable="!mayBegin || busy"
-                  @click="startRestore"
-                />
-                <q-btn
-                  outline
-                  color="primary"
-                  no-caps
-                  :label="$t('accountRecovery.identify_legacy_account_locally')"
-                  data-test="legacy-recovery"
-                  :disable="!mayBegin || busy"
-                  @click="changeMode('legacy')"
-                />
-              </div>
               <section
                 class="q-mt-lg"
                 aria-labelledby="mera-heading"
@@ -432,22 +404,21 @@
                 </p>
                 <div class="row q-gutter-sm items-center">
                   <q-btn
-                    outline
-                    color="primary"
-                    no-caps
-                    :label="$t('accountRecovery.mera_create')"
-                    data-test="mera-create"
-                    :disable="!mayBegin || busy"
-                    @click="beginPasskey('create')"
-                  />
-                  <q-btn
-                    outline
                     color="primary"
                     no-caps
                     :label="$t('accountRecovery.mera_login')"
                     data-test="mera-login"
                     :disable="!mayBegin || busy"
                     @click="beginPasskey('login')"
+                  />
+                  <q-btn
+                    flat
+                    color="primary"
+                    no-caps
+                    :label="$t('accountRecovery.mera_create')"
+                    data-test="mera-create"
+                    :disable="!mayBegin || busy"
+                    @click="beginPasskey('create')"
                   />
                 </div>
                 <p
@@ -458,6 +429,36 @@
                   {{ $t('accountRecovery.mera_unsupported') }}
                 </p>
               </section>
+              <div class="row q-gutter-sm items-center">
+                <q-btn
+                  color="primary"
+                  no-caps
+                  outline
+                  :label="$t('accountRecovery.new_account')"
+                  data-test="new-account"
+                  :disable="!mayBegin || busy"
+                  @click="changeMode('policy')"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.restore_account')"
+                  data-test="restore-account"
+                  :disable="!mayBegin || busy"
+                  @click="startRestore"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.identify_legacy_account_locally')"
+                  data-test="legacy-recovery"
+                  :disable="!mayBegin || busy"
+                  @click="changeMode('legacy')"
+                />
+              </div>
+
               <q-btn
                 v-if="account.status === 'ready'"
                 class="q-mt-md"
@@ -1113,10 +1114,22 @@ function beginPasskey(action: MeraAccountAction) {
   return run(async isCurrent => {
     if (!mayBegin.value) return
     shareReport.value = []
+    const mayAutoActivate = !account.account && !legacy.present
     const outcome = await ceremony.beginPasskey(action)
     if (!isCurrent()) return
     applyDiscoveredRelay(outcome, isCurrent)
     changeMode('choice')
+    if (action === 'login' && outcome.loginVerification === 'unreachable')
+      error.value = t('accountRecovery.mera_verification_unreachable')
+    if (
+      action === 'login' &&
+      mayAutoActivate &&
+      outcome.loginVerification === 'existing' &&
+      account.pending?.account.receipt.operationId === outcome.attemptId &&
+      account.pendingReady &&
+      isCurrent()
+    )
+      await activateStagedAccount(outcome.attemptId)
   })
 }
 function beginNew() {
@@ -1243,7 +1256,17 @@ function submitLegacyPhrase() {
 }
 
 function activate() {
-  return run(async () => {
+  return run(async () => activateStagedAccount())
+}
+
+async function activateStagedAccount(expectedAttemptId?: string) {
+  const token = request
+  let chainChanged = false
+  const stopChain = onActiveChainChange(() => {
+    chainChanged = true
+  })
+  const current = () => alive && token === request && !chainChanged
+  try {
     const pending = account.pending
     if (!pending) return
     const cleanedRelay = customRelayUrl.value?.trim()
@@ -1257,10 +1280,16 @@ function activate() {
       pending.account.receipt.operationId,
       pending.expectedActive,
     )
-    if (account.status !== 'ready') return
+    if (
+      !current() ||
+      account.status !== 'ready' ||
+      (expectedAttemptId !== undefined &&
+        account.account?.receipt.operationId !== expectedAttemptId)
+    )
+      return
     void usePersistentStorageStore().afterActivation()
     if (!pending.account.displayName) {
-      await completeProfileRecovery()
+      await completeProfileRecovery(current)
       return
     }
     // The name typed at setup is a new account's name. An account restored here has the
@@ -1271,13 +1300,18 @@ function activate() {
     ).catch(() => undefined)
     emit('setupCompleted')
     await router.push('/wallet')
-  })
+  } finally {
+    stopChain()
+  }
 }
 
-async function completeProfileRecovery() {
+async function completeProfileRecovery(isCurrent: () => boolean = () => true) {
   const revision = account.revision
   const current = () =>
-    alive && account.status === 'ready' && account.revision === revision
+    isCurrent() &&
+    alive &&
+    account.status === 'ready' &&
+    account.revision === revision
   const wallet = await accountSession.getWallet()
   if (!current()) return
   const outcome = await restoreOwnProfileWithRelay({
@@ -1298,7 +1332,7 @@ async function completeProfileRecovery() {
 }
 
 function retryProfileRecovery() {
-  return run(completeProfileRecovery)
+  return run(async () => completeProfileRecovery())
 }
 function cancelPending() {
   return run(async () => {

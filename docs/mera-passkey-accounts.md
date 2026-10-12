@@ -44,8 +44,16 @@ leave those ordinary root backups recoverable.
 Before credential prompts, composition captures the existing account precondition,
 legacy revision, and canonical chain context. Cancellation, account replacement,
 chain change, or session closure must prevent late results from staging. Staging
-only creates an inactive pending attempt; the existing explicit activation and
-replacement-consent flow remains authoritative. Failed required restoration keeps
+only creates an inactive pending attempt. The first primary entry, “Continue with
+Mera (Passkey),” invokes existing-passkey login; creation remains a secondary
+explicit action. On a device without a local or legacy account, login may activate
+that exact pending attempt when a verified signed directory entry or signed,
+address-checked profile proves the account already exists. Network failure is
+observable and never evidence of absence. Without positive evidence, confirmation
+remains visible. Any existing local-account replacement still requires consent
+and explicit pending activation. An interrupted staged login reopens as pending
+and requires confirmation; automatic activation is never inferred from persisted
+state. Failed required restoration keeps
 its existing activation/runtime gating. Raw PRF/root bytes stay outside reactive
 presentation and are wiped when their operation settles. They are never logged or
 sent to a relay. Browser/platform credential implementations may retain their own
@@ -87,5 +95,6 @@ lookup result with the staged account; presentation never retries a negative
 lookup. Setup alone selects the discovered relay after checking the same request,
 component lifetime, public account object and revision, chain context, and session
 status. Chain changes and session close/reopen permanently invalidate that request.
-No delayed lookup can redirect a replacement account's relay. Existing explicit
-activation still applies the displayed relay choice.
+No delayed lookup can redirect a replacement account's relay. Activation applies
+the displayed relay choice. Profile adoption runs only after custody activation,
+with required restoration failure gating navigation.

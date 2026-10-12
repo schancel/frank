@@ -1,3 +1,4 @@
+import { fetchMonadProfile } from '@frank/wallet/monad-identity'
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import {
   getActiveChain,
@@ -18,6 +19,10 @@ import {
 } from './testing/device'
 
 jest.setTimeout(15000)
+jest.mock('@frank/wallet/monad-identity', () => ({
+  ...jest.requireActual('@frank/wallet/monad-identity'),
+  fetchMonadProfile: jest.fn(async () => undefined),
+}))
 jest.mock('./session', () => ({
   ...jest.requireActual('./session'),
   get accountSession() {
@@ -173,5 +178,79 @@ test.each(['replacement', 'close'] as const)(
       expect(await describeAccount(session)).toEqual(replacement)
     }
     setCustomRelayBaseUrl(undefined)
+  },
+)
+
+test.each(['existing', 'unverified', 'unreachable'] as const)(
+  'login preserves read-only profile verification outcome %s',
+  async verification => {
+    const session = freshDevice()
+    await session.initialize()
+    const fetchProfile = jest.mocked(fetchMonadProfile)
+    if (verification === 'existing')
+      fetchProfile.mockResolvedValueOnce({
+        name: 'Synthetic profile',
+      } as Awaited<ReturnType<typeof fetchMonadProfile>>)
+    else if (verification === 'unreachable')
+      fetchProfile.mockRejectedValueOnce(new Error('Offline'))
+    else fetchProfile.mockResolvedValueOnce(undefined)
+    const ceremony = createAccountCeremony()
+    try {
+      const result = await ceremony.beginPasskey('login', async () =>
+        syntheticRoot(),
+      )
+      expect(result.loginVerification).toBe(verification)
+      expect(result.attemptId).toBeTruthy()
+    } finally {
+      ceremony.cancel()
+    }
+  },
+)
+
+test.each(['replacement', 'close', 'cancel', 'chain'] as const)(
+  'a deferred positive profile after %s cannot stage the login',
+  async race => {
+    const session = freshDevice()
+    await session.initialize()
+    const previousChain = getActiveChain()
+    let answer!: (value: Awaited<ReturnType<typeof fetchMonadProfile>>) => void
+    let entered!: () => void
+    const probing = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    jest.mocked(fetchMonadProfile).mockImplementationOnce(() => {
+      entered()
+      return new Promise(resolve => {
+        answer = resolve
+      })
+    })
+    const ceremony = createAccountCeremony()
+    const login = ceremony.beginPasskey('login', async () => syntheticRoot())
+    await probing
+    try {
+      if (race === 'replacement') {
+        await createAccountCeremony().beginPasskey('create', async () =>
+          new Uint8Array(32).fill(9),
+        )
+        await activate(session)
+      } else if (race === 'close') await session.close()
+      else if (race === 'cancel') ceremony.cancel()
+      else {
+        setActiveChain({
+          ...previousChain,
+          chainIdentifier: 'ethereum-sepolia',
+        })
+        setActiveChain(previousChain)
+      }
+      answer({ name: 'Synthetic profile' } as Awaited<
+        ReturnType<typeof fetchMonadProfile>
+      >)
+      await expect(login).rejects.toThrow()
+      if (race !== 'close')
+        expect((await session.snapshot()).pending).toBeNull()
+    } finally {
+      setActiveChain(previousChain)
+      ceremony.cancel()
+    }
   },
 )

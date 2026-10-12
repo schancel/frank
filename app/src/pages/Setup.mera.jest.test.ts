@@ -16,6 +16,7 @@ import {
 import { MeraAccountError } from '../accounts/mera-passkey'
 import fr from '../i18n/fr-fr'
 import Setup from './Setup.vue'
+import * as ownProfile from '../utils/own-profile'
 import { inspectLegacyWallet } from '../accounts/legacy'
 import en from '../i18n/en-us'
 
@@ -70,7 +71,11 @@ function render(locale: 'en' | 'fr' = 'en') {
           props: ['label', 'disable'],
           template: '<button :disabled="disable">{{ label }}</button>',
         },
-        QCheckbox: true,
+        QCheckbox: {
+          props: ['modelValue'],
+          template:
+            '<input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+        },
         QOptionGroup: true,
         QExpansionItem: true,
         QCard: true,
@@ -119,6 +124,7 @@ beforeEach(async () => {
     .spyOn(mockSession, 'getWallet')
     .mockRejectedValue(new Error('No live wallet in this fixture'))
   jest.spyOn(mockSession, 'activatePending').mockImplementation(async () => {
+    mockAccount.account = mockAccount.pending?.account ?? null
     mockAccount.status = 'ready'
     mockAccount.revision = 1
     mockAccount.pending = null
@@ -280,6 +286,8 @@ test.each([
         isRestore: true,
         subject: '02' + 'dd'.repeat(32),
         discoveredRelayUrl: 'https://stale-account-relay.example',
+        loginVerification: 'existing',
+        attemptId: 'attempt',
       })
       await flushPromises()
       expect(getCustomRelayBaseUrl()).toBe(home)
@@ -327,6 +335,11 @@ test.each(['en', 'fr'] as const)(
     try {
       const options = view.get('[data-test="mera-options"]')
       expect(options.get('#mera-heading').text()).toBe('Mera')
+      const actions = view.findAll('button[data-test]')
+      expect(actions[0].attributes('data-test')).toBe('mera-login')
+      expect(
+        options.get('[data-test="mera-login"]').attributes('outline'),
+      ).toBeUndefined()
       expect(options.get('[data-test="mera-logo"]').attributes('alt')).toBe('')
       expect(options.get('[data-test="mera-create"]').text()).toBe(
         t(locale)('accountRecovery.mera_create'),
@@ -343,3 +356,132 @@ test.each(['en', 'fr'] as const)(
     }
   },
 )
+
+test.each(['existing', 'unverified', 'unreachable'] as const)(
+  'fresh login activates automatically only with positive existing-account evidence: %s',
+  async loginVerification => {
+    mockPasskey.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, {
+        status: 'pending',
+        pending,
+        pendingReady: true,
+      })
+      return { isRestore: true, attemptId: 'attempt', loginVerification }
+    })
+    const view = render()
+    try {
+      await view.get('[data-test="mera-login"]').trigger('click')
+      await flushPromises()
+      expect(mockSession.activatePending).toHaveBeenCalledTimes(
+        loginVerification === 'existing' ? 1 : 0,
+      )
+      if (loginVerification === 'unreachable')
+        expect(view.get('[data-test="account-error"]').text()).toBe(
+          t('en')('accountRecovery.mera_verification_unreachable'),
+        )
+    } finally {
+      view.unmount()
+    }
+  },
+)
+
+test('positive evidence cannot activate a different staged attempt', async () => {
+  mockPasskey.mockImplementationOnce(async () => {
+    Object.assign(mockAccount, {
+      status: 'pending',
+      pending,
+      pendingReady: true,
+    })
+    return {
+      isRestore: true,
+      attemptId: 'foreign-attempt',
+      loginVerification: 'existing',
+    }
+  })
+  const view = render()
+  try {
+    await view.get('[data-test="mera-login"]').trigger('click')
+    await flushPromises()
+    expect(mockSession.activatePending).not.toHaveBeenCalled()
+  } finally {
+    view.unmount()
+  }
+})
+
+test.each(['adopted', 'unreachable'] as const)(
+  'automatic login keeps required profile restoration observable: %s',
+  async profileOutcome => {
+    const staged = {
+      ...pending,
+      account: { ...pending.account, displayName: '' },
+    }
+    mockPasskey.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, {
+        status: 'pending',
+        pending: staged,
+        pendingReady: true,
+      })
+      return {
+        isRestore: true,
+        attemptId: 'attempt',
+        loginVerification: 'existing',
+      }
+    })
+    jest.mocked(mockSession.getWallet).mockResolvedValue({
+      identity: {},
+      relayBaseUrl: 'https://home.example',
+    } as never)
+    jest
+      .spyOn(ownProfile, 'restoreOwnProfileWithRelay')
+      .mockResolvedValue(profileOutcome)
+    const view = render()
+    try {
+      await view.get('[data-test="mera-login"]').trigger('click')
+      await flushPromises()
+      expect(mockSession.activatePending).toHaveBeenCalledWith(
+        'attempt',
+        pending.expectedActive,
+      )
+      if (profileOutcome === 'adopted')
+        expect(mockPush).toHaveBeenCalledWith('/wallet')
+      else {
+        expect(mockPush).not.toHaveBeenCalled()
+        expect(view.get('[data-test="account-error"]').text()).toBe(
+          t('en')('accountRecovery.profile_restore_unreachable'),
+        )
+      }
+    } finally {
+      view.unmount()
+    }
+  },
+)
+
+test('acknowledged local replacement still requires pending activation confirmation', async () => {
+  Object.assign(mockAccount, {
+    status: 'ready',
+    revision: 1,
+    account: pending.account,
+  })
+  mockPasskey.mockImplementationOnce(async () => {
+    Object.assign(mockAccount, {
+      status: 'pending',
+      pending,
+      pendingReady: true,
+    })
+    return {
+      isRestore: true,
+      attemptId: 'attempt',
+      loginVerification: 'existing',
+    }
+  })
+  const view = render()
+  try {
+    await view.get('[data-test="replace-ack"]').setValue(true)
+    await view.get('[data-test="mera-login"]').trigger('click')
+    await flushPromises()
+    expect(mockPasskey).toHaveBeenCalledWith('login')
+    expect(mockSession.activatePending).not.toHaveBeenCalled()
+  } finally {
+    view.unmount()
+  }
+})

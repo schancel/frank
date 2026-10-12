@@ -274,9 +274,9 @@
               >
                 <p>
                   {{
-                    $t(
-                      'accountRecovery.pending_profile_' + pendingProfileStatus,
-                    )
+                    pendingProfileStatus === 'unverified'
+                      ? $t('accountRecovery.pending_profile_unverified')
+                      : $t('accountRecovery.pending_profile_unreachable')
                   }}
                 </p>
                 <q-btn

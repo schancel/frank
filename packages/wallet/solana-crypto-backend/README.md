@@ -50,7 +50,27 @@ bash packages/wallet/solana-crypto-backend/build-wasm.sh
 node packages/wallet/solana-crypto-backend/browser-test.mjs
 ```
 
-Generator/build source is `build-wasm.sh` plus the Rust sources/Cargo.lock. Output is `generated/backend.js`, `backend_bg.wasm` and their generated declarations. Outputs are ignored build artifacts; rebuild before running the browser harness. Do not hand-edit generated glue. A future Vite composition must supply an explicit `backend_bg.wasm?url` asset URL to the adapter. No third-party DKLS source is modified.
+Generator/build source is `build-wasm.sh` plus the Rust sources, `Cargo.toml`, `Cargo.lock` and `rust-toolchain.toml`. The Rust compiler is pinned to 1.93.0 and bindgen to 0.2.129. Build flags remap repository and Cargo registry source paths to stable `/frank` and `/cargo-home` prefixes, so panic-location strings do not depend on the developer or CI checkout. External Rust flags must be unset for this package build. Output is the tracked `generated/backend.js`, `backend_bg.wasm`, `backend.d.ts`, `backend_bg.wasm.d.ts` and full SHA-256 `SHA256SUMS` manifest. Generate these files only with the build script; never hand-edit them. The local `package.json` declares the generated web glue as ESM without changing the wallet package boundary. A clean checkout can import and instantiate the committed package without Rust tooling or a manually copied artifact. No third-party DKLS source is modified.
+
+Before an intentional regeneration, install the pinned Rust toolchain with its WASM target and wasm-bindgen CLI, then populate Cargo's registry cache from the locked dependencies:
+
+```sh
+rustup toolchain install 1.93.0 --profile minimal --target wasm32-unknown-unknown
+cargo +1.93.0 install wasm-bindgen-cli --version 0.2.129 --locked
+cargo +1.93.0 fetch --locked --manifest-path packages/wallet/solana-crypto-backend/Cargo.toml
+```
+
+Build and deterministic source-equivalence check, from repository root (local repository workers acquire the existing cargo slot):
+
+```sh
+bash .agents/scripts/with-cargo-slot bash packages/wallet/solana-crypto-backend/build-wasm.sh
+bash .agents/scripts/with-cargo-slot bash packages/wallet/solana-crypto-backend/build-wasm.sh --check
+node packages/wallet/solana-crypto-backend/package-test.mjs
+```
+
+`--check` uses offline locked Cargo, regenerates into a temporary directory, byte-compares all outputs including the hash manifest, and removes only its own temporary directory. It neither rewrites tracked artifacts nor deletes other build outputs. Cargo's reported artifact path is used, including when the cargo slot chooses an external target directory. The CI workflow `.github/workflows/solana-crypto-package.yml` bootstraps these pinned tools/dependencies and enforces the same source-equivalence and clean-package checks.
+
+The package test uses only Node builtins, verifies the full artifact hash manifest, imports the actual runtime, instantiates the committed WASM bytes with networking disabled, compares its public key to the independent public synthetic vector, and closes custody. It does not replace the existing browser signing/vector tests or establish cryptographic approval. A future authorized Vite composition must bundle the local `generated/backend_bg.wasm?url` asset and pass that same-origin emitted URL to the adapter; it must not fetch an external WASM implementation. No application export or capability is activated here.
 
 The real disposable Chrome test uses a loopback server with a same-origin CSP and synthetic credentials. It signs native and configured-devUSDC synthetic transfers in WASM, compares the exact signatures with independent Python arithmetic, verifies them through Noble/OpenSSL, parses actual Solana messages and checks ATA derivation with web3.js. It checks host seed wipe on success/failure, closed-handle rejection, deterministic reopen, op/context message binding and invalid-request rejection. This proves signing/serialization and derivation, not funded receipt, ATA existence, RPC submission or restored financial inventory. It uses no owner profile, funds or live chain.
 

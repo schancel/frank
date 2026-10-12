@@ -301,7 +301,7 @@ export class QwenBot implements FrankBotDefinition {
           type: "text",
           text: "Hello! I am Qwen, an AI assistant on the Frank network. Send me any message to chat, or send /subscribe to receive my daily news updates!",
         },
-      ]);
+      ], undefined, { stampValueWei: 0n });
     } catch (err) {
       console.warn(`[qwen] Failed to welcome new user ${user.address}:`, err);
     }

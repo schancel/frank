@@ -115,6 +115,16 @@ const stored = (context = ctx, message = msg) => {
   return raw === undefined ? undefined : JSON.parse(raw);
 };
 
+it("welcomes a newly registered user without spending the live AVU default stamp", async () => {
+  await bot.onNewUser({ address: peer.address, registeredAtMs: 1 }, ctx);
+  expect(ctx.sendMessage).toHaveBeenCalledWith(
+    peer.address,
+    expect.any(Array),
+    undefined,
+    { stampValueWei: 0n }
+  );
+});
+
 it("keeps its profile and newsletter, and answers a subscription command or an empty message with a stored reply, not a send of its own", async () => {
   expect(bot.getProfile().name).toBe("Qwen");
   expect(bot.schedules).toHaveLength(1);

@@ -34,7 +34,7 @@ export class ChatRoomBot implements FrankBotDefinition {
           type: "text",
           text: "👋 Welcome to Frank! I host community group chat rooms over direct messaging. Send /join to chat with everyone in #general, or /help to learn more!",
         },
-      ]);
+      ], undefined, { stampValueWei: 0n });
     } catch (err) {
       console.warn(`[lobby] Failed to welcome ${user.address}:`, err);
     }

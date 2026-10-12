@@ -1,5 +1,10 @@
 /** Browser DNS-over-HTTPS discovery. DNS selects a relay; signed directory admission
  * remains responsible for accepting an account's identity. Nothing here is persisted. */
+import {
+  discoverWellKnown,
+  WellKnownDiscoveryError,
+} from './frank-wellknown-discovery'
+
 export const DEFAULT_DOH_ENDPOINTS = [
   'https://cloudflare-dns.com/dns-query',
   'https://dns.google/dns-query',
@@ -244,6 +249,26 @@ export function createFrankDomainDiscovery(
           /* Try the next configured resolver; never turn failure into absence. */
         } finally {
           clearTimeout(timeout)
+        }
+      }
+      if (!answer?.relays.length) {
+        const srvAbsent = answer !== undefined
+        try {
+          const wellKnown = await discoverWellKnown(
+            canonical,
+            options.fetch ?? globalThis.fetch,
+          )
+          if (wellKnown) answer = wellKnown
+        } catch (error) {
+          // With authoritative SRV absence and no positive HTTP advertisement, retain
+          // the explicit email action (ordinary email domains often block browser CORS).
+          // An advertised but invalid native service must remain a visible failure.
+          if (
+            !srvAbsent ||
+            !(error instanceof WellKnownDiscoveryError) ||
+            error.advertised
+          )
+            throw error
         }
       }
       if (!answer)

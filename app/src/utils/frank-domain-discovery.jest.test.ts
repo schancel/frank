@@ -117,11 +117,15 @@ describe('browser Frank SRV discovery', () => {
     async code => {
       const request = jest
         .fn()
-        .mockImplementation(async () => response(answer({ code })))
+        .mockImplementation(async (url: string) =>
+          url.includes('/.well-known/')
+            ? new Response('', { status: 404 })
+            : response(answer({ code })),
+        )
       const discover = createFrankDomainDiscovery({ fetch: request })
       expect(await discover('example.com')).toEqual([])
       await discover('example.com')
-      expect(request).toHaveBeenCalledTimes(2)
+      expect(request).toHaveBeenCalledTimes(4)
     },
   )
   it.each([
@@ -139,7 +143,7 @@ describe('browser Frank SRV discovery', () => {
         .mockImplementation(async () => response(answer(options)))
       await expect(
         createFrankDomainDiscovery({ fetch: request })('example.com'),
-      ).rejects.toThrow('Domain discovery failed')
+      ).rejects.toThrow()
     },
   )
   it('rejects truncated and oversized bodies', async () => {
@@ -162,14 +166,14 @@ describe('browser Frank SRV discovery', () => {
           ),
       )
       const discover = createFrankDomainDiscovery({ fetch: request })
-      const pending = expect(discover('example.com')).rejects.toThrow(
-        'Domain discovery failed',
-      )
+      const pending = expect(discover('example.com')).rejects.toThrow()
+      await jest.advanceTimersByTimeAsync(5000)
+      await new Promise(resolve => setImmediate(resolve))
       await jest.advanceTimersByTimeAsync(5000)
       await new Promise(resolve => setImmediate(resolve))
       await jest.advanceTimersByTimeAsync(5000)
       await pending
-      expect(request).toHaveBeenCalledTimes(2)
+      expect(request).toHaveBeenCalledTimes(3)
     } finally {
       jest.useRealTimers()
     }

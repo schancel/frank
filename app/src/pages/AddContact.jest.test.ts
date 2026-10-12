@@ -82,6 +82,10 @@ jest.mock('src/utils/contact-username', () => ({
   relayHandleOf: (...args: unknown[]) => mockRelayHandleOf(...args),
 }))
 const mockDiscoverFrankDomain = jest.fn()
+const mockDiscoverWellKnown = jest.fn()
+jest.mock('src/utils/frank-wellknown-discovery', () => ({
+  discoverWellKnown: (...args: unknown[]) => mockDiscoverWellKnown(...args),
+}))
 const mockAssertDiscoveryRelay = jest.fn()
 jest.mock('src/utils/frank-domain-discovery', () => ({
   ...jest.requireActual('src/utils/frank-domain-discovery'),
@@ -252,6 +256,7 @@ describe('AddContact latest lookup', () => {
 
   beforeEach(() => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    mockDiscoverWellKnown.mockReset().mockResolvedValue(null)
     mockDiscoverFrankDomain.mockReset().mockResolvedValue([])
     mockAssertDiscoveryRelay.mockReset().mockResolvedValue(undefined)
     mockExistingContacts = {}
@@ -924,6 +929,40 @@ describe('AddContact latest lookup', () => {
       expect(
         wrapper.find('[data-test="start-email-thread-btn"]').exists(),
       ).toBe(false)
+    })
+    it('tries authenticated well-known after an advertised SRV target fails TLS or origin checks', async () => {
+      mockDiscoverFrankDomain.mockResolvedValue([
+        { endpoint: 'https://broken.example.com', priority: 0, weight: 0 },
+      ])
+      mockAssertDiscoveryRelay
+        .mockRejectedValueOnce(new Error('TLS failure'))
+        .mockResolvedValue(undefined)
+      mockDiscoverWellKnown.mockResolvedValue({
+        relays: [
+          { endpoint: 'https://relay.example.com', priority: 0, weight: 0 },
+        ],
+        ttl: 60,
+      })
+      mockResolveUsername.mockResolvedValue({
+        username: 'alice',
+        address: ADDRESS_A,
+      })
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+      await typeAndFire(wrapper, 'alice@native.example')
+      expect(mockDiscoverWellKnown).toHaveBeenCalled()
+      expect(mockResolveUsername).toHaveBeenCalledWith(
+        'alice',
+        'https://relay.example.com',
+      )
+      expect(
+        wrapper.find('[data-test="start-email-thread-btn"]').exists(),
+      ).toBe(false)
+      await wrapper
+        .find('[data-test="start-conversation-btn"]')
+        .trigger('click')
+      expect(mockCreateConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'direct', address: ADDRESS_A }),
+      )
     })
     it('keeps signed directory refusal visible even after a username was resolved', async () => {
       mockDiscoverFrankDomain.mockResolvedValue([

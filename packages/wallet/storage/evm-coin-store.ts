@@ -717,6 +717,70 @@ async function changeStoredCoin(
   throw new Error('Received account changed during update; retry required')
 }
 
+/** Registers the first exact native payment after an account-only recovery note. This changes
+ * claim evidence only, never observed native balances or ERC20 positions. The store is already
+ * bound to the wallet/chain by composition; caller derivation must match its immutable account. */
+export async function registerStoredEvmNativePayment(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  payment: {
+    chainIdentifier: string
+    ephemeralPubKey: string
+    rawTransaction: string
+    amountWei: bigint
+    payloadDigest: string
+  },
+): Promise<EvmCoin> {
+  payment = { ...payment }
+  const chain = Object.prototype.hasOwnProperty.call(
+    PROTOCOL_CHAINS,
+    payment.chainIdentifier,
+  )
+    ? PROTOCOL_CHAINS[payment.chainIdentifier]
+    : undefined
+  if (!chain || chain.family !== 'evm')
+    throw new Error('Unsupported canonical EVM chain')
+  const tx = Transaction.from(payment.rawTransaction)
+  const key = getAddress(address).toLowerCase()
+  if (
+    payment.amountWei <= 0n ||
+    payment.amountWei >= 1n << 256n ||
+    !tx.isSigned() ||
+    tx.chainId !== BigInt(chain.nativeChainId!) ||
+    tx.to?.toLowerCase() !== key ||
+    tx.data !== '0x' ||
+    tx.value !== payment.amountWei
+  )
+    throw new Error('Native transaction does not match the claimed payment')
+  if (!/^[0-9a-fA-F]{64}$/.test(payment.payloadDigest))
+    throw new Error('Invalid native payment digest')
+  const raw = tx.serialized.slice(2).toLowerCase()
+  const digest = payment.payloadDigest.toLowerCase()
+  return changeStoredCoin(store, key, coin => {
+    if (
+      coin.origin !== 'stealth' ||
+      coin.ephemeralPubKey !== payment.ephemeralPubKey ||
+      computeAddress(coin.privateKey).toLowerCase() !== key
+    )
+      throw new Error('Native payment derivation conflicts with its owner')
+    if (
+      coin.transactions.length === 1 &&
+      coin.transactions[0] === raw &&
+      coin.claimedAmountWei === payment.amountWei.toString() &&
+      coin.payloadDigest === digest
+    )
+      return coin
+    if (coin.transactions.length !== 0 || coin.claimedAmountWei !== '0')
+      throw new Error('Conflicting native receipt account claim')
+    return {
+      ...coin,
+      transactions: [raw],
+      claimedAmountWei: payment.amountWei.toString(),
+      payloadDigest: digest,
+    }
+  })
+}
+
 /** Native observations merge against current durable state and preserve every token position.
  * All observations at this owner boundary must use CAS, not put an earlier full-row snapshot. */
 export function applyStoredNativeCoinObservation(

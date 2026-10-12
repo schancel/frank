@@ -29,6 +29,7 @@ import { deriveEvmStealthAddress } from '../monad-stealth'
 import { getEvmDexDeployment } from './dex-deployments'
 import { LevelRecordStore } from '../storage/evm-coin-store'
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
+import { applyWalletSyncItem } from '../sync-dispatcher'
 
 const config: EvmChainConfig = {
   networkId: 'monad-test',
@@ -251,7 +252,18 @@ test('production native preparation retains exact bytes and claims until bound e
       rawTransactions: prepared.members.map(member => member.rawTransaction),
       payloadDigest: digest,
     }
+    const accountNote = {
+      type: 'received-coin' as const,
+      chainIdentifier: intent.chainIdentifier,
+      address: prepared.recipientAddress,
+      origin: 'stealth' as const,
+      ephemeralPubKey: Buffer.from(prepared.ephemeralPublicKey).toString('hex'),
+      claimedAmountWei: '0',
+      timestamp: 1,
+    }
+    await applyWalletSyncItem(wallet, accountNote)
     await wallet.stealthReceipts!.record(receiptClaim)
+    await applyWalletSyncItem(wallet, accountNote)
     expect(await wallet.stealthReceipts!.observe(receiptClaim)).toMatchObject({
       status: 'succeeded',
       verifiedReceivedAmountAtomic: 1_000n,

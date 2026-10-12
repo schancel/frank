@@ -35,6 +35,7 @@ import {
   recordStoredEvmCoin,
   markStoredEvmCoinNoted,
   registerStoredEvmErc20Payment,
+  registerStoredEvmNativePayment,
   refreshStoredEvmErc20Position,
   receivedErc20Payments,
   fundedErc20Coins,
@@ -3554,18 +3555,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ): Promise<void> => {
             const claim = snapshotReceiptClaim(input);
             const coin = verifyReceiptClaim(claim);
-            const known = coinStore.get(coin.address);
-            if (
-              claim.asset.kind === "native" &&
-              known !== undefined &&
-              (!known.transactions.includes(coin.transactions[0]!) ||
-                known.claimedAmountWei !== coin.claimedAmountWei ||
-                known.payloadDigest !== coin.payloadDigest)
-            )
-              throw new Error("Conflicting native receipt account claim");
             await recordStoredEvmCoin(coinStore, coin);
             assertFinancialActive();
-            if (claim.asset.kind === "erc20")
+            if (claim.asset.kind === "native") await registerStoredEvmNativePayment(coinStore, coin.address, {chainIdentifier, ephemeralPubKey: coin.ephemeralPubKey!, rawTransaction: claim.rawTransactions[0]!, amountWei: claim.amountAtomic, payloadDigest: claim.payloadDigest});
+            else
               await registerStoredEvmErc20Payment(coinStore, coin.address, {
                 chainIdentifier,
                 contractAddress: claim.asset.contractAddress,

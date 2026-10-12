@@ -18,6 +18,7 @@ import {
   registerEvmErc20Payment,
   recordStoredEvmCoin,
   registerStoredEvmErc20Payment,
+  registerStoredEvmNativePayment,
   spendableCoins,
   type EvmCoin,
   type EvmErc20Reader,
@@ -119,6 +120,26 @@ const view = (coin: EvmCoin, nativeBalanceWei = 0n) =>
     nativeBalanceWei,
     requiredNativeFeeWei: 100_000n,
   })
+
+const nativeSigned = (nonce = 0) =>
+  sender.signTransaction({
+    to: recipient.address,
+    chainId: 10143n,
+    type: 2,
+    nonce,
+    value: 1000n,
+    data: '0x',
+    gasLimit: 21000n,
+    maxFeePerGas: 2n,
+    maxPriorityFeePerGas: 1n,
+  })
+const nativePayment = (rawTransaction: string) => ({
+  chainIdentifier: 'monad-testnet',
+  ephemeralPubKey: account().ephemeralPubKey!,
+  rawTransaction,
+  amountWei: 1000n,
+  payloadDigest: digest,
+})
 
 describe('received ERC20 positions under the account owner', () => {
   afterEach(() => jest.restoreAllMocks())
@@ -398,6 +419,67 @@ describe('received ERC20 positions under the account owner', () => {
     )
   })
 
+  it('restores note-before-native-claim and claim-before-note without losing token or observed native facts', async () => {
+    const raw = await nativeSigned()
+    const tokenRaw = await signed()
+    for (const claimFirst of [false, true]) {
+      const store = new MemoryRecordStore<EvmCoin>()
+      const note = account()
+      const nativeClaim = {
+        ...note,
+        transactions: [raw.slice(2)],
+        claimedAmountWei: '1000',
+        payloadDigest: digest,
+      }
+      await recordStoredEvmCoin(store, claimFirst ? nativeClaim : note)
+      await registerStoredEvmErc20Payment(
+        store,
+        note.address,
+        payment(tokenRaw),
+      )
+      await applyStoredNativeCoinObservation(store, note.address, {
+        balanceWei: 777n,
+        transfer: 'included',
+        transferValueWei: 1000n,
+        atMs: 30,
+      })
+      const before = store.get(note.address)!
+      await registerStoredEvmNativePayment(
+        store,
+        note.address,
+        nativePayment(raw),
+      )
+      await recordStoredEvmCoin(store, note)
+      await registerStoredEvmNativePayment(
+        store,
+        note.address,
+        nativePayment(raw),
+      )
+      expect(store.get(note.address)).toMatchObject({
+        amountWei: '777',
+        checkedAtMs: 30,
+        receivedAmountWei: '1000',
+        claimedAmountWei: '1000',
+        transactions: [raw.slice(2)],
+        payloadDigest: digest,
+        erc20Positions: before.erc20Positions,
+      })
+      for (const invalid of [
+        { ...nativePayment(raw), chainIdentifier: 'monad' },
+        { ...nativePayment(raw), amountWei: 999n },
+        {
+          ...nativePayment(raw),
+          ephemeralPubKey: recipient.signingKey.compressedPublicKey.slice(2),
+        },
+        nativePayment(await nativeSigned(1)),
+      ])
+        await expect(
+          registerStoredEvmNativePayment(store, note.address, invalid),
+        ).rejects.toThrow()
+      expect(store.get(note.address)!.transactions).toEqual([raw.slice(2)])
+    }
+  })
+
   it('repeated account discovery retains positions and refuses conflicting custody', async () => {
     const store = new MemoryRecordStore<EvmCoin>()
     const raw = await signed()
@@ -435,6 +517,18 @@ describe('received ERC20 positions under the account owner', () => {
       const coin = registerEvmErc20Payment(account(), payment(raw))
       await first.put(coin.address, coin)
       second = await LevelRecordStore.open(root, EVM_COIN_NAMESPACE)
+      const nativeRaw = await nativeSigned()
+      await Promise.all([
+        registerStoredEvmNativePayment(
+          first,
+          coin.address,
+          nativePayment(nativeRaw),
+        ),
+        registerStoredEvmErc20Payment(second, coin.address, {
+          ...payment(raw),
+          payloadDigest: 'ef'.repeat(32),
+        }),
+      ])
       await applyStoredNativeCoinObservation(first, coin.address, {
         balanceWei: 999n,
         transfer: 'none',
@@ -456,6 +550,11 @@ describe('received ERC20 positions under the account owner', () => {
       first = undefined
       second = await LevelRecordStore.open(root, EVM_COIN_NAMESPACE)
       expect(second.get(coin.address)).toEqual(before)
+      expect(before.transactions).toEqual([nativeRaw.slice(2)])
+      expect(before.claimedAmountWei).toBe('1000')
+      expect(before.erc20Positions![0]!.claims[0]!.payloadDigests).toContain(
+        'ef'.repeat(32),
+      )
       expect(view(second.get(coin.address)!)[0]!.receivedAmountBaseUnits).toBe(
         amount,
       )

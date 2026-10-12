@@ -266,6 +266,8 @@ export interface StoredMessage {
   reason?: string
   /** A host message points at this attempt, or the user answered for it. */
   accounted?: boolean
+  /** Complete bytes exist, but the host has not durably bound their financial effects. */
+  exposurePending?: true
   createdAt: number
 }
 
@@ -276,15 +278,23 @@ export interface OutgoingMessageStore {
   put(row: StoredMessage): Promise<void>
   close(): Promise<void>
   /** The sealed envelope of an unpaid message that was handed to the relay and is not known to
-   * have been delivered, by message ID. Kept so that sending the same message again sends the
+   * have been delivered, by message ID. Host-bound envelopes also retain terminal receipts.
+   * Kept so that sending the same message again sends the
    * same bytes: one digest, however many copies the relay ends up holding. Not a link and not
    * in `all()`: it stands for no payment. */
   unpaid(messageId: string): UnpaidEnvelope | undefined
+  /** Read-only linear lookup of host-bound free envelopes; no second recovery index. */
+  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined
   /** `undefined` drops the record. */
   setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined): Promise<void>
 }
 /** Hex throughout. `recipientSubject`: whom the envelope is sealed to. */
 export interface UnpaidEnvelope {
+  exposurePending?: true
+  /** A host effect is bound to these immutable bytes; retain its delivery receipt on success. */
+  hostBound?: true
+  outcome?: 'delivered' | 'dead'
+  reason?: string
   digest: string
   delivery: string
   context: string
@@ -313,6 +323,10 @@ export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   private readonly envelopes = new Map<string, UnpaidEnvelope>()
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
+  }
+  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined {
+    return [...this.envelopes.values()].find(envelope =>
+      envelope.hostBound && envelope.digest === payloadDigest)
   }
   async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
     if (envelope) this.envelopes.set(messageId, { ...envelope })
@@ -415,6 +429,10 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   private readonly envelopes = new Map<string, UnpaidEnvelope>()
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
+  }
+  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined {
+    return [...this.envelopes.values()].find(envelope =>
+      envelope.hostBound && envelope.digest === payloadDigest)
   }
   async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
     if (envelope) {
@@ -870,7 +888,11 @@ async function submitStored(
   directory: CanonicalDirectory,
   row: StoredMessage,
 ): Promise<{ row: StoredMessage; error?: unknown }> {
-  if (row.outcome !== undefined || row.request === undefined) return { row }
+  if (
+    row.exposurePending ||
+    row.outcome !== undefined ||
+    row.request === undefined
+  ) return { row }
   let accepted: CanonicalAcceptedBody
   try {
     accepted = await submitCanonicalRequest({
@@ -1248,7 +1270,7 @@ async function settleHolder(
     consumerId === undefined ? undefined : owner.messages.get(consumerId)
   if (consumerId === undefined || !row)
     return void (await owner.settleOtherHolder?.(holder))
-  if (!row.payments.some(isPending)) return
+  if (row.exposurePending || !row.payments.some(isPending)) return
   const work = workOf(owner, consumerId)
   if (work.creating) return
   if (work.busy) return void (await work.busy)
@@ -1288,6 +1310,17 @@ async function settleHolder(
   }
 }
 
+async function authorizeEnvelope(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+  callback: (digest: string) => void | Promise<void>,
+): Promise<StoredMessage> {
+  await owner.lifetime(async () => callback(row.digest))
+  const { exposurePending: _pending, ...authorized } = row
+  await owner.lifetime(() => owner.messages.put(authorized))
+  return authorized
+}
+
 /**
  * The resend queue: the only queue there is. Every stored message whose delivery or payment is
  * not known to be finished is driven one step further, each on its own and all at once; a message
@@ -1303,7 +1336,11 @@ async function settleHolder(
 async function resend(
   owner: CanonicalMessagingOwner,
   directory: CanonicalDirectory,
-  options: { digests?: ReadonlySet<string>; now?: boolean } = {},
+  options: {
+    digests?: ReadonlySet<string>
+    now?: boolean
+    onEnvelopeDurable?: (digest: string) => void | Promise<void>
+  } = {},
 ): Promise<void> {
   await Promise.all(
     owner.messages
@@ -1325,6 +1362,11 @@ async function resend(
             options.now === true &&
             options.digests?.has(stored.digest) !== false
           let row = owner.messages.get(stored.consumerId)!
+          if (row.exposurePending) {
+            if (!options.onEnvelopeDurable || !options.digests?.has(row.digest))
+              return
+            row = await authorizeEnvelope(owner, row, options.onEnvelopeDurable)
+          }
           if (row.outcome === undefined && due(work.submit, SUBMIT_EVERY, now)) {
             const submitted = await submitStored(owner, directory, row)
             if (submitted.error)
@@ -1396,11 +1438,29 @@ export function restoreOutgoingClaims(owner: CanonicalMessagingOwner): void {
   }
 }
 
+function unpaidResult(payloadDigest: string): DirectMessageSendResult {
+  return {
+    payloadDigest,
+    stampValueWei: 0n,
+    stampPayments: [],
+    paymentTransfers: [],
+    preparationTxHashes: [],
+  }
+}
+
+function throwUnpaidTerminal(reason?: string): never {
+  if (reason === 'undeliverable') throw new CanonicalRecipientUndeliverableError()
+  if (reason === 'sender_unpublished') throw new CanonicalSenderUnpublishedError()
+  throw new UnpaidDirectMessageNotDeliveredError(reason ?? 'dead')
+}
+
 async function send(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['send']>[0],
   resolveDefaultStamp: (minimumStamp?: bigint) => Promise<DefaultStampQuote>,
 ): Promise<DirectMessageSendResult> {
+  if (params.onEnvelopeDurable && params.messageId === undefined)
+    throw new DirectMessageArgumentError('messageId')
   // Supplied identities are taken exactly or refused: 16 bytes or their lowercase 8-4-4-4-12
   // form. Nothing is repaired. Bytes are copied, so the repeat check and the sealed message use
   // the same value whatever the caller does to its buffer while this send waits. A refusal here
@@ -1432,13 +1492,42 @@ async function send(
   // attempt exists, and the answer is the original. A send of the same ID that is still on its
   // way to that record is waited for (this ID only; no other message waits on anything).
   for (;;) {
+    // A named envelope fixes its paid/free mode as well as its bytes. Re-read after every
+    // creator wait: the creator may have completed and retained a terminal free receipt.
+    const previousFree = params.messageId !== undefined
+      ? owner.messages.unpaid(toHex(messageId)) : undefined
+    if (previousFree) {
+      if (params.stampValue !== 0n) throw new DirectMessageArgumentError('messageId')
+      if (
+        computeAddress('0x' + previousFree.recipientSubject).toLowerCase() !==
+        params.recipient.raw.toLowerCase()
+      ) throw new DirectMessageArgumentError('messageId')
+      if (previousFree.hostBound && previousFree.outcome) {
+        if (previousFree.outcome === 'dead') throwUnpaidTerminal(previousFree.reason)
+        return unpaidResult(previousFree.digest)
+      }
+    }
     const original = owner.messages.get(consumerId)
-    if (original)
+    if (original) {
+      if (original.exposurePending && params.onEnvelopeDurable) {
+        if (
+          computeAddress('0x' + original.recipientSubject).toLowerCase() !==
+          params.recipient.raw.toLowerCase()
+        ) throw new DirectMessageArgumentError('messageId')
+        await owner.lifetime(() =>
+          resend(owner, requireDirectory(owner), {
+            digests: new Set([original.digest]),
+            now: true,
+            onEnvelopeDurable: params.onEnvelopeDurable,
+          }),
+        )
+      }
       throw new DirectMessageAlreadyAttemptedError(
         formatUuid(messageId),
         original.digest,
         original.recipientSubject,
       )
+    }
     // Its record's write failed: whether it is on disk is unknown, so never a second payment.
     if (work.unrecorded)
       throw new DirectMessageAttemptUnlinkedError(formatUuid(messageId))
@@ -1558,11 +1647,22 @@ async function send(
             context: toHex(unpaid.context),
             recipientSubject: peer.subject,
             boundary: unpaid.boundary,
+            ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
+            ...(params.onEnvelopeDurable ? { hostBound: true as const } : {}),
           })
       }
       // The caller learns the message's digest, durably on its side, BEFORE the relay is handed
       // a byte: a free message has no payment attempt to announce it.
       await params.onBeforeExposure?.(digest)
+      const held = name ? owner.messages.unpaid(name) : undefined
+      if (params.onEnvelopeDurable || held?.exposurePending) {
+        if (!params.onEnvelopeDurable || !name || !held)
+          throw new MonadStampPendingAttemptError([digest])
+        // Keep the marker until both the host effect and this durable clear succeed.
+        await owner.lifetime(async () => params.onEnvelopeDurable!(digest))
+        const { exposurePending: _pending, ...authorized } = held
+        await owner.lifetime(() => owner.messages.setUnpaid(name, { ...authorized, hostBound: true }))
+      }
       // From here the relay may hold the message, whatever this call learns of it.
       attempted = true
       const accepted = await submitCanonicalRequest({
@@ -1572,25 +1672,25 @@ async function send(
         fetch: directory.fetch,
       })
       if (accepted.phase === 'dead') {
-        // The relay ended it: this envelope never arrives. A later send is a new message.
-        if (name) await owner.messages.setUnpaid(name, undefined)
-        if (accepted.reason === 'undeliverable')
-          throw new CanonicalRecipientUndeliverableError()
-        if (accepted.reason === 'sender_unpublished')
-          throw new CanonicalSenderUnpublishedError()
-        throw new UnpaidDirectMessageNotDeliveredError(accepted.reason)
+        // Host-bound IDs retain this terminal receipt; only an unbound send drops its envelope.
+        if (name) {
+          const envelope = owner.messages.unpaid(name)!
+          await owner.messages.setUnpaid(name, envelope.hostBound
+            ? { ...envelope, outcome: 'dead', reason: accepted.reason }
+            : undefined)
+        }
+        throwUnpaidTerminal(accepted.reason)
       }
       // Anything but delivered is the caller's error to act on; the envelope stays for its repeat.
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
-      if (name) await owner.messages.setUnpaid(name, undefined)
-      return {
-        payloadDigest: digest,
-        stampValueWei: 0n,
-        stampPayments: [],
-        paymentTransfers: [],
-        preparationTxHashes: [],
+      if (name) {
+        const envelope = owner.messages.unpaid(name)!
+        await owner.messages.setUnpaid(name, envelope.hostBound
+          ? { ...envelope, outcome: 'delivered' }
+          : undefined)
       }
+      return unpaidResult(digest)
     }
     if (stampValueWei !== undefined && (stampValueWei <= 0n || stampValueWei >= 1n << 256n))
       throw new Error('canonical-wallet:economics-invalid')
@@ -1711,6 +1811,7 @@ async function send(
       request: { body: toHex(request.body), contentType: request.contentType },
       payments: signed.map(payment => ({ ...payment, state: 'pending' })),
       createdAt: Date.now(),
+      ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
     }
     try {
       await owner.lifetime(() => owner.messages.put(row))
@@ -1727,6 +1828,8 @@ async function send(
     work.creating = undefined
     created()
     try {
+      if (params.onEnvelopeDurable)
+        row = await authorizeEnvelope(owner, row, params.onEnvelopeDurable)
       await params.onAttemptCreated?.(digest)
       const submitted = await owner.lifetime(() =>
         submitStored(owner, directory, row),
@@ -2237,6 +2340,16 @@ export function canonicalDirectMessages(
   return {
     send: (params: Parameters<DirectMessageClient['send']>[0]) =>
       send(owner, params, resolveDefaultStamp),
+    deliveryOf: async (
+      params: Parameters<NonNullable<DirectMessageClient['deliveryOf']>>[0],
+    ): Promise<DirectMessageAttemptStatus | undefined> => {
+      if (!/^[0-9a-f]{64}$/.test(params.payloadDigest))
+        throw new Error('Expected canonical message payload digest')
+      const row = owner.messages.all().find(row => row.digest === params.payloadDigest)
+        ?? owner.messages.unpaidByDigest(params.payloadDigest)
+      if (!row) return undefined
+      return row.exposurePending ? 'live' : row.outcome ?? 'live'
+    },
     /**
      * The host's tick. Drives every unresolved message of this wallet one step (see `resend`),
      * whichever digests are named, and answers for the named ones. `maxPutAttempts` above 1 is
@@ -2250,6 +2363,7 @@ export function canonicalDirectMessages(
         resend(owner, directory, {
           digests: new Set(params.payloadDigests),
           now: (params.maxPutAttempts ?? 1) > 1,
+          onEnvelopeDurable: params.onEnvelopeDurable,
         }),
       )
       return Object.fromEntries(

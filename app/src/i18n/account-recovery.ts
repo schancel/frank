@@ -1,5 +1,9 @@
 export const en = {
   mera_title: 'Mera',
+  mera_choose:
+    'Use an existing passkey, or create a new account with a new passkey.',
+  mera_existing: 'Use existing passkey',
+  mera_new: 'Create new passkey',
   mera_create: 'Create with Mera',
   mera_login: 'Continue with Mera (Passkey)',
   mera_verification_unreachable:
@@ -39,10 +43,10 @@ export const en = {
     'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares. Proceed?',
   a_saved_account_attempt_is_pending_it:
     'A saved account attempt is pending. It is not active until you choose Activate account.',
-  account_found: 'Account found',
+  account_found: 'Confirm identity',
   activate_account: 'Activate',
   pending_identity_address:
-    'This is the account your backup restores. Activating opens the account with this identity address:',
+    'Activating opens the account with this identity address. Its published profile will be loaded separately:',
   pending_identity_stop_if_unexpected:
     'If you are restoring an account and this is not the address you expect, stop: do not activate. Cancel the attempt instead.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
@@ -179,6 +183,10 @@ export const en = {
 
 export const fr = {
   mera_title: 'Mera',
+  mera_choose:
+    'Utilisez une clé d’accès existante ou créez un nouveau compte avec une nouvelle clé.',
+  mera_existing: 'Utiliser une clé existante',
+  mera_new: 'Créer une nouvelle clé',
   mera_create: 'Créer avec Mera',
   mera_login: 'Continuer avec Mera (clé d’accès)',
   mera_verification_unreachable:
@@ -218,10 +226,10 @@ export const fr = {
     'La réinitialisation effacera les données de compte local illisibles. Vous pourrez ensuite restaurer votre compte depuis vos clés de secours. Continuer ?',
   a_saved_account_attempt_is_pending_it:
     'Une tentative de création enregistrée est en attente. Le compte ne sera actif qu’après avoir choisi Activer le compte.',
-  account_found: 'Compte retrouvé',
+  account_found: 'Confirmer l’identité',
   activate_account: 'Activer',
   pending_identity_address:
-    'Voici le compte que votre sauvegarde restaure. L’activation ouvre le compte ayant cette adresse d’identité :',
+    'L’activation ouvre le compte ayant cette adresse d’identité. Son profil publié sera chargé séparément :',
   pending_identity_stop_if_unexpected:
     'Si vous restaurez un compte et que ce n’est pas l’adresse attendue, arrêtez : n’activez pas. Annulez plutôt la tentative.',
   the_attempt_is_incomplete_or_awaiting_cleanup:

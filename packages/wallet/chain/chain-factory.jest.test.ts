@@ -85,7 +85,7 @@ describe("createChain", () => {
     });
   });
 
-  it("rejects an EVM network missing from the canonical registry", async () => {
+  it("rejects an EVM chain absent from the canonical protocol registry", async () => {
     await expect(
       createChain({
         family: "evm",
@@ -105,7 +105,56 @@ describe("createChain", () => {
           walletStorageLocation: false,
         },
       })
-    ).rejects.toThrow("Unsupported EVM network: base-mainnet");
+    ).rejects.toThrow('Unsupported EVM chain identifier "base-mainnet"');
+  });
+
+  it.each([
+    ["monad-testnet", "tempo-testnet"],
+    ["tempo-testnet", "monad-testnet"],
+  ])(
+    "rejects mismatched EVM chain %s and RPC %s",
+    async (chainIdentifier, rpcChain) => {
+      await expect(
+        createChain({
+          family: "evm",
+          chainIdentifier,
+          config: {
+            networkId: chainIdentifier,
+            chainId: 10143,
+            rpcChain,
+            relayBaseUrl: "http://127.0.0.1:8098",
+            networkTag: "MONT",
+            stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+            defaultStampValueWei: 1n,
+            defaultTopicVoteValueWei: 1n,
+            subAccountPoolSize: 1,
+            walletStorageLocation: false,
+          },
+        })
+      ).rejects.toThrow("EVM chain identifier and RPC chain must match");
+    }
+  );
+
+  it("rejects a conflicting identifier inside EVM configuration", async () => {
+    await expect(
+      createChain({
+        family: "evm",
+        chainIdentifier: "monad-testnet",
+        config: {
+          chainIdentifier: "tempo-testnet",
+          networkId: "monad-testnet",
+          chainId: 10143,
+          rpcChain: "monad-testnet",
+          relayBaseUrl: "http://127.0.0.1:8098",
+          networkTag: "MONT",
+          stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+          defaultStampValueWei: 1n,
+          defaultTopicVoteValueWei: 1n,
+          subAccountPoolSize: 1,
+          walletStorageLocation: false,
+        },
+      })
+    ).rejects.toThrow("EVM chain identifier and RPC chain must match");
   });
 
   it("creates a Hyperliquid chain via createChain", async () => {
@@ -137,28 +186,34 @@ describe("createChain", () => {
     });
   });
 
-  it("rejects Tempo as a native-coin chain", async () => {
-    await expect(
-      createChain({
-        family: "evm",
-        chainIdentifier: "tempo-mainnet",
-        config: {
-          name: "Tempo",
-          unit: "USD",
-          networkId: "tempo-mainnet",
-          chainId: 4217,
-          rpcChain: "tempo-mainnet",
-          relayBaseUrl: "http://127.0.0.1:8098",
-          networkTag: "TMPO",
-          stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
-          resolveDefaultStamp: fixedStampDefault(1n),
-          defaultTopicVoteValueWei: 1n,
-          subAccountPoolSize: 1,
-          walletStorageLocation: false,
-        },
-      })
-    ).rejects.toThrow("tempo-mainnet has no native coin");
-  });
+  it.each([
+    ["tempo-mainnet", 4217],
+    ["tempo-testnet", 42431],
+  ])(
+    "refuses %s until signed 0x76 custody and fee recovery exist",
+    async (chainIdentifier, chainId) => {
+      await expect(
+        createChain({
+          family: "evm",
+          chainIdentifier,
+          config: {
+            name: "Tempo",
+            unit: "USD",
+            networkId: chainIdentifier,
+            chainId,
+            rpcChain: chainIdentifier,
+            relayBaseUrl: "http://127.0.0.1:8098",
+            networkTag: "TMPO",
+            stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+            defaultStampValueWei: 1n,
+            defaultTopicVoteValueWei: 1n,
+            subAccountPoolSize: 1,
+            walletStorageLocation: false,
+          },
+        })
+      ).rejects.toThrow("signed 0x76 transaction and fee-token recovery");
+    }
+  );
 
   it("creates a Solana chain with the shared codecs and wallet API", async () => {
     const signer = await Keypair.fromSeed(new Uint8Array(32).fill(1));

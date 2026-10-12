@@ -24,6 +24,7 @@ export interface PreparedStealthPayment {
   readonly recipientAddress: string
   /** Wire destination: EVM address bytes, or the Bitcoin-family output locking script. */
   readonly recipientDestination: Uint8Array
+  readonly recipientSpendPublicKey: Uint8Array
   readonly ephemeralPublicKey: Uint8Array
   readonly members: readonly {
     readonly rawTransaction: string
@@ -55,6 +56,10 @@ export interface StealthPaymentCapability {
   /** Releases only an operation proven never exposed. Exposed uncertainty remains reserved. */
   release(operationId: string): Promise<boolean>
   get(operationId: string): Promise<PreparedStealthPayment | undefined>
+  /** Read-only recovery index under the operation owner; independent of chat/UI retention. */
+  list(): Promise<
+    readonly { readonly operationId: string; readonly payloadDigest?: string }[]
+  >
 }
 
 /** A claim locates funds; the adapter must verify derivation, transactions and chain state. */

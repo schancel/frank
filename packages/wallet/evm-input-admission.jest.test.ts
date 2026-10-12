@@ -243,6 +243,34 @@ describe('derived EVM input admission', () => {
   afterEach(async () => {
     await rm(location, { recursive: true, force: true })
   })
+  it('refreshes the original preparation and rejects completion after its admission lifetime expires', async () => {
+    const f = await fixture(location)
+    try {
+      const preparationId = 'stealth-payment:admission-recovery'
+      const row = await f.journal.prepare({ ...f.plan(), preparationId })
+      const access = nativeAdmissionJournal(f.admission, f.lifetime)
+      expect(await access.refreshPreparation(preparationId)).toEqual(row)
+      const entered = barrier(),
+        release = barrier()
+      const refresh = f.journal.refreshPreparation.bind(f.journal)
+      jest
+        .spyOn(f.journal, 'refreshPreparation')
+        .mockImplementation(async id => {
+          entered.resolve()
+          await release.promise
+          return refresh(id)
+        })
+      const pending = access.refreshPreparation(preparationId)
+      const rejected = expect(pending).rejects.toThrow('foreign lifetime')
+      await entered.promise
+      f.active.clear()
+      release.resolve()
+      await rejected
+      expect(f.journal.list()).toEqual([row])
+    } finally {
+      await f.close()
+    }
+  })
   it('nested_lifetime_token_still_serializes_mutation', async () => {
     const f = await fixture(location)
     try {

@@ -199,6 +199,281 @@ describe('wallet-lifetime EVM native operations', () => {
     journal = new EvmNativeOperationJournal({ location, binding })
     await journal.Open()
   }
+  const independent = (preparationId = 'independent-test') => ({
+    kind: 'native' as const,
+    preparationId: 'stealth-payment:' + preparationId,
+    recipient: { raw: recipient },
+    maxNativeFeeWei: fee * 2n,
+    members: sources()
+      .slice(0, 2)
+      .map(source => ({ sourceAddress: source.address, value: 1000n })),
+  })
+  it('reserves the entire independent set before signing and reopens original bytes', async () => {
+    const state = chain([50000n, 50000n]),
+      { executor, sign } = owner(state)
+    sign.mockImplementationOnce(async (source, raw) => {
+      expect(
+        sources()
+          .slice(0, 2)
+          .every(source => !journal.canSelect(source.address, 0)),
+      ).toBe(true)
+      return wallets
+        .find(wallet => wallet.address.toLowerCase() === source.address)!
+        .signTransaction(Transaction.from(raw))
+    })
+    sign.mockRejectedValueOnce(new Error('interrupt second signature'))
+    await expect(
+      executor.signIndependentPayment(independent()),
+    ).rejects.toThrow('interrupt second')
+    expect(journal.list()).toHaveLength(1)
+    const original = journal.list()[0]!
+    expect(original.members[0]!.signed).not.toBeNull()
+    expect(original.members[1]!.signed).toBeNull()
+    expect(original.members.every(member => !member.exposed)).toBe(true)
+    expect(state.raws).toHaveLength(0)
+    await reopen()
+    const resumed = await owner(state).executor.signIndependentPayment(
+      independent(),
+    )
+    expect(resumed.operationId).toBe(original.operationId)
+    expect(resumed.members[0]!.signed).toEqual(original.members[0]!.signed)
+    expect(
+      resumed.members.every(member => member.signed && !member.exposed),
+    ).toBe(true)
+    await expect(
+      owner(state).executor.signIndependentPayment({
+        ...independent(),
+        members: [...independent().members].reverse(),
+      }),
+    ).rejects.toThrow('conflicts')
+  })
+  it('applies one total fee ceiling and rejects duplicate or unowned sources without claims', async () => {
+    const state = chain([50000n, 50000n]),
+      { executor, sign } = owner(state)
+    await expect(
+      executor.signIndependentPayment({
+        ...independent(),
+        maxNativeFeeWei: fee,
+      }),
+    ).rejects.toThrow('total fee')
+    expect(journal.list()).toHaveLength(0)
+    expect(sign).not.toHaveBeenCalled()
+    expect(() =>
+      executor.signIndependentPayment({
+        ...independent(),
+        members: [independent().members[0]!, independent().members[0]!],
+      }),
+    ).toThrow('Duplicate')
+    await expect(
+      executor.signIndependentPayment({
+        ...independent(),
+        members: [
+          independent().members[0]!,
+          { sourceAddress: recipient, value: 1000n },
+        ],
+      }),
+    ).rejects.toThrow('not owned')
+    expect(journal.list()).toHaveLength(0)
+    expect(journal.canSelect(sources()[0]!.address, 0)).toBe(true)
+  })
+  it('does not leak an earlier source when a later member conflicts atomically', async () => {
+    const state = chain([50000n, 50000n]),
+      { executor } = owner(state)
+    await executor.signIndependentPayment({
+      ...independent('held-second'),
+      members: [independent().members[1]!],
+    })
+    await expect(
+      executor.signIndependentPayment(independent()),
+    ).rejects.toThrow('reserved')
+    expect(journal.canSelect(sources()[0]!.address, 0)).toBe(true)
+    expect(journal.list()).toHaveLength(1)
+  })
+  it('coordinates same preparation across owner instances without duplicate signatures or rows', async () => {
+    const state = chain([50000n, 50000n]),
+      first = owner(state),
+      second = owner(state)
+    const [a, b] = await Promise.all([
+      first.executor.signIndependentPayment(independent()),
+      second.executor.signIndependentPayment(independent()),
+    ])
+    expect(a.operationId).toBe(b.operationId)
+    expect(journal.list()).toHaveLength(1)
+    expect(first.sign.mock.calls.length + second.sign.mock.calls.length).toBe(2)
+  })
+  it('tries every independent original after an uncertain sibling and preserves individual retirement', async () => {
+    const state = chain([50000n, 50000n]),
+      { executor } = owner(state, { noPoolRows: true })
+    const row = await executor.signIndependentPayment(independent())
+    state.provider.broadcastTransaction.mockImplementationOnce(async raw => {
+      state.raws.push(raw)
+      throw new Error('ambiguous first')
+    })
+    await expect(
+      executor.resumeOperation(row.operationId),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    expect(state.raws).toEqual(
+      row.members.map(member => member.signed!.rawTransaction),
+    )
+    await executor.observe(row.operationId, 1)
+    expect(
+      summarizeEvmNativeOperation(journal.get(row.operationId)).payment,
+    ).toBe('partial')
+    expect(journal.canSelect(sources()[0]!.address, 0)).toBe(false)
+    expect(journal.canSelect(sources()[1]!.address, 1)).toBe(true)
+    await reopen()
+    await owner(state).executor.resumeOperation(row.operationId)
+    expect(state.raws[2]).toBe(row.members[0]!.signed!.rawTransaction)
+    expect(state.raws).toHaveLength(3)
+  })
+  it('invalidates orphaned independent inclusion after reopen and retries only that original member', async () => {
+    const state = chain([50000n, 50000n])
+    const row = await owner(state).executor.signIndependentPayment(
+      independent(),
+    )
+    await owner(state).executor.resumeOperation(row.operationId)
+    await owner(state).executor.observe(row.operationId, 0)
+    await owner(state).executor.observe(row.operationId, 1)
+    expect(
+      summarizeEvmNativeOperation(journal.get(row.operationId)).payment,
+    ).toBe('included')
+    await reopen()
+    const first = row.members[0]!
+    state.receipts.delete(first.signed!.transactionHash)
+    state.transactions.delete(first.signed!.transactionHash)
+    state.nonces.set(first.source.address, 0)
+    state.balances.set(first.source.address, 50000n)
+    state.provider.getBlock.mockImplementationOnce(async () => ({
+      hash: '0x' + 'cd'.repeat(32),
+      number: 1,
+    }))
+    await owner(state).executor.observe(row.operationId, 0)
+    const invalidated = journal.get(row.operationId)
+    expect(invalidated.members[0]!.observation.state).toBe('missing')
+    expect(invalidated.members[0]!.signed).toEqual(first.signed)
+    expect(invalidated.members[0]!.exposed).toBe(true)
+    expect(journal.canSelect(first.source.address, 0)).toBe(false)
+    expect(summarizeEvmNativeOperation(invalidated).payment).toBe('partial')
+    await owner(state).executor.resumeOperation(row.operationId)
+    expect(state.raws).toEqual([
+      ...row.members.map(member => member.signed!.rawTransaction),
+      first.signed!.rawTransaction,
+    ])
+  })
+  it('does not stop siblings when the first original reverted', async () => {
+    const state = chain([50000n, 50000n]),
+      { executor } = owner(state)
+    const row = await executor.signIndependentPayment(independent())
+    state.mine(row.members[0]!.signed!.rawTransaction, 0)
+    await expect(
+      executor.resumeOperation(row.operationId),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    expect(state.raws).toEqual([row.members[1]!.signed!.rawTransaction])
+    await executor.observe(row.operationId, 1)
+    expect(
+      summarizeEvmNativeOperation(journal.get(row.operationId)).payment,
+    ).toBe('partial')
+  })
+  it('allows an unrelated source to sign while another operation waits for RPC', async () => {
+    const state = chain([50000n, 50000n, 50000n]),
+      { executor } = owner(state)
+    let unblock!: () => void, entered!: () => void
+    const blocked = new Promise<void>(resolve => {
+      unblock = resolve
+    })
+    const started = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    state.provider.getBalance.mockImplementationOnce(async () => {
+      entered()
+      await blocked
+      return 50000n
+    })
+    const slow = executor.signIndependentPayment(independent())
+    await started
+    const fast = await executor.signIndependentPayment({
+      ...independent('unrelated'),
+      members: [{ sourceAddress: sources()[2]!.address, value: 1000n }],
+    })
+    expect(fast.members[0]!.signed).not.toBeNull()
+    unblock()
+    await slow
+  })
+  it('quotes gasless owned token sources truthfully without signing or reserving', async () => {
+    const state = chain([0n, 50000n]),
+      { executor, sign } = owner(state)
+    const terms = {
+      ...independent(),
+      kind: 'contract' as const,
+      members: independent().members.map(member => ({
+        ...member,
+        value: 0n,
+        data: '0xa9059cbb',
+        gasLimit: 21000n,
+      })),
+    }
+    const quote = await executor.quoteIndependentPayment(terms)
+    expect(quote.sources[0]!.nativeBalanceAtomic).toBe(0n)
+    expect(quote.estimatedNativeFeeAtomic).toBe(fee * 2n)
+    await expect(executor.signIndependentPayment(terms)).rejects.toThrow(
+      'Insufficient',
+    )
+    expect(sign).not.toHaveBeenCalled()
+    expect(journal.list()).toHaveLength(0)
+  })
+  it('atomically admits only one of concurrent overlapping complete source sets', async () => {
+    const state = chain([50000n, 50000n, 50000n])
+    const a = independent('overlap-a'),
+      b = {
+        ...independent('overlap-b'),
+        members: sources()
+          .slice(1)
+          .map(source => ({ sourceAddress: source.address, value: 1000n })),
+      }
+    const results = await Promise.allSettled([
+      owner(state).executor.signIndependentPayment(a),
+      owner(state).executor.signIndependentPayment(b),
+    ])
+    expect(
+      results.filter(result => result.status === 'fulfilled'),
+    ).toHaveLength(1)
+    expect(journal.list()).toHaveLength(1)
+    const held = new Set(
+      journal.list()[0]!.members.map(member => member.source.address),
+    )
+    for (const source of sources())
+      expect(journal.canSelect(source.address, 0)).toBe(
+        !held.has(source.address),
+      )
+  })
+  it('background contract recovery probes each exposed member and leaves private siblings untouched', async () => {
+    const state = chain([50000n, 50000n]),
+      { executor } = owner(state)
+    state.setMode('retained')
+    const terms = {
+      ...independent('contract-background'),
+      kind: 'contract' as const,
+      members: independent().members.map(member => ({
+        ...member,
+        value: 0n,
+        data: '0xa9059cbb',
+        gasLimit: 21000n,
+      })),
+    }
+    const row = await executor.signIndependentPayment(terms)
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toHaveLength(0)
+    await journal.markExposed(row.operationId, 1)
+    expect(executor.unresolvedContractCalls()).toEqual([
+      {
+        operationId: row.operationId,
+        txHash: row.members[1]!.signed!.transactionHash,
+      },
+    ])
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toEqual([row.members[1]!.signed!.rawTransaction])
+    expect(journal.get(row.operationId).members[0]!.exposed).toBe(false)
+  })
   it('does not expose a direct payment before its recovery checkpoint and callback', async () => {
     const state = chain([200000n])
     const { executor } = owner(state)
@@ -735,7 +1010,9 @@ describe('wallet-lifetime EVM native operations', () => {
     })
     const address = (index: number) =>
       keyring.deriveSubAccount(index).address.toLowerCase()
-    balances.forEach((value, index) => state.balances.set(address(index), value))
+    balances.forEach((value, index) =>
+      state.balances.set(address(index), value),
+    )
     const sign = jest.fn(async (source: EvmNativeSource, raw: string) => {
       if (source.kind !== 'spend') throw new Error('fixture custody')
       return new Wallet(
@@ -879,7 +1156,10 @@ describe('wallet-lifetime EVM native operations', () => {
       value: 100000n,
       onProgress: p => void stages.push(p.status.stage),
     })
-    const native = await base.executor.sendNative({ recipient: to, value: 1000n })
+    const native = await base.executor.sendNative({
+      recipient: to,
+      value: 1000n,
+    })
     await journal.Close()
     await rm(location, { recursive: true, force: true })
     location = await mkdtemp(join(tmpdir(), 'frank-native-owner-'))
@@ -903,7 +1183,10 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(Object.keys(composedLegacy).sort()).toEqual(
       Object.keys(legacy).sort(),
     )
-    expect({ ...composedLegacy, txHash: '' }).toEqual({ ...legacy, txHash: '' })
+    expect({ ...composedLegacy, txHash: '' }).toEqual({
+      ...legacy,
+      txHash: '',
+    })
     expect(composedLegacy).toEqual({
       txHash: journal.list()[0]!.members[0]!.signed!.transactionHash,
       intermediateTxHashes: [],
@@ -1043,7 +1326,9 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(c.pool.getRecord(0)!.status).not.toBe('spent')
     expect(c.pool.getRecord(0)!.lifecycle?.spend).toBeUndefined()
     await c.executor.flushSync(row.operationId)
-    expect(c.sync.mock.calls.map(([item]) => (item as { rawTx: string }).rawTx)).toEqual([
+    expect(
+      c.sync.mock.calls.map(([item]) => (item as { rawTx: string }).rawTx),
+    ).toEqual([
       row.members[0]!.signed!.rawTransaction,
       row.members[1]!.signed!.rawTransaction,
     ])
@@ -1083,7 +1368,9 @@ describe('wallet-lifetime EVM native operations', () => {
     // All operations: continues past held A, transports B's applied members, names A.
     const all = await pending(c.executor.flushSync())
     expect(all.operation.operationId).toBe(a.operationId)
-    expect(c.sync.mock.calls.map(([item]) => (item as { txHash: string }).txHash)).toEqual([
+    expect(
+      c.sync.mock.calls.map(([item]) => (item as { txHash: string }).txHash),
+    ).toEqual([
       b.members[1]!.signed!.transactionHash,
       b.members[2]!.signed!.transactionHash,
     ])
@@ -1104,9 +1391,9 @@ describe('wallet-lifetime EVM native operations', () => {
     await c.executor.resumeLegacySend(b.operationId, c.lifetime)
     await c.executor.flushSync()
     expect(c.sync).toHaveBeenCalledTimes(4)
-    expect(journal.list().flatMap(r => r.members.map(m => m.syncApplied))).toEqual(
-      [true, true, true, true],
-    )
+    expect(
+      journal.list().flatMap(r => r.members.map(m => m.syncApplied)),
+    ).toEqual([true, true, true, true])
   })
 
   it('a member can never be marked sync-applied without this session local record: a fresh executor transports nothing until its own pass has run', async () => {
@@ -1182,7 +1469,8 @@ describe('wallet-lifetime EVM native operations', () => {
       else expect(passReads).toHaveLength(1)
       // A failing send: the reply to its broadcast is lost.
       state.setMode('lost')
-      const broadcast = state.provider.broadcastTransaction.getMockImplementation()!
+      const broadcast =
+        state.provider.broadcastTransaction.getMockImplementation()!
       state.provider.broadcastTransaction.mockImplementation(async raw => {
         if (fault === 'the journal is unreadable') unreadable = true
         return broadcast(raw)
@@ -1201,7 +1489,14 @@ describe('wallet-lifetime EVM native operations', () => {
 
   it('eligibility: a member that is pending, missing, never observed, reverted, unsigned or cancelled gets no classification and no apply', async () => {
     const state = chain([])
-    const c = await composed(state, [90000n, 80000n, 70000n, 60000n, 50000n, 40000n])
+    const c = await composed(state, [
+      90000n,
+      80000n,
+      70000n,
+      60000n,
+      50000n,
+      40000n,
+    ])
     const send = (value: bigint, onSigned?: () => Promise<void>) =>
       c.executor
         .sendLegacy({ recipient: to, value, onSigned }, c.lifetime)
@@ -1298,7 +1593,9 @@ describe('wallet-lifetime EVM native operations', () => {
     await c.executor.sendNative({ recipient: to, value: 350000n }, c.lifetime)
     expect(c.pool.getRecord(0)).toMatchObject({
       status: 'spent',
-      lifecycle: { spend: { rawTx: first!.members[0]!.signed!.rawTransaction } },
+      lifecycle: {
+        spend: { rawTx: first!.members[0]!.signed!.rawTransaction },
+      },
     })
     expect(c.apply.mock.calls.map(([id]) => id)).toEqual([
       first!.operationId,
@@ -1323,7 +1620,10 @@ describe('wallet-lifetime EVM native operations', () => {
   // ---------------------------------------------------------------------------------------
   /** An unsigned plan from pool row `index`, written the way a crash between the journal write and
    * the first signature leaves it: through the journal, with no send. */
-  const crashedPlan = (c: Awaited<ReturnType<typeof composed>>, index: number) =>
+  const crashedPlan = (
+    c: Awaited<ReturnType<typeof composed>>,
+    index: number,
+  ) =>
     journal.prepare({
       kind: 'legacy',
       recipient,
@@ -1573,7 +1873,9 @@ describe('wallet-lifetime EVM native operations', () => {
     )
     expect(c.pool.getRecord(0)).toMatchObject({
       status: 'spent',
-      lifecycle: { spend: { rawTx: first!.members[0]!.signed!.rawTransaction } },
+      lifecycle: {
+        spend: { rawTx: first!.members[0]!.signed!.rawTransaction },
+      },
     })
     expect(c.apply.mock.calls.map(([id]) => id)).toEqual([
       first!.operationId,
@@ -1592,7 +1894,8 @@ describe('wallet-lifetime EVM native operations', () => {
     let real!: (id: string, i: number) => Promise<unknown>
     const c = await composed(state, [200000n], {
       applyLocalMember: async (id, i) => {
-        if (blocked) throw new EvmInputAdmissionError('conflicting-authorization')
+        if (blocked)
+          throw new EvmInputAdmissionError('conflicting-authorization')
         return real(id, i) as never
       },
     })
@@ -1623,7 +1926,7 @@ describe('wallet-lifetime EVM native operations', () => {
 
   // Coordinator item 1(d). On main e8d87c2d classification answers `needs-apply` under a
   // conflicting projection and every pass, also after a refused resume, enters the admission.
-  it('hand-built: under an already-conflicting admission the pass does nothing and cannot replace the failing call\'s error; once the never-signed plan is cancelled the next pass applies the member', async () => {
+  it("hand-built: under an already-conflicting admission the pass does nothing and cannot replace the failing call's error; once the never-signed plan is cancelled the next pass applies the member", async () => {
     const state = chain([])
     let transient = true
     let real!: (id: string, i: number) => Promise<unknown>
@@ -1721,7 +2024,10 @@ describe('wallet-lifetime EVM native operations', () => {
         .resumeLegacySend(a.operationId, c.lifetime)
         .catch(() => undefined)
       // Asked once, by the first of these passes; never applied.
-      expect(calls(c)).toEqual({ classify: held.classify + 1, apply: held.apply })
+      expect(calls(c)).toEqual({
+        classify: held.classify + 1,
+        apply: held.apply,
+      })
     }
     expect(c.classify).toHaveLastReturnedWith('not-eligible')
     expect(c.pool.getRecord(0)).toMatchObject({ status: 'in-use' })
@@ -1750,9 +2056,7 @@ describe('wallet-lifetime EVM native operations', () => {
       state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
         announce(state, raw),
       )
-      await pending(
-        c.executor.sendLegacy({ recipient: to, value }, c.lifetime),
-      )
+      await pending(c.executor.sendLegacy({ recipient: to, value }, c.lifetime))
     }
     await send(100000n) // row 0: will be included
     await send(100000n) // row 1: stays pending
@@ -1794,9 +2098,9 @@ describe('wallet-lifetime EVM native operations', () => {
       },
     })
     // Pending and reverted members: not classified, not applied, rows untouched.
-    expect(c.classify.mock.calls.map(([row, i]) => [row.operationId, i])).toEqual(
-      [[a!.operationId, 0]],
-    )
+    expect(
+      c.classify.mock.calls.map(([row, i]) => [row.operationId, i]),
+    ).toEqual([[a!.operationId, 0]])
     expect(c.apply.mock.calls).toEqual([[a!.operationId, 0, c.lifetime]])
     for (const index of [1, 2, 3]) {
       expect(c.pool.getRecord(index)!.status).not.toBe('spent')
@@ -1845,7 +2149,7 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(c.pool.getRecord(2)!.lifecycle?.spend).toBeUndefined()
   })
 
-  it('the open-time pass never throws: a refused member is held under the pass\'s own rules, a member whose apply threw is applied by the next pass, and an unreadable journal changes nothing', async () => {
+  it("the open-time pass never throws: a refused member is held under the pass's own rules, a member whose apply threw is applied by the next pass, and an unreadable journal changes nothing", async () => {
     const state = chain([])
     let mode: 'throw' | 'refuse' | 'real' = 'throw'
     let real!: (id: string, i: number) => Promise<unknown>
@@ -2002,8 +2306,9 @@ describe('wallet-lifetime EVM native operations', () => {
   }
   const probed = (state: ReturnType<typeof chain>) =>
     state.provider.getTransactionReceipt.mock.calls.map(([hash]) => hash)
-  const hashOf = (row: { members: { signed: { transactionHash: string } | null }[] }) =>
-    row.members[0]!.signed!.transactionHash
+  const hashOf = (row: {
+    members: { signed: { transactionHash: string } | null }[]
+  }) => row.members[0]!.signed!.transactionHash
   const settle = () => new Promise(resolve => setImmediate(resolve))
   const spent = (raw: string) => ({
     status: 'spent',
@@ -2012,7 +2317,10 @@ describe('wallet-lifetime EVM native operations', () => {
 
   it('nothing to look up means no request at all: an empty journal, then unsigned, cancelled, signed-but-unexposed, included and reverted members, over many ticks; one broadcast member then costs exactly one receipt request', async () => {
     const state = chain([])
-    const c = await composed(state, Array.from({ length: 6 }, () => 121000n))
+    const c = await composed(
+      state,
+      Array.from({ length: 6 }, () => 121000n),
+    )
     const r = reobserver(c)
     const ticks = async (count: number) => {
       for (let i = 0; i < count; i++) {
@@ -2065,8 +2373,18 @@ describe('wallet-lifetime EVM native operations', () => {
         })),
       )
     const settledShape = [
-      { cancelled: false, signed: true, exposed: true, state: 'included-success' },
-      { cancelled: false, signed: true, exposed: true, state: 'included-revert' },
+      {
+        cancelled: false,
+        signed: true,
+        exposed: true,
+        state: 'included-success',
+      },
+      {
+        cancelled: false,
+        signed: true,
+        exposed: true,
+        state: 'included-revert',
+      },
       { cancelled: false, signed: true, exposed: false, state: 'unknown' },
       { cancelled: true, signed: false, exposed: false, state: 'unknown' },
       { cancelled: false, signed: false, exposed: false, state: 'unknown' },
@@ -2104,7 +2422,9 @@ describe('wallet-lifetime EVM native operations', () => {
       { cancelled: false, signed: true, exposed: true, state: 'missing' },
     ])
     expect(c.sign.mock.calls.length).toBe(signatures)
-    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(broadcasts)
+    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(
+      broadcasts,
+    )
   })
 
   it.each(['no receipt', 'request rejects', 'request throws'] as const)(
@@ -2233,7 +2553,10 @@ describe('wallet-lifetime EVM native operations', () => {
 
   it('20 broadcast members: a pass probes at most 8, oldest first, the next pass continues after the last one probed so all 20 are reached, and concurrent callers do not add a request', async () => {
     const state = chain([])
-    const c = await composed(state, Array.from({ length: 20 }, () => 100000n))
+    const c = await composed(
+      state,
+      Array.from({ length: 20 }, () => 100000n),
+    )
     const r = reobserver(c)
     for (let i = 0; i < 20; i++) await broadcastNative(c, state)
     const hashes = journal.list().map(hashOf)
@@ -2266,14 +2589,18 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(new Set(probed(state).slice(seen))).toEqual(
       new Set(hashes.slice(12, 20)),
     )
-    expect(journal.list().map(row => row.members[0]!.observation.state)).toEqual(
+    expect(
+      journal.list().map(row => row.members[0]!.observation.state),
+    ).toEqual(
       recorded.map((row, i) =>
         i === 12 ? 'included-success' : row.members[0]!.observation.state,
       ),
     )
-    expect(c.pool.getRecord(
-      (recorded[12]!.members[0]!.source as { index: number }).index,
-    )).toMatchObject(spent(recorded[12]!.members[0]!.signed!.rawTransaction))
+    expect(
+      c.pool.getRecord(
+        (recorded[12]!.members[0]!.source as { index: number }).index,
+      ),
+    ).toMatchObject(spent(recorded[12]!.members[0]!.signed!.rawTransaction))
     expect(c.sign).toHaveBeenCalledTimes(20)
     expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(20)
   }, 60_000)
@@ -2460,12 +2787,14 @@ describe('wallet-lifetime EVM native operations', () => {
     // The re-observation's own result was discarded by the journal's capture rule.
     expect(await record.mock.results.slice(-1)[0]!.value).toBe(false)
     expect(journal.list()).toEqual(recorded)
-    expect(c.apply.mock.calls.filter(([id]) => id === row.operationId)).toHaveLength(1)
+    expect(
+      c.apply.mock.calls.filter(([id]) => id === row.operationId),
+    ).toHaveLength(1)
     expect(putMany).toHaveBeenCalledTimes(1)
     expect(c.inspect()).toMatchObject({ status: 'ready' })
   })
 
-  it('while a send is on the executor queue a landed member is probed but not observed, so the send\'s own observations are never discarded; the next pass records it', async () => {
+  it("while a send is on the executor queue a landed member is probed but not observed, so the send's own observations are never discarded; the next pass records it", async () => {
     const state = chain([])
     const c = await composed(state, [121000n, 50000n])
     const r = reobserver(c)
@@ -2674,7 +3003,11 @@ describe('wallet-lifetime EVM native operations', () => {
     const tx = Transaction.from(raw)
     state.transactions.set(
       tx.hash!,
-      Object.assign(tx, { blockHash: null, blockNumber: null, index: 0 }) as never,
+      Object.assign(tx, {
+        blockHash: null,
+        blockNumber: null,
+        index: 0,
+      }) as never,
     )
   }
   it('a transfer mined a block after its broadcast: the send watches at each look of the block watcher and resolves with the block and fee', async () => {
@@ -2723,7 +3056,10 @@ describe('wallet-lifetime EVM native operations', () => {
     state.setMode('retained')
     const first = owner(state)
     await expect(
-      first.executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
+      first.executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 100000n,
+      }),
     ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
     const id = journal.list()[0]!.operationId
     const raw = journal.list()[0]!.members[0]!.signed!.rawTransaction
@@ -2785,11 +3121,14 @@ describe('wallet-lifetime EVM native operations', () => {
   // Rule: Monad charges the gas LIMIT, and a transfer to an address with code needs more than
   // 21,000 (measured: 49,413 for a small contract; sent with 21,000 it was mined, reverted, and
   // charged in full). The recipient of a native send is whatever the user typed.
-  it('a transfer to the address the user entered carries the node\'s gas estimate for that address; the transfers that fund it between the wallet\'s own accounts stay at exactly 21,000', async () => {
+  it("a transfer to the address the user entered carries the node's gas estimate for that address; the transfers that fund it between the wallet's own accounts stay at exactly 21,000", async () => {
     const state = chain([80000n, 70000n])
     state.provider.estimateGas.mockImplementation(async () => 49413n)
     const { executor } = owner(state)
-    const estimate = await executor.estimateLegacyFee({ raw: recipient }, 40000n)
+    const estimate = await executor.estimateLegacyFee(
+      { raw: recipient },
+      40000n,
+    )
     expect(estimate.deliveryFee).toBe(49413n)
     await executor
       .sendLegacy({ recipient: { raw: recipient }, value: 40000n })
@@ -2812,7 +3151,9 @@ describe('wallet-lifetime EVM native operations', () => {
   })
   it('a recipient that refuses the transfer (the estimate fails) is not sent to: nothing is planned or signed', async () => {
     const state = chain([200000n])
-    state.provider.estimateGas.mockRejectedValue(new Error('execution reverted'))
+    state.provider.estimateGas.mockRejectedValue(
+      new Error('execution reverted'),
+    )
     const { executor, sign } = owner(state)
     await expect(
       executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
@@ -2846,13 +3187,16 @@ describe('wallet-lifetime EVM native operations', () => {
       address.toLowerCase() === leader
         ? 80000n
         : latest(address)) as never)
-    const broadcast = state.provider.broadcastTransaction.getMockImplementation()!
-    state.provider.broadcastTransaction.mockImplementation(async (raw: string) => {
-      const tx = Transaction.from(raw)
-      offeredAt.push({ to: tx.to!.toLowerCase(), head })
-      if (tx.to!.toLowerCase() === leader) fundedAt = head
-      return broadcast(raw)
-    })
+    const broadcast =
+      state.provider.broadcastTransaction.getMockImplementation()!
+    state.provider.broadcastTransaction.mockImplementation(
+      async (raw: string) => {
+        const tx = Transaction.from(raw)
+        offeredAt.push({ to: tx.to!.toLowerCase(), head })
+        if (tx.to!.toLowerCase() === leader) fundedAt = head
+        return broadcast(raw)
+      },
+    )
     const nextLook = jest.fn(async () => void head++)
     const executor = new EvmLegacyConsolidator({
       journal,
@@ -2878,7 +3222,7 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(state.balances.get(recipient)).toBe(100000n)
     expect(state.raws).toHaveLength(2)
   })
-  it('the fee quoted for a transfer is what it will be charged (the node\'s price times the gas limit), not the fee cap', async () => {
+  it("the fee quoted for a transfer is what it will be charged (the node's price times the gas limit), not the fee cap", async () => {
     const state = chain([10_000_000n])
     // Monad testnet's shape: the cap is about twice what is charged.
     state.provider.getFeeData.mockResolvedValue({

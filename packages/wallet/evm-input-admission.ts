@@ -921,6 +921,7 @@ export type NativeExecutionJournal = NativeJournalReader &
   Pick<
     EvmNativeOperationJournal,
     | 'prepare'
+    | 'refreshPreparation'
     | 'checkpointSigned'
     | 'markExposed'
     | 'markSyncApplied'
@@ -942,6 +943,12 @@ export function nativeAdmissionJournal(
     owner.mutate(lifetime, operation)
   return {
     ...nativeJournalReader(journal),
+    refreshPreparation: id =>
+      mutation(async () => {
+        const row = await journal.refreshPreparation(id)
+        owner.owners.assertLifetime(lifetime)
+        return row
+      }),
     prepare: plan => {
       const snapshot = admission.inspect(lifetime)
       if (snapshot.status !== 'ready')

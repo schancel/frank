@@ -463,7 +463,6 @@ function validateRow(
     row.members.length > MAX_MEMBERS
   )
     fail()
-  if (row.kind !== 'legacy' && row.members.length !== 1) fail()
   let fee = 0n
   const sourceAddresses = new Set<string>()
   const claims = new Set<string>()
@@ -537,6 +536,24 @@ function validateRow(
     if (member.syncApplied && observation.state !== 'included-success') fail()
     checked('account', () => validateAccount(member.account))
     if (row.cancelled && (member.signed !== null || member.exposed)) fail()
+  }
+  if (row.members.length > 1 && row.kind !== 'legacy') {
+    if (
+      hasRecord ||
+      (row.kind === 'contract' && row.submissionPolicy !== 'explicit')
+    )
+      fail()
+    let value = 0n
+    for (const item of row.members as EvmNativeMember[]) {
+      const tx = unsigned(item.unsignedTransaction, binding)
+      if (item.dependencies.length || tx.to?.toLowerCase() !== row.recipient)
+        fail()
+      if (row.kind === 'native') {
+        if (tx.data !== '0x' || tx.value <= 0n) fail()
+        value += tx.value
+      } else if (tx.data === '0x' || tx.value !== 0n) fail()
+    }
+    if (value.toString() !== row.intendedValueWei) fail()
   }
   if (fee.toString() !== row.maximumFeeWei) fail()
   if (fee + uint(row.intendedValueWei) > UINT_MAX) fail()

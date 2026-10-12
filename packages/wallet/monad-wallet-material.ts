@@ -677,6 +677,31 @@ export interface MonadWalletMaterial {
   dispose(): void
 }
 
+/** Stable EVM spend-state owner binding. Authentication and messaging roots may rotate while the
+ * same EVM spend root keeps its inventory; the binding therefore contains only chain identity
+ * and public spend derivation facts. */
+export function evmWalletPoolBindingId(
+  material: MonadWalletMaterial,
+  chainIdentifier: string,
+  nativeChainId: bigint,
+): string {
+  const branch = (descriptor: { path: string; publicKey: Uint8Array; chainCode: Uint8Array }) => ({
+    path: descriptor.path,
+    publicKey: hexlify(descriptor.publicKey),
+    chainCode: hexlify(descriptor.chainCode),
+  })
+  return sha256(toUtf8Bytes(JSON.stringify({
+    version: 1,
+    domain: 'frank-evm-pool-binding-v1',
+    registry: DERIVATION_REGISTRY_ID,
+    chainIdentifier,
+    nativeChainId: nativeChainId.toString(),
+    mainAddress: material.mainAccount.address.toLowerCase(),
+    spend: branch(material.keyring.publicBranchDescriptor()),
+    change: branch(material.changeKeyring.publicBranchDescriptor()),
+  })))
+}
+
 function snapshot<P extends DomainPurpose>(
   root: DomainRoot<P>,
   purpose: P,

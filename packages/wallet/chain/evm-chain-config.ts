@@ -56,6 +56,9 @@ export interface EvmChainConfig {
    * isolated tests; production must persist these records so recreating a wallet cannot reuse a
    * sender account or rewind the change derivation path. */
   walletStorageLocation: string | false;
+  /** Require the typed wallet's spend and change stores to retain their EVM-root binding.
+   * Production hosts use this to refuse incomplete legacy or partially restored state. */
+  requireBoundWalletState?: boolean;
   nativeAttemptStore?: NativeTransactionAttemptStore;
 
   /** Unique chain identifier, e.g. "monad-testnet", "monad-mainnet", "hyperliquid-mainnet", "tempo-mainnet". */

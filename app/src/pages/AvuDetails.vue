@@ -336,8 +336,8 @@ const observations = computed(() => {
       for (const kind of [
         'price',
         'marketCap',
-        'difficulty',
-        'blockReward',
+        'hashrate',
+        'minerRevenue',
       ] as const)
         names.add(seriesName(kind, chain.chain))
   }

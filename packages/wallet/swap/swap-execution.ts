@@ -171,7 +171,7 @@ async function awaitReceipt(
  * transaction at all (the broadcast was lost), the wallet re-submits the same recorded operation
  * (the same signed bytes, never a new transaction) and the watch starts again, once.
  */
-async function settle(
+export async function settle(
   reader: SwapExecutionReader,
   wallet: Pick<SwapWallet, 'resumeNativeOperation'>,
   handle: Handle,

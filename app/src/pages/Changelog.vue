@@ -25,20 +25,48 @@
           <div class="text-h6">v0.3.0 — 2026-10-12</div>
           <div class="text-body1">
             <ul>
-              <li>Bring direct messages, topic posts, and voting to Monad testnet, with recipient-controlled stealth stamp payments and relay verification.</li>
-              <li>Add Mera passkey sign-in, recovery shares, and restoration of historical BIP39 identities. Show the recovered account and its published profile before activation.</li>
-              <li>Improve profile and username discovery, curated contacts, and independent conversations with the same contact.</li>
+              <li>
+                Bring direct messages, topic posts, and voting to Monad testnet,
+                with recipient-controlled stealth stamp payments and relay
+                verification.
+              </li>
+              <li>
+                Add Mera passkey sign-in, recovery shares, and restoration of
+                historical BIP39 identities. Show the recovered account and its
+                published profile before activation.
+              </li>
+              <li>
+                Improve profile and username discovery, curated contacts, and
+                independent conversations with the same contact.
+              </li>
               <li>Add Qwen replies, welcome messages, and game bots.</li>
-              <li>Bring message payments into wallet history alongside transfers and swaps, with clearer payment and delivery states.</li>
-              <li>Improve wallet balances, asset lists, and send and receive controls across the supported test networks.</li>
-              <li>Add AVU values and price history with timeframe and range selection. Message stamps support AVU defaults, explicit amounts, and free messages.</li>
-              <li>Improve swap quotes, fee details, confirmation, progress, and history.</li>
-              <li>Add an app update prompt for installed PWAs and remember dismissed notification offers.</li>
+              <li>
+                Bring message payments into wallet history alongside transfers
+                and swaps, with clearer payment and delivery states.
+              </li>
+              <li>
+                Improve wallet balances, asset lists, and send and receive
+                controls across the supported test networks.
+              </li>
+              <li>
+                Add AVU values and price history with timeframe and range
+                selection. Message stamps support AVU defaults, explicit
+                amounts, and free messages.
+              </li>
+              <li>
+                Improve swap quotes, fee details, confirmation, progress, and
+                history.
+              </li>
+              <li>
+                Add an app update prompt for installed PWAs and remember
+                dismissed notification offers.
+              </li>
             </ul>
             <p>
               Still in progress: complete recovery of wallet funds and history
               from a seed or backup, older mailbox history, additional network
-              support, email gateway delivery, and background push notifications.
+              support, email gateway delivery, and background push
+              notifications.
             </p>
           </div>
 

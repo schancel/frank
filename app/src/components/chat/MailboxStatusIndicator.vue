@@ -1,12 +1,22 @@
 <template>
-  <div
-    v-if="message"
-    class="full-width text-caption text-center bg-negative text-white q-py-xs q-px-sm"
-    role="status"
-    data-testid="mailbox-status"
-  >
-    {{ message }}
-  </div>
+  <span v-if="message" class="mailbox-status-indicator">
+    <q-btn
+      flat
+      dense
+      round
+      size="sm"
+      icon="warning"
+      color="warning"
+      data-testid="mailbox-status-indicator"
+      :aria-label="message"
+      @click.stop="detailsOpen = !detailsOpen"
+    >
+      <q-tooltip v-model="detailsOpen">{{ message }}</q-tooltip>
+    </q-btn>
+    <span class="q-sr-only" role="status" aria-live="polite">{{
+      message
+    }}</span>
+  </span>
 </template>
 
 <script lang="ts">
@@ -22,17 +32,17 @@ const keyByState = {
   'unauthorized': 'mailboxStatus.unauthorized',
 } as const
 
-/** Non-blocking, screen-reader-announced status while messaging could not start (the account's
- * directory entry is not published yet) or the mailbox poll is failing (ticket #271).
- * Renders nothing while the inbox is healthy. */
+/** A compact status beside the sidebar balance. The mailbox poller retains ownership of retry. */
 export default defineComponent({
-  name: 'MailboxStatusBanner',
+  name: 'MailboxStatusIndicator',
   setup() {
     return { status: useMailboxStatusStore(), messaging: messagingState }
   },
+  data() {
+    return { detailsOpen: false }
+  },
   computed: {
     message(): string | null {
-      // Messaging that never started explains itself first: nothing is being received at all.
       if (this.messaging.status !== 'ready' && this.messaging.reason)
         return this.$t(`mailboxStatus.directory.${this.messaging.reason}`)
       return this.status.state === 'ok'

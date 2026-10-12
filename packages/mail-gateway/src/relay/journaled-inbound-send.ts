@@ -280,6 +280,44 @@ export class JournaledInboundSend {
     };
   }
 
+  /** Revisit authenticated held mail after a credit top-up; no webhook replay is required. */
+  async releaseHeld(limit = 100, after?: { scopeAccount: string; mailKey: string }): Promise<{
+    released: number;
+    errors: Array<{ scopeAccount: string; mailKey: string; kind: string }>;
+    nextAfter?: { scopeAccount: string; mailKey: string };
+  }> {
+    this.journal.expireInboundEmails(1000);
+    const held = this.journal.listHeldInboundEmails(limit, after);
+    let released = 0;
+    const errors: Array<{ scopeAccount: string; mailKey: string; kind: string }> = [];
+    for (const email of held) {
+      try {
+        if (!email.raw) throw new Error('Held mail has no source bytes');
+        const headers = readThreadHeaders(await this.resolveBytes(email.raw));
+        if (!headers.ok) throw new Error(`Invalid stored mail thread headers: ${headers.reason}`);
+        const result = this.journal.releaseHeldInboundEmail({
+          scopeAccount: email.scopeAccount,
+          mailKey: email.mailKey,
+          inReplyTo: headers.inReplyTo,
+          references: headers.references,
+        });
+        if (result?.created) released += 1;
+      } catch (error) {
+        errors.push({
+          scopeAccount: email.scopeAccount,
+          mailKey: email.mailKey,
+          kind: error instanceof Error ? error.name : typeof error,
+        });
+      }
+    }
+    const last = held.at(-1);
+    return {
+      released,
+      errors,
+      nextAfter: last ? { scopeAccount: last.scopeAccount, mailKey: last.mailKey } : undefined,
+    };
+  }
+
   private mailIdFor(slot: FrankSendRecord): string {
     const key = slot.sourceKey.slice(slot.scopeAccount.length + 1);
     const email = this.journal.findInboundEmail(slot.scopeAccount, key);

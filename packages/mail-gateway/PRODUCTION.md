@@ -48,6 +48,11 @@ Implement this as separate reviewed landings:
    `recordFrankMessage`. Honor incomplete timestamp floors; persist a terminal
    disposition for each observed envelope before advancing. Never create a
    fresh outbound email from a replayed message.
+   `JournaledFrankMailbox` now provides the cursor and durable-disposition
+   guard as a library seam. Its injected handler must finish the complete
+   outbound-job commit before it resolves; a returning handler with no journal
+   outcome is refused. A truncated fetch can advance over its complete prefix,
+   while the inclusive timestamp lets a later poll replay its boundary.
 4. Render/sign outbound mail, store its exact bytes in `addOutboundJob`, then
    submit. On an ambiguous transport result, retain the job as uncertain and
    reconcile it before another submission. Only after target paths have

@@ -1563,16 +1563,19 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     expect(columns).not.toEqual(expect.arrayContaining(['outbound_job.conversation_id']));
   });
 
-  // 21.6 rule 4 and the first accepted runtime consumer. Prevents a holder's
-  // row being rewritten or the legacy SMTP/mailbox paths bypassing the journal.
-  it('never rewrites a mail_message, and only the journaled inbound coordinator uses it', () => {
+  // 21.6 rule 4 and explicitly admitted runtime callers. Prevents a holder's
+  // row being rewritten or a new, unreviewed path taking journal ownership.
+  it('has no UPDATE or DELETE on mail_message, and only accepted coordinators use the journal', () => {
     const journalSource = fs.readFileSync(path.join(SRC, 'ledger', 'mail-journal.ts'), 'utf8');
     expect(journalSource).not.toMatch(/UPDATE\s+mail_message|DELETE\s+FROM\s+mail_message|REPLACE\s+INTO\s+mail_message/i);
     const outside = sourceFiles(SRC).filter((f) => !f.startsWith(path.join(SRC, 'ledger') + path.sep));
     const users = outside.filter((f) =>
       /MailJournal|\.atomic\(|expireHeldMessage|LedgerPoisonedError/.test(fs.readFileSync(f, 'utf8'))
     );
-    expect(users).toEqual([path.join(SRC, 'relay', 'journaled-inbound-send.ts')]);
+    expect(users.map((f) => path.relative(SRC, f))).toEqual([
+      'relay/journaled-frank-mailbox.ts',
+      'relay/journaled-inbound-send.ts',
+    ]);
   });
 });
 

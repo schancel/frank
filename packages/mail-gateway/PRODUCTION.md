@@ -15,27 +15,33 @@ mappings, held mail and a retry spool; `InboundEmailHandler` consumes credit
 before handing mail to a sender; `OutboundEmailDelivery` writes its thread
 mapping before `OutboundMtaWorker` hands mail to SMTP; the mailbox listener
 starts at the current time minus one minute and keeps its cursor in memory.
-`MailJournal` already defines durable inbound mail, Frank send slots, mailbox
-cursor, bridged messages and outbound jobs, but no running path uses it.
+`MailJournal` defines durable inbound mail, Frank send slots, mailbox cursor,
+bridged messages and outbound jobs. `JournaledInboundSend` now uses its inbound
+slots as a library seam; no executable has composed it yet.
 
 The replacement host must open and validate one persisted Frank wallet on one
 canonical `chainIdentifier`, restore its payment attempts, then open the
 format-2 journal bound to that wallet's identity and the gateway domain. The
 host owns lifecycle and wires typed wallet messaging, the journal, and one
 verified mail transport. Wallet custody owns keys/signing and wallet recovery;
-the journal owns mail admission, credit consumption, thread identity, mailbox
+the journal owns mail admission, the decision that a particular mail consumed
+credit, thread identity, mailbox
 cursor, delivery jobs and the binding from a mail to the wallet's stable
-message ID and payload digest. A transport receipt is separate from a wallet
+message ID and payload digest. `CreditLedger` continues to own credit balances;
+its debit joins the journal's SQLite transaction. A transport receipt is separate from a wallet
 delivery/payment result. No new wire format is required for this predecessor.
 
 Implement this as separate reviewed landings:
 
 1. Pin the current and target behavior with interruption/reopen tests. Reject
-   the demo executable (this landing).
+   the demo executable (landed in #1453).
 2. Route inbound mail through `MailJournal.admitInboundEmail` and
    `relayInboundEmail`, persist a stable Frank message ID and complete send
    intent before wallet exposure, and reconcile the same wallet attempt on
    restart. Consume one credit only once. Preserve raw mail and its scope.
+   `JournaledInboundSend` implements the library side of this step; a host must
+   still verify sender authentication and transport provenance, open the wallet,
+   run recovery, and connect the receiving endpoint.
 3. Route Frank mailbox reads through the journal's inclusive cursor and
    `recordFrankMessage`. Honor incomplete timestamp floors; persist a terminal
    disposition for each observed envelope before advancing. Never create a
@@ -66,7 +72,8 @@ transport timeout cannot trigger a duplicate after the provider's idempotency
 window; wallet recovery finishes the original authorized payment. Run the
 package integration tests and `yarn typecheck:fast` before GKE deployment.
 
-The current candidate changes only the executable. Existing SQLite tables,
-wallet records and wire payloads stay untouched. Rolling back this landing
-would restore the unsafe demo executable, so use a replacement production host
-as the removal trigger instead.
+The inbound coordinator adds no SQLite tables, wallet records or wire payloads.
+It does not activate the executable or the legacy SMTP path. Its unfinished
+slot listing is read-only; any failed recovery slot stays in the journal and
+is reported while other slots continue. The remaining host/transport stages
+must be reviewed before mail can be offered to judges.

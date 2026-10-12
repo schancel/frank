@@ -10,6 +10,10 @@ import {
 import { MessageWrapper } from '../../types/messages'
 import level, { LevelDB } from 'level'
 import { join } from 'path'
+import {
+  messageMetadataBackend,
+  type MessageMetadataBackend,
+} from './message-store-backend'
 
 const metadataKeys = {
   schemaVersion: 'schemaVersion',
@@ -234,6 +238,7 @@ export class LevelMessageStore implements MessageStore {
   private schemaVersion?: number
   private openedDb?: LevelDB
   private openedMetadataDb?: LevelDB
+  private metadataBackend?: MessageMetadataBackend
   private mutationQueue: Promise<void> = Promise.resolve()
   private state: 'new' | 'opening' | 'open' | 'failed' | 'closed' = 'new'
   private opening?: Promise<void>
@@ -290,8 +295,12 @@ export class LevelMessageStore implements MessageStore {
       await this.openDatabase(this.messageDbLocation, db => {
         this.openedDb = db
       })
-      await this.openDatabase(this.metadataDbLocation, db => {
-        this.openedMetadataDb = db
+      await new Promise<void>((resolve, reject) => {
+        this.metadataBackend = messageMetadataBackend(
+          this.metadataDbLocation,
+          error => (error ? reject(error) : resolve()),
+        )
+        this.openedMetadataDb = this.metadataBackend.db
       })
       let marker: string | undefined
       try {

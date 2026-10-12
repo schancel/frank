@@ -43,7 +43,28 @@ export interface StealthPaymentProgress {
   readonly nativeFeeAtomic?: bigint
 }
 
+/** An unsigned observation of one immutable payment intent, not a spend reservation. */
+export interface StealthPaymentQuote {
+  readonly operationId: string
+  readonly chainIdentifier: string
+  readonly asset: StealthPaymentAsset
+  readonly amountAtomic: bigint
+  readonly recipientAddress: string
+  readonly recipientDestination: Uint8Array
+  readonly recipientSpendPublicKey: Uint8Array
+  readonly ephemeralPublicKey: Uint8Array
+  readonly sourceAddress?: string
+  readonly nativeBalanceAtomic: bigint
+  readonly assetBalanceAtomic: bigint
+  readonly estimatedNativeFeeAtomic: bigint
+}
+
 export interface StealthPaymentCapability {
+  /** Read-only chain observation; retains the operation's unsigned intent/derivation.
+   * Does not sign, expose, submit, reserve funds, or authorize a fee ceiling. */
+  quote?(
+    intent: Omit<StealthPaymentIntent, 'maxNativeFeeAtomic'>,
+  ): Promise<StealthPaymentQuote>
   /** Reserves inputs and durably saves signed bytes without submitting them. */
   prepare(intent: StealthPaymentIntent): Promise<PreparedStealthPayment>
   /** The host binds the immutable sealed message digest before any external handoff. */

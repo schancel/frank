@@ -3,7 +3,7 @@
  *
  * One wallet per chain for the current account, shared by the balance reader, the Wallet page's
  * receive address and Send, so they agree and a send interrupted earlier is finished once.
- * Custody is asked for the `ecash-bch-wallet` domain root only when a wallet is first opened.
+ * Session custody constructs the wallet and privately supplies its signing capabilities.
  */
 import {
   loadMonadChainConfigFromEnv,
@@ -47,19 +47,9 @@ export function openUtxoWallet(
     relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
   })
   const opening = (async () => {
-    const material = await accountSession.getActiveFamilyMaterial(
-      'ecash-bch-wallet',
-    )
-    try {
-      const wallet = await relayChain.createWallet(
-        'seed' in material ? material : material.bytes,
-      )
-      if (sessionScope() !== scope) throw new Error('Account changed')
-      return { chain: relayChain.chain, wallet }
-    } finally {
-      if ('seed' in material) material.seed.fill(0)
-      else material.bytes.fill(0)
-    }
+    const wallet = await accountSession.createUtxoWallet(relayChain)
+    if (sessionScope() !== scope) throw new Error('Account changed')
+    return { chain: relayChain.chain, wallet }
   })()
   const entry: Opened = { scope, opening, close: () => relayChain.close() }
   opened.set(chainIdentifier, entry)

@@ -1,3 +1,21 @@
+import { secp256k1 } from '@noble/curves/secp256k1'
+import { lockingScript, parseTransaction } from '@frank/nakamoto'
+import { BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
+import { createUtxoChain } from '@frank/wallet/chain/utxo-chain'
+import type { RelayUtxoChain } from '@frank/wallet/chain/utxo-family'
+import {
+  UtxoWallet,
+  UTXO_NETWORKS,
+  memoryUtxoWalletStore,
+  parseUtxoAddress,
+  type IndexedOutput,
+  type UtxoIndexer,
+} from '@frank/wallet/utxo-wallet'
+import {
+  deriveUtxoStealthDestination,
+  type UtxoStealthCustody,
+  type UtxoStealthDerivation,
+} from '@frank/wallet/utxo-stealth'
 import { activeChain, EvmNativeJournalError } from '@frank/wallet/chain'
 import {
   AccountBackupUnavailableError,
@@ -1029,4 +1047,288 @@ test('a delayed local receive address is revoked when custody is invalidated', a
   address.resolve({ raw: '0xold-account' })
   await rejected
   await f.session.close()
+})
+
+describe('session-owned UTXO stealth custody', () => {
+  const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
+  function realIdentityFixture(historical = false) {
+    const f = fixture()
+    const copies: Uint8Array[] = []
+    const freshRoots = () =>
+      DOMAIN_PURPOSES.map((purpose, i) => {
+        const bytes = new Uint8Array(32).fill(i + 1)
+        copies.push(bytes)
+        return { registry: DERIVATION_REGISTRY_ID, purpose, bytes }
+      })
+    f.capability.takeRoots.mockImplementation(freshRoots)
+    const seed = new Uint8Array(64).fill(37)
+    if (historical) {
+      Object.assign(f.account.receipt.context, {
+        recoveryFormat: BIP39_RECOVERY_FORMAT,
+      })
+      Object.assign(f.capability, {
+        takeBip39Seed: () => {
+          const copy = new Uint8Array(seed)
+          copies.push(copy)
+          return copy
+        },
+      })
+    }
+    const auth = freshRoots().find(
+      (r): r is DomainRoot<'identity-authentication'> =>
+        r.purpose === 'identity-authentication',
+    )!
+    const identity = historical
+      ? MonadIdentity.fromBip39Seed(seed)
+      : MonadIdentity.fromDomainRoot(auth)
+    Object.assign(f.wallet.identity, {
+      compressedPubKey: identity.compressedPubKey,
+    })
+    copies.forEach(copy => copy.fill(0))
+    return { ...f, copies, identity }
+  }
+  function relayFixture(
+    chainIdentifier: string,
+    store = memoryUtxoWalletStore(),
+  ) {
+    const unspent = new Map<string, IndexedOutput[]>()
+    const indexer: UtxoIndexer = {
+      listUnspent: async script => unspent.get(hex(script)) ?? [],
+      hasHistory: async script => unspent.has(hex(script)),
+      hasTransaction: async () => false,
+      feeRate: async () => 2n,
+      broadcast: async () => {
+        throw new Error('test does not broadcast')
+      },
+    }
+    const chain = createUtxoChain({
+      chainIdentifier,
+      indexer,
+      storeFor: () => store,
+    })
+    let injected: UtxoStealthCustody | undefined
+    const signed: {
+      digest: Uint8Array
+      signature: Uint8Array
+      publicKey: Uint8Array
+    }[] = []
+    const relay: RelayUtxoChain = {
+      chain,
+      async createWallet(root, options) {
+        injected = options?.stealthCustody
+        const source = injected
+        const stealthCustody = source && {
+          identityPublicKey: source.identityPublicKey,
+          async deriveStealthSigner(derivation: UtxoStealthDerivation) {
+            const key = await source.deriveStealthSigner(derivation)
+            return {
+              publicKey: key.publicKey,
+              sign(digest: Uint8Array) {
+                const signature = key.sign(digest)
+                signed.push({
+                  digest: new Uint8Array(digest),
+                  signature,
+                  publicKey: key.publicKey,
+                })
+                return signature
+              },
+            }
+          },
+        }
+        return createUtxoChain({
+          chainIdentifier,
+          indexer,
+          storeFor: () => store,
+          stealthCustody,
+        }).createWallet(root instanceof Uint8Array ? root : root.seed)
+      },
+      close: async () => undefined,
+    }
+    return { relay, indexer, unspent, store, signed, custody: () => injected! }
+  }
+  test.each(['btc-testnet', 'bch-testnet'])(
+    'imports, reopens and signs an actual %s spend using the published identity',
+    async chainIdentifier => {
+      const f = realIdentityFixture()
+      const r = relayFixture(chainIdentifier)
+      const network = UTXO_NETWORKS[chainIdentifier]
+      const receiver = (await f.session.createUtxoWallet(r.relay)) as UtxoWallet
+      expect(hex(r.custody().identityPublicKey)).toBe(
+        hex(f.identity.compressedPubKey),
+      )
+      expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+      const destination = deriveUtxoStealthDestination({
+        network,
+        identityPublicKey: f.identity.compressedPubKey,
+        ephemeralSecret: new Uint8Array(32).fill(19),
+      })
+      const source = await UtxoWallet.create({
+        network,
+        seed: new Uint8Array(32).fill(71),
+        indexer: r.indexer,
+        storeFor: () => memoryUtxoWalletStore(),
+      })
+      const sourceScript = lockingScript(
+        parseUtxoAddress(network, source.identity.address.raw)!,
+      )
+      r.unspent.set(hex(sourceScript), [
+        { txid: 'a'.repeat(64), vout: 0, amount: 30_000n, height: 1 },
+      ])
+      const prepared = await source.prepareNativePayment({
+        operationId: 'receipt-source',
+        recipient: { raw: destination.address },
+        value: 10_000n,
+      })
+      const receipt = {
+        chainIdentifier,
+        ephemeralPubKey: hex(destination.derivation.ephemeralPubKey),
+        transactions: prepared.transaction.rawTransactions,
+        claimedAmount: 10_000n,
+        payloadDigest: 'c'.repeat(64),
+        timestampMs: 1,
+      }
+      await receiver.recordStealthPayment(receipt)
+      expect(await receiver.getBalance()).toBe(0n)
+      const parsed = parseTransaction(
+        Uint8Array.from(Buffer.from(receipt.transactions[0], 'hex')),
+        network.descriptor,
+      )
+      if (!parsed.ok) throw new Error('Invalid prepared transaction')
+      const vout = parsed.value.outputs.findIndex(
+        output => hex(output.scriptPubKey) === hex(destination.scriptPubKey),
+      )
+      // Only observed indexer funds, never the message claim, become spendable.
+      r.unspent.set(hex(destination.scriptPubKey), [
+        { txid: prepared.transaction.txHash, vout, amount: 10_000n, height: 1 },
+      ])
+      const oldSigner = await r
+        .custody()
+        .deriveStealthSigner(destination.derivation)
+      await f.session.close()
+      expect(() => oldSigner.sign(new Uint8Array(32))).toThrow()
+      const reopenedSession = realIdentityFixture()
+      const reopened = (await reopenedSession.session.createUtxoWallet(
+        r.relay,
+      )) as UtxoWallet
+      await reopened.recordStealthPayment(receipt)
+      expect(await reopened.getBalance()).toBe(10_000n)
+      expect(reopened.coins()).toHaveLength(1)
+      const spend = await reopened.prepareNativePayment({
+        operationId: 'respend',
+        recipient: source.identity.address,
+        value: 5_000n,
+      })
+      expect(spend.transaction.rawTransactions).toHaveLength(1)
+      expect(r.signed).toHaveLength(1)
+      for (const signed of r.signed) {
+        expect(hex(signed.publicKey)).toBe(hex(destination.publicKey))
+        expect(
+          secp256k1.verify(
+            secp256k1.Signature.fromDER(signed.signature),
+            signed.digest,
+            signed.publicKey,
+          ),
+        ).toBe(true)
+        expect(spend.transaction.rawTransactions[0]).toContain(
+          hex(signed.signature),
+        )
+      }
+      await reopenedSession.session.close()
+    },
+  )
+  test.each([false, true])(
+    'revokes derived signers when an account is replaced (invalidation %s)',
+    async invalidate => {
+      const f = realIdentityFixture(),
+        r = relayFixture('btc-testnet')
+      await f.session.createUtxoWallet(r.relay)
+      const destination = deriveUtxoStealthDestination({
+        network: UTXO_NETWORKS['btc-testnet'],
+        identityPublicKey: f.identity.compressedPubKey,
+        ephemeralSecret: new Uint8Array(32).fill(19),
+      })
+      const signer = await r
+        .custody()
+        .deriveStealthSigner(destination.derivation)
+      await replaceAccount(f, invalidate)
+      expect(() => signer.sign(new Uint8Array(32))).toThrow()
+      await expect(
+        r.custody().deriveStealthSigner(destination.derivation),
+      ).rejects.toThrow()
+      await f.session.close()
+    },
+  )
+  test('historical seed uses the unchanged published identity owner; wrong identity/chain/point fail closed', async () => {
+    const f = realIdentityFixture(true),
+      r = relayFixture('bch-testnet')
+    await f.session.createUtxoWallet(r.relay)
+    const destination = deriveUtxoStealthDestination({
+      network: UTXO_NETWORKS['bch-testnet'],
+      identityPublicKey: f.identity.compressedPubKey,
+      ephemeralSecret: new Uint8Array(32).fill(19),
+    })
+    const key = await r.custody().deriveStealthSigner(destination.derivation)
+    expect(hex(key.publicKey)).toBe(hex(destination.publicKey))
+    const digest = new Uint8Array(32).fill(3)
+    expect(
+      secp256k1.verify(
+        secp256k1.Signature.fromDER(key.sign(digest)),
+        digest,
+        destination.publicKey,
+      ),
+    ).toBe(true)
+    await expect(
+      r.custody().deriveStealthSigner({
+        ...destination.derivation,
+        chainIdentifier: 'btc-testnet',
+      }),
+    ).rejects.toThrow()
+    await expect(
+      r.custody().deriveStealthSigner({
+        ...destination.derivation,
+        identityPublicKey: new Uint8Array(33).fill(2),
+      }),
+    ).rejects.toThrow()
+    await expect(
+      r.custody().deriveStealthSigner({
+        ...destination.derivation,
+        ephemeralPubKey: new Uint8Array(33),
+      }),
+    ).rejects.toThrow()
+    expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+    await f.session.close()
+  })
+  test('rejects a custody identity that differs from the published runtime identity before constructing a wallet', async () => {
+    const f = realIdentityFixture(),
+      r = relayFixture('btc-testnet')
+    Object.assign(f.wallet.identity, {
+      compressedPubKey: new Uint8Array(33).fill(2),
+    })
+    await expect(f.session.createUtxoWallet(r.relay)).rejects.toThrow()
+    expect(r.custody()).toBeUndefined()
+    expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+    await f.session.close()
+  })
+  test('account invalidation during construction revokes the captured capability and wipes material', async () => {
+    const f = realIdentityFixture(),
+      r = relayFixture('btc-testnet')
+    const original = r.relay.createWallet
+    let captured: UtxoStealthCustody | undefined
+    r.relay.createWallet = async (root, options) => {
+      captured = options?.stealthCustody
+      const result = await original(root, options)
+      f.invalidate()
+      return result
+    }
+    await expect(f.session.createUtxoWallet(r.relay)).rejects.toThrow()
+    expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+    await expect(
+      captured!.deriveStealthSigner({
+        chainIdentifier: 'btc-testnet',
+        identityPublicKey: f.identity.compressedPubKey,
+        ephemeralPubKey: f.identity.compressedPubKey,
+      }),
+    ).rejects.toThrow()
+    await f.session.close()
+  })
 })

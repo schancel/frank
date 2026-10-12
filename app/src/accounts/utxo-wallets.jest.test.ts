@@ -6,17 +6,13 @@ const mockState = {
   account: publicAccount('account-a'),
   revision: 1,
 }
-const mockGetRoot = jest.fn()
+const mockSessionCreateWallet = jest.fn()
 jest.mock('./session', () => ({
   accountSession: {
     get state() {
       return mockState
     },
-    getActiveFamilyMaterial: async (purpose: string) => ({
-      registry: 'frank-domain-roots-v1',
-      purpose,
-      bytes: await mockGetRoot(purpose),
-    }),
+    createUtxoWallet: (relay: unknown) => mockSessionCreateWallet(relay),
   },
 }))
 const mockCreateWallet = jest.fn()
@@ -39,18 +35,14 @@ jest.mock('@frank/wallet/chain', () => ({
 
 import { openUtxoWallet } from './utxo-wallets'
 
-let roots: Uint8Array[]
 beforeEach(() => {
   jest.clearAllMocks()
   mockState.status = 'ready'
   mockState.account = publicAccount('account-a')
   mockState.revision += 1
-  roots = []
-  mockGetRoot.mockImplementation(async () => {
-    const root = new Uint8Array(32).fill(7)
-    roots.push(root)
-    return root
-  })
+  mockSessionCreateWallet.mockImplementation(relay =>
+    relay.createWallet(new Uint8Array(32).fill(7)),
+  )
   mockCreateWallet.mockImplementation(
     async (params: { chainIdentifier: string }) => ({
       chainIdentifier: params.chainIdentifier,
@@ -58,7 +50,7 @@ beforeEach(() => {
   )
 })
 
-it('opens one wallet per chain for the account, through the relay, and clears the root', async () => {
+it('opens one wallet per chain for the account, through the relay, through session custody', async () => {
   const [first, again, other] = await Promise.all([
     openUtxoWallet('btc-testnet'),
     openUtxoWallet('btc-testnet'),
@@ -72,12 +64,10 @@ it('opens one wallet per chain for the account, through the relay, and clears th
     chainIdentifier: 'btc-testnet',
     relayBaseUrl: 'https://relay.invalid',
   })
-  expect(mockGetRoot).toHaveBeenCalledWith('ecash-bch-wallet')
-  // The wallet saw the real root; the copy custody handed out is zero afterwards.
-  expect(
-    mockCreateWallet.mock.calls[0][1].every((byte: number) => byte === 7),
-  ).toBe(true)
-  expect(roots.every(root => root.every(byte => byte === 0))).toBe(true)
+  expect(mockSessionCreateWallet).toHaveBeenCalledTimes(2)
+  expect(mockSessionCreateWallet.mock.calls[0][0]).toBe(
+    mockOpenRelayUtxoChain.mock.results[0].value,
+  )
 })
 
 it('does not hand one account the wallet of another', async () => {
@@ -96,7 +86,6 @@ it('refuses a wallet whose account changed while it was opening', async () => {
     return { chainIdentifier: 'btc-testnet' }
   })
   await expect(openUtxoWallet('btc-testnet')).rejects.toThrow('Account changed')
-  expect(roots[0].every(byte => byte === 0)).toBe(true)
 })
 
 it('retries after a failed open instead of caching the failure', async () => {

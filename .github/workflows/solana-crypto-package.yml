@@ -1,0 +1,44 @@
+name: Solana crypto package reproducibility
+on:
+  pull_request:
+    paths:
+      - "packages/wallet/solana-crypto-backend/**"
+      - "packages/wallet/solana-stealth-vectors/**"
+      - "docs/protocol/chains/v1.json"
+      - ".github/workflows/solana-crypto-package.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/wallet/solana-crypto-backend/**"
+      - "packages/wallet/solana-stealth-vectors/**"
+      - "docs/protocol/chains/v1.json"
+      - ".github/workflows/solana-crypto-package.yml"
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - run: cargo fetch --locked --manifest-path packages/wallet/solana-crypto-backend/Cargo.toml
+      - id: reproduce
+        run: bash packages/wallet/solana-crypto-backend/build-wasm.sh --check
+      - name: Capture mismatched generated package
+        if: failure() && steps.reproduce.outcome == 'failure'
+        run: |
+          rustc -vV
+          cargo -vV
+          wasm-bindgen --version
+          ls "$CARGO_HOME/registry/src"
+          bash packages/wallet/solana-crypto-backend/build-wasm.sh
+      - uses: actions/upload-artifact@v4
+        if: failure() && steps.reproduce.outcome == 'failure'
+        with:
+          name: solana-generated-reproducibility-diagnostic
+          path: packages/wallet/solana-crypto-backend/generated/
+      - run: node packages/wallet/solana-crypto-backend/package-test.mjs

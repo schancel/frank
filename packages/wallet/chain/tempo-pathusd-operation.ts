@@ -277,10 +277,17 @@ export class TempoPathUsdJournal {
   private tail: Promise<unknown> = Promise.resolve()
   private uncertain = false
 
-  constructor(private readonly store: RecordStore<TempoPathUsdOperation>) {
+  constructor(private readonly store: RecordStore<TempoPathUsdOperation> & {
+    refresh(): Promise<void>
+    compareAndDelete(key: string, expected: TempoPathUsdOperation): Promise<boolean>
+  }) {
+    this.validateRows()
+  }
+
+  private validateRows(): void {
     const claims = new Set<string>()
     const ids = new Set<string>()
-    for (const row of store.all()) {
+    for (const row of this.store.all()) {
       validate(row)
       if (ids.has(row.operationId)) throw new Error('Duplicate Tempo operation ID')
       ids.add(row.operationId)
@@ -288,6 +295,13 @@ export class TempoPathUsdJournal {
       if (claims.has(claim)) throw new Error('Duplicate Tempo source nonce claim')
       claims.add(claim)
     }
+  }
+
+  /** Refresh inside the host's source lock before relying on cached source claims. */
+  async refresh(): Promise<void> {
+    if (this.uncertain) throw new Error('Tempo journal write outcome is uncertain')
+    await this.store.refresh()
+    this.validateRows()
   }
 
   get(operationId: string): TempoPathUsdOperation | undefined {
@@ -311,14 +325,16 @@ export class TempoPathUsdJournal {
     )
   }
 
-  private async write(row: TempoPathUsdOperation): Promise<TempoPathUsdOperation> {
+  private async write(row: TempoPathUsdOperation, previous: TempoPathUsdOperation | undefined): Promise<TempoPathUsdOperation> {
     const valid = validate(row)
+    let written: boolean
     try {
-      await this.store.put(valid.operationId, valid)
+      written = await this.store.compareAndPut(valid.operationId, previous, valid)
     } catch (error) {
       this.uncertain = true
       throw error
     }
+    if (!written) throw new Error('Tempo operation changed concurrently')
     return valid
   }
 
@@ -331,36 +347,41 @@ export class TempoPathUsdJournal {
 
   prepare(row: TempoPathUsdOperation): Promise<TempoPathUsdOperation> {
     return this.exclusive(async () => {
+      await this.refresh()
       if (this.get(row.operationId)) throw new Error('Tempo operation already exists')
       if (this.list().some(existing =>
         existing.chainIdentifier === row.chainIdentifier &&
         existing.source.address === row.source.address &&
         existing.nonce === row.nonce
       )) throw new Error('Tempo source nonce is reserved')
-      return this.write(row)
+      return this.write(row, undefined)
     })
   }
 
   mutate(operationId: string, change: (row: TempoPathUsdOperation) => TempoPathUsdOperation): Promise<TempoPathUsdOperation> {
     return this.exclusive(async () => {
+      await this.refresh()
       const previous = this.get(operationId)
       if (!previous) throw new Error('Unknown Tempo operation')
-      return this.write(change(previous))
+      return this.write(change(previous), previous)
     })
   }
 
   /** Only a row whose signed bytes never crossed a broadcast boundary may release its claim. */
   abandonUnexposed(operationId: string): Promise<void> {
     return this.exclusive(async () => {
+      await this.refresh()
       const row = this.get(operationId)
       if (!row) throw new Error('Unknown Tempo operation')
       if (row.exposed) throw new Error('Exposed Tempo operation cannot be abandoned')
+      let deleted: boolean
       try {
-        await this.store.delete(operationId)
+        deleted = await this.store.compareAndDelete(operationId, row)
       } catch (error) {
         this.uncertain = true
         throw error
       }
+      if (!deleted) throw new Error('Tempo operation changed concurrently')
     })
   }
 
@@ -432,6 +453,7 @@ export class TempoPathUsdTransfers {
     if (maximumFeeAtomic > params.authorizedFeeCeilingAtomic)
       throw new Error('Tempo fee exceeds authorized PathUSD ceiling')
     return this.withSourceLock(source, async () => {
+      await this.journal.refresh()
       const retry = this.journal.get(params.operationId)
       if (retry) {
         assertExistingAuthorization(retry)
@@ -470,6 +492,7 @@ export class TempoPathUsdTransfers {
   }
 
   async submit(operationId: string, signer: TempoPathUsdSigner): Promise<TempoPathUsdOperation> {
+    await this.journal.refresh()
     const operation = this.journal.get(operationId)
     if (!operation || operation.chainIdentifier !== this.chainIdentifier)
       throw new Error('Unknown Tempo operation for this chain')
@@ -477,6 +500,7 @@ export class TempoPathUsdTransfers {
   }
 
   async abandonUnexposed(operationId: string): Promise<void> {
+    await this.journal.refresh()
     const row = this.journal.get(operationId)
     if (!row || row.chainIdentifier !== this.chainIdentifier)
       throw new Error('Unknown Tempo operation for this chain')
@@ -484,14 +508,15 @@ export class TempoPathUsdTransfers {
   }
 
   private async submitLocked(operationId: string, signer: TempoPathUsdSigner): Promise<TempoPathUsdOperation> {
+    await this.journal.refresh()
     let row = this.journal.get(operationId)
     if (!row || row.chainIdentifier !== this.chainIdentifier)
       throw new Error('Unknown Tempo operation for this chain')
     if (canonicalAddress(signer.source.address) !== row.source.address)
       throw new Error('Tempo signer does not own operation source')
     await this.rpc.verifyChain(this.chainIdentifier)
-    if (row.observation.state === 'nonce-consumed-unknown') return this.reconcile(operationId)
-    if (row.observation.state.startsWith('included-')) return this.reconcile(operationId)
+    if (row.observation.state === 'nonce-consumed-unknown') return this.reconcileLocked(operationId)
+    if (row.observation.state.startsWith('included-')) return this.reconcileLocked(operationId)
     if (!row.signedRaw) {
       const tx = transaction(row)
       const signature = await signer.signDigest(tempoSigningHash(tx))
@@ -514,11 +539,12 @@ export class TempoPathUsdTransfers {
       submission = { state: 'ambiguous' }
     }
     await this.journal.mutate(operationId, current => ({ ...current, submission }))
-    return this.reconcile(operationId)
+    return this.reconcileLocked(operationId)
   }
 
   /** Explicitly authorized higher fee for the same payment and nonce; old raw bytes stay recoverable. */
   async replaceFee(operationId: string, signer: TempoPathUsdSigner, authorizedFeeCeilingAtomic: bigint): Promise<TempoPathUsdOperation> {
+    await this.journal.refresh()
     const original = this.journal.get(operationId)
     if (!original || original.chainIdentifier !== this.chainIdentifier || !original.signedRaw)
       throw new Error('Unknown signed Tempo operation for this chain')
@@ -526,7 +552,11 @@ export class TempoPathUsdTransfers {
     if (source !== original.source.address || authorizedFeeCeilingAtomic < 0n)
       throw new Error('Invalid Tempo replacement authorization')
     return this.withSourceLock(source, async () => {
-      const row = await this.reconcile(operationId)
+      await this.journal.refresh()
+      const current = this.journal.get(operationId)
+      if (!current || current.source.address !== source || !current.signedRaw)
+        throw new Error('Unknown signed Tempo operation for this chain')
+      const row = await this.reconcileLocked(operationId)
       if (row.observation.state.startsWith('included-') || row.observation.state === 'nonce-consumed-unknown')
         throw new Error('Tempo operation has an included candidate')
       const quote = await this.rpc.quoteTransfer({
@@ -568,6 +598,15 @@ export class TempoPathUsdTransfers {
   }
 
   async reconcile(operationId: string): Promise<TempoPathUsdOperation> {
+    await this.journal.refresh()
+    const row = this.journal.get(operationId)
+    if (!row || row.chainIdentifier !== this.chainIdentifier)
+      throw new Error('Unknown Tempo operation for this chain')
+    return this.withSourceLock(row.source.address, () => this.reconcileLocked(operationId))
+  }
+
+  private async reconcileLocked(operationId: string): Promise<TempoPathUsdOperation> {
+    await this.journal.refresh()
     const row = this.journal.get(operationId)
     if (!row || row.chainIdentifier !== this.chainIdentifier)
       throw new Error('Unknown Tempo operation for this chain')

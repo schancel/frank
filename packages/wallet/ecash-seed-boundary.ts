@@ -8,6 +8,7 @@ import type { ChronikClient } from "chronik-client";
 import type { HdNode } from "ecash-lib/dist/hdwallet";
 import type { EcashSdkBackend, EcashSdkWallet } from "./ecash-sdk-backend";
 import type { EcashAddressPrefix, EcashWalletFactory } from "./ecash-wallet";
+import type { EcashStealthCustody } from "./ecash-stealth";
 
 /** Validate the frozen registry interpretation, then copy before asynchronous effects. */
 export function snapshotEcashDomainRoot(
@@ -44,18 +45,27 @@ interface EcashSdkHdConstructor {
   ): EcashSdkWallet;
 }
 
-export const createEcashSeedBackend = async ({
-  domainRoot,
-  chronik,
-  addressPrefix,
-}: Parameters<EcashWalletFactory>[0]): Promise<EcashSdkBackend> => {
-  const root = snapshotEcashDomainRoot(domainRoot);
-  try {
-    return await createBackend(root.bytes, chronik, addressPrefix);
-  } finally {
-    root.bytes.fill(0);
-  }
-};
+/** Host custody composition; the returned factory passes no key capability through a wallet. */
+export function createEcashStealthSeedBackend(custody: EcashStealthCustody) {
+  return seedBackendFactory(custody);
+}
+
+export const createEcashSeedBackend = seedBackendFactory();
+
+function seedBackendFactory(custody?: EcashStealthCustody) {
+  return async ({
+    domainRoot,
+    chronik,
+    addressPrefix,
+  }: Parameters<EcashWalletFactory>[0]): Promise<EcashSdkBackend> => {
+    const root = snapshotEcashDomainRoot(domainRoot);
+    try {
+      return await createBackend(root.bytes, chronik, addressPrefix, custody);
+    } finally {
+      root.bytes.fill(0);
+    }
+  };
+}
 
 export async function createEcashBip39SeedBackend(
   material: HistoricalBip39Seed,
@@ -79,7 +89,8 @@ export async function createEcashBip39SeedBackend(
 async function createBackend(
   seed: Uint8Array,
   chronik: ChronikClient,
-  addressPrefix: EcashAddressPrefix
+  addressPrefix: EcashAddressPrefix,
+  custody?: EcashStealthCustody
 ): Promise<EcashSdkBackend> {
   const imported = await import("ecash-wallet/dist/index.js");
   const { HdNode } = await import("ecash-lib");
@@ -105,6 +116,7 @@ async function createBackend(
       addressPrefix
     ),
     chronik,
-    addressPrefix
+    addressPrefix,
+    custody
   );
 }

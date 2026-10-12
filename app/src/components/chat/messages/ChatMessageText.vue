@@ -85,13 +85,19 @@ export default defineComponent({
     },
   },
   watch: {
-    text() { void this.refreshMentions() },
-    isReply() { void this.refreshMentions() },
+    text() {
+      void this.refreshMentions()
+    },
+    isReply() {
+      void this.refreshMentions()
+    },
   },
   mounted() {
     this.showPictures()
     void this.refreshMentions()
-    this.removeChainListener = onActiveChainChange(() => { void this.refreshMentions() })
+    this.removeChainListener = onActiveChainChange(() => {
+      void this.refreshMentions()
+    })
   },
   updated() {
     this.showPictures()
@@ -110,18 +116,25 @@ export default defineComponent({
       const addresses = addressMentionTokens(this.text).addresses
       if (!addresses.length) return
       const chain = getActiveChain()
-      await Promise.all(addresses.map(async address => {
-        try {
-          const parsed = chain.parseAddress(address)
-          if (!parsed) return
-          const profile = await fetchContactProfile(parsed)
-          if (generation !== this.mentionGeneration || getActiveChain() !== chain) return
-          const name = profile?.name?.trim()
-          if (name) this.mentionNames = { ...this.mentionNames, [address]: name }
-        } catch {
-          // The full address remains usable when its profile is unavailable.
-        }
-      }))
+      await Promise.all(
+        addresses.map(async address => {
+          try {
+            const parsed = chain.parseAddress(address)
+            if (!parsed) return
+            const profile = await fetchContactProfile(parsed)
+            if (
+              generation !== this.mentionGeneration ||
+              getActiveChain() !== chain
+            )
+              return
+            const name = profile?.name?.trim()
+            if (name)
+              this.mentionNames = { ...this.mentionNames, [address]: name }
+          } catch {
+            // The full address remains usable when its profile is unavailable.
+          }
+        }),
+      )
     },
     attachmentOf(image: Element): PostAttachment | undefined {
       const id = image.getAttribute(ATTACHMENT_ATTRIBUTE)
@@ -150,7 +163,9 @@ export default defineComponent({
     clicked(event: MouseEvent) {
       const target = event.target as HTMLElement | null
       const anchor = target?.closest('a')
-      const address = /^\/chat\/(0x[0-9a-f]{40})\?info=true$/i.exec(anchor?.getAttribute('href') ?? '')?.[1]
+      const address = /^\/chat\/(0x[0-9a-f]{40})\?info=true$/i.exec(
+        anchor?.getAttribute('href') ?? '',
+      )?.[1]
       if (address) {
         event.preventDefault()
         void openContactProfile(this.$router, address)

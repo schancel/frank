@@ -13,10 +13,14 @@ jest.mock('@frank/wallet/chain', () => ({
   getActiveChain: () => mockCurrentChain,
   onActiveChainChange: (listener: () => void) => {
     mockListeners.add(listener)
-    return () => { mockListeners.delete(listener) }
+    return () => {
+      mockListeners.delete(listener)
+    }
   },
 }))
-jest.mock('../../../utils/directory-peer', () => ({ fetchContactProfile: jest.fn() }))
+jest.mock('../../../utils/directory-peer', () => ({
+  fetchContactProfile: jest.fn(),
+}))
 jest.mock('../../../utils/routes', () => ({ openContactProfile: jest.fn() }))
 
 jest.mock('quasar', () => ({
@@ -35,7 +39,12 @@ const large = {
 function mountText(text: string, attachments = [picture]) {
   return mount(ChatMessageText, {
     props: { text, attachments },
-    global: { mocks: { $q: { dark: { isActive: false } }, $router: { push: jest.fn() } } },
+    global: {
+      mocks: {
+        $q: { dark: { isActive: false } },
+        $router: { push: jest.fn() },
+      },
+    },
   })
 }
 
@@ -89,7 +98,6 @@ describe('ChatMessageText pictures', () => {
   })
 })
 
-
 describe('ChatMessageText exact address mentions', () => {
   const address = '0x' + 'a'.repeat(40)
   beforeEach(() => {
@@ -102,7 +110,11 @@ describe('ChatMessageText exact address mentions', () => {
 
   it('shows the full address immediately, then a resolved name, and opens that exact profile', async () => {
     let resolve!: (profile: { name: string }) => void
-    ;(fetchContactProfile as jest.Mock).mockReturnValueOnce(new Promise(done => { resolve = done }))
+    ;(fetchContactProfile as jest.Mock).mockReturnValueOnce(
+      new Promise(done => {
+        resolve = done
+      }),
+    )
     const wrapper = mountText(`Hello @${address}`, [])
     expect(wrapper.get('a').text()).toBe('@' + address)
     expect(fetchContactProfile).toHaveBeenCalledWith({ raw: address })
@@ -116,20 +128,34 @@ describe('ChatMessageText exact address mentions', () => {
   })
 
   it('leaves unavailable profiles as full-address links without resolving code or existing links', async () => {
-    ;(fetchContactProfile as jest.Mock).mockRejectedValueOnce(new Error('offline'))
-    const wrapper = mountText(`@${address} \`@${address}\` [@${address}](https://example.com)`, [])
+    ;(fetchContactProfile as jest.Mock).mockRejectedValueOnce(
+      new Error('offline'),
+    )
+    const wrapper = mountText(
+      `@${address} \`@${address}\` [@${address}](https://example.com)`,
+      [],
+    )
     await flushPromises()
     expect(fetchContactProfile).toHaveBeenCalledTimes(1)
-    expect(wrapper.get(`a[href="/chat/${address}?info=true"]`).text()).toBe('@' + address)
+    expect(wrapper.get(`a[href="/chat/${address}?info=true"]`).text()).toBe(
+      '@' + address,
+    )
     wrapper.unmount()
-    const protectedOnly = mountText(`\`@${address}\` [@${address}](https://example.com)`, [])
+    const protectedOnly = mountText(
+      `\`@${address}\` [@${address}](https://example.com)`,
+      [],
+    )
     expect(fetchContactProfile).toHaveBeenCalledTimes(1)
     protectedOnly.unmount()
   })
 
   it('ignores a profile that resolves after the message text changes', async () => {
     let resolve!: (profile: { name: string }) => void
-    ;(fetchContactProfile as jest.Mock).mockReturnValueOnce(new Promise(done => { resolve = done }))
+    ;(fetchContactProfile as jest.Mock).mockReturnValueOnce(
+      new Promise(done => {
+        resolve = done
+      }),
+    )
     const wrapper = mountText('@' + address, [])
     await wrapper.setProps({ text: 'No mention now' })
     resolve({ name: 'Old Name' })
@@ -141,7 +167,12 @@ describe('ChatMessageText exact address mentions', () => {
 
   it('ignores the old-chain lookup after a chain change and releases its listener', async () => {
     let resolve!: (profile: { name: string }) => void
-    ;(fetchContactProfile as jest.Mock).mockReturnValueOnce(new Promise(done => { resolve = done }))
+    ;(fetchContactProfile as jest.Mock)
+      .mockReturnValueOnce(
+        new Promise(done => {
+          resolve = done
+        }),
+      )
       .mockResolvedValueOnce({ name: 'Current Chain Name' })
     const wrapper = mountText('@' + address, [])
     mockCurrentChain = { parseAddress: (raw: string) => ({ raw }) }
@@ -156,7 +187,11 @@ describe('ChatMessageText exact address mentions', () => {
 
   it('discards profile results after unmounting', async () => {
     let resolve!: (profile: { name: string }) => void
-    ;(fetchContactProfile as jest.Mock).mockReturnValueOnce(new Promise(done => { resolve = done }))
+    ;(fetchContactProfile as jest.Mock).mockReturnValueOnce(
+      new Promise(done => {
+        resolve = done
+      }),
+    )
     const wrapper = mountText('@' + address, [])
     const vm = wrapper.vm
     wrapper.unmount()

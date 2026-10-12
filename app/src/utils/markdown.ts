@@ -100,7 +100,11 @@ export function renderMarkdown(
 ) {
   const cacheKey = `${linkColor ? 1 : 0}${lineBreaks ? 'b' : ''}${
     attachments ? `i${attachments.join(',')}` : ''
-  }:${mentionNames === undefined ? '' : JSON.stringify(Object.entries(mentionNames).sort())}:${input}`
+  }:${
+    mentionNames === undefined
+      ? ''
+      : JSON.stringify(Object.entries(mentionNames).sort())
+  }:${input}`
   const cached = cache.get(cacheKey)
   if (cached !== undefined) {
     cache.delete(cacheKey)
@@ -149,7 +153,10 @@ export function renderMarkdown(
   const result = sanitize(
     mentionNames === undefined
       ? marked.marked(input, { renderer: renderer, breaks: lineBreaks })
-      : marked.parser(addressMentionTokens(input, mentionNames, lineBreaks).tokens, { renderer: renderer, breaks: lineBreaks }),
+      : marked.parser(
+          addressMentionTokens(input, mentionNames, lineBreaks).tokens,
+          { renderer: renderer, breaks: lineBreaks },
+        ),
     allowed,
     [QUOTE_STYLE, linkStyle(linkColorHex)],
   )

@@ -206,6 +206,12 @@ interface StoredState {
   readonly receiveIndex: number;
   readonly changeIndex: number;
   readonly pending: readonly PendingSend[];
+  /** Inputs of native transactions the indexer knows or accepted. A retired pending row must
+   * not make a stale coin view in another instance selectable. This is durable spend evidence. */
+  readonly consumedNativeInputs?: ReadonlyArray<{
+    readonly txid: string;
+    readonly vout: number;
+  }>;
   /** Absent in a native-only wallet. Existing native pending records keep their meaning. */
   readonly operations?: readonly StoredUtxoPayment[];
 }
@@ -270,6 +276,19 @@ function must<T>(
   return result.value;
 }
 
+function validOutpoint(input: {
+  readonly txid: string;
+  readonly vout: number;
+}): boolean {
+  return (
+    typeof input?.txid === "string" &&
+    /^[a-f0-9]{64}$/.test(input.txid) &&
+    Number.isSafeInteger(input.vout) &&
+    input.vout >= 0 &&
+    input.vout <= 0xffffffff
+  );
+}
+
 function validPendingSend(send: PendingSend): boolean {
   return (
     typeof send?.txid === "string" &&
@@ -278,13 +297,7 @@ function validPendingSend(send: PendingSend): boolean {
     /^(?:[a-f0-9]{2})+$/.test(send.raw) &&
     Array.isArray(send.inputs) &&
     send.inputs.length > 0 &&
-    send.inputs.every(
-      (input) =>
-        typeof input?.txid === "string" &&
-        /^[a-f0-9]{64}$/.test(input.txid) &&
-        Number.isSafeInteger(input.vout) &&
-        input.vout >= 0
-    )
+    send.inputs.every(validOutpoint)
   );
 }
 
@@ -325,6 +338,9 @@ function parseState(serialized: string | undefined): StoredState {
     !index(value.changeIndex) ||
     !Array.isArray(value.pending) ||
     value.pending.some((send) => !validPendingSend(send)) ||
+    (value.consumedNativeInputs !== undefined &&
+      (!Array.isArray(value.consumedNativeInputs) ||
+        !value.consumedNativeInputs.every(validOutpoint))) ||
     (value.operations !== undefined &&
       (!Array.isArray(value.operations) ||
         value.operations.some((operation) => !validStoredPayment(operation)) ||
@@ -811,11 +827,28 @@ export class UtxoWallet implements NativeWalletHandle {
     this.state = next;
   }
 
-  private dropPending(txid: string): void {
+  private dropPending(
+    txid: string,
+    consumedInputs: PendingSend["inputs"] = []
+  ): void {
     this.settledGeneration += 1;
     this.persist({
       ...this.state,
       pending: this.state.pending.filter((send) => send.txid !== txid),
+      ...(consumedInputs.length > 0
+        ? {
+            consumedNativeInputs: [
+              ...new Map(
+                [
+                  ...(this.state.consumedNativeInputs ?? []),
+                  ...consumedInputs,
+                ].map(
+                  (input) => [`${input.txid}:${input.vout}`, input] as const
+                )
+              ).values(),
+            ],
+          }
+        : {}),
     });
     this.markPending();
   }
@@ -827,9 +860,10 @@ export class UtxoWallet implements NativeWalletHandle {
         ...(this.state.operations ?? []).filter(
           (payment) => payment.phase !== "released"
         ),
-      ].flatMap((send) =>
-        send.inputs.map((input) => `${input.txid}:${input.vout}`)
-      )
+      ]
+        .flatMap((send) => send.inputs)
+        .concat(this.state.consumedNativeInputs ?? [])
+        .map((input) => `${input.txid}:${input.vout}`)
     );
     this.coinList = this.coinList.map((coin) => ({
       ...coin,
@@ -847,10 +881,13 @@ export class UtxoWallet implements NativeWalletHandle {
     const pending = await this.exclusive(async () => this.state.pending);
     for (const send of pending) {
       if (this.inFlight.has(send.txid)) continue;
+      let consumed = false;
       try {
-        if (!(await this.indexer.hasTransaction(send.txid))) {
+        consumed = await this.indexer.hasTransaction(send.txid);
+        if (!consumed) {
           try {
             await this.indexer.broadcast(send.raw);
+            consumed = true;
           } catch (reason) {
             // Refused: the node already has it, or its inputs were spent some other way.
             // Either way these bytes need no further sending. Anything else is unknown.
@@ -864,7 +901,9 @@ export class UtxoWallet implements NativeWalletHandle {
         });
         continue;
       }
-      await this.exclusive(async () => this.dropPending(send.txid));
+      await this.exclusive(async () =>
+        this.dropPending(send.txid, consumed ? send.inputs : [])
+      );
     }
     this.unresolved = unresolved;
   }

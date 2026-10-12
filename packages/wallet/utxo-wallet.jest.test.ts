@@ -444,7 +444,7 @@ describe.each([
   });
 
   it("frees the coins when the network refuses the transaction outright", async () => {
-    const { wallet, backend } = await open(network);
+    const { wallet, backend, store } = await open(network);
     fund(
       backend,
       network,
@@ -463,6 +463,7 @@ describe.each([
     );
     expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
     expect(await wallet.getBalance()).toBe(70_000n);
+    expect(JSON.parse(store.load()!).consumedNativeInputs ?? []).toEqual([]);
   });
 
   it("does not report failure, or sign again, for a transaction that may have been broadcast", async () => {
@@ -982,6 +983,75 @@ describe.each([
       input(prepared.transaction.rawTransactions![0])
     );
     expect((await wallet.getNativePayments())[0].phase).toBe("prepared");
+  });
+
+  it("does not free a cached native input when another instance settles its pending record before selection", async () => {
+    const { wallet: first, backend, store } = await open(network);
+    const second = (await open(network, backend, store)).wallet;
+    fund(backend, network, first.identity.address.raw, 70_000n, "a");
+    fund(backend, network, first.identity.address.raw, 60_000n, "b");
+    backend.setOutcome("lost");
+    await expect(
+      first.sendNative({ recipient: { raw: recipient }, value: 10_000n })
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+    const nativeRaw = backend.broadcasts[0];
+
+    let readComplete!: () => void;
+    let continueSelection!: () => void;
+    const read = new Promise<void>((resolve) => {
+      readComplete = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      continueSelection = resolve;
+    });
+    // Wrap the real sync solely to schedule the gap after its atomic apply and before selection.
+    // Both wallet instances still read the test indexer and mutate through their real APIs.
+    const boundary = second as unknown as { sync(): Promise<void> };
+    const sync = boundary.sync.bind(second);
+    const barrier = jest
+      .spyOn(boundary, "sync")
+      .mockImplementationOnce(async () => {
+        await sync();
+        readComplete();
+        await resume;
+      });
+    const preparing = second.prepareNativePayment({
+      operationId: "after-native",
+      recipient: { raw: recipient },
+      value: 10_000n,
+    });
+    try {
+      await read;
+      // Someone rebroadcasts the native bytes; the first instance now learns they were consumed
+      // and retires its pending record while the second still has the earlier input snapshot.
+      backend.setOutcome("accept");
+      await backend.indexer.broadcast(nativeRaw);
+      await expect(
+        first.sendNative({ recipient: { raw: recipient }, value: 1_000_000n })
+      ).rejects.toThrow("Insufficient funds");
+      expect(JSON.parse(store.load()!).pending).toEqual([]);
+    } finally {
+      continueSelection();
+      barrier.mockRestore();
+    }
+    const prepared = await preparing;
+    const parsed = parseTransaction(
+      unhex(prepared.transaction.rawTransactions[0]),
+      network.descriptor
+    );
+    if (!parsed.ok) throw new Error("unparseable");
+    expect(
+      hex(Uint8Array.from(parsed.value.inputs[0].prevout.txid).reverse())
+    ).toBe("b".repeat(64));
+    // The exclusion survives a fresh wallet even when the indexer later returns the old input.
+    fund(backend, network, first.identity.address.raw, 70_000n, "a");
+    const reopened = (await open(network, backend, store)).wallet;
+    expect((await reopened.getNativePayments())[0].transaction).toEqual(
+      prepared.transaction
+    );
+    expect(await reopened.getBalance()).toBe(
+      70_000n - 10_000n - feeOf(nativeRaw, network, 70_000n)
+    );
   });
 
   it("fails reopening a foreign-chain operation before any broadcast", async () => {

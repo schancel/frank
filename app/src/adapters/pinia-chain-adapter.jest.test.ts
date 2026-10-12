@@ -94,6 +94,8 @@ const PUB_KEY_BYTES = Uint8Array.from(Buffer.from(PUB_KEY_HEX, 'hex'))
 
 type MockMessageStore = {
   saveMessage: jest.Mock
+  suppressAndDelete: jest.Mock
+  suppressedRelayReceipts: jest.Mock
   relayCursor: jest.Mock
   quarantineRelayReceipts: jest.Mock
   mostRecentMessageTime: jest.Mock
@@ -160,6 +162,147 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       },
     })
   })
+
+  it.each(['quarantine', 'self echo', 'delayed suppression'] as const)(
+    'orders %s frontier evidence after the required financial receipt',
+    async mode => {
+      const { LevelMessageStore } = jest.requireActual<
+        typeof import('@frank/cashweb/relay/storage/level-storage')
+      >('@frank/cashweb/relay/storage/level-storage')
+      const { mkdtempSync } =
+        jest.requireActual<typeof import('node:fs')>('node:fs')
+      const { tmpdir } = jest.requireActual<typeof import('node:os')>('node:os')
+      const { join } =
+        jest.requireActual<typeof import('node:path')>('node:path')
+      const path = mkdtempSync(join(tmpdir(), 'frank-terminal-receipts-'))
+      let disk = new LevelMessageStore(path)
+      await disk.Open()
+      const chats = useChatStore()
+      const number = ['quarantine', 'self echo', 'delayed suppression'].indexOf(
+        mode,
+      )
+      const claim = makeWrapper(String(number + 4).repeat(64))
+      claim.message.receivedTime = claim.message.serverTime = 100
+      const later = makeWrapper(String(number + 7).repeat(64))
+      later.message.receivedTime = later.message.serverTime = 200
+      if (mode !== 'delayed suppression') {
+        const peer = mode === 'self echo' ? RECIPIENT_ADDRESS : SENDER_ADDRESS
+        const deleted = chats.createConversation({
+          participants: [peer, RECIPIENT_ADDRESS],
+          address: peer,
+        })
+        deleted.deletedAt = 300
+        later.message.conversationId = deleted.id
+        if (mode === 'self echo') {
+          later.senderAddress = later.copartyAddress = RECIPIENT_ADDRESS
+          later.message.senderAddress = RECIPIENT_ADDRESS
+          const outgoing = {
+            ...later.message,
+            outbound: true,
+            status: 'pending',
+            payloadDigest: later.index,
+            conversationId: deleted.id,
+            senderAddress: RECIPIENT_ADDRESS,
+            destinationAddress: RECIPIENT_ADDRESS,
+          }
+          deleted.messages.push(outgoing)
+          chats.messages[later.index] = outgoing
+        }
+      } else {
+        // A local deletion has no relay time until its delayed mailbox row arrives.
+        await disk.suppressAndDelete(
+          RECIPIENT_ADDRESS,
+          [later.index],
+          [{ payloadDigest: later.index }],
+        )
+        expect(await disk.relayCursor(RECIPIENT_ADDRESS)).toBe(0)
+      }
+      const order: string[] = []
+      mockMessageStore.quarantineRelayReceipts.mockImplementation(
+        async (recipient, receipts) => {
+          order.push(`quarantine:${receipts[0].receivedTime}`)
+          await disk.quarantineRelayReceipts(recipient, receipts)
+        },
+      )
+      mockMessageStore.suppressAndDelete.mockImplementation(
+        async (recipient, digests, suppressions) => {
+          order.push(
+            `tombstone:${
+              suppressions.find(entry => entry.receivedTime !== undefined)
+                ?.receivedTime
+            }`,
+          )
+          await disk.suppressAndDelete(recipient, digests, suppressions)
+        },
+      )
+      mockMessageStore.suppressedRelayReceipts.mockImplementation(
+        async (recipient, receipts, options) => {
+          if (
+            options?.learnRelayTime !== false &&
+            mode === 'delayed suppression'
+          )
+            order.push(`suppression:${receipts[0].receivedTime}`)
+          return disk.suppressedRelayReceipts(recipient, receipts, options)
+        },
+      )
+      let interrupted = true
+      mockMessageStore.saveMessage.mockImplementation(
+        async (wrapper, options) => {
+          order.push(`save:${wrapper.message.receivedTime}`)
+          if (interrupted && wrapper.index === claim.index)
+            throw new Error('required financial row write failed')
+          await disk.saveMessage(wrapper, options)
+        },
+      )
+      // Composition has already committed the financial claim; this lease identifies its row.
+      const beforePersist = jest.fn(async () => [claim.index])
+      const lease = { isCancelled: () => false, beforePersist }
+      try {
+        await expect(
+          chats.receiveMessages([later, claim], RECIPIENT_ADDRESS, lease),
+        ).rejects.toThrow('required financial row write failed')
+        expect(beforePersist).toHaveBeenCalledTimes(1)
+        expect(order).toEqual(['save:100'])
+        await disk.Close()
+        disk = new LevelMessageStore(path)
+        await disk.Open()
+        expect(await disk.relayCursor(RECIPIENT_ADDRESS)).toBe(0)
+        expect(await disk.getMessage(claim.index)).toBeUndefined()
+        expect(await disk.getMessage(later.index)).toBeUndefined()
+        interrupted = false
+        order.length = 0
+        await chats.receiveMessages([later, claim], RECIPIENT_ADDRESS, lease)
+        expect(order).toEqual([
+          'save:100',
+          `${
+            mode === 'quarantine'
+              ? 'quarantine'
+              : mode === 'self echo'
+              ? 'tombstone'
+              : 'suppression'
+          }:200`,
+        ])
+        await disk.Close()
+        disk = new LevelMessageStore(path)
+        await disk.Open()
+        expect(await disk.relayCursor(RECIPIENT_ADDRESS)).toBe(200)
+        expect((await disk.getMessage(claim.index))?.index).toBe(claim.index)
+        expect(await disk.getMessage(later.index)).toBeUndefined()
+      } finally {
+        await disk.Close()
+        mockMessageStore.saveMessage.mockReset().mockResolvedValue(undefined)
+        mockMessageStore.quarantineRelayReceipts
+          .mockReset()
+          .mockResolvedValue(undefined)
+        mockMessageStore.suppressAndDelete
+          .mockReset()
+          .mockResolvedValue(undefined)
+        mockMessageStore.suppressedRelayReceipts
+          .mockReset()
+          .mockImplementation(async () => new Set<string>())
+      }
+    },
+  )
 
   it.each(['interrupted write', 'overlapping failure'])(
     'preserves the restart frontier after %s on an older financial receipt',

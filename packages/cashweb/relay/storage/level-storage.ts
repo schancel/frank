@@ -541,6 +541,7 @@ export class LevelMessageStore implements MessageStore {
   async suppressedRelayReceipts(
     recipientAddress: string,
     receipts: RelayReceiptIdentity[],
+    options?: { learnRelayTime?: boolean },
   ): Promise<Set<string>> {
     const requested = receipts.map(entry => ({ ...entry }))
     return this.mutate(async () => {
@@ -555,7 +556,10 @@ export class LevelMessageStore implements MessageStore {
           throw new Error('Unsafe relay receipt timestamp')
         if (!byDigest.has(receipt.payloadDigest)) continue
         suppressed.add(receipt.payloadDigest)
-        if (byDigest.get(receipt.payloadDigest) === null) {
+        if (
+          options?.learnRelayTime !== false &&
+          byDigest.get(receipt.payloadDigest) === null
+        ) {
           byDigest.set(receipt.payloadDigest, receipt.receivedTime)
           changed = true
         }

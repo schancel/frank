@@ -92,10 +92,11 @@ export interface MessageStore {
     payloadDigests: string[],
     suppressions: RelayDeliverySuppression[]
   ): Promise<void>;
-  /** May persist a newly observed time for an existing unresolved suppression anchor. */
+  /** May learn an unresolved anchor time; classification can explicitly remain read-only. */
   suppressedRelayReceipts(
     recipientAddress: string,
-    receipts: RelayReceiptIdentity[]
+    receipts: RelayReceiptIdentity[],
+    options?: { learnRelayTime?: boolean }
   ): Promise<Set<string>>;
   getIterator(): Promise<AsyncIterableIterator<MessageWrapper>>;
   clear(): Promise<void>;

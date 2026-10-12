@@ -4331,7 +4331,9 @@ export const useChatStore = defineStore('chats', {
       const suppressedDigests =
         ownAddress &&
         typeof messageStore?.suppressedRelayReceipts === 'function'
-          ? await messageStore.suppressedRelayReceipts(ownAddress, receipts)
+          ? await messageStore.suppressedRelayReceipts(ownAddress, receipts, {
+              learnRelayTime: false,
+            })
           : new Set<string>()
       let deliverableWrappers = messageWrappers.filter(wrapper => {
         // A row refused earlier in this session is not looked at again.
@@ -4585,7 +4587,6 @@ export const useChatStore = defineStore('chats', {
         deliverableWrappers = deliverableWrappers.filter(
           wrapper => !refusedIncoming.has(wrapper.index),
         )
-        if (ownAddress) await this.quarantineRelayReceipts(ownAddress, refused)
       }
       // From here on each row is filed into the store's own conversation object. A conversation
       // this batch created is a plain object until it is installed; writing to that one would
@@ -4595,24 +4596,48 @@ export const useChatStore = defineStore('chats', {
         receivedConversations.set(index, this.conversations[conv.id])
       }
 
-      // A local send has no relay time until its echo arrives. Once it does, apply the
-      // same deletion boundary as any other mailbox row, including a note received in
-      // an earlier poll. Tombstone both the local row and its receipt before installing
-      // anything, retaining the wallet's independent submission/recovery evidence.
+      // Stage terminal receipt actions alongside normal writes. Every newly learned relay
+      // time can advance the restart frontier, so quarantine and suppression must obey the
+      // same order as saved rows. Classification above deliberately learns no anchor times.
+      const terminalReceipts = new Map<string, () => Promise<void>>()
+      for (const wrapper of messageWrappers) {
+        if (suppressedDigests.has(wrapper.index)) {
+          if (ownAddress)
+            terminalReceipts.set(wrapper.index, async () => {
+              await messageStore.suppressedRelayReceipts(ownAddress, [
+                {
+                  payloadDigest: wrapper.index,
+                  receivedTime: wrapper.message.receivedTime,
+                },
+              ])
+            })
+        } else if (refusedIncoming.has(wrapper.index) && ownAddress) {
+          terminalReceipts.set(wrapper.index, () =>
+            this.quarantineRelayReceipts(ownAddress, [
+              {
+                payloadDigest: wrapper.index,
+                receivedTime: wrapper.message.receivedTime,
+              },
+            ]),
+          )
+        }
+      }
       const coveredEchoes = new Set<string>()
       for (const [index, loopback] of outboundMatches) {
         const conv = receivedConversations.get(index)!
         if (inDeletedConversation(conv, loopback.message) !== 'gone') continue
         const original = this.messages[loopback.oldIndex]
-        await this.tombstoneMessagesExclusive(conv, [
-          ...(original ? [original] : []),
-          { payloadDigest: index, ...loopback.message },
-        ])
-        if (conv.messages.length === 0) {
-          conv.deletedAt = clearedUpTo(conv)
-          if (this.activeConversationId === conv.id)
-            this.activeConversationId = null
-        }
+        terminalReceipts.set(index, async () => {
+          await this.tombstoneMessagesExclusive(conv, [
+            ...(original ? [original] : []),
+            { payloadDigest: index, ...loopback.message },
+          ])
+          if (conv.messages.length === 0) {
+            conv.deletedAt = clearedUpTo(conv)
+            if (this.activeConversationId === conv.id)
+              this.activeConversationId = null
+          }
+        })
         coveredEchoes.add(index)
         suppressedDigests.add(index)
         toNotify.delete(index)
@@ -4621,11 +4646,17 @@ export const useChatStore = defineStore('chats', {
       deliverableWrappers = deliverableWrappers.filter(
         wrapper => !coveredEchoes.has(wrapper.index),
       )
-
-      for (const wrapper of deliverableWrappers) {
+      const deliverableIndices = new Set(
+        deliverableWrappers.map(row => row.index),
+      )
+      for (const wrapper of messageWrappers) {
+        const terminal = terminalReceipts.get(wrapper.index)
+        if (terminal) {
+          await terminal()
+          continue
+        }
+        if (!deliverableIndices.has(wrapper.index)) continue
         // An index this call did not claim belongs to an overlapping receive.
-        // Do not persist it: if the claimer fails before storing, a later poll
-        // must still be able to notify.
         if (!toNotify.has(wrapper.index) && !(wrapper.index in this.messages)) {
           continue
         }

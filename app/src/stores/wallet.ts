@@ -11,11 +11,16 @@ export const useWalletStore = defineStore('wallet', {
     xPrivKey: null,
     seedPhrase: null,
     seedConfirmedAt: null,
+    backedUp: false,
   }),
   actions: {
+    setBackedUp(status: boolean) {
+      this.backedUp = status
+    },
     reset() {
       this.balance = 0
       this.utxos = {}
+      this.backedUp = false
     },
     setXPrivKey() {
       throw new Error('Legacy wallet is quarantined')

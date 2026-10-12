@@ -202,6 +202,72 @@
             </div>
           </q-card-section>
 
+          <q-card-section v-if="!backupUnavailable" class="backup-section q-pt-none">
+            <q-expansion-item
+              v-model="showVerifySection"
+              icon="verified"
+              :label="$t('accountRecovery.verify_shards_title')"
+              header-class="text-weight-medium text-grey-8"
+              data-test="verify-shards-expansion"
+            >
+              <div class="verify-shards-box q-pa-sm rounded-borders q-mt-xs">
+                <div class="text-caption text-grey-8 q-mb-sm">
+                  {{ $t('accountRecovery.verify_shards_explainer') }}
+                </div>
+                <q-input
+                  v-model="verifyInput"
+                  type="textarea"
+                  outlined
+                  dense
+                  :label="$t('accountRecovery.saved_codex32_shares_one_per_line')"
+                  :maxlength="7000"
+                  autocomplete="off"
+                  autocorrect="off"
+                  :spellcheck="false"
+                  data-test="verify-shards-input"
+                />
+                <div class="row q-gutter-sm q-mt-sm items-center">
+                  <q-btn
+                    unelevated
+                    no-caps
+                    size="sm"
+                    color="primary"
+                    :label="$t('accountRecovery.verify_shards_button')"
+                    data-test="verify-shards-btn"
+                    :disable="!String(verifyInput || '').trim() || verifyLoading"
+                    :loading="verifyLoading"
+                    @click="verifyShards"
+                  />
+                  <q-btn
+                    v-if="verifyInput"
+                    flat
+                    no-caps
+                    size="sm"
+                    label="Clear"
+                    data-test="clear-verify-input"
+                    @click="clearVerify"
+                  />
+                </div>
+                <div
+                  v-if="verifySuccess"
+                  role="status"
+                  class="text-caption text-positive q-mt-sm"
+                  data-test="verify-success"
+                >
+                  {{ $t('accountRecovery.verify_shards_success') }}
+                </div>
+                <div
+                  v-else-if="verifyError"
+                  role="alert"
+                  class="text-caption text-negative q-mt-sm"
+                  data-test="verify-error"
+                >
+                  {{ verifyError }}
+                </div>
+              </div>
+            </q-expansion-item>
+          </q-card-section>
+
           <q-card-actions align="right" class="q-pa-none">
             <q-btn
               flat
@@ -223,6 +289,17 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCodex32Backup } from '../composables/useCodex32Backup'
 import { navigateBack } from '../utils/navigate-back'
+import { markAccountBackedUp } from '../accounts/backup-status'
+import { accountStatus } from '../accounts/session'
+import { useWalletStore } from '../stores/wallet'
+import {
+  parseAccountBackupShareInput,
+  recoverAccountBackupShares,
+  decodeRecoveryDescriptor,
+  destroyRecoveredBackup,
+  type PublicRecoveryDescriptor,
+} from '@frank/account-recovery'
+import { recoveryErrorMessage } from '../accounts/ceremony'
 
 defineEmits<{
   (e: 'toggleMyDrawerOpen'): void
@@ -299,10 +376,29 @@ function applyCustom() {
   void generateShares()
 }
 
+watch(backupShares, shares => {
+  if (shares && shares.length > 0) {
+    const id = accountStatus.account?.receipt.context.accountId
+    markAccountBackedUp(id)
+    try {
+      useWalletStore().setBackedUp(true)
+    } catch {
+      // ignore
+    }
+  }
+})
+
 async function copyShare(share: string, index: number) {
   try {
     await navigator.clipboard.writeText(share)
     copyStatus.value = `Share ${index + 1} copied.`
+    const id = accountStatus.account?.receipt.context.accountId
+    markAccountBackedUp(id)
+    try {
+      useWalletStore().setBackedUp(true)
+    } catch {
+      // ignore
+    }
   } catch {
     copyStatus.value = 'Failed to copy share.'
   }
@@ -310,6 +406,56 @@ async function copyShare(share: string, index: number) {
 
 function cancel() {
   navigateBack(router)
+}
+
+const showVerifySection = ref(false)
+const verifyInput = ref('')
+const verifyLoading = ref(false)
+const verifySuccess = ref(false)
+const verifyError = ref('')
+
+function clearVerify() {
+  verifyInput.value = ''
+  verifySuccess.value = false
+  verifyError.value = ''
+}
+
+async function verifyShards() {
+  const input = String(verifyInput.value || '').trim()
+  if (!input || verifyLoading.value) return
+  verifyLoading.value = true
+  verifySuccess.value = false
+  verifyError.value = ''
+  try {
+    const shards = parseAccountBackupShareInput(input)
+    let expectedDescriptor: PublicRecoveryDescriptor | undefined
+    if (accountStatus.account?.descriptor) {
+      try {
+        expectedDescriptor = decodeRecoveryDescriptor(
+          accountStatus.account.descriptor,
+        )
+      } catch {
+        // Ignored if not a Frank descriptor (e.g. BIP39)
+      }
+    }
+    const recovery = recoverAccountBackupShares(shards, expectedDescriptor)
+    if (recovery.candidates.length === 0) {
+      throw new Error('No account reconstructed from the entered shards.')
+    }
+    recovery.candidates.forEach(c => destroyRecoveredBackup(c.account))
+    const id = accountStatus.account?.receipt.context.accountId
+    markAccountBackedUp(id)
+    try {
+      useWalletStore().setBackedUp(true)
+    } catch {
+      // ignore
+    }
+    verifySuccess.value = true
+  } catch (err) {
+    verifyError.value = recoveryErrorMessage(err)
+  } finally {
+    verifyLoading.value = false
+  }
 }
 
 // Entering this dedicated backup route is the explicit request to display shares.
@@ -382,14 +528,16 @@ onBeforeUnmount(clearShares)
 }
 
 .share-card,
-.custom-scheme-box {
+.custom-scheme-box,
+.verify-shards-box {
   background: rgba(0, 0, 0, 0.04);
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 :global(body.body--dark) {
   .share-card,
-  .custom-scheme-box {
+  .custom-scheme-box,
+  .verify-shards-box {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
   }

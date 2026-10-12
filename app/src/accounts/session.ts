@@ -55,6 +55,7 @@ import {
   exportCodex32Backup,
   exportHistoricalCodex32Backup,
 } from '@frank/account-recovery'
+import { isAccountBackedUp, markAccountBackedUp } from './backup-status'
 import {
   openAccountCustody,
   CustodyError,
@@ -88,6 +89,7 @@ export interface AccountSessionState {
   status: SessionStatus
   revision: number
   account: PublicAccount | null
+  backedUp: boolean
   pending: CustodySnapshot['pending']
   pendingReady: boolean
   /**
@@ -182,6 +184,7 @@ export function createAccountSession(deps: {
     status: 'loading',
     revision: 0,
     account: null,
+    backedUp: false,
     pending: null,
     pendingReady: false,
     pendingIdentityAddress: null,
@@ -213,6 +216,8 @@ export function createAccountSession(deps: {
     state.revision = snapshot.revision
     if (!unchanged) state.account = snapshot.active
     state.pending = snapshot.pending
+    const accountId = snapshot.active?.receipt.context.accountId
+    state.backedUp = isAccountBackedUp(accountId)
   }
   const fail = (error: unknown) => {
     const code =
@@ -1357,7 +1362,7 @@ export function createAccountSession(deps: {
         if (exported.account.receipt.context.accountId !== walletAccount)
           throw new CustodyError('conflict')
         if (!exported.accountRoot) throw new AccountBackupUnavailableError()
-        return [
+        const shares = [
           ...exportCodex32Backup({
             accountRoot: exported.accountRoot,
             // The root must reproduce this account's own recorded fingerprint.
@@ -1368,6 +1373,9 @@ export function createAccountSession(deps: {
               crypto.getRandomValues(new Uint8Array(length)),
           }),
         ]
+        markAccountBackedUp(walletAccount)
+        state.backedUp = true
+        return shares
       } finally {
         exported.accountRoot?.fill(0)
       }

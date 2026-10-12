@@ -412,7 +412,6 @@ describe('signup and pinned descriptor restore boundary', () => {
     for (const [entered, code] of [
       [[], 'insufficient-shares'],
       [[shares[0]!], 'wrong-share-count'],
-      [shares, 'wrong-share-count'],
       [[shares[0]!, shares[0]!], 'duplicate-share'],
       [[shares[0]!, other[1]!], 'inconsistent-share'],
     ] as const) {
@@ -421,6 +420,17 @@ describe('signup and pinned descriptor restore boundary', () => {
     expect(derive).not.toHaveBeenCalled()
     restore.cancel()
     errorCode(() => restore.recover(shares.slice(0, 2)), 'ceremony-consumed')
+    pending.cancel()
+  })
+
+  it('accepts all shares when count exceeds threshold (e.g. 3 of 2-of-3)', () => {
+    const pending = signup()
+    const restore = beginCodex32Restore(pending.publicDescriptor)
+    const recovered = restore.recover(pending.shares)
+    expect(recovered.metadata.descriptor.publicRecoveryFingerprint).toEqual(
+      pending.publicDescriptor.publicRecoveryFingerprint,
+    )
+    destroyAccountDomainRoots(recovered.roots)
     pending.cancel()
   })
 })

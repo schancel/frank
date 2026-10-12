@@ -37,6 +37,7 @@ import { accountSession } from './session'
 import { assertLegacyUnchanged, legacyStatus } from './legacy'
 import type { ExpectedActive } from './custody'
 import { bip39Descriptor } from './custody/bip39'
+import { markAccountBackedUp } from './backup-status'
 
 function identityOf(account: RecoveredAccountBackup): MonadIdentity {
   return 'seed' in account
@@ -147,6 +148,9 @@ export function createAccountCeremony() {
       )
       if (token !== epoch || !isCurrent())
         await accountSession.cancelPending(captured.attemptId)
+      if (isRestore) {
+        markAccountBackedUp(captured.accountId)
+      }
       return {
         isRestore,
         attemptId: captured.attemptId,
@@ -225,6 +229,61 @@ export function createAccountCeremony() {
         derived.forEach(value => value.bytes.fill(0))
       }
     },
+    /**
+     * Create and stage a new account directly without requiring an upfront backup ceremony.
+     * The account can be backed up at any time later from Settings > Backup account.
+     */
+    async createDirect(displayName = '') {
+      cancel()
+      const chainIdentifier = activeChain.chainIdentifier
+      let chainChanged = false
+      const unlisten = onActiveChainChange(() => {
+        chainChanged = true
+      })
+      const randomBuffers: Uint8Array[] = []
+      const randomBytes = (length: number) => {
+        const bytes = crypto.getRandomValues(new Uint8Array(length))
+        randomBuffers.push(bytes)
+        return bytes
+      }
+      let root: Uint8Array | undefined
+      let master: Uint8Array | undefined
+      const derived: DomainRoot[] = []
+      try {
+        await capture()
+        const token = epoch
+        root = randomBytes(32)
+        const payload = createMasterPayload(root)
+        if (!payload.ok) throw new Error('Invalid account root')
+        master = payload.value
+        const metadata = deriveRecoveryPublicMetadata(master)
+        for (const purpose of DOMAIN_PURPOSES)
+          derived.push(deriveDomainRoot(root, purpose))
+        const recovered = {
+          accountRoot: root,
+          metadata,
+          roots: Object.freeze(
+            Object.fromEntries(derived.map(value => [value.purpose, value])),
+          ) as AccountDomainRoots,
+        }
+        const outcome = await finish(
+          () => recovered,
+          false,
+          displayName,
+          () =>
+            !chainChanged && chainIdentifier === activeChain.chainIdentifier,
+        )
+        if (token !== epoch || chainChanged)
+          throw new Error('Ceremony cancelled')
+        return outcome
+      } finally {
+        unlisten()
+        randomBuffers.forEach(bytes => bytes.fill(0))
+        root?.fill(0)
+        master?.fill(0)
+        derived.forEach(value => value.bytes.fill(0))
+      }
+    },
     async beginNew(threshold: 2 | 3, count: 3 | 5) {
       cancel()
       await capture()
@@ -276,27 +335,36 @@ export function createAccountCeremony() {
       const displayName = signup ? requireValidProfileDisplayName(name) : ''
       if (!attempt) throw new Error('Start an account ceremony first')
       if (signup) {
-        return finish(
-          () => {
-            const recovered = signup?.confirmWithMetadata(shares)
-            signup = undefined
-            return recovered
-          },
+        let recovered: RecoveredAccountBackup | undefined
+        try {
+          recovered = signup.confirmWithMetadata(shares)
+        } catch (error) {
+          throw error
+        }
+        const outcome = await finish(
+          () => recovered,
           false,
           displayName,
         )
+        signup = undefined
+        return outcome
       }
+      if (!restoring) throw new Error('Start an account ceremony first')
       let recovery: ReturnType<typeof recoverAccountBackupShares>
       try {
-        if (!restoring) throw new Error('Start an account ceremony first')
-        restoring = false
         recovery = recoverAccountBackupShares(shares, expectedDescriptor)
-        expectedDescriptor = undefined
       } catch (error) {
-        cancel()
+        if (
+          expectedDescriptor &&
+          (error as AccountRecoveryError)?.code === 'descriptor-mismatch'
+        ) {
+          cancel()
+        }
         throw error
       }
       if (recovery.candidates.length > 1) {
+        restoring = false
+        expectedDescriptor = undefined
         choice = recovery.candidates.map(candidate => candidate.account)
         return {
           isRestore: true,
@@ -319,6 +387,8 @@ export function createAccountCeremony() {
         true,
         displayName,
       )
+      restoring = false
+      expectedDescriptor = undefined
       return {
         ...outcome,
         report: recovery.shares,

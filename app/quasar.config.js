@@ -32,8 +32,8 @@ function resolveGitCommitHash() {
   ]) {
     try {
       const parsed = JSON.parse(fs.readFileSync(p, 'utf8'))
-      if (parsed.commitSha) return parsed.commitSha
-      if (parsed.resolvedOrigin) return parsed.resolvedOrigin // sometimes used in GCP
+      const hash = parsed.public_source_sha || parsed.commitSha || parsed.resolvedOrigin
+      if (hash) return hash
     } catch (err) {}
   }
   try {

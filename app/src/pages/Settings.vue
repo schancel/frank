@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="settings-container column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -23,8 +23,8 @@
         />
       </q-toolbar>
     </q-header>
-    <q-page-container>
-      <q-page class="q-ma-none q-pa-none column no-wrap" :style-fn="pageStyle">
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page class="settings-page q-ma-none q-pa-none column no-wrap col full-height overflow-hidden" :style-fn="pageStyle">
         <q-card
           flat
           class="settings-content col column full-width full-height bg-transparent"
@@ -417,7 +417,11 @@ export default defineComponent({
 
     function resetEmailGateway() {
       emailGatewayError.value = ''
-      settingsStore.resetEmailGatewayAddress()
+      if (settingsStore.emailGatewayStatus === 'changed') {
+        settingsStore.acceptAdvertisedEmailGateway()
+      } else {
+        settingsStore.resetEmailGatewayAddress()
+      }
       emailGatewayInput.value = ''
     }
 
@@ -547,6 +551,14 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.settings-container {
+  height: 100%;
+  min-height: 0;
+}
+.settings-page {
+  height: 100%;
+  min-height: 0 !important;
+}
 .settings-content,
 .settings-content :deep(.q-tab-panels) {
   min-width: 0;

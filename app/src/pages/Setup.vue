@@ -578,6 +578,16 @@
                   $t('accountRecovery.the_new_identity_is_different_no_funds')
                 }}
               </p>
+              <q-input
+                v-model="displayName"
+                outlined
+                dense
+                class="q-mb-md"
+                :label="$t('accountRecovery.display_name')"
+                :maxlength="80"
+                autocomplete="off"
+                data-test="display-name"
+              />
               <p>
                 {{
                   $t('accountRecovery.choose_how_many_shares_you_must_retain')
@@ -634,7 +644,7 @@
                   type="submit"
                   color="primary"
                   no-caps
-                  :label="$t('accountRecovery.generate_frank_account_backups')"
+                  :label="$t('welcome.createAccount')"
                   data-test="generate-backups"
                   :disable="!policy || busy"
                   :loading="busy"
@@ -1061,10 +1071,10 @@ const heading = ref<HTMLElement>()
 const busy = ref(false)
 const error = ref('')
 const profileRecoveryFailed = ref(false)
-const policy = ref<string | null>(null)
+const policy = ref<string | null>('2-3')
 const policies = [
-  { label: '2 of 3 shares — tolerate losing one', value: '2-3' },
-  { label: '3 of 5 shares — tolerate losing two', value: '3-5' },
+  { label: '2 of 3 shards — tolerate losing one', value: '2-3' },
+  { label: '3 of 5 shards — tolerate losing two', value: '3-5' },
 ]
 const threshold = ref<2 | 3>(2)
 const shareCount = ref<3 | 5>(3)
@@ -1205,11 +1215,15 @@ async function run(work: (isCurrent: () => boolean) => Promise<void>) {
   try {
     await work(isCurrent)
   } catch (failure) {
-    ceremony.cancel()
+    const isVerification =
+      mode.value === 'confirm' || mode.value === 'restore-shares'
     const wasLegacy = mode.value === 'legacy'
-    clearSecrets(wasLegacy)
+    if (!isVerification) {
+      ceremony.cancel()
+      clearSecrets(wasLegacy)
+    }
     if (alive && token === request) {
-      if (!wasLegacy) {
+      if (!wasLegacy && !isVerification) {
         mode.value = 'choice'
       }
       error.value =
@@ -1250,29 +1264,26 @@ function beginPasskey(action: MeraAccountAction) {
   })
 }
 function beginNew() {
-  return run(async () => {
+  return run(async isCurrent => {
     shareReport.value = []
     insufficientSets.value = []
-    if (!mayBegin.value || !policy.value) return
+    if (!mayBegin.value) return
     const cleanedRelay = customRelayUrl.value?.trim()
     if (cleanedRelay && cleanedRelay !== defaultRelayUrl) {
       setCustomRelayBaseUrl(cleanedRelay)
     } else {
       setCustomRelayBaseUrl(undefined)
     }
-    threshold.value = policy.value === '2-3' ? 2 : 3
-    shareCount.value = policy.value === '2-3' ? 3 : 5
-    descriptor.value = await ceremony.beginNew(
-      threshold.value,
-      shareCount.value,
-    )
-    if (!alive) {
-      ceremony.cancel()
-      return
+    const outcome = await ceremony.createDirect(displayName.value)
+    if (!isCurrent()) return
+    applyDiscoveredRelay(outcome, isCurrent)
+    if (
+      alive &&
+      account.pendingReady &&
+      account.pending?.account.receipt.operationId === outcome.attemptId
+    ) {
+      await activateStagedAccount(outcome.attemptId)
     }
-    shareIndex.value = 0
-    shownShare.value = ceremony.share(0)
-    changeMode('backup')
   })
 }
 function nextShare() {
@@ -1304,11 +1315,11 @@ function pinDescriptor() {
 function confirm() {
   return run(async isCurrent => {
     let shares = parseAccountBackupShareInput(shareInput.value)
-    shareInput.value = ''
-    shownShare.value = ''
     try {
       const outcome = (await ceremony.confirm(shares, displayName.value)) as any
       if (!isCurrent()) return
+      shareInput.value = ''
+      shownShare.value = ''
       shareReport.value = outcome?.report ?? []
       insufficientSets.value = outcome?.insufficientSets ?? []
       reportCandidate.value = 0

@@ -60,6 +60,11 @@ const mockChoose = jest.fn(async (_index: number, _name: string) => ({
   isRestore: true,
   discoveredRelayUrl: undefined,
 }))
+const mockCreateDirect = jest.fn(async (_name = '') => ({
+  isRestore: false,
+  attemptId: 'direct-attempt-id',
+  discoveredRelayUrl: undefined,
+}))
 
 jest.mock('../accounts/ceremony', () => ({
   createAccountCeremony: () => ({
@@ -69,6 +74,7 @@ jest.mock('../accounts/ceremony', () => ({
     beginRestore: mockBeginRestore,
     confirm: mockConfirm,
     choose: mockChoose,
+    createDirect: mockCreateDirect,
   }),
   recoveryErrorMessage: (err: unknown) =>
     (err as Error)?.message ?? 'Account operation failed',
@@ -144,7 +150,7 @@ function render() {
           template: `
             <div class="q-input-stub" :data-test="$attrs['data-test']">
               <input
-                data-test="custom-relay-input-inner"
+                :data-test="$attrs['data-test'] === 'custom-relay-input' ? 'custom-relay-input-inner' : undefined"
                 :value="modelValue"
                 :placeholder="placeholder"
                 @input="$emit('update:modelValue', $event.target.value)"
@@ -819,14 +825,14 @@ describe('Setup page restore from more shares than the threshold', () => {
     })
     const view = await enterShares('a\nb\nc\nd\ne\nf')
     const report = view.get('[data-test="share-report"]').text()
-    expect(report).toContain('Share 1 (index q): used.')
+    expect(report).toContain('Shard 1 (index q): used.')
     expect(report).toContain(
-      'Share 2 (index p): does not belong to this backup',
+      'Shard 2 (index p): does not belong to this backup',
     )
-    expect(report).toContain('Share 3 (set wxyz): from a different backup set.')
-    expect(report).toContain('Share 4: entered more than once.')
-    expect(report).toContain('Share 5: could not be read.')
-    expect(report).toContain('Share 6 (index 9): used.')
+    expect(report).toContain('Shard 3 (set wxyz): from a different backup set.')
+    expect(report).toContain('Shard 4: entered more than once.')
+    expect(report).toContain('Shard 5: could not be read.')
+    expect(report).toContain('Shard 6 (index 9): used.')
     // The pending screen still shows whose account this is before Activate.
     expect(view.get('[data-test="pending-identity-address"]').text()).toBe(
       pendingAccount.pendingIdentityAddress,
@@ -863,7 +869,7 @@ describe('Setup page restore from more shares than the threshold', () => {
       candidates.map(c =>
         c.get('[data-test="restore-candidate-shares"]').text(),
       ),
-    ).toEqual(['Built from shares 1, 3.', 'Built from shares 2, 4.'])
+    ).toEqual(['Built from shards 1, 3.', 'Built from shards 2, 4.'])
     // Nothing is staged or offered for activation until the user picks.
     expect(mockChoose).not.toHaveBeenCalled()
     expect(view.find('[data-test="activate-account"]').exists()).toBe(false)
@@ -878,9 +884,9 @@ describe('Setup page restore from more shares than the threshold', () => {
     await flushPromises()
     expect(mockChoose).toHaveBeenCalledWith(1, '')
     const report = view.get('[data-test="share-report"]').text()
-    expect(report).toContain('Share 2 (index p): used.')
+    expect(report).toContain('Shard 2 (index p): used.')
     expect(report).toContain(
-      'Share 1 (index q): does not belong to this backup',
+      'Shard 1 (index q): does not belong to this backup',
     )
     expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
     view.unmount()
@@ -899,7 +905,7 @@ describe('Setup page restore from more shares than the threshold', () => {
     const view = await enterShares('a\nb')
     expect(view.get('[data-test="account-error"]').text()).toBe('refused')
     expect(view.get('[data-test="share-report"]').text()).toContain(
-      'Share 1: could not be read.',
+      'Shard 1: could not be read.',
     )
     expect(view.find('[data-test="activate-account"]').exists()).toBe(false)
     view.unmount()

@@ -57,7 +57,6 @@ const SAME_IN_FRENCH = new Set([
   'walletPanel.zeroUsd',
   'walletPanel.zeroTusd',
   'walletPanel.zeroEth',
-  'walletPanel.zeroSep',
   'walletPanel.zeroHype',
   'walletPanel.zeroThype',
   'walletPanel.zeroBtc',

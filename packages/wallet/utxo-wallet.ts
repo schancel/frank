@@ -13,6 +13,8 @@
  *   indices, native submission attempts, and prepared payments' exact bytes, input claims,
  *   message exposure and submission intent. Released ids and settled inputs remain recorded to
  *   prevent a retry from creating another payment or a stale indexer from reusing spent inputs.
+ *   Stealth operations also retain the original recipient identity, ephemeral public descriptor
+ *   and authorized fee ceiling. Confirmed receipt amounts are current queries, never cached.
  * - Imported stealth scripts persist public derivation descriptors and message claims only.
  *   Published Frank identity custody re-derives their signing capabilities; their actual coins
  *   are discovered from the indexer alongside the HD receive/change chains.
@@ -63,9 +65,27 @@ import {
 import {
   requireCompressedStealthPoint,
   utxoStealthDestination,
+  deriveUtxoStealthDestination,
 } from "./utxo-stealth";
 import type { UtxoStealthCustody, UtxoStealthDerivation } from "./utxo-stealth";
 import type { ReceivedCoinItem } from "@frank/cashweb/types/messages";
+
+import { randomBytes } from "@frank/crypto-box";
+import {
+  utxoStealthPaymentManifest,
+  utxoRecipientMembers,
+  observeUtxoStealthPayment,
+} from "./utxo-stealth-payment";
+import type { UtxoStealthOperationDescriptor } from "./utxo-stealth-payment";
+import type {
+  StealthPaymentIntent,
+  StealthPaymentCapability,
+  PreparedStealthPayment,
+  StealthPaymentReceiptCapability,
+  StealthPaymentReceiptClaim,
+  StealthPaymentReceiptObservation,
+  StealthPaymentProgress,
+} from "./stealth-payment";
 
 /** The facts needed to build a transaction on one network. */
 export interface UtxoNetwork {
@@ -150,6 +170,12 @@ export interface UtxoIndexer {
   hasHistory(scriptPubKey: Uint8Array): Promise<boolean>;
   /** True when the indexer knows the transaction, in a block or in its mempool. */
   hasTransaction(txid: string): Promise<boolean>;
+  /** Current positive inclusion height from this script's chain history; absent means pending.
+   * Unlike listUnspent, this remains observable after the recipient spends the output. */
+  transactionConfirmation?(
+    txid: string,
+    scriptPubKey: Uint8Array
+  ): Promise<{ readonly height: number } | undefined>;
   /** Throws UtxoBroadcastRefused when the node answers no; anything else means unknown. */
   broadcast(rawHex: string): Promise<void>;
   /** Base units per virtual byte for prompt confirmation, when the server can estimate one. */
@@ -203,6 +229,7 @@ export interface PreparedUtxoPayment {
   readonly fee: bigint;
   readonly phase: UtxoPaymentPhase;
   readonly payloadDigests: readonly string[];
+  readonly stealth?: UtxoStealthOperationDescriptor;
 }
 
 interface StoredUtxoPayment extends PendingSend {
@@ -213,6 +240,7 @@ interface StoredUtxoPayment extends PendingSend {
   readonly fee: string;
   readonly phase: UtxoPaymentPhase;
   readonly payloadDigests: readonly string[];
+  readonly stealth?: UtxoStealthOperationDescriptor;
 }
 
 export interface UtxoStealthReceipt {
@@ -351,6 +379,12 @@ function validPendingSend(send: PendingSend): boolean {
 function validStoredPayment(operation: StoredUtxoPayment): boolean {
   return (
     validPendingSend(operation) &&
+    (operation.stealth === undefined ||
+      (/^(02|03)[a-f0-9]{64}$/.test(
+        operation.stealth.recipientSpendPublicKey
+      ) &&
+        /^(02|03)[a-f0-9]{64}$/.test(operation.stealth.ephemeralPublicKey) &&
+        /^(0|[1-9][0-9]*)$/.test(operation.stealth.maxNativeFeeAtomic))) &&
     typeof operation.operationId === "string" &&
     operation.operationId.trim().length > 0 &&
     typeof operation.chainIdentifier === "string" &&
@@ -521,6 +555,327 @@ export class UtxoWallet implements NativeWalletHandle {
   ) {
     this.chainIdentifier = network.chainIdentifier;
     this.networkId = network.chainIdentifier;
+  }
+
+  /** Financial operations are available only with an explicitly scoped custody lifetime. */
+  get stealthPayments(): StealthPaymentCapability | undefined {
+    if (!this.stealthCustody) return undefined;
+    return {
+      prepare: (intent) => this.prepareStealthPayment(intent),
+      list: async () => {
+        this.requireStealthCustody();
+        return this.exclusive(async () => {
+          this.requireStealthCustody();
+          return (this.state.operations ?? [])
+            .filter(
+              (payment) => payment.stealth && payment.phase !== "released"
+            )
+            .flatMap((payment) =>
+              payment.payloadDigests.length > 0
+                ? payment.payloadDigests.map((payloadDigest) => ({
+                    operationId: payment.operationId,
+                    payloadDigest,
+                  }))
+                : [{ operationId: payment.operationId }]
+            );
+        });
+      },
+      expose: async (binding) => {
+        await this.requireStealthOperation(binding.operationId);
+        await this.recordPaymentExposure(binding);
+      },
+      submit: async (operationId) => {
+        await this.requireStealthOperation(operationId);
+        await this.submitPreparedPayment(operationId);
+        return this.reconcileStealthPayment(operationId);
+      },
+      reconcile: (operationId) => this.reconcileStealthPayment(operationId),
+      release: async (operationId) => {
+        await this.requireStealthOperation(operationId);
+        return this.releaseUnexposedPayment(operationId);
+      },
+      get: async (operationId) => {
+        this.requireStealthCustody();
+        return this.exclusive(async () => {
+          this.requireStealthCustody();
+          const payment = this.findPayment(operationId);
+          return payment?.stealth
+            ? utxoStealthPaymentManifest(
+                this.paymentView(payment),
+                this.network
+              )
+            : undefined;
+        });
+      },
+    };
+  }
+
+  get stealthReceipts(): StealthPaymentReceiptCapability | undefined {
+    if (!this.stealthCustody) return undefined;
+    return {
+      record: async (claim) =>
+        this.importStealthReceipt(
+          this.financialReceipt(claim),
+          new Uint8Array(claim.recipientDestination)
+        ),
+      submit: (claim) => this.submitStealthReceipt(claim),
+      observe: (claim) => this.observeStealthReceipt(claim),
+    };
+  }
+
+  async prepareStealthPayment(
+    intent: StealthPaymentIntent
+  ): Promise<PreparedStealthPayment> {
+    intent = {
+      ...intent,
+      asset: { ...intent.asset },
+      recipientSpendPublicKey: new Uint8Array(intent.recipientSpendPublicKey),
+    };
+    if (intent.chainIdentifier !== this.chainIdentifier)
+      throw new Error("Stealth intent belongs to another chain");
+    if (intent.asset.kind !== "native")
+      throw new Error("UTXO stealth supports native payments only");
+    if (intent.sourceAddress !== undefined)
+      throw new Error("UTXO stealth does not select a source address");
+    if (
+      typeof intent.amountAtomic !== "bigint" ||
+      intent.amountAtomic <= 0n ||
+      intent.amountAtomic > 2n ** 64n - 1n ||
+      typeof intent.maxNativeFeeAtomic !== "bigint" ||
+      intent.maxNativeFeeAtomic < 0n ||
+      intent.maxNativeFeeAtomic > 2n ** 64n - 1n
+    )
+      throw new Error("Invalid stealth payment amount or fee ceiling");
+    if (
+      typeof intent.operationId !== "string" ||
+      intent.operationId.trim().length === 0
+    )
+      throw new Error("Invalid stealth payment operation id");
+    const recipientSpendPublicKey = requireCompressedStealthPoint(
+      intent.recipientSpendPublicKey
+    );
+    this.requireStealthCustody();
+    const existing = await this.exclusive(async () =>
+      this.findPayment(intent.operationId)
+    );
+    if (existing) {
+      this.requireStealthCustody();
+      if (
+        !existing.stealth ||
+        existing.stealth.recipientSpendPublicKey !==
+          hex(recipientSpendPublicKey) ||
+        existing.stealth.maxNativeFeeAtomic !==
+          intent.maxNativeFeeAtomic.toString() ||
+        BigInt(existing.value) !== intent.amountAtomic
+      )
+        throw new Error("Payment operation already has another stealth intent");
+      if (existing.phase === "released")
+        throw new Error("Payment operation was released");
+      return utxoStealthPaymentManifest(
+        this.paymentView(existing),
+        this.network
+      );
+    }
+    // A fresh scalar belongs to this new operation only. Retries read the durable public descriptor.
+    let ephemeralSecret: Uint8Array;
+    for (;;) {
+      ephemeralSecret = randomBytes(32);
+      const key = privateKeyFromBytes(ephemeralSecret, true);
+      if (key.ok) {
+        key.value.bytes.fill(0);
+        break;
+      }
+      ephemeralSecret.fill(0);
+    }
+    let destination: ReturnType<typeof deriveUtxoStealthDestination>;
+    try {
+      destination = deriveUtxoStealthDestination({
+        network: this.network,
+        identityPublicKey: recipientSpendPublicKey,
+        ephemeralSecret,
+      });
+    } finally {
+      ephemeralSecret.fill(0);
+    }
+    const prepared = await this.preparePayment({
+      operationId: intent.operationId,
+      recipient: { raw: destination.address },
+      value: intent.amountAtomic,
+      maxFee: intent.maxNativeFeeAtomic,
+      stealth: {
+        recipientSpendPublicKey: hex(recipientSpendPublicKey),
+        ephemeralPublicKey: hex(destination.derivation.ephemeralPubKey),
+        maxNativeFeeAtomic: intent.maxNativeFeeAtomic.toString(),
+      },
+    });
+    this.requireStealthCustody();
+    return utxoStealthPaymentManifest(prepared, this.network);
+  }
+
+  private async requireStealthOperation(
+    operationId: string
+  ): Promise<StoredUtxoPayment> {
+    this.requireStealthCustody();
+    return this.exclusive(async () => {
+      this.requireStealthCustody();
+      const payment = this.requirePayment(operationId);
+      if (!payment.stealth) throw new Error("Not a stealth payment operation");
+      return payment;
+    });
+  }
+
+  private async reconcileStealthPayment(
+    operationId: string
+  ): Promise<StealthPaymentProgress> {
+    const payment = await this.requireStealthOperation(operationId);
+    if (payment.phase === "released")
+      return {
+        status: "failed",
+        intendedAmountAtomic: BigInt(payment.value),
+        nativeFeeAtomic: BigInt(payment.fee),
+      };
+    if (payment.phase === "submitted")
+      await this.submitPreparedPayment(operationId);
+    const manifest = utxoStealthPaymentManifest(
+      this.paymentView(payment),
+      this.network
+    );
+    const result = await observeUtxoStealthPayment({
+      indexer: this.indexer,
+      script: this.recipientScript(payment.recipient),
+      members: manifest.members,
+      amount: manifest.amountAtomic,
+      fee: BigInt(payment.fee),
+    });
+    this.requireStealthCustody();
+    return result;
+  }
+
+  private financialReceipt(
+    claim: StealthPaymentReceiptClaim
+  ): UtxoStealthReceipt {
+    if (claim.chainIdentifier !== this.chainIdentifier)
+      throw new Error("Stealth claim belongs to another chain");
+    if (claim.asset.kind !== "native")
+      throw new Error("UTXO stealth supports native receipts only");
+    return {
+      chainIdentifier: claim.chainIdentifier,
+      ephemeralPubKey: hex(
+        requireCompressedStealthPoint(claim.ephemeralPublicKey)
+      ),
+      transactions: [...claim.rawTransactions],
+      claimedAmount: claim.amountAtomic,
+      payloadDigest: claim.payloadDigest,
+      timestampMs: 0,
+    };
+  }
+
+  private async observeStealthReceipt(
+    claim: StealthPaymentReceiptClaim
+  ): Promise<StealthPaymentReceiptObservation> {
+    const receipt = this.financialReceipt(claim);
+    const recipientDestination = new Uint8Array(claim.recipientDestination);
+    const { destination } = await this.describeStealthReceipt(receipt);
+    if (hex(destination.scriptPubKey) !== hex(recipientDestination))
+      throw new Error("Stealth recipient destination does not match custody");
+    const members = utxoRecipientMembers(
+      receipt.transactions,
+      this.network,
+      destination.scriptPubKey
+    );
+    const progress = await observeUtxoStealthPayment({
+      indexer: this.indexer,
+      script: destination.scriptPubKey,
+      members,
+      amount: receipt.claimedAmount,
+    });
+    this.requireStealthCustody();
+    const reserved = await this.exclusive(async () => {
+      this.requireStealthCustody();
+      return new Set(
+        [
+          ...this.state.pending.flatMap((payment) => payment.inputs),
+          ...(this.state.operations ?? [])
+            .filter((payment) => payment.phase !== "released")
+            .flatMap((payment) => payment.inputs),
+          ...(this.state.consumedNativeInputs ?? []),
+        ].map((input) => `${input.txid}:${input.vout}`)
+      );
+    });
+    const outputs = await this.indexer.listUnspent(destination.scriptPubKey);
+    this.requireStealthCustody();
+    const claimed = new Map(
+      members.map((member) => [
+        `${member.txHash}:${member.vout}`,
+        member.recipientAmountAtomic,
+      ])
+    );
+    const coins = outputs.filter((output) =>
+      claimed.has(`${output.txid}:${output.vout}`)
+    );
+    if (
+      coins.some(
+        (output) =>
+          claimed.get(`${output.txid}:${output.vout}`) !== output.amount
+      )
+    )
+      throw new Error("Indexer output differs from signed stealth receipt");
+    return {
+      ...progress,
+      spendability: coins.some(
+        (coin) => !reserved.has(`${coin.txid}:${coin.vout}`)
+      )
+        ? "spendable"
+        : coins.length > 0
+        ? "reserved"
+        : progress.status === "pending"
+        ? "pending"
+        : "empty",
+    };
+  }
+
+  /** Re-broadcast only an exact claim already imported durably. Never derives a new payment. */
+  private async submitStealthReceipt(
+    claim: StealthPaymentReceiptClaim
+  ): Promise<void> {
+    const receipt = this.financialReceipt(claim);
+    const recipientDestination = new Uint8Array(claim.recipientDestination);
+    const { destination } = await this.describeStealthReceipt(receipt);
+    if (hex(destination.scriptPubKey) !== hex(recipientDestination))
+      throw new Error("Stealth recipient destination does not match custody");
+    await this.exclusive(async () => {
+      this.requireStealthCustody();
+      const script = this.state.stealthScripts?.find(
+        (script) =>
+          script.address === destination.address &&
+          script.ephemeralPubKey === receipt.ephemeralPubKey
+      );
+      const saved = script?.receipts.find(
+        (saved) => saved.payloadDigest === receipt.payloadDigest
+      );
+      if (
+        !saved ||
+        saved.claimedAmount !== receipt.claimedAmount.toString() ||
+        JSON.stringify(saved.transactions) !==
+          JSON.stringify(receipt.transactions)
+      )
+        throw new Error("Stealth receipt has not been recorded durably");
+    });
+    const members = utxoRecipientMembers(
+      receipt.transactions,
+      this.network,
+      destination.scriptPubKey
+    );
+    for (const txid of new Set(members.map((member) => member.txHash))) {
+      this.requireStealthCustody();
+      const known = await this.indexer.hasTransaction(txid);
+      this.requireStealthCustody();
+      if (!known)
+        await this.indexer.broadcast(
+          members.find((member) => member.txHash === txid)!.rawTransaction
+        );
+    }
+    this.requireStealthCustody();
   }
 
   /**
@@ -702,42 +1057,22 @@ export class UtxoWallet implements NativeWalletHandle {
   /** Validate a received payment claim and durably watch its owned script before mailbox
    * completion. Parsing is not chain settlement: only indexer-discovered unspent outputs count. */
   async recordStealthPayment(receipt: UtxoStealthReceipt): Promise<void> {
-    if (receipt.chainIdentifier !== this.chainIdentifier)
-      throw new Error("Stealth receipt belongs to another chain");
-    if (receipt.claimedAmount <= 0n || receipt.claimedAmount > 2n ** 64n - 1n)
-      throw new Error("Invalid stealth recipient amount");
+    return this.importStealthReceipt(receipt);
+  }
+
+  private async importStealthReceipt(
+    receipt: UtxoStealthReceipt,
+    expectedDestination?: Uint8Array
+  ): Promise<void> {
+    const { custody, identityPublicKey, destination } =
+      await this.describeStealthReceipt(receipt);
     if (
-      !/^[a-f0-9]{64}$/.test(receipt.payloadDigest) ||
-      !Number.isSafeInteger(receipt.timestampMs) ||
-      receipt.timestampMs < 0
+      expectedDestination !== undefined &&
+      hex(expectedDestination) !== hex(destination.scriptPubKey)
     )
-      throw new Error("Invalid stealth receipt origin");
-    if (!/^(02|03)[a-f0-9]{64}$/.test(receipt.ephemeralPubKey))
-      throw new Error("Invalid stealth ephemeral public key");
-    const custody = this.requireStealthCustody();
-    const identityPublicKey = requireCompressedStealthPoint(
-      custody.identityPublicKey
-    );
-    const derivation: UtxoStealthDerivation = {
-      chainIdentifier: this.chainIdentifier,
-      identityPublicKey,
-      ephemeralPubKey: requireCompressedStealthPoint(
-        unhex(receipt.ephemeralPubKey)
-      ),
-    };
-    const signer = await custody.deriveStealthSigner(derivation);
-    const destination = utxoStealthDestination(this.network, signer.publicKey);
-    if (
-      receipt.expectedAddress !== undefined &&
-      receipt.expectedAddress !== destination.address
-    )
-      throw new Error("Stealth recovery address does not match custody");
-    this.validateReceiptTransactions(
-      receipt.transactions,
-      destination.scriptPubKey,
-      receipt.claimedAmount
-    );
+      throw new Error("Stealth recipient destination does not match custody");
     await this.exclusive(async () => {
+      custody.assertActive();
       const scripts = this.state.stealthScripts ?? [];
       const previous = scripts.find(
         (script) => script.address === destination.address
@@ -782,6 +1117,46 @@ export class UtxoWallet implements NativeWalletHandle {
         ],
       });
     });
+  }
+
+  private async describeStealthReceipt(receipt: UtxoStealthReceipt) {
+    if (receipt.chainIdentifier !== this.chainIdentifier)
+      throw new Error("Stealth receipt belongs to another chain");
+    if (receipt.claimedAmount <= 0n || receipt.claimedAmount > 2n ** 64n - 1n)
+      throw new Error("Invalid stealth recipient amount");
+    if (
+      !/^[a-f0-9]{64}$/.test(receipt.payloadDigest) ||
+      !Number.isSafeInteger(receipt.timestampMs) ||
+      receipt.timestampMs < 0
+    )
+      throw new Error("Invalid stealth receipt origin");
+    if (!/^(02|03)[a-f0-9]{64}$/.test(receipt.ephemeralPubKey))
+      throw new Error("Invalid stealth ephemeral public key");
+    const custody = this.requireStealthCustody();
+    const identityPublicKey = requireCompressedStealthPoint(
+      custody.identityPublicKey
+    );
+    const derivation: UtxoStealthDerivation = {
+      chainIdentifier: this.chainIdentifier,
+      identityPublicKey,
+      ephemeralPubKey: requireCompressedStealthPoint(
+        unhex(receipt.ephemeralPubKey)
+      ),
+    };
+    const signer = await custody.deriveStealthSigner(derivation);
+    custody.assertActive();
+    const destination = utxoStealthDestination(this.network, signer.publicKey);
+    if (
+      receipt.expectedAddress !== undefined &&
+      receipt.expectedAddress !== destination.address
+    )
+      throw new Error("Stealth recovery address does not match custody");
+    this.validateReceiptTransactions(
+      receipt.transactions,
+      destination.scriptPubKey,
+      receipt.claimedAmount
+    );
+    return { custody, identityPublicKey, destination };
   }
 
   /** Public derivation/claim facts for composition to note to self. Amounts here are claims,
@@ -830,8 +1205,8 @@ export class UtxoWallet implements NativeWalletHandle {
   }
 
   private requireStealthCustody(): UtxoStealthCustody {
-    if (!this.stealthCustody)
-      throw new Error("Stealth receipt custody is unavailable");
+    if (!this.stealthCustody) throw new Error("Stealth custody is unavailable");
+    this.stealthCustody.assertActive();
     return this.stealthCustody;
   }
 
@@ -882,6 +1257,7 @@ export class UtxoWallet implements NativeWalletHandle {
         unhex(script.ephemeralPubKey)
       ),
     });
+    custody.assertActive();
     const destination = utxoStealthDestination(this.network, signer.publicKey);
     if (
       hex(destination.publicKey) !== script.publicKey ||
@@ -910,6 +1286,17 @@ export class UtxoWallet implements NativeWalletHandle {
     value: bigint;
     maxFee?: bigint;
   }): Promise<PreparedUtxoPayment> {
+    return this.preparePayment(params);
+  }
+
+  private async preparePayment(params: {
+    operationId: string;
+    recipient: ChainAddress;
+    value: bigint;
+    maxFee?: bigint;
+    stealth?: UtxoStealthOperationDescriptor;
+  }): Promise<PreparedUtxoPayment> {
+    if (params.stealth) this.requireStealthCustody();
     if (params.operationId.trim().length === 0)
       throw new Error("Payment operation id must not be empty");
     if (params.value <= 0n)
@@ -922,7 +1309,13 @@ export class UtxoWallet implements NativeWalletHandle {
     );
     const reuse = (payment: StoredUtxoPayment): PreparedUtxoPayment => {
       if (
-        payment.recipient !== recipient ||
+        (params.stealth
+          ? !payment.stealth ||
+            payment.stealth.recipientSpendPublicKey !==
+              params.stealth.recipientSpendPublicKey ||
+            payment.stealth.maxNativeFeeAtomic !==
+              params.stealth.maxNativeFeeAtomic
+          : payment.stealth !== undefined || payment.recipient !== recipient) ||
         BigInt(payment.value) !== params.value
       )
         throw new Error(
@@ -932,12 +1325,22 @@ export class UtxoWallet implements NativeWalletHandle {
         throw new Error("Payment operation was released");
       if (params.maxFee !== undefined && BigInt(payment.fee) > params.maxFee)
         throw new NativeFeeExceededError(BigInt(payment.fee));
+      if (params.stealth) this.requireStealthCustody();
       return this.paymentView(payment);
     };
     if (existing) return reuse(existing);
     const feeRate = await this.feeRate();
-    await this.sync();
+    if (params.stealth) this.requireStealthCustody();
+    await this.sync(
+      params.stealth
+        ? () => {
+            this.requireStealthCustody();
+          }
+        : undefined
+    );
+    if (params.stealth) this.requireStealthCustody();
     return this.exclusive(async () => {
+      if (params.stealth) this.requireStealthCustody();
       const saved = this.findPayment(params.operationId);
       if (saved) return reuse(saved);
       const recipientScript = this.recipientScript(recipient);
@@ -957,6 +1360,7 @@ export class UtxoWallet implements NativeWalletHandle {
           value: plan.change,
           scriptPubKey: this.scriptAt(1, changeIndex),
         });
+      if (params.stealth) this.requireStealthCustody();
       const signed = this.sign(plan.inputs, outputs);
       const payment: StoredUtxoPayment = {
         ...signed,
@@ -968,6 +1372,7 @@ export class UtxoWallet implements NativeWalletHandle {
         fee: plan.fee.toString(),
         phase: "prepared",
         payloadDigests: [],
+        ...(params.stealth ? { stealth: params.stealth } : {}),
       };
       this.persist({
         ...this.state,
@@ -989,6 +1394,7 @@ export class UtxoWallet implements NativeWalletHandle {
       throw new Error("Invalid payment message payload digest");
     await this.exclusive(async () => {
       const payment = this.requirePayment(params.operationId);
+      if (payment.stealth) this.requireStealthCustody();
       if (payment.phase === "released")
         throw new Error("Payment operation was released");
       if (payment.payloadDigests.includes(params.payloadDigest)) return;
@@ -1006,6 +1412,7 @@ export class UtxoWallet implements NativeWalletHandle {
   async submitPreparedPayment(operationId: string): Promise<ChainTransaction> {
     const payment = await this.exclusive(async () => {
       const current = this.requirePayment(operationId);
+      if (current.stealth) this.requireStealthCustody();
       if (current.phase === "prepared" || current.phase === "released")
         throw new Error("Payment must be exposed before submission");
       if (current.phase === "settled") return current;
@@ -1016,15 +1423,19 @@ export class UtxoWallet implements NativeWalletHandle {
     const transaction = this.paymentView(payment).transaction;
     if (payment.phase === "settled") return transaction;
     try {
-      if (await this.indexer.hasTransaction(payment.txid)) {
+      if (payment.stealth) this.requireStealthCustody();
+      const known = await this.indexer.hasTransaction(payment.txid);
+      if (payment.stealth) this.requireStealthCustody();
+      if (known) {
         // Settled means the indexer has the transaction, not confirmation or finality.
         // Keep spent outpoints excluded even if a lagging coin read lists them as unspent.
-        await this.exclusive(async () =>
+        await this.exclusive(async () => {
+          if (payment.stealth) this.requireStealthCustody();
           this.putPayment({
             ...this.requirePayment(operationId),
             phase: "settled",
-          })
-        );
+          });
+        });
       } else {
         await this.indexer.broadcast(payment.raw);
       }
@@ -1039,6 +1450,7 @@ export class UtxoWallet implements NativeWalletHandle {
   async releaseUnexposedPayment(operationId: string): Promise<boolean> {
     return this.exclusive(async () => {
       const payment = this.requirePayment(operationId);
+      if (payment.stealth) this.requireStealthCustody();
       if (payment.phase !== "prepared") return false;
       this.putPayment({ ...payment, phase: "released" });
       this.markPending();
@@ -1083,6 +1495,7 @@ export class UtxoWallet implements NativeWalletHandle {
       fee: BigInt(payment.fee),
       phase: payment.phase,
       payloadDigests: [...payment.payloadDigests],
+      ...(payment.stealth ? { stealth: { ...payment.stealth } } : {}),
     };
   }
 
@@ -1110,6 +1523,9 @@ export class UtxoWallet implements NativeWalletHandle {
       )
     )
       throw new Error("Stored UTXO payment belongs to another chain");
+    for (const payment of this.state.operations ?? [])
+      if (payment.stealth)
+        utxoStealthPaymentManifest(this.paymentView(payment), this.network);
   }
 
   private persist(next: StoredState): void {
@@ -1278,12 +1694,16 @@ export class UtxoWallet implements NativeWalletHandle {
    * short locked step, and thrown away if a recorded send was dropped while reading (its inputs
    * would look unspent in the older answer).
    */
-  private async sync(): Promise<void> {
+  private async sync(assertActive?: () => void): Promise<void> {
+    assertActive?.();
     for (let attempt = 0; attempt < 3; attempt++) {
       const snapshot = await this.exclusive(async () => this.store.load());
       const generation = this.settledGeneration;
+      assertActive?.();
       const read = await this.readCoins();
+      assertActive?.();
       const applied = await this.exclusive(async () => {
+        assertActive?.();
         if (
           generation !== this.settledGeneration ||
           snapshot !== this.store.load()

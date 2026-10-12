@@ -5,11 +5,15 @@ import { HDNodeWallet } from "ethers";
 import { decodeCashAddress } from "ecashaddrjs";
 import {
   parseTransaction,
+  lockingScript,
+  serializeTransaction,
+  transactionId,
   privateKeyFromBytes,
   publicFromPrivate,
   signEcdsa,
 } from "@frank/nakamoto";
 import { stealthParentSecret } from "@frank/cashweb/relay/stealth-parent";
+import { utxoStealthPaymentManifest } from "./utxo-stealth-payment";
 import { deriveUtxoStealthDestination } from "./utxo-stealth";
 import { createUtxoChain } from "./chain/utxo-chain";
 import type { UtxoStealthCustody } from "./utxo-stealth";
@@ -47,6 +51,7 @@ const sha256d = (bytes: Uint8Array) => sha256(sha256(bytes));
 function makeIndexer() {
   const unspent = new Map<string, IndexedOutput[]>();
   const known = new Set<string>();
+  const confirmationHeights = new Map<string, number>();
   const broadcasts: string[] = [];
   let broadcastOutcome: "accept" | "refuse" | "lost" | "lost-but-sent" =
     "accept";
@@ -54,6 +59,10 @@ function makeIndexer() {
     listUnspent: async (script) => unspent.get(hex(script)) ?? [],
     hasHistory: async (script) => unspent.has(hex(script)),
     hasTransaction: async (txid) => known.has(txid),
+    transactionConfirmation: async (txid) => {
+      const height = confirmationHeights.get(txid);
+      return height !== undefined && height > 0 ? { height } : undefined;
+    },
     feeRate: async () => 2n,
     broadcast: async (raw) => {
       broadcasts.push(raw);
@@ -94,6 +103,7 @@ function makeIndexer() {
     indexer,
     unspent,
     known,
+    confirmationHeights,
     broadcasts,
     setOutcome: (outcome: typeof broadcastOutcome) => {
       broadcastOutcome = outcome;
@@ -253,6 +263,9 @@ function syntheticStealthCustody(
   const identityPublicKey = secp256k1.getPublicKey(identitySecret, true);
   const custody: UtxoStealthCustody = {
     identityPublicKey,
+    assertActive() {
+      if (!active) throw new Error("custody closed");
+    },
     async deriveStealthSigner(derivation) {
       if (!active) throw new Error("custody closed");
       if (
@@ -1323,6 +1336,7 @@ describe.each([
     ).rejects.toThrow("another identity");
     const mismatch: UtxoStealthCustody = {
       identityPublicKey: f.custody.custody.identityPublicKey,
+      assertActive: f.custody.custody.assertActive,
       deriveStealthSigner: async () => ({
         publicKey: wrong.custody.identityPublicKey,
         sign: () => {
@@ -1399,3 +1413,461 @@ it("refuses stored state it does not understand instead of dropping a pending se
     "not in the current format"
   );
 });
+
+describe.each([BTC, BCH])(
+  "financial stealth projection on $chainIdentifier",
+  (network) => {
+    async function fixture() {
+      const backend = makeIndexer(),
+        store = memoryUtxoWalletStore();
+      const senderCustody = syntheticStealthCustody(
+        network,
+        new Uint8Array(32).fill(23)
+      );
+      const receiverCustody = syntheticStealthCustody(
+        network,
+        new Uint8Array(32).fill(29)
+      );
+      const sender = (
+        await open(network, backend, store, ROOT, senderCustody.custody)
+      ).wallet;
+      const receiverStore = memoryUtxoWalletStore();
+      const receiverRoot = new Uint8Array(32).fill(31);
+      const receiver = (
+        await open(
+          network,
+          backend,
+          receiverStore,
+          receiverRoot,
+          receiverCustody.custody
+        )
+      ).wallet;
+      fund(backend, network, sender.identity.address.raw, 70_000n, "a");
+      await sender.getBalance();
+      const intent = {
+        operationId: "financial",
+        chainIdentifier: network.chainIdentifier,
+        asset: { kind: "native" as const },
+        recipientSpendPublicKey: receiverCustody.custody.identityPublicKey,
+        amountAtomic: 10_000n,
+        maxNativeFeeAtomic: 5_000n,
+      };
+      return {
+        backend,
+        store,
+        sender,
+        receiver,
+        receiverStore,
+        receiverRoot,
+        senderCustody,
+        receiverCustody,
+        intent,
+      };
+    }
+    const claimFor = (
+      prepared: Awaited<ReturnType<UtxoWallet["prepareStealthPayment"]>>,
+      digest = "f".repeat(64)
+    ) => ({
+      chainIdentifier: prepared.chainIdentifier,
+      asset: prepared.asset,
+      recipientDestination: prepared.recipientDestination,
+      ephemeralPublicKey: prepared.ephemeralPublicKey,
+      amountAtomic: prepared.amountAtomic,
+      rawTransactions: [
+        ...new Set(prepared.members.map((member) => member.rawTransaction)),
+      ],
+      payloadDigest: digest,
+    });
+    test("concurrent prepare, reopen, relay exposure and ambiguous submission reuse one exact manifest and reservation", async () => {
+      const f = await fixture(),
+        capability = f.sender.stealthPayments!;
+      const [prepared, duplicate] = await Promise.all([
+        capability.prepare(f.intent),
+        capability.prepare(f.intent),
+      ]);
+      expect(duplicate).toEqual(prepared);
+      expect(prepared.recipientDestination).toEqual(
+        lockingScript(parseUtxoAddress(network, prepared.recipientAddress)!)
+      );
+      expect(prepared.members).toHaveLength(1);
+      expect(prepared.members[0].recipientAmountAtomic).toBe(10_000n);
+      expect(prepared.members[0].vout).toBe(0);
+      expect(f.backend.broadcasts).toHaveLength(0);
+      expect(JSON.parse(f.store.load()!).operations).toHaveLength(1);
+      const reopened = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      expect(await reopened.stealthPayments!.get("financial")).toEqual(
+        prepared
+      );
+      expect(await reopened.stealthPayments!.prepare(f.intent)).toEqual(
+        prepared
+      );
+      await expect(capability.submit("financial")).rejects.toThrow("exposed");
+      const claim = claimFor(prepared);
+      await f.receiver.stealthReceipts!.record(claim);
+      expect(await f.receiver.getBalance()).toBe(0n);
+      expect(await f.receiver.stealthReceipts!.observe(claim)).toMatchObject({
+        status: "pending",
+        spendability: "pending",
+      });
+      await capability.expose({
+        operationId: "financial",
+        payloadDigest: claim.payloadDigest,
+      });
+      expect(await capability.release("financial")).toBe(false);
+      f.backend.setOutcome("lost-but-sent");
+      await expect(capability.submit("financial")).rejects.toBeInstanceOf(
+        NativeTransactionSubmissionError
+      );
+      expect(await f.receiver.getBalance()).toBe(10_000n);
+      const restoredSubmission = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      expect(
+        await restoredSubmission.stealthPayments!.get("financial")
+      ).toEqual(prepared);
+      const pending = await reopened.stealthPayments!.reconcile("financial");
+      expect(pending.status).toBe("pending");
+      expect(pending.verifiedReceivedAmountAtomic).toBeUndefined();
+      expect(
+        f.backend.broadcasts.every(
+          (raw) => raw === prepared.members[0].rawTransaction
+        )
+      ).toBe(true);
+      // Recipient can spend before the sender observes confirmation; script history still proves it.
+      const received = f.receiver.coins().slice();
+      f.backend.setOutcome("accept");
+      const respend = await f.receiver.sendNative({
+        recipient: f.sender.identity.address,
+        value: 5_000n,
+      });
+      expectValidSignatures(
+        f.backend.broadcasts[f.backend.broadcasts.length - 1],
+        network,
+        received
+      );
+      f.backend.confirmationHeights.set(prepared.members[0].txHash, 100);
+      expect(await capability.reconcile("financial")).toMatchObject({
+        status: "succeeded",
+        verifiedReceivedAmountAtomic: 10_000n,
+      });
+      expect(await f.receiver.stealthReceipts!.observe(claim)).toMatchObject({
+        status: "succeeded",
+        verifiedReceivedAmountAtomic: 10_000n,
+        spendability: "empty",
+      });
+      // Current inclusion can disappear. Previously observed receipt amount is not cached forever.
+      f.backend.confirmationHeights.delete(prepared.members[0].txHash);
+      expect(await capability.reconcile("financial")).toMatchObject({
+        status: "pending",
+      });
+      expect(
+        (await capability.reconcile("financial")).verifiedReceivedAmountAtomic
+      ).toBeUndefined();
+      expect(
+        (await f.receiver.stealthReceipts!.observe(claim))
+          .verifiedReceivedAmountAtomic
+      ).toBeUndefined();
+    });
+    test("exposed unknown inputs stay reserved while other coins remain usable, and only unexposed plans release", async () => {
+      const f = await fixture(),
+        cap = f.sender.stealthPayments!;
+      const first = await cap.prepare(f.intent);
+      await cap.expose({
+        operationId: "financial",
+        payloadDigest: "f".repeat(64),
+      });
+      f.backend.setOutcome("lost");
+      await expect(cap.submit("financial")).rejects.toBeInstanceOf(
+        NativeTransactionSubmissionError
+      );
+      fund(f.backend, network, f.sender.identity.address.raw, 60_000n, "b");
+      const second = await cap.prepare({ ...f.intent, operationId: "other" });
+      const parsed = parseTransaction(
+        unhex(second.members[0].rawTransaction),
+        network.descriptor
+      );
+      if (!parsed.ok) throw new Error("Unparseable");
+      expect(
+        hex(Uint8Array.from(parsed.value.inputs[0].prevout.txid).reverse())
+      ).toBe("b".repeat(64));
+      expect(await cap.release("other")).toBe(true);
+      expect(await cap.release("financial")).toBe(false);
+      await expect(
+        cap.prepare({ ...f.intent, operationId: "other" })
+      ).rejects.toThrow("released");
+      expect(await cap.get("financial")).toEqual(first);
+    });
+    test("validates chain, asset, identity, amount and fee before creating an operation or signing", async () => {
+      const f = await fixture(),
+        cap = f.sender.stealthPayments!;
+      const before = f.store.load();
+      for (const intent of [
+        {
+          ...f.intent,
+          chainIdentifier:
+            network === BTC ? BCH.chainIdentifier : BTC.chainIdentifier,
+        },
+        {
+          ...f.intent,
+          asset: {
+            kind: "erc20" as const,
+            contractAddress: "0x" + "a".repeat(40),
+          },
+        },
+        { ...f.intent, recipientSpendPublicKey: new Uint8Array(33) },
+        { ...f.intent, amountAtomic: 2n ** 64n },
+        { ...f.intent, maxNativeFeeAtomic: -1n },
+        { ...f.intent, sourceAddress: f.sender.identity.address.raw },
+        { ...f.intent, maxNativeFeeAtomic: 0n },
+      ])
+        await expect(cap.prepare(intent)).rejects.toThrow();
+      expect(f.store.load()).toBe(before);
+      expect(f.backend.broadcasts).toHaveLength(0);
+      await cap.prepare(f.intent);
+      await expect(
+        cap.prepare({ ...f.intent, amountAtomic: 11_000n })
+      ).rejects.toThrow("another stealth intent");
+      await expect(
+        cap.prepare({ ...f.intent, maxNativeFeeAtomic: 6_000n })
+      ).rejects.toThrow("another stealth intent");
+      await expect(
+        cap.prepare({
+          ...f.intent,
+          recipientSpendPublicKey: f.senderCustody.custody.identityPublicKey,
+        })
+      ).rejects.toThrow("another stealth intent");
+    });
+    test("different derived accounts in one payload group independently and grouped raw outputs report current partial receipt", async () => {
+      const f = await fixture(),
+        cap = f.sender.stealthPayments!;
+      const first = await cap.prepare(f.intent);
+      fund(f.backend, network, f.sender.identity.address.raw, 60_000n, "b");
+      const second = await cap.prepare({ ...f.intent, operationId: "second" });
+      const claim1 = claimFor(first),
+        claim2 = claimFor(second);
+      await f.receiver.stealthReceipts!.record(claim1);
+      await f.receiver.stealthReceipts!.record(claim2);
+      await f.receiver.stealthReceipts!.record(claim1);
+      expect(await f.receiver.getStealthReceipts()).toHaveLength(2);
+      expect(
+        (await f.receiver.getStealthReceipts()).map((row) => row.payloadDigest)
+      ).toEqual([claim1.payloadDigest, claim1.payloadDigest]);
+      const before = f.receiverStore.load();
+      await expect(
+        f.receiver.stealthReceipts!.record({
+          ...claim1,
+          chainIdentifier:
+            network === BTC ? BCH.chainIdentifier : BTC.chainIdentifier,
+        })
+      ).rejects.toThrow("chain");
+      await expect(
+        f.receiver.stealthReceipts!.record({
+          ...claim1,
+          asset: { kind: "erc20", contractAddress: "0x" + "a".repeat(40) },
+        })
+      ).rejects.toThrow("native");
+      await expect(
+        f.receiver.stealthReceipts!.record({
+          ...claim1,
+          recipientDestination: claim2.recipientDestination,
+        })
+      ).rejects.toThrow("destination");
+      await expect(
+        f.receiver.stealthReceipts!.observe({
+          ...claim1,
+          recipientDestination: claim2.recipientDestination,
+        })
+      ).rejects.toThrow("destination");
+      await expect(
+        f.receiver.stealthReceipts!.record({ ...claim1, amountAtomic: 9_999n })
+      ).rejects.toThrow("amount");
+      expect(f.receiverStore.load()).toBe(before);
+      // One grouped receipt can carry multiple independent transactions to the same derived script.
+      const otherSender = (
+        await open(
+          network,
+          f.backend,
+          memoryUtxoWalletStore(),
+          new Uint8Array(32).fill(41)
+        )
+      ).wallet;
+      fund(f.backend, network, otherSender.identity.address.raw, 50_000n, "c");
+      const other = await otherSender.prepareNativePayment({
+        operationId: "additional",
+        recipient: { raw: first.recipientAddress },
+        value: 5_000n,
+      });
+      const grouped = {
+        ...claim1,
+        amountAtomic: 15_000n,
+        rawTransactions: [
+          ...claim1.rawTransactions,
+          ...other.transaction.rawTransactions,
+        ],
+        payloadDigest: "e".repeat(64),
+      };
+      await f.receiver.stealthReceipts!.record(grouped);
+      f.backend.confirmationHeights.set(first.members[0].txHash, 100);
+      expect(await f.receiver.stealthReceipts!.observe(grouped)).toMatchObject({
+        status: "partial",
+        intendedAmountAtomic: 15_000n,
+        verifiedReceivedAmountAtomic: 10_000n,
+      });
+      f.backend.confirmationHeights.set(other.transaction.txHash, 100);
+      expect(await f.receiver.stealthReceipts!.observe(grouped)).toMatchObject({
+        status: "succeeded",
+        verifiedReceivedAmountAtomic: 15_000n,
+      });
+      const reopening = await open(
+        network,
+        f.backend,
+        f.receiverStore,
+        f.receiverRoot,
+        f.receiverCustody.custody
+      );
+      expect(await reopening.wallet.getStealthReceipts()).toHaveLength(3);
+    });
+    test("unavailable or malformed current confirmation never becomes a successful or empty observation", async () => {
+      const f = await fixture(),
+        prepared = await f.sender.stealthPayments!.prepare(f.intent),
+        claim = claimFor(prepared);
+      await f.receiver.stealthReceipts!.record(claim);
+      jest
+        .spyOn(f.backend.indexer, "transactionConfirmation")
+        .mockRejectedValueOnce(new Error("offline"));
+      await expect(
+        f.sender.stealthPayments!.reconcile("financial")
+      ).rejects.toThrow("offline");
+      jest
+        .spyOn(f.backend.indexer, "transactionConfirmation")
+        .mockResolvedValueOnce({ height: 0 });
+      await expect(f.receiver.stealthReceipts!.observe(claim)).rejects.toThrow(
+        "evidence"
+      );
+      f.backend.indexer.transactionConfirmation = undefined;
+      await expect(
+        f.sender.stealthPayments!.reconcile("financial")
+      ).rejects.toThrow("unavailable");
+      await expect(f.receiver.stealthReceipts!.observe(claim)).rejects.toThrow(
+        "unavailable"
+      );
+    });
+    test("recipient submission requires the exact durable claim and only replays its original signed bytes", async () => {
+      const f = await fixture();
+      const prepared = await f.sender.stealthPayments!.prepare(f.intent);
+      const claim = claimFor(prepared);
+      await expect(f.receiver.stealthReceipts!.submit(claim)).rejects.toThrow(
+        "durably"
+      );
+      expect(f.backend.broadcasts).toHaveLength(0);
+      await f.sender.stealthPayments!.expose({
+        operationId: "financial",
+        payloadDigest: claim.payloadDigest,
+      });
+      await f.receiver.stealthReceipts!.record(claim);
+      await expect(
+        f.receiver.stealthReceipts!.submit({
+          ...claim,
+          payloadDigest: "d".repeat(64),
+        })
+      ).rejects.toThrow("durably");
+      const before = f.receiverStore.load();
+      await f.receiver.stealthReceipts!.observe(claim);
+      expect(f.receiverStore.load()).toBe(before);
+      expect(f.backend.broadcasts).toHaveLength(0);
+      f.backend.setOutcome("lost-but-sent");
+      await expect(f.receiver.stealthReceipts!.submit(claim)).rejects.toThrow(
+        "socket closed"
+      );
+      await f.receiver.stealthReceipts!.submit(claim);
+      expect(f.backend.broadcasts).toEqual([
+        prepared.members[0].rawTransaction,
+      ]);
+      expect(await f.sender.stealthPayments!.list()).toEqual([
+        { operationId: "financial", payloadDigest: claim.payloadDigest },
+      ]);
+      expect(
+        (await f.sender.stealthPayments!.get("financial"))!
+          .recipientSpendPublicKey
+      ).toEqual(f.intent.recipientSpendPublicKey);
+      expect(f.receiverStore.load()).toBe(before);
+    });
+    test("public projection maps every exact recipient output and preserves bigint amounts", async () => {
+      const f = await fixture();
+      const prepared = await f.sender.stealthPayments!.prepare(f.intent);
+      const native = (await f.sender.getNativePayments())[0];
+      const parsed = parseTransaction(
+        unhex(prepared.members[0].rawTransaction),
+        network.descriptor
+      );
+      if (!parsed.ok) throw new Error("Unparseable");
+      // Pure structural projection only: these rewritten bytes do not claim valid signatures.
+      const amount = 9_007_199_254_740_993n;
+      const transaction = {
+        ...parsed.value,
+        outputs: [
+          { value: amount, scriptPubKey: prepared.recipientDestination },
+          parsed.value.outputs[1],
+          { value: 100n, scriptPubKey: prepared.recipientDestination },
+        ],
+      };
+      const serialized = serializeTransaction(transaction, network.descriptor);
+      const id = transactionId(transaction, network.descriptor);
+      if (!serialized.ok || !id.ok)
+        throw new Error("Invalid structural transaction");
+      const payment = {
+        ...native,
+        value: amount + 100n,
+        transaction: {
+          txHash: hex(Uint8Array.from(id.value).reverse()),
+          rawTransactions: [hex(serialized.value)],
+        },
+      };
+      const manifest = utxoStealthPaymentManifest(payment, network);
+      expect(manifest.amountAtomic).toBe(amount + 100n);
+      expect(
+        manifest.members.map((member) => [
+          member.vout,
+          member.recipientAmountAtomic,
+        ])
+      ).toEqual([
+        [0, amount],
+        [2, 100n],
+      ]);
+      expect(() =>
+        utxoStealthPaymentManifest(
+          { ...payment, value: payment.value + 1n },
+          network
+        )
+      ).toThrow("intent");
+      expect(() =>
+        utxoStealthPaymentManifest(
+          {
+            ...payment,
+            transaction: { ...payment.transaction, txHash: "b".repeat(64) },
+          },
+          network
+        )
+      ).toThrow("intent");
+    });
+    test("stealth payment capability is absent without a scoped custody guard", async () => {
+      const native = await open(network);
+      expect(native.wallet.stealthPayments).toBeUndefined();
+      await expect(
+        native.wallet.prepareStealthPayment({
+          operationId: "no-custody",
+          chainIdentifier: network.chainIdentifier,
+          asset: { kind: "native" },
+          recipientSpendPublicKey: secp256k1.getPublicKey(
+            new Uint8Array(32).fill(3),
+            true
+          ),
+          amountAtomic: 10_000n,
+          maxNativeFeeAtomic: 5_000n,
+        })
+      ).rejects.toThrow("custody");
+    });
+  }
+);

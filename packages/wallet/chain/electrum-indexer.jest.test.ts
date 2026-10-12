@@ -31,7 +31,9 @@ describe("who answered decides what an Electrum error means", () => {
     rpc(undefined, "something"),
     new Error("Electrum request timed out after 30000ms"),
   ])("leaves a broadcast's outcome unknown on %s", async (error) => {
-    const outcome = await failing(error).broadcast("00").catch((caught) => caught);
+    const outcome = await failing(error)
+      .broadcast("00")
+      .catch((caught) => caught);
     expect(outcome).toBe(error);
     expect(outcome).not.toBeInstanceOf(UtxoBroadcastRefused);
   });
@@ -47,5 +49,54 @@ describe("who answered decides what an Electrum error means", () => {
     ]) {
       await expect(failing(error).hasTransaction("ab")).rejects.toBe(error);
     }
+  });
+});
+
+describe("current transaction confirmation through script history", () => {
+  const script = Uint8Array.of(0x51),
+    txid = "a".repeat(64);
+  function fixture(history: unknown) {
+    const getHistory = jest.fn(async () => history);
+    return {
+      getHistory,
+      indexer: electrumIndexer({ getHistory } as unknown as ElectrumClient),
+    };
+  }
+  it("observes positive current inclusion even after outputs are spent, without relying on the unspent set", async () => {
+    const f = fixture([{ tx_hash: txid, height: 123 }]);
+    await expect(
+      f.indexer.transactionConfirmation!(txid, script)
+    ).resolves.toEqual({ height: 123 });
+    expect(f.getHistory).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    { history: [] },
+    { history: [{ tx_hash: txid, height: 0 }] },
+    { history: [{ tx_hash: txid, height: -1 }] },
+    { history: [{ tx_hash: "b".repeat(64), height: 123 }] },
+  ])(
+    "keeps absent/mempool inclusion pending: $history",
+    async ({ history }) => {
+      await expect(
+        fixture(history).indexer.transactionConfirmation!(txid, script)
+      ).resolves.toBeUndefined();
+    }
+  );
+  it("rejects malformed or conflicting evidence and propagates unavailable reads", async () => {
+    for (const history of [
+      [{ tx_hash: txid, height: 1.5 }],
+      [
+        { tx_hash: txid, height: 1 },
+        { tx_hash: txid, height: 2 },
+      ],
+    ])
+      await expect(
+        fixture(history).indexer.transactionConfirmation!(txid, script)
+      ).rejects.toThrow("confirmation");
+    const f = fixture([]);
+    f.getHistory.mockRejectedValueOnce(new Error("offline"));
+    await expect(
+      f.indexer.transactionConfirmation!(txid, script)
+    ).rejects.toThrow("offline");
   });
 });

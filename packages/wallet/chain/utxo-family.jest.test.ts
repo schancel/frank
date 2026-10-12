@@ -39,6 +39,7 @@ const derivation = {
 const sign = jest.fn(() => new Uint8Array(70));
 const custody: UtxoStealthCustody = {
   identityPublicKey: derivation.identityPublicKey,
+  assertActive: jest.fn(),
   deriveStealthSigner: jest.fn(async () => ({
     publicKey: new Uint8Array(33).fill(4),
     sign,
@@ -215,4 +216,31 @@ test("Chronik close during construction rejects the wallet and wipes its copied 
   finish();
   await expect(opening).rejects.toThrow("closed");
   expect(copy.every((byte) => byte === 0)).toBe(true);
+});
+
+test("the construction capability guard checks both adapter lifetime and the supplied session", async () => {
+  const relay = open();
+  let active = true;
+  const scoped = {
+    ...custody,
+    assertActive() {
+      if (!active) throw new Error("session closed");
+    },
+  };
+  await relay.createWallet(new Uint8Array(32).fill(7), {
+    stealthCustody: scoped,
+  });
+  mockConfig.stealthCustody!.assertActive();
+  const signer = await mockConfig.stealthCustody!.deriveStealthSigner(
+    derivation
+  );
+  active = false;
+  expect(() => signer.sign(new Uint8Array(32))).toThrow("session closed");
+  expect(() => mockConfig.stealthCustody!.assertActive()).toThrow(
+    "session closed"
+  );
+  await expect(
+    mockConfig.stealthCustody!.deriveStealthSigner(derivation)
+  ).rejects.toThrow("session closed");
+  await relay.close();
 });

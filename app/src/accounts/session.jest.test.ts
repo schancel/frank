@@ -1147,6 +1147,7 @@ describe('session-owned UTXO stealth custody', () => {
         const source = injected
         const stealthCustody = source && {
           identityPublicKey: source.identityPublicKey,
+          assertActive: () => source.assertActive(),
           async deriveStealthSigner(derivation: UtxoStealthDerivation) {
             const key = await source.deriveStealthSigner(derivation)
             return {
@@ -1337,6 +1338,51 @@ describe('session-owned UTXO stealth custody', () => {
     expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
     await f.session.close()
   })
+  test.each(['fee read', 'before selection'])(
+    'revokes real HD sender preparation after session invalidation during %s',
+    async boundary => {
+      const f = realIdentityFixture(),
+        r = relayFixture('btc-testnet')
+      const sender = (await f.session.createUtxoWallet(r.relay)) as UtxoWallet
+      const script = lockingScript(
+        parseUtxoAddress(
+          UTXO_NETWORKS['btc-testnet'],
+          sender.identity.address.raw,
+        )!,
+      )
+      r.unspent.set(hex(script), [
+        { txid: 'a'.repeat(64), vout: 0, amount: 30_000n, height: 1 },
+      ])
+      await sender.getBalance()
+      if (boundary === 'fee read') {
+        r.indexer.feeRate = async () => {
+          f.invalidate()
+          return 2n
+        }
+      } else {
+        const seam = sender as unknown as { sync(): Promise<void> }
+        const sync = seam.sync.bind(sender)
+        jest.spyOn(seam, 'sync').mockImplementationOnce(async () => {
+          await sync()
+          f.invalidate()
+        })
+      }
+      const before = r.store.load()
+      await expect(
+        sender.stealthPayments!.prepare({
+          operationId: 'closed-sender',
+          chainIdentifier: 'btc-testnet',
+          asset: { kind: 'native' },
+          recipientSpendPublicKey: f.identity.compressedPubKey,
+          amountAtomic: 10_000n,
+          maxNativeFeeAtomic: 5_000n,
+        }),
+      ).rejects.toThrow()
+      expect(r.store.load()).toBe(before)
+      expect(await sender.getNativePayments()).toEqual([])
+      await f.session.close()
+    },
+  )
   test('account invalidation during construction revokes the captured capability and wipes material', async () => {
     const f = realIdentityFixture(),
       r = relayFixture('btc-testnet')

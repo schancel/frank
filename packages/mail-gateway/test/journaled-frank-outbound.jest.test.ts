@@ -1,10 +1,11 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain';
+import type { ActiveChain, DirectMessageReceived, WalletHandle } from '@frank/wallet/chain/active-chain';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import { MailJournal } from '../src/ledger/mail-journal';
 import { JournaledFrankOutbound, replyAlias } from '../src/relay/journaled-frank-outbound';
+import { JournaledFrankMailbox } from '../src/relay/journaled-frank-mailbox';
 import { LocalFsBlobStore } from '../src/storage/local-fs-blob-store';
 
 const SCOPE = `0x${'a'.repeat(40)}`;
@@ -96,6 +97,47 @@ describe('journaled Frank outbound bridge', () => {
     await handler.handle(message);
     expect(journal.findFrankInbound(DIGEST)).toMatchObject({ disposition: 'rejected', reason: 'bad_recipient' });
     expect(journal.listDueOutboundJobs(1000, 10)).toEqual([]);
+  });
+
+  it.each(['<x@contested.gw.example>', '<x@no-message-id.gw.example>'])(
+    'durably rejects authored mail ID %s in a gateway-reserved namespace', async (authoredId) => {
+      const message = received();
+      const email = message.items[0];
+      if (email.type !== 'email') throw new Error('Expected email');
+      email.messageId = authoredId;
+      await handler.handle(message);
+      expect(journal.findFrankInbound(DIGEST)).toMatchObject({ disposition: 'rejected', reason: 'bad_message_id' });
+      expect(journal.listDueOutboundJobs(1000, 10)).toEqual([]);
+      ledger.sqlite?.close();
+      open();
+      await handler.handle(message);
+      expect(journal.findFrankInbound(DIGEST)).toMatchObject({ disposition: 'rejected', reason: 'bad_message_id' });
+    }
+  );
+
+  it('advances the mailbox past a reserved authored ID and bridges later mail', async () => {
+    const reserved = received();
+    const firstItem = reserved.items[0];
+    if (firstItem.type !== 'email') throw new Error('Expected email');
+    firstItem.messageId = '<x@contested.gw.example>';
+    const later = received();
+    later.payloadDigest = 'b'.repeat(64);
+    later.receivedTime = 2000;
+    later.messageId = '00000000-0000-0000-0000-000000000003';
+    const laterItem = later.items[0];
+    if (laterItem.type !== 'email') throw new Error('Expected email');
+    laterItem.messageId = '<later@example.test>';
+    const wallet = { identity: { address: { raw: GATEWAY } } } as WalletHandle;
+    const chain = {
+      chainIdentifier: 'monad-testnet',
+      directMessages: { fetchSince: async ({ sinceMs }: { sinceMs: number }) =>
+        [reserved, later].filter(message => message.receivedTime >= sinceMs) },
+    } as unknown as ActiveChain;
+    const mailbox = new JournaledFrankMailbox({ chain, wallet, journal, handle: message => handler.handle(message) });
+    expect(await mailbox.pollOnce()).toEqual({ processed: 2, cursorMs: 2000 });
+    expect(journal.findFrankInbound(DIGEST)).toMatchObject({ disposition: 'rejected', reason: 'bad_message_id' });
+    expect(journal.findFrankInbound(later.payloadDigest)?.disposition).toBe('bridged');
+    expect(journal.listDueOutboundJobs(2000, 10)).toHaveLength(1);
   });
 
   it('encodes Unicode subject and body without changing the issued sender', async () => {

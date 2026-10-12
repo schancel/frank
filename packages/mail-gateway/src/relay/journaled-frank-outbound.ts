@@ -110,7 +110,8 @@ export class JournaledFrankOutbound {
     const item = emails[0];
     const conversationId = message.conversationId;
     if (!message.messageId || !conversationId) return reject('no_sealed_identity');
-    if (typeof item.messageId !== 'string' || parseMessageId(item.messageId) !== item.messageId)
+    if (typeof item.messageId !== 'string' || parseMessageId(item.messageId) !== item.messageId ||
+      this.journal.isReservedMessageId(item.messageId))
       return reject('bad_message_id');
     if (item.inReplyTo !== undefined &&
       (typeof item.inReplyTo !== 'string' || parseMessageId(item.inReplyTo) !== item.inReplyTo))

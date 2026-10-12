@@ -281,3 +281,49 @@ it(
 `),
   35_000
 );
+
+it(
+  "restores and respends historical raw-seed receipts through the actual chain factory",
+  () =>
+    run(`
+  const { createEcashChain } = require('./chain/ecash-chain.ts');
+  const { createEcashStealthBip39SeedBackend } = require('./ecash-seed-boundary.ts');
+  const { BIP39_DERIVATION } = require('../domain-roots/src/index.ts');
+  const { mnemonicToSeed } = require('ecash-lib');
+  const phrase = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+  const seed = mnemonicToSeed(phrase), original = Buffer.from(seed).toString('hex');
+  assert.equal(seed.length, 64);
+  const chronik = chronikFor();
+  chronik.constructor = class CheckpointClient {
+    async block() { return { blockInfo: { hash: ECASH_MAINNET_CHECKPOINT_HASH } }; }
+  };
+  const persisted = new Map(); let writes = 0;
+  globalThis.window = {};
+  globalThis.localStorage = { getItem: key => persisted.get(key) ?? null, setItem: (key, value) => { writes++; persisted.set(key, value); } };
+  const factory = createEcashStealthBip39SeedBackend(custody());
+  const chain = createEcashChain({ networkId: 'xec-mainnet', chronik,
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(), bip39WalletFactory: factory });
+  const material = { derivation: BIP39_DERIVATION, seed };
+  const wallet = await chain.createWallet(material);
+  const previousSdk = Wallet.fromMnemonic(phrase, chronik, { hd: true, prefix: 'ecash' });
+  assert.equal(wallet.identity.address.raw, previousSdk.getReceiveAddress(0));
+  assert.equal(writes, 0);
+  const tx = await payment(); await wallet.recordStealthPayment(claim(tx));
+  assert.equal(await wallet.getBalance(), 0n); chronik.coins = [coin(tx)];
+  const before = writes, saved = [...persisted.entries()];
+  const reopened = await chain.createWallet(material);
+  assert.deepEqual(reopened.identity, wallet.identity);
+  assert.equal(writes, before); assert.deepEqual([...persisted.entries()], saved);
+  assert.equal(await reopened.getBalance(), 7000n);
+  const operation = await reopened.prepareNativeOperation({ operationId: 'historical-respend', recipient, value: 1000n });
+  assert.deepEqual(operation.inputs, [{ txid: tx.txid, vout: 0, satoshis: '7000' }]);
+  assert.equal(operation.state, 'prepared'); assert(operation.nextChangeIndex > 0);
+  assert.equal(await reopened.getBalance(), 0n);
+  assert.equal(Buffer.from(seed).toString('hex'), original);
+  const missing = createEcashChain({ networkId: 'xec-mainnet', chronik,
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore() });
+  await assert.rejects(missing.createWallet(material), /custody is unavailable/);
+  await assert.rejects(chain.createWallet({ derivation: BIP39_DERIVATION, seed: new Uint8Array(32) }), /original 64-byte/);
+`),
+  35_000
+);

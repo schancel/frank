@@ -7,7 +7,11 @@ import type { DomainRoot, HistoricalBip39Seed } from "../domain-roots/src";
 import type { ChronikClient } from "chronik-client";
 import type { HdNode } from "ecash-lib/dist/hdwallet";
 import type { EcashSdkBackend, EcashSdkWallet } from "./ecash-sdk-backend";
-import type { EcashAddressPrefix, EcashWalletFactory } from "./ecash-wallet";
+import type {
+  EcashAddressPrefix,
+  EcashWalletFactory,
+  EcashBip39WalletFactory,
+} from "./ecash-wallet";
 import type { EcashStealthCustody } from "./ecash-stealth";
 
 /** Validate the frozen registry interpretation, then copy before asynchronous effects. */
@@ -50,6 +54,14 @@ export function createEcashStealthSeedBackend(custody: EcashStealthCustody) {
   return seedBackendFactory(custody);
 }
 
+/** Historical custody keeps the original raw 64-byte seed. It never treats it as a v1 root. */
+export function createEcashStealthBip39SeedBackend(
+  custody: EcashStealthCustody
+): EcashBip39WalletFactory {
+  return ({ material, chronik, addressPrefix }) =>
+    createEcashBip39SeedBackend(material, chronik, addressPrefix, custody);
+}
+
 export const createEcashSeedBackend = seedBackendFactory();
 
 function seedBackendFactory(custody?: EcashStealthCustody) {
@@ -70,7 +82,8 @@ function seedBackendFactory(custody?: EcashStealthCustody) {
 export async function createEcashBip39SeedBackend(
   material: HistoricalBip39Seed,
   chronik: ChronikClient,
-  addressPrefix: EcashAddressPrefix
+  addressPrefix: EcashAddressPrefix,
+  custody?: EcashStealthCustody
 ): Promise<EcashSdkBackend> {
   if (
     material.derivation !== BIP39_DERIVATION ||
@@ -80,7 +93,7 @@ export async function createEcashBip39SeedBackend(
     throw new Error("Expected the original 64-byte historical BIP39 seed");
   const seed = new Uint8Array(material.seed);
   try {
-    return await createBackend(seed, chronik, addressPrefix);
+    return await createBackend(seed, chronik, addressPrefix, custody);
   } finally {
     seed.fill(0);
   }

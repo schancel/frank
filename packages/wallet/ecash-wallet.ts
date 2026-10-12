@@ -254,6 +254,12 @@ export type EcashWalletFactory = (params: {
   addressPrefix: EcashAddressPrefix;
 }) => EcashWalletBackend | Promise<EcashWalletBackend>;
 
+export type EcashBip39WalletFactory = (params: {
+  material: HistoricalBip39Seed;
+  chronik: ChronikClient;
+  addressPrefix: EcashAddressPrefix;
+}) => EcashWalletBackend | Promise<EcashWalletBackend>;
+
 export interface EcashWalletOptions {
   chronik: ChronikClient;
   networkId: EcashNetworkId;
@@ -321,6 +327,7 @@ export class EcashWallet implements NativeWalletHandle {
     params: EcashWalletOptions & {
       material: DomainRoot<"ecash-bch-wallet"> | HistoricalBip39Seed;
       walletFactory?: EcashWalletFactory;
+      bip39WalletFactory?: EcashBip39WalletFactory;
     }
   ): Promise<EcashWallet> {
     if (!("seed" in params.material))
@@ -336,15 +343,20 @@ export class EcashWallet implements NativeWalletHandle {
       throw new Error("Expected the original 64-byte historical BIP39 seed");
     // Snapshot before endpoint verification or SDK loading; the caller may wipe its copy.
     const seed = new Uint8Array(params.material.seed);
+    const factory: EcashBip39WalletFactory =
+      params.bip39WalletFactory ??
+      (({ material, chronik, addressPrefix }) =>
+        createEcashBip39SeedBackend(material, chronik, addressPrefix));
     try {
       return await EcashWallet.initialize(
         params,
         () =>
-          createEcashBip39SeedBackend(
-            { derivation: BIP39_DERIVATION, seed },
-            params.chronik,
-            ECASH_ADDRESS_PREFIXES[canonicalEcashNetworkId(params.networkId)]
-          ),
+          factory({
+            material: { derivation: BIP39_DERIVATION, seed },
+            chronik: params.chronik,
+            addressPrefix:
+              ECASH_ADDRESS_PREFIXES[canonicalEcashNetworkId(params.networkId)],
+          }),
         false
       );
     } finally {

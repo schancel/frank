@@ -52,8 +52,22 @@ export function createRelayPricedEvmChain(
  * full application chain. Its host has not installed profile, messaging, forum, or contact
  * payment services on this network, so those capabilities must not be advertised.
  */
-export function createNativeOnlyEvmChain(config: EvmChainConfig): NativeAssetChain {
+export type NativeOnlyEvmChain = Omit<NativeAssetChain, "createWallet"> &
+  Pick<ActiveChain, "createWallet">;
+
+export function createNativeOnlyEvmChain(config: EvmChainConfig): NativeOnlyEvmChain {
   const chain = createEvmChain(config);
+  const nativeTransfers: NativeAssetChain["nativeTransfers"] = {
+    getBalance: chain.nativeTransfers.getBalance,
+    send: chain.nativeTransfers.send,
+    getTransactionStatus: chain.nativeTransfers.getTransactionStatus,
+    ...(chain.nativeTransfers.sendLegacy
+      ? { sendLegacy: chain.nativeTransfers.sendLegacy }
+      : {}),
+    ...(chain.nativeTransfers.estimateLegacyFee
+      ? { estimateLegacyFee: chain.nativeTransfers.estimateLegacyFee }
+      : {}),
+  };
   return {
     family: chain.family,
     chainIdentifier: chain.chainIdentifier,
@@ -76,6 +90,6 @@ export function createNativeOnlyEvmChain(config: EvmChainConfig): NativeAssetCha
     formatAddress: chain.formatAddress,
     parseAddress: chain.parseAddress,
     createWallet: chain.createWallet,
-    nativeTransfers: chain.nativeTransfers,
+    nativeTransfers,
   };
 }

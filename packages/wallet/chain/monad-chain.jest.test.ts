@@ -237,6 +237,122 @@ describe("createEvmChain: basic chain properties", () => {
     expect(chain.fromDisplayAmount(display)).toBe(raw);
   });
 
+  it.each([
+    ["ethereum-sepolia", 11155111, "SEPO"],
+    ["hyperliquid-testnet", 998, "HYPT"],
+  ])("keeps %s native amounts in their canonical base units", (chainIdentifier, chainId, networkTag) => {
+    const other = createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier,
+      rpcChain: chainIdentifier,
+      networkId: chainIdentifier,
+      chainId,
+      networkTag,
+    });
+    expect(other.toDisplayAmount(1_250_000_000_000_000_000n)).toBe("1.25");
+    expect(other.fromDisplayAmount("1.25")).toBe(1_250_000_000_000_000_000n);
+    expect(other.name).toBe(chainIdentifier === "ethereum-sepolia" ? "Sepolia" : "Hyperliquid Testnet");
+    expect(other.unit).toBe(chainIdentifier === "ethereum-sepolia" ? "ETH" : "tHYPE");
+  });
+
+  it.each([
+    ["ethereum-sepolia", 11155111, "SEPO"],
+    ["hyperliquid-testnet", 998, "HYPT"],
+  ])("refuses legacy contact payments on %s before signing or reserving", async (chainIdentifier, chainId, networkTag) => {
+    const directory = mkdtempSync(join(tmpdir(), "frank-peer-evm-"));
+    const other = createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier,
+      rpcChain: chainIdentifier,
+      networkId: chainIdentifier,
+      chainId,
+      networkTag,
+      walletStorageLocation: join(directory, "wallet"),
+    });
+    const roots: MonadRootBundle = {
+      evm: { registry: "frank-domain-roots-v1", purpose: "evm-wallet", bytes: new Uint8Array(32).fill(41) },
+      authentication: { registry: "frank-domain-roots-v1", purpose: "identity-authentication", bytes: new Uint8Array(32).fill(42) },
+      messaging: { registry: "frank-domain-roots-v1", purpose: "messaging-encryption", bytes: new Uint8Array(32).fill(43) },
+    };
+    const expected = createMonadWalletMaterial(roots);
+    const expectedIdentity = expected.identity.address.raw;
+    const expectedMain = expected.mainAccount.address;
+    expected.dispose();
+    const wallet = await other.createWallet(roots);
+    try {
+      expect(wallet.identity.address.raw).toBe(expectedIdentity);
+      expect((await wallet.getReceiveAddress()).raw).toBe(expectedMain);
+      await expect(wallet.prepareContactPayment!({
+        recipient: { raw: "0x0000000000000000000000000000000000000001" },
+        value: 1n,
+      })).rejects.toMatchObject({ name: "CanonicalMessagingPendingError" });
+      expect(wallet.getContactPayments!()).toEqual([]);
+      expect(MonadAccountTxSigner).not.toHaveBeenCalled();
+      await wallet.close();
+      const reopened = await other.createWallet(roots);
+      try {
+        expect(reopened.identity.address.raw).toBe(expectedIdentity);
+        expect((await reopened.getReceiveAddress()).raw).toBe(expectedMain);
+        expect(reopened.getContactPayments!()).toEqual([]);
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await wallet.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mistake Tempo's TIP-20 USD for an EVM native coin", () => {
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "tempo-testnet",
+      rpcChain: "tempo-testnet",
+      networkId: "tempo-testnet",
+      chainId: 42431,
+      networkTag: "TMPT",
+    })).toThrow("tempo-testnet has no native coin");
+  });
+
+  it("rejects a native wallet bound to a different canonical RPC or chain ID", () => {
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+    })).toThrow("EVM network mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+      rpcChain: "ethereum-sepolia",
+      networkId: "monad-testnet",
+      chainId: 11155111,
+      networkTag: "SEPO",
+    })).toThrow("EVM wallet network mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+      rpcChain: "ethereum-sepolia",
+      networkId: "ethereum-sepolia",
+      chainId: 10143,
+      networkTag: "SEPO",
+    })).toThrow("EVM chain ID mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+      rpcChain: "ethereum-sepolia",
+      networkId: "ethereum-sepolia",
+      chainId: 11155111,
+      networkTag: "MON",
+    })).toThrow("EVM network tag mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "unregistered-evm",
+      rpcChain: "unregistered-evm",
+      networkId: "unregistered-evm",
+    })).toThrow("Unsupported EVM network");
+    expect(() => createEvmChain({ ...TEST_CONFIG, unit: "USD" })).toThrow("EVM unit mismatch");
+    expect(() => createEvmChain({ ...TEST_CONFIG, name: "Ethereum" })).toThrow("EVM name mismatch");
+  });
+
   it("formatAddress returns the canonical address string as-is", () => {
     const addr = { raw: "0x000000000000000000000000000000000000dEaD" };
     expect(chain.formatAddress(addr)).toBe(addr.raw);

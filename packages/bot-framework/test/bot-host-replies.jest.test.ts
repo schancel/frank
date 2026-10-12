@@ -1226,10 +1226,11 @@ describe("FrankBotHost replies", () => {
       const first = await start(answering(seen));
       jest.spyOn(console, "warn").mockImplementation(() => {});
       mockSend.mockReset().mockRejectedValue(new Error("insufficient funds"));
-      const message = inbound("hello");
+      const message = inbound("hello", { stampValueWei: STAMP });
       await poll(first.host, [message]);
       await drain(first.instance);
       const original = mockSend.mock.calls[0][0];
+      expect(original.stampValue).toBe(STAMP);
       await new Promise((r) => setTimeout(r, 5));
       (first.host as any).options.replyGiveUpMs = 1;
       await poll(first.host, [message]);

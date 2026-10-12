@@ -85,11 +85,15 @@ export function contactLookupFailure(
 /** Profile used to create or refresh a contact. `undefined` when the address cannot be used. */
 export async function fetchContactProfile(
   address: ChainAddress,
+  options?: { relayBaseUrl?: string },
 ): Promise<ProfileInfo | undefined> {
   if (lookup === 'pending') {
     await waitForDirectoryLookup(3000)
   }
-  if (lookup === null) return activeChain.fetchProfile(address)
+  if (lookup === null)
+    return options
+      ? activeChain.fetchProfile(address, options)
+      : activeChain.fetchProfile(address)
   const key = address.raw.toLowerCase()
   if (lookup === 'pending') {
     lastFailure = { address: key, reason: 'messaging-off' }
@@ -118,7 +122,9 @@ export async function fetchContactProfile(
   if (lastFailure?.address === key) lastFailure = null
   let display: ProfileInfo | undefined
   try {
-    display = await activeChain.fetchProfile(address)
+    display = await (options
+      ? activeChain.fetchProfile(address, options)
+      : activeChain.fetchProfile(address))
   } catch {
     display = undefined
   }

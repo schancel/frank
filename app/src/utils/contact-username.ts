@@ -58,9 +58,10 @@ export async function relayHandleOf(
  */
 export async function resolveUsername(
   username: string,
+  relayBaseUrl = loadMonadChainConfigFromEnv().relayBaseUrl,
 ): Promise<{ username: string; address: string } | undefined> {
   const holder = await lookupUsername({
-    relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+    relayBaseUrl,
     username,
   })
   return holder && { username: holder.username, address: holder.address }

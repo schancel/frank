@@ -159,3 +159,30 @@ flowchart TD
    - Frank clients MUST reject plaintext HTTP connections. All relay communication MUST use TLS 1.3 on port 443 with valid X.509 server certificates matching the SRV target FQDN.
 4. **Content-Oblivious Relay Boundary**:
    - Relays process encrypted envelopes without access to message text. Resolution of `user@domain` happens exclusively at envelope creation; inner Type 6 encrypted payloads remain end-to-end encrypted to $K_{\text{msg}}$.
+
+## Browser implementation status
+
+The contact picker queries `_frank._tcp` using RFC 8484 wire-format HTTPS GET
+requests. `app/src/utils/frank-domain-discovery.ts` configures Cloudflare and
+Google as trusted resolver defaults; composition can supply a different resolver
+list. Queries omit credentials, refuse redirects, have a five-second deadline per
+resolver, and accept bounded DNS responses. Positive SRV results are cached for
+at most their TTL (capped at five minutes); negative answers are not cached.
+
+A discovered relay must use HTTPS port 443 and describe the same origin and the
+active canonical chain identifier in `/relay/v1/info`. The username lookup then
+uses that relay. Identity acceptance still goes through the session's existing
+signed directory admission; DNS never supplies a messaging key. Display profiles
+may be read from the discovered relay. The resulting conversation remains bound
+to the resolved account address. Domain handles are not stored as local-relay
+username claims.
+
+An explicit empty SRV answer or a reachable relay reporting no such username can
+offer the existing email action. Transport errors (including CORS and TLS),
+malformed DNS, mismatched relay metadata, and directory refusal do **not**
+automatically downgrade to email. This supersedes the permissive error arrows in
+the draft algorithm above. The browser does not yet implement the draft
+well-known/MX fallback: domains must publish usable SRV records for native
+browser discovery. Remote accounts whose evidence is unavailable through the
+session's replicated directory remain visibly unavailable; this change does not
+introduce a second directory admission store or bypass first-contact verification.

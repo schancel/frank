@@ -496,12 +496,10 @@ pub struct DirectoryConf {
     pub principals: Option<RemovedSetting>,
 }
 
-/// Public identity and domain of the email bridge for one canonical relay network.
+/// Public identity and domain of the relay's email bridge.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EmailGatewayConf {
-    /// Must equal this relay's canonical `network` identifier.
-    pub chain_identifier: String,
     /// Frank EVM identity address. Key material is never stored here.
     pub address: String,
     /// Email domain served by the gateway, without a leading `@`.
@@ -549,7 +547,7 @@ pub enum DirectoryConfError {
     RemovedSettings,
     /// A required relay field is absent.
     Missing(&'static str),
-    /// Invalid, unsupported or cross-network email gateway advertisement.
+    /// Invalid email gateway advertisement.
     InvalidEmailGateway,
 }
 
@@ -564,7 +562,7 @@ impl fmt::Display for DirectoryConfError {
             ),
             Self::Missing(field) => write!(formatter, "registry.directory.{field} is required"),
             Self::InvalidEmailGateway => formatter.write_str(
-                "registry.directory.email_gateway must name this canonical EVM network, a 0x-prefixed 20-byte address, and a valid lowercase email domain",
+                "registry.directory.email_gateway must provide a 0x-prefixed 20-byte address and a valid lowercase email domain",
             ),
         }
     }
@@ -590,10 +588,6 @@ impl DirectoryConf {
             }
         }
         if let Some(gateway) = &self.email_gateway {
-            let chain = protocol_chain_registry()
-                .chains
-                .iter()
-                .find(|chain| chain.id == gateway.chain_identifier);
             let valid_domain = gateway.domain.len() <= 253
                 && gateway.domain.contains('.')
                 && gateway.domain.split('.').all(|label| {
@@ -611,9 +605,7 @@ impl DirectoryConf {
                             .bytes()
                             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
                 });
-            if chain.is_none_or(|chain| chain.family != ProtocolChainFamily::Evm)
-                || gateway.chain_identifier != self.network
-                || gateway.address.len() != 42
+            if gateway.address.len() != 42
                 || !gateway.address.starts_with("0x")
                 || !gateway.address[2..].bytes().all(|b| b.is_ascii_hexdigit())
                 || !valid_domain
@@ -1640,7 +1632,6 @@ binding_expiry_ns = "1893456000000000000"
 
         let mut with_gateway = minimal.clone();
         with_gateway.email_gateway = Some(crate::EmailGatewayConf {
-            chain_identifier: "monad-testnet".into(),
             address: format!("0x{}", "a".repeat(40)),
             domain: "signet.mx".into(),
         });
@@ -1654,7 +1645,6 @@ endpoint = "https://relay.example.org"
 binding_expiry_ns = "1893456000000000000"
 
 [email_gateway]
-chain_identifier = "monad-testnet"
 address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 domain = "signet.mx"
 "#,
@@ -1662,27 +1652,20 @@ domain = "signet.mx"
         .unwrap();
         assert_eq!(parsed.email_gateway, with_gateway.email_gateway);
         assert_eq!(parsed.validate(), Ok(()));
-        for (chain_identifier, address, domain) in [
-            (
-                "monad-mainnet",
-                format!("0x{}", "a".repeat(40)),
-                "signet.mx",
-            ),
-            (
-                "unknown-chain",
-                format!("0x{}", "a".repeat(40)),
-                "signet.mx",
-            ),
-            ("monad-testnet", "0x123".into(), "signet.mx"),
-            (
-                "monad-testnet",
-                format!("0x{}", "a".repeat(40)),
-                "bad_domain",
-            ),
+        // The bridge identity is independent of the relay's settlement network.
+        let mut bitcoin_relay = with_gateway.clone();
+        bitcoin_relay.network = "btc-testnet".into();
+        assert_eq!(bitcoin_relay.validate(), Ok(()));
+        assert!(toml::from_str::<crate::EmailGatewayConf>(
+            "chain_identifier = 'monad-testnet'\naddress = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\ndomain = 'signet.mx'"
+        )
+        .is_err());
+        for (address, domain) in [
+            ("0x123".into(), "signet.mx"),
+            (format!("0x{}", "a".repeat(40)), "bad_domain"),
         ] {
             let mut invalid = with_gateway.clone();
             invalid.email_gateway = Some(crate::EmailGatewayConf {
-                chain_identifier: chain_identifier.into(),
                 address,
                 domain: domain.into(),
             });

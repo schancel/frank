@@ -250,7 +250,6 @@ async fn info(Extension(routes): Extension<Arc<Routes>>) -> Response {
     });
     if let Some(gateway) = &info.email_gateway {
         val["emailGateway"] = serde_json::json!({
-            "chainIdentifier": gateway.chain_identifier,
             "address": gateway.address,
             "domain": gateway.domain,
         });

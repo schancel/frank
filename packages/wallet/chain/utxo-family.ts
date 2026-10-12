@@ -20,6 +20,7 @@ import { ElectrumClient } from "./electrum-client";
 import { electrumIndexer, relayElectrumUrl } from "./electrum-indexer";
 import { createUtxoChain } from "./utxo-chain";
 import { browserUtxoWalletStore } from "../utxo-wallet";
+import type { UtxoStealthCustody } from "../utxo-stealth";
 import type { UtxoWalletStore } from "../utxo-wallet";
 
 export interface RelayUtxoChain {
@@ -29,7 +30,8 @@ export interface RelayUtxoChain {
    * original BIP39 seed64. Both use the configured family HD paths. The caller owns the input.
    */
   createWallet(
-    root: Uint8Array | HistoricalBip39Seed
+    root: Uint8Array | HistoricalBip39Seed,
+    options?: { stealthCustody?: UtxoStealthCustody }
   ): Promise<NativeWalletHandle>;
   /** Release the indexer connection. */
   close(): Promise<void>;
@@ -91,8 +93,12 @@ export function openRelayUtxoChain(params: {
     });
     return {
       chain,
-      createWallet: (root) =>
-        withMaterial(root, (material) =>
+      createWallet: (root, options) => {
+        if (options?.stealthCustody)
+          throw new Error(
+            "Stealth custody is unsupported by the Chronik adapter"
+          );
+        return withMaterial(root, (material) =>
           chain.createWallet(
             material instanceof Uint8Array
               ? {
@@ -102,7 +108,8 @@ export function openRelayUtxoChain(params: {
                 }
               : material
           )
-        ),
+        );
+      },
       close: async () => undefined,
     };
   }
@@ -111,22 +118,53 @@ export function openRelayUtxoChain(params: {
       endpoints: [relayElectrumUrl(relay, chainIdentifier)],
       requestTimeoutMs: 30_000,
     });
-    const chain = createUtxoChain({
-      chainIdentifier,
-      indexer: electrumIndexer(client),
-      storeFor: (firstAddress) =>
-        params.storeFor?.(chainIdentifier, firstAddress) ??
-        browserUtxoWalletStore(`${chainIdentifier}:${firstAddress}`),
-    });
+    let closed = false;
+    const requireOpen = () => {
+      if (closed) throw new Error("UTXO wallet is closed");
+    };
+    const indexer = electrumIndexer(client);
+    const makeChain = (stealthCustody?: UtxoStealthCustody) =>
+      createUtxoChain({
+        chainIdentifier,
+        indexer,
+        stealthCustody,
+        storeFor: (firstAddress) =>
+          params.storeFor?.(chainIdentifier, firstAddress) ??
+          browserUtxoWalletStore(`${chainIdentifier}:${firstAddress}`),
+      });
+    const chain = makeChain();
     return {
       chain,
-      createWallet: (root) =>
-        withMaterial(root, (material) =>
-          chain.createWallet(
+      createWallet: async (root, options) => {
+        requireOpen();
+        const source = options?.stealthCustody;
+        const guarded: UtxoStealthCustody | undefined = source && {
+          identityPublicKey: new Uint8Array(source.identityPublicKey),
+          async deriveStealthSigner(derivation) {
+            requireOpen();
+            const signer = await source.deriveStealthSigner(derivation);
+            requireOpen();
+            return {
+              publicKey: new Uint8Array(signer.publicKey),
+              sign(digest) {
+                requireOpen();
+                return signer.sign(digest);
+              },
+            };
+          },
+        };
+        const wallet = await withMaterial(root, (material) =>
+          makeChain(guarded).createWallet(
             material instanceof Uint8Array ? material : material.seed
           )
-        ),
-      close: () => client.close(),
+        );
+        requireOpen();
+        return wallet;
+      },
+      close: async () => {
+        closed = true;
+        await client.close();
+      },
     };
   }
   throw new Error(`No wallet is available for ${chainIdentifier}`);

@@ -818,6 +818,7 @@ export function createAccountSession(deps: {
           }
           stealthCustody = {
             identityPublicKey: new Uint8Array(identityPublicKey),
+            assertActive: requireLive,
             async deriveStealthSigner(derivation) {
               requireLive()
               if (

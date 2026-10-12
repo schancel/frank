@@ -1161,6 +1161,7 @@ describe('session-owned UTXO stealth custody', () => {
         const source = injected
         const stealthCustody = source && {
           identityPublicKey: source.identityPublicKey,
+          assertActive: () => source.assertActive(),
           async deriveStealthSigner(derivation: UtxoStealthDerivation) {
             const key = await source.deriveStealthSigner(derivation)
             return {

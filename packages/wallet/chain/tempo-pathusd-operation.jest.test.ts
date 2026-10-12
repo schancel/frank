@@ -28,7 +28,9 @@ function transferLog(amount = 2_000_000n, recipient = RECIPIENT) {
 }
 
 function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
-  let receipt: TempoReceipt | null = null
+  const receipts = new Map<string, TempoReceipt>()
+  let finalized = false
+  let quoteMaxFee = 2_000_000_000n
   let failBroadcast = false
   let wrongHash = false
   let sends = 0
@@ -38,7 +40,7 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
     verifyChain: async chain => { events.push('verify:' + chain) },
     getPendingNonce: async () => 7n,
     getPathUsdBalance: async () => 3_000_000n,
-    quoteTransfer: async () => ({ gasLimit: 100_000n, maxFeePerGas: 2_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n }),
+    quoteTransfer: async () => ({ gasLimit: 100_000n, maxFeePerGas: quoteMaxFee, maxPriorityFeePerGas: 1_000_000_000n }),
     sendRawTransaction: async raw => {
       sends++
       events.push('send')
@@ -47,7 +49,8 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
       if (wrongHash) return '0x' + '99'.repeat(32)
       return decodeSignedTempoTransaction(raw, 42431n).transactionHash
     },
-    getReceipt: async () => receipt,
+    getReceipt: async hash => receipts.get(hash) ?? null,
+    isFinalizedReceipt: async () => finalized,
   }
   const signer = {
     source: { kind: 'main' as const, address: SOURCE },
@@ -71,7 +74,12 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
   })
   return {
     store, journal, transfers, signer, events, included,
-    setReceipt: (value: TempoReceipt | null) => { receipt = value },
+    setReceipt: (value: TempoReceipt | null) => {
+      if (value) receipts.set(value.transactionHash, value)
+      else receipts.clear()
+    },
+    setFinalized: (value: boolean) => { finalized = value },
+    raiseFee: () => { quoteMaxFee = 3_000_000_000n },
     failBroadcast: () => { failBroadcast = true },
     wrongHash: () => { wrongHash = true },
     sends: () => sends, signs: () => signs,
@@ -132,7 +140,14 @@ describe('Tempo PathUSD transfer ownership', () => {
       const replayed = await second.transfers.submit(ID, second.signer)
       expect(replayed.signedRaw).toBe(pending.signedRaw)
       expect(second.signs()).toBe(0)
+      second.raiseFee()
+      const replacement = await second.transfers.replaceFee(ID, second.signer, 300n)
       await second.journal.close()
+      const thirdStore = await LevelRecordStore.open<TempoPathUsdOperation>(directory, 'tempo-pathusd')
+      const third = harness(thirdStore)
+      expect(third.journal.get(ID)).toEqual(replacement)
+      expect(third.journal.get(ID)!.priorAttempts[0]!.signedRaw).toBe(pending.signedRaw)
+      await third.journal.close()
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
@@ -165,12 +180,54 @@ describe('Tempo PathUSD transfer ownership', () => {
     })).rejects.toThrow('unresolved PathUSD operation')
   })
 
+  test('fee replacement keeps both signed candidates and reconciles the old one after restart', async () => {
+    const h = harness()
+    h.failBroadcast()
+    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const first = await h.transfers.submit(ID, h.signer)
+    h.raiseFee()
+    await expect(h.transfers.replaceFee(ID, h.signer, 100n)).rejects.toThrow('authorized fee ceiling')
+    const replacement = await h.transfers.replaceFee(ID, h.signer, 300n)
+    expect(replacement.priorAttempts).toHaveLength(1)
+    expect(replacement.priorAttempts[0]!.signedRaw).toBe(first.signedRaw)
+    expect(replacement.transactionHash).not.toBe(first.transactionHash)
+    expect(decodeSignedTempoTransaction(replacement.signedRaw!, 42431n).transaction.nonce).toBe(7n)
+    expect(decodeSignedTempoTransaction(first.signedRaw!, 42431n).transaction.nonce).toBe(7n)
+    const reopened = harness(h.store)
+    h.setReceipt(h.included(first))
+    reopened.setReceipt(reopened.included(first))
+    const included = await reopened.transfers.reconcile(ID)
+    expect(included.observation.state).toBe('included-success')
+    expect('transactionHash' in included.observation && included.observation.transactionHash).toBe(first.transactionHash)
+    expect(reopened.signs()).toBe(0)
+  })
+
+  test('unfinalized inclusion retains source claim across reorg and restart', async () => {
+    const h = harness()
+    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const row = await h.transfers.submit(ID, h.signer)
+    h.setReceipt(h.included(row))
+    await h.transfers.reconcile(ID)
+    const reopened = harness(h.store)
+    await expect(reopened.transfers.prepare({
+      operationId: '0x' + '99'.repeat(32), signer: reopened.signer, recipient: RECIPIENT, amountAtomic: 1n,
+    })).rejects.toThrow('unresolved PathUSD operation')
+    reopened.setReceipt(null)
+    expect((await reopened.transfers.reconcile(ID)).observation.state).toBe('pending')
+    expect(reopened.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(true)
+    reopened.setReceipt(reopened.included(row))
+    reopened.setFinalized(true)
+    const final = await reopened.transfers.reconcile(ID)
+    expect('finalized' in final.observation && final.observation.finalized).toBe(true)
+    expect(reopened.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(false)
+  })
+
   test('receipt confirms exact token transfer, and reorg to unknown retains nonce claim', async () => {
     const h = harness()
     await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const row = await h.transfers.submit(ID, h.signer)
     h.setReceipt(h.included(row))
-    expect((await h.transfers.reconcile(ID)).observation).toEqual({ state: 'included-success', blockHash: BLOCK, blockNumber: 100, feeAtomic: '80' })
+    expect((await h.transfers.reconcile(ID)).observation).toEqual({ state: 'included-success', transactionHash: row.transactionHash, finalized: false, blockHash: BLOCK, blockNumber: 100, feeAtomic: '80' })
     h.setReceipt(null)
     expect((await h.transfers.reconcile(ID)).observation.state).toBe('pending')
     await expect(h.journal.prepare({ ...row, operationId: '0x' + '55'.repeat(32) })).rejects.toThrow('nonce is reserved')

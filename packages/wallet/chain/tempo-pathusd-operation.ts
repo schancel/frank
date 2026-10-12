@@ -18,6 +18,16 @@ const TRANSFER = new Interface([
 const TRANSFER_TOPIC = TRANSFER.getEvent('Transfer')!.topicHash
 const HASH = /^0x[0-9a-f]{64}$/
 
+/** Superseded signatures remain durable because any candidate may still settle. */
+export interface TempoSignedAttempt {
+  readonly gasLimit: string
+  readonly maxFeePerGas: string
+  readonly maxPriorityFeePerGas: string
+  readonly maximumFeeAtomic: string
+  readonly signedRaw: string
+  readonly transactionHash: string
+}
+
 /** Distinct from the native EVM journal: amounts and fees are six-decimal PathUSD units. */
 export interface TempoPathUsdOperation {
   readonly version: 1
@@ -33,12 +43,15 @@ export interface TempoPathUsdOperation {
   readonly maximumFeeAtomic: string
   readonly signedRaw: string | null
   readonly transactionHash: string | null
+  readonly priorAttempts: readonly TempoSignedAttempt[]
   readonly exposed: boolean
   readonly submission: { state: 'never' | 'accepted' | 'ambiguous' | 'inconsistent-rpc' }
   readonly observation:
     | { state: 'unknown' | 'pending' }
     | {
         state: 'included-success' | 'included-revert' | 'included-mismatch'
+        transactionHash: string
+        finalized: boolean
         blockHash: string
         blockNumber: number
         feeAtomic: string
@@ -73,6 +86,7 @@ export interface TempoPathUsdRpc {
   }): Promise<{ gasLimit: bigint; maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }>
   sendRawTransaction(raw: string): Promise<string>
   getReceipt(hash: string): Promise<TempoReceipt | null>
+  isFinalizedReceipt(receipt: TempoReceipt): Promise<boolean>
 }
 
 export interface TempoPathUsdSigner {
@@ -121,6 +135,33 @@ function transaction(row: TempoPathUsdOperation): TempoTransaction {
   }
 }
 
+function signedAttempts(row: TempoPathUsdOperation): TempoSignedAttempt[] {
+  return [
+    ...row.priorAttempts,
+    ...(row.signedRaw && row.transactionHash ? [{
+      gasLimit: row.gasLimit,
+      maxFeePerGas: row.maxFeePerGas,
+      maxPriorityFeePerGas: row.maxPriorityFeePerGas,
+      maximumFeeAtomic: row.maximumFeeAtomic,
+      signedRaw: row.signedRaw,
+      transactionHash: row.transactionHash,
+    }] : []),
+  ]
+}
+
+function validateAttempt(row: TempoPathUsdOperation, attempt: TempoSignedAttempt): void {
+  const candidate = transaction({ ...row, ...attempt })
+  const ceiling = tempoPathUsdMaximumFee(candidate.gasLimit, candidate.maxFeePerGas)
+  if (attempt.maximumFeeAtomic !== ceiling.toString())
+    throw new Error('Invalid Tempo attempt fee hold')
+  const decoded = decodeSignedTempoTransaction(attempt.signedRaw, candidate.chainId)
+  if (
+    canonicalAddress(decoded.sender) !== row.source.address ||
+    decoded.transactionHash !== attempt.transactionHash ||
+    tempoSigningHash(decoded.transaction) !== tempoSigningHash(candidate)
+  ) throw new Error('Signed Tempo attempt differs from its authorization')
+}
+
 function validate(row: TempoPathUsdOperation): TempoPathUsdOperation {
   if (row.version !== 1 || !HASH.test(row.operationId))
     throw new Error('Invalid Tempo operation ID')
@@ -135,36 +176,42 @@ function validate(row: TempoPathUsdOperation): TempoPathUsdOperation {
   if (row.maximumFeeAtomic !== maxFee.toString())
     throw new Error('Invalid Tempo fee hold')
   if (row.signedRaw === null) {
-    if (row.transactionHash !== null || row.exposed)
+    if (row.transactionHash !== null || row.exposed || row.priorAttempts.length)
       throw new Error('Invalid unsigned Tempo operation')
   } else {
-    const decoded = decodeSignedTempoTransaction(row.signedRaw, tx.chainId)
-    if (
-      canonicalAddress(decoded.sender) !== row.source.address ||
-      decoded.transactionHash !== row.transactionHash ||
-      tempoSigningHash(decoded.transaction) !== tempoSigningHash(tx)
-    )
-      throw new Error('Signed Tempo operation differs from its authorization')
+    if (!row.transactionHash) throw new Error('Missing Tempo transaction hash')
+  }
+  const attempts = signedAttempts(row)
+  const hashes = new Set<string>()
+  for (const attempt of attempts) {
+    validateAttempt(row, attempt)
+    if (hashes.has(attempt.transactionHash)) throw new Error('Duplicate Tempo attempt')
+    hashes.add(attempt.transactionHash)
   }
   if (!['never', 'accepted', 'ambiguous', 'inconsistent-rpc'].includes(row.submission.state) ||
     (row.submission.state !== 'never' && !row.exposed))
     throw new Error('Invalid Tempo submission state')
   if ('feeAtomic' in row.observation) {
+    const included = row.observation
+    const includedAttempt = attempts.find(attempt => attempt.transactionHash === included.transactionHash)
     if (
       !row.exposed ||
-      !HASH.test(row.observation.blockHash) ||
-      !Number.isSafeInteger(row.observation.blockNumber) ||
-      row.observation.blockNumber < 0 ||
-      atomic(row.observation.feeAtomic, 'observed fee') > maxFee
+      !hashes.has(included.transactionHash) ||
+      !includedAttempt ||
+      typeof included.finalized !== 'boolean' ||
+      !HASH.test(included.blockHash) ||
+      !Number.isSafeInteger(included.blockNumber) ||
+      included.blockNumber < 0 ||
+      atomic(included.feeAtomic, 'observed fee') > atomic(includedAttempt.maximumFeeAtomic, 'attempt fee hold')
     )
       throw new Error('Invalid Tempo inclusion observation')
   }
   return structuredClone(row)
 }
 
-function receiptObservation(row: TempoPathUsdOperation, receipt: TempoReceipt): TempoPathUsdOperation['observation'] {
+function receiptObservation(row: TempoPathUsdOperation, attempt: TempoSignedAttempt, receipt: TempoReceipt, finalized: boolean): TempoPathUsdOperation['observation'] {
   if (
-    receipt.transactionHash !== row.transactionHash ||
+    receipt.transactionHash !== attempt.transactionHash ||
     canonicalAddress(receipt.feeToken) !== PATHUSD ||
     canonicalAddress(receipt.feePayer) !== row.source.address ||
     !HASH.test(receipt.blockHash) ||
@@ -174,7 +221,7 @@ function receiptObservation(row: TempoPathUsdOperation, receipt: TempoReceipt): 
   )
     throw new Error('Invalid Tempo receipt identity')
   const feeAtomic = tempoPathUsdMaximumFee(receipt.gasUsed, receipt.effectiveGasPrice)
-  if (feeAtomic > atomic(row.maximumFeeAtomic, 'maximum fee'))
+  if (feeAtomic > atomic(attempt.maximumFeeAtomic, 'maximum fee'))
     throw new Error('Tempo receipt exceeds authorized fee')
   let state: 'included-success' | 'included-revert' | 'included-mismatch' =
     receipt.status === 0 ? 'included-revert' : 'included-mismatch'
@@ -197,6 +244,8 @@ function receiptObservation(row: TempoPathUsdOperation, receipt: TempoReceipt): 
   }
   return {
     state,
+    transactionHash: attempt.transactionHash,
+    finalized,
     blockHash: receipt.blockHash,
     blockNumber: receipt.blockNumber,
     feeAtomic: feeAtomic.toString(),
@@ -237,7 +286,7 @@ export class TempoPathUsdJournal {
     return this.list().some(row =>
       row.chainIdentifier === chainIdentifier &&
       row.source.address === source &&
-      !row.observation.state.startsWith('included-')
+      (!row.observation.state.startsWith('included-') || !('finalized' in row.observation) || !row.observation.finalized)
     )
   }
 
@@ -347,6 +396,7 @@ export class TempoPathUsdTransfers {
         maximumFeeAtomic: maximumFeeAtomic.toString(),
         signedRaw: null,
         transactionHash: null,
+        priorAttempts: [],
         exposed: false,
         submission: { state: 'never' },
         observation: { state: 'unknown' },
@@ -356,6 +406,13 @@ export class TempoPathUsdTransfers {
   }
 
   async submit(operationId: string, signer: TempoPathUsdSigner): Promise<TempoPathUsdOperation> {
+    const operation = this.journal.get(operationId)
+    if (!operation || operation.chainIdentifier !== this.chainIdentifier)
+      throw new Error('Unknown Tempo operation for this chain')
+    return this.withSourceLock(operation.source.address, () => this.submitLocked(operationId, signer))
+  }
+
+  private async submitLocked(operationId: string, signer: TempoPathUsdSigner): Promise<TempoPathUsdOperation> {
     let row = this.journal.get(operationId)
     if (!row || row.chainIdentifier !== this.chainIdentifier)
       throw new Error('Unknown Tempo operation for this chain')
@@ -388,16 +445,69 @@ export class TempoPathUsdTransfers {
     return this.reconcile(operationId)
   }
 
+  /** Explicitly authorized higher fee for the same payment and nonce; old raw bytes stay recoverable. */
+  async replaceFee(operationId: string, signer: TempoPathUsdSigner, authorizedFeeCeilingAtomic: bigint): Promise<TempoPathUsdOperation> {
+    const original = this.journal.get(operationId)
+    if (!original || original.chainIdentifier !== this.chainIdentifier || !original.signedRaw)
+      throw new Error('Unknown signed Tempo operation for this chain')
+    const source = canonicalAddress(signer.source.address)
+    if (source !== original.source.address || authorizedFeeCeilingAtomic < 0n)
+      throw new Error('Invalid Tempo replacement authorization')
+    return this.withSourceLock(source, async () => {
+      const row = await this.reconcile(operationId)
+      if (row.observation.state.startsWith('included-'))
+        throw new Error('Tempo operation has an included candidate')
+      const quote = await this.rpc.quoteTransfer({
+        from: source, to: PATHUSD,
+        data: transferData(row.recipient, atomic(row.amountAtomic, 'amount')),
+      })
+      if (quote.maxFeePerGas <= atomic(row.maxFeePerGas, 'old max fee'))
+        throw new Error('Tempo replacement fee is not higher')
+      const gasLimit = quote.gasLimit > atomic(row.gasLimit, 'old gas limit')
+        ? quote.gasLimit : atomic(row.gasLimit, 'old gas limit')
+      const maximumFeeAtomic = tempoPathUsdMaximumFee(gasLimit, quote.maxFeePerGas)
+      if (maximumFeeAtomic > authorizedFeeCeilingAtomic)
+        throw new Error('Tempo replacement exceeds authorized fee ceiling')
+      if (await this.rpc.getPathUsdBalance(source) < atomic(row.amountAtomic, 'amount') + maximumFeeAtomic)
+        throw new RangeError('Insufficient PathUSD for replacement fee')
+      const replacement = {
+        ...row,
+        gasLimit: gasLimit.toString(),
+        maxFeePerGas: quote.maxFeePerGas.toString(),
+        maxPriorityFeePerGas: quote.maxPriorityFeePerGas.toString(),
+        maximumFeeAtomic: maximumFeeAtomic.toString(),
+      }
+      const signature = await signer.signDigest(tempoSigningHash(transaction(replacement)))
+      const signed = encodeSignedTempoTransaction(transaction(replacement), signature, source)
+      return this.journal.mutate(operationId, current => {
+        if (current.transactionHash !== row.transactionHash)
+          throw new Error('Tempo operation changed while replacing its fee')
+        return {
+          ...replacement,
+          signedRaw: signed.rawTransaction,
+          transactionHash: signed.transactionHash,
+          priorAttempts: signedAttempts(current),
+          exposed: true,
+          submission: { state: 'never' },
+          observation: { state: 'pending' },
+        }
+      })
+    })
+  }
+
   async reconcile(operationId: string): Promise<TempoPathUsdOperation> {
     const row = this.journal.get(operationId)
     if (!row || row.chainIdentifier !== this.chainIdentifier)
       throw new Error('Unknown Tempo operation for this chain')
     if (!row.exposed || !row.transactionHash) return row
     await this.rpc.verifyChain(this.chainIdentifier)
-    const receipt = await this.rpc.getReceipt(row.transactionHash)
-    const observation = receipt
-      ? receiptObservation(row, receipt)
-      : { state: 'pending' as const }
+    let observation: TempoPathUsdOperation['observation'] = { state: 'pending' }
+    for (const attempt of signedAttempts(row)) {
+      const receipt = await this.rpc.getReceipt(attempt.transactionHash)
+      if (!receipt) continue
+      if (observation.state !== 'pending') throw new Error('Multiple Tempo candidates included for one nonce')
+      observation = receiptObservation(row, attempt, receipt, await this.rpc.isFinalizedReceipt(receipt))
+    }
     if (JSON.stringify(row.observation) === JSON.stringify(observation)) return row
     return this.journal.mutate(operationId, current => ({ ...current, observation }))
   }

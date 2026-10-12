@@ -106,7 +106,7 @@ import type {
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 7;
+export const MAIL_JOURNAL_FORMAT = 8;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
@@ -125,6 +125,7 @@ const MAIL_JOURNAL_DDL = `
     format INTEGER NOT NULL,
     chain_identifier TEXT NOT NULL,
     gateway_account TEXT NOT NULL,
+    gateway_domain TEXT NOT NULL,
     frank_cursor_ms INTEGER,
     frank_incomplete_floor_ms INTEGER
   );
@@ -694,8 +695,8 @@ export class MailJournal {
    *   an alias, another spelling or an inherited property name is refused
    *   before any pragma or statement, because the first open stores it for good.
    * - No journal table present: creates all eight and the marker row.
-   * - Journal tables present: the marker row must exist, say format 3 and name
-   *   the same chain identifier and gateway account, and all eight tables must
+   * - Journal tables present: the marker row must exist, say format 8 and name
+   *   the same chain identifier, gateway account and domain, and all eight tables must
    *   be there. Anything else throws `MailJournalOpenError` and changes nothing.
    * - A ledger with no SQLite connection (Postgres) is refused.
    * - A refused open leaves the connection as it found it: the busy timeout and
@@ -760,10 +761,11 @@ export class MailJournal {
     if (present.length === 0) {
       this.db.exec(MAIL_JOURNAL_DDL);
       this.run(
-        'INSERT INTO mail_journal_meta (id, format, chain_identifier, gateway_account) VALUES (1, ?, ?, ?)',
+        'INSERT INTO mail_journal_meta (id, format, chain_identifier, gateway_account, gateway_domain) VALUES (1, ?, ?, ?, ?)',
         MAIL_JOURNAL_FORMAT,
         this.chainIdentifier,
-        this.gatewayAccount
+        this.gatewayAccount,
+        this.gatewayDomain
       );
       return;
     }
@@ -788,10 +790,12 @@ export class MailJournal {
     if (missing.length > 0) {
       throw new MailJournalOpenError(`Mail journal is missing tables (${missing.join(', ')}). ${reset}`);
     }
-    if (meta.chain_identifier !== this.chainIdentifier || meta.gateway_account !== this.gatewayAccount) {
+    if (meta.chain_identifier !== this.chainIdentifier || meta.gateway_account !== this.gatewayAccount ||
+      meta.gateway_domain !== this.gatewayDomain) {
       throw new MailJournalOpenError(
-        `Mail journal belongs to chain ${meta.chain_identifier} and gateway account ${meta.gateway_account}, ` +
-          `not ${this.chainIdentifier} and ${this.gatewayAccount}. ${reset}`
+        `Mail journal belongs to chain ${meta.chain_identifier}, gateway account ${meta.gateway_account}, ` +
+          `and domain ${meta.gateway_domain}; not ${this.chainIdentifier}, ${this.gatewayAccount}, ` +
+          `and ${this.gatewayDomain}. ${reset}`
       );
     }
   }

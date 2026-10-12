@@ -6,7 +6,9 @@ reserved as an entire local-part prefix. Operator aliases are outside the
 Frank user-mailbox mapping; the mail host must route them to a separately
 managed mailbox or reject them.
 
-`MailJournal` format 7 owns explicit, immutable mailbox issuance. A local part
+`MailJournal` format 8 owns explicit, immutable mailbox issuance. Its durable
+marker binds the canonical chain, gateway account and mail domain; reopening
+under another domain is refused before any signed SMTP job can be claimed. A local part
 maps to one scoped Frank account and optionally one conversation ID; a repeat
 assignment is idempotent and a conflicting assignment is refused. The
 `createIssuedMailboxLookup` adapter lets both direct SMTP and a future signed
@@ -25,12 +27,12 @@ operator must audit the reserved names against the directory and resolve any
 collisions explicitly with the claimant. New claims of those names receive
 `reserved-username`; they never become user mailboxes.
 
-Formats 2 through 6 are refused by the format 7 reader without mutation. Format 7
+Formats 2 through 7 are refused by the format 8 reader without mutation. Format 8
 stores the envelope local part and its assigned conversation on each inbound delivery,
 including held mail. One RFC message addressed to two issued aliases has two independent
 delivery keys and durable slots. It also stores the admitted stamp value, including
 while held; a later credit top-up cannot change the intended payment amount.
-Outbound jobs in format 7 bind an issued sender local part to the same account
+Outbound jobs in format 8 bind an issued sender local part to the same account
 and conversation as the bridged message. Both signed From and Reply-To must
 equal that routable address before a job can be claimed or handed to SMTP.
 Jobs must be claimed durably before provider submission.
@@ -52,5 +54,5 @@ advances. Rich HTML, attachments, multiple recipients and custom Reply-To are
 rejected as unsupported rather than partly forwarded. The salt must be derived
 from the restored gateway root and remain stable across hosts and restarts.
 Archive the journal together with its gateway wallet stores before starting a new
-prelaunch format 7 instance; do not discard a funded gateway wallet or replay
+prelaunch format 8 instance; do not discard a funded gateway wallet or replay
 an ambiguous payment as a new one.

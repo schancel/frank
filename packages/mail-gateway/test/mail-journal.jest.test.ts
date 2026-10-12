@@ -1,5 +1,5 @@
 /**
- * Mail journal (#1237 G1, format 7 with issued aliases and provider evidence). File-backed SQLite in a temp
+ * Mail journal (#1237 G1, format 8 with domain-bound issued aliases and provider evidence). File-backed SQLite in a temp
  * directory, real close and reopen, no database mocks. Each test names the
  * later-stage failure it prevents. `J1`..`J25` are the acceptance tests of the
  * contract's section 21.6.
@@ -320,13 +320,14 @@ describe('open, format marker and the single connection', () => {
         format: MAIL_JOURNAL_FORMAT,
         chain_identifier: IDENTITY.chainIdentifier,
         gateway_account: IDENTITY.gatewayAccount,
+        gateway_domain: IDENTITY.gatewayDomain,
         frank_cursor_ms: null,
       }),
     ]);
     expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
     expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' });
     expect(db.prepare('PRAGMA locking_mode').get()).toEqual({ locking_mode: 'exclusive' });
-    expect(MAIL_JOURNAL_FORMAT).toBe(7);
+    expect(MAIL_JOURNAL_FORMAT).toBe(8);
     expect(journal.frankCursor()).toEqual({});
   });
 
@@ -345,7 +346,7 @@ describe('open, format marker and the single connection', () => {
 
   // B2. Prevents: a gateway pointed at another chain or wallet treating this journal's slots and
   // message IDs as its own, which would re-send paid mail from a wallet that never attempted it.
-  it('refuses a reopen under another chain identifier or gateway account and writes nothing', () => {
+  it('refuses a reopen under another chain identifier, gateway account or domain and writes nothing', () => {
     const first = open();
     admit(first.journal, ALICE, 'm1', '<m1@x.example>');
     relay(first.journal, ALICE, 'm1');
@@ -354,6 +355,7 @@ describe('open, format marker and the single connection', () => {
 
     expect(() => open({ chainIdentifier: 'monad-mainnet' })).toThrow(MailJournalOpenError);
     expect(() => open({ gatewayAccount: `0x${'8'.repeat(40)}` })).toThrow(/belongs to chain monad-testnet/);
+    expect(() => open({ gatewayDomain: 'other.example' })).toThrow(/domain/);
 
     const raw = new DatabaseSync(file);
     expect(dump(raw)).toBe(before);
@@ -364,8 +366,8 @@ describe('open, format marker and the single connection', () => {
   // Prevents: a build silently re-creating or reinterpreting a journal it cannot read, which
   // would forget which mails were already relayed and pay for them again.
   it.each([
-    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 7 only/],
-    ['a later format', 'UPDATE mail_journal_meta SET format = 8', /format 8 is not supported/],
+    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 8 only/],
+    ['a later format', 'UPDATE mail_journal_meta SET format = 9', /format 9 is not supported/],
     ['no marker row', 'DELETE FROM mail_journal_meta', /format marker is missing/],
     ['no marker table', 'DROP TABLE mail_journal_meta', /format marker is missing/],
     ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (3), (3)', /format marker is missing/],
@@ -1612,7 +1614,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     for (let i = 0; i < 2; i++) {
       expect(() => open()).toThrow(MailJournalOpenError);
       expect(() => open()).toThrow(
-        /format 1 is not supported; this build reads format 7 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
+        /format 1 is not supported; this build reads format 8 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
       );
     }
     expect(fileHash()).toBe(before);
@@ -1637,7 +1639,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
 
     expect('MAIL_JOURNAL_DDL' in packageIndex).toBe(false);
     expect(Object.keys(packageIndex).filter((name) => /DDL/.test(name))).toEqual([]);
-    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(7);
+    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(8);
     expect(packageIndex.MAIL_JOURNAL_TABLES).toBe(MAIL_JOURNAL_TABLES);
 
     const { db } = open();

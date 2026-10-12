@@ -47,6 +47,8 @@ describe('Tempo PathUSD JSON-RPC boundary', () => {
 
   test('queries PathUSD balance and quotes 0x76 token-paid gas with margin', async () => {
     const h = transport()
+    expect(await h.rpc.getFinalizedNonce(SOURCE)).toBe(7n)
+    expect(h.calls[0]).toEqual({ method: 'eth_getTransactionCount', params: [SOURCE, 'finalized'] })
     expect(await h.rpc.getPathUsdBalance(SOURCE)).toBe(10_000_000n)
     const quote = await h.rpc.quoteTransfer({ from: SOURCE, to: PATHUSD, data: '0xa9059cbb' })
     expect(quote.gasLimit).toBe((0x4722an * 120n + 99n) / 100n)
@@ -61,10 +63,10 @@ describe('Tempo PathUSD JSON-RPC boundary', () => {
     const encoded = abi.encodeEventLog(abi.getEvent('Transfer')!, [SOURCE, RECIPIENT, 2_000_000n])
     h.set('eth_getLogs', [{
       address: PATHUSD, topics: encoded.topics, data: encoded.data,
-      transactionHash: HASH, blockHash: BLOCK, blockNumber: '0x64',
+      transactionHash: HASH, blockHash: BLOCK, blockNumber: '0x64', logIndex: '0x0',
     }])
     expect(await h.rpc.receivedTransfers(RECIPIENT, 90n, 100n)).toEqual([{
-      transactionHash: HASH, blockHash: BLOCK, blockNumber: 100,
+      transactionHash: HASH, logIndex: 0, blockHash: BLOCK, blockNumber: 100,
       sender: SOURCE, recipient: RECIPIENT, amountAtomic: 2_000_000n,
     }])
     const filter = h.calls.find(call => call.method === 'eth_getLogs')!.params[0] as Record<string, unknown>

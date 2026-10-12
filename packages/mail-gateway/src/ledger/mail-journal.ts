@@ -933,6 +933,35 @@ export class MailJournal {
     return row && toInboundEmail(row);
   }
 
+  /** Bounded, stable page for a host to revisit authenticated mail after credit arrives. */
+  listHeldInboundEmails(limit = 100, after?: { scopeAccount: string; mailKey: string }): InboundEmailRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');
+    const scope = after === undefined ? '' : requireMatch('after.scopeAccount', after.scopeAccount, SCOPE_ACCOUNT);
+    const key = after === undefined ? '' : requireMatch('after.mailKey', after.mailKey, HEX_64);
+    return this.all<InboundEmailRow>(
+      `SELECT * FROM inbound_email WHERE disposition = 'held' AND expires_at > ?
+         AND (scope_account > ? OR (scope_account = ? AND mail_key > ?))
+       ORDER BY scope_account, mail_key LIMIT ?`,
+      this.now(), scope, scope, key, limit
+    ).map(toInboundEmail);
+  }
+
+  /** One atomic credit debit and original-slot creation for a previously held mail. */
+  releaseHeldInboundEmail(input: Omit<RelayInboundEmailInput, 'stampValue'>): RelayInboundEmailResult | undefined {
+    const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
+    const key = requireMatch('mailKey', input.mailKey, HEX_64);
+    return this.ledger.atomic(() => {
+      const row = this.inboundEmailRow(scope, key);
+      if (!row || row.disposition !== 'held') return undefined;
+      if (row.expires_at === null || row.expires_at <= this.now()) {
+        this.expireHeldRow(row);
+        return undefined;
+      }
+      if (!this.ledger.consumeCredit(row.sender_email, scope)) return undefined;
+      return this.relayInboundEmail({ ...input, stampValue: row.stamp_value });
+    });
+  }
+
   findFrankInbound(payloadDigest: string): FrankInboundRecord | undefined {
     requireMatch('payloadDigest', payloadDigest, HEX_64);
     const row = this.frankInboundRow(payloadDigest);

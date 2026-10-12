@@ -165,6 +165,34 @@ describe('journal-backed inbound Frank send', () => {
     expect(journal.relayInboundEmail({ scopeAccount: RECIPIENT, mailKey: held.mail_key, stampValue: '1000' }).slot.conversationId).toBe(conversationId);
   });
 
+  it('releases a held alias after restart and credit top-up without a second webhook', async () => {
+    const conversationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const verified = { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER };
+    let sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    expect(sender.admit(verified, RECIPIENT, 1000n, conversationId, 'alice')).toEqual({ kind: 'held' });
+    sender = restart();
+    ledger.addCredits(SENDER, 1);
+    expect(await sender.releaseHeld()).toMatchObject({ released: 1, errors: [] });
+    expect(ledger.getBalance(SENDER)).toBe(0);
+    const slot = journal.listUnfinishedFrankSends()[0];
+    expect(slot).toMatchObject({ conversationId, stampValue: '1000' });
+    expect(await sender.releaseHeld()).toMatchObject({ released: 0, errors: [] });
+    expect(journal.listUnfinishedFrankSends()).toHaveLength(1);
+    expect(ledger.getBalance(SENDER)).toBe(0);
+  });
+
+  it('never releases an expired held alias or consumes its later credit', async () => {
+    const conversationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const verified = { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER };
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    expect(sender.admit(verified, RECIPIENT, 1000n, conversationId, 'alice')).toEqual({ kind: 'held' });
+    ledger.sqlite!.prepare("UPDATE inbound_email SET expires_at = 1 WHERE disposition = 'held'").run();
+    ledger.addCredits(SENDER, 1);
+    expect(await sender.releaseHeld()).toMatchObject({ released: 0, errors: [] });
+    expect(ledger.getBalance(SENDER)).toBe(1);
+    expect(journal.listUnfinishedFrankSends()).toHaveLength(0);
+  });
+
   it.each(['before_attempt', 'before_barrier', 'after_barrier'] as const)(
     'recovers a %s interruption using the same message identity and one credit',
     async (point) => {

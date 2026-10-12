@@ -8,12 +8,12 @@ import { LevelBotStateStore } from "./state-store";
 
 export interface NativeGrantRequest {
   to: string;
-  valueWei: bigint;
-  minReserveWei: bigint;
-  maxFeeWei: bigint;
+  valueWei?: bigint;
+  minReserveWei?: bigint;
+  maxFeeWei?: bigint;
 }
 export interface NativeGrantResult {
-  state: "low" | "pending" | "submitted" | "confirmed" | "failed";
+  state: "low" | "pending" | "submitted" | "confirmed" | "failed" | "legacy-absent";
   already: boolean;
   txHash?: string;
 }
@@ -110,12 +110,6 @@ export class NativeGrants implements NativeGrantCapability {
   grant(request: NativeGrantRequest): Promise<NativeGrantResult> {
     const recipient = getAddress(request.to).toLowerCase();
     request = { ...request, to: recipient };
-    if (
-      request.valueWei <= 0n ||
-      request.minReserveWei < 0n ||
-      request.maxFeeWei < 0n
-    )
-      return Promise.reject(new Error("Invalid faucet amount or reserve"));
     const running = this.active.get(recipient);
     // Still check immutable authorization when two callers use the same recipient at once.
     const run = (
@@ -155,48 +149,8 @@ export class NativeGrants implements NativeGrantCapability {
     const already = raw !== undefined;
     if (raw !== undefined) {
       intent = this.parse(raw);
-      if (
-        intent.recipient !== recipient ||
-        intent.valueWei !== request.valueWei.toString() ||
-        intent.minReserveWei !== request.minReserveWei.toString() ||
-        intent.maxFeeWei !== request.maxFeeWei.toString()
-      )
-        throw new Error(
-          "Faucet grant authorization changed; original intent retained"
-        );
     } else {
-      // Fast conservative precheck; authoritative fresh, unreserved value and actual fee are
-      // checked by the wallet owner under its allocation lock before reservation/signing.
-      if (
-        (await this.wallet.getBalance()) <
-        request.valueWei + request.minReserveWei + request.maxFeeWei
-      )
-        return { state: "low", already: false };
-      intent = {
-        version: 2,
-        chainIdentifier: this.wallet.chainIdentifier,
-        walletAddress: getAddress(
-          this.wallet.identity.address.raw
-        ).toLowerCase(),
-        recipient,
-        valueWei: request.valueWei.toString(),
-        minReserveWei: request.minReserveWei.toString(),
-        maxFeeWei: request.maxFeeWei.toString(),
-        previousOperationIds: this.rows()
-          .filter((row) =>
-            this.matches(
-              {
-                chainIdentifier: this.wallet.chainIdentifier,
-                recipient,
-                valueWei: request.valueWei.toString(),
-              },
-              row
-            )
-          )
-          .map((row) => row.operationId),
-        operationId: null,
-      };
-      await this.save(key, intent);
+      return { state: "legacy-absent", already: false };
     }
 
     // The wallet may have signed just before a crash, before our callback could bind its ID.
@@ -243,9 +197,9 @@ export class NativeGrants implements NativeGrantCapability {
       } else {
         await this.wallet.sendNative({
           recipient: { raw: recipient },
-          value: request.valueWei,
-          maxFee: request.maxFeeWei,
-          minimumRemainingBalance: request.minReserveWei,
+          value: request.valueWei!,
+          maxFee: request.maxFeeWei!,
+          minimumRemainingBalance: request.minReserveWei!,
           onSigned: async (signed) => {
             const candidates = this.rows().filter(
               (row) =>

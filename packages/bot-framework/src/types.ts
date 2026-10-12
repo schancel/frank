@@ -223,6 +223,9 @@ export interface FrankBotDefinition {
   /** The largest single transfer this bot can owe from its own account (a game's biggest
    * payout), in wei. The host warns at registration when its top-up cannot cover it. */
   readonly maxPayoutWei?: bigint;
+  /** Total receive-account balances requested for paid messages, before the host's existing
+   * gas headroom: top up below `belowWei` to `toWei`. Not a per-message transfer amount. */
+  readonly paidMessageFunding?: { belowWei: bigint; toWei: bigint };
   readonly schedules?: BotScheduleDefinition[];
   getProfile(): BotProfile;
   onStart?(ctx: BotContext): Promise<void>;

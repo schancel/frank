@@ -651,8 +651,8 @@ export default defineComponent({
 }
 
 .topic-list-item {
-  border-radius: 8px;
-  margin: 2px 8px;
+  border-radius: 0;
+  margin: 0;
   min-height: 38px;
   transition: background 0.15s ease, color 0.15s ease;
 }

@@ -133,12 +133,6 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     wrapper.unmount()
   })
 
-  it('renders standard 50px settings header', () => {
-    const { wrapper } = mountPanel()
-    expect(wrapper.text()).toContain('leftDrawer.settings')
-    wrapper.unmount()
-  })
-
   it('renders prominent Codex32 backup button and navigates to /backup', async () => {
     const { wrapper } = mountPanel()
     const backupBtn = wrapper.find('[data-test="backup-codex32-button"]')

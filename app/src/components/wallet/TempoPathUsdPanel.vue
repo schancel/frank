@@ -216,13 +216,14 @@ import {
 } from 'ethers'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import QrcodeVue from 'qrcode.vue'
-import { copyToClipboard } from 'quasar'
+import { copyToClipboard, Notify } from 'quasar'
 import type {
   TempoPathUsdOperation,
   TempoPathUsdQuote,
 } from '@frank/wallet/chain/tempo-pathusd-operation'
 import type { TempoReceiveItem } from '@frank/wallet/chain/tempo-pathusd-receive'
 import { accountStatus } from '../../accounts/session'
+import { translateMessage } from '../../i18n'
 import {
   openTempoPathUsdWallet,
   type OpenTempoPathUsdWallet,
@@ -403,8 +404,9 @@ async function confirmPayment(): Promise<void> {
   error.value = ''
   review.value = null
   const operationId = hexlify(randomBytes(32))
+  let preparedOperation: TempoPathUsdOperation | null = null
   try {
-    const prepared = await host.wallet.prepare({
+    preparedOperation = await host.wallet.prepare({
       operationId,
       recipient: quote.recipient,
       amountAtomic: quote.amountAtomic,
@@ -414,7 +416,8 @@ async function confirmPayment(): Promise<void> {
     })
     // The user already confirmed this exact operation. An account-view change
     // must not abandon it after its reservation has been persisted.
-    if (host === opened) operations.value = [prepared, ...operations.value]
+    if (host === opened)
+      operations.value = [preparedOperation, ...operations.value]
     const submitted = await host.wallet.submit(operationId)
     if (host !== opened) return
     operations.value = operations.value.map(row =>
@@ -427,6 +430,21 @@ async function confirmPayment(): Promise<void> {
       error.value = `Payment status must be checked before another send. ${String(
         cause,
       )}`
+    } else if (preparedOperation) {
+      // Session revocation can prevent signing, and an exposed operation can still settle.
+      // Keep the original row for recovery and tell the user where to inspect it.
+      Notify.create({
+        message: translateMessage('tempoPayment.interrupted'),
+        html: false,
+        color: 'warning',
+        timeout: 0,
+        actions: [
+          {
+            label: translateMessage('tempoPayment.dismiss'),
+            color: 'black',
+          },
+        ],
+      })
     }
   } finally {
     finishBusy()

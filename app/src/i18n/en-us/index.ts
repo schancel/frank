@@ -26,6 +26,11 @@ export default {
     message: 'Startup has stopped. Your saved data has not been reset.',
     loading: 'Loading saved data',
   },
+  tempoPayment: {
+    interrupted:
+      'A Tempo payment needs review. Return to the account that started it and check Payment activity. Resume the same payment there if prompted; do not create another payment for it.',
+    dismiss: 'Dismiss',
+  },
   accountRecovery,
   agree: 'Agree',
   chat: {

@@ -1,10 +1,16 @@
 /** @jest-environment jsdom */
 import { enableAutoUnmount, flushPromises, shallowMount } from '@vue/test-utils'
 import { nextTick } from 'vue'
+import { Notify } from 'quasar'
 import TempoPathUsdPanel from './TempoPathUsdPanel.vue'
 import { accountStatus } from '../../accounts/session'
 
 enableAutoUnmount(afterEach)
+
+jest.mock('quasar', () => ({
+  copyToClipboard: jest.fn(),
+  Notify: { create: jest.fn() },
+}))
 
 const mockOpen = jest.fn()
 jest.mock('../../accounts/session', () => ({
@@ -98,6 +104,7 @@ const stubs = {
 
 beforeEach(() => {
   mockOpen.mockReset()
+  jest.mocked(Notify.create).mockClear()
   mockStatus.status = 'ready'
   mockStatus.revision++
 })
@@ -242,4 +249,44 @@ test('account revision during prepare still submits the confirmed operation befo
   await flushPromises()
   expect(wallet.submit).toHaveBeenCalledTimes(1)
   expect(close).toHaveBeenCalledTimes(1)
+})
+
+test('revoked signer after account switch keeps the prepared operation and gives a persistent recovery notice', async () => {
+  const { wallet, close } = fixture()
+  let finishPrepare: ((value: unknown) => void) | undefined
+  wallet.prepare.mockImplementationOnce(
+    () =>
+      new Promise(resolve => {
+        finishPrepare = resolve
+      }),
+  )
+  wallet.submit.mockRejectedValueOnce(new Error('CustodyError/closed'))
+  const wrapper = shallowMount(TempoPathUsdPanel, { global: { stubs } })
+  await flushPromises()
+  const state = controls(wrapper)
+  state.recipient = recipient
+  state.amount = '1'
+  await state.reviewPayment()
+  const sending = state.confirmPayment()
+  await nextTick()
+  mockStatus.revision++
+  await nextTick()
+  finishPrepare?.({
+    operationId: '0x' + 'ab'.repeat(32),
+    amountAtomic: '1000000',
+    recipient,
+    exposed: false,
+    observation: { state: 'unknown' },
+  })
+  await sending
+  await flushPromises()
+  expect(wallet.submit).toHaveBeenCalledTimes(1)
+  expect(close).toHaveBeenCalledTimes(1)
+  expect(Notify.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      html: false,
+      timeout: 0,
+      message: expect.stringContaining('Resume the same payment'),
+    }),
+  )
 })

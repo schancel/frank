@@ -1,7 +1,10 @@
 /** @jest-environment jsdom */
 import { mount, flushPromises } from '@vue/test-utils'
 import type { RecipientAssetPaymentItem } from '@frank/cashweb/types/messages'
-import type { StealthPaymentReceiptObservation } from '@frank/wallet/stealth-payment'
+import type {
+  StealthPaymentReceiptObservation,
+  StealthPaymentReceiptClaim,
+} from '@frank/wallet/stealth-payment'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import ChatMessageStealthAsset from './ChatMessageStealthAsset.vue'
 import { translateMessage } from '../../../i18n'
@@ -330,4 +333,68 @@ test('French presentation localizes verification state and exact atomic units', 
   expect(wrapper.get('[data-testid="asset-status"]').text()).toBe(
     'Vérification indisponible',
   )
+})
+
+test('expired same-object context clears every verified result when one claim completed before another blocked claim', async () => {
+  let completeSecond!: (value: StealthPaymentReceiptObservation) => void
+  let active = true
+  const payment = item()
+  payment.transfers.push({
+    ...transfer('monad-testnet', '17'),
+    stealthMetadata: { keyType: 1, ephemeralPubKey: `03${'22'.repeat(32)}` },
+    destination: '34'.repeat(20),
+    txId: 'ef'.repeat(32),
+    rawTx: '040506',
+  })
+  payment.transfers.push({
+    ...transfer('monad-testnet', '19'),
+    derivationScheme: 99,
+  })
+  const observe = jest.fn(
+    async (
+      claim: StealthPaymentReceiptClaim,
+    ): Promise<StealthPaymentReceiptObservation> => {
+      if (claim.amountAtomic === 17n)
+        return new Promise(resolve => {
+          completeSecond = resolve
+        })
+      return {
+        status: 'succeeded',
+        intendedAmountAtomic: claim.amountAtomic,
+        verifiedReceivedAmountAtomic: claim.amountAtomic,
+        spendability: 'spendable',
+      }
+    },
+  )
+  const ctx = {
+    ...context(),
+    observe,
+    receipts: jest.fn(() => ({ observe })),
+    assertCurrent: () => {
+      if (!active) throw new Error('session expired')
+    },
+  }
+  const wrapper = render({ item: payment, observationContext: ctx })
+  await flushPromises()
+  expect(observe).toHaveBeenCalledTimes(2)
+  expect(wrapper.find('[data-testid="asset-verified"]').exists()).toBe(false)
+  active = false
+  completeSecond({
+    status: 'succeeded',
+    intendedAmountAtomic: 17n,
+    verifiedReceivedAmountAtomic: 17n,
+    spendability: 'spendable',
+  })
+  await flushPromises()
+  const rows = wrapper.findAll('[data-testid="asset-payment-row"]')
+  expect(
+    rows.map(row => row.get('[data-testid="asset-status"]').text()),
+  ).toEqual([
+    'Verification unavailable',
+    'Verification unavailable',
+    'Unsupported payment',
+  ])
+  expect(wrapper.find('[data-testid="asset-verified"]').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('Reserved by another payment')
+  expect(wrapper.text()).not.toContain('No unspent funds remain')
 })

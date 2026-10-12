@@ -149,23 +149,40 @@ export default defineComponent({
     let generation = 0
     async function refresh() {
       const captured = ++generation
+      const context = props.observationContext
       claimError.value = false
       try {
         const initial = recipientAssetRows(
           props.item,
           props.assetOptions,
-          props.observationContext,
+          context,
           props.outbound,
           props.transactionUrl,
         )
         rows.value = initial
         if (props.outbound) return
         const observed = await Promise.all(
-          initial.map(row =>
-            observeRecipientAssetRow(row, props.observationContext),
-          ),
+          initial.map(row => observeRecipientAssetRow(row, context)),
         )
-        if (captured === generation) rows.value = observed
+        if (captured === generation) {
+          // Individual observations can finish on opposite sides of account expiry. Check
+          // the captured lifetime again before publishing any member of the complete batch.
+          try {
+            context?.assertCurrent()
+            rows.value = observed
+          } catch {
+            rows.value = observed.map(row =>
+              row.claim && row.status !== 'outgoing'
+                ? {
+                    ...row,
+                    status: 'unavailable',
+                    verifiedAmount: undefined,
+                    spendability: undefined,
+                  }
+                : row,
+            )
+          }
+        }
       } catch {
         if (captured === generation) {
           rows.value = []

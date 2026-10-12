@@ -31,6 +31,8 @@ export type StealthDialogQuoteState =
       readonly payment: StealthPaymentQuote
       readonly maxNativeFeeAtomic: bigint
       readonly stampValueAtomic: bigint
+      /** Estimated sender network fee, separate from the recipient stamp amount. */
+      readonly stampFeeAtomic: bigint
       readonly stampUnit: string
       readonly stampDecimals: number
     }

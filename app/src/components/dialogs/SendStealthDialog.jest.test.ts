@@ -102,6 +102,7 @@ function quoteFor(
     request,
     maxNativeFeeAtomic: 20n,
     stampValueAtomic: 1000000000000n,
+    stampFeeAtomic: 2000000000n,
     stampUnit: 'MONT',
     stampDecimals: 18,
     payment: {
@@ -180,6 +181,9 @@ describe('multiasset stealth review dialog', () => {
     expect(wrapper.find('[data-testid="stealth-fee-ceiling"]').text()).toBe(
       '0.00000000000000002 MONT',
     )
+    expect(
+      wrapper.find('[data-testid="stealth-message-stamp-fee"]').text(),
+    ).toBe('0.000000002 MONT')
     expect(wrapper.find('[data-testid="stealth-message-stamp"]').text()).toBe(
       '0.000001 MONT',
     )

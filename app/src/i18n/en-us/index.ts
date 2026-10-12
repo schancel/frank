@@ -833,7 +833,8 @@ export default {
   },
   sendStealthDialog: {
     nativeBalance: 'Native balance',
-    insufficientFunds: 'Insufficient asset or native balance for this payment and its network fee.',
+    insufficientFunds:
+      'Insufficient asset or native balance for this payment and its network fee.',
 
     assetLabel: 'Asset and network',
     reviewBtnLabel: 'Review payment',
@@ -841,6 +842,7 @@ export default {
     recipientAmount: 'Recipient amount',
     nativeFee: 'Network fee',
     feeCeiling: 'Maximum network fee',
+    messageStampFee: 'Estimated message network fee',
     messageStamp: 'Message stamp',
 
     preparing: 'Preparing stealth payment: {amount}',

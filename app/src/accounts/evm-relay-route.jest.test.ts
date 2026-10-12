@@ -3,7 +3,8 @@ import { verifyEvmRelayRoute } from './evm-wallet-verification'
 
 const id = 'hyperliquid-testnet'
 const entry = getChainRegistryEntry(id)
-if (!entry?.networkTag) throw new Error('Hyperliquid registry entry unavailable')
+if (!entry?.networkTag)
+  throw new Error('Hyperliquid registry entry unavailable')
 const config = {
   chainIdentifier: id,
   networkId: id,

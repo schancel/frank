@@ -78,6 +78,24 @@ describe('BlackjackChallengeForm', () => {
     mockBalance.value = HAND_FEE_RESERVE_WEI + 4_000n
   })
 
+  it('distinguishes the table limit from the later paid bet and makes pending preparation cancellable', async () => {
+    const w = mountForm()
+    await w.find('[data-testid="blackjack-challenge-max"]').setValue('100')
+    expect(
+      w.find('[data-testid="blackjack-challenge-review"]').text(),
+    ).toContain('confirm your bet after')
+    await w.setProps({ busy: true })
+    expect(
+      w.find('[data-testid="blackjack-challenge-pending"]').attributes('role'),
+    ).toBe('status')
+    expect(send(w).attributes('disabled')).toBeDefined()
+    ;(w.vm as any).submit()
+    expect(w.emitted('submit')).toBeUndefined()
+    await w.find('[data-testid="blackjack-challenge-cancel"]').trigger('click')
+    expect(w.emitted('cancel')).toHaveLength(1)
+    w.unmount()
+  })
+
   it('starts on the player role, the one a dealer bot can answer', () => {
     expect((mountForm().vm as any).role).toBe('player')
   })

@@ -46,6 +46,11 @@ describe('SendStealthDialog', () => {
         directives: { 'close-popup': {} },
         stubs: {
           QCard: { template: '<div><slot /></div>' },
+          QForm: {
+            emits: ['submit'],
+            template:
+              '<form @submit.prevent="$emit(\'submit\', $event)"><slot /></form>',
+          },
           QCardSection: { template: '<div><slot /></div>' },
           QCardActions: { template: '<div><slot /></div>' },
           QSelect: {
@@ -59,8 +64,9 @@ describe('SendStealthDialog', () => {
               '<div><input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" /><span v-if="error" class="error-text">{{ errorMessage }}</span></div>',
           },
           QBtn: {
-            props: ['disable'],
-            template: '<button :disabled="disable"><slot /></button>',
+            props: ['disable', 'label'],
+            template:
+              '<button :disabled="disable">{{ label }}<slot /></button>',
           },
         },
       },
@@ -78,6 +84,20 @@ describe('SendStealthDialog', () => {
     expect(wrapper.find('[data-testid="stealth-wallet-select"]').exists()).toBe(
       false,
     )
+  })
+
+  it('resolves the contact profile name, offers Send as the default form action, and falls back to address', async () => {
+    const wrapper = mountDialog({ contact: { profile: { name: 'Qwen' } } })
+    expect(wrapper.text()).toContain('Send Stealth Payment to Qwen')
+    const send = wrapper.get('[data-testid="stealth-send-confirm-btn"]')
+    expect(send.text()).toBe('Send')
+    expect(send.attributes('type')).toBe('submit')
+    await wrapper.setProps({ contact: {} })
+    expect(wrapper.text()).toContain('Send Stealth Payment to 0xAlice')
+    await wrapper.setData({ amount: '1' })
+    await wrapper.setProps({ busy: true })
+    await wrapper.get('form').trigger('submit')
+    expect(wrapper.emitted('send')).toBeUndefined()
   })
 
   it('shows the wallet real balance, and no figure at all while it is not known', async () => {
@@ -106,7 +126,7 @@ describe('SendStealthDialog', () => {
     const wrapper = mountDialog()
     await wrapper.setData({ amount: '2.5', memo: '  lunch  ' })
     expect((wrapper.vm as any).canSend).toBe(true)
-    ;(wrapper.vm as any).sendStealth()
+    await wrapper.get('form').trigger('submit')
 
     const emitted = wrapper.emitted('send')
     expect(emitted).toHaveLength(1)

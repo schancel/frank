@@ -108,7 +108,7 @@ stubs.QDialog = defineComponent({
 })
 const FormStub = defineComponent({
   props: ['busy'],
-  emits: ['submit'],
+  emits: ['submit', 'cancel'],
   setup: () => () => h('div', { 'data-stub': 'challenge-form' }),
 })
 const Bubble = defineComponent({
@@ -122,6 +122,7 @@ async function mountChat(
     realInput?: boolean
     address?: string
     seedMessage?: boolean
+    translate?: (key: string) => string
   } = {},
 ) {
   const address = options.address ?? DEALER
@@ -165,7 +166,7 @@ async function mountChat(
       mocks: {
         $route: { params: { address } },
         $q: { dark: { isActive: false } },
-        $t: (key: string) => key,
+        $t: options.translate ?? ((key: string) => key),
       },
     },
   })
@@ -283,6 +284,69 @@ describe('Chat.vue blackjack wiring (mounted)', () => {
     // A challenge carries the chat's ordinary stamp, nothing more.
     expect(sent.stampValue).toBe(activeChain.fromDisplayAmount(vm.stampAmount))
     expect(wrapper.findComponent(FormStub).exists()).toBe(false)
+  })
+
+  it.each(['cancel', 'conversation', 'wallet'] as const)(
+    'prepares a challenge with immediate feedback and never sends after %s changes its captured context',
+    async change => {
+      const { wrapper } = await mountChat(undefined, { realInput: true })
+      await wrapper.find('[data-testid="blackjack-menu-item"]').trigger('click')
+      const form = wrapper.findComponent(FormStub)
+      const vm = wrapper.vm as any
+      let finish!: (balance: bigint) => void
+      jest
+        .spyOn(activeChain.nativeTransfers, 'getBalance')
+        .mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              finish = resolve
+            }),
+        )
+      vm.sendDirectMessage = jest.fn()
+      form.vm.$emit('submit', { role: 'player', maxBetWei: 10n ** 17n })
+      await flushPromises()
+      expect(vm.blackjackPreparing).toBe(true)
+      expect(wrapper.findComponent(FormStub).props('busy')).toBe(true)
+      // Repeated submit while preparation waits never starts a second operation.
+      form.vm.$emit('submit', { role: 'player', maxBetWei: 10n ** 17n })
+      await flushPromises()
+      if (change === 'cancel') form.vm.$emit('cancel')
+      else if (change === 'conversation') vm.address = SELF
+      else
+        mockUseMonadWallet.mockReturnValue({
+          ...mockUseMonadWallet(),
+          changed: true,
+        })
+      finish(10n ** 18n)
+      await flushPromises()
+      expect(vm.sendDirectMessage).not.toHaveBeenCalled()
+      expect(vm.blackjackPreparing).toBe(false)
+      wrapper.unmount()
+    },
+  )
+
+  it('keeps a pending default quote visible without translating an empty failure key', async () => {
+    const translate = jest.fn((key: string) => key)
+    const { wrapper, chats } = await mountChat({}, { translate })
+    const vm = wrapper.vm as any
+    vm.defaultStampWei = undefined
+    vm.defaultStampFailure = ''
+    await wrapper.vm.$nextTick()
+    expect(vm.stampUnavailable).toBe('chatInput.stampQuoteUnavailable')
+    expect(translate).not.toHaveBeenCalledWith('chatInput.stampQuoteReasons.')
+    vm.defaultStampFailure = 'missing-fee'
+    await wrapper.vm.$nextTick()
+    expect(vm.stampUnavailable).toBe('chatInput.stampQuoteUnavailableReason')
+    expect(translate).toHaveBeenCalledWith(
+      'chatInput.stampQuoteReasons.missing-fee',
+    )
+    chats.setStampWei({
+      address: vm.conversation?.id || vm.recipientAddress,
+      stampWei: 0n,
+    })
+    await wrapper.vm.$nextTick()
+    expect(vm.stampUnavailable).toBe('')
+    wrapper.unmount()
   })
 
   it('submits the mounted composer to the ordinary stamped store path for self-chat', async () => {

@@ -161,6 +161,7 @@ export default defineComponent({
       type: Array as PropType<string[]>,
       default: () => [],
     },
+    outboundState: { type: String, default: 'unknown' },
     outbound: {
       type: Boolean,
       default: false,
@@ -281,12 +282,15 @@ export default defineComponent({
     title(): string {
       return this.$t(
         this.outbound
-          ? 'chatMessageStealth.sentTitle'
+          ? 'chatMessageStealth.title'
           : 'chatMessageStealth.receivedTitle',
       ) as string
     },
     displayStatus(): string {
-      if (this.outbound) return this.$t('chatMessageStealth.sent') as string
+      if (this.outbound)
+        return this.$t(
+          `chatMessageStealth.outboundState.${this.outboundState}`,
+        ) as string
       switch (this.walletStatus) {
         case 'received':
           return this.$t('chatMessageStealth.received') as string
@@ -301,7 +305,12 @@ export default defineComponent({
       }
     },
     statusColor(): string {
-      if (this.outbound) return 'primary'
+      if (this.outbound)
+        return this.outboundState === 'paid'
+          ? 'positive'
+          : this.outboundState === 'failed' || this.outboundState === 'released'
+          ? 'negative'
+          : 'grey'
       switch (this.walletStatus) {
         case 'received':
           return 'positive'

@@ -32,6 +32,14 @@ import {
   type ExpectedActive,
 } from './custody'
 
+/** Public receive-address failures contain no provider or key material. */
+export class AccountAddressUnavailableError extends Error {
+  constructor(readonly code: 'unknown-network' | 'network-mismatch') {
+    super(code)
+    this.name = 'AccountAddressUnavailableError'
+  }
+}
+
 export type RuntimeWallet = NativeWalletHandle &
   WalletHandle & { close(): Promise<void> }
 export type SessionStatus =
@@ -323,11 +331,6 @@ export function createAccountSession(deps: {
       candidate = undefined
       walletAccount = capability.account.receipt.context.accountId
       walletRevision = latest.revision
-      if (wallet?.identity?.displayAddress) {
-        chainAddressCache.set('monad', wallet.identity.displayAddress)
-        const netId = resolveNetworkId('monad', activeChain.isTestnet ?? false)
-        chainAddressCache.set(netId, wallet.identity.displayAddress)
-      }
       publish(latest)
       state.status = 'ready'
       state.error = null
@@ -492,13 +495,14 @@ export function createAccountSession(deps: {
     },
     getCachedChainAddress(chain: string): string | undefined {
       const isTestnet = activeChain.isTestnet ?? false
-      const netId = resolveNetworkId(chain, isTestnet)
-      if (chain === 'monad' || netId.startsWith('monad-')) {
-        return (
-          chainAddressCache.get(netId) ??
-          chainAddressCache.get('monad') ??
-          wallet?.identity?.displayAddress
-        )
+      const netId =
+        chain === 'monad'
+          ? activeChain.chainIdentifier
+          : resolveNetworkId(chain, isTestnet)
+      if (getChainRegistryEntry(netId)?.kind === 'monad') {
+        // Only a completed receive-address read can seed this cache. The profile
+        // identity is a different account, and another network's entry is not usable.
+        return chainAddressCache.get(netId)
       }
       return (
         chainAddressCache.get(netId) ??
@@ -522,19 +526,39 @@ export function createAccountSession(deps: {
       const checkCurrent = captureDerivation()
       checkCurrent()
       const fallbackTestnet = activeChain.isTestnet ?? false
-      const netId = resolveNetworkId(chain, fallbackTestnet)
+      const netId =
+        chain === 'monad'
+          ? activeChain.chainIdentifier
+          : resolveNetworkId(chain, fallbackTestnet)
       const entry = getChainRegistryEntry(netId)
-      const isTestnet = entry?.isTestnet ?? fallbackTestnet
-      if (chain === 'monad' || netId.startsWith('monad-')) {
-        const wallet = await session.getWallet()
+      if (!entry) throw new AccountAddressUnavailableError('unknown-network')
+      const isTestnet = entry.isTestnet
+      if (entry.kind === 'monad') {
+        // A ready runtime already owns this local address. Reopening runtime stores and
+        // restoring a relay profile is not part of formatting a receive address.
+        if (state.status !== 'ready') await session.initialize()
         checkCurrent()
-        let address: unknown
-        if (typeof (wallet as any).getReceiveAddress === 'function') {
-          address = await (wallet as any).getReceiveAddress()
-        } else if (wallet.identity?.displayAddress) {
-          address = wallet.identity.displayAddress
-        }
+        if (
+          state.status !== 'ready' ||
+          !wallet ||
+          state.account?.receipt.context.accountId !== walletAccount ||
+          state.revision !== walletRevision
+        )
+          throw new CustodyError('locked')
+        if (wallet.chainIdentifier !== netId)
+          throw new AccountAddressUnavailableError('network-mismatch')
+        const owner = wallet
+        const address = await owner.getReceiveAddress()
         checkCurrent()
+        if (
+          state.status !== 'ready' ||
+          wallet !== owner ||
+          state.account?.receipt.context.accountId !== walletAccount ||
+          state.revision !== walletRevision
+        )
+          throw new CustodyError('closed')
+        if (chain === 'monad' && activeChain.chainIdentifier !== netId)
+          throw new AccountAddressUnavailableError('network-mismatch')
         const formatted =
           typeof address === 'string'
             ? address
@@ -770,7 +794,7 @@ export function createAccountSession(deps: {
           return [
             ...exportHistoricalCodex32Backup({
               seed,
-              threshold: threshold as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+              threshold: threshold as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
               shareCount: count,
               randomBytes: length =>
                 crypto.getRandomValues(new Uint8Array(length)),
@@ -792,7 +816,7 @@ export function createAccountSession(deps: {
             accountRoot: exported.accountRoot,
             // The root must reproduce this account's own recorded fingerprint.
             expected: decodeRecoveryDescriptor(exported.account.descriptor),
-            threshold: threshold as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+            threshold: threshold as 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
             shareCount: count,
             randomBytes: length =>
               crypto.getRandomValues(new Uint8Array(length)),

@@ -88,7 +88,7 @@ describe('WalletPanel Backup Account (Codex32) (Issue #848, #1042)', () => {
     const view = render()
     const btn = view.find('[data-test="backup-codex32-button"]')
     expect(btn.exists()).toBe(true)
-    expect(btn.text()).toContain('Backup account (Codex32)')
+    expect(btn.text()).toContain('Backup account')
     const footer = view.get('[data-test="wallet-backup-footer"]')
     const scroll = view.get('[data-test="wallet-list-scroll"]')
     expect(footer.element.contains(btn.element)).toBe(true)

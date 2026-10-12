@@ -77,7 +77,7 @@
       <div class="chart-container" data-test="macro-chart-container">
         <svg
           class="chart-svg cursor-crosshair"
-          viewBox="0 0 680 290"
+          viewBox="0 0 640 290"
           preserveAspectRatio="xMidYMid meet"
           data-test="macro-chart-svg"
           @mouseleave="leaveChart"
@@ -136,30 +136,6 @@
             />
           </g>
 
-          <!-- Scale labels stay anchored inside the chart. -->
-          <template v-for="side in axisLabels" :key="`axis-${side.axis}`">
-            <text
-              v-for="end in side.ends"
-              :key="`${side.axis}-${end.name}`"
-              :x="side.axis === 'left' ? 4 : 676"
-              :y="end.y"
-              dominant-baseline="middle"
-              font-size="10"
-              :text-anchor="side.axis === 'left' ? 'start' : 'end'"
-              :data-test="`chart-${end.name}-label-${side.axis}`"
-            >
-              <tspan
-                v-for="(label, index) in end.labels"
-                :key="label.id"
-                :dx="index === 0 ? 0 : 10"
-                :fill="label.color"
-                :data-test="`chart-scale-${end.name}-${label.id}`"
-              >
-                {{ label.text }}
-              </tspan>
-            </text>
-          </template>
-
           <line
             v-if="hovered"
             :x1="hovered.x"
@@ -208,14 +184,43 @@
               :x="column.x"
               y="248"
               font-size="11"
-              text-anchor="middle"
+              :text-anchor="column.anchor"
               :fill="themeColors.text"
               class="unselectable"
+              data-test="chart-time-tick"
             >
               {{ column.tick }}
             </text>
           </g>
         </svg>
+        <div
+          v-for="side in axisLabels"
+          :key="side.axis"
+          class="chart-scale"
+          :style="{
+            gridTemplateRows: `${Y_TOP}fr ${Y_BOTTOM - Y_TOP}fr ${
+              290 - Y_BOTTOM
+            }fr`,
+          }"
+          data-test="chart-scale"
+        >
+          <div class="chart-scale-bounds">
+            <div
+              v-for="end in side.ends"
+              :key="end.name"
+              :data-test="`chart-${end.name}-label-${side.axis}`"
+            >
+              <span
+                v-for="label in end.labels"
+                :key="label.id"
+                :style="{ color: label.color }"
+                :data-test="`chart-scale-${end.name}-${label.id}`"
+              >
+                {{ label.text }}
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div
@@ -288,6 +293,8 @@ import {
   avuSpotAt,
   priceAssetId,
   seriesName,
+  mergeSeries,
+  type OracleFeed,
   type OracleInputs,
   type SupportedAsset,
 } from '@frank/wallet/oracle'
@@ -331,7 +338,7 @@ const themeColors = computed(() =>
 )
 
 const DAY = 86_400
-/** How far back each range reaches and how fine its points are, in seconds. */
+/** Range duration and requested history resolution, in seconds. */
 const RANGES = {
   // Bitcoin's bundled history begins in 2010; nothing older can be asked for.
   'all': { span: Infinity, step: 30 * DAY },
@@ -477,22 +484,36 @@ interface Series {
   gaps: number[]
 }
 
+// Only the current zoom holds unthinned history; old detailed intervals never accumulate.
+const detailedHistory = ref<OracleFeed[]>([])
+const historyInputs = computed<OracleInputs | undefined>(() => {
+  const held = inputs.value
+  if (!held) return undefined
+  const series = { ...held.series }
+  for (const feed of detailedHistory.value) {
+    for (const [name, received] of Object.entries(feed.series)) {
+      series[name] = {
+        ...received,
+        points: mergeSeries(series[name]?.points ?? [], received.points),
+      }
+    }
+  }
+  return { ...held, series }
+})
+
 /** Only actual selected-coin price timestamps provide historical observations. */
 const sampleTimes = computed<number[]>(() => {
-  const points = inputs.value?.series[tokenPriceSeries.value]?.points ?? []
-  const range = timeRange.value
+  const points =
+    historyInputs.value?.series[tokenPriceSeries.value]?.points ?? []
   const now = Math.floor(Date.now() / 1000)
-  const lastInStep = new Map<number, number>()
-  for (const [time] of points) {
-    if (time < rangeStart.value || time > now) continue
-    const bucket = Math.floor(time / range.step)
-    if ((lastInStep.get(bucket) ?? -1) < time) lastInStep.set(bucket, time)
-  }
-  return Array.from(lastInStep.values()).sort((a, b) => a - b)
+  // Request resolution must not discard finer observations already held in the cache.
+  return points
+    .filter(([time]) => time >= rangeStart.value && time <= now)
+    .map(([time]) => time)
 })
 
 const rangeSeries = computed<Series[]>(() => {
-  const feed = inputs.value
+  const feed = historyInputs.value
   if (!feed || denomination.value === 'gold') return []
   const points: DataPoint[] = []
   const gaps: number[] = []
@@ -526,6 +547,13 @@ const rangeSeries = computed<Series[]>(() => {
 
 // Drag across the chart to zoom to that stretch. Zooming only hides points outside it.
 const zoom = ref<{ min: number; max: number } | null>(null)
+watch(
+  zoom,
+  () => {
+    detailedHistory.value = []
+  },
+  { flush: 'sync' },
+)
 const series = computed<Series[]>(() => {
   const window = zoom.value
   if (!window) return rangeSeries.value
@@ -537,18 +565,25 @@ const series = computed<Series[]>(() => {
 
 function formatAt(at: number): string {
   const date = new Date(at * 1000)
-  if (selectedRange.value === 'all' || selectedRange.value === '5y') {
+  const extent = timeExtent.value
+  const span = extent ? extent.max - extent.min : 0
+  if (span > 365 * DAY) {
     return date.toLocaleDateString(undefined, {
       month: 'short',
       year: 'numeric',
     })
   }
-  return selectedRange.value === '24h'
-    ? date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return span <= 2 * DAY
+    ? date.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
     : date.toLocaleDateString(undefined, {
         month: 'short',
         day: 'numeric',
-        ...(selectedRange.value === '1y' ? { year: '2-digit' } : {}),
+        ...(span > 90 * DAY ? { year: '2-digit' } : {}),
       })
 }
 
@@ -626,8 +661,8 @@ const axisLabels = computed(() =>
       return {
         axis,
         ends: [
-          { name: 'max', y: Y_TOP, labels: labels('maxLabel') },
-          { name: 'min', y: Y_BOTTOM, labels: labels('minLabel') },
+          { name: 'max', labels: labels('maxLabel') },
+          { name: 'min', labels: labels('minLabel') },
         ],
       }
     })
@@ -639,6 +674,7 @@ interface Column {
   x: number
   label: string
   tick: string
+  anchor: 'start' | 'middle' | 'end'
 }
 
 const columns = computed<Column[]>(() => {
@@ -646,13 +682,35 @@ const columns = computed<Column[]>(() => {
   const positions = Array.from(
     new Set(series.value.flatMap(s => s.points.map(p => p.at))),
   ).sort((a, b) => a - b)
-  const every = Math.max(1, Math.ceil(positions.length / 7))
-  return positions.map((at, index) => ({
+  // Choose by time position, not sample index: irregular observations must not bunch
+  // labels together. Three ticks and endpoint anchors fit the narrow SVG too.
+  const ticks = new Set<number>()
+  if (positions.length) {
+    ticks.add(positions[0])
+    const last = positions[positions.length - 1]
+    ticks.add(last)
+    const middle = positions.reduce((best, at) =>
+      Math.abs(xOf(at) - (X_MIN + X_MAX) / 2) <
+      Math.abs(xOf(best) - (X_MIN + X_MAX) / 2)
+        ? at
+        : best,
+    )
+    if (xOf(middle) - X_MIN >= 170 && X_MAX - xOf(middle) >= 170)
+      ticks.add(middle)
+  }
+  return positions.map<Column>((at, index) => ({
     key: at,
     x: Math.round(xOf(at) * 10) / 10,
     label: formatAt(at),
-    tick:
-      index % every === 0 || index === positions.length - 1 ? formatAt(at) : '',
+    tick: ticks.has(at) ? formatAt(at) : '',
+    anchor:
+      positions.length === 1
+        ? 'middle'
+        : index === 0
+        ? 'start'
+        : index === positions.length - 1
+        ? 'end'
+        : 'middle',
   }))
 })
 
@@ -730,13 +788,17 @@ const dataNote = computed(() => {
         })
       : t('walletPanel.chartNoteNoTokenPrice', { symbol: unit.value.symbol })
   const parts = [
-    drawn.length === 1
-      ? t('walletPanel.priceHistorySinglePoint')
-      : t('walletPanel.priceHistoryPoints', {
-          count: drawn.length,
-          first: drawn[0].label,
-        }),
+    t('walletPanel.priceHistoryCoverage', {
+      count: drawn.length,
+      first: drawn[0].label,
+      last: drawn[drawn.length - 1].label,
+      range:
+        rangeToggleOptions.value.find(
+          option => option.value === selectedRange.value,
+        )?.label ?? '',
+    }),
   ]
+  if (drawn.length === 1) parts.push(t('walletPanel.priceHistorySinglePoint'))
   if (series.value.some(line => line.points.some(point => point.estimated)))
     parts.push(t('walletPanel.avuHashEstimated'))
   if (oracle.valuesAreTestnet) parts.push(t('walletPanel.chartNoteTestnet'))
@@ -746,10 +808,36 @@ const dataNote = computed(() => {
 // While this chart is on screen, the oracle's local series are made to hold the range it
 // shows: the feed is asked only for the stretches they lack. Nothing is drawn until real
 // data is there.
-useOracleHistory(() => {
-  const range = timeRange.value
-  return range ? { since: rangeStart.value, step: range.step } : null
-})
+useOracleHistory(
+  () => {
+    const range = timeRange.value
+    const window = zoom.value
+    if (!window) return { since: rangeStart.value, step: range.step }
+    const span = window.max - window.min
+    const resolution = Object.values(RANGES)
+      .filter(candidate => candidate.span >= span)
+      .reduce((step, candidate) => Math.min(step, candidate.step), range.step)
+    return { since: window.min, until: window.max, step: resolution }
+  },
+  feeds => {
+    if (zoom.value) detailedHistory.value = feeds
+  },
+)
+
+// A newly collected coin can have its whole history in one monthly bucket. Keep the
+// full-range request above and also ask for recent observations at hourly resolution.
+// 30 days is at most 720 steps, within the feed's range bound. No timestamp is invented.
+useOracleHistory(() =>
+  timeRange.value.step > 3600 && !zoom.value
+    ? {
+        since: Math.max(
+          rangeStart.value,
+          Math.floor(Date.now() / 1000) - 30 * DAY,
+        ),
+        step: 3600,
+      }
+    : null,
+)
 </script>
 
 <style scoped>
@@ -773,7 +861,23 @@ useOracleHistory(() => {
   border-radius: 8px;
 }
 .chart-container {
-  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  column-gap: 8px;
+}
+.chart-scale {
+  display: grid;
+  min-width: 5.5em;
+  font-size: 12px;
+  line-height: 1.2;
+}
+.chart-scale-bounds {
+  grid-row: 2;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  white-space: nowrap;
 }
 .chart-svg {
   width: 100%;

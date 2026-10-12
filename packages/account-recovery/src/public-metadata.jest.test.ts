@@ -38,7 +38,33 @@ const errorCode = (
       code,
       message: `Frank account recovery failed: ${code}`,
     })
-    expect(Object.keys(error as object).sort()).toEqual(['code', 'name'])
+    const diagnostic = error as AccountRecoveryError
+    const keys = ['code', 'name']
+    if (diagnostic.shares) {
+      keys.push('shares')
+      for (const share of diagnostic.shares)
+        expect(Object.keys(share).sort()).toEqual([
+          'candidates',
+          'code',
+          'identifier',
+          'index',
+          'position',
+          'status',
+        ])
+    }
+    if (diagnostic.insufficientSets) {
+      keys.push('insufficientSets')
+      for (const set of diagnostic.insufficientSets)
+        expect(Object.keys(set).sort()).toEqual([
+          'available',
+          'identifier',
+          'required',
+        ])
+    }
+    expect(Object.keys(diagnostic).sort()).toEqual(keys.sort())
+    expect(JSON.stringify(diagnostic)).not.toMatch(
+      /(?:ms1|fr1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20}/,
+    )
   }
 }
 const encodePayload = (

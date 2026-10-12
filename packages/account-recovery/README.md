@@ -1,6 +1,6 @@
 # `@frank/account-recovery`
 
-This package owns Frank's transient Codex32 signup and recovery ceremonies. It
+This package owns Frank's transient signup and recovery ceremonies and Frank Recovery Shares. It
 composes `@frank/codex32` with the frozen `@frank/domain-roots` registry.
 Public encoding uses only `@frank/nakamoto/bech32` and `convert-bits` leaf
 modules; the browser bundle check rejects chain, key, wallet, storage and UI
@@ -9,8 +9,7 @@ modules. Commitments use the existing pinned Noble SHA-256 dependency.
 Signup parameters are explicit: the caller chooses the threshold, identifier,
 share indices, and CSPRNG. The ceremony returns encoded threshold shares but
 releases no domain roots until the caller supplies an exact threshold set
-that reconstructs the complete canonical 103-symbol payload generated for that
-ceremony. It never creates or exposes an encoded Codex32 `s` secret.
+that reconstructs the original account root generated for that ceremony. It never creates or exposes an encoded Codex32 `s` secret.
 
 `pending.publicDescriptor` is available during transient signup for independent
 backup. `pending.confirmWithMetadata(shares)` returns `{ roots, metadata,
@@ -19,8 +18,7 @@ accountRoot }` after exact recovery verification; restore returns the same shape
 `destroyRecoveredAccount`.
 
 `exportCodex32Backup({ accountRoot, expected, threshold, shareCount, randomBytes })`
-issues a new share set for an existing account. It wraps R as the same master
-`R || V` that signup splits, refuses with `descriptor-mismatch` unless that master
+issues a new Frank Recovery Share set for an existing account. It refuses with `descriptor-mismatch` unless that master
 reproduces the account's recorded public fingerprint (so a derived domain root or
 another account's root cannot be split), reads the new shares back, and gives the
 set a fresh random identifier. Share sets are independent: shares from two sets
@@ -77,7 +75,7 @@ with another family; `descriptor-mismatch` is terminal and no domain roots are
 derived. Success and cancellation also consume the session. Selecting a new
 descriptor requires a new session. The caller owns the independent trust source,
 account/ceremony binding, async attempt fencing, and UI cleanup. A valid checksum
-or a self-comparison cannot establish that trust.
+or a self-comparison cannot establish that trust. Descriptor pinning is optional in the mixed-share app flow; several valid accounts require an explicit user choice.
 
 Malformed descriptors/fingerprints raise `AccountRecoveryError` with stable
 `invalid-descriptor` / `invalid-fingerprint` codes; unknown format or registry
@@ -116,23 +114,56 @@ recomputes it using Node/OpenSSL and a separate Bech32m implementation. The
 Codex32 and domain-root package suites and domain-root vector checker must also
 pass. No real account material belongs in these fixtures.
 
-## Original historical BIP39 seed backups
+## Frank Recovery Shares
 
-`exportHistoricalCodex32Backup({ seed, threshold, shareCount, randomBytes })`
-backs up the exact original 64-byte PBKDF2 seed. Each returned paper share is
-`frank-bip39-v1:<seed-share>:<check-share>`, pairing a standard 64-byte Codex32
-payload with a standard 32-byte validation payload. Both components must be kept
-together. They use the same threshold, identifier and index, but independent
-sharing polynomials. Validation is SHA256 of UTF-8
-`frank/bip39-backup/v1\0frank-bip39-bip32-v1\0` followed by all 64 seed bytes.
-The prefix selects the historical derivation and validation binds it to the seed.
-No seed is truncated, hashed into a root, or interpreted as an HKDF domain root.
+New signup and backup output is **Frank Recovery Shares**, an application format based
+on Codex32's GF(32) Shamir construction and long BCH code, not a standard Codex32
+master-seed encoding. `@frank/codex32` standard APIs and vectors remain unchanged.
 
-`recoverAccountBackupShares` searches both current root backups and these
-historical envelopes with the existing per-set subset bound. It returns explicit
-candidates: current `{ roots, metadata, accountRoot }` or historical
-`{ derivation: 'frank-bip39-bip32-v1', seed }`. Mixed complete backups remain
-separate candidates for an explicit user choice. Call `destroyRecoveredBackup`
-after copying the chosen secret into custody. Existing root-only APIs and
-Codex32 master-seed lengths are unchanged. There is no new persistent format: a
-historical result is staged using the existing BIP39 custody format.
+`exportRecoveryShares({ format, secret, threshold, shareCount, randomBytes })` is the
+common writer for original 32-byte account roots (`format: 'root'`) and original
+64-byte BIP39 PBKDF2 seeds (`format: 'historical'`). Both use one encoding and splitting
+pass over `secret || validation32`. BIP39 is only an upstream secret producer and its
+historical derivation only a downstream consumer. The root and historical backup
+adapters call this same writer. No seed is truncated, hashed into a new account root,
+or otherwise converted. This preserves the declared secret/derivation; it does not
+recover legacy family material that was derived from a phrase by a different algorithm.
+
+One share is `fr1` followed by ten unshared base32 metadata symbols, the shared
+payload symbols, and fifteen long BCH symbols. Metadata, in order:
+
+| Symbols | Meaning                                                  |
+| ------- | -------------------------------------------------------- |
+| 1       | version, value 1                                         |
+| 1       | secret format: root=0, historical BIP39=1                |
+| 2       | secret byte length, high/low five bits: literal 32 or 64 |
+| 1       | threshold, 1–9                                           |
+| 4       | random set identifier                                    |
+| 1       | share index, any field coordinate except `s`             |
+
+Threshold 1 emits exactly one share. Share count is not required for reconstruction.
+Strings are 131 characters (root32) or 182 (seed64); expanded BCH lengths are 133/184,
+within the 96–1023 long-code bound. Uniform upper/lower case is accepted, mixed case
+is rejected. The BCH covers HRP expansion of `fr`, all metadata and shared payload.
+
+The validation digest is SHA256 of ASCII `frank/recovery-share/v1` + NUL, nine raw
+five-bit metadata bytes excluding share index, derivation-context ASCII + NUL,
+and the unchanged secret. Contexts are `frank-root-v1` and `frank-bip39-bip32-v1`.
+All secret and digest symbols are shared together at Codex32's `s` coordinate.
+Reconstruction requires zero residual padding and the complete inner digest match.
+Every emitted threshold window is decoded and validated before the writer returns.
+
+`recoverAccountBackupShares` is the common bounded search across both secret types.
+Groups include full version, format, length, threshold and identifier. Conflicting
+same-index payloads are searched without putting two equal indices in one subset.
+At most 31 strings and 5000 subsets per group are examined. Account duplicates merge
+supporting positions across sets; multiple accounts remain explicit choices.
+Malformed inputs have per-share diagnostics; incomplete groups expose public
+`required`/`available` counts. The existing common stage/activation/reopen flow owns
+custody, and the caller wipes recovered material with `destroyRecoveredBackup`.
+
+Previously issued `ms1...` root shares and `frank-bip39-v1:<seed>:<check>` paired
+historical shares remain **recovery-only** by explicit owner authorization.
+`parseAccountBackupShareInput` also joins the two adjacent standard lines of an issued
+paired share. No production writer emits either old format. They use isolated reader
+adapters into bounded search; no persisted account migration or key reset occurs.

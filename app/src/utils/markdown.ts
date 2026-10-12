@@ -1,5 +1,6 @@
 import * as marked from 'marked'
 import DOMPurify from 'dompurify'
+import { addressMentionTokens } from './address-mentions'
 
 import { colors } from 'quasar'
 const { getPaletteColor } = colors
@@ -95,9 +96,14 @@ export function renderMarkdown(
   linkColor: boolean,
   lineBreaks = false,
   attachments?: readonly string[],
+  mentionNames?: Readonly<Record<string, string>>,
 ) {
   const cacheKey = `${linkColor ? 1 : 0}${lineBreaks ? 'b' : ''}${
     attachments ? `i${attachments.join(',')}` : ''
+  }:${
+    mentionNames === undefined
+      ? ''
+      : JSON.stringify(Object.entries(mentionNames).sort())
   }:${input}`
   const cached = cache.get(cacheKey)
   if (cached !== undefined) {
@@ -145,7 +151,12 @@ export function renderMarkdown(
     }
   }
   const result = sanitize(
-    marked.marked(input, { renderer: renderer, breaks: lineBreaks }),
+    mentionNames === undefined
+      ? marked.marked(input, { renderer: renderer, breaks: lineBreaks })
+      : marked.parser(
+          addressMentionTokens(input, mentionNames, lineBreaks).tokens,
+          { renderer: renderer, breaks: lineBreaks },
+        ),
     allowed,
     [QUOTE_STYLE, linkStyle(linkColorHex)],
   )

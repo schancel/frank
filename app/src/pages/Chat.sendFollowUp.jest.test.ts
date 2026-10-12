@@ -262,10 +262,16 @@ describe('Chat.vue priced action availability and custody affinity', () => {
     const self = fakeThis()
     try {
       const sending = methods.sendStealthPayment.call(self, { value: 1n })
+      expect(self.stealthPreparation).toMatchObject({
+        recipient: self.recipientAddress || self.address,
+        amount: '1 MON',
+      })
+      expect(self.sendDirectMessage).not.toHaveBeenCalled()
       expect(useActiveWallet).toHaveBeenCalledTimes(1)
       mockWallet = { id: 'b', ...{ prepareContactPayment: prepareB } }
       release()
       await sending
+      expect(self.stealthPreparation).toBeNull()
       expect(prepareA).not.toHaveBeenCalled()
       expect(prepareB).not.toHaveBeenCalled()
       expect(self.sendDirectMessage).not.toHaveBeenCalled()
@@ -402,7 +408,13 @@ describe('Chat.vue sendFollowUpItems vs the no-throw send outcome (#269/#270)', 
 describe('Chat.vue blackjack challenge', () => {
   const balance = jest.mocked(activeChain.nativeTransfers.getBalance)
   const challengeThis = (over: Record<string, unknown> = {}) => {
-    const self = fakeThis({ blackjackDialog: true, ...over })
+    // Challenge methods capture an incrementing preparation token, initialized by Chat.data.
+    const self = fakeThis({
+      blackjackDialog: true,
+      blackjackPreparing: false,
+      blackjackPreparationSequence: 0,
+      ...over,
+    })
     self.sendFollowUpItems = jest.fn().mockResolvedValue(true)
     return self
   }
@@ -434,6 +446,8 @@ describe('Chat.vue blackjack challenge', () => {
     expect(commitmentOf(seed)).toBe(item.commitment)
     expect(JSON.stringify(item)).not.toContain(seed)
     expect(self.blackjackDialog).toBe(false)
+    expect(self.blackjackPreparationSequence).toBe(1)
+    expect(self.blackjackPreparing).toBe(false)
   })
 
   it('sends a player challenge with no commitment and no seed', async () => {

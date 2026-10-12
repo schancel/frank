@@ -16,6 +16,7 @@ export function initDicePlugin(
     type: 'dice',
     hydrate: raw => raw,
     previewText: raw => {
+      if (raw.action === 'rejected') return 'Satoshi Dice: No roll was made'
       if (raw.action === 'result') {
         return `Satoshi Dice: Rolled ${raw.luckyNumber} (${
           raw.isWin ? 'Win!' : 'Loss'

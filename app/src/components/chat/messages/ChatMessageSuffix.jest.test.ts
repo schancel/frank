@@ -276,6 +276,19 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
         expect(
           sent.get('[data-testid="outgoing-payment-summary"]').text(),
         ).toBe(t(key))
+        if (summary === 'pending') {
+          const label = sent.get(
+            '[data-testid="outgoing-payment-summary"]',
+          ).element
+          expect(label.parentElement).toBe(
+            sent.get('[data-testid="outgoing-footer"]').element,
+          )
+          expect(label.nextElementSibling).toBe(
+            sent.get('[data-testid="outgoing-amount"]').element,
+          )
+          expect(label.textContent).toBe(messages === enUS ? 'Sent' : 'Envoyé')
+          expect(sent.findAll('.outgoing-status')).toHaveLength(0)
+        }
         // A real string in both languages, never the key.
         expect(t(key)).not.toBe(key)
       }
@@ -292,6 +305,10 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     const footer = wrapper.get('[data-testid="outgoing-footer"]').element
     const time = wrapper.get('[data-testid="outgoing-stamp"]').element
     const amount = wrapper.get('[data-testid="outgoing-amount"]').element
+    const sending = wrapper.get('[data-testid="outgoing-sending"]').element
+    expect(sending.parentElement).toBe(footer)
+    expect(sending.nextElementSibling).toBe(time)
+    expect(wrapper.findAll('.outgoing-status')).toHaveLength(0)
     for (const props of [
       { status: 'payment-pending' },
       { status: 'error', failureReason: 'unavailable' },

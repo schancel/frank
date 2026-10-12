@@ -179,6 +179,8 @@ export interface EvmStampPayerConfig {
    * waiting for this very message.
    */
   accountHeld?: (address: string) => boolean
+  /** Authoritative shared wallet reservation of this current account/nonce state. */
+  canSelectAccount?: (address: string, nonce: number) => boolean
   heldRefusal?: () => Error
 }
 
@@ -199,15 +201,24 @@ export class EvmStampPayer {
 
   /** A read of the chain on behalf of a payment: its failure marks the chain unreachable and
    * is reported as such; nothing was signed. */
-  private async read<T>(task: () => Promise<T>): Promise<T> {
+  private async read<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) throw new ChainWaitCancelledError()
+    let cancel: (() => void) | undefined
     try {
-      const value = await task()
+      const stopped = new Promise<never>((_, reject) => {
+        cancel = () => reject(new ChainWaitCancelledError())
+        signal?.addEventListener('abort', cancel, { once: true })
+      })
+      const value = await Promise.race([task(), stopped])
+      if (signal?.aborted) throw new ChainWaitCancelledError()
       this.watcher.noteSuccess()
       return value
     } catch (error) {
       if (error instanceof ChainWaitCancelledError) throw error
       this.watcher.noteFailure(error)
       throw new ChainUnreachableError(error)
+    } finally {
+      if (cancel) signal?.removeEventListener('abort', cancel)
     }
   }
 
@@ -250,6 +261,7 @@ export class EvmStampPayer {
             : Promise.resolve(undefined),
           this.config.provider.getTransactionCount(address, 'pending'),
         ]),
+        signal,
       )
       // Something of this account is in the mempool: no coin until it is mined.
       if (pending > now) {
@@ -445,14 +457,33 @@ export class EvmStampPayer {
       for (;;) {
         if (allowed('pool')) {
           // Balances this process has not read yet are read here, outside the claim.
-          await pool.fundedCapacities(provider, feeReserveWei, {
+          const capacities = await pool.fundedCapacities(provider, feeReserveWei, {
             fromBalance: true,
             maxCacheAgeMs: Infinity,
           })
+          // Restoring keys reconstructs addresses, not a proof that their nonce is still zero.
+          // Read before the atomic pool claim; a release in between invalidates that snapshot.
+          const current = new Map<number, { nonce: number; generation: number }>()
+          await Promise.all(capacities.map(async account => {
+            const generation = pool.accountGeneration(account.address)
+            const [latest, pending] = await this.read(() => Promise.all([
+              provider.getTransactionCount(account.address, 'latest'),
+              provider.getTransactionCount(account.address, 'pending'),
+            ]), input.signal)
+            if (pending === latest) current.set(account.index, { nonce: latest, generation })
+          }))
+          const eligible = (index: number, address: string) => {
+            const state = current.get(index)
+            return state !== undefined &&
+              state.generation === pool.accountGeneration(address) &&
+              this.config.accountHeld?.(address) !== true &&
+              this.config.canSelectAccount?.(address.toLowerCase(), state.nonce) !== false
+          }
           const selected = pool.claimStampAccounts(
             input.holder,
             input.stampValueWei,
             feeReserveWei,
+            eligible,
           )
           // No payment smaller than its own transfer's fee: a split that would make one is
           // not used, and the stamp is paid in one piece instead.
@@ -465,8 +496,17 @@ export class EvmStampPayer {
             ) === true
           if (dust) pool.releaseClaim(input.holder)
           else if (selected !== undefined) {
-            // An account funded in the last few blocks is not spendable yet.
-            for (const account of selected)
+            const nonces = new Map<number, number>()
+            // Re-read under the claim: an external spend after the pre-claim snapshot cannot
+            // make the chosen nonce stale. This uses the same spacing rule as other accounts.
+            for (const account of selected) {
+              const coin = await this.coinOf(account.address, input.signal)
+              nonces.set(account.index, coin.nonce)
+              if (this.config.canSelectAccount?.(account.address.toLowerCase(), coin.nonce) === false)
+                throw new Error('The current account nonce is reserved by another payment')
+              const offerAt = coin.notBeforeBlock - (this.config.spendSpacingBlocks ? 1 : 0)
+              if (offerAt > (this.watcher.latest() ?? coin.notBeforeBlock))
+                await this.watcher.until(offerAt, input.signal)
               await this.untilFundsSettled(
                 account.address,
                 account.paymentValueWei + feeReserveWei,
@@ -476,6 +516,7 @@ export class EvmStampPayer {
                   input.onWaiting?.(blocks)
                 },
               )
+            }
             this.config.onPoolCoinsClaimed?.()
             return {
               holder: input.holder,
@@ -484,7 +525,7 @@ export class EvmStampPayer {
                 source: 'pool' as const,
                 index: account.index,
                 address: account.address.toLowerCase(),
-                nonce: 0,
+                nonce: nonces.get(account.index)!,
                 paymentValueWei: account.paymentValueWei,
               })),
             }

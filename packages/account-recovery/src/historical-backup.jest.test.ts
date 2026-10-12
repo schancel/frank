@@ -1,3 +1,5 @@
+import { splitCodex32 } from '@frank/codex32'
+import { historicalValidation } from './historical-payload.js'
 import { BIP39_DERIVATION } from '@frank/domain-roots'
 import {
   beginCodex32Signup,
@@ -54,13 +56,13 @@ test('historical validation rejects a seed paired with another seed’s check, w
   const a = seed(),
     b = seed(1)
   try {
-    const left = exportHistoricalCodex32Backup({
+    const left = issuedPaired({
       seed: a,
       threshold: 2,
       shareCount: 3,
       randomBytes: random(),
     })
-    const right = exportHistoricalCodex32Backup({
+    const right = issuedPaired({
       seed: b,
       threshold: 2,
       shareCount: 3,
@@ -140,6 +142,56 @@ test('one corrupted historical paper share is diagnosed while intact shares rest
     expect(result.shares[2]?.code).toBe('bad-checksum')
   } finally {
     result.candidates.forEach(value => destroyRecoveredBackup(value.account))
+    original.fill(0)
+  }
+})
+
+/** Fixture writer for previously issued backups; production exposes only its recovery reader. */
+function issuedPaired(input: {
+  seed: Uint8Array
+  threshold: 2
+  shareCount: number
+  randomBytes: (length: number) => Uint8Array
+}): readonly string[] {
+  const check = historicalValidation(input.seed)
+  const common = {
+    threshold: input.threshold,
+    identifier: 'test',
+    indices: ['q', 'p', 'z'],
+    randomBytes: input.randomBytes,
+  }
+  try {
+    const left = splitCodex32({ ...common, secret: input.seed }),
+      right = splitCodex32({ ...common, secret: check })
+    if (!left.ok || !right.ok) throw new Error('fixture')
+    return left.value.map(
+      (share, i) => `frank-bip39-v1:${share}:${right.value[i]}`,
+    )
+  } finally {
+    check.fill(0)
+  }
+}
+test('previously issued paired backups remain recovery-only supported', () => {
+  const original = seed()
+  try {
+    const shares = issuedPaired({
+      seed: original,
+      threshold: 2,
+      shareCount: 3,
+      randomBytes: random(),
+    })
+    const found = recoverAccountBackupShares(shares.slice(0, 2))
+    try {
+      expect(
+        found.candidates.some(
+          value =>
+            'seed' in value.account && same(value.account.seed, original),
+        ),
+      ).toBe(true)
+    } finally {
+      found.candidates.forEach(value => destroyRecoveredBackup(value.account))
+    }
+  } finally {
     original.fill(0)
   }
 })

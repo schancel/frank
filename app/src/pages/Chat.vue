@@ -50,6 +50,15 @@
                   @senderClicked="openSenderProfile"
                 />
               </template>
+              <q-chat-message
+                v-if="visibleStealthPreparation"
+                sent
+                :text="[visibleStealthPreparation]"
+                :stamp="$t('outgoing.sending')"
+                role="status"
+                aria-live="polite"
+                data-testid="stealth-preparing-bubble"
+              />
             </div>
           </q-scroll-area>
           <!-- Overlaying the bounded viewport keeps banner changes from resizing the scroll box. -->
@@ -141,11 +150,12 @@
       />
     </q-footer>
     <!-- A blackjack challenge from the composer's message-type menu: any chat, any contact. -->
-    <q-dialog v-model="blackjackDialog">
+    <q-dialog v-model="blackjackDialog" @hide="cancelBlackjackPreparation">
       <q-card v-if="blackjackDialog" data-testid="blackjack-dialog">
         <blackjack-challenge-form
-          :busy="sendingMessage"
+          :busy="sendingMessage || blackjackPreparing"
           @submit="sendBlackjackChallenge"
+          @cancel="cancelBlackjackPreparation"
         />
       </q-card>
     </q-dialog>
@@ -279,6 +289,7 @@ export default defineComponent({
     }
   },
   beforeUnmount() {
+    this.cancelBlackjackPreparation()
     window.removeEventListener('resize', this.resizeHandler)
     if (this.stampQuoteTimer) clearInterval(this.stampQuoteTimer)
     this.stampQuoteSequence++
@@ -313,7 +324,16 @@ export default defineComponent({
       sendingMessage: false,
       activeSendCount: 0,
       blackjackDialog: false,
+      blackjackPreparing: false,
+      blackjackPreparationSequence: 0,
       stealthDialog: false,
+      stealthPreparation: null as null | {
+        recipient: string
+        conversationId?: string
+        revision: number
+        chainIdentifier: string
+        amount: string
+      },
       swapDialog: false,
       forwardDialogOpen: false,
       messageToForward: null as ChatMessage | null,
@@ -786,6 +806,8 @@ export default defineComponent({
       value: bigint
       memo?: string
     }) {
+      if (this.sendingMessage) return
+      this.stealthDialog = false
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
@@ -813,6 +835,13 @@ export default defineComponent({
             )
               throw new Error(this.$t('chat.sendContextChanged'))
           }
+          this.stealthPreparation = {
+            recipient,
+            conversationId,
+            revision,
+            chainIdentifier,
+            amount: `${activeChain.toDisplayAmount(value)} ${activeChain.unit}`,
+          }
           const activeWallet = await useActiveWallet()
           requireCurrentContext()
           if (activeWallet !== wallet)
@@ -834,6 +863,7 @@ export default defineComponent({
         }
         try {
           requireCurrentContext()
+          this.stealthPreparation = null
           await this.sendDirectMessage({
             wallet,
             address: recipient,
@@ -849,6 +879,7 @@ export default defineComponent({
           errorNotify(err, { fallbackKey: 'sendStealthDialog.messageEnded' })
         }
       } finally {
+        this.stealthPreparation = null
         this.stampPreparationStatus = null
         this.sendingMessage = false
       }
@@ -1018,6 +1049,11 @@ export default defineComponent({
     // The challenge form's submit: build the challenge against this wallet's spendable balance
     // and send it as an ordinary message. A dealer's seed is kept on this device before its
     // commitment leaves it.
+    cancelBlackjackPreparation() {
+      this.blackjackPreparationSequence++
+      this.blackjackPreparing = false
+      this.blackjackDialog = false
+    },
     async sendBlackjackChallenge({
       role,
       maxBetWei,
@@ -1025,42 +1061,65 @@ export default defineComponent({
       role: HandRole
       maxBetWei: bigint
     }) {
-      const own = await getOwnCanonicalAddress()
-      if (role === 'dealer' && !own) {
-        errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+      if (
+        this.blackjackPreparing ||
+        this.sendingMessage ||
+        !this.blackjackDialog
+      )
         return
-      }
-      const gameId = newGameId()
-      const seed =
-        role === 'dealer' ? newSeed(gameId, own ?? undefined) : undefined
-      let spendableWei: bigint
+      const sequence = ++this.blackjackPreparationSequence
+      this.blackjackPreparing = true
+      const revision = accountStatus.revision
+      const status = accountStatus.status
+      const peer = this.recipientAddress || this.address
+      const conversationId = this.conversation?.id
+      const chain = activeChain
+      const current = () =>
+        sequence === this.blackjackPreparationSequence &&
+        this.blackjackDialog &&
+        revision === accountStatus.revision &&
+        status === accountStatus.status &&
+        chain === activeChain &&
+        peer === (this.recipientAddress || this.address) &&
+        conversationId === this.conversation?.id
       try {
-        spendableWei = await activeChain.nativeTransfers.getBalance({
-          wallet: useMonadWallet(),
+        const wallet = useMonadWallet()
+        const own = await getOwnCanonicalAddress()
+        if (!current() || wallet !== useMonadWallet()) return
+        if (role === 'dealer' && !own) {
+          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+          return
+        }
+        const spendableWei = await chain.nativeTransfers.getBalance({ wallet })
+        if (!current() || wallet !== useMonadWallet()) return
+        const gameId = newGameId()
+        const seed =
+          role === 'dealer' ? newSeed(gameId, own ?? undefined) : undefined
+        const built = buildChallenge({
+          gameId,
+          role,
+          maxBetWei,
+          spendableWei,
+          reserveWei: HAND_FEE_RESERVE_WEI,
+          seed,
         })
+        if ('error' in built) {
+          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+          return
+        }
+        if (seed && own) saveSeed(own, peer, gameId, seed)
+        // Stop preparation before closing: dialog hide may cancel preparation, never a message
+        // already handed to the normal captured-context send/reconciliation pipeline.
+        this.blackjackPreparing = false
+        this.blackjackDialog = false
+        await this.sendFollowUpItems({ items: [built.item] })
       } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
-        return
+        if (current())
+          errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        if (sequence === this.blackjackPreparationSequence)
+          this.blackjackPreparing = false
       }
-      const built = buildChallenge({
-        gameId,
-        role,
-        maxBetWei,
-        spendableWei,
-        reserveWei: HAND_FEE_RESERVE_WEI,
-        seed,
-      })
-      if ('error' in built) {
-        errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
-        return
-      }
-      if (seed && own) {
-        // The seed is kept under this account's own name before its commitment leaves.
-        const peer = this.recipientAddress || this.address
-        saveSeed(own, peer, gameId, seed)
-      }
-      this.blackjackDialog = false
-      await this.sendFollowUpItems({ items: [built.item] })
     },
     // Dealer steps that involve no choice and pay nothing (deal, card, a reveal that owes
     // nothing) are sent without asking. Each position of a hand is attempted once per page
@@ -1207,13 +1266,16 @@ export default defineComponent({
           amount: activeChain.toDisplayAmount(this.minimumStampWei),
           unit: activeChain.unit,
         })
-      return this.isDefaultStampMode && this.defaultStampWei === undefined
-        ? this.$t('chatInput.stampQuoteUnavailableReason', {
-            reason: this.$t(
-              `chatInput.stampQuoteReasons.${this.defaultStampFailure}`,
-            ),
-          })
-        : ''
+      if (!this.isDefaultStampMode || this.defaultStampWei !== undefined)
+        return ''
+      // A fresh quote can be pending before it has supplied a failure reason.
+      if (!this.defaultStampFailure)
+        return this.$t('chatInput.stampQuoteUnavailable')
+      return this.$t('chatInput.stampQuoteUnavailableReason', {
+        reason: this.$t(
+          `chatInput.stampQuoteReasons.${this.defaultStampFailure}`,
+        ),
+      })
     },
     isEmailThread(): boolean {
       if (this.conversation?.kind === 'email') {
@@ -1260,6 +1322,18 @@ export default defineComponent({
         }
       }
       return this.address
+    },
+    visibleStealthPreparation(): string {
+      const intent = this.stealthPreparation
+      if (
+        !intent ||
+        intent.revision !== accountStatus.revision ||
+        intent.chainIdentifier !== activeChain.chainIdentifier ||
+        intent.recipient !== (this.recipientAddress || this.address) ||
+        intent.conversationId !== this.conversation?.id
+      )
+        return ''
+      return this.$t('sendStealthDialog.preparing', { amount: intent.amount })
     },
     contact() {
       return this.getContactVuex(this.recipientAddress)

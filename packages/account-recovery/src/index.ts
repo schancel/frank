@@ -3,11 +3,9 @@ import {
   createMasterPayload,
   decodeCodex32,
   recoverCodex32Exact,
-  splitCodex32,
   validateMasterPayload,
   type Codex32ErrorCode,
   type RecoveredCodex32,
-  type SplitCodex32Input,
 } from '@frank/codex32'
 import {
   DERIVATION_REGISTRY_CODE,
@@ -22,10 +20,17 @@ import {
 } from '@frank/domain-roots'
 import { AccountRecoveryError, type ShareVerdict } from './errors.js'
 import { searchShares } from './share-search.js'
+import { HISTORICAL_SHARE_PREFIX } from './historical-payload.js'
+
 import {
-  HISTORICAL_SHARE_PREFIX,
-  historicalValidation,
-} from './historical-payload.js'
+  exportRecoveryShares,
+  decodeFrankRecoveryShare,
+} from './frank-shares.js'
+export {
+  exportRecoveryShares,
+  type RecoverySecretFormat,
+} from './frank-shares.js'
+export type RecoveryThreshold = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 
 export { maxSharesForThreshold } from './share-search.js'
 import {
@@ -55,10 +60,6 @@ export {
 const ACCOUNT_ROOT_LENGTH = 32
 const MASTER_LENGTH = 64
 const CODEX32_ALPHABET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l'
-/** Every share index except the secret index `s`. */
-const BACKUP_SHARE_INDICES = Object.freeze(
-  Array.from(CODEX32_ALPHABET).filter(index => index !== 's'),
-)
 
 /** Share-family metadata only; it never authenticates account identity. */
 export interface RecoveryFamilyMetadata {
@@ -66,7 +67,7 @@ export interface RecoveryFamilyMetadata {
   readonly recoveryFormatCode: typeof RECOVERY_FORMAT_CODE
   readonly registry: typeof DERIVATION_REGISTRY_ID
   readonly registryCode: typeof DERIVATION_REGISTRY_CODE
-  readonly threshold: SplitCodex32Input['threshold']
+  readonly threshold: RecoveryThreshold
   readonly identifier: string
 }
 
@@ -143,6 +144,9 @@ export function recoverAccountBackupShares(
     readonly supporting: readonly number[]
   }[]
   readonly shares: readonly ShareVerdict[]
+  readonly insufficientSets: NonNullable<
+    AccountRecoveryError['insufficientSets']
+  >
 } {
   if (Array.isArray(candidateShares) && candidateShares.length > 31)
     throw new AccountRecoveryError('too-many-shares', undefined, 31)
@@ -183,6 +187,7 @@ export function recoverAccountBackupShares(
     )
     const result = Object.freeze({
       candidates: Object.freeze(candidates.map(value => Object.freeze(value))),
+      insufficientSets: found.insufficientSets,
       shares: Object.freeze(
         found.shares.map(share =>
           share.status !== 'supports'
@@ -216,64 +221,18 @@ export function destroyRecoveredBackup(account: RecoveredAccountBackup): void {
   else destroyRecoveredAccount(account)
 }
 
-/** Each returned line is one paper share, containing a standard seed component and check component. */
+/** Historical adapter; all new backups use the common Frank Recovery Share writer. */
 export function exportHistoricalCodex32Backup(input: {
   readonly seed: Uint8Array
-  readonly threshold: SplitCodex32Input['threshold']
+  readonly threshold: RecoveryThreshold
   readonly shareCount: number
   readonly randomBytes: (length: number) => Uint8Array
 }): readonly string[] {
-  const seed = snapshotBytes(input.seed, 64, 'bad-format')
-  let validation: Uint8Array | undefined
-  try {
-    const { threshold, shareCount, randomBytes } = input
-    if (
-      !Number.isInteger(threshold) ||
-      threshold < 2 ||
-      threshold > 9 ||
-      !Number.isInteger(shareCount) ||
-      shareCount < threshold ||
-      shareCount > 31
-    )
-      throw new AccountRecoveryError('invalid-threshold')
-    validation = historicalValidation(seed)
-    const common = {
-      threshold,
-      identifier: randomCodex32Identifier(randomBytes),
-      indices: BACKUP_SHARE_INDICES.slice(0, shareCount),
-      randomBytes: (length: number) => secureRandom(randomBytes, length),
-    }
-    const seedShares = unwrap(splitCodex32({ ...common, secret: seed }))
-    const checks = unwrap(splitCodex32({ ...common, secret: validation }))
-    const shares = seedShares.map(
-      (share, i) => `${HISTORICAL_SHARE_PREFIX}${share}:${checks[i]}`,
-    )
-    for (let first = 0; first < shareCount; first++) {
-      const subset = Array.from(
-        { length: threshold },
-        (_, offset) => shares[(first + offset) % shareCount]!,
-      )
-      const recovered = recoverAccountBackupShares(subset)
-      try {
-        const account = recovered.candidates[0]?.account
-        if (
-          recovered.candidates.length !== 1 ||
-          !account ||
-          !('seed' in account) ||
-          !equalBytes(account.seed, seed)
-        )
-          throw new AccountRecoveryError('confirmation-mismatch')
-      } finally {
-        recovered.candidates.forEach(value =>
-          destroyRecoveredBackup(value.account),
-        )
-      }
-    }
-    return Object.freeze(shares)
-  } finally {
-    seed.fill(0)
-    validation?.fill(0)
-  }
+  return exportRecoveryShares({
+    ...input,
+    format: 'historical',
+    secret: input.seed,
+  })
 }
 
 export interface ExportCodex32BackupInput {
@@ -281,7 +240,7 @@ export interface ExportCodex32BackupInput {
   readonly accountRoot: Uint8Array
   /** The account's own recorded public descriptor; the root must reproduce it. */
   readonly expected: PublicRecoveryDescriptor
-  readonly threshold: SplitCodex32Input['threshold']
+  readonly threshold: RecoveryThreshold
   readonly shareCount: number
   readonly randomBytes: (length: number) => Uint8Array
 }
@@ -323,7 +282,7 @@ export interface Codex32ShareRecovery {
 }
 
 export interface BeginCodex32SignupInput {
-  readonly threshold: SplitCodex32Input['threshold']
+  readonly threshold: RecoveryThreshold
   readonly identifier: string
   readonly indices: readonly string[]
   readonly randomBytes: (length: number) => Uint8Array
@@ -345,15 +304,15 @@ export function beginCodex32Signup(
   try {
     master = unwrap(createMasterPayload(root))
     const metadata = deriveRecoveryPublicMetadata(master)
-    const shares = unwrap(
-      splitCodex32({
-        threshold: signup.threshold,
-        identifier: signup.identifier,
-        indices: signup.indices,
-        secret: master,
-        randomBytes: signup.randomBytes,
-      }),
-    )
+    const shares = exportRecoveryShares({
+      format: 'root',
+      secret: root,
+      threshold: signup.threshold,
+      identifier: signup.identifier,
+      indices: signup.indices,
+      shareCount: signup.indices.length,
+      randomBytes: signup.randomBytes,
+    })
     expectedSymbols = unwrap(codex32SecretPayloadSymbols(master))
     const descriptor = descriptorFor(signup.threshold, signup.identifier)
     let retainedSymbols: Uint8Array | null = expectedSymbols
@@ -624,66 +583,26 @@ export function beginCodex32Restore(
 export function exportCodex32Backup(
   input: ExportCodex32BackupInput,
 ): readonly string[] {
-  let threshold: SplitCodex32Input['threshold']
-  let shareCount: number
-  let randomBytes: (length: number) => Uint8Array
-  let root: Uint8Array
-  let expected: Uint8Array
+  const root = snapshotBytes(
+    input.accountRoot,
+    ACCOUNT_ROOT_LENGTH,
+    'bad-format',
+  )
+  let master: Uint8Array | undefined
   try {
-    threshold = input.threshold
-    shareCount = input.shareCount
-    randomBytes = input.randomBytes
-    expected = snapshotPublicDescriptor(
+    const expected = snapshotPublicDescriptor(
       input.expected,
     ).publicRecoveryFingerprint
-    root = snapshotBytes(input.accountRoot, ACCOUNT_ROOT_LENGTH, 'bad-format')
-  } catch (error) {
-    if (error instanceof AccountRecoveryError) throw error
-    throw new AccountRecoveryError('bad-format')
-  }
-  let master: Uint8Array | null = null
-  try {
-    if (
-      !Number.isInteger(threshold) ||
-      threshold < 2 ||
-      threshold > 9 ||
-      !Number.isInteger(shareCount) ||
-      shareCount < threshold ||
-      shareCount > BACKUP_SHARE_INDICES.length
-    ) {
-      throw new AccountRecoveryError('invalid-threshold')
-    }
     master = unwrap(createMasterPayload(root))
-    if (!masterMatches(master, expected)) {
+    if (!masterMatches(master, expected))
       throw new AccountRecoveryError('descriptor-mismatch')
-    }
-    const shares = unwrap(
-      splitCodex32({
-        threshold,
-        identifier: randomCodex32Identifier(randomBytes),
-        indices: BACKUP_SHARE_INDICES.slice(0, shareCount),
-        secret: master,
-        randomBytes: length => secureRandom(randomBytes, length),
-      }),
-    )
-    // Read every share back: each one, together with the threshold - 1 shares that
-    // follow it (wrapping round), must reconstruct exactly the master that was split.
-    for (let first = 0; first < shares.length; first += 1) {
-      const subset = Array.from(
-        { length: threshold },
-        (_, offset) => shares[(first + offset) % shares.length] ?? '',
-      )
-      const check = recoverMaster(subset)
-      try {
-        if (!equalBytes(check.secret, master)) {
-          throw new AccountRecoveryError('confirmation-mismatch')
-        }
-      } finally {
-        check.secret.fill(0)
-        check.payloadSymbols.fill(0)
-      }
-    }
-    return Object.freeze(Array.from(shares))
+    return exportRecoveryShares({
+      format: 'root',
+      secret: root,
+      threshold: input.threshold,
+      shareCount: input.shareCount,
+      randomBytes: input.randomBytes,
+    })
   } finally {
     root.fill(0)
     master?.fill(0)
@@ -745,7 +664,29 @@ export function destroyRecoveredAccount(
 
 /** Interpolate an exact threshold set; codec errors keep their own codes. */
 function recoverMaster(shares: readonly string[]): RecoveredCodex32 {
-  return unwrap(recoverCodex32Exact(shares))
+  if (!shares.some(share => /^fr1/i.test(share)))
+    return unwrap(recoverCodex32Exact(shares))
+  const header = unwrap(decodeFrankRecoveryShare(shares[0] ?? ''))
+  header.payload.fill(0)
+  if (shares.length !== header.threshold)
+    throw new AccountRecoveryError('wrong-share-count')
+  const found = searchShares(shares)
+  try {
+    if (found.masters.length !== 1)
+      throw new AccountRecoveryError('inconsistent-share', found.shares)
+    const secret = new Uint8Array(found.masters[0]!.master)
+    try {
+      return {
+        secret,
+        payloadSymbols: unwrap(codex32SecretPayloadSymbols(secret)),
+      }
+    } catch (error) {
+      secret.fill(0)
+      throw error
+    }
+  } finally {
+    found.masters.forEach(item => item.master.fill(0))
+  }
 }
 
 /**
@@ -785,7 +726,7 @@ function accountFrom(
 }
 
 function descriptorFor(
-  threshold: SplitCodex32Input['threshold'],
+  threshold: RecoveryThreshold,
   identifier: string,
 ): RecoveryDescriptor {
   return Object.freeze({
@@ -834,7 +775,7 @@ function snapshotDescriptor(value: RecoveryDescriptor): RecoveryDescriptor {
 function snapshotSignupInput(
   value: BeginCodex32SignupInput,
 ): BeginCodex32SignupInput {
-  let threshold: SplitCodex32Input['threshold']
+  let threshold: RecoveryThreshold
   let identifier: string
   let randomBytes: (length: number) => Uint8Array
   let rawIndices: readonly string[]
@@ -900,7 +841,10 @@ function assertCeremonyFamily(
   shares: readonly string[],
 ): void {
   assertDescriptor(descriptor)
-  const first = unwrap(decodeCodex32(shares[0] ?? ''))
+  const text = shares[0] ?? ''
+  const first = /^fr1/i.test(text)
+    ? unwrap(decodeFrankRecoveryShare(text))
+    : unwrap(decodeCodex32(text))
   try {
     if (
       first.threshold !== descriptor.threshold ||

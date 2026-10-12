@@ -44,6 +44,7 @@ jest.mock('../../../composables/useActiveWallet', () => ({
 jest.mock('../../../utils/notifications', () => ({ errorNotify: jest.fn() }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: { toDisplayAmount: () => '0.01', unit: 'MON' },
+  onActiveChainChange: jest.fn(() => () => undefined),
 }))
 jest.mock('../../../utils/message-items', () => ({
   messageItems: { previewText: () => '' },

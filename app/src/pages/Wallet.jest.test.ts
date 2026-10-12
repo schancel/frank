@@ -17,6 +17,12 @@ import type { SwapActivityRow } from '../swap/useSwapActivity'
 import en from '../i18n/en-us'
 import fr from '../i18n/fr-fr'
 const mockGetChainAddress = jest.fn(async (chain: string) => {
+  if (chain.startsWith('monad-')) {
+    const wallet = await mockUseActiveWallet()
+    return wallet.getReceiveAddress
+      ? (await wallet.getReceiveAddress()).raw
+      : wallet.identity.displayAddress
+  }
   if (chain === 'ecash')
     return 'ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9'
   if (chain === 'solana') return 'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9'
@@ -508,10 +514,35 @@ describe('Wallet detail page (#570)', () => {
     expect(
       wrapper.get('[data-testid="wallet-copy-address"]').attributes('disabled'),
     ).toBeDefined()
-    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
-      fallbackKey: 'walletPanel.failedLoadAddress',
-    })
+    expect(
+      wrapper.get('[data-testid="wallet-address-unavailable"]').exists(),
+    ).toBe(true)
+    expect(errorNotify).not.toHaveBeenCalled()
     wrapper.unmount()
+  })
+
+  it('shows discovery availability without repeated derivation toasts, then retries the next unused address', async () => {
+    mockRoute.value = { path: '/wallet/ecash', query: {} }
+    mockOpenUtxoWallet.mockRejectedValueOnce(new Error('relay unavailable'))
+    const wrapper = mountWallet()
+    await flush()
+    expect(
+      wrapper.get('[data-testid="wallet-address-unavailable"]').text(),
+    ).toContain('walletPanel.receiveDiscoveryUnavailable')
+    expect(wrapper.find('[data-testid="wallet-qr"]').exists()).toBe(false)
+    expect(
+      wrapper.get('[data-testid="wallet-copy-address"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(errorNotify).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="wallet-retry-address"]').trigger('click')
+    await flush()
+    expect(
+      wrapper.find('[data-testid="wallet-address-unavailable"]').exists(),
+    ).toBe(false)
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      UTXO_ADDRESSES['xec-testnet'],
+    )
+    expect(errorNotify).not.toHaveBeenCalled()
   })
 
   it('does not copy an address that never loaded', async () => {
@@ -523,9 +554,10 @@ describe('Wallet detail page (#570)', () => {
     await wrapper.get('[data-testid="wallet-copy-address"]').trigger('click')
     await flush()
     expect(mockCopyToClipboard).not.toHaveBeenCalled()
-    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
-      fallbackKey: 'walletPanel.failedLoadAddress',
-    })
+    expect(
+      wrapper.get('[data-testid="wallet-address-unavailable"]').exists(),
+    ).toBe(true)
+    expect(errorNotify).not.toHaveBeenCalled()
     wrapper.unmount()
     spy.mockRestore()
   })
@@ -1165,7 +1197,7 @@ describe('Wallet detail page (#570)', () => {
               releaseOld = resolve
             }),
         )
-      } else mockUseActiveWallet.mockResolvedValueOnce(oldOwner)
+      } else mockUseActiveWallet.mockResolvedValue(oldOwner)
       const wrapper = mountWallet()
       try {
         await flush()
@@ -1200,7 +1232,9 @@ describe('Wallet detail page (#570)', () => {
         ).not.toContain(fixture.hash)
         if (phase === 'acquiring')
           expect(oldOwner.getNativeOperations).not.toHaveBeenCalled()
-        expect(mockUseActiveWallet).toHaveBeenCalledTimes(2)
+        expect(mockUseActiveWallet).toHaveBeenCalledTimes(
+          phase === 'visible' ? 3 : 2,
+        )
         releaseNew({
           family: 'evm',
           chainIdentifier: 'monad-mainnet',

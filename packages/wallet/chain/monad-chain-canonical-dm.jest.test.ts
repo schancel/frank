@@ -608,6 +608,59 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   const paymentStates = (wallet: EvmChainWalletHandle, payloadDigest: string) =>
     f.chain.directMessages.paymentsOf!({ wallet, payloadDigest })
 
+  it('restoring the same account after a prior Forum burn pays a new DM at the next nonce', async () => {
+    const prior = f.alice.pool.records()[0]!
+    const unsigned = Transaction.from({
+      type: 2,
+      chainId: 10143n,
+      nonce: 0,
+      to: f.config.stampBurnAddress,
+      value: 1000n,
+      gasLimit: 23000n,
+      maxFeePerGas: 3n,
+      maxPriorityFeePerGas: 1n,
+      data: '0x504f4e4401',
+    })
+    const burn = await f.alice.pool
+      .getSigner(prior.index, {
+        provider: f.alice.provider,
+        httpClient: f.alice.httpClient,
+      })
+      .signFrozenUnsigned({
+        from: prior.address.toLowerCase(),
+        unsignedSerialized: unsigned.unsignedSerialized,
+      })
+    mockMine(burn.rawTx)
+    f.alice.pool.commitSpend(prior.index, burn.rawTx)
+    await f.alice.pool.flush()
+    expect(f.alice.pool.getRecord(prior.index)!.status).toBe('spent')
+    // A separate installation restores exactly the same root, without this installation's
+    // local pool lifecycle. The confirmed burn remains in the authoritative chain stand-in.
+    await f.close()
+    f = await fixture()
+    expect(f.alice.pool.records()[0]!.address).toBe(prior.address)
+    expect(f.alice.pool.records()[0]!.status).toBe('available')
+    installCanonicalDirectory(
+      f.alice,
+      await f.directoryFor('alice', f.alice, f.bob),
+    )
+    const sent = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('after root restore'),
+      stampValue: 100000n,
+    })
+    const request = restoreCanonicalRequest(f.requests[0])
+    const payment = Transaction.from(
+      '0x' + toHex(request.parts.transactions[0]!),
+    )
+    expect(payment.from!.toLowerCase()).toBe(prior.address.toLowerCase())
+    expect(payment.nonce).toBe(1)
+    expect(payment.hash).not.toBe(burn.txHash)
+    expect(mockMined.has(payment.hash!)).toBe(true)
+    expect(sent.stampValueWei).toBe(100000n)
+  })
+
   it('shares the host quote with new implicit sends, while free and explicit sends need no oracle', async () => {
     installCanonicalDirectory(f.alice, await f.directoryFor('alice', f.alice, f.bob))
     const resolver = jest.fn(fixedStampDefault(50_000n))

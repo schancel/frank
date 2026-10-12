@@ -9,6 +9,12 @@ import { readFileSync } from 'fs'
 import { join } from 'path'
 
 import { mount, VueWrapper } from '@vue/test-utils'
+import { ref } from 'vue'
+import type { ContactPaymentInfo } from '@frank/wallet/chain'
+const mockSentPayments = ref<ContactPaymentInfo[]>([])
+jest.mock('../../../composables/useSentContactPayments', () => ({
+  useSentContactPayments: () => ({ sentContactPayments: mockSentPayments }),
+}))
 
 import ChatMessage from './ChatMessage.vue'
 import enUS from '../../../i18n/en-us'
@@ -43,7 +49,11 @@ jest.mock('../../../composables/useActiveWallet', () => ({
 }))
 jest.mock('../../../utils/notifications', () => ({ errorNotify: jest.fn() }))
 jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { toDisplayAmount: () => '0', unit: 'MON' },
+  activeChain: {
+    chainIdentifier: 'monad-testnet',
+    toDisplayAmount: () => '0',
+    unit: 'MON',
+  },
 }))
 jest.mock('../../../utils/message-items', () => ({
   messageItems: { previewText: () => '' },
@@ -156,7 +166,11 @@ function mountOutgoing(
         ChatMessageReply: quiet,
         ChatMessageText: quiet,
         ChatMessageImage: quiet,
-        ChatMessageStealth: quiet,
+        ChatMessageStealth: {
+          props: ['outboundState'],
+          template:
+            '<span data-testid="stealth-item-owner">{{ outboundState }}</span>',
+        },
         ChatMessageBlackjack: quiet,
         ChatMessageDigitalGoods: quiet,
         ChatMessageRaffle: quiet,
@@ -275,4 +289,50 @@ describe('outgoing bubble shows one status (#393)', () => {
     sending.unmount()
     sent.unmount()
   })
+})
+
+it('associates each rendered stealth item with its own transaction group, even when ephemeral keys repeat', async () => {
+  const hash = '0x' + 'aa'.repeat(32)
+  mockSentPayments.value = [
+    {
+      messageId: 'payment',
+      ephemeralPubKey: '02aa',
+      holdsFunds: false,
+      recipientAddress: 'peer',
+      valueWei: 1n,
+      state: 'paid',
+      txHash: hash,
+    },
+  ]
+  const wrapper = mountOutgoing('confirmed', enUS)
+  try {
+    const original = wrapper.props('message')
+    const item = {
+      type: 'stealth' as const,
+      amount: 1,
+      amountWei: '1',
+      ephemeralPubKey: '02aa',
+      networkTag: 'MONT',
+      transactions: [hash],
+    }
+    await wrapper.setProps({
+      message: {
+        ...original,
+        items: [
+          original.items[0],
+          item,
+          { type: 'text', text: 'second' },
+          { ...item, transactions: ['0x' + 'bb'.repeat(32)] },
+        ],
+      },
+    })
+    expect(
+      wrapper
+        .findAll('[data-testid="stealth-item-owner"]')
+        .map(card => card.text()),
+    ).toEqual(['paid', 'unknown'])
+  } finally {
+    mockSentPayments.value = []
+    wrapper.unmount()
+  }
 })

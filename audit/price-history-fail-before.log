@@ -1,0 +1,135 @@
+FAIL src/components/wallet/AvuParityChart.jest.test.ts
+  ● selected coin price history › labels short available history precisely within the requested 1y window
+
+    expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 3
+    Received:    8
+
+      171 |       const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+      172 |       expect(ticks.length).toBeGreaterThanOrEqual(2)
+    > 173 |       expect(ticks.length).toBeLessThanOrEqual(3)
+          |                            ^
+      174 |       expect(new Set(ticks.map(tick => tick.text())).size).toBe(ticks.length)
+      175 |       expect(ticks.every(tick => /\d+:\d+/.test(tick.text()))).toBe(true)
+      176 |       expect(ticks[0].attributes('text-anchor')).toBe('start')
+
+      at src/components/wallet/AvuParityChart.jest.test.ts:173:28
+
+  ● selected coin price history › labels short available history precisely within the requested 30d window
+
+    expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 3
+    Received:    8
+
+      171 |       const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+      172 |       expect(ticks.length).toBeGreaterThanOrEqual(2)
+    > 173 |       expect(ticks.length).toBeLessThanOrEqual(3)
+          |                            ^
+      174 |       expect(new Set(ticks.map(tick => tick.text())).size).toBe(ticks.length)
+      175 |       expect(ticks.every(tick => /\d+:\d+/.test(tick.text()))).toBe(true)
+      176 |       expect(ticks[0].attributes('text-anchor')).toBe('start')
+
+      at src/components/wallet/AvuParityChart.jest.test.ts:173:28
+
+  ● selected coin price history › labels short available history precisely within the requested 7d window
+
+    expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 3
+    Received:    8
+
+      171 |       const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+      172 |       expect(ticks.length).toBeGreaterThanOrEqual(2)
+    > 173 |       expect(ticks.length).toBeLessThanOrEqual(3)
+          |                            ^
+      174 |       expect(new Set(ticks.map(tick => tick.text())).size).toBe(ticks.length)
+      175 |       expect(ticks.every(tick => /\d+:\d+/.test(tick.text()))).toBe(true)
+      176 |       expect(ticks[0].attributes('text-anchor')).toBe('start')
+
+      at src/components/wallet/AvuParityChart.jest.test.ts:173:28
+
+  ● selected coin price history › labels short available history precisely within the requested 24h window
+
+    expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 3
+    Received:    8
+
+      171 |       const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+      172 |       expect(ticks.length).toBeGreaterThanOrEqual(2)
+    > 173 |       expect(ticks.length).toBeLessThanOrEqual(3)
+          |                            ^
+      174 |       expect(new Set(ticks.map(tick => tick.text())).size).toBe(ticks.length)
+      175 |       expect(ticks.every(tick => /\d+:\d+/.test(tick.text()))).toBe(true)
+      176 |       expect(ticks[0].attributes('text-anchor')).toBe('start')
+
+      at src/components/wallet/AvuParityChart.jest.test.ts:173:28
+
+  ● selected coin price history › labels short available history precisely within the requested all window
+
+    expect(received).toBeLessThanOrEqual(expected)
+
+    Expected: <= 3
+    Received:    8
+
+      171 |       const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+      172 |       expect(ticks.length).toBeGreaterThanOrEqual(2)
+    > 173 |       expect(ticks.length).toBeLessThanOrEqual(3)
+          |                            ^
+      174 |       expect(new Set(ticks.map(tick => tick.text())).size).toBe(ticks.length)
+      175 |       expect(ticks.every(tick => /\d+:\d+/.test(tick.text()))).toBe(true)
+      176 |       expect(ticks[0].attributes('text-anchor')).toBe('start')
+
+      at src/components/wallet/AvuParityChart.jest.test.ts:173:28
+
+  ● selected coin price history › keeps time ticks apart when most observations cluster at one end
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      195 |     const ticks = wrapper.get('[data-test="macro-chart-svg"]').findAll('text')
+      196 |     const xs = ticks.map(tick => Number(tick.attributes('x')))
+    > 197 |     expect(xs.every((x, i) => i === 0 || x - xs[i - 1] >= 170)).toBe(true)
+          |                                                                 ^
+      198 |     expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(21)
+      199 |     wrapper.unmount()
+      200 |   })
+
+      at Object.<anonymous> (src/components/wallet/AvuParityChart.jest.test.ts:197:65)
+
+  ● selected coin price history › refines recent ALL history beyond a single monthly bucket through the real store query
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    - Expected
+    + Received
+
+      Object {
+    -   "since": 1789041600,
+    -   "step": 3600,
+    +   "since": 1262304000,
+    +   "step": 2592000,
+        "until": 1791633600,
+      },
+      [Function anonymous],
+
+    Number of calls: 1
+
+      211 |     const wrapper = mountChart()
+      212 |     await flushPromises()
+    > 213 |     expect(source).toHaveBeenCalledWith(
+          |                    ^
+      214 |       { since: NOW - 30 * DAY, until: NOW, step: 3600 },
+      215 |       expect.any(Function),
+      216 |     )
+
+      at Object.<anonymous> (src/components/wallet/AvuParityChart.jest.test.ts:213:20)
+
+Test Suites: 1 failed, 1 total
+Tests:       7 failed, 25 skipped, 32 total
+Snapshots:   0 total
+Time:        1.02 s

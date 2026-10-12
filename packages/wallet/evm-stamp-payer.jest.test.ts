@@ -9,7 +9,9 @@ import {
   EvmStampPayer,
   InsufficientStampFundsError,
 } from './evm-stamp-payer'
-import type { MonadSubAccountPool } from './monad-account-pool'
+import { MonadSubAccountPool } from './monad-account-pool'
+import { MonadHdKeyring } from './monad-hd-keyring'
+import { InMemorySubAccountPoolStore } from './storage/sub-account-pool-storage'
 
 const GWEI = 10n ** 9n
 const MON = 10n ** 18n
@@ -245,5 +247,143 @@ describe('settling a stamp from its actual receipt', () => {
       state.hash = 'canonical'
       expect(await stampPayer.observe(raw)).toEqual({ state: 'included', reverted: true, block: 1000 })
     } finally { watcher.stop() }
+  })
+})
+
+
+describe('reconstructed pool account nonces', () => {
+  function recovered() {
+    const keyring = MonadHdKeyring.fromMnemonic(
+      'test test test test test test test test test test test junk',
+    )
+    const pool = new MonadSubAccountPool({
+      keyring,
+      store: new InMemorySubAccountPoolStore(),
+    })
+    pool.ensureSize(2)
+    const provider = {
+      getBlockNumber: jest.fn(async () => 1000),
+      getTransactionCount: jest.fn(async () => 1),
+      getBalance: jest.fn(async () => MON / 50n),
+      getFeeData: jest.fn(async () => ({
+        gasPrice: 102n * GWEI,
+        maxFeePerGas: 202n * GWEI,
+        maxPriorityFeePerGas: 2n * GWEI,
+      })),
+    }
+    const watcher = new EvmBlockWatcher({
+      provider: provider as unknown as Provider,
+      intervalMs: 10,
+    })
+    const stampPayer = new EvmStampPayer({
+      pool,
+      provider: provider as unknown as Provider,
+      httpClient: {} as never,
+      watcher,
+      accounts: [],
+    })
+    return { pool, provider, watcher, stampPayer }
+  }
+  it('signs the remaining value at nonce one after a recovered available account previously burned at nonce zero', async () => {
+    const f = recovered()
+    try {
+      const claim = await f.stampPayer.claim({
+        holder: 'new-message',
+        stampValueWei: MON / 100n,
+        sources: ['pool'],
+      })
+      expect(claim.accounts).toHaveLength(1)
+      expect(claim.accounts[0]!.nonce).toBe(1)
+      const [payment] = await f.stampPayer.sign(
+        claim,
+        10143n,
+        () => main.address,
+      )
+      expect(Transaction.from(payment!.rawTx).nonce).toBe(1)
+      expect(Transaction.from(payment!.rawTx).value).toBe(MON / 100n)
+    } finally {
+      f.watcher.stop()
+      f.stampPayer.release('new-message')
+    }
+  })
+  it('does not construct over a pending nonce and can use another available account', async () => {
+    const f = recovered()
+    const first = f.pool.records()[0]!.address.toLowerCase()
+    f.provider.getTransactionCount.mockImplementation(
+      async (address?: unknown, block?: unknown) =>
+        String(address).toLowerCase() === first && block === 'pending' ? 2 : 1,
+    )
+    try {
+      const claim = await f.stampPayer.claim({
+        holder: 'new-message',
+        stampValueWei: MON / 100n,
+        sources: ['pool'],
+      })
+      expect(claim.accounts[0]!.address).not.toBe(first)
+      expect(claim.accounts[0]!.nonce).toBe(1)
+      expect(f.pool.claimedBy(0)).toBeUndefined()
+    } finally {
+      f.watcher.stop()
+      f.stampPayer.release('new-message')
+    }
+  })
+  it('preserves a restored ambiguous original claim even when the chain nonce advanced', async () => {
+    const f = recovered()
+    const original = await f.pool
+      .getSigner(0, {
+        provider: f.provider as unknown as Provider,
+        httpClient: {} as never,
+      })
+      .signFrozenUnsigned({
+        from: f.pool.records()[0]!.address.toLowerCase(),
+        unsignedSerialized: Transaction.from({
+          type: 2,
+          chainId: 10143n,
+          nonce: 0,
+          to: main.address,
+          value: MON / 100n,
+          gasLimit: 21000n,
+          maxFeePerGas: 202n * GWEI,
+          maxPriorityFeePerGas: 2n * GWEI,
+        }).unsignedSerialized,
+      })
+    // This is the public restore boundary the durable outgoing-message owner invokes on reopen.
+    f.pool.restoreClaim('original-operation', [0])
+    try {
+      const claim = await f.stampPayer.claim({
+        holder: 'different-message',
+        stampValueWei: MON / 100n,
+        sources: ['pool'],
+      })
+      expect(claim.accounts[0]!.index).toBe(1)
+      expect(f.pool.claimedBy(0)).toBe('original-operation')
+      expect(Transaction.from(original.rawTx).nonce).toBe(0)
+    } finally {
+      f.watcher.stop()
+      f.stampPayer.release('different-message')
+      f.pool.releaseClaim('original-operation')
+    }
+  })
+  it('reserves independent recovered accounts exclusively for concurrent construction', async () => {
+    const f = recovered()
+    try {
+      const claims = await Promise.all(
+        ['first', 'second'].map(holder =>
+          f.stampPayer.claim({
+            holder,
+            stampValueWei: MON / 100n,
+            sources: ['pool'],
+          }),
+        ),
+      )
+      expect(
+        new Set(claims.map(claim => claim.accounts[0]!.address)).size,
+      ).toBe(2)
+      expect(claims.map(claim => claim.accounts[0]!.nonce)).toEqual([1, 1])
+    } finally {
+      f.watcher.stop()
+      f.stampPayer.release('first')
+      f.stampPayer.release('second')
+    }
   })
 })

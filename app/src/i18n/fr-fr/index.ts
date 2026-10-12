@@ -195,6 +195,18 @@ export default {
     balanceUnknown: 'Votre solde n’est pas encore connu.',
   },
   gameFairness: {
+    diceRejected: 'Aucun lancer n’a été effectué.',
+    diceRejectionReasons: {
+      'roll-not-offered': 'Ce lancer n’a pas été proposé.',
+      'commitment-mismatch':
+        'L’engagement ne correspond pas au lancer proposé.',
+      'invalid-client-seed': 'La valeur aléatoire du joueur est invalide.',
+      'invalid-target': 'La cible du lancer est invalide.',
+      'invalid-wager': 'La mise est invalide.',
+      'below-minimum': 'La mise est inférieure au minimum.',
+      'payout-limit': 'Le gain possible dépasse la limite de la table.',
+      'payment-not-confirmed': 'Le paiement de la mise n’a pas été confirmé.',
+    },
     dicePractice: 'Entraînement',
     dicePracticeDescription:
       'Mise nulle, aucun gain. L’entraînement utilise les mêmes règles de tirage sans miser de fonds.',
@@ -256,6 +268,15 @@ export default {
       'Le navigateur n’a pas accordé la protection contre l’effacement automatique. Vos données restent enregistrées. Consultez les conseils d’installation ci-dessous et réessayez ; la protection n’est pas garantie.',
   },
   blackjackP2p: {
+    cancel: 'Annuler',
+    challengeDealerReview: 'L’autre joueur choisit une mise dans cette limite.',
+    challengeBetLimit: 'Limite de mise',
+    challengeBeforeBet:
+      'Ceci ouvre une main. Vérifiez et confirmez votre mise après acceptation du croupier.',
+    preparingChallenge: 'Préparation du défi…',
+    betSummary: 'Mise : {amount}',
+    changeBet: 'Modifier',
+    confirmBet: 'Miser {amount}',
     notDeliveredYet:
       'L’autre joueur n’a pas encore ce message : l’envoi est en cours.',
     notDelivered:
@@ -472,6 +493,11 @@ export default {
       'Soldes de jetons indisponibles. Affichage des derniers soldes connus.',
     balanceStale: '{balance} (dernière valeur connue)',
     failedLoadAddress: 'Impossible de dériver l’adresse du portefeuille',
+    receiveDiscoveryUnavailable:
+      'La prochaine adresse de réception inutilisée n’a pas pu être vérifiée via le relais. Réessayez lorsque la connexion est disponible.',
+    receiveAddressUnavailable:
+      'L’adresse de réception est indisponible pour ce compte et ce réseau. Réessayez de l’ouvrir.',
+    retryAddress: 'Réessayer l’adresse',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',
@@ -544,6 +570,8 @@ export default {
     priceHistorySpot: 'AVU (Spot)',
     priceHistoryGold: 'Or',
     priceHistoryPoints: '{count} observations de prix depuis le {first}.',
+    priceHistoryCoverage:
+      '{count} observations de prix disponibles du {first} au {last}. Période demandée : {range}.',
     priceHistorySinglePoint:
       'Une seule observation de prix est disponible sur cette période ; aucune ligne n’est tracée.',
     priceHistoryGoldUnavailable:
@@ -702,14 +730,14 @@ export default {
     waitingForChain: 'En file : le réseau est injoignable.',
     waitingBlocks:
       'Encore {blocks} blocs à attendre après le paiement précédent avant de payer…',
-    paymentSent: '· paiement envoyé',
-    paymentInMempool: '· paiement dans le mempool',
-    paymentPaid: '· payé',
+    paymentSent: 'Envoyé',
+    paymentInMempool: 'Timbre du message dans le mempool',
+    paymentPaid: 'Timbre payé',
     paymentReverted:
-      '· paiement annulé par le réseau, nouveau paiement en cours',
-    paymentRepaid: '· annulé par le réseau, payé de nouveau',
-    paymentFailed: '· paiement échoué',
-    paymentUnsent: '· non payé',
+      'Timbre du message annulé par le réseau, nouveau paiement en cours',
+    paymentRepaid: 'Timbre annulé par le réseau, payé de nouveau',
+    paymentFailed: 'Échec du timbre du message',
+    paymentUnsent: 'Timbre du message non payé',
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
     reasonRejected: 'Le relais a refusé le message.',
@@ -816,7 +844,8 @@ export default {
       'Vous avez ajouté ce contact sous {username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.',
   },
   sendStealthDialog: {
-    sendStealthTo: 'Envoyer furtivement à',
+    preparing: 'Préparation du paiement furtif : {amount}',
+    sendStealthTo: 'Envoyer un paiement furtif à',
     subtitle:
       'Payé depuis votre portefeuille vers une adresse à usage unique que seul ce contact peut dépenser',
     balanceLabel: 'Disponible pour ce paiement :',
@@ -824,7 +853,7 @@ export default {
     amountPlaceholder: '0.0',
     memoHint: 'Mémo, envoyé avec le paiement (optionnel)',
     memoPlaceholder: 'Entrez un mémo...',
-    sendBtnLabel: 'Envoyer furtivement',
+    sendBtnLabel: 'Envoyer',
     cancelBtnLabel: 'Annuler',
     sent: 'Paiement envoyé',
     pending:
@@ -896,6 +925,15 @@ export default {
     },
   },
   chatMessageStealth: {
+    outboundState: {
+      unknown: 'Non vérifié',
+      planned: 'Préparation',
+      prepared: 'En attente',
+      delivered: 'En attente',
+      paid: 'Payé',
+      failed: 'Échec de livraison du transfert',
+      released: 'Annulé avant envoi',
+    },
     title: 'Paiement furtif',
     sentTitle: 'Paiement furtif envoyé',
     receivedTitle: 'Paiement furtif reçu',
@@ -1466,6 +1504,19 @@ export default {
       'Gardez ceci secret. Ne partagez pas et ne faites pas de capture d’écran.',
   },
   transactionDialog: {
+    stealthPayment: 'Paiement furtif',
+    valueUnavailable: 'Valeur de transaction indisponible',
+    transactionUnavailable: 'Transaction illisible',
+    baseUnits: 'unités de base',
+    stampState: {
+      pending: 'Envoyé',
+      mempool: 'Dans le mempool',
+      paid: 'Payé',
+      repaid: 'Payé à nouveau',
+      reverted: 'Annulé par le réseau',
+      failed: 'Échoué',
+      unsent: 'Non payé',
+    },
     backingTransactions: 'Transactions',
     totalStampPayment: 'Paiement total du timbre',
     stampPaymentN: 'Paiement du timbre {n}',
@@ -1635,8 +1686,9 @@ export default {
       'L’approbation n’a pas été confirmée : rien n’a été échangé. Réessayez.',
     errorAccountChanged: 'Le compte a changé. Vérifiez à nouveau l’échange.',
     errorQuote: 'Impossible d’obtenir un prix du réseau. Réessayez.',
+    failureDiagnostic: 'Détails de l’échec : {stage} · {code}',
     errorExecution:
-      'L’échange n’a pas été envoyé. Rien n’a été échangé ; consultez les échanges récents avant de réessayer.',
+      'L’état de l’échange n’a pas pu être confirmé. Consultez les échanges récents avant de réessayer ; un échange envoyé peut encore aboutir.',
     warnHighImpact:
       'Ce montant est important pour ce pool : vous recevez nettement moins que le taux du marché.',
     status: {

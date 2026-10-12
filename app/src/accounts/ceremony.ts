@@ -1,18 +1,37 @@
 import {
+  AccountRecoveryError,
   beginCodex32Signup,
   recoverAccountBackupShares,
   decodeRecoveryDescriptor,
   encodeRecoveryDescriptor,
   destroyRecoveredBackup,
   randomCodex32Identifier,
+  deriveRecoveryPublicMetadata,
+  type AccountDomainRoots,
   type PendingCodex32Signup,
   type PublicRecoveryDescriptor,
   type RecoveredAccountBackup,
 } from '@frank/account-recovery'
+import { createMasterPayload } from '@frank/codex32'
+import {
+  DOMAIN_PURPOSES,
+  deriveDomainRoot,
+  type DomainRoot,
+} from '@frank/domain-roots'
+import { getMeraAccountRoot, type MeraAccountAction } from './mera-passkey'
+import {
+  activeChain,
+  onActiveChainChange,
+  getDefaultRelayBaseUrl,
+  getCustomRelayBaseUrl,
+} from '@frank/wallet/chain'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
+import {
+  verifyMeraLoginProfile,
+  type MeraLoginVerification,
+} from './mera-login-proof'
 import { toHex } from '@frank/codec'
-import { setCustomRelayBaseUrl } from '@frank/wallet/chain'
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { accountSession } from './session'
 import { assertLegacyUnchanged, legacyStatus } from './legacy'
@@ -79,6 +98,8 @@ export function createAccountCeremony() {
     take: () => RecoveredAccountBackup | undefined,
     isRestore: boolean,
     displayName: string,
+    isCurrent: () => boolean = () => true,
+    verifyLogin = false,
   ) {
     if (!attempt) throw new Error('Start an account ceremony first')
     const captured = attempt
@@ -87,6 +108,7 @@ export function createAccountCeremony() {
     try {
       recovered = take()
       if (!recovered) throw new Error('Start an account ceremony first')
+      let loginVerification: MeraLoginVerification = 'unverified'
       let discoveredRelayUrl: string | undefined
       let identityDetails: { subject: string; address: string } | undefined
       if (isRestore) {
@@ -96,13 +118,22 @@ export function createAccountCeremony() {
           const address = identity.displayAddress
           identityDetails = { subject, address }
           discoveredRelayUrl = await probeDirectoryRelay({ subject, address })
-          if (discoveredRelayUrl) setCustomRelayBaseUrl(discoveredRelayUrl)
         } catch {
           // probe failure should never block account recovery
         }
       }
+      if (verifyLogin) {
+        if (discoveredRelayUrl) loginVerification = 'existing'
+        else {
+          // Read only: adopting a profile before activation could overwrite another account.
+          loginVerification = await verifyMeraLoginProfile(
+            getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl(),
+            identityOf(recovered).address.raw,
+          )
+        }
+      }
       await assertLegacyUnchanged(captured.legacyRevision)
-      if (token !== epoch) throw new Error('Ceremony cancelled')
+      if (token !== epoch || !isCurrent()) throw new Error('Ceremony cancelled')
       // Preserve the exact secret and its original derivation through the common stage boundary.
       const context = { ...captured, displayName, custodyEpoch: 1 }
       await accountSession.stage(
@@ -114,10 +145,12 @@ export function createAccountCeremony() {
               accountRoot: recovered.accountRoot,
             },
       )
-      if (token !== epoch)
+      if (token !== epoch || !isCurrent())
         await accountSession.cancelPending(captured.attemptId)
       return {
         isRestore,
+        attemptId: captured.attemptId,
+        loginVerification,
         subject: identityDetails?.subject,
         address: identityDetails?.address,
         discoveredRelayUrl,
@@ -132,6 +165,66 @@ export function createAccountCeremony() {
   }
   return {
     cancel,
+    /** Passkeys stage the same root32 account as backup recovery; composition owns activation. */
+    async beginPasskey(
+      action: MeraAccountAction,
+      readRoot: (
+        action: MeraAccountAction,
+      ) => Promise<Uint8Array> = getMeraAccountRoot,
+    ) {
+      cancel()
+      const chainIdentifier = activeChain.chainIdentifier
+      let chainChanged = false
+      const unlisten = onActiveChainChange(() => {
+        chainChanged = true
+      })
+      let root: Uint8Array | undefined
+      let master: Uint8Array | undefined
+      const derived: DomainRoot[] = []
+      try {
+        await capture()
+        const token = epoch
+        root = await readRoot(action)
+        if (
+          token !== epoch ||
+          chainChanged ||
+          chainIdentifier !== activeChain.chainIdentifier
+        )
+          throw new Error('Ceremony cancelled')
+        const payload = createMasterPayload(root)
+        if (!payload.ok) throw new Error('Invalid account root')
+        master = payload.value
+        const metadata = deriveRecoveryPublicMetadata(master)
+        for (const purpose of DOMAIN_PURPOSES)
+          derived.push(deriveDomainRoot(root, purpose))
+        const recovered = {
+          accountRoot: root,
+          metadata,
+          roots: Object.freeze(
+            Object.fromEntries(derived.map(value => [value.purpose, value])),
+          ) as AccountDomainRoots,
+        }
+        const outcome = await finish(
+          () => recovered,
+          action === 'login',
+          '',
+          () =>
+            !chainChanged && chainIdentifier === activeChain.chainIdentifier,
+          action === 'login',
+        )
+        if (token !== epoch || chainChanged)
+          throw new Error('Ceremony cancelled')
+        return outcome
+      } catch (error) {
+        cancel()
+        throw error
+      } finally {
+        unlisten()
+        root?.fill(0)
+        master?.fill(0)
+        derived.forEach(value => value.bytes.fill(0))
+      }
+    },
     async beginNew(threshold: 2 | 3, count: 3 | 5) {
       cancel()
       await capture()
@@ -208,6 +301,7 @@ export function createAccountCeremony() {
         return {
           isRestore: true,
           report: recovery.shares,
+          insufficientSets: recovery.insufficientSets,
           candidates: recovery.candidates.map(candidate => ({
             address: identityOf(candidate.account).displayAddress,
             descriptor:
@@ -225,7 +319,11 @@ export function createAccountCeremony() {
         true,
         displayName,
       )
-      return { ...outcome, report: recovery.shares }
+      return {
+        ...outcome,
+        report: recovery.shares,
+        insufficientSets: recovery.insufficientSets,
+      }
     },
     /** Stage the candidate the user picked after `confirm` returned several. */
     async choose(index: number, _name?: string) {
@@ -246,6 +344,21 @@ export function createAccountCeremony() {
 
 export function recoveryErrorMessage(error: unknown): string {
   const code = (error as { code?: string })?.code
+  if (error instanceof AccountRecoveryError && error.insufficientSets?.length) {
+    const explanation =
+      code === 'inconsistent-share'
+        ? 'These shares come from different backup sets and cannot be combined. '
+        : ''
+    return (
+      explanation +
+      error.insufficientSets
+        .map(
+          set =>
+            `Backup ${set.identifier}: ${set.available} distinct shares available; ${set.required} required.`,
+        )
+        .join(' ')
+    )
+  }
   const messages: Record<string, string> = {
     'descriptor-mismatch':
       'These shares belong to a different account. Start again with your independently saved descriptor.',

@@ -2,9 +2,18 @@
  * Account backup round trip with nothing under test mocked. See ./testing/device for what is real
  * (session, custody, vault, ceremony, recovery) and the three stand-ins outside backup/restore.
  */
-import { splitCodex32 } from '@frank/codex32'
+import {
+  createLongBchChecksum,
+  GF32_ALPHABET,
+  splitCodex32,
+} from '@frank/codex32'
 import { DOMAIN_PURPOSES, BIP39_DERIVATION } from '@frank/domain-roots'
-import { parseAccountBackupShareInput } from '@frank/account-recovery'
+import {
+  exportRecoveryShares,
+  recoverAccountBackupShares,
+  destroyRecoveredBackup,
+  parseAccountBackupShareInput,
+} from '@frank/account-recovery'
 import { historicalBip39WalletMaterial } from '@frank/wallet/monad-wallet-material'
 import { mnemonicToSeedSync } from 'bip39'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
@@ -86,6 +95,7 @@ function historicalPublicKeys(seed: Uint8Array) {
 }
 
 test.each([
+  [1, 1],
   [2, 3],
   [3, 5],
 ] as const)(
@@ -101,11 +111,7 @@ test.each([
     const shares = await original.backupCodex32(threshold, count)
     expect(shares.length).toBe(count)
     await original.close()
-    // The paper presentation uses two adjacent lines per share. Clipboard envelopes also work.
-    const paper = shares
-      .slice(-threshold)
-      .map(share => share.split(':').slice(1).join('\n'))
-      .join('\n')
+    const paper = shares.slice(-threshold).join('\n')
     const observed: ReturnType<typeof historicalPublicKeys>[] = []
     const options = {
       observeHistoricalSeed: (seed: Uint8Array) => {
@@ -139,7 +145,7 @@ test.each([
   },
 )
 
-test('mixed historical components fail before staging and leave the active account unchanged', async () => {
+test('mixed historical backup sets fail before staging and leave the active account unchanged', async () => {
   const session = freshDevice()
   await session.initialize()
   await stageBip39Recovery(
@@ -150,10 +156,7 @@ test('mixed historical components fail before staging and leave the active accou
   const before = await session.snapshot()
   const first = await session.backupCodex32(2, 3)
   const second = await session.backupCodex32(2, 3)
-  const wrong = first.slice(0, 2).map((line, i) => {
-    const parts = line.split(':')
-    return `${parts[0]}:${parts[1]}:${second[i]!.split(':')[2]}`
-  })
+  const wrong = [first[0]!, second[1]!]
   const ceremony = createAccountCeremony()
   await ceremony.beginRestore()
   await expect(ceremony.confirm(wrong, '')).rejects.toThrow()
@@ -364,6 +367,9 @@ test('two backups of one account each restore it; their shares do not mix, nor w
     const error = await failure(() => ceremony.confirm(mixed, 'Mixed'))
     expect((error as { code?: string }).code).toBe('inconsistent-share')
     expect(recoveryErrorMessage(error)).toMatch(/different backup sets/)
+    expect(recoveryErrorMessage(error)).toMatch(
+      /1 distinct shares available; 2 required/,
+    )
     // A refused restore leaves the device without an account, staged or active.
     expect(device.state.pending).toBeNull()
     expect(device.state.account).toBeNull()
@@ -422,18 +428,18 @@ test('an unsupported backup policy is refused, not adjusted', async () => {
 
 /** A well-formed share with the same header and index but wrong contents. */
 function poisoned(share: string): string {
-  const split = splitCodex32({
-    threshold: Number(share[3]) as 2,
-    identifier: share.slice(4, 8),
-    indices: [
-      share[8],
-      ...Array.from('qpzry9x8gf').filter(i => i !== share[8]),
-    ],
-    secret: crypto.getRandomValues(new Uint8Array(64)),
-    randomBytes: n => crypto.getRandomValues(new Uint8Array(n)),
-  })
-  if (!split.ok) throw new Error('fixture')
-  return split.value[0]
+  const data = Array.from(share.slice(3, -15), char =>
+    GF32_ALPHABET.indexOf(char),
+  )
+  try {
+    for (let i = 10; i < data.length; i++)
+      data[i] = crypto.getRandomValues(new Uint8Array(1))[0]! & 31
+    return `fr1${[...data, ...createLongBchChecksum('fr', data)]
+      .map(value => GF32_ALPHABET[value])
+      .join('')}`
+  } finally {
+    data.fill(0)
+  }
 }
 
 test('a 4-of-10 backup restores from six shares when two of them are bad, and names the two', async () => {
@@ -499,3 +505,49 @@ test('shares holding complete backups of two accounts restore only the one the u
     await device.close()
   }
 })
+
+// Both upstream secret producers call the same public writer and bounded recovery API.
+test.each([
+  [1, 1],
+  [2, 3],
+  [3, 5],
+] as const)(
+  'common public recovery path preserves mnemonic seed and random root at %i-of-%i',
+  (threshold, shareCount) => {
+    const historical = mnemonicToSeedSync(
+      'test test test test test test test test test test test junk',
+    )
+    const root = crypto.getRandomValues(new Uint8Array(32))
+    try {
+      for (const [format, secret] of [
+        ['historical', historical],
+        ['root', root],
+      ] as const) {
+        const shares = exportRecoveryShares({
+          format,
+          secret,
+          threshold,
+          shareCount,
+          randomBytes: length => crypto.getRandomValues(new Uint8Array(length)),
+        })
+        const recovered = recoverAccountBackupShares(shares.slice(-threshold))
+        try {
+          expect(recovered.candidates.length).toBe(1)
+          const account = recovered.candidates[0]!.account
+          const actual = 'seed' in account ? account.seed : account.accountRoot
+          expect(
+            actual.length === secret.length &&
+              actual.every((byte, i) => byte === secret[i]),
+          ).toBe(true)
+        } finally {
+          recovered.candidates.forEach(value =>
+            destroyRecoveredBackup(value.account),
+          )
+        }
+      }
+    } finally {
+      historical.fill(0)
+      root.fill(0)
+    }
+  },
+)

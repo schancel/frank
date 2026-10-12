@@ -71,8 +71,8 @@ export function oracleInputs(cache: OracleCache): OracleInputs | undefined {
 const DAY_SECONDS = 24 * 60 * 60
 
 /**
- * Every point is kept for this long. The finest line the chart draws further back than a
- * week has one point a day, so nothing drawn needs more than that from older data.
+ * Persistent history keeps recent detail and one real observation per older UTC day.
+ * A chart may hold a finer fetched interval transiently without expanding this cache.
  */
 export const FULL_RESOLUTION_SECONDS = 14 * DAY_SECONDS
 
@@ -138,7 +138,7 @@ export function mergeFeed(
     basket: feed.basket,
     electricity: feed.electricity,
     series,
-    coverage: cache.coverage,
+    coverage: retainedCoverage(cache.coverage, nowSeconds),
     ...(cache.refreshMs === undefined ? {} : { refreshMs: cache.refreshMs }),
   }
 }
@@ -157,6 +157,25 @@ function normalise(coverage: Coverage[]): Coverage[] {
     }
   }
   return merged
+}
+
+/** Never advertise subdaily persisted coverage after its points have been thinned. */
+export function retainedCoverage(
+  coverage: readonly Coverage[],
+  nowSeconds: number,
+): Coverage[] {
+  const cutoff = nowSeconds - FULL_RESOLUTION_SECONDS
+  return normalise(
+    coverage.flatMap(one => {
+      if (one.step >= DAY_SECONDS || one.from >= cutoff) return [{ ...one }]
+      const older = {
+        ...one,
+        until: Math.min(one.until, cutoff),
+        step: DAY_SECONDS,
+      }
+      return one.until > cutoff ? [older, { ...one, from: cutoff }] : [older]
+    }),
+  )
 }
 
 /**

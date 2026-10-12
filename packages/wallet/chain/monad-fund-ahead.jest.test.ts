@@ -259,11 +259,11 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     expect(sent.preparationTxHashes).toEqual([]);
     expect(mockFunded).toHaveLength(2);
     expect(atRelay!.chainHttp).toEqual([]);
-    expect(
-      atRelay!.rpc.filter(
-        (name) => name === "estimateGas" || name === "getTransactionCount"
-      )
-    ).toEqual([]);
+    expect(atRelay!.rpc.filter((name) => name === "estimateGas")).toEqual([]);
+    // Each funded account's latest/pending nonce is checked before and under its claim.
+    // These admission reads prevent restored accounts from signing stale nonce zero;
+    // they are not inline funding or a gas-estimation/consolidation workflow.
+    expect(atRelay!.rpc.filter((name) => name === "getTransactionCount")).toHaveLength(8);
     expect(sent.stampPayments.reduce((sum, p) => sum + p.valueWei, 0n)).toBe(
       STAMP
     );
@@ -277,9 +277,9 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     await tick();
     expect(rows("available")).toEqual([]);
     expect(rows("spent")).toHaveLength(2);
-    // Before its relay request the pre-funded send only quotes the fee.
+    // Before exposure the send quotes its fee and validates the funded pair's current nonce.
     expect(new Set(atRelay!.rpc)).toEqual(
-      new Set(["getBlock", "getGasPrice", "getPriorityFee"])
+      new Set(["getBlock", "getGasPrice", "getPriorityFee", "getBlockNumber", "getTransactionCount"])
     );
   });
 

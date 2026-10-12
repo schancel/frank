@@ -3,79 +3,80 @@
     class="q-px-sm q-pb-md dialog-medium"
     data-testid="send-stealth-dialog"
   >
-    <q-card-section>
-      <div class="text-h6">
-        {{
-          $t('sendStealthDialog.sendStealthTo') +
-          ' ' +
-          (contact?.name || address)
-        }}
-      </div>
-      <div class="text-caption text-grey-7">
-        {{ $t('sendStealthDialog.subtitle') }}
-      </div>
-    </q-card-section>
+    <q-form @submit.prevent="sendStealth">
+      <q-card-section>
+        <div class="text-h6">
+          {{
+            $t('sendStealthDialog.sendStealthTo') +
+            ' ' +
+            (contact?.profile?.name || contact?.name || address)
+          }}
+        </div>
+        <div class="text-caption text-grey-7">
+          {{ $t('sendStealthDialog.subtitle') }}
+        </div>
+      </q-card-section>
 
-    <!-- Spendable Balance Row -->
-    <q-card-section class="q-pt-none q-pb-xs">
-      <div
-        class="row items-center justify-between text-caption text-grey-7"
-        data-testid="wallet-balance-row"
-      >
-        <span>{{ $t('sendStealthDialog.balanceLabel') }}</span>
-        <span class="text-bold" data-testid="wallet-balance-value">
-          {{ currentWalletBalanceDisplay }}
-        </span>
-      </div>
-    </q-card-section>
+      <!-- Spendable Balance Row -->
+      <q-card-section class="q-pt-none q-pb-xs">
+        <div
+          class="row items-center justify-between text-caption text-grey-7"
+          data-testid="wallet-balance-row"
+        >
+          <span>{{ $t('sendStealthDialog.balanceLabel') }}</span>
+          <span class="text-bold" data-testid="wallet-balance-value">
+            {{ currentWalletBalanceDisplay }}
+          </span>
+        </div>
+      </q-card-section>
 
-    <!-- Amount Input -->
-    <q-card-section>
-      <q-input
-        class="text-bold text-h6"
-        v-model="amount"
-        type="number"
-        filled
-        dense
-        :suffix="currentUnit"
-        :hint="$t('sendStealthDialog.amountHint')"
-        :error="tooLarge"
-        :error-message="tooLargeMessage"
-        :placeholder="$t('sendStealthDialog.amountPlaceholder')"
-        data-testid="stealth-amount-input"
-        ref="amountInput"
-      />
-    </q-card-section>
+      <!-- Amount Input -->
+      <q-card-section>
+        <q-input
+          class="text-bold text-h6"
+          v-model="amount"
+          type="number"
+          filled
+          dense
+          :suffix="currentUnit"
+          :hint="$t('sendStealthDialog.amountHint')"
+          :error="tooLarge"
+          :error-message="tooLargeMessage"
+          :placeholder="$t('sendStealthDialog.amountPlaceholder')"
+          data-testid="stealth-amount-input"
+          ref="amountInput"
+        />
+      </q-card-section>
 
-    <!-- Memo Input -->
-    <q-card-section>
-      <q-input
-        v-model="memo"
-        filled
-        dense
-        :hint="$t('sendStealthDialog.memoHint')"
-        :placeholder="$t('sendStealthDialog.memoPlaceholder')"
-        data-testid="stealth-memo-input"
-      />
-    </q-card-section>
+      <!-- Memo Input -->
+      <q-card-section>
+        <q-input
+          v-model="memo"
+          filled
+          dense
+          :hint="$t('sendStealthDialog.memoHint')"
+          :placeholder="$t('sendStealthDialog.memoPlaceholder')"
+          data-testid="stealth-memo-input"
+        />
+      </q-card-section>
 
-    <q-card-actions align="right">
-      <q-btn
-        flat
-        :label="$t('sendStealthDialog.cancelBtnLabel')"
-        color="primary"
-        v-close-popup
-      />
-      <q-btn
-        flat
-        :disable="!canSend || busy"
-        :label="$t('sendStealthDialog.sendBtnLabel')"
-        color="primary"
-        data-testid="stealth-send-confirm-btn"
-        v-close-popup
-        @click="sendStealth"
-      />
-    </q-card-actions>
+      <q-card-actions align="right">
+        <q-btn
+          flat
+          :label="$t('sendStealthDialog.cancelBtnLabel')"
+          color="primary"
+          v-close-popup
+        />
+        <q-btn
+          flat
+          :disable="!canSend || busy"
+          :label="$t('sendStealthDialog.sendBtnLabel')"
+          color="primary"
+          data-testid="stealth-send-confirm-btn"
+          type="submit"
+        />
+      </q-card-actions>
+    </q-form>
   </q-card>
 </template>
 
@@ -98,7 +99,7 @@ export default defineComponent({
     },
     contact: {
       type: Object,
-      default: () => ({ name: 'Unknown' }),
+      default: () => ({}),
     },
     busy: {
       type: Boolean,
@@ -156,7 +157,7 @@ export default defineComponent({
   },
   methods: {
     sendStealth() {
-      if (this.value === undefined || this.tooLarge) return
+      if (this.busy || this.value === undefined || this.tooLarge) return
       this.$emit('send', {
         address: this.address,
         value: this.value,

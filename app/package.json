@@ -33,6 +33,7 @@
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@category-labs/mera": "0.2.0",
     "@frank/account-recovery": "*",
     "@frank/account-vault": "*",
     "@frank/bot": "*",

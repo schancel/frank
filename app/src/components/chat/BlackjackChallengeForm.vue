@@ -6,6 +6,7 @@
     <div class="text-subtitle2">{{ $t('blackjackP2p.challengeTitle') }}</div>
     <q-option-group
       v-model="role"
+      :disable="busy"
       dense
       :options="[
         { label: $t('blackjackP2p.roleDealer'), value: 'dealer' },
@@ -14,9 +15,10 @@
     />
     <q-input
       v-model="maxBet"
+      :disable="busy"
       dense
       data-testid="blackjack-challenge-max"
-      :label="$t('blackjackP2p.maxBet')"
+      :label="$t('blackjackP2p.challengeBetLimit')"
       :suffix="unit"
       inputmode="decimal"
     />
@@ -35,6 +37,23 @@
     >
       {{ error }}
     </div>
+    <div class="text-caption q-mt-xs" data-testid="blackjack-challenge-review">
+      {{
+        $t(
+          role === 'dealer'
+            ? 'blackjackP2p.challengeDealerReview'
+            : 'blackjackP2p.challengeBeforeBet',
+        )
+      }}
+    </div>
+    <div
+      v-if="busy"
+      role="status"
+      class="text-caption q-mt-xs"
+      data-testid="blackjack-challenge-pending"
+    >
+      {{ $t('blackjackP2p.preparingChallenge') }}
+    </div>
     <q-btn
       no-caps
       class="q-mt-sm"
@@ -43,7 +62,17 @@
       data-testid="blackjack-challenge-send"
       :label="$t('blackjackP2p.sendChallenge')"
       :disable="!!error || busy"
+      :loading="busy"
       @click="submit"
+    />
+    <q-btn
+      flat
+      no-caps
+      dense
+      class="q-mt-sm q-ml-sm"
+      data-testid="blackjack-challenge-cancel"
+      :label="$t('blackjackP2p.cancel')"
+      @click="$emit('cancel')"
     />
   </q-card-section>
 </template>
@@ -69,7 +98,7 @@ export default defineComponent({
   props: {
     busy: { type: Boolean, default: false },
   },
-  emits: ['submit'],
+  emits: ['submit', 'cancel'],
   setup() {
     const { balance } = useBalance()
     return { balance }
@@ -120,7 +149,7 @@ export default defineComponent({
   },
   methods: {
     submit() {
-      if (this.error || this.maxBetWei === null) return
+      if (this.busy || this.error || this.maxBetWei === null) return
       this.$emit('submit', { role: this.role, maxBetWei: this.maxBetWei })
     },
   },

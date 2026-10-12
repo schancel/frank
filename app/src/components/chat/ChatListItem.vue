@@ -5,8 +5,9 @@
     active-class="active-chat-list-item"
     clickable
   >
-    <q-item-section avatar v-if="$status.setup" side>
+    <q-item-section avatar v-if="$status.setup" side class="chat-list-avatar">
       <q-avatar
+        class="chat-list-avatar-image"
         rounded
         :color="isGroup ? 'primary' : undefined"
         :text-color="isGroup ? 'white' : undefined"
@@ -27,40 +28,44 @@
       </q-avatar>
     </q-item-section>
     <q-item-section v-show="!compact" class="chat-list-text">
-      <!-- Keep the name and badges on one bounded line. -->
+      <!-- Give the name its own line so account badges cannot consume it. -->
       <div class="chat-list-title" data-testid="chat-list-title">
-        <q-icon
-          v-if="isEmail && isVerifiedGateway"
-          name="mail"
-          size="15px"
-          color="primary"
-          class="q-mr-xs"
-          data-testid="verified-email-icon"
-        />
-        <q-icon
-          v-else-if="isEmail && !isVerifiedGateway"
-          name="warning"
-          size="15px"
-          color="warning"
-          class="q-mr-xs"
-          data-testid="unverified-email-icon"
-        />
-        <q-badge
-          v-if="isEmail && !isVerifiedGateway"
-          color="warning"
-          text-color="dark"
-          outline
-          class="q-mr-xs text-caption"
-          data-testid="unverified-email-badge"
-        >
-          P2P
-        </q-badge>
-        <q-item-label
-          lines="1"
-          class="chat-list-name text-weight-medium text-body2 ellipsis"
-          >{{ titleName }}</q-item-label
-        >
+        <div class="chat-list-name-line">
+          <q-icon
+            v-if="isEmail && isVerifiedGateway"
+            name="mail"
+            size="15px"
+            color="primary"
+            class="q-mr-xs"
+            data-testid="verified-email-icon"
+          />
+          <q-icon
+            v-else-if="isEmail && !isVerifiedGateway"
+            name="warning"
+            size="15px"
+            color="warning"
+            class="q-mr-xs"
+            data-testid="unverified-email-icon"
+          />
+          <q-badge
+            v-if="isEmail && !isVerifiedGateway"
+            color="warning"
+            text-color="dark"
+            outline
+            class="q-mr-xs text-caption"
+            data-testid="unverified-email-badge"
+          >
+            P2P
+          </q-badge>
+          <q-item-label
+            lines="1"
+            class="chat-list-name text-weight-medium text-body2 ellipsis"
+            :title="titleName"
+            >{{ titleName }}</q-item-label
+          >
+        </div>
         <account-badge
+          class="chat-list-account-badge"
           v-if="effectiveAddress && !conversation?.topic && !isGroup"
           :address="effectiveAddress"
           :name="titleName"
@@ -529,54 +534,86 @@ export default defineComponent({
   overflow-wrap: anywhere;
 }
 
-.chat-list-title {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 2px 4px;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.chat-list-title > * {
-  min-width: 0;
-  max-width: 100%;
-}
-
 .chat-list-row {
   container-type: inline-size;
 }
 
-.chat-list-text,
-.chat-list-name {
+.chat-list-avatar {
+  min-width: 48px;
+  padding-right: 8px;
+}
+
+.chat-list-avatar-image {
+  font-size: 40px;
+}
+
+.chat-list-text {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.chat-list-title {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-list-name-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
   min-width: 0;
 }
 
 .chat-list-name {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
-.chat-list-title > :deep(.q-badge) {
-  /* The role uses its natural width; the name yields first. A badge wider than the entire
-     title may wrap, but never clips its label or pushes the row sideways. */
+.chat-list-account-badge {
   flex: 0 0 auto;
-  max-width: calc(100% - 4px);
+  max-width: 100%;
+  margin-left: 0;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
-.chat-list-title > :deep(.q-icon) {
+.chat-list-name-line > :deep(.q-icon),
+.chat-list-name-line > :deep(.q-badge) {
   flex-shrink: 0;
+  margin: 0;
 }
 
 .chat-list-metadata {
   display: none;
+  flex: 0 0 72px;
+  width: 72px;
   min-width: 0;
+  max-width: 72px;
+  padding-left: 8px;
 }
 
 .chat-list-metadata-unread {
   display: flex;
-  max-width: 42%;
+}
+
+@container (max-width: 280px) {
+  .chat-list-avatar {
+    min-width: 40px;
+    padding-right: 8px;
+  }
+  .chat-list-avatar-image {
+    font-size: 32px;
+  }
+  .chat-list-metadata {
+    flex-basis: 64px;
+    width: 64px;
+    max-width: 64px;
+  }
 }
 
 .chat-list-unread-chips {
@@ -607,12 +644,5 @@ export default defineComponent({
     flex-direction: column;
     align-items: flex-end;
   }
-}
-
-/* The title's gap owns badge/icon spacing. */
-.chat-list-title > :deep(.q-badge),
-.chat-list-title > :deep(.q-icon) {
-  margin-left: 0;
-  margin-right: 0;
 }
 </style>

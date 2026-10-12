@@ -332,6 +332,14 @@
           <span>{{ $t(problem.key, problem.params) }}</span>
         </div>
 
+        <div
+          v-if="failureDiagnostic"
+          class="text-caption text-grey-7 q-mb-sm"
+          data-testid="swap-failure-diagnostic"
+        >
+          {{ $t('swap.failureDiagnostic', failureDiagnostic) }}
+        </div>
+
         <!-- Confirm step -->
         <q-card
           v-if="phase === 'review' && quote"
@@ -339,10 +347,20 @@
           bordered
           class="q-pa-md swap-card swap-card--review"
           data-testid="swap-review"
+          tabindex="-1"
+          role="region"
+          :aria-label="$t('swap.reviewTitle')"
+          :aria-busy="reviewing"
         >
           <div class="text-subtitle2 text-weight-bold q-mb-xs">
             {{ $t('swap.reviewTitle') }}
           </div>
+          <q-linear-progress
+            v-if="reviewing"
+            indeterminate
+            class="q-mb-sm"
+            data-testid="swap-review-loading"
+          />
           <!-- The swap as a whole: everything that leaves the wallet, and what arrives. -->
           <div class="text-body2" data-testid="swap-review-pay">
             {{ $t(payLine.key, payLine.params) }}
@@ -448,6 +466,7 @@
 import {
   computed,
   defineComponent,
+  nextTick,
   onBeforeUnmount,
   onMounted,
   ref,
@@ -569,6 +588,59 @@ export default defineComponent({
     const quoteState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
     const quoteProblem = ref<Problem>()
     const flowProblem = ref<Problem>()
+    const failureDiagnostic = ref<{ stage: string; code: string }>()
+    // Only these fixed identifiers may reach the UI; never serialize provider errors or messages.
+    function recordFailure(error: unknown, stage: string): void {
+      const names = [
+        'Error',
+        'TypeError',
+        'RangeError',
+        'EvmNativeJournalError',
+        'EvmInputAdmissionError',
+        'EvmNativeOperationPendingError',
+        'SwapRecordMismatchError',
+      ]
+      const codes = [
+        'invalid',
+        'binding',
+        'capacity',
+        'conflict',
+        'closed',
+        'uncertain',
+        'not-ready',
+        'uncertain-owner',
+        'invalid-provenance',
+        'conflicting-authorization',
+        'foreign-lifetime',
+        'stale-epoch',
+        'reentrant-mutation',
+        'CALL_EXCEPTION',
+        'INSUFFICIENT_FUNDS',
+        'NETWORK_ERROR',
+        'SERVER_ERROR',
+        'TIMEOUT',
+        'UNKNOWN_ERROR',
+        'INVALID_ARGUMENT',
+        'UNSUPPORTED_OPERATION',
+        'NONCE_EXPIRED',
+        'REPLACEMENT_UNDERPRICED',
+      ]
+      const value = error as {
+        name?: unknown
+        code?: unknown
+        reason?: unknown
+      } | null
+      const name =
+        typeof value?.name === 'string' && names.includes(value.name)
+          ? value.name
+          : 'Error'
+      const reason = value?.code ?? value?.reason
+      const code =
+        typeof reason === 'string' && codes.includes(reason)
+          ? `${name}/${reason}`
+          : name
+      failureDiagnostic.value = { stage, code }
+    }
 
     const phase = ref<'form' | 'review' | 'working' | 'done'>('form')
     const reviewing = ref(false)
@@ -850,6 +922,7 @@ export default defineComponent({
     const wantsQuoteRefresh = () =>
       !confirming.value &&
       !reviewing.value &&
+      quoteState.value !== 'loading' &&
       ((phase.value === 'form' && quote.value !== undefined) ||
         phase.value === 'review')
     const onVisibility = () => {
@@ -902,6 +975,11 @@ export default defineComponent({
         return next
       } catch (error) {
         if (!alive || sequence !== quoteSequence) return undefined
+        if (reviewing.value || confirming.value)
+          recordFailure(
+            error,
+            confirming.value ? 'confirm-quote' : 'review-quote',
+          )
         if (phase.value === 'review' && quote.value) {
           // Stay on the review card with the last figures, marked stale. Confirm waits for a
           // fresh quote; Back is always there; the next refresh tries again.
@@ -924,6 +1002,7 @@ export default defineComponent({
       cost.value = undefined
       quoteProblem.value = undefined
       flowProblem.value = undefined
+      failureDiagnostic.value = undefined
       quoteSequence++
       if (debounce) clearTimeout(debounce)
       if (amount.value === undefined) {
@@ -988,33 +1067,53 @@ export default defineComponent({
     const canConfirm = computed(
       () =>
         phase.value === 'review' &&
+        !reviewing.value &&
+        reviewed.value !== undefined &&
+        !flowProblem.value?.blocking &&
         quote.value !== undefined &&
         !quoteStale.value &&
         !insufficient.value &&
         !quoteProblem.value?.blocking,
     )
 
+    let reviewSequence = 0
     async function review(): Promise<void> {
       if (!canReview.value) return
+      const current = session.value
+      if (!current) return
+      const sequence = ++reviewSequence
+      const active = () =>
+        alive && sequence === reviewSequence && current.isCurrent()
       reviewing.value = true
+      reviewed.value = undefined
       flowProblem.value = undefined
+      failureDiagnostic.value = undefined
+      phase.value = 'review'
+      let stage = 'review-quote'
       try {
-        // Always the chain's current answer, never the one that was on screen.
+        // Acknowledge the click before waiting for network reads. Confirm stays disabled.
+        await nextTick()
+        if (!active()) return
+        const card = root.value?.querySelector<HTMLElement>(
+          '[data-testid="swap-review"]',
+        )
+        card?.focus({ preventScroll: true })
+        card?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
         const fresh = await refreshQuote()
-        if (!fresh || problem.value?.blocking) return
-        // What, if anything, has to be moved into the main account first. The user sees the
-        // amount on the review card and confirms it with the swap.
-        const current = session.value
-        if (!current) return
+        if (!active() || !fresh || problem.value?.blocking) return
+        stage = 'review-plan'
         const reviewPlan = await current.dex.plan({
           quote: fresh,
           slippageBps: slippageBps.value,
           account: current.account,
         })
+        if (!active()) return
+        stage = 'review-funds'
         const need = await current.dex.consolidation({
           plan: reviewPlan,
           swapFee: fee.value,
         })
+        if (!active()) return
         if (!need.possible) {
           flowProblem.value = {
             key: 'swap.errorInsufficientNative',
@@ -1023,19 +1122,23 @@ export default defineComponent({
           return
         }
         moveWei.value = need.moveWei
-        // With the move known, the total includes its transfer fee as well.
-        cost.value = await current.dex.cost({
+        // Price the final plan with the required move; its deadline can differ from the quote plan.
+        stage = 'review-cost'
+        const revisedCost = await current.dex.cost({
           plan: reviewPlan,
           account: current.account,
           moveWei: need.moveWei,
         })
+        if (!active()) return
+        cost.value = revisedCost
         reviewed.value = fresh
         quoteStale.value = false
-        phase.value = 'review'
       } catch (error) {
+        if (!active()) return
+        recordFailure(error, stage)
         flowProblem.value = problemOf(error, 'swap.errorQuote')
       } finally {
-        reviewing.value = false
+        if (sequence === reviewSequence) reviewing.value = false
       }
     }
 
@@ -1109,6 +1212,8 @@ export default defineComponent({
       if (!current || !accepted || !canConfirm.value || confirming.value) return
       confirming.value = true
       flowProblem.value = undefined
+      failureDiagnostic.value = undefined
+      let stage = 'confirm-quote'
       try {
         if (!current.isCurrent()) {
           flowProblem.value = {
@@ -1130,6 +1235,7 @@ export default defineComponent({
           flowProblem.value = { key: 'swap.errorPriceMoved', blocking: false }
           return
         }
+        stage = 'confirm-plan'
         const plan = await current.dex.plan({
           quote: q,
           slippageBps: slippageBps.value,
@@ -1139,14 +1245,17 @@ export default defineComponent({
         progress.value = undefined
         // The record goes to the wallet with the swap's transaction: the wallet journals it
         // before signing and its note to self carries it. Nothing is recorded here.
+        stage = 'execution-funds'
         const result = await current.dex.execute({
           plan,
           account: current.account,
           consolidateWei: moveWei.value,
           onProgress: next => {
+            stage = next.stage
             progress.value = next
           },
         })
+        stage = 'recording-result'
         listOwnSwaps(current)
         rememberOutcome(result)
         outcome.value = outcomeOf(result, q)
@@ -1155,6 +1264,7 @@ export default defineComponent({
         void refreshBalances()
         void refreshOtherAccounts()
       } catch (error) {
+        recordFailure(error, stage)
         flowProblem.value = {
           ...problemOf(error, 'swap.errorExecution'),
           blocking: false,
@@ -1168,6 +1278,8 @@ export default defineComponent({
     }
 
     function backToForm(): void {
+      reviewSequence++
+      reviewing.value = false
       quoteStale.value = false
       flowProblem.value = undefined
       phase.value = 'form'
@@ -1293,6 +1405,7 @@ export default defineComponent({
       root,
       touched,
       quoteStale,
+      failureDiagnostic,
       backToForm,
       moveText: computed(() =>
         moveWei.value > 0n

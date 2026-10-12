@@ -372,10 +372,20 @@ export interface RpsItem {
  * `commitment` and adds its own random `clientSeed`; the `result` reveals `serverSecret`, and the
  * number rolled follows from the secret and the seed. One commitment is good for one roll. The
  * stake is `wagerWei` and is paid as the value of the `roll` message itself. */
+export type DiceRejectionReason =
+  | 'roll-not-offered'
+  | 'commitment-mismatch'
+  | 'invalid-client-seed'
+  | 'invalid-target'
+  | 'invalid-wager'
+  | 'below-minimum'
+  | 'payout-limit'
+  | 'payment-not-confirmed'
+
 export interface SatoshiDiceItem {
   type: 'dice'
-  action: 'table' | 'roll' | 'result'
-  /** `table`: the roll the bot now offers. `roll`/`result`: the roll being played. */
+  action: 'table' | 'roll' | 'result' | 'rejected'
+  /** `table`: the next offer. `roll`/`result`/`rejected`: the original roll being answered. */
   rollId?: string
   /** SHA-256 of the bot's secret for `rollId`, hex. */
   commitment?: string
@@ -393,6 +403,8 @@ export interface SatoshiDiceItem {
   /** `result` only: the next roll on offer and its commitment. */
   nextRollId?: string
   nextCommitment?: string
+  /** `rejected` only: no roll was made for `rollId`. Does not assert a refund settled. */
+  rejectionReason?: DiceRejectionReason
 }
 
 export interface LiarsDiceItem {

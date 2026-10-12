@@ -190,6 +190,17 @@ export default {
     balanceUnknown: 'Your balance is not known yet.',
   },
   gameFairness: {
+    diceRejected: 'No roll was made.',
+    diceRejectionReasons: {
+      'roll-not-offered': 'This roll was not offered.',
+      'commitment-mismatch': 'The commitment does not match the offered roll.',
+      'invalid-client-seed': 'The player random value is invalid.',
+      'invalid-target': 'The roll target is invalid.',
+      'invalid-wager': 'The stake is invalid.',
+      'below-minimum': 'The stake is below the minimum.',
+      'payout-limit': 'The possible payout exceeds the table limit.',
+      'payment-not-confirmed': 'The bet payment was not confirmed.',
+    },
     dicePractice: 'Practice',
     dicePracticeDescription:
       'Zero stake, no payout. Practice uses the same roll rules without wagering funds.',
@@ -251,6 +262,15 @@ export default {
       'The browser has not granted protection against automatic eviction. Your data is still stored. See the installation guidance below and try again; protection is not guaranteed.',
   },
   blackjackP2p: {
+    cancel: 'Cancel',
+    challengeDealerReview: 'The other player chooses a bet within this limit.',
+    challengeBetLimit: 'Bet limit',
+    challengeBeforeBet:
+      'This opens a hand. Review and confirm your bet after the dealer accepts.',
+    preparingChallenge: 'Preparing challenge…',
+    betSummary: 'Bet: {amount}',
+    changeBet: 'Change',
+    confirmBet: 'Bet {amount}',
     notDeliveredYet:
       'The other side does not have this message yet: it is still being sent.',
     notDelivered:
@@ -462,6 +482,11 @@ export default {
       'Token balances unavailable. Showing last known balances.',
     balanceStale: '{balance} (last known)',
     failedLoadAddress: 'Could not derive wallet address',
+    receiveDiscoveryUnavailable:
+      'The next unused receive address could not be checked through the relay. Retry when the connection is available.',
+    receiveAddressUnavailable:
+      'The receive address is unavailable for this account and network. Retry opening it.',
+    retryAddress: 'Retry address',
     unableCopyAddress: 'Unable to copy the Monad address',
     ecash: 'eCash',
     ecashTestnet: 'eCash Testnet',
@@ -534,6 +559,8 @@ export default {
     priceHistorySpot: 'AVU (Spot)',
     priceHistoryGold: 'Gold',
     priceHistoryPoints: '{count} price observations since {first}.',
+    priceHistoryCoverage:
+      '{count} price observations available from {first} to {last}. Requested window: {range}.',
     priceHistorySinglePoint:
       'Only one price observation is available in this range; no line is drawn.',
     priceHistoryGoldUnavailable:
@@ -690,13 +717,13 @@ export default {
     waitingForChain: 'Queued: the network cannot be reached.',
     waitingBlocks:
       'Waiting {blocks} more blocks after the previous payment before paying…',
-    paymentSent: '· payment sent',
-    paymentInMempool: '· payment in the mempool',
-    paymentPaid: '· paid',
-    paymentReverted: '· payment reverted, paying again',
-    paymentRepaid: '· reverted, paid again',
-    paymentFailed: '· payment failed',
-    paymentUnsent: '· not paid',
+    paymentSent: 'Sent',
+    paymentInMempool: 'Message stamp in mempool',
+    paymentPaid: 'Stamp paid',
+    paymentReverted: 'Message stamp reverted, paying again',
+    paymentRepaid: 'Stamp reverted, paid again',
+    paymentFailed: 'Message stamp failed',
+    paymentUnsent: 'Message stamp not paid',
     reasonUnreachable: "Can't reach the server.",
     reasonUnavailable: 'This relay does not offer messaging.',
     reasonRejected: 'The relay rejected it.',
@@ -797,7 +824,8 @@ export default {
       'You added this contact as {username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.',
   },
   sendStealthDialog: {
-    sendStealthTo: 'Send Stealth to',
+    preparing: 'Preparing stealth payment: {amount}',
+    sendStealthTo: 'Send Stealth Payment to',
     subtitle:
       'Paid from your wallet to a one-time address only this contact can spend from',
     balanceLabel: 'Available for this payment:',
@@ -805,7 +833,7 @@ export default {
     amountPlaceholder: '0.0',
     memoHint: 'Memo, sent with the payment (optional)',
     memoPlaceholder: 'Enter memo...',
-    sendBtnLabel: 'Send Stealth',
+    sendBtnLabel: 'Send',
     cancelBtnLabel: 'Cancel',
     sent: 'Payment sent',
     pending:
@@ -877,6 +905,15 @@ export default {
     },
   },
   chatMessageStealth: {
+    outboundState: {
+      unknown: 'Not checked',
+      planned: 'Preparing',
+      prepared: 'Pending',
+      delivered: 'Pending',
+      paid: 'Paid',
+      failed: 'Transfer delivery failed',
+      released: 'Cancelled before sending',
+    },
     title: 'Stealth Payment',
     sentTitle: 'Sent Stealth Payment',
     receivedTitle: 'Received Stealth Payment',
@@ -1425,6 +1462,19 @@ export default {
     keepPrivateNotice: 'Keep this private. Do not share or screenshot.',
   },
   transactionDialog: {
+    stealthPayment: 'Stealth payment',
+    valueUnavailable: 'Transaction value unavailable',
+    transactionUnavailable: 'Transaction could not be decoded',
+    baseUnits: 'base units',
+    stampState: {
+      pending: 'Sent',
+      mempool: 'In mempool',
+      paid: 'Paid',
+      repaid: 'Paid again',
+      reverted: 'Reverted',
+      failed: 'Failed',
+      unsent: 'Not paid',
+    },
     backingTransactions: 'Backing Transactions',
     totalStampPayment: 'Total stamp payment',
     stampPaymentN: 'Stamp payment {n}',
@@ -1580,8 +1630,9 @@ export default {
       'The approval did not confirm, so nothing was swapped. Try again.',
     errorAccountChanged: 'The account changed. Review the swap again.',
     errorQuote: 'Could not get a price from the network. Try again.',
+    failureDiagnostic: 'Failure details: {stage} · {code}',
     errorExecution:
-      'The swap was not sent. Nothing was swapped; check Recent swaps before trying again.',
+      'The swap status could not be confirmed. Check Recent swaps before trying again; a submitted swap may still complete.',
     warnHighImpact:
       'This amount is large for the pool: you receive noticeably less than the market rate.',
     status: {

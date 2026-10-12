@@ -1,6 +1,13 @@
 import { webcrypto } from 'crypto'
-import { splitCodex32 } from '@frank/codex32'
-import { decodeRecoveryDescriptor } from '@frank/account-recovery'
+import {
+  createLongBchChecksum,
+  GF32_ALPHABET,
+  splitCodex32,
+} from '@frank/codex32'
+import {
+  exportRecoveryShares,
+  decodeRecoveryDescriptor,
+} from '@frank/account-recovery'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { accountSession } from './session'
 import { assertLegacyUnchanged } from './legacy'
@@ -120,7 +127,7 @@ test('stages the account root with the roots and wipes its own copy afterwards',
 test('each signup names its own share set', async () => {
   const a = await signup(),
     b = await signup()
-  const id = (share: string) => share.slice(4, 8)
+  const id = (share: string) => share.slice(8, 12)
   expect(new Set(a.shares.map(id)).size).toBe(1)
   expect(id(a.shares[0])).not.toBe(id(b.shares[0]))
   a.ceremony.cancel()
@@ -155,18 +162,18 @@ test.each([
 )
 /** A well-formed share with the same header and index but wrong contents. */
 function poisoned(share: string): string {
-  const split = splitCodex32({
-    threshold: Number(share[3]) as 2,
-    identifier: share.slice(4, 8),
-    indices: [
-      share[8],
-      ...Array.from('qpzry9x8gf').filter(i => i !== share[8]),
-    ],
-    secret: webcrypto.getRandomValues(new Uint8Array(64)),
-    randomBytes: n => webcrypto.getRandomValues(new Uint8Array(n)),
-  })
-  if (!split.ok) throw new Error('fixture')
-  return split.value[0]
+  const data = Array.from(share.slice(3, -15), char =>
+    GF32_ALPHABET.indexOf(char),
+  )
+  try {
+    for (let i = 10; i < data.length; i++)
+      data[i] = webcrypto.getRandomValues(new Uint8Array(1))[0] & 31
+    return `fr1${[...data, ...createLongBchChecksum('fr', data)]
+      .map(value => GF32_ALPHABET[value])
+      .join('')}`
+  } finally {
+    data.fill(0)
+  }
 }
 test('restore accepts more shares than the threshold, stages the account and reports the bad share', async () => {
   const f = await signup()
@@ -319,4 +326,51 @@ test('bounded error text never includes arbitrary secret exception messages', ()
   expect(recoveryErrorMessage({ code: 'duplicate-share' })).toContain(
     'different index',
   )
+})
+
+test('ten mixed root/historical strings require explicit selection before staging', async () => {
+  const root = webcrypto.getRandomValues(new Uint8Array(32)),
+    seed = webcrypto.getRandomValues(new Uint8Array(64)),
+    other = webcrypto.getRandomValues(new Uint8Array(32))
+  const make = (
+    format: 'root' | 'historical',
+    secret: Uint8Array,
+    threshold: number,
+    shareCount: number,
+    identifier: string,
+  ) =>
+    exportRecoveryShares({
+      format,
+      secret,
+      threshold,
+      shareCount,
+      identifier,
+      randomBytes: length => webcrypto.getRandomValues(new Uint8Array(length)),
+    })
+  const ceremony = createAccountCeremony()
+  try {
+    const pile = [
+      ...make('root', root, 2, 3, 'test'),
+      ...make('historical', seed, 3, 5, 'test').slice(0, 3),
+      ...make('root', other, 2, 3, 'test'),
+      ...make('root', root, 1, 1, 'same'),
+    ]
+    expect(pile.length).toBe(10)
+    await ceremony.beginRestore()
+    const result = await ceremony.confirm(pile, '')
+    expect(accountSession.stage).not.toHaveBeenCalled()
+    if (!('candidates' in result))
+      throw new Error('Expected explicit account selection')
+    expect(result.candidates.length).toBe(3)
+    expect(result.report.every(share => share.status === 'supports')).toBe(true)
+    await ceremony.choose(1)
+    expect(accountSession.stage).toHaveBeenCalledTimes(1)
+    await expect(ceremony.choose(0)).rejects.toThrow()
+    expect(accountSession.stage).toHaveBeenCalledTimes(1)
+  } finally {
+    ceremony.cancel()
+    root.fill(0)
+    seed.fill(0)
+    other.fill(0)
+  }
 })

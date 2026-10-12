@@ -15,10 +15,77 @@
       />
     </q-card-section>
 
+    <q-card-section
+      v-for="(group, index) in stealthGroups"
+      :key="group.ephemeralPubKey || index"
+      data-testid="stealth-transaction-group"
+    >
+      <div class="text-subtitle2">
+        {{ $t('transactionDialog.stealthPayment') }}
+      </div>
+      <div class="text-caption" data-testid="stealth-transaction-status">
+        {{ $t(`chatMessageStealth.outboundState.${group.state}`) }}
+      </div>
+      <div class="text-weight-bold" data-testid="stealth-transaction-total">
+        {{ groupTotal(group) }}
+      </div>
+      <q-list separator>
+        <q-item
+          v-for="(tx, txIndex) in group.transactions"
+          :key="tx.txHash || txIndex"
+        >
+          <q-item-section>
+            <q-item-label>{{
+              tx.valueWei !== undefined
+                ? groupValue(tx.valueWei, group)
+                : $t('transactionDialog.valueUnavailable')
+            }}</q-item-label>
+            <q-item-label v-if="tx.state" caption>{{
+              $t(`chatMessageStealth.outboundState.${tx.state}`)
+            }}</q-item-label>
+            <q-item-label v-if="tx.destinationAddress" caption>{{
+              $t('transactionDialog.sentTo', { address: tx.destinationAddress })
+            }}</q-item-label>
+            <q-item-label>
+              <a
+                v-if="
+                  tx.txHash &&
+                  group.chainIdentifier &&
+                  multiChainExplorerUrl(tx.txHash, group.chainIdentifier)
+                "
+                :href="
+                  multiChainExplorerUrl(tx.txHash, group.chainIdentifier || '')
+                "
+                target="_blank"
+                rel="noopener noreferrer"
+                >{{ tx.txHash }}</a
+              >
+              <span v-else>{{
+                tx.txHash || $t('transactionDialog.transactionUnavailable')
+              }}</span>
+            </q-item-label>
+          </q-item-section>
+          <q-item-section v-if="tx.txHash" side>
+            <q-btn
+              flat
+              round
+              dense
+              icon="content_copy"
+              :aria-label="$t('a11y.copyTxHash')"
+              @click="copyTxHash(tx.txHash)"
+            />
+          </q-item-section>
+        </q-item>
+      </q-list>
+    </q-card-section>
+
     <q-card-section v-if="stampPayments.length" class="q-pt-sm q-pb-xs">
       <div class="q-pa-md bg-grey-1 rounded-borders">
         <div class="text-caption text-grey-7">
           {{ $t('transactionDialog.totalStampPayment') }}
+          <span v-if="stampStatus" data-testid="stamp-transaction-status">
+            — {{ $t(`transactionDialog.stampState.${stampStatus}`) }}</span
+          >
         </div>
         <div class="text-h6 text-weight-bold text-primary">
           {{ formattedTotal }}
@@ -160,7 +227,11 @@ import { defineComponent, PropType } from 'vue'
 import { copyToClipboard } from 'quasar'
 import { toDisplayAddress } from 'src/utils/address'
 import { Utxo } from '@frank/cashweb/types/utxo'
-import { transactionExplorerUrl } from 'src/utils/explorer'
+import {
+  transactionExplorerUrl,
+  multiChainExplorerUrl,
+} from 'src/utils/explorer'
+import type { StealthTransactionGroup } from 'src/utils/stealth-transaction-details'
 import { infoNotify } from 'src/utils/notifications'
 import { translateMessage } from 'src/i18n'
 import { activeChain } from '@frank/wallet/chain'
@@ -183,6 +254,11 @@ export default defineComponent({
     outpoints: {
       type: Object as PropType<Array<Utxo>>,
       default: () => [] as Utxo[],
+    },
+    stampStatus: { type: String, default: '' },
+    stealthGroups: {
+      type: Array as PropType<StealthTransactionGroup[]>,
+      default: () => [],
     },
     stampPayments: {
       type: Array as PropType<
@@ -213,6 +289,30 @@ export default defineComponent({
     return {
       copyTxHash,
       transactionExplorerUrl,
+      multiChainExplorerUrl,
+      groupValue(value: bigint, group: StealthTransactionGroup) {
+        return group.chainIdentifier === activeChain.chainIdentifier
+          ? `${activeChain.toDisplayAmount(value)} ${activeChain.unit}`
+          : `${value} ${translateMessage('transactionDialog.baseUnits')} (${
+              group.chainIdentifier ?? '?'
+            })`
+      },
+      groupTotal(group: StealthTransactionGroup) {
+        if (
+          !group.transactions.length ||
+          group.transactions.some(tx => tx.valueWei === undefined)
+        )
+          return translateMessage('transactionDialog.valueUnavailable')
+        const total = group.transactions.reduce(
+          (sum, tx) => sum + (tx.valueWei ?? 0n),
+          0n,
+        )
+        return group.chainIdentifier === activeChain.chainIdentifier
+          ? `${activeChain.toDisplayAmount(total)} ${activeChain.unit}`
+          : `${total} ${translateMessage('transactionDialog.baseUnits')} (${
+              group.chainIdentifier ?? '?'
+            })`
+      },
       formatValue(valueWei: bigint) {
         return `${activeChain.toDisplayAmount(valueWei)} ${activeChain.unit}`
       },

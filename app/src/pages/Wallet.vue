@@ -258,7 +258,7 @@
                         class="fit"
                         filled
                         auto-grow
-                        :loading="!displayAddress"
+                        :loading="addressAvailability === 'loading'"
                         v-model="displayAddress"
                         readonly
                       >
@@ -275,6 +275,30 @@
                           />
                         </template>
                       </q-input>
+                    </div>
+                    <div
+                      v-if="
+                        addressAvailability === 'discovery-unavailable' ||
+                        addressAvailability === 'unavailable'
+                      "
+                      role="alert"
+                      data-testid="wallet-address-unavailable"
+                      class="q-mt-md"
+                    >
+                      {{
+                        $t(
+                          addressAvailability === 'discovery-unavailable'
+                            ? 'walletPanel.receiveDiscoveryUnavailable'
+                            : 'walletPanel.receiveAddressUnavailable',
+                        )
+                      }}
+                      <q-btn
+                        flat
+                        no-caps
+                        :label="$t('walletPanel.retryAddress')"
+                        data-testid="wallet-retry-address"
+                        @click="addressRetry++"
+                      />
                     </div>
                     <q-card-actions
                       align="right"
@@ -415,7 +439,10 @@
                                 · {{ token.name }}
                               </span>
                             </q-item-label>
-                            <q-item-label caption class="text-grey-6">
+                            <q-item-label
+                              caption
+                              class="text-grey-6 wallet-token-contract"
+                            >
                               {{ $t('walletPanel.tokenContract') }}:
                               <address-text :address="token.address" copyable />
                             </q-item-label>
@@ -1009,14 +1036,20 @@ export default defineComponent({
       accountSession.getCachedChainAddress?.(selectedWallet.value) ?? '',
     )
 
+    const addressAvailability = ref<
+      'loading' | 'ready' | 'discovery-unavailable' | 'unavailable'
+    >('loading')
+    const addressRetry = ref(0)
     watch(
       () => [
         accountStatus.status,
         accountStatus.revision,
         selectedWallet.value,
         network.value.chainIdentifier,
+        addressRetry.value,
       ],
       async ([status, , chain], _previous, onCleanup) => {
+        addressAvailability.value = 'loading'
         nativeOperations.value = {
           status: chain === 'monad' ? 'unavailable' : 'unsupported',
         }
@@ -1048,29 +1081,23 @@ export default defineComponent({
         })
         try {
           if (chain === 'monad') {
-            const wallet = await useActiveWallet()
-            if (!current) return
-            nativePresentation.value = capturedChain
-            nativeOperations.value = inspectNativeTransferOperations(
-              wallet,
+            const address = await accountSession.getChainAddress(
               capturedChain.chainIdentifier,
             )
-            let address: unknown
-            if (typeof wallet.getReceiveAddress === 'function') {
-              address = await wallet.getReceiveAddress()
-            } else if (wallet.identity?.displayAddress) {
-              address = wallet.identity.displayAddress
-            }
-            if (current && address) {
-              displayAddress.value =
-                typeof address === 'string'
-                  ? address
-                  : capturedChain.addressToString(
-                      address as Parameters<
-                        typeof capturedChain.addressToString
-                      >[0],
-                    )
-            }
+            if (!current) return
+            displayAddress.value = address
+            nativePresentation.value = capturedChain
+            // Financial acquisition is separate from the local receive address. A failed
+            // operation inspection must not hide an address the ready session owns.
+            void useActiveWallet()
+              .then(wallet => {
+                if (current)
+                  nativeOperations.value = inspectNativeTransferOperations(
+                    wallet,
+                    capturedChain.chainIdentifier,
+                  )
+              })
+              .catch(() => undefined)
           } else if (utxoChain) {
             // The wallet's next unused receive address, never one that was already paid.
             const { wallet } = await openUtxoWallet(utxoChain)
@@ -1080,9 +1107,18 @@ export default defineComponent({
             const address = await accountSession.getChainAddress(chain)
             if (current) displayAddress.value = address
           }
-        } catch (err) {
-          if (current)
-            errorNotify(err, { fallbackKey: 'walletPanel.failedLoadAddress' })
+          if (current) addressAvailability.value = 'ready'
+        } catch {
+          if (current) {
+            displayAddress.value = ''
+            addressAvailability.value = utxoChain
+              ? 'discovery-unavailable'
+              : 'unavailable'
+            console.error('wallet-receive-address-unavailable', {
+              chainIdentifier: capability.entry.id,
+              code: addressAvailability.value,
+            })
+          }
         }
       },
       { immediate: true, flush: 'sync' },
@@ -1109,6 +1145,8 @@ export default defineComponent({
       currentWalletConfig,
       isTestnet,
       displayAddress,
+      addressAvailability,
+      addressRetry,
       balancePresentation,
       balanceObservation,
       chainUnreachable,
@@ -1161,6 +1199,11 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.wallet-token-contract :deep(.address-text) {
+  width: fit-content;
+  max-width: 100%;
+}
+
 .wallet-header-unit {
   flex-shrink: 0;
 }

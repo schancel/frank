@@ -182,13 +182,14 @@ describe('parallel paid messages', () => {
     for (const row of rows) mockBalances.set(row.address.toLowerCase(), valueWei)
     return rows
   }
-  const send = (n: number, wallet = alice) =>
+  const send = (n: number, wallet = alice, onBeforeExposure?: () => void) =>
     f.chain.directMessages.send({
       wallet,
       recipient: f.bob.identity.address,
       items: [{ type: 'text', text: `message ${n}` }],
       stampValue: STAMP,
       messageId: ID(n),
+      onBeforeExposure,
     })
   const tick = (digests: string[] = [], wallet = alice) =>
     f.chain.directMessages.reconcileAttempts({ wallet, payloadDigests: digests })
@@ -523,9 +524,9 @@ describe('parallel paid messages', () => {
   it('neither broadcast lands while the node is down: the same bytes are broadcast again until included', async () => {
     const [row] = await fundAccounts(1)
     offlineChain.relayBroadcasts = false
-    offlineChain.nodeDown = true
-    // The fee is read before the node goes down for transactions (fee reads still answer).
-    const sent = await send(1)
+    // Nonce admission succeeds before signing. Fail the node after original signed bytes
+    // are durable but before either party can broadcast them.
+    const sent = await send(1, alice, () => { offlineChain.nodeDown = true })
     expect(bobMailbox).toHaveLength(1)
     for (let pass = 0; pass < 8; pass++) await tick()
     expect(statusOf(row.index)).toBe('available')
@@ -543,8 +544,7 @@ describe('parallel paid messages', () => {
     REPLACED_AFTER_MS.value = 0
     const [row] = await fundAccounts(1)
     offlineChain.relayBroadcasts = false
-    offlineChain.nodeDown = true
-    const sent = await send(1)
+    const sent = await send(1, alice, () => { offlineChain.nodeDown = true })
     offlineChain.nodeDown = false
     // Another transaction from the same account lands first (another device, a sweep).
     const other = await alice.pool
@@ -820,7 +820,7 @@ describe('parallel paid messages', () => {
     expect(bobMailbox).toHaveLength(2)
   })
 
-  it('one account the chain and the wallet disagree about goes out of use; every other send proceeds', async () => {
+  it('an account consumed after its payment is signed goes out of use; every other send proceeds', async () => {
     REPLACED_AFTER_MS.value = 0
     const [bad, ...good] = await fundAccounts(4)
     const first = await send(1)
@@ -843,9 +843,15 @@ describe('parallel paid messages', () => {
           maxPriorityFeePerGas: 1n,
         }).unsignedSerialized,
       })
-    offlineChain.mine(stolen.rawTx)
     offlineChain.relayBroadcasts = false
-    const settled = await Promise.allSettled([send(2), send(3), send(4)])
+    // Before selection, a consumed nonce is a legitimate successor coin. Consume it only
+    // after this message signs nonce zero, preserving the failed-original-payment race.
+    const raced = await send(2, alice, () => { offlineChain.mine(stolen.rawTx) })
+    const settled = await Promise.allSettled([Promise.resolve(raced), send(3), send(4)])
+    const original = relayPayments().filter(tx => tx.from!.toLowerCase() === victim.address.toLowerCase())
+    expect(original).toHaveLength(1)
+    expect(original[0].nonce).toBe(0)
+    expect(offlineChain.mined.has(original[0].hash!)).toBe(false)
     expect(settled.map(s => s.status)).toEqual([
       'fulfilled',
       'fulfilled',

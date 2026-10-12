@@ -1,4 +1,19 @@
 export const en = {
+  mera_title: 'Mera',
+  mera_create: 'Create with Mera',
+  mera_login: 'Continue with Mera (Passkey)',
+  mera_verification_unreachable:
+    'Could not verify your existing account. Your passkey account is ready for confirmation; check your connection before continuing.',
+  mera_description:
+    'A new passkey creates a new Frank account. Log in with your existing passkey to return to the same account on this website. You can also save recovery shares from account backup.',
+  mera_unsupported:
+    'Passkeys require a secure website and a supported browser. Use account creation or recovery shares instead.',
+  mera_cancelled:
+    'The passkey request was cancelled or timed out. No account was activated. Try again when ready.',
+  mera_prf:
+    'This passkey or browser did not provide the required PRF secret. No account was activated. Try a supported passkey provider and browser, or use recovery shares.',
+  mera_failed:
+    'The passkey request could not finish. No account was activated. Retry with the same passkey. A passkey may have been created before this failure; use existing-passkey login to retry it.',
   wallet_chain_mismatch:
     'This saved wallet does not match the network or account configuration the app is using. Restore the previous network configuration and retry opening the existing account. Its saved data has not been changed.',
   profile_restore_unreachable:
@@ -34,7 +49,7 @@ export const en = {
     'The attempt is incomplete or awaiting cleanup. Cancel it explicitly before starting another account.',
   cancel_pending_attempt: 'Cancel',
   create_a_frank_account_backup_or_restore:
-    'Create a Frank account and its backup, or restore one from your saved Codex32 shares. No funds are required to activate locally.',
+    'Create a Frank account and its backup, or restore one from your saved Recovery shares. No funds are required to activate locally.',
   an_existing_legacy_account_is_quarantined_its:
     'An existing legacy account is quarantined. Its saved data remains untouched and is not opened as the normal account.',
   changing_accounts_replaces_the_active_local_account:
@@ -94,7 +109,9 @@ export const en = {
   restore_choose_shares: 'Built from shares {shares}.',
   restore_choose_pick: 'Restore this account',
   expected_account: 'Expected account:',
-  saved_codex32_shares_one_per_line: 'Saved Codex32 shares, one per line',
+  insufficient_share_set:
+    'Backup {identifier}: {available} distinct shares available; {required} required.',
+  saved_codex32_shares_one_per_line: 'Saved recovery shares, one per line',
   display_name: 'Display name',
   display_name_required:
     'Required. This is the name people you message will see; you can change it later in your profile.',
@@ -120,13 +137,13 @@ export const en = {
   keep_independent_account_backup:
     'Keep an independent backup of your account. Browser storage protection is not a backup.',
   import_bip39_seed: 'Import BIP39 seed',
-  backup_account_codex32: 'Backup account (Codex32)',
+  backup_account_codex32: 'Backup account',
   codex32_threshold_explainer:
-    'Write down each paper share. Any {threshold} of these {count} shares restore this account: the same identity, addresses and funds.',
+    'Write down each share. Any {threshold} of these {count} shares restore the original account secret and its derivation.',
   codex32_backup_sets_do_not_mix:
     'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
-  show_recovery_shares: 'Show recovery shares',
-  show_recovery_shares_warning:
+  cancel_scheme: 'Cancel',
+  recovery_shares_privacy:
     'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
   codex32_backup_unavailable_for_account:
     'The original secret needed to issue backup shares is unavailable on this device. Your existing backup remains valid.',
@@ -139,7 +156,7 @@ export const en = {
   threshold: 'Threshold',
   total_shares: 'Total shares',
   apply: 'Apply',
-  generating_codex32_backup_shares: 'Generating Codex32 backup shares…',
+  generating_codex32_backup_shares: 'Generating recovery shares…',
   share: 'Share',
   copy_share: 'Copy',
   advanced_details: 'Advanced details',
@@ -161,6 +178,21 @@ export const en = {
 }
 
 export const fr = {
+  mera_title: 'Mera',
+  mera_create: 'Créer avec Mera',
+  mera_login: 'Continuer avec Mera (clé d’accès)',
+  mera_verification_unreachable:
+    'Impossible de vérifier votre compte existant. Votre compte est prêt à être confirmé ; vérifiez votre connexion avant de continuer.',
+  mera_description:
+    'Une nouvelle clé d’accès crée un nouveau compte Frank. Connectez-vous avec votre clé existante pour retrouver le même compte sur ce site. Vous pouvez aussi enregistrer des parts de récupération dans la sauvegarde du compte.',
+  mera_unsupported:
+    'Les clés d’accès nécessitent un site sécurisé et un navigateur compatible. Utilisez la création de compte ou les parts de récupération.',
+  mera_cancelled:
+    'La demande de clé d’accès a été annulée ou a expiré. Aucun compte n’a été activé. Réessayez lorsque vous êtes prêt.',
+  mera_prf:
+    'Cette clé d’accès ou ce navigateur n’a pas fourni le secret PRF requis. Aucun compte n’a été activé. Essayez un fournisseur et un navigateur compatibles, ou utilisez les parts de récupération.',
+  mera_failed:
+    'La demande de clé d’accès n’a pas abouti. Aucun compte n’a été activé. Réessayez avec la même clé. Une clé a peut-être été créée avant cet échec ; réessayez avec la connexion par clé existante.',
   wallet_chain_mismatch:
     'Ce portefeuille enregistré ne correspond pas au réseau ou à la configuration de compte utilisé par l’application. Rétablissez la configuration réseau précédente puis réessayez d’ouvrir le compte existant. Les données enregistrées n’ont pas été modifiées.',
   profile_restore_unreachable:
@@ -196,7 +228,7 @@ export const fr = {
     'La tentative est incomplète ou en attente de nettoyage. Annulez-la explicitement avant de créer un autre compte.',
   cancel_pending_attempt: 'Annuler',
   create_a_frank_account_backup_or_restore:
-    'Créez un compte Frank et sa sauvegarde, ou restaurez-en un avec vos parts Codex32 enregistrées. Aucun fonds n’est nécessaire pour l’activation locale.',
+    'Créez un compte Frank et sa sauvegarde, ou restaurez-en un avec vos parts de récupération enregistrées. Aucun fonds n’est nécessaire pour l’activation locale.',
   an_existing_legacy_account_is_quarantined_its:
     'Un ancien compte est en quarantaine. Ses données enregistrées restent intactes et ne sont pas ouvertes comme compte courant.',
   changing_accounts_replaces_the_active_local_account:
@@ -257,8 +289,10 @@ export const fr = {
   restore_choose_shares: 'Construit à partir des parts {shares}.',
   restore_choose_pick: 'Restaurer ce compte',
   expected_account: 'Compte attendu :',
+  insufficient_share_set:
+    'Sauvegarde {identifier} : {available} parts distinctes disponibles ; {required} requises.',
   saved_codex32_shares_one_per_line:
-    'Parts Codex32 enregistrées, une par ligne',
+    'Parts de récupération enregistrées, une par ligne',
   display_name: 'Nom affiché',
   display_name_required:
     'Obligatoire. C’est le nom que verront les personnes à qui vous écrivez ; vous pourrez le modifier plus tard dans votre profil.',
@@ -285,13 +319,13 @@ export const fr = {
   keep_independent_account_backup:
     'Conservez une sauvegarde indépendante de votre compte. La protection du stockage du navigateur ne remplace pas une sauvegarde.',
   import_bip39_seed: 'Importer la graine BIP39',
-  backup_account_codex32: 'Sauvegarder le compte (Codex32)',
+  backup_account_codex32: 'Sauvegarder le compte',
   codex32_threshold_explainer:
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
     'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
-  show_recovery_shares: 'Afficher les parts de récupération',
-  show_recovery_shares_warning:
+  cancel_scheme: 'Annuler',
+  recovery_shares_privacy:
     'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',
   codex32_backup_unavailable_for_account:
     'Le secret d’origine nécessaire pour créer des parts de sauvegarde est indisponible sur cet appareil. Votre sauvegarde existante reste valide.',
@@ -304,8 +338,7 @@ export const fr = {
   threshold: 'Seuil',
   total_shares: 'Nombre de parts',
   apply: 'Appliquer',
-  generating_codex32_backup_shares:
-    'Génération des parts de sauvegarde Codex32…',
+  generating_codex32_backup_shares: 'Génération des parts de récupération…',
   share: 'Part',
   copy_share: 'Copier',
   advanced_details: 'Détails avancés',

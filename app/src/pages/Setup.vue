@@ -89,6 +89,14 @@
               </li>
             </ul>
           </div>
+          <p
+            v-for="(set, index) in insufficientSets"
+            :key="index"
+            data-test="insufficient-share-set"
+            role="status"
+          >
+            {{ $t('accountRecovery.insufficient_share_set', set) }}
+          </p>
           <template
             v-if="tabCoordinator.otherTabActive || account.status === 'standby'"
           >
@@ -371,10 +379,61 @@
                   data-test="replace-ack"
                 />
               </div>
+              <section
+                class="q-mt-lg"
+                aria-labelledby="mera-heading"
+                data-test="mera-options"
+              >
+                <div class="row items-center q-gutter-sm">
+                  <img
+                    :src="meraLogo"
+                    alt=""
+                    width="32"
+                    height="32"
+                    data-test="mera-logo"
+                  />
+                  <h2
+                    id="mera-heading"
+                    class="text-subtitle1 text-weight-medium q-my-none"
+                  >
+                    {{ $t('accountRecovery.mera_title') }}
+                  </h2>
+                </div>
+                <p class="q-mt-sm" data-test="mera-description">
+                  {{ $t('accountRecovery.mera_description') }}
+                </p>
+                <div class="row q-gutter-sm items-center">
+                  <q-btn
+                    color="primary"
+                    no-caps
+                    :label="$t('accountRecovery.mera_login')"
+                    data-test="mera-login"
+                    :disable="!mayBegin || busy"
+                    @click="beginPasskey('login')"
+                  />
+                  <q-btn
+                    flat
+                    color="primary"
+                    no-caps
+                    :label="$t('accountRecovery.mera_create')"
+                    data-test="mera-create"
+                    :disable="!mayBegin || busy"
+                    @click="beginPasskey('create')"
+                  />
+                </div>
+                <p
+                  v-if="!passkeysSupported"
+                  class="q-mt-sm"
+                  data-test="mera-unsupported"
+                >
+                  {{ $t('accountRecovery.mera_unsupported') }}
+                </p>
+              </section>
               <div class="row q-gutter-sm items-center">
                 <q-btn
                   color="primary"
                   no-caps
+                  outline
                   :label="$t('accountRecovery.new_account')"
                   data-test="new-account"
                   :disable="!mayBegin || busy"
@@ -399,6 +458,7 @@
                   @click="changeMode('legacy')"
                 />
               </div>
+
               <q-btn
                 v-if="account.status === 'ready'"
                 class="q-mt-md"
@@ -780,6 +840,7 @@ import {
   type ShareVerdict,
 } from '@frank/account-recovery'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import meraLogo from '../assets/mera/favicon.svg'
 import { useRouter } from 'vue-router'
 import { useTranslate } from '../composables/useTranslate'
 import {
@@ -791,6 +852,11 @@ import {
   createAccountCeremony,
   recoveryErrorMessage,
 } from '../accounts/ceremony'
+import {
+  MeraAccountError,
+  supportsMeraPasskeys,
+  type MeraAccountAction,
+} from '../accounts/mera-passkey'
 import {
   legacyStatus as legacy,
   retryLegacyInspection,
@@ -804,8 +870,9 @@ import {
   getDefaultRelayBaseUrl,
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
+  activeChain,
+  onActiveChainChange,
 } from '@frank/wallet/chain'
-import { probeDirectoryRelay } from '@frank/cashweb/relay'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits([
@@ -817,6 +884,7 @@ const emit = defineEmits([
 const router = useRouter()
 const t = useTranslate()
 const ceremony = createAccountCeremony()
+const passkeysSupported = supportsMeraPasskeys()
 const tabCoordinator = useTabCoordinatorStore()
 
 const defaultRelayUrl = getDefaultRelayBaseUrl()
@@ -891,6 +959,9 @@ const descriptorSaved = ref(false)
 const shareInput = ref('')
 /** What the last restore found in each entered share. Public facts only, never contents. */
 const shareReport = ref<readonly ShareVerdict[]>([])
+const insufficientSets = ref<
+  readonly { identifier: string; required: number; available: number }[]
+>([])
 const restoreCandidates = ref<
   { address: string; descriptor: string; supporting: readonly number[] }[]
 >([])
@@ -967,6 +1038,7 @@ function cancel() {
   ceremony.cancel()
   clearSecrets()
   shareReport.value = []
+  insufficientSets.value = []
   restoreCandidates.value = []
   descriptor.value = ''
   descriptorInput.value = ''
@@ -983,13 +1055,38 @@ watch(
     replaceAccepted.value = false
   },
 )
-async function run(work: () => Promise<void>) {
+async function run(work: (isCurrent: () => boolean) => Promise<void>) {
   if (busy.value) return
   const token = ++request
+  const expectedRevision = account.revision
+  const expectedLegacyRevision = legacy.revision
+  const expectedAccount = account.account
+  const chainIdentifier = activeChain.chainIdentifier
+  let invalidated = false
+  const stopChain = onActiveChainChange(() => {
+    invalidated = true
+  })
+  // A closed/reopened session must stay invalid even if its revision did not change.
+  const stopStatus = watch(
+    () => account.status,
+    status => {
+      if (['loading', 'locked', 'unavailable', 'standby'].includes(status))
+        invalidated = true
+    },
+    { flush: 'sync' },
+  )
+  const isCurrent = () =>
+    alive &&
+    token === request &&
+    !invalidated &&
+    account.revision === expectedRevision &&
+    legacy.revision === expectedLegacyRevision &&
+    account.account === expectedAccount &&
+    activeChain.chainIdentifier === chainIdentifier
   busy.value = true
   error.value = ''
   try {
-    await work()
+    await work(isCurrent)
   } catch (failure) {
     ceremony.cancel()
     const wasLegacy = mode.value === 'legacy'
@@ -998,19 +1095,47 @@ async function run(work: () => Promise<void>) {
       if (!wasLegacy) {
         mode.value = 'choice'
       }
-      error.value = recoveryErrorMessage(failure)
+      error.value =
+        failure instanceof MeraAccountError
+          ? t(`accountRecovery.mera_${failure.code}`)
+          : recoveryErrorMessage(failure)
       // Which share was wrong is worth knowing even when nothing could be restored.
       shareReport.value = (failure as { shares?: ShareVerdict[] })?.shares ?? []
       reportCandidate.value = 0
       focus()
     }
   } finally {
+    stopChain()
+    stopStatus()
     if (alive && token === request) busy.value = false
   }
+}
+function beginPasskey(action: MeraAccountAction) {
+  return run(async isCurrent => {
+    if (!mayBegin.value) return
+    shareReport.value = []
+    const mayAutoActivate = !account.account && !legacy.present
+    const outcome = await ceremony.beginPasskey(action)
+    if (!isCurrent()) return
+    applyDiscoveredRelay(outcome, isCurrent)
+    changeMode('choice')
+    if (action === 'login' && outcome.loginVerification === 'unreachable')
+      error.value = t('accountRecovery.mera_verification_unreachable')
+    if (
+      action === 'login' &&
+      mayAutoActivate &&
+      outcome.loginVerification === 'existing' &&
+      account.pending?.account.receipt.operationId === outcome.attemptId &&
+      account.pendingReady &&
+      isCurrent()
+    )
+      await activateStagedAccount(outcome.attemptId)
+  })
 }
 function beginNew() {
   return run(async () => {
     shareReport.value = []
+    insufficientSets.value = []
     if (!mayBegin.value || !policy.value) return
     const cleanedRelay = customRelayUrl.value?.trim()
     if (cleanedRelay && cleanedRelay !== defaultRelayUrl) {
@@ -1043,6 +1168,7 @@ function nextShare() {
 function startRestore() {
   return run(async () => {
     shareReport.value = []
+    insufficientSets.value = []
     if (!mayBegin.value) return
     descriptor.value = await ceremony.beginRestore()
     if (alive) changeMode('restore-shares')
@@ -1051,6 +1177,7 @@ function startRestore() {
 function pinDescriptor() {
   return run(async () => {
     shareReport.value = []
+    insufficientSets.value = []
     if (!mayBegin.value) return
     descriptor.value = await ceremony.beginRestore(descriptorInput.value)
     descriptorInput.value = ''
@@ -1058,13 +1185,15 @@ function pinDescriptor() {
   })
 }
 function confirm() {
-  return run(async () => {
+  return run(async isCurrent => {
     let shares = parseAccountBackupShareInput(shareInput.value)
     shareInput.value = ''
     shownShare.value = ''
     try {
       const outcome = (await ceremony.confirm(shares, displayName.value)) as any
+      if (!isCurrent()) return
       shareReport.value = outcome?.report ?? []
+      insufficientSets.value = outcome?.insufficientSets ?? []
       reportCandidate.value = 0
       if (outcome?.candidates) {
         // Complete backups of more than one account: the user picks, with the addresses shown.
@@ -1072,7 +1201,7 @@ function confirm() {
         if (alive) changeMode('restore-choose')
         return
       }
-      await applyDiscoveredRelay(outcome)
+      applyDiscoveredRelay(outcome, isCurrent)
     } finally {
       shares = []
     }
@@ -1083,41 +1212,29 @@ function confirm() {
   })
 }
 function chooseCandidate(index: number) {
-  return run(async () => {
+  return run(async isCurrent => {
     restoreCandidates.value = []
     reportCandidate.value = index
-    await applyDiscoveredRelay(await ceremony.choose(index, displayName.value))
+    const outcome = await ceremony.choose(index, displayName.value)
+    if (!isCurrent()) return
+    applyDiscoveredRelay(outcome, isCurrent)
     if (alive) {
       changeMode('choice')
       focus()
     }
   })
 }
-async function applyDiscoveredRelay(outcome: any) {
-  {
-    {
-      let discovered = outcome?.discoveredRelayUrl
-      if (
-        outcome?.isRestore &&
-        !discovered &&
-        (outcome.subject || outcome.address)
-      ) {
-        try {
-          discovered = await probeDirectoryRelay({
-            subject: outcome.subject,
-            address: outcome.address,
-          })
-        } catch {
-          // ignore probe error
-        }
-      }
-      if (discovered) {
-        setCustomRelayBaseUrl(discovered)
-        customRelayUrl.value = discovered
-        discoveredRelay.value = discovered
-      }
-    }
-  }
+/** Discovery is read-only in the ceremony; this is its only selection effect. */
+function applyDiscoveredRelay(
+  outcome: { readonly discoveredRelayUrl?: string } | undefined,
+  isCurrent: () => boolean,
+) {
+  if (!isCurrent()) return
+  const discovered = outcome?.discoveredRelayUrl
+  if (!discovered) return
+  setCustomRelayBaseUrl(discovered)
+  customRelayUrl.value = discovered
+  discoveredRelay.value = discovered
 }
 function submitLegacyPhrase() {
   return run(async () => {
@@ -1139,7 +1256,17 @@ function submitLegacyPhrase() {
 }
 
 function activate() {
-  return run(async () => {
+  return run(async () => activateStagedAccount())
+}
+
+async function activateStagedAccount(expectedAttemptId?: string) {
+  const token = request
+  let chainChanged = false
+  const stopChain = onActiveChainChange(() => {
+    chainChanged = true
+  })
+  const current = () => alive && token === request && !chainChanged
+  try {
     const pending = account.pending
     if (!pending) return
     const cleanedRelay = customRelayUrl.value?.trim()
@@ -1153,10 +1280,16 @@ function activate() {
       pending.account.receipt.operationId,
       pending.expectedActive,
     )
-    if (account.status !== 'ready') return
+    if (
+      !current() ||
+      account.status !== 'ready' ||
+      (expectedAttemptId !== undefined &&
+        account.account?.receipt.operationId !== expectedAttemptId)
+    )
+      return
     void usePersistentStorageStore().afterActivation()
     if (!pending.account.displayName) {
-      await completeProfileRecovery()
+      await completeProfileRecovery(current)
       return
     }
     // The name typed at setup is a new account's name. An account restored here has the
@@ -1167,13 +1300,18 @@ function activate() {
     ).catch(() => undefined)
     emit('setupCompleted')
     await router.push('/wallet')
-  })
+  } finally {
+    stopChain()
+  }
 }
 
-async function completeProfileRecovery() {
+async function completeProfileRecovery(isCurrent: () => boolean = () => true) {
   const revision = account.revision
   const current = () =>
-    alive && account.status === 'ready' && account.revision === revision
+    isCurrent() &&
+    alive &&
+    account.status === 'ready' &&
+    account.revision === revision
   const wallet = await accountSession.getWallet()
   if (!current()) return
   const outcome = await restoreOwnProfileWithRelay({
@@ -1194,7 +1332,7 @@ async function completeProfileRecovery() {
 }
 
 function retryProfileRecovery() {
-  return run(completeProfileRecovery)
+  return run(async () => completeProfileRecovery())
 }
 function cancelPending() {
   return run(async () => {

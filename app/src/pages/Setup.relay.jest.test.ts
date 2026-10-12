@@ -543,7 +543,7 @@ describe('Setup page advanced relay configuration', () => {
     view.unmount()
   })
 
-  test('probes directory during restore and configures discovered relay', async () => {
+  test('uses the ceremony discovery result without a second directory lookup', async () => {
     const discoveredRelay = 'https://probed-relay.example.com'
     const cashwebRelay = await import('@frank/cashweb/relay')
     const probeSpy = jest
@@ -565,7 +565,7 @@ describe('Setup page advanced relay configuration', () => {
         isRestore: true,
         subject: '02' + 'dd'.repeat(32),
         address: '0xdddddddddddddddddddddddddddddddddddddddd',
-        discoveredRelayUrl: undefined,
+        discoveredRelayUrl: discoveredRelay,
       }
     })
 
@@ -581,10 +581,7 @@ describe('Setup page advanced relay configuration', () => {
     await view.get('form').trigger('submit')
     await flushPromises()
 
-    expect(probeSpy).toHaveBeenCalledWith({
-      subject: '02' + 'dd'.repeat(32),
-      address: '0xdddddddddddddddddddddddddddddddddddddddd',
-    })
+    expect(probeSpy).not.toHaveBeenCalled()
     expect(getCustomRelayBaseUrl()).toBe(discoveredRelay)
     expect(view.find('[data-test="relay-discovered-status"]').text()).toContain(
       discoveredRelay,

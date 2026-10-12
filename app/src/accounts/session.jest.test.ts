@@ -1,4 +1,4 @@
-import { EvmNativeJournalError } from '@frank/wallet/chain'
+import { activeChain, EvmNativeJournalError } from '@frank/wallet/chain'
 import {
   AccountBackupUnavailableError,
   accountSession,
@@ -26,7 +26,12 @@ jest.mock('@frank/wallet/chain', () => {
   const actual = jest.requireActual('@frank/wallet/chain')
   return {
     ...actual,
-    activeChain: { createWallet: jest.fn(), isTestnet: true },
+    activeChain: {
+      createWallet: jest.fn(),
+      isTestnet: true,
+      chainIdentifier: 'monad-testnet',
+      addressToString: (address: { raw: string }) => address.raw,
+    },
   }
 })
 
@@ -78,6 +83,7 @@ function fixture() {
     close: jest.fn(),
   } as unknown as jest.Mocked<AccountCustody>
   const wallet = {
+    chainIdentifier: 'monad-testnet',
     close: jest.fn(async () => undefined),
     identity: {
       compressedPubKey: new Uint8Array(33).fill(0x02),
@@ -974,5 +980,53 @@ test('network binding failure preserves the active account and retry reopens it 
   expect(await f.session.getWallet()).toBe(f.wallet)
   expect(f.custody.stage).not.toHaveBeenCalled()
   expect(f.custody.activate).not.toHaveBeenCalled()
+  await f.session.close()
+})
+
+test.each(['monad-regtest', 'monad-testnet'])(
+  'reads the ready %s receive address locally with exact network affinity',
+  async chainIdentifier => {
+    const f = fixture()
+    Object.assign(activeChain, { chainIdentifier })
+    Object.assign(f.wallet, {
+      chainIdentifier,
+      getReceiveAddress: jest.fn(async () => ({
+        raw: '0xowned-local-address',
+      })),
+    })
+    await f.session.initialize()
+    f.custody.snapshot.mockRejectedValue(
+      new Error('runtime refresh unavailable'),
+    )
+    expect(await f.session.getChainAddress('monad')).toBe(
+      '0xowned-local-address',
+    )
+    expect(await f.session.getChainAddress(chainIdentifier)).toBe(
+      '0xowned-local-address',
+    )
+    expect(f.createWallet).toHaveBeenCalledTimes(1)
+    await expect(
+      f.session.getChainAddress(
+        chainIdentifier === 'monad-regtest' ? 'monad-testnet' : 'monad-regtest',
+      ),
+    ).rejects.toMatchObject({ code: 'network-mismatch' })
+    await f.session.close()
+  },
+)
+
+test('a delayed local receive address is revoked when custody is invalidated', async () => {
+  const f = fixture()
+  const address = deferred<{ raw: string }>()
+  Object.assign(activeChain, { chainIdentifier: 'monad-regtest' })
+  Object.assign(f.wallet, {
+    chainIdentifier: 'monad-regtest',
+    getReceiveAddress: jest.fn(() => address.promise),
+  })
+  await f.session.initialize()
+  const read = f.session.getChainAddress('monad-regtest')
+  const rejected = expect(read).rejects.toMatchObject({ code: 'closed' })
+  f.invalidate()
+  address.resolve({ raw: '0xold-account' })
+  await rejected
   await f.session.close()
 })

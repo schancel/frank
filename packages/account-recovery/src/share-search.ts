@@ -1,7 +1,7 @@
 import {
   codex32SymbolsToBytes,
   decodeCodex32,
-  interpolateCodex32Symbols,
+  interpolateGf32Symbols,
   validateMasterPayload,
   type Codex32ErrorCode,
 } from '@frank/codex32'
@@ -10,6 +10,11 @@ import {
   type ShareStatus,
   type ShareVerdict,
 } from './errors.js'
+import {
+  decodeFrankRecoveryShare,
+  validateFrankRecoverySymbols,
+  type FrankRecoveryShare,
+} from './frank-shares.js'
 import {
   decodeHistoricalShare,
   validateHistoricalSymbols,
@@ -39,6 +44,7 @@ interface Entry {
   readonly index: string
   readonly payload: Uint8Array
   readonly group: string
+  readonly frank?: FrankRecoveryShare
 }
 
 /** One valid master found among the supplied shares. The caller owns and wipes `master`. */
@@ -52,6 +58,9 @@ export interface FoundMaster {
 export interface ShareSearchResult {
   readonly masters: readonly FoundMaster[]
   readonly shares: readonly ShareVerdict[]
+  readonly insufficientSets: NonNullable<
+    AccountRecoveryError['insufficientSets']
+  >
 }
 
 /**
@@ -86,8 +95,11 @@ export function searchShares(
   try {
     const seen = new Map<string, Entry[]>()
     shares.forEach((text, position) => {
+      const frank = /^fr1/i.test(text)
       const historical = includeHistorical && text.startsWith('frank-bip39-v1:')
-      const decoded = historical
+      const decoded = frank
+        ? decodeFrankRecoveryShare(text)
+        : historical
         ? decodeHistoricalShare(text)
         : decodeCodex32(text)
       if (!decoded.ok) {
@@ -105,8 +117,17 @@ export function searchShares(
         codes[position] = 'invalid-index'
         return
       }
-      const format = historical ? 'historical' : 'root'
-      const group = `${format}/${share.identifier}/${share.threshold}/${share.payload.length}`
+      const frankShare = 'commonMetadata' in share ? share : undefined
+      if (!includeHistorical && frankShare?.format === 'historical') {
+        share.payload.fill(0)
+        status[position] = 'invalid'
+        codes[position] = 'bad-format'
+        return
+      }
+      const format = frankShare?.format ?? (historical ? 'historical' : 'root')
+      const group =
+        frankShare?.group ??
+        `${format}/${share.identifier}/${share.threshold}/${share.payload.length}`
       const sameIndex = seen.get(`${group}/${share.index}`) ?? []
       if (sameIndex.some(other => equal(other.payload, share.payload))) {
         share.payload.fill(0)
@@ -121,6 +142,7 @@ export function searchShares(
         index: share.index,
         payload: share.payload,
         group,
+        frank: frankShare,
       }
       sameIndex.push(entry)
       seen.set(`${group}/${share.index}`, sameIndex)
@@ -135,6 +157,19 @@ export function searchShares(
     }
     // Largest set first; ties keep the order the user entered them.
     const ordered = [...groups.values()].sort((a, b) => b.length - a.length)
+    const insufficientSets = ordered.flatMap(members => {
+      const first = members[0]!
+      const available = new Set(members.map(member => member.index)).size
+      return available < first.threshold
+        ? [
+            {
+              identifier: first.identifier,
+              required: first.threshold,
+              available,
+            },
+          ]
+        : []
+    })
     const primary = ordered[0]
     for (const members of ordered) {
       const threshold = members[0]?.threshold ?? 0
@@ -155,6 +190,12 @@ export function searchShares(
             other.format === found.format && equal(other.master, found.master),
         )
         if (known >= 0) {
+          const existing = masters[known]!
+          existing.supporting.push(
+            ...found.supporting.filter(
+              position => !existing.supporting.includes(position),
+            ),
+          )
           found.master.fill(0)
           return known
         }
@@ -198,11 +239,16 @@ export function searchShares(
       throw new AccountRecoveryError(
         failureCode(searched.size > 0, status, codes, groups.size),
         verdicts,
+        undefined,
+        insufficientSets,
       )
     }
     const result = Object.freeze({
       masters: Object.freeze(masters.map(found => Object.freeze(found))),
       shares: Object.freeze(verdicts),
+      insufficientSets: Object.freeze(
+        insufficientSets.map(set => Object.freeze(set)),
+      ),
     })
     masters.length = 0 // ownership moved to the caller
     return result
@@ -272,7 +318,14 @@ function searchGroup(
 }
 
 function reconstruct(subset: readonly Entry[]): Uint8Array | null {
-  const symbols = interpolateCodex32Symbols(subset, 's')
+  const symbols = interpolateGf32Symbols(subset, 's')
+  if (symbols.ok && subset[0]?.frank) {
+    try {
+      return validateFrankRecoverySymbols(symbols.value, subset[0].frank)
+    } finally {
+      symbols.value.fill(0)
+    }
+  }
   if (!symbols.ok) return null
   if (subset[0]?.format === 'historical') {
     try {
@@ -296,7 +349,7 @@ function reconstruct(subset: readonly Entry[]): Uint8Array | null {
 
 function liesOn(subset: readonly Entry[], entry: Entry): boolean {
   if (subset.includes(entry)) return true
-  const expected = interpolateCodex32Symbols(subset, entry.index)
+  const expected = interpolateGf32Symbols(subset, entry.index)
   if (!expected.ok) return false
   try {
     return equal(expected.value, entry.payload)

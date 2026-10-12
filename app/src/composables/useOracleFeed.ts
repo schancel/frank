@@ -1,5 +1,6 @@
 import { getCurrentInstance, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useSafeOracleStore } from '../stores/oracle'
+import type { OracleFeed } from '@frank/wallet/oracle'
 
 /**
  * Keeps the oracle's AVU rates current for as long as the app is running. Called once, by
@@ -28,7 +29,8 @@ export function useAppOracleFeed(): void {
  * nothing.
  */
 export function useOracleHistory(
-  range: () => { since: number; step: number } | null,
+  range: () => { since: number; step: number; until?: number } | null,
+  receive?: (feeds: OracleFeed[]) => void,
 ): void {
   const oracle = useSafeOracleStore()
   const instance = getCurrentInstance()
@@ -38,12 +40,26 @@ export function useOracleHistory(
   watch(
     () => {
       const wanted = onScreen.value ? range() : null
-      return wanted ? `${wanted.since}:${wanted.step}` : ''
+      return wanted
+        ? `${wanted.since}:${wanted.step}:${wanted.until ?? ''}`
+        : ''
     },
-    key => {
+    async (key, _previous, onCleanup) => {
+      let current = true
+      onCleanup(() => {
+        current = false
+      })
       if (!key) return
-      const [since, step] = key.split(':').map(Number)
-      void oracle.ensureHistory?.(since, step)
+      const [since, step, until] = key.split(':')
+      const feeds =
+        until === ''
+          ? await oracle.ensureHistory?.(Number(since), Number(step))
+          : await oracle.ensureHistory?.(
+              Number(since),
+              Number(step),
+              Number(until),
+            )
+      if (current && feeds) receive?.(feeds)
     },
   )
 

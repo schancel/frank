@@ -15,6 +15,7 @@ import { createResendSentMailEvidencePort, ResendOutboundReconciler } from '../m
 import { JournaledOutboundWorker } from '../mta/journaled-outbound-worker';
 import { JournaledMailRuntime } from './journaled-runtime';
 import { ResendWebhookHttp } from './resend-webhook-http';
+import { JournaledSmtpIngress, JournaledSmtpServer } from '../smtp/journaled-smtp-ingress';
 
 export interface JournaledMailHostOptions {
   readonly chain: ActiveChain;
@@ -31,12 +32,18 @@ export interface JournaledMailHostOptions {
   readonly inboundStampValue: bigint;
   readonly webhookHost: string;
   readonly webhookPort: number;
+  readonly nativeSmtp?: {
+    readonly hostname: string;
+    readonly tlsKey: Buffer;
+    readonly tlsCert: Buffer;
+  };
 }
 
 export interface JournaledMailHost {
   readonly journal: MailJournal;
   readonly runtime: JournaledMailRuntime;
   readonly webhook: ResendWebhookHttp;
+  readonly smtp?: JournaledSmtpServer;
   close(): Promise<void>;
 }
 
@@ -112,13 +119,28 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
     const webhook = new ResendWebhookHttp({
       importer, host: input.webhookHost, port: input.webhookPort,
     });
+    const smtp = input.nativeSmtp && new JournaledSmtpServer({
+      ingress: new JournaledSmtpIngress({
+        gatewayDomain: input.gatewayDomain,
+        issuedMailboxLookup: createIssuedMailboxLookup(journal),
+        sender: inbound,
+        stampValue: input.inboundStampValue,
+      }),
+      hostname: input.nativeSmtp.hostname,
+      tlsKey: input.nativeSmtp.tlsKey,
+      tlsCert: input.nativeSmtp.tlsCert,
+    });
     return {
       journal,
       runtime: new JournaledMailRuntime({ inbound, frankMailbox: mailbox, outbound, outboundReconciler }),
       webhook,
+      smtp,
       close: async () => {
-        await webhook.stop();
-        ledger.closeSqlite();
+        try { if (smtp) await smtp.stop(); }
+        finally {
+          try { await webhook.stop(); }
+          finally { ledger.closeSqlite(); }
+        }
       },
     };
   } catch (error) {

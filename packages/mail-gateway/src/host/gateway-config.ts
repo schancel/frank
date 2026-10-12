@@ -28,6 +28,13 @@ export interface GatewayHostConfig extends GatewayIdentityConfig {
   readonly webhookHost: string;
   readonly webhookPort: number;
   readonly pollIntervalMs: number;
+  readonly nativeSmtp?: {
+    readonly host: string;
+    readonly port: number;
+    readonly hostname: string;
+    readonly tlsKey: Buffer;
+    readonly tlsCert: Buffer;
+  };
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -44,6 +51,17 @@ function absolute(env: NodeJS.ProcessEnv, name: string): string {
 
 /** Secret Manager/Kubernetes volume input. Never accept raw credentials in process env. */
 function ownerSecret(path: string): string {
+  const bytes = ownerFile(path);
+  try {
+    const secret = bytes.toString('utf8').trim();
+    if (!secret || secret.includes('\n')) throw new Error('Mail host secret file is empty or multiline');
+    return secret;
+  } finally {
+    bytes.fill(0);
+  }
+}
+
+function ownerFile(path: string): Buffer {
   let fd: number | undefined;
   try {
     fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -52,9 +70,9 @@ function ownerSecret(path: string): string {
       ((info.mode & 0o077) !== 0 || (info.mode & 0o400) === 0))) {
       throw new Error('Mail host secret file must be owner-readable only');
     }
-    const secret = readFileSync(fd, 'utf8').trim();
-    if (!secret || secret.includes('\n')) throw new Error('Mail host secret file is empty or multiline');
-    return secret;
+    const contents = readFileSync(fd);
+    if (contents.length === 0) throw new Error('Mail host secret file is empty');
+    return contents;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
@@ -111,9 +129,29 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
   const webhookHost = required(env, 'FRANK_MAIL_WEBHOOK_HOST');
   const webhookPort = positiveInteger(required(env, 'FRANK_MAIL_WEBHOOK_PORT'), 'Webhook port', 65535);
   const pollIntervalMs = positiveInteger(required(env, 'FRANK_MAIL_POLL_MS'), 'Poll interval', 3_600_000);
+  const smtpNames = [
+    'FRANK_MAIL_SMTP_HOST', 'FRANK_MAIL_SMTP_PORT', 'FRANK_MAIL_SMTP_HOSTNAME',
+    'FRANK_MAIL_SMTP_TLS_KEY_FILE', 'FRANK_MAIL_SMTP_TLS_CERT_FILE',
+  ] as const;
+  const nativeSmtpPresent = smtpNames.some(name => env[name] !== undefined);
+  const nativeSmtp = nativeSmtpPresent ? (() => {
+    const host = required(env, 'FRANK_MAIL_SMTP_HOST');
+    const port = positiveInteger(required(env, 'FRANK_MAIL_SMTP_PORT'), 'SMTP port', 65535);
+    const hostname = required(env, 'FRANK_MAIL_SMTP_HOSTNAME').toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(hostname))
+      throw new Error('Invalid SMTP hostname');
+    const tlsKey = ownerFile(absolute(env, 'FRANK_MAIL_SMTP_TLS_KEY_FILE'));
+    try {
+      const tlsCert = ownerFile(absolute(env, 'FRANK_MAIL_SMTP_TLS_CERT_FILE'));
+      return { host, port, hostname, tlsKey, tlsCert };
+    } catch (error) {
+      tlsKey.fill(0);
+      throw error;
+    }
+  })() : undefined;
   return {
     ...identity, directoryStorage,
     journalMode, resendApiKey, resendWebhookSecret,
-    resendRawOrigins, inboundStampValue, webhookHost, webhookPort, pollIntervalMs,
+    resendRawOrigins, inboundStampValue, webhookHost, webhookPort, pollIntervalMs, nativeSmtp,
   };
 }

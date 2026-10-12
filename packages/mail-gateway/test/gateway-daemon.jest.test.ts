@@ -80,4 +80,42 @@ describe('mail gateway executable lifecycle', () => {
     expect(directoryOpen).not.toHaveBeenCalled();
     expect(webhookStart).not.toHaveBeenCalled();
   });
+
+  it('starts optional SMTP after recovery and withdraws readiness before shutdown', async () => {
+    const tlsKey = Buffer.from('synthetic-key');
+    const tlsCert = Buffer.from('synthetic-cert');
+    const smtpStart = jest.fn(async () => { order.push('smtp start'); });
+    const smtpReady = jest.fn();
+    hostCreate.mockReturnValue({
+      runtime: { runOnce: poll }, webhook: { start: webhookStart, setReady: webhookSetReady },
+      smtp: { start: smtpStart, setReady: smtpReady }, close: hostClose,
+    } as unknown as ReturnType<typeof createJournaledMailHost>);
+    const withSmtp = { ...config, nativeSmtp: {
+      host: '127.0.0.1', port: 2525, hostname: 'mail.signet.mx', tlsKey, tlsCert,
+    } };
+    const service = await startMailGateway(withSmtp);
+    expect(order).toEqual(['directory publish', 'poll', 'webhook start', 'smtp start']);
+    expect(smtpStart).toHaveBeenCalledWith(2525, '127.0.0.1');
+    await service.close();
+    expect(smtpReady).toHaveBeenCalledWith(false);
+    expect(tlsKey.every(byte => byte === 0)).toBe(true);
+    expect(tlsCert.every(byte => byte === 0)).toBe(true);
+  });
+
+  it('closes all opened owners and clears TLS input if SMTP bind fails', async () => {
+    const tlsKey = Buffer.from('synthetic-key');
+    const tlsCert = Buffer.from('synthetic-cert');
+    const smtpStart = jest.fn(async () => { throw new Error('smtp bind failed'); });
+    hostCreate.mockReturnValue({
+      runtime: { runOnce: poll }, webhook: { start: webhookStart, setReady: webhookSetReady },
+      smtp: { start: smtpStart, setReady: jest.fn() }, close: hostClose,
+    } as unknown as ReturnType<typeof createJournaledMailHost>);
+    await expect(startMailGateway({ ...config, nativeSmtp: {
+      host: '127.0.0.1', port: 2525, hostname: 'mail.signet.mx', tlsKey, tlsCert,
+    } })).rejects.toThrow('smtp bind failed');
+    expect(order).toEqual(['directory publish', 'poll', 'webhook start',
+      'webhook stop', 'directory close', 'wallet close']);
+    expect(tlsKey.every(byte => byte === 0)).toBe(true);
+    expect(tlsCert.every(byte => byte === 0)).toBe(true);
+  });
 });

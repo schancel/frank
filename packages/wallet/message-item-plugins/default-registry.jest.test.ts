@@ -19,6 +19,7 @@ import {
 // Adding a member to `MessageItem` without listing it here does not compile.
 const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'stealth': true,
+  'stealth-asset': true,
   'p2pkh': true,
   'text': true,
   'reply': true,

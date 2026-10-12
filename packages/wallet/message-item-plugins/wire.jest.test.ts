@@ -94,6 +94,7 @@ describe('the dispatch rule', () => {
       'text': 'dedicated:17',
       'blackjack-hand': 'dedicated:18',
       'stealth': 'dedicated:19',
+      'stealth-asset': 'dedicated:19',
       'channel-update': 'dedicated:24',
       'email': 'dedicated:26',
       'image': 'generic:27',

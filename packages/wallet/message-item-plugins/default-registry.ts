@@ -19,6 +19,7 @@ import { initImagePlugin } from './image/plugin'
 import { initLiarsDicePlugin } from './liars-dice/plugin'
 import { initP2pkhPlugin } from './p2pkh/plugin'
 import { initPaymentTransferPlugin } from './payment-transfer/plugin'
+import { initRecipientAssetPaymentPlugin } from './stealth-asset/plugin'
 import { initPokerPlugin } from './poker/plugin'
 import { initRafflePlugin } from './raffle/plugin'
 import { initReceivedCoinPlugin } from './received-coin/plugin'
@@ -45,6 +46,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['image', initImagePlugin],
   ['reply', initReplyPlugin],
   ['stealth', initStealthPlugin],
+  ['stealth-asset', initRecipientAssetPaymentPlugin],
   ['p2pkh', initP2pkhPlugin],
   ['email', initEmailPlugin],
   ['channel-update', initChannelUpdatePlugin],

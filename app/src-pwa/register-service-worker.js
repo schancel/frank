@@ -2,6 +2,7 @@ import { Notify } from 'quasar'
 import { register } from 'register-service-worker'
 
 let updateNotice
+let deferredWorker
 let reloadAfterActivation = false
 let lastUpdateCheck = 0
 
@@ -9,7 +10,8 @@ function offerUpdate(registration) {
   if (
     !navigator.serviceWorker.controller ||
     !registration.waiting ||
-    updateNotice
+    updateNotice ||
+    registration.waiting === deferredWorker
   ) {
     return
   }
@@ -28,7 +30,13 @@ function offerUpdate(registration) {
           registration.waiting.postMessage({ type: 'SKIP_WAITING' })
         },
       },
-      { label: 'Later', color: 'white' },
+      {
+        label: 'Later',
+        color: 'white',
+        handler: () => {
+          deferredWorker = registration.waiting
+        },
+      },
     ],
     onDismiss: () => {
       updateNotice = undefined

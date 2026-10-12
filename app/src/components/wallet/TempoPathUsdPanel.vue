@@ -430,9 +430,9 @@ async function confirmPayment(): Promise<void> {
       error.value = `Payment status must be checked before another send. ${String(
         cause,
       )}`
-    } else if (preparedOperation) {
-      // Session revocation can prevent signing, and an exposed operation can still settle.
-      // Keep the original row for recovery and tell the user where to inspect it.
+    } else {
+      // A rejected prepare can still have committed its journal write, and an exposed
+      // operation can still settle. Direct the user to the original account's recovery UI.
       Notify.create({
         message: translateMessage('tempoPayment.interrupted'),
         html: false,

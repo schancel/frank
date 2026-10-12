@@ -290,3 +290,36 @@ test('revoked signer after account switch keeps the prepared operation and gives
     }),
   )
 })
+
+test('account switch warns after an uncertain prepare write without assuming no payment effect', async () => {
+  const { wallet, close } = fixture()
+  let rejectPrepare: ((reason: unknown) => void) | undefined
+  wallet.prepare.mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectPrepare = reject
+      }),
+  )
+  const wrapper = shallowMount(TempoPathUsdPanel, { global: { stubs } })
+  await flushPromises()
+  const state = controls(wrapper)
+  state.recipient = recipient
+  state.amount = '1'
+  await state.reviewPayment()
+  const sending = state.confirmPayment()
+  await nextTick()
+  mockStatus.revision++
+  await nextTick()
+  rejectPrepare?.(new Error('Journal write outcome uncertain'))
+  await sending
+  await flushPromises()
+  expect(close).toHaveBeenCalledTimes(1)
+  expect(wallet.submit).not.toHaveBeenCalled()
+  expect(Notify.create).toHaveBeenCalledWith(
+    expect.objectContaining({
+      html: false,
+      timeout: 0,
+      message: expect.stringContaining('check Payment activity'),
+    }),
+  )
+})

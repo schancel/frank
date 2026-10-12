@@ -252,7 +252,7 @@ describe("createEvmChain: basic chain properties", () => {
     expect(other.toDisplayAmount(1_250_000_000_000_000_000n)).toBe("1.25");
     expect(other.fromDisplayAmount("1.25")).toBe(1_250_000_000_000_000_000n);
     expect(other.name).toBe(chainIdentifier === "ethereum-sepolia" ? "Sepolia" : "Hyperliquid Testnet");
-    expect(other.unit).toBe(chainIdentifier === "ethereum-sepolia" ? "SEP" : "tHYPE");
+    expect(other.unit).toBe(chainIdentifier === "ethereum-sepolia" ? "ETH" : "tHYPE");
   });
 
   it("does not mistake Tempo's TIP-20 USD for an EVM native coin", () => {

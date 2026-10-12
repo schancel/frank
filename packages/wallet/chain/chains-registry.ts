@@ -277,7 +277,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       curve: "secp256k1",
       keyType: 1,
       name: "Sepolia",
-      unit: "SEP",
+      unit: "ETH",
       nativeDecimals: 18,
       networkTag: "SEPO",
       rpcUrls: Object.freeze([

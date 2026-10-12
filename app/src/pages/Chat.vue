@@ -635,10 +635,20 @@ export default defineComponent({
           this.minimumStampWei = quote.minimumStamp
           this.defaultStampWei = quote.amount
           this.defaultStampFailure = ''
-          this.defaultStampBasisNote =
-            quote.rateFeeCoverage && quote.rateFeeCoverage !== 'included'
-              ? this.$t('walletPanel.avuFeesExcluded')
-              : ''
+          if (quote.pricingBasis === 'configured-fallback') {
+            this.defaultStampBasisNote = this.$t(
+              'chatInput.fixedStampFallback',
+              {
+                amount: activeChain.toDisplayAmount(quote.amount),
+                unit: activeChain.unit,
+              },
+            )
+          } else {
+            this.defaultStampBasisNote =
+              quote.rateFeeCoverage && quote.rateFeeCoverage !== 'included'
+                ? this.$t('walletPanel.avuFeesExcluded')
+                : ''
+          }
         } else {
           this.defaultStampWei = undefined
           this.defaultStampFailure = quote?.reason ?? 'unsupported'

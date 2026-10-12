@@ -44,6 +44,73 @@ function resolver(
 }
 
 describe("host observations for AVU stamp defaults", () => {
+  it("uses a configured native-unit fallback while the conversion rate is missing, without inventing a rate", async () => {
+    const resolve = createStampDefaultResolver({
+      chainIdentifier: context.chainIdentifier,
+      asset: "monad",
+      supportsDirectMessages: true,
+      baseUnitsPerCoin: 10n ** 18n,
+      config: stampPolicyConfig(),
+      fallbackStamp: 10n ** 16n,
+      getRates: () => unavailableOracleRates(NOW / 1000),
+      now: () => NOW,
+    });
+    expect(
+      await resolve({ ...context, minimumStamp: 2n * 10n ** 16n })
+    ).toEqual({
+      status: "available",
+      chainIdentifier: context.chainIdentifier,
+      amount: 2n * 10n ** 16n,
+      targetAmount: 10n ** 16n,
+      minimumStamp: 2n * 10n ** 16n,
+      pricingBasis: "configured-fallback",
+    });
+    expect(
+      await resolve({ ...context, minimumStamp: undefined })
+    ).toMatchObject({
+      status: "unavailable",
+      reason: "missing-fee",
+    });
+    expect(
+      await resolve({ ...context, minimumStamp: -1n })
+    ).toMatchObject({ status: "unavailable", reason: "missing-fee" });
+    expect(
+      await createStampDefaultResolver({
+        chainIdentifier: context.chainIdentifier,
+        asset: "monad",
+        supportsDirectMessages: true,
+        baseUnitsPerCoin: 10n ** 18n,
+        config: stampPolicyConfig(),
+        fallbackStamp: 0n,
+        getRates: () => unavailableOracleRates(NOW / 1000),
+        now: () => NOW,
+      })(context)
+    ).toMatchObject({ status: "unavailable", reason: "missing-rate" });
+  });
+  it("prefers a fresh AVU quote and uses the native fallback only when that quote is stale", async () => {
+    const rates = observation();
+    const resolve = createStampDefaultResolver({
+      chainIdentifier: context.chainIdentifier,
+      asset: "monad",
+      supportsDirectMessages: true,
+      baseUnitsPerCoin: 10n ** 18n,
+      config: stampPolicyConfig(),
+      fallbackStamp: 10n ** 16n,
+      getRates: () => rates,
+      now: () => NOW,
+    });
+    expect(await resolve(context)).toMatchObject({
+      status: "available",
+      amount: 400000000000000000n,
+      rateAt: NOW / 1000,
+    });
+    rates.avuHash.stale = true;
+    expect(await resolve(context)).toMatchObject({
+      status: "available",
+      amount: 10n ** 16n,
+      pricingBasis: "configured-fallback",
+    });
+  });
   it.each([
     ["monad", 400000000000000000n],
     ["solana", 400000000n],

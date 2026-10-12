@@ -98,6 +98,19 @@ describe('Chat.vue minimum stamp', () => {
     expect(self.defaultStampBasisNote).toBe('walletPanel.avuFeesExcluded')
   })
 
+  it('labels a fixed native-unit fallback without claiming an AVU conversion', async () => {
+    defaultStampQuote.mockResolvedValue({
+      status: 'available',
+      amount: 10n ** 16n,
+      minimumStamp: 1n,
+      pricingBasis: 'configured-fallback',
+    })
+    const self = fakeThis({ $t: (key: string) => key })
+    await page.methods.refreshMinimumStamp.call(self)
+    expect(self.defaultStampWei).toBe(10n ** 16n)
+    expect(self.defaultStampBasisNote).toBe('chatInput.fixedStampFallback')
+  })
+
   it('makes the default unavailable when the wallet cannot quote', async () => {
     defaultStampQuote.mockRejectedValue(new Error('node did not answer'))
     const self = fakeThis({ minimumStampWei: 42_000n })

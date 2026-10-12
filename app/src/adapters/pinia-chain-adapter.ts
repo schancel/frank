@@ -35,6 +35,9 @@
 import { refreshOutgoingPaymentSummaries } from '../utils/outgoing-payments'
 import { financialRecoveryForPolling } from '../stealth-payments/runtime-recovery'
 import { activeChain } from '@frank/wallet/chain'
+import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
+import { accountSession } from '../accounts/session'
+import { openEvmWallet } from '../accounts/evm-wallets'
 import type {
   DirectMessageAttemptStatus,
   DirectMessageReceived,
@@ -329,6 +332,15 @@ export function startDirectMessagePolling({
       const received = await activeChain.directMessages.fetchSince({
         wallet,
         sinceMs,
+        onForeignWalletSync: async item => {
+          if (stopped || accountSession.peekWallet() !== wallet)
+            throw new Error('Wallet sync session changed')
+          const target = await openEvmWallet(item.chainIdentifier)
+          if (stopped || accountSession.peekWallet() !== wallet ||
+              target.wallet.chainIdentifier !== item.chainIdentifier)
+            throw new Error('Wallet sync session changed')
+          await applyWalletSyncItem(target.wallet, item)
+        },
         // The result is already cut back to a complete timestamp group, so advancing below is
         // safe; the remainder is fetched by the next poll.
         onTruncated: reason =>

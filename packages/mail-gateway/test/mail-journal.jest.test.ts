@@ -1,5 +1,5 @@
 /**
- * Mail journal (#1237 G1, format 2 from G1b). File-backed SQLite in a temp
+ * Mail journal (#1237 G1, format 3 with mailbox issuance). File-backed SQLite in a temp
  * directory, real close and reopen, no database mocks. Each test names the
  * later-stage failure it prevents. `J1`..`J25` are the acceptance tests of the
  * contract's section 21.6.
@@ -300,7 +300,7 @@ afterEach(() => {
 
 describe('open, format marker and the single connection', () => {
   // Prevents: a later stage writing through a connection that loses a committed row on power loss.
-  it('creates the seven tables and the marker in a durable, exclusively locked database', () => {
+  it('creates the eight tables and the marker in a durable, exclusively locked database', () => {
     const { db, journal } = open();
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -318,7 +318,7 @@ describe('open, format marker and the single connection', () => {
     expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
     expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' });
     expect(db.prepare('PRAGMA locking_mode').get()).toEqual({ locking_mode: 'exclusive' });
-    expect(MAIL_JOURNAL_FORMAT).toBe(2);
+    expect(MAIL_JOURNAL_FORMAT).toBe(3);
     expect(journal.frankCursor()).toEqual({});
   });
 
@@ -356,11 +356,11 @@ describe('open, format marker and the single connection', () => {
   // Prevents: a build silently re-creating or reinterpreting a journal it cannot read, which
   // would forget which mails were already relayed and pay for them again.
   it.each([
-    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 2 only/],
-    ['a later format', 'UPDATE mail_journal_meta SET format = 3', /format 3 is not supported/],
+    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 3 only/],
+    ['a later format', 'UPDATE mail_journal_meta SET format = 4', /format 4 is not supported/],
     ['no marker row', 'DELETE FROM mail_journal_meta', /format marker is missing/],
     ['no marker table', 'DROP TABLE mail_journal_meta', /format marker is missing/],
-    ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (2), (2)', /format marker is missing/],
+    ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (3), (3)', /format marker is missing/],
     ['a missing table', 'DROP TABLE outbound_job', /missing tables \(outbound_job\)/],
   ])('refuses a database with %s and leaves every row as it was', (_name, damage, message) => {
     const first = open();
@@ -440,6 +440,39 @@ describe('open, format marker and the single connection', () => {
     const raw = new DatabaseSync(file);
     expect(count(raw, "sqlite_master WHERE name LIKE 'mail_%'")).toBe(0);
     raw.close();
+  });
+});
+
+describe('explicit mailbox issuance', () => {
+  it('resolves only durable issued local parts and keeps their owner after reopen', async () => {
+    const { journal, db } = open();
+    expect(journal.issuedMailbox('alice')).toBeUndefined();
+    expect(await packageIndex.createIssuedMailboxLookup(journal)('alice')).toBeUndefined();
+    journal.issueMailbox({ localPart: 'Alice', scopeAccount: ALICE, conversationId: frankId(11) });
+    const afterIssue = dump(db);
+    journal.issueMailbox({ localPart: 'alice', scopeAccount: ALICE, conversationId: frankId(11) });
+    expect(dump(db)).toBe(afterIssue);
+    expect(journal.issuedMailbox('ALICE')).toEqual({ scopeAccount: ALICE, conversationId: frankId(11) });
+    expect(await packageIndex.createIssuedMailboxLookup(journal)('ALICE')).toEqual({
+      accountAddress: ALICE,
+      conversationId: frankId(11),
+    });
+    expect(reopen().journal.issuedMailbox('alice')).toEqual({
+      scopeAccount: ALICE,
+      conversationId: frankId(11),
+    });
+  });
+
+  it('refuses conflicts, raw account addresses and operational aliases without changing ownership', () => {
+    const { journal, db } = open();
+    journal.issueMailbox({ localPart: 'alice', scopeAccount: ALICE });
+    const before = dump(db);
+    expect(() => journal.issueMailbox({ localPart: 'ALICE', scopeAccount: BOB })).toThrow(MailJournalStateError);
+    expect(() => journal.issueMailbox({ localPart: 'alice', scopeAccount: ALICE, conversationId: frankId(12) })).toThrow(MailJournalStateError);
+    expect(() => journal.issueMailbox({ localPart: 'SeCuRiTy', scopeAccount: BOB })).toThrow(MailJournalArgumentError);
+    expect(() => journal.issueMailbox({ localPart: `0x${'1'.repeat(40)}`, scopeAccount: BOB })).toThrow(MailJournalArgumentError);
+    expect(journal.issuedMailbox('unknown')).toBeUndefined();
+    expect(dump(db)).toBe(before);
   });
 });
 
@@ -1513,7 +1546,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     for (let i = 0; i < 2; i++) {
       expect(() => open()).toThrow(MailJournalOpenError);
       expect(() => open()).toThrow(
-        /format 1 is not supported; this build reads format 2 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
+        /format 1 is not supported; this build reads format 3 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
       );
     }
     expect(fileHash()).toBe(before);
@@ -1538,7 +1571,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
 
     expect('MAIL_JOURNAL_DDL' in packageIndex).toBe(false);
     expect(Object.keys(packageIndex).filter((name) => /DDL/.test(name))).toEqual([]);
-    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(2);
+    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(3);
     expect(packageIndex.MAIL_JOURNAL_TABLES).toBe(MAIL_JOURNAL_TABLES);
 
     const { db } = open();
@@ -1575,6 +1608,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     expect(users.map((f) => path.relative(SRC, f))).toEqual([
       'relay/journaled-frank-mailbox.ts',
       'relay/journaled-inbound-send.ts',
+      'smtp/issued-mailbox-lookup.ts',
     ]);
   });
 });

@@ -24,7 +24,7 @@ export * from './dns/domain-resolver';
 import { BlobStore, createBlobStore } from './storage/blob-store';
 import { CreditLedger } from './ledger/credit-ledger';
 import { CheckoutServer } from './http/checkout-server';
-import { InboundEmailHandler } from './smtp/inbound-server';
+import { InboundEmailHandler, type InboundRecipientResolution } from './smtp/inbound-server';
 import { SmtpListener } from './smtp/smtp-listener';
 import { OutboundEmailDelivery } from './mta/outbound-delivery';
 import { MxDirectTransport } from './mta/mx-transport';
@@ -56,6 +56,8 @@ export class EmailGatewayDaemon {
       blobStore?: BlobStore;
       activeChain?: ActiveChain;
       wallet?: WalletHandle;
+      /** Only explicitly issued mailbox local parts may resolve. */
+      issuedMailboxLookup?: (localPart: string) => Promise<InboundRecipientResolution | undefined>;
     }
   ) {
     this.config = config;
@@ -78,10 +80,10 @@ export class EmailGatewayDaemon {
     });
     this.inboundHandler = new InboundEmailHandler({
       gatewayDomain: config.gatewayDomain,
-      relayUrl: config.gatewayRelayUrl,
       ledger: this.ledger,
       stampProvider,
       blobStore: this.blobStore,
+      relayLookup: options?.issuedMailboxLookup,
     });
     this.smtpListener = new SmtpListener({
       gatewayDomain: config.gatewayDomain,

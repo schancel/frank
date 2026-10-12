@@ -20,6 +20,7 @@ use bitcoinsuite_error::Result;
 use prost::Message;
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeSet, sync::OnceLock};
 use thiserror::Error;
 
 use crate::{
@@ -53,6 +54,9 @@ pub enum UsernameError {
     /// The key has since claimed another name with a later claim.
     #[error("This claim is older than the one this account already made")]
     Stale,
+    /// Operational mailbox names cannot be claimed by any account key.
+    #[error("This username is reserved for mail operations")]
+    Reserved,
 }
 
 impl UsernameError {
@@ -63,11 +67,28 @@ impl UsernameError {
             UsernameError::InvalidClaim(_) => "invalid-claim",
             UsernameError::Taken => "taken",
             UsernameError::Stale => "stale-claim",
+            UsernameError::Reserved => "reserved-username",
         }
     }
 }
 
 use self::UsernameError::*;
+
+/// One source for the case-insensitive operational local parts that may never become a user
+/// handle or user-issued mailbox. Existing stored claims are not modified by this policy.
+pub fn is_operational_local_part(raw: &str) -> bool {
+    static NAMES: OnceLock<BTreeSet<String>> = OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            serde_json::from_str::<Vec<String>>(include_str!(
+                "../../../../../docs/protocol/mail/reserved-local-parts-v1.json"
+            ))
+            .expect("valid operational mail policy")
+            .into_iter()
+            .collect()
+        })
+        .contains(&raw.trim().to_ascii_lowercase())
+}
 
 /// The canonical form of a name: trimmed, one leading `@` dropped, ASCII lower-case, then 3 to
 /// 32 characters of `a-z 0-9 - _` starting with a letter or digit. This is the only definition
@@ -305,6 +326,9 @@ impl<'a> DbDirectoryUsernames<'a> {
         accepted_ms: u64,
         reserved_for_claimant: bool,
     ) -> Result<std::result::Result<ClaimOutcome, UsernameError>> {
+        if is_operational_local_part(&record.username) {
+            return Ok(Err(Reserved));
+        }
         let _guard = self.db.lock_usernames();
         let mut batch = rocksdb::WriteBatch::default();
         if let Some(holder) = self.get(&record.username)? {
@@ -583,6 +607,24 @@ pub(crate) mod tests {
         assert_eq!(found("zed", 10)?, Vec::<String>::new());
         // The address index shares the column family and never shows up as a name.
         assert_eq!(found("a", 10)?, ["alice", "alicia"]);
+        Ok(())
+    }
+
+    #[test]
+    fn operational_mail_names_are_case_insensitive_and_cannot_be_claimed() -> Result<()> {
+        assert!(is_operational_local_part(" PoStMaStEr "));
+        assert!(is_operational_local_part("SECURITY"));
+        assert!(!is_operational_local_part("alice"));
+        let (_dir, db) = open();
+        let names = db.directory_usernames();
+        let record = verify_claim(
+            &EccSecp256k1::default(),
+            &claim_for(1, "postmaster", NOW_MS),
+            NETWORK,
+            NOW_MS,
+        )?;
+        assert_eq!(names.claim(&record, NOW_MS, false)?, Err(Reserved));
+        assert_eq!(names.get("postmaster")?, None);
         Ok(())
     }
 }

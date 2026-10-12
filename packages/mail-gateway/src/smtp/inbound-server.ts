@@ -4,6 +4,7 @@ import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
 import { InboundEmail } from '../types';
 import { BlobStore } from '../storage/blob-store';
 import type { MessageItem } from '@frank/cashweb/types/messages';
+import { isOperationalLocalPart } from './operational-local-parts';
 
 export interface InboundRecipientResolution {
   readonly accountAddress: string;
@@ -17,58 +18,9 @@ export interface InboundHandlerOptions {
   readonly gatewayDomain: string;
   readonly ledger: CreditLedger;
   readonly stampProvider: GatewayStampProvider;
-  readonly relayUrl?: string;
-  readonly relayLookup?: (username: string) => Promise<InboundRecipientResolution | undefined>;
+  /** Must resolve only previously issued mailbox local parts, never arbitrary directory usernames. */
+  readonly relayLookup?: (localPart: string) => Promise<InboundRecipientResolution | undefined>;
   readonly blobStore?: BlobStore;
-}
-
-/**
- * Factory for resolving usernames against a Frank relay over HTTP.
- * Queries `GET ${relayUrl}/directory/user/${username}` matching the relay wire format.
- */
-export function createRelayUsernameLookup(
-  relayBaseUrl: string,
-  fetchFn: typeof fetch = fetch
-): (username: string) => Promise<InboundRecipientResolution | undefined> {
-  const normalizedBase = relayBaseUrl.replace(/\/+$/, '');
-  return async (username: string) => {
-    try {
-      const url = `${normalizedBase}/directory/user/${encodeURIComponent(username)}`;
-      const response = await fetchFn(url, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
-
-      if (response.status === 404 || response.status === 400) {
-        return undefined;
-      }
-
-      if (!response.ok) {
-        throw new Error(`Relay lookup failed with HTTP ${response.status}`);
-      }
-
-      const data = (await response.json()) as {
-        username: string;
-        account_address: string;
-        status: 'active' | 'tombstoned' | 'moved';
-        redirect_to?: string;
-        entry?: { content_type: string; raw_hex: string };
-      };
-
-      return {
-        accountAddress: data.account_address,
-        isTombstoned: data.status === 'tombstoned',
-        isMoved: data.status === 'moved',
-        redirectTo: data.redirect_to,
-        entry: data.entry,
-      };
-    } catch (err: unknown) {
-      if (err instanceof Error && err.message.startsWith('Relay lookup failed')) {
-        throw err;
-      }
-      return undefined;
-    }
-  };
 }
 
 export interface InboundProcessingResult {
@@ -77,6 +29,7 @@ export interface InboundProcessingResult {
     | 'held'
     | 'rejected_tombstone'
     | 'rejected_unknown'
+    | 'rejected_reserved'
     | 'rejected_unauthenticated'
     | 'bounce';
   readonly heldMessageId?: string;
@@ -163,23 +116,19 @@ export class InboundEmailHandler {
     this.ledger = options.ledger;
     this.stampProvider = options.stampProvider;
     this.blobStore = options.blobStore;
-    this.relayLookup =
-      options.relayLookup ??
-      (options.relayUrl ? createRelayUsernameLookup(options.relayUrl) : undefined);
+    // Directory usernames do not by themselves issue email addresses. The host
+    // must inject an explicit mailbox lookup; legacy relayUrl is not authority.
+    this.relayLookup = options.relayLookup;
   }
 
   async processInboundEmail(email: InboundEmail): Promise<InboundProcessingResult> {
     const localPartLower = email.localPart.toLowerCase().trim();
 
-    // Check for Bounce / NDR envelope recipient (bounce+<id>@<domain> or mailer-daemon@<domain>)
-    const isBounce =
-      localPartLower === 'mailer-daemon' ||
-      localPartLower === 'postmaster' ||
-      localPartLower === 'bounce' ||
-      localPartLower.startsWith('bounce+');
-
-    if (isBounce) {
-      return await this.processBounceNotification(email, localPartLower);
+    // SMTP DATA and its headers are untrusted. A forged bounce+jobId used to
+    // trigger a paid Frank notification, so bounce processing stays closed
+    // until an authenticated provider event can enter a separate adapter.
+    if (isOperationalLocalPart(localPartLower) || localPartLower.startsWith('bounce+')) {
+      return { status: 'rejected_reserved', shouldSendAutoReply: false };
     }
 
     // 1. Resolve recipient address
@@ -343,94 +292,12 @@ export class InboundEmailHandler {
   ): Promise<InboundRecipientResolution | undefined> {
     const canonicalLocal = localPart.toLowerCase().trim();
 
-    // Check if it's already a raw hexadecimal Ethereum/Monad account address (0x...)
-    if (/^0x[a-f0-9]{40}$/i.test(canonicalLocal)) {
-      return { accountAddress: canonicalLocal };
-    }
-
-    // Otherwise lookup username in relay directory
+    // A bare address is not an issued mailbox. The configured lookup must be
+    // backed by an issuance registry; without it, catch-all mail cannot spend credit.
     if (this.relayLookup) {
       return await this.relayLookup(canonicalLocal);
     }
-
-    // Default fallback mock for test harness
-    return { accountAddress: `0x${canonicalLocal.padEnd(40, '0')}` };
+    return undefined;
   }
 
-  private async processBounceNotification(
-    email: InboundEmail,
-    localPartLower: string
-  ): Promise<InboundProcessingResult> {
-    let failedRecipient: string | undefined;
-    let frankSender: string | undefined;
-    let conversationId: string | undefined;
-    let inReplyToFrankMessageId: string | undefined;
-
-    // Check if envelope is bounce+<id>
-    if (localPartLower.startsWith('bounce+')) {
-      const idStr = localPartLower.slice('bounce+'.length);
-      const jobId = parseInt(idStr, 10);
-      if (!isNaN(jobId)) {
-        const job = this.ledger.getOutboundJob(jobId);
-        if (job) {
-          failedRecipient = job.recipientEmail;
-          frankSender = job.fromAddress.split('@')[0];
-        }
-      }
-    }
-
-    // Parse notification headers and body
-    const bounceDetails = parseBounceDetails(email, this.gatewayDomain);
-    if (!failedRecipient && bounceDetails.failedRecipient) {
-      failedRecipient = bounceDetails.failedRecipient;
-    }
-
-    const originalMsgId = bounceDetails.originalMessageId || email.inReplyTo;
-    if (originalMsgId) {
-      const mapping = this.ledger.getThreadMappingByRfc822Id(originalMsgId);
-      if (mapping) {
-        conversationId = mapping.conversationId;
-        inReplyToFrankMessageId = mapping.frankMessageId;
-      }
-      if (!frankSender) {
-        frankSender = this.ledger.findFrankSenderByRfc822Id(originalMsgId);
-      }
-    }
-
-    if (!frankSender && failedRecipient) {
-      frankSender = this.ledger.findFrankSenderForRecipient(failedRecipient);
-    }
-
-    // If we have a frank sender, deliver bounce notification DM
-    if (frankSender) {
-      const reasonText = bounceDetails.reason ? `\nReason: ${bounceDetails.reason}` : '';
-      const notificationText =
-        `[Delivery Status Notification - Bounce]\n` +
-        `Your message to ${failedRecipient || 'recipient'} could not be delivered.${reasonText}`;
-
-      const sendResult = await this.stampProvider.stampAndSendDirectMessage({
-        recipientAddress: frankSender,
-        text: notificationText,
-        conversationId,
-        inReplyToFrankMessageId,
-      });
-
-      return {
-        status: 'bounce',
-        txHash: sendResult.txHash,
-        conversationId,
-        inReplyToFrankMessageId,
-        shouldSendAutoReply: false,
-        bounceRecipient: failedRecipient,
-        bounceNotificationSent: true,
-      };
-    }
-
-    return {
-      status: 'bounce',
-      shouldSendAutoReply: false,
-      bounceRecipient: failedRecipient,
-      bounceNotificationSent: false,
-    };
-  }
 }

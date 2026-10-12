@@ -20,7 +20,8 @@ use crate::{
     directory_runtime::DirectoryRuntime,
     monad_http::Address,
     store::directory_usernames::{
-        normalize, UsernameError, UsernameRecord, MAX_CLAIM_BYTES, MAX_SEARCH_RESULTS,
+        is_operational_local_part, normalize, UsernameError, UsernameRecord, MAX_CLAIM_BYTES,
+        MAX_SEARCH_RESULTS,
     },
 };
 
@@ -41,7 +42,9 @@ fn refusal(status: StatusCode, code: &str, message: impl std::fmt::Display) -> R
 fn refused(error: UsernameError) -> Response {
     let status = match error {
         UsernameError::InvalidName(_) | UsernameError::InvalidClaim(_) => StatusCode::BAD_REQUEST,
-        UsernameError::Taken | UsernameError::Stale => StatusCode::CONFLICT,
+        UsernameError::Taken | UsernameError::Stale | UsernameError::Reserved => {
+            StatusCode::CONFLICT
+        }
     };
     refusal(status, error.code(), error)
 }
@@ -134,6 +137,9 @@ async fn claim(
             "the claim is for {:?}, not {name:?}",
             record.username
         )));
+    }
+    if is_operational_local_part(&name) {
+        return refused(UsernameError::Reserved);
     }
     // A name the operator reserved is taken for everyone but the key it is reserved for.
     let reserved = runtime.reserved_username(&name).is_some();

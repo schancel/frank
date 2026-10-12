@@ -385,6 +385,9 @@ export interface NativeWalletHandle {
   /** Whether this session's last attempt to tell the account's other devices about the operation
    * failed. It is tried again on a later send or resume; the payment itself is unaffected. */
   nativeOperationSyncFailed?(operationId: string): boolean;
+  /** Retry durable, already signed wallet-sync members without constructing another payment.
+   * Returns operation IDs still awaiting delivery so the host can surface partial recovery. */
+  flushNativeSync?(): Promise<readonly string[]>;
   resumeNativeOperation?(operationId: string): Promise<EvmNativeOperation>;
   cancelUnsignedNativeOperation?(operationId: string): Promise<void>;
   /**

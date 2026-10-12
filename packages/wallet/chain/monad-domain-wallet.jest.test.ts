@@ -77,7 +77,7 @@ jest.mock('../monad-account-tx', () => ({
 }))
 
 const config: EvmChainConfig = {
-  networkId: 'monad-test',
+  networkId: 'monad-testnet',
   chainId: 10143,
   rpcChain: 'monad-testnet',
   relayBaseUrl: 'http://127.0.0.1:1',
@@ -604,6 +604,74 @@ test('native signed bytes survive restart and authentication changes without an 
   } finally {
     await restored?.close()
     await first.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a real Sepolia owner retries the original sync event without signing or broadcasting twice', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-sepolia-sync-restart-'))
+  const emitWalletSync = jest.fn()
+    .mockRejectedValueOnce(new Error('primary mailbox unavailable'))
+    .mockResolvedValue(undefined)
+  const cfg: EvmChainConfig = {
+    ...config,
+    networkId: 'ethereum-sepolia',
+    rpcChain: 'ethereum-sepolia',
+    chainIdentifier: 'ethereum-sepolia',
+    chainId: 11155111,
+    networkTag: 'SEPO',
+    walletStorageLocation: join(dir, 'wallet'),
+    emitWalletSync,
+  }
+  const chain = createEvmChain(cfg)
+  let wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n })
+    jest.spyOn(wallet.provider, 'getNetwork')
+      .mockResolvedValue(Network.from(11155111))
+    const notesSettled = watchNotes()
+    const sent = await chain.nativeTransfers.send({
+      wallet,
+      recipient: { raw: expected[1].main },
+      value: 1000n,
+    })
+    await wallet.reobserveNativeOperations!()
+    const operationId = wallet.getNativeOperations!()[0]!.operationId
+    await wallet.resumeNativeOperation!(operationId)
+    await notesSettled()
+    expect(rpc.broadcast).toHaveBeenCalledTimes(1)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.observation.state)
+      .toBe('included-success')
+    expect(emitWalletSync).toHaveBeenCalledTimes(1)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
+    await wallet.close()
+    wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+    const restartedBroadcast = jest.spyOn(wallet.provider, 'broadcastTransaction')
+    const remaining = await wallet.flushNativeSync!()
+    await notesSettled()
+    expect(remaining).toEqual([])
+    expect(restartedBroadcast).not.toHaveBeenCalled()
+    expect(rpc.broadcast).toHaveBeenCalledTimes(1)
+    expect(emitWalletSync).toHaveBeenCalledTimes(2)
+    const [item, swapRecord, messageId] = emitWalletSync.mock.calls[0]!
+    expect(item).toMatchObject({
+      type: 'wallet-sync',
+      chainIdentifier: 'ethereum-sepolia',
+      txHash: sent.txHash,
+    })
+    expect(swapRecord).toBeUndefined()
+    expect(messageId).toEqual(getBytes(keccak256(Buffer.from(
+      `frank-wallet-sync:ethereum-sepolia:${sent.txHash}`,
+    ))).slice(0, 16))
+    expect(emitWalletSync.mock.calls[1]![0]).toMatchObject({
+      chainIdentifier: item.chainIdentifier,
+      txHash: item.txHash,
+      rawTx: item.rawTx,
+    })
+    expect(emitWalletSync.mock.calls[1]![2]).toEqual(messageId)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(true)
+  } finally {
+    await wallet.close()
     await rm(dir, { recursive: true, force: true })
   }
 })

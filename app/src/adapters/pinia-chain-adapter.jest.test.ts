@@ -29,6 +29,7 @@ import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface
 import { setDirectoryLookup } from '../utils/directory-peer'
 import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+import { accountSession } from '../accounts/session'
 
 // An account that can open a chat always has its conversation-ID salt installed.
 beforeEach(() =>
@@ -53,6 +54,12 @@ jest.mock('./level-message-store', () => ({
       /* no persisted Lotus-era messages in tests */
     },
   }),
+}))
+
+const mockOpenForeignEvmWallet = jest.fn()
+jest.mock('../accounts/evm-wallets', () => ({
+  openEvmWallet: (...args: unknown[]) => mockOpenForeignEvmWallet(...args),
+  recoverSecondaryEvmWallets: jest.fn(async () => []),
 }))
 
 const SENDER_ADDRESS = '0x4C4C4C4C4C4c4C4C4C4C4c4C4C4c4C4c4C4C4c4C'
@@ -122,6 +129,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       .mockReset()
       .mockResolvedValue(undefined)
     mockMessageStore.mostRecentMessageTime.mockReset().mockResolvedValue(0)
+    mockOpenForeignEvmWallet.mockReset()
     useContactStore().addContact({
       address: SENDER_ADDRESS,
       contact: {
@@ -312,6 +320,50 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       jest.useRealTimers()
     })
 
+    it('holds the mailbox cursor until the exact secondary owner applies a self sync note', async () => {
+      const peek = jest
+        .spyOn(accountSession, 'peekWallet')
+        .mockReturnValue(wallet)
+      const apply = jest.fn(async () => ({ affectedIndices: [3] }))
+      const target = {
+        chainIdentifier: 'ethereum-sepolia',
+        pool: { processSyncTransaction: apply },
+      }
+      mockOpenForeignEvmWallet
+        .mockRejectedValueOnce(new Error('secondary RPC unavailable'))
+        .mockResolvedValue({ wallet: target })
+      const note = {
+        type: 'wallet-sync' as const,
+        direction: 'out' as const,
+        chainIdentifier: 'ethereum-sepolia',
+        txHash: '0x' + '4'.repeat(64),
+        rawTx: '0x01',
+        spentInputs: [],
+        createdOutputs: [],
+        timestamp: 100,
+      }
+      const fetch = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ onForeignWalletSync }) => {
+          await onForeignWalletSync!(note)
+          return []
+        })
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetch.mock.calls.length >= 2)
+        expect(fetch.mock.calls[0]![0].sinceMs).toBe(0)
+        expect(fetch.mock.calls[1]![0].sinceMs).toBe(0)
+        expect(mockOpenForeignEvmWallet).toHaveBeenCalledWith(
+          'ethereum-sepolia',
+        )
+        expect(apply).toHaveBeenCalledTimes(1)
+        expect(apply).toHaveBeenCalledWith(note)
+      } finally {
+        polling.stop()
+        peek.mockRestore()
+      }
+    })
+
     it('feeds fetchSince results into chats.receiveMessages and advances sinceMs', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')
@@ -335,6 +387,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
         onQuarantinedTimestamp: expect.any(Function),
+        onForeignWalletSync: expect.any(Function),
       })
 
       // The relay bound is inclusive, so advance one millisecond past the received record.
@@ -346,6 +399,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
         onQuarantinedTimestamp: expect.any(Function),
+        onForeignWalletSync: expect.any(Function),
       })
       // No new messages on any subsequent poll.
       expect(receiveMessagesSpy).toHaveBeenCalledTimes(1)
@@ -386,6 +440,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         onTruncated: expect.any(Function),
         onIncompleteTimestamp: expect.any(Function),
         onQuarantinedTimestamp: expect.any(Function),
+        onForeignWalletSync: expect.any(Function),
       })
       expect(useChatStore().messages['same-time-a']).toBeDefined()
       expect(useChatStore().messages['same-time-b']).toBeDefined()
@@ -580,6 +635,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -676,6 +732,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -717,6 +774,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -767,6 +825,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()
@@ -804,6 +863,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
           onTruncated: expect.any(Function),
           onIncompleteTimestamp: expect.any(Function),
           onQuarantinedTimestamp: expect.any(Function),
+          onForeignWalletSync: expect.any(Function),
         })
       } finally {
         polling.stop()

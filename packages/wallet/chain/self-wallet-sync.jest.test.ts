@@ -36,12 +36,14 @@ import {
   mockBalances,
   mockFunded,
   providerBroadcasts,
+  roots,
   useProviderStandIns,
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
-import { SELF_NOTE_RETRY_MS, installCanonicalDirectory } from './monad-chain'
+import { SELF_NOTE_RETRY_MS, createEvmChain, installCanonicalDirectory } from './monad-chain'
+import type { EvmChainConfig } from './evm-chain-config'
 import { EvmInputAdmissionError } from '../evm-input-admission'
 import { SubAccountSpendRefusedError } from '../monad-account-pool'
 
@@ -183,6 +185,7 @@ describe("a wallet's sync note to itself", () => {
     f: Fixture,
     wallet: EvmChainWalletHandle,
     sinceMs = 0,
+    onForeignWalletSync?: (item: WalletSyncItem) => Promise<void>,
   ) => {
     const passed: [number, string][] = []
     const held: number[] = []
@@ -191,6 +194,7 @@ describe("a wallet's sync note to itself", () => {
       sinceMs,
       onQuarantinedTimestamp: (time, digest) => passed.push([time, digest]),
       onIncompleteTimestamp: time => held.push(time),
+      onForeignWalletSync,
     })
     return { messages, passed, held }
   }
@@ -225,6 +229,73 @@ describe("a wallet's sync note to itself", () => {
     expect(again.messages).toEqual([])
     expect(again.passed).toEqual(first.passed)
     expect(applied).toHaveBeenCalledTimes(1)
+  })
+
+  it('delivers a Sepolia spend through the primary mailbox to the other device’s Sepolia owner', async () => {
+    const config: EvmChainConfig = {
+      networkId: 'ethereum-sepolia',
+      rpcChain: 'ethereum-sepolia',
+      chainIdentifier: 'ethereum-sepolia',
+      chainId: 11155111,
+      networkTag: 'SEPO',
+      relayBaseUrl: 'http://127.0.0.1:1',
+      stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+      defaultTopicVoteValueWei: 1n,
+      subAccountPoolSize: 1,
+      nativeInclusionWaitMs: 0,
+      walletStorageLocation: false,
+      emitWalletSync: (item, record, messageId) => one.chain.directMessages.send({
+        wallet: one.alice,
+        recipient: one.alice.identity.address,
+        items: record ? [item, record] : [item],
+        stampValue: 0n,
+        messageId,
+      }).then(() => undefined),
+    }
+    const sendingChain = createEvmChain(config)
+    const sender = await sendingChain.createWallet(roots(0)) as EvmChainWalletHandle
+    try {
+      const [source] = sender.pool.ensureSize(1)
+      await sender.pool.flush()
+      mockBalances.set(source.address.toLowerCase(), 10n ** 17n)
+      minesNativeTransfers(sender)
+      one.setMailbox(mailbox)
+      const sent = await sendingChain.nativeTransfers.send({
+        wallet: sender,
+        recipient: { raw: one.bob.identity.address.raw },
+        value: 1_000n,
+      })
+      await sender.reobserveNativeOperations!()
+      await sender.flushNativeSync!()
+      expect(mailbox).toHaveLength(1)
+      expect(sender.getNativeOperations!()[0]!.members[0]!.signed!.transactionHash).toBe(sent.txHash)
+      one.setMailbox(undefined)
+      await sender.close()
+      const other = await otherDevice()
+      const receivingChain = createEvmChain({ ...config, emitWalletSync: async () => undefined })
+      const target = await receivingChain.createWallet(roots(0)) as EvmChainWalletHandle
+      try {
+        const [counterpart] = target.pool.ensureSize(1)
+        expect(counterpart.address.toLowerCase()).toBe(source.address.toLowerCase())
+        await expect(read(other, other.alice, 0, async () => {
+          throw new Error('secondary owner temporarily unavailable')
+        })).rejects.toThrow('secondary owner temporarily unavailable')
+        expect(applied).not.toHaveBeenCalled()
+        const readResult = await read(other, other.alice, 0, item =>
+          syncDispatch.applyWalletSyncItem(target, item).then(() => undefined),
+        )
+        expect(readResult.messages).toEqual([])
+        expect(readResult.held).toEqual([])
+        expect(applied).toHaveBeenCalledWith(target, expect.objectContaining({
+          chainIdentifier: 'ethereum-sepolia', txHash: sent.txHash,
+        }))
+        expect(target.pool.getRecord(counterpart.index)?.status).not.toBe('available')
+      } finally {
+        await target.close()
+      }
+    } finally {
+      await sender.close()
+    }
   })
 
   it('is refused, before anything is paid, in a message to anyone else', async () => {

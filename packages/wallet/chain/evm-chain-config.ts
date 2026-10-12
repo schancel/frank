@@ -2,6 +2,7 @@ import type { StampDefaultResolver } from "../oracle/stamp-policy";
 /** Generic EVM configuration; runtime/environment composition remains in monad-chain.ts. */
 import type { NativeTransactionAttemptStore } from "./chain-wallet";
 import type { EvmTransactionBuilder } from "./evm-transaction-builder";
+import type { SwapRecordItem, WalletSyncItem } from "@frank/cashweb/types/messages";
 
 export interface EvmChainConfig {
   /** Stable chain/deployment identifier used for wallet affinity checks. */
@@ -66,4 +67,15 @@ export interface EvmChainConfig {
   readonly unit?: string;
   /** Custom transaction builder strategy for native gas vs token-as-gas (TIP-20/ERC-20). */
   readonly transactionBuilder?: EvmTransactionBuilder;
+  /**
+   * Host-owned delivery of the wallet's durable sync event to this account's other devices.
+   * A secondary EVM network has no Frank mailbox of its own; the application can carry the
+   * canonical item through its captured primary messaging session. A rejected delivery leaves
+   * the native operation's sync member pending for its existing recovery pass.
+   */
+  readonly emitWalletSync?: (
+    item: WalletSyncItem,
+    swapRecord: SwapRecordItem | undefined,
+    messageId: Uint8Array,
+  ) => Promise<void>;
 }

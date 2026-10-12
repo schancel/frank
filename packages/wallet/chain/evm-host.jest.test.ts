@@ -3,6 +3,7 @@ import { createNativeOnlyEvmChain, createRelayStampDefaultResolver } from "./evm
 import { ASSET_DECIMALS } from "../oracle/price-oracle";
 import type { EvmChainConfig } from "./evm-chain-config";
 import { Tip20TransactionBuilder } from "./evm-transaction-builder";
+import { DERIVATION_REGISTRY_ID } from "@frank/domain-roots";
 
 const config: EvmChainConfig = {
   networkId: "monad-testnet",
@@ -89,4 +90,40 @@ it("uses the same native-only boundary for Hyperliquid Testnet", () => {
     topics: false,
     stealthPayments: false,
   });
+});
+
+it("refuses a peer native send before signing when its sync delivery is absent", async () => {
+  const chain = createNativeOnlyEvmChain({
+    ...config,
+    networkId: "ethereum-sepolia",
+    rpcChain: "ethereum-sepolia",
+    chainIdentifier: "ethereum-sepolia",
+    chainId: 11155111,
+    networkTag: "SEPO",
+  });
+  const root = (purpose: string, value: number) => ({
+    registry: DERIVATION_REGISTRY_ID,
+    purpose,
+    bytes: new Uint8Array(32).fill(value),
+  });
+  const wallet = await chain.createWallet({
+    evm: root("evm-wallet", 51),
+    authentication: root("identity-authentication", 52),
+    messaging: root("messaging-encryption", 53),
+  });
+  const sign = jest.spyOn(wallet, "sendNative");
+  try {
+    await expect(chain.nativeTransfers.send({
+      wallet,
+      recipient: { raw: "0x000000000000000000000000000000000000dEaD" },
+      value: 1n,
+    })).rejects.toThrow("sync delivery is unavailable");
+    expect(sign).not.toHaveBeenCalled();
+    await expect(wallet.sendNative({
+      recipient: { raw: "0x000000000000000000000000000000000000dEaD" },
+      value: 1n,
+    })).rejects.toThrow("sync delivery is unavailable");
+  } finally {
+    await wallet.close();
+  }
 });

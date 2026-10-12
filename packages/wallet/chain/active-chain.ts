@@ -601,6 +601,8 @@ export interface DirectMessageClient {
     sinceMs: number;
     onTruncated?: (reason: Error) => void;
     onIncompleteTimestamp?: (receivedTime: number) => void;
+    /** Host-owned cross-wallet application of a self note for another canonical chain. */
+    onForeignWalletSync?: (item: WalletSyncItem) => Promise<void>;
     onQuarantinedTimestamp?: (
       receivedTime: number,
       payloadDigest: string

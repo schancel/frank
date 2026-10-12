@@ -1015,6 +1015,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   }
   const nativeDecimals = chainEntry.nativeDecimals;
   const isTestnet = chainEntry.isTestnet;
+  const requirePeerSyncDelivery = (): void => {
+    if (
+      chainEntry.kind !== "monad" &&
+      !config.emitWalletSync
+    )
+      throw new Error("Secondary EVM wallet sync delivery is unavailable");
+  };
   // A configured network tag that names no registered network must not fall back to
   // another network's contracts.
   const contractChainIdentifier = (): string =>
@@ -1415,7 +1422,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   };
   const consumeSelfNotes = async (
     wallet: EvmChainWalletHandle,
-    message: DirectMessageReceived
+    message: DirectMessageReceived,
+    onForeignWalletSync?: (item: WalletSyncItem) => Promise<void>
   ): Promise<
     | { kind: "none" }
     | { kind: "consumed"; rest: DirectMessageReceived | undefined }
@@ -1446,9 +1454,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     if (waiting === undefined)
       waitingSelfNotes.set(wallet, (waiting = new Map()));
     try {
-      for (const note of notes)
-        await applyWalletSyncItem(wallet, note as WalletSyncItem);
+      for (const note of notes) {
+        const item = note as WalletSyncItem;
+        if (item.chainIdentifier === wallet.chainIdentifier)
+          await applyWalletSyncItem(wallet, item);
+        else {
+          if (!onForeignWalletSync)
+            throw new Error(`Wallet sync owner unavailable for ${item.chainIdentifier}`);
+          await onForeignWalletSync(item);
+        }
+      }
     } catch (error) {
+      // A foreign owner's availability is a host concern, not a terminal rejection by this
+      // wallet. Keep the relay cursor before this row and retry after that owner recovers.
+      if (notes.some((note) => (note as WalletSyncItem).chainIdentifier !== wallet.chainIdentifier))
+        throw error;
       const detail = error instanceof Error ? error.message : String(error);
       const since = waiting.get(digest) ?? Date.now();
       const final = selfNoteRefusalIsFinal(error);
@@ -1730,7 +1750,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           });
         }
         for (const msg of canonicalReceived) {
-          const taken = await consumeSelfNotes(wallet, msg);
+          const taken = await consumeSelfNotes(wallet, msg, params.onForeignWalletSync);
           if (taken.kind === "none") received.push(msg);
           else if (taken.kind === "retry")
             params.onIncompleteTimestamp?.(msg.receivedTime);
@@ -1822,6 +1842,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       mainAccountWaitMs,
     }): Promise<{ txHash: string }> {
       asMonadWallet(wallet, config.networkId);
+      requirePeerSyncDelivery();
       return wallet.sendNative({
         recipient,
         value,
@@ -1851,6 +1872,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       mainAccountWaitMs,
     }) {
       const owned = asMonadWallet(wallet, config.networkId);
+      requirePeerSyncDelivery();
       nativeOperationOwner(owned);
       return owned.sendLegacy!({
         recipient,
@@ -2794,6 +2816,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 operationId
               );
             },
+            async flushNativeSync() {
+              const owner = nativeOperationOwner(wallet);
+              await owner.flushSync();
+              return owner.listOperations()
+                .filter((row) => !row.cancelled && row.members.some(
+                  (member) => member.signed &&
+                    member.observation.state === "included-success" &&
+                    !member.syncApplied
+                ))
+                .map((row) => row.operationId);
+            },
             async resumeNativeOperation(operationId) {
               // A payment to a contact is broadcast only once the relay has its message.
               if (heldForItsMessage(operationId))
@@ -2911,6 +2944,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return { txHash: row.members[0]!.signed!.transactionHash };
             },
             async sendNative(params) {
+              requirePeerSyncDelivery();
               params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>
@@ -2938,6 +2972,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return result;
             },
             async sendLegacy(params) {
+              requirePeerSyncDelivery();
               params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>
@@ -3344,6 +3379,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // Best effort: a failure leaves the member not sync-applied and a later flush
               // sends it again. The other devices apply it in `consumeSelfNotes`.
               onSyncTransaction: async (item, swapRecord) => {
+                const messageId = getBytes(
+                  keccak256(
+                    toUtf8Bytes(
+                      `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`
+                    )
+                  )
+                ).slice(0, 16);
+                if (config.emitWalletSync) {
+                  await config.emitWalletSync(item, swapRecord, messageId);
+                  return;
+                }
                 await directMessages.send({
                   wallet,
                   recipient: toChainAddress(identity.address.raw),
@@ -3351,13 +3397,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   // message, the same identity, sent and retried the same way.
                   items: swapRecord ? [item, swapRecord] : [item],
                   stampValue: 0n,
-                  messageId: getBytes(
-                    keccak256(
-                      toUtf8Bytes(
-                        `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`
-                      )
-                    )
-                  ).slice(0, 16),
+                  messageId,
                 });
               },
             })

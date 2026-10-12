@@ -1303,8 +1303,8 @@ thread_local! {
 /// current. A canonical account has no legacy profile key on this relay, so this is the only key
 /// its RPC proxy signature can be checked against. The caller may present its key in
 /// `x-frank-rpc-subject`; otherwise the relay finds it through its address index. Either way the
-/// key must hash to `customer` and must have a published, unexpired entry on the network whose
-/// chain is the one being proxied.
+/// key must hash to `customer` and must have a published, unexpired entry on the relay's Monad
+/// identity network. The target RPC chain is bound separately by the challenge and capability.
 ///
 /// `Ok(None)` means the customer has no such entry and the legacy profile key applies. Asking the
 /// owner takes one of its few queue slots, so callers do it only after the challenge was verified.
@@ -1314,15 +1314,11 @@ async fn admitted_customer(
     server: &RegistryServer,
     headers: &HeaderMap,
     network_tag: &[u8],
-    expected_chain_id: u64,
     customer: Address,
 ) -> Result<Option<Vec<u8>>, RpcRejection> {
     let Some(descriptor) = crate::network_tag::monad_network(network_tag) else {
         return Ok(None);
     };
-    if descriptor.evm_chain_id != expected_chain_id {
-        return Ok(None);
-    }
     let Some(directory) = server.registry.canonical_dm().directory() else {
         return Ok(None);
     };
@@ -1465,18 +1461,10 @@ async fn authenticate_customer(
     server: &RegistryServer,
     auth: &RpcAuthState,
     network_tag: &[u8],
-    expected_chain_id: u64,
     binding: &RpcBinding,
 ) -> Result<(), RpcRejection> {
     let parsed = parse_authentication(headers, auth, binding)?;
-    let admitted = admitted_customer(
-        server,
-        headers,
-        network_tag,
-        expected_chain_id,
-        binding.customer,
-    )
-    .await?;
+    let admitted = admitted_customer(server, headers, network_tag, binding.customer).await?;
     finish_authentication(server, network_tag, binding, parsed, admitted.as_deref())
 }
 
@@ -1674,7 +1662,6 @@ pub(crate) async fn handle_issue_rpc_capability(
         &server,
         &runtime.auth,
         &runtime.network_tag,
-        runtime.chains[&chain_id].expected_chain_id,
         &binding,
     )
     .await?;
@@ -2348,7 +2335,6 @@ async fn proxy_rpc_inner(
                 &server,
                 &runtime.auth,
                 &runtime.network_tag,
-                chain.expected_chain_id,
                 &binding,
             )
             .await
@@ -4473,8 +4459,6 @@ mod tests {
             http::monad_message_cbor::tests::{public_p_signature, NativeDirectoryFixture},
         };
 
-        const CHAIN_ID: u64 = 10_143;
-
         fn lookups() -> usize {
             DIRECTORY_LOOKUPS.get()
         }
@@ -4505,9 +4489,13 @@ mod tests {
         }
 
         fn binding(customer: Address) -> RpcBinding {
+            binding_for(customer, "monad-testnet")
+        }
+
+        fn binding_for(customer: Address, chain: &str) -> RpcBinding {
             RpcBinding {
                 customer,
-                chain: "monad-testnet".to_string(),
+                chain: chain.to_string(),
                 body_sha256: body_hash(b""),
                 resource: RpcResource::Capability,
             }
@@ -4538,8 +4526,17 @@ mod tests {
             auth: &RpcAuthState,
             tag: &[u8],
         ) -> (RpcBinding, HeaderMap) {
+            subject_proof_for(fixture, auth, tag, "monad-testnet").await
+        }
+
+        async fn subject_proof_for(
+            fixture: &NativeDirectoryFixture,
+            auth: &RpcAuthState,
+            tag: &[u8],
+            chain: &str,
+        ) -> (RpcBinding, HeaderMap) {
             let (point, customer) = subject(fixture);
-            let binding = binding(customer);
+            let binding = binding_for(customer, chain);
             let challenge = auth.issue(&binding, now_ms());
             let signature = public_p_signature(
                 fixture.root.path(),
@@ -4566,10 +4563,9 @@ mod tests {
             server: &RegistryServer,
             auth: &RpcAuthState,
             tag: &[u8],
-            chain_id: u64,
             proof: &(RpcBinding, HeaderMap),
         ) -> Result<(), (StatusCode, &'static str)> {
-            authenticate_customer(&proof.1, server, auth, tag, chain_id, &proof.0)
+            authenticate_customer(&proof.1, server, auth, tag, &proof.0)
                 .await
                 .map_err(|rejection| (rejection.status, rejection.code))
         }
@@ -4692,13 +4688,10 @@ mod tests {
             let stranger = server(&unpublished, self::runtime());
             DIRECTORY_LOOKUPS.set(0);
             // Without its key in the request the relay has no index entry to find it by.
-            assert_eq!(check(&stranger, auth, tag, CHAIN_ID, &proof).await, REFUSED);
+            assert_eq!(check(&stranger, auth, tag, &proof).await, REFUSED);
             assert_eq!(lookups(), 0);
             // Presenting the key does not help: the directory is asked and has no entry for it.
-            assert_eq!(
-                check(&stranger, auth, tag, CHAIN_ID, &presenting).await,
-                REFUSED
-            );
+            assert_eq!(check(&stranger, auth, tag, &presenting).await, REFUSED);
             assert_eq!(lookups(), 1);
 
             let server = server(&published, self::runtime());
@@ -4709,7 +4702,7 @@ mod tests {
             ));
             DIRECTORY_LOOKUPS.set(0);
             // Found through the address index, with no key header.
-            assert_eq!(check(&server, auth, tag, CHAIN_ID, &proof).await, Ok(()));
+            assert_eq!(check(&server, auth, tag, &proof).await, Ok(()));
             assert_eq!(lookups(), 1);
             // Found by the presented key.
             let again = subject_proof(&published, auth, tag).await;
@@ -4717,10 +4710,7 @@ mod tests {
             again_presenting
                 .1
                 .insert(RPC_SUBJECT_HEADER, subject(&published).0.parse().unwrap());
-            assert_eq!(
-                check(&server, auth, tag, CHAIN_ID, &again_presenting).await,
-                Ok(())
-            );
+            assert_eq!(check(&server, auth, tag, &again_presenting).await, Ok(()));
             // A presented key that is someone else's published key does not authenticate.
             let other = subject_proof(&published, auth, tag).await;
             let mut wrong_key = other.clone();
@@ -4728,36 +4718,41 @@ mod tests {
                 RPC_SUBJECT_HEADER,
                 published.accounts[0].subject.parse().unwrap(),
             );
-            assert_eq!(
-                check(&server, auth, tag, CHAIN_ID, &wrong_key).await,
-                REFUSED
-            );
+            assert_eq!(check(&server, auth, tag, &wrong_key).await, REFUSED);
             published.stop().await;
             unpublished.stop().await;
         }
 
         #[tokio::test]
-        async fn evm_rpc_admitted_subject_of_another_network_or_chain_is_not_looked_up() {
+        async fn evm_rpc_admits_monad_identity_on_secondary_chains_without_cross_chain_replay() {
             let fixture = NativeDirectoryFixture::new().await;
             let server = server(&fixture, runtime());
             let runtime = runtime();
             let auth = &runtime.auth;
             DIRECTORY_LOOKUPS.set(0);
 
-            // The relay proxies mainnet; the account published on testnet.
+            // A Monad testnet account has no entry on the Monad mainnet identity network.
             let mainnet = subject_proof(&fixture, auth, b"MON1").await;
-            assert_eq!(check(&server, auth, b"MON1", 143, &mainnet).await, REFUSED);
-
-            // The relay's network is the subject's, but the proxied chain is not that network's.
-            let testnet = subject_proof(&fixture, auth, b"MONT").await;
-            assert_eq!(check(&server, auth, b"MONT", 143, &testnet).await, REFUSED);
+            assert_eq!(check(&server, auth, b"MON1", &mainnet).await, REFUSED);
             assert_eq!(lookups(), 0);
 
-            // The refusals were about the network: the second proof is good on its own chain.
-            assert_eq!(
-                check(&server, auth, b"MONT", CHAIN_ID, &testnet).await,
-                Ok(())
-            );
+            // The profile lives on Monad, while each RPC proof names its target chain.
+            for target in [
+                "ethereum-sepolia",
+                "hyperliquid-testnet",
+                "tempo-testnet",
+                "monad-testnet",
+            ] {
+                let proof = subject_proof_for(&fixture, auth, b"MONT", target).await;
+                assert_eq!(check(&server, auth, b"MONT", &proof).await, Ok(()));
+            }
+            // A challenge signed for Hyperliquid cannot be replayed on Sepolia.
+            let mut wrong_target =
+                subject_proof_for(&fixture, auth, b"MONT", "hyperliquid-testnet").await;
+            wrong_target.0.chain = "ethereum-sepolia".to_string();
+            let before = lookups();
+            assert_eq!(check(&server, auth, b"MONT", &wrong_target).await, REFUSED);
+            assert_eq!(lookups(), before);
             fixture.stop().await;
         }
 
@@ -4770,10 +4765,7 @@ mod tests {
             // A valid signature by a key that has neither published nor stored a profile.
             let stranger = legacy_proof(auth, tag);
             DIRECTORY_LOOKUPS.set(0);
-            assert_eq!(
-                check(&server, auth, tag, CHAIN_ID, &stranger).await,
-                REFUSED
-            );
+            assert_eq!(check(&server, auth, tag, &stranger).await, REFUSED);
             assert_eq!(lookups(), 0);
             fixture.stop().await;
         }
@@ -4807,14 +4799,14 @@ mod tests {
 
             DIRECTORY_LOOKUPS.set(0);
             for attempt in unverified.iter().chain([&missing_signature]) {
-                assert_eq!(check(&server, auth, tag, CHAIN_ID, attempt).await, REFUSED);
+                assert_eq!(check(&server, auth, tag, attempt).await, REFUSED);
             }
             assert_eq!(lookups(), 0);
 
             // With the owner's queue full, a lookup would be answered 503. None of these is.
             let (release, held) = fill_directory_queue(&fixture).await;
             for attempt in unverified.iter().chain([&missing_signature]) {
-                assert_eq!(check(&server, auth, tag, CHAIN_ID, attempt).await, REFUSED);
+                assert_eq!(check(&server, auth, tag, attempt).await, REFUSED);
             }
             assert_eq!(lookups(), 0);
             drain(release, held).await;
@@ -4824,10 +4816,7 @@ mod tests {
                 binding.clone(),
                 proof(issued, customer, &well_formed_signature),
             );
-            assert_eq!(
-                check(&server, auth, tag, CHAIN_ID, &verified).await,
-                REFUSED
-            );
+            assert_eq!(check(&server, auth, tag, &verified).await, REFUSED);
             assert_eq!(lookups(), 1);
             fixture.stop().await;
         }
@@ -4841,7 +4830,7 @@ mod tests {
             let proof = subject_proof(&fixture, auth, tag).await;
 
             let (release, held) = fill_directory_queue(&fixture).await;
-            let busy = authenticate_customer(&proof.1, &server, auth, tag, CHAIN_ID, &proof.0)
+            let busy = authenticate_customer(&proof.1, &server, auth, tag, &proof.0)
                 .await
                 .unwrap_err();
             assert_eq!(busy.status, StatusCode::SERVICE_UNAVAILABLE);
@@ -4852,7 +4841,7 @@ mod tests {
             drain(release, held).await;
 
             // Nothing was consumed: the very same proof succeeds once the directory answers.
-            assert_eq!(check(&server, auth, tag, CHAIN_ID, &proof).await, Ok(()));
+            assert_eq!(check(&server, auth, tag, &proof).await, Ok(()));
             fixture.stop().await;
         }
 
@@ -4869,14 +4858,14 @@ mod tests {
             let new = legacy_proof(auth, tag);
             DIRECTORY_LOOKUPS.set(0);
             assert!(authenticate(&old.1, &server, auth, tag, &old.0).is_ok());
-            assert_eq!(check(&server, auth, tag, CHAIN_ID, &new).await, Ok(()));
+            assert_eq!(check(&server, auth, tag, &new).await, Ok(()));
             // Both are single-use.
             assert!(matches!(
                 authenticate(&old.1, &server, auth, tag, &old.0),
                 Err(rejection) if rejection.status == StatusCode::UNAUTHORIZED
                     && rejection.code == "rpc_auth_failed"
             ));
-            assert_eq!(check(&server, auth, tag, CHAIN_ID, &new).await, REFUSED);
+            assert_eq!(check(&server, auth, tag, &new).await, REFUSED);
 
             // A wrong signature is refused the same way by both.
             let (binding, mut headers) = legacy_proof(auth, tag);
@@ -4888,14 +4877,14 @@ mod tests {
                     && rejection.code == "rpc_auth_failed"
             ));
             assert_eq!(
-                check(&server, auth, tag, CHAIN_ID, &(binding, headers)).await,
+                check(&server, auth, tag, &(binding, headers)).await,
                 REFUSED
             );
 
             // A legacy principal never touches the directory, so a full queue cannot refuse it.
             let (release, held) = fill_directory_queue(&fixture).await;
             let during = legacy_proof(auth, tag);
-            assert_eq!(check(&server, auth, tag, CHAIN_ID, &during).await, Ok(()));
+            assert_eq!(check(&server, auth, tag, &during).await, Ok(()));
             assert_eq!(lookups(), 0);
             drain(release, held).await;
             fixture.stop().await;

@@ -11,6 +11,7 @@ import {
   UtxoWallet,
 } from "../utxo-wallet";
 import type { UtxoIndexer, UtxoWalletStore } from "../utxo-wallet";
+import type { UtxoStealthCustody } from "../utxo-stealth";
 
 export interface UtxoChainConfig {
   /** Canonical chain identifier, e.g. `btc-testnet`. */
@@ -18,6 +19,8 @@ export interface UtxoChainConfig {
   readonly indexer: UtxoIndexer;
   /** Durable storage for one wallet, named by its first address. */
   readonly storeFor: (firstAddress: string) => UtxoWalletStore;
+  /** Explicit published Frank identity custody for received stealth outputs. */
+  readonly stealthCustody?: UtxoStealthCustody;
 }
 
 export interface UtxoChain extends Omit<NativeAssetChain, "createWallet"> {
@@ -30,7 +33,11 @@ const DECIMALS = 8;
 export function createUtxoChain(config: UtxoChainConfig): UtxoChain {
   const network = UTXO_NETWORKS[config.chainIdentifier];
   const entry = getChainRegistryEntry(config.chainIdentifier);
-  if (network === undefined || entry === undefined || entry.family !== "bitcoin") {
+  if (
+    network === undefined ||
+    entry === undefined ||
+    entry.family !== "bitcoin"
+  ) {
     throw new Error(
       `No Electrum wallet is available for ${config.chainIdentifier}`
     );
@@ -74,6 +81,7 @@ export function createUtxoChain(config: UtxoChainConfig): UtxoChain {
         seed,
         indexer: config.indexer,
         storeFor: config.storeFor,
+        stealthCustody: config.stealthCustody,
       });
     },
     nativeTransfers: {

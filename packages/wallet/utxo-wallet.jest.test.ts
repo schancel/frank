@@ -3,7 +3,16 @@ import { sha256 } from "@noble/hashes/sha256";
 import { ripemd160 } from "@noble/hashes/ripemd160";
 import { HDNodeWallet } from "ethers";
 import { decodeCashAddress } from "ecashaddrjs";
-import { parseTransaction } from "@frank/nakamoto";
+import {
+  parseTransaction,
+  privateKeyFromBytes,
+  publicFromPrivate,
+  signEcdsa,
+} from "@frank/nakamoto";
+import { stealthParentSecret } from "@frank/cashweb/relay/stealth-parent";
+import { deriveUtxoStealthDestination } from "./utxo-stealth";
+import { createUtxoChain } from "./chain/utxo-chain";
+import type { UtxoStealthCustody } from "./utxo-stealth";
 import {
   NativeFeeExceededError,
   NativeTransactionRefusedError,
@@ -221,15 +230,71 @@ async function open(
   network: UtxoNetwork,
   backend = makeIndexer(),
   store: UtxoWalletStore = memoryUtxoWalletStore(),
-  seed: Uint8Array = ROOT
+  seed: Uint8Array = ROOT,
+  stealthCustody?: UtxoStealthCustody
 ) {
   const wallet = await UtxoWallet.create({
     network,
     seed,
     indexer: backend.indexer,
     storeFor: () => store,
+    stealthCustody,
   });
   return { wallet, backend, store };
+}
+
+/** Synthetic identity custody deliberately unrelated to either wallet's HD root. The callback
+ * holds no derived secret between calls and makes every signing closure obey session expiry. */
+function syntheticStealthCustody(
+  network: UtxoNetwork,
+  identitySecret = new Uint8Array(32).fill(21)
+) {
+  let active = true;
+  const identityPublicKey = secp256k1.getPublicKey(identitySecret, true);
+  const custody: UtxoStealthCustody = {
+    identityPublicKey,
+    async deriveStealthSigner(derivation) {
+      if (!active) throw new Error("custody closed");
+      if (
+        derivation.chainIdentifier !== network.chainIdentifier ||
+        hex(derivation.identityPublicKey) !== hex(identityPublicKey)
+      )
+        throw new Error("wrong custody scope");
+      const derive = () =>
+        stealthParentSecret(identitySecret, derivation.ephemeralPubKey).secret;
+      const secret = derive();
+      const key = privateKeyFromBytes(secret, true);
+      secret.fill(0);
+      if (!key.ok) throw new Error("bad synthetic custody key");
+      const point = publicFromPrivate(key.value);
+      key.value.bytes.fill(0);
+      if (!point.ok) throw new Error("bad synthetic custody point");
+      return {
+        publicKey: point.value.compressed,
+        sign(digest) {
+          if (!active) throw new Error("custody closed");
+          const temporary = derive();
+          const signer = privateKeyFromBytes(temporary, true);
+          temporary.fill(0);
+          if (!signer.ok) throw new Error("bad synthetic custody signer");
+          try {
+            const signature = signEcdsa(signer.value, digest);
+            if (!signature.ok)
+              throw new Error("bad synthetic custody signature");
+            return signature.value;
+          } finally {
+            signer.value.bytes.fill(0);
+          }
+        },
+      };
+    },
+  };
+  return {
+    custody,
+    close: () => {
+      active = false;
+    },
+  };
 }
 
 function scriptOf(network: UtxoNetwork, address: string): string {
@@ -1073,6 +1138,227 @@ describe.each([
       "belongs to another chain"
     );
     expect(backend.broadcasts).toHaveLength(0);
+  });
+
+  async function preparedStealth() {
+    const backend = makeIndexer();
+    const sender = (await open(network, backend)).wallet;
+    const custody = syntheticStealthCustody(network);
+    const receiverRoot = new Uint8Array(32).fill(11);
+    const store = memoryUtxoWalletStore();
+    const receiver = await createUtxoChain({
+      chainIdentifier: network.chainIdentifier,
+      indexer: backend.indexer,
+      storeFor: () => store,
+      stealthCustody: custody.custody,
+    }).createWallet(receiverRoot);
+    fund(backend, network, sender.identity.address.raw, 70_000n, "a");
+    const destination = deriveUtxoStealthDestination({
+      network,
+      identityPublicKey: custody.custody.identityPublicKey,
+      ephemeralSecret: new Uint8Array(32).fill(17),
+    });
+    const prepared = await sender.prepareNativePayment({
+      operationId: "stealth",
+      recipient: { raw: destination.address },
+      value: 10_000n,
+    });
+    const receipt = {
+      chainIdentifier: network.chainIdentifier,
+      ephemeralPubKey: hex(destination.derivation.ephemeralPubKey),
+      transactions: prepared.transaction.rawTransactions,
+      claimedAmount: 10_000n,
+      payloadDigest: "5".repeat(64),
+      timestampMs: 100,
+    };
+    return {
+      backend,
+      sender,
+      receiver,
+      receiverRoot,
+      custody,
+      store,
+      destination,
+      prepared,
+      receipt,
+    };
+  }
+
+  it("imports recipient-only stealth, reopens without private keys, restores from a self note, and respends with valid signatures", async () => {
+    const f = await preparedStealth();
+    expect(f.destination.address).not.toBe(f.receiver.identity.address.raw);
+    await f.receiver.recordStealthPayment(f.receipt);
+    // Signed-message claims alone never credit the receiver.
+    expect(await f.receiver.getBalance()).toBe(0n);
+    expect(f.backend.broadcasts).toHaveLength(0);
+    await f.sender.recordPaymentExposure({
+      operationId: "stealth",
+      payloadDigest: f.receipt.payloadDigest,
+    });
+    await f.sender.submitPreparedPayment("stealth");
+    expect(await f.receiver.getBalance()).toBe(10_000n);
+    await f.receiver.recordStealthPayment(f.receipt);
+    await f.receiver.recordStealthPayment({
+      ...f.receipt,
+      payloadDigest: "6".repeat(64),
+    });
+    expect(await f.receiver.getBalance()).toBe(10_000n);
+    expect(f.receiver.coins()).toHaveLength(1);
+    expect(f.receiver.coins()[0]).toMatchObject({
+      origin: "stealth",
+      amount: 10_000n,
+    });
+    expect(f.receiver.coins()[0].privKey).toBeUndefined();
+    const stored = JSON.parse(f.store.load()!);
+    expect(stored.stealthScripts[0]).not.toHaveProperty("privateKey");
+    expect(stored.stealthScripts[0]).not.toHaveProperty("privKey");
+    const reopened = (
+      await open(network, f.backend, f.store, f.receiverRoot, f.custody.custody)
+    ).wallet;
+    expect(await reopened.getBalance()).toBe(10_000n);
+    const receipts = await reopened.getStealthReceipts();
+    expect(receipts).toHaveLength(2);
+    expect(receipts[0].address).toBe(f.destination.address);
+    // Seed plus a mailbox derivation note works with a genuinely empty local wallet store.
+    const restored = (
+      await open(
+        network,
+        f.backend,
+        memoryUtxoWalletStore(),
+        f.receiverRoot,
+        f.custody.custody
+      )
+    ).wallet;
+    expect(await restored.getBalance()).toBe(0n);
+    const note = {
+      type: "received-coin" as const,
+      chainIdentifier: network.chainIdentifier,
+      address: f.destination.address,
+      origin: "stealth" as const,
+      ephemeralPubKey: f.receipt.ephemeralPubKey,
+      claimedAmountWei: "10000",
+      transactions: f.receipt.transactions,
+      payloadDigest: f.receipt.payloadDigest,
+      timestamp: 100,
+    };
+    await expect(
+      restored.recordReceivedCoin({
+        ...note,
+        address: restored.identity.address.raw,
+      })
+    ).rejects.toThrow("address does not match");
+    expect(await restored.getStealthReceipts()).toEqual([]);
+    expect(await restored.recordReceivedCoin(note)).toBe(true);
+    expect(await restored.recordReceivedCoin(note)).toBe(true);
+    expect(await restored.getBalance()).toBe(10_000n);
+    expect(restored.coins()).toHaveLength(1);
+    const spent = [...reopened.coins()];
+    await reopened.sendNative({ recipient: { raw: recipient }, value: 2_000n });
+    const raw = f.backend.broadcasts[f.backend.broadcasts.length - 1];
+    expectValidSignatures(raw, network, spent);
+    expect(await reopened.getBalance()).toBe(
+      10_000n - 2_000n - feeOf(raw, network, 10_000n)
+    );
+  });
+
+  it("rejects wrong-chain, invalid-point, malformed, duplicate and false-amount stealth claims before mutation", async () => {
+    const f = await preparedStealth();
+    const before = f.store.load();
+    for (const receipt of [
+      {
+        ...f.receipt,
+        chainIdentifier: network === BTC ? "bch-testnet" : "btc-testnet",
+      },
+      { ...f.receipt, ephemeralPubKey: "02" + "ff".repeat(32) },
+      { ...f.receipt, ephemeralPubKey: "00".repeat(33) },
+      { ...f.receipt, transactions: ["zz"] },
+      {
+        ...f.receipt,
+        transactions: [...f.receipt.transactions, ...f.receipt.transactions],
+      },
+      { ...f.receipt, claimedAmount: 11_000n },
+      { ...f.receipt, claimedAmount: 0n },
+    ])
+      await expect(f.receiver.recordStealthPayment(receipt)).rejects.toThrow();
+    expect(f.store.load()).toBe(before);
+    expect(f.backend.broadcasts).toHaveLength(0);
+    expect(await f.receiver.getBalance()).toBe(0n);
+  });
+
+  it("keeps stealth import persistence failures observable and replayable", async () => {
+    const f = await preparedStealth();
+    const durable = memoryUtxoWalletStore();
+    let fail = false;
+    const store = {
+      load: () => durable.load(),
+      save: (value: string) => {
+        if (fail) throw new Error("storage full");
+        durable.save(value);
+      },
+    };
+    const receiver = (
+      await open(network, f.backend, store, f.receiverRoot, f.custody.custody)
+    ).wallet;
+    fail = true;
+    await expect(receiver.recordStealthPayment(f.receipt)).rejects.toThrow(
+      "storage full"
+    );
+    fail = false;
+    expect(await receiver.getStealthReceipts()).toEqual([]);
+    await receiver.recordStealthPayment(f.receipt);
+    expect(await receiver.getStealthReceipts()).toHaveLength(1);
+    expect(f.backend.broadcasts).toHaveLength(0);
+  });
+
+  it("fails restoration with missing, wrong identity or mismatched derived signing custody", async () => {
+    const f = await preparedStealth();
+    await f.receiver.recordStealthPayment(f.receipt);
+    const before = f.store.load();
+    await expect(
+      open(network, f.backend, f.store, f.receiverRoot)
+    ).rejects.toThrow("custody is unavailable");
+    const wrong = syntheticStealthCustody(network, new Uint8Array(32).fill(22));
+    await expect(
+      open(network, f.backend, f.store, f.receiverRoot, wrong.custody)
+    ).rejects.toThrow("another identity");
+    const mismatch: UtxoStealthCustody = {
+      identityPublicKey: f.custody.custody.identityPublicKey,
+      deriveStealthSigner: async () => ({
+        publicKey: wrong.custody.identityPublicKey,
+        sign: () => {
+          throw new Error("must not sign");
+        },
+      }),
+    };
+    await expect(
+      open(network, f.backend, f.store, f.receiverRoot, mismatch)
+    ).rejects.toThrow("does not match stored script");
+    expect(f.store.load()).toBe(before);
+    expect(f.backend.broadcasts).toHaveLength(0);
+  });
+
+  it("refuses spending through an expired custody capability without a new signed attempt", async () => {
+    const f = await preparedStealth();
+    await f.receiver.recordStealthPayment(f.receipt);
+    await f.sender.recordPaymentExposure({
+      operationId: "stealth",
+      payloadDigest: f.receipt.payloadDigest,
+    });
+    await f.sender.submitPreparedPayment("stealth");
+    // Expire after synchronization but before the atomic signing boundary.
+    const boundary = f.receiver as unknown as { sync(): Promise<void> };
+    const sync = boundary.sync.bind(f.receiver);
+    jest.spyOn(boundary, "sync").mockImplementationOnce(async () => {
+      await sync();
+      f.custody.close();
+    });
+    const before = f.store.load();
+    await expect(
+      f.receiver.sendNative({ recipient: { raw: recipient }, value: 2_000n })
+    ).rejects.toThrow("custody closed");
+    expect(f.store.load()).toBe(before);
+    expect(f.backend.broadcasts).toHaveLength(1);
+    expect(JSON.parse(f.store.load()!).pending).toEqual([]);
   });
 
   it("rejects addresses of other networks", async () => {

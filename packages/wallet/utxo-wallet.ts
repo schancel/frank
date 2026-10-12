@@ -13,6 +13,9 @@
  *   indices, native submission attempts, and prepared payments' exact bytes, input claims,
  *   message exposure and submission intent. Released ids and settled inputs remain recorded to
  *   prevent a retry from creating another payment or a stale indexer from reusing spent inputs.
+ * - Imported stealth scripts persist public derivation descriptors and message claims only.
+ *   Published Frank identity custody re-derives their signing capabilities; their actual coins
+ *   are discovered from the indexer alongside the HD receive/change chains.
  *
  * No address is reused: change goes to the next change address, and the receive address moves on
  * once it has been paid.
@@ -27,6 +30,7 @@ import {
   privateKeyFromBytes,
   pubkeyHashFromBytes,
   publicFromPrivate,
+  parseTransaction,
   serializeTransaction,
   signAll,
   signingKey,
@@ -43,6 +47,7 @@ import type {
   HdPrivateNode,
   InternalHash,
   Transaction,
+  SigningKey,
 } from "@frank/nakamoto";
 import {
   ChainAddress,
@@ -54,6 +59,13 @@ import {
   nativeTransactionAttemptKey,
   runNativeTransactionExclusive,
 } from "./chain/chain-wallet";
+
+import {
+  requireCompressedStealthPoint,
+  utxoStealthDestination,
+} from "./utxo-stealth";
+import type { UtxoStealthCustody, UtxoStealthDerivation } from "./utxo-stealth";
+import type { ReceivedCoinItem } from "@frank/cashweb/types/messages";
 
 /** The facts needed to build a transaction on one network. */
 export interface UtxoNetwork {
@@ -146,14 +158,16 @@ export interface UtxoIndexer {
 
 export type UtxoCoinState = "unspent" | "pending";
 
-/** One spendable output and the key that spends it. */
+/** One spendable output with its HD key or scoped custody signing capability. */
 export interface UtxoCoin {
-  readonly privKey: Uint8Array;
+  readonly privKey?: Uint8Array;
+  /** Imported stealth outputs carry only the custody's scoped signing capability. */
+  readonly signer?: SigningKey;
   readonly txid: string;
   readonly vout: number;
   readonly amount: bigint;
-  /** Which of the wallet's two address chains was paid. */
-  readonly origin: "receive" | "change";
+  /** The HD address chain or imported stealth script that was paid. */
+  readonly origin: "receive" | "change" | "stealth";
   /** `pending` while a recorded transaction of this wallet spends it. */
   readonly state: UtxoCoinState;
   readonly scriptPubKey: Uint8Array;
@@ -201,8 +215,41 @@ interface StoredUtxoPayment extends PendingSend {
   readonly payloadDigests: readonly string[];
 }
 
+export interface UtxoStealthReceipt {
+  readonly chainIdentifier: string;
+  readonly ephemeralPubKey: string;
+  readonly transactions: readonly string[];
+  readonly claimedAmount: bigint;
+  readonly payloadDigest: string;
+  readonly timestampMs: number;
+  /** A recovery note may additionally require the derived address to equal this exact value. */
+  readonly expectedAddress?: string;
+}
+
+export interface UtxoStealthReceiptInfo extends UtxoStealthReceipt {
+  readonly address: string;
+  readonly identityPublicKey: string;
+  readonly publicKey: string;
+}
+
+interface StoredStealthScript {
+  readonly chainIdentifier: string;
+  readonly identityPublicKey: string;
+  readonly ephemeralPubKey: string;
+  readonly publicKey: string;
+  readonly address: string;
+  /** Claims and original signed bytes, not confirmed balances or settlement facts. */
+  readonly receipts: ReadonlyArray<{
+    readonly payloadDigest: string;
+    readonly claimedAmount: string;
+    readonly transactions: readonly string[];
+    readonly timestampMs: number;
+  }>;
+}
+
 interface StoredState {
   readonly version: 1;
+  readonly stealthScripts?: readonly StoredStealthScript[];
   readonly receiveIndex: number;
   readonly changeIndex: number;
   readonly pending: readonly PendingSend[];
@@ -325,6 +372,35 @@ function validStoredPayment(operation: StoredUtxoPayment): boolean {
   );
 }
 
+function validStealthScript(script: StoredStealthScript): boolean {
+  const point = (value: string) =>
+    typeof value === "string" && /^(02|03)[a-f0-9]{64}$/.test(value);
+  return (
+    typeof script?.chainIdentifier === "string" &&
+    typeof script.address === "string" &&
+    point(script.identityPublicKey) &&
+    point(script.ephemeralPubKey) &&
+    point(script.publicKey) &&
+    Array.isArray(script.receipts) &&
+    script.receipts.length > 0 &&
+    script.receipts.every(
+      (receipt) =>
+        typeof receipt?.payloadDigest === "string" &&
+        /^[a-f0-9]{64}$/.test(receipt.payloadDigest) &&
+        typeof receipt.claimedAmount === "string" &&
+        /^[1-9][0-9]*$/.test(receipt.claimedAmount) &&
+        Number.isSafeInteger(receipt.timestampMs) &&
+        receipt.timestampMs >= 0 &&
+        Array.isArray(receipt.transactions) &&
+        receipt.transactions.length > 0 &&
+        receipt.transactions.every(
+          (raw: unknown) =>
+            typeof raw === "string" && /^(?:[a-f0-9]{2})+$/.test(raw)
+        )
+    )
+  );
+}
+
 function parseState(serialized: string | undefined): StoredState {
   if (serialized === undefined) {
     return { version: 1, receiveIndex: 0, changeIndex: 0, pending: [] };
@@ -338,6 +414,11 @@ function parseState(serialized: string | undefined): StoredState {
     !index(value.changeIndex) ||
     !Array.isArray(value.pending) ||
     value.pending.some((send) => !validPendingSend(send)) ||
+    (value.stealthScripts !== undefined &&
+      (!Array.isArray(value.stealthScripts) ||
+        value.stealthScripts.some((script) => !validStealthScript(script)) ||
+        new Set(value.stealthScripts.map((script) => script.address)).size !==
+          value.stealthScripts.length)) ||
     (value.consumedNativeInputs !== undefined &&
       (!Array.isArray(value.consumedNativeInputs) ||
         !value.consumedNativeInputs.every(validOutpoint))) ||
@@ -435,7 +516,8 @@ export class UtxoWallet implements NativeWalletHandle {
     private readonly account: HdPrivateNode,
     private readonly indexer: UtxoIndexer,
     private store: UtxoWalletStore,
-    private state: StoredState
+    private state: StoredState,
+    private readonly stealthCustody?: UtxoStealthCustody
   ) {
     this.chainIdentifier = network.chainIdentifier;
     this.networkId = network.chainIdentifier;
@@ -451,6 +533,8 @@ export class UtxoWallet implements NativeWalletHandle {
     indexer: UtxoIndexer;
     /** Durable storage for this wallet, named by its first receive address. */
     storeFor: (firstAddress: string) => UtxoWalletStore;
+    /** Optional, explicitly composed published Frank identity custody; never the HD domain root. */
+    stealthCustody?: UtxoStealthCustody;
   }): Promise<UtxoWallet> {
     const master = must(hdPrivateFromSeed(params.seed), "Invalid wallet seed");
     const account = must(
@@ -462,10 +546,13 @@ export class UtxoWallet implements NativeWalletHandle {
       account,
       params.indexer,
       memoryUtxoWalletStore(),
-      parseState(undefined)
+      parseState(undefined),
+      params.stealthCustody
     );
     wallet.store = params.storeFor(wallet.addressAt(0, 0));
     wallet.reload();
+    // A required imported signing capability must restore before the wallet becomes active.
+    await wallet.validateStealthScripts();
     await wallet.discover();
     // Finish a send a restart interrupted. If the indexer cannot be reached now, the next send
     // tries again before it signs anything.
@@ -610,6 +697,209 @@ export class UtxoWallet implements NativeWalletHandle {
     // Accepted: its inputs are spent on the indexer from now on. The record stays until the
     // indexer shows the transaction, so a lagging server cannot hand the coins out again.
     return transaction;
+  }
+
+  /** Validate a received payment claim and durably watch its owned script before mailbox
+   * completion. Parsing is not chain settlement: only indexer-discovered unspent outputs count. */
+  async recordStealthPayment(receipt: UtxoStealthReceipt): Promise<void> {
+    if (receipt.chainIdentifier !== this.chainIdentifier)
+      throw new Error("Stealth receipt belongs to another chain");
+    if (receipt.claimedAmount <= 0n || receipt.claimedAmount > 2n ** 64n - 1n)
+      throw new Error("Invalid stealth recipient amount");
+    if (
+      !/^[a-f0-9]{64}$/.test(receipt.payloadDigest) ||
+      !Number.isSafeInteger(receipt.timestampMs) ||
+      receipt.timestampMs < 0
+    )
+      throw new Error("Invalid stealth receipt origin");
+    if (!/^(02|03)[a-f0-9]{64}$/.test(receipt.ephemeralPubKey))
+      throw new Error("Invalid stealth ephemeral public key");
+    const custody = this.requireStealthCustody();
+    const identityPublicKey = requireCompressedStealthPoint(
+      custody.identityPublicKey
+    );
+    const derivation: UtxoStealthDerivation = {
+      chainIdentifier: this.chainIdentifier,
+      identityPublicKey,
+      ephemeralPubKey: requireCompressedStealthPoint(
+        unhex(receipt.ephemeralPubKey)
+      ),
+    };
+    const signer = await custody.deriveStealthSigner(derivation);
+    const destination = utxoStealthDestination(this.network, signer.publicKey);
+    if (
+      receipt.expectedAddress !== undefined &&
+      receipt.expectedAddress !== destination.address
+    )
+      throw new Error("Stealth recovery address does not match custody");
+    this.validateReceiptTransactions(
+      receipt.transactions,
+      destination.scriptPubKey,
+      receipt.claimedAmount
+    );
+    await this.exclusive(async () => {
+      const scripts = this.state.stealthScripts ?? [];
+      const previous = scripts.find(
+        (script) => script.address === destination.address
+      );
+      if (
+        previous &&
+        (previous.identityPublicKey !== hex(identityPublicKey) ||
+          previous.ephemeralPubKey !== receipt.ephemeralPubKey)
+      )
+        throw new Error("Stealth script has another derivation");
+      const saved = previous?.receipts.find(
+        (entry) => entry.payloadDigest === receipt.payloadDigest
+      );
+      const entry = {
+        payloadDigest: receipt.payloadDigest,
+        claimedAmount: receipt.claimedAmount.toString(),
+        transactions: [...receipt.transactions],
+        timestampMs: receipt.timestampMs,
+      };
+      if (saved) {
+        if (
+          saved.claimedAmount !== entry.claimedAmount ||
+          JSON.stringify(saved.transactions) !==
+            JSON.stringify(entry.transactions)
+        )
+          throw new Error("Stealth receipt already has another payment");
+        return;
+      }
+      const script: StoredStealthScript = {
+        chainIdentifier: this.chainIdentifier,
+        identityPublicKey: hex(identityPublicKey),
+        ephemeralPubKey: receipt.ephemeralPubKey,
+        publicKey: hex(destination.publicKey),
+        address: destination.address,
+        receipts: [...(previous?.receipts ?? []), entry],
+      };
+      this.persist({
+        ...this.state,
+        stealthScripts: [
+          ...scripts.filter((item) => item.address !== script.address),
+          script,
+        ],
+      });
+    });
+  }
+
+  /** Public derivation/claim facts for composition to note to self. Amounts here are claims,
+   * never balances; coins()/getBalance() remain the indexer's authoritative inventory view. */
+  async getStealthReceipts(): Promise<readonly UtxoStealthReceiptInfo[]> {
+    return this.exclusive(async () =>
+      (this.state.stealthScripts ?? []).flatMap((script) =>
+        script.receipts.map((receipt) => ({
+          chainIdentifier: script.chainIdentifier,
+          ephemeralPubKey: script.ephemeralPubKey,
+          address: script.address,
+          identityPublicKey: script.identityPublicKey,
+          publicKey: script.publicKey,
+          claimedAmount: BigInt(receipt.claimedAmount),
+          transactions: [...receipt.transactions],
+          payloadDigest: receipt.payloadDigest,
+          timestampMs: receipt.timestampMs,
+        }))
+      )
+    );
+  }
+
+  /** The existing sync dispatcher calls this for a self recovery note. A complete native note
+   * uses the same validation/import boundary as its original recipient message. */
+  async recordReceivedCoin(note: ReceivedCoinItem): Promise<boolean> {
+    if (note.chainIdentifier !== this.chainIdentifier)
+      throw new Error("Stealth recovery note belongs to another chain");
+    if (
+      note.origin !== "stealth" ||
+      !note.ephemeralPubKey ||
+      !note.payloadDigest ||
+      !note.transactions ||
+      !/^[1-9][0-9]*$/.test(note.claimedAmountWei)
+    )
+      return false;
+    await this.recordStealthPayment({
+      chainIdentifier: note.chainIdentifier,
+      ephemeralPubKey: note.ephemeralPubKey,
+      transactions: note.transactions,
+      claimedAmount: BigInt(note.claimedAmountWei),
+      payloadDigest: note.payloadDigest,
+      timestampMs: note.timestamp,
+      expectedAddress: note.address,
+    });
+    return true;
+  }
+
+  private requireStealthCustody(): UtxoStealthCustody {
+    if (!this.stealthCustody)
+      throw new Error("Stealth receipt custody is unavailable");
+    return this.stealthCustody;
+  }
+
+  private validateReceiptTransactions(
+    transactions: readonly string[],
+    script: Uint8Array,
+    claimed: bigint
+  ): void {
+    if (transactions.length === 0 || transactions.length > 16)
+      throw new Error("Invalid stealth transaction set");
+    let amount = 0n;
+    const ids = new Set<string>();
+    for (const raw of transactions) {
+      if (!/^(?:[a-f0-9]{2})+$/.test(raw) || raw.length > 32768)
+        throw new Error("Invalid stealth transaction bytes");
+      const parsed = parseTransaction(unhex(raw), this.network.descriptor);
+      if (!parsed.ok) throw new Error("Invalid stealth transaction");
+      const txid = hex(
+        must(
+          transactionId(parsed.value, this.network.descriptor),
+          "Invalid stealth transaction id"
+        )
+      );
+      if (ids.has(txid)) throw new Error("Duplicate stealth transaction");
+      ids.add(txid);
+      for (const output of parsed.value.outputs)
+        if (hex(output.scriptPubKey) === hex(script)) amount += output.value;
+    }
+    if (amount !== claimed)
+      throw new Error("Stealth transaction recipient amount does not match");
+  }
+
+  private async stealthSigner(
+    script: StoredStealthScript
+  ): Promise<SigningKey> {
+    if (script.chainIdentifier !== this.chainIdentifier)
+      throw new Error("Stored stealth script belongs to another chain");
+    const custody = this.requireStealthCustody();
+    if (
+      hex(requireCompressedStealthPoint(custody.identityPublicKey)) !==
+      script.identityPublicKey
+    )
+      throw new Error("Stored stealth script belongs to another identity");
+    const signer = await custody.deriveStealthSigner({
+      chainIdentifier: this.chainIdentifier,
+      identityPublicKey: unhex(script.identityPublicKey),
+      ephemeralPubKey: requireCompressedStealthPoint(
+        unhex(script.ephemeralPubKey)
+      ),
+    });
+    const destination = utxoStealthDestination(this.network, signer.publicKey);
+    if (
+      hex(destination.publicKey) !== script.publicKey ||
+      destination.address !== script.address
+    )
+      throw new Error("Stealth custody does not match stored script");
+    for (const receipt of script.receipts)
+      this.validateReceiptTransactions(
+        receipt.transactions,
+        destination.scriptPubKey,
+        BigInt(receipt.claimedAmount)
+      );
+    return signer;
+  }
+
+  private async validateStealthScripts(): Promise<void> {
+    for (const script of this.state.stealthScripts ?? [])
+      await this.stealthSigner(script);
   }
 
   /** Signs and claims inputs durably, but exposes no bytes and makes no broadcast. The id
@@ -1049,7 +1339,36 @@ export class UtxoWallet implements NativeWalletHandle {
     for (let index = 0; index < changeIndex; index++) {
       await read(1, index);
     }
+    for (const script of this.state.stealthScripts ?? []) {
+      const signer = await this.stealthSigner(script);
+      const scriptPubKey = utxoStealthDestination(
+        this.network,
+        signer.publicKey
+      ).scriptPubKey;
+      for (const output of await this.indexer.listUnspent(scriptPubKey)) {
+        if (
+          !coins.some(
+            (coin) => coin.txid === output.txid && coin.vout === output.vout
+          )
+        )
+          coins.push({
+            signer,
+            txid: output.txid,
+            vout: output.vout,
+            amount: output.amount,
+            origin: "stealth",
+            state: "unspent",
+            scriptPubKey,
+            confirmed: output.height > 0,
+          });
+      }
+    }
     return { coins, receiveIndex };
+  }
+
+  private coinPrivateKey(coin: UtxoCoin): Uint8Array {
+    if (!coin.privKey) throw new Error("Coin has no signing capability");
+    return coin.privKey;
   }
 
   private sign(
@@ -1075,13 +1394,18 @@ export class UtxoWallet implements NativeWalletHandle {
         unsigned,
         inputs.map((coin, inputIndex) => ({
           inputIndex,
-          signer: must(
-            signingKey(
-              "ecdsa",
-              must(privateKeyFromBytes(coin.privKey, true), "Invalid coin key")
+          signer:
+            coin.signer ??
+            must(
+              signingKey(
+                "ecdsa",
+                must(
+                  privateKeyFromBytes(this.coinPrivateKey(coin), true),
+                  "Invalid coin key"
+                )
+              ),
+              "Invalid signing key"
             ),
-            "Invalid signing key"
-          ),
         })),
         {
           chain: descriptor,

@@ -13,6 +13,7 @@ import {
   EcashNetworkId,
   EcashWallet,
   EcashWalletFactory,
+  EcashBip39WalletFactory,
 } from "../ecash-wallet";
 import type { ChronikClient } from "chronik-client";
 import type { ChainUtxoPool } from "../chain-utxo-pool";
@@ -28,6 +29,8 @@ export interface EcashChainConfig {
   chronik: ChronikClient;
   /** Test/embedding seam; production uses ecash-wallet's HD wallet implementation. */
   walletFactory?: EcashWalletFactory;
+  /** Historical raw-seed custody uses its own construction seam, never a v1 domain root. */
+  bip39WalletFactory?: EcashBip39WalletFactory;
   nativeAttemptStore?: NativeTransactionAttemptStore;
   chainUtxoPool?: ChainUtxoPool;
 }
@@ -116,6 +119,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         networkId: canonicalNetwork,
         checkpoint: config.checkpoint,
         walletFactory: config.walletFactory,
+        bip39WalletFactory: config.bip39WalletFactory,
         nativeAttemptStore: config.nativeAttemptStore,
         chainUtxoPool: config.chainUtxoPool,
         getTransactionStatus: (transaction) =>

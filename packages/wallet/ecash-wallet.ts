@@ -12,6 +12,12 @@ import type {
   EcashInputReference,
   EcashNativeConstruction,
 } from "./ecash-sdk-backend";
+import type { ReceivedCoinItem } from "@frank/cashweb/types/messages";
+import { validateEcashStealthReceipt } from "./ecash-stealth";
+import type {
+  EcashStealthDerivation,
+  EcashStealthReceipt,
+} from "./ecash-stealth";
 import type { HistoricalBip39Seed } from "../domain-roots/src";
 import { BIP39_DERIVATION } from "../domain-roots/src";
 import {
@@ -221,6 +227,14 @@ interface EcashPreparationBackend extends EcashWalletBackend {
 }
 
 export interface EcashWalletBackend {
+  getStealthIdentityPublicKey?(): string;
+  describeStealthDerivation?(
+    derivation: EcashStealthDerivation
+  ): Promise<{ address: string; publicKey: string }>;
+  importStealthDerivation?(
+    derivation: EcashStealthDerivation,
+    expected: { address: string; publicKey: string }
+  ): Promise<{ address: string; publicKey: string }>;
   buildNativeConstruction?: EcashPreparationBackend["buildNativeConstruction"];
   restoreChangeIndex?: EcashPreparationBackend["restoreChangeIndex"];
   getAvailableBalance?: EcashPreparationBackend["getAvailableBalance"];
@@ -236,6 +250,12 @@ export interface EcashWalletBackend {
 
 export type EcashWalletFactory = (params: {
   domainRoot: DomainRoot<"ecash-bch-wallet">;
+  chronik: ChronikClient;
+  addressPrefix: EcashAddressPrefix;
+}) => EcashWalletBackend | Promise<EcashWalletBackend>;
+
+export type EcashBip39WalletFactory = (params: {
+  material: HistoricalBip39Seed;
   chronik: ChronikClient;
   addressPrefix: EcashAddressPrefix;
 }) => EcashWalletBackend | Promise<EcashWalletBackend>;
@@ -307,6 +327,7 @@ export class EcashWallet implements NativeWalletHandle {
     params: EcashWalletOptions & {
       material: DomainRoot<"ecash-bch-wallet"> | HistoricalBip39Seed;
       walletFactory?: EcashWalletFactory;
+      bip39WalletFactory?: EcashBip39WalletFactory;
     }
   ): Promise<EcashWallet> {
     if (!("seed" in params.material))
@@ -322,15 +343,20 @@ export class EcashWallet implements NativeWalletHandle {
       throw new Error("Expected the original 64-byte historical BIP39 seed");
     // Snapshot before endpoint verification or SDK loading; the caller may wipe its copy.
     const seed = new Uint8Array(params.material.seed);
+    const factory: EcashBip39WalletFactory =
+      params.bip39WalletFactory ??
+      (({ material, chronik, addressPrefix }) =>
+        createEcashBip39SeedBackend(material, chronik, addressPrefix));
     try {
       return await EcashWallet.initialize(
         params,
         () =>
-          createEcashBip39SeedBackend(
-            { derivation: BIP39_DERIVATION, seed },
-            params.chronik,
-            ECASH_ADDRESS_PREFIXES[canonicalEcashNetworkId(params.networkId)]
-          ),
+          factory({
+            material: { derivation: BIP39_DERIVATION, seed },
+            chronik: params.chronik,
+            addressPrefix:
+              ECASH_ADDRESS_PREFIXES[canonicalEcashNetworkId(params.networkId)],
+          }),
         false
       );
     } finally {
@@ -389,7 +415,6 @@ export class EcashWallet implements NativeWalletHandle {
       checkpointClientFactory: params.checkpointClientFactory,
     });
     const backend = await createBackend();
-    await backend.syncAndDiscoverAddresses();
     const canonicalId = canonicalEcashNetworkId(params.networkId);
     const addressPrefix = ECASH_ADDRESS_PREFIXES[canonicalId];
     const primaryAddress = canonicalEcashAddress(
@@ -414,10 +439,11 @@ export class EcashWallet implements NativeWalletHandle {
       params.operationStore ?? defaultEcashOperationStore
     );
     const ledger = wallet.loadLedger();
+    await wallet.restoreStealthReceipts();
     if (ledger.nextChangeIndex > 0) {
       wallet.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
-      await backend.sync();
     }
+    await backend.syncAndDiscoverAddresses();
     // Resume still-authorized RPC attempts independently of new sends. Prepared operations
     // never broadcast here; parse/affinity failures above remain activation failures.
     await wallet.finishInterruptedSend().catch(() => undefined);
@@ -461,6 +487,164 @@ export class EcashWallet implements NativeWalletHandle {
     };
   }
 
+  private stealthBackend(): Required<
+    Pick<
+      EcashWalletBackend,
+      | "describeStealthDerivation"
+      | "importStealthDerivation"
+      | "getStealthIdentityPublicKey"
+    >
+  > {
+    if (
+      this.backend.describeStealthDerivation === undefined ||
+      this.backend.importStealthDerivation === undefined ||
+      this.backend.getStealthIdentityPublicKey === undefined
+    )
+      throw new Error(
+        "eCash backend does not support recipient stealth custody"
+      );
+    return this.backend as Required<
+      Pick<
+        EcashWalletBackend,
+        | "describeStealthDerivation"
+        | "importStealthDerivation"
+        | "getStealthIdentityPublicKey"
+      >
+    >;
+  }
+
+  private async restoreStealthReceipts(): Promise<void> {
+    for (const receipt of this.loadLedger().stealthReceipts ?? []) {
+      const imported = await this.stealthBackend().importStealthDerivation(
+        receipt.derivation,
+        receipt
+      );
+      if (
+        imported.address !== receipt.address ||
+        imported.publicKey !== receipt.publicKey
+      )
+        throw new Error("Restored eCash stealth derivation mismatch");
+    }
+  }
+
+  /** Public claim validation only. Receipt arrival does not credit SDK inventory or balance. */
+  async recordStealthPayment(params: {
+    chainIdentifier: string;
+    ephemeralPubKey: string;
+    claimedAmount: bigint;
+    transactions: ReadonlyArray<string>;
+    payloadDigest: string;
+    timestamp: number;
+    expectedAddress?: string;
+  }): Promise<EcashStealthReceipt> {
+    const snapshot = { ...params, transactions: [...params.transactions] };
+    if (snapshot.chainIdentifier !== this.chainIdentifier)
+      throw new Error("eCash stealth payment belongs to another chain");
+    const backend = this.stealthBackend();
+    const derivation = Object.freeze({
+      chainIdentifier: this.chainIdentifier,
+      identityPublicKey: backend.getStealthIdentityPublicKey(),
+      ephemeralPubKey: snapshot.ephemeralPubKey,
+    });
+    const imported = await backend.describeStealthDerivation(derivation);
+    if (
+      snapshot.expectedAddress !== undefined &&
+      snapshot.expectedAddress !== imported.address
+    )
+      throw new Error("eCash received coin address mismatch");
+    const receipt: EcashStealthReceipt = {
+      derivation,
+      ...imported,
+      claimedAmount: snapshot.claimedAmount.toString(),
+      payloadDigest: snapshot.payloadDigest,
+      timestamp: snapshot.timestamp,
+      transactions: snapshot.transactions,
+    };
+    const prefix =
+      ECASH_ADDRESS_PREFIXES[this.chainIdentifier as CanonicalEcashNetworkId];
+    const incoming = validateEcashStealthReceipt(
+      receipt,
+      this.chainIdentifier,
+      prefix
+    );
+    const recorded = await this.exclusive(() => {
+      const ledger = this.loadLedger();
+      const receipts = ledger.stealthReceipts ?? [];
+      for (const previous of receipts) {
+        const outpoints = validateEcashStealthReceipt(
+          previous,
+          this.chainIdentifier,
+          prefix
+        );
+        const overlap = outpoints.some((outpoint) =>
+          incoming.includes(outpoint)
+        );
+        const sameDigest = previous.payloadDigest === receipt.payloadDigest;
+        if (sameDigest || overlap) {
+          if (
+            previous.address === receipt.address &&
+            previous.publicKey === receipt.publicKey &&
+            previous.derivation.identityPublicKey ===
+              receipt.derivation.identityPublicKey &&
+            previous.derivation.ephemeralPubKey ===
+              receipt.derivation.ephemeralPubKey &&
+            previous.claimedAmount === receipt.claimedAmount &&
+            previous.transactions.length === receipt.transactions.length &&
+            previous.transactions.every(
+              (raw, index) => raw === receipt.transactions[index]
+            )
+          )
+            return previous;
+          throw new Error(
+            "Conflicting eCash stealth receipt or duplicate outpoint"
+          );
+        }
+      }
+      this.operationStore.put(this.nativeAttemptKey, {
+        ...ledger,
+        stealthReceipts: [...receipts, receipt],
+      });
+      return receipt;
+    });
+    const restored = await backend.importStealthDerivation(
+      recorded.derivation,
+      recorded
+    );
+    if (
+      restored.address !== recorded.address ||
+      restored.publicKey !== recorded.publicKey
+    )
+      throw new Error("Restored eCash stealth derivation mismatch");
+    return recorded;
+  }
+
+  async recordReceivedCoin(note: ReceivedCoinItem): Promise<boolean> {
+    if (
+      note.type !== "received-coin" ||
+      note.origin !== "stealth" ||
+      typeof note.ephemeralPubKey !== "string" ||
+      typeof note.payloadDigest !== "string" ||
+      !Array.isArray(note.transactions) ||
+      typeof note.claimedAmountWei !== "string" ||
+      !/^[1-9][0-9]*$/.test(note.claimedAmountWei)
+    )
+      throw new Error("Invalid eCash received coin note");
+    await this.recordStealthPayment({
+      chainIdentifier: note.chainIdentifier,
+      ephemeralPubKey: note.ephemeralPubKey,
+      expectedAddress: note.address,
+      claimedAmount: BigInt(note.claimedAmountWei),
+      transactions: note.transactions,
+      payloadDigest: note.payloadDigest,
+      timestamp: note.timestamp,
+    });
+    return true;
+  }
+
+  getStealthReceipts(): ReadonlyArray<EcashStealthReceipt> {
+    return this.loadLedger().stealthReceipts ?? [];
+  }
+
   private preparationBackend(): EcashPreparationBackend {
     const backend = this.backend as Partial<EcashPreparationBackend>;
     if (
@@ -498,6 +682,22 @@ export class EcashWallet implements NativeWalletHandle {
     const backend = this.preparationBackend();
     for (const operation of ledger.operations)
       backend.validateNativeOperation(operation);
+    const outpoints = new Set<string>();
+    const digests = new Set<string>();
+    for (const receipt of ledger.stealthReceipts ?? []) {
+      const inputs = validateEcashStealthReceipt(
+        receipt,
+        this.chainIdentifier,
+        ECASH_ADDRESS_PREFIXES[this.chainIdentifier as CanonicalEcashNetworkId]
+      );
+      if (
+        digests.has(receipt.payloadDigest) ||
+        inputs.some((input) => outpoints.has(input))
+      )
+        throw new Error("Duplicate persisted eCash stealth receipt");
+      digests.add(receipt.payloadDigest);
+      inputs.forEach((input) => outpoints.add(input));
+    }
     return ledger;
   }
 
@@ -635,6 +835,7 @@ export class EcashWallet implements NativeWalletHandle {
     backend.restoreChangeIndex(this.loadLedger().nextChangeIndex);
     // Indexer waits occur outside the shared atomic selection section. A stale indexer cannot
     // make already claimed inputs selectable because claims are reloaded after this await.
+    await this.restoreStealthReceipts();
     await this.backend.sync();
     return this.exclusive(() => {
       const ledger = this.loadLedger();
@@ -796,6 +997,7 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   async getReceiveAddress(): Promise<ChainAddress> {
+    await this.restoreStealthReceipts();
     await this.backend.syncAndDiscoverAddresses();
     const ledger = this.loadLedger();
     if (ledger.nextChangeIndex > 0)
@@ -811,6 +1013,7 @@ export class EcashWallet implements NativeWalletHandle {
   async getBalance(): Promise<bigint> {
     const floor = this.loadLedger().nextChangeIndex;
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
+    await this.restoreStealthReceipts();
     await this.backend.sync();
     return this.exclusive(() => {
       const ledger = this.loadLedger();
@@ -830,6 +1033,7 @@ export class EcashWallet implements NativeWalletHandle {
     const value = params.value;
     const floor = this.loadLedger().nextChangeIndex;
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
+    await this.restoreStealthReceipts();
     await this.backend.sync();
     return this.exclusive(() => {
       const ledger = this.loadLedger();

@@ -6,6 +6,8 @@
  * payload before asserting its bound exposure digest. Reopen is read-only until an authorized
  * operation mutates. A source rollback must retain this namespace for signed-byte recovery.
  */
+import type { EcashStealthReceipt } from "./ecash-stealth";
+
 export interface EcashNativeIntent {
   readonly recipient: string;
   readonly value: string;
@@ -58,6 +60,8 @@ export interface EcashOperationLedger {
     readonly txid: string;
     readonly vout: number;
   }>;
+  /** Public derivation and claimed-output facts only. SDK/Chronik still own coin inventory. */
+  readonly stealthReceipts?: ReadonlyArray<EcashStealthReceipt>;
 }
 
 export interface EcashOperationStore {
@@ -112,6 +116,27 @@ export function parseEcashOperationLedger(
       consumed.add(key);
     }
   }
+  if (
+    value.stealthReceipts !== undefined &&
+    (!Array.isArray(value.stealthReceipts) ||
+      value.stealthReceipts.some(
+        (receipt: unknown) =>
+          !object(receipt) ||
+          !object(receipt.derivation) ||
+          !text(receipt.derivation.chainIdentifier) ||
+          !text(receipt.derivation.identityPublicKey) ||
+          !text(receipt.derivation.ephemeralPubKey) ||
+          !text(receipt.publicKey) ||
+          !text(receipt.address) ||
+          !quantity(receipt.claimedAmount) ||
+          !hash(receipt.payloadDigest) ||
+          !Number.isSafeInteger(receipt.timestamp) ||
+          Number(receipt.timestamp) < 0 ||
+          !Array.isArray(receipt.transactions) ||
+          receipt.transactions.some((raw: unknown) => typeof raw !== "string")
+      ))
+  )
+    throw new Error("Invalid eCash stealth receipt record");
   const ids = new Set<string>();
   const claimed = new Set<string>();
   for (const operation of value.operations) {

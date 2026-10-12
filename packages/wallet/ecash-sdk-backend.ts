@@ -6,7 +6,8 @@
  * This construction view is used by EcashWallet's durable operation owner, which reloads input
  * claims and the HD change floor under a short cross-instance lock and persists intent/signed
  * bytes before exposure. The host owns complete external-payload persistence and its barrier.
- * Imported-key derivation references remain custody's responsibility before recipient enablement.
+ * Public stealth receipts retain derivation references; injected Frank identity custody rederives
+ * each recipient key before imported-script discovery. Claims never credit inventory.
  * Import must run inside custody from a recipient-derived key, not expose a private-key getter or
  * require messaging/UI to pass keys. No production capability is enabled by this predecessor.
  * Reopening requires custody to re-import keys; this backend never persists private keys.
@@ -16,6 +17,11 @@ import { Address, Ecc, Script, shaRmd160, Tx, sha256d } from "ecash-lib";
 import type { EcashNativeOperation } from "./ecash-operation-store";
 import type { ChainTransaction } from "./chain/chain-wallet";
 import type { EcashAddressPrefix, EcashWalletBackend } from "./ecash-wallet";
+import { ecashStealthPoint, assertEcashStealthChain } from "./ecash-stealth";
+import type {
+  EcashStealthCustody,
+  EcashStealthDerivation,
+} from "./ecash-stealth";
 
 interface Keypair {
   sk: Uint8Array;
@@ -83,8 +89,90 @@ export class EcashSdkBackend implements EcashWalletBackend {
   constructor(
     private readonly sdk: EcashSdkWallet,
     private readonly chronik: ChronikClient,
-    private readonly prefix: EcashAddressPrefix
+    private readonly prefix: EcashAddressPrefix,
+    private readonly stealthCustody?: EcashStealthCustody
   ) {}
+
+  getStealthIdentityPublicKey(): string {
+    if (this.stealthCustody === undefined)
+      throw new Error("eCash stealth custody is unavailable");
+    this.stealthCustody.assertActive();
+    ecashStealthPoint(this.stealthCustody.identityPublicKey);
+    return this.stealthCustody.identityPublicKey;
+  }
+
+  /** Public descriptors in, SDK keypair out internally. No private-key capability escapes. */
+  describeStealthDerivation(
+    derivation: EcashStealthDerivation
+  ): Promise<{ address: string; publicKey: string }> {
+    return this.deriveStealthScript(derivation, false);
+  }
+
+  importStealthDerivation(
+    derivation: EcashStealthDerivation,
+    expected: { address: string; publicKey: string }
+  ): Promise<{ address: string; publicKey: string }> {
+    return this.deriveStealthScript(derivation, true, { ...expected });
+  }
+
+  private async deriveStealthScript(
+    derivation: EcashStealthDerivation,
+    importKey: boolean,
+    expected?: { address: string; publicKey: string }
+  ): Promise<{
+    address: string;
+    publicKey: string;
+  }> {
+    const custody = this.stealthCustody;
+    if (custody === undefined)
+      throw new Error("eCash stealth custody is unavailable");
+    const descriptor = Object.freeze({ ...derivation });
+    assertEcashStealthChain(descriptor.chainIdentifier, this.prefix);
+    ecashStealthPoint(descriptor.identityPublicKey);
+    ecashStealthPoint(descriptor.ephemeralPubKey);
+    custody.assertActive();
+    if (custody.identityPublicKey !== descriptor.identityPublicKey)
+      throw new Error("eCash stealth identity mismatch");
+    let result: { address: string; publicKey: string } | undefined;
+    let activeCallback = true;
+    try {
+      await custody.withDerivedStealthSecret(descriptor, (secret) => {
+        try {
+          if (!activeCallback || result !== undefined)
+            throw new Error("Invalid eCash custody import callback");
+          custody.assertActive();
+          const publicKey = Buffer.from(
+            new Ecc().derivePubkey(secret)
+          ).toString("hex");
+          const address = Address.p2pkh(
+            shaRmd160(Buffer.from(publicKey, "hex")),
+            this.prefix
+          ).toString();
+          if (importKey) {
+            if (
+              expected?.address !== address ||
+              expected.publicKey !== publicKey
+            )
+              throw new Error("Restored eCash stealth derivation mismatch");
+            this.importSigningKey(secret);
+          }
+          result = { address, publicKey };
+        } finally {
+          secret.fill(0);
+        }
+      });
+    } finally {
+      activeCallback = false;
+    }
+    custody.assertActive();
+    if (result === undefined)
+      throw new Error("eCash custody did not import the required key");
+    return result;
+  }
+
+  private assertCustodyActive(): void {
+    this.stealthCustody?.assertActive();
+  }
 
   get balanceSats(): bigint {
     return this.sdk.balanceSats;
@@ -188,17 +276,20 @@ export class EcashSdkBackend implements EcashWalletBackend {
   }
 
   async sync(): Promise<void> {
+    this.assertCustodyActive();
     await this.sdk.sync();
     await this.refreshImportedCoins();
   }
 
   async syncAndDiscoverAddresses(): Promise<void> {
+    this.assertCustodyActive();
     await this.sdk.syncAndDiscoverAddresses();
     await this.refreshImportedCoins();
   }
 
   /** Copies the key and returns only its address. Custody owns re-import after reopening. */
   importSigningKey(secretKey: Uint8Array): string {
+    this.assertCustodyActive();
     if (!(secretKey instanceof Uint8Array) || secretKey.length !== 32)
       throw new Error("Expected a 32-byte eCash signing key");
     const sk = Uint8Array.from(secretKey);
@@ -226,9 +317,11 @@ export class EcashSdkBackend implements EcashWalletBackend {
   }
 
   private async refreshImportedCoins(): Promise<void> {
+    this.assertCustodyActive();
     if (this.imported.size === 0) return;
     const rows = await Promise.all(
       Array.from(this.imported.values(), async (keypair) => {
+        this.assertCustodyActive();
         const result = await this.chronik
           .script("p2pkh", Buffer.from(keypair.pkh).toString("hex"))
           .utxos();
@@ -240,11 +333,14 @@ export class EcashSdkBackend implements EcashWalletBackend {
         }));
       })
     );
+    this.assertCustodyActive();
     const coins = new Map(
-      this.sdk.utxos.map((coin) => [
-        outpointKey({ txid: coin.outpoint.txid, vout: coin.outpoint.outIdx }),
-        coin,
-      ])
+      this.sdk.utxos
+        .filter((coin) => !this.imported.has(coin.address))
+        .map((coin) => [
+          outpointKey({ txid: coin.outpoint.txid, vout: coin.outpoint.outIdx }),
+          coin,
+        ])
     );
     for (const coin of rows.flat()) {
       const key = outpointKey({
@@ -265,6 +361,7 @@ export class EcashSdkBackend implements EcashWalletBackend {
     excludedInputs: ReadonlyArray<EcashInputReference>;
     changeIndexFloor?: number;
   }): EcashNativeConstruction {
+    this.assertCustodyActive();
     const recipient = Address.fromCashAddress(params.recipient);
     if (recipient.prefix !== this.prefix)
       throw new Error("Wrong eCash recipient network");

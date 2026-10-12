@@ -16,9 +16,9 @@ function item(): RecipientAssetPaymentItem {
       {
         chainIdentifier: 'monad-testnet',
         txId: 'ab'.repeat(32),
-        destination: '0x' + '12'.repeat(20),
+        destination: '12'.repeat(20),
         amountAtomic: ((1n << 255n) + 1n).toString(),
-        asset: { kind: 'token', identifier: '0x' + '34'.repeat(20) },
+        asset: { kind: 'token', identifier: '34'.repeat(20) },
         stealthMetadata: { keyType: 1, ephemeralPubKey: publicKey },
         recipientSpendKey: { keyType: 1, publicKey },
         derivationScheme: 1,

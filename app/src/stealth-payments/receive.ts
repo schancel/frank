@@ -75,11 +75,11 @@ export async function recordRecipientAssetPayment(
     const asset: StealthPaymentAsset =
       transfer.asset.kind === 'native'
         ? { kind: 'native' }
-        : { kind: 'erc20', contractAddress: transfer.asset.identifier }
+        : { kind: 'erc20', contractAddress: `0x${transfer.asset.identifier}` }
     const claim: StealthPaymentReceiptClaim = {
       chainIdentifier: transfer.chainIdentifier,
       asset,
-      recipientAddress: transfer.destination,
+      recipientDestination: bytes(transfer.destination),
       ephemeralPublicKey: bytes(transfer.stealthMetadata.ephemeralPubKey),
       amountAtomic,
       rawTransactions: [transfer.rawTx],

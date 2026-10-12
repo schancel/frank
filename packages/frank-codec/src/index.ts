@@ -17,6 +17,16 @@ export * from './forum'
 export * from './blackjack'
 export * from './stealth'
 export * from './stealth-assets'
+export {
+  decodeExperimentalSolanaStealthContext,
+  encodeExperimentalSolanaStealthContext,
+  experimentalSolanaStealthTranscript,
+  projectExperimentalSolanaStealthTransfer,
+} from './experimental-solana-stealth'
+export type {
+  ExperimentalSolanaStealthContext,
+  ExperimentalSolanaStealthDescriptor,
+} from './experimental-solana-stealth'
 export * from './channel'
 export * from './forwarding'
 export * from './token-transfer'

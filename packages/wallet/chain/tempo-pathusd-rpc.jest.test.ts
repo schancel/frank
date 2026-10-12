@@ -75,7 +75,7 @@ describe('Tempo PathUSD JSON-RPC boundary', () => {
     expect(filter.toBlock).toBe('0x64')
     expect((filter.topics as unknown[])[2]).toBe(zeroPadValue(RECIPIENT, 32))
     expect(h.calls.slice(-3).map(call => call.method)).toEqual(['eth_chainId', 'eth_getBlockByNumber', 'eth_getLogs'])
-    await expect(h.rpc.receivedTransfers(RECIPIENT, 0n, 2_000n)).rejects.toThrow('exceeds')
+    await expect(h.rpc.receivedTransfers(RECIPIENT, 0n, 10_000n)).rejects.toThrow('exceeds')
     h.set('eth_getBlockByNumber', { hash: BLOCK })
     await expect(h.rpc.receivedTransfers(RECIPIENT, 0n, 1n)).rejects.toThrow('checkpoint mismatch')
   })

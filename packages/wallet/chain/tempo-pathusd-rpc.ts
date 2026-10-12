@@ -162,7 +162,7 @@ export class TempoPathUsdJsonRpc implements TempoPathUsdRpc {
     amountAtomic: bigint
   }[]> {
     if (fromBlock < 0n || toBlock < fromBlock) throw new RangeError('Invalid Tempo scan range')
-    if (toBlock - fromBlock >= 2_000n) throw new RangeError('Tempo scan range exceeds 2,000 blocks')
+    if (toBlock - fromBlock >= 10_000n) throw new RangeError('Tempo scan range exceeds 10,000 blocks')
     await this.verifyChain(this.chainIdentifier)
     const target = address(recipient)
     const transferTopic = new Interface(['event Transfer(address indexed from, address indexed to, uint256 amount)']).getEvent('Transfer')!.topicHash

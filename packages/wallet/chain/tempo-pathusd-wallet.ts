@@ -94,6 +94,17 @@ export class TempoPathUsdWallet {
     return this.receive.syncOnce(this.address, this.receiveStartBlock, async () => undefined)
   }
 
+  /** Scans a bounded number of finalized pages and exposes the remaining catch-up distance. */
+  async syncReceivedCatchUp(maxPages = 8): Promise<{
+    nextBlock: bigint
+    finalizedBlock: bigint
+    delivered: number
+    complete: boolean
+  }> {
+    await this.rpc.verifyChain(this.chainIdentifier)
+    return this.receive.syncCatchUp(this.address, this.receiveStartBlock, async () => undefined, maxPages)
+  }
+
   receivedItems(): TempoReceiveItem[] {
     return this.receive.receivedItems(this.address, this.receiveStartBlock)
   }

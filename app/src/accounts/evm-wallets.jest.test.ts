@@ -1,5 +1,5 @@
 import {
-  createEvmChain,
+  createNativeOnlyEvmChain,
   activeChain,
   getChainRegistryEntry,
   type EvmChainWalletHandle,
@@ -66,7 +66,7 @@ jest.mock('./session', () => ({
 }))
 jest.mock('@frank/wallet/chain', () => ({
   ...jest.requireActual('@frank/wallet/chain'),
-  createEvmChain: jest.fn(config => ({
+  createNativeOnlyEvmChain: jest.fn(config => ({
     chainIdentifier: config.chainIdentifier,
     family: 'evm',
     config,
@@ -120,7 +120,7 @@ it('opens once per configured canonical peer and keeps independent stores withou
   expect(mockPrimaryClose).not.toHaveBeenCalled()
   expect(mockCreate).toHaveBeenCalledTimes(1)
   const mainConfig = mockCreate.mock.calls[0][0].config
-  const testConfig = jest.mocked(createEvmChain).mock.calls[1]![0]
+  const testConfig = jest.mocked(createNativeOnlyEvmChain).mock.calls[1]![0]
   expect(mainConfig).toMatchObject({
     chainIdentifier: 'monad-mainnet',
     networkId: 'monad-mainnet',
@@ -136,7 +136,7 @@ it('opens once per configured canonical peer and keeps independent stores withou
     walletStorageLocation: 'configured-host-store-monad-testnet',
   })
   expect(peekOpenedEvmWallets()).toEqual([main, test])
-  expect(createEvmChain).toHaveBeenCalledTimes(2)
+  expect(createNativeOnlyEvmChain).toHaveBeenCalledTimes(2)
   await main.wallet.close()
   expect(peekOpenedEvmWallets()).toEqual([test])
 })

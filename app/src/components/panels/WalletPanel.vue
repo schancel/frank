@@ -66,6 +66,10 @@
                   aria-hidden="true"
                   :data-test="`${wallet.id}-balance-stale-indicator`"
                 />{{ nativeBalance(wallet.id) }}
+                <mailbox-status-indicator
+                  v-if="wallet.id === 'monad'"
+                  class="q-ml-xs"
+                />
               </q-item-label>
             </q-item-section>
           </q-item>
@@ -97,6 +101,7 @@ import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
 import { walletSupport } from '../../utils/wallet-support'
 import { WALLET_CONFIGS } from '../../utils/wallet-configs'
+import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
 
 const isTestnet = shallowRef(activeChain.isTestnet ?? false)
 onBeforeUnmount(

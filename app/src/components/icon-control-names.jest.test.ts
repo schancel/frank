@@ -107,7 +107,7 @@ jest.mock('./topic/TopicDrawer.vue', () => ({ template: '<div />' }))
 jest.mock('./dialogs/ClearHistoryDialog.vue', () => ({ template: '<div />' }))
 jest.mock('./dialogs/DeleteChatDialog.vue', () => ({ template: '<div />' }))
 jest.mock('./chat/ChatListItem.vue', () => ({ template: '<div />' }))
-jest.mock('./chat/MailboxStatusBanner.vue', () => ({
+jest.mock('./chat/MailboxStatusIndicator.vue', () => ({
   template: '<div />',
 }))
 jest.mock('src/utils/avatar', () => ({ profileAvatar: () => '' }))

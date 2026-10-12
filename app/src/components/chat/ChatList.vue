@@ -1,7 +1,5 @@
 <template>
   <div class="full-width column col">
-    <!-- Said here too: with no chat open, an inbox that cannot be read looks like an empty one. -->
-    <mailbox-status-banner />
     <q-scroll-area
       class="q-px-none col full-width"
       :content-style="{ width: '100%', minWidth: '100%' }"
@@ -61,7 +59,6 @@ import { defineComponent } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
-import MailboxStatusBanner from './MailboxStatusBanner.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 
 import { openChat, openPage } from '../../utils/routes'
@@ -125,7 +122,6 @@ export default defineComponent({
   },
   components: {
     ChatListItem,
-    MailboxStatusBanner,
   },
 })
 </script>

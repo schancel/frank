@@ -102,6 +102,7 @@ export class NativeGrants implements NativeGrantCapability {
 
   grant(request: NativeGrantRequest): Promise<NativeGrantResult> {
     const recipient = getAddress(request.to).toLowerCase();
+    request = { ...request, to: recipient };
     if (request.valueWei <= 0n || request.minReserveWei < 0n)
       return Promise.reject(new Error("Invalid faucet amount or reserve"));
     const running = this.active.get(recipient);

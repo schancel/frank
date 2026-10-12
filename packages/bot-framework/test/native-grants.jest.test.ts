@@ -269,6 +269,16 @@ describe("durable faucet grant / native wallet boundary", () => {
     expect(raws).toHaveLength(1);
   });
 
+  test("caller mutation cannot change an already authorized grant", async () => {
+    const mutable = { ...request };
+    const pending = grants.grant(mutable);
+    mutable.valueWei *= 2n;
+    mutable.to = other;
+    await pending;
+    expect(Transaction.from(raws[0]!).value).toBe(request.valueWei);
+    expect(Transaction.from(raws[0]!).to!.toLowerCase()).toBe(recipient);
+  });
+
   test("corrupt business state fails visibly, not as an empty grant", async () => {
     await state.put(`grant:${recipient}`, "pending");
     await expect(grants.grant(request)).rejects.toThrow("Invalid faucet grant");

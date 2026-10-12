@@ -160,7 +160,7 @@ export const WALLET_CONFIGS: WalletItemConfig[] = [
     chainKey: 'walletPanel.ethereum',
     testnetChainKey: 'walletPanel.ethereumTestnet',
     balanceZeroKey: 'walletPanel.zeroEth',
-    testnetBalanceZeroKey: 'walletPanel.zeroSep',
+    testnetBalanceZeroKey: 'walletPanel.zeroEth',
   },
   {
     id: 'hyperliquid',

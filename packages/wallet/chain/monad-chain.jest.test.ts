@@ -147,7 +147,7 @@ const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
 >;
 
 const TEST_CONFIG: EvmChainConfig = {
-  networkId: "monad-test",
+  networkId: "monad-testnet",
   chainId: 10143,
   nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   rpcChain: "monad-testnet",
@@ -235,6 +235,74 @@ describe("createEvmChain: basic chain properties", () => {
     const raw = 1_500_000_000_000_000_000n; // 1.5 MON
     const display = chain.toDisplayAmount(raw);
     expect(chain.fromDisplayAmount(display)).toBe(raw);
+  });
+
+  it.each([
+    ["ethereum-sepolia", 11155111, "SEPO"],
+    ["hyperliquid-testnet", 998, "HYPT"],
+  ])("keeps %s native amounts in their canonical base units", (chainIdentifier, chainId, networkTag) => {
+    const other = createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier,
+      rpcChain: chainIdentifier,
+      networkId: chainIdentifier,
+      chainId,
+      networkTag,
+    });
+    expect(other.toDisplayAmount(1_250_000_000_000_000_000n)).toBe("1.25");
+    expect(other.fromDisplayAmount("1.25")).toBe(1_250_000_000_000_000_000n);
+    expect(other.name).toBe(chainIdentifier === "ethereum-sepolia" ? "Sepolia" : "Hyperliquid Testnet");
+    expect(other.unit).toBe(chainIdentifier === "ethereum-sepolia" ? "ETH" : "tHYPE");
+  });
+
+  it("does not mistake Tempo's TIP-20 USD for an EVM native coin", () => {
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "tempo-testnet",
+      rpcChain: "tempo-testnet",
+      networkId: "tempo-testnet",
+      chainId: 42431,
+      networkTag: "TMPT",
+    })).toThrow("tempo-testnet has no native coin");
+  });
+
+  it("rejects a native wallet bound to a different canonical RPC or chain ID", () => {
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+    })).toThrow("EVM network mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+      rpcChain: "ethereum-sepolia",
+      networkId: "monad-testnet",
+      chainId: 11155111,
+      networkTag: "SEPO",
+    })).toThrow("EVM wallet network mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+      rpcChain: "ethereum-sepolia",
+      networkId: "ethereum-sepolia",
+      chainId: 10143,
+      networkTag: "SEPO",
+    })).toThrow("EVM chain ID mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "ethereum-sepolia",
+      rpcChain: "ethereum-sepolia",
+      networkId: "ethereum-sepolia",
+      chainId: 11155111,
+      networkTag: "MON",
+    })).toThrow("EVM network tag mismatch");
+    expect(() => createEvmChain({
+      ...TEST_CONFIG,
+      chainIdentifier: "unregistered-evm",
+      rpcChain: "unregistered-evm",
+      networkId: "unregistered-evm",
+    })).toThrow("Unsupported EVM network");
+    expect(() => createEvmChain({ ...TEST_CONFIG, unit: "USD" })).toThrow("EVM unit mismatch");
+    expect(() => createEvmChain({ ...TEST_CONFIG, name: "Ethereum" })).toThrow("EVM name mismatch");
   });
 
   it("formatAddress returns the canonical address string as-is", () => {
@@ -1163,7 +1231,7 @@ describe("canonical topic owner production composition", () => {
       );
       const other = createEvmChain({
         ...TEST_CONFIG,
-        chainId: 143n,
+        chainId: 10143n,
         stampBurnAddress: "0x" + "22".repeat(20),
         nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
       });

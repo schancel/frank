@@ -511,7 +511,6 @@ export default {
     zeroUsd: '0 USD',
     zeroTusd: '0 tUSD',
     zeroEth: '0 ETH',
-    zeroSep: '0 SEP',
     zeroHype: '0 HYPE',
     zeroThype: '0 tHYPE',
     zeroBtc: '0 BTC',

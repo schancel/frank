@@ -29,7 +29,7 @@ describe("a bot's amounts are written in its chain's unit", () => {
     ["monad-testnet", "0.01 MONT"],
     ["monad-mainnet", "0.01 MON"],
     ["monad-regtest", "0.01 MONR"],
-    ["ethereum-sepolia", "0.01 SEP"],
+    ["ethereum-sepolia", "0.01 ETH"],
   ])("%s writes 0.01 of its coin as %s", (chainIdentifier, text) => {
     const amounts = chainAmounts(chainOf(chainIdentifier));
     expect(amounts.formatAmount(10_000_000_000_000_000n)).toBe(text);

@@ -36,6 +36,7 @@ const clientKeys = new Set([
   "enabled",
   "name",
   "unit",
+  "nativeDecimals",
   "networkTag",
   "addressPrefix",
   "rpcUrl",
@@ -184,6 +185,15 @@ export function projectProtocolChains<T extends object>(
     const metadata = object(extension);
     if (Object.keys(metadata).some((key) => !clientKeys.has(key)))
       invalid(`unknown client extension field for ${id}`);
+    const nativeDecimals = metadata.nativeDecimals;
+    if (
+      nativeDecimals !== null &&
+      (typeof nativeDecimals !== "number" ||
+        !Number.isInteger(nativeDecimals) ||
+        nativeDecimals < 0 ||
+        nativeDecimals > 255)
+    )
+      invalid(`nativeDecimals must be null or a uint8 for ${id}`);
     const row = facts.get(id);
     if (!row) invalid(`unsupported client reference ${id}`);
     // A client wallet may read only through a capability the protocol permits for the chain.

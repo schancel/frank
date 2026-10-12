@@ -64,7 +64,7 @@ describe("createChain", () => {
       createChain({
         family: "evm",
         config: {
-          networkId: "monad-test",
+          networkId: "monad-testnet",
           chainId: 10143,
           rpcChain: "monad-testnet",
           relayBaseUrl: "http://127.0.0.1:8098",
@@ -85,7 +85,7 @@ describe("createChain", () => {
     });
   });
 
-  it("creates an EVM application chain with custom name, unit, and identifier", async () => {
+  it("rejects an EVM network missing from the canonical registry", async () => {
     await expect(
       createChain({
         family: "evm",
@@ -105,13 +105,7 @@ describe("createChain", () => {
           walletStorageLocation: false,
         },
       })
-    ).resolves.toMatchObject({
-      family: "evm",
-      chainIdentifier: "base-mainnet",
-      name: "Base",
-      unit: "ETH",
-      isTestnet: false,
-    });
+    ).rejects.toThrow("Unsupported EVM network: base-mainnet");
   });
 
   it("creates a Hyperliquid chain via createChain", async () => {
@@ -143,7 +137,7 @@ describe("createChain", () => {
     });
   });
 
-  it("creates a Tempo chain with default TIP-20 transaction builder", async () => {
+  it("rejects Tempo as a native-coin chain", async () => {
     await expect(
       createChain({
         family: "evm",
@@ -163,13 +157,7 @@ describe("createChain", () => {
           walletStorageLocation: false,
         },
       })
-    ).resolves.toMatchObject({
-      family: "evm",
-      chainIdentifier: "tempo-mainnet",
-      name: "Tempo",
-      unit: "USD",
-      isTestnet: false,
-    });
+    ).rejects.toThrow("tempo-mainnet has no native coin");
   });
 
   it("creates a Solana chain with the shared codecs and wallet API", async () => {

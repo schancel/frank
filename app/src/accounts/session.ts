@@ -1,7 +1,14 @@
+import {
+  validateEvmWalletConfiguration,
+  verifyEvmWalletRpcIdentity,
+} from './evm-wallet-verification'
 import { reactive, readonly } from 'vue'
 import { toHex } from '@frank/codec'
 import {
   activeChain,
+  createEvmChain,
+  type EvmChainConfig,
+  type EvmChainWalletHandle,
   EvmNativeJournalError,
   getChainRegistryEntry,
   resolveNetworkId,
@@ -148,6 +155,11 @@ export function createAccountSession(deps: {
   createWallet: (
     roots: MonadRootBundle | HistoricalBip39Seed,
   ) => Promise<RuntimeWallet>
+  /** Private family construction; material stays inside the custody composition boundary. */
+  createEvmWallet?: (
+    config: EvmChainConfig,
+    material: MonadRootBundle | HistoricalBip39Seed,
+  ) => Promise<EvmChainWalletHandle>
   /** Required application restoration finishes before consumers can acquire the wallet. */
   restoreApplicationState?: (options: {
     wallet: RuntimeWallet
@@ -218,10 +230,15 @@ export function createAccountSession(deps: {
     )
     return next
   }
+  const secondaryEvmWallets = new Set<EvmChainWalletHandle>()
   const revokeUtxoCustody = new Set<() => void>()
   const release = async () => {
     for (const revoke of revokeUtxoCustody) revoke()
     revokeUtxoCustody.clear()
+    const secondaryClosing = [...secondaryEvmWallets].map(secondary =>
+      secondary.close(),
+    )
+    secondaryEvmWallets.clear()
     // Refresh can discover a replacement without an explicit invalidation event.
     if (wallet) ++walletGeneration
     chainAddressCache.clear()
@@ -231,6 +248,7 @@ export function createAccountSession(deps: {
     const previous = wallet
     wallet = undefined
     if (previous) await previous.close()
+    await Promise.all(secondaryClosing)
   }
   const check = (token: number) => {
     if (closed || token !== generation) throw new CustodyError('closed')
@@ -446,6 +464,115 @@ export function createAccountSession(deps: {
       await session.initialize()
       if (state.status !== 'ready' || !wallet) throw new CustodyError('locked')
       return wallet
+    },
+    /** Opens a configured EVM owner privately, using the same published Frank identity. */
+    async createEvmWallet(input: {
+      readonly config: EvmChainConfig
+      readonly signal?: AbortSignal
+      readonly operatorCheckpoint?: {
+        readonly blockNumber: number
+        readonly blockHash: string
+      }
+    }): Promise<NativeWalletHandle & { close(): Promise<void> }> {
+      const signal = input.signal
+      const config = { ...input.config }
+      const checkpoint = input.operatorCheckpoint && {
+        ...input.operatorCheckpoint,
+      }
+      const entry = validateEvmWalletConfiguration(config, checkpoint)
+      const checkCurrent = captureDerivation()
+      const currentWallet = await session.getWallet()
+      const publishedIdentity = await session.getCurvePublicKey('secp256k1')
+      checkCurrent()
+      if (!custody) throw new CustodyError('locked')
+      const capability = await custody.openActive()
+      let roots: readonly DomainRoot[] = []
+      let seed: Uint8Array | undefined
+      let candidate: EvmChainWalletHandle | undefined
+      let retained = false
+      const requireCurrent = () => {
+        checkCurrent()
+        if (
+          signal?.aborted ||
+          state.status !== 'ready' ||
+          wallet !== currentWallet
+        )
+          throw new CustodyError('closed')
+      }
+      const revoke = () => {
+        if (candidate) void candidate.close().catch(() => undefined)
+      }
+      signal?.addEventListener('abort', revoke, { once: true })
+      try {
+        requireCurrent()
+        if (capability.account.receipt.context.accountId !== walletAccount)
+          throw new CustodyError('conflict')
+        let material: MonadRootBundle | HistoricalBip39Seed
+        if (
+          capability.account.receipt.context.recoveryFormat ===
+          BIP39_RECOVERY_FORMAT
+        ) {
+          seed = capability.takeBip39Seed()
+          material = { derivation: BIP39_DERIVATION, seed }
+        } else {
+          roots = capability.takeRoots()
+          const find = <P extends DomainRoot['purpose']>(
+            purpose: P,
+          ): DomainRoot<P> => {
+            const found = roots.find(
+              (root): root is DomainRoot<P> => root.purpose === purpose,
+            )
+            if (!found) throw new AccountPurposeUnavailableError(purpose)
+            return found
+          }
+          material = {
+            evm: find('evm-wallet'),
+            authentication: find('identity-authentication'),
+            messaging: find('messaging-encryption'),
+          }
+        }
+        candidate = await (deps.createEvmWallet
+          ? deps.createEvmWallet(config, material)
+          : (createEvmChain(config).createWallet(
+              material,
+            ) as Promise<EvmChainWalletHandle>))
+        const owned = candidate
+        const close = owned.close.bind(owned)
+        owned.close = async () => {
+          secondaryEvmWallets.delete(owned)
+          signal?.removeEventListener('abort', revoke)
+          await close()
+        }
+        secondaryEvmWallets.add(candidate)
+        requireCurrent()
+        if (
+          candidate.family !== 'evm' ||
+          candidate.chainIdentifier !== entry.id ||
+          candidate.identity.compressedPubKey.length !==
+            publishedIdentity.length ||
+          !candidate.identity.compressedPubKey.every(
+            (byte, i) => byte === publishedIdentity[i],
+          )
+        )
+          throw new CustodyError('conflict')
+        await verifyEvmWalletRpcIdentity(
+          config,
+          candidate.provider,
+          checkpoint,
+          requireCurrent,
+        )
+        retained = true
+        return candidate
+      } finally {
+        roots.forEach(root => root.bytes.fill(0))
+        seed?.fill(0)
+        capability.close()
+        if (!retained) signal?.removeEventListener('abort', revoke)
+        if (candidate && !retained) {
+          secondaryEvmWallets.delete(candidate)
+          await candidate.close()
+        }
+      }
     },
     /** Construct a family wallet inside custody; neither root nor identity secret escapes. */
     async createUtxoWallet(relay: RelayUtxoChain): Promise<NativeWalletHandle> {
@@ -926,6 +1053,10 @@ export function createAccountSession(deps: {
         })
       chainAddressInFlight.set(netId, promise)
       return promise
+    },
+    /** Existing ready owner only; never initializes custody or performs network work. */
+    peekWallet(): RuntimeWallet | undefined {
+      return state.status === 'ready' ? wallet : undefined
     },
     getCachedCurvePublicKey(curve: SupportedCurve): Uint8Array | undefined {
       if (curve === 'secp256k1') {

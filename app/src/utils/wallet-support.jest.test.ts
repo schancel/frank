@@ -34,8 +34,9 @@ it.each([
       expect(walletNetworkMetadata('monad-testnet', true)?.id).toBe(
         'monad-testnet',
       )
-      if (id !== 'monad-testnet')
-        expect(nativeSendChainIdentifier('monad-testnet', true)).toBeUndefined()
+      expect(nativeSendChainIdentifier('monad-testnet', true)).toBe(
+        'monad-testnet',
+      )
       if (id === 'monad-regtest') {
         expect(getWalletNetworkLabel(WALLET_CONFIGS[0], true, key => key)).toBe(
           'Monad Regtest',

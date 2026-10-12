@@ -28,6 +28,23 @@ it.each([
   },
 )
 
+it.each([
+  ['monad-mainnet', true, 'monad-testnet', 'monad-mainnet'],
+  ['monad-testnet', false, 'monad-mainnet', 'monad-testnet'],
+  ['monad-regtest', true, 'monad-testnet', 'monad-regtest'],
+  ['monad', true, 'monad-regtest', 'monad-regtest'],
+  ['monad', false, 'monad-testnet', 'monad-testnet'],
+  ['ethereum-sepolia', true, 'monad-testnet', undefined],
+  ['unknown', true, 'monad-mainnet', undefined],
+])(
+  'resolves %s against explicit configured network %s',
+  (row, testnet, configured, expected) => {
+    expect(
+      nativeSendChainIdentifier(row, testnet as boolean, configured as string),
+    ).toBe(expected)
+  },
+)
+
 describe('parseNativeTransferInput', () => {
   it('returns a canonical Monad recipient and wei value', () => {
     expect(

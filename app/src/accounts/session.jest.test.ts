@@ -27,6 +27,7 @@ jest.mock('ecash-lib/dist/ffi/ecash_lib_wasm_bg_browser.js', () => {
 import * as ecashSeedBoundary from '@frank/wallet/ecash-seed-boundary'
 import type { EcashStealthCustody } from '@frank/wallet/ecash-stealth'
 import { secp256k1 } from '@noble/curves/secp256k1'
+import { Transaction, keccak256 } from 'ethers'
 import { lockingScript, parseTransaction } from '@frank/nakamoto'
 import { BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
 import { createUtxoChain } from '@frank/wallet/chain/utxo-chain'
@@ -44,7 +45,14 @@ import {
   type UtxoStealthCustody,
   type UtxoStealthDerivation,
 } from '@frank/wallet/utxo-stealth'
-import { activeChain, EvmNativeJournalError } from '@frank/wallet/chain'
+import {
+  activeChain,
+  createEvmChain,
+  getChainRegistryEntry,
+  EvmNativeJournalError,
+  type EvmChainConfig,
+  type EvmChainWalletHandle,
+} from '@frank/wallet/chain'
 import {
   AccountBackupUnavailableError,
   accountSession,
@@ -63,6 +71,7 @@ import {
 } from './custody'
 import {
   DOMAIN_PURPOSES,
+  BIP39_DERIVATION,
   DERIVATION_REGISTRY_ID,
   type DomainRoot,
 } from '@frank/domain-roots'
@@ -90,7 +99,11 @@ const deferred = <T>() => {
   })
   return { promise, resolve, reject }
 }
-function fixture() {
+function fixture(
+  createEvmWallet?: Parameters<
+    typeof createAccountSession
+  >[0]['createEvmWallet'],
+) {
   const account = {
     displayName: 'Fixture',
     descriptor: 'public',
@@ -145,6 +158,7 @@ function fixture() {
     },
     open: async () => custody,
     createWallet,
+    createEvmWallet,
   })
   return {
     session,
@@ -1887,4 +1901,292 @@ describe('session-owned UTXO stealth custody', () => {
       }
     },
   )
+})
+
+function peerEvmConfig(network = 'monad-mainnet'): EvmChainConfig {
+  const entry = getChainRegistryEntry(network)!
+  return {
+    chainIdentifier: network,
+    networkId: network,
+    rpcChain: network,
+    chainId: BigInt(entry.nativeChainId!),
+    networkTag: entry.networkTag!,
+    relayBaseUrl: 'https://relay.invalid',
+    stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+    defaultTopicVoteValueWei: 1n,
+    subAccountPoolSize: 0,
+    walletStorageLocation: false,
+    nativeInclusionWaitMs: 0,
+  }
+}
+function peerCheckpoint(network = 'monad-mainnet') {
+  const probe = getChainRegistryEntry(network)!.identityProbes.find(
+    probe => probe.kind === 'block-hash',
+  )!
+  if (probe.kind !== 'block-hash') throw new Error('missing checkpoint')
+  return { number: probe.height, hash: probe.expected }
+}
+test('privately opens real EVM owners with the same Frank identity and separate canonical journals without replacing the primary', async () => {
+  const borrowed: DomainRoot[] = []
+  const secondary: EvmChainWalletHandle[] = []
+  const factory = jest.fn(
+    async (
+      config: EvmChainConfig,
+      material:
+        | import('@frank/wallet/chain/active-chain').MonadRootBundle
+        | import('@frank/wallet/monad-wallet-material').HistoricalBip39Seed,
+    ) => {
+      const candidate = (await createEvmChain(config).createWallet(
+        material,
+      )) as EvmChainWalletHandle
+      jest
+        .spyOn(candidate.provider, 'getNetwork')
+        .mockResolvedValue({ chainId: BigInt(config.chainId) } as never)
+      jest
+        .spyOn(candidate.provider, 'getBlock')
+        .mockResolvedValue(peerCheckpoint(config.networkId) as never)
+      jest.spyOn(candidate.provider, 'getBalance').mockResolvedValue(1000000n)
+      jest.spyOn(candidate.provider, 'getTransactionCount').mockResolvedValue(0)
+      jest.spyOn(candidate.provider, 'getFeeData').mockResolvedValue({
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+        gasPrice: 1n,
+      } as never)
+      jest.spyOn(candidate.provider, 'estimateGas').mockResolvedValue(21000n)
+      jest
+        .spyOn(candidate.provider, 'getTransactionReceipt')
+        .mockResolvedValue(null)
+      jest.spyOn(candidate.provider, 'getTransaction').mockResolvedValue(null)
+      jest
+        .spyOn(candidate.provider, 'broadcastTransaction')
+        .mockImplementation(async raw => ({ hash: keccak256(raw) } as never))
+      secondary.push(candidate)
+      return candidate
+    },
+  )
+  const f = fixture(factory)
+  const roots = (): DomainRoot[] =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    }))
+  const identity = MonadIdentity.fromDomainRoot(
+    roots().find(
+      (root): root is DomainRoot<'identity-authentication'> =>
+        root.purpose === 'identity-authentication',
+    )!,
+  )
+  Object.assign(f.wallet.identity, {
+    compressedPubKey: identity.compressedPubKey,
+  })
+  await f.session.initialize()
+  f.capability.takeRoots.mockImplementation(() => {
+    const current = roots().map(root => ({
+      ...root,
+      bytes: new Uint8Array(root.bytes),
+    }))
+    borrowed.push(...current)
+    return current
+  })
+  try {
+    const main = await f.session.createEvmWallet({ config: peerEvmConfig() })
+    const test = await f.session.createEvmWallet({
+      config: peerEvmConfig('monad-testnet'),
+    })
+    expect(main.chainIdentifier).toBe('monad-mainnet')
+    expect(test.chainIdentifier).toBe('monad-testnet')
+    expect(main).not.toBe(test)
+    expect(secondary[0]!.identity.compressedPubKey).toEqual(
+      identity.compressedPubKey,
+    )
+    expect(secondary[1]!.identity.compressedPubKey).toEqual(
+      identity.compressedPubKey,
+    )
+    expect(secondary[0]!.pool).not.toBe(secondary[1]!.pool)
+    expect(secondary[0]!.getNativeOperations!()).toEqual([])
+    expect(secondary[1]!.getNativeOperations!()).toEqual([])
+    const call = {
+      to: { raw: '0x0000000000000000000000000000000000000001' },
+      data: '0x1234',
+      value: 0n,
+    }
+    await secondary[0]!.sendContractCall!(call)
+    await secondary[1]!.sendContractCall!(call)
+    const operations = secondary.map(owner => owner.getNativeOperations!()[0]!)
+    expect(
+      operations.map(operation => operation.binding.chainIdentifier),
+    ).toEqual(['monad-mainnet', 'monad-testnet'])
+    const transactions = operations.map(operation =>
+      Transaction.from(operation.members[0]!.signed!.rawTransaction),
+    )
+    expect(transactions.map(transaction => transaction.chainId)).toEqual([
+      143n,
+      10143n,
+    ])
+    expect(transactions[0]!.from).toBe(transactions[1]!.from)
+    expect(transactions.map(transaction => transaction.nonce)).toEqual([0, 0])
+    expect(transactions[0]!.hash).not.toBe(transactions[1]!.hash)
+    expect(await f.session.getWallet()).toBe(f.wallet)
+    expect(borrowed.every(root => root.bytes.every(byte => byte === 0))).toBe(
+      true,
+    )
+    await f.session.close()
+    await expect(secondary[0]!.sendContractCall!(call)).rejects.toThrow(
+      /closed/i,
+    )
+    await expect(secondary[1]!.sendContractCall!(call)).rejects.toThrow(
+      /closed/i,
+    )
+  } finally {
+    await f.session.close()
+    await Promise.all(secondary.map(wallet => wallet.close()))
+  }
+})
+test.each(['chain-id', 'checkpoint', 'identity'])(
+  'rejects a peer EVM %s mismatch and closes the candidate',
+  async mismatch => {
+    const close = jest.fn(async () => undefined)
+    const f = fixture(
+      async () =>
+        ({
+          family: 'evm',
+          chainIdentifier: 'monad-mainnet',
+          identity: {
+            compressedPubKey:
+              mismatch === 'identity'
+                ? new Uint8Array(33).fill(3)
+                : f.session.getCachedCurvePublicKey('secp256k1')!,
+          },
+          provider: {
+            getNetwork: async () => ({
+              chainId: mismatch === 'chain-id' ? 10143n : 143n,
+            }),
+            getBlock: async () =>
+              mismatch === 'checkpoint'
+                ? { ...peerCheckpoint(), hash: '0x' + 'ff'.repeat(32) }
+                : peerCheckpoint(),
+          },
+          close,
+        } as unknown as EvmChainWalletHandle),
+    )
+    await f.session.initialize()
+    await expect(
+      f.session.createEvmWallet({ config: peerEvmConfig() }),
+    ).rejects.toThrow()
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(await f.session.getWallet()).toBe(f.wallet)
+    await f.session.close()
+  },
+)
+test.each(['signal', 'session-release'])(
+  'revokes a peer EVM owner through %s while checkpoint RPC is pending and rejects the late result',
+  async lifetime => {
+    const checkpoint = deferred<ReturnType<typeof peerCheckpoint>>()
+    const entered = deferred<void>()
+    const close = jest.fn(async () => undefined)
+    const f = fixture(
+      async () =>
+        ({
+          family: 'evm',
+          chainIdentifier: 'monad-mainnet',
+          identity: f.wallet.identity,
+          provider: {
+            getNetwork: async () => ({ chainId: 143n }),
+            getBlock: async () => {
+              entered.resolve()
+              return checkpoint.promise
+            },
+          },
+          close,
+        } as unknown as EvmChainWalletHandle),
+    )
+    await f.session.initialize()
+    const cancellation = new AbortController()
+    const opening = f.session.createEvmWallet({
+      config: peerEvmConfig(),
+      signal: cancellation.signal,
+    })
+    const rejected = expect(opening).rejects.toThrow(/closed/)
+    await entered.promise
+    if (lifetime === 'signal') cancellation.abort()
+    else await f.session.close()
+    expect(close).toHaveBeenCalledTimes(1)
+    checkpoint.resolve(peerCheckpoint())
+    await rejected
+    if (lifetime === 'signal')
+      expect(await f.session.getWallet()).toBe(f.wallet)
+    await f.session.close()
+    await expect(
+      f.session.createEvmWallet({ config: peerEvmConfig('monad-regtest') }),
+    ).rejects.toThrow(/checkpoint/)
+  },
+)
+
+test('uses the historical EVM seed derivation unchanged and wipes its borrowed copy', async () => {
+  const copies: Uint8Array[] = []
+  const factory = jest.fn(
+    async (
+      config: EvmChainConfig,
+      material:
+        | import('@frank/wallet/chain/active-chain').MonadRootBundle
+        | import('@frank/wallet/monad-wallet-material').HistoricalBip39Seed,
+    ) => {
+      expect(material).toMatchObject({ derivation: BIP39_DERIVATION })
+      if (!('seed' in material)) throw new Error('expected historical seed')
+      expect(material.seed).toEqual(new Uint8Array(64).fill(37))
+      return {
+        family: 'evm',
+        chainIdentifier: config.chainIdentifier,
+        identity: f.wallet.identity,
+        provider: {
+          getNetwork: async () => ({ chainId: 143n }),
+          getBlock: async () => peerCheckpoint(),
+        },
+        close: jest.fn(async () => undefined),
+      } as unknown as EvmChainWalletHandle
+    },
+  )
+  const f = fixture(factory)
+  Object.assign(f.account.receipt.context, {
+    recoveryFormat: BIP39_RECOVERY_FORMAT,
+  })
+  Object.assign(f.capability, {
+    takeBip39Seed: () => {
+      const copy = new Uint8Array(64).fill(37)
+      copies.push(copy)
+      return copy
+    },
+  })
+  await f.session.initialize()
+  await f.session.createEvmWallet({ config: peerEvmConfig() })
+  expect(factory).toHaveBeenCalledTimes(1)
+  expect(copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+  expect(f.capability.takeRoots).not.toHaveBeenCalled()
+  await f.session.close()
+})
+test('checks the explicit operator anchor for a configured regtest EVM wallet', async () => {
+  const anchor = { blockNumber: 37, blockHash: '0x' + 'ab'.repeat(32) }
+  const getBlock = jest.fn(async () => ({
+    number: anchor.blockNumber,
+    hash: anchor.blockHash,
+  }))
+  const f = fixture(
+    async () =>
+      ({
+        family: 'evm',
+        chainIdentifier: 'monad-regtest',
+        identity: f.wallet.identity,
+        provider: { getNetwork: async () => ({ chainId: 20143n }), getBlock },
+        close: jest.fn(async () => undefined),
+      } as unknown as EvmChainWalletHandle),
+  )
+  await f.session.initialize()
+  const owner = await f.session.createEvmWallet({
+    config: peerEvmConfig('monad-regtest'),
+    operatorCheckpoint: anchor,
+  })
+  expect(owner.chainIdentifier).toBe('monad-regtest')
+  expect(getBlock).toHaveBeenCalledWith(37)
+  await f.session.close()
 })

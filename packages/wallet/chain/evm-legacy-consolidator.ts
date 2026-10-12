@@ -796,7 +796,9 @@ export class EvmLegacyConsolidator {
    * itself keeps every other spender off them. */
   private async reserve(
     lifetime: WalletOperationLifetime | undefined,
-    plan: Parameters<ReturnType<EvmLegacyConsolidator['journal']>['prepare']>[0],
+    plan: Parameters<
+      ReturnType<EvmLegacyConsolidator['journal']>['prepare']
+    >[0],
   ): Promise<EvmNativeOperation> {
     const release = this.config.claimSources?.(
       plan.members.map(member => member.source),
@@ -1146,6 +1148,7 @@ export class EvmLegacyConsolidator {
       const row = this.config.journal.get(operationId)
       if (
         row.kind === 'contract' &&
+        row.submissionPolicy !== 'explicit' &&
         !row.cancelled &&
         row.members.some(m => m.signed) &&
         !row.members.some(m => m.exposed)
@@ -1158,8 +1161,9 @@ export class EvmLegacyConsolidator {
   /**
    * Wallet open: cancels every operation no member of which was ever signed or exposed (a crash
    * or failure between `prepare` and the first signature), and ends every contract call that was
-   * signed but never exposed (a crash between the signature and the broadcast: its record may
-   * not have been kept, so it must not be sent later). Local only: it reads and writes the
+   * signed but never exposed, except an explicitly prepared call. An ordinary call interrupted
+   * between its signature and broadcast may not have kept its record, so it must not be sent
+   * later. Local only: it reads and writes the
    * journal, makes no network request, asks for no signature, and never throws.
    */
   cancelUnsignedOperations(lifetime?: WalletOperationLifetime): Promise<void> {
@@ -1697,7 +1701,10 @@ export class EvmLegacyConsolidator {
       for (const row of journal.list())
         if (!row.cancelled)
           for (let i = 0; i < row.members.length; i++)
-            if (row.members[i]!.signed && wanted.has(row.members[i]!.source.address))
+            if (
+              row.members[i]!.signed &&
+              wanted.has(row.members[i]!.source.address)
+            )
               await this.observe(row.operationId, i, lifetime)
       for (const source of sources) {
         const account = await this.account(source.address)
@@ -1716,7 +1723,9 @@ export class EvmLegacyConsolidator {
           continue
         }
         const cost = nativeMaximumFee(
-          Transaction.from(await this.transaction(available, recipient, 0n, fees)),
+          Transaction.from(
+            await this.transaction(available, recipient, 0n, fees),
+          ),
         )
         // A move that costs more than it moves.
         if (balance - cost <= cost) {
@@ -1728,22 +1737,22 @@ export class EvmLegacyConsolidator {
         let row: EvmNativeOperation
         try {
           row = await this.reserve(lifetime, {
-          kind: 'native',
-          recipient,
-          intendedValueWei: (balance - cost).toString(),
-          members: [
-            {
-              source,
-              unsignedTransaction: await this.transaction(
-                available,
-                recipient,
-                balance - cost,
-                fees,
-              ),
-              dependencies: [],
-            },
-          ],
-        })
+            kind: 'native',
+            recipient,
+            intendedValueWei: (balance - cost).toString(),
+            members: [
+              {
+                source,
+                unsignedTransaction: await this.transaction(
+                  available,
+                  recipient,
+                  balance - cost,
+                  fees,
+                ),
+                dependencies: [],
+              },
+            ],
+          })
         } catch (reason) {
           // Claimed by another operation at this very moment: held, like a journal hold.
           if (!(reason instanceof RangeError)) throw reason
@@ -1934,6 +1943,7 @@ export class EvmLegacyConsolidator {
   private async planContractCall(
     params: ContractCallParams,
     lifetime?: WalletOperationLifetime,
+    submissionPolicy?: 'explicit',
   ): Promise<EvmNativeOperation> {
     const to = getAddress(params.to.raw).toLowerCase()
     if (params.value < 0n)
@@ -1972,6 +1982,7 @@ export class EvmLegacyConsolidator {
       throw new RangeError('Insufficient unreserved native funds')
     return this.journal(lifetime).prepare({
       kind: 'contract',
+      ...(submissionPolicy === undefined ? {} : { submissionPolicy }),
       recipient: to,
       intendedValueWei: params.value.toString(),
       ...(params.record ? { record: params.record } : {}),
@@ -1992,6 +2003,24 @@ export class EvmLegacyConsolidator {
           dependencies: [],
         },
       ],
+    })
+  }
+  /**
+   * Plans and signs a main-account contract call without broadcasting or marking its bytes
+   * exposed. The journal holds its source and exact signed bytes just as `signNative` does.
+   * The caller owns durable recording of any external hand-off before it begins;
+   * `resumeOperation` submits these same bytes and `releaseUnexposed` is only for a call
+   * whose bytes were handed to nobody. Preparation does not invoke a broadcast callback.
+   */
+  signContractCall(
+    params: Omit<ContractCallParams, 'onSigned'>,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<EvmNativeOperation> {
+    params = { ...params, to: { ...params.to } }
+    return this.runWithLocalPass(lifetime, async planned => {
+      const row = await this.planContractCall(params, lifetime, 'explicit')
+      planned(row.operationId)
+      return this.sign(row, lifetime)
     })
   }
   /**

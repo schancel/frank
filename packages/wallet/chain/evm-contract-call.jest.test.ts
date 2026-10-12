@@ -171,6 +171,113 @@ describe('contract calls through the native operation journal', () => {
   }
   const call = { to: { raw: router }, data: calldata, value: 1_000n }
 
+  it('prepares a durable unexposed call and holds its nonce without broadcasting', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor, sign } = owner(state)
+    const prepared = await executor.signContractCall({
+      ...call,
+      value: 0n,
+      gasLimit: 250_000n,
+    })
+    expect(prepared).toEqual(journal.get(prepared.operationId))
+    expect(prepared).toMatchObject({
+      kind: 'contract',
+      intendedValueWei: '0',
+      submissionPolicy: 'explicit',
+    })
+    const member = prepared.members[0]!
+    expect(member.exposed).toBe(false)
+    expect(Transaction.from(member.signed!.rawTransaction)).toMatchObject({
+      to: expect.stringMatching(new RegExp(router, 'i')),
+      data: calldata,
+      value: 0n,
+      gasLimit: 250_000n,
+      maxFeePerGas: 2n,
+      nonce: 0,
+    })
+    expect(sign).toHaveBeenCalledTimes(1)
+    expect(state.raws).toEqual([])
+    expect((await executor.contractCallFunds()).mainBusy).toBe(true)
+    await expect(executor.sendContractCall(call)).rejects.toThrow(
+      /Insufficient unreserved native funds/,
+    )
+    expect(state.raws).toEqual([])
+  })
+
+  it('reopens a prepared call without broadcasting and explicitly resumes its identical bytes', async () => {
+    const state = node({ main: 10_000_000n })
+    const first = owner(state)
+    const prepared = await first.executor.signContractCall(call)
+    const raw = prepared.members[0]!.signed!.rawTransaction
+    await journal.Close()
+    await open()
+
+    const second = owner(state)
+    await second.executor.cancelUnsignedOperations()
+    await second.executor.reobservePending()
+    await second.executor.resendMissingContractCalls()
+    expect(journal.get(prepared.operationId).cancelled).toBe(false)
+    expect(
+      journal.get(prepared.operationId).members[0]!.signed!.rawTransaction,
+    ).toBe(raw)
+    expect((await second.executor.contractCallFunds()).mainBusy).toBe(true)
+    expect(state.raws).toEqual([])
+    await second.executor.resumeOperation(prepared.operationId)
+    expect(state.raws).toEqual([raw])
+    expect(second.sign).not.toHaveBeenCalled()
+    await second.executor.observe(prepared.operationId, 0)
+    expect(
+      journal.get(prepared.operationId).members[0]!.observation.state,
+    ).toBe('included-success')
+  })
+
+  it('releases only an unexposed prepared call and permits a new claim of its nonce', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor } = owner(state)
+    const prepared = await executor.signContractCall(call)
+    await executor.releaseUnexposed(prepared.operationId)
+    expect(journal.get(prepared.operationId).cancelled).toBe(true)
+    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(state.raws).toEqual([])
+    await expect(
+      executor.resumeOperation(prepared.operationId),
+    ).rejects.toThrow(/cancelled/)
+
+    const replacement = await executor.signContractCall(call)
+    expect(
+      Transaction.from(replacement.members[0]!.signed!.rawTransaction).nonce,
+    ).toBe(0)
+    state.setMode('lost')
+    await expect(
+      executor.resumeOperation(replacement.operationId),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    await expect(
+      executor.releaseUnexposed(replacement.operationId),
+    ).rejects.toBeInstanceOf(EvmNativeJournalError)
+    expect((await executor.contractCallFunds()).mainBusy).toBe(true)
+  })
+
+  it('refuses invalid preparation before signing and releases an unsigned failed plan', async () => {
+    const state = node({ main: 400_000n })
+    const { executor, sign } = owner(state)
+    await expect(
+      executor.signContractCall({ ...call, data: '0x' }),
+    ).rejects.toThrow(/calldata/)
+    await expect(
+      executor.signContractCall({ ...call, gasLimit: 250_000n }),
+    ).rejects.toThrow(RangeError)
+    expect(journal.list()).toEqual([])
+    expect(sign).not.toHaveBeenCalled()
+    state.balances.set(main.address.toLowerCase(), 10_000_000n)
+    sign.mockRejectedValueOnce(new Error('signing interrupted'))
+    await expect(executor.signContractCall(call)).rejects.toThrow(
+      'signing interrupted',
+    )
+    expect(journal.list()[0]!.cancelled).toBe(true)
+    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(state.raws).toEqual([])
+  })
+
   it('journals the call before signing and the signed bytes before broadcast', async () => {
     const state = node({ main: 10_000_000n })
     const { executor } = owner(state)

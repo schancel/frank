@@ -139,6 +139,9 @@ export interface EvmNativeOperation {
   operationId: string
   binding: EvmNativeBinding
   kind: EvmNativeOperationKind
+  /** An intentionally prepared contract call: preserve signed bytes at wallet open until its
+   * owner explicitly submits or releases it. Ordinary calls retain their existing cleanup. */
+  submissionPolicy?: 'explicit'
   recipient: string
   intendedValueWei: string
   maximumFeeWei: string
@@ -155,6 +158,7 @@ export interface EvmNativeOperation {
 }
 export interface EvmNativePlan {
   kind: EvmNativeOperationKind
+  submissionPolicy?: 'explicit'
   recipient: string
   intendedValueWei: string
   members: EvmNativeMemberPlan[]
@@ -391,6 +395,8 @@ function validateRow(
   binding: EvmNativeBinding,
 ): EvmNativeOperation {
   const hasRecord = !!value && typeof value === 'object' && 'record' in value
+  const hasSubmissionPolicy =
+    !!value && typeof value === 'object' && 'submissionPolicy' in value
   const row = object(value, [
     'version',
     'operationId',
@@ -403,8 +409,14 @@ function validateRow(
     'cancelled',
     'reservedBytes',
     ...(hasRecord ? ['record'] : []),
+    ...(hasSubmissionPolicy ? ['submissionPolicy'] : []),
   ])
   if (hasRecord) checked('record', () => validateRecord(row.record, row.kind))
+  if (
+    hasSubmissionPolicy &&
+    (row.kind !== 'contract' || row.submissionPolicy !== 'explicit')
+  )
+    fail()
   if (
     row.version !== 1 ||
     typeof row.operationId !== 'string' ||
@@ -750,6 +762,9 @@ export class EvmNativeOperationJournal {
           .padStart(16, '0')}`,
         binding: this.binding,
         kind: frozen.kind,
+        ...(frozen.submissionPolicy === undefined
+          ? {}
+          : { submissionPolicy: frozen.submissionPolicy }),
         recipient: frozen.recipient,
         intendedValueWei: frozen.intendedValueWei,
         maximumFeeWei: frozen.members

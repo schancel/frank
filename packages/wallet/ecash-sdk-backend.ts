@@ -3,21 +3,19 @@
  * selector and signer; Chronik owns unspent facts. Imported scripts are explicitly refreshed into
  * that inventory because SDK HD discovery scans only HD indices. No ChainUtxoPool is consulted.
  *
- * This is a construction view, NOT durable payment preparation. Its caller must eventually own
- * durable imported-key derivation references, exact input claims and HD change allocation, reload
- * them under a short cross-instance lock, and persist intent/message/signed bytes before exposure.
+ * This construction view is used by EcashWallet's durable operation owner, which reloads input
+ * claims and the HD change floor under a short cross-instance lock and persists intent/signed
+ * bytes before exposure. The host owns complete external-payload persistence and its barrier.
+ * Imported-key derivation references remain custody's responsibility before recipient enablement.
  * Import must run inside custody from a recipient-derived key, not expose a private-key getter or
  * require messaging/UI to pass keys. No production capability is enabled by this predecessor.
- * Reopening currently requires custody to re-import keys; no key/operation persistence is added.
+ * Reopening requires custody to re-import keys; this backend never persists private keys.
  */
 import type { ChronikClient, ScriptUtxo } from "chronik-client";
-import { Address, Ecc, Script, shaRmd160 } from "ecash-lib";
-import type { Tx } from "ecash-lib";
-import type {
-  EcashAddressPrefix,
-  EcashBuiltAction,
-  EcashWalletBackend,
-} from "./ecash-wallet";
+import { Address, Ecc, Script, shaRmd160, Tx, sha256d } from "ecash-lib";
+import type { EcashNativeOperation } from "./ecash-operation-store";
+import type { ChainTransaction } from "./chain/chain-wallet";
+import type { EcashAddressPrefix, EcashWalletBackend } from "./ecash-wallet";
 
 interface Keypair {
   sk: Uint8Array;
@@ -33,6 +31,7 @@ export interface EcashSdkWallet extends EcashWalletBackend {
   utxos: Array<ScriptUtxo & { address: string }>;
   keypairs: Map<string, Keypair>;
   clone(): EcashSdkWallet;
+  spendableSatsOnlyUtxos(): Array<ScriptUtxo & { address: string }>;
   updateBalance(): void;
   action(action: {
     outputs: ReadonlyArray<{ address: string; sats: bigint }>;
@@ -40,7 +39,7 @@ export interface EcashSdkWallet extends EcashWalletBackend {
     build(
       sighash?: undefined,
       options?: { skipAutoConsolidateOnMaxTxSize: boolean }
-    ): EcashBuiltAction & {
+    ): {
       builtTxs: ReadonlyArray<{ txid: string; tx: Tx; fee(): bigint }>;
     };
     inspect(): { fee(): bigint };
@@ -99,10 +98,93 @@ export class EcashSdkBackend implements EcashWalletBackend {
     return this.sdk.getReceiveAddress(index);
   }
 
-  action(action: Parameters<EcashWalletBackend["action"]>[0]) {
-    // Existing native sends retain the established SDK lifecycle. Durable preparation must
-    // switch ALL spend entry points to shared claims in a separately reviewed successor.
-    return this.sdk.action(action);
+  restoreChangeIndex(floor: number): void {
+    if (!Number.isSafeInteger(floor) || floor < 0 || floor >= 0x80000000)
+      throw new Error("Invalid eCash change allocation");
+    this.sdk.changeIndex = Math.max(this.sdk.changeIndex, floor);
+  }
+
+  getAvailableBalance(
+    excludedInputs: ReadonlyArray<EcashInputReference>
+  ): bigint {
+    const excluded = new Set(excludedInputs.map(outpointKey));
+    return this.sdk.spendableSatsOnlyUtxos().reduce(
+      (sum, coin) =>
+        excluded.has(
+          outpointKey({
+            txid: coin.outpoint.txid,
+            vout: coin.outpoint.outIdx,
+          })
+        )
+          ? sum
+          : sum + coin.sats,
+      0n
+    );
+  }
+
+  inputReferencesFromTransactions(
+    rawTransactions: ReadonlyArray<string>
+  ): EcashInputReference[] {
+    return rawTransactions.flatMap((raw) =>
+      Tx.fromHex(raw).inputs.map(({ prevOut }) => ({
+        txid:
+          typeof prevOut.txid === "string"
+            ? prevOut.txid
+            : Buffer.from(prevOut.txid).reverse().toString("hex"),
+        vout: prevOut.outIdx,
+      }))
+    );
+  }
+
+  validateNativeOperation(operation: EcashNativeOperation): void {
+    const tx = Tx.fromHex(operation.transactions[0].rawTransaction);
+    const txid = Buffer.from(sha256d(tx.ser())).reverse().toString("hex");
+    const inputs = this.inputReferencesFromTransactions([
+      operation.transactions[0].rawTransaction,
+    ]);
+    const recipient = Address.fromCashAddress(operation.intent.recipient);
+    const fee =
+      operation.inputs.reduce(
+        (sum, input) => sum + BigInt(input.satoshis),
+        0n
+      ) - tx.outputs.reduce((sum, output) => sum + output.sats, 0n);
+    if (
+      txid !== operation.transactions[0].txid ||
+      recipient.prefix !== this.prefix ||
+      inputs.length !== operation.inputs.length ||
+      inputs.some(
+        (input, i) => outpointKey(input) !== outpointKey(operation.inputs[i])
+      ) ||
+      new Set(inputs.map(outpointKey)).size !== inputs.length ||
+      tx.outputs[0]?.sats !== BigInt(operation.intent.value) ||
+      tx.outputs[0]?.script.toHex() !== recipient.toScript().toHex() ||
+      fee < 0n ||
+      fee !== BigInt(operation.fee) ||
+      (operation.intent.maxFee !== undefined &&
+        fee > BigInt(operation.intent.maxFee))
+    )
+      throw new Error(
+        "Persisted eCash operation does not match its signed transaction"
+      );
+  }
+
+  validateLegacyTransaction(transaction: ChainTransaction): void {
+    const hashes = transaction.rawTransactions?.map((raw) =>
+      Buffer.from(sha256d(Tx.fromHex(raw).ser()))
+        .reverse()
+        .toString("hex")
+    );
+    if (
+      hashes === undefined ||
+      hashes.length === 0 ||
+      hashes[hashes.length - 1] !== transaction.txHash ||
+      (transaction.relatedTxHashes !== undefined &&
+        (transaction.relatedTxHashes.length !== hashes.length ||
+          transaction.relatedTxHashes.some((hash, i) => hash !== hashes[i])))
+    )
+      throw new Error(
+        "Existing eCash obligation bytes do not match recorded transaction ids"
+      );
   }
 
   async sync(): Promise<void> {
@@ -181,6 +263,7 @@ export class EcashSdkBackend implements EcashWalletBackend {
     recipient: string;
     value: bigint;
     excludedInputs: ReadonlyArray<EcashInputReference>;
+    changeIndexFloor?: number;
   }): EcashNativeConstruction {
     const recipient = Address.fromCashAddress(params.recipient);
     if (recipient.prefix !== this.prefix)
@@ -188,6 +271,15 @@ export class EcashSdkBackend implements EcashWalletBackend {
     if (params.value <= 0n) throw new Error("eCash value must be positive");
     const excluded = new Set(params.excludedInputs.map(outpointKey));
     const view = this.sdk.clone();
+    if (params.changeIndexFloor !== undefined) {
+      if (
+        !Number.isSafeInteger(params.changeIndexFloor) ||
+        params.changeIndexFloor < 0 ||
+        params.changeIndexFloor >= 0x80000000
+      )
+        throw new Error("Invalid eCash change allocation");
+      view.changeIndex = Math.max(view.changeIndex, params.changeIndexFloor);
+    }
     view.utxos = view.utxos.filter(
       (coin) =>
         !excluded.has(

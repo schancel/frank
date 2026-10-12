@@ -58,6 +58,10 @@ describe('Tempo finalized PathUSD receive cursor', () => {
     expect(await reopened.scanner.syncOnce(RECIPIENT, 10n, async item => { applied.push(item) })).toEqual({ nextBlock: 13n, delivered: 0 })
     expect(applied).toHaveLength(1)
     expect(reopened.ranges).toEqual([])
+    expect(reopened.scanner.receivedItems(RECIPIENT, 10n)).toEqual([expect.objectContaining({
+      id: `tempo-testnet:${TX}:0`, amountAtomic: '1000000', applied: true,
+    })])
+    await expect(Promise.resolve().then(() => reopened.scanner.receivedItems(RECIPIENT, 9n))).rejects.toThrow('changed start block')
   })
 
   test('failed inventory application leaves cursor fact durable and redelivers after restart', async () => {

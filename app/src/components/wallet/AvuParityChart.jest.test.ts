@@ -92,6 +92,58 @@ function mountChart(
   })
 }
 
+async function dragRange(
+  wrapper: ReturnType<typeof mountChart>,
+  from = 55,
+  to = 625,
+  pointerType = 'mouse',
+  endEvent = 'pointerup',
+) {
+  const svg = wrapper.get('[data-test="macro-chart-svg"]')
+    .element as SVGSVGElement
+  Object.defineProperty(svg, 'getScreenCTM', {
+    configurable: true,
+    value: () => ({ inverse: () => ({}) }),
+  })
+  Object.defineProperty(svg, 'createSVGPoint', {
+    configurable: true,
+    value: () => ({
+      x: 0,
+      y: 0,
+      matrixTransform() {
+        return { x: this.x, y: this.y }
+      },
+    }),
+  })
+  const area = wrapper.get('[data-test="chart-range-interaction"]')
+  Object.assign(area.element, {
+    setPointerCapture: jest.fn(),
+    releasePointerCapture: jest.fn(),
+  })
+  await area.trigger('pointerdown', {
+    clientX: from,
+    clientY: 100,
+    pointerId: 1,
+    isPrimary: true,
+    button: 0,
+    pointerType,
+  })
+  await area.trigger('pointermove', {
+    clientX: to,
+    clientY: 100,
+    pointerId: 1,
+    isPrimary: true,
+    pointerType,
+  })
+  await area.trigger(endEvent, {
+    clientX: to,
+    clientY: 100,
+    pointerId: 1,
+    isPrimary: true,
+    pointerType,
+  })
+}
+
 async function openRange(
   wrapper: ReturnType<typeof mountChart>,
   range: string,
@@ -531,8 +583,7 @@ describe('selected coin price history', () => {
     await flushPromises()
     const columns = wrapper.findAll('[data-test="chart-hover-point"]')
     expect(columns).toHaveLength(2)
-    await columns[0].trigger('mousedown')
-    await columns[1].trigger('mouseup')
+    await dragRange(wrapper)
     await flushPromises()
     expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(4)
     expect(oracle.cache.series['price/monad-mainnet'].points).toHaveLength(2)
@@ -561,9 +612,7 @@ describe('selected coin price history', () => {
       )
       const wrapper = mountChart()
       await flushPromises()
-      const columns = wrapper.findAll('[data-test="chart-hover-point"]')
-      await columns[0].trigger('mousedown')
-      await columns[1].trigger('mouseup')
+      await dragRange(wrapper)
       await flushPromises()
       if (change === 'reset')
         await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
@@ -593,9 +642,7 @@ describe('selected coin price history', () => {
       const wrapper = mountChart()
       await openRange(wrapper, range)
       const select = async () => {
-        const columns = wrapper.findAll('[data-test="chart-hover-point"]')
-        await columns[0].trigger('mousedown')
-        await columns[columns.length - 1].trigger('mouseup')
+        await dragRange(wrapper)
         await flushPromises()
       }
       await select()
@@ -638,12 +685,51 @@ describe('selected coin price history', () => {
     expect(wrapper.get('[data-test="inspection-date"]').text()).toContain(
       'Inspecting',
     )
-    await columns[0].trigger('mousedown')
-    await columns[1].trigger('mouseup')
+    await dragRange(wrapper)
     expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(true)
     await wrapper.get('[data-test="reset-zoom-btn"]').trigger('click')
     expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
   })
+
+  it.each(['mouse', 'touch', 'pen'])(
+    'selects a time window between sparse observations with %s and rerenders/reset',
+    async pointerType => {
+      const oracle = receive(
+        testFeed([NOW - DAY, NOW - DAY + 60, NOW - 60], {
+          prices: { 'monad-mainnet': 0.025 },
+        }),
+      )
+      const ensure = jest
+        .spyOn(oracle, 'ensureHistory')
+        .mockResolvedValue(undefined)
+      const wrapper = mountChart()
+      await flushPromises()
+      // Both ends are in empty SVG space, away from the tightly clustered first samples.
+      await dragRange(wrapper, 200, 500, pointerType)
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(true)
+      expect(ensure.mock.calls.at(-1)?.[0]).toBeGreaterThan(NOW - DAY)
+      expect(ensure.mock.calls.at(-1)?.[2]).toBeLessThan(NOW - 60)
+      await wrapper.setProps({ selectedWallet: 'solana' })
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="zoom-selection"]').exists()).toBe(false)
+      wrapper.unmount()
+    },
+  )
+
+  it.each(['pointercancel', 'lostpointercapture'])(
+    'clears selection without zoom after %s',
+    async endEvent => {
+      receive(twoEntryFeed())
+      const wrapper = mountChart()
+      await flushPromises()
+      await dragRange(wrapper, 100, 500, 'touch', endEvent)
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      expect(wrapper.find('[data-test="zoom-selection"]').exists()).toBe(false)
+      await dragRange(wrapper, 200, 202)
+      expect(wrapper.find('[data-test="reset-zoom-btn"]').exists()).toBe(false)
+      wrapper.unmount()
+    },
+  )
 
   it('reserves a separate scale column and keeps presentation containers shrinkable', () => {
     receive(twoEntryFeed())

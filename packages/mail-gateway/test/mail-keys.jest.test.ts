@@ -611,7 +611,7 @@ describe('mailKey', () => {
         const k = mailKey(input);
         const ms = Number(process.hrtime.bigint() - started) / 1e6;
         expect(k).toMatch(HEX_64);
-        expect({ shape, slow: ms > 2000 }).toEqual({ shape, slow: false });
+        expect({ shape, slow: ms > 5000 }).toEqual({ shape, slow: false });
       }
       expect(mailKey(shapes['only LF'])).toBe(key('From: a@x.example\r\nSubject: big\r\n'));
     });

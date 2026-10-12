@@ -176,6 +176,60 @@ describe('journal-backed inbound Frank send', () => {
     );
   });
 
+  it('refuses a credit ledger on another connection before any debit or journal write', () => {
+    const other = new CreditLedger(path.join(dir, 'other.sqlite3'), new LocalFsBlobStore({ inMemory: true }));
+    try {
+      expect(() => new JournaledInboundSend({ chain, wallet, ledger: other, journal })).toThrow(
+        'different connections'
+      );
+      expect(journal.countWaitingFrankSends()).toBe(0);
+    } finally {
+      other.sqlite!.close();
+    }
+  });
+
+  it('resends the same free envelope after a crash at the host barrier without paid reconciliation', async () => {
+    ledger.addCredits(SENDER, 1);
+    const freeAttempts = new Map<string, string>();
+    let delivered = false;
+    let sends = 0;
+    const directMessages = chain.directMessages as unknown as Record<string, unknown>;
+    directMessages.send = async (params: {
+      messageId: string;
+      stampValue: bigint;
+      onEnvelopeDurable: (digest: string) => Promise<void>;
+    }) => {
+      expect(params.stampValue).toBe(0n);
+      sends++;
+      freeAttempts.set(params.messageId, DIGEST);
+      await params.onEnvelopeDurable(DIGEST);
+      if (sends === 1) throw new Error('crash after free host barrier');
+      delivered = true;
+      return { payloadDigest: DIGEST, stampValueWei: 0n, stampPayments: [], preparationTxHashes: [] };
+    };
+    directMessages.attemptOf = async ({ messageId }: { messageId: string }) => {
+      const payloadDigest = freeAttempts.get(messageId);
+      return payloadDigest ? { payloadDigest, paid: false } : undefined;
+    };
+    directMessages.deliveryOf = async () => delivered ? 'delivered' : 'live';
+    directMessages.reconcileAttempts = jest.fn(async () => { throw new Error('paid reconcile used for free mail'); });
+
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const admitted = sender.admit(
+      { email: parseRawRfc822(RAW), verifiedTransportId: 'smtp:mail-1', authenticatedSenderEmail: SENDER },
+      RECIPIENT, 0n
+    );
+    if (admitted.kind !== 'queued') throw new Error('admission failed');
+    await expect(sender.resume(admitted.slot.slotId)).rejects.toThrow('crash after free host barrier');
+    expect(journal.findFrankSend(admitted.slot.slotId)?.payloadDigest).toBe(DIGEST);
+    const recovered = restart();
+    expect(await recovered.recover()).toMatchObject({ attempted: 1, delivered: 1 });
+    expect(sends).toBe(2);
+    expect(freeAttempts.size).toBe(1);
+    expect(directMessages.reconcileAttempts).not.toHaveBeenCalled();
+    expect(ledger.getBalance(SENDER)).toBe(0);
+  });
+
   it('refuses sender metadata that differs from the authenticated principal without debiting credit', () => {
     ledger.addCredits(SENDER, 1);
     const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });

@@ -22,8 +22,10 @@ slots as a library seam; no executable has composed it yet.
 The replacement host must open and validate one persisted Frank wallet on one
 canonical `chainIdentifier`, restore its payment attempts, then open the
 format-2 journal bound to that wallet's identity and the gateway domain. The
-host owns lifecycle and wires typed wallet messaging, the journal, and one
-verified mail transport. Wallet custody owns keys/signing and wallet recovery;
+host owns lifecycle and wires typed wallet messaging, the journal, and verified
+mail transports. Direct inbound SMTP remains supported; a Resend webhook can
+be a deployment adapter. Both ingress paths must authenticate the sender and
+feed the same durable admission path. Wallet custody owns keys/signing and wallet recovery;
 the journal owns mail admission, the decision that a particular mail consumed
 credit, thread identity, mailbox
 cursor, delivery jobs and the binding from a mail to the wallet's stable
@@ -41,7 +43,7 @@ Implement this as separate reviewed landings:
    restart. Consume one credit only once. Preserve raw mail and its scope.
    `JournaledInboundSend` implements the library side of this step; a host must
    still verify sender authentication and transport provenance, open the wallet,
-   run recovery, and connect the receiving endpoint.
+   run recovery, and connect SMTP and any webhook receiving endpoints.
 3. Route Frank mailbox reads through the journal's inclusive cursor and
    `recordFrankMessage`. Honor incomplete timestamp floors; persist a terminal
    disposition for each observed envelope before advancing. Never create a

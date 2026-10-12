@@ -632,6 +632,13 @@ export class MailJournal {
   private readonly now: () => number;
   private readonly statements = new Map<string, StatementSync>();
 
+  /** A credit decision and journal transition are atomic only on this exact connection. */
+  assertCreditLedger(ledger: CreditLedger): void {
+    if (ledger !== this.ledger) {
+      throw new MailJournalStateError('Mail journal and credit ledger use different connections');
+    }
+  }
+
   /**
    * Opens the journal on the ledger's SQLite connection, in one transaction.
    *

@@ -50,6 +50,7 @@ export class JournaledInboundSend {
     this.ledger = options.ledger;
     this.journal = options.journal;
     this.blobStore = options.blobStore;
+    this.journal.assertCreditLedger(this.ledger);
     if (this.chain.chainIdentifier !== this.journal.chainIdentifier) {
       throw new Error('Mail journal and wallet chain identifiers differ');
     }
@@ -124,6 +125,20 @@ export class JournaledInboundSend {
     if (slot.state === 'held') return 'held';
     if (slot.sourceKind !== 'inbound_email') throw new Error('Send slot has a different source');
 
+    if (slot.payloadDigest && slot.stampValue === '0') {
+      const knownDelivery = await this.chain.directMessages.deliveryOf?.({
+        wallet: this.wallet, payloadDigest: slot.payloadDigest,
+      });
+      if (knownDelivery === 'delivered') {
+        this.journal.markFrankSendDelivered(slotId);
+        return 'delivered';
+      }
+      if (knownDelivery === 'dead') {
+        this.journal.holdFrankSend(slotId, 'wallet_delivery_dead');
+        return 'held';
+      }
+    }
+
     if (!slot.payloadDigest) {
       const known = await this.chain.directMessages.attemptOf?.({
         wallet: this.wallet,
@@ -137,7 +152,9 @@ export class JournaledInboundSend {
       }
     }
 
-    if (!slot.payloadDigest) {
+    // Free host-bound envelopes are resumed by send with the SAME message ID.
+    // reconcileAttempts only replays paid attempts and cannot deliver these.
+    if (!slot.payloadDigest || slot.stampValue === '0') {
       const raw = await this.readSource(slot);
       const parsed = parseRawRfc822(raw);
       const recipient = this.chain.parseAddress(slot.scopeAccount);
@@ -154,7 +171,7 @@ export class JournaledInboundSend {
         inReplyTo: parsed.inReplyTo,
         references: parsed.references,
       };
-      this.journal.markFrankSendSending(slot.slotId);
+      if (slot.state === 'staged') this.journal.markFrankSendSending(slot.slotId);
       try {
         const sent = await this.chain.directMessages.send({
           wallet: this.wallet,
@@ -187,6 +204,20 @@ export class JournaledInboundSend {
     }
 
     if (!slot.payloadDigest) return 'pending';
+    if (slot.stampValue === '0') {
+      const outcome = await this.chain.directMessages.deliveryOf?.({
+        wallet: this.wallet, payloadDigest: slot.payloadDigest,
+      });
+      if (outcome === 'delivered') {
+        this.journal.markFrankSendDelivered(slotId);
+        return 'delivered';
+      }
+      if (outcome === 'dead') {
+        this.journal.holdFrankSend(slotId, 'wallet_delivery_dead');
+        return 'held';
+      }
+      return 'pending';
+    }
     const outcomes = await this.chain.directMessages.reconcileAttempts({
       wallet: this.wallet,
       payloadDigests: [slot.payloadDigest],

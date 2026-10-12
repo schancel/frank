@@ -22,6 +22,7 @@ interface Opened {
   readonly scope: string
   readonly opening: Promise<OpenUtxoWallet>
   readonly close: () => Promise<void>
+  value?: OpenUtxoWallet
 }
 
 const opened = new Map<string, Opened>()
@@ -53,10 +54,29 @@ export function openUtxoWallet(
   })()
   const entry: Opened = { scope, opening, close: () => relayChain.close() }
   opened.set(chainIdentifier, entry)
+  void opening.then(
+    value => {
+      if (opened.get(chainIdentifier) === entry) entry.value = value
+    },
+    () => undefined,
+  )
   // A failed open (relay unreachable) is retried by the next caller instead of being cached.
   opening.catch(() => {
     if (opened.get(chainIdentifier) === entry) opened.delete(chainIdentifier)
     void relayChain.close().catch(() => undefined)
   })
   return opening
+}
+
+/** Read-only references to this session's already-open owners; never opens custody. */
+export function peekOpenedUtxoWallets(): readonly OpenUtxoWallet[] {
+  let scope: string
+  try {
+    scope = sessionScope()
+  } catch {
+    return []
+  }
+  return [...opened.values()].flatMap(entry =>
+    entry.scope === scope && entry.value ? [entry.value] : [],
+  )
 }

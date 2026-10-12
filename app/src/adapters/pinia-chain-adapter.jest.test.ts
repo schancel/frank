@@ -161,78 +161,159 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     })
   })
 
-  it('replays an interrupted streamed financial receipt before a later durable frontier', async () => {
-    const wallet: WalletHandle = {
-      identity: {
-        address: { raw: RECIPIENT_ADDRESS },
-        displayAddress: RECIPIENT_ADDRESS,
-      },
-    }
-    mockFinancialWallet = wallet
-    mockFinancialState.status = 'ready'
-    mockFinancialRecord
-      .mockReset()
-      .mockRejectedValue(new Error('receipt write unavailable'))
-    const fetch = jest
-      .spyOn(activeChain.directMessages, 'fetchSince')
-      .mockResolvedValue([])
-    let onRecord!: (record: DirectMessageReceived) => Promise<void>
-    jest
-      .spyOn(activeChain.directMessages, 'subscribeMailboxStream')
-      .mockImplementation(params => {
-        onRecord = params.onRecord
-        return () => undefined
-      })
-    const key = PUB_KEY_HEX
-    const claim = makeRecord({
-      receivedTime: 100,
-      payloadDigest: 'a'.repeat(64),
-      senderPublicKey: PUB_KEY_BYTES,
-      items: [
-        {
-          type: 'stealth-asset',
-          transfers: [
-            {
-              chainIdentifier: 'monad-testnet',
-              txId: 'ab'.repeat(32),
-              destination: '12'.repeat(20),
-              amountAtomic: '20000000',
-              asset: { kind: 'token', identifier: '34'.repeat(20) },
-              recipientSpendKey: { keyType: 1, publicKey: key },
-              stealthMetadata: { keyType: 1, ephemeralPubKey: key },
-              derivationScheme: 1,
-              rawTx: '010203',
-            },
-          ],
+  it.each(['interrupted write', 'overlapping failure'])(
+    'preserves the restart frontier after %s on an older financial receipt',
+    async mode => {
+      const wallet: WalletHandle = {
+        identity: {
+          address: { raw: RECIPIENT_ADDRESS },
+          displayAddress: RECIPIENT_ADDRESS,
         },
-      ],
-    })
-    const later = makeRecord({
-      receivedTime: 200,
-      payloadDigest: 'b'.repeat(64),
-      senderPublicKey: PUB_KEY_BYTES,
-    })
-    const polling = startDirectMessagePolling({ wallet })
-    try {
-      await expect(onRecord(claim)).rejects.toThrow('receipt write unavailable')
-      await expect(onRecord(later)).rejects.toThrow('receipt write unavailable')
-      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
-      mockFinancialRecord.mockResolvedValue(undefined)
-      await onRecord(later)
-      const saved = mockMessageStore.saveMessage.mock.calls.map(
-        call => call[0].index,
-      )
-      expect(new Set(saved)).toEqual(
-        new Set([claim.payloadDigest, later.payloadDigest]),
-      )
-      expect(mockFinancialRecord).toHaveBeenCalledWith(
-        expect.objectContaining({ amountAtomic: 20000000n }),
-      )
-      expect(fetch).toHaveBeenCalled()
-    } finally {
-      polling.stop()
-    }
-  })
+      }
+      mockFinancialWallet = wallet
+      mockFinancialState.status = 'ready'
+      mockFinancialRecord
+        .mockReset()
+        .mockRejectedValue(new Error('receipt write unavailable'))
+      const fetch = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockResolvedValue([])
+      let onRecord!: (record: DirectMessageReceived) => Promise<void>
+      jest
+        .spyOn(activeChain.directMessages, 'subscribeMailboxStream')
+        .mockImplementation(params => {
+          onRecord = params.onRecord
+          return () => undefined
+        })
+      const key = PUB_KEY_HEX
+      const claim = makeRecord({
+        receivedTime: 100,
+        payloadDigest: 'a'.repeat(64),
+        senderPublicKey: PUB_KEY_BYTES,
+        items: [
+          {
+            type: 'stealth-asset',
+            transfers: [
+              {
+                chainIdentifier: 'monad-testnet',
+                txId: 'ab'.repeat(32),
+                destination: '12'.repeat(20),
+                amountAtomic: '20000000',
+                asset: { kind: 'token', identifier: '34'.repeat(20) },
+                recipientSpendKey: { keyType: 1, publicKey: key },
+                stealthMetadata: { keyType: 1, ephemeralPubKey: key },
+                derivationScheme: 1,
+                rawTx: '010203',
+              },
+            ],
+          },
+        ],
+      })
+      const later = makeRecord({
+        receivedTime: 200,
+        payloadDigest: 'b'.repeat(64),
+        senderPublicKey: PUB_KEY_BYTES,
+      })
+      const polling = startDirectMessagePolling({ wallet })
+      try {
+        await expect(onRecord(claim)).rejects.toThrow(
+          'receipt write unavailable',
+        )
+        await expect(onRecord(later)).rejects.toThrow(
+          'receipt write unavailable',
+        )
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+        mockFinancialRecord.mockResolvedValue(undefined)
+        const { LevelMessageStore } = jest.requireActual(
+          '@frank/cashweb/relay/storage/level-storage',
+        )
+        const { mkdtempSync, mkdirSync } = jest.requireActual('node:fs')
+        const { tmpdir } = jest.requireActual('node:os')
+        const { join } = jest.requireActual('node:path')
+        const path = join(
+          mkdtempSync(join(tmpdir(), 'frank-financial-receipts-')),
+          'receipts',
+        )
+        mkdirSync(path)
+        let disk = new LevelMessageStore(path)
+        await disk.Open()
+        const ordered: number[] = []
+        mockMessageStore.saveMessage.mockImplementation(
+          async (wrapper, options) => {
+            ordered.push(wrapper.message.receivedTime)
+            if (
+              mode === 'interrupted write' &&
+              wrapper.index === claim.payloadDigest
+            )
+              throw new Error('interrupted financial receipt write')
+            await disk.saveMessage(wrapper, options)
+          },
+        )
+        try {
+          if (mode === 'interrupted write') {
+            await expect(onRecord(later)).rejects.toThrow(
+              'interrupted financial receipt write',
+            )
+            expect(ordered).toEqual([100])
+            await disk.Close()
+            disk = new LevelMessageStore(path)
+            await disk.Open()
+            expect(await disk.relayCursor(RECIPIENT_ADDRESS)).toBe(0)
+            const rows = []
+            for await (const row of await disk.getIterator())
+              rows.push(row.index)
+            expect(rows).toEqual([])
+          } else {
+            let begin!: () => void, rejectFirst!: (error: Error) => void
+            const begun = new Promise<void>(resolve => {
+              begin = resolve
+            })
+            const failing = new Promise<void>((_resolve, reject) => {
+              rejectFirst = reject
+            })
+            mockFinancialRecord
+              .mockImplementationOnce(() => {
+                begin()
+                return failing
+              })
+              .mockResolvedValue(undefined)
+            const receives = jest.spyOn(useChatStore(), 'receiveMessages')
+            const first = onRecord(claim).then(
+              () => undefined,
+              error => error,
+            )
+            await begun
+            const second = onRecord(later)
+            for (let i = 0; receives.mock.calls.length < 2 && i < 100; i++)
+              await Promise.resolve()
+            expect(receives.mock.calls.length).toBe(2)
+            rejectFirst(new Error('failed earlier financial receiver'))
+            expect(await first).toEqual(
+              new Error('failed earlier financial receiver'),
+            )
+            await second
+            expect(ordered).toEqual([100, 200])
+            await disk.Close()
+            disk = new LevelMessageStore(path)
+            await disk.Open()
+            const rows = []
+            for await (const row of await disk.getIterator())
+              rows.push(row.index)
+            expect(new Set(rows)).toEqual(
+              new Set([claim.payloadDigest, later.payloadDigest]),
+            )
+            expect(await disk.relayCursor(RECIPIENT_ADDRESS)).toBe(200)
+          }
+        } finally {
+          await disk.Close()
+          mockMessageStore.saveMessage.mockReset().mockResolvedValue(undefined)
+        }
+        expect(fetch).toHaveBeenCalled()
+      } finally {
+        polling.stop()
+      }
+    },
+  )
 
   describe('toReceivedMessageWrapper', () => {
     it('adapts a DirectMessageReceived record into a ReceivedMessageWrapper', async () => {

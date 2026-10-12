@@ -33,6 +33,7 @@
  *   ticket) has no cheaper way to ask "what pubkey did you just use to decrypt this."
  */
 import { refreshOutgoingPaymentSummaries } from '../utils/outgoing-payments'
+import { financialRecoveryForPolling } from '../stealth-payments/runtime-recovery'
 import { activeChain } from '@frank/wallet/chain'
 import type {
   DirectMessageAttemptStatus,
@@ -264,6 +265,12 @@ export function startDirectMessagePolling({
   const profileAbort = new AbortController()
   // Unresolved claims block later durable receipt frontiers in both delivery paths.
   // The relay remains their durable source; this map only tracks this poller's unresolved work.
+  const financialRecovery = financialRecoveryForPolling({
+    wallet,
+    isCancelled: () => stopped,
+    onError: failure =>
+      console.warn('Financial operation recovery remains pending', failure),
+  })
   const pendingPayments = new Map<string, DirectMessageReceived>()
   const rememberPayment = (record: DirectMessageReceived) => {
     if (
@@ -277,6 +284,14 @@ export function startDirectMessagePolling({
       await recordReceivedAssetPayments(record, wallet, () => stopped)
       if (stopped) throw new Error('Payment receiver stopped')
     }
+    return [...pendingPayments.keys()]
+  }
+  const beforePersistFor = (wrappers: ReceivedMessageWrapper[]) => async () => {
+    const required = await beforePersist()
+    const included = new Set(wrappers.map(wrapper => wrapper.index))
+    if (required.some(digest => !included.has(digest)))
+      throw new Error('An earlier payment receipt must be retried first')
+    return required
   }
 
   const withPendingPayments = async (wrappers: ReceivedMessageWrapper[]) => {
@@ -299,6 +314,10 @@ export function startDirectMessagePolling({
     const startedAt = Date.now()
     let nextDelayMs = intervalMs
     let steady = true
+    // Recovery is independent of mailbox availability and never holds the receive queue.
+    void financialRecovery.tick().catch(error => {
+      if (!stopped) console.warn('Financial recovery inspection failed', error)
+    })
     try {
       await cursorReady
       if (stopped) return
@@ -432,7 +451,10 @@ export function startDirectMessagePolling({
           recipientAddress,
           // Delivery is queued behind a module-global mutation boundary; a poller the wallet
           // replaced while queued must not persist, mutate shared state, or notify.
-          { isCancelled: () => stopped, beforePersist },
+          {
+            isCancelled: () => stopped,
+            beforePersist: beforePersistFor(wrappers),
+          },
         )
         // The queued boundary ran after replacement: nothing was delivered, so nothing may
         // advance -- the replacement poller replays this window from its own cursor.
@@ -583,7 +605,7 @@ export function startDirectMessagePolling({
             recipientAddress,
             {
               isCancelled: () => stopped,
-              beforePersist,
+              beforePersist: beforePersistFor(wrappers),
             },
           )
           if (!result.cancelled) forgetPersistedPayments(wrappers)

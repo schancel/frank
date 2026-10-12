@@ -934,7 +934,7 @@ let noteConversationsAgain = false
 export type DeliveryLease = {
   isCancelled: () => boolean
   /** Composition's durable receipt effects, serialized before any later receipt write. */
-  beforePersist?: () => Promise<void>
+  beforePersist?: () => Promise<readonly string[] | void>
 }
 
 export type ReceivedDeliveryResult = {
@@ -4299,10 +4299,22 @@ export const useChatStore = defineStore('chats', {
       if (lease?.isCancelled()) {
         return { suppressedReceipts: [], cancelled: true }
       }
-      await lease?.beforePersist?.()
+      const requiredReceipts = await lease?.beforePersist?.()
       if (lease?.isCancelled()) {
         return { suppressedReceipts: [], cancelled: true }
       }
+      // An earlier overlapping receiver may have failed after claiming notification ownership.
+      // Composition's required receipts must still become durable before a later frontier.
+      for (const wrapper of messageWrappers) {
+        if (
+          requiredReceipts?.includes(wrapper.index) &&
+          !(wrapper.index in this.messages)
+        )
+          toNotify.add(wrapper.index)
+      }
+      messageWrappers = [...messageWrappers].sort(
+        (a, b) => a.message.receivedTime - b.message.receivedTime,
+      )
       console.log('receiving messages')
       const messageStore = await store
       if (

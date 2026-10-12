@@ -18,7 +18,9 @@ const mockCaptureWallet = jest.fn(async () => ({
 }))
 jest.mock('../accounts/session', () => ({
   accountSession: {
-    state: mockState,
+    get state() {
+      return mockState
+    },
     getWallet: jest.fn(async () => mockWallet),
     getCurvePublicKey: jest.fn(async () => mockKey.slice()),
   },

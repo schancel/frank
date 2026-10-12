@@ -2305,7 +2305,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
             },
             canonicalBinding:
-              material.canonicalRoles === undefined
+              material.canonicalRoles === undefined || chainEntry.kind !== "monad"
                 ? undefined
                 : canonicalWalletPublicBinding(
                     material,
@@ -3672,6 +3672,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             hostDelivers: boolean
           ): Promise<ContactSendResult | PreparedContactPayment> => {
             requireOpenWallet(wallet);
+            // This legacy payment is delivered by directMessages. Refuse before reserving or
+            // signing funds on networks without the canonical messaging service; the separate
+            // typed financial payment owner does not use this transport-coupled path.
+            if (!canonicalMessagingFor(wallet))
+              throw new CanonicalMessagingPendingError(
+                "Contact payments require canonical direct messaging."
+              );
             if (params.value <= 0n)
               throw new RangeError("Transfer value must be positive");
             // The message item states the amount in an unsigned 64-bit field. A larger payment

@@ -67,6 +67,7 @@ it("exposes a Sepolia native wallet without claiming application messaging or co
   expect(chain.fromDisplayAmount("0.000000000000000001")).toBe(1n);
   expect(chain.toDisplayAmount(1n)).toBe("0.000000000000000001");
   expect(chain.nativeTransfers).toBeDefined();
+  expect(chain.nativeTransfers.sendToContact).toBeUndefined();
   expect("directMessages" in chain).toBe(false);
   expect("topics" in chain).toBe(false);
   expect(chain.getStateChannelAddress).toBeUndefined();

@@ -78,6 +78,14 @@ import {
   type DomainRoot,
 } from '@frank/domain-roots'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
+import {
+  TempoPathUsdJournal,
+  TempoPathUsdTransfers,
+  type TempoPathUsdOperation,
+  type TempoPathUsdRpc,
+} from '@frank/wallet/chain/tempo-pathusd-operation'
+import { MemoryRecordStore } from '@frank/wallet/storage/evm-coin-store'
+import { decodeSignedTempoTransaction } from '@frank/wallet/chain/tempo-transaction'
 
 jest.mock('@frank/wallet/chain', () => {
   const actual = jest.requireActual('@frank/wallet/chain')
@@ -226,6 +234,78 @@ test('Tempo signer uses the existing EVM main path and is revoked with its sessi
   await expect(signer.signDigest(digest)).rejects.toMatchObject({
     code: 'closed',
   })
+})
+test('a revoked Tempo signer leaves a durable prepared operation for the restored account to resume', async () => {
+  const first = fixture()
+  await first.session.initialize()
+  const firstSigner = await first.session.createTempoMainAccountSigner(
+    'tempo-testnet',
+  )
+  const store = new MemoryRecordStore<TempoPathUsdOperation>()
+  const journal = new TempoPathUsdJournal(store)
+  let broadcasts = 0
+  const rpc: TempoPathUsdRpc = {
+    verifyChain: async () => undefined,
+    getPendingNonce: async () => 7n,
+    getFinalizedNonce: async () => 0n,
+    getPathUsdBalance: async () => 3_000_000n,
+    quoteTransfer: async () => ({
+      gasLimit: 100_000n,
+      maxFeePerGas: 2_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000_000n,
+    }),
+    sendRawTransaction: async raw => {
+      broadcasts++
+      return decodeSignedTempoTransaction(raw, 42431n).transactionHash
+    },
+    getReceipt: async () => null,
+    isFinalizedReceipt: async () => false,
+  }
+  const transfers = new TempoPathUsdTransfers(
+    'tempo-testnet',
+    journal,
+    rpc,
+    async (_source, operation) => operation(),
+  )
+  const recipient = '0x2222222222222222222222222222222222222222'
+  const operationId = '0x' + '33'.repeat(32)
+  const quote = await transfers.quote({
+    signer: firstSigner,
+    recipient,
+    amountAtomic: 1_000_000n,
+  })
+  await transfers.prepare({
+    operationId,
+    signer: firstSigner,
+    recipient,
+    amountAtomic: 1_000_000n,
+    authorizedFeeAsset: quote.feeAsset,
+    authorizedFeeCeilingAtomic: quote.maximumFeeAtomic,
+    quotedNonce: quote.nonce,
+  })
+  await first.session.close()
+  await expect(
+    transfers.submit(operationId, firstSigner),
+  ).rejects.toMatchObject({ code: 'closed' })
+  expect(broadcasts).toBe(0)
+  expect(journal.get(operationId)).toMatchObject({
+    operationId,
+    signedRaw: null,
+    exposed: false,
+    submission: { state: 'never' },
+  })
+
+  const restored = fixture()
+  await restored.session.initialize()
+  const restoredSigner = await restored.session.createTempoMainAccountSigner(
+    'tempo-testnet',
+  )
+  expect(restoredSigner.source.address).toBe(firstSigner.source.address)
+  await expect(
+    transfers.submit(operationId, restoredSigner),
+  ).resolves.toMatchObject({ operationId, exposed: true })
+  expect(broadcasts).toBe(1)
+  await restored.session.close()
 })
 test('a synchronous status watcher cannot reacquire before retired-wallet teardown completes', async () => {
   const f = fixture(),

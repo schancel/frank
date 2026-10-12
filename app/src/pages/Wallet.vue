@@ -42,6 +42,7 @@
           </div>
         </q-toolbar-title>
         <q-btn
+          v-if="selectedWallet !== 'tempo'"
           flat
           dense
           icon="help_outline"
@@ -80,7 +81,13 @@
               class="wallet-content-card bg-transparent"
               style="max-width: 680px; width: 100%; margin: 0 auto"
             >
+              <tempo-path-usd-panel
+                v-if="
+                  selectedWallet === 'tempo' && walletStatus === 'available'
+                "
+              />
               <q-tabs
+                v-else
                 v-model="activeTab"
                 dense
                 no-caps
@@ -117,9 +124,16 @@
                   data-testid="wallet-tab-parity"
                 />
               </q-tabs>
-              <q-separator />
+              <q-separator
+                v-if="
+                  selectedWallet !== 'tempo' || walletStatus !== 'available'
+                "
+              />
 
               <q-tab-panels
+                v-if="
+                  selectedWallet !== 'tempo' || walletStatus !== 'available'
+                "
                 v-model="activeTab"
                 animated
                 class="bg-transparent col column"
@@ -649,6 +663,7 @@ import { getExplorerUrl } from 'src/utils/explorer'
 import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import WalletHistory from 'src/components/wallet/WalletHistory.vue'
+import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
 import type { WalletHistoryRow } from 'src/components/wallet/wallet-history'
 import { walletSupport } from 'src/utils/wallet-support'
 import { openUtxoWallet } from 'src/accounts/utxo-wallets'
@@ -666,6 +681,7 @@ export default defineComponent({
     HeldContactPayments,
     BalanceBreakdown,
     WalletHistory,
+    TempoPathUsdPanel,
   },
   emits: ['toggleMyDrawerOpen'],
   setup() {
@@ -1021,7 +1037,11 @@ export default defineComponent({
       selectedWalletIsTestnet: computed(
         () => support.value.entry?.isTestnet ?? false,
       ),
-      walletUnit: computed(() => support.value.entry?.unit ?? ''),
+      walletUnit: computed(() =>
+        selectedWallet.value === 'tempo'
+          ? 'PathUSD'
+          : support.value.entry?.unit ?? '',
+      ),
       selectedChain: selectedWallet,
       currentWalletConfig,
       isTestnet,

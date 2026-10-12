@@ -28,6 +28,11 @@ export default {
       'Le démarrage a été interrompu. Vos données enregistrées n’ont pas été réinitialisées.',
     loading: 'Chargement des données enregistrées',
   },
+  tempoPayment: {
+    interrupted:
+      'Un paiement Tempo doit être vérifié. Revenez au compte qui l’a commencé et consultez l’activité des paiements. Reprenez ce même paiement si nécessaire ; n’en créez pas un autre.',
+    dismiss: 'Fermer',
+  },
   accountRecovery,
   forum: {
     postsLabel: 'messages',

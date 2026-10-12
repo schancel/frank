@@ -85,6 +85,27 @@ jest.mock('../accounts/evm-wallets', () => ({
   openEvmWallet: (chainIdentifier: string) =>
     mockOpenEvmWallet(chainIdentifier),
 }))
+const mockReadTempoPathUsdBalance = jest.fn(async () => 1_234_567n)
+jest.mock('../accounts/tempo-wallets', () => ({
+  readTempoPathUsdBalance: (...args: unknown[]) =>
+    mockReadTempoPathUsdBalance(...args),
+}))
+let mockTempoEnabled = false
+jest.mock('../utils/wallet-support', () => {
+  const actual = jest.requireActual('../utils/wallet-support')
+  return {
+    ...actual,
+    walletSupport: (wallet: string, isTestnet: boolean, configured?: string) =>
+      mockTempoEnabled && (wallet === 'tempo' || wallet === 'tempo-testnet')
+        ? {
+            status: 'available',
+            entry: jest
+              .requireActual('@frank/wallet/chain/chains-registry')
+              .getChainRegistryEntry('tempo-testnet'),
+          }
+        : actual.walletSupport(wallet, isTestnet, configured),
+  }
+})
 
 const mockFetchSolanaBalance = jest.fn().mockResolvedValue({
   lamports: 2_500_000_000n,
@@ -164,6 +185,23 @@ describe('useChainBalance', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockAccountStatus.status = 'ready'
+    mockTempoEnabled = false
+  })
+
+  it('reads Tempo PathUSD through its verified token reader, not an EVM native wallet', async () => {
+    mockTempoEnabled = true
+    const configured = activeChain.chainIdentifier
+    try {
+      activeChain.chainIdentifier = 'tempo-testnet'
+      await fetchChainBalance('tempo', true)
+      expect(mockReadTempoPathUsdBalance).toHaveBeenCalledWith('tempo-testnet')
+      expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+      expect(useChainBalance('tempo').formattedBalance.value).toBe(
+        '1.234567 PathUSD',
+      )
+    } finally {
+      activeChain.chainIdentifier = configured
+    }
   })
 
   it('does not invent a native Solana row before a successful observation', async () => {

@@ -88,6 +88,9 @@ const defaultStubs = {
     ],
   },
   'q-page-container': { template: '<div><slot /></div>' },
+  'q-header': { template: '<header><slot /></header>' },
+  'q-toolbar': { template: '<div><slot /></div>' },
+  'q-toolbar-title': { template: '<h1><slot /></h1>' },
   'q-page': { template: '<div><slot /></div>' },
   'q-card': { template: '<div><slot /></div>' },
   'q-card-section': { template: '<div><slot /></div>' },
@@ -127,6 +130,10 @@ describe('Profile.vue', () => {
     expect(wrapper.find('[data-test="profile-component"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="profile-cancel"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="profile-update"]').exists()).toBe(true)
+    expect(wrapper.get('header h1').text()).toBe('profileDialog.profile')
+    expect(wrapper.findAll('h1')).toHaveLength(1)
+    expect(wrapper.find('[data-test="profile-back"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="profile-menu"]').exists()).toBe(true)
     const source = readFileSync(join(__dirname, 'Profile.vue'), 'utf8')
     // Must NOT use legacy protobuf registerMonadIdentity, must use registerMonadIdentityCbor
     expect(source).not.toMatch(/registerMonadIdentity\(/)

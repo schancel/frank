@@ -246,10 +246,10 @@
             class="q-pa-md"
             data-test="profile-panel-identity"
           >
-            <div class="row q-col-gutter-lg items-center">
-              <div class="col-12 col-md-5 text-center">
+            <div class="identity-layout">
+              <div class="identity-qr-column text-center">
                 <div
-                  class="q-pa-md bg-white rounded-borders shadow-2 inline-block"
+                  class="identity-qr-card q-pa-md bg-white rounded-borders shadow-2 inline-block"
                   data-test="profile-identity-qr-container"
                 >
                   <qrcode-vue
@@ -259,13 +259,13 @@
                     level="H"
                     data-test="profile-identity-qr"
                   />
-                  <q-skeleton v-else size="240px" square />
+                  <q-skeleton v-else class="identity-qr-placeholder" square />
                 </div>
                 <div class="text-caption text-grey-7 q-mt-sm">
                   {{ $t('profileDialog.scanPrompt') }}
                 </div>
               </div>
-              <div class="col-12 col-md-7">
+              <div class="identity-details">
                 <div class="text-h5 text-weight-bold text-primary q-mb-xs">
                   {{ internalName || $t('profile.unnamed') }}
                 </div>
@@ -313,7 +313,7 @@
                       size="md"
                       class="q-mr-sm"
                     />
-                    <div>
+                    <div class="identity-explainer-text">
                       <div class="text-caption text-weight-bold">
                         {{ $t('profileDialog.receiveVsIdentityTitle') }}
                       </div>
@@ -683,3 +683,41 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.identity-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+  min-width: 0;
+}
+
+.identity-qr-column {
+  flex: 0 1 280px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.identity-qr-card {
+  box-sizing: border-box;
+  max-width: 100%;
+}
+
+.identity-qr-card :deep(canvas),
+.identity-qr-placeholder {
+  display: block;
+  width: min(240px, 100%) !important;
+  height: auto !important;
+  aspect-ratio: 1;
+}
+
+.identity-details {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.identity-explainer-text {
+  min-width: 0;
+}
+</style>

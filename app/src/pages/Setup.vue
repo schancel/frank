@@ -142,6 +142,15 @@
                     @click="switchToOpenTab"
                   />
                 </q-card-actions>
+                <q-card-section
+                  v-if="showManualTabHint"
+                  class="text-body2 text-grey-8 q-pt-none"
+                  role="status"
+                  aria-live="polite"
+                  data-test="switch-tab-help"
+                >
+                  {{ $t('accountRecovery.manual_tab_switch_hint') }}
+                </q-card-section>
               </q-card>
             </div>
           </template>
@@ -941,6 +950,7 @@ const t = useTranslate()
 const ceremony = createAccountCeremony()
 const passkeysSupported = supportsMeraPasskeys()
 const tabCoordinator = useTabCoordinatorStore()
+const showManualTabHint = ref(false)
 
 const defaultRelayUrl = getDefaultRelayBaseUrl()
 const customRelayUrl = ref(getCustomRelayBaseUrl() ?? defaultRelayUrl)
@@ -1006,6 +1016,7 @@ async function takeoverHere() {
 
 function switchToOpenTab() {
   tabCoordinator.requestTabFocus()
+  showManualTabHint.value = true
 }
 
 watch(

@@ -5,6 +5,10 @@ import {
   verifyEvmWalletRpcIdentity,
 } from './evm-wallet-verification'
 import { reactive, readonly } from 'vue'
+import { HDNodeWallet, getAddress } from 'ethers'
+import { bip32MasterFromDomainRoot } from '@frank/wallet/bip32-domain-root'
+import { MONAD_IDENTITY_DERIVATION_PATH } from '@frank/wallet/monad-identity'
+import type { TempoPathUsdSigner } from '@frank/wallet/chain/tempo-pathusd-operation'
 import { toHex } from '@frank/codec'
 import {
   activeChain,
@@ -947,6 +951,59 @@ export function createAccountSession(deps: {
         throw new AccountPurposeUnavailableError(purpose)
       }
       return material.bytes
+    },
+    /** A revocable Tempo signing capability; no private material survives a signing call. */
+    async createTempoMainAccountSigner(
+      chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',
+    ): Promise<TempoPathUsdSigner> {
+      const entry = getChainRegistryEntry(chainIdentifier)
+      if (entry?.kind !== 'tempo')
+        throw new Error(`Tempo wallet unavailable for ${chainIdentifier}`)
+      const checkCurrent = captureDerivation()
+      const owner = await session.getWallet()
+      checkCurrent()
+      const requireCurrent = () => {
+        checkCurrent()
+        if (state.status !== 'ready' || wallet !== owner)
+          throw new CustodyError('closed')
+      }
+      const derive = async () => {
+        requireCurrent()
+        const material = await session.getActiveFamilyMaterial('evm-wallet')
+        try {
+          requireCurrent()
+          const master =
+            'seed' in material
+              ? HDNodeWallet.fromSeed(material.seed)
+              : bip32MasterFromDomainRoot(material, 'evm-wallet')
+          const node = master.derivePath(MONAD_IDENTITY_DERIVATION_PATH)
+          requireCurrent()
+          return node
+        } finally {
+          if ('seed' in material) material.seed.fill(0)
+          else material.bytes.fill(0)
+        }
+      }
+      const address = getAddress((await derive()).address).toLowerCase()
+      requireCurrent()
+      return {
+        source: { kind: 'main', address },
+        async signDigest(digest: string) {
+          if (!/^0x[0-9a-f]{64}$/i.test(digest))
+            throw new Error('Invalid Tempo signing digest')
+          const node = await derive()
+          if (getAddress(node.address).toLowerCase() !== address)
+            throw new CustodyError('conflict')
+          requireCurrent()
+          const signature = node.signingKey.sign(digest)
+          requireCurrent()
+          return {
+            r: signature.r,
+            s: signature.s,
+            yParity: signature.yParity as 0 | 1,
+          }
+        },
+      }
     },
     async getSolanaSigner() {
       const checkCurrent = captureDerivation()

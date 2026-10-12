@@ -198,7 +198,7 @@ describe('Tempo PathUSD transfer ownership', () => {
     }
   })
 
-  test('two already-open stores cannot reserve the same Tempo source and nonce', async () => {
+  test('two cached tabs share one nonce claim and preserve exposed and replacement attempts', async () => {
     const durable = new Map<string, TempoPathUsdOperation>()
     const openTab = () => {
       const cache = new Map(durable)
@@ -213,6 +213,12 @@ describe('Tempo PathUSD transfer ownership', () => {
           if (JSON.stringify(durable.get(key)) !== JSON.stringify(expected)) return false
           durable.set(key, structuredClone(row))
           cache.set(key, structuredClone(row))
+          return true
+        },
+        compareAndDelete: async (key: string, expected: TempoPathUsdOperation) => {
+          if (JSON.stringify(durable.get(key)) !== JSON.stringify(expected)) return false
+          durable.delete(key)
+          cache.delete(key)
           return true
         },
         delete: async (key: string) => { durable.delete(key); cache.delete(key) },
@@ -239,6 +245,22 @@ describe('Tempo PathUSD transfer ownership', () => {
     expect(attempts.filter(result => result.status === 'fulfilled')).toHaveLength(1)
     expect(attempts.filter(result => result.status === 'rejected')).toHaveLength(1)
     expect(durable.size).toBe(1)
+
+    const submitted = await second.transfers.submit(ID, second.signer)
+    expect(submitted.exposed).toBe(true)
+    await expect(first.transfers.abandonUnexposed(ID)).rejects.toThrow('cannot be abandoned')
+    expect((await first.transfers.reconcile(ID)).transactionHash).toBe(submitted.transactionHash)
+
+    first.raiseFee()
+    const replacement = await first.transfers.replaceFee(ID, first.signer, 300n)
+    expect(replacement.priorAttempts).toHaveLength(1)
+    expect(replacement.priorAttempts[0]!.transactionHash).toBe(submitted.transactionHash)
+    expect(replacement.transactionHash).not.toBe(submitted.transactionHash)
+    expect((await second.transfers.reconcile(ID)).transactionHash).toBe(replacement.transactionHash)
+    const replayed = await second.transfers.submit(ID, second.signer)
+    expect(replayed.transactionHash).toBe(replacement.transactionHash)
+    expect(replayed.priorAttempts).toEqual(replacement.priorAttempts)
+    expect(harness(openTab()).journal.get(ID)).toEqual(replayed)
   })
 
   test('prepared or ambiguous spend holds PathUSD source balance across concurrent operations and restart', async () => {

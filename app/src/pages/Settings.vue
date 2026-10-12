@@ -284,7 +284,11 @@
                       no-caps
                       size="sm"
                       color="grey-7"
-                      :label="emailGatewayStatus === 'changed' ? 'Accept relay gateway' : 'Use relay gateway'"
+                      :label="
+                        emailGatewayStatus === 'changed'
+                          ? 'Accept relay gateway'
+                          : 'Use relay gateway'
+                      "
                       data-test="reset-email-gateway-btn"
                       data-testid="reset-email-gateway-btn"
                       @click="resetEmailGateway"

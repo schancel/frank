@@ -36,12 +36,13 @@ describe('email gateway settings', () => {
     ).toEqual({})
     expect(
       await restoreSettings({
-        get: async () => JSON.stringify({
-          emailGatewayOverride: {
-            chainIdentifier: 'monad-testnet',
-            address: advertised.address,
-          },
-        }),
+        get: async () =>
+          JSON.stringify({
+            emailGatewayOverride: {
+              chainIdentifier: 'monad-testnet',
+              address: advertised.address,
+            },
+          }),
       } as any),
     ).toEqual({})
   })
@@ -121,9 +122,18 @@ describe('email gateway settings', () => {
   it('blocks a changed mail domain even when the relay and identity address match', async () => {
     const store = useSettingsStore()
     discover.mockResolvedValueOnce(advertised)
-    await store.refreshEmailGateway('https://relay.example.test', activeChain.chainIdentifier)
-    discover.mockResolvedValueOnce({ ...advertised, domain: 'other.example.test' })
-    await store.refreshEmailGateway('https://relay.example.test', activeChain.chainIdentifier)
+    await store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    discover.mockResolvedValueOnce({
+      ...advertised,
+      domain: 'other.example.test',
+    })
+    await store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
     expect(store.emailGatewayStatus).toBe('changed')
     expect(store.emailGatewayAddress).toBe('')
   })
@@ -131,7 +141,10 @@ describe('email gateway settings', () => {
   it('does not use an advertisement verified for another selected network', async () => {
     const store = useSettingsStore()
     discover.mockResolvedValueOnce(advertised)
-    await store.refreshEmailGateway('https://relay.example.test', activeChain.chainIdentifier)
+    await store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
     store.emailGatewayVerifiedNetwork = 'ethereum-sepolia'
     expect(store.emailGatewayAddress).toBe('')
   })
@@ -145,7 +158,9 @@ describe('email gateway settings', () => {
     store.emailGatewayOverride = {
       address: '0x5555555555555555555555555555555555555555',
     }
-    expect(store.emailGatewayAddress).toBe('0x5555555555555555555555555555555555555555')
+    expect(store.emailGatewayAddress).toBe(
+      '0x5555555555555555555555555555555555555555',
+    )
     expect(() => store.setEmailGatewayAddress('0x123')).toThrow(
       /Invalid Ethereum address/,
     )

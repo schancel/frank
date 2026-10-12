@@ -43,7 +43,8 @@ function validAcceptedIdentity(
 ): value is AcceptedGatewayIdentity {
   return (
     validIdentity(value) &&
-    typeof (value as unknown as Record<string, unknown>).relayOrigin === 'string' &&
+    typeof (value as unknown as Record<string, unknown>).relayOrigin ===
+      'string' &&
     typeof (value as unknown as Record<string, unknown>).domain === 'string'
   )
 }
@@ -103,8 +104,7 @@ export const useSettingsStore = defineStore('settings', {
   }),
   getters: {
     emailGatewayAddress(state): string {
-      if (state.emailGatewayOverride)
-        return state.emailGatewayOverride.address
+      if (state.emailGatewayOverride) return state.emailGatewayOverride.address
       if (
         state.emailGatewayStatus !== 'ready' ||
         state.emailGatewayVerifiedNetwork !== activeChain.chainIdentifier

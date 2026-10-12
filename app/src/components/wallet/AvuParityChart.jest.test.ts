@@ -747,3 +747,14 @@ describe('selected coin price history', () => {
     expect(source).toContain('overflow-wrap: anywhere;')
   })
 })
+
+it('discloses omitted fees on subsidy-only price history', () => {
+  const feed = testFeed([NOW - 60], { prices: { 'monad-mainnet': 0.025 } })
+  feed.series['minerSubsidy/btc-mainnet'] =
+    feed.series['minerRevenue/btc-mainnet']
+  delete feed.series['minerRevenue/btc-mainnet']
+  receive(feed)
+  const wrapper = mountChart()
+  expect(wrapper.text()).toContain(en.walletPanel.avuFeesExcluded)
+  wrapper.unmount()
+})

@@ -149,6 +149,12 @@
           <q-tooltip max-width="280px">
             <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
             <div>{{ $t('chatInput.stampWhat') }}</div>
+            <div
+              v-if="defaultStampMode && stampBasisNote"
+              data-testid="stamp-basis-note"
+            >
+              {{ stampBasisNote }}
+            </div>
           </q-tooltip>
           <q-menu anchor="top middle" self="bottom middle">
             <div class="q-pa-md" style="min-width: 320px">
@@ -163,6 +169,12 @@
                 data-testid="stamp-explanation"
               >
                 <div>{{ $t('chatInput.stampWhat') }}</div>
+                <div
+                  v-if="defaultStampMode && stampBasisNote"
+                  data-testid="stamp-basis-note"
+                >
+                  {{ stampBasisNote }}
+                </div>
                 <div class="q-mt-xs">{{ $t('chatInput.stampWhy') }}</div>
               </div>
 
@@ -320,6 +332,7 @@ export default defineComponent({
     },
     defaultStampMode: { type: Boolean, default: true },
     stampUnavailable: { type: String, default: '' },
+    stampBasisNote: { type: String, default: '' },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
     // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its
     // focus (seen in Chromium) and ignores keystrokes until the send ends, so the first characters

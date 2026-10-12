@@ -1,3 +1,4 @@
+import { miningFeeCoverage } from "./energy-basket";
 import { ORACLE_REFRESH_INTERVAL_MS } from "@frank/price-feeds";
 import {
   ASSET_DECIMALS,
@@ -70,6 +71,7 @@ export function createStampDefaultResolver(options: {
       config: options.config,
       avuPerCoin: hash ? rates.rates[options.asset] : undefined,
       rateAt: priceAt,
+      rateFeeCoverage: hash ? miningFeeCoverage(hash) : undefined,
       rateStale: stale,
       minimumStamp: context.minimumStamp,
     });

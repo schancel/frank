@@ -356,3 +356,16 @@ describe('AVU dollar reference details', () => {
     expect(wrapper.text()).not.toMatch(/AVU_hash|AVU_spot/)
   })
 })
+
+test('discloses subsidy-only mining basis on the reference page', () => {
+  const feed = testFeed([NOW - 60])
+  feed.series['minerSubsidy/btc-mainnet'] =
+    feed.series['minerRevenue/btc-mainnet']
+  delete feed.series['minerRevenue/btc-mainnet']
+  receive(feed)
+  const wrapper = mountPage()
+  expect(wrapper.get('[data-test="avu-fees-excluded"]').text()).toBe(
+    en.walletPanel.avuFeesExcluded,
+  )
+  wrapper.unmount()
+})

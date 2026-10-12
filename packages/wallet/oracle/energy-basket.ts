@@ -76,6 +76,8 @@ export interface AvuHashEntry {
   weight: number
   /** The efficiency figure used is an estimate (see the series' estimatedBefore). */
   estimated: boolean
+  /** False when any chain used observed miner subsidy with unavailable fees. */
+  feesIncluded: boolean
 }
 
 /** Which input a left-out entry lacks at the time asked about. */
@@ -119,13 +121,18 @@ export function avuHashAt(
     let marketCap = 0
     let entryOldest = Infinity
     let entryStale = false
+    let feesIncluded = true
     for (const chain of reason ? [] : entry.chains) {
       const read = (
-        kind: 'price' | 'marketCap' | 'hashrate' | 'minerRevenue',
+        kind:
+          | 'price'
+          | 'marketCap'
+          | 'hashrate'
+          | 'minerRevenue'
+          | 'minerSubsidy',
       ) => {
         const one = inputs.series[seriesName(kind, chain.chain)]
         const point = at(one?.points, t)
-        if (point && one?.stale) entryStale = true
         return point
       }
       const price = read('price')
@@ -135,7 +142,11 @@ export function avuHashAt(
       }
       const cap = read('marketCap')
       const hashrate = read('hashrate')
-      const reward = read('minerRevenue')
+      const revenue = read('minerRevenue')
+      const subsidy = read('minerSubsidy')
+      const exact = revenue && hashrate && revenue[0] === hashrate[0]
+      const reward = exact ? revenue : subsidy
+      feesIncluded = feesIncluded && Boolean(exact)
       if (
         !cap ||
         !hashrate ||
@@ -150,6 +161,12 @@ export function avuHashAt(
         reason = 'chain'
         break
       }
+      entryStale ||= [
+        'price',
+        'marketCap',
+        'hashrate',
+        exact ? 'minerRevenue' : 'minerSubsidy',
+      ].some(kind => inputs.series[`${kind}/${chain.chain}`]?.stale)
       valuePerHash += (price[1] * reward[1]) / hashrate[1]
       marketCap += cap[1]
       entryOldest = Math.min(entryOldest, price[0], cap[0], hashrate[0])
@@ -169,6 +186,7 @@ export function avuHashAt(
       valuePerKwh,
       kwhPerValue: 1 / valuePerKwh,
       marketCap,
+      feesIncluded,
       estimated:
         efficiencySeries?.estimatedBefore !== undefined &&
         efficiency[0] < efficiencySeries.estimatedBefore,
@@ -241,4 +259,18 @@ export function avuSpotAt(inputs: OracleInputs, t: number): AvuSpot {
     at: point[0],
     stale,
   }
+}
+
+export type MiningFeeCoverage = 'included' | 'subsidy-only' | 'mixed'
+
+/** Basis used by the calculation, also carried by default stamp quotes. */
+export function miningFeeCoverage(
+  hash: Pick<AvuHash, 'entries'>,
+): MiningFeeCoverage {
+  const included = hash.entries.filter(entry => entry.feesIncluded).length
+  return included === hash.entries.length
+    ? 'included'
+    : included === 0
+    ? 'subsidy-only'
+    : 'mixed'
 }

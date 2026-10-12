@@ -50,6 +50,11 @@ describe('observed mining receipts and work', () => {
         firstBlock: 100,
         lastBlock: 109,
       })
+      const subsidyOnly = await fetchMiningStats(chain as string, {
+        fetchFn: responses({}, { 'sum(fee_total)': undefined }),
+      })
+      expect(subsidyOnly?.subsidyCoins24h).toBe(1e9 / Number(unit))
+      expect(subsidyOnly?.feeCoins24h).toBeUndefined()
       const query = new URL((fetchFn as jest.Mock).mock.calls[1][0])
         .searchParams
       expect(query.get('q')).toBe('id(100..109)')
@@ -80,30 +85,59 @@ describe('observed mining receipts and work', () => {
     ).toBe(0)
   })
   it.each([null, undefined, '', 'bad', -1, Infinity, true])(
-    'rejects missing/malformed fee data %p',
+    'keeps observed subsidy but never fabricates missing/malformed fees %p',
     async fee => {
       expect(
         await fetchMiningStats('bitcoin', {
           fetchFn: responses({}, { 'sum(fee_total)': fee }),
         }),
-      ).toBeNull()
+      ).toMatchObject({ subsidyCoins24h: 10 })
+      expect(
+        (
+          await fetchMiningStats('bitcoin', {
+            fetchFn: responses({}, { 'sum(fee_total)': fee }),
+          })
+        )?.feeCoins24h,
+      ).toBeUndefined()
     },
   )
   it.each([
     { 'count()': 9 },
     { 'sum(generation)': 999 },
     { 'sum(generation)': null },
-  ])('rejects a mismatched block observation %p', async aggregate => {
-    expect(
-      await fetchMiningStats('bitcoin', { fetchFn: responses({}, aggregate) }),
-    ).toBeNull()
-  })
+  ])(
+    'does not label mismatched aggregate receipts as observed fees %p',
+    async aggregate => {
+      expect(
+        await fetchMiningStats('bitcoin', {
+          fetchFn: responses({}, aggregate),
+        }),
+      ).toMatchObject({ subsidyCoins24h: 10 })
+      expect(
+        (
+          await fetchMiningStats('bitcoin', {
+            fetchFn: responses({}, aggregate),
+          })
+        )?.feeCoins24h,
+      ).toBeUndefined()
+    },
+  )
   it.each([0, null, undefined, Infinity, 'NaN'])(
     'never substitutes difficulty for absent hashrate %p',
     async h => {
       expect(
         await fetchMiningStats('bitcoin', {
           fetchFn: responses({ hashrate_24h: h }),
+        }),
+      ).toBeNull()
+    },
+  )
+  it.each([null, undefined, 0, -1, 'bad'])(
+    'requires observed stats issuance %p even for subsidy-only',
+    async issuance => {
+      expect(
+        await fetchMiningStats('bitcoin', {
+          fetchFn: responses({ inflation_24h: issuance }),
         }),
       ).toBeNull()
     },
@@ -115,7 +149,7 @@ describe('observed mining receipts and work', () => {
       }),
     ).toBeNull()
   })
-  it('returns unavailable on failed aggregate, not subsidy-only stats', async () => {
+  it('retains explicitly subsidy-only stats on failed fee aggregate', async () => {
     const fetchFn = jest
       .fn()
       .mockResolvedValueOnce({
@@ -132,6 +166,9 @@ describe('observed mining receipts and work', () => {
         }),
       })
       .mockResolvedValueOnce({ ok: false }) as unknown as typeof fetch
-    expect(await fetchMiningStats('bitcoin', { fetchFn })).toBeNull()
+    expect(await fetchMiningStats('bitcoin', { fetchFn })).toMatchObject({
+      subsidyCoins24h: 0.000001,
+      hashrate24h: 100,
+    })
   })
 })

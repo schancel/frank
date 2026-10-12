@@ -139,7 +139,7 @@
       "type": "object",
       "propertyNames": {
         "description": "<kind>/<id>. For price: a mainnet chain id (the chain's native coin) or a token id (usdc, usdt).",
-        "pattern": "^(price|marketCap|hashrate|minerRevenue|efficiency|electricity)/[a-z0-9-]+$"
+        "pattern": "^(price|marketCap|hashrate|minerRevenue|minerSubsidy|efficiency|electricity)/[a-z0-9-]+$"
       },
       "additionalProperties": {
         "type": "object",

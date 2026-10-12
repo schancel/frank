@@ -42,6 +42,15 @@
             </div>
             <p class="text-body2" data-test="avu-reference-measurement">
               {{ t('walletPanel.avuReferenceMeasurement') }}
+              <span
+                v-if="
+                  oracle.current?.avuHash?.entries.some(
+                    entry => !entry.feesIncluded,
+                  )
+                "
+                data-test="avu-fees-excluded"
+                >{{ t('walletPanel.avuFeesExcluded') }}</span
+              >
             </p>
             <div
               class="reference-legend q-mb-sm"
@@ -338,6 +347,7 @@ const observations = computed(() => {
         'marketCap',
         'hashrate',
         'minerRevenue',
+        'minerSubsidy',
       ] as const)
         names.add(seriesName(kind, chain.chain))
   }
@@ -354,6 +364,7 @@ const observations = computed(() => {
         at,
         hash: hash?.kwhPerValue,
         estimated: hash?.entries.some(entry => entry.estimated),
+        feesExcluded: hash?.entries.some(entry => !entry.feesIncluded),
         spot: avuSpotAt(feed, at).kwhPerValue,
       }
     })
@@ -486,6 +497,9 @@ const historyNote = computed(() => {
   if (!count) return t('walletPanel.avuReferenceNoHistory')
   return [
     t('walletPanel.avuReferencePointCount', { count }),
+    observations.value.some(point => point.feesExcluded)
+      ? t('walletPanel.avuFeesExcluded')
+      : '',
     observations.value.some(point => point.estimated)
       ? t('walletPanel.avuHashEstimated')
       : '',

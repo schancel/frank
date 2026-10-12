@@ -6,8 +6,8 @@ export interface MiningStats {
   chain: string
   /** Whole coins newly issued in the observed 24-hour block set. */
   subsidyCoins24h: number
-  /** Fees in the same block set; zero is valid, absence is unavailable. */
-  feeCoins24h: number
+  /** Actual fees in the same block set; undefined means unavailable, never zero. */
+  feeCoins24h?: number
   /** Upstream observed-work estimate, hashes/second over 24 hours. */
   hashrate24h: number
   /** Provider block-time endpoint of the trailing observation, Unix seconds. */
@@ -63,11 +63,13 @@ export async function fetchMiningStats(
     const observationEnd = utcTimestamp(stats?.best_block_time)
     const hashrate24h = positive(stats?.hashrate_24h)
     const circulatingCoins = positive(stats?.circulation)
+    const issuance = positive(stats?.inflation_24h)
     if (
       !Number.isSafeInteger(blocks) ||
       blocks <= 0 ||
       !Number.isSafeInteger(lastBlock) ||
       lastBlock < blocks - 1 ||
+      issuance === undefined ||
       observationEnd === undefined ||
       hashrate24h === undefined ||
       circulatingCoins === undefined
@@ -81,29 +83,34 @@ export async function fetchMiningStats(
       a: 'sum(fee_total),sum(generation),count()',
       q: `id(${firstBlock}..${lastBlock})`,
     })
-    const aggregateResponse = await fetchFn(
-      `${BLOCKCHAIR_API_BASE}/${chain}/blocks?${query}`,
-      { signal: controller.signal, headers: { Accept: 'application/json' } },
-    )
-    if (!aggregateResponse.ok) return null
-    const rows = (await aggregateResponse.json())?.data
-    if (!Array.isArray(rows) || rows.length !== 1) return null
-    const row = rows[0]
-    const generation = positive(row?.['sum(generation)'])
-    const fees = nonnegative(row?.['sum(fee_total)'])
-    const issuance = positive(stats?.inflation_24h)
-    if (
-      generation === undefined ||
-      fees === undefined ||
-      issuance === undefined ||
-      row?.['count()'] !== blocks ||
-      generation !== issuance
-    )
-      return null
+    // Subsidy/work remain observed even when the optional exact fee source fails.
+    let feeCoins24h: number | undefined
+    try {
+      const aggregateResponse = await fetchFn(
+        `${BLOCKCHAIR_API_BASE}/${chain}/blocks?${query}`,
+        { signal: controller.signal, headers: { Accept: 'application/json' } },
+      )
+      if (aggregateResponse.ok) {
+        const rows = (await aggregateResponse.json())?.data
+        if (Array.isArray(rows) && rows.length === 1) {
+          const row = rows[0]
+          const generation = positive(row?.['sum(generation)'])
+          const fees = nonnegative(row?.['sum(fee_total)'])
+          if (
+            generation === issuance &&
+            fees !== undefined &&
+            row?.['count()'] === blocks
+          )
+            feeCoins24h = fees / unit
+        }
+      }
+    } catch {
+      // Transport, decoding and timeout failures do not turn absent fees into zero.
+    }
     return {
       chain,
-      subsidyCoins24h: generation / unit,
-      feeCoins24h: fees / unit,
+      subsidyCoins24h: issuance / unit,
+      ...(feeCoins24h === undefined ? {} : { feeCoins24h }),
       hashrate24h,
       observationEnd,
       firstBlock,

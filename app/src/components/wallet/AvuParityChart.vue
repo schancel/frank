@@ -519,6 +519,7 @@ interface DataPoint {
   at: number
   value: number
   estimated?: boolean
+  feesExcluded?: boolean
 }
 
 interface Series {
@@ -583,6 +584,7 @@ const rangeSeries = computed<Series[]>(() => {
         at: time,
         value: value * unit.value.multiplier,
         estimated: hash?.entries.some(entry => entry.estimated),
+        feesExcluded: hash?.entries.some(entry => !entry.feesIncluded),
       })
     else gaps.push(time)
   }
@@ -896,6 +898,8 @@ const dataNote = computed(() => {
   if (drawn.length === 1) parts.push(t('walletPanel.priceHistorySinglePoint'))
   if (series.value.some(line => line.points.some(point => point.estimated)))
     parts.push(t('walletPanel.avuHashEstimated'))
+  if (series.value.some(line => line.points.some(point => point.feesExcluded)))
+    parts.push(t('walletPanel.avuFeesExcluded'))
   if (oracle.valuesAreTestnet) parts.push(t('walletPanel.chartNoteTestnet'))
   return parts.join(' ')
 })

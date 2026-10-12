@@ -197,7 +197,10 @@ that is not yet due after a restart is not repeated.
   One additional `<provider-chain>/blocks` aggregate per chain requests
   `a=sum(fee_total),sum(generation),count()` scoped to `id(tip-count+1..tip)`.
   Revenue is accepted only when count and issuance match the stats snapshot exactly; missing
-  or invalid fees never become zero. `hashrate/<chain>` is observed hashes/s and
+  or invalid fees never become zero. When fees are unavailable, the separately named
+  `minerSubsidy/<chain>` series supplies an explicit subsidy-only lower-bound estimate
+  (coins/s, transaction fees excluded); consumers prefer matching-timestamp total revenue
+  and disclose when using this estimate. `hashrate/<chain>` is observed hashes/s and
   `minerRevenue/<chain>` is `(issuance + fees) / 10^decimals / 86400`, times the dated
   consensus miner share (eCash: 0.58 applied to total coinbase; per-block satoshi rounding
   is not modelled). Both points share one collection timestamp; windows crossing a share

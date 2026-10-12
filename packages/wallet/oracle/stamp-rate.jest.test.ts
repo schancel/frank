@@ -92,7 +92,10 @@ describe("host observations for AVU stamp defaults", () => {
       reason: "unsupported",
     });
     expect(
-      await resolver(getRates)({ ...context, chainIdentifier: "monad-mainnet" })
+      await resolver(getRates)({
+        ...context,
+        chainIdentifier: "monad-mainnet",
+      })
     ).toMatchObject({ reason: "unsupported" });
     expect(getRates).not.toHaveBeenCalled();
   });
@@ -127,4 +130,16 @@ it("accepts an adapter zero fee floor, distinct from a missing fee estimate", as
     await resolve({ chainIdentifier: context.chainIdentifier })
   ).toMatchObject({ reason: "missing-fee" });
   expect(getRates).not.toHaveBeenCalled();
+});
+
+it("carries the subsidy-only rate basis into the native default quote", async () => {
+  const rates = observation();
+  Object.assign(rates.avuHash, {
+    entries: [{ id: "bitcoin", label: "Bitcoin", feesIncluded: false }],
+  });
+  expect(await resolver(() => rates)(context)).toMatchObject({
+    status: "available",
+    amount: 400000000000000000n,
+    rateFeeCoverage: "subsidy-only",
+  });
 });

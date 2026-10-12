@@ -600,7 +600,7 @@ export default {
     avuReferenceMeasurement:
       'Un AVU représente un kilowattheure. Ces courbes montrent sa valeur en dollars américains selon les mesures du minage et des prix de gros de l’électricité.',
     avuReferenceSampling:
-      'La mesure du minage utilise les prix des monnaies, les récompenses de bloc, la difficulté, l’efficacité du matériel et les pondérations par capitalisation. Les données historiques incluent des moyennes mensuelles et des changements datés ; chaque valeur reste valable jusqu’à l’observation suivante. Les variations peuvent provenir de chacun de ces paramètres, et pas seulement de la difficulté.',
+      'La mesure du minage utilise les prix des monnaies, les recettes de minage et le taux de hachage observés, l’efficacité du matériel et les pondérations par capitalisation. Les données historiques incluent des moyennes mensuelles et des changements datés ; chaque valeur reste valable jusqu’à l’observation suivante. Les variations peuvent provenir de chacun de ces paramètres, et pas seulement de la difficulté.',
     tabParity: 'Historique des prix',
     tabSwap: 'Échange instantané',
     swapUnavailable: 'Échange instantané indisponible',
@@ -662,6 +662,8 @@ export default {
     sourceUnit:
       'AVU : 1 AVU = 1 kWh. AVU_hash est l’énergie que vaut une unité de valeur, en moyenne sur un panier de monnaies minées pondéré par la capitalisation avec Bitcoin plafonné à 60 % ; pour chaque entrée, rémunération par kWh = prix × récompense de bloc du mineur ÷ hachages attendus par bloc × hachages par kWh. Toute valeur en AVU est un prix multiplié par AVU_hash.',
     avuHashValue: '{used} entrées du panier sur {total}',
+    avuFeesExcluded:
+      'Les frais de minage sont indisponibles pour une partie de cette estimation ; ces données utilisent uniquement la subvention des mineurs.',
     avuHashEstimated:
       'Une entrée repose sur une efficacité matérielle estimée.',
     avuSpotValue: 'Un kWh de gros coûte {avu} AVU',

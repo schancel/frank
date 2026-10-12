@@ -558,3 +558,19 @@ describe('orders-of-magnitude stamp slider (Issue #819)', () => {
     expect(emitted[0][0]).toBe((10n ** 17n).toString())
   })
 })
+
+it('discloses the basis of the AVU default stamp without attaching it to an explicit amount', async () => {
+  const wrapper = mount(ChatInput, {
+    props: {
+      stampBasisNote: enUS.walletPanel.avuFeesExcluded,
+      defaultStampMode: true,
+    },
+    global: globalOptions,
+  })
+  expect(wrapper.get('[data-testid="stamp-basis-note"]').text()).toBe(
+    enUS.walletPanel.avuFeesExcluded,
+  )
+  await wrapper.setProps({ defaultStampMode: false })
+  expect(wrapper.find('[data-testid="stamp-basis-note"]').exists()).toBe(false)
+  wrapper.unmount()
+})

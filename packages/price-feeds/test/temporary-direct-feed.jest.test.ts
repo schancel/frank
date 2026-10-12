@@ -164,7 +164,7 @@ describe('the latest answer, filled directly', () => {
     expect(feed.series['minerRevenue/xec-mainnet']).toBeUndefined()
   })
 
-  it('uses the historical share when an old observation arrives after the split', async () => {
+  it('suppresses an ambiguous pre-split tip collected after activation', async () => {
     const fetched = Date.parse('2023-11-17T12:00:00Z')
     const feed = await directLatestFeed({
       now: () => fetched,
@@ -175,9 +175,27 @@ describe('the latest answer, filled directly', () => {
         observationEnd: seconds('2023-11-14'),
       }),
     })
-    expect(feed.series['minerRevenue/xec-mainnet'].points[0][1]).toBeCloseTo(
-      ((3_125_000 + 100_000) * 0.92) / 86_400,
-      6,
+    expect(feed.series['minerRevenue/xec-mainnet']).toBeUndefined()
+    expect(feed.series['minerSubsidy/xec-mainnet']).toBeUndefined()
+  })
+
+  it('publishes explicit net miner subsidy when fees cannot be observed', async () => {
+    const feed = await directLatestFeed({
+      now: () => NOW,
+      fetchPrices: everyPrice,
+      fetchGold: async () => null,
+      fetchStats: async chain => ({ ...stats(chain), feeCoins24h: undefined }),
+    })
+    expect(parseOracleFeed(JSON.parse(JSON.stringify(feed)))).toBeDefined()
+    expect(feed.series['minerRevenue/xec-mainnet']).toBeUndefined()
+    expect(feed.series['minerSubsidy/xec-mainnet'].points[0][1]).toBeCloseTo(
+      (3_125_000 * 0.58) / 86400,
+    )
+    expect(feed.series['minerSubsidy/xec-mainnet'].source).toContain(
+      'fees unavailable',
+    )
+    expect(feed.series['minerSubsidy/btc-mainnet'].points[0][0]).toBe(
+      feed.series['hashrate/btc-mainnet'].points[0][0],
     )
   })
 

@@ -486,7 +486,12 @@ export async function directLatestFeed(
     // The caller's own series already hold this hour's reading: nothing to add to it.
     if (!stats && heldFresh.has(asset)) continue
     if (!stats) {
-      for (const kind of ['marketCap', 'hashrate', 'minerRevenue'] as const) {
+      for (const kind of [
+        'marketCap',
+        'hashrate',
+        'minerRevenue',
+        'minerSubsidy',
+      ] as const) {
         fallback(seriesName(kind, asset))
       }
       continue
@@ -495,7 +500,10 @@ export async function directLatestFeed(
     const shares = minerShare(asset)
     const share = at(shares, stats.observationEnd)?.[1] ?? 1
     // Do not apply one share to a window spanning a consensus allocation change.
-    if ((at(shares, stats.observationEnd - 86_400)?.[1] ?? 1) !== share)
+    if (
+      (at(shares, stats.observationEnd - 86_400)?.[1] ?? 1) !== share ||
+      (at(shares, statsSeconds)?.[1] ?? 1) !== share
+    )
       continue
     out[seriesName('hashrate', asset)] = live(
       'hashes/s',
@@ -503,11 +511,24 @@ export async function directLatestFeed(
       statsSeconds,
       stats.hashrate24h,
     )
-    out[seriesName('minerRevenue', asset)] = live(
-      'coins/s to the miner including fees',
-      'Blockchair exact block receipts, 24h',
+    out[
+      seriesName(
+        stats.feeCoins24h === undefined ? 'minerSubsidy' : 'minerRevenue',
+        asset,
+      )
+    ] = live(
+      stats.feeCoins24h === undefined
+        ? 'coins/s to the miner excluding fees'
+        : 'coins/s to the miner including fees',
+      stats.feeCoins24h === undefined
+        ? 'Blockchair observed issuance, 24h; fees unavailable'
+        : 'Blockchair exact block receipts, 24h',
       statsSeconds,
-      ((stats.subsidyCoins24h + stats.feeCoins24h) * share) / 86_400,
+      ((stats.feeCoins24h === undefined
+        ? stats.subsidyCoins24h
+        : stats.subsidyCoins24h + stats.feeCoins24h) *
+        share) /
+        86_400,
     )
     // The market capitalisation is a price times a supply; it has the older time of the two.
     const pricePoint = out[priceName]?.points[0]

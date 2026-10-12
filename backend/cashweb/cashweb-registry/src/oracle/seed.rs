@@ -11,11 +11,12 @@ use serde::Deserialize;
 const EMBEDDED: &str = include_str!("../../../../../docs/protocol/oracle/seed.json");
 
 /// The kinds of series the feed serves.
-pub const SERIES_KINDS: [&str; 6] = [
+pub const SERIES_KINDS: [&str; 7] = [
     "price",
     "marketCap",
     "hashrate",
     "minerRevenue",
+    "minerSubsidy",
     "efficiency",
     "electricity",
 ];

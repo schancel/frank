@@ -1665,7 +1665,7 @@ export default {
     newSwap: 'Nouvel échange',
     progressConsolidating: 'Transfert des fonds vers le compte d’échange…',
     progressApproving: 'Approbation du montant exact ({step} sur {of})…',
-    progressSigning: 'Signature de l’échange…',
+    progressSigning: 'Préparation et envoi de l’échange…',
     progressSubmitted: 'Envoyé. En attente de la confirmation du réseau…',
     progressKeepOpen:
       'Vous pouvez quitter cette page : l’échange est enregistré et apparaît dans les échanges récents.',
@@ -1786,7 +1786,7 @@ export default {
     checkAgain: 'Vérifier à nouveau',
     newSwap: 'Nouvel échange',
     stage: {
-      submitting: 'Préparation et envoi…',
+      signing: 'Signature…',
       submitted: 'Envoyé. En attente de confirmation par le réseau…',
       confirmed: 'Échange terminé',
       failed: 'Échange échoué',
@@ -1794,8 +1794,8 @@ export default {
       unknown: 'Vérification de cet échange en cours',
     },
     stageNote: {
-      submitting:
-        'Votre portefeuille vérifie les fonds, enregistre l’opération, signe et envoie l’échange.',
+      signing:
+        'Votre portefeuille signe l’échange. Rien n’a encore été envoyé.',
       submitted:
         'Cela prend généralement quelques secondes. Vous pouvez quitter cette page ; l’échange est enregistré et son suivi continue.',
       confirmed:

@@ -712,6 +712,22 @@ describe('confirming and executing', () => {
     })
   })
 
+  it('describes the wallet submission wait without claiming that it is only signing', async () => {
+    const s = scene()
+    s.wallet.sendContractCall.mockImplementationOnce(
+      () => new Promise(() => {}),
+    )
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    await view.get('[data-testid="swap-confirm-btn"]').trigger('click')
+    await flushPromises()
+    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
+    expect(text(view, 'swap-progress')).toContain(
+      'Preparing and submitting the swap…',
+    )
+  })
+
   it('shows a swap the network has not confirmed as pending and tells the user not to resend', async () => {
     const s = scene()
     const view = await mountPanel()

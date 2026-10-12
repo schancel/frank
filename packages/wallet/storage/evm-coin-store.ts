@@ -295,7 +295,11 @@ export async function refreshEvmErc20Position(
       throw new Error('ERC20 claim transaction hash mismatch')
     const receipt = await options.reader.getTransactionReceipt(claim.txHash)
     if (receipt === null) {
-      claims.push(claim)
+      // A formerly included transaction may have been removed by a reorganization.
+      // Absence is pending evidence, never proof of failure or retained receipt value.
+      receipts = receipts.filter(item => item.txHash !== claim.txHash)
+      const { execution: _execution, ...pending } = claim
+      claims.push(pending)
       continue
     }
     const included = await options.reader.getBlock(receipt.blockNumber)

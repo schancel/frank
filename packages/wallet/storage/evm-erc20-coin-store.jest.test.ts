@@ -181,10 +181,14 @@ describe('received ERC20 positions under the account owner', () => {
     })
     const later = await signed(usdc, amount, 1)
     coin = registerEvmErc20Payment(coin, payment(later))
-    coin = await refreshEvmErc20Position(
-      coin,
-      options(node(later, amount * 2n).reader),
-    )
+    const cumulative = node(later, amount * 2n)
+    const firstReceipt = node(raw).receipt
+    jest
+      .spyOn(cumulative.reader, 'getTransactionReceipt')
+      .mockImplementation(async txHash =>
+        txHash === firstReceipt.hash ? firstReceipt : cumulative.receipt,
+      )
+    coin = await refreshEvmErc20Position(coin, options(cumulative.reader))
     expect(coin.erc20Positions![0]!.claims).toHaveLength(2)
     expect(coin.erc20Positions![0]!.receipts).toHaveLength(2)
     expect(
@@ -250,6 +254,58 @@ describe('received ERC20 positions under the account owner', () => {
     await expect(
       refreshEvmErc20Position(registered, options(forged.reader)),
     ).rejects.toThrow(/inclusion/)
+  })
+
+  it('returns an orphaned successful receipt to pending after a canonical reorganization', async () => {
+    const raw = await signed()
+    const store = new MemoryRecordStore<EvmCoin>()
+    await recordStoredEvmCoin(store, account())
+    await registerStoredEvmErc20Payment(store, account().address, payment(raw))
+    await refreshStoredEvmErc20Position(
+      store,
+      account().address,
+      options(node(raw).reader),
+    )
+    expect(view(store.get(account().address)!)[0]).toMatchObject({
+      status: 'received',
+      receivedAmountBaseUnits: amount,
+    })
+    const replacement = node(raw, 0n)
+    jest
+      .spyOn(replacement.reader, 'getBlock')
+      .mockImplementation(async tag => ({
+        hash: '0x' + 'ef'.repeat(32),
+        number: tag === 'latest' ? 11 : tag,
+      }))
+    jest
+      .spyOn(replacement.reader, 'getTransactionReceipt')
+      .mockResolvedValue(null)
+    await refreshStoredEvmErc20Position(
+      store,
+      account().address,
+      options(replacement.reader, usdc, 11),
+    )
+    const current = store.get(account().address)!
+    expect(current.erc20Positions![0]!.receipts).toEqual([])
+    expect(current.erc20Positions![0]!.claims[0]!.execution).toBeUndefined()
+    expect(view(current)[0]).toMatchObject({
+      status: 'pending',
+      receivedAmountBaseUnits: 0n,
+      balanceBaseUnits: 0n,
+    })
+    expect(fundedErc20Coins(store.all(), usdc)).toEqual([])
+    // Re-inclusion restores one membership, without duplicate receipt value.
+    await refreshStoredEvmErc20Position(
+      store,
+      account().address,
+      options(node(raw).reader, usdc, 12),
+    )
+    expect(
+      store.get(account().address)!.erc20Positions![0]!.receipts,
+    ).toHaveLength(1)
+    expect(
+      view(store.get(account().address)!)[0]!.receivedAmountBaseUnits,
+    ).toBe(amount)
   })
 
   it('preserves current native facts and rejects an out-of-order token refresh', async () => {

@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
@@ -50,6 +50,7 @@ it('real wallet factory refuses empty LevelDB namespaces, then reopens a provisi
         chainId: 10143,
         walletStorageLocation: walletBase,
         requireBoundWalletState: true,
+        walletStateExists: existsSync,
         relayBaseUrl: 'http://127.0.0.1:1',
         stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
         defaultStampValueWei: 1n,

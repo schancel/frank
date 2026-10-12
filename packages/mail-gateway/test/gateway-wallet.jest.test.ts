@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
@@ -54,6 +54,7 @@ describe('gateway wallet host admission', () => {
       chainId: 10143,
       walletStorageLocation: walletBase,
       requireBoundWalletState: true,
+      walletStateExists: existsSync,
     } as Parameters<typeof openGatewayWallet>[0]['chain'],
   });
 

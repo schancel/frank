@@ -34,6 +34,7 @@ export interface TempoPathUsdOperation {
   readonly signedRaw: string | null
   readonly transactionHash: string | null
   readonly exposed: boolean
+  readonly submission: { state: 'never' | 'accepted' | 'ambiguous' | 'inconsistent-rpc' }
   readonly observation:
     | { state: 'unknown' | 'pending' }
     | {
@@ -145,6 +146,9 @@ function validate(row: TempoPathUsdOperation): TempoPathUsdOperation {
     )
       throw new Error('Signed Tempo operation differs from its authorization')
   }
+  if (!['never', 'accepted', 'ambiguous', 'inconsistent-rpc'].includes(row.submission.state) ||
+    (row.submission.state !== 'never' && !row.exposed))
+    throw new Error('Invalid Tempo submission state')
   if ('feeAtomic' in row.observation) {
     if (
       !row.exposed ||
@@ -226,6 +230,15 @@ export class TempoPathUsdJournal {
   list(): TempoPathUsdOperation[] {
     if (this.uncertain) throw new Error('Tempo journal write outcome is uncertain')
     return this.store.all().map(validate)
+  }
+
+  /** A pending or merely prepared spend holds this account's token balance and nonce lane. */
+  hasActiveSource(chainIdentifier: TempoPathUsdOperation['chainIdentifier'], source: string): boolean {
+    return this.list().some(row =>
+      row.chainIdentifier === chainIdentifier &&
+      row.source.address === source &&
+      !row.observation.state.startsWith('included-')
+    )
   }
 
   private async write(row: TempoPathUsdOperation): Promise<TempoPathUsdOperation> {
@@ -312,6 +325,8 @@ export class TempoPathUsdTransfers {
         ) throw new Error('Tempo operation ID has a different authorization')
         return retry
       }
+      if (this.journal.hasActiveSource(this.chainIdentifier, source))
+        throw new Error('Tempo source has an unresolved PathUSD operation')
       const [nonce, balance] = await Promise.all([
         this.rpc.getPendingNonce(source),
         this.rpc.getPathUsdBalance(source),
@@ -333,6 +348,7 @@ export class TempoPathUsdTransfers {
         signedRaw: null,
         transactionHash: null,
         exposed: false,
+        submission: { state: 'never' },
         observation: { state: 'unknown' },
       }
       return this.journal.prepare(row)
@@ -360,13 +376,15 @@ export class TempoPathUsdTransfers {
     if (!row.exposed) {
       row = await this.journal.mutate(operationId, current => ({ ...current, exposed: true }))
     }
+    let submission: TempoPathUsdOperation['submission']
     try {
       const returnedHash = await this.rpc.sendRawTransaction(row.signedRaw!)
-      if (returnedHash !== row.transactionHash)
-        throw new Error('Tempo RPC returned a different transaction hash')
+      submission = { state: returnedHash === row.transactionHash ? 'accepted' : 'inconsistent-rpc' }
     } catch {
       // The signed transaction may already be in the mempool or chain. Reconcile by its exact hash.
+      submission = { state: 'ambiguous' }
     }
+    await this.journal.mutate(operationId, current => ({ ...current, submission }))
     return this.reconcile(operationId)
   }
 

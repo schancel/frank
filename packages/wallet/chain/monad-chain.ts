@@ -2325,7 +2325,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
             },
             canonicalBinding:
-              material.canonicalRoles === undefined || chainEntry.kind !== "monad"
+              material.canonicalRoles === undefined ||
+              getChainRegistryEntry(chainIdentifier)?.kind !== "monad"
                 ? undefined
                 : canonicalWalletPublicBinding(
                     material,

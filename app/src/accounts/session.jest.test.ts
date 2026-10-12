@@ -1,3 +1,31 @@
+// Load the pinned SDK's real embedded WASM in Jest/CommonJS. Only the unused async
+// URL loader needs import.meta removal; initSync and every cryptographic export stay real.
+jest.mock('ecash-lib/dist/ffi/ecash_lib_wasm_browser.js', () => {
+  const fs = jest.requireActual('node:fs')
+  const ts = jest.requireActual('typescript')
+  const source = fs
+    .readFileSync(
+      require.resolve('ecash-lib/dist/ffi/ecash_lib_wasm_browser.js'),
+      'utf8',
+    )
+    .replace('import.meta.url', "'file:///unused-jest-wasm-loader'")
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS },
+  }).outputText
+  const exports = {}
+  new Function('exports', compiled)(exports)
+  return exports
+})
+jest.mock('ecash-lib/dist/ffi/ecash_lib_wasm_bg_browser.js', () => {
+  const fs = jest.requireActual('node:fs')
+  const source = fs.readFileSync(
+    require.resolve('ecash-lib/dist/ffi/ecash_lib_wasm_bg_browser.js'),
+    'utf8',
+  )
+  return { ECASH_LIB_WASM_BASE64: source.match(/`([\s\S]*?)`/)[1] }
+})
+import * as ecashSeedBoundary from '@frank/wallet/ecash-seed-boundary'
+import type { EcashStealthCustody } from '@frank/wallet/ecash-stealth'
 import { secp256k1 } from '@noble/curves/secp256k1'
 import { lockingScript, parseTransaction } from '@frank/nakamoto'
 import { BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
@@ -1331,4 +1359,532 @@ describe('session-owned UTXO stealth custody', () => {
     ).rejects.toThrow()
     await f.session.close()
   })
+  test.each([false, true])(
+    'session private eCash factories restore and respend actual SDK stealth coins (historical=%s)',
+    async historical => {
+      const { Wallet } = jest.requireActual('ecash-wallet')
+      const { HdNode, Ecc, Address, Tx, UnsignedTx, ALL_BIP143, sha256d } =
+        jest.requireActual('ecash-lib')
+      const { EcashWallet, ECASH_TESTNET_CHECKPOINT_HASH } = jest.requireActual(
+        '@frank/wallet/ecash-wallet',
+      )
+      const { EcashSdkBackend } = jest.requireActual(
+        '@frank/wallet/ecash-sdk-backend',
+      )
+      const { InMemoryEcashOperationStore } = jest.requireActual(
+        '@frank/wallet/ecash-operation-store',
+      )
+      const { InMemoryNativeTransactionAttemptStore } = jest.requireActual(
+        '@frank/wallet/chain/chain-wallet',
+      )
+      const { deriveEcashStealthDestination } = jest.requireActual(
+        '@frank/wallet/ecash-stealth',
+      )
+      const { createEcashSeedBackend, createEcashBip39SeedBackend } =
+        jest.requireActual('@frank/wallet/ecash-seed-boundary')
+      const store = new InMemoryEcashOperationStore()
+      const coins: unknown[] = []
+      const chronik = {
+        proxyInterface: () => ({
+          getEndpointArray: () => [{ url: 'http://127.0.0.1:1' }],
+        }),
+        blockchainInfo: async () => ({ tipHeight: 900000 }),
+        batchSummary: async (scripts: unknown[]) =>
+          scripts.map(() => ({ numTxs: 0, numUtxos: 0 })),
+        batchUtxos: async (scripts: { payload: string }[]) =>
+          scripts.map(s => ({
+            utxos: { outputScript: '76a914' + s.payload + '88ac', utxos: [] },
+          })),
+        script: (_type: string, payload: string) => ({
+          utxos: async () => ({
+            outputScript: '76a914' + payload + '88ac',
+            utxos: payload === destinationPkh ? coins : [],
+          }),
+        }),
+        broadcastTx: async () => {
+          throw new Error('network forbidden')
+        },
+      }
+      let destinationPkh = ''
+      const broadcasts: string[][] = []
+      let factoryOptions: Parameters<RelayUtxoChain['createWallet']>[1]
+      const relay: RelayUtxoChain = {
+        chain: { chainIdentifier: 'xec-testnet' } as RelayUtxoChain['chain'],
+        createWallet: async (material, options) => {
+          factoryOptions = options
+          return EcashWallet.fromDerivationMaterial({
+            material:
+              material instanceof Uint8Array
+                ? {
+                    registry: DERIVATION_REGISTRY_ID,
+                    purpose: 'ecash-bch-wallet',
+                    bytes: material,
+                  }
+                : material,
+            networkId: 'xec-testnet',
+            chronik,
+            operationStore: store,
+            nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+            checkpointClientFactory: () => ({
+              block: async () => ({
+                blockInfo: { hash: ECASH_TESTNET_CHECKPOINT_HASH },
+              }),
+            }),
+            rebroadcast: async (raws: string[]) => {
+              broadcasts.push([...raws])
+            },
+            walletFactory: options?.ecashWalletFactory,
+            bip39WalletFactory: options?.ecashBip39WalletFactory,
+          })
+        },
+        close: async () => undefined,
+      }
+      const f = realIdentityFixture(historical)
+      await f.session.initialize()
+      const first = (await f.session.createUtxoWallet(relay)) as InstanceType<
+        typeof EcashWallet
+      >
+      expect(factoryOptions?.ecashWalletFactory).toEqual(expect.any(Function))
+      expect(factoryOptions?.ecashBip39WalletFactory).toEqual(
+        expect.any(Function),
+      )
+      expect(factoryOptions?.stealthCustody).toBeUndefined()
+      // Baseline SDK factory uses the unchanged family HD root/seed, independently of Frank identity.
+      const baseline = historical
+        ? await createEcashBip39SeedBackend(
+            {
+              derivation: 'frank-bip39-bip32-v1',
+              seed: new Uint8Array(64).fill(37),
+            },
+            chronik,
+            'ectest',
+          )
+        : await createEcashSeedBackend({
+            domainRoot: {
+              registry: DERIVATION_REGISTRY_ID,
+              purpose: 'ecash-bch-wallet',
+              bytes: new Uint8Array(32).fill(
+                DOMAIN_PURPOSES.indexOf('ecash-bch-wallet') + 1,
+              ),
+            },
+            chronik,
+            addressPrefix: 'ectest',
+          })
+      expect(first.identity.address.raw).toBe(baseline.getReceiveAddress(0))
+      const destination = deriveEcashStealthDestination({
+        chainIdentifier: 'xec-testnet',
+        addressPrefix: 'ectest',
+        identityPublicKey: hex(f.identity.compressedPubKey),
+        ephemeralSecret: new Uint8Array(32).fill(17),
+      })
+      const destinationScript = Address.fromCashAddress(
+        destination.address,
+      ).toScript()
+      destinationPkh = destinationScript.toHex().slice(6, 46)
+      const hd = HdNode.fromSeed(new Uint8Array(32).fill(88)).derivePath(
+        "m/44'/1899'/0'",
+      )
+      const sdk = new Wallet(hd.seckey(), chronik, hd, 0, 'ectest')
+      sdk.utxos = [
+        {
+          outpoint: { txid: '58'.repeat(32), outIdx: 0 },
+          sats: 100000n,
+          blockHeight: 800000,
+          isCoinbase: false,
+          isFinal: true,
+          address: sdk.getReceiveAddress(0),
+        },
+      ]
+      const tx = new EcashSdkBackend(
+        sdk,
+        chronik,
+        'ectest',
+      ).buildNativeConstruction({
+        recipient: destination.address,
+        value: 7000n,
+        excludedInputs: [],
+      }).transactions[0]
+      await first.recordStealthPayment({
+        chainIdentifier: 'xec-testnet',
+        ephemeralPubKey: destination.ephemeralPubKey,
+        claimedAmount: 7000n,
+        transactions: [tx.rawTransaction],
+        payloadDigest: 'ab'.repeat(32),
+        timestamp: 100,
+      })
+      expect(await first.getBalance()).toBe(0n)
+      const retainedFactory = factoryOptions!.ecashWalletFactory!
+      await f.session.yieldCustody()
+      await expect(first.getBalance()).rejects.toThrow()
+      expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+      const next = realIdentityFixture(historical)
+      await next.session.initialize()
+      coins.push({
+        outpoint: { txid: tx.txid, outIdx: 0 },
+        sats: 7000n,
+        blockHeight: 800000,
+        isCoinbase: false,
+        isFinal: true,
+      })
+      const reopened = (await next.session.createUtxoWallet(
+        relay,
+      )) as InstanceType<typeof EcashWallet>
+      expect(reopened.identity).toEqual(first.identity)
+      expect(broadcasts).toEqual([])
+      expect(await reopened.getBalance()).toBe(7000n)
+      const operation = await reopened.prepareNativeOperation({
+        operationId: 'session-respend',
+        recipient: {
+          raw: Address.p2pkh(new Uint8Array(20).fill(31), 'ectest').toString(),
+        },
+        value: 1000n,
+        maxFee: 1000n,
+      })
+      expect(operation.inputs).toEqual([
+        { txid: tx.txid, vout: 0, satoshis: '7000' },
+      ])
+      const signed = Tx.fromHex(operation.transactions[0].rawTransaction)
+      signed.inputs[0].signData = {
+        sats: 7000n,
+        outputScript: destinationScript,
+      }
+      const signature = signed.inputs[0].script.bytecode.slice(1, 65)
+      const digest = sha256d(
+        UnsignedTx.fromTx(signed).inputAt(0).sigHashPreimage(ALL_BIP143).bytes,
+      )
+      new Ecc().schnorrVerify(
+        signature,
+        digest,
+        Buffer.from(destination.publicKey, 'hex'),
+      )
+      expect(
+        typeof (reopened as unknown as Record<string, unknown>)
+          .withDerivedStealthSecret,
+      ).toBe('undefined')
+      expect(JSON.stringify(next.session.state)).not.toMatch(
+        /"(?:private|bytes|seed|secret)":/,
+      )
+      expect(retainedFactory).not.toBe(factoryOptions!.ecashWalletFactory)
+      await next.session.close()
+      await expect(reopened.getBalance()).rejects.toThrow()
+      await f.session.close()
+    },
+  )
+  test.each(['yield', 'invalidate', 'close'] as const)(
+    'private eCash callback binds identity/chain, wipes temporary secrets and revokes on %s',
+    async lifecycle => {
+      const f = realIdentityFixture()
+      await f.session.initialize()
+      let captured: EcashStealthCustody | undefined
+      const original = ecashSeedBoundary.createEcashStealthSeedBackend
+      const spy = jest
+        .spyOn(ecashSeedBoundary, 'createEcashStealthSeedBackend')
+        .mockImplementation(custody => {
+          captured = custody
+          return original(custody)
+        })
+      try {
+        await f.session.createUtxoWallet({
+          chain: { chainIdentifier: 'xec-testnet' } as RelayUtxoChain['chain'],
+          createWallet: async () => f.wallet,
+          close: async () => undefined,
+        })
+      } finally {
+        spy.mockRestore()
+      }
+      const derivation = {
+        chainIdentifier: 'xec-testnet',
+        identityPublicKey: hex(f.identity.compressedPubKey),
+        ephemeralPubKey: hex(
+          secp256k1.getPublicKey(new Uint8Array(32).fill(17), true),
+        ),
+      }
+      for (const bad of [
+        { ...derivation, chainIdentifier: 'xec-mainnet' },
+        { ...derivation, identityPublicKey: derivation.ephemeralPubKey },
+        { ...derivation, ephemeralPubKey: '00'.repeat(33) },
+      ]) {
+        const callback = jest.fn()
+        await expect(
+          captured!.withDerivedStealthSecret(bad, callback),
+        ).rejects.toThrow()
+        expect(callback).not.toHaveBeenCalled()
+      }
+      let temporary: Uint8Array | undefined
+      await captured!.withDerivedStealthSecret(derivation, secret => {
+        temporary = secret
+        expect(secret.some(byte => byte !== 0)).toBe(true)
+      })
+      expect(temporary!.every(byte => byte === 0)).toBe(true)
+      await expect(
+        captured!.withDerivedStealthSecret(derivation, secret => {
+          temporary = secret
+          throw new Error('import interrupted')
+        }),
+      ).rejects.toThrow('import interrupted')
+      expect(temporary!.every(byte => byte === 0)).toBe(true)
+      if (lifecycle === 'invalidate') {
+        await expect(
+          captured!.withDerivedStealthSecret(derivation, secret => {
+            temporary = secret
+            f.invalidate()
+          }),
+        ).rejects.toThrow()
+        expect(temporary!.every(byte => byte === 0)).toBe(true)
+      }
+      if (lifecycle === 'yield') await f.session.yieldCustody()
+      else if (lifecycle === 'invalidate') f.invalidate()
+      else await f.session.close()
+      const callback = jest.fn()
+      expect(() => captured!.assertActive()).toThrow()
+      await expect(
+        captured!.withDerivedStealthSecret(derivation, callback),
+      ).rejects.toThrow()
+      expect(callback).not.toHaveBeenCalled()
+      expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+      await f.session.close()
+    },
+  )
+  test.each([false, true])(
+    'public Chronik close synchronously revokes session-ready custody and actual SDK signing (historical=%s)',
+    async historical => {
+      const { openRelayUtxoChain } = jest.requireActual(
+        '@frank/wallet/chain/utxo-family',
+      )
+      const { createRequire } = jest.requireActual('node:module')
+      const walletRequire = createRequire(
+        require.resolve('@frank/wallet/chain/utxo-family'),
+      )
+      const { ChronikClient } = jest.requireActual(
+        walletRequire.resolve('chronik-client'),
+      )
+      const { Address, Ecc, Tx } = jest.requireActual('ecash-lib')
+      const { ECASH_TESTNET_CHECKPOINT_HASH } = jest.requireActual(
+        '@frank/wallet/ecash-wallet',
+      )
+      const { InMemoryNativeTransactionAttemptStore } = jest.requireActual(
+        '@frank/wallet/chain/chain-wallet',
+      )
+      let captured: EcashStealthCustody | undefined
+      let backend:
+        | import('@frank/wallet/ecash-sdk-backend').EcashSdkBackend
+        | undefined
+      let pkh = ''
+      const proto = ChronikClient.prototype
+      const networkSpies = [
+        jest
+          .spyOn(proto, 'script')
+          .mockImplementation((_type: string, payload: string) => ({
+            utxos: async () => ({
+              outputScript: '76a914' + payload + '88ac',
+              utxos: [],
+            }),
+          })),
+        jest.spyOn(proto, 'block').mockImplementation(async () => ({
+          blockInfo: { hash: ECASH_TESTNET_CHECKPOINT_HASH },
+        })),
+        jest
+          .spyOn(proto, 'blockchainInfo')
+          .mockImplementation(async () => ({ tipHeight: 900000 })),
+        jest
+          .spyOn(proto, 'batchSummary')
+          .mockImplementation(async (scripts: { payload: string }[]) =>
+            scripts.map(script => ({
+              numTxs: script.payload === pkh ? 1 : 0,
+              numUtxos: script.payload === pkh ? 1 : 0,
+            })),
+          ),
+        jest
+          .spyOn(proto, 'batchUtxos')
+          .mockImplementation(async (scripts: { payload: string }[]) =>
+            scripts.map(script => ({
+              utxos: {
+                outputScript: '76a914' + script.payload + '88ac',
+                utxos:
+                  script.payload === pkh
+                    ? [
+                        {
+                          outpoint: { txid: '71'.repeat(32), outIdx: 0 },
+                          sats: 10000n,
+                          blockHeight: 800000,
+                          isCoinbase: false,
+                          isFinal: true,
+                        },
+                      ]
+                    : [],
+              },
+            })),
+          ),
+      ]
+      let constructionParams:
+        | Parameters<import('@frank/wallet/ecash-wallet').EcashWalletFactory>[0]
+        | Parameters<
+            import('@frank/wallet/ecash-wallet').EcashBip39WalletFactory
+          >[0]
+        | undefined
+      const remember = (
+        result: import('@frank/wallet/ecash-sdk-backend').EcashSdkBackend,
+      ) => {
+        backend = result
+        pkh = Address.fromCashAddress(result.getReceiveAddress(0))
+          .toScript()
+          .toHex()
+          .slice(6, 46)
+        return result
+      }
+      const domainFactory = ecashSeedBoundary.createEcashStealthSeedBackend
+      const historicalFactory =
+        ecashSeedBoundary.createEcashStealthBip39SeedBackend
+      const factorySpy = historical
+        ? jest
+            .spyOn(ecashSeedBoundary, 'createEcashStealthBip39SeedBackend')
+            .mockImplementation(custody => {
+              captured = custody
+              const factory = historicalFactory(custody)
+              return async params => {
+                constructionParams = params
+                return remember(await factory(params))
+              }
+            })
+        : jest
+            .spyOn(ecashSeedBoundary, 'createEcashStealthSeedBackend')
+            .mockImplementation(custody => {
+              captured = custody
+              const factory = domainFactory(custody)
+              return async params => {
+                constructionParams = params
+                return remember(await factory(params))
+              }
+            })
+      const f = realIdentityFixture(historical)
+      const relay: RelayUtxoChain = openRelayUtxoChain({
+        chainIdentifier: 'xec-testnet',
+        relayBaseUrl: 'http://127.0.0.1:1',
+        nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+      })
+      let retainedOptions: Parameters<RelayUtxoChain['createWallet']>[1]
+      const create = relay.createWallet.bind(relay)
+      relay.createWallet = (material, options) => {
+        retainedOptions = options
+        return create(material, options)
+      }
+      let signingSpy: jest.SpyInstance | undefined
+      try {
+        await f.session.initialize()
+        const wallet = (await f.session.createUtxoWallet(
+          relay,
+        )) as import('@frank/wallet/ecash-wallet').EcashWallet
+        expect(await wallet.getBalance()).toBe(10000n)
+        const descriptor = {
+          chainIdentifier: 'xec-testnet',
+          identityPublicKey: hex(f.identity.compressedPubKey),
+          ephemeralPubKey: hex(
+            secp256k1.getPublicKey(new Uint8Array(32).fill(17), true),
+          ),
+        }
+        const destination = await backend!.describeStealthDerivation(descriptor)
+        const recipient = Address.p2pkh(
+          new Uint8Array(20).fill(31),
+          'ectest',
+        ).toString()
+        const construction = backend!.buildNativeConstruction({
+          recipient,
+          value: 1000n,
+          excludedInputs: [],
+        })
+        expect(
+          Tx.fromHex(construction.transactions[0].rawTransaction).inputs[0]
+            .script.bytecode.length,
+        ).toBeGreaterThan(64)
+        signingSpy = jest.spyOn(Ecc.prototype, 'schnorrSign')
+        const closing = relay.close()
+        expect(f.session.state.status).toBe('ready')
+        const blocked: Record<string, boolean> = {}
+        try {
+          captured!.assertActive()
+          blocked.assertActive = false
+        } catch {
+          blocked.assertActive = true
+        }
+        const callback = jest.fn()
+        await captured!.withDerivedStealthSecret(descriptor, callback).then(
+          () => {
+            blocked.derive = false
+          },
+          () => {
+            blocked.derive = true
+          },
+        )
+        await backend!.importStealthDerivation(descriptor, destination).then(
+          () => {
+            blocked.import = false
+          },
+          () => {
+            blocked.import = true
+          },
+        )
+        try {
+          backend!.buildNativeConstruction({
+            recipient,
+            value: 1000n,
+            excludedInputs: [],
+          })
+          blocked.sign = false
+        } catch {
+          blocked.sign = true
+        }
+        await wallet
+          .prepareNativeOperation({
+            operationId: 'after-relay-close',
+            recipient: { raw: recipient },
+            value: 1000n,
+          })
+          .then(
+            () => {
+              blocked.prepare = false
+            },
+            () => {
+              blocked.prepare = true
+            },
+          )
+        await f.session.createUtxoWallet(relay).then(
+          () => {
+            blocked.create = false
+          },
+          () => {
+            blocked.create = true
+          },
+        )
+        const retainedFactory = historical
+          ? retainedOptions!.ecashBip39WalletFactory!
+          : retainedOptions!.ecashWalletFactory!
+        await retainedFactory(constructionParams as never).then(
+          () => {
+            blocked.factory = false
+          },
+          () => {
+            blocked.factory = true
+          },
+        )
+        expect(blocked).toEqual({
+          assertActive: true,
+          derive: true,
+          import: true,
+          sign: true,
+          prepare: true,
+          create: true,
+          factory: true,
+        })
+        expect(callback).not.toHaveBeenCalled()
+        expect(signingSpy).not.toHaveBeenCalled()
+        await closing
+      } finally {
+        signingSpy?.mockRestore()
+        factorySpy.mockRestore()
+        networkSpies.forEach(spy => spy.mockRestore())
+        await relay.close()
+        await f.session.close()
+      }
+    },
+  )
 })

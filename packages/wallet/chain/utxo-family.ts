@@ -15,7 +15,11 @@ import type {
 } from "./chain-wallet";
 import { getChainRegistryEntry } from "./chains-registry";
 import { createEcashChain } from "./ecash-chain";
-import type { EcashCheckpoint } from "../ecash-wallet";
+import type {
+  EcashCheckpoint,
+  EcashWalletFactory,
+  EcashBip39WalletFactory,
+} from "../ecash-wallet";
 import { ElectrumClient } from "./electrum-client";
 import { electrumIndexer, relayElectrumUrl } from "./electrum-indexer";
 import { createUtxoChain } from "./utxo-chain";
@@ -31,9 +35,15 @@ export interface RelayUtxoChain {
    */
   createWallet(
     root: Uint8Array | HistoricalBip39Seed,
-    options?: { stealthCustody?: UtxoStealthCustody }
+    options?: {
+      stealthCustody?: UtxoStealthCustody;
+      ecashWalletFactory?: EcashWalletFactory;
+      ecashBip39WalletFactory?: EcashBip39WalletFactory;
+    }
   ): Promise<NativeWalletHandle>;
-  /** Release the indexer connection. */
+  /** Nonsecret lifecycle check for session-owned custody bound to this relay. */
+  readonly assertActive?: () => void;
+  /** Release the indexer connection and synchronously revoke its signing lifetime. */
   close(): Promise<void>;
 }
 
@@ -83,23 +93,38 @@ export function openRelayUtxoChain(params: {
     ) {
       throw new Error(`No Chronik wallet is available for ${chainIdentifier}`);
     }
-    const chain = createEcashChain({
-      networkId: chainIdentifier,
-      checkpoint: params.checkpoint,
-      nativeAttemptStore: params.nativeAttemptStore,
-      chronik: new ChronikClient([
-        `${relay}/chain-rpc/${chainIdentifier}/chronik`,
-      ]),
-    });
+    let closed = false;
+    const requireOpen = () => {
+      if (closed) throw new Error("UTXO wallet is closed");
+    };
+    const chronik = new ChronikClient([
+      `${relay}/chain-rpc/${chainIdentifier}/chronik`,
+    ]);
+    const makeChain = (options?: {
+      ecashWalletFactory?: EcashWalletFactory;
+      ecashBip39WalletFactory?: EcashBip39WalletFactory;
+    }) =>
+      createEcashChain({
+        networkId: chainIdentifier,
+        checkpoint: params.checkpoint,
+        nativeAttemptStore: params.nativeAttemptStore,
+        chronik,
+        walletFactory: options?.ecashWalletFactory,
+        bip39WalletFactory: options?.ecashBip39WalletFactory,
+      });
+    const chain = makeChain();
     return {
       chain,
+      assertActive: requireOpen,
       createWallet: (root, options) => {
+        requireOpen();
         if (options?.stealthCustody)
           throw new Error(
             "Stealth custody is unsupported by the Chronik adapter"
           );
-        return withMaterial(root, (material) =>
-          chain.createWallet(
+        return withMaterial(root, async (material) => {
+          requireOpen();
+          const wallet = await makeChain(options).createWallet(
             material instanceof Uint8Array
               ? {
                   registry: "frank-domain-roots-v1",
@@ -107,10 +132,14 @@ export function openRelayUtxoChain(params: {
                   bytes: material,
                 }
               : material
-          )
-        );
+          );
+          requireOpen();
+          return wallet;
+        });
       },
-      close: async () => undefined,
+      close: async () => {
+        closed = true;
+      },
     };
   }
   if (entry.wallet.indexer === "electrum") {
@@ -135,8 +164,13 @@ export function openRelayUtxoChain(params: {
     const chain = makeChain();
     return {
       chain,
+      assertActive: requireOpen,
       createWallet: async (root, options) => {
         requireOpen();
+        if (options?.ecashWalletFactory || options?.ecashBip39WalletFactory)
+          throw new Error(
+            "eCash factories are unsupported by the Electrum adapter"
+          );
         const source = options?.stealthCustody;
         const guarded: UtxoStealthCustody | undefined = source && {
           identityPublicKey: new Uint8Array(source.identityPublicKey),

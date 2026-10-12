@@ -1,4 +1,5 @@
 import { reactive, readonly } from 'vue'
+import { toHex } from '@frank/codec'
 import {
   activeChain,
   EvmNativeJournalError,
@@ -25,6 +26,14 @@ import {
   requireCompressedStealthPoint,
   type UtxoStealthCustody,
 } from '@frank/wallet/utxo-stealth'
+import {
+  createEcashStealthSeedBackend,
+  createEcashStealthBip39SeedBackend,
+} from '@frank/wallet/ecash-seed-boundary'
+import {
+  ecashStealthPoint,
+  type EcashStealthCustody,
+} from '@frank/wallet/ecash-stealth'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { Platform } from 'quasar'
 import type { DomainRoot } from '@frank/domain-roots'
@@ -460,6 +469,7 @@ export function createAccountSession(deps: {
       }
       const requireLive = () => {
         checkCurrent()
+        relay.assertActive?.()
         if (!live || state.status !== 'ready' || wallet !== currentWallet)
           throw new CustodyError('closed')
       }
@@ -475,27 +485,23 @@ export function createAccountSession(deps: {
         ) {
           seed = capability.takeBip39Seed()
           material = { derivation: BIP39_DERIVATION, seed }
-          if (entry.wallet.indexer === 'electrum')
-            identity = MonadIdentity.fromBip39Seed(seed)
+          identity = MonadIdentity.fromBip39Seed(seed)
         } else {
           roots = capability.takeRoots()
           const familyRoot = roots.find(r => r.purpose === 'ecash-bch-wallet')
           if (!familyRoot)
             throw new AccountPurposeUnavailableError('ecash-bch-wallet')
           material = familyRoot.bytes
-          if (entry.wallet.indexer === 'electrum') {
-            const authRoot = roots.find(
-              (r): r is DomainRoot<'identity-authentication'> =>
-                r.purpose === 'identity-authentication',
-            )
-            if (!authRoot)
-              throw new AccountPurposeUnavailableError(
-                'identity-authentication',
-              )
-            identity = MonadIdentity.fromDomainRoot(authRoot)
-          }
+          const authRoot = roots.find(
+            (r): r is DomainRoot<'identity-authentication'> =>
+              r.purpose === 'identity-authentication',
+          )
+          if (!authRoot)
+            throw new AccountPurposeUnavailableError('identity-authentication')
+          identity = MonadIdentity.fromDomainRoot(authRoot)
         }
         let stealthCustody: UtxoStealthCustody | undefined
+        let ecashCustody: EcashStealthCustody | undefined
         if (identity) {
           const identityPublicKey = new Uint8Array(identity.compressedPubKey)
           if (
@@ -510,6 +516,33 @@ export function createAccountSession(deps: {
           identity = undefined
           // Retain only the session-owned identity scalar. No derived spend secret survives a call.
           revokeUtxoCustody.add(revoke)
+          const identityHex = toHex(identityPublicKey)
+          ecashCustody = {
+            identityPublicKey: identityHex,
+            assertActive: requireLive,
+            async withDerivedStealthSecret(derivation, importIntoBackend) {
+              requireLive()
+              if (
+                derivation.chainIdentifier !== chainIdentifier ||
+                derivation.identityPublicKey !== identityHex
+              )
+                throw new CustodyError('conflict')
+              const ephemeral = ecashStealthPoint(derivation.ephemeralPubKey)
+              if (!identitySecret) throw new CustodyError('closed')
+              const temporaryIdentity = new Uint8Array(identitySecret)
+              let derived: ReturnType<typeof stealthParentSecret> | undefined
+              try {
+                derived = stealthParentSecret(temporaryIdentity, ephemeral)
+                requireLive()
+                importIntoBackend(derived.secret)
+                requireLive()
+              } finally {
+                temporaryIdentity.fill(0)
+                derived?.secret.fill(0)
+                derived?.digest.fill(0)
+              }
+            },
+          }
           stealthCustody = {
             identityPublicKey: new Uint8Array(identityPublicKey),
             async deriveStealthSigner(derivation) {
@@ -566,9 +599,28 @@ export function createAccountSession(deps: {
             },
           }
         }
+        const guardConstruction =
+          <P, R>(create: (params: P) => Promise<R>) =>
+          async (params: P): Promise<R> => {
+            requireLive()
+            const result = await create(params)
+            requireLive()
+            return result
+          }
         const result = await relay.createWallet(
           material,
-          stealthCustody ? { stealthCustody } : undefined,
+          entry.wallet.indexer === 'chronik' && ecashCustody
+            ? {
+                ecashWalletFactory: guardConstruction(
+                  createEcashStealthSeedBackend(ecashCustody),
+                ),
+                ecashBip39WalletFactory: guardConstruction(
+                  createEcashStealthBip39SeedBackend(ecashCustody),
+                ),
+              }
+            : stealthCustody
+            ? { stealthCustody }
+            : undefined,
         )
         requireLive()
         return result

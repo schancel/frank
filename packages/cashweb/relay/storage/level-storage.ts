@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   isSafeRelayTimestamp,
+  financialEnvelopeBinding,
+  FinancialEnvelopeBinding,
   MessageStore,
   MessageResult,
   MessageReturnResult,
@@ -26,6 +28,17 @@ const metadataKeys = {
 // client rollback. See the class header for the full durability contract.
 const suppressionIndexPrefix = 'relaySuppressionIndex:'
 const quarantineIndexPrefix = 'relayQuarantineIndex:'
+const financialBindingPrefix = 'financialEnvelope:'
+function financialBindingKey(binding: FinancialEnvelopeBinding): string {
+  return (
+    financialBindingPrefix +
+    JSON.stringify([
+      binding.accountId,
+      binding.messagingChainIdentifier,
+      binding.messageId,
+    ])
+  )
+}
 function suppressionIndexKey(recipientAddress: string): string {
   return `${suppressionIndexPrefix}${recipientAddress.toLowerCase()}`
 }
@@ -325,6 +338,8 @@ export class LevelMessageStore implements MessageStore {
           throw new MessageStoreError('unsupported-schema')
         this.schemaVersion = currentSchemaVersion
       }
+      // Validate new host recovery facts during required restoration, without writing defaults.
+      await this.readFinancialBindings(this.openedMetadataDb!)
       this.state = 'open'
     } catch (error) {
       this.state = 'failed'
@@ -523,7 +538,7 @@ export class LevelMessageStore implements MessageStore {
       await this.initializeForWrite()
       // Anchor-before-deletion is application ordering, not cross-database atomicity.
       if (changed)
-        await (this.metadataDb as any).batch(
+        await this.metadataDb.batch(
           [
             {
               type: 'put',
@@ -751,14 +766,93 @@ export class LevelMessageStore implements MessageStore {
     return iterator
   }
 
+  private async readFinancialBindings(
+    db: LevelDB,
+  ): Promise<FinancialEnvelopeBinding[]> {
+    const rows: FinancialEnvelopeBinding[] = []
+    for await (const [key, value] of db.iterator({
+      gte: financialBindingPrefix,
+      lt: financialBindingPrefix + '\uffff',
+    })) {
+      const binding = financialEnvelopeBinding(JSON.parse(String(value)))
+      if (String(key) !== financialBindingKey(binding))
+        throw new Error('Financial binding key conflicts with its scope')
+      rows.push(binding)
+    }
+    return rows
+  }
+
+  async financialEnvelopeBindings(scope: {
+    accountId: string
+    messagingChainIdentifier: string
+  }): Promise<readonly FinancialEnvelopeBinding[]> {
+    this.assertAvailable()
+    return (await this.readFinancialBindings(this.metadataDb)).filter(
+      row =>
+        row.accountId === scope.accountId &&
+        row.messagingChainIdentifier === scope.messagingChainIdentifier,
+    )
+  }
+
+  async bindFinancialEnvelope(input: FinancialEnvelopeBinding): Promise<void> {
+    const binding = financialEnvelopeBinding(input)
+    const key = financialBindingKey(binding),
+      value = JSON.stringify(binding)
+    await this.mutate(async () => {
+      await this.initializeForWrite()
+      const { phase: _phase, payloadDigest: _digest, ...intent } = binding
+      const pending = JSON.stringify(
+        financialEnvelopeBinding({ ...intent, phase: 'pending' }),
+      )
+      let previous: FinancialEnvelopeBinding | undefined
+      try {
+        previous = financialEnvelopeBinding(
+          JSON.parse(await this.metadataDb.get(key)),
+        )
+      } catch (error) {
+        if (!isNotFound(error)) throw error
+      }
+      if (previous?.phase === 'bound' && binding.phase === 'pending') {
+        const {
+          phase: _oldPhase,
+          payloadDigest: _oldDigest,
+          ...oldIntent
+        } = previous
+        if (JSON.stringify(oldIntent) !== JSON.stringify(intent))
+          throw new Error('Financial envelope binding conflict')
+        return
+      }
+      await this.metadataBackend!.bindImmutable(
+        key,
+        value,
+        [metadataKeys.schemaVersion, JSON.stringify(currentSchemaVersion)],
+        binding.phase === 'bound' ? pending : undefined,
+      )
+    })
+  }
+
   /** Explicit destructive operation; never used to recover a rejected store. */
   async clear(): Promise<void> {
     await this.mutate(async () => {
       if (this.schemaVersion === undefined) return
       try {
         await this.db.clear()
-        await this.metadataDb.clear()
-        this.schemaVersion = undefined
+        const bindings = await this.readFinancialBindings(this.metadataDb)
+        if (bindings.length === 0) {
+          await this.metadataDb.clear()
+          this.schemaVersion = undefined
+        } else {
+          // History deletion cannot remove authorization needed to finish an original.
+          const removals: { type: 'del'; key: string }[] = []
+          for await (const [key] of this.metadataDb.iterator())
+            if (
+              String(key) !== metadataKeys.schemaVersion &&
+              !String(key).startsWith(financialBindingPrefix)
+            )
+              removals.push({ type: 'del', key: String(key) })
+          if (removals.length)
+            await this.metadataDb.batch(removals, { sync: true })
+        }
       } catch (cause) {
         this.state = 'failed'
         throw new MessageStoreError('write-uncertain', cause)

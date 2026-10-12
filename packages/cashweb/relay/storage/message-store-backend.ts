@@ -21,6 +21,7 @@ class StrictMessageMetadata extends LevelJS {
     key: string,
     value: string,
     marker: readonly [string, string],
+    expected?: string,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       let store: IDBObjectStore
@@ -46,11 +47,18 @@ class StrictMessageMetadata extends LevelJS {
       request.onsuccess = () => {
         try {
           if (
-            request.result !== undefined &&
-            indexedDB.cmp(request.result, this._serializeValue(value)) !== 0
+            request.result === undefined
+              ? expected !== undefined
+              : indexedDB.cmp(request.result, this._serializeValue(value)) !==
+                  0 &&
+                (expected === undefined ||
+                  indexedDB.cmp(
+                    request.result,
+                    this._serializeValue(expected),
+                  ) !== 0)
           )
             throw new Error('Financial envelope binding conflict')
-          if (request.result === undefined)
+          if (request.result === undefined || expected !== undefined)
             store.put(this._serializeValue(value), encodedKey)
           // Commit the format marker with the binding even on the first mutation.
           store.put(
@@ -67,11 +75,14 @@ class StrictMessageMetadata extends LevelJS {
 }
 
 export interface MessageMetadataBackend {
+  /** Undefined expected means insert/idempotent only; exact expected permits the host's
+   * pending-to-bound transition. The MessageStore mutation queue owns Node serialization. */
   db: LevelDB
   bindImmutable(
     key: string,
     value: string,
     marker: readonly [string, string],
+    expected?: string,
   ): Promise<void>
 }
 
@@ -89,14 +100,14 @@ export function messageMetadataBackend(
     )
     return {
       db,
-      bindImmutable: (key, value, marker) =>
-        backend.bindImmutable(key, value, marker),
+      bindImmutable: (key, value, marker, expected) =>
+        backend.bindImmutable(key, value, marker, expected),
     }
   }
   const db = level(location, {}, error => callback(error ?? undefined))
   return {
     db,
-    async bindImmutable(key, value, marker) {
+    async bindImmutable(key, value, marker, expected) {
       // The caller's mutation queue plus LevelDB's exclusive handle serialize this CAS.
       let previous: string | undefined
       try {
@@ -112,7 +123,11 @@ export function messageMetadataBackend(
         )
           throw error
       }
-      if (previous !== undefined && previous !== value)
+      if (
+        previous === undefined
+          ? expected !== undefined
+          : previous !== value && previous !== expected
+      )
         throw new Error('Financial envelope binding conflict')
       await db.batch(
         [

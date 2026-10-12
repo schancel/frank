@@ -22,7 +22,10 @@ import {
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
-import { getBytes } from 'ethers'
+import { getBytes, Wallet, Transaction, type Provider } from 'ethers'
+import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
+import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
+import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import {
@@ -377,7 +380,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       expect(relayBodies).toHaveLength(0)
       const signedBefore = sign.mock.calls.length
       await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [row.digest], maxPutAttempts: 2, onEnvelopeDurable: hook })
-      expect(hook).toHaveBeenCalledWith(row.digest)
+      expect(hook).toHaveBeenCalledWith(row.digest, ID_A)
       expect(sign.mock.calls.length).toBe(signedBefore)
       expect(toHex(relayBodies[0].body)).toBe(row.request!.body)
       expect(relayBodies[0].contentType).toBe(row.request!.contentType)
@@ -1078,4 +1081,368 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect((await rows()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
     expect((await received()).map(m => m.messageId)).toEqual([ID_A])
   })
+
+  it.each([
+    [0n, 'partial-exposure'],
+    [1000n, 'partial-exposure'],
+    [0n, 'digest-write'],
+    [1000n, 'digest-write'],
+    [0n, 'marker-clear'],
+    [1000n, 'marker-clear'],
+    [0n, 'digest-write-then-error'],
+    [1000n, 'digest-write-then-error'],
+  ] as const)(
+    'recovers original stamp=%s after %s, UI deletion and actual Level restart',
+    async (stampValue, interruption) => {
+      const { LevelMessageStore } = await import(
+        '@frank/cashweb/relay/storage/level-storage'
+      )
+      const { createFinancialEnvelopeRecovery } = await import(
+        '../../../app/src/stealth-payments/financial-envelope-recovery'
+      )
+      const { mkdtemp, rm } = await import('node:fs/promises')
+      const { tmpdir } = await import('node:os')
+      const { join } = await import('node:path')
+      const { freezeCanonicalRequest } = await import(
+        '@frank/cashweb/relay/canonical-dm-transport'
+      )
+      const path = await mkdtemp(
+        join(tmpdir(), 'frank-host-original-recovery-'),
+      )
+      let appStore = new LevelMessageStore(path)
+      await appStore.Open()
+      try {
+        // Public native owner: actual signing and durable reservations; only RPC is synthetic.
+        const { mkdir } = await import('node:fs/promises')
+        const nativePath = join(path, 'native')
+        await mkdir(nativePath)
+        const keys = ['11', '22'].map(
+          byte => new Wallet('0x' + byte.repeat(32)),
+        )
+        const nativeSign = jest.fn(
+          async (source: { address: string }, raw: string) =>
+            keys
+              .find(key => key.address.toLowerCase() === source.address)!
+              .signTransaction(Transaction.from(raw)),
+        )
+        const broadcasts: string[] = []
+        const provider = {
+          getBlock: async () => ({ hash: '0x' + 'ab'.repeat(32), number: 10 }),
+          getBalance: async () => 10n ** 18n,
+          getTransactionCount: async () => 0,
+          getFeeData: async () => ({
+            maxFeePerGas: 2n,
+            maxPriorityFeePerGas: 1n,
+          }),
+          estimateGas: async () => 21000n,
+          getTransaction: async () => null,
+          getTransactionReceipt: async () => null,
+          broadcastTransaction: async (raw: string) => {
+            broadcasts.push(raw)
+            return { hash: Transaction.from(raw).hash }
+          },
+        }
+        const nativeBinding = {
+          chainIdentifier: 'monad-testnet',
+          nativeChainId: '10143',
+          publicTuple: 'synthetic-host-native-owner',
+        }
+        let journal = new EvmNativeOperationJournal({
+          location: nativePath,
+          binding: nativeBinding,
+        })
+        await journal.Open()
+        const makeOwner = () =>
+          new EvmLegacyConsolidator({
+            journal,
+            provider: provider as unknown as Provider,
+            transactionBuilder: new NativeEvmTransactionBuilder(),
+            getSources: async () =>
+              keys.map(key => ({
+                kind: 'main' as const,
+                address: key.address.toLowerCase(),
+              })),
+            sign: nativeSign,
+          })
+        let nativeOwner = makeOwner()
+        const prepare = jest.spyOn(nativeOwner, 'signNative')
+        const params = {
+          recipient: { raw: f.bob.identity.address.raw },
+          value: 1000n,
+          maxFee: 100000n,
+        }
+        const first = await nativeOwner.signNative(params)
+        const second = await nativeOwner.signNative(params)
+        const refs = [first, second].map(p => ({
+          chainIdentifier: 'monad-testnet',
+          operationId: p.operationId,
+        }))
+        const expose = async (operationId: string) => {
+          const row = journal.get(operationId)
+          for (let i = 0; i < row.members.length; i++)
+            await journal.markExposed(operationId, i)
+        }
+        const binding = {
+          version: 1 as const,
+          phase: 'pending' as const,
+          accountId: 'synthetic-public-account',
+          messagingChainIdentifier: 'monad-testnet',
+          messageId: ID_A,
+          financialOperations: refs,
+        }
+        await appStore.bindFinancialEnvelope(binding)
+        await appStore.saveMessage({
+          index: 'local-row',
+          outbound: true,
+          senderAddress: alice.identity.address.raw,
+          copartyAddress: f.bob.identity.address.raw,
+          message: {
+            outbound: true,
+            status: 'pending',
+            receivedTime: 123,
+            serverTime: 123,
+            items: [{ type: 'text', text: 'hello' }],
+            outpoints: [],
+            senderAddress: alice.identity.address.raw,
+          },
+        })
+        let digest!: string
+        const sent = await attempt({
+          messageId: ID_A,
+          stampValue,
+          onEnvelopeDurable: async value => {
+            digest = value
+            if (interruption === 'digest-write') {
+              const write = jest
+                .spyOn(appStore, 'bindFinancialEnvelope')
+                .mockRejectedValueOnce(
+                  new Error('binding durable write interrupted'),
+                )
+              try {
+                await appStore.bindFinancialEnvelope({
+                  ...binding,
+                  phase: 'bound',
+                  payloadDigest: value,
+                })
+              } finally {
+                write.mockRestore()
+              }
+            } else
+              await appStore.bindFinancialEnvelope({
+                ...binding,
+                phase: 'bound',
+                payloadDigest: value,
+              })
+            if (interruption === 'digest-write-then-error')
+              throw new Error('binding written, completion reported failure')
+            await expose(first.operationId)
+            if (interruption === 'partial-exposure')
+              throw new Error('interrupted between owner exposures')
+            await expose(second.operationId)
+            if (interruption === 'marker-clear') {
+              mockMessageWrite.mode = 'dropped'
+              mockMessageWrite.unpaid = stampValue === 0n
+            }
+          },
+        })
+        expect(sent.error).toBeDefined()
+        expect(sent.requests).toBe(0)
+        expect(
+          await f.chain.directMessages.deliveryOf!({
+            wallet: alice,
+            payloadDigest: digest,
+          }),
+        ).toBe('live')
+        const ownAddress = (await alice.getReceiveAddress()).raw.toLowerCase()
+        const ownIndex = openMessages.mock.calls
+          .map(call => String(call[0]).endsWith(`-evm-${ownAddress}`))
+          .lastIndexOf(true)
+        const originalStore: LevelOutgoingMessageStore = await openMessages.mock
+          .results[ownIndex].value
+        const unpaid = originalStore.unpaid(ID_A.replace(/-/g, ''))
+        const original = unpaid
+          ? freezeCanonicalRequest(
+              {
+                delivery: getBytes('0x' + unpaid.delivery),
+                context: getBytes('0x' + unpaid.context),
+                transactions: [],
+              },
+              unpaid.boundary,
+            )
+          : restoreCanonicalRequest({
+              body: getBytes('0x' + (await rows())[0].request!.body),
+              contentType: (await rows())[0].request!.contentType,
+            })
+        const originalBody = original.body
+        await appStore.suppressAndDelete(
+          alice.identity.address.raw,
+          ['local-row'],
+          [{ payloadDigest: digest }],
+        )
+        await appStore.clear()
+        await f.chain.directMessages.discardAttempt!({
+          wallet: alice,
+          payloadDigest: digest,
+        })
+        await appStore.Close()
+        appStore = new LevelMessageStore(path)
+        await appStore.Open()
+        expect(await appStore.getMessage('local-row')).toBeUndefined()
+        expect(
+          (await appStore.financialEnvelopeBindings(binding))[0].phase,
+        ).toBe(interruption === 'digest-write' ? 'pending' : 'bound')
+        await reopen()
+        const signs = sign.mock.calls.length
+        const nativeSigns = nativeSign.mock.calls.length
+        const preparedCalls = prepare.mock.calls.length
+        await journal.Close()
+        journal = new EvmNativeOperationJournal({
+          location: nativePath,
+          binding: nativeBinding,
+        })
+        await journal.Open()
+        nativeOwner = makeOwner()
+        const errors: unknown[] = []
+        const recovery = createFinancialEnvelopeRecovery({
+          store: appStore,
+          accountId: binding.accountId,
+          messagingChainIdentifier: binding.messagingChainIdentifier,
+          isCurrent: () => true,
+          capture: async references => {
+            for (const reference of references)
+              expect(
+                nativeOwner.listOperations().find(row => row.operationId === reference.operationId),
+              ).toBeDefined()
+            return {
+              expose: async () => {
+                for (const reference of references)
+                  await expose(reference.operationId)
+              },
+            }
+          },
+          deliveryOf: payloadDigest =>
+            f.chain.directMessages.deliveryOf!({
+              wallet: alice,
+              payloadDigest,
+            }),
+          reconcile: params =>
+            f.chain.directMessages.reconcileAttempts({
+              wallet: alice,
+              ...params,
+            }),
+          onError: (_binding, error) => errors.push(error),
+        })
+        await recovery.tick()
+        expect(errors).toEqual([])
+        expect(relayBodies).toHaveLength(1)
+        expect(relayBodies[0].body).toEqual(originalBody)
+        expect(
+          await f.chain.directMessages.deliveryOf!({
+            wallet: alice,
+            payloadDigest: digest,
+          }),
+        ).toBe('delivered')
+        expect(
+          journal
+            .list()
+            .every(row => row.members.every(member => member.exposed)),
+        ).toBe(true)
+        for (const original of [first, second]) {
+          expect(
+            journal
+              .get(original.operationId)
+              .members.map(member => member.signed!.rawTransaction),
+          ).toEqual(
+            original.members.map(member => member.signed!.rawTransaction),
+          )
+        }
+        expect(broadcasts).toEqual([])
+        await recovery.tick()
+        expect(relayBodies).toHaveLength(1)
+        expect(prepare).toHaveBeenCalledTimes(preparedCalls)
+        expect(nativeSign).toHaveBeenCalledTimes(nativeSigns)
+        await journal.Close()
+        expect(sign.mock.calls.length).toBe(signs)
+        expect((await received()).map(message => message.messageId)).toEqual([
+          ID_A,
+        ])
+      } finally {
+        await appStore.Close()
+        await rm(path, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('stable-ID recovery leaves an absent original pending and validates all IDs before effects', async () => {
+    const callback = jest.fn()
+    const before = sign.mock.calls.length
+    expect(
+      await f.chain.directMessages.reconcileAttempts({
+        wallet: alice,
+        payloadDigests: [],
+        messageIds: [ID_A],
+        onEnvelopeDurable: callback,
+      }),
+    ).toEqual({})
+    expect(callback).not.toHaveBeenCalled()
+    expect(relayBodies).toHaveLength(0)
+    expect(sign.mock.calls.length).toBe(before)
+    const held = await attempt({
+      messageId: ID_A,
+      stampValue: 0n,
+      onEnvelopeDurable: async () => {
+        throw new Error('hold')
+      },
+    })
+    expect(held.requests).toBe(0)
+    for (const messageIds of [
+      [ID_A, ID_A],
+      [ID_A, 'bad'],
+      [ID_A, ID_A.toUpperCase()],
+    ])
+      await expect(
+        f.chain.directMessages.reconcileAttempts({
+          wallet: alice,
+          payloadDigests: [],
+          messageIds,
+          onEnvelopeDurable: callback,
+        }),
+      ).rejects.toBeInstanceOf(DirectMessageArgumentError)
+    expect(callback).not.toHaveBeenCalled()
+    expect(relayBodies).toHaveLength(0)
+  })
+
+  it('authenticates the sealed stable ID before authorizing a corrupted free store lookup', async () => {
+    await attempt({
+      messageId: ID_A,
+      stampValue: 0n,
+      onEnvelopeDurable: async () => {
+        throw new Error('hold')
+      },
+    })
+    const ownAddress = (await alice.getReceiveAddress()).raw.toLowerCase()
+    const ownIndex = openMessages.mock.calls
+      .map(call => String(call[0]).endsWith(`-evm-${ownAddress}`))
+      .lastIndexOf(true)
+    const messages: LevelOutgoingMessageStore = await openMessages.mock.results[
+      ownIndex
+    ].value
+    const envelope = messages.unpaid(ID_A.replace(/-/g, ''))!
+    // Fault injection uses the owner's existing durable store. The encrypted content still
+    // names A; a public-key/key-index alias B must never authorize it.
+    await messages.setUnpaid(ID_B.replace(/-/g, ''), envelope)
+    const callback = jest.fn()
+    await expect(
+      f.chain.directMessages.reconcileAttempts({
+        wallet: alice,
+        payloadDigests: [],
+        messageIds: [ID_B],
+        onEnvelopeDurable: callback,
+      }),
+    ).rejects.toThrow('stable identity mismatch')
+    expect(callback).not.toHaveBeenCalled()
+    expect(relayBodies).toHaveLength(0)
+    expect(messages.unpaid(ID_A.replace(/-/g, ''))!.exposurePending).toBe(true)
+  })
+
 })

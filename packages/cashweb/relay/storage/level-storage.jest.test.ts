@@ -479,7 +479,7 @@ describe('LevelMessageStore', () => {
     try {
       await seed(location, {
         messages: {
-          'kept': serializeMessageWrapper(inbound('kept', 400)),
+          kept: serializeMessageWrapper(inbound('kept', 400)),
           'relayCursor:0xaa': '5000',
           'relaySuppressionIndex:0xaa': JSON.stringify([
             { payloadDigest: 'gone', receivedTime: 456 },
@@ -582,7 +582,7 @@ describe('message store schema and mutation lifecycle', () => {
     'rejects schema marker %s unchanged and releases backend ownership',
     async marker => {
       await seed(location, {
-        metadata: { 'schemaVersion': marker, 'relayCursor:old': '456' },
+        metadata: { schemaVersion: marker, 'relayCursor:old': '456' },
         messages: { retained: 'original bytes' },
       })
       const before = await snapshot(location)
@@ -595,7 +595,9 @@ describe('message store schema and mutation lifecycle', () => {
       await expect(store.saveMessage(wrapper())).rejects.toMatchObject({
         code: 'unavailable',
       })
-      await expect(store.clear()).rejects.toMatchObject({ code: 'unavailable' })
+      await expect(store.clear()).rejects.toMatchObject({
+        code: 'unavailable',
+      })
       await store.Close()
       expect(await snapshot(location)).toEqual(before)
     },
@@ -697,7 +699,9 @@ describe('message store schema and mutation lifecycle', () => {
       code: 'unavailable',
     })
     await closing
-    await expect(iterator.next()).rejects.toMatchObject({ code: 'unavailable' })
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: 'unavailable',
+    })
     await expect(store.Open()).rejects.toMatchObject({ code: 'unavailable' })
     store = new LevelMessageStore(location)
     await store.Open()
@@ -744,7 +748,9 @@ describe('message store schema and mutation lifecycle', () => {
       const metadata = rawDb(store, 'metadataDb')
       const marker = jest.spyOn(metadata, 'put')
       if (writer === 'save' || writer === 'save-no-cursor')
-        await store.saveMessage(wrapper(), { advanceCursor: writer === 'save' })
+        await store.saveMessage(wrapper(), {
+          advanceCursor: writer === 'save',
+        })
       if (writer === 'quarantine')
         await store.quarantineRelayReceipts('0xaa', [
           { payloadDigest: 'anchored', receivedTime: 123 },
@@ -1012,7 +1018,11 @@ describe('message store IO and cleanup boundaries', () => {
     })
     const probe = jest.spyOn(LevelUp.prototype, 'iterator')
     await store.Open()
-    expect(probe).not.toHaveBeenCalled()
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(probe).toHaveBeenCalledWith({
+      gte: 'financialEnvelope:',
+      lt: 'financialEnvelope:\uffff',
+    })
     const iterator = await store.getIterator()
     await expect(iterator.next()).rejects.toThrow()
     await store.Close()
@@ -1059,5 +1069,125 @@ describe('message store IO and cleanup boundaries', () => {
     expect(write).not.toHaveBeenCalled()
     await store.Close()
     expect(await snapshot(location)).toEqual({ messages: {}, metadata: {} })
+  })
+})
+
+describe('durable financial envelope intents independent of history', () => {
+  const pending = {
+    version: 1 as const,
+    phase: 'pending' as const,
+    accountId: 'synthetic-public-account',
+    messagingChainIdentifier: 'monad-testnet',
+    messageId: '11111111-2222-4333-8444-555555555555',
+    financialOperations: [
+      { chainIdentifier: 'solana-devnet', operationId: 'original' },
+    ],
+  }
+  it('serializes Node pending/bound mutations, retains digest on repeat, and rejects conflicting facts', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'host-envelope-node-'))
+    let store = new LevelMessageStore(location)
+    await store.Open()
+    try {
+      const bound = {
+        ...pending,
+        phase: 'bound' as const,
+        payloadDigest: 'ab'.repeat(32),
+      }
+      await Promise.all([
+        store.bindFinancialEnvelope(pending),
+        store.bindFinancialEnvelope(bound),
+      ])
+      await store.bindFinancialEnvelope(pending)
+      await expect(
+        store.bindFinancialEnvelope({
+          ...bound,
+          payloadDigest: 'cd'.repeat(32),
+        }),
+      ).rejects.toThrow('conflict')
+      await expect(
+        store.bindFinancialEnvelope({
+          ...pending,
+          financialOperations: [
+            { chainIdentifier: 'solana-devnet', operationId: 'different' },
+          ],
+        }),
+      ).rejects.toThrow('conflict')
+      await store.clear()
+      await store.Close()
+      store = new LevelMessageStore(location)
+      await store.Open()
+      expect(await store.financialEnvelopeBindings(pending)).toEqual([bound])
+      expect(
+        await store.financialEnvelopeBindings({
+          ...pending,
+          messagingChainIdentifier: 'monad-mainnet',
+        }),
+      ).toEqual([])
+      expect(
+        await store.financialEnvelopeBindings({
+          ...pending,
+          accountId: 'other',
+        }),
+      ).toEqual([])
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+  it('rejects bound-without-intent, malformed/duplicate references, and corrupt persisted facts without reset', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'host-envelope-invalid-'))
+    let store = new LevelMessageStore(location)
+    await store.Open()
+    try {
+      await expect(
+        store.bindFinancialEnvelope({
+          ...pending,
+          phase: 'bound',
+          payloadDigest: 'ab'.repeat(32),
+        }),
+      ).rejects.toThrow('conflict')
+      await expect(
+        store.bindFinancialEnvelope({
+          ...pending,
+          financialOperations: [
+            ...pending.financialOperations,
+            ...pending.financialOperations,
+          ],
+        }),
+      ).rejects.toThrow('Duplicate')
+      await expect(
+        store.bindFinancialEnvelope({
+          ...pending,
+          messagingChainIdentifier: 'Solana Devnet',
+        }),
+      ).rejects.toThrow('Invalid')
+      await store.bindFinancialEnvelope(pending)
+      await store.Close()
+      const metadata = level(join(location, 'metadata'))
+      const key =
+        'financialEnvelope:' +
+        JSON.stringify([
+          pending.accountId,
+          pending.messagingChainIdentifier,
+          pending.messageId,
+        ])
+      await metadata.put(
+        key,
+        JSON.stringify({
+          ...pending,
+          phase: 'bound',
+          payloadDigest: 'not-a-digest',
+        }),
+        { sync: true },
+      )
+      await metadata.close()
+      const before = await snapshot(location)
+      store = new LevelMessageStore(location)
+      await expect(store.Open()).rejects.toMatchObject({ code: 'unavailable' })
+      expect(await snapshot(location)).toEqual(before)
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
   })
 })

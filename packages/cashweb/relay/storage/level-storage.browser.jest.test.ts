@@ -81,7 +81,7 @@ describe('actual browser message-store application records', () => {
       accepted: true,
       messages: {
         'browser-message': serializeMessageWrapper(message),
-        'lastServerTime': '0',
+        lastServerTime: '0',
       },
       metadata: { schemaVersion: '2' },
     },
@@ -175,7 +175,7 @@ describe('actual browser message-store application records', () => {
     expect(await raw(location)).toEqual({
       messages: {
         'browser-message': serializeMessageWrapper(message),
-        'lastServerTime': '12',
+        lastServerTime: '12',
       },
       metadata: { schemaVersion: '2' },
     })
@@ -198,5 +198,125 @@ describe('actual browser message-store application records', () => {
     expect(before.messages['browser-message']).toBe(
       serializeMessageWrapper(message),
     )
+  })
+})
+
+describe('strict immutable financial envelope metadata on installed LevelJS', () => {
+  const binding = {
+    version: 1 as const,
+    phase: 'pending' as const,
+    accountId: 'synthetic-account',
+    messagingChainIdentifier: 'monad-testnet',
+    messageId: '11111111-2222-4333-8444-555555555555',
+    financialOperations: [
+      { chainIdentifier: 'solana-devnet', operationId: 'original' },
+    ],
+  }
+  it('opens read-only without defaults, commits strict CAS, and retains binding across history clear/reopen', async () => {
+    const location = `/strict-bind-${++sequence}`
+    let store = new LevelMessageStore(location)
+    const transactions = jest.spyOn(IDBDatabase.prototype, 'transaction')
+    await store.Open()
+    expect(await store.financialEnvelopeBindings(binding)).toEqual([])
+    expect(await raw(location)).toEqual({ messages: {}, metadata: {} })
+    await store.bindFinancialEnvelope(binding)
+    await store.bindFinancialEnvelope(binding)
+    await expect(
+      store.bindFinancialEnvelope({
+        ...binding,
+        financialOperations: [
+          { chainIdentifier: 'solana-devnet', operationId: 'conflict' },
+        ],
+      }),
+    ).rejects.toThrow('conflict')
+    const writes = transactions.mock.calls.filter(
+      call => call[1] === 'readwrite',
+    )
+    expect(writes.length).toBeGreaterThan(0)
+    expect(writes.every(call => call[2]?.durability === 'strict')).toBe(true)
+    transactions.mockRestore()
+    await store.clear()
+    await store.Close()
+    store = new LevelMessageStore(location)
+    await store.Open()
+    expect(await store.financialEnvelopeBindings(binding)).toEqual([binding])
+    expect(
+      await store.financialEnvelopeBindings({ ...binding, accountId: 'other' }),
+    ).toEqual([])
+    await store.Close()
+  })
+  it('serializes conflicting immutable CAS across separate browser handles', async () => {
+    const location = `/strict-bind-${++sequence}`
+    const a = new LevelMessageStore(location),
+      b = new LevelMessageStore(location)
+    await Promise.all([a.Open(), b.Open()])
+    const outcomes = await Promise.allSettled([
+      a.bindFinancialEnvelope(binding),
+      b.bindFinancialEnvelope({
+        ...binding,
+        financialOperations: [
+          { chainIdentifier: 'solana-devnet', operationId: 'different' },
+        ],
+      }),
+    ])
+    expect(
+      outcomes.filter(result => result.status === 'fulfilled'),
+    ).toHaveLength(1)
+    expect(
+      outcomes.filter(result => result.status === 'rejected'),
+    ).toHaveLength(1)
+    expect(await a.financialEnvelopeBindings(binding)).toHaveLength(1)
+    await Promise.all([a.Close(), b.Close()])
+  })
+  it('fails closed when strict durability is unavailable, leaving no binding', async () => {
+    const location = `/strict-bind-${++sequence}`
+    const store = new LevelMessageStore(location)
+    await store.Open()
+    const original = IDBDatabase.prototype.transaction
+    const transaction = jest
+      .spyOn(IDBDatabase.prototype, 'transaction')
+      .mockImplementation(function (
+        this: IDBDatabase,
+        ...args: Parameters<typeof original>
+      ) {
+        const result = original.apply(this, args)
+        if (args[1] === 'readwrite')
+          Object.defineProperty(result, 'durability', { value: 'relaxed' })
+        return result
+      })
+    await expect(store.bindFinancialEnvelope(binding)).rejects.toBeDefined()
+    transaction.mockRestore()
+    await store.Close()
+    expect((await raw(location)).metadata).toEqual({})
+  })
+  it('competing browser pending-to-bound transitions preserve exactly one digest', async () => {
+    const location = `/strict-bind-${++sequence}`
+    const a = new LevelMessageStore(location),
+      b = new LevelMessageStore(location)
+    await Promise.all([a.Open(), b.Open()])
+    await a.bindFinancialEnvelope(binding)
+    const outcomes = await Promise.allSettled([
+      a.bindFinancialEnvelope({
+        ...binding,
+        phase: 'bound',
+        payloadDigest: 'ab'.repeat(32),
+      }),
+      b.bindFinancialEnvelope({
+        ...binding,
+        phase: 'bound',
+        payloadDigest: 'cd'.repeat(32),
+      }),
+    ])
+    expect(
+      outcomes.filter(result => result.status === 'fulfilled'),
+    ).toHaveLength(1)
+    expect(
+      outcomes.filter(result => result.status === 'rejected'),
+    ).toHaveLength(1)
+    await a.bindFinancialEnvelope(binding)
+    const [stored] = await a.financialEnvelopeBindings(binding)
+    expect(stored.phase).toBe('bound')
+    expect(['ab'.repeat(32), 'cd'.repeat(32)]).toContain(stored.payloadDigest)
+    await Promise.all([a.Close(), b.Close()])
   })
 })

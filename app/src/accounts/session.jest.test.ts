@@ -1947,13 +1947,11 @@ test('privately opens real EVM owners with the same Frank identity and separate 
         .mockResolvedValue(peerCheckpoint(config.networkId) as never)
       jest.spyOn(candidate.provider, 'getBalance').mockResolvedValue(1000000n)
       jest.spyOn(candidate.provider, 'getTransactionCount').mockResolvedValue(0)
-      jest
-        .spyOn(candidate.provider, 'getFeeData')
-        .mockResolvedValue({
-          maxFeePerGas: 1n,
-          maxPriorityFeePerGas: 1n,
-          gasPrice: 1n,
-        } as never)
+      jest.spyOn(candidate.provider, 'getFeeData').mockResolvedValue({
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+        gasPrice: 1n,
+      } as never)
       jest.spyOn(candidate.provider, 'estimateGas').mockResolvedValue(21000n)
       jest
         .spyOn(candidate.provider, 'getTransactionReceipt')

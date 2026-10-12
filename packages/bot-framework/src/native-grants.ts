@@ -1,5 +1,8 @@
 import { getAddress } from "ethers";
-import type { NativeWalletHandle } from "@frank/wallet/chain/chain-wallet";
+import {
+  NativeReserveExceededError,
+  type NativeWalletHandle,
+} from "@frank/wallet/chain/chain-wallet";
 import type { EvmNativeOperation } from "@frank/wallet/storage/evm-native-operation-journal";
 import { LevelBotStateStore } from "./state-store";
 
@@ -7,6 +10,7 @@ export interface NativeGrantRequest {
   to: string;
   valueWei: bigint;
   minReserveWei: bigint;
+  maxFeeWei: bigint;
 }
 export interface NativeGrantResult {
   state: "low" | "pending" | "submitted" | "confirmed" | "failed";
@@ -18,12 +22,13 @@ export interface NativeGrantCapability {
   resume(): Promise<void>;
 }
 interface GrantIntent {
-  version: 1;
+  version: 2;
   chainIdentifier: string;
   walletAddress: string;
   recipient: string;
   valueWei: string;
   minReserveWei: string;
+  maxFeeWei: string;
   previousOperationIds: string[];
   operationId: string | null;
 }
@@ -62,7 +67,7 @@ export class NativeGrants implements NativeGrantCapability {
     }
     if (
       !row ||
-      row.version !== 1 ||
+      row.version !== 2 ||
       row.chainIdentifier !== this.wallet.chainIdentifier ||
       row.walletAddress !==
         getAddress(this.wallet.identity.address.raw).toLowerCase() ||
@@ -72,6 +77,8 @@ export class NativeGrants implements NativeGrantCapability {
       !/^[1-9][0-9]*$/.test(row.valueWei) ||
       typeof row.minReserveWei !== "string" ||
       !/^(0|[1-9][0-9]*)$/.test(row.minReserveWei) ||
+      typeof row.maxFeeWei !== "string" ||
+      !/^(0|[1-9][0-9]*)$/.test(row.maxFeeWei) ||
       !Array.isArray(row.previousOperationIds) ||
       row.previousOperationIds.some((id) => typeof id !== "string") ||
       (row.operationId !== null && typeof row.operationId !== "string")
@@ -103,7 +110,11 @@ export class NativeGrants implements NativeGrantCapability {
   grant(request: NativeGrantRequest): Promise<NativeGrantResult> {
     const recipient = getAddress(request.to).toLowerCase();
     request = { ...request, to: recipient };
-    if (request.valueWei <= 0n || request.minReserveWei < 0n)
+    if (
+      request.valueWei <= 0n ||
+      request.minReserveWei < 0n ||
+      request.maxFeeWei < 0n
+    )
       return Promise.reject(new Error("Invalid faucet amount or reserve"));
     const running = this.active.get(recipient);
     // Still check immutable authorization when two callers use the same recipient at once.
@@ -147,21 +158,22 @@ export class NativeGrants implements NativeGrantCapability {
       if (
         intent.recipient !== recipient ||
         intent.valueWei !== request.valueWei.toString() ||
-        intent.minReserveWei !== request.minReserveWei.toString()
+        intent.minReserveWei !== request.minReserveWei.toString() ||
+        intent.maxFeeWei !== request.maxFeeWei.toString()
       )
         throw new Error(
           "Faucet grant authorization changed; original intent retained"
         );
     } else {
-      // This preserves the existing reserve policy. It is NOT a fee ceiling: deployment with
-      // funded grants remains gated on wallet enforcement of reserve plus maximum fees.
+      // Fast conservative precheck; authoritative fresh, unreserved value and actual fee are
+      // checked by the wallet owner under its allocation lock before reservation/signing.
       if (
         (await this.wallet.getBalance()) <
-        request.valueWei + request.minReserveWei
+        request.valueWei + request.minReserveWei + request.maxFeeWei
       )
         return { state: "low", already: false };
       intent = {
-        version: 1,
+        version: 2,
         chainIdentifier: this.wallet.chainIdentifier,
         walletAddress: getAddress(
           this.wallet.identity.address.raw
@@ -169,6 +181,7 @@ export class NativeGrants implements NativeGrantCapability {
         recipient,
         valueWei: request.valueWei.toString(),
         minReserveWei: request.minReserveWei.toString(),
+        maxFeeWei: request.maxFeeWei.toString(),
         previousOperationIds: this.rows()
           .filter((row) =>
             this.matches(
@@ -216,6 +229,8 @@ export class NativeGrants implements NativeGrantCapability {
       throw new Error(
         "Faucet wallet operation does not match its authorization"
       );
+    if (operation && BigInt(operation.maximumFeeWei) > BigInt(intent.maxFeeWei))
+      throw new Error("Faucet operation exceeds its authorized fee budget");
     // Cancellation is an owner decision; chain inclusion is only an observation. Recheck even
     // successful or reverted receipts through the wallet so an orphaned block cannot freeze
     // the business intent as settled or cause a newly signed replacement.
@@ -229,6 +244,8 @@ export class NativeGrants implements NativeGrantCapability {
         await this.wallet.sendNative({
           recipient: { raw: recipient },
           value: request.valueWei,
+          maxFee: request.maxFeeWei,
+          minimumRemainingBalance: request.minReserveWei,
           onSigned: async (signed) => {
             const candidates = this.rows().filter(
               (row) =>
@@ -250,6 +267,8 @@ export class NativeGrants implements NativeGrantCapability {
     } catch (error) {
       // Unknown submission is still the ORIGINAL operation. Persist failures stay visible;
       // a later invocation adopts/resumes that row without signing a replacement payment.
+      if (!bindingPersisted && error instanceof NativeReserveExceededError)
+        return { state: "low", already };
       if (!bindingPersisted || intent.operationId === null) throw error;
       const current = this.rows().find(
         (row) => row.operationId === intent.operationId
@@ -282,6 +301,7 @@ export class NativeGrants implements NativeGrantCapability {
           to: intent.recipient,
           valueWei: BigInt(intent.valueWei),
           minReserveWei: BigInt(intent.minReserveWei),
+          maxFeeWei: BigInt(intent.maxFeeWei),
         });
       } catch (error) {
         failures.push(error);

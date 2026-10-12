@@ -10,6 +10,7 @@ import { generateAvatarPng } from "../../bot-directory";
 import { replyFree, sendFree } from "./money";
 
 export const FAUCET_DEFAULT_AMOUNT_WEI = 50_000_000_000_000_000n; // 0.05 MON
+export const FAUCET_DEFAULT_MAX_FEE_WEI = 10_000_000_000_000_000n; // 0.01 MON
 export const FAUCET_DEFAULT_MIN_RESERVE_WEI = 100_000_000_000_000_000n; // 0.1 MON
 /** The most one grant may be configured to: a misconfigured amount must not empty the wallet. */
 export const MAX_AMOUNT_WEI = 1_000_000_000_000_000_000n; // 1 MON
@@ -19,6 +20,8 @@ export interface FaucetBotOptions {
   amountWei?: bigint;
   /** The faucet wallet keeps at least this (`FAUCET_MIN_RESERVE_WEI`). */
   minReserveWei?: bigint;
+  /** Maximum native fee authorized for each original grant (`FAUCET_MAX_FEE_WEI`). */
+  maxFeeWei?: bigint;
 }
 
 /**
@@ -37,6 +40,7 @@ export class FaucetBot implements FrankBotDefinition {
 
   private readonly amountWei: bigint;
   private readonly minReserveWei: bigint;
+  private readonly maxFeeWei: bigint;
 
   constructor(options?: FaucetBotOptions) {
     this.amountWei =
@@ -53,6 +57,19 @@ export class FaucetBot implements FrankBotDefinition {
       (process.env.FAUCET_MIN_RESERVE_WEI
         ? BigInt(process.env.FAUCET_MIN_RESERVE_WEI)
         : FAUCET_DEFAULT_MIN_RESERVE_WEI);
+    this.maxFeeWei =
+      options?.maxFeeWei ??
+      (process.env.FAUCET_MAX_FEE_WEI
+        ? BigInt(process.env.FAUCET_MAX_FEE_WEI)
+        : FAUCET_DEFAULT_MAX_FEE_WEI);
+    if (
+      this.minReserveWei < 0n ||
+      this.maxFeeWei < 0n ||
+      this.maxFeeWei > MAX_AMOUNT_WEI
+    )
+      throw new Error(
+        "Faucet reserve must be nonnegative and maximum fee between zero and 1 MON"
+      );
   }
 
   getProfile(): BotProfile {
@@ -92,6 +109,7 @@ export class FaucetBot implements FrankBotDefinition {
       to: address,
       valueWei: this.amountWei,
       minReserveWei: this.minReserveWei,
+      maxFeeWei: this.maxFeeWei,
     });
   }
 

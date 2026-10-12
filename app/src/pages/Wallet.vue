@@ -345,9 +345,14 @@
                             {{ $t('walletPanel.assetsAndTokens') }}
                           </span>
                         </div>
-                        <q-badge outline color="primary" class="text-bold">
-                          {{ activeTokens.length }}
-                          {{ activeTokens.length === 1 ? 'Asset' : 'Assets' }}
+                        <q-badge
+                          outline
+                          color="primary"
+                          class="text-bold"
+                          data-testid="wallet-asset-count"
+                        >
+                          {{ assetCount }}
+                          {{ assetCount === 1 ? 'Asset' : 'Assets' }}
                         </q-badge>
                       </div>
 
@@ -362,7 +367,63 @@
 
                       <q-list separator class="rounded-borders">
                         <q-item
-                          v-for="token in activeTokens"
+                          v-if="nativeAsset"
+                          class="q-px-none q-py-sm"
+                          :data-testid="`wallet-token-item-${nativeAsset.unit.toLowerCase()}`"
+                          data-native-asset
+                        >
+                          <q-item-section avatar top>
+                            <q-avatar
+                              size="36px"
+                              color="primary"
+                              text-color="white"
+                              icon="toll"
+                            />
+                          </q-item-section>
+                          <q-item-section>
+                            <q-item-label class="text-weight-bold">
+                              {{ nativeAsset.unit }}
+                              <span
+                                class="text-caption text-grey-7 font-weight-normal q-ml-xs"
+                              >
+                                · {{ nativeAsset.name }}
+                              </span>
+                            </q-item-label>
+                            <q-item-label caption class="text-grey-6">
+                              {{ $t('walletPanel.nativeCoin') }}
+                            </q-item-label>
+                          </q-item-section>
+                          <q-item-section side>
+                            <q-item-label
+                              class="text-weight-bolder text-right"
+                              :title="balanceTitle"
+                            >
+                              {{
+                                balanceObservation
+                                  ? currentWalletHasError
+                                    ? $t('walletPanel.balanceStale', {
+                                        balance:
+                                          balanceObservation.formattedBalance,
+                                      })
+                                    : balanceObservation.formattedBalance
+                                  : $t(
+                                      balancePresentation.status === 'loading'
+                                        ? 'walletPanel.balanceLoading'
+                                        : 'walletPanel.balanceUnavailable',
+                                    )
+                              }}
+                            </q-item-label>
+                            <q-item-label
+                              v-if="!currentWalletHasError && currentWalletAvu"
+                              caption
+                              class="text-grey-7 text-right"
+                            >
+                              {{ currentWalletAvu }}
+                            </q-item-label>
+                          </q-item-section>
+                        </q-item>
+                        <q-item
+                          v-for="token in nonNativeTokens"
                           :key="token.id"
                           class="q-px-none q-py-sm"
                           :data-testid="`wallet-token-item-${token.symbol.toLowerCase()}`"
@@ -940,6 +1001,20 @@ export default defineComponent({
       status: evmTokenStatus,
       refresh: refreshEvmTokens,
     } = useEvmTokenBalances(sendChainIdentifier)
+    // Asset rows are a derived view, not another balance owner. Solana's reader already
+    // includes its native coin; show that coin once through the same row as other families.
+    const nativeAsset = computed(() =>
+      support.value.status === 'available' ? support.value.entry : undefined,
+    )
+    const nonNativeTokens = computed(() =>
+      activeTokens.value.filter(token => !token.isNative),
+    )
+    const assetCount = computed(
+      () =>
+        (nativeAsset.value ? 1 : 0) +
+        nonNativeTokens.value.length +
+        evmTokens.value.length,
+    )
     // Coming back from the swap tab, the token balances are read again at once.
     watch(activeTab, tab => {
       if (tab === 'balance') void refreshEvmTokens()
@@ -1185,7 +1260,9 @@ export default defineComponent({
       openReceive() {
         openPage(router, '/wallet')
       },
-      activeTokens,
+      nativeAsset,
+      nonNativeTokens,
+      assetCount,
       evmTokens,
       evmTokenStatus,
       tokenStatusKey,

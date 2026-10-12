@@ -28,6 +28,7 @@ const SAME_IN_FRENCH = new Set([
   'notificationPermission.title',
   'leftDrawer.contacts',
   'leftDrawer.forum',
+  'walletHistory.transaction',
   'walletPanel.avuUnitValue',
   'walletPanel.avuTestnetValue',
   'walletPanel.chartUsdKwh',

@@ -10,6 +10,9 @@ import { useSettingsStore } from 'src/stores/settings'
 describe('EmailThreadView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    useSettingsStore().setEmailGatewayAddress(
+      '0x3333333333333333333333333333333333333333',
+    )
   })
   const sampleEmail1: EmailItem = {
     type: 'email',
@@ -68,8 +71,8 @@ describe('EmailThreadView', () => {
     id: 'conv-123',
     kind: 'email',
     name: 'Project Kickoff',
-    address: '0xGateway',
-    participants: ['0xGateway', '0xMe'],
+    address: '0x3333333333333333333333333333333333333333',
+    participants: ['0x3333333333333333333333333333333333333333', '0xMe'],
     messages,
     totalUnreadMessages: 0,
     totalUnreadValue: 0,
@@ -86,7 +89,7 @@ describe('EmailThreadView', () => {
         conversation,
         messages,
         sending: false,
-        recipientAddress: '0xGateway',
+        recipientAddress: '0x3333333333333333333333333333333333333333',
         ...customProps,
       },
       global: {
@@ -420,8 +423,35 @@ describe('EmailThreadView', () => {
       }
       expect(emitted.fallbackText).toContain('[Email to ')
       expect(emitted.targetAddress).toBe(
-        '0x1111111111111111111111111111111111111111',
+        '0x3333333333333333333333333333333333333333',
       )
+    })
+
+    it('does not send an old gateway thread after the relay identity changes', async () => {
+      const wrapper = mountView()
+      const vm = wrapper.vm as any
+      vm.replyText = 'Do not send to the old address'
+      useSettingsStore().resetEmailGatewayAddress()
+      await wrapper.vm.$nextTick()
+      expect(vm.canSend).toBe(false)
+      await vm.handleSend()
+      expect(wrapper.emitted('sendReply')).toBeUndefined()
+    })
+
+    it('does not bridge a peer email when this relay has no gateway', async () => {
+      const wrapper = mountView({
+        conversation: unverifiedPeerConversation,
+        messages: [peerMessage],
+        recipientAddress: peerAddress,
+      })
+      const vm = wrapper.vm as any
+      vm.replyRouting = 'gateway'
+      vm.replyText = 'Cannot bridge'
+      useSettingsStore().resetEmailGatewayAddress()
+      await wrapper.vm.$nextTick()
+      expect(vm.canSend).toBe(false)
+      await vm.handleSend()
+      expect(wrapper.emitted('sendReply')).toBeUndefined()
     })
 
     it('initializes in draft mode with prefilled recipient when messages are empty (0-message state)', () => {
@@ -616,7 +646,7 @@ describe('EmailThreadView', () => {
           serverTime: 5000,
           items: [emailWithHtml],
           outpoints: [],
-          senderAddress: '0xGateway',
+          senderAddress: '0x3333333333333333333333333333333333333333',
           payloadDigest: 'digest-html-msg',
         }
 

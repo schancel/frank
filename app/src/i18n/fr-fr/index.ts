@@ -1357,6 +1357,15 @@ export default {
     languageSelectorCaption: 'Langue',
     networkSettings: 'Paramètres réseau et passerelle',
     emailGatewayAddress: 'Adresse de la passerelle e-mail',
+    emailGatewayRelayLabel: 'Passerelle du relais :',
+    emailGatewayChanged:
+      'Le relais ou l’identité de sa passerelle e-mail a changé. Vérifiez la nouvelle adresse avant de l’utiliser.',
+    emailGatewayChecking: 'Recherche de la passerelle e-mail de ce relais…',
+    emailGatewayUnavailable:
+      'Ce relais ne propose pas de passerelle e-mail. L’envoi d’e-mails nécessite une adresse définie manuellement.',
+    emailGatewayOverrideHint: 'Adresse facultative pour le réseau sélectionné',
+    acceptRelayGateway: 'Accepter la passerelle du relais',
+    useRelayGateway: 'Utiliser la passerelle du relais',
     resetDefault: 'Rétablir par défaut',
     save: 'Enregistrer',
     gateways: 'Passerelles',

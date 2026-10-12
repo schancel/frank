@@ -313,7 +313,6 @@ import { activeChain } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
 import { errorNotify } from 'src/utils/notifications'
-import { defaultEmailGatewayAddress } from 'src/utils/constants'
 import { useSettingsStore } from 'src/stores/settings'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -857,8 +856,7 @@ export default defineComponent({
         const chatStore = useChatStore()
         const conversation = chatStore.createEmailConversation({
           recipientEmail: this.emailAddress,
-          gatewayAddress:
-            settingsStore.emailGatewayAddress || defaultEmailGatewayAddress,
+          gatewayAddress: settingsStore.emailGatewayAddress,
           subject: this.topic.trim() || undefined,
         })
         chatStore.setActiveConversation(conversation.id)

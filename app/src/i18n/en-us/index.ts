@@ -1323,6 +1323,16 @@ export default {
     languageSelectorCaption: 'Language',
     networkSettings: 'Network & Gateway Settings',
     emailGatewayAddress: 'Email Gateway Address',
+    emailGatewayRelayLabel: 'Relay gateway:',
+    emailGatewayChanged:
+      'The relay or its email gateway identity changed. Review the new address before using it.',
+    emailGatewayChecking: 'Checking this relay for an email gateway…',
+    emailGatewayUnavailable:
+      'This relay has no available email gateway. Email sending is unavailable unless you set an explicit address.',
+    emailGatewayOverrideHint:
+      'Optional address override for the selected network',
+    acceptRelayGateway: 'Accept relay gateway',
+    useRelayGateway: 'Use relay gateway',
     resetDefault: 'Reset to default',
     save: 'Save',
     gateways: 'Gateways',

@@ -221,10 +221,7 @@ import { shortAddress } from '../utils/short-address'
 import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
-import {
-  defaultAcceptancePrice,
-  defaultEmailGatewayAddress,
-} from '../utils/constants'
+import { defaultAcceptancePrice } from '../utils/constants'
 import { useSettingsStore } from '../stores/settings'
 import {
   automaticDealerSteps,
@@ -765,6 +762,21 @@ export default defineComponent({
       const originalName = conversation.name
       const recipient =
         payload.targetAddress || this.recipientAddress || this.address
+      if (
+        (conversation.verifiedGateway === true || payload.targetAddress) &&
+        (!useSettingsStore().emailGatewayAddress ||
+          !sameCanonicalAddress(
+            recipient,
+            useSettingsStore().emailGatewayAddress,
+          ))
+      ) {
+        errorNotify(
+          new Error(
+            'This relay email gateway is unavailable or has changed. Review its address in Settings before sending.',
+          ),
+        )
+        return
+      }
       this.sendingMessage = true
       try {
         if (this.stampUnavailable) throw new Error(this.stampUnavailable)
@@ -1323,9 +1335,9 @@ export default defineComponent({
       if (this.isEmailThread) {
         try {
           const settingsStore = useSettingsStore()
-          return settingsStore.emailGatewayAddress || defaultEmailGatewayAddress
+          return settingsStore.emailGatewayAddress
         } catch {
-          return defaultEmailGatewayAddress
+          return ''
         }
       }
       return this.address

@@ -2,7 +2,7 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 import { shallowRef } from 'vue'
 
-import { defaultEmailGatewayAddress, displayNetwork } from '../utils/constants'
+import { displayNetwork } from '../utils/constants'
 import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { picturePreview, picturePreviewText } from '../utils/chat-attachments'
@@ -215,22 +215,11 @@ export type ChatState = Conversation
 
 export function getTrustedEmailGatewayAddress(): string {
   try {
-    const profile = useProfileStore()
-    if (profile.emailBridgeGatewayAddress) {
-      return profile.emailBridgeGatewayAddress
-    }
-  } catch {
-    //
-  }
-  try {
     const settings = useSettingsStore()
-    if (settings.emailGatewayAddress) {
-      return settings.emailGatewayAddress
-    }
+    return settings.emailGatewayAddress
   } catch {
-    //
+    return ''
   }
-  return defaultEmailGatewayAddress
 }
 
 export function makeParticipantsKey(participants: string[]): string {
@@ -3854,7 +3843,7 @@ export const useChatStore = defineStore('chats', {
     createEmailConversation({
       recipientEmail,
       subject,
-      gatewayAddress = defaultEmailGatewayAddress,
+      gatewayAddress,
     }: {
       recipientEmail: string
       subject?: string
@@ -3864,6 +3853,8 @@ export const useChatStore = defineStore('chats', {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
         throw new Error('Invalid email recipient')
       }
+      if (!gatewayAddress)
+        throw new Error('No email gateway is available for this relay')
       const canonicalGateway = toChainDisplayAddress(gatewayAddress)
       return this.createConversation({
         kind: 'email',

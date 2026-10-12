@@ -54,9 +54,17 @@ function memoryDatabase() {
       data.clear()
     }),
     close: jest.fn(async () => undefined),
-    iterator: () => {
-      const entries = [...data.entries()][Symbol.iterator]()
+    iterator: (range?: { gte?: string; lt?: string }) => {
+      const values = [...data.entries()].filter(
+        ([key]) =>
+          (range?.gte === undefined || key >= range.gte) &&
+          (range?.lt === undefined || key < range.lt),
+      )
+      const entries = values[Symbol.iterator]()
       return {
+        async *[Symbol.asyncIterator]() {
+          yield* values
+        },
         next(
           callback: (error: undefined, key?: string, value?: string) => void,
         ) {
@@ -113,6 +121,8 @@ jest.mock('./accounts/session', () => ({
 const mockIdentity = jest.fn(async () => undefined)
 jest.mock('./utils/monad-identity-session', () => ({
   initializeMonadIdentity: () => mockIdentity(),
+  messagingState: { status: 'pending' },
+  messagingWallet: () => undefined,
 }))
 const mockTabInit = jest.fn(async () => undefined)
 jest.mock('./stores/tab-coordinator', () => ({

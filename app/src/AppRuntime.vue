@@ -50,6 +50,7 @@ import { useAppearanceStore } from 'src/stores/appearance'
 import { useProfileStore } from 'src/stores/my-profile'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
+import { useSettingsStore } from 'src/stores/settings'
 import { usePersistentStorageStore } from 'src/stores/persistent-storage'
 import { applyTheme } from 'src/utils/theme'
 import { openChat } from 'src/utils/routes'
@@ -58,6 +59,11 @@ import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
 import { useTabCoordinatorStore } from 'src/stores/tab-coordinator'
 import { accountStatus } from './accounts/session'
+import {
+  messagingState,
+  messagingWallet,
+} from 'src/utils/monad-identity-session'
+import { activeChain } from '@frank/wallet/chain'
 import { useAppOracleFeed } from 'src/composables/useOracleFeed'
 
 export default defineComponent({
@@ -75,6 +81,7 @@ export default defineComponent({
     const appearanceStore = useAppearanceStore()
     const { darkMode, locale, theme } = storeToRefs(appearanceStore)
     const myProfile = useProfileStore()
+    const settings = useSettingsStore()
     const tabCoordinator = useTabCoordinatorStore()
 
     useNotificationPermissionOffer(
@@ -145,6 +152,32 @@ export default defineComponent({
               console.error(err)
             })
         }
+      },
+      { immediate: true },
+    )
+
+    let gatewayDiscoveryWasActive = false
+    watch(
+      [() => accountStatus.status, () => messagingState.status],
+      ([account, messaging]) => {
+        const wallet = messaging === 'ready' ? messagingWallet() : undefined
+        if (account !== 'ready' || !wallet) {
+          // Initial hydration is read-only. Only clear a discovery that this
+          // runtime actually started after an active session ends.
+          if (gatewayDiscoveryWasActive) {
+            settings.clearEmailGatewayDiscovery()
+            gatewayDiscoveryWasActive = false
+          }
+          return
+        }
+        gatewayDiscoveryWasActive = true
+        const relayBaseUrl =
+          (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
+          loadMonadChainConfigFromEnv().relayBaseUrl
+        void settings.refreshEmailGateway(
+          relayBaseUrl,
+          activeChain.chainIdentifier,
+        )
       },
       { immediate: true },
     )

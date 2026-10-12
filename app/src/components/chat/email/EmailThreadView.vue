@@ -808,7 +808,6 @@ import type {
   MessageItem,
 } from '@frank/cashweb/types/messages'
 import { formatConversationTimestamp } from 'src/utils/formatting'
-import { defaultEmailGatewayAddress } from 'src/utils/constants'
 import { purify, renderMarkdown } from 'src/utils/markdown'
 import {
   applyMarkdownFormat,
@@ -895,7 +894,12 @@ export default defineComponent({
   },
   computed: {
     isVerifiedGateway(): boolean {
-      return this.conversation?.verifiedGateway === true
+      return (
+        this.conversation?.verifiedGateway === true &&
+        !!this.emailGatewayAddress &&
+        this.peerFrankAddress.toLowerCase() ===
+          this.emailGatewayAddress.toLowerCase()
+      )
     },
     peerFrankAddress(): string {
       if (this.recipientAddress) return this.recipientAddress
@@ -929,9 +933,9 @@ export default defineComponent({
     emailGatewayAddress(): string {
       try {
         const settingsStore = useSettingsStore()
-        return settingsStore.emailGatewayAddress || defaultEmailGatewayAddress
+        return settingsStore.emailGatewayAddress
       } catch {
-        return defaultEmailGatewayAddress
+        return ''
       }
     },
     parsedEmails(): ParsedEmailCard[] {
@@ -1035,6 +1039,20 @@ export default defineComponent({
       return Array.from(set)
     },
     canSend(): boolean {
+      if (
+        this.conversation?.verifiedGateway === true &&
+        !this.isVerifiedGateway
+      )
+        return false
+      if (this.isVerifiedGateway || this.replyRouting === 'gateway') {
+        if (!this.emailGatewayAddress) return false
+        if (
+          this.isVerifiedGateway &&
+          this.peerFrankAddress.toLowerCase() !==
+            this.emailGatewayAddress.toLowerCase()
+        )
+          return false
+      }
       return (
         (this.replyText.trim().length > 0 || this.stagedFiles.length > 0) &&
         (this.toList.length > 0 ||

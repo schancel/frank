@@ -5,6 +5,7 @@ import { createApp, defineComponent, h, nextTick } from 'vue'
 import { TextDecoder, TextEncoder } from 'util'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
+import { useSettingsStore } from '../stores/settings'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 
 // An account that can open a chat always has its conversation-ID salt installed.
@@ -640,6 +641,7 @@ it.each([false, true])(
 it('New conversation infers email and creates independent equal and blank roots, reopens by ID and preserves direct defaults', async () => {
   const app = await mountedConversations()
   try {
+    useSettingsStore().setEmailGatewayAddress(`0x${'7'.repeat(40)}`)
     const defaultId = await app.create(PEER, '', false)
     const ids: string[] = []
     for (const [recipient, subject] of [

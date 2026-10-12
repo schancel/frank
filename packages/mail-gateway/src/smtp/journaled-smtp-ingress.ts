@@ -50,6 +50,8 @@ export interface JournaledSmtpIngressOptions {
   readonly sender: Pick<JournaledInboundSend, 'admit'>;
   readonly stampValue: bigint;
   readonly authentication?: DirectSmtpAuthentication;
+  /** Runtime recovery health. A transient failure asks the sender to retry later. */
+  readonly isReady?: () => boolean;
 }
 
 /** Both SMTP and signed-webhook ingress end at the same durable admission owner. */
@@ -59,6 +61,7 @@ export class JournaledSmtpIngress {
   private readonly sender: Pick<JournaledInboundSend, 'admit'>;
   private readonly stampValue: bigint;
   private readonly authentication: DirectSmtpAuthentication;
+  private readonly isReady: () => boolean;
 
   constructor(options: JournaledSmtpIngressOptions) {
     if (options.stampValue < 0n) throw new Error('SMTP stamp value must be non-negative');
@@ -67,6 +70,7 @@ export class JournaledSmtpIngress {
     this.sender = options.sender;
     this.stampValue = options.stampValue;
     this.authentication = options.authentication ?? strictSmtpAuthentication;
+    this.isReady = options.isReady ?? (() => true);
   }
 
   private localPart(address: string): string {
@@ -80,6 +84,7 @@ export class JournaledSmtpIngress {
   }
 
   async acceptsRecipient(address: string): Promise<boolean> {
+    if (!this.isReady()) throw new SmtpAdmissionRefusal(451, 'Mail admission unavailable');
     try { return !!(await this.lookup(this.localPart(address))); }
     catch (error) {
       if (error instanceof SmtpAdmissionRefusal) return false;
@@ -89,6 +94,7 @@ export class JournaledSmtpIngress {
 
   /** Returns only after every recipient is journaled. A partial failure invites an idempotent retry. */
   async accept(raw: Uint8Array, envelope: DirectSmtpEnvelope): Promise<void> {
+    if (!this.isReady()) throw new SmtpAdmissionRefusal(451, 'Mail admission unavailable');
     if (raw.byteLength > MAX_RAW_BYTES) throw new SmtpAdmissionRefusal(552, 'Message too large');
     if (!envelope.clientIp || !envelope.helo || !envelope.mailFrom || envelope.recipients.length === 0)
       throw new SmtpAdmissionRefusal(550, 'Invalid SMTP envelope');
@@ -125,6 +131,8 @@ export interface JournaledSmtpServerOptions {
 /** SMTP protocol boundary; never reports 250 until the journal has committed. */
 export class JournaledSmtpServer {
   private readonly server: SMTPServer;
+  private ready = false;
+  private started = false;
 
   constructor(options: JournaledSmtpServerOptions) {
     if (!options.tlsKey || !options.tlsCert) throw new Error('SMTP TLS key and certificate are required');
@@ -134,6 +142,7 @@ export class JournaledSmtpServer {
       mailFrom: session.envelope.mailFrom ? session.envelope.mailFrom.address : '',
       recipients: session.envelope.rcptTo.map(recipient => recipient.address),
     });
+    const isServerReady = () => this.ready;
     this.server = new SMTPServer({
       name: options.hostname,
       key: options.tlsKey,
@@ -142,11 +151,13 @@ export class JournaledSmtpServer {
       disabledCommands: ['AUTH'],
       size: MAX_RAW_BYTES,
       onRcptTo(address, _session, callback) {
+        if (!isServerReady()) { callback(new SmtpAdmissionRefusal(451, 'Mail admission unavailable')); return; }
         void options.ingress.acceptsRecipient(address.address).then(accepted => {
           callback(accepted ? null : new SmtpAdmissionRefusal(550, 'Recipient unavailable'));
         }, () => callback(new SmtpAdmissionRefusal(451, 'Recipient lookup unavailable')));
       },
       onData(stream, session, callback) {
+        if (!isServerReady()) { stream.resume(); callback(new SmtpAdmissionRefusal(451, 'Mail admission unavailable')); return; }
         void (async () => {
           const chunks: Buffer[] = [];
           let length = 0;
@@ -172,12 +183,27 @@ export class JournaledSmtpServer {
       this.server.once('error', reject);
       this.server.listen(port, host, () => {
         this.server.removeListener('error', reject);
+        this.started = true;
+        this.ready = true;
         resolve();
       });
     });
   }
 
+  address(): { address: string; port: number } {
+    const address = this.server.server.address();
+    if (!address || typeof address === 'string') throw new Error('SMTP server is not listening');
+    return { address: address.address, port: address.port };
+  }
+
   stop(): Promise<void> {
+    this.ready = false;
+    if (!this.started) return Promise.resolve();
+    this.started = false;
     return new Promise(resolve => this.server.close(() => resolve()));
+  }
+
+  setReady(ready: boolean): void {
+    this.ready = ready;
   }
 }

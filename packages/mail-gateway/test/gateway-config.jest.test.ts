@@ -57,4 +57,23 @@ describe('mail executable configuration', () => {
     env.FRANK_MAIL_WALLET_STATE_DIR = 'relative';
     expect(() => loadGatewayHostConfig(env)).toThrow('absolute path');
   });
+
+  it('enables direct SMTP only with a complete file-backed TLS configuration', () => {
+    const env = settings(dir);
+    const key = path.join(dir, 'smtp-key');
+    const cert = path.join(dir, 'smtp-cert');
+    fs.writeFileSync(key, 'PRIVATE KEY\nsecond line\n', { mode: 0o600 });
+    fs.writeFileSync(cert, 'CERTIFICATE\nsecond line\n', { mode: 0o600 });
+    env.FRANK_MAIL_SMTP_HOST = '127.0.0.1';
+    expect(() => loadGatewayHostConfig(env)).toThrow('FRANK_MAIL_SMTP_PORT');
+    env.FRANK_MAIL_SMTP_PORT = '2525';
+    env.FRANK_MAIL_SMTP_HOSTNAME = 'mail.signet.mx';
+    env.FRANK_MAIL_SMTP_TLS_KEY_FILE = key;
+    env.FRANK_MAIL_SMTP_TLS_CERT_FILE = cert;
+    const config = loadGatewayHostConfig(env);
+    expect(config.nativeSmtp).toMatchObject({ host: '127.0.0.1', port: 2525, hostname: 'mail.signet.mx' });
+    expect(config.nativeSmtp?.tlsKey.toString()).toContain('second line');
+    fs.chmodSync(key, 0o644);
+    expect(() => loadGatewayHostConfig(env)).toThrow('owner-readable only');
+  });
 });

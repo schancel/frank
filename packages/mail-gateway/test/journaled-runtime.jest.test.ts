@@ -23,11 +23,28 @@ describe('journaled mail host recovery', () => {
       now: () => 1000,
     });
 
-    await expect(runtime.runOnce()).rejects.toThrow('Frank send recovery: 1');
+    await expect(runtime.runOnce()).rejects.toThrow('Frank send recovery items: 1');
     expect(pollOnce).toHaveBeenCalledTimes(1);
     expect(dispatchDue).toHaveBeenCalledWith(1000, 100);
     await runtime.runOnce();
     expect(recover).toHaveBeenNthCalledWith(2, 100, 1);
     expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues SMTP and provider reconciliation after a mailbox fetch fails', async () => {
+    const dispatchDue = jest.fn(async () => ({ sent: 1, uncertain: 0 }));
+    const reconcile = jest.fn(async () => ({ confirmed: 0, unresolved: 0, pages: 0 }));
+    const runtime = new JournaledMailRuntime({
+      inbound: {
+        releaseHeld: async () => ({ released: 0, errors: [], nextAfter: undefined }),
+        recover: async () => ({ attempted: 0, delivered: 0, pending: 0, held: 0, errors: [], nextAfterSlotId: 0 }),
+      } as unknown as JournaledInboundSend,
+      frankMailbox: { pollOnce: async () => { throw new Error('relay unavailable'); } } as unknown as JournaledFrankMailbox,
+      outbound: { dispatchDue } as unknown as JournaledOutboundWorker,
+      outboundReconciler: { reconcile } as unknown as ResendOutboundReconciler,
+    });
+    await expect(runtime.runOnce()).rejects.toThrow('Frank mailbox: Error');
+    expect(dispatchDue).toHaveBeenCalledTimes(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
   });
 });

@@ -46,26 +46,36 @@ export class JournaledMailRuntime {
     this.running = true;
     try {
       const failures: string[] = [];
-      const released = await this.inbound.releaseHeld(100, this.heldAfter);
-      this.heldAfter = released.nextAfter;
-      if (released.errors.length) failures.push(`held release: ${released.errors.length}`);
-
-      const recovered = await this.inbound.recover(100, this.inboundAfterSlotId);
-      this.inboundAfterSlotId = recovered.nextAfterSlotId;
-      if (recovered.errors.length) failures.push(`Frank send recovery: ${recovered.errors.length}`);
-
-      await this.frankMailbox.pollOnce();
-      await this.outbound.dispatchDue(this.now(), 100);
-
-      const evidence = await this.outboundReconciler.reconcile(
-        100, 20, this.outboundAfterJobId, this.outboundProviderAfter
-      );
-      if (evidence.nextProviderAfter) {
-        this.outboundProviderAfter = evidence.nextProviderAfter;
-      } else {
-        this.outboundProviderAfter = undefined;
-        this.outboundAfterJobId = evidence.nextJobId ?? 0;
-      }
+      const stage = async (name: string, run: () => Promise<void>): Promise<void> => {
+        try {
+          await run();
+        } catch (error) {
+          failures.push(`${name}: ${error instanceof Error ? error.name : typeof error}`);
+        }
+      };
+      await stage('held release', async () => {
+        const released = await this.inbound.releaseHeld(100, this.heldAfter);
+        this.heldAfter = released.nextAfter;
+        if (released.errors.length) failures.push(`held release items: ${released.errors.length}`);
+      });
+      await stage('Frank send recovery', async () => {
+        const recovered = await this.inbound.recover(100, this.inboundAfterSlotId);
+        this.inboundAfterSlotId = recovered.nextAfterSlotId;
+        if (recovered.errors.length) failures.push(`Frank send recovery items: ${recovered.errors.length}`);
+      });
+      await stage('Frank mailbox', async () => { await this.frankMailbox.pollOnce(); });
+      await stage('outbound SMTP', async () => { await this.outbound.dispatchDue(this.now(), 100); });
+      await stage('outbound reconciliation', async () => {
+        const evidence = await this.outboundReconciler.reconcile(
+          100, 20, this.outboundAfterJobId, this.outboundProviderAfter
+        );
+        if (evidence.nextProviderAfter) {
+          this.outboundProviderAfter = evidence.nextProviderAfter;
+        } else {
+          this.outboundProviderAfter = undefined;
+          this.outboundAfterJobId = evidence.nextJobId ?? 0;
+        }
+      });
       if (failures.length) throw new Error(`Mail runtime pass encountered item failures (${failures.join(', ')})`);
     } finally {
       this.running = false;

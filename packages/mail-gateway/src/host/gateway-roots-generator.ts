@@ -35,6 +35,14 @@ function writeExclusive(path: string, contents: Buffer): void {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+  // File contents and the directory entry are distinct durability facts. A
+  // successful return must survive a restart without relying on a warm cache.
+  const directory = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
+  }
 }
 
 /** Creates a fresh, unfunded testnet identity. Existing files and partial writes are never reset. */

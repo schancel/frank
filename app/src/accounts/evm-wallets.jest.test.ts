@@ -27,6 +27,7 @@ const mockPrimaryBlock = jest.fn(async () => {
 })
 let mockPrimary: {
   family: string
+  relayBaseUrl: string
   chainIdentifier: string
   close: () => Promise<void>
   provider: {
@@ -35,6 +36,7 @@ let mockPrimary: {
   }
 } = {
   family: 'evm',
+  relayBaseUrl: 'https://relay.invalid',
   chainIdentifier: 'monad-testnet',
   close: mockPrimaryClose,
   provider: {
@@ -44,13 +46,22 @@ let mockPrimary: {
 }
 const mockGetWallet = jest.fn(async () => mockPrimary)
 let mockRelay = 'https://relay.invalid'
+let mockSessionOverride:
+  | ReturnType<typeof import('./session').createAccountSession>
+  | undefined
 jest.mock('./session', () => ({
   accountSession: {
     get state() {
-      return mockState
+      return mockSessionOverride?.state ?? mockState
     },
     createEvmWallet: (...args: unknown[]) => mockCreate(...args),
-    getWallet: () => mockGetWallet(),
+    getWallet: () => mockSessionOverride?.getWallet() ?? mockGetWallet(),
+    peekWallet: () =>
+      mockSessionOverride
+        ? mockSessionOverride.peekWallet()
+        : mockState.status === 'ready'
+        ? mockPrimary
+        : undefined,
   },
 }))
 jest.mock('@frank/wallet/chain', () => ({
@@ -71,12 +82,14 @@ jest.mock('@frank/wallet/chain', () => ({
 beforeEach(async () => {
   await closeOpenedEvmWallets()
   jest.clearAllMocks()
+  mockSessionOverride = undefined
   mockState.status = 'ready'
   mockState.revision++
   mockState.account = { receipt: { context: { accountId: 'a' } } }
   mockRelay = 'https://relay.invalid'
   mockPrimary = {
     family: 'evm',
+    relayBaseUrl: 'https://relay.invalid',
     chainIdentifier: 'monad-testnet',
     close: mockPrimaryClose,
     provider: {
@@ -347,6 +360,7 @@ it('waits for actual old custody retirement before same-chain relay replacement 
     await Promise.resolve()
     await Promise.resolve()
     expect(mockCreate).toHaveBeenCalledTimes(1)
+    mockPrimary.relayBaseUrl = mockRelay
     expect((await openEvmWallet('monad-testnet')).wallet).toBe(mockPrimary)
     release()
     const next = await replacement
@@ -417,6 +431,7 @@ it.each(['public', 'direct'])(
       const reopen = openEvmWallet('monad-mainnet')
       await new Promise(done => setTimeout(done, 0))
       expect(mockCreate).toHaveBeenCalledTimes(1)
+      mockPrimary.relayBaseUrl = mockRelay
       expect((await openEvmWallet('monad-testnet')).wallet).toBe(mockPrimary)
       release()
       await closing
@@ -463,6 +478,98 @@ it('rejects an active regtest financial context without its operator anchor', as
   } finally {
     Object.assign(activeChain, { chainIdentifier: original })
     await primary.close()
+  }
+})
+
+it('normalizes the captured primary relay and rejects a new host relay before pairing chain and owner', async () => {
+  const primary = await actualEvmOwner('monad-testnet')
+  mockPrimary = primary as unknown as typeof mockPrimary
+  try {
+    mockRelay = ' https://relay.invalid/// '
+    const original = await openEvmWallet('monad-testnet')
+    expect(original.wallet).toBe(primary)
+    mockRelay = 'https://replacement.invalid'
+    await expect(openEvmWallet('monad-testnet')).rejects.toThrow(
+      /Primary EVM relay differs/,
+    )
+    expect(peekOpenedEvmWallets()).toEqual([])
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(primary.relayBaseUrl).toBe('https://relay.invalid')
+  } finally {
+    await closeOpenedEvmWallets()
+    await primary.close()
+  }
+})
+
+it('rechecks an actual session owner after invalidation at the same persisted revision', async () => {
+  const { createAccountSession } =
+    jest.requireActual<typeof import('./session')>('./session')
+  const { DOMAIN_PURPOSES, DERIVATION_REGISTRY_ID } = jest.requireActual<
+    typeof import('@frank/domain-roots')
+  >('@frank/domain-roots')
+  const account = {
+    displayName: 'Fixture',
+    descriptor: 'public',
+    receipt: { operationId: 'fixture', context: { accountId: 'a' } },
+  } as import('./custody').PublicAccount
+  const snapshot = { schema: 1, revision: 1, active: account, pending: null }
+  let invalidate!: () => void
+  const session = createAccountSession({
+    listen: callback => {
+      invalidate = callback
+      return () => undefined
+    },
+    open: async () =>
+      ({
+        snapshot: async () => snapshot,
+        reconcile: async () => 'ready',
+        openActive: async () => ({
+          account,
+          close: () => undefined,
+          takeRoots: () =>
+            DOMAIN_PURPOSES.map((purpose, i) => ({
+              registry: DERIVATION_REGISTRY_ID,
+              purpose,
+              bytes: new Uint8Array(32).fill(i + 1),
+            })),
+        }),
+        close: () => undefined,
+      } as unknown as import('./custody').AccountCustody),
+    createWallet: async () =>
+      (await actualEvmOwner(
+        'monad-testnet',
+      )) as unknown as import('./session').RuntimeWallet,
+  })
+  mockSessionOverride = session
+  try {
+    expect(session.peekWallet()).toBeUndefined()
+    await session.initialize()
+    const first = await openEvmWallet('monad-testnet')
+    const binding = await (
+      await createNativeTransferContext('monad-testnet')
+    ).captureWallet()
+    const primaryA = session.peekWallet()
+    expect(first.wallet).toBe(primaryA)
+    invalidate()
+    expect(session.peekWallet()).toBeUndefined()
+    expect(peekOpenedEvmWallets()).toEqual([])
+    expect(binding.isCurrent()).toBe(false)
+    await session.initialize()
+    const primaryB = await session.getWallet()
+    expect(primaryB).not.toBe(primaryA)
+    expect(session.state.revision).toBe(1)
+    expect(peekOpenedEvmWallets()).toEqual([])
+    expect(binding.isCurrent()).toBe(false)
+    const second = await openEvmWallet('monad-testnet')
+    expect(second.wallet).toBe(primaryB)
+    expect(second.wallet).not.toBe(first.wallet)
+    expect(peekOpenedEvmWallets()).toEqual([second])
+    expect(mockCreate).not.toHaveBeenCalled()
+  } finally {
+    await closeOpenedEvmWallets()
+    await session.close()
+    expect(session.peekWallet()).toBeUndefined()
+    mockSessionOverride = undefined
   }
 })
 

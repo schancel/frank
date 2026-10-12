@@ -47,6 +47,53 @@ function harness(store = new MemoryRecordStore<TempoReceiveBatch>()) {
 }
 
 describe('Tempo finalized PathUSD receive cursor', () => {
+  test('39-million-block sparse catch-up bounds history reads and resumes after reopen', async () => {
+    const backing = new MemoryRecordStore<TempoReceiveBatch>()
+    let allCalls = 0
+    let rowsRead = 0
+    const store: RecordStore<TempoReceiveBatch> & { refresh(): Promise<void> } = {
+      get: key => backing.get(key),
+      all: () => {
+        const rows = backing.all()
+        allCalls++
+        rowsRead += rows.length
+        return rows
+      },
+      refresh: () => backing.refresh(),
+      put: (key, row) => backing.put(key, row),
+      compareAndPut: (key, expected, row) => backing.compareAndPut(key, expected, row),
+      delete: key => backing.delete(key), close: () => backing.close(),
+    }
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: 38_999_999n, hash: BLOCK }),
+      blockHash: async () => BLOCK,
+      receivedTransfers: async (_recipient, from) => {
+        if (from % 10_000_000n !== 0n) return []
+        const index = Number(from / 10_000_000n)
+        return [{
+          transactionHash: `0x${(index + 1).toString(16).padStart(64, '0')}`,
+          logIndex: 0, blockHash: BLOCK, blockNumber: Number(from),
+          sender: SOURCE, recipient: RECIPIENT, amountAtomic: 1_000_000n,
+        }]
+      },
+    }
+    const scanner = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    const applied: string[] = []
+    let result: Awaited<ReturnType<typeof scanner.syncCatchUp>>
+    do {
+      result = await scanner.syncCatchUp(RECIPIENT, 0n, async item => { applied.push(item.id) }, 32)
+    } while (!result.complete)
+    expect(result.nextBlock).toBe(39_000_000n)
+    expect(applied).toHaveLength(4)
+    expect(backing.all()).toHaveLength(3_900)
+    expect(allCalls).toBeLessThan(130)
+    expect(rowsRead).toBeLessThan(250_000)
+    const reopened = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    expect(await reopened.syncOnce(RECIPIENT, 0n, async () => { throw new Error('duplicate credit') })).toEqual({
+      nextBlock: 39_000_000n, delivered: 0,
+    })
+  }, 60_000)
+
   test('bounded catch-up persists contiguous pages and resumes after reopen', async () => {
     const h = harness()
     h.setHead(25_000n)

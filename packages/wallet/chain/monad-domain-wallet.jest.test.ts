@@ -608,6 +608,66 @@ test('native signed bytes survive restart and authentication changes without an 
   }
 })
 
+test('a real Sepolia owner retries the original sync event without signing or broadcasting twice', async () => {
+  const emitWalletSync = jest.fn()
+    .mockRejectedValueOnce(new Error('primary mailbox unavailable'))
+    .mockResolvedValue(undefined)
+  const cfg: EvmChainConfig = {
+    ...config,
+    networkId: 'ethereum-sepolia',
+    rpcChain: 'ethereum-sepolia',
+    chainIdentifier: 'ethereum-sepolia',
+    chainId: 11155111,
+    networkTag: 'SEPO',
+    emitWalletSync,
+  }
+  const chain = createEvmChain(cfg)
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n })
+    jest.spyOn(wallet.provider, 'getNetwork')
+      .mockResolvedValue(Network.from(11155111))
+    const notesSettled = watchNotes()
+    const sent = await chain.nativeTransfers.send({
+      wallet,
+      recipient: { raw: expected[1].main },
+      value: 1000n,
+    })
+    await wallet.reobserveNativeOperations!()
+    const operationId = wallet.getNativeOperations!()[0]!.operationId
+    await wallet.resumeNativeOperation!(operationId)
+    await notesSettled()
+    expect(rpc.broadcast).toHaveBeenCalledTimes(1)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.observation.state)
+      .toBe('included-success')
+    expect(emitWalletSync).toHaveBeenCalledTimes(1)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
+    await wallet.resumeNativeOperation!(operationId)
+    await notesSettled()
+    expect(rpc.broadcast).toHaveBeenCalledTimes(1)
+    expect(emitWalletSync).toHaveBeenCalledTimes(2)
+    const [item, swapRecord, messageId] = emitWalletSync.mock.calls[0]!
+    expect(item).toMatchObject({
+      type: 'wallet-sync',
+      chainIdentifier: 'ethereum-sepolia',
+      txHash: sent.txHash,
+    })
+    expect(swapRecord).toBeUndefined()
+    expect(messageId).toEqual(getBytes(keccak256(Buffer.from(
+      `frank-wallet-sync:ethereum-sepolia:${sent.txHash}`,
+    ))).slice(0, 16))
+    expect(emitWalletSync.mock.calls[1]![0]).toMatchObject({
+      chainIdentifier: item.chainIdentifier,
+      txHash: item.txHash,
+      rawTx: item.rawTx,
+    })
+    expect(emitWalletSync.mock.calls[1]![2]).toEqual(messageId)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(true)
+  } finally {
+    await wallet.close()
+  }
+})
+
 test.each([false, true])(
   'authentication signs relay challenges while topic funding uses EVM main (another facade: %s)',
   async anotherFacade => {

@@ -19,6 +19,7 @@ import { isLoopbackHostname } from './directory-client'
 export const CANONICAL_DM_MAX_BYTES = 8 * 1024 * 1024
 export const CANONICAL_DM_MAX_STATUS_BYTES = 16 * 1024
 export const CANONICAL_DM_MAX_CONTEXT_BYTES = 4096
+export const CANONICAL_DM_MAX_TRANSACTIONS = 64
 export const CANONICAL_DM_MAX_TRANSACTION_BYTES = 128 * 1024
 const text = (value: string) => new TextEncoder().encode(value)
 const utf8 = (value: Uint8Array) =>
@@ -343,7 +344,7 @@ export function describeCanonicalParts(
     parts.context.length > CANONICAL_DM_MAX_CONTEXT_BYTES ||
     !Array.isArray(parts.transactions) ||
     // None is the unpaid message; the count must still equal the delivery's payment members.
-    parts.transactions.length > 64
+    parts.transactions.length > CANONICAL_DM_MAX_TRANSACTIONS
   )
     invalid('Canonical part limits')
   let charged = parts.delivery.length + parts.context.length
@@ -438,7 +439,7 @@ export function inspectCanonicalPair(
     invalid('Payload digest mismatch')
   // No payment is a valid delivery (type 1 at schema 2): an unpaid message.
   if (
-    delivery.payments.length > 64 ||
+    delivery.payments.length > CANONICAL_DM_MAX_TRANSACTIONS ||
     delivery.payments.some((member, i) => member.childIndex !== i)
   )
     invalid('Canonical member order/count')
@@ -587,7 +588,7 @@ export function decodeCanonicalTransactions(
     return value
   }
   const count = length(4)
-  if (count > 64) invalid('Canonical transaction count')
+  if (count > CANONICAL_DM_MAX_TRANSACTIONS) invalid('Canonical transaction count')
   const raws: Uint8Array[] = []
   for (let i = 0; i < count; i++) {
     const size = length(2)

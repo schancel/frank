@@ -42,6 +42,15 @@ export async function recordRecipientAssetPayment(
   context: RecipientPaymentContext,
 ): Promise<readonly RecipientPaymentApplication[]> {
   const result: RecipientPaymentApplication[] = []
+  const groups = new Map<
+    string,
+    {
+      indices: number[]
+      claim: StealthPaymentReceiptClaim
+      members: Set<string>
+      transactions: Map<string, string>
+    }
+  >()
   for (const [index, transfer] of item.transfers.entries()) {
     context.assertCurrent()
     // Unknown schemes are honest opaque claims, even when their keys resemble supported ones.
@@ -76,24 +85,65 @@ export async function recordRecipientAssetPayment(
       transfer.asset.kind === 'native'
         ? { kind: 'native' }
         : { kind: 'erc20', contractAddress: `0x${transfer.asset.identifier}` }
-    const claim: StealthPaymentReceiptClaim = {
-      chainIdentifier: transfer.chainIdentifier,
-      asset,
-      recipientDestination: bytes(transfer.destination),
-      ephemeralPublicKey: bytes(transfer.stealthMetadata.ephemeralPubKey),
-      amountAtomic,
-      rawTransactions: [transfer.rawTx],
-      payloadDigest: context.payloadDigest,
+    // One claim owns the complete signed set for one asset and derived account. Different
+    // accounts or assets in the same message remain independent claims under the same origin.
+    const groupKey = JSON.stringify([
+      transfer.chainIdentifier,
+      transfer.asset.kind,
+      transfer.asset.kind === 'native'
+        ? ''
+        : transfer.asset.identifier.toLowerCase(),
+      transfer.destination.toLowerCase(),
+      transfer.stealthMetadata.ephemeralPubKey.toLowerCase(),
+    ])
+    const memberKey = `${transfer.txId.toLowerCase()}:${transfer.vout ?? ''}`
+    let group = groups.get(groupKey)
+    if (!group) {
+      group = {
+        indices: [],
+        claim: {
+          chainIdentifier: transfer.chainIdentifier,
+          asset,
+          recipientDestination: bytes(transfer.destination),
+          ephemeralPublicKey: bytes(transfer.stealthMetadata.ephemeralPubKey),
+          amountAtomic: 0n,
+          rawTransactions: [],
+          payloadDigest: context.payloadDigest,
+        },
+        members: new Set(),
+        transactions: new Map(),
+      }
+      groups.set(groupKey, group)
     }
-    const wallet = await context.openWallet(transfer.chainIdentifier)
+    if (group.members.has(memberKey))
+      throw new Error('Duplicate recipient payment member')
+    const oldRaw = group.transactions.get(transfer.txId.toLowerCase())
+    if (oldRaw !== undefined && oldRaw !== transfer.rawTx)
+      throw new Error('Conflicting recipient signed transaction evidence')
+    const total = group.claim.amountAtomic + amountAtomic
+    if (total >= 1n << 256n)
+      throw new Error('Recipient payment total exceeds the quantity limit')
+    group.indices.push(index)
+    group.members.add(memberKey)
+    group.transactions.set(transfer.txId.toLowerCase(), transfer.rawTx)
+    group.claim = { ...group.claim, amountAtomic: total }
+  }
+  for (const group of groups.values()) {
     context.assertCurrent()
-    if (wallet.chainIdentifier !== transfer.chainIdentifier)
+    const claim = {
+      ...group.claim,
+      rawTransactions: [...group.transactions.values()],
+    }
+    const wallet = await context.openWallet(claim.chainIdentifier)
+    context.assertCurrent()
+    if (wallet.chainIdentifier !== claim.chainIdentifier)
       throw new Error('Recipient payment wallet has a different chain')
     if (!wallet.stealthReceipts)
       throw new Error('Recipient payment owner is unavailable')
     await wallet.stealthReceipts.record(claim)
     context.assertCurrent()
-    result.push({ index, status: 'recorded' })
+    for (const index of group.indices)
+      result.push({ index, status: 'recorded' })
   }
-  return result
+  return result.sort((left, right) => left.index - right.index)
 }

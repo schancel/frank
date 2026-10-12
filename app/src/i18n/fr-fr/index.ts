@@ -1200,6 +1200,33 @@ export default {
     failedLoadBalance: 'Impossible de charger le solde du portefeuille',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
+  walletHistory: {
+    transfers: 'Transferts',
+    to: 'À',
+    contract: 'Contrat',
+    details: 'Détails',
+    intended:
+      'Il s’agit du montant demandé. Le paiement complet n’est pas encore confirmé.',
+    dateUnknown: 'La date de ce transfert n’a pas été enregistrée.',
+    transaction: 'Transaction {number}',
+    status: {
+      confirmed: 'Confirmé',
+      included: 'Envoyé',
+      reverted: 'Annulé par le réseau',
+      partial: 'Partiellement traité',
+      pending: 'En attente',
+      missing: 'En attente du réseau',
+      unknown: 'Vérification du paiement',
+      cancelled: 'Annulé',
+    },
+    memberStatus: {
+      'included-success': 'Confirmée',
+      'included-revert': 'Annulée par le réseau',
+      'pending': 'En attente',
+      'missing': 'Pas encore sur le réseau',
+      'unknown': 'Non confirmée',
+    },
+  },
   nativeOperation: {
     title: 'Résultat du transfert',
     listTitle: 'Transferts natifs',

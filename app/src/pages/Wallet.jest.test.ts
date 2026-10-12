@@ -13,6 +13,8 @@ import RenameWalletDialog from '../components/wallet/RenameWalletDialog.vue'
 import { useWalletNames } from '../composables/useWalletNames'
 import * as nativeTransfer from '../accounts/native-transfer'
 import type { EvmNativeOperationStatus } from '@frank/wallet/chain'
+import type { TokenItem } from '../composables/useChainBalance'
+import type { EvmTokenRow } from '../composables/useEvmTokenBalances'
 import type { SwapActivityRow } from '../swap/useSwapActivity'
 import en from '../i18n/en-us'
 import fr from '../i18n/fr-fr'
@@ -100,15 +102,28 @@ jest.mock('src/composables/useBalance', () => ({
   useBalance: () => balance,
 }))
 
+let mockAdditionalBalanceRows = false
+const mockTokens = ref<TokenItem[]>([])
+const mockEvmTokens = ref<EvmTokenRow[]>([])
+jest.mock('src/composables/useEvmTokenBalances', () => ({
+  useEvmTokenBalances: () => ({
+    rows: mockEvmTokens,
+    status: ref('available'),
+    refresh: jest.fn(),
+  }),
+}))
 const mockRefreshCordoned = jest.fn()
 jest.mock('src/composables/useChainBalance', () => ({
   useChainBalance: (chain: any) => ({
     refreshCordoned: () => mockRefreshCordoned(),
-    tokens: ref([]),
+    tokens: mockTokens,
     tokenObservation: ref(undefined),
     presentation: jest.requireActual('vue').computed(() => {
       const val = typeof chain === 'string' ? chain : chain.value
-      if (!['monad', 'ecash', 'solana'].includes(val)) {
+      if (
+        !['monad', 'ecash', 'solana'].includes(val) &&
+        !(mockAdditionalBalanceRows && ['bitcoin', 'bitcoincash'].includes(val))
+      ) {
         return { status: 'unavailable', reason: 'unsupported' }
       }
       const state = val === 'monad' ? balance : mockChainBalance
@@ -180,9 +195,29 @@ function mountWallet(
     key: string,
     params?: { balance?: string; unit?: string },
   ) => string,
+  realAssetRows = false,
 ) {
+  const assetComponents = [
+    'QList',
+    'QItem',
+    'QItemSection',
+    'QItemLabel',
+    'QAvatar',
+    'QBadge',
+  ]
+  const quasar = realAssetRows ? jest.requireActual('quasar') : {}
   return shallowMount(Wallet, {
     global: {
+      provide: {
+        _q_: {
+          dark: { isActive: false },
+          lang: { rtl: false },
+          platform: { is: {} },
+        },
+      },
+      components: realAssetRows
+        ? Object.fromEntries(assetComponents.map(name => [name, quasar[name]]))
+        : {},
       mocks: {
         $t:
           translate ??
@@ -194,6 +229,7 @@ function mountWallet(
               : key),
       },
       stubs: {
+        WalletHistory: false,
         AddressText: {
           props: ['address'],
           template: '<span>{{ address }}</span>',
@@ -231,8 +267,22 @@ function mountWallet(
             'q-item',
             'q-item-section',
             'q-item-label',
-          ].map(n => [n, { template: '<div><slot /></div>' }]),
+          ].map(n => [
+            n,
+            realAssetRows &&
+            [
+              'q-list',
+              'q-item',
+              'q-item-section',
+              'q-item-label',
+              'q-avatar',
+              'q-badge',
+            ].includes(n)
+              ? false
+              : { template: '<div><slot /></div>' },
+          ]),
         ),
+        ...(realAssetRows ? { QAvatar: false } : {}),
       },
     },
   })
@@ -241,6 +291,9 @@ function mountWallet(
 describe('Wallet detail page (#570)', () => {
   beforeEach(() => {
     mockSwapRows.value = []
+    mockAdditionalBalanceRows = false
+    mockTokens.value = []
+    mockEvmTokens.value = []
     useWalletNames().clearAllCustomNames()
     mockRoute.value = { query: { chain: 'monad' }, path: '/wallet' }
     session.status = 'ready'
@@ -300,6 +353,127 @@ describe('Wallet detail page (#570)', () => {
       }
     },
   )
+
+  it.each([
+    ['monad', 'monad-testnet', 'MONT'],
+    ['monad', 'monad-regtest', 'MONR'],
+    ['solana', 'monad-testnet', 'dSOL'],
+    ['ecash', 'monad-testnet', 'tXEC'],
+    ['bitcoin', 'monad-testnet', 'tBTC'],
+    ['bitcoincash', 'monad-testnet', 'tBCH'],
+  ])(
+    'shows one native asset for %s on runtime %s',
+    async (wallet, runtime, unit) => {
+      const original = getActiveChain()
+      try {
+        setActiveChain({
+          ...original,
+          chainIdentifier: runtime,
+          isTestnet: true,
+        })
+        mockAdditionalBalanceRows = true
+        mockRoute.value = { path: '/wallet', query: { chain: wallet } }
+        const state = wallet === 'monad' ? balance : mockChainBalance
+        state.loaded.value = true
+        state.formattedBalance.value = `2 ${unit}`
+        const wrapper = mountWallet(undefined, true)
+        await flush()
+        const row = wrapper.get(
+          `[data-testid="wallet-token-item-${unit.toLowerCase()}"]`,
+        )
+        expect(row.classes()).toContain('q-item')
+        expect(row.text()).toContain(`2 ${unit}`)
+        expect(row.text()).toContain('walletPanel.nativeCoin')
+        expect(wrapper.findAll('[data-native-asset]')).toHaveLength(1)
+        expect(wrapper.get('[data-testid="wallet-asset-count"]').text()).toBe(
+          '1 Asset',
+        )
+      } finally {
+        setActiveChain(original)
+      }
+    },
+  )
+
+  it.each(['solana', 'monad'])(
+    'counts %s native and tokens once without summing balances',
+    async wallet => {
+      mockRoute.value = { path: '/wallet', query: { chain: wallet } }
+      mockChainBalance.loaded.value = true
+      mockChainBalance.formattedBalance.value = '2 dSOL'
+      if (wallet === 'solana') {
+        mockTokens.value = [
+          {
+            id: 'native',
+            symbol: 'dSOL',
+            name: 'Solana',
+            isNative: true,
+            balanceFormatted: '999 dSOL',
+            numericBalance: 999,
+            avuFormatted: '',
+            mintOrAddress: '',
+          },
+          {
+            id: 'spl',
+            symbol: 'SPL',
+            name: 'Token',
+            balanceFormatted: '3 SPL',
+            numericBalance: 3,
+            avuFormatted: '',
+            mintOrAddress: 'mint',
+          },
+        ]
+      } else {
+        mockEvmTokens.value = [
+          {
+            address: '0xtoken',
+            symbol: 'ERC',
+            name: 'ERC token',
+            balance: '4',
+            exact: '4',
+          },
+        ]
+      }
+      const wrapper = mountWallet(undefined, true)
+      await flush()
+      expect(wrapper.findAll('[data-native-asset]')).toHaveLength(1)
+      expect(wrapper.get('[data-testid="wallet-asset-count"]').text()).toBe(
+        '2 Assets',
+      )
+      expect(wrapper.get('[data-native-asset]').text()).toContain(
+        wallet === 'solana' ? '2 dSOL' : '1 MON',
+      )
+      expect(wrapper.get('[data-native-asset]').text()).not.toContain('999')
+      expect(
+        wrapper
+          .find(
+            `[data-testid="wallet-token-item-${
+              wallet === 'solana' ? 'spl' : 'erc'
+            }"]`,
+          )
+          .exists(),
+      ).toBe(true)
+    },
+  )
+
+  it('keeps native loading, unavailable and last-known states explicit', async () => {
+    balance.loaded.value = false
+    const wrapper = mountWallet()
+    await flush()
+    expect(wrapper.get('[data-native-asset]').text()).toContain(
+      'walletPanel.balanceLoading',
+    )
+    balance.hasError.value = true
+    await nextTick()
+    expect(wrapper.get('[data-native-asset]').text()).toContain(
+      'walletPanel.balanceUnavailable',
+    )
+    balance.loaded.value = true
+    await nextTick()
+    expect(wrapper.get('[data-native-asset]').text()).toContain(
+      'walletPanel.balanceStale:1 MON',
+    )
+    expect(wrapper.get('[data-native-asset]').text()).not.toContain('AVU')
+  })
 
   it('updates canonical metadata when regtest changes to testnet without changing the testnet flag', async () => {
     const original = getActiveChain()
@@ -1007,7 +1181,7 @@ describe('Wallet detail page (#570)', () => {
           translate('nativeOperation.included', { network: 'Monad Testnet' }),
         )
         expect(history.text()).toContain(fixture.hash)
-        expect(history.text()).toContain(fixture.operationId)
+        expect(history.text()).not.toContain(fixture.operationId)
         // Included reads as sent; the sharing state is a muted note in every case, and recovery
         // is not mentioned for a transfer that needs none.
         expect(translate('nativeOperation.included', { network: 'n' })).toMatch(
@@ -1110,7 +1284,7 @@ describe('Wallet detail page (#570)', () => {
           .map(row => row.attributes('data-activity-id')),
       ).toEqual(['swap:pending', 'swap:shared', 'swap:old', 'native:transfer'])
       expect(history.text()).toContain('walletPanel.historyPending')
-      expect(history.text()).toContain('walletPanel.historyUndated')
+      expect(history.text()).toContain('walletHistory.transfers')
       expect(
         history.findAll('[data-testid="wallet-native-operation"]'),
       ).toHaveLength(2)
@@ -1120,7 +1294,7 @@ describe('Wallet detail page (#570)', () => {
       const summary = history.get(
         '[data-activity-id="native:transfer"] summary',
       )
-      expect(summary.text()).toBe('nativeOperation.viewTransfer')
+      expect(summary.text()).toBe('walletHistory.details')
       expect(summary.classes()).toContain('wallet-history-action')
       expect(
         history.get('[data-activity-id="native:transfer"]').text(),

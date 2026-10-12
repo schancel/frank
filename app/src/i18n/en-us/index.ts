@@ -1171,6 +1171,33 @@ export default {
     failedLoadBalance: 'Could not load wallet balance',
     unableCopyAddress: 'Unable to copy the Monad address',
   },
+  walletHistory: {
+    transfers: 'Transfers',
+    to: 'To',
+    contract: 'Contract',
+    details: 'Details',
+    intended:
+      'This is the amount requested. The full payment is not yet confirmed.',
+    dateUnknown: 'The date was not recorded for this transfer.',
+    transaction: 'Transaction {number}',
+    status: {
+      confirmed: 'Confirmed',
+      included: 'Sent',
+      reverted: 'Reverted',
+      partial: 'Partly processed',
+      pending: 'Pending',
+      missing: 'Awaiting network',
+      unknown: 'Checking payment',
+      cancelled: 'Cancelled',
+    },
+    memberStatus: {
+      'included-success': 'Confirmed',
+      'included-revert': 'Reverted',
+      'pending': 'Pending',
+      'missing': 'Not yet on network',
+      'unknown': 'Not confirmed',
+    },
+  },
   nativeOperation: {
     title: 'Transfer outcome',
     listTitle: 'Native transfers',

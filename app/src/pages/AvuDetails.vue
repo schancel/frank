@@ -69,6 +69,16 @@
                 class="reference-ranges"
                 data-test="avu-reference-range"
               />
+              <q-btn
+                v-if="zoom"
+                flat
+                dense
+                no-caps
+                icon="zoom_out_map"
+                :label="t('walletPanel.resetZoom')"
+                data-test="avu-reference-reset"
+                @click="zoom = null"
+              />
             </div>
             <div
               class="text-caption text-weight-medium"
@@ -82,6 +92,11 @@
               role="img"
               :aria-label="t('walletPanel.avuReferenceTitle')"
               data-test="avu-reference-chart"
+              @pointerdown="startSelection"
+              @pointermove="moveSelection"
+              @pointerup="finishSelection"
+              @pointercancel="drag = null"
+              @lostpointercapture="drag = null"
             >
               <line
                 x1="60"
@@ -129,10 +144,22 @@
                   </title>
                 </circle>
               </g>
+              <rect
+                v-if="drag && drag.from !== drag.to"
+                :x="Math.min(drag.from, drag.to)"
+                y="25"
+                :width="Math.abs(drag.to - drag.from)"
+                height="195"
+                fill="currentColor"
+                opacity="0.12"
+                pointer-events="none"
+                data-test="avu-reference-selection"
+              />
               <text x="60" y="246" font-size="11" fill="currentColor">
                 {{ extent ? dateLabel(extent.min) : '' }}
               </text>
               <text
+                v-if="extent && extent.min !== extent.max"
                 x="560"
                 y="246"
                 text-anchor="end"
@@ -223,9 +250,13 @@ const ranges = {
 } as const
 const selectedRange = ref<keyof typeof ranges>('1y')
 const since = ref(0)
+const zoom = ref<{ min: number; max: number } | null>(null)
+const drag = ref<{ id: number; from: number; to: number } | null>(null)
 watch(
   selectedRange,
   () => {
+    zoom.value = null
+    drag.value = null
     since.value = Number.isFinite(ranges[selectedRange.value].span)
       ? Math.floor(Date.now() / 1000) - ranges[selectedRange.value].span
       : Date.UTC(2010, 0, 1) / 1000
@@ -247,10 +278,13 @@ function dollars(value: number): string {
   })
 }
 function dateLabel(at: number): string {
-  return new Date(at * 1000).toLocaleDateString(undefined, {
+  const short = extent.value && extent.value.max - extent.value.min <= 2 * DAY
+  return new Date(at * 1000).toLocaleString(undefined, {
     day: 'numeric',
     month: 'short',
-    year: 'numeric',
+    year: short ? undefined : 'numeric',
+    hour: short ? '2-digit' : undefined,
+    minute: short ? '2-digit' : undefined,
     timeZone: 'UTC',
   })
 }
@@ -327,13 +361,19 @@ const observations = computed(() => {
 const histories = computed(() =>
   benchmarks.value.map(benchmark => ({
     ...benchmark,
-    points: observations.value.map(point => {
-      const kwhPerValue = benchmark.id === 'hash' ? point.hash : point.spot
-      return {
-        at: point.at,
-        value: kwhPerValue && kwhPerValue > 0 ? 1 / kwhPerValue : undefined,
-      }
-    }),
+    points: observations.value
+      .filter(
+        point =>
+          !zoom.value ||
+          (point.at >= zoom.value.min && point.at <= zoom.value.max),
+      )
+      .map(point => {
+        const kwhPerValue = benchmark.id === 'hash' ? point.hash : point.spot
+        return {
+          at: point.at,
+          value: kwhPerValue && kwhPerValue > 0 ? 1 / kwhPerValue : undefined,
+        }
+      }),
   })),
 )
 const extent = computed(() => {
@@ -346,6 +386,54 @@ const extent = computed(() => {
     ? { min: Math.min(...times), max: Math.max(...times) }
     : null
 })
+// Coordinates use the rendered SVG width, not its 600-unit viewBox width.
+function plotX(event: PointerEvent): number | null {
+  const rect = (event.currentTarget as SVGSVGElement).getBoundingClientRect()
+  return rect.width > 0
+    ? Math.max(
+        60,
+        Math.min(560, ((event.clientX - rect.left) / rect.width) * 600),
+      )
+    : null
+}
+function startSelection(event: PointerEvent) {
+  if (
+    event.isPrimary === false ||
+    (event.pointerType === 'mouse' && event.button !== 0)
+  )
+    return
+  if (!extent.value || extent.value.min === extent.value.max) return
+  const x = plotX(event)
+  if (x === null) return
+  drag.value = { id: event.pointerId, from: x, to: x }
+  ;(event.currentTarget as SVGSVGElement).setPointerCapture?.(event.pointerId)
+}
+function moveSelection(event: PointerEvent) {
+  if (!drag.value || drag.value.id !== event.pointerId) return
+  const x = plotX(event)
+  if (x !== null) drag.value.to = x
+}
+function finishSelection(event: PointerEvent) {
+  if (!drag.value || drag.value.id !== event.pointerId) return
+  moveSelection(event)
+  const selected = drag.value
+  drag.value = null
+  const bounds = extent.value
+  if (!bounds || Math.abs(selected.to - selected.from) < 5) return
+  const times = Array.from(
+    new Set(lines.value.flatMap(line => line.points.map(point => point.at))),
+  )
+  const nearest = (x: number) => {
+    const at = bounds.min + ((x - 60) / 500) * (bounds.max - bounds.min)
+    return times.reduce((best, time) =>
+      Math.abs(time - at) < Math.abs(best - at) ? time : best,
+    )
+  }
+  const from = nearest(selected.from),
+    to = nearest(selected.to)
+  if (from !== to)
+    zoom.value = { min: Math.min(from, to), max: Math.max(from, to) }
+}
 const scale = computed(() => {
   const values = histories.value.flatMap(line =>
     line.points.flatMap(point =>
@@ -427,6 +515,24 @@ useOracleHistory(() => ({
   since: since.value,
   step: ranges[selectedRange.value].step,
 }))
+// A coarse ALL/1Y request must not collapse newly collected recent history to one bucket.
+useOracleHistory(() =>
+  !zoom.value && ranges[selectedRange.value].step > 3600
+    ? {
+        since: Math.max(since.value, Math.floor(Date.now() / 1000) - 30 * DAY),
+        step: 3600,
+      }
+    : null,
+)
+useOracleHistory(() =>
+  zoom.value
+    ? {
+        since: zoom.value.min,
+        until: zoom.value.max,
+        step: Math.max(60, Math.ceil((zoom.value.max - zoom.value.min) / 600)),
+      }
+    : null,
+)
 </script>
 
 <style scoped>
@@ -446,6 +552,8 @@ useOracleHistory(() => ({
   overflow-wrap: anywhere;
 }
 .reference-chart {
+  touch-action: pan-y;
+  user-select: none;
   width: 100%;
   height: auto;
   display: block;

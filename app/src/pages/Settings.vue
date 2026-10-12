@@ -31,11 +31,11 @@
         >
           <div
             class="col full-height overflow-hidden"
-            :class="$q.screen.gt.xs ? 'row' : 'column'"
+            :class="$q?.screen?.gt?.xs || false ? 'row' : 'column'"
           >
             <q-tabs
               v-model="tab"
-              :vertical="$q.screen.gt.xs"
+              :vertical="$q?.screen?.gt?.xs || false"
               class="text-primary col-auto"
               outside-arrows
               mobile-arrows
@@ -72,7 +72,7 @@
               v-model="tab"
               animated
               swipeable
-              :vertical="$q.screen.gt.xs"
+              :vertical="$q?.screen?.gt?.xs || false"
               class="col"
               transition-prev="jump-up"
               transition-next="jump-up"

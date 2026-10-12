@@ -9,7 +9,7 @@ import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import type { EvmDex, EvmDexPlan, EvmDexQuote, EvmDexWallet } from './evm-dex'
 import { SwapRecordMismatchError } from './evm-dex'
 import { estimateCallFee, quoteIsFresh, SwapNoRouteError } from './evm-swap'
-import type { SwapExecutionReader, SwapWallet, SwapResult, SwapProgress, SwapTiming, ConsolidationNeed, SwapCost } from './swap-execution'
+import { settle, DEFAULT_SWAP_TIMING, type SwapExecutionReader, type SwapWallet, type SwapResult, type SwapProgress, type SwapTiming, type ConsolidationNeed, type SwapCost } from './swap-execution'
 import type { EvmDexToken } from '../chain/dex-entries'
 
 export const HYPERSWAP_V2_TESTNET = Object.freeze({
@@ -53,33 +53,6 @@ export interface HyperSwapRoute {
 export interface HyperSwapPlan extends EvmDexPlan {
   readonly account: string
   readonly route: HyperSwapRoute
-}
-
-const DEFAULT_SWAP_TIMING: SwapTiming = {
-  inclusionTimeoutMs: 90_000,
-  pollMs: 1_000,
-  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
-}
-const RECEIPT_BACKOFF = [1, 1, 2, 3, 5]
-
-async function awaitReceipt(reader: SwapExecutionReader, txHash: string, timing: SwapTiming) {
-  for (let waited = 0, attempt = 0; ; attempt++) {
-    const receipt = await reader.getTransactionReceipt(txHash).catch(() => null)
-    if (receipt) return receipt
-    if (waited >= timing.inclusionTimeoutMs) return undefined
-    const wait = timing.pollMs * RECEIPT_BACKOFF[Math.min(attempt, RECEIPT_BACKOFF.length - 1)]!
-    await timing.sleep(wait)
-    waited += wait
-  }
-}
-
-async function settle(reader: SwapExecutionReader, wallet: Pick<SwapWallet, 'resumeNativeOperation'>, txHash: string, operationId: string, timing: SwapTiming) {
-  const receipt = await awaitReceipt(reader, txHash, timing)
-  if (receipt || !wallet.resumeNativeOperation) return receipt
-  const known = await reader.getTransaction(txHash).catch(() => 'unknown')
-  if (known !== null) return undefined
-  await wallet.resumeNativeOperation(operationId).catch(() => {})
-  return awaitReceipt(reader, txHash, timing)
 }
 
 /** No fallback chain, token, router, or pair is accepted. */
@@ -220,7 +193,7 @@ export class HyperSwapV2Testnet implements EvmDex<EvmDexQuote, HyperSwapPlan> {
     
     onProgress?.({ stage: 'submitted', txHash: handle.txHash })
     const timing = input.timing ?? DEFAULT_SWAP_TIMING
-    const receipt = await settle(this.reader, this.wallet, handle.txHash, handle.operationId, timing)
+    const receipt = await settle(this.reader, this.wallet, handle, timing)
     
     if (receipt) {
       try { await this.wallet.resumeNativeOperation?.(handle.operationId) } catch {}
@@ -241,7 +214,7 @@ export class HyperSwapV2Testnet implements EvmDex<EvmDexQuote, HyperSwapPlan> {
   }): Promise<SwapResult> {
     this.validateRoute(input.route)
     const timing = input.timing ?? DEFAULT_SWAP_TIMING
-    await settle(this.reader, this.wallet, input.transactionId, input.operationId, { ...timing, inclusionTimeoutMs: 0 })
+    await settle(this.reader, this.wallet, { txHash: input.transactionId, operationId: input.operationId }, { ...timing, inclusionTimeoutMs: 0 })
     await this.wallet.reobserveNativeOperations?.()
     return this.observe({ transactionId: input.transactionId, account: input.account, route: input.route })
   }

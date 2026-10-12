@@ -112,14 +112,41 @@ describe('HyperSwap V2 Adapter', () => {
 
   it('handles reverted observe', async () => {
     const mockReader = createMockReader()
-    mockReader.getTransactionReceipt.mockResolvedValueOnce({ status: 0, from: HYPERSWAP_V2_TESTNET.router, to: HYPERSWAP_V2_TESTNET.router, gasUsed: 21000n, gasPrice: 1000n, logs: [] })
-    mockReader.getTransaction.mockImplementationOnce(() => Promise.resolve({ chainId: 998n, from: HYPERSWAP_V2_TESTNET.router, to: HYPERSWAP_V2_TESTNET.router, value: 10000n, data: adapter['callFor'](plan.route).data }))
-    const adapter = new HyperSwapV2Testnet({ reader: mockReader })
+    const adapter = new HyperSwapV2Testnet({ reader: mockReader } as any)
     const quote = await adapter.quote({ tokenIn: HYPERSWAP_V2_TESTNET.tokenIn, tokenOut: HYPERSWAP_V2_TESTNET.tokenOut, amountIn: 10000n })
     const plan = await adapter.plan({ quote, account: HYPERSWAP_V2_TESTNET.router, slippageBps: 50 })
     
+    mockReader.getTransactionReceipt.mockResolvedValueOnce({ status: 0, from: HYPERSWAP_V2_TESTNET.router, to: HYPERSWAP_V2_TESTNET.router, gasUsed: 21000n, gasPrice: 1000n, logs: [] })
+    mockReader.getTransaction.mockResolvedValueOnce({ chainId: 998n, from: HYPERSWAP_V2_TESTNET.router, to: HYPERSWAP_V2_TESTNET.router, value: 10000n, data: adapter['callFor'](plan.route).data })
+
     const result = await adapter.observe({ transactionId: '0x123', account: HYPERSWAP_V2_TESTNET.router, route: plan.route })
     expect(result.status).toBe('reverted')
   })
+})
+// Add a new suite at the bottom
+describe('reconcile edge cases', () => {
+  it('calls resumeNativeOperation when receipt is not found', async () => {
+    const mockReader = {
+      getTransactionReceipt: jest.fn().mockResolvedValue(null),
+      getTransaction: jest.fn().mockResolvedValue(null),
+      getNetwork: jest.fn().mockResolvedValue({ chainId: 998n }),
+      getBlock: jest.fn().mockResolvedValue({ hash: '0x61826beeba5fa2a5cc2dcd04febc904aca943cb95821eab8087308cfa25b2baf' }),
+      getCode: jest.fn().mockResolvedValue('0x1234'),
+      call: jest.fn().mockResolvedValue('0x')
+    };
+    const mockWallet = { reader: mockReader, resumeNativeOperation: jest.fn().mockResolvedValue(undefined), reobserveNativeOperations: jest.fn().mockResolvedValue(undefined) };
+    const adapter = new HyperSwapV2Testnet(mockWallet as any);
+    
+    // stub verifyDeployment to avoid read checks
+    adapter.verifyDeployment = jest.fn().mockResolvedValue(undefined);
 
+    await expect(adapter.reconcile({
+      transactionId: '0x123', operationId: '0x456', account: HYPERSWAP_V2_TESTNET.router,
+      route: { kind: 'hyperswap-v2-native-purr', amountIn: '10', minimumAmountOut: '10', account: HYPERSWAP_V2_TESTNET.router, deadline: 1000 },
+      call: { to: '0x', data: '0x', value: '0x0' },
+      timing: { inclusionTimeoutMs: 0, pollMs: 1, sleep: async () => {} }
+    })).resolves.toMatchObject({ status: 'pending' });
+
+    expect(mockWallet.resumeNativeOperation).toHaveBeenCalledWith('0x456');
+  })
 })

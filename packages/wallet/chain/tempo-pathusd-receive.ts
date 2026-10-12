@@ -83,7 +83,7 @@ export class TempoPathUsdReceiveScanner {
   private uncertain = false
 
   constructor(
-    private readonly chainIdentifier: TempoNetwork,
+    readonly chainIdentifier: TempoNetwork,
     private readonly store: RecordStore<TempoReceiveBatch>,
     private readonly rpc: TempoReceiveRpc,
     private readonly withRecipientLock: <T>(recipient: string, operation: () => Promise<T>) => Promise<T>,
@@ -97,6 +97,25 @@ export class TempoPathUsdReceiveScanner {
       .filter(row => row.chainIdentifier === this.chainIdentifier && row.recipient === recipient)
       .map(validate)
       .sort((a, b) => quantity(a.fromBlock) < quantity(b.fromBlock) ? -1 : 1)
+  }
+
+  /** The batch store is authoritative; this is a rebuildable, deduplicated inventory view. */
+  receivedItems(recipientAddress: string, startBlock: bigint): TempoReceiveItem[] {
+    const recipient = canonical(recipientAddress)
+    const rows = this.rows(recipient)
+    let next = startBlock
+    const seen = new Set<string>()
+    const items: TempoReceiveItem[] = []
+    for (const row of rows) {
+      if (quantity(row.fromBlock) !== next) throw new Error('Tempo receive cursor has a gap or changed start block')
+      next = quantity(row.toBlock) + 1n
+      for (const item of row.items) {
+        if (seen.has(item.id)) throw new Error('Duplicate Tempo receive transfer across batches')
+        seen.add(item.id)
+        items.push(structuredClone(item))
+      }
+    }
+    return items
   }
 
   private async write(row: TempoReceiveBatch): Promise<void> {

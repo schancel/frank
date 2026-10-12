@@ -277,12 +277,40 @@ it(
     persist(key, ledger);
     if (ledger.operations.some(operation => operation.state === 'exposed')) closing.expired = true;
   };
+  await interrupted.wallet.stealthPayments.expose({ operationId: 'close-before-rpc', payloadDigest: 'ce'.repeat(32) });
   await assert.rejects(interrupted.wallet.stealthPayments.submit('close-before-rpc'));
   assert.equal(interrupted.sent.length, 0);
   assert.equal(interrupted.wallet.getEcashOperations()[0].state, 'exposed');
   const recovered = await make({ store: interrupted.store });
   await recovered.wallet.stealthPayments.submit('close-before-rpc');
   assert.deepEqual(recovered.sent, [[immutable.members[0].rawTransaction]]);
+`),
+  35_000
+);
+
+it(
+  "requires payload exposure through both stealth and generic submission after reopen",
+  () =>
+    run(`
+  const host = await sender();
+  const prepared = await host.wallet.stealthPayments.prepare(intent('barrier'));
+  const saved = JSON.stringify(host.store.get(host.key));
+  for (const wallet of [host.wallet, (await make({ store: host.store })).wallet]) {
+    await assert.rejects(wallet.stealthPayments.submit('barrier'), /requires bound external payload exposure/);
+    await assert.rejects(wallet.submitNativeOperation('barrier'), /requires bound external payload exposure/);
+    assert.equal(wallet.getEcashOperations()[0].state, 'prepared');
+    assert.equal(wallet.getEcashOperations()[0].exposure, undefined);
+  }
+  assert.equal(JSON.stringify(host.store.get(host.key)), saved); assert.equal(host.sent.length, 0);
+  const originalLedger = host.store.get(host.key);
+  host.store.put(host.key, { ...originalLedger, operations: originalLedger.operations.map(operation => ({ ...operation, state: 'exposed', exposure: { kind: 'native-rpc' } })) });
+  await assert.rejects(host.wallet.submitNativeOperation('barrier'), /requires bound external payload exposure/);
+  assert.equal(host.sent.length, 0);
+  host.store.put(host.key, originalLedger);
+  await host.wallet.stealthPayments.expose({ operationId: 'barrier', payloadDigest: 'de'.repeat(32) });
+  await host.wallet.submitNativeOperation('barrier');
+  assert.deepEqual(host.sent, [[prepared.members[0].rawTransaction]]);
+  assert.equal(host.wallet.getEcashOperations()[0].exposure.binding.externalPayloadDigest, 'de'.repeat(32));
 `),
   35_000
 );

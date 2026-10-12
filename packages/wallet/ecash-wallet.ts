@@ -1274,6 +1274,14 @@ export class EcashWallet implements NativeWalletHandle {
     return this.updateOperation(operationId, (operation) => {
       if (operation.state === "released")
         throw new Error("Released eCash operation cannot be submitted");
+      if (
+        operation.stealth !== undefined &&
+        (operation.state === "prepared" ||
+          operation.exposure?.kind !== "external-payload")
+      )
+        throw new Error(
+          "eCash stealth submission requires bound external payload exposure"
+        );
       if (operation.state !== "prepared") return operation;
       return {
         ...operation,

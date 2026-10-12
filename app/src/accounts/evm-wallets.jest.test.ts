@@ -197,6 +197,7 @@ it('keeps Hyperliquid custody closed until the relay advertises its exact route'
 
 it('opens Hyperliquid custody only after the relay advertises the canonical RPC route', async () => {
   mockEnabledPeerNetworks.add('hyperliquid-testnet')
+  mockPrimary = { ...mockPrimary, chainIdentifier: 'monad-regtest' }
   const originalFetch = globalThis.fetch
   const request = jest.fn(async () => ({
     ok: true,
@@ -223,12 +224,133 @@ it('opens Hyperliquid custody only after the relay advertises the canonical RPC 
       chainIdentifier: 'hyperliquid-testnet',
       chainId: 998n,
       networkTag: 'HYPT',
+      relayAuthNetworkTag: 'MONR',
     })
     expect(open.wallet.chainIdentifier).toBe('hyperliquid-testnet')
   } finally {
     globalThis.fetch = originalFetch
   }
 })
+
+it('refuses a new primary wallet after capturing the directory auth network, even at the same revision', async () => {
+  mockEnabledPeerNetworks.add('hyperliquid-testnet')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = jest.fn(async () => ({
+    ok: true,
+    json: async () => {
+      mockPrimary = { ...mockPrimary }
+      return {
+        schema_version: 1,
+        chains: [
+          {
+            id: 'hyperliquid-testnet',
+            family: 'evm',
+            network: 'testnet',
+            caip2: 'eip155:998',
+            native_chain_id: '998',
+            capabilities: ['json-rpc'],
+          },
+        ],
+      }
+    },
+  })) as unknown as typeof fetch
+  try {
+    await expect(openEvmWallet('hyperliquid-testnet')).rejects.toThrow(
+      'Account changed',
+    )
+    expect(mockCreate).not.toHaveBeenCalled()
+    expect(peekOpenedEvmWallets()).toEqual([])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+const hyperLiveRoots = [
+  process.env.FRANK_HYPER_SYNTHETIC_ROOT_A_FILE,
+  process.env.FRANK_HYPER_SYNTHETIC_ROOT_B_FILE,
+]
+const hyperLive = hyperLiveRoots.every(Boolean) ? it : it.skip
+hyperLive(
+  'opens, switches, and reopens real Hyperliquid owners through the authenticated relay without sending',
+  async () => {
+    const { readFileSync } = await import('node:fs')
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { deriveDomainRoot } = jest.requireActual('@frank/domain-roots')
+    const actual = jest.requireActual('@frank/wallet/chain')
+    const { verifyEvmWalletRpcIdentity } = await import(
+      './evm-wallet-verification'
+    )
+    const stateDir = await mkdtemp(join(tmpdir(), 'frank-hyper-owner-live-'))
+    const checkpoint = getChainRegistryEntry(
+      'hyperliquid-testnet',
+    )!.identityProbes.find(probe => probe.kind === 'block-hash')!
+    if (checkpoint.kind !== 'block-hash') throw new Error('missing checkpoint')
+    mockEnabledPeerNetworks.add('hyperliquid-testnet')
+    mockRelay = 'https://relay.signet.mx'
+    const roots = hyperLiveRoots.map(path => {
+      const root = Uint8Array.from(
+        Buffer.from(readFileSync(path!, 'utf8').trim(), 'hex'),
+      )
+      if (root.length !== 32) throw new Error('invalid synthetic test root')
+      try {
+        return {
+          evm: deriveDomainRoot(root, 'evm-wallet'),
+          authentication: deriveDomainRoot(root, 'identity-authentication'),
+          messaging: deriveDomainRoot(root, 'messaging-encryption'),
+        }
+      } finally {
+        root.fill(0)
+      }
+    })
+    let selected = 0
+    mockCreate.mockImplementation(async ({ config }) => {
+      expect(config.relayAuthNetworkTag).toBe('MONT')
+      expect(config.networkTag).toBe('HYPT')
+      const wallet = await actual
+        .createNativeOnlyEvmChain({
+          ...config,
+          walletStorageLocation: join(stateDir, 'hyperliquid-testnet'),
+          subAccountPoolSize: 1,
+        })
+        .createWallet(roots[selected])
+      await verifyEvmWalletRpcIdentity(
+        config,
+        wallet.provider,
+        { blockNumber: checkpoint.height, blockHash: checkpoint.expected },
+        () => undefined,
+      )
+      return wallet
+    })
+    try {
+      const open = async (index: number) => {
+        selected = index
+        mockState.account = {
+          receipt: { context: { accountId: `synthetic-${index}` } },
+        }
+        mockState.revision++
+        mockPrimary = { ...mockPrimary }
+        const result = await openEvmWallet('hyperliquid-testnet')
+        const address = (await result.wallet.getReceiveAddress()).raw
+        const balance = await result.wallet.getBalance()
+        expect(result.wallet.chainIdentifier).toBe('hyperliquid-testnet')
+        expect(address).toMatch(/^0x[0-9a-fA-F]{40}$/)
+        expect(balance).toBe(0n)
+        return address
+      }
+      const a1 = await open(0)
+      const b = await open(1)
+      expect(b.toLowerCase()).not.toBe(a1.toLowerCase())
+      const a2 = await open(0)
+      expect(a2.toLowerCase()).toBe(a1.toLowerCase())
+    } finally {
+      await closeOpenedEvmWallets()
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  },
+  90_000,
+)
 it('does not reuse another account or relay context and cancels an in-flight open on teardown', async () => {
   const first = await openEvmWallet('monad-mainnet')
   const close = jest.spyOn(first.wallet, 'close')

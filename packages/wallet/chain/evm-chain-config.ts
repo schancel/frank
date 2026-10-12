@@ -81,4 +81,7 @@ export interface EvmChainConfig {
     swapRecord: SwapRecordItem | undefined,
     messageId: Uint8Array,
   ) => Promise<void>;
+  /** Directory network tag of the principal signing relay RPC capabilities.
+   * A secondary wallet's target `networkTag` remains its own chain's tag. */
+  readonly relayAuthNetworkTag?: string;
 }

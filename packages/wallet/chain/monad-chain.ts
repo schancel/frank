@@ -2446,7 +2446,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             chain: config.rpcChain,
             customer: identity.address.raw,
             subject: hexlify(identity.compressedPubKey).slice(2),
-            networkTag: config.networkTag,
+            networkTag: config.relayAuthNetworkTag ?? config.networkTag,
             signDigest: (digest: Uint8Array) =>
               identity.signHash(Buffer.from(digest)),
           };

@@ -6,10 +6,11 @@
  */
 import { Interface, getAddress } from 'ethers'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
-import type { EvmDexPlan, EvmDexQuote } from './evm-dex'
+import type { EvmDex, EvmDexPlan, EvmDexQuote, EvmDexWallet } from './evm-dex'
 import { SwapRecordMismatchError } from './evm-dex'
 import { estimateCallFee, quoteIsFresh, SwapNoRouteError } from './evm-swap'
-import type { SwapExecutionReader, SwapWallet, SwapResult } from './swap-execution'
+import type { SwapExecutionReader, SwapWallet, SwapResult, SwapProgress, SwapTiming, ConsolidationNeed, SwapCost } from './swap-execution'
+import type { EvmDexToken } from '../chain/dex-entries'
 
 export const HYPERSWAP_V2_TESTNET = Object.freeze({
   id: 'hyperswap-v2', adapter: 'hyperswap-v2', enabled: false,
@@ -41,12 +42,7 @@ const token = new Interface([
 ])
 const same = (a: string | null | undefined, b: string) => typeof a === 'string' && a.toLowerCase() === b.toLowerCase()
 const positive = (v: bigint) => { if (v <= 0n || v >= 1n << 256n) throw new RangeError('Invalid swap amount') }
-export interface HyperSwapReader extends Omit<SwapExecutionReader, 'getBlock' | 'getTransaction'> {
-  getNetwork(): Promise<{ chainId: bigint }>
-  getBlock(tag: number | 'latest'): Promise<{ hash: string | null; baseFeePerGas: bigint | null } | null>
-  getCode(address: string): Promise<string>
-  getTransaction(hash: string): Promise<{ from: string; to: string | null; data: string; value: bigint; chainId: bigint } | null>
-}
+
 export interface HyperSwapRoute {
   readonly kind: 'hyperswap-v2-native-purr'
   readonly amountIn: string
@@ -58,18 +54,49 @@ export interface HyperSwapPlan extends EvmDexPlan {
   readonly account: string
   readonly route: HyperSwapRoute
 }
-export interface HyperSwapHandle { readonly operationId: string; readonly txHash: string }
+
+const DEFAULT_SWAP_TIMING: SwapTiming = {
+  inclusionTimeoutMs: 90_000,
+  pollMs: 1_000,
+  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+}
+const RECEIPT_BACKOFF = [1, 1, 2, 3, 5]
+
+async function awaitReceipt(reader: SwapExecutionReader, txHash: string, timing: SwapTiming) {
+  for (let waited = 0, attempt = 0; ; attempt++) {
+    const receipt = await reader.getTransactionReceipt(txHash).catch(() => null)
+    if (receipt) return receipt
+    if (waited >= timing.inclusionTimeoutMs) return undefined
+    const wait = timing.pollMs * RECEIPT_BACKOFF[Math.min(attempt, RECEIPT_BACKOFF.length - 1)]!
+    await timing.sleep(wait)
+    waited += wait
+  }
+}
+
+async function settle(reader: SwapExecutionReader, wallet: Pick<SwapWallet, 'resumeNativeOperation'>, txHash: string, operationId: string, timing: SwapTiming) {
+  const receipt = await awaitReceipt(reader, txHash, timing)
+  if (receipt || !wallet.resumeNativeOperation) return receipt
+  const known = await reader.getTransaction(txHash).catch(() => 'unknown')
+  if (known !== null) return undefined
+  await wallet.resumeNativeOperation(operationId).catch(() => {})
+  return awaitReceipt(reader, txHash, timing)
+}
 
 /** No fallback chain, token, router, or pair is accepted. */
-export class HyperSwapV2Testnet {
+export class HyperSwapV2Testnet implements EvmDex<EvmDexQuote, HyperSwapPlan> {
   readonly entry = d
-  constructor(private readonly reader: HyperSwapReader,
-    private readonly wallet: SwapWallet, private readonly now: () => number = Date.now) {}
+  readonly chainIdentifier = d.chainIdentifier
+  readonly tokens = [d.tokenIn, d.tokenOut]
+  
+  constructor(private readonly wallet: EvmDexWallet, private readonly now: () => number = Date.now) {}
+
+  private get reader() { return this.wallet.reader }
 
   private async read(abi: Interface, address: string, name: string, args: unknown[] = [], blockTag?: number) {
     const result = await this.reader.call({ to: address, data: abi.encodeFunctionData(name, args), ...(blockTag === undefined ? {} : { blockTag }) })
     return abi.decodeFunctionResult(name, result)
   }
+  
   async verifyDeployment(): Promise<void> {
     const protocol = PROTOCOL_CHAINS[d.chainIdentifier]
     if (protocol.nativeChainId === undefined || (await this.reader.getNetwork()).chainId.toString() !== protocol.nativeChainId.toString())
@@ -87,10 +114,12 @@ export class HyperSwapV2Testnet {
     ])
     if (!same(f[0], d.factory) || !same(w[0], d.wrappedNative) || !same(p[0], d.pair) ||
       !same(t0[0], d.wrappedNative) || !same(t1[0], d.tokenOut.address) || decimals[0] !== 18n ||
-      codes.some(code => typeof code !== 'string' || !/^0x[0-9a-fA-F]+$/.test(code)))
+      codes.some(code => typeof code !== "string" || !/^0x[0-9a-fA-F]+$/.test(code)))
       throw new Error('HyperSwap deployment mismatch')
   }
-  async quote(amountIn: bigint): Promise<EvmDexQuote> {
+  
+  async quote(input: { tokenIn: EvmDexToken; tokenOut: EvmDexToken; amountIn: bigint }): Promise<EvmDexQuote> {
+    const amountIn = input.amountIn
     positive(amountIn)
     await this.verifyDeployment()
     const [amounts, reserves] = await Promise.all([
@@ -106,9 +135,9 @@ export class HyperSwapV2Testnet {
       priceImpactPpm: mid > amountOut ? Number((mid - amountOut) * 1_000_000n / mid) : 0,
       quotedAtMs: this.now(), route: { kind: 'hyperswap-v2-native-purr' } }
   }
-  /** Re-quotes rather than trusting caller-supplied amounts or route. Max slippage 5%; 120s expiry. */
-  async plan(input: { amountIn: bigint; account: string; slippageBps: number }): Promise<HyperSwapPlan> {
-    const quote = await this.quote(input.amountIn)
+  
+  async plan(input: { quote: EvmDexQuote; slippageBps: number; account: string }): Promise<HyperSwapPlan> {
+    const quote = await this.quote(input.quote)
     if (!Number.isInteger(input.slippageBps) || input.slippageBps < 0 || input.slippageBps > 500)
       throw new RangeError('Slippage must be between 0 and 500 basis points')
     const account = getAddress(input.account)
@@ -120,40 +149,66 @@ export class HyperSwapV2Testnet {
     return { account, quote, route, minimumAmountOut, slippageBps: input.slippageBps, deadline,
       approvals: [], swap: this.callFor(route) }
   }
+  
   private callFor(route: HyperSwapRoute) {
     this.validateRoute(route)
     return { to: d.router, value: BigInt(route.amountIn), data: router.encodeFunctionData('swapExactETHForTokens', [
       route.minimumAmountOut, [d.wrappedNative, d.tokenOut.address], route.account, route.deadline,
     ]) }
   }
-  private validateRoute(route: HyperSwapRoute) {
-    if (route.kind !== 'hyperswap-v2-native-purr' || !/^\d+$/.test(route.amountIn) || !/^\d+$/.test(route.minimumAmountOut) ||
-      !Number.isSafeInteger(route.deadline) || route.deadline <= 0) throw new SwapRecordMismatchError()
-    getAddress(route.account); positive(BigInt(route.amountIn)); positive(BigInt(route.minimumAmountOut))
+  
+  private validateRoute(route: unknown): asserts route is HyperSwapRoute {
+    const r = route as HyperSwapRoute
+    if (r?.kind !== 'hyperswap-v2-native-purr' || !/^\d+$/.test(r.amountIn) || !/^\d+$/.test(r.minimumAmountOut) ||
+      !Number.isSafeInteger(r.deadline) || r.deadline <= 0) throw new SwapRecordMismatchError()
+    getAddress(r.account); positive(BigInt(r.amountIn)); positive(BigInt(r.minimumAmountOut))
   }
-  /** One native call only. No implicit consolidation/approval. A submitted handle must be reconciled. */
-  async execute(plan: HyperSwapPlan, maximumDebitWei: bigint): Promise<SwapResult> {
+  
+  async consolidation(input: { plan: HyperSwapPlan; swapFee?: SwapCost['swapFee'] }): Promise<ConsolidationNeed> {
+    return { moveWei: 0n, possible: true } // Native swaps with sufficient funds need no move
+  }
+
+  async cost(input: { plan: HyperSwapPlan; account: string; moveWei?: bigint }): Promise<SwapCost> {
+    const fee = await estimateCallFee(this.reader, input.plan.swap, input.account).catch(() => undefined)
+    return {
+      transactions: [{ kind: 'swap', feeWei: fee?.chargedFeeWei }],
+      networkFeeWei: fee?.chargedFeeWei ?? 0n,
+      complete: fee !== undefined,
+      swapFee: fee
+    }
+  }
+
+  async execute(input: {
+    plan: HyperSwapPlan
+    account: string
+    consolidateWei?: bigint
+    onProgress?: (progress: SwapProgress) => void
+    timing?: SwapTiming
+  }): Promise<SwapResult> {
     await this.verifyDeployment()
+    const { plan, account, onProgress } = input
     const call = this.callFor(plan.route)
     if (!quoteIsFresh(plan.quote, this.now()) || plan.deadline !== plan.route.deadline ||
       plan.deadline <= Math.floor(this.now() / 1000) || plan.deadline > Math.floor(this.now() / 1000) + 120 ||
       plan.minimumAmountOut !== BigInt(plan.route.minimumAmountOut) || plan.quote.amountIn !== call.value ||
-      !same(plan.account, plan.route.account) || plan.approvals.length ||
+      !same(account, plan.route.account) || plan.approvals.length ||
       !same(plan.swap.to, call.to) || plan.swap.data !== call.data || plan.swap.value !== call.value)
       throw new Error('Swap plan changed or expired; review a new quote')
     if (!Number.isInteger(plan.slippageBps) || plan.slippageBps < 0 || plan.slippageBps > 500 ||
       plan.minimumAmountOut !== plan.quote.amountOut * BigInt(10_000 - plan.slippageBps) / 10_000n)
       throw new Error('Invalid minimum received')
     const funds = await this.wallet.getContractCallFunds()
-    if (!same(funds.mainAddress, plan.account) || funds.mainBusy || this.wallet.getUnresolvedContractCalls?.().length)
+    if (!same(funds.mainAddress, account) || funds.mainBusy || this.wallet.getUnresolvedContractCalls?.().length)
       throw new Error('Swap account is changed or busy; reconcile its original operation')
-    const fee = await estimateCallFee(this.reader, call, plan.account)
-    if (call.value + fee.maximumFeeWei > maximumDebitWei || funds.mainBalance < call.value + fee.maximumFeeWei)
+    const fee = await estimateCallFee(this.reader, call, account)
+    if (call.value + fee.maximumFeeWei > funds.mainBalance) // NOTE: The user's wallet may have less funds than moveWei.
       throw new Error('Swap exceeds available funds or the authorized maximum debit')
-    let handle: HyperSwapHandle
+    
+    onProgress?.({ stage: 'submitting' })
+    let handle: { operationId: string, txHash: string }
     try {
       handle = await this.wallet.sendContractCall({ to: { raw: call.to }, data: call.data, value: call.value, gasLimit: fee.gasLimit,
-        record: { kind: 'swap', venueId: d.id, account: plan.account,
+        record: { kind: 'swap', venueId: d.id, account: account,
           assetIn: d.tokenIn, amountIn: call.value.toString(), assetOut: d.tokenOut,
           quotedAmountOut: plan.quote.amountOut.toString(), minimumAmountOut: plan.minimumAmountOut.toString(),
           interfaceFeeAmount: '0', route: plan.route, networkFeeWei: fee.chargedFeeWei.toString() } })
@@ -162,31 +217,51 @@ export class HyperSwapV2Testnet {
       if (!pending.operation?.operationId || !pending.transaction?.txHash) throw error
       handle = { operationId: pending.operation.operationId, txHash: pending.transaction.txHash }
     }
-    return this.observe(handle, plan.route)
-  }
-  /** Does not sign, select funds, or create an operation. Only the durable owner replays bytes. */
-  async reconcile(handle: HyperSwapHandle, route: HyperSwapRoute): Promise<SwapResult> {
-    await this.verifyDeployment(); this.validateRoute(route)
-    const tx = await this.reader.getTransaction(handle.txHash)
-    if (tx) this.validateTransaction(tx, route)
-    else {
-      if (!this.wallet.resumeNativeOperation) return { status: 'pending', ...handle }
-      await this.wallet.resumeNativeOperation(handle.operationId)
+    
+    onProgress?.({ stage: 'submitted', txHash: handle.txHash })
+    const timing = input.timing ?? DEFAULT_SWAP_TIMING
+    const receipt = await settle(this.reader, this.wallet, handle.txHash, handle.operationId, timing)
+    
+    if (receipt) {
+      try { await this.wallet.resumeNativeOperation?.(handle.operationId) } catch {}
+    } else {
+      await this.wallet.reobserveNativeOperations?.()
     }
-    return this.observe(handle, route)
+    
+    return this.observe({ transactionId: handle.txHash, account, route: plan.route })
   }
-  private validateTransaction(tx: NonNullable<Awaited<ReturnType<HyperSwapReader['getTransaction']>>>, route: HyperSwapRoute) {
+
+  async reconcile(input: {
+    transactionId: string
+    operationId: string
+    account: string
+    route: unknown
+    call: { to: string; data: string; value: string }
+    timing?: SwapTiming
+  }): Promise<SwapResult> {
+    this.validateRoute(input.route)
+    const timing = input.timing ?? DEFAULT_SWAP_TIMING
+    await settle(this.reader, this.wallet, input.transactionId, input.operationId, { ...timing, inclusionTimeoutMs: 0 })
+    await this.wallet.reobserveNativeOperations?.()
+    return this.observe({ transactionId: input.transactionId, account: input.account, route: input.route })
+  }
+
+  private validateTransaction(tx: NonNullable<Awaited<ReturnType<SwapExecutionReader['getTransaction']>>>, route: HyperSwapRoute) {
     const call = this.callFor(route)
-    if (tx.chainId !== 998n || !same(tx.from, route.account) || !same(tx.to, call.to) || tx.data !== call.data || tx.value !== call.value)
+    const typedTx = tx as { chainId: bigint; from: string; to: string | null; data: string; value: bigint }
+    if (typedTx.chainId !== 998n || !same(typedTx.from, route.account) || !same(typedTx.to, call.to) || typedTx.data !== call.data || typedTx.value !== call.value)
       throw new SwapRecordMismatchError()
   }
-  async observe(handle: HyperSwapHandle, route: HyperSwapRoute): Promise<SwapResult> {
-    await this.verifyDeployment(); this.validateRoute(route)
-    const receipt = await this.reader.getTransactionReceipt(handle.txHash)
+
+  async observe(input: { transactionId: string; account: string; route: unknown }): Promise<SwapResult> {
+    const handle = { txHash: input.transactionId, operationId: '' } // operationId is not required for output if missing
+    try { await this.verifyDeployment() } catch { return { status: 'pending', ...handle } }
+    this.validateRoute(input.route)
+    const receipt = await this.reader.getTransactionReceipt(input.transactionId)
     if (!receipt) return { status: 'pending', ...handle }
-    const tx = await this.reader.getTransaction(handle.txHash)
-    if (!tx || !same(receipt.from, route.account) || !same(receipt.to, d.router)) throw new SwapRecordMismatchError()
-    this.validateTransaction(tx, route)
+    const tx = await this.reader.getTransaction(input.transactionId)
+    if (!tx || !same(receipt.from, input.account) || !same(receipt.to, d.router)) throw new SwapRecordMismatchError()
+    this.validateTransaction(tx, input.route)
     const feeWei = receipt.gasUsed * receipt.gasPrice
     if (receipt.status === 0) return { status: 'reverted', ...handle, feeWei, totalFeeWei: feeWei }
     if (receipt.status !== 1) return { status: 'pending', ...handle }
@@ -196,8 +271,8 @@ export class HyperSwapV2Testnet {
         let event
         try { event = pair.parseLog(log) } catch { continue }
         if (event?.name === 'Swap') {
-          if (!same(event.args.sender, d.router) || !same(event.args.to, route.account) ||
-            event.args.amount0In !== BigInt(route.amountIn) || event.args.amount1In !== 0n || event.args.amount0Out !== 0n)
+          if (!same(event.args.sender, d.router) || !same(event.args.to, input.account) ||
+            event.args.amount0In !== BigInt(input.route.amountIn) || event.args.amount1In !== 0n || event.args.amount0Out !== 0n)
             throw new SwapRecordMismatchError()
           output = event.args.amount1Out; swapCount++
         }
@@ -208,12 +283,12 @@ export class HyperSwapV2Testnet {
       if (!same(log.address, d.tokenOut.address)) continue
       let event
       try { event = token.parseLog(log) } catch { continue }
-      if (event?.name === 'Transfer' && same(event.args.from, d.pair) && same(event.args.to, route.account)) received += event.args.value
+      if (event?.name === 'Transfer' && same(event.args.from, d.pair) && same(event.args.to, input.account)) received += event.args.value
     }
-    if (swapCount !== 1 || output < BigInt(route.minimumAmountOut) || received !== output) throw new SwapRecordMismatchError()
-    const [balance] = await this.read(token, d.tokenOut.address, 'balanceOf', [route.account], receipt.blockNumber)
+    if (swapCount !== 1 || output < BigInt(input.route.minimumAmountOut) || received !== output) throw new SwapRecordMismatchError()
+    const [balance] = await this.read(token, d.tokenOut.address, 'balanceOf', [input.account], receipt.blockNumber)
     if (balance < received) throw new Error('Recipient balance does not corroborate the swap receipt')
     await this.wallet.reobserveNativeOperations?.()
-    return { status: 'confirmed', ...handle, amountIn: BigInt(route.amountIn), amountOut: received, feeWei, totalFeeWei: feeWei }
+    return { status: 'confirmed', ...handle, amountIn: BigInt(input.route.amountIn), amountOut: received, feeWei, totalFeeWei: feeWei }
   }
 }

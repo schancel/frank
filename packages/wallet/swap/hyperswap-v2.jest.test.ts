@@ -1,6 +1,5 @@
 import { HYPERSWAP_V2_TESTNET, HyperSwapV2Testnet } from './hyperswap-v2'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
-import type { SwapWallet } from './swap-execution'
 import { getAddress } from 'ethers'
 
 describe('HyperSwap V2 Adapter', () => {
@@ -52,40 +51,75 @@ describe('HyperSwap V2 Adapter', () => {
 
   it('provides a quote', async () => {
     const mockReader = createMockReader()
-    const mockWallet = {} as unknown as SwapWallet
-    const adapter = new HyperSwapV2Testnet(mockReader as any, mockWallet)
-    const quote = await adapter.quote(1000000000000000000n)
+    const mockWallet = { reader: mockReader }
+    const adapter = new HyperSwapV2Testnet(mockWallet)
+    const quote = await adapter.quote({ tokenIn: HYPERSWAP_V2_TESTNET.tokenIn, tokenOut: HYPERSWAP_V2_TESTNET.tokenOut, amountIn: 1000000000000000000n })
     expect(quote.amountOut).toBe(256n)
     expect(quote.poolAmountOut).toBe(256n)
   })
 
   it('plans a swap', async () => {
     const mockReader = createMockReader()
-    const adapter = new HyperSwapV2Testnet(mockReader as any, {} as any)
-    adapter.now = () => 1000000
+    const adapter = new HyperSwapV2Testnet({ reader: mockReader })
 
-    const plan = await adapter.plan({ amountIn: 10000n, account: HYPERSWAP_V2_TESTNET.router, slippageBps: 50 })
+    const quote = await adapter.quote({ tokenIn: HYPERSWAP_V2_TESTNET.tokenIn, tokenOut: HYPERSWAP_V2_TESTNET.tokenOut, amountIn: 10000n })
+    const plan = await adapter.plan({ quote, account: HYPERSWAP_V2_TESTNET.router, slippageBps: 50 })
     expect(plan.slippageBps).toBe(50)
     expect(plan.minimumAmountOut).toBe(256n * 9950n / 10000n)
   })
 
   it('validates execute parameters', async () => {
     const mockReader = createMockReader()
-    const adapter = new HyperSwapV2Testnet(mockReader as any, {} as any)
-    await expect(adapter.execute({ route: { kind: 'wrong' } } as any, 1000n)).rejects.toThrow()
+    const adapter = new HyperSwapV2Testnet({ reader: mockReader })
+    await expect(adapter.execute({ plan: { route: { kind: 'wrong' } }, account: '0x123' })).rejects.toThrow()
   })
 
   it('validates reconcile parameters', async () => {
     const mockReader = createMockReader()
-    const adapter = new HyperSwapV2Testnet(mockReader as any, {} as any)
-    const result = await adapter.reconcile({ txHash: '0x123', operationId: '0x456' }, { kind: 'hyperswap-v2-native-purr', amountIn: '10', minimumAmountOut: '10', account: HYPERSWAP_V2_TESTNET.router, deadline: 1000 })
+    const adapter = new HyperSwapV2Testnet({ reader: mockReader })
+    const result = await adapter.reconcile({ transactionId: '0x123', operationId: '0x456', call: {}, account: HYPERSWAP_V2_TESTNET.router, route: { kind: 'hyperswap-v2-native-purr', amountIn: '10', minimumAmountOut: '10', account: HYPERSWAP_V2_TESTNET.router, deadline: 1000 } })
     expect(result.status).toBe('pending')
   })
 
   it('validates observe parameters', async () => {
     const mockReader = createMockReader()
-    const adapter = new HyperSwapV2Testnet(mockReader as any, {} as any)
-    const result = await adapter.observe({ txHash: '0x123', operationId: '0x456' }, { kind: 'hyperswap-v2-native-purr', amountIn: '10', minimumAmountOut: '10', account: HYPERSWAP_V2_TESTNET.router, deadline: 1000 })
+    const adapter = new HyperSwapV2Testnet({ reader: mockReader })
+    const result = await adapter.observe({ transactionId: '0x123', account: HYPERSWAP_V2_TESTNET.router, route: { kind: 'hyperswap-v2-native-purr', amountIn: '10', minimumAmountOut: '10', account: HYPERSWAP_V2_TESTNET.router, deadline: 1000 } })
     expect(result.status).toBe('pending')
   })
+
+  it('fails execute on stale quote', async () => {
+    const mockReader = createMockReader()
+    const adapter = new HyperSwapV2Testnet({ reader: mockReader })
+    adapter['now'] = () => 1000 // force old time
+    const quote = await adapter.quote({ tokenIn: HYPERSWAP_V2_TESTNET.tokenIn, tokenOut: HYPERSWAP_V2_TESTNET.tokenOut, amountIn: 10000n })
+    const plan = await adapter.plan({ quote, account: HYPERSWAP_V2_TESTNET.router, slippageBps: 50 })
+    
+    adapter['now'] = () => 10000000 // fast forward
+    await expect(adapter.execute({ plan, account: HYPERSWAP_V2_TESTNET.router })).rejects.toThrow('Swap plan changed or expired')
+  })
+
+  it('fails execute on changed swap account', async () => {
+    const mockReader = createMockReader()
+    const mockWallet = { reader: mockReader, getContractCallFunds: async () => ({ mainAddress: '0xDiff', mainBusy: false }) }
+    const adapter = new HyperSwapV2Testnet(mockWallet as any)
+    
+    const quote = await adapter.quote({ tokenIn: HYPERSWAP_V2_TESTNET.tokenIn, tokenOut: HYPERSWAP_V2_TESTNET.tokenOut, amountIn: 10000n })
+    const plan = await adapter.plan({ quote, account: HYPERSWAP_V2_TESTNET.router, slippageBps: 50 })
+    
+    await expect(adapter.execute({ plan, account: HYPERSWAP_V2_TESTNET.router })).rejects.toThrow('Swap account is changed or busy')
+  })
+
+  it('handles reverted observe', async () => {
+    const mockReader = createMockReader()
+    mockReader.getTransactionReceipt.mockResolvedValueOnce({ status: 0, from: HYPERSWAP_V2_TESTNET.router, to: HYPERSWAP_V2_TESTNET.router, gasUsed: 21000n, gasPrice: 1000n, logs: [] })
+    mockReader.getTransaction.mockImplementationOnce(() => Promise.resolve({ chainId: 998n, from: HYPERSWAP_V2_TESTNET.router, to: HYPERSWAP_V2_TESTNET.router, value: 10000n, data: adapter['callFor'](plan.route).data }))
+    const adapter = new HyperSwapV2Testnet({ reader: mockReader })
+    const quote = await adapter.quote({ tokenIn: HYPERSWAP_V2_TESTNET.tokenIn, tokenOut: HYPERSWAP_V2_TESTNET.tokenOut, amountIn: 10000n })
+    const plan = await adapter.plan({ quote, account: HYPERSWAP_V2_TESTNET.router, slippageBps: 50 })
+    
+    const result = await adapter.observe({ transactionId: '0x123', account: HYPERSWAP_V2_TESTNET.router, route: plan.route })
+    expect(result.status).toBe('reverted')
+  })
+
 })

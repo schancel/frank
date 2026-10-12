@@ -71,13 +71,19 @@ jest.mock('@frank/wallet/chain', () => ({
   ...jest.requireActual('@frank/wallet/chain'),
   get PROTOCOL_CHAINS() {
     const entries = jest.requireActual('@frank/wallet/chain').PROTOCOL_CHAINS
-    return Object.fromEntries(Object.entries(entries).map(([id, entry]) => [
-      id,
-      mockEnabledPeerNetworks.has(id) ? { ...(entry as object), wallet: true } : entry,
-    ]))
+    return Object.fromEntries(
+      Object.entries(entries).map(([id, entry]) => [
+        id,
+        mockEnabledPeerNetworks.has(id)
+          ? { ...(entry as object), wallet: true }
+          : entry,
+      ]),
+    )
   },
   getChainRegistryEntry: (id: string) => {
-    const entry = jest.requireActual('@frank/wallet/chain').getChainRegistryEntry(id)
+    const entry = jest
+      .requireActual('@frank/wallet/chain')
+      .getChainRegistryEntry(id)
     return entry && mockEnabledPeerNetworks.has(id)
       ? { ...entry, wallet: true }
       : entry
@@ -605,9 +611,11 @@ it('carries a peer EVM sync event through the captured primary mailbox and refus
   mockEnabledPeerNetworks.add('ethereum-sepolia')
   const primary = await actualEvmOwner('monad-testnet')
   mockPrimary = primary as unknown as typeof mockPrimary
-  const send = jest.spyOn(activeChain.directMessages, 'send').mockResolvedValue({
-    payloadDigest: 'delivered',
-  } as never)
+  const send = jest
+    .spyOn(activeChain.directMessages, 'send')
+    .mockResolvedValue({
+      payloadDigest: 'delivered',
+    } as never)
   const reconcile = jest.spyOn(activeChain.directMessages, 'reconcileAttempts')
   const messageId = new Uint8Array(16).fill(7)
   const item = {
@@ -632,7 +640,11 @@ it('carries a peer EVM sync event through the captured primary mailbox and refus
       messageId,
     })
     send.mockRejectedValueOnce(
-      new DirectMessageAlreadyAttemptedError('same-id', 'original-digest', 'self'),
+      new DirectMessageAlreadyAttemptedError(
+        'same-id',
+        'original-digest',
+        'self',
+      ),
     )
     reconcile.mockResolvedValueOnce({ 'original-digest': 'delivered' })
     await config.emitWalletSync!(item, undefined, messageId)
@@ -641,8 +653,9 @@ it('carries a peer EVM sync event through the captured primary mailbox and refus
       payloadDigests: ['original-digest'],
     })
     mockState.account = { receipt: { context: { accountId: 'changed' } } }
-    await expect(config.emitWalletSync!(item, undefined, messageId))
-      .rejects.toThrow('owner changed')
+    await expect(
+      config.emitWalletSync!(item, undefined, messageId),
+    ).rejects.toThrow('owner changed')
     expect(send).toHaveBeenCalledTimes(2)
   } finally {
     reconcile.mockRestore()
@@ -655,7 +668,8 @@ it('carries a peer EVM sync event through the captured primary mailbox and refus
 it('recovers an enabled secondary journal without signing another payment', async () => {
   mockEnabledPeerNetworks.add('ethereum-sepolia')
   const reobserve = jest.fn(async () => undefined)
-  const flush = jest.fn()
+  const flush = jest
+    .fn()
     .mockResolvedValueOnce(['original-operation'])
     .mockResolvedValueOnce([])
   mockCreate.mockImplementation(async ({ config }) => ({
@@ -665,10 +679,12 @@ it('recovers an enabled secondary journal without signing another payment', asyn
     reobserveNativeOperations: reobserve,
     flushNativeSync: flush,
   }))
-  await expect(recoverSecondaryEvmWallets(mockPrimary as never))
-    .rejects.toThrow('original-operation')
-  await expect(recoverSecondaryEvmWallets(mockPrimary as never))
-    .resolves.toBeUndefined()
+  await expect(
+    recoverSecondaryEvmWallets(mockPrimary as never),
+  ).rejects.toThrow('original-operation')
+  await expect(
+    recoverSecondaryEvmWallets(mockPrimary as never),
+  ).resolves.toBeUndefined()
   expect(mockCreate).toHaveBeenCalledTimes(1)
   expect(reobserve).toHaveBeenCalledTimes(2)
   expect(flush).toHaveBeenCalledTimes(2)

@@ -36,7 +36,10 @@ import { refreshOutgoingPaymentSummaries } from '../utils/outgoing-payments'
 import { activeChain } from '@frank/wallet/chain'
 import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
 import { accountSession } from '../accounts/session'
-import { openEvmWallet, recoverSecondaryEvmWallets } from '../accounts/evm-wallets'
+import {
+  openEvmWallet,
+  recoverSecondaryEvmWallets,
+} from '../accounts/evm-wallets'
 import type {
   DirectMessageAttemptStatus,
   DirectMessageReceived,
@@ -232,8 +235,11 @@ export function startDirectMessagePolling({
           if (stopped || accountSession.peekWallet() !== wallet)
             throw new Error('Wallet sync session changed')
           const target = await openEvmWallet(item.chainIdentifier)
-          if (stopped || accountSession.peekWallet() !== wallet ||
-              target.wallet.chainIdentifier !== item.chainIdentifier)
+          if (
+            stopped ||
+            accountSession.peekWallet() !== wallet ||
+            target.wallet.chainIdentifier !== item.chainIdentifier
+          )
             throw new Error('Wallet sync session changed')
           await applyWalletSyncItem(target.wallet, item)
         },
@@ -769,10 +775,13 @@ export function startOutgoingReconciliation({
       const recovery = recoverSecondaryEvmWallets(wallet as NativeWalletHandle)
       secondaryRecovery = recovery
       void recovery.then(
-        () => { if (secondaryRecovery === recovery) secondaryRecovery = undefined },
+        () => {
+          if (secondaryRecovery === recovery) secondaryRecovery = undefined
+        },
         error => {
           if (secondaryRecovery === recovery) secondaryRecovery = undefined
-          if (!stopped) console.warn('Secondary EVM recovery remains pending', error)
+          if (!stopped)
+            console.warn('Secondary EVM recovery remains pending', error)
         },
       )
     }

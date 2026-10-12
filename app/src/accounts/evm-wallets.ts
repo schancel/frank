@@ -11,7 +11,10 @@ import {
   type NativeAssetChain,
   type NativeWalletHandle,
 } from '@frank/wallet/chain'
-import type { SwapRecordItem, WalletSyncItem } from '@frank/cashweb/types/messages'
+import type {
+  SwapRecordItem,
+  WalletSyncItem,
+} from '@frank/cashweb/types/messages'
 import { accountSession } from './session'
 import {
   validateEvmWalletConfiguration,
@@ -314,19 +317,29 @@ export async function recoverSecondaryEvmWallets(
   if (peers.length === 0) return
   if (accountSession.peekWallet() !== primary)
     throw new Error('EVM recovery owner changed')
-  const results = await Promise.allSettled(peers.map(async peer => {
-    const opened = await openEvmWallet(peer.id)
-    if (accountSession.peekWallet() !== primary ||
-        opened.wallet.chainIdentifier !== peer.id)
-      throw new Error(`EVM recovery owner changed for ${peer.id}`)
-    await opened.wallet.reobserveNativeOperations?.()
-    const remaining = await opened.wallet.flushNativeSync?.()
-    if (remaining?.length)
-      throw new Error(`Wallet sync remains pending for ${peer.id}: ${remaining.join(', ')}`)
-  }))
-  const errors = results.flatMap((result, index) => result.status === 'rejected'
-    ? [`${peers[index]!.id}: ${String(result.reason)}`] : [])
-  if (errors.length) throw new Error(`Secondary EVM recovery incomplete: ${errors.join('; ')}`)
+  const results = await Promise.allSettled(
+    peers.map(async peer => {
+      const opened = await openEvmWallet(peer.id)
+      if (
+        accountSession.peekWallet() !== primary ||
+        opened.wallet.chainIdentifier !== peer.id
+      )
+        throw new Error(`EVM recovery owner changed for ${peer.id}`)
+      await opened.wallet.reobserveNativeOperations?.()
+      const remaining = await opened.wallet.flushNativeSync?.()
+      if (remaining?.length)
+        throw new Error(
+          `Wallet sync remains pending for ${peer.id}: ${remaining.join(', ')}`,
+        )
+    }),
+  )
+  const errors = results.flatMap((result, index) =>
+    result.status === 'rejected'
+      ? [`${peers[index]!.id}: ${String(result.reason)}`]
+      : [],
+  )
+  if (errors.length)
+    throw new Error(`Secondary EVM recovery incomplete: ${errors.join('; ')}`)
 }
 /** Host teardown closes owned secondary handles; the session retains ownership of its primary.
  * A cancelled secondary opening closes its late result before publishing it. */

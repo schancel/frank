@@ -76,7 +76,6 @@ const mockSetEmailGatewayAddress = jest.fn((address: string) => {
   }
   mockSettingsStore.emailGatewayAddress = address
   mockSettingsStore.emailGatewayOverride = {
-    chainIdentifier: 'monad-testnet',
     address,
   }
 })
@@ -87,7 +86,6 @@ const mockResetEmailGatewayAddress = jest.fn(() => {
 const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayAddress: '',
   emailGatewayOverride: null as {
-    chainIdentifier: string
     address: string
   } | null,
   advertisedEmailGateway: null,
@@ -435,7 +433,6 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     const customAddr = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
     mockSettingsStore.emailGatewayAddress = customAddr
     mockSettingsStore.emailGatewayOverride = {
-      chainIdentifier: 'monad-testnet',
       address: customAddr,
     }
     ;(wrapper.vm as any).emailGatewayInput = customAddr
@@ -457,7 +454,6 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     const newAddress = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
     mockSettingsStore.emailGatewayAddress = newAddress
     mockSettingsStore.emailGatewayOverride = {
-      chainIdentifier: 'monad-testnet',
       address: newAddress,
     }
     await wrapper.vm.$nextTick()

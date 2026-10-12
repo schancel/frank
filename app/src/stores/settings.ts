@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { LevelDB } from 'level'
-import { activeChain, PROTOCOL_CHAINS } from '@frank/wallet/chain'
+import { activeChain } from '@frank/wallet/chain'
 import {
   discoverEmailGateway,
   type AdvertisedEmailGateway,
@@ -8,22 +8,21 @@ import {
 
 export const ETHEREUM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/
 
-type GatewayIdentity = Pick<
-  AdvertisedEmailGateway,
-  'chainIdentifier' | 'address'
->
-type AcceptedGatewayIdentity = GatewayIdentity & { relayOrigin: string }
+type GatewayIdentity = Pick<AdvertisedEmailGateway, 'address'>
+type AcceptedGatewayIdentity = AdvertisedEmailGateway & { relayOrigin: string }
 type GatewayStatus = 'unavailable' | 'loading' | 'ready' | 'changed' | 'error'
 
 export interface SettingsState {
-  /** A deliberate user choice, scoped to the canonical network. Never a compiled default. */
+  /** A deliberate user choice. Never a compiled default. */
   emailGatewayOverride: GatewayIdentity | null
-  /** Last relay identity accepted for this network; detects address rotation across restarts. */
+  /** Last relay identity accepted; detects address, domain, and origin changes across restarts. */
   acceptedEmailGateway: AcceptedGatewayIdentity | null
   advertisedEmailGateway: AdvertisedEmailGateway | null
   emailGatewayStatus: GatewayStatus
   emailGatewayError: string
   emailGatewayRelayOrigin: string | null
+  /** Network of the relay information most recently verified this session. */
+  emailGatewayVerifiedNetwork: string | null
   emailGatewayGeneration: number
   /** Always 'testnet' for now. */
   networkMode: 'testnet'
@@ -33,9 +32,7 @@ function validIdentity(value: unknown): value is GatewayIdentity {
   if (!value || typeof value !== 'object') return false
   const item = value as Record<string, unknown>
   return (
-    typeof item.chainIdentifier === 'string' &&
-    PROTOCOL_CHAINS[item.chainIdentifier]?.id === item.chainIdentifier &&
-    PROTOCOL_CHAINS[item.chainIdentifier]?.family === 'evm' &&
+    !('chainIdentifier' in item) &&
     typeof item.address === 'string' &&
     ETHEREUM_ADDRESS_REGEX.test(item.address)
   )
@@ -46,8 +43,8 @@ function validAcceptedIdentity(
 ): value is AcceptedGatewayIdentity {
   return (
     validIdentity(value) &&
-    typeof (value as unknown as Record<string, unknown>).relayOrigin ===
-      'string'
+    typeof (value as unknown as Record<string, unknown>).relayOrigin === 'string' &&
+    typeof (value as unknown as Record<string, unknown>).domain === 'string'
   )
 }
 
@@ -100,17 +97,17 @@ export const useSettingsStore = defineStore('settings', {
     emailGatewayStatus: 'unavailable',
     emailGatewayError: '',
     emailGatewayRelayOrigin: null,
+    emailGatewayVerifiedNetwork: null,
     emailGatewayGeneration: 0,
     networkMode: 'testnet',
   }),
   getters: {
     emailGatewayAddress(state): string {
-      const chain = activeChain.chainIdentifier
-      if (state.emailGatewayOverride?.chainIdentifier === chain)
+      if (state.emailGatewayOverride)
         return state.emailGatewayOverride.address
       if (
         state.emailGatewayStatus !== 'ready' ||
-        state.advertisedEmailGateway?.chainIdentifier !== chain
+        state.emailGatewayVerifiedNetwork !== activeChain.chainIdentifier
       )
         return ''
       return state.advertisedEmailGateway.address
@@ -122,20 +119,13 @@ export const useSettingsStore = defineStore('settings', {
         throw new Error(
           `Invalid Ethereum address: "${address}". Expected format: 0x followed by 40 hex characters.`,
         )
-      this.emailGatewayOverride = {
-        chainIdentifier: activeChain.chainIdentifier,
-        address,
-      }
+      this.emailGatewayOverride = { address }
     },
     resetEmailGatewayAddress() {
       this.emailGatewayOverride = null
-      if (
-        this.advertisedEmailGateway?.chainIdentifier ===
-        activeChain.chainIdentifier
-      )
+      if (this.advertisedEmailGateway)
         this.acceptedEmailGateway = {
-          chainIdentifier: activeChain.chainIdentifier,
-          address: this.advertisedEmailGateway.address,
+          ...this.advertisedEmailGateway,
           relayOrigin: this.emailGatewayRelayOrigin ?? '',
         }
       this.emailGatewayStatus = this.advertisedEmailGateway
@@ -146,12 +136,14 @@ export const useSettingsStore = defineStore('settings', {
       this.emailGatewayGeneration += 1
       this.advertisedEmailGateway = null
       this.emailGatewayRelayOrigin = null
+      this.emailGatewayVerifiedNetwork = null
       this.emailGatewayStatus = 'unavailable'
       this.emailGatewayError = ''
     },
     async refreshEmailGateway(relayBaseUrl: string, chainIdentifier: string) {
       const generation = ++this.emailGatewayGeneration
       this.advertisedEmailGateway = null
+      this.emailGatewayVerifiedNetwork = null
       this.emailGatewayStatus = 'loading'
       this.emailGatewayError = ''
       try {
@@ -168,19 +160,20 @@ export const useSettingsStore = defineStore('settings', {
         )
           return
         this.advertisedEmailGateway = gateway
+        this.emailGatewayVerifiedNetwork = chainIdentifier
         if (!gateway) {
           this.emailGatewayStatus = 'unavailable'
         } else if (
-          this.acceptedEmailGateway?.chainIdentifier === chainIdentifier &&
+          this.acceptedEmailGateway &&
           (this.acceptedEmailGateway.relayOrigin !== origin ||
             this.acceptedEmailGateway.address.toLowerCase() !==
-              gateway.address.toLowerCase())
+              gateway.address.toLowerCase() ||
+            this.acceptedEmailGateway.domain !== gateway.domain)
         ) {
           this.emailGatewayStatus = 'changed'
         } else {
           this.acceptedEmailGateway = {
-            chainIdentifier,
-            address: gateway.address,
+            ...gateway,
             relayOrigin: origin,
           }
           this.emailGatewayStatus = 'ready'

@@ -393,20 +393,14 @@ export default defineComponent({
 
     const settingsStore = useSettingsStore()
     const emailGatewayInput = ref(
-      settingsStore.emailGatewayOverride?.chainIdentifier ===
-        activeChain.chainIdentifier
-        ? settingsStore.emailGatewayOverride.address
-        : '',
+      settingsStore.emailGatewayOverride?.address ?? '',
     )
     const emailGatewayError = ref('')
 
     watch(
       () => settingsStore.emailGatewayOverride,
       newVal => {
-        emailGatewayInput.value =
-          newVal?.chainIdentifier === activeChain.chainIdentifier
-            ? newVal.address
-            : ''
+        emailGatewayInput.value = newVal?.address ?? ''
       },
     )
 

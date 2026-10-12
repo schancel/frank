@@ -4,7 +4,6 @@ const relayInfo = {
   network: 'monad-testnet',
   endpoint: 'https://relay.example.test',
   emailGateway: {
-    chainIdentifier: 'monad-testnet',
     address: '0x2222222222222222222222222222222222222222',
     domain: 'mail.example.test',
   },
@@ -48,7 +47,7 @@ describe('email gateway discovery', () => {
       ...relayInfo,
       emailGateway: {
         ...relayInfo.emailGateway,
-        chainIdentifier: 'ethereum-sepolia',
+        chainIdentifier: 'monad-testnet',
       },
     },
     {

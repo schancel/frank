@@ -10,7 +10,6 @@ jest.mock('src/utils/email-gateway-discovery', () => ({
 }))
 
 const advertised = {
-  chainIdentifier: 'monad-testnet',
   address: '0x2222222222222222222222222222222222222222',
   domain: 'mail.example.test',
 }
@@ -33,6 +32,16 @@ describe('email gateway settings', () => {
           JSON.stringify({
             emailGatewayAddress: '0x1111111111111111111111111111111111111111',
           }),
+      } as any),
+    ).toEqual({})
+    expect(
+      await restoreSettings({
+        get: async () => JSON.stringify({
+          emailGatewayOverride: {
+            chainIdentifier: 'monad-testnet',
+            address: advertised.address,
+          },
+        }),
       } as any),
     ).toEqual({})
   })
@@ -109,20 +118,34 @@ describe('email gateway settings', () => {
     expect(store.emailGatewayAddress).toBe('')
   })
 
-  it('keeps a deliberate override scoped to its canonical chain', () => {
+  it('blocks a changed mail domain even when the relay and identity address match', async () => {
+    const store = useSettingsStore()
+    discover.mockResolvedValueOnce(advertised)
+    await store.refreshEmailGateway('https://relay.example.test', activeChain.chainIdentifier)
+    discover.mockResolvedValueOnce({ ...advertised, domain: 'other.example.test' })
+    await store.refreshEmailGateway('https://relay.example.test', activeChain.chainIdentifier)
+    expect(store.emailGatewayStatus).toBe('changed')
+    expect(store.emailGatewayAddress).toBe('')
+  })
+
+  it('does not use an advertisement verified for another selected network', async () => {
+    const store = useSettingsStore()
+    discover.mockResolvedValueOnce(advertised)
+    await store.refreshEmailGateway('https://relay.example.test', activeChain.chainIdentifier)
+    store.emailGatewayVerifiedNetwork = 'ethereum-sepolia'
+    expect(store.emailGatewayAddress).toBe('')
+  })
+
+  it('keeps a deliberate gateway identity override independent of settlement chain', () => {
     const store = useSettingsStore()
     store.setEmailGatewayAddress('0x4444444444444444444444444444444444444444')
     expect(store.emailGatewayAddress).toBe(
       '0x4444444444444444444444444444444444444444',
     )
-    expect(store.emailGatewayOverride?.chainIdentifier).toBe(
-      activeChain.chainIdentifier,
-    )
     store.emailGatewayOverride = {
-      chainIdentifier: 'ethereum-sepolia',
       address: '0x5555555555555555555555555555555555555555',
     }
-    expect(store.emailGatewayAddress).toBe('')
+    expect(store.emailGatewayAddress).toBe('0x5555555555555555555555555555555555555555')
     expect(() => store.setEmailGatewayAddress('0x123')).toThrow(
       /Invalid Ethereum address/,
     )
@@ -141,7 +164,6 @@ describe('email gateway settings', () => {
     await saveSettings(storage, store.$state)
     expect(await restoreSettings(storage)).toEqual({
       emailGatewayOverride: {
-        chainIdentifier: activeChain.chainIdentifier,
         address: '0x4444444444444444444444444444444444444444',
       },
     })

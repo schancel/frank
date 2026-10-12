@@ -1,5 +1,4 @@
 export interface AdvertisedEmailGateway {
-  chainIdentifier: string
   address: string
   domain: string
 }
@@ -51,12 +50,12 @@ export async function discoverEmailGateway({
     throw new Error('Invalid email gateway advertisement')
   const value = gateway as Record<string, unknown>
   if (
-    value.chainIdentifier !== chainIdentifier ||
+    'chainIdentifier' in value ||
     typeof value.address !== 'string' ||
     !ADDRESS.test(value.address) ||
     typeof value.domain !== 'string' ||
     !DOMAIN.test(value.domain)
   )
     throw new Error('Invalid email gateway advertisement')
-  return { chainIdentifier, address: value.address, domain: value.domain }
+  return { address: value.address, domain: value.domain }
 }

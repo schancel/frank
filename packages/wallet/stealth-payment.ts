@@ -83,6 +83,9 @@ export interface StealthPaymentReceiptObservation
 export interface StealthPaymentReceiptCapability {
   /** Idempotently records derivation/claim evidence; never credits a claimed amount as funds. */
   record(claim: StealthPaymentReceiptClaim): Promise<void>
+  /** Requires matching durable claim evidence; submits its original signed bytes unchanged.
+   * Never signs, funds a new account, or interprets uncertain submission as failure to pay. */
+  submit(claim: StealthPaymentReceiptClaim): Promise<void>
   /** Reads current chain evidence. An unavailable observation must reject, not invent zero. */
   observe(
     claim: StealthPaymentReceiptClaim,

@@ -16,7 +16,7 @@
     </q-header>
 
     <q-page-container>
-      <q-page class="q-pa-md about-page">
+      <q-page class="q-pa-md about-page" :style-fn="pageStyle">
         <!-- Hero section -->
         <div
           class="column items-center q-mb-lg text-center about-hero"
@@ -180,6 +180,7 @@ import { defineComponent } from 'vue'
 import { version as appVersion } from '../../package.json'
 
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
+import { viewportPageStyle } from 'src/utils/layout'
 import {
   SILENCE_LABORATORIES_CHANGED_ON,
   SILENCE_LABORATORIES_LICENSE,
@@ -197,6 +198,7 @@ export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   setup(_, { emit }) {
     return {
+      pageStyle: viewportPageStyle,
       appVersion,
       myDrawerOpen: useMyDrawerOpen(),
       notice: SILENCE_LABORATORIES_NOTICE,
@@ -214,6 +216,7 @@ export default defineComponent({
 <style lang="scss" scoped>
 .about-page {
   max-width: 60rem;
+  overflow-y: auto;
 }
 .about-license {
   white-space: pre-wrap;

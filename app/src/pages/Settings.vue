@@ -24,7 +24,7 @@
       </q-toolbar>
     </q-header>
     <q-page-container>
-      <q-page class="q-ma-none q-pa-none column full-height">
+      <q-page class="q-ma-none q-pa-none column no-wrap" :style-fn="pageStyle">
         <q-card flat class="col column full-width full-height bg-transparent">
           <q-splitter
             :model-value="120"
@@ -310,6 +310,7 @@
 
 <script lang="ts">
 import { navigateBack } from 'src/utils/navigate-back'
+import { viewportPageStyle } from 'src/utils/layout'
 import { localeOptions } from 'src/i18n'
 import { applyLocale } from 'src/utils/apply-locale'
 import {
@@ -453,6 +454,7 @@ export default defineComponent({
     }
   },
   methods: {
+    pageStyle: viewportPageStyle,
     selectTheme(stoneId: SignetStone) {
       this.theme = stoneId
       this.isSaved = false

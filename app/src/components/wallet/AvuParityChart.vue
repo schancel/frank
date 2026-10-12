@@ -168,17 +168,7 @@
             data-test="chart-hover-point"
             @mouseenter="hovered = column"
             @click="hovered = column"
-            @mousedown.prevent="dragFrom = column"
-            @mouseup="finishDrag(column)"
           >
-            <rect
-              :x="column.x - columnHitWidth / 2"
-              y="20"
-              :width="columnHitWidth"
-              height="210"
-              fill="transparent"
-              pointer-events="all"
-            />
             <text
               v-if="column.tick"
               :x="column.x"
@@ -192,6 +182,21 @@
               {{ column.tick }}
             </text>
           </g>
+          <rect
+            x="55"
+            y="20"
+            width="570"
+            height="210"
+            fill="transparent"
+            class="chart-range-interaction"
+            data-test="chart-range-interaction"
+            @pointerdown.prevent="startDrag"
+            @pointermove="movePointer"
+            @pointerup="finishDrag"
+            @pointercancel="cancelDrag"
+            @lostpointercapture="cancelDrag"
+            @pointerleave="leaveChart"
+          />
         </svg>
         <div
           v-for="side in axisLabels"
@@ -764,39 +769,79 @@ const columns = computed<Column[]>(() => {
   }))
 })
 
-const columnHitWidth = computed(() =>
-  Math.max(4, (X_MAX - X_MIN) / Math.max(columns.value.length, 1)),
-)
-
 const hovered = ref<Column | null>(null)
-const dragFrom = ref<Column | null>(null)
+const dragFrom = ref<{ pointerId: number; x: number; at: number } | null>(null)
+const pointerX = ref<number | null>(null)
 watch([selectedRange, asset, denomination], () => {
   hovered.value = null
-  dragFrom.value = null
+  cancelDrag()
   zoom.value = null
 })
 
+// Convert rendered coordinates through the SVG's actual transform, including letterboxing.
+function pointerPosition(event: PointerEvent) {
+  const target = event.currentTarget as SVGRectElement
+  const svg = target.ownerSVGElement
+  const transform = svg?.getScreenCTM()
+  const extent = timeExtent.value
+  if (!svg || !transform || !extent || extent.min === extent.max) return null
+  const point = svg.createSVGPoint()
+  point.x = event.clientX
+  point.y = event.clientY
+  const local = point.matrixTransform(transform.inverse())
+  const x = Math.max(X_MIN, Math.min(X_MAX, local.x))
+  return {
+    x,
+    at: Math.round(
+      extent.min + ((x - X_MIN) / (X_MAX - X_MIN)) * (extent.max - extent.min),
+    ),
+  }
+}
+function movePointer(event: PointerEvent) {
+  if (dragFrom.value && dragFrom.value.pointerId !== event.pointerId) return
+  const position = pointerPosition(event)
+  if (!position) return
+  pointerX.value = position.x
+  hovered.value = columns.value.reduce<Column | null>(
+    (best, column) =>
+      !best || Math.abs(column.x - position.x) < Math.abs(best.x - position.x)
+        ? column
+        : best,
+    null,
+  )
+}
+function startDrag(event: PointerEvent) {
+  if (dragFrom.value || !event.isPrimary || event.button !== 0) return
+  const position = pointerPosition(event)
+  if (!position) return
+  dragFrom.value = { pointerId: event.pointerId, ...position }
+  movePointer(event)
+  ;(event.currentTarget as SVGRectElement).setPointerCapture(event.pointerId)
+}
 const dragSelection = computed(() => {
   const from = dragFrom.value
-  const to = hovered.value
-  if (!from || !to || from.key === to.key) return null
-  return { x: Math.min(from.x, to.x), width: Math.abs(to.x - from.x) }
+  const to = pointerX.value
+  if (!from || to === null || from.x === to) return null
+  return { x: Math.min(from.x, to), width: Math.abs(to - from.x) }
 })
-
-function finishDrag(column: Column) {
+function finishDrag(event: PointerEvent) {
   const from = dragFrom.value
-  dragFrom.value = null
-  if (!from || from.key === column.key) return
-  zoom.value = {
-    min: Math.min(from.key, column.key),
-    max: Math.max(from.key, column.key),
-  }
+  if (!from || from.pointerId !== event.pointerId) return
+  const to = pointerPosition(event)
+  cancelDrag()
+  ;(event.currentTarget as SVGRectElement).releasePointerCapture(
+    event.pointerId,
+  )
+  if (!to || Math.abs(from.x - to.x) < 4 || from.at === to.at) return
+  zoom.value = { min: Math.min(from.at, to.at), max: Math.max(from.at, to.at) }
   hovered.value = null
 }
-
-function leaveChart() {
-  hovered.value = null
+function cancelDrag() {
   dragFrom.value = null
+  pointerX.value = null
+}
+function leaveChart() {
+  if (!dragFrom.value) hovered.value = null
 }
 
 const inspected = computed<Column | null>(
@@ -983,6 +1028,10 @@ useOracleHistory(() =>
     grid-template-columns: minmax(0, 1fr);
   }
 }
+.chart-svg {
+  touch-action: none;
+}
+
 .unselectable {
   user-select: none;
 }

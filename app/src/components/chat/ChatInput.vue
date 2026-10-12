@@ -177,14 +177,23 @@
                 :suffix="chainUnit"
                 :label="$t('chatInput.stampPayment')"
               />
-              <!-- Side room for the first and last marker labels, which are centred on the ends. -->
-              <div class="q-mt-sm q-px-md">
+              <q-btn
+                flat
+                dense
+                color="primary"
+                data-testid="chat-input-stamp-free"
+                :label="$t('chatInput.stampFree')"
+                :disable="disable"
+                @click="chooseFreeStamp"
+              />
+              <!-- Multipliers require a real quote; an absent quote is not a Free selection. -->
+              <div v-if="defaultStampWei !== undefined" class="q-mt-sm q-px-md">
                 <q-slider
                   v-model="decadeIndex"
                   class="q-mt-md"
                   :min="0"
                   :max="multiplierSteps.length - 1"
-                  :disable="defaultStampWei === undefined"
+                  :disable="disable"
                   :step="1"
                   label
                   label-always
@@ -201,7 +210,10 @@
               >
                 {{ sliderLabelValue }}
               </div>
-              <div class="text-caption text-grey-7 q-mt-sm">
+              <div
+                v-if="defaultStampWei !== undefined"
+                class="text-caption text-grey-7 q-mt-sm"
+              >
                 {{ $t('chatInput.stampQuickSelection') }}
               </div>
 
@@ -345,6 +357,11 @@ export default defineComponent({
         : raw < this.minimumStampWei
         ? this.minimumStampWei
         : raw
+    },
+    chooseFreeStamp() {
+      if (this.disable) return
+      this.typedStamp = '0'
+      this.$emit('update:stampAmount', '0')
     },
     resetToDefault() {
       this.typedStamp = null

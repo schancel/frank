@@ -20,23 +20,23 @@ const RFC_ID = '<outbound@gw.example>';
 const ALIAS = 'threadreply001';
 const sha = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 
-function claimedJob(journal: MailJournal): number {
+function claimedJob(journal: MailJournal, suffix = '1'): number {
   const input = {
     outcome: 'bridged' as const,
-    payloadDigest: sha('payload'),
+    payloadDigest: sha(`payload-${suffix}`),
     receivedTimeMs: 1000,
     stampValue: '0',
     scopeAccount: ACCOUNT,
-    frankMessageId: ID,
+    frankMessageId: suffix === '1' ? ID : '00000000-0000-0000-0000-000000000003',
     conversationId: CONVERSATION,
-    authoredMessageId: RFC_ID,
-    itemKey: sha('item'),
+    authoredMessageId: suffix === '1' ? RFC_ID : '<outbound-2@gw.example>',
+    itemKey: sha(`item-${suffix}`),
   };
   const render = journal.recordFrankMessage(input);
   if (render.kind !== 'needs_render') throw new Error('Expected render request');
   const bridged = journal.recordFrankMessage({
     ...input,
-    emitted: { rfcMessageId: render.rfcMessageId, mailKey: sha('mail') },
+    emitted: { rfcMessageId: render.rfcMessageId, mailKey: sha(`mail-${suffix}`) },
   });
   if (bridged.kind !== 'bridged') throw new Error('Expected bridged message');
   journal.issueMailbox({ localPart: ALIAS, scopeAccount: ACCOUNT, conversationId: CONVERSATION });
@@ -113,5 +113,30 @@ describe('Resend outbound acceptance reconciliation', () => {
     });
     expect(journal.findOutboundJob(jobId)?.state).toBe('submitting');
     expect(journal.listDueOutboundJobs(100_000, 10)).toEqual([]);
+  });
+
+  it('walks past old unresolved jobs and resumes after a bounded provider page', async () => {
+    const old = claimedJob(journal);
+    const later = claimedJob(journal, '2');
+    const evidence = {
+      id: 'provider-later',
+      messageId: '<outbound-2@gw.example>',
+      from: `${ALIAS}@${DOMAIN}`,
+      to: [RECIPIENT],
+      createdAt: new Date(1000).toISOString(),
+    };
+    const list = jest.fn(async (after?: string) => after === 'first-page'
+      ? { messages: [evidence], hasMore: false }
+      : { messages: [{ ...evidence, id: 'first-page', messageId: '<wrong@gw.example>' }], hasMore: true });
+    const reconciler = new ResendOutboundReconciler(journal, { list });
+    const first = await reconciler.reconcile(1, 1);
+    expect(first).toEqual({ confirmed: 0, unresolved: 1, pages: 1, nextProviderAfter: 'first-page' });
+    const exhausted = await reconciler.reconcile(1, 1, 0, first.nextProviderAfter);
+    expect(exhausted).toEqual({ confirmed: 0, unresolved: 1, pages: 1, nextJobId: old });
+    const next = await reconciler.reconcile(1, 2, exhausted.nextJobId);
+    expect(next).toMatchObject({ confirmed: 1, unresolved: 0, nextJobId: later });
+    expect(journal.findOutboundJob(old)?.state).toBe('submitting');
+    expect(journal.findOutboundJob(later)).toMatchObject({ state: 'sent', providerEmailId: 'provider-later' });
+    expect(list).toHaveBeenCalledWith('first-page');
   });
 });

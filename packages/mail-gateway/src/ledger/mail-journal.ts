@@ -1708,10 +1708,11 @@ export class MailJournal {
   }
 
   /** Operator reconciliation queue; `submitting` includes crashes during provider calls. */
-  listUncertainOutboundJobs(limit = 100): OutboundJobRecord[] {
+  listUncertainOutboundJobs(limit = 100, afterJobId = 0): OutboundJobRecord[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');
+    if (!Number.isSafeInteger(afterJobId) || afterJobId < 0) refuse('afterJobId: not a nonnegative integer');
     return this.all<OutboundJobJoinedRow>(
-      `${JOB_SELECT} WHERE j.state IN ('submitting', 'uncertain') ORDER BY j.submission_started_at, j.job_id LIMIT ?`, limit
+      `${JOB_SELECT} WHERE j.state IN ('submitting', 'uncertain') AND j.job_id > ? ORDER BY j.job_id LIMIT ?`, afterJobId, limit
     ).map(toJob);
   }
 

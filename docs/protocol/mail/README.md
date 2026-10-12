@@ -38,7 +38,11 @@ Jobs must be claimed durably before provider submission.
 operator reconciliation states; neither is automatically retried. Positive
 Resend sent-email evidence can mark a claimed job accepted, after checking its
 Message-ID, issued sender alias, recipient, and submission time. An absent
-listing result never authorizes a resend. Only a
+listing result never authorizes a resend. Reconciliation returns a provider
+page cursor while scanning one bounded job batch, then a job cursor to scan
+past unresolved older jobs. A host must continue those cursors and start a new
+pass at job ID zero later; keeping only the first page would starve later jobs.
+Only a
 confirmed rejection can return a claimed job to `pending` or mark it `failed`.
 Archive the journal together with its gateway wallet stores before starting a new
 prelaunch format 7 instance; do not discard a funded gateway wallet or replay

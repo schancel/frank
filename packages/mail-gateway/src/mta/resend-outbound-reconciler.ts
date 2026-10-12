@@ -62,17 +62,32 @@ function matches(job: OutboundJobRecord, evidence: SentMailEvidence, gatewayDoma
 export class ResendOutboundReconciler {
   constructor(private readonly journal: MailJournal, private readonly port: SentMailEvidencePort) {}
 
-  async reconcile(limitJobs = 100, maxPages = 20): Promise<{ confirmed: number; unresolved: number; pages: number }> {
+  async reconcile(
+    limitJobs = 100,
+    maxPages = 20,
+    afterJobId = 0,
+    providerAfter?: string
+  ): Promise<{
+    confirmed: number;
+    unresolved: number;
+    pages: number;
+    /** Continue the same job batch from the next provider page. */
+    nextProviderAfter?: string;
+    /** Once provider pages are exhausted, move to the next job batch. */
+    nextJobId?: number;
+  }> {
     if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 1000) {
       throw new Error('maxPages must be an integer from 1 to 1000');
     }
-    const jobs = this.journal.listUncertainOutboundJobs(limitJobs);
+    const jobs = this.journal.listUncertainOutboundJobs(limitJobs, afterJobId);
     const remaining = new Map(jobs.map((job) => [job.jobId, job]));
-    let after: string | undefined;
+    let after = providerAfter;
     let pages = 0;
+    let hasMore = false;
     while (remaining.size > 0 && pages < maxPages) {
       const page = await this.port.list(after);
       pages += 1;
+      hasMore = page.hasMore;
       for (const evidence of page.messages) {
         for (const [id, job] of remaining) {
           if (!matches(job, evidence, this.journal.gatewayDomain)) continue;
@@ -80,11 +95,18 @@ export class ResendOutboundReconciler {
           remaining.delete(id);
         }
       }
-      if (!page.hasMore) break;
+      if (!hasMore) break;
       const lastId = page.messages.at(-1)?.id;
       if (!lastId || lastId === after) throw new Error('Resend sent-email pagination did not advance');
       after = lastId;
     }
-    return { confirmed: jobs.length - remaining.size, unresolved: remaining.size, pages };
+    return {
+      confirmed: jobs.length - remaining.size,
+      unresolved: remaining.size,
+      pages,
+      ...(remaining.size > 0 && hasMore ? { nextProviderAfter: after } : {}),
+      ...(jobs.length === limitJobs && (remaining.size === 0 || !hasMore)
+        ? { nextJobId: jobs.at(-1)!.jobId } : {}),
+    };
   }
 }

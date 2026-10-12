@@ -53,7 +53,17 @@ export interface StealthPaymentQuote {
   readonly recipientDestination: Uint8Array
   readonly recipientSpendPublicKey: Uint8Array
   readonly ephemeralPublicKey: Uint8Array
+  /** Present only for a single-source quote. */
   readonly sourceAddress?: string
+  /** Owner-frozen source allocations. Recipient amounts sum to amountAtomic;
+   * top-level balances and estimated fee aggregate only these selected sources. */
+  readonly sources?: readonly {
+    readonly sourceAddress: string
+    readonly recipientAmountAtomic: bigint
+    readonly nativeBalanceAtomic: bigint
+    readonly assetBalanceAtomic: bigint
+    readonly estimatedNativeFeeAtomic: bigint
+  }[]
   readonly nativeBalanceAtomic: bigint
   readonly assetBalanceAtomic: bigint
   readonly estimatedNativeFeeAtomic: bigint

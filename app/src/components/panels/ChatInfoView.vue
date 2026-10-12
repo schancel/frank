@@ -82,7 +82,7 @@
             icon="chat"
             :label="$t('chat.sendMessage') || $t('chatList.directMessages')"
             data-test="info-start-chat"
-            @click="$emit('chat')"
+            @click="$emit('chat', address)"
           />
         </div>
       </div>

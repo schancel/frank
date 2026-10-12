@@ -253,7 +253,7 @@
       :conversation-id="activeConversation?.id"
       :contact="getContact(effectiveAddress || address)"
       @deleted="onChatDeleted"
-      @chat="closeInfo"
+      @chat="onStartChatFromInfo"
     />
   </div>
 </template>
@@ -263,6 +263,7 @@ import { computed, defineComponent } from 'vue'
 import { RouteLocationNormalized } from 'vue-router'
 
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
+import { openChat } from '../utils/routes'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import AccountBadge from '../components/contacts/AccountBadge.vue'
@@ -393,6 +394,25 @@ export default defineComponent({
         void this.$router.replace({ query })
       }
     },
+    onStartChatFromInfo(targetAddress?: string) {
+      this.closeInfo()
+      const target = targetAddress || this.effectiveAddress || this.address
+      if (target) {
+        try {
+          const chatStore = useChatStore()
+          if (isChainAddress(target)) {
+            chatStore.setActiveChat(target)
+          } else {
+            chatStore.setActiveConversation(target)
+          }
+        } catch {
+          // In test environments without active pinia
+        }
+        if (this.$route?.params?.address !== target && this.$router) {
+          void openChat(this.$router, target)
+        }
+      }
+    },
     // DeleteChatDialog (opened either from the overflow menu or from within the full-pane Info
     // view) emits this once the chat is actually gone -- neither the chat route nor an Info view
     // for it is a valid place to keep sitting.
@@ -413,7 +433,18 @@ export default defineComponent({
           return chatStore.conversations[this.address] ?? null
         }
         if (isChainAddress(this.address)) {
-          return chatStore.chats[toChainDisplayAddress(this.address)] ?? null
+          const defaultChat =
+            chatStore.chats[toChainDisplayAddress(this.address)]
+          if (defaultChat) return defaultChat
+        }
+        const active = chatStore.activeConversation
+        if (
+          active &&
+          (active.id === this.address ||
+            (isChainAddress(this.address) &&
+              sameCanonicalAddress(active.address, this.address)))
+        ) {
+          return active
         }
       } catch {
         //

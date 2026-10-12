@@ -91,6 +91,7 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
     ...loadMonadChainConfigFromEnv({ isTestnet: true }),
     chainIdentifier: 'monad-testnet',
     walletStorageLocation,
+    requireBoundWalletState: true,
     relayBaseUrl,
   } satisfies EvmChainConfig;
   return {

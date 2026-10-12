@@ -12,6 +12,7 @@ export interface ResendWebhookHttpOptions {
 /** The only public HTTP route for a journaled Resend ingress. */
 export class ResendWebhookHttp {
   private server?: Server;
+  private ready = false;
 
   constructor(private readonly options: ResendWebhookHttpOptions) {
     if (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535)
@@ -37,6 +38,7 @@ export class ResendWebhookHttp {
       throw error;
     }
     this.server = server;
+    this.ready = true;
   }
 
   address(): string {
@@ -45,7 +47,13 @@ export class ResendWebhookHttp {
     return `http://${this.options.host}:${address.port}`;
   }
 
+  /** Recovery failure withdraws readiness while ingress remains retryable. */
+  setReady(ready: boolean): void {
+    this.ready = ready && this.server !== undefined;
+  }
+
   async stop(): Promise<void> {
+    this.ready = false;
     const server = this.server;
     if (!server) return;
     this.server = undefined;
@@ -53,6 +61,11 @@ export class ResendWebhookHttp {
   }
 
   private async handle(incoming: IncomingMessage, outgoing: ServerResponse): Promise<void> {
+    if (incoming.url === '/healthz' && incoming.method === 'GET') {
+      incoming.resume();
+      outgoing.writeHead(this.ready ? 200 : 503).end();
+      return;
+    }
     if (incoming.url !== '/webhooks/resend') {
       incoming.resume();
       outgoing.writeHead(404).end();

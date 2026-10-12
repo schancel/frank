@@ -1,9 +1,14 @@
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Transaction, Wallet } from 'ethers'
+import { Interface, Transaction, Wallet } from 'ethers'
+import { getEvmDexDeployment } from '../chain/dex-deployments'
 import {
   LevelRecordStore,
+  refreshStoredEvmNativePaymentSet,
+  applyStoredNativeCoinObservation,
+  markStoredEvmCoinNoted,
+  registerStoredEvmErc20Payment,
   recordStoredEvmCoin,
   registerStoredEvmNativePayment,
   registerStoredEvmNativePaymentSet,
@@ -169,6 +174,137 @@ describe('atomic native received payment sets', () => {
       erc20Positions: [],
     })
     expect(store.get(note.address)!.transactions).toHaveLength(2)
+  })
+  it('updates canonical received totals across partial/full/reorg evidence without treating balances as receipt value', async () => {
+    const raws = await Promise.all(senders.map(sender => signed(sender)))
+    const claim = payment(raws)
+    await registerStoredEvmNativePaymentSet(store, note.address, claim)
+    let at = 10
+    for (const [values, expected, complete] of [
+      [[1000n, undefined], 1000n, false],
+      [[1000n, 1000n], 2000n, true],
+      [[undefined, 1000n], 1000n, false],
+      [[undefined, undefined], 0n, false],
+      [[0n, 0n], 0n, true],
+      [[1000n, 1000n], 2000n, true],
+    ] as const) {
+      const result = await refreshStoredEvmNativePaymentSet(
+        store,
+        note.address,
+        claim,
+        async (address, original) => {
+          expect(address).toBe(note.address)
+          expect(original).toEqual(raws)
+          return { balanceWei: 777n, receivedAmountsWei: values }
+        },
+        at++,
+      )
+      expect(result.applied).toBe(true)
+      expect(result.verifiedReceivedAmountWei).toBe(expected)
+      expect(result.complete).toBe(complete)
+      expect(result.allFailed).toBe(values.every(value => value === 0n))
+      expect(result.coin.receivedAmountWei).toBe(expected.toString())
+      expect(result.coin.amountWei).toBe('777')
+      expect(result.coin.claimedAmountWei).toBe('2000')
+    }
+    await reopen()
+    expect(store.get(note.address)!.receivedAmountWei).toBe('2000')
+  })
+  it('rejects observation of another/subset claim and impossible member evidence without changes', async () => {
+    const raws = await Promise.all(senders.map(sender => signed(sender))),
+      claim = payment(raws)
+    await registerStoredEvmNativePaymentSet(store, note.address, claim)
+    const before = store.get(note.address)
+    for (const invalid of [
+      { ...claim, payloadDigest: 'cd'.repeat(32) },
+      { ...claim, rawTransactions: [raws[0]!], amountWei: 1000n },
+    ])
+      await expect(
+        refreshStoredEvmNativePaymentSet(
+          store,
+          note.address,
+          invalid,
+          async () => ({ balanceWei: 0n, receivedAmountsWei: [1000n, 1000n] }),
+          10,
+        ),
+      ).rejects.toThrow()
+    for (const evidence of [
+      { balanceWei: 0n, receivedAmountsWei: [999n, 1000n] },
+      { balanceWei: -1n, receivedAmountsWei: [1000n, 1000n] },
+      { balanceWei: 0n, receivedAmountsWei: [1000n] },
+    ])
+      await expect(
+        refreshStoredEvmNativePaymentSet(
+          store,
+          note.address,
+          claim,
+          async () => evidence,
+          10,
+        ),
+      ).rejects.toThrow()
+    expect(store.get(note.address)).toEqual(before)
+  })
+  it('merges unrelated facts during RPC and refuses a stale native result', async () => {
+    const raws = await Promise.all(senders.map(sender => signed(sender))),
+      claim = payment(raws)
+    await registerStoredEvmNativePaymentSet(store, note.address, claim)
+    const merged = await refreshStoredEvmNativePaymentSet(
+      store,
+      note.address,
+      claim,
+      async () => {
+        const token = getEvmDexDeployment('monad-testnet')!.tokens.find(
+          token => token.symbol === 'USDC',
+        )!.address!
+        const raw = await senders[0]!.signTransaction({
+          type: 2,
+          chainId: 10143n,
+          nonce: 7,
+          to: token,
+          value: 0n,
+          data: new Interface([
+            'function transfer(address to,uint256 amount)',
+          ]).encodeFunctionData('transfer', [note.address, 7n]),
+          gasLimit: 100000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+        })
+        await registerStoredEvmErc20Payment(store, note.address, {
+          chainIdentifier: 'monad-testnet',
+          contractAddress: token,
+          rawTransaction: raw,
+          amountBaseUnits: 7n,
+          payloadDigest: 'cd'.repeat(32),
+          discoveredAtMs: 15,
+        })
+        await markStoredEvmCoinNoted(store, note.address, 15)
+        return { balanceWei: 777n, receivedAmountsWei: [1000n, undefined] }
+      },
+      20,
+    )
+    expect(merged.applied).toBe(true)
+    expect(merged.coin.notedAtMs).toBe(15)
+    expect(merged.coin.erc20Positions![0]!.claims[0]!.amountBaseUnits).toBe('7')
+    const stale = await refreshStoredEvmNativePaymentSet(
+      store,
+      note.address,
+      claim,
+      async () => {
+        await applyStoredNativeCoinObservation(store, note.address, {
+          balanceWei: 999n,
+          transfer: 'none',
+          atMs: 30,
+        })
+        return { balanceWei: 0n, receivedAmountsWei: [undefined, undefined] }
+      },
+      40,
+    )
+    expect(stale.applied).toBe(false)
+    expect(stale.coin.amountWei).toBe('999')
+    expect(stale.coin.receivedAmountWei).toBe('1000')
+    expect(stale.coin.checkedAtMs).toBe(30)
+    expect(stale.coin.notedAtMs).toBe(15)
+    expect(stale.coin.erc20Positions).toEqual(merged.coin.erc20Positions)
   })
   it('keeps singleton registration on the same validator and persistence path', async () => {
     const raw = await signed()

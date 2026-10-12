@@ -84,7 +84,7 @@ export class TempoPathUsdReceiveScanner {
 
   constructor(
     readonly chainIdentifier: TempoNetwork,
-    private readonly store: RecordStore<TempoReceiveBatch>,
+    private readonly store: RecordStore<TempoReceiveBatch> & { refresh?: () => Promise<void> },
     private readonly rpc: TempoReceiveRpc,
     private readonly withRecipientLock: <T>(recipient: string, operation: () => Promise<T>) => Promise<T>,
   ) {
@@ -136,6 +136,7 @@ export class TempoPathUsdReceiveScanner {
     const recipient = canonical(recipientAddress)
     if (startBlock < 0n) return Promise.reject(new RangeError('Invalid Tempo receive start block'))
     return this.withRecipientLock(recipient, async () => {
+      await this.store.refresh?.()
       const rows = this.rows(recipient)
       let next = startBlock
       const seen = new Set<string>()

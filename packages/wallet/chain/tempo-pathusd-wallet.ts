@@ -44,7 +44,7 @@ export class TempoPathUsdWallet {
 
   constructor(
     readonly chainIdentifier: TempoNetwork,
-    readonly account: TempoPathUsdMainAccount,
+    readonly account: TempoPathUsdSigner,
     private readonly rpc: TempoPathUsdRpc,
     private readonly transfers: TempoPathUsdTransfers,
     private readonly receive: TempoPathUsdReceiveScanner,

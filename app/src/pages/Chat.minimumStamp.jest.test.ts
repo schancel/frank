@@ -85,6 +85,19 @@ describe('Chat.vue minimum stamp', () => {
     expect(self.defaultStampWei).toBe(50_000n)
   })
 
+  it('keeps the observed subsidy-only basis with the native default', async () => {
+    defaultStampQuote.mockResolvedValue({
+      status: 'available',
+      amount: 50_000n,
+      minimumStamp: 42_000n,
+      rateFeeCoverage: 'subsidy-only',
+    })
+    const self = fakeThis({ $t: (key: string) => key })
+    await page.methods.refreshMinimumStamp.call(self)
+    expect(self.defaultStampWei).toBe(50_000n)
+    expect(self.defaultStampBasisNote).toBe('walletPanel.avuFeesExcluded')
+  })
+
   it('makes the default unavailable when the wallet cannot quote', async () => {
     defaultStampQuote.mockRejectedValue(new Error('node did not answer'))
     const self = fakeThis({ minimumStampWei: 42_000n })

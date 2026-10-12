@@ -589,7 +589,7 @@ export default {
     avuReferenceMeasurement:
       'One AVU represents one kilowatt-hour. These curves show its value in US dollars using mining and wholesale electricity measurements.',
     avuReferenceSampling:
-      'The mining measurement uses coin prices, block rewards, difficulty, hardware efficiency and market-cap weights. Historical inputs include monthly averages and dated changes; each value holds until its next observation. Changes in the curve can come from any of these inputs, not only difficulty.',
+      'The mining measurement uses coin prices, observed mining receipts and hashrate, hardware efficiency and market-cap weights. Historical inputs include monthly averages and dated changes; each value holds until its next observation. Changes in the curve can come from any of these inputs, not only hashrate.',
     tabParity: 'Price history',
     tabSwap: 'Instant Swap',
     swapUnavailable: 'Instant Swap unavailable',
@@ -651,6 +651,8 @@ export default {
     sourceUnit:
       'AVU: 1 AVU = 1 kWh. AVU_hash is the energy a unit of value is worth, averaged over a basket of mined coins by market capitalisation with Bitcoin capped at 60%; for each entry, pay per kWh = price × miner’s block reward ÷ expected hashes per block × hashes per kWh. Every AVU value is a price times AVU_hash.',
     avuHashValue: '{used} of {total} basket entries',
+    avuFeesExcluded:
+      'Mining fees are unavailable for part of this estimate; those inputs use miner subsidy only.',
     avuHashEstimated: 'An entry rests on an estimated hardware figure.',
     avuSpotValue: 'A wholesale kWh costs {avu} AVU',
     avuSpotStale: 'Not refreshed: latest price is {age} old.',

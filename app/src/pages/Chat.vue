@@ -143,6 +143,7 @@
         v-model:stamp-amount="stampAmount"
         :minimum-stamp-wei="minimumStampWei"
         :default-stamp-wei="defaultStampWei"
+        :stamp-basis-note="defaultStampBasisNote"
         :default-stamp-mode="isDefaultStampMode"
         :stamp-unavailable="stampUnavailable"
         @resetStampDefault="resetStampDefault"
@@ -319,6 +320,7 @@ export default defineComponent({
       minimumStampWei: 0n as bigint,
       defaultStampWei: undefined as bigint | undefined,
       defaultStampFailure: 'missing-rate' as string,
+      defaultStampBasisNote: '',
       stampQuoteSequence: 0,
       stampQuoteTimer: undefined as ReturnType<typeof setInterval> | undefined,
       sendingMessage: false,
@@ -619,6 +621,7 @@ export default defineComponent({
       const chainIdentifier = activeChain.chainIdentifier
       const revision = accountStatus.revision
       this.defaultStampWei = undefined
+      this.defaultStampBasisNote = ''
       let wallet: ReturnType<typeof useMonadWallet> | undefined
       try {
         wallet = useMonadWallet()
@@ -635,6 +638,10 @@ export default defineComponent({
           this.minimumStampWei = quote.minimumStamp
           this.defaultStampWei = quote.amount
           this.defaultStampFailure = ''
+          this.defaultStampBasisNote =
+            quote.rateFeeCoverage && quote.rateFeeCoverage !== 'included'
+              ? this.$t('walletPanel.avuFeesExcluded')
+              : ''
         } else {
           this.defaultStampWei = undefined
           this.defaultStampFailure = quote?.reason ?? 'unsupported'

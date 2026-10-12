@@ -1,3 +1,4 @@
+import type { MiningFeeCoverage } from "./energy-basket";
 /** Host-owned configuration: the recipient's value, independent of native coin and fees. */
 export interface StampPolicyConfig {
   readonly targetAvu: string;
@@ -60,6 +61,8 @@ export type DefaultStampQuote =
       /** Adapter minimum; not a quote of the complete multi-input network fee. */
       readonly minimumStamp: bigint;
       readonly rateAt: number;
+      /** Observed mining basis; absent for host-supplied non-oracle fixed quotes. */
+      readonly rateFeeCoverage?: MiningFeeCoverage;
     }
   | {
       readonly status: "unavailable";
@@ -79,6 +82,7 @@ export function quoteDefaultStamp(input: {
   readonly config: StampPolicyConfig;
   readonly avuPerCoin?: string | number;
   readonly rateAt?: number;
+  readonly rateFeeCoverage?: MiningFeeCoverage;
   readonly rateStale?: boolean;
   readonly minimumStamp?: bigint;
 }): DefaultStampQuote {
@@ -118,6 +122,9 @@ export function quoteDefaultStamp(input: {
     targetAmount,
     minimumStamp: input.minimumStamp,
     rateAt: input.rateAt,
+    ...(input.rateFeeCoverage
+      ? { rateFeeCoverage: input.rateFeeCoverage }
+      : {}),
   };
 }
 

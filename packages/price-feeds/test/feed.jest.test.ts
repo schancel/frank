@@ -36,6 +36,18 @@ describe('the oracle feed contract', () => {
     expect(parseOracleFeed({ ...example, version: 2 })).toBeUndefined()
   })
 
+  it('accepts explicit subsidy-only observations and rejects unnamed approximations', () => {
+    const feed = JSON.parse(JSON.stringify(example))
+    feed.series['minerSubsidy/btc-mainnet'] =
+      feed.series['minerRevenue/btc-mainnet']
+    expect(
+      parseOracleFeed(feed)?.series['minerSubsidy/btc-mainnet'],
+    ).toBeDefined()
+    feed.series['subsidyEstimate/btc-mainnet'] =
+      feed.series['minerRevenue/btc-mainnet']
+    expect(parseOracleFeed(feed)).toBeUndefined()
+  })
+
   it('names the two request shapes', () => {
     expect(feedUrl('https://relay.example/', { latest: true })).toBe(
       'https://relay.example/oracle/v1/feed?latest',

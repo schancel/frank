@@ -3,6 +3,7 @@ import {
   avuPerCoin,
   avuSpotAt,
   basketWeights,
+  miningFeeCoverage,
   type OracleInputs,
 } from './energy-basket'
 import {
@@ -287,5 +288,52 @@ it('responds to measured hashrate independently of difficulty', () => {
   expect(avuHashAt(inputs, T)!.entries[0].valuePerKwh).toBeCloseTo(
     before / 2,
     12,
+  )
+})
+
+describe('explicit subsidy-only mining basis', () => {
+  it('uses matching observed subsidy when fees are unavailable and keeps exact revenue preferred', () => {
+    const inputs = inputsOf(FIVE, EFFICIENCY)
+    const exact = avuHashAt(inputs, T)!
+    inputs.series['minerSubsidy/btc-mainnet'] =
+      inputs.series['minerRevenue/btc-mainnet']
+    expect(avuHashAt(inputs, T)!.kwhPerValue).toBe(exact.kwhPerValue)
+    expect(miningFeeCoverage(avuHashAt(inputs, T)!)).toBe('included')
+    delete inputs.series['minerRevenue/btc-mainnet']
+    const partial = avuHashAt(inputs, T)!
+    expect(partial.kwhPerValue).toBe(exact.kwhPerValue)
+    expect(
+      partial.entries.find(entry => entry.id === 'bitcoin')?.feesIncluded,
+    ).toBe(false)
+    expect(miningFeeCoverage(partial)).toBe('mixed')
+  })
+  it('does not let stale older total revenue override a matching fresh subsidy', () => {
+    const inputs = inputsOf(FIVE, EFFICIENCY)
+    inputs.series['minerRevenue/btc-mainnet'] = {
+      points: [[T - 20, 100]],
+      stale: true,
+    }
+    inputs.series['minerSubsidy/btc-mainnet'] = { points: [[T - 10, 3.125]] }
+    const hash = avuHashAt(inputs, T)!
+    expect(hash.stale).toBe(false)
+    expect(
+      hash.entries.find(entry => entry.id === 'bitcoin')?.feesIncluded,
+    ).toBe(false)
+    inputs.series['minerSubsidy/btc-mainnet'] = { points: [[T - 11, 3.125]] }
+    expect(
+      avuHashAt(inputs, T)!.leftOut.some(entry => entry.id === 'bitcoin'),
+    ).toBe(true)
+  })
+})
+
+it('marks the merge-mined energy entry subsidy-only if one constituent lacks fees', () => {
+  const inputs = inputsOf(FIVE, EFFICIENCY)
+  inputs.series['minerSubsidy/doge-mainnet'] =
+    inputs.series['minerRevenue/doge-mainnet']
+  delete inputs.series['minerRevenue/doge-mainnet']
+  const hash = avuHashAt(inputs, T)!
+  expect(hash.entries.filter(entry => entry.id === 'scrypt')).toHaveLength(1)
+  expect(hash.entries.find(entry => entry.id === 'scrypt')?.feesIncluded).toBe(
+    false,
   )
 })

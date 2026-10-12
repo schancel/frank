@@ -84,6 +84,7 @@ export type SeriesKind =
   | 'marketCap'
   | 'hashrate'
   | 'minerRevenue'
+  | 'minerSubsidy'
   | 'efficiency'
   | 'electricity'
 
@@ -92,7 +93,7 @@ export function seriesName(kind: SeriesKind, id: string): string {
 }
 
 const SERIES_NAME =
-  /^(price|marketCap|hashrate|minerRevenue|efficiency|electricity)\/[a-z0-9-]+$/
+  /^(price|marketCap|hashrate|minerRevenue|minerSubsidy|efficiency|electricity)\/[a-z0-9-]+$/
 const ALGORITHMS: readonly string[] = ['sha256', 'scrypt', 'randomx']
 
 function isRecord(value: unknown): value is Record<string, unknown> {

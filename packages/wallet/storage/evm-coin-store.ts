@@ -538,6 +538,8 @@ export interface ContactPayment {
 export interface RecordStore<T> {
   get(key: string): T | undefined
   all(): T[]
+  /** Refresh this wrapper's read cache from its one durable owner; no default writes. */
+  refresh(): Promise<void>
   put(key: string, row: T): Promise<void>
   /** Compare against durable state, not this wrapper's cache. A miss refreshes its cache. */
   compareAndPut(key: string, expected: T | undefined, row: T): Promise<boolean>

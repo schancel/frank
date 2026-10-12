@@ -53,6 +53,11 @@ export interface EcashOperationLedger {
   readonly walletAddress: string;
   readonly nextChangeIndex: number;
   readonly operations: ReadonlyArray<EcashNativeOperation>;
+  /** Confirmed prior-obligation inputs. No lifecycle or signed bytes are copied here. */
+  readonly consumedInputs?: ReadonlyArray<{
+    readonly txid: string;
+    readonly vout: number;
+  }>;
 }
 
 export interface EcashOperationStore {
@@ -89,6 +94,24 @@ export function parseEcashOperationLedger(
     !Array.isArray(value.operations)
   )
     throw new Error("Invalid eCash operation ledger");
+  if (value.consumedInputs !== undefined) {
+    if (!Array.isArray(value.consumedInputs))
+      throw new Error("Invalid eCash consumed inputs");
+    const consumed = new Set<string>();
+    for (const input of value.consumedInputs) {
+      if (
+        !object(input) ||
+        !hash(input.txid) ||
+        !Number.isSafeInteger(input.vout) ||
+        Number(input.vout) < 0 ||
+        Number(input.vout) > 0xffffffff
+      )
+        throw new Error("Invalid eCash consumed input");
+      const key = `${input.txid}:${input.vout}`;
+      if (consumed.has(key)) throw new Error("Duplicate eCash consumed input");
+      consumed.add(key);
+    }
+  }
   const ids = new Set<string>();
   const claimed = new Set<string>();
   for (const operation of value.operations) {

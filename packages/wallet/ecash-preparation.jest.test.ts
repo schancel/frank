@@ -263,6 +263,40 @@ it(
 );
 
 it(
+  "retains consumed prior inputs across both confirmation paths, restart and write failure",
+  () =>
+    run(`
+  const source = await make();
+  const operation = await source.wallet.prepareNativeOperation(params('source'));
+  const transaction = { txHash: operation.transactions[0].txid, rawTransactions: operation.transactions.map(tx => tx.rawTransaction) };
+  for (const explicit of [false, true]) {
+    const old = new InMemoryNativeTransactionAttemptStore();
+    const store = new InMemoryEcashOperationStore();
+    let status = 'unknown'; let fail = false;
+    const durablePut = store.put.bind(store);
+    store.put = (key, ledger) => { if (fail) throw new Error('durability unavailable'); durablePut(key, ledger); };
+    const host = await make({ old, store, status: async () => status });
+    old.put(source.key, transaction); status = 'confirmed'; fail = true;
+    const settle = () => explicit
+      ? host.wallet.resolveUnresolvedNativeTransaction({ transaction, outcome: 'submitted' })
+      : host.wallet.finishInterruptedSend();
+    await assert.rejects(settle());
+    assert.deepEqual(old.get(source.key), transaction);
+    assert.equal(store.get(source.key), undefined);
+    fail = false; await settle();
+    assert.equal(old.get(source.key), undefined);
+    assert.deepEqual(store.get(source.key).consumedInputs, operation.inputs.map(({txid,vout}) => ({txid,vout})));
+    assert.equal(store.get(source.key).operations.length, 0);
+    const reopened = await make({ old, store });
+    const next = await reopened.wallet.prepareNativeOperation(params('after-prior'));
+    assert.ok(next.inputs.every(input => !operation.inputs.some(prior => prior.txid === input.txid && prior.vout === input.vout)));
+    assert.equal((await reopened.wallet.getBalance()), 60000n);
+  }
+`),
+  35_000
+);
+
+it(
   "uses the same SDK derivation and durable preparation through the legacy mnemonic entry point",
   () =>
     run(`

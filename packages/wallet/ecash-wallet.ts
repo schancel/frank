@@ -518,11 +518,14 @@ export class EcashWallet implements NativeWalletHandle {
   private exclusions(ledger: EcashOperationLedger): EcashInputReference[] {
     // Confirmed inputs remain spent tombstones, preventing stale indexer snapshots from
     // resurrecting them. Only a genuinely unexposed released operation frees its claims.
-    const claims = ledger.operations
-      .filter((operation) => operation.state !== "released")
-      .flatMap((operation) =>
-        operation.inputs.map(({ txid, vout }) => ({ txid, vout }))
-      );
+    const claims = [
+      ...(ledger.consumedInputs ?? []),
+      ...ledger.operations
+        .filter((operation) => operation.state !== "released")
+        .flatMap((operation) =>
+          operation.inputs.map(({ txid, vout }) => ({ txid, vout }))
+        ),
+    ];
     const obligation = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (obligation !== undefined) {
       // These are derived exclusions, not a copied lifecycle/bytes owner. The original store
@@ -868,16 +871,39 @@ export class EcashWallet implements NativeWalletHandle {
     return this.submitNativeOperation(operation.operationId);
   }
 
+  /** Under the shared lock, transfer only confirmed spent-input evidence before retiring its
+   * original journal owner. If persistence fails, the original obligation remains recoverable.
+   */
+  private retireConfirmedPriorObligation(old: ChainTransaction): void {
+    const current = this.nativeAttemptStore.get(this.nativeAttemptKey);
+    if (current === undefined || !sameChainTransaction(current, old)) return;
+    const backend = this.preparationBackend();
+    backend.validateLegacyTransaction(current);
+    const inputs = backend.inputReferencesFromTransactions(
+      current.rawTransactions!
+    );
+    const ledger = this.loadLedger();
+    const consumed = new Map(
+      (ledger.consumedInputs ?? []).map((input) => [
+        `${input.txid}:${input.vout}`,
+        input,
+      ])
+    );
+    for (const input of inputs)
+      consumed.set(`${input.txid}:${input.vout}`, input);
+    this.operationStore.put(this.nativeAttemptKey, {
+      ...ledger,
+      consumedInputs: [...consumed.values()],
+    });
+    this.nativeAttemptStore.delete(this.nativeAttemptKey);
+  }
+
   private async finishPriorObligation(): Promise<void> {
     const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (old !== undefined) {
       const status = await this.getTransactionStatus(old);
       if (status === "confirmed")
-        await this.exclusive(() => {
-          const current = this.nativeAttemptStore.get(this.nativeAttemptKey);
-          if (current !== undefined && sameChainTransaction(current, old))
-            this.nativeAttemptStore.delete(this.nativeAttemptKey);
-        });
+        await this.exclusive(() => this.retireConfirmedPriorObligation(old));
       else if (
         status === "unknown" &&
         old.rawTransactions !== undefined &&
@@ -928,11 +954,7 @@ export class EcashWallet implements NativeWalletHandle {
       );
     const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (old !== undefined && sameChainTransaction(old, params.transaction)) {
-      await this.exclusive(() => {
-        const current = this.nativeAttemptStore.get(this.nativeAttemptKey);
-        if (current !== undefined && sameChainTransaction(current, old))
-          this.nativeAttemptStore.delete(this.nativeAttemptKey);
-      });
+      await this.exclusive(() => this.retireConfirmedPriorObligation(old));
       return;
     }
     const operation = this.loadLedger().operations.find((item) =>

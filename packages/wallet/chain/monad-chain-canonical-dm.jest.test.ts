@@ -224,6 +224,8 @@ jest.mock('../monad-http', () => {
 })
 const mockFunded: { from: string; to: string; value: bigint }[] = []
 let mockStreamRecordHandler: ((record: any) => Promise<void>) | undefined
+let mockStreamErrorHandler: ((error: Error) => void) | undefined
+let mockStreamCloseHandler: (() => void) | undefined
 jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => {
   const actual = jest.requireActual('@frank/cashweb/relay/monad-mailbox-client')
   return {
@@ -233,6 +235,9 @@ jest.mock('@frank/cashweb/relay/monad-mailbox-client', () => {
     fetchCanonicalRecoveryPage: jest.fn(async () => ({ records: [] })),
     connectCanonicalMailboxStream: jest.fn(async (params: any) => {
       mockStreamRecordHandler = params.onRecord
+      mockStreamErrorHandler = params.onError
+      mockStreamCloseHandler = params.onClose
+      params.onReady?.()
       return { close: jest.fn() }
     }),
   }
@@ -2641,6 +2646,35 @@ describe('two typed wallets on the open directory', () => {
     )
     unsub()
   })
+
+  it('automatically reconnects when stream closes or errors with modest backoff', async () => {
+    await online('alice', f.alice)
+    const connectSpy = jest.mocked(connectCanonicalMailboxStream)
+    connectSpy.mockClear()
+    const unsub = f.chain.directMessages.subscribeMailboxStream!({
+      wallet: f.alice,
+      onRecord: () => {},
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(connectSpy).toHaveBeenCalledTimes(1)
+
+    // Simulate stream close
+    mockStreamCloseHandler?.()
+    // First backoff is 1s (1000ms)
+    await new Promise(resolve => setTimeout(resolve, 1100))
+    expect(connectSpy).toHaveBeenCalledTimes(2)
+
+    // Simulate stream error
+    mockStreamErrorHandler?.(new Error('connection reset'))
+    // Next backoff is 2s (2000ms)
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    expect(connectSpy).toHaveBeenCalledTimes(2) // not yet
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    expect(connectSpy).toHaveBeenCalledTimes(3) // reconnected!
+
+    unsub()
+  })
+
 
   it('decrypts own outbound message and recipient inbox message across directory statement rotation', async () => {
     const aliceDir = await online('alice', f.alice)

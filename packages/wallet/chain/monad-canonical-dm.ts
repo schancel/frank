@@ -2633,13 +2633,43 @@ export function canonicalDirectMessages(
       const auth = mailboxAuth(owner, directory)
       let active = true
       let streamHandle: { close: () => void } | undefined
+      let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+      let reconnectAttempts = 0
+
+      const scheduleReconnect = () => {
+        if (!active || reconnectTimer !== undefined) return
+        const delay =
+          reconnectAttempts === 0
+            ? 1000
+            : reconnectAttempts === 1
+            ? 2000
+            : 5000
+        reconnectAttempts += 1
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = undefined
+          if (active) {
+            void connect()
+          }
+        }, delay)
+      }
 
       const connect = async () => {
         try {
           const self = await directory.selfCurrent()
           if (!active) return
+          streamHandle?.close()
+          streamHandle = undefined
+
           streamHandle = await connectCanonicalMailboxStream({
             ...auth,
+            onReady: () => {
+              reconnectAttempts = 0
+            },
+            onClose: () => {
+              if (active) {
+                scheduleReconnect()
+              }
+            },
             onRecord: async (record: CanonicalMailboxRecord) => {
               if (!active) return
               try {
@@ -2652,8 +2682,8 @@ export function canonicalDirectMessages(
                 const digest = toHex(deliveryTyped.payloadDigest)
                 const isOutbound = record.direction === 'out'
                 const peerSubjectKeyBytes = isOutbound
-                  ? payload.recipient.keyBytes
-                  : payload.sender.keyBytes
+                ? payload.recipient.keyBytes
+                : payload.sender.keyBytes
                 const peerSubjectHex = toHex(peerSubjectKeyBytes)
                 const peer = await directory.peerCurrent({
                   subject: peerSubjectHex,
@@ -2775,7 +2805,10 @@ export function canonicalDirectMessages(
               }
             },
             onError: err => {
-              params.onError?.(err)
+              if (active) {
+                params.onError?.(err)
+                scheduleReconnect()
+              }
             },
           })
         } catch (err) {
@@ -2783,6 +2816,7 @@ export function canonicalDirectMessages(
             params.onError?.(
               err instanceof Error ? err : new Error(String(err)),
             )
+            scheduleReconnect()
           }
         }
       }
@@ -2791,7 +2825,12 @@ export function canonicalDirectMessages(
 
       return () => {
         active = false
+        if (reconnectTimer !== undefined) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = undefined
+        }
         streamHandle?.close()
+        streamHandle = undefined
       }
     },
   }

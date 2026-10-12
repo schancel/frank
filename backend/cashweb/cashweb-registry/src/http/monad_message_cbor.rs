@@ -1322,14 +1322,32 @@ pub(crate) async fn handle_mailbox_ws(
 
     Ok(ws.on_upgrade(move |mut socket| async move {
         let mut seen_payloads = std::collections::HashSet::new();
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        heartbeat.tick().await;
         loop {
             tokio::select! {
+                _ = heartbeat.tick() => {
+                    if socket.send(axum::extract::ws::Message::Ping(vec![])).await.is_err() {
+                        break;
+                    }
+                }
                 msg = socket.recv() => {
                     match msg {
                         Some(Ok(axum::extract::ws::Message::Close(_))) | None => break,
                         Some(Ok(axum::extract::ws::Message::Ping(data))) => {
                             if socket.send(axum::extract::ws::Message::Pong(data)).await.is_err() {
                                 break;
+                            }
+                        }
+                        Some(Ok(axum::extract::ws::Message::Pong(_))) => {}
+                        Some(Ok(axum::extract::ws::Message::Text(ref text))) => {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+                                if val.get("type").and_then(|v| v.as_str()) == Some("ping") {
+                                    if socket.send(axum::extract::ws::Message::Text("{\"type\":\"pong\"}".into())).await.is_err() {
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Some(Err(_)) => break,

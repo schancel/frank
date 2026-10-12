@@ -1,3 +1,7 @@
+import {
+  validateEvmWalletConfiguration,
+  verifyEvmWalletRpcIdentity,
+} from './evm-wallet-verification'
 import { reactive, readonly } from 'vue'
 import { toHex } from '@frank/codec'
 import {
@@ -475,28 +479,7 @@ export function createAccountSession(deps: {
       const checkpoint = input.operatorCheckpoint && {
         ...input.operatorCheckpoint,
       }
-      const entry = getChainRegistryEntry(config.networkId)
-      if (
-        !entry ||
-        entry.family !== 'evm' ||
-        !entry.wallet ||
-        entry.id !== config.chainIdentifier ||
-        entry.id !== config.rpcChain ||
-        entry.networkTag !== config.networkTag ||
-        entry.nativeChainId === undefined ||
-        BigInt(entry.nativeChainId) !== BigInt(config.chainId)
-      )
-        throw new Error('Unsupported or inconsistent EVM wallet configuration')
-      if (
-        entry.identityProbes.some(
-          probe => probe.kind === 'operator-block-checkpoint',
-        ) &&
-        (!checkpoint ||
-          !Number.isSafeInteger(checkpoint.blockNumber) ||
-          checkpoint.blockNumber < 0 ||
-          !/^0x[0-9a-fA-F]{64}$/.test(checkpoint.blockHash))
-      )
-        throw new Error('EVM operator checkpoint is required')
+      const entry = validateEvmWalletConfiguration(config, checkpoint)
       const checkCurrent = captureDerivation()
       const currentWallet = await session.getWallet()
       const publishedIdentity = await session.getCurvePublicKey('secp256k1')
@@ -572,38 +555,12 @@ export function createAccountSession(deps: {
           )
         )
           throw new CustodyError('conflict')
-        // The EVM provider verifies its expected numeric ID against eth_chainId on first use.
-        const chainId = (await candidate.provider.getNetwork()).chainId
-        requireCurrent()
-        if (BigInt(chainId) !== BigInt(entry.nativeChainId))
-          throw new Error('EVM RPC chain identity mismatch')
-        for (const probe of entry.identityProbes) {
-          if (probe.capability !== 'json-rpc') continue
-          if (probe.kind === 'evm-chain-id') {
-            if (BigInt(probe.expected) !== BigInt(chainId))
-              throw new Error('EVM RPC chain identity mismatch')
-          } else if (
-            probe.kind === 'block-hash' ||
-            probe.kind === 'operator-block-checkpoint'
-          ) {
-            const height =
-              probe.kind === 'block-hash'
-                ? probe.height
-                : checkpoint!.blockNumber
-            const expected =
-              probe.kind === 'block-hash'
-                ? probe.expected
-                : checkpoint!.blockHash
-            const block = await candidate.provider.getBlock(height)
-            requireCurrent()
-            if (
-              !block ||
-              block.number !== height ||
-              block.hash?.toLowerCase() !== expected.toLowerCase()
-            )
-              throw new Error('EVM RPC checkpoint mismatch')
-          } else throw new Error('Unsupported EVM identity probe')
-        }
+        await verifyEvmWalletRpcIdentity(
+          config,
+          candidate.provider,
+          checkpoint,
+          requireCurrent,
+        )
         retained = true
         return candidate
       } finally {

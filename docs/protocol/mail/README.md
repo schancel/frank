@@ -6,7 +6,7 @@ reserved as an entire local-part prefix. Operator aliases are outside the
 Frank user-mailbox mapping; the mail host must route them to a separately
 managed mailbox or reject them.
 
-`MailJournal` format 3 owns explicit, immutable mailbox issuance. A local part
+`MailJournal` format 4 owns explicit, immutable mailbox issuance. A local part
 maps to one scoped Frank account and optionally one conversation ID; a repeat
 assignment is idempotent and a conflicting assignment is refused. The
 `createIssuedMailboxLookup` adapter lets both direct SMTP and a future signed
@@ -25,7 +25,11 @@ operator must audit the reserved names against the directory and resolve any
 collisions explicitly with the claimant. New claims of those names receive
 `reserved-username`; they never become user mailboxes.
 
-Format 2 journals are refused by the format 3 reader without mutation. Archive
-the journal together with its gateway wallet stores before starting a new
-prelaunch format 3 instance; do not discard a funded gateway wallet or replay
+Format 2 and 3 journals are refused by the format 4 reader without mutation. Format 4
+stores the envelope local part and its assigned conversation on each inbound delivery,
+including held mail. One RFC message addressed to two issued aliases has two independent
+delivery keys and durable slots. It also stores the admitted stamp value, including
+while held; a later credit top-up cannot change the intended payment amount.
+Archive the journal together with its gateway wallet stores before starting a new
+prelaunch format 4 instance; do not discard a funded gateway wallet or replay
 an ambiguous payment as a new one.

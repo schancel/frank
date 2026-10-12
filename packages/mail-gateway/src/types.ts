@@ -143,6 +143,9 @@ export type InboundEmailDisposition = 'relay' | 'held' | 'released' | 'echo' | '
 export interface InboundEmailRecord {
   readonly scopeAccount: string;
   readonly mailKey: string;
+  readonly mailboxLocalPart?: string;
+  readonly conversationId?: string;
+  readonly stampValue: string;
   /** The identifier the mail claimed (its Message-ID, or the synthetic one). */
   readonly rfcMessageId: string;
   readonly senderEmail: string;

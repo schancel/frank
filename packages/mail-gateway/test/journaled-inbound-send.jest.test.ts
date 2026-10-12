@@ -103,6 +103,68 @@ describe('journal-backed inbound Frank send', () => {
     );
   }
 
+  it('carries an issued mailbox conversation through the durable send slot', () => {
+    const conversationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    journal.issueMailbox({ localPart: 'alice', scopeAccount: RECIPIENT, conversationId });
+    ledger.addCredits(SENDER, 1);
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const admitted = sender.admit(
+      { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER },
+      RECIPIENT, 1000n, journal.issuedMailbox('alice')!.conversationId, 'alice',
+    );
+    expect(admitted).toMatchObject({ kind: 'queued', slot: { conversationId } });
+    expect(journal.findMailThread(RECIPIENT, conversationId)).toBeDefined();
+  });
+
+  it('accepts an issued inbox alias without a preassigned conversation', () => {
+    journal.issueMailbox({ localPart: 'inbox', scopeAccount: RECIPIENT });
+    ledger.addCredits(SENDER, 1);
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const result = sender.admit(
+      { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER },
+      RECIPIENT, 1000n, undefined, 'inbox',
+    );
+    expect(result).toMatchObject({ kind: 'queued' });
+    if (result.kind !== 'queued') throw new Error('mail was not queued');
+    expect(journal.findInboundEmail(RECIPIENT, result.slot.sourceKey.slice(RECIPIENT.length + 1))).toMatchObject({
+      mailboxLocalPart: 'inbox', stampValue: '1000',
+    });
+  });
+
+  it('keeps two aliases for one account as separate durable deliveries across replay and restart', () => {
+    const aliceConversation = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const bobConversation = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    journal.issueMailbox({ localPart: 'alice', scopeAccount: RECIPIENT, conversationId: aliceConversation });
+    journal.issueMailbox({ localPart: 'bob', scopeAccount: RECIPIENT, conversationId: bobConversation });
+    ledger.addCredits(SENDER, 2);
+    let sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const verified = { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER };
+    const first = sender.admit(verified, RECIPIENT, 1000n, aliceConversation, 'alice');
+    const second = sender.admit(verified, RECIPIENT, 1000n, bobConversation, 'bob');
+    expect(first).toMatchObject({ kind: 'queued', slot: { conversationId: aliceConversation } });
+    expect(second).toMatchObject({ kind: 'queued', slot: { conversationId: bobConversation } });
+    if (first.kind !== 'queued' || second.kind !== 'queued') throw new Error('mail was not queued');
+    expect(second.slot.slotId).not.toBe(first.slot.slotId);
+    expect(ledger.getBalance(SENDER)).toBe(0);
+    sender = restart();
+    expect(sender.admit(verified, RECIPIENT, 1000n, aliceConversation, 'alice')).toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: first.slot.slotId } });
+    expect(sender.admit(verified, RECIPIENT, 1000n, bobConversation, 'bob')).toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: second.slot.slotId } });
+    expect(ledger.getBalance(SENDER)).toBe(0);
+  });
+
+  it('preserves the assigned alias conversation while mail is held for credit', () => {
+    const conversationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const verified = { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER };
+    let sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    expect(sender.admit(verified, RECIPIENT, 1000n, conversationId, 'alice')).toEqual({ kind: 'held' });
+    const held = ledger.sqlite!.prepare('SELECT mail_key, mailbox_local_part, conversation_id FROM inbound_email').get() as { mail_key: string; mailbox_local_part: string; conversation_id: string };
+    expect(held).toMatchObject({ mailbox_local_part: 'alice', conversation_id: conversationId });
+    sender = restart();
+    ledger.addCredits(SENDER, 1);
+    expect(sender.admit(verified, RECIPIENT, 1000n, conversationId, 'alice')).toMatchObject({ kind: 'queued', slot: { conversationId } });
+    expect(journal.relayInboundEmail({ scopeAccount: RECIPIENT, mailKey: held.mail_key, stampValue: '1000' }).slot.conversationId).toBe(conversationId);
+  });
+
   it.each(['before_attempt', 'before_barrier', 'after_barrier'] as const)(
     'recovers a %s interruption using the same message identity and one credit',
     async (point) => {
@@ -137,8 +199,12 @@ describe('journal-backed inbound Frank send', () => {
     expect(journal.countWaitingFrankSends()).toBe(0);
     sender = restart();
     ledger.addCredits(SENDER, 1);
-    const admitted = admit(sender);
+    const admitted = sender.admit(
+      { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:mail-1', authenticatedSenderEmail: SENDER },
+      RECIPIENT, 2000n,
+    );
     expect(admitted.kind).toBe('queued');
+    expect(admitted).toMatchObject({ slot: { stampValue: '1000' } });
     expect(ledger.getBalance(SENDER)).toBe(0);
     expect(admit(sender)).toMatchObject({ kind: 'queued', duplicate: true });
     expect(ledger.getBalance(SENDER)).toBe(0);

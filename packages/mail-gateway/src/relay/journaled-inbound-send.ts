@@ -60,7 +60,7 @@ export class JournaledInboundSend {
   }
 
   /** Admission and one credit debit commit together, before any wallet effect. */
-  admit(mail: VerifiedInboundMail, scopeAccount: string, stampValue: bigint): InboundAdmission {
+  admit(mail: VerifiedInboundMail, scopeAccount: string, stampValue: bigint, conversationId?: string, mailboxLocalPart?: string): InboundAdmission {
     if (!mail.verifiedTransportId) throw new Error('Verified transport identity is required');
     if (stampValue < 0n) throw new Error('Stamp value must be non-negative');
     const scope = scopeAccount.toLowerCase();
@@ -70,7 +70,9 @@ export class JournaledInboundSend {
     if (sender !== mail.email.fromAddress.toLowerCase().trim() || sender !== parsedSender) {
       throw new Error('Authenticated sender and mail From header differ');
     }
-    const key = mailKey(mail.email.rawRfc822);
+    const contentKey = mailKey(mail.email.rawRfc822);
+    const key = mailboxLocalPart === undefined ? contentKey : crypto.createHash('sha256')
+      .update('frank-inbound-delivery-v1\0').update(contentKey).update('\0').update(mailboxLocalPart).digest('hex');
     const dataSha256 = crypto.createHash('sha256').update(mail.email.rawRfc822).digest('hex');
     const threadHeaders = readThreadHeaders(mail.email.rawRfc822);
     if (!threadHeaders.ok) throw new Error(`Invalid mail thread headers: ${threadHeaders.reason}`);
@@ -81,6 +83,10 @@ export class JournaledInboundSend {
       const admitted = this.journal.admitInboundEmail({
         scopeAccount: scope,
         mailKey: key,
+        stampValue: stampValue.toString(),
+        mailboxLocalPart,
+        conversationId,
+        echoMailKey: contentKey,
         messageIdHeader: threadHeaders.messageId,
         senderEmail: sender,
         dataSha256,
@@ -94,7 +100,8 @@ export class JournaledInboundSend {
           const existing = this.journal.relayInboundEmail({
             scopeAccount: scope,
             mailKey: key,
-            stampValue: stampValue.toString(),
+            conversationId,
+            stampValue: admitted.email.stampValue,
           });
           return { kind: 'queued', slot: existing.slot, duplicate: true };
         }
@@ -104,7 +111,8 @@ export class JournaledInboundSend {
       const relayed = this.journal.relayInboundEmail({
         scopeAccount: scope,
         mailKey: key,
-        stampValue: stampValue.toString(),
+        conversationId,
+        stampValue: admitted.email.stampValue,
         inReplyTo: threadHeaders.inReplyTo,
         references: threadHeaders.references,
       });

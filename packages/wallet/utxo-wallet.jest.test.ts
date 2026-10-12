@@ -1478,6 +1478,118 @@ describe.each([BTC, BCH])(
       ],
       payloadDigest: digest,
     });
+    test.each(["submit", "reconcile", "reopen"])(
+      "rechecks a formerly known transaction and replays the original bytes after eviction through %s",
+      async (recovery) => {
+        const f = await fixture(),
+          cap = f.sender.stealthPayments!;
+        const prepared = await cap.prepare(f.intent);
+        await cap.expose({
+          operationId: "financial",
+          payloadDigest: "f".repeat(64),
+        });
+        await cap.submit("financial");
+        f.backend.confirmationHeights.set(prepared.members[0].txHash, 100);
+        expect((await cap.reconcile("financial")).status).toBe("succeeded");
+        const original = JSON.parse(f.store.load()!).operations[0];
+        expect(original.phase).toBe("settled");
+        const changeIndex = JSON.parse(f.store.load()!).changeIndex;
+        // Eviction/reorg removes current inclusion and restores the source input at the indexer.
+        f.backend.known.delete(prepared.members[0].txHash);
+        f.backend.confirmationHeights.delete(prepared.members[0].txHash);
+        for (const [script, outputs] of f.backend.unspent)
+          f.backend.unspent.set(
+            script,
+            outputs.filter(
+              (output) => output.txid !== prepared.members[0].txHash
+            )
+          );
+        fund(f.backend, network, f.sender.identity.address.raw, 70_000n, "a");
+        const broadcasts = f.backend.broadcasts.length;
+        f.backend.indexer.feeRate = jest.fn(async () => {
+          throw new Error("Recovery must not construct or reprice");
+        });
+        const recovered =
+          recovery === "reopen"
+            ? (
+                await open(
+                  network,
+                  f.backend,
+                  f.store,
+                  ROOT,
+                  f.senderCustody.custody
+                )
+              ).wallet
+            : f.sender;
+        if (recovery === "submit")
+          await recovered.stealthPayments!.submit("financial");
+        if (recovery === "reconcile")
+          await recovered.stealthPayments!.reconcile("financial");
+        expect(f.backend.broadcasts.length).toBe(broadcasts + 1);
+        expect(
+          f.backend.broadcasts.every(
+            (raw) => raw === prepared.members[0].rawTransaction
+          )
+        ).toBe(true);
+        expect(await recovered.stealthPayments!.get("financial")).toEqual(
+          prepared
+        );
+        expect(await recovered.stealthPayments!.release("financial")).toBe(
+          false
+        );
+        const state = JSON.parse(f.store.load()!);
+        expect(state.changeIndex).toBe(changeIndex);
+        expect(state.operations).toHaveLength(1);
+        expect({ ...state.operations[0], phase: original.phase }).toEqual(
+          original
+        );
+        expect(
+          (await recovered.stealthPayments!.reconcile("financial")).status
+        ).toBe("pending");
+        expect(f.backend.indexer.feeRate).not.toHaveBeenCalled();
+      }
+    );
+    test("failed replay after eviction stays recoverable and keeps the original source reserved", async () => {
+      const f = await fixture(),
+        cap = f.sender.stealthPayments!;
+      const prepared = await cap.prepare(f.intent);
+      await cap.expose({
+        operationId: "financial",
+        payloadDigest: "f".repeat(64),
+      });
+      await cap.submit("financial");
+      expect((await f.sender.getNativePayments())[0].phase).toBe("settled");
+      f.backend.known.delete(prepared.members[0].txHash);
+      for (const [script, outputs] of f.backend.unspent)
+        f.backend.unspent.set(
+          script,
+          outputs.filter((output) => output.txid !== prepared.members[0].txHash)
+        );
+      fund(f.backend, network, f.sender.identity.address.raw, 70_000n, "a");
+      fund(f.backend, network, f.sender.identity.address.raw, 60_000n, "b");
+      f.backend.setOutcome("refuse");
+      await expect(cap.reconcile("financial")).rejects.toBeInstanceOf(
+        NativeTransactionSubmissionError
+      );
+      expect((await f.sender.getNativePayments())[0].phase).toBe("submitted");
+      expect(await cap.release("financial")).toBe(false);
+      expect(await f.sender.getBalance()).toBe(60_000n);
+      const reopened = (
+        await open(network, f.backend, f.store, ROOT, f.senderCustody.custody)
+      ).wallet;
+      expect((await reopened.getNativePayments())[0].phase).toBe("submitted");
+      expect(await reopened.stealthPayments!.get("financial")).toEqual(
+        prepared
+      );
+      expect(await reopened.getBalance()).toBe(60_000n);
+      f.backend.setOutcome("accept");
+      await reopened.stealthPayments!.reconcile("financial");
+      expect(
+        f.backend.broadcasts.every(
+          (raw) => raw === prepared.members[0].rawTransaction
+        )
+      ).toBe(true);
+    });
     test("concurrent prepare, reopen, relay exposure and ambiguous submission reuse one exact manifest and reservation", async () => {
       const f = await fixture(),
         capability = f.sender.stealthPayments!;

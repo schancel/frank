@@ -211,7 +211,8 @@ interface PendingSend {
 
 /** `settled` means the indexer knows the transaction, not confirmation/finality. A host owns
  * message delivery evidence: it marks exposure before relay access and authorizes submission
- * only after delivery. Wallet opening resumes `submitted` alone. */
+ * only after delivery. Wallet opening rechecks both submission-authorized phases (`submitted`
+ * and `settled`), because a transaction previously known to the indexer can disappear. */
 export type UtxoPaymentPhase =
   | "prepared"
   | "exposed"
@@ -734,7 +735,7 @@ export class UtxoWallet implements NativeWalletHandle {
         intendedAmountAtomic: BigInt(payment.value),
         nativeFeeAtomic: BigInt(payment.fee),
       };
-    if (payment.phase === "submitted")
+    if (payment.phase === "submitted" || payment.phase === "settled")
       await this.submitPreparedPayment(operationId);
     const manifest = utxoStealthPaymentManifest(
       this.paymentView(payment),
@@ -915,7 +916,7 @@ export class UtxoWallet implements NativeWalletHandle {
     // Locally prepared or merely relay-exposed payments are never paid by wallet opening.
     // Once the host authorized submission, a restart may resend only the saved bytes.
     for (const payment of wallet.state.operations ?? []) {
-      if (payment.phase === "submitted")
+      if (payment.phase === "submitted" || payment.phase === "settled")
         await wallet
           .submitPreparedPayment(payment.operationId)
           .catch(() => undefined);
@@ -1415,13 +1416,11 @@ export class UtxoWallet implements NativeWalletHandle {
       if (current.stealth) this.requireStealthCustody();
       if (current.phase === "prepared" || current.phase === "released")
         throw new Error("Payment must be exposed before submission");
-      if (current.phase === "settled") return current;
       const submitted = { ...current, phase: "submitted" as const };
       this.putPayment(submitted);
       return submitted;
     });
     const transaction = this.paymentView(payment).transaction;
-    if (payment.phase === "settled") return transaction;
     try {
       if (payment.stealth) this.requireStealthCustody();
       const known = await this.indexer.hasTransaction(payment.txid);

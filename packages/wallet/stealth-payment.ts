@@ -65,3 +65,23 @@ export interface StealthPaymentReceiptClaim {
   readonly rawTransactions: readonly string[]
   readonly payloadDigest: string
 }
+
+export interface StealthPaymentReceiptObservation
+  extends StealthPaymentProgress {
+  /** Receipt and ability to spend are independent: a token receipt need not carry native gas. */
+  readonly spendability:
+    | 'pending'
+    | 'spendable'
+    | 'reserved'
+    | 'empty'
+    | 'needs-native-gas'
+}
+
+export interface StealthPaymentReceiptCapability {
+  /** Idempotently records derivation/claim evidence; never credits a claimed amount as funds. */
+  record(claim: StealthPaymentReceiptClaim): Promise<void>
+  /** Reads current chain evidence. An unavailable observation must reject, not invent zero. */
+  observe(
+    claim: StealthPaymentReceiptClaim,
+  ): Promise<StealthPaymentReceiptObservation>
+}

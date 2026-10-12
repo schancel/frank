@@ -237,6 +237,10 @@ export interface NativeWalletHandle {
   /** Address to show for a new inbound payment; may rotate independently of wallet identity. */
   getReceiveAddress(): Promise<ChainAddress>;
   getBalance(): Promise<bigint>;
+  /** Optional financial adapter. Message construction and transport remain with the host. */
+  readonly stealthPayments?: import("../stealth-payment").StealthPaymentCapability;
+  /** Recipient derivation/chain verification, distinct from outgoing wallet synchronization. */
+  readonly stealthReceipts?: import("../stealth-payment").StealthPaymentReceiptCapability;
   /**
    * Where the balance is, in the wallet's own words: every coin a send can draw on, and nothing
    * else. `getBalance()` is the sum of the four amounts.

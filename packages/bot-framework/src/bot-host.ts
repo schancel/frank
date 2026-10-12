@@ -1636,14 +1636,9 @@ export class FrankBotHost {
       return undefined;
     // With the wallet already: the poll asks the wallet what became of it.
     if (row.reply.digest) return undefined;
-    if (Date.now() - row.reply.since >= this.options.replyGiveUpMs) {
-      await this.giveUp(
-        instance,
-        digest,
-        "it could not be sent in time; nothing was paid for it"
-      );
-      return undefined;
-    }
+    // An unlinked reply is still owed. Insufficient funds or an interrupted send can
+    // outlive the delivery bound; neither proves that discarding its only durable
+    // text is safe. Retry this same identity so a wallet attempt, if any, is reused.
     const text = await instance.operations.replyText(digest);
     try {
       // Bounded like the poll's other calls: a send that hangs must not hold this peer's lane

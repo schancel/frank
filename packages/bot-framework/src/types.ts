@@ -259,8 +259,9 @@ export interface BotHostOptions {
    * non-negative integer (0: never reply to a bot). Default: the `FRANK_BOT_MAX_REPLIES_PER_PEER` environment variable when
    * set; otherwise each bot's own `maxRepliesPerPeer`. */
   maxRepliesPerPeer?: number;
-  /** How long the host keeps trying to deliver a stored reply before it gives up on it, logs
-   * the peer and message at error level and lets that conversation go on. Default: one hour. */
+  /** How long a wallet-owned reply holds its conversation before the host lets it go on.
+   * The wallet continues recovering that attempt. Replies not yet linked to a wallet attempt
+   * remain durably owed and retry with the same message identity. Default: one hour. */
   replyGiveUpMs?: number;
   /** The account a bot pays transfers from is topped up from the shared funding wallet when it
    * holds less than `topUpBelowWei` (default 0.3 MON, or `FRANK_BOT_TOP_UP_BELOW_WEI`), up to

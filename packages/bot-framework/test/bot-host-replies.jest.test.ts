@@ -1221,27 +1221,36 @@ describe("FrankBotHost replies", () => {
       expect(seen).toEqual(["one", "two"]);
     });
 
-    it("that could never be sent is given up visibly after the bound, having paid nothing", async () => {
-      const { host, instance } = await start(answering());
-      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+    it("retains an unfunded reply beyond the bound and sends the original after restart", async () => {
+      const seen: string[] = [];
+      const first = await start(answering(seen));
       jest.spyOn(console, "warn").mockImplementation(() => {});
-      mockSend.mockReset().mockRejectedValue(new Error("no directory entry"));
-      const message = inbound("hello");
-
-      await poll(host, [message]);
-      await drain(instance);
+      mockSend.mockReset().mockRejectedValue(new Error("insufficient funds"));
+      const message = inbound("hello", { stampValueWei: STAMP });
+      await poll(first.host, [message]);
+      await drain(first.instance);
+      const original = mockSend.mock.calls[0][0];
+      expect(original.stampValue).toBe(STAMP);
       await new Promise((r) => setTimeout(r, 5));
-      (host as any).options.replyGiveUpMs = 1;
-      await poll(host, [message]);
-      await drain(instance);
+      (first.host as any).options.replyGiveUpMs = 1;
+      await poll(first.host, [message]);
+      await drain(first.instance);
+      expect(await finished(first.instance, message)).toBe(false);
+      await first.host.stop();
 
+      const second = await start(answering(seen), { replyGiveUpMs: 1 });
+      mockSend.mockReset().mockImplementation(accept);
+      await poll(second.host);
+      await drain(second.instance);
       expect(mockSend).toHaveBeenCalledTimes(1);
-      expect(
-        error.mock.calls.filter(([line]) =>
-          String(line).includes("nothing was paid for it")
-        )
-      ).toHaveLength(1);
-      expect(await finished(instance, message)).toBe(true);
+      expect(mockSend.mock.calls[0][0]).toMatchObject({
+        messageId: original.messageId,
+        conversationId: original.conversationId,
+        stampValue: original.stampValue,
+        items: original.items,
+      });
+      expect(seen).toEqual(["hello"]);
+      expect(await finished(second.instance, message)).toBe(true);
     });
 
     // On 16218e9f this send had no bound: one that hung held its peer's lane and the single

@@ -31,6 +31,10 @@ const mockUtxo = {
   },
 }
 const mockPeek = jest.fn(() => [{ wallet: mockUtxo }])
+const mockEvmPeek = jest.fn(() => [] as { wallet: typeof mockPrimary }[])
+jest.mock('../accounts/evm-wallets', () => ({
+  peekOpenedEvmWallets: () => mockEvmPeek(),
+}))
 jest.mock('../accounts/session', () => ({
   accountSession: {
     get state() {
@@ -53,6 +57,7 @@ beforeEach(() => {
   mockReconcile.mockClear()
   mockList.mockClear()
   mockPeek.mockClear()
+  mockEvmPeek.mockReset().mockReturnValue([])
 })
 test('polling runtime retries the original delivered financial operation without any chat row', async () => {
   const delivery = jest.fn(async () => 'delivered' as const)
@@ -100,6 +105,47 @@ test('held delivery and replaced accounts cannot submit through the runtime driv
     client.deliveryOf = async () => 'delivered'
     await recovery.tick()
     expect(mockSubmit).not.toHaveBeenCalled()
+  } finally {
+    client.deliveryOf = original
+  }
+})
+
+test('a cached peer EVM owner recovers through the primary messaging outcome without opening custody', async () => {
+  const payments = {
+    list: jest.fn(async () => [
+      { operationId: 'peer-token', payloadDigest: 'cd'.repeat(32) },
+    ]),
+    submit: jest.fn(async () => ({
+      status: 'pending' as const,
+      intendedAmountAtomic: 20n,
+    })),
+    reconcile: jest.fn(async () => ({
+      status: 'succeeded' as const,
+      intendedAmountAtomic: 20n,
+      verifiedReceivedAmountAtomic: 20n,
+    })),
+  }
+  const peer = {
+    chainIdentifier: 'ethereum-sepolia',
+    stealthPayments: payments,
+  }
+  mockEvmPeek.mockReturnValue([{ wallet: peer }])
+  const client = activeChain.directMessages
+  const original = client.deliveryOf
+  client.deliveryOf = async ({ wallet, payloadDigest }) => {
+    expect(wallet).toBe(mockPrimary)
+    expect(['ab'.repeat(32), 'cd'.repeat(32)]).toContain(payloadDigest)
+    return 'delivered'
+  }
+  try {
+    const recovery = financialRecoveryForPolling({
+      wallet: mockPrimary as never,
+      isCancelled: () => false,
+      onError: jest.fn(),
+    })
+    await recovery.tick()
+    expect(payments.submit).toHaveBeenCalledWith('peer-token')
+    expect(payments.reconcile).toHaveBeenCalledWith('peer-token')
   } finally {
     client.deliveryOf = original
   }

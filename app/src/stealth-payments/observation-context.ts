@@ -5,6 +5,7 @@ import {
 } from '@frank/wallet/chain'
 import { accountSession } from '../accounts/session'
 import { peekOpenedUtxoWallets } from '../accounts/utxo-wallets'
+import { peekOpenedEvmWallets } from '../accounts/evm-wallets'
 import type { RecipientAssetObservationContext } from './presentation'
 import { stealthAssetKey, type StealthAssetOption } from './options'
 
@@ -49,6 +50,7 @@ export function cachedRecipientObservationHost(
       return [
         ...(wallet ? [{ wallet, chain: activeChain }] : []),
         ...peekOpenedUtxoWallets(),
+        ...peekOpenedEvmWallets(),
         ...additionalOwners(),
       ]
     },

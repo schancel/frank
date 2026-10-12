@@ -7,6 +7,7 @@ import {
   type RecipientObservationHost,
 } from './observation-context'
 import { accountSession } from '../accounts/session'
+import { peekOpenedEvmWallets, openEvmWallet } from '../accounts/evm-wallets'
 import { peekOpenedUtxoWallets, openUtxoWallet } from '../accounts/utxo-wallets'
 
 jest.mock('../accounts/session', () => ({
@@ -25,6 +26,12 @@ jest.mock('../accounts/session', () => ({
       throw new Error('Forbidden derivation')
     }),
   },
+}))
+jest.mock('../accounts/evm-wallets', () => ({
+  peekOpenedEvmWallets: jest.fn(() => []),
+  openEvmWallet: jest.fn(() => {
+    throw new Error('Forbidden EVM custody activation')
+  }),
 }))
 jest.mock('../accounts/utxo-wallets', () => ({
   peekOpenedUtxoWallets: jest.fn(() => []),
@@ -198,4 +205,32 @@ test('final batch check invalidates evidence from an owner replaced after its ow
   await ctx.receipts('xec-testnet')!.observe(claim)
   f.replaceOwner()
   expect(() => ctx.assertCurrent()).toThrow('owner expired')
+})
+
+test('cached peer EVM receipts are observable and expire when that exact owner disappears', async () => {
+  const f = fixture()
+  const peer = { ...f.wallet, chainIdentifier: 'ethereum-sepolia' }
+  const publicOwner = {
+    wallet: peer,
+    chain: {
+      chainIdentifier: 'ethereum-sepolia',
+      name: 'Ethereum Sepolia',
+      unit: 'ETH',
+      fromDisplayAmount: () => 10n ** 18n,
+    },
+  }
+  jest.mocked(peekOpenedEvmWallets).mockReturnValue([publicOwner as never])
+  try {
+    const context = createRecipientAssetObservationContext(digest)!
+    const receipt = { ...claim, chainIdentifier: peer.chainIdentifier }
+    await context.receipts(peer.chainIdentifier)!.observe(receipt)
+    expect(f.observe).toHaveBeenCalledWith(receipt)
+    expect(openEvmWallet).not.toHaveBeenCalled()
+    jest.mocked(peekOpenedEvmWallets).mockReturnValue([])
+    expect(() => context.assertCurrent()).toThrow('owner expired')
+    expect(f.wallet.stealthReceipts.record).not.toHaveBeenCalled()
+    expect(f.wallet.stealthReceipts.submit).not.toHaveBeenCalled()
+  } finally {
+    jest.mocked(peekOpenedEvmWallets).mockReturnValue([])
+  }
 })

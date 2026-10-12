@@ -77,7 +77,7 @@ jest.mock('../monad-account-tx', () => ({
 }))
 
 const config: EvmChainConfig = {
-  networkId: 'monad-test',
+  networkId: 'monad-testnet',
   chainId: 10143,
   rpcChain: 'monad-testnet',
   relayBaseUrl: 'http://127.0.0.1:1',

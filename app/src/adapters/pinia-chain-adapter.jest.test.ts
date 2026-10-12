@@ -29,6 +29,7 @@ import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface
 import { setDirectoryLookup } from '../utils/directory-peer'
 import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
 import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+import { accountSession } from '../accounts/session'
 
 // An account that can open a chat always has its conversation-ID salt installed.
 beforeEach(() =>
@@ -55,37 +56,10 @@ jest.mock('./level-message-store', () => ({
   }),
 }))
 
-const mockFinancialRecord = jest.fn(async () => undefined)
 const mockOpenForeignEvmWallet = jest.fn()
-let mockFinancialWallet: WalletHandle
-const mockFinancialState = { status: 'ready', revision: 1, account: {} }
-jest.mock('../accounts/session', () => ({
-  get accountStatus() {
-    return mockFinancialState
-  },
-  accountSession: {
-    get state() {
-      return mockFinancialState
-    },
-    getWallet: async () => mockFinancialWallet,
-    peekWallet: () =>
-      mockFinancialState.status === 'ready' ? mockFinancialWallet : undefined,
-    getCurvePublicKey: async () => PUB_KEY_BYTES.slice(),
-  },
-}))
 jest.mock('../accounts/evm-wallets', () => ({
   openEvmWallet: (...args: unknown[]) => mockOpenForeignEvmWallet(...args),
-}))
-jest.mock('../accounts/native-transfer', () => ({
-  createNativeTransferContext: async (chainIdentifier: string) => ({
-    captureWallet: async () => ({
-      wallet: {
-        chainIdentifier,
-        stealthReceipts: { record: mockFinancialRecord },
-      },
-      assertCurrent: async () => undefined,
-    }),
-  }),
+  recoverSecondaryEvmWallets: jest.fn(async () => []),
 }))
 
 const SENDER_ADDRESS = '0x4C4C4C4C4C4c4C4C4C4C4c4C4C4c4C4c4C4C4c4C'
@@ -347,8 +321,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
     })
 
     it('holds the mailbox cursor until the exact secondary owner applies a self sync note', async () => {
-      mockFinancialState.status = 'ready'
-      mockFinancialWallet = wallet
+      const peek = jest.spyOn(accountSession, 'peekWallet').mockReturnValue(wallet)
       const apply = jest.fn(async () => ({ affectedIndices: [3] }))
       const target = {
         chainIdentifier: 'ethereum-sepolia',
@@ -385,6 +358,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         expect(apply).toHaveBeenCalledWith(note)
       } finally {
         polling.stop()
+        peek.mockRestore()
       }
     })
 

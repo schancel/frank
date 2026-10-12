@@ -77,7 +77,7 @@ export interface GatewayDatabase {
 }
 
 /**
- * Rows of the mail journal tables (format 6; the DDL is private to `mail-journal.ts`), as
+ * Rows of the mail journal tables (format 7; the DDL is private to `mail-journal.ts`), as
  * `node:sqlite` returns them. SQLite only, so they are not part of
  * `GatewayDatabase`: Kysely must not offer them on Postgres.
  */
@@ -175,6 +175,7 @@ export interface OutboundJobRow {
   state: 'pending' | 'submitting' | 'uncertain' | 'sent' | 'failed' | 'bounced';
   attempts: number;
   submission_started_at: number | null;
+  provider_email_id: string | null;
   next_attempt_at: number;
   last_error: string | null;
   created_at: number;

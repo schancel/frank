@@ -230,6 +230,7 @@ export interface OutboundJobRecord {
   readonly state: OutboundJobState;
   readonly attempts: number;
   readonly submissionStartedAtMs?: number;
+  readonly providerEmailId?: string;
   readonly nextAttemptAtMs: number;
   readonly lastError?: string;
   readonly createdAtMs: number;

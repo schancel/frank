@@ -1,0 +1,90 @@
+import { Resend } from 'resend';
+import { MailJournal } from '../ledger/mail-journal';
+import type { OutboundJobRecord } from '../types';
+
+export interface SentMailEvidence {
+  readonly id: string;
+  readonly messageId: string;
+  readonly from: string;
+  readonly to: readonly string[];
+  readonly createdAt: string;
+}
+
+export interface SentMailPage {
+  readonly messages: readonly SentMailEvidence[];
+  readonly hasMore: boolean;
+}
+
+export interface SentMailEvidencePort {
+  list(after?: string): Promise<SentMailPage>;
+}
+
+/** Read-only provider lookup. Its absence of evidence never authorizes a resend. */
+export function createResendSentMailEvidencePort(apiKey: string): SentMailEvidencePort {
+  if (!apiKey) throw new Error('Resend API key is required');
+  const resend = new Resend(apiKey);
+  return {
+    async list(after) {
+      const response = await resend.emails.list({ limit: 100, ...(after ? { after } : {}) });
+      if (response.error || !response.data) throw new Error('Resend sent-email listing failed');
+      return {
+        hasMore: response.data.has_more,
+        messages: response.data.data.map((email) => ({
+          id: email.id,
+          messageId: email.message_id,
+          from: email.from,
+          to: email.to,
+          createdAt: email.created_at,
+        })),
+      };
+    },
+  };
+}
+
+function exactFrom(providerFrom: string, expected: string): boolean {
+  const from = providerFrom.trim().toLowerCase();
+  return from === expected || from.endsWith(`<${expected}>`);
+}
+
+function matches(job: OutboundJobRecord, evidence: SentMailEvidence, gatewayDomain: string): boolean {
+  const createdAtMs = Date.parse(evidence.createdAt);
+  return (
+    Number.isFinite(createdAtMs) &&
+    job.submissionStartedAtMs !== undefined &&
+    createdAtMs >= job.submissionStartedAtMs - 5 * 60_000 &&
+    evidence.messageId === job.rfcMessageId &&
+    exactFrom(evidence.from, `${job.senderLocalPart}@${gatewayDomain}`) &&
+    evidence.to.some((address) => address.toLowerCase() === job.recipientEmail)
+  );
+}
+
+/** Confirm only exact provider evidence for a claimed job; never infer rejection from absence. */
+export class ResendOutboundReconciler {
+  constructor(private readonly journal: MailJournal, private readonly port: SentMailEvidencePort) {}
+
+  async reconcile(limitJobs = 100, maxPages = 20): Promise<{ confirmed: number; unresolved: number; pages: number }> {
+    if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 1000) {
+      throw new Error('maxPages must be an integer from 1 to 1000');
+    }
+    const jobs = this.journal.listUncertainOutboundJobs(limitJobs);
+    const remaining = new Map(jobs.map((job) => [job.jobId, job]));
+    let after: string | undefined;
+    let pages = 0;
+    while (remaining.size > 0 && pages < maxPages) {
+      const page = await this.port.list(after);
+      pages += 1;
+      for (const evidence of page.messages) {
+        for (const [id, job] of remaining) {
+          if (!matches(job, evidence, this.journal.gatewayDomain)) continue;
+          this.journal.confirmOutboundJobAccepted(id, evidence.id);
+          remaining.delete(id);
+        }
+      }
+      if (!page.hasMore) break;
+      const lastId = page.messages.at(-1)?.id;
+      if (!lastId || lastId === after) throw new Error('Resend sent-email pagination did not advance');
+      after = lastId;
+    }
+    return { confirmed: jobs.length - remaining.size, unresolved: remaining.size, pages };
+  }
+}

@@ -75,6 +75,69 @@ describe('durable EVM native journal', () => {
       ),
     )
   }
+  it('retains one immutable caller preparation through concurrent creation, signed exposure and reopen', async () => {
+    const original = {
+      ...plan(),
+      preparationId: 'stealth-payment:stable-review',
+    }
+    const [first, duplicate] = await Promise.all([
+      journal.prepare(original),
+      journal.prepare(structuredClone(original)),
+    ])
+    expect(duplicate).toEqual(first)
+    expect(journal.list()).toHaveLength(1)
+    const raw = await wallet.signTransaction(
+      Transaction.from(first.members[0]!.unsignedTransaction),
+    )
+    await journal.checkpointSigned(first.operationId, 0, raw)
+    await journal.markExposed(first.operationId, 0)
+    await reopen()
+    const recovered = await journal.refreshPreparation(original.preparationId)
+    expect(recovered!.members[0]).toMatchObject({
+      signed: { rawTransaction: raw },
+      exposed: true,
+    })
+    expect(await journal.prepare(original)).toEqual(recovered)
+    expect(journal.canSelect(address, 0)).toBe(false)
+    await expect(journal.discardUnexposed(first.operationId)).rejects.toThrow(
+      'conflict',
+    )
+    for (const changed of [
+      {
+        ...original,
+        recipient: new Wallet('0x' + '42'.repeat(32)).address.toLowerCase(),
+      },
+      { ...original, intendedValueWei: '1001' },
+      {
+        ...original,
+        members: [
+          {
+            ...original.members[0]!,
+            unsignedTransaction: Transaction.from({
+              ...Transaction.from(
+                original.members[0]!.unsignedTransaction,
+              ).toJSON(),
+              maxFeePerGas: 2n,
+            }).unsignedSerialized,
+          },
+        ],
+      },
+    ])
+      await expect(journal.prepare(changed)).rejects.toThrow('conflict')
+    expect(journal.list()).toEqual([recovered])
+  })
+  it('rejects invalid caller preparation identities without creating rows', async () => {
+    for (const preparationId of [
+      '',
+      'stable-review',
+      'stealth-payment:',
+      'stealth-payment:invalid/part',
+    ])
+      await expect(
+        journal.prepare({ ...plan(), preparationId }),
+      ).rejects.toThrow('invalid')
+    expect(journal.list()).toEqual([])
+  })
   it('persists explicit contract submission policy and rejects it on native transfers', async () => {
     await expect(
       journal.prepare({ ...plan(), submissionPolicy: 'explicit' }),

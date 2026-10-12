@@ -10,7 +10,9 @@
  * - The chain (through the indexer) owns which outputs are unspent. The coin list is rebuilt from
  *   it on every sync and is never stored.
  * - The wallet store owns only what the chain cannot say: the next unused receive and change
- *   indices, and a signed transaction that was handed to the network without a known outcome.
+ *   indices, native submission attempts, and prepared payments' exact bytes, input claims,
+ *   message exposure and submission intent. Released ids and settled inputs remain recorded to
+ *   prevent a retry from creating another payment or a stale indexer from reusing spent inputs.
  *
  * No address is reused: change goes to the next change address, and the receive address moves on
  * once it has been paid.
@@ -49,6 +51,8 @@ import {
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
   NativeWalletHandle,
+  nativeTransactionAttemptKey,
+  runNativeTransactionExclusive,
 } from "./chain/chain-wallet";
 
 /** The facts needed to build a transaction on one network. */
@@ -159,7 +163,42 @@ export interface UtxoCoin {
 interface PendingSend {
   readonly txid: string;
   readonly raw: string;
-  readonly inputs: ReadonlyArray<{ readonly txid: string; readonly vout: number }>;
+  readonly inputs: ReadonlyArray<{
+    readonly txid: string;
+    readonly vout: number;
+  }>;
+}
+
+/** `settled` means the indexer knows the transaction, not confirmation/finality. A host owns
+ * message delivery evidence: it marks exposure before relay access and authorizes submission
+ * only after delivery. Wallet opening resumes `submitted` alone. */
+export type UtxoPaymentPhase =
+  | "prepared"
+  | "exposed"
+  | "submitted"
+  | "settled"
+  | "released";
+
+/** A signed payment and its durable delivery/submission facts. No transport dependency. */
+export interface PreparedUtxoPayment {
+  readonly operationId: string;
+  readonly chainIdentifier: string;
+  readonly transaction: ChainTransaction & { rawTransactions: string[] };
+  readonly recipient: ChainAddress;
+  readonly value: bigint;
+  readonly fee: bigint;
+  readonly phase: UtxoPaymentPhase;
+  readonly payloadDigests: readonly string[];
+}
+
+interface StoredUtxoPayment extends PendingSend {
+  readonly operationId: string;
+  readonly chainIdentifier: string;
+  readonly recipient: string;
+  readonly value: string;
+  readonly fee: string;
+  readonly phase: UtxoPaymentPhase;
+  readonly payloadDigests: readonly string[];
 }
 
 interface StoredState {
@@ -167,6 +206,14 @@ interface StoredState {
   readonly receiveIndex: number;
   readonly changeIndex: number;
   readonly pending: readonly PendingSend[];
+  /** Inputs of native transactions the indexer knows or accepted. A retired pending row must
+   * not make a stale coin view in another instance selectable. This is durable spend evidence. */
+  readonly consumedNativeInputs?: ReadonlyArray<{
+    readonly txid: string;
+    readonly vout: number;
+  }>;
+  /** Absent in a native-only wallet. Existing native pending records keep their meaning. */
+  readonly operations?: readonly StoredUtxoPayment[];
 }
 
 /** Durable text for one wallet. `save` must not return before the text is durable. */
@@ -229,6 +276,55 @@ function must<T>(
   return result.value;
 }
 
+function validOutpoint(input: {
+  readonly txid: string;
+  readonly vout: number;
+}): boolean {
+  return (
+    typeof input?.txid === "string" &&
+    /^[a-f0-9]{64}$/.test(input.txid) &&
+    Number.isSafeInteger(input.vout) &&
+    input.vout >= 0 &&
+    input.vout <= 0xffffffff
+  );
+}
+
+function validPendingSend(send: PendingSend): boolean {
+  return (
+    typeof send?.txid === "string" &&
+    /^[a-f0-9]{64}$/.test(send.txid) &&
+    typeof send.raw === "string" &&
+    /^(?:[a-f0-9]{2})+$/.test(send.raw) &&
+    Array.isArray(send.inputs) &&
+    send.inputs.length > 0 &&
+    send.inputs.every(validOutpoint)
+  );
+}
+
+function validStoredPayment(operation: StoredUtxoPayment): boolean {
+  return (
+    validPendingSend(operation) &&
+    typeof operation.operationId === "string" &&
+    operation.operationId.trim().length > 0 &&
+    typeof operation.chainIdentifier === "string" &&
+    operation.chainIdentifier.length > 0 &&
+    typeof operation.recipient === "string" &&
+    operation.recipient.length > 0 &&
+    typeof operation.value === "string" &&
+    /^[1-9][0-9]*$/.test(operation.value) &&
+    typeof operation.fee === "string" &&
+    /^(0|[1-9][0-9]*)$/.test(operation.fee) &&
+    ["prepared", "exposed", "submitted", "settled", "released"].includes(
+      operation.phase
+    ) &&
+    Array.isArray(operation.payloadDigests) &&
+    operation.payloadDigests.every((digest) => /^[a-f0-9]{64}$/.test(digest)) &&
+    (operation.phase === "prepared" || operation.phase === "released"
+      ? operation.payloadDigests.length === 0
+      : operation.payloadDigests.length > 0)
+  );
+}
+
 function parseState(serialized: string | undefined): StoredState {
   if (serialized === undefined) {
     return { version: 1, receiveIndex: 0, changeIndex: 0, pending: [] };
@@ -241,12 +337,15 @@ function parseState(serialized: string | undefined): StoredState {
     !index(value.receiveIndex) ||
     !index(value.changeIndex) ||
     !Array.isArray(value.pending) ||
-    value.pending.some(
-      (send) =>
-        typeof send?.txid !== "string" ||
-        typeof send.raw !== "string" ||
-        !Array.isArray(send.inputs)
-    )
+    value.pending.some((send) => !validPendingSend(send)) ||
+    (value.consumedNativeInputs !== undefined &&
+      (!Array.isArray(value.consumedNativeInputs) ||
+        !value.consumedNativeInputs.every(validOutpoint))) ||
+    (value.operations !== undefined &&
+      (!Array.isArray(value.operations) ||
+        value.operations.some((operation) => !validStoredPayment(operation)) ||
+        new Set(value.operations.map((operation) => operation.operationId))
+          .size !== value.operations.length))
   ) {
     // A record of a possibly broadcast transaction is never silently discarded.
     throw new Error(
@@ -305,7 +404,11 @@ export function planUtxoSend(params: {
       outputVbytes(params.recipientScript);
     const feeWithChange = BigInt(base + 9 + changeScriptBytes) * feeRate;
     if (total >= value + feeWithChange + network.dust) {
-      return { inputs, fee: feeWithChange, change: total - value - feeWithChange };
+      return {
+        inputs,
+        fee: feeWithChange,
+        change: total - value - feeWithChange,
+      };
     }
     const feeWithoutChange = BigInt(base) * feeRate;
     if (total >= value + feeWithoutChange) {
@@ -320,7 +423,6 @@ export class UtxoWallet implements NativeWalletHandle {
   readonly family = "bitcoin" as const;
   readonly chainIdentifier: string;
   readonly networkId: string;
-  private queue: Promise<void> = Promise.resolve();
   private coinList: UtxoCoin[] = [];
   private unresolved: NativeTransactionSubmissionError | undefined;
   /** Sends this process is broadcasting right now; nobody else re-sends or settles them. */
@@ -363,11 +465,19 @@ export class UtxoWallet implements NativeWalletHandle {
       parseState(undefined)
     );
     wallet.store = params.storeFor(wallet.addressAt(0, 0));
-    wallet.state = parseState(wallet.store.load());
+    wallet.reload();
     await wallet.discover();
     // Finish a send a restart interrupted. If the indexer cannot be reached now, the next send
     // tries again before it signs anything.
     await wallet.finishPending().catch(() => undefined);
+    // Locally prepared or merely relay-exposed payments are never paid by wallet opening.
+    // Once the host authorized submission, a restart may resend only the saved bytes.
+    for (const payment of wallet.state.operations ?? []) {
+      if (payment.phase === "submitted")
+        await wallet
+          .submitPreparedPayment(payment.operationId)
+          .catch(() => undefined);
+    }
     return wallet;
   }
 
@@ -502,13 +612,214 @@ export class UtxoWallet implements NativeWalletHandle {
     return transaction;
   }
 
-  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(operation);
-    this.queue = run.then(
-      () => undefined,
-      () => undefined
+  /** Signs and claims inputs durably, but exposes no bytes and makes no broadcast. The id
+   * names one authorized payment; reuse with another destination or amount is refused. */
+  async prepareNativePayment(params: {
+    operationId: string;
+    recipient: ChainAddress;
+    value: bigint;
+    maxFee?: bigint;
+  }): Promise<PreparedUtxoPayment> {
+    if (params.operationId.trim().length === 0)
+      throw new Error("Payment operation id must not be empty");
+    if (params.value <= 0n)
+      throw new RangeError("Transfer value must be greater than zero");
+    const recipient = canonicalUtxoAddress(this.network, params.recipient.raw);
+    if (recipient === undefined)
+      throw new Error("Invalid recipient address for this network");
+    const existing = await this.exclusive(async () =>
+      this.findPayment(params.operationId)
     );
-    return run;
+    const reuse = (payment: StoredUtxoPayment): PreparedUtxoPayment => {
+      if (
+        payment.recipient !== recipient ||
+        BigInt(payment.value) !== params.value
+      )
+        throw new Error(
+          "Payment operation already has another recipient or amount"
+        );
+      if (payment.phase === "released")
+        throw new Error("Payment operation was released");
+      if (params.maxFee !== undefined && BigInt(payment.fee) > params.maxFee)
+        throw new NativeFeeExceededError(BigInt(payment.fee));
+      return this.paymentView(payment);
+    };
+    if (existing) return reuse(existing);
+    const feeRate = await this.feeRate();
+    await this.sync();
+    return this.exclusive(async () => {
+      const saved = this.findPayment(params.operationId);
+      if (saved) return reuse(saved);
+      const recipientScript = this.recipientScript(recipient);
+      const plan = planUtxoSend({
+        coins: this.coinList,
+        value: params.value,
+        recipientScript,
+        feeRate,
+        network: this.network,
+      });
+      if (params.maxFee !== undefined && plan.fee > params.maxFee)
+        throw new NativeFeeExceededError(plan.fee);
+      const changeIndex = this.state.changeIndex;
+      const outputs = [{ value: params.value, scriptPubKey: recipientScript }];
+      if (plan.change !== undefined)
+        outputs.push({
+          value: plan.change,
+          scriptPubKey: this.scriptAt(1, changeIndex),
+        });
+      const signed = this.sign(plan.inputs, outputs);
+      const payment: StoredUtxoPayment = {
+        ...signed,
+        inputs: plan.inputs.map(({ txid, vout }) => ({ txid, vout })),
+        operationId: params.operationId,
+        chainIdentifier: this.chainIdentifier,
+        recipient,
+        value: params.value.toString(),
+        fee: plan.fee.toString(),
+        phase: "prepared",
+        payloadDigests: [],
+      };
+      this.persist({
+        ...this.state,
+        changeIndex: plan.change === undefined ? changeIndex : changeIndex + 1,
+        operations: [...(this.state.operations ?? []), payment],
+      });
+      this.markPending();
+      return this.paymentView(payment);
+    });
+  }
+
+  /** Called after the encrypted outbox attempt is durable and BEFORE handing its signed payment
+   * to a relay. Exposure is irreversible even when delivery subsequently fails. */
+  async recordPaymentExposure(params: {
+    operationId: string;
+    payloadDigest: string;
+  }): Promise<void> {
+    if (!/^[a-f0-9]{64}$/.test(params.payloadDigest))
+      throw new Error("Invalid payment message payload digest");
+    await this.exclusive(async () => {
+      const payment = this.requirePayment(params.operationId);
+      if (payment.phase === "released")
+        throw new Error("Payment operation was released");
+      if (payment.payloadDigests.includes(params.payloadDigest)) return;
+      this.putPayment({
+        ...payment,
+        phase: payment.phase === "prepared" ? "exposed" : payment.phase,
+        payloadDigests: [...payment.payloadDigests, params.payloadDigest],
+      });
+    });
+  }
+
+  /** The host calls this only after relay delivery is established. Records submission intent
+   * before RPC, so an interruption retries these exact bytes. A refusal after message exposure
+   * cannot prove the recipient/relay will never broadcast them and never releases their inputs. */
+  async submitPreparedPayment(operationId: string): Promise<ChainTransaction> {
+    const payment = await this.exclusive(async () => {
+      const current = this.requirePayment(operationId);
+      if (current.phase === "prepared" || current.phase === "released")
+        throw new Error("Payment must be exposed before submission");
+      if (current.phase === "settled") return current;
+      const submitted = { ...current, phase: "submitted" as const };
+      this.putPayment(submitted);
+      return submitted;
+    });
+    const transaction = this.paymentView(payment).transaction;
+    if (payment.phase === "settled") return transaction;
+    try {
+      if (await this.indexer.hasTransaction(payment.txid)) {
+        // Settled means the indexer has the transaction, not confirmation or finality.
+        // Keep spent outpoints excluded even if a lagging coin read lists them as unspent.
+        await this.exclusive(async () =>
+          this.putPayment({
+            ...this.requirePayment(operationId),
+            phase: "settled",
+          })
+        );
+      } else {
+        await this.indexer.broadcast(payment.raw);
+      }
+      return transaction;
+    } catch (reason) {
+      throw new NativeTransactionSubmissionError({ transaction, reason });
+    }
+  }
+
+  /** Only a locally prepared payment can be cancelled. Its change derivation stays consumed,
+   * and its id remains a tombstone so retry cannot silently authorize a second payment. */
+  async releaseUnexposedPayment(operationId: string): Promise<boolean> {
+    return this.exclusive(async () => {
+      const payment = this.requirePayment(operationId);
+      if (payment.phase !== "prepared") return false;
+      this.putPayment({ ...payment, phase: "released" });
+      this.markPending();
+      return true;
+    });
+  }
+
+  async getNativePayments(): Promise<readonly PreparedUtxoPayment[]> {
+    return this.exclusive(async () =>
+      (this.state.operations ?? []).map((payment) => this.paymentView(payment))
+    );
+  }
+
+  private findPayment(operationId: string): StoredUtxoPayment | undefined {
+    return this.state.operations?.find(
+      (payment) => payment.operationId === operationId
+    );
+  }
+
+  private requirePayment(operationId: string): StoredUtxoPayment {
+    const payment = this.findPayment(operationId);
+    if (!payment) throw new Error("Unknown payment operation");
+    return payment;
+  }
+
+  private putPayment(payment: StoredUtxoPayment): void {
+    this.persist({
+      ...this.state,
+      operations: (this.state.operations ?? []).map((saved) =>
+        saved.operationId === payment.operationId ? payment : saved
+      ),
+    });
+  }
+
+  private paymentView(payment: StoredUtxoPayment): PreparedUtxoPayment {
+    return {
+      operationId: payment.operationId,
+      chainIdentifier: payment.chainIdentifier,
+      transaction: { txHash: payment.txid, rawTransactions: [payment.raw] },
+      recipient: { raw: payment.recipient },
+      value: BigInt(payment.value),
+      fee: BigInt(payment.fee),
+      phase: payment.phase,
+      payloadDigests: [...payment.payloadDigests],
+    };
+  }
+
+  private exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    return runNativeTransactionExclusive(
+      nativeTransactionAttemptKey({
+        family: this.family,
+        chainIdentifier: this.chainIdentifier,
+        address: this.addressAt(0, 0),
+      }),
+      "single-realm",
+      async () => {
+        this.reload();
+        this.markPending();
+        return operation();
+      }
+    );
+  }
+
+  private reload(): void {
+    this.state = parseState(this.store.load());
+    if (
+      (this.state.operations ?? []).some(
+        (payment) => payment.chainIdentifier !== this.chainIdentifier
+      )
+    )
+      throw new Error("Stored UTXO payment belongs to another chain");
   }
 
   private persist(next: StoredState): void {
@@ -516,20 +827,43 @@ export class UtxoWallet implements NativeWalletHandle {
     this.state = next;
   }
 
-  private dropPending(txid: string): void {
+  private dropPending(
+    txid: string,
+    consumedInputs: PendingSend["inputs"] = []
+  ): void {
     this.settledGeneration += 1;
     this.persist({
       ...this.state,
       pending: this.state.pending.filter((send) => send.txid !== txid),
+      ...(consumedInputs.length > 0
+        ? {
+            consumedNativeInputs: [
+              ...new Map(
+                [
+                  ...(this.state.consumedNativeInputs ?? []),
+                  ...consumedInputs,
+                ].map(
+                  (input) => [`${input.txid}:${input.vout}`, input] as const
+                )
+              ).values(),
+            ],
+          }
+        : {}),
     });
     this.markPending();
   }
 
   private markPending(): void {
     const claimed = new Set(
-      this.state.pending.flatMap((send) =>
-        send.inputs.map((input) => `${input.txid}:${input.vout}`)
-      )
+      [
+        ...this.state.pending,
+        ...(this.state.operations ?? []).filter(
+          (payment) => payment.phase !== "released"
+        ),
+      ]
+        .flatMap((send) => send.inputs)
+        .concat(this.state.consumedNativeInputs ?? [])
+        .map((input) => `${input.txid}:${input.vout}`)
     );
     this.coinList = this.coinList.map((coin) => ({
       ...coin,
@@ -544,12 +878,16 @@ export class UtxoWallet implements NativeWalletHandle {
    */
   private async finishPending(): Promise<void> {
     let unresolved: NativeTransactionSubmissionError | undefined;
-    for (const send of this.state.pending) {
+    const pending = await this.exclusive(async () => this.state.pending);
+    for (const send of pending) {
       if (this.inFlight.has(send.txid)) continue;
+      let consumed = false;
       try {
-        if (!(await this.indexer.hasTransaction(send.txid))) {
+        consumed = await this.indexer.hasTransaction(send.txid);
+        if (!consumed) {
           try {
             await this.indexer.broadcast(send.raw);
+            consumed = true;
           } catch (reason) {
             // Refused: the node already has it, or its inputs were spent some other way.
             // Either way these bytes need no further sending. Anything else is unknown.
@@ -563,7 +901,9 @@ export class UtxoWallet implements NativeWalletHandle {
         });
         continue;
       }
-      await this.exclusive(async () => this.dropPending(send.txid));
+      await this.exclusive(async () =>
+        this.dropPending(send.txid, consumed ? send.inputs : [])
+      );
     }
     this.unresolved = unresolved;
   }
@@ -577,7 +917,10 @@ export class UtxoWallet implements NativeWalletHandle {
   }
 
   private nodeAt(chain: 0 | 1, index: number): HdPrivateNode {
-    const branch = must(deriveHdPrivate(this.account, chain), "Derivation failed");
+    const branch = must(
+      deriveHdPrivate(this.account, chain),
+      "Derivation failed"
+    );
     return must(deriveHdPrivate(branch, index), "Derivation failed");
   }
 
@@ -627,12 +970,17 @@ export class UtxoWallet implements NativeWalletHandle {
     };
     const receiveIndex = await next(0, this.state.receiveIndex);
     const changeIndex = await next(1, this.state.changeIndex);
-    if (
-      receiveIndex !== this.state.receiveIndex ||
-      changeIndex !== this.state.changeIndex
-    ) {
-      this.persist({ ...this.state, receiveIndex, changeIndex });
-    }
+    await this.exclusive(async () => {
+      if (
+        receiveIndex > this.state.receiveIndex ||
+        changeIndex > this.state.changeIndex
+      )
+        this.persist({
+          ...this.state,
+          receiveIndex: Math.max(receiveIndex, this.state.receiveIndex),
+          changeIndex: Math.max(changeIndex, this.state.changeIndex),
+        });
+    });
   }
 
   /**
@@ -642,10 +990,15 @@ export class UtxoWallet implements NativeWalletHandle {
    */
   private async sync(): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
+      const snapshot = await this.exclusive(async () => this.store.load());
       const generation = this.settledGeneration;
       const read = await this.readCoins();
       const applied = await this.exclusive(async () => {
-        if (generation !== this.settledGeneration) return false;
+        if (
+          generation !== this.settledGeneration ||
+          snapshot !== this.store.load()
+        )
+          return false;
         if (read.receiveIndex > this.state.receiveIndex) {
           this.persist({ ...this.state, receiveIndex: read.receiveIndex });
         }
@@ -655,10 +1008,15 @@ export class UtxoWallet implements NativeWalletHandle {
       });
       if (applied) return;
     }
-    throw new Error("The wallet's coins kept changing while they were read; try again");
+    throw new Error(
+      "The wallet's coins kept changing while they were read; try again"
+    );
   }
 
-  private async readCoins(): Promise<{ coins: UtxoCoin[]; receiveIndex: number }> {
+  private async readCoins(): Promise<{
+    coins: UtxoCoin[];
+    receiveIndex: number;
+  }> {
     const coins: UtxoCoin[] = [];
     let receiveIndex = this.state.receiveIndex;
     const changeIndex = this.state.changeIndex;
@@ -666,7 +1024,9 @@ export class UtxoWallet implements NativeWalletHandle {
       const scriptPubKey = this.scriptAt(chain, index);
       const outputs = await this.indexer.listUnspent(scriptPubKey);
       if (outputs.length === 0) return false;
-      const privKey = Uint8Array.from(this.nodeAt(chain, index).privateKey.bytes);
+      const privKey = Uint8Array.from(
+        this.nodeAt(chain, index).privateKey.bytes
+      );
       for (const output of outputs) {
         coins.push({
           privKey,
@@ -739,7 +1099,10 @@ export class UtxoWallet implements NativeWalletHandle {
       serializeTransaction(signed.transaction, descriptor),
       "Serialization failed"
     );
-    const id = must(transactionId(signed.transaction, descriptor), "Txid failed");
+    const id = must(
+      transactionId(signed.transaction, descriptor),
+      "Txid failed"
+    );
     return { raw: hex(raw), txid: hex(Uint8Array.from(id).reverse()) };
   }
 }

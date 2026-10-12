@@ -11,16 +11,38 @@ function faucet(funds = 10n ** 18n) {
   const transfers: { to: string; valueWei: bigint }[] = [];
   const balances = new Map<string, bigint>();
   let fails = false;
+  const grants = new Map<string, string>();
   const ctx = {
     ...h.ctx,
     getBalance: async (address?: string) =>
       address ? balances.get(address.toLowerCase()) ?? 0n : funds,
-    sendTransfer: async ({ to, valueWei }: { to: string; valueWei: bigint }) => {
-      if (fails) throw new Error("rpc down");
-      funds -= valueWei;
-      balances.set(to.toLowerCase(), (balances.get(to.toLowerCase()) ?? 0n) + valueWei);
-      transfers.push({ to, valueWei });
-      return { txHash: "0x" + transfers.length.toString(16).padStart(64, "0") };
+    sendTransfer: async () => {
+      throw new Error("Faucet must use durable grant capability");
+    },
+    nativeGrants: {
+      resume: jest.fn(async () => undefined),
+      grant: jest.fn(
+        async ({
+          to,
+          valueWei,
+          minReserveWei,
+        }: {
+          to: string;
+          valueWei: bigint;
+          minReserveWei: bigint;
+        }) => {
+          if (fails) throw new Error("rpc down");
+          const txHash = grants.get(to.toLowerCase());
+          if (txHash) return { state: "confirmed", already: true, txHash };
+          if (funds < valueWei + minReserveWei)
+            return { state: "low", already: false };
+          funds -= valueWei;
+          transfers.push({ to, valueWei });
+          const hash = "0x" + transfers.length.toString(16).padStart(64, "0");
+          grants.set(to.toLowerCase(), hash);
+          return { state: "confirmed", already: false, txHash: hash };
+        }
+      ),
     },
   } as unknown as BotContext;
   return { ...h, ctx, transfers, failTransfers: (on: boolean) => (fails = on) };
@@ -42,7 +64,10 @@ describe("FaucetBot", () => {
   test("a message from a profile that was never granted is granted once; afterwards it is told so", async () => {
     const f = faucet();
     const b = bot();
-    await b.onMessage(f.message([{ type: "text", text: "funds please" }]), f.ctx);
+    await b.onMessage(
+      f.message([{ type: "text", text: "funds please" }]),
+      f.ctx
+    );
     await b.onMessage(f.message([{ type: "text", text: "again" }]), f.ctx);
     expect(f.transfers).toHaveLength(1);
     expect(f.sent[1].items[0]).toMatchObject({
@@ -81,12 +106,20 @@ describe("FaucetBot", () => {
     expect(f.transfers).toHaveLength(1);
   });
 
-  test("a grant whose record was left unfinished by a crash, but which landed, is not paid again", async () => {
+  test("an old pending grant never authorizes a fresh payment, regardless of recipient balance", async () => {
     const f = faucet();
     await bot().onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx);
     f.data.set(`funded:${PLAYER}`, "pending");
     await bot().onMessage(f.message([{ type: "text", text: "hi" }]), f.ctx);
     expect(f.transfers).toHaveLength(1);
+    expect(f.item("text").text).toContain("could not send");
+  });
+
+  test("startup and scheduled recovery resume existing grants without new registration", async () => {
+    const f = faucet();
+    await bot().schedules[0]!.handler(f.ctx);
+    expect(f.ctx.nativeGrants!.resume).toHaveBeenCalledTimes(1);
+    expect(f.transfers).toHaveLength(0);
   });
 
   test("every setting is enforced: there is no cap that is read and ignored", () => {

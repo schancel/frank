@@ -794,3 +794,21 @@ validated once at startup and a bad one is a one-line error naming the item: unk
 bad prices, files outside the directory, non-image bytes, and any image (or the whole catalog
 message) that would not fit the relay's 2 MiB request cap. To change the bundled art, edit and run
 `yarn tsx scripts/generate-demo-pictures.ts`; to sell your own, point the variable at your directory.
+
+### Faucet grant recovery and funded deployment gate
+
+The unified faucet target records once-per-recipient authorization in its retained bot state and
+binds it to the wallet's native operation journal before broadcast. Keep **both** stores with the
+same bot identity. Startup and scheduled recovery resume the original operation; recipient balance,
+RPC timeouts and a missing receipt never authorize another payment. Old `funded:*` records have no
+reliable operation binding and are retained with an explicit reconciliation error; do not erase
+those records or reuse a previously funded identity with empty state.
+
+The grant path uses the faucet's own wallet, rather than the optional shared funding key. It does
+not create new keys during recovery or copy signed transactions into a second journal.
+
+**Funded deployment is gated:** the native wallet must enforce an authorized maximum network fee
+and retain the faucet reserve after that fee. The existing reserve precheck alone does not establish
+this. The public `sendNative.maxFee` parameter is not yet enforced by its native executor; its
+implementation and boundary tests are a separate wallet prerequisite. Until that predecessor is
+reviewed, do not launch this faucet with spendable funds on GKE or mainnet.

@@ -37,8 +37,6 @@ export class FaucetBot implements FrankBotDefinition {
 
   private readonly amountWei: bigint;
   private readonly minReserveWei: bigint;
-  /** Grants are decided one at a time: two for one profile never both pass the check. */
-  private turn: Promise<unknown> = Promise.resolve();
 
   constructor(options?: FaucetBotOptions) {
     this.amountWei =
@@ -68,54 +66,71 @@ export class FaucetBot implements FrankBotDefinition {
     };
   }
 
-  /** Grants `address` once. `granted`: the transfer was broadcast now. `already`: this profile
-   * was granted before. `low`: the faucet is at its reserve. A grant is recorded before its
-   * transfer is sent; a record left unfinished by a crash counts as granted only if the address
-   * holds the grant. */
-  private grant(
-    ctx: BotContext,
-    address: string
-  ): Promise<{ outcome: "granted"; txHash: string } | { outcome: "already" | "low" }> {
-    const run = async () => {
-      const key = `funded:${address.toLowerCase()}`;
-      const record = await ctx.state.get(key);
-      if (
-        record !== undefined &&
-        (record !== "pending" || (await ctx.getBalance(address)) >= this.amountWei)
-      )
-        return { outcome: "already" as const };
-      if ((await ctx.getBalance()) < this.amountWei + this.minReserveWei)
-        return { outcome: "low" as const };
-      await ctx.state.put(key, "pending");
-      const { txHash } = await ctx.sendTransfer({
-        to: address,
-        valueWei: this.amountWei,
-      });
-      await ctx.state.put(key, txHash);
-      return { outcome: "granted" as const, txHash };
-    };
-    const next = this.turn.then(run, run);
-    this.turn = next.catch(() => undefined);
-    return next;
+  readonly schedules = [
+    {
+      id: "recover-grants",
+      intervalMs: 15_000,
+      runOnStartup: true,
+      handler: async (ctx: BotContext) => {
+        if (!ctx.nativeGrants)
+          throw new Error("Durable faucet grant capability unavailable");
+        await ctx.nativeGrants.resume();
+      },
+    },
+  ];
+
+  private async grant(ctx: BotContext, address: string) {
+    // Old development grant records lack a binding to the wallet's signed operation. Never
+    // turn that uncertainty into permission to pay again, even when the recipient spent it.
+    if ((await ctx.state.get(`funded:${address.toLowerCase()}`)) !== undefined)
+      throw new Error(
+        "Legacy faucet grant requires explicit reconciliation; preserve state"
+      );
+    if (!ctx.nativeGrants)
+      throw new Error("Durable faucet grant capability unavailable");
+    return ctx.nativeGrants.grant({
+      to: address,
+      valueWei: this.amountWei,
+      minReserveWei: this.minReserveWei,
+    });
   }
 
-  private sentText(ctx: BotContext, address: string, txHash: string): string {
-    return `Sent ${ctx.formatAmount(
+  private sentText(
+    ctx: BotContext,
+    address: string,
+    txHash: string,
+    confirmed: boolean
+  ): string {
+    return `${confirmed ? "Sent" : "Submitted"} ${ctx.formatAmount(
       this.amountWei
-    )} to your profile address ${address} (transaction ${txHash}). It is part of the balance your wallet shows.`;
+    )} to your profile address ${address} (transaction ${txHash}). ${
+      confirmed
+        ? "It is part of the balance your wallet shows."
+        : "Confirmation is still pending."
+    }`;
   }
 
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     try {
       const result = await this.grant(ctx, user.address);
-      if (result.outcome === "low")
+      if (result.state === "low")
         console.warn(`[faucet] At the reserve; ${user.address} not funded`);
-      if (result.outcome !== "granted") return;
+      if (
+        result.already ||
+        !result.txHash ||
+        (result.state !== "submitted" && result.state !== "confirmed")
+      )
+        return;
       console.log(`[faucet] Funded ${user.address} (tx: ${result.txHash})`);
       await sendFree(ctx, user.address, [
         {
           type: "text",
-          text: `Welcome to Frank. ${this.sentText(ctx, user.address, result.txHash)}`,
+          text: `Welcome to Frank. ${this.sentText(
+            ctx,
+            user.address,
+            result.txHash,
+            result.state === "confirmed"
+          )}`,
         },
       ]);
     } catch (err) {
@@ -128,11 +143,21 @@ export class FaucetBot implements FrankBotDefinition {
     try {
       const result = await this.grant(ctx, msgCtx.peerAddress);
       text =
-        result.outcome === "granted"
-          ? this.sentText(ctx, msgCtx.peerAddress, result.txHash)
-          : result.outcome === "already"
+        result.state === "confirmed" && result.already
           ? "You have already received funds from the faucet. It grants once per account."
-          : "The faucet is at its reserve. Please check back later.";
+          : (result.state === "confirmed" || result.state === "submitted") &&
+            result.txHash
+          ? this.sentText(
+              ctx,
+              msgCtx.peerAddress,
+              result.txHash,
+              result.state === "confirmed"
+            )
+          : result.state === "low"
+          ? "The faucet is at its reserve. Please check back later."
+          : result.state === "failed"
+          ? "Your original faucet grant needs review. No replacement payment was created."
+          : "Your original faucet grant is being checked. Sending another message will check the same payment.";
     } catch (err) {
       console.error(`[faucet] Grant to ${msgCtx.peerAddress} failed:`, err);
       text =

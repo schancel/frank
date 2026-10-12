@@ -410,7 +410,8 @@ impl Collector {
                     .feed
                     .seed()
                     .miner_share(&chain, window.end.saturating_sub(DAY_S));
-                if share == start_share {
+                if share == start_share && share == self.feed.seed().miner_share(&chain, now) {
+                    let mut has_total = false;
                     let row = &stats.chains[&chain];
                     if let Some(request) =
                         providers::blockchair::totals_request(&stats.api_url, &row.name, window)
@@ -439,8 +440,17 @@ impl Collector {
                                     * share
                                     / DAY_S as f64;
                                 points.push((format!("minerRevenue/{chain}"), now, revenue));
+                                has_total = true;
                             }
                         }
+                    }
+                    if !has_total {
+                        // A separately named lower-bound estimate is useful when fee data is
+                        // unavailable, but must never masquerade as total mining revenue.
+                        let subsidy = window.issuance as f64 / 10f64.powi(row.decimals as i32)
+                            * share
+                            / DAY_S as f64;
+                        points.push((format!("minerSubsidy/{chain}"), now, subsidy));
                     }
                 }
             }
@@ -1347,6 +1357,7 @@ fx_url = "http://stub/fx"
             Some(904_779_190_082_934_550_306.0)
         );
         assert_eq!(at("minerRevenue/btc-mainnet"), Some(429.125 / 86400.0));
+        assert_eq!(at("minerSubsidy/btc-mainnet"), None);
         // eCash's split applies to subsidy AND fees, converted from 2-decimal base units.
         assert_eq!(
             at("minerRevenue/xec-mainnet"),
@@ -1430,6 +1441,10 @@ fx_url = "http://stub/fx"
             now
         );
         assert_eq!(
+            feed.store().floor("minerSubsidy/btc-mainnet", now)?,
+            Some((now, 428.125 / 86400.0))
+        );
+        assert_eq!(
             feed.store()
                 .floor("minerRevenue/btc-mainnet", now)?
                 .unwrap()
@@ -1443,6 +1458,33 @@ fx_url = "http://stub/fx"
                 .0,
             now
         );
+        Ok(())
+    }
+
+    /// A cached stats tip preceding a newly activated miner split cannot price the
+    /// current observation with either total revenue or the subsidy-only estimate.
+    #[tokio::test]
+    async fn share_change_after_stats_tip_suppresses_both_mining_amounts() -> Result<()> {
+        let dir = tempdir::TempDir::new("oracle-share-change")?;
+        let original = feed(&dir, STATS_AND_POWER);
+        let mut seed = original.seed().clone();
+        let now = 1_791_651_900;
+        seed.miner_share
+            .insert("btc-mainnet".to_owned(), vec![(now - 60, 0.5)]);
+        let feed = Arc::new(Feed::new(
+            plan(STATS_AND_POWER),
+            crate::oracle::store::OracleStore::open(dir.path().join("changed"))?,
+            seed,
+        ));
+        let upstream: Arc<dyn Upstream> = Arc::new(Canned(vec![(
+            "/stats",
+            include_bytes!("fixtures/blockchair.json"),
+        )]));
+        let mut collector = Collector::new(plan(STATS_AND_POWER), Arc::clone(&feed), upstream);
+        collector.stats_round(now).await?;
+        assert!(feed.store().floor("hashrate/btc-mainnet", now)?.is_some());
+        assert_eq!(feed.store().floor("minerRevenue/btc-mainnet", now)?, None);
+        assert_eq!(feed.store().floor("minerSubsidy/btc-mainnet", now)?, None);
         Ok(())
     }
 

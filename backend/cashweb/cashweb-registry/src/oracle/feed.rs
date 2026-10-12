@@ -288,7 +288,7 @@ impl Feed {
                     !providers.is_empty(),
                 )
             }
-            "marketCap" | "hashrate" | "minerRevenue" => {
+            "marketCap" | "hashrate" | "minerRevenue" | "minerSubsidy" => {
                 let unit = match kind {
                     "marketCap" => "USD",
                     "hashrate" => "hashes/s",
@@ -299,6 +299,7 @@ impl Feed {
                     (Some(stats), "marketCap") => {
                         format!("price x coins in existence ({})", stats.id)
                     }
+                    (Some(stats), "minerSubsidy") => format!("{}: observed 24h issuance only; transaction fees unavailable and excluded; consensus miner-share model (base-unit rounding not modelled)", stats.id),
                     (Some(stats), "minerRevenue") => format!("{}: exact 24h block fees + issuance; consensus miner-share model (base-unit rounding not modelled)", stats.id),
                     (Some(stats), _) => format!("{}: observed 24h hashes/s", stats.id),
                     (None, _) => seed_source().unwrap_or_default(),

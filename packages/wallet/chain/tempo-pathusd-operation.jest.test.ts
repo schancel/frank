@@ -14,6 +14,7 @@ import {
 } from './tempo-pathusd-operation'
 import { decodeSignedTempoTransaction } from './tempo-transaction'
 
+const FEE_ASSET = { chainIdentifier: 'tempo-testnet' as const, kind: 'tip20' as const, contract: PATHUSD, decimals: 6 as const }
 const KEY = '0x' + '11'.repeat(32)
 const SOURCE = new Wallet(KEY).address.toLowerCase()
 const RECIPIENT = new Wallet('0x' + '22'.repeat(32)).address.toLowerCase()
@@ -90,9 +91,46 @@ function harness(store = new MemoryRecordStore<TempoPathUsdOperation>()) {
 }
 
 describe('Tempo PathUSD transfer ownership', () => {
+  test('quotes PathUSD fees before authorization and refuses fee or nonce drift before signing', async () => {
+    const h = harness()
+    const quote = await h.transfers.quote({ signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    expect(quote.feeAsset).toEqual(FEE_ASSET)
+    expect(quote.maximumFeeAtomic).toBe(200n)
+    expect(quote.nonce).toBe(7n)
+    h.raiseFee()
+    await expect(h.transfers.prepare({
+      operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n,
+      authorizedFeeAsset: quote.feeAsset, authorizedFeeCeilingAtomic: quote.maximumFeeAtomic,
+      quotedNonce: quote.nonce,
+    })).rejects.toThrow('exceeds authorized')
+    expect(h.journal.get(ID)).toBeUndefined()
+    expect(h.signs()).toBe(0)
+    expect(h.sends()).toBe(0)
+    await expect(h.transfers.prepare({
+      operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n,
+      authorizedFeeAsset: { ...quote.feeAsset, contract: RECIPIENT },
+      authorizedFeeCeilingAtomic: 1_000n, quotedNonce: quote.nonce,
+    })).rejects.toThrow('Invalid Tempo PathUSD fee authorization')
+  })
+
+  test('operation-ID retry cannot bypass a narrower or wrong-asset fee authorization', async () => {
+    const h = harness()
+    const quote = await h.transfers.quote({ signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const request = {
+      operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n,
+      authorizedFeeAsset: quote.feeAsset, authorizedFeeCeilingAtomic: quote.maximumFeeAtomic,
+      quotedNonce: quote.nonce,
+    }
+    await h.transfers.prepare(request)
+    await expect(h.transfers.prepare({ ...request, authorizedFeeCeilingAtomic: 199n })).rejects.toThrow('different authorization')
+    await expect(h.transfers.prepare({ ...request, authorizedFeeAsset: { ...quote.feeAsset, contract: RECIPIENT } })).rejects.toThrow('Invalid Tempo PathUSD fee authorization')
+    await expect(h.transfers.prepare({ ...request, quotedNonce: 8n })).rejects.toThrow('different authorization')
+    expect(h.signs()).toBe(0)
+    expect(h.sends()).toBe(0)
+  })
   test('holds token amount plus PathUSD fee and signs type 0x76 for exact authorization', async () => {
     const h = harness()
-    const row = await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const row = await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     expect(row.maximumFeeAtomic).toBe('200')
     expect(row.nonce).toBe('7')
     expect(row.chainIdentifier).toBe('tempo-testnet')
@@ -112,7 +150,7 @@ describe('Tempo PathUSD transfer ownership', () => {
   test('ambiguous broadcast replays original signed bytes after reopen, without resigning', async () => {
     const h = harness()
     h.failBroadcast()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const first = await h.transfers.submit(ID, h.signer)
     expect(first.observation.state).toBe('pending')
     expect(first.submission.state).toBe('ambiguous')
@@ -123,8 +161,8 @@ describe('Tempo PathUSD transfer ownership', () => {
     expect(second.transactionHash).toBe(first.transactionHash)
     expect(reopened.signs()).toBe(0)
     expect(reopened.sends()).toBe(1)
-    expect(await reopened.transfers.prepare({ operationId: ID, signer: reopened.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })).toEqual(second)
-    await expect(reopened.transfers.prepare({ operationId: ID, signer: reopened.signer, recipient: RECIPIENT, amountAtomic: 3_000_000n })).rejects.toThrow('different authorization')
+    expect(await reopened.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: reopened.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })).toEqual(second)
+    await expect(reopened.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: reopened.signer, recipient: RECIPIENT, amountAtomic: 3_000_000n })).rejects.toThrow('different authorization')
   })
 
   test('durable LevelDB reopen preserves exposed raw transaction and source nonce claim', async () => {
@@ -132,7 +170,7 @@ describe('Tempo PathUSD transfer ownership', () => {
     try {
       const firstStore = await LevelRecordStore.open<TempoPathUsdOperation>(directory, 'tempo-pathusd')
       const first = harness(firstStore)
-      await first.transfers.prepare({ operationId: ID, signer: first.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+      await first.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: first.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
       first.failBroadcast()
       const pending = await first.transfers.submit(ID, first.signer)
       await first.journal.close()
@@ -158,13 +196,13 @@ describe('Tempo PathUSD transfer ownership', () => {
 
   test('prepared or ambiguous spend holds PathUSD source balance across concurrent operations and restart', async () => {
     const h = harness()
-    const first = h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
-    const second = h.transfers.prepare({ operationId: '0x' + '66'.repeat(32), signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const first = h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const second = h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: '0x' + '66'.repeat(32), signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const results = await Promise.allSettled([first, second])
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
     expect(results.filter(result => result.status === 'rejected')).toHaveLength(1)
     const reopened = harness(h.store)
-    await expect(reopened.transfers.prepare({
+    await expect(reopened.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n,
       operationId: '0x' + '77'.repeat(32), signer: reopened.signer,
       recipient: RECIPIENT, amountAtomic: 2_000_000n,
     })).rejects.toThrow('unresolved PathUSD operation')
@@ -172,11 +210,11 @@ describe('Tempo PathUSD transfer ownership', () => {
 
   test('unexposed plan can release source; exposed signed payment cannot', async () => {
     const h = harness()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     expect(h.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(true)
     await h.transfers.abandonUnexposed(ID)
     expect(h.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(false)
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     await h.transfers.submit(ID, h.signer)
     await expect(h.transfers.abandonUnexposed(ID)).rejects.toThrow('cannot be abandoned')
     expect(h.journal.hasActiveSource('tempo-testnet', SOURCE)).toBe(true)
@@ -185,12 +223,12 @@ describe('Tempo PathUSD transfer ownership', () => {
   test('inconsistent RPC hash is visible while exact signed payment remains claimed', async () => {
     const h = harness()
     h.wrongHash()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const row = await h.transfers.submit(ID, h.signer)
     expect(row.submission.state).toBe('inconsistent-rpc')
     expect(row.observation.state).toBe('pending')
     expect(row.signedRaw).toMatch(/^0x76/)
-    await expect(h.transfers.prepare({
+    await expect(h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n,
       operationId: '0x' + '88'.repeat(32), signer: h.signer, recipient: RECIPIENT, amountAtomic: 1n,
     })).rejects.toThrow('unresolved PathUSD operation')
   })
@@ -198,7 +236,7 @@ describe('Tempo PathUSD transfer ownership', () => {
   test('fee replacement keeps both signed candidates and reconciles the old one after restart', async () => {
     const h = harness()
     h.failBroadcast()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const first = await h.transfers.submit(ID, h.signer)
     h.raiseFee()
     await expect(h.transfers.replaceFee(ID, h.signer, 100n)).rejects.toThrow('authorized fee ceiling')
@@ -219,12 +257,12 @@ describe('Tempo PathUSD transfer ownership', () => {
 
   test('unfinalized inclusion retains source claim across reorg and restart', async () => {
     const h = harness()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const row = await h.transfers.submit(ID, h.signer)
     h.setReceipt(h.included(row))
     await h.transfers.reconcile(ID)
     const reopened = harness(h.store)
-    await expect(reopened.transfers.prepare({
+    await expect(reopened.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n,
       operationId: '0x' + '99'.repeat(32), signer: reopened.signer, recipient: RECIPIENT, amountAtomic: 1n,
     })).rejects.toThrow('unresolved PathUSD operation')
     reopened.setReceipt(null)
@@ -239,7 +277,7 @@ describe('Tempo PathUSD transfer ownership', () => {
 
   test('finalized consumed nonce without receipt reports unknown outcome, never retries payment', async () => {
     const h = harness()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const pending = await h.transfers.submit(ID, h.signer)
     h.setFinalizedNonce(8n)
     const consumed = await h.transfers.reconcile(ID)
@@ -256,7 +294,7 @@ describe('Tempo PathUSD transfer ownership', () => {
 
   test('receipt confirms exact token transfer, and reorg to unknown retains nonce claim', async () => {
     const h = harness()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const row = await h.transfers.submit(ID, h.signer)
     h.setReceipt(h.included(row))
     expect((await h.transfers.reconcile(ID)).observation).toEqual({ state: 'included-success', transactionHash: row.transactionHash, finalized: false, blockHash: BLOCK, blockNumber: 100, feeAtomic: '80' })
@@ -267,7 +305,7 @@ describe('Tempo PathUSD transfer ownership', () => {
 
   test('revert and wrong transfer cannot be reported as payment', async () => {
     const h = harness()
-    await h.transfers.prepare({ operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
     const row = await h.transfers.submit(ID, h.signer)
     h.setReceipt(h.included(row, 0))
     expect((await h.transfers.reconcile(ID)).observation.state).toBe('included-revert')

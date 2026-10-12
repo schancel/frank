@@ -11,6 +11,21 @@ import {
 } from './tempo-transaction'
 
 export const PATHUSD = '0x20c0000000000000000000000000000000000000'
+export interface TempoPathUsdFeeAsset {
+  readonly chainIdentifier: 'tempo-testnet' | 'tempo-mainnet'
+  readonly kind: 'tip20'
+  readonly contract: typeof PATHUSD
+  readonly decimals: 6
+}
+
+export interface TempoPathUsdQuote {
+  readonly source: string
+  readonly recipient: string
+  readonly amountAtomic: bigint
+  readonly nonce: bigint
+  readonly feeAsset: TempoPathUsdFeeAsset
+  readonly maximumFeeAtomic: bigint
+}
 const TRANSFER = new Interface([
   'function transfer(address to, uint256 amount) returns (bool)',
   'event Transfer(address indexed from, address indexed to, uint256 amount)',
@@ -355,44 +370,71 @@ export class TempoPathUsdJournal {
 /** Stable request ID prevents retries from authorizing a second payment. */
 export class TempoPathUsdTransfers {
   constructor(
-    private readonly chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',
+    readonly chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',
     private readonly journal: TempoPathUsdJournal,
     private readonly rpc: TempoPathUsdRpc,
     private readonly withSourceLock: <T>(source: string, operation: () => Promise<T>) => Promise<T>,
   ) {}
+
+  async quote(params: { signer: TempoPathUsdSigner; recipient: string; amountAtomic: bigint }): Promise<TempoPathUsdQuote> {
+    const source = canonicalAddress(params.signer.source.address)
+    const recipient = canonicalAddress(params.recipient)
+    if (params.amountAtomic <= 0n) throw new RangeError('Tempo amount must be positive')
+    await this.rpc.verifyChain(this.chainIdentifier)
+    const [nonce, estimate] = await Promise.all([
+      this.rpc.getPendingNonce(source),
+      this.rpc.quoteTransfer({ from: source, to: PATHUSD, data: transferData(recipient, params.amountAtomic) }),
+    ])
+    return {
+      source, recipient, amountAtomic: params.amountAtomic, nonce,
+      feeAsset: { chainIdentifier: this.chainIdentifier, kind: 'tip20', contract: PATHUSD, decimals: 6 },
+      maximumFeeAtomic: tempoPathUsdMaximumFee(estimate.gasLimit, estimate.maxFeePerGas),
+    }
+  }
 
   async prepare(params: {
     operationId: string
     signer: TempoPathUsdSigner
     recipient: string
     amountAtomic: bigint
+    authorizedFeeAsset: TempoPathUsdFeeAsset
+    authorizedFeeCeilingAtomic: bigint
+    quotedNonce: bigint
   }): Promise<TempoPathUsdOperation> {
     if (!HASH.test(params.operationId)) throw new Error('Invalid Tempo operation ID')
-    const existing = this.journal.get(params.operationId)
-    if (existing) {
-      if (
-        existing.chainIdentifier !== this.chainIdentifier ||
-        existing.source.address !== canonicalAddress(params.signer.source.address) ||
-        existing.recipient !== canonicalAddress(params.recipient) ||
-        atomic(existing.amountAtomic, 'amount') !== params.amountAtomic
-      ) throw new Error('Tempo operation ID has a different authorization')
-      return existing
-    }
     const source = canonicalAddress(params.signer.source.address)
     const recipient = canonicalAddress(params.recipient)
     if (params.amountAtomic <= 0n) throw new RangeError('Tempo amount must be positive')
+    if (params.authorizedFeeAsset.chainIdentifier !== this.chainIdentifier ||
+        params.authorizedFeeAsset.kind !== 'tip20' ||
+        params.authorizedFeeAsset.contract !== PATHUSD ||
+        params.authorizedFeeAsset.decimals !== 6 ||
+        params.authorizedFeeCeilingAtomic < 0n || params.quotedNonce < 0n)
+      throw new Error('Invalid Tempo PathUSD fee authorization')
+    const assertExistingAuthorization = (row: TempoPathUsdOperation): void => {
+      if (
+        row.chainIdentifier !== this.chainIdentifier ||
+        row.source.address !== source || row.recipient !== recipient ||
+        atomic(row.amountAtomic, 'amount') !== params.amountAtomic ||
+        atomic(row.nonce, 'nonce') !== params.quotedNonce ||
+        atomic(row.maximumFeeAtomic, 'fee hold') > params.authorizedFeeCeilingAtomic
+      ) throw new Error('Tempo operation ID has a different authorization')
+    }
+    const existing = this.journal.get(params.operationId)
+    if (existing) {
+      assertExistingAuthorization(existing)
+      return existing
+    }
     await this.rpc.verifyChain(this.chainIdentifier)
     const data = transferData(recipient, params.amountAtomic)
     const quote = await this.rpc.quoteTransfer({ from: source, to: PATHUSD, data })
     const maximumFeeAtomic = tempoPathUsdMaximumFee(quote.gasLimit, quote.maxFeePerGas)
+    if (maximumFeeAtomic > params.authorizedFeeCeilingAtomic)
+      throw new Error('Tempo fee exceeds authorized PathUSD ceiling')
     return this.withSourceLock(source, async () => {
       const retry = this.journal.get(params.operationId)
       if (retry) {
-        if (
-          retry.source.address !== source ||
-          retry.recipient !== recipient ||
-          atomic(retry.amountAtomic, 'amount') !== params.amountAtomic
-        ) throw new Error('Tempo operation ID has a different authorization')
+        assertExistingAuthorization(retry)
         return retry
       }
       if (this.journal.hasActiveSource(this.chainIdentifier, source))
@@ -401,6 +443,7 @@ export class TempoPathUsdTransfers {
         this.rpc.getPendingNonce(source),
         this.rpc.getPathUsdBalance(source),
       ])
+      if (nonce !== params.quotedNonce) throw new Error('Tempo source nonce changed since quote')
       if (balance < params.amountAtomic + maximumFeeAtomic)
         throw new RangeError('Insufficient PathUSD for transfer and network fee')
       const row: TempoPathUsdOperation = {

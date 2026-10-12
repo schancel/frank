@@ -1475,16 +1475,6 @@ async function send(
   const conversationIdBytes = suppliedId('conversationId')
   const messageId = suppliedId('messageId') ?? randomBytes(16)
   const consumerId = consumerOf(messageId)
-  const previousFree = params.messageId !== undefined
-    ? owner.messages.unpaid(toHex(messageId)) : undefined
-  if (previousFree?.hostBound && previousFree.outcome) {
-    if (
-      computeAddress('0x' + previousFree.recipientSubject).toLowerCase() !==
-      params.recipient.raw.toLowerCase()
-    ) throw new DirectMessageArgumentError('messageId')
-    if (previousFree.outcome === 'dead') throwUnpaidTerminal(previousFree.reason)
-    return unpaidResult(previousFree.digest)
-  }
   let work = workOf(owner, consumerId)
   // The repeat rule, before the directory or anything else that can refuse or act: a message ID
   // that already has a payment attempt is never given a second one. Its record is the row keyed
@@ -1492,6 +1482,21 @@ async function send(
   // attempt exists, and the answer is the original. A send of the same ID that is still on its
   // way to that record is waited for (this ID only; no other message waits on anything).
   for (;;) {
+    // A named envelope fixes its paid/free mode as well as its bytes. Re-read after every
+    // creator wait: the creator may have completed and retained a terminal free receipt.
+    const previousFree = params.messageId !== undefined
+      ? owner.messages.unpaid(toHex(messageId)) : undefined
+    if (previousFree) {
+      if (params.stampValue !== 0n) throw new DirectMessageArgumentError('messageId')
+      if (
+        computeAddress('0x' + previousFree.recipientSubject).toLowerCase() !==
+        params.recipient.raw.toLowerCase()
+      ) throw new DirectMessageArgumentError('messageId')
+      if (previousFree.hostBound && previousFree.outcome) {
+        if (previousFree.outcome === 'dead') throwUnpaidTerminal(previousFree.reason)
+        return unpaidResult(previousFree.digest)
+      }
+    }
     const original = owner.messages.get(consumerId)
     if (original) {
       if (original.exposurePending && params.onEnvelopeDurable) {

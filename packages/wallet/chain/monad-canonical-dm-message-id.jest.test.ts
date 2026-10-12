@@ -274,6 +274,37 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 })
 
   describe('durable envelope exposure barrier', () => {
+    it.each([undefined, 10n ** 15n])('rejects changing a held free envelope to stamp mode %s after restart', async stampValue => {
+      const first = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async () => { throw new Error('host interrupted') } })
+      expect(first.requests).toBe(0)
+      await reopen()
+      const callback = jest.fn()
+      const replay = await attempt({ messageId: ID_A, stampValue, onEnvelopeDurable: callback })
+      expect(replay.error).toBeInstanceOf(DirectMessageArgumentError)
+      expect(replay.signed).toBe(0)
+      expect(replay.requests).toBe(0)
+      expect(callback).not.toHaveBeenCalled()
+    })
+
+    it('rechecks the free terminal receipt after waiting for a concurrent creator', async () => {
+      let entered!: () => void
+      const started = new Promise<void>(resolve => { entered = resolve })
+      let release!: () => void
+      const blocked = new Promise<void>(resolve => { release = resolve })
+      const first = attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: async () => { entered(); await blocked } })
+      await started
+      const callback = jest.fn()
+      const second = attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: callback })
+      release()
+      const [one, two] = await Promise.all([first, second])
+      expect(one.error).toBeUndefined()
+      expect(two.error).toBeUndefined()
+      expect(two.result?.payloadDigest).toBe(one.result?.payloadDigest)
+      expect(callback).not.toHaveBeenCalled()
+      expect(relayBodies).toHaveLength(1)
+      expect(sign).not.toHaveBeenCalled()
+    })
+
     it.each(['delivered', 'dead'] as const)('retains the free %s receipt after relay acceptance and caller interruption', async outcome => {
       if (outcome === 'dead') relayMode = 'ended'
       let digest: string | undefined

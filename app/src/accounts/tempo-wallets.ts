@@ -35,11 +35,18 @@ export async function openTempoPathUsdWallet(
     entry?.kind !== 'tempo' ||
     entry.id !== chainIdentifier ||
     !entry.nativeChainId ||
-    !entry.networkTag ||
     !entry.allowedProxyCapabilities.includes('json-rpc')
   )
     throw new Error('Tempo PathUSD network is unavailable')
   const host = loadMonadChainConfigFromEnv()
+  const home = getChainRegistryEntry(host.rpcChain)
+  if (
+    !home ||
+    home.id !== host.rpcChain ||
+    home.id !== host.networkId ||
+    home.networkTag !== host.networkTag
+  )
+    throw new Error('Tempo relay identity network is unavailable')
   if (host.walletStorageLocation === false)
     throw new Error('Tempo requires durable wallet storage')
   const sessionWallet = await accountSession.getWallet()
@@ -67,7 +74,7 @@ export async function openTempoPathUsdWallet(
       chain: chainIdentifier,
       customer: identity.address.raw,
       subject: hexlify(publicKey).slice(2),
-      networkTag: entry.networkTag,
+      networkTag: home.networkTag,
       signDigest: digest => {
         if (accountSession.peekWallet() !== sessionWallet)
           throw new Error('Account changed before Tempo relay signing')

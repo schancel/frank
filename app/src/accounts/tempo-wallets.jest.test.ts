@@ -16,6 +16,9 @@ jest.mock('@frank/wallet/chain', () => ({
   loadMonadChainConfigFromEnv: () => ({
     relayBaseUrl: 'https://relay.example',
     walletStorageLocation: 'tempo-test-store',
+    rpcChain: 'monad-testnet',
+    networkId: 'monad-testnet',
+    networkTag: 'MONT',
   }),
 }))
 jest.mock('@frank/wallet/monad-provider', () => ({
@@ -57,7 +60,7 @@ test('Tempo host rejects a wrong RPC chain before opening financial stores', asy
         chainId: 42431,
         relayAuth: expect.objectContaining({
           chain: 'tempo-testnet',
-          networkTag: 'TMPT',
+          networkTag: 'MONT',
         }),
       }),
     )

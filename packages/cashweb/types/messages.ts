@@ -621,9 +621,18 @@ export interface RecipientAssetPaymentItem {
   memo?: string
 }
 
-export interface RecipientAssetPaymentTransfer extends RecipientPaymentTransfer {
+/** Allocated protocol key identifiers carried as claims, not executable wallet capabilities. */
+export type RecipientPaymentClaimKeyType = 1 | 2 | 3
+
+export interface RecipientAssetPaymentTransfer
+  extends Omit<RecipientPaymentTransfer, 'stealthMetadata'> {
+  stealthMetadata: {
+    keyType: RecipientPaymentClaimKeyType
+    ephemeralPubKey: string
+    viewTag?: number | string
+  }
   derivationScheme: number
-  recipientSpendKey: { keyType: 1 | 2; publicKey: string }
+  recipientSpendKey: { keyType: RecipientPaymentClaimKeyType; publicKey: string }
   /** SPL token-program bytes, stored once alongside the mint in asset.identifier. An absent
    * program on an unknown scheme remains incomplete metadata, never a runtime asset default. */
   tokenProgram?: string

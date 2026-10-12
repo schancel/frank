@@ -201,3 +201,35 @@ it('rejects zero schemes and malformed exact amounts', () => {
     })
   ).toThrow()
 })
+
+it('round trips allocated key type 3 under an unknown scheme without claiming execution', async () => {
+  const item: RecipientAssetPaymentItem = {
+    ...sample,
+    transfers: [
+      {
+        ...sample.transfers[0],
+        derivationScheme: 4294967295,
+        recipientSpendKey: { keyType: 3, publicKey: '33'.repeat(32) },
+        stealthMetadata: { keyType: 3, ephemeralPubKey: '11'.repeat(32) },
+      },
+    ],
+  }
+  const frames = encodeItemFrames(registry, [item])
+  const received = decodeItemFrames(
+    registry,
+    children(frames),
+    standaloneItemBudget()
+  )
+  expect(received).toEqual([item])
+  expect(
+    await registry
+      .get('stealth-asset')!
+      .hydrate(received[0] as never, {} as never)
+  ).toEqual(item)
+  expect(() =>
+    encodeRecipientAssetPaymentItem({
+      ...item,
+      transfers: [{ ...item.transfers[0], derivationScheme: 1 }],
+    })
+  ).toThrow('requires secp keys')
+})

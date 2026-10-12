@@ -1,4 +1,7 @@
-import type { RecipientAssetPaymentItem } from '@frank/cashweb/types/messages'
+import type {
+  RecipientAssetPaymentItem,
+  RecipientPaymentClaimKeyType,
+} from '@frank/cashweb/types/messages'
 import {
   encodeStealthAssetMessageItem,
   fromHex,
@@ -16,6 +19,13 @@ function canonicalChain(chainIdentifier: string): void {
   if (getChainRegistryEntry(chainIdentifier)?.id !== chainIdentifier) {
     throw new Error(`Unsupported payment chain: ${chainIdentifier}`)
   }
+}
+
+function claimKeyType(keyType: number): RecipientPaymentClaimKeyType {
+  if (keyType !== 1 && keyType !== 2 && keyType !== 3) {
+    throw new Error(`Unallocated recipient claim key type: ${keyType}`)
+  }
+  return keyType
 }
 
 /** Dedicated frame only. Pure serialization; no signing, verification or wallet mutation. */
@@ -96,7 +106,7 @@ export function decodeRecipientAssetPaymentItem(
             ? { kind: 'token' as const, identifier: toHex(transfer.token) }
             : { kind: 'native' as const },
         stealthMetadata: {
-          keyType: metadata.ephemeralPubKey.keyType as 1 | 2,
+          keyType: claimKeyType(metadata.ephemeralPubKey.keyType),
           ephemeralPubKey: toHex(metadata.ephemeralPubKey.keyBytes),
           ...(metadata.viewTag !== undefined
             ? {
@@ -116,7 +126,7 @@ export function decodeRecipientAssetPaymentItem(
           : {}),
         derivationScheme: entry.derivationScheme,
         recipientSpendKey: {
-          keyType: entry.recipientSpendKey.keyType as 1 | 2,
+          keyType: claimKeyType(entry.recipientSpendKey.keyType),
           publicKey: toHex(entry.recipientSpendKey.keyBytes),
         },
         ...(entry.tokenProgram !== undefined

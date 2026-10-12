@@ -724,7 +724,16 @@ export interface OutgoingDelivery {
   live?: boolean
 }
 
+/** Local association to the authoritative financial owner, never a wire payment claim. */
+export interface OutgoingFinancialOperation {
+  chainIdentifier: string
+  operationId: string
+}
+
 export interface Message {
+  /** Persisted before sealing; reused even for free financial message retries. */
+  sealedMessageId?: string
+  financialOperations?: OutgoingFinancialOperation[]
   outbound: boolean
   status: string
   receivedTime: number

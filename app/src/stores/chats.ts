@@ -50,6 +50,7 @@ import type {
   MessageWrapper,
   MessageItem,
   OutgoingDelivery,
+  OutgoingFinancialOperation,
   OutgoingFailureReason,
   TextItem,
   StealthItem,
@@ -80,8 +81,11 @@ import {
   sameCanonicalAddress,
 } from '../utils/own-address'
 import { shortAddress } from '../utils/short-address'
+import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing'
 
 export type ChatMessage = {
+  sealedMessageId?: string
+  financialOperations?: OutgoingFinancialOperation[]
   outbound: boolean
   status: string
   receivedTime: number
@@ -2342,6 +2346,8 @@ export const useChatStore = defineStore('chats', {
       delivery,
       logicalMessageId,
       revisionDigest,
+      sealedMessageId,
+      financialOperations,
     }: {
       address: string
       conversationId?: string
@@ -2363,6 +2369,8 @@ export const useChatStore = defineStore('chats', {
       delivery?: OutgoingDelivery
       logicalMessageId?: string
       revisionDigest?: string
+      sealedMessageId?: string
+      financialOperations?: OutgoingFinancialOperation[]
     }) {
       let displayAddress: string = address
       try {
@@ -2378,6 +2386,8 @@ export const useChatStore = defineStore('chats', {
 
       const newMsg = {
         outbound: true,
+        sealedMessageId,
+        financialOperations,
         status,
         items,
         serverTime: timestamp,
@@ -2576,16 +2586,25 @@ export const useChatStore = defineStore('chats', {
       items,
       stampValue,
       onPreparationProgress,
+      financialOperations,
     }: {
       wallet: WalletHandle
       address: string
       conversationId?: string
       items: MessageItem[]
+      financialOperations?: OutgoingFinancialOperation[]
       stampValue?: bigint
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
+      if (
+        financialOperations?.length &&
+        (stampValue === undefined || stampValue < 0n)
+      )
+        throw new Error(
+          'Financial messages require an explicit nonnegative stamp value',
+        )
       const recipient = activeChain.parseAddress(address)
       assert(recipient, `Invalid recipient address: ${address}`)
       const displayAddress = toChainDisplayAddress(address)
@@ -2618,6 +2637,14 @@ export const useChatStore = defineStore('chats', {
         previousHash: null,
         timestamp,
         delivery: {},
+        ...(financialOperations?.length
+          ? {
+              sealedMessageId: outgoingMessageId(pendingMessageId),
+              financialOperations: financialOperations.map(reference => ({
+                ...reference,
+              })),
+            }
+          : {}),
       })
       // Enqueue the first durable save synchronously. Clear called after this composer action is
       // therefore ordered after the row, while the optimistic bubble remains visible immediately.
@@ -2628,7 +2655,9 @@ export const useChatStore = defineStore('chats', {
       try {
         await serializeDeliveryMutation(async () => {
           await lock.held
-          return this.saveOutgoingExclusive(displayAddress, pendingMessageId)
+          return this.saveOutgoingExclusive(displayAddress, pendingMessageId, {
+            strict: !!financialOperations?.length,
+          })
         })
         return await this.runOutgoing({
           wallet,
@@ -2899,6 +2928,8 @@ export const useChatStore = defineStore('chats', {
         timestamp: serverTime,
         delivery: message.delivery,
         revisionDigest: message.revisionDigest,
+        sealedMessageId: message.sealedMessageId,
+        financialOperations: message.financialOperations,
       })
       recomputeChatAccounting(conversation, this.activeConversationId)
       const messageStore = await store
@@ -3123,6 +3154,7 @@ export const useChatStore = defineStore('chats', {
         progress: DirectMessagePreparationProgress,
       ) => void
     }): Promise<OutgoingOutcome> {
+      const messagingChain = { ...activeChain }
       // A Retry (clicked or automatic) acts on this tab's copy of the message, which can be stale:
       // another tab may have sent it (and removed its row) or recorded a payment for it since
       // this tab loaded. Read the durable row first, under the lock, and never act on an old copy.
@@ -3142,21 +3174,45 @@ export const useChatStore = defineStore('chats', {
         return { state: 'busy' }
       if (automatic && (!message.outbound || message.status !== 'error'))
         return { state: 'busy' }
-      const recipient = activeChain.parseAddress(address)
+      const recipient = messagingChain.parseAddress(address)
       assert(recipient, `Invalid recipient address: ${address}`)
       const previous = message.delivery
       const digest = previous?.attemptDigest
       const stillCurrent = () =>
         this.messages[id] === message && walletOwnsMessage(wallet, message)
 
+      const financial = message.financialOperations?.length
+        ? await captureOutgoingFinancialOperations(
+            wallet,
+            message.financialOperations,
+          )
+        : undefined
+      if (financial && !message.sealedMessageId)
+        throw new Error('Financial message has no durable sealed identity')
+      const onEnvelopeDurable =
+        financial &&
+        (async (attemptDigest: string) => {
+          await this.setOutgoingState(
+            address,
+            id,
+            'pending',
+            { attemptDigest },
+            { strict: true },
+          )
+          await financial.expose(attemptDigest)
+        })
+      // Free envelopes have their own durable replay owner; paid reconciliation cannot find them.
+      const replayFreeFinancial = !!financial && message.stampValueWei === 0n
+
       // 1. An earlier payment attempt exists: ask what became of it BEFORE anything else.
-      if (digest !== undefined) {
+      if (digest !== undefined && !replayFreeFinancial) {
         let statuses: Record<string, DirectMessageAttemptStatus>
         try {
-          statuses = await activeChain.directMessages.reconcileAttempts({
+          statuses = await messagingChain.directMessages.reconcileAttempts({
             wallet,
             payloadDigests: [digest],
             maxPutAttempts: manual ? 3 : 1,
+            ...(onEnvelopeDurable ? { onEnvelopeDurable } : {}),
           })
         } catch (error) {
           // Cannot tell. Keep the attempt on the message; never guess in favour of a new payment.
@@ -3173,6 +3229,12 @@ export const useChatStore = defineStore('chats', {
         }
         if (!stillCurrent()) return { state: 'busy' }
         const status = statuses[digest] ?? 'unknown'
+        if (status === 'delivered' && financial)
+          await financial
+            .submit()
+            .catch(error =>
+              console.warn('Financial submission remains pending', error),
+            )
         const applied = await this.applyAttemptStatus({ address, id, status })
         if (applied === 'sent') {
           const confirmed = this.messages[digest]
@@ -3191,17 +3253,26 @@ export const useChatStore = defineStore('chats', {
           detail: previous?.detail,
         })
         return { state: 'failed', reason: failureReason }
-      } else if (automatic && previous?.failureReason !== 'interrupted') {
+      } else if (
+        digest === undefined &&
+        automatic &&
+        previous?.failureReason !== 'interrupted'
+      ) {
         // No attempt recorded and not cut off mid-send: an earlier payment for it was given up
         // (dead) or the send failed for a reason the user must see. Only a click sends it again.
         return { state: 'failed', reason: previous?.failureReason ?? 'error' }
       } else if (
+        digest === undefined &&
         manual &&
         !confirmed &&
         previous?.failureReason === 'recovered'
       ) {
         return { state: 'needs-confirmation', reason: 'recovered' }
-      } else if (manual && previous?.failureReason === 'interrupted') {
+      } else if (
+        digest === undefined &&
+        manual &&
+        previous?.failureReason === 'interrupted'
+      ) {
         // No attempt is recorded on this message, but the app stopped mid-send: the wallet may
         // hold (or already have resumed) a payment nobody points at. Do not pay again unless
         // there is provably none, or the user says so.
@@ -3213,7 +3284,7 @@ export const useChatStore = defineStore('chats', {
         }
         let orphans: string[] | undefined
         try {
-          orphans = await activeChain.directMessages.unattributedAttempts({
+          orphans = await messagingChain.directMessages.unattributedAttempts({
             wallet,
             knownDigests: [...known],
           })
@@ -3230,7 +3301,7 @@ export const useChatStore = defineStore('chats', {
           // stop blocking later retries. If it cannot be saved, the wallet keeps reporting them
           // and the next interrupted message asks again; that never pays without a prompt.
           try {
-            await activeChain.directMessages.resolveUnattributedAttempts({
+            await messagingChain.directMessages.resolveUnattributedAttempts({
               wallet,
               payloadDigests: orphans,
             })
@@ -3255,7 +3326,7 @@ export const useChatStore = defineStore('chats', {
         message.delivery?.failureReason === 'stamp-below-fee' &&
         message.stampValueWei !== undefined
       ) {
-        const minimum = await activeChain.directMessages
+        const minimum = await messagingChain.directMessages
           .minimumStamp?.({ wallet })
           .catch(() => undefined)
         if (minimum !== undefined && minimum > message.stampValueWei)
@@ -3279,12 +3350,13 @@ export const useChatStore = defineStore('chats', {
               ? undefined
               : this.conversations[message.conversationId],
           )
-          result = await activeChain.directMessages.send({
+          result = await messagingChain.directMessages.send({
             wallet,
             recipient,
             // One ID for this message, whatever attempt this is: the wallet makes one payment
             // per ID, ever, and answers a repeat with the attempt it already holds.
-            messageId: outgoingMessageId(id),
+            messageId: message.sealedMessageId ?? outgoingMessageId(id),
+            ...(onEnvelopeDurable ? { onEnvelopeDurable } : {}),
             conversationId: message.conversationId,
             ...(subject === undefined ? {} : { conversationName: subject }),
             items: message.items,
@@ -3404,7 +3476,11 @@ export const useChatStore = defineStore('chats', {
           // The wallet released the payment this message carried (nothing of it was ever
           // sent): the saved message must not keep a sendable copy of its signed transfer. The
           // row is saved by the state change just below.
-          if (error instanceof ContactPaymentReleasedError && this.messages[id])
+          if (
+            error instanceof ContactPaymentReleasedError &&
+            this.messages[id] &&
+            !financial
+          )
             stripReleasedPayments(this.messages[id])
           const failure = classifySendFailure(error, ownDigest)
           await this.setOutgoingState(address, id, 'error', {
@@ -3431,6 +3507,12 @@ export const useChatStore = defineStore('chats', {
         return { state: 'failed', reason: failure.reason }
       }
 
+      if (financial)
+        await financial
+          .submit()
+          .catch(error =>
+            console.warn('Financial submission remains pending', error),
+          )
       await this.confirmOutgoing({
         address,
         id,
@@ -3481,7 +3563,7 @@ export const useChatStore = defineStore('chats', {
           try {
             held = await activeChain.directMessages.attemptOf?.({
               wallet,
-              messageId: outgoingMessageId(id),
+              messageId: message.sealedMessageId ?? outgoingMessageId(id),
             })
           } catch (error) {
             console.warn('could not ask the wallet about a cut-off send', error)
@@ -3575,6 +3657,15 @@ export const useChatStore = defineStore('chats', {
               message.destinationAddress ||
               (activeChain.parseAddress(key) ? key : '')
             if (!address) continue
+            if (message.financialOperations?.length) {
+              await this.runOutgoing({
+                wallet,
+                address,
+                id: message.payloadDigest,
+                manual: false,
+              })
+              continue
+            }
             waiting.push({
               address,
               id: message.payloadDigest,
@@ -4318,6 +4409,8 @@ export const useChatStore = defineStore('chats', {
               senderAddress: existing.senderAddress,
               destinationAddress: wrapper.message.destinationAddress,
               delivery: existing.delivery,
+              sealedMessageId: existing.sealedMessageId,
+              financialOperations: existing.financialOperations,
               conversationId,
               logicalMessageId: existing.logicalMessageId,
             },

@@ -1,3 +1,7 @@
+import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing'
+jest.mock('../stealth-payments/outgoing', () => ({
+  captureOutgoingFinancialOperations: jest.fn(),
+}))
 /**
  * Outgoing direct-message delivery states (tickets #269, #270): a failed or payment-pending send
  * stays in the conversation, survives a reload, can be retried by hand, and never pays twice.
@@ -311,6 +315,10 @@ describe('outgoing direct messages (#269, #270)', () => {
             senderAddress: ME,
             conversationId: entry.conversationId,
             index: entry.localId,
+            sealedMessageId: outgoingMessageId(entry.localId),
+            financialOperations: [
+              { chainIdentifier: 'xec-testnet', operationId: entry.localId },
+            ],
             items: TEXT,
             outpoints: [],
             status: 'payment-pending',
@@ -361,6 +369,10 @@ describe('outgoing direct messages (#269, #270)', () => {
               payloadDigest: entry.digest,
               conversationId: entry.conversationId,
               logicalMessageId: entry.localId,
+              sealedMessageId: outgoingMessageId(entry.localId),
+              financialOperations: [
+                { chainIdentifier: 'xec-testnet', operationId: entry.localId },
+              ],
               delivery: expect.objectContaining({
                 attemptDigest: entry.digest,
               }),
@@ -2385,5 +2397,176 @@ describe('outgoing direct messages (#269, #270)', () => {
         expect(only(chats)[0].delivery).toEqual(delivery)
       })
     })
+  })
+})
+
+describe('financial outbox envelope barrier', () => {
+  const financialOperations = [
+    { chainIdentifier: 'xec-testnet', operationId: 'xec-payment' },
+    { chainIdentifier: 'monad-testnet', operationId: 'token-payment' },
+  ]
+  let expose: jest.Mock, submit: jest.Mock
+  beforeEach(async () => {
+    ;(await durable()).clear()
+    setActivePinia(createPinia())
+    jest.restoreAllMocks()
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    expose = jest.fn(async () => undefined)
+    submit = jest.fn(async () => undefined)
+    jest
+      .mocked(captureOutgoingFinancialOperations)
+      .mockResolvedValue({ expose, submit })
+  })
+  const params = () => ({
+    wallet,
+    address: PEER,
+    items: TEXT,
+    financialOperations,
+    stampValue: 0n,
+  })
+
+  it('requires an explicit reviewed stamp before creating a financial draft', async () => {
+    const chats = useChatStore()
+    await expect(
+      chats.sendMessage({ ...params(), stampValue: undefined }),
+    ).rejects.toThrow('explicit')
+    expect(only(chats)).toEqual([])
+    expect((await durable()).size).toBe(0)
+  })
+
+  it('requires the initial financial draft write before any sealing or exposure', async () => {
+    const chats = useChatStore()
+    const send = jest.spyOn(activeChain.directMessages, 'send')
+    jest
+      .spyOn(await messageStorePromise, 'saveMessage')
+      .mockRejectedValueOnce(new Error('disk full'))
+    await expect(chats.sendMessage(params())).rejects.toThrow('disk full')
+    expect(send).not.toHaveBeenCalled()
+    expect(expose).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+  })
+
+  it('retries partial binding of a free envelope with its persisted identity and retains refs through reopen/confirmation', async () => {
+    let handoffs = 0
+    const identities: unknown[] = []
+    expose.mockRejectedValueOnce(new Error('second owner unavailable'))
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async p => {
+        identities.push(p.messageId)
+        const rows = [...(await durable()).values()].map(
+          deserializeMessageWrapper,
+        )
+        expect(rows[0].message.sealedMessageId).toBe(p.messageId)
+        expect(rows[0].message.financialOperations).toEqual(financialOperations)
+        await p.onEnvelopeDurable?.(HASH)
+        const linked = [...(await durable()).values()].map(
+          deserializeMessageWrapper,
+        )[0]
+        expect(linked.message.delivery?.attemptDigest).toBe(HASH)
+        handoffs++
+        return { ...okResult(HASH), stampValueWei: 0n }
+      })
+    const chats = useChatStore()
+    expect((await chats.sendMessage(params())).state).toBe('failed')
+    expect(handoffs).toBe(0)
+    const reloaded = await reload({ askWallet: false })
+    await reloaded.retryOutgoing({
+      wallet,
+      address: PEER,
+      payloadDigest: only(reloaded)[0].payloadDigest,
+    })
+    expect(send).toHaveBeenCalledTimes(2)
+    expect(identities[0]).toBe(identities[1])
+    expect(expose).toHaveBeenNthCalledWith(1, HASH)
+    expect(expose).toHaveBeenNthCalledWith(2, HASH)
+    expect(submit).toHaveBeenCalledTimes(1)
+    const confirmed = only(reloaded)[0]
+    expect(confirmed.status).toBe('confirmed')
+    expect(confirmed.financialOperations).toEqual(financialOperations)
+    expect(confirmed.sealedMessageId).toBe(identities[0])
+    const again = await reload({ askWallet: false })
+    expect(only(again)[0].financialOperations).toEqual(financialOperations)
+  })
+
+  it('resumes a held paid attempt through its barrier and submits originals only after delivery', async () => {
+    const send = jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async p => {
+        await p.onEnvelopeDurable?.(HASH)
+        throw new MonadStampPendingAttemptError([HASH])
+      })
+    const chats = useChatStore()
+    await chats.sendMessage({ ...params(), stampValue: 1n })
+    expect(submit).not.toHaveBeenCalled()
+    const reloaded = await reload({ askWallet: false })
+    const reconcile = jest
+      .spyOn(activeChain.directMessages, 'reconcileAttempts')
+      .mockImplementation(async p => {
+        expect(p.payloadDigests).toEqual([HASH])
+        await p.onEnvelopeDurable?.(HASH)
+        expect(expose).toHaveBeenCalledTimes(2)
+        return { [HASH]: 'delivered' }
+      })
+    await reloaded.reconcileOutgoing({ wallet })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(submit).toHaveBeenCalledTimes(1)
+    expect(only(reloaded)[0].financialOperations).toEqual(financialOperations)
+  })
+
+  it('keeps the financial hold when the digest-link write fails before exposure', async () => {
+    const chats = useChatStore()
+    const save = jest.spyOn(await messageStorePromise, 'saveMessage')
+    let handoffs = 0
+    jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async p => {
+        save.mockRejectedValueOnce(new Error('link write failed'))
+        await p.onEnvelopeDurable?.(HASH)
+        handoffs++
+        return okResult(HASH)
+      })
+    expect((await chats.sendMessage(params())).state).toBe('failed')
+    expect(handoffs).toBe(0)
+    expect(expose).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+    expect(only(chats)[0].financialOperations).toEqual(financialOperations)
+  })
+})
+
+describe('financial UI cancellation', () => {
+  it('removes presentation without exposing or releasing its prepared financial operation', async () => {
+    ;(await durable()).clear()
+    setActivePinia(createPinia())
+    jest.restoreAllMocks()
+    const expose = jest.fn(),
+      submit = jest.fn()
+    jest
+      .mocked(captureOutgoingFinancialOperations)
+      .mockResolvedValue({ expose, submit })
+    const chats = useChatStore()
+    jest
+      .spyOn(activeChain.directMessages, 'send')
+      .mockImplementation(async p => {
+        await chats.deleteMessage({
+          address: PEER,
+          payloadDigest: only(chats)[0].payloadDigest,
+        })
+        await p.onEnvelopeDurable?.(HASH)
+        throw new Error('must not hand off')
+      })
+    await chats.sendMessage({
+      wallet,
+      address: PEER,
+      items: TEXT,
+      stampValue: 0n,
+      financialOperations: [
+        { chainIdentifier: 'xec-testnet', operationId: 'held' },
+      ],
+    })
+    expect(expose).not.toHaveBeenCalled()
+    expect(submit).not.toHaveBeenCalled()
+    expect(only(chats)).toEqual([])
   })
 })

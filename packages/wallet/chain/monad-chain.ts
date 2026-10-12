@@ -1,3 +1,4 @@
+import { CANONICAL_DM_MAX_TRANSACTIONS } from '@frank/cashweb/relay/canonical-dm-transport';
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/stamp-policy";
 import type { EvmChainConfig } from "./evm-chain-config";
@@ -115,6 +116,8 @@ import {
   ChainTransaction,
   DirectMessageClient,
   DirectMessageFundAheadResult,
+  DirectMessageStampQuote,
+  DirectMessageStampBelowFeeError,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,
@@ -575,6 +578,14 @@ type CanonicalInventoryFunder = (input: {
 const canonicalInventoryFunders = new WeakMap<
   object,
   CanonicalInventoryFunder
+>();
+/** The existing live payer owns read-only stamp planning too; no second spend inventory. */
+const canonicalStampQuoters = new WeakMap<
+  object,
+  (input: {
+    stampValueWei: bigint;
+    excludedAddresses?: readonly string[];
+  }) => Promise<DirectMessageStampQuote>
 >();
 /** Per live typed wallet: its fund-ahead pass (`DirectMessageClient.fundAhead`). */
 const stampFundersAhead = new WeakMap<
@@ -1502,6 +1513,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (message.outbound !== true) await owner.recordStampPayments(message);
   };
   const directMessages: DirectMessageClient = {
+    async quoteStamp(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const quote = canonicalStampQuoters.get(wallet);
+      if (!quote)
+        throw new CanonicalMessagingPendingError(
+          "Stamp affordability requires persistent typed wallet custody."
+        );
+      return quote({
+        stampValueWei: params.stampValue,
+        excludedAddresses: params.excludedAddresses,
+      });
+    },
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
@@ -3064,6 +3087,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   canonicalUnavailableWallets.delete(wallet);
                   canonicalMessaging.delete(wallet);
                   canonicalInventoryFunders.delete(wallet);
+                  canonicalStampQuoters.delete(wallet);
                   canonicalDirectories.delete(wallet);
                   installedCanonicalWalletDescriptors.delete(wallet);
                   privateTopicWallets.delete(wallet);
@@ -5036,6 +5060,34 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     ]),
               ],
             });
+
+            canonicalStampQuoters.set(wallet, (input) =>
+              topicOwner!.runLifetime(async () => {
+                if (input.stampValueWei > 0n) {
+                  const minimum = await stampPayer.minimumPaymentWei();
+                  if (input.stampValueWei < minimum)
+                    throw new DirectMessageStampBelowFeeError(
+                      input.stampValueWei, minimum
+                    );
+                }
+                const quote = await stampPayer.quote({
+                  ...input, maxPayments: CANONICAL_DM_MAX_TRANSACTIONS,
+                });
+                topicOwner!.assertOpen();
+                const common = {
+                  chainIdentifier: config.networkId,
+                  stampValueAtomic: quote.stampValueWei,
+                  spendableCapacityAtomic: quote.capacityWei,
+                };
+                return quote.status === "available"
+                  ? {
+                      ...common,
+                      status: "available",
+                      maximumNativeFeeAtomic: quote.maximumFeeWei,
+                    }
+                  : { ...common, status: "insufficient" };
+              })
+            );
 
             // Funding ahead (#1235): the same preparation, asked for by the host between
             // messages. Never called from here: opening a wallet makes no request.

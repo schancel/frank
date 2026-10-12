@@ -12,7 +12,8 @@
  * - the chain shows what happened to it (`recordSpent`, `recordFailed`): never a timeout, a relay
  *   answer or a restart.
  */
-import { Transaction, type Provider } from 'ethers'
+import { getAddress, Transaction, type Provider } from 'ethers'
+import { selectStampAccounts } from './monad-stamp-account-selection'
 import { EVM_FAILURE_CONFIRMATIONS } from './chain/evm-settlement'
 import {
   InsufficientStampFundsError,
@@ -94,6 +95,40 @@ export interface StampClaim {
   readonly holder: string
   readonly accounts: readonly ClaimedStampCoin[]
   readonly fee: StampFee
+}
+
+/** Read-only snapshot. An available quote is not a reservation; sending rechecks everything. */
+export type StampAffordabilityQuote = {
+  readonly stampValueWei: bigint
+  /** Capacity after per-account maximum fees, across the largest supported spending route.
+   * Fragment size rules can still make a particular amount unavailable. */
+  readonly capacityWei: bigint
+} & (
+  | { readonly status: 'available'; readonly maximumFeeWei: bigint }
+  | { readonly status: 'insufficient' }
+)
+
+/** The fallback sender and its quote use exactly the same fragmentation policy. */
+function selectStampParts<T extends { capacityWei: bigint }>(
+  funded: readonly T[],
+  amountWei: bigint,
+  smallest: bigint,
+): { coin: T; valueWei: bigint }[] | undefined {
+  const ordered = [...funded].sort((a, b) =>
+    a.capacityWei > b.capacityWei ? -1 : 1,
+  )
+  const parts: { coin: T; valueWei: bigint }[] = []
+  let remaining = amountWei
+  for (const coin of ordered) {
+    if (remaining === 0n) break
+    let valueWei = coin.capacityWei < remaining ? coin.capacityWei : remaining
+    if (remaining - valueWei > 0n && remaining - valueWei < smallest)
+      valueWei = remaining - smallest
+    if (valueWei < smallest) continue
+    parts.push({ coin, valueWei })
+    remaining -= valueWei
+  }
+  return remaining > 0n || parts.length < 2 ? undefined : parts
 }
 
 const STAMP_GAS_LIMIT = 21_000n
@@ -411,6 +446,186 @@ export class EvmStampPayer {
    */
   async minimumPaymentWei(): Promise<bigint> {
     return STAMP_GAS_LIMIT * (await this.read(() => this.currentFee())).chargedPerGas
+  }
+
+  /** Snapshot the actual sender's selection without claims, signatures, funding or waits.
+   * Inputs still pending or awaiting spacing/fund maturity are unavailable for this quote.
+   * Exclusions let a host account for an unsigned financial plan before it reserves its source. */
+  async quote(input: {
+    stampValueWei: bigint
+    excludedAddresses?: readonly string[]
+    /** A composed consumer's transaction-count admission limit. */
+    maxPayments?: number
+  }): Promise<StampAffordabilityQuote> {
+    if (
+      typeof input.stampValueWei !== 'bigint' ||
+      input.stampValueWei < 0n ||
+      input.stampValueWei >= 1n << 256n
+    )
+      throw new Error('Stamp amount must be a nonnegative bigint')
+    const maxPayments = input.maxPayments ?? Number.MAX_SAFE_INTEGER
+    if (!Number.isInteger(maxPayments) || maxPayments < 1)
+      throw new Error('Stamp payment count must be a positive integer')
+    const excluded = new Set(
+      (input.excludedAddresses ?? []).map(address =>
+        getAddress(address).toLowerCase(),
+      ),
+    )
+    if (input.stampValueWei === 0n)
+      return {
+        status: 'available',
+        stampValueWei: 0n,
+        maximumFeeWei: 0n,
+        capacityWei: 0n,
+      }
+    const { pool, provider } = this.config
+    const [fee, head] = await this.read(() =>
+      Promise.all([this.currentFee(), provider.getBlockNumber()]),
+    )
+    const reserve = STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
+    const smallest = STAMP_GAS_LIMIT * fee.chargedPerGas
+    const spacing = this.config.spendSpacingBlocks ?? 0
+    const free = (address: string, nonce: number, generation: number) =>
+      !excluded.has(address.toLowerCase()) &&
+      pool.accountGeneration(address) === generation &&
+      pool.accountClaimedBy(address) === undefined &&
+      this.config.accountHeld?.(address) !== true &&
+      this.config.canSelectAccount?.(address.toLowerCase(), nonce) !== false
+    const snapshot = async (address: string, poolCoin = false) => {
+      const generation = pool.accountGeneration(address)
+      if (
+        excluded.has(address.toLowerCase()) ||
+        pool.accountClaimedBy(address) !== undefined ||
+        this.config.accountHeld?.(address)
+      )
+        return undefined
+      const [balance, nonce, pending, before, matured] = await this.read(() =>
+        Promise.all([
+          provider.getBalance(address),
+          provider.getTransactionCount(address, head),
+          provider.getTransactionCount(address, 'pending'),
+          spacing > 0 && head >= spacing
+            ? provider.getTransactionCount(address, head - spacing)
+            : Promise.resolve(undefined),
+          spacing > 0 && head >= spacing + 1
+            ? provider.getBalance(address, head - spacing - 1)
+            : Promise.resolve(undefined),
+        ]),
+      )
+      const known = this.coins.get(address.toLowerCase())
+      const settled = this.settledNonce.get(address.toLowerCase())
+      if (
+        pending !== nonce ||
+        (settled !== undefined && nonce <= settled) ||
+        (known !== undefined && known.nonce > nonce)
+      )
+        return undefined
+      const recent =
+        (before !== undefined && before !== nonce) ||
+        (known !== undefined &&
+          known.notBeforeBlock - (spacing > 0 ? 1 : 0) > head)
+      // A recent account may still pay without waiting when it leaves the configured reserve.
+      const matureBalance =
+        matured === undefined || matured > balance ? balance : matured
+      let usable = matureBalance
+      if (recent && spacing > 1) {
+        const floor = this.config.reserveBalanceWei
+        usable =
+          poolCoin || floor === undefined || usable <= floor
+            ? 0n
+            : usable - floor
+      }
+      return {
+        address,
+        nonce,
+        generation,
+        capacityWei: usable > reserve ? usable - reserve : 0n,
+      }
+    }
+    const records = pool
+      .records()
+      .filter(
+        record =>
+          record.status === 'available' && !pool.isSpendReserved(record.index),
+      )
+    const poolStates = await Promise.all(
+      records.map(async record => {
+        const state = await snapshot(record.address, true)
+        return state === undefined
+          ? undefined
+          : { ...state, index: record.index }
+      }),
+    )
+    const candidates = [
+      ...this.config.accounts,
+      ...(this.config.coins?.() ?? []),
+    ]
+    const fallbackStates = await Promise.all(
+      candidates.map(account => snapshot(account.address)),
+    )
+    // Recheck reservations after all asynchronous reads, immediately before pure selection.
+    const poolAccounts = poolStates.filter(
+      (state): state is NonNullable<typeof state> =>
+        state !== undefined &&
+        free(state.address, state.nonce, state.generation) &&
+        !pool.isSpendReserved(state.index) &&
+        state.capacityWei > 0n,
+    )
+    const fallback = fallbackStates.filter(
+      (state): state is NonNullable<typeof state> =>
+        state !== undefined &&
+        free(state.address, state.nonce, state.generation) &&
+        state.capacityWei > 0n,
+    )
+    const sum = (values: readonly { capacityWei: bigint }[]) =>
+      values.reduce((total, value) => total + value.capacityWei, 0n)
+    const poolCapacity = sum(
+      [...poolAccounts]
+        .sort((a, b) => (a.capacityWei > b.capacityWei ? -1 : 1))
+        .slice(0, Math.min(64, maxPayments)),
+    )
+    // The sender waits for a busy fallback account before attempting fragmentation.
+    const busy = candidates.some(
+      account =>
+        !excluded.has(account.address.toLowerCase()) &&
+        !this.config.accountHeld?.(account.address) &&
+        pool.accountClaimedBy(account.address) !== undefined,
+    )
+    const fragmented = busy
+      ? []
+      : fallback.filter(state => state.capacityWei >= smallest)
+    const fallbackCapacity = fallback.reduce(
+      (maximum, state) =>
+        state.capacityWei > maximum ? state.capacityWei : maximum,
+      sum([...fragmented].sort((a, b) => a.capacityWei > b.capacityWei ? -1 : 1)
+        .slice(0, maxPayments)),
+    )
+    const capacityWei =
+      poolCapacity > fallbackCapacity ? poolCapacity : fallbackCapacity
+    const result = { stampValueWei: input.stampValueWei, capacityWei }
+    if (poolCapacity >= input.stampValueWei) {
+      const selected = selectStampAccounts({
+        amountWei: input.stampValueWei,
+        accounts: poolAccounts,
+        maxTransactions: Math.min(64, maxPayments),
+      })
+      if (selected.every(account => account.paymentValueWei >= smallest))
+        return {
+          ...result,
+          status: 'available',
+          maximumFeeWei: reserve * BigInt(selected.length),
+        }
+    }
+    if (fallback.some(state => state.capacityWei >= input.stampValueWei))
+      return { ...result, status: 'available', maximumFeeWei: reserve }
+    const parts = selectStampParts(fragmented, input.stampValueWei, smallest)
+    return parts === undefined || parts.length > maxPayments
+      ? { ...result, status: 'insufficient' }
+      : {
+          ...result,
+          status: 'available',
+          maximumFeeWei: reserve * BigInt(parts.length),
+        }
   }
 
   /**
@@ -736,20 +951,8 @@ export class EvmStampPayer {
           capacityWei: balanceWei - feeReserveWei,
         })
     }
-    funded.sort((a, b) => (a.capacityWei > b.capacityWei ? -1 : 1))
-    const parts: { coin: (typeof funded)[number]; valueWei: bigint }[] = []
-    let remaining = input.stampValueWei
-    for (const coin of funded) {
-      if (remaining === 0n) break
-      let valueWei = coin.capacityWei < remaining ? coin.capacityWei : remaining
-      // Never leave a last part too small to be worth its own transfer.
-      if (remaining - valueWei > 0n && remaining - valueWei < smallest)
-        valueWei = remaining - smallest
-      if (valueWei < smallest) continue
-      parts.push({ coin, valueWei })
-      remaining -= valueWei
-    }
-    if (remaining > 0n || parts.length < 2) return undefined
+    const parts = selectStampParts(funded, input.stampValueWei, smallest)
+    if (parts === undefined) return undefined
     // Synchronous: every coin is free and unspent since its balance was read, or none is taken.
     const taken: string[] = []
     const letGo = () => {

@@ -178,6 +178,7 @@ export type {
   DirectMessageAttemptStatus,
   DirectMessagePaymentSummary,
   DirectMessageClient,
+  DirectMessageStampQuote,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,

@@ -25,6 +25,7 @@ const coins = [2, 3, 4].map(n => new Wallet(key(n)))
 function payer(balances: Record<string, bigint>, options: {
   provider?: Partial<Provider>
   spendSpacingBlocks?: number
+  canSelectAccount?: (address: string, nonce: number) => boolean
 } = {}) {
   const held = new Map<string, string>()
   const provider = {
@@ -39,6 +40,8 @@ function payer(balances: Record<string, bigint>, options: {
     ...options.provider,
   } as unknown as Provider
   const pool = {
+    records: () => [],
+    isSpendReserved: () => false,
     accountClaimedBy: (address: string) => held.get(address.toLowerCase()),
     accountGeneration: () => 0,
     claimAccount: (holder: string, address: string) =>
@@ -62,6 +65,7 @@ function payer(balances: Record<string, bigint>, options: {
     httpClient: {} as never,
     watcher,
     spendSpacingBlocks: options.spendSpacingBlocks,
+    canSelectAccount: options.canSelectAccount,
     accounts: [
       { source: 'main', address: main.address, privateKey: () => main.privateKey },
     ],
@@ -385,5 +389,179 @@ describe('reconstructed pool account nonces', () => {
       f.stampPayer.release('first')
       f.stampPayer.release('second')
     }
+  })
+})
+
+describe('read-only stamp affordability', () => {
+  it('quotes the actual fragmented plan and maximum native fees, without claiming', async () => {
+    const { stampPayer, held, watcher } = payer({
+      [at(main)]: MON / 100n,
+      [at(coins[0]!)]: (3n * MON) / 100n,
+      [at(coins[1]!)]: (2n * MON) / 100n,
+    })
+    const stampValueWei = (4n * MON) / 100n
+    const quote = await stampPayer.quote({ stampValueWei })
+    expect(quote).toEqual({
+      status: 'available',
+      stampValueWei,
+      maximumFeeWei: RESERVE * 2n,
+      capacityWei: (6n * MON) / 100n - RESERVE * 3n,
+    })
+    expect(held.size).toBe(0)
+    const claim = await stampPayer.claim({
+      holder: 'actual-send',
+      stampValueWei,
+      sources,
+    })
+    expect(claim.accounts).toHaveLength(2)
+    expect(
+      claim.accounts.reduce((total, coin) => total + coin.paymentValueWei, 0n),
+    ).toBe(stampValueWei)
+    stampPayer.release('actual-send')
+    watcher.stop()
+  })
+
+  it('excludes held and quoted financial sources despite a large aggregate balance', async () => {
+    const { stampPayer, held, watcher } = payer({
+      [at(main)]: MON,
+      [at(coins[0]!)]: MON,
+    })
+    held.set(at(main), 'earlier-message')
+    const quote = await stampPayer.quote({
+      stampValueWei: MON / 100n,
+      excludedAddresses: [coins[0]!.address],
+    })
+    expect(quote).toEqual({
+      status: 'insufficient',
+      stampValueWei: MON / 100n,
+      capacityWei: 0n,
+    })
+    expect(held).toEqual(new Map([[at(main), 'earlier-message']]))
+    watcher.stop()
+  })
+
+  it('refuses a fallback plan exceeding the canonical transport payment count', async () => {
+    const accounts = Array.from({ length: 65 }, (_, i) => new Wallet(key(i + 10)))
+    const provider = {
+      getBlockNumber: async () => 1000,
+      getTransactionCount: async () => 0,
+      getBalance: async () => RESERVE + CHARGED,
+      getFeeData: async () => ({ gasPrice: 102n * GWEI, maxFeePerGas: 202n * GWEI }),
+    } as unknown as Provider
+    const pool = new MonadSubAccountPool({
+      keyring: MonadHdKeyring.fromMnemonic('test test test test test test test test test test test junk'),
+      store: new InMemorySubAccountPoolStore(),
+    })
+    const stampPayer = new EvmStampPayer({ pool, provider, httpClient: {} as never,
+      accounts: [], coins: () => accounts.map(account => ({ address: account.address,
+        privateKey: () => { throw new Error('Quote must never request signing material') } })),
+    })
+    expect(await stampPayer.quote({ stampValueWei: CHARGED * 65n, maxPayments: 64 })).toEqual({
+      status: 'insufficient', stampValueWei: CHARGED * 65n, capacityWei: CHARGED * 64n,
+    })
+    expect(await stampPayer.quote({ stampValueWei: CHARGED * 64n, maxPayments: 64 })).toEqual({
+      status: 'available', stampValueWei: CHARGED * 64n, capacityWei: CHARGED * 64n,
+      maximumFeeWei: RESERVE * 64n,
+    })
+    expect(accounts.some(account => pool.accountClaimedBy(account.address) !== undefined)).toBe(false)
+    stampPayer.watcher.stop()
+  })
+
+  it('excludes the current nonce reserved by the native operation owner', async () => {
+    const eligible = jest.fn(() => false)
+    const { stampPayer, held, watcher } = payer({ [at(main)]: MON }, {
+      canSelectAccount: eligible,
+    })
+    expect(await stampPayer.quote({ stampValueWei: MON / 100n })).toEqual({
+      status: 'insufficient', stampValueWei: MON / 100n, capacityWei: 0n,
+    })
+    expect(eligible).toHaveBeenCalledWith(at(main), 0)
+    expect(held.size).toBe(0)
+    watcher.stop()
+  })
+
+  it('rechecks a claim taken during network reads', async () => {
+    let block!: () => void
+    const gate = new Promise<void>(resolve => {
+      block = resolve
+    })
+    let started!: () => void
+    const reading = new Promise<void>(resolve => {
+      started = resolve
+    })
+    const { stampPayer, held, watcher } = payer(
+      { [at(main)]: MON },
+      {
+        provider: {
+          getBalance: async () => {
+            started()
+            await gate
+            return MON
+          },
+        },
+      },
+    )
+    const quote = stampPayer.quote({ stampValueWei: MON / 100n })
+    await reading
+    held.set(at(main), 'concurrent-send')
+    block()
+    expect((await quote).status).toBe('insufficient')
+    expect(held.get(at(main))).toBe('concurrent-send')
+    watcher.stop()
+  })
+
+  it('free messages cost zero without node reads; node failures remain observable', async () => {
+    const read = jest.fn(async () => {
+      throw new Error('offline')
+    })
+    const { stampPayer, held, watcher } = payer(
+      {},
+      {
+        provider: { getFeeData: read, getBlockNumber: read },
+      },
+    )
+    expect(await stampPayer.quote({ stampValueWei: 0n })).toEqual({
+      status: 'available',
+      stampValueWei: 0n,
+      capacityWei: 0n,
+      maximumFeeWei: 0n,
+    })
+    expect(read).not.toHaveBeenCalled()
+    await expect(stampPayer.quote({ stampValueWei: 1n })).rejects.toThrow(
+      'The chain could not be read',
+    )
+    expect(held.size).toBe(0)
+    watcher.stop()
+  })
+
+  it('excludes a pending nonce and immature funds without waiting', async () => {
+    const { stampPayer, held, watcher } = payer(
+      { [at(main)]: MON },
+      {
+        spendSpacingBlocks: 3,
+        provider: {
+          getBalance: async (_address, block) =>
+            block === undefined ? MON : 0n,
+        },
+      },
+    )
+    expect((await stampPayer.quote({ stampValueWei: MON / 100n })).status).toBe(
+      'insufficient',
+    )
+    expect(held.size).toBe(0)
+    watcher.stop()
+    const pending = payer(
+      { [at(main)]: MON },
+      {
+        provider: {
+          getTransactionCount: async (_address, block) =>
+            block === 'pending' ? 1 : 0,
+        },
+      },
+    )
+    expect(
+      (await pending.stampPayer.quote({ stampValueWei: MON / 100n })).status,
+    ).toBe('insufficient')
+    pending.watcher.stop()
   })
 })

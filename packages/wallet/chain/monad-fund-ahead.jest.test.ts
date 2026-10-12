@@ -223,6 +223,55 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     expect(rows("funding")).toEqual([]);
   }
 
+  it("quotes the real messaging payer without signing, funding, relay handoff or inventory writes", async () => {
+    const sign = jest.spyOn(MonadAccountTxSigner.prototype, "signFrozenUnsigned");
+    const records = alice.pool.records();
+    const balances = new Map(mockBalances);
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP });
+    expect(quote).toMatchObject({ status: "available", chainIdentifier: alice.chainIdentifier,
+      stampValueAtomic: STAMP, maximumNativeFeeAtomic: RESERVE });
+    expect(quote.spendableCapacityAtomic).toBeGreaterThanOrEqual(STAMP);
+    expect(sign).not.toHaveBeenCalled();
+    expect(alice.pool.records()).toEqual(records);
+    expect(mockBalances).toEqual(balances);
+    expect(mockFunded).toEqual([]);
+    expect(chainHttpRequests).toEqual([]);
+    expect(relayBodies).toEqual([]);
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined();
+    expect(await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP,
+      excludedAddresses: [main] })).toMatchObject({ status: "insufficient", spendableCapacityAtomic: 0n });
+    await reopen();
+    expect(await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP }))
+      .toMatchObject({ status: "available", maximumNativeFeeAtomic: RESERVE });
+  });
+
+  it("quotes funded pool fragmentation with the sender's exact fees, excluding held inputs", async () => {
+    await fundAhead();
+    const funded = rows("available");
+    const transfers = mockFunded.length;
+    const quote = await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP });
+    expect(quote).toMatchObject({ status: "available", maximumNativeFeeAtomic: RESERVE * 2n });
+    expect(funded.map(record => alice.pool.claimedBy(record.index))).toEqual([undefined, undefined]);
+    alice.pool.restoreClaim("earlier-message", funded.map(record => record.index));
+    expect(await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP,
+      excludedAddresses: [main] })).toMatchObject({ status: "insufficient" });
+    expect(mockFunded).toHaveLength(transfers);
+    alice.pool.releaseClaim("earlier-message");
+  });
+
+  it("free stamps read no node, rejects below-fee paid stamps, and refuses closed handles", async () => {
+    const before = requests();
+    expect(await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: 0n }))
+      .toMatchObject({ status: "available", maximumNativeFeeAtomic: 0n, spendableCapacityAtomic: 0n });
+    expect(requests()).toBe(before);
+    offlineChain.gasPrice = 1n;
+    await expect(f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: 1n }))
+      .rejects.toThrow();
+    await alice.close();
+    await expect(f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP }))
+      .rejects.toThrow();
+  });
+
   it("funds exactly the pair one message needs; the send that follows pays from that pair, while a send with nothing funded makes one payment from the main account; neither makes a funding transaction", async () => {
     expect(FUND_AHEAD_MESSAGES).toBe(1);
     // A send with nothing funded: one payment of the whole stamp from the main account.

@@ -12,6 +12,7 @@ export * from './ledger/mail-journal';
 export * from './http/checkout-server';
 export * from './smtp/inbound-server';
 export * from './smtp/issued-mailbox-lookup';
+export * from './smtp/resend-inbound-webhook';
 export * from './smtp/smtp-listener';
 export * from './mta/outbound-delivery';
 export * from './mta/mx-transport';

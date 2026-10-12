@@ -1,5 +1,5 @@
 /**
- * Mail gateway journal (#1237, stage G1; format 3 with issued mailbox ownership).
+ * Mail gateway journal (#1237, stage G1; format 4 with issued mailbox ownership).
  *
  * The durable owner of: which email threads exist in a Frank account's scope,
  * which message holds each RFC Message-ID there, every inbound email the
@@ -25,10 +25,12 @@
  * Two keys (contract section 21.2), both opaque 64-hex values computed by the
  * caller. This module stores and compares them and computes neither.
  *
- * - The **mail key** identifies one RFC 5322 message. It is the key of an
- *   inbound email, the regenerated identifier of a contested inbound mail, the
- *   synthetic identifier of a mail with no usable Message-ID, and the only thing
- *   that decides whether an arriving mail is the scope's own mail coming back.
+ * - The **mail key** identifies an inbound delivery or an outbound RFC 5322
+ *   message. For an issued inbound mailbox, its delivery key binds the canonical
+ *   content mail key to the envelope local part, so two aliases never share a
+ *   row or send slot. The canonical content key alone decides whether an
+ *   arriving mail is the scope's own outbound mail coming back. The delivery
+ *   key supplies regenerated identifiers for contested or ID-less inbound mail.
  * - The **item key** identifies what a Frank user authored, whatever seal it
  *   arrived under. It decides whether a Frank message is a re-seal of one
  *   already bridged, and it is the regenerated identifier of a contested
@@ -104,7 +106,7 @@ import type {
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 3;
+export const MAIL_JOURNAL_FORMAT = 4;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
@@ -168,6 +170,9 @@ const MAIL_JOURNAL_DDL = `
   CREATE TABLE inbound_email (
     scope_account TEXT NOT NULL,
     mail_key TEXT NOT NULL,
+    mailbox_local_part TEXT,
+    conversation_id TEXT,
+    stamp_value TEXT NOT NULL,
     rfc_message_id TEXT NOT NULL,
     sender_email TEXT NOT NULL,
     data_sha256 TEXT NOT NULL,
@@ -283,6 +288,14 @@ export interface AdmitInboundEmailInput {
   readonly scopeAccount: string;
   /** Mail key of the DATA bytes. It is the row key: the same key is the same mail. */
   readonly mailKey: string;
+  /** Exact stamp intended when this delivery is accepted; retained while held. */
+  readonly stampValue: string;
+  /** Envelope recipient for an issued mailbox. Part of the caller's delivery key. */
+  readonly mailboxLocalPart?: string;
+  /** Immutable conversation assignment of the issued mailbox, including while held. */
+  readonly conversationId?: string;
+  /** Canonical RFC-content key for echo detection when mailKey includes an envelope recipient. */
+  readonly echoMailKey?: string;
   /**
    * The sole valid ID of the `Message-ID` header; undefined when absent or `bad_message_id`.
    * The journal derives the stored identifier: this value, or `noMessageIdFor(mailKey)` when
@@ -330,6 +343,8 @@ export type AdmitInboundEmailResult =
 export interface RelayInboundEmailInput {
   readonly scopeAccount: string;
   readonly mailKey: string;
+  /** Explicitly issued mailbox conversation. It overrides unrelated RFC reply headers. */
+  readonly conversationId?: string;
   /** Value the gateway will stamp the send with, as decimal text. */
   readonly stampValue: string;
   /** First valid ID of `In-Reply-To`, if any. */
@@ -567,6 +582,9 @@ function toInboundEmail(row: InboundEmailRow): InboundEmailRecord {
   return {
     scopeAccount: row.scope_account,
     mailKey: row.mail_key,
+    mailboxLocalPart: optional(row.mailbox_local_part),
+    conversationId: optional(row.conversation_id),
+    stampValue: row.stamp_value,
     rfcMessageId: row.rfc_message_id,
     senderEmail: row.sender_email,
     dataSha256: row.data_sha256,
@@ -1018,6 +1036,13 @@ export class MailJournal {
   admitInboundEmail(input: AdmitInboundEmailInput): AdmitInboundEmailResult {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
     const mailKey = requireMatch('mailKey', input.mailKey, HEX_64);
+    const stampValue = requireMatch('stampValue', input.stampValue, DECIMAL);
+    const mailboxLocalPart = input.mailboxLocalPart === undefined ? null
+      : requireMatch('mailboxLocalPart', input.mailboxLocalPart, /^[a-z0-9][a-z0-9_-]{2,31}$/);
+    const conversationId = input.conversationId === undefined ? null
+      : requireMatch('conversationId', input.conversationId, FRANK_ID);
+    const echoMailKey = input.echoMailKey === undefined ? mailKey
+      : requireMatch('echoMailKey', input.echoMailKey, HEX_64);
     const header =
       input.messageIdHeader === undefined ? undefined : requireRfcId('messageIdHeader', input.messageIdHeader);
     const rfcId =
@@ -1042,6 +1067,8 @@ export class MailJournal {
       for (const row of due) this.expireHeldRow(row);
 
       const stored = this.inboundEmailRow(scope, mailKey);
+      if (stored && (stored.mailbox_local_part !== mailboxLocalPart || stored.conversation_id !== conversationId))
+        throw new MailJournalStateError('Inbound delivery key has a different mailbox assignment');
       if (stored && stored.disposition !== 'expired') return { kind: 'duplicate', email: toInboundEmail(stored) };
 
       // Mail key against mail key. An outbound row's item key is never consulted here.
@@ -1049,7 +1076,7 @@ export class MailJournal {
         this.get<{ n: number }>(
           "SELECT 1 AS n FROM mail_message WHERE scope_account = ? AND mail_key = ? AND direction = 'frank_to_email' LIMIT 1",
           scope,
-          mailKey
+          echoMailKey
         ) !== undefined;
 
       let displaced: InboundEmailRecord | undefined;
@@ -1084,10 +1111,11 @@ export class MailJournal {
       if (stored) {
         this.run(
           `UPDATE inbound_email
-              SET rfc_message_id = ?, sender_email = ?, data_sha256 = ?, raw = ?, disposition = ?,
+              SET rfc_message_id = ?, stamp_value = ?, sender_email = ?, data_sha256 = ?, raw = ?, disposition = ?,
                   held_message_id = NULL, expires_at = ?
             WHERE scope_account = ? AND mail_key = ? AND disposition = 'expired'`,
           rfcId,
+          stampValue,
           sender,
           dataSha256,
           encodeStoredBytes(input.raw),
@@ -1099,10 +1127,13 @@ export class MailJournal {
       } else {
         this.run(
           `INSERT INTO inbound_email
-             (scope_account, mail_key, rfc_message_id, sender_email, data_sha256, raw, disposition, expires_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (scope_account, mail_key, mailbox_local_part, conversation_id, stamp_value, rfc_message_id, sender_email, data_sha256, raw, disposition, expires_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           scope,
           mailKey,
+          mailboxLocalPart,
+          conversationId,
+          stampValue,
           rfcId,
           sender,
           dataSha256,
@@ -1199,6 +1230,8 @@ export class MailJournal {
     const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
     const mailKey = requireMatch('mailKey', input.mailKey, HEX_64);
     const stampValue = requireMatch('stampValue', input.stampValue, DECIMAL);
+    const issuedConversationId = input.conversationId === undefined
+      ? undefined : requireMatch('conversationId', input.conversationId, FRANK_ID);
     const inReplyTo =
       input.inReplyTo === undefined ? undefined : requireRfcId('inReplyTo', input.inReplyTo);
     const references = (input.references ?? []).map((id, i) => requireRfcId(`references[${i}]`, id));
@@ -1207,6 +1240,10 @@ export class MailJournal {
     return this.ledger.atomic((): RelayInboundEmailResult => {
       const email = this.inboundEmailRow(scope, mailKey);
       if (!email) throw new MailJournalStateError('No inbound email with this scope and mail key');
+      if (stampValue !== email.stamp_value)
+        throw new MailJournalStateError('Inbound send stamp differs from admitted intent');
+      if (issuedConversationId && email.conversation_id && issuedConversationId !== email.conversation_id)
+        throw new MailJournalStateError('Issued mailbox conversation differs from stored inbound email');
 
       const existing = this.slotBySource('inbound_email', sourceKey);
       if (existing) {
@@ -1228,9 +1265,12 @@ export class MailJournal {
         throw new MailJournalStateError(`Inbound email is ${email.disposition}; it cannot be relayed`);
       }
 
-      const parent = this.resolveParent(scope, inReplyTo, references);
+      const resolvedParent = this.resolveParent(scope, inReplyTo, references);
+      const assignedConversationId = email.conversation_id ?? issuedConversationId;
+      const parent = assignedConversationId && resolvedParent?.conversation_id !== assignedConversationId
+        ? undefined : resolvedParent;
       const frankMessageId = randomFrankId();
-      const conversationId = parent?.conversation_id ?? frankMessageId;
+      const conversationId = assignedConversationId ?? parent?.conversation_id ?? frankMessageId;
       const contested = this.messageRow(scope, email.rfc_message_id) !== undefined;
       const rfcId = contested ? this.contestedIdFor(mailKey) : email.rfc_message_id;
       if (contested && this.messageRow(scope, rfcId)) {
@@ -1264,7 +1304,7 @@ export class MailJournal {
         in_reply_to: inReplyTo ?? null,
         created_at: now,
       });
-      if (!parent) {
+      if (!this.get('SELECT 1 AS n FROM mail_thread WHERE scope_account = ? AND conversation_id = ?', scope, conversationId)) {
         this.run(
           "INSERT INTO mail_thread (scope_account, conversation_id, origin, created_at) VALUES (?, ?, 'email', ?)",
           scope,

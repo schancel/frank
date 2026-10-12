@@ -15,7 +15,8 @@
     "@frank/directory-admission": "*",
     "@frank/wallet": "*",
     "ethers": "^6.17.0",
-    "kysely": "^0.29.6"
+    "kysely": "^0.29.6",
+    "resend": "^6.32.1"
   },
   "devDependencies": {
     "@types/jest": "^29",

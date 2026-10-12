@@ -1,5 +1,5 @@
 /**
- * Mail journal (#1237 G1, format 3 with mailbox issuance). File-backed SQLite in a temp
+ * Mail journal (#1237 G1, format 4 with mailbox issuance). File-backed SQLite in a temp
  * directory, real close and reopen, no database mocks. Each test names the
  * later-stage failure it prevents. `J1`..`J25` are the acceptance tests of the
  * contract's section 21.6.
@@ -139,6 +139,7 @@ function admit(journal: MailJournal, scope: string, name: string, messageIdHeade
   return journal.admitInboundEmail({
     scopeAccount: scope,
     mailKey: key(name),
+    stampValue: '1000',
     messageIdHeader,
     senderEmail: over.sender ?? SENDER,
     dataSha256: sha(bytes),
@@ -151,7 +152,7 @@ function relay(
   journal: MailJournal,
   scope: string,
   name: string,
-  parents: { inReplyTo?: string; references?: string[] } = {}
+  parents: { inReplyTo?: string; references?: string[]; conversationId?: string } = {}
 ) {
   return journal.relayInboundEmail({ scopeAccount: scope, mailKey: key(name), stampValue: '1000', ...parents });
 }
@@ -318,7 +319,7 @@ describe('open, format marker and the single connection', () => {
     expect(db.prepare('PRAGMA synchronous').get()).toEqual({ synchronous: 2 });
     expect(db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' });
     expect(db.prepare('PRAGMA locking_mode').get()).toEqual({ locking_mode: 'exclusive' });
-    expect(MAIL_JOURNAL_FORMAT).toBe(3);
+    expect(MAIL_JOURNAL_FORMAT).toBe(4);
     expect(journal.frankCursor()).toEqual({});
   });
 
@@ -356,8 +357,8 @@ describe('open, format marker and the single connection', () => {
   // Prevents: a build silently re-creating or reinterpreting a journal it cannot read, which
   // would forget which mails were already relayed and pay for them again.
   it.each([
-    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 3 only/],
-    ['a later format', 'UPDATE mail_journal_meta SET format = 4', /format 4 is not supported/],
+    ['an earlier format', 'UPDATE mail_journal_meta SET format = 1', /format 1 is not supported; this build reads format 4 only/],
+    ['a later format', 'UPDATE mail_journal_meta SET format = 5', /format 5 is not supported/],
     ['no marker row', 'DELETE FROM mail_journal_meta', /format marker is missing/],
     ['no marker table', 'DROP TABLE mail_journal_meta', /format marker is missing/],
     ['a second marker row', 'DROP TABLE mail_journal_meta; CREATE TABLE mail_journal_meta (format); INSERT INTO mail_journal_meta VALUES (3), (3)', /format marker is missing/],
@@ -959,6 +960,26 @@ describe('email → Frank: holder, repeat and contested', () => {
     expect(bobReply.message.conversationId).toBe(bobReply.slot.frankMessageId);
   });
 
+  it('routes issued aliases to their own conversation despite cross-thread RFC headers', () => {
+    let { journal } = open();
+    const firstId = frankId(401);
+    const secondId = frankId(402);
+    journal.issueMailbox({ localPart: 'first', scopeAccount: ALICE, conversationId: firstId });
+    journal.issueMailbox({ localPart: 'second', scopeAccount: ALICE, conversationId: secondId });
+    admit(journal, ALICE, 'first-mail', '<first@x.example>');
+    const first = relay(journal, ALICE, 'first-mail', { conversationId: journal.issuedMailbox('first')!.conversationId });
+    journal = reopen().journal;
+    admit(journal, ALICE, 'second-mail', '<second@x.example>');
+    const second = relay(journal, ALICE, 'second-mail', {
+      conversationId: journal.issuedMailbox('second')!.conversationId,
+      inReplyTo: '<first@x.example>',
+    });
+    expect(first.slot.conversationId).toBe(firstId);
+    expect(second.slot.conversationId).toBe(secondId);
+    expect(journal.findMailThread(ALICE, firstId)).toBeDefined();
+    expect(journal.findMailThread(ALICE, secondId)).toBeDefined();
+  });
+
   // Prevents: two arrivals of one ID both becoming its holder. Only one connection can exist
   // (see the lock test), and on it each decision is one transaction.
   it('two different mails claiming one ID, admitted together and relayed back to back, give exactly one holder', () => {
@@ -983,7 +1004,7 @@ describe('email → Frank: holder, repeat and contested', () => {
     admit(journal, ALICE, 'one', '<m1@x.example>');
     admit(journal, ALICE, 'two', '<m1@x.example>');
     const tricky = Buffer.from('blob://looks-like-a-pointer');
-    const common = { scopeAccount: ALICE, senderEmail: SENDER, principalHasCredit: false };
+    const common = { scopeAccount: ALICE, senderEmail: SENDER, stampValue: '1000', principalHasCredit: false };
     journal.admitInboundEmail({
       ...common,
       mailKey: key('tricky'),
@@ -1110,6 +1131,7 @@ describe('boundary refusals', () => {
     const good = {
       scopeAccount: ALICE,
       mailKey: key('m1'),
+      stampValue: '1000',
       messageIdHeader: '<m1@x.example>',
       senderEmail: SENDER,
       dataSha256: sha('x'),
@@ -1126,6 +1148,7 @@ describe('boundary refusals', () => {
       { senderEmail: 'carol' },
       { senderEmail: 'carol @mail.example' },
       { dataSha256: 'zz' },
+      { stampValue: '01' },
       { principalHasCredit: undefined as never },
       { principalHasCredit: 1 as never },
     ]) {
@@ -1546,7 +1569,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
     for (let i = 0; i < 2; i++) {
       expect(() => open()).toThrow(MailJournalOpenError);
       expect(() => open()).toThrow(
-        /format 1 is not supported; this build reads format 3 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
+        /format 1 is not supported; this build reads format 4 only\. Nothing was changed\. Archive this database together with the gateway wallet stores and start a new one/
       );
     }
     expect(fileHash()).toBe(before);
@@ -1571,7 +1594,7 @@ describe('G1b: the open path, the registry and what stays private (21.4, 21.5)',
 
     expect('MAIL_JOURNAL_DDL' in packageIndex).toBe(false);
     expect(Object.keys(packageIndex).filter((name) => /DDL/.test(name))).toEqual([]);
-    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(3);
+    expect(packageIndex.MAIL_JOURNAL_FORMAT).toBe(4);
     expect(packageIndex.MAIL_JOURNAL_TABLES).toBe(MAIL_JOURNAL_TABLES);
 
     const { db } = open();
@@ -2104,6 +2127,7 @@ describe('G1b: two keys, re-seals and echoes (21.2)', () => {
       journal.admitInboundEmail({
         scopeAccount: ALICE,
         mailKey,
+        stampValue: '1',
         messageIdHeader,
         senderEmail: SENDER,
         dataSha256: sha(body),

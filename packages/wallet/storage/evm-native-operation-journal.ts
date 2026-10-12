@@ -858,7 +858,11 @@ export class EvmNativeOperationJournal {
             .reduce(
               (n, m) =>
                 n +
-                nativeMaximumFee(checked('unsigned', () => unsigned(m.unsignedTransaction, this.binding))),
+                nativeMaximumFee(
+                  checked('unsigned', () =>
+                    unsigned(m.unsignedTransaction, this.binding),
+                  ),
+                ),
               0n,
             )
             .toString(),

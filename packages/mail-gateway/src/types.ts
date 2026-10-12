@@ -212,7 +212,7 @@ export interface FrankInboundRecord {
   readonly reason?: string;
 }
 
-export type OutboundJobState = 'pending' | 'sent' | 'failed' | 'bounced';
+export type OutboundJobState = 'pending' | 'submitting' | 'uncertain' | 'sent' | 'failed' | 'bounced';
 
 export interface OutboundJobRecord {
   readonly jobId: number;
@@ -228,6 +228,7 @@ export interface OutboundJobRecord {
   readonly signedRfc822: StoredMailBytes;
   readonly state: OutboundJobState;
   readonly attempts: number;
+  readonly submissionStartedAtMs?: number;
   readonly nextAttemptAtMs: number;
   readonly lastError?: string;
   readonly createdAtMs: number;

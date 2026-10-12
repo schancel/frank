@@ -106,7 +106,7 @@ import type {
  * Identifier comparison is byte-exact: every key column is TEXT under SQLite's
  * default BINARY collation.
  */
-export const MAIL_JOURNAL_FORMAT = 4;
+export const MAIL_JOURNAL_FORMAT = 5;
 
 export const MAIL_JOURNAL_TABLES = [
   'mail_journal_meta',
@@ -229,8 +229,9 @@ const MAIL_JOURNAL_DDL = `
     recipient_email TEXT NOT NULL,
     bounce_token TEXT NOT NULL UNIQUE,
     signed_rfc822 BLOB NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'sent', 'failed', 'bounced')),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'submitting', 'uncertain', 'sent', 'failed', 'bounced')),
     attempts INTEGER NOT NULL DEFAULT 0,
+    submission_started_at INTEGER,
     next_attempt_at INTEGER NOT NULL,
     last_error TEXT,
     created_at INTEGER NOT NULL,
@@ -655,6 +656,7 @@ function toJob(row: OutboundJobJoinedRow): OutboundJobRecord {
     signedRfc822: decodeStoredBytes(row.signed_rfc822),
     state: row.state,
     attempts: row.attempts,
+    submissionStartedAtMs: optional(row.submission_started_at),
     nextAttemptAtMs: row.next_attempt_at,
     lastError: optional(row.last_error),
     createdAtMs: row.created_at,
@@ -1616,9 +1618,20 @@ export class MailJournal {
     });
   }
 
-  /** `pending` → `sent`, counting the attempt. One transaction. Already `sent`: nothing written. */
+  /** Persist the externally visible send attempt before handing bytes to any provider. */
+  claimOutboundJob(jobId: number): OutboundJobRecord {
+    return this.ledger.atomic(() => {
+      const job = this.jobRow(jobId);
+      if (job.state !== 'pending')
+        throw new MailJournalStateError(`Outbound job ${jobId} is ${job.state}; it cannot be claimed again`);
+      this.run("UPDATE outbound_job SET state = 'submitting', submission_started_at = ? WHERE job_id = ?", this.now(), job.job_id);
+      return toJob(this.jobRow(jobId));
+    });
+  }
+
+  /** `submitting` → `sent` after the provider confirms acceptance. */
   markOutboundJobSent(jobId: number): OutboundJobRecord {
-    return this.moveJob(jobId, 'sent', ['pending'], (job) =>
+    return this.moveJob(jobId, 'sent', ['submitting'], (job) =>
       this.run("UPDATE outbound_job SET state = 'sent', attempts = attempts + 1 WHERE job_id = ?", job.job_id)
     );
   }
@@ -1632,11 +1645,11 @@ export class MailJournal {
     requireTime('nextAttemptAtMs', nextAttemptAtMs);
     return this.ledger.atomic(() => {
       const job = this.jobRow(jobId);
-      if (job.state !== 'pending') {
+      if (job.state !== 'submitting') {
         throw new MailJournalStateError(`Outbound job ${jobId} is ${job.state}; not changed`);
       }
       this.run(
-        'UPDATE outbound_job SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE job_id = ?',
+        "UPDATE outbound_job SET state = 'pending', attempts = attempts + 1, next_attempt_at = ?, last_error = ?, submission_started_at = NULL WHERE job_id = ?",
         nextAttemptAtMs,
         String(error),
         jobId
@@ -1645,15 +1658,30 @@ export class MailJournal {
     });
   }
 
-  /** `pending` → `failed`, counting the attempt. One transaction. Already `failed`: nothing written. */
+  /** `submitting` → `failed` after explicit permanent provider rejection. */
   markOutboundJobFailed(jobId: number, error: string): OutboundJobRecord {
-    return this.moveJob(jobId, 'failed', ['pending'], (job) =>
+    return this.moveJob(jobId, 'failed', ['submitting'], (job) =>
       this.run(
         "UPDATE outbound_job SET state = 'failed', attempts = attempts + 1, last_error = ? WHERE job_id = ?",
         String(error),
         job.job_id
       )
     );
+  }
+
+  /** Ambiguous outcome: never automatically retry this job, even after a restart. */
+  markOutboundJobUncertain(jobId: number, error: string): OutboundJobRecord {
+    return this.moveJob(jobId, 'uncertain', ['submitting'], (job) =>
+      this.run("UPDATE outbound_job SET state = 'uncertain', attempts = attempts + 1, last_error = ? WHERE job_id = ?", String(error), job.job_id)
+    );
+  }
+
+  /** Operator reconciliation queue; `submitting` includes crashes during provider calls. */
+  listUncertainOutboundJobs(limit = 100): OutboundJobRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');
+    return this.all<OutboundJobJoinedRow>(
+      `${JOB_SELECT} WHERE j.state IN ('submitting', 'uncertain') ORDER BY j.submission_started_at, j.job_id LIMIT ?`, limit
+    ).map(toJob);
   }
 
   /**
@@ -1666,7 +1694,7 @@ export class MailJournal {
     return this.ledger.atomic(() => {
       const job = this.get<OutboundJobRow>('SELECT * FROM outbound_job WHERE bounce_token = ?', bounceToken);
       if (!job) return undefined;
-      if (job.state === 'pending' || job.state === 'sent') {
+      if (job.state === 'pending' || job.state === 'submitting' || job.state === 'uncertain' || job.state === 'sent') {
         this.run("UPDATE outbound_job SET state = 'bounced' WHERE job_id = ?", job.job_id);
       }
       return toJob(this.jobRow(job.job_id));

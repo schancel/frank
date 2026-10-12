@@ -4,6 +4,7 @@ import {
   app,
   BrowserWindow,
   nativeTheme,
+  ipcMain,
   Tray,
   Menu,
   shell,
@@ -13,6 +14,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 import Badge from 'electron-windows-badge'
+import { registerQuasarRuntime } from '#q-app/electron/main'
 
 const currentDir = fileURLToPath(new URL('.', import.meta.url))
 const __dirname = currentDir
@@ -32,14 +34,6 @@ try {
   }
   // eslint-disable-next-line no-empty
 } catch (_) {}
-
-/**
- * Set `__statics` path to static files in production;
- * The reason we are setting it here is that the path needs to be evaluated at runtime
- */
-if (process.env.PROD) {
-  global.__statics = currentDir
-}
 
 function getIconPNGPath() {
   const candidates = [
@@ -63,7 +57,7 @@ const nativeIconSmall = nativeImage
   .resize({ width: 16, height: 16 })
 const nativeIcon = nativeImage.createFromPath(getIconPNGPath())
 
-function createWindow() {
+async function createWindow() {
   const contextMenu = Menu.buildFromTemplate([
     {
       label: 'Open Frank',
@@ -89,16 +83,22 @@ function createWindow() {
     icon: nativeIcon,
     useContentSize: true,
     webPreferences: {
-      preload: path.resolve(__dirname, process.env.QUASAR_ELECTRON_PRELOAD),
+      preload: path.resolve(__dirname, 'electron-preload.cjs'),
       contextIsolation: true,
-      nodeIntegration: true,
-      enableRemoteModule: true,
+      nodeIntegration: false,
+      sandbox: true,
     },
   })
 
-  windowsBadgeUpdater = new Badge(mainWindow, {})
+  if (process.platform === 'win32') {
+    windowsBadgeUpdater = new Badge(mainWindow, {})
+  }
 
-  mainWindow.loadURL(process.env.APP_URL)
+  if (import.meta.env.QUASAR_DEV) {
+    await mainWindow.loadURL(import.meta.env.QUASAR_APP_URL)
+  } else {
+    await mainWindow.loadFile(path.join(currentDir, 'index.html'))
+  }
 
   let forceQuit = false
   if (process.platform === 'darwin') {
@@ -119,10 +119,15 @@ function createWindow() {
     mainWindow = null
   })
 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    openExternal(url)
+    return { action: 'deny' }
+  })
+
   mainWindow.webContents.on('will-navigate', (e, url) => {
     if (url !== e.sender.getURL()) {
       e.preventDefault()
-      shell.openExternal(url)
+      openExternal(url)
     }
   })
 }
@@ -135,7 +140,35 @@ app.on('second-instance', (event, commandLine, workingDirectory) => {
   }
 })
 
-app.on('ready', createWindow)
+function openExternal(url) {
+  if (typeof url !== 'string') return
+  try {
+    const parsed = new URL(url)
+    if (['https:', 'http:', 'mailto:'].includes(parsed.protocol)) {
+      void shell.openExternal(parsed.href)
+    }
+  } catch {
+    // Ignore malformed external URLs instead of passing them to the operating system.
+  }
+}
+
+app.whenReady().then(() => {
+  registerQuasarRuntime()
+  ipcMain.on('frank:update-badge', (event, count) => {
+    if (
+      event.sender !== mainWindow?.webContents ||
+      !Number.isSafeInteger(count) ||
+      count < 0
+    )
+      return
+    if (process.platform === 'win32') windowsBadgeUpdater?.update(count)
+    else app.setBadgeCount(count)
+  })
+  ipcMain.on('frank:open-url', (event, url) => {
+    if (event.sender === mainWindow?.webContents) openExternal(url)
+  })
+  void createWindow()
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

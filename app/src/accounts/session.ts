@@ -993,8 +993,10 @@ export const accountSession = createAccountSession({
     accountChannel?.postMessage('changed')
   },
   open: () => {
-    // Preview capability evidence is browser-only; native webviews do not inherit it.
-    if (Platform.is.electron || Platform.is.capacitor || Platform.is.cordova)
+    // Electron uses the same isolated-renderer IndexedDB/WebCrypto custody,
+    // verified with packaged process-crash and reopen tests. Mobile webviews
+    // have not passed these capability checks.
+    if (Platform.is.capacitor || Platform.is.cordova)
       return Promise.reject(new CustodyError('unavailable'))
     return openAccountCustody({ namespace: 'local-account-v1' })
   },

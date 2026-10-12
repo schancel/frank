@@ -522,6 +522,8 @@ export default configure(ctx => {
       bundler: 'builder', // 'packager' or 'builder'
 
       extendElectronPackageJson(pkg) {
+        // Build-time protobuf tooling is not a native runtime dependency.
+        delete pkg.optionalDependencies
         pkg.type = 'module'
         return pkg
       },
@@ -530,6 +532,9 @@ export default configure(ctx => {
         // https://www.electron.build/configuration/configuration
 
         appId: 'org.cashweb.stamp',
+        mac: {
+          icon: 'src-electron/electron-assets/icons/icon.icns',
+        },
         extraFiles: [
           { from: 'src-electron/electron-assets/icons', to: 'resources/icons' },
         ],

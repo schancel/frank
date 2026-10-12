@@ -318,7 +318,8 @@ export function getDefaultRelayBaseUrl(): string {
   if (
     typeof window !== "undefined" &&
     window.location &&
-    window.location.origin
+    window.location.origin &&
+    ["http:", "https:"].includes(window.location.protocol)
   ) {
     const isLoopback =
       window.location.hostname === "127.0.0.1" ||

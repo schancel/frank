@@ -194,10 +194,19 @@ for (const phase of [
       console.log(JSON.stringify({ phase, ...result.result.value }))
       continue
     }
-    const loaded = await evaluate(bundle.outputFiles[0].text)
+    await evaluate(
+      "window.custodyFixture = document.createElement('iframe'); custodyFixture.srcdoc = '<!doctype html><title>Isolated custody fixture</title>'; document.body.append(custodyFixture); new Promise(resolve => custodyFixture.onload = resolve)",
+    )
+    const loaded = await evaluate(
+      `custodyFixture.contentWindow.eval(${JSON.stringify(
+        bundle.outputFiles[0].text + ';globalThis.custodyTests = custodyTests',
+      )})`,
+    )
     if (loaded.exceptionDetails)
       throw new Error(loaded.exceptionDetails.exception?.description)
-    const result = await evaluate(`custodyTests.run(${JSON.stringify(phase)})`)
+    const result = await evaluate(
+      `custodyFixture.contentWindow.custodyTests.run(${JSON.stringify(phase)})`,
+    )
     if (result.exceptionDetails)
       throw new Error(result.exceptionDetails.exception?.description)
     console.log(JSON.stringify({ phase, ...result.result.value }))

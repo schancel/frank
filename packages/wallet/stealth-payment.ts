@@ -91,6 +91,7 @@ export interface StealthPaymentReceiptClaim {
   readonly recipientDestination: Uint8Array
   readonly ephemeralPublicKey: Uint8Array
   readonly amountAtomic: bigint
+  /** Canonical wire transaction bytes: nonempty, even-length lowercase hex without 0x. */
   readonly rawTransactions: readonly string[]
   readonly payloadDigest: string
 }

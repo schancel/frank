@@ -3544,7 +3544,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             asset: { ...claim.asset },
             ephemeralPublicKey: new Uint8Array(claim.ephemeralPublicKey),
             recipientDestination: new Uint8Array(claim.recipientDestination),
-            rawTransactions: [...claim.rawTransactions],
+            // Public claims carry canonical wire hex; ethers and EVM persistence use DataHexString.
+            rawTransactions: claim.rawTransactions.map((raw) => {
+              if (
+                typeof raw !== "string" ||
+                raw.length > 32768 ||
+                !/^(?:[0-9a-f]{2})+$/.test(raw)
+              )
+                throw new Error("Invalid financial receipt transaction bytes");
+              return `0x${raw}`;
+            }),
           });
           const verifyReceiptClaim = (claim: StealthPaymentReceiptClaim): EvmCoin => {
             assertFinancialActive();

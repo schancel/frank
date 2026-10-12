@@ -31,6 +31,69 @@ import { LevelRecordStore } from '../storage/evm-coin-store'
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
 import { applyWalletSyncItem } from '../sync-dispatcher'
 
+import { validateFrame, standaloneItemBudget } from '@frank/codec'
+import {
+  encodeRecipientAssetPaymentItem,
+  decodeRecipientAssetPaymentItem,
+} from '../message-item-plugins/stealth-asset/codec'
+import type { StealthPaymentReceiptClaim } from '../stealth-payment'
+
+/** Exercise the canonical application codec, whose byte strings project as bare lowercase hex. */
+function receiptFromWire(
+  input: StealthPaymentReceiptClaim,
+  recipientSpendPublicKey: Uint8Array,
+): StealthPaymentReceiptClaim {
+  expect(input.rawTransactions).toHaveLength(1)
+  const raw = input.rawTransactions[0]!
+  const encoded = encodeRecipientAssetPaymentItem({
+    type: 'stealth-asset',
+    transfers: [{
+      chainIdentifier: input.chainIdentifier,
+      txId: Transaction.from(raw).hash!.slice(2),
+      destination: Buffer.from(input.recipientDestination).toString('hex'),
+      amountAtomic: input.amountAtomic.toString(),
+      asset: input.asset.kind === 'native' ? { kind: 'native' } :
+        { kind: 'token', identifier: input.asset.contractAddress.slice(2).toLowerCase() },
+      stealthMetadata: { keyType: 1,
+        ephemeralPubKey: Buffer.from(input.ephemeralPublicKey).toString('hex') },
+      recipientSpendKey: { keyType: 1,
+        publicKey: Buffer.from(recipientSpendPublicKey).toString('hex') },
+      derivationScheme: 1,
+      rawTx: raw.slice(2),
+    }],
+  })
+  const frame = validateFrame(encoded)
+  if (frame.kind !== 'parsed') throw new Error('Expected canonical payment frame')
+  const decoded = decodeRecipientAssetPaymentItem(encoded, {
+    frame, budget: standaloneItemBudget(),
+  }).transfers[0]!
+  expect(decoded.rawTx).toBe(raw.slice(2))
+  expect(keccak256('0x' + decoded.rawTx)).toBe(Transaction.from(raw).hash)
+  return {
+    chainIdentifier: decoded.chainIdentifier,
+    asset: decoded.asset.kind === 'native' ? { kind: 'native' } :
+      { kind: 'erc20', contractAddress: '0x' + decoded.asset.identifier },
+    recipientDestination: getBytes('0x' + decoded.destination),
+    ephemeralPublicKey: getBytes('0x' + decoded.stealthMetadata.ephemeralPubKey),
+    amountAtomic: BigInt(decoded.amountAtomic),
+    rawTransactions: [decoded.rawTx!],
+    payloadDigest: input.payloadDigest,
+  }
+}
+
+async function rejectMalformedReceiptBytes(
+  wallet: EvmChainWalletHandle,
+  claim: StealthPaymentReceiptClaim,
+) {
+  const malformed = ['', '0x' + claim.rawTransactions[0], '0', 'gg', 'AA', '00'.repeat(16385)]
+  for (const raw of malformed) {
+    for (const operation of ['record', 'submit', 'observe'] as const) {
+      await expect(wallet.stealthReceipts![operation]({ ...claim, rawTransactions: [raw] }))
+        .rejects.toThrow('Invalid financial receipt transaction bytes')
+    }
+  }
+}
+
 const config: EvmChainConfig = {
   networkId: 'monad-test',
   chainId: 10143,
@@ -278,7 +341,7 @@ test('production native preparation retains exact bytes and claims until bound e
     expect(state.broadcast).toHaveBeenCalledWith(
       prepared.members[0]!.rawTransaction,
     )
-    const receiptClaim = {
+    const receiptClaim = receiptFromWire({
       chainIdentifier: intent.chainIdentifier,
       asset: intent.asset,
       recipientDestination: prepared.recipientDestination,
@@ -286,7 +349,7 @@ test('production native preparation retains exact bytes and claims until bound e
       amountAtomic: intent.amountAtomic,
       rawTransactions: prepared.members.map(member => member.rawTransaction),
       payloadDigest: digest,
-    }
+    }, wallet.identity.compressedPubKey)
     const accountNote = {
       type: 'received-coin' as const,
       chainIdentifier: intent.chainIdentifier,
@@ -297,6 +360,7 @@ test('production native preparation retains exact bytes and claims until bound e
       timestamp: 1,
     }
     await applyWalletSyncItem(wallet, accountNote)
+    await wallet.stealthReceipts!.record(receiptClaim)
     await wallet.stealthReceipts!.record(receiptClaim)
     await applyWalletSyncItem(wallet, accountNote)
     expect(await wallet.stealthReceipts!.observe(receiptClaim)).toMatchObject({
@@ -309,6 +373,24 @@ test('production native preparation retains exact bytes and claims until bound e
         recipientDestination: new Uint8Array(19),
       }),
     ).rejects.toThrow(/20 bytes/)
+    const history = { balances: new Map(state.balances), transactions: new Map(state.transactions),
+      receipts: new Map(state.receipts) }
+    await wallet.close()
+    wallet = await createEvmChain(cfg).createWallet(roots()) as EvmChainWalletHandle
+    state = stubNode(wallet, 1_000_000n)
+    for (const [key, value] of history.balances) state.balances.set(key, value)
+    for (const [key, value] of history.transactions) state.transactions.set(key, value)
+    for (const [key, value] of history.receipts) state.receipts.set(key, value)
+    await wallet.stealthReceipts!.record(receiptClaim)
+    expect(await wallet.stealthReceipts!.observe(receiptClaim)).toMatchObject({
+      status: 'succeeded', verifiedReceivedAmountAtomic: 1_000n,
+    })
+    await rejectMalformedReceiptBytes(wallet, receiptClaim)
+    expect(state.broadcast).not.toHaveBeenCalled()
+    state.broadcast.mockResolvedValueOnce({ hash: prepared.members[0]!.txHash } as TransactionResponse)
+    await wallet.stealthReceipts!.submit(receiptClaim)
+    expect(state.broadcast).toHaveBeenCalledWith(prepared.members[0]!.rawTransaction)
+    expect(receiptClaim.rawTransactions[0]).toBe(prepared.members[0]!.rawTransaction.slice(2))
     const canonical = state.receipts.get(prepared.members[0]!.txHash)!
     state.receipts.set(canonical.hash, {
       ...canonical,
@@ -360,7 +442,7 @@ test('production ERC20 receipt retains a gasless account and later signs from th
     maxFeePerGas: 1n,
     maxPriorityFeePerGas: 1n,
   })
-  const claim = {
+  const claim = receiptFromWire({
     chainIdentifier: 'monad-testnet',
     asset: { kind: 'erc20' as const, contractAddress: token },
     recipientDestination: getBytes(derived.stealthAddress),
@@ -368,7 +450,7 @@ test('production ERC20 receipt retains a gasless account and later signs from th
     amountAtomic: amount,
     rawTransactions: [raw],
     payloadDigest: 'ab'.repeat(32),
-  }
+  }, wallet.identity.compressedPubKey)
   const receipt = {
     hash: Transaction.from(raw).hash!,
     from: sender.address,
@@ -410,6 +492,8 @@ test('production ERC20 receipt retains a gasless account and later signs from th
   }
   try {
     let state = attach()
+    await rejectMalformedReceiptBytes(wallet, claim)
+    expect(state.broadcast).not.toHaveBeenCalled()
     await expect(wallet.stealthReceipts!.submit(claim)).rejects.toThrow(
       /durably recorded/,
     )
@@ -439,6 +523,7 @@ test('production ERC20 receipt retains a gasless account and later signs from th
     } as TransactionResponse)
     await wallet.stealthReceipts!.submit(claim)
     expect(state.broadcast).toHaveBeenCalledWith(raw)
+    expect(claim.rawTransactions).toEqual([raw.slice(2)])
     state.broadcast.mockClear()
     const intent = {
       operationId: 'erc20-financial-1',
@@ -460,10 +545,15 @@ test('production ERC20 receipt retains a gasless account and later signs from th
       roots(),
     )) as EvmChainWalletHandle
     state = attach()
+    await wallet.stealthReceipts!.record(claim)
     expect(await wallet.stealthReceipts!.observe(claim)).toMatchObject({
       status: 'succeeded',
       spendability: 'needs-native-gas',
     })
+    state.broadcast.mockResolvedValueOnce({ hash: Transaction.from(raw).hash! } as TransactionResponse)
+    await wallet.stealthReceipts!.submit(claim)
+    expect(state.broadcast).toHaveBeenCalledWith(raw)
+    state.broadcast.mockClear()
     // An external native deposit makes this same account usable; no sender funding is inferred.
     state.balances.set(derived.stealthAddress.toLowerCase(), 1_000_000n)
     const { maxNativeFeeAtomic: _ceiling, ...unsignedTokenIntent } = intent

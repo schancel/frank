@@ -72,7 +72,7 @@ export class HyperSwapV2Testnet {
   }
   async verifyDeployment(): Promise<void> {
     const protocol = PROTOCOL_CHAINS[d.chainIdentifier]
-    if ((await this.reader.getNetwork()).chainId.toString() !== protocol.nativeChainId.toString())
+    if (protocol.nativeChainId === undefined || (await this.reader.getNetwork()).chainId.toString() !== protocol.nativeChainId.toString())
       throw new Error('HyperSwap requires Hyperliquid testnet')
     for (const probe of protocol.identityProbes) {
       if (probe.kind === 'block-hash' && !same((await this.reader.getBlock(probe.height))?.hash, probe.expected))

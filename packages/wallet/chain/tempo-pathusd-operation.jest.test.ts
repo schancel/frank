@@ -112,6 +112,22 @@ describe('Tempo PathUSD transfer ownership', () => {
       authorizedFeeCeilingAtomic: 1_000n, quotedNonce: quote.nonce,
     })).rejects.toThrow('Invalid Tempo PathUSD fee authorization')
   })
+
+  test('operation-ID retry cannot bypass a narrower or wrong-asset fee authorization', async () => {
+    const h = harness()
+    const quote = await h.transfers.quote({ signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })
+    const request = {
+      operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n,
+      authorizedFeeAsset: quote.feeAsset, authorizedFeeCeilingAtomic: quote.maximumFeeAtomic,
+      quotedNonce: quote.nonce,
+    }
+    await h.transfers.prepare(request)
+    await expect(h.transfers.prepare({ ...request, authorizedFeeCeilingAtomic: 199n })).rejects.toThrow('different authorization')
+    await expect(h.transfers.prepare({ ...request, authorizedFeeAsset: { ...quote.feeAsset, contract: RECIPIENT } })).rejects.toThrow('Invalid Tempo PathUSD fee authorization')
+    await expect(h.transfers.prepare({ ...request, quotedNonce: 8n })).rejects.toThrow('different authorization')
+    expect(h.signs()).toBe(0)
+    expect(h.sends()).toBe(0)
+  })
   test('holds token amount plus PathUSD fee and signs type 0x76 for exact authorization', async () => {
     const h = harness()
     const row = await h.transfers.prepare({ authorizedFeeAsset: FEE_ASSET, authorizedFeeCeilingAtomic: 1000n, quotedNonce: 7n, operationId: ID, signer: h.signer, recipient: RECIPIENT, amountAtomic: 2_000_000n })

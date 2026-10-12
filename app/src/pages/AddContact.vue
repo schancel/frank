@@ -703,10 +703,7 @@ export default defineComponent({
             if (index === relays.length - 1 && !triedWellKnown) {
               triedWellKnown = true
               try {
-                const fallback = await discoverWellKnown(
-                  domain,
-                  globalThis.fetch,
-                )
+                const fallback = await discoverWellKnown(domain)
                 if (!current()) return
                 // A failing SRV target can still have a valid domain-authenticated HTTPS
                 // route (for example behind a reverse proxy). Never retry the same target.

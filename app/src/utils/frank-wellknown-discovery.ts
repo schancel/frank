@@ -10,7 +10,7 @@ export class WellKnownDiscoveryError extends Error {
 
 export async function discoverWellKnown(
   domain: string,
-  request: typeof fetch,
+  request: typeof fetch = globalThis.fetch,
 ): Promise<{ relays: DiscoveredRelay[]; ttl: number } | null> {
   const abort = new AbortController()
   const timer = setTimeout(() => abort.abort(), 5000)

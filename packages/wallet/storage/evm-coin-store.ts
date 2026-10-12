@@ -568,6 +568,11 @@ export class MemoryRecordStore<T> implements RecordStore<T> {
     this.rows.set(key, { ...row })
     return true
   }
+  async compareAndDelete(key: string, expected: T): Promise<boolean> {
+    if (JSON.stringify(this.rows.get(key)) !== JSON.stringify(expected)) return false
+    this.rows.delete(key)
+    return true
+  }
   async delete(key: string): Promise<void> {
     this.rows.delete(key)
   }
@@ -662,6 +667,28 @@ export class LevelRecordStore<T> implements RecordStore<T> {
         if (JSON.stringify(current) !== expectedBytes) return false
         await durablePut(this.db, key, bytes)
         this.rows.set(key, JSON.parse(bytes) as T)
+        return true
+      },
+    )
+  }
+  async compareAndDelete(key: string, expected: T): Promise<boolean> {
+    const expectedBytes = JSON.stringify(expected)
+    return runNativeTransactionExclusive(
+      this.coordinationKey,
+      'single-realm',
+      async () => {
+        let current: T | undefined
+        try {
+          current = JSON.parse(String(await this.db.get(key))) as T
+        } catch (error) {
+          if (!(error && typeof error === 'object' && 'notFound' in error && error.notFound === true))
+            throw error
+        }
+        if (current === undefined) this.rows.delete(key)
+        else this.rows.set(key, current)
+        if (JSON.stringify(current) !== expectedBytes) return false
+        await durableDelete(this.db, key)
+        this.rows.delete(key)
         return true
       },
     )

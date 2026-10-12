@@ -1,8 +1,9 @@
 export const en = {
-  mera_create: 'Create a new passkey account',
-  mera_login: 'Log in with an existing passkey',
+  mera_title: 'Mera',
+  mera_create: 'Create with Mera',
+  mera_login: 'Log in with Mera',
   mera_description:
-    'Passkeys (preview) create a separate Frank account. To log in elsewhere, use the same passkey on this same website with a supported browser and passkey provider. Save recovery shares from account backup as another way to recover access.',
+    'A new passkey creates a new Frank account. Log in with your existing passkey to return to the same account on this website. You can also save recovery shares from account backup.',
   mera_unsupported:
     'Passkeys require a secure website and a supported browser. Use account creation or recovery shares instead.',
   mera_cancelled:
@@ -175,10 +176,11 @@ export const en = {
 }
 
 export const fr = {
-  mera_create: 'Créer un compte avec une nouvelle clé d’accès',
-  mera_login: 'Se connecter avec une clé d’accès existante',
+  mera_title: 'Mera',
+  mera_create: 'Créer avec Mera',
+  mera_login: 'Se connecter avec Mera',
   mera_description:
-    'Les clés d’accès (aperçu) créent un compte Frank distinct. Pour vous connecter ailleurs, utilisez la même clé d’accès sur ce même site avec un navigateur et un fournisseur compatibles. Enregistrez aussi des parts de récupération dans la sauvegarde du compte.',
+    'Une nouvelle clé d’accès crée un nouveau compte Frank. Connectez-vous avec votre clé existante pour retrouver le même compte sur ce site. Vous pouvez aussi enregistrer des parts de récupération dans la sauvegarde du compte.',
   mera_unsupported:
     'Les clés d’accès nécessitent un site sécurisé et un navigateur compatible. Utilisez la création de compte ou les parts de récupération.',
   mera_cancelled:

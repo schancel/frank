@@ -319,3 +319,27 @@ test('a completed negative directory lookup is not retried by presentation', asy
     setCustomRelayBaseUrl(undefined)
   }
 })
+
+test.each(['en', 'fr'] as const)(
+  'Mera branding groups the official mark and distinct account actions in %s',
+  locale => {
+    const view = render(locale)
+    try {
+      const options = view.get('[data-test="mera-options"]')
+      expect(options.get('#mera-heading').text()).toBe('Mera')
+      expect(options.get('[data-test="mera-logo"]').attributes('alt')).toBe('')
+      expect(options.get('[data-test="mera-create"]').text()).toBe(
+        t(locale)('accountRecovery.mera_create'),
+      )
+      expect(options.get('[data-test="mera-login"]').text()).toBe(
+        t(locale)('accountRecovery.mera_login'),
+      )
+      expect(options.get('[data-test="mera-description"]').text()).toBe(
+        t(locale)('accountRecovery.mera_description'),
+      )
+      expect(options.find('[data-test="new-account"]').exists()).toBe(false)
+    } finally {
+      view.unmount()
+    }
+  },
+)

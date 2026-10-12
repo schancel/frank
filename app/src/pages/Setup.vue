@@ -401,36 +401,63 @@
                   outline
                   color="primary"
                   no-caps
-                  :label="$t('accountRecovery.mera_create')"
-                  data-test="mera-create"
-                  :disable="!mayBegin || busy"
-                  @click="beginPasskey('create')"
-                />
-                <q-btn
-                  outline
-                  color="primary"
-                  no-caps
-                  :label="$t('accountRecovery.mera_login')"
-                  data-test="mera-login"
-                  :disable="!mayBegin || busy"
-                  @click="beginPasskey('login')"
-                />
-                <q-btn
-                  outline
-                  color="primary"
-                  no-caps
                   :label="$t('accountRecovery.identify_legacy_account_locally')"
                   data-test="legacy-recovery"
                   :disable="!mayBegin || busy"
                   @click="changeMode('legacy')"
                 />
               </div>
-              <p class="q-mt-md" data-test="mera-description">
-                {{ $t('accountRecovery.mera_description') }}
-              </p>
-              <p v-if="!passkeysSupported" data-test="mera-unsupported">
-                {{ $t('accountRecovery.mera_unsupported') }}
-              </p>
+              <section
+                class="q-mt-lg"
+                aria-labelledby="mera-heading"
+                data-test="mera-options"
+              >
+                <div class="row items-center q-gutter-sm">
+                  <img
+                    :src="meraLogo"
+                    alt=""
+                    width="32"
+                    height="32"
+                    data-test="mera-logo"
+                  />
+                  <h2
+                    id="mera-heading"
+                    class="text-subtitle1 text-weight-medium q-my-none"
+                  >
+                    {{ $t('accountRecovery.mera_title') }}
+                  </h2>
+                </div>
+                <p class="q-mt-sm" data-test="mera-description">
+                  {{ $t('accountRecovery.mera_description') }}
+                </p>
+                <div class="row q-gutter-sm items-center">
+                  <q-btn
+                    outline
+                    color="primary"
+                    no-caps
+                    :label="$t('accountRecovery.mera_create')"
+                    data-test="mera-create"
+                    :disable="!mayBegin || busy"
+                    @click="beginPasskey('create')"
+                  />
+                  <q-btn
+                    outline
+                    color="primary"
+                    no-caps
+                    :label="$t('accountRecovery.mera_login')"
+                    data-test="mera-login"
+                    :disable="!mayBegin || busy"
+                    @click="beginPasskey('login')"
+                  />
+                </div>
+                <p
+                  v-if="!passkeysSupported"
+                  class="q-mt-sm"
+                  data-test="mera-unsupported"
+                >
+                  {{ $t('accountRecovery.mera_unsupported') }}
+                </p>
+              </section>
               <q-btn
                 v-if="account.status === 'ready'"
                 class="q-mt-md"
@@ -812,6 +839,7 @@ import {
   type ShareVerdict,
 } from '@frank/account-recovery'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import meraLogo from '../assets/mera/favicon.svg'
 import { useRouter } from 'vue-router'
 import { useTranslate } from '../composables/useTranslate'
 import {

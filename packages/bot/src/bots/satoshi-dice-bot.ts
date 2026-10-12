@@ -44,7 +44,7 @@ export function diceHelp(tableLimit: string): string {
 
 How a roll is fair: I publish the hash of a secret before you bet. Your bet adds a random value of your own. The number is derived from both, and I reveal the secret with the result, so the app can check that the secret matches the hash and that the number, outcome and payout follow from it.
 
-Your stake is what your bet message pays me. Amounts typed in chat are not bets. Use the card below.`;
+Your stake is what your bet message pays me. Amounts typed in chat are not bets. Use the game controls to place a bet.`;
 }
 
 interface OfferedRoll {

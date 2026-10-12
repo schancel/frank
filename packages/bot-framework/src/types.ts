@@ -162,8 +162,6 @@ export interface BotContext {
   ): void;
 
   // --- Financial & Transaction Operations ---
-  /** Faucet-only once-per-recipient grants through the wallet operation owner. */
-  readonly nativeGrants?: import("./native-grants").NativeGrantCapability;
   /** Wallet-owned receipt evidence for this chain and message; stated amounts are not receipts. */
   checkMessagePayment(payloadDigest: string): Promise<MessagePayment>;
   sendTransfer(params: {
@@ -223,6 +221,9 @@ export interface FrankBotDefinition {
   /** The largest single transfer this bot can owe from its own account (a game's biggest
    * payout), in wei. The host warns at registration when its top-up cannot cover it. */
   readonly maxPayoutWei?: bigint;
+  /** Total receive-account balances requested for paid messages, before the host's existing
+   * gas headroom: top up below `belowWei` to `toWei`. Not a per-message transfer amount. */
+  readonly paidMessageFunding?: { belowWei: bigint; toWei: bigint };
   readonly schedules?: BotScheduleDefinition[];
   getProfile(): BotProfile;
   onStart?(ctx: BotContext): Promise<void>;

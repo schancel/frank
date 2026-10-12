@@ -70,7 +70,6 @@ import { LoopGuard } from "./loop-guard";
 import { PeerLaneQueue } from "./peer-queue";
 import { LevelSubscriptionManager } from "./subscription-manager";
 import { BotScheduler } from "./scheduler";
-import { NativeGrants } from "./native-grants";
 
 // A retained message that fetches stop returning is never dropped on a guess; it waits. Twenty
 // default poll intervals is past any brief relay or directory lapse and soon enough to act on.
@@ -96,9 +95,7 @@ export const FAILED_REPLY_TEXT =
 // starting from nothing draw under 10 MON.
 const TOP_UP_BELOW_WEI = 300_000_000_000_000_000n;
 const TOP_UP_TO_WEI = 500_000_000_000_000_000n;
-// What bot top-ups leave in the shared funding wallet: the faucet pays its grants from the same
-// wallet and keeps this reserve itself (`FAUCET_MIN_RESERVE_WEI`, 0.1 MON when unset; the
-// faucet's own default lives in packages/bot/src/bots/faucet-bot.ts and must stay the same figure).
+// What bot top-ups leave in the shared funding wallet, independently of each bot's reserve.
 const FUNDING_RESERVE_WEI = 100_000_000_000_000_000n;
 // The account a bot's wallet pays message stamps from spends far less.
 const STAMP_TOP_UP_BELOW_WEI = 100_000_000_000_000_000n;
@@ -476,8 +473,22 @@ export class FrankBotHost {
 
       // 6. Fund the bot from the shared funding wallet, if there is one. The same top-up runs
       // again on the poll whenever a balance has fallen under the threshold.
-      // The faucet sends its grants straight from the funding wallet, so its identity address
-      // needs nothing; its messages are still paid from its own receive address.
+      // The faucet grants through messages, so only its message payer needs a top-up.
+      const paidFunding = definition.paidMessageFunding;
+      if (
+        paidFunding &&
+        (paidFunding.belowWei < 0n || paidFunding.toWei < paidFunding.belowWei)
+      )
+        throw new Error(
+          `Bot "${definition.id}" has invalid paid-message funding balances`
+        );
+      // Keep the existing stamp threshold as gas headroom above the bot's requested totals.
+      const requestedBelow = paidFunding
+        ? paidFunding.belowWei + STAMP_TOP_UP_BELOW_WEI
+        : 0n;
+      const requestedTo = paidFunding
+        ? paidFunding.toWei + STAMP_TOP_UP_BELOW_WEI
+        : 0n;
       const fundingTargets: FundingTarget[] = this.fundingWallet
         ? [
             ...(definition.id === "faucet"
@@ -495,8 +506,14 @@ export class FrankBotHost {
               // Pays the stamps on the bot's messages.
               addr: (await wallet.getReceiveAddress()).raw,
               label: "EVM main account",
-              belowWei: STAMP_TOP_UP_BELOW_WEI,
-              toWei: STAMP_TOP_UP_TO_WEI,
+              belowWei:
+                requestedBelow > STAMP_TOP_UP_BELOW_WEI
+                  ? requestedBelow
+                  : STAMP_TOP_UP_BELOW_WEI,
+              toWei:
+                requestedTo > STAMP_TOP_UP_TO_WEI
+                  ? requestedTo
+                  : STAMP_TOP_UP_TO_WEI,
             },
           ].filter(
             // One account under two names is topped up once, by the larger rule (the first).
@@ -551,9 +568,6 @@ export class FrankBotHost {
       );
 
       const context: BotContext = {
-        ...(definition.id === "faucet"
-          ? { nativeGrants: new NativeGrants(state.sublevel("native-grants"), wallet) }
-          : {}),
         botId: definition.id,
         address: botAddress,
         subject: botSubject,
@@ -773,9 +787,7 @@ export class FrankBotHost {
           if (address) {
             return this.provider.getBalance(address);
           }
-          if (definition.id === "faucet" && this.fundingWallet) {
-            return this.provider.getBalance(this.fundingWallet.address);
-          }
+          if (definition.id === "faucet") return wallet.getBalance();
           return this.provider.getBalance(botAddress);
         },
 

@@ -11,6 +11,7 @@ import { join } from "path";
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { FrankBotHost } from "../src/bot-host";
+import { FaucetBot } from "../../bot/src/bots/faucet-bot";
 import { EVMNonceSequencer } from "../src/nonce-sequencer";
 import type { FrankBotDefinition } from "../src/types";
 
@@ -332,6 +333,111 @@ describe("several bots on one host", () => {
     expect(overlapped).toBe(false);
     expect(provider.getTransactionCount).toHaveBeenCalledTimes(1);
   });
+
+  // Narrow composition unit: real host registration/context/Outbox, with wallet/RPC effects
+  // stubbed below their existing seams. This does not establish real chain/relay acceptance.
+  it.each([0n, 100_000_000_000_000_000n])(
+    "funds the paid welcome payer for a configured 1-coin grant with reserve %s",
+    async (reserve) => {
+      process.env.FAUCET_BOT_IDENTITY_JSON = join(
+        stateDir,
+        "unused-faucet-identity.json"
+      );
+      newHost({ fundingPrivateKeyHex: "0x" + "22".repeat(32) });
+      const amount = 1_000_000_000_000_000_000n;
+      const gasBuffer = 100_000_000_000_000_000n;
+      const receive = "0x3333333333333333333333333333333333333333";
+      const funder = "0x1111111111111111111111111111111111111111";
+      let payerBalance = 500_000_000_000_000_000n;
+      let fundingAvailable = false;
+      const transfers: { to: string; value: bigint }[] = [];
+      const provider = {
+        getBalance: jest.fn(async (address: string) =>
+          address === funder ? 20n * amount : payerBalance
+        ),
+        getTransactionCount: jest.fn(async () => 7),
+      };
+      (host as any).provider = provider;
+      (host as any).fundingWallet = {
+        address: funder,
+        sendTransaction: jest.fn(async ({ to, value }) => {
+          if (!fundingAvailable)
+            throw new Error("top-up temporarily unavailable");
+          transfers.push({ to, value });
+          payerBalance += value;
+          return { wait: async () => undefined };
+        }),
+      };
+      (host as any).nonceSequencer = new EVMNonceSequencer(
+        provider as never,
+        funder
+      );
+      const chain = (host as any).chain;
+      const createWallet = chain.createWallet.getMockImplementation();
+      chain.createWallet.mockImplementationOnce(
+        async (roots: MonadRootBundle) => ({
+          ...(await createWallet(roots)),
+          getReceiveAddress: async () => ({ raw: receive }),
+          getBalance: jest.fn(async () => payerBalance),
+        })
+      );
+      chain.directMessages.minimumStamp = async () => 10_000_000_000_000_000n;
+      const faucet = new FaucetBot({
+        amountWei: amount,
+        minReserveWei: reserve,
+      });
+      await host!.register(faucet);
+      const instance = instanceOf("faucet");
+      expect(await instance.context.getBalance()).toBe(payerBalance);
+      await faucet.onNewUser(
+        { address: peer.address, registeredAtMs: 1 },
+        instance.context
+      );
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(
+        await instance.state.get(`funded:${peer.address.toLowerCase()}`)
+      ).toBeUndefined();
+      expect(instance.fundingTargets).toEqual([
+        {
+          addr: receive,
+          label: "EVM main account",
+          belowWei: amount + reserve + gasBuffer,
+          toWei: amount + reserve + gasBuffer,
+        },
+      ]);
+      fundingAvailable = true;
+      await (host as any).fundBot("faucet", instance.fundingTargets);
+      expect(transfers).toEqual([
+        {
+          to: receive,
+          value: amount + reserve + gasBuffer - 500_000_000_000_000_000n,
+        },
+      ]);
+      mockSend.mockImplementation(async (params) => {
+        expect(params.wallet).toBe(instance.wallet);
+        expect(payerBalance).toBeGreaterThan(params.stampValue + reserve);
+        payerBalance -= params.stampValue + 10_000_000_000_000_000n;
+        return {
+          payloadDigest: "ab".repeat(32),
+          stampValueWei: params.stampValue,
+        };
+      });
+      await faucet.onNewUser(
+        { address: peer.address, registeredAtMs: 1 },
+        instance.context
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0]).toMatchObject({
+        recipient: { raw: peer.address },
+        stampValue: amount,
+        settlement: true,
+        messageId: expect.any(String),
+        items: [{ type: "text", text: expect.stringContaining("Frank faucet") }],
+      });
+      expect(transfers.every(({ to }) => to === receive)).toBe(true);
+      expect(payerBalance).toBeGreaterThanOrEqual(reserve);
+    }
+  );
 
   // On 16218e9f a payout the bot could not cover made the shared funding wallet send the
   // shortfall plus 0.05 MON, an amount the handler chose, and waited for it without a limit

@@ -1,6 +1,7 @@
 import type { RecipientAssetPaymentItem } from '@frank/cashweb/types/messages'
 import {
   recordRecipientAssetPayment,
+  groupRecipientAssetPayment,
   type RecipientPaymentContext,
 } from './receive'
 
@@ -209,4 +210,22 @@ test('duplicate transfer membership rejects before any receipt mutation', async 
     'Duplicate',
   )
   expect(ctx.openWallet).not.toHaveBeenCalled()
+})
+
+test('pure grouping retains the exact receipt claim without opening or recording an owner', () => {
+  const payment = item(),
+    ctx = context()
+  payment.transfers.push({
+    ...payment.transfers[0]!,
+    txId: 'ef'.repeat(32),
+    rawTx: '040506',
+    amountAtomic: '7',
+  })
+  const grouped = groupRecipientAssetPayment(payment, ctx.value)
+  expect(grouped.groups).toHaveLength(1)
+  expect(grouped.groups[0]!.indices).toEqual([0, 1])
+  expect(grouped.groups[0]!.claim.amountAtomic).toBe((1n << 255n) + 8n)
+  expect(grouped.groups[0]!.claim.rawTransactions).toEqual(['010203', '040506'])
+  expect(ctx.openWallet).not.toHaveBeenCalled()
+  expect(ctx.record).not.toHaveBeenCalled()
 })

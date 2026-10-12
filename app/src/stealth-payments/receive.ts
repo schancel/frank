@@ -32,16 +32,24 @@ function bytes(value: string): Uint8Array {
   return Uint8Array.from(value.match(/../g)!, part => parseInt(part, 16))
 }
 
-/** Consumes an already validated application item. Family owners verify signed claims and
- * discover balances; this function neither credits money nor dispatches outgoing wallet sync.
- * A failure rejects the receive so its mailbox frontier remains retryable. Earlier successful
- * entries are replayed through their owners' idempotent receipt operations.
- */
-export async function recordRecipientAssetPayment(
+export interface GroupedRecipientAssetPayment {
+  readonly indices: readonly number[]
+  readonly claim: StealthPaymentReceiptClaim
+}
+
+/** Pure claim grouping shared by receipt application and read-only presentation. Unknown
+ * schemes remain opaque; only a receiving account supplies spendPublicKey for affinity checks. */
+export function groupRecipientAssetPayment(
   item: RecipientAssetPaymentItem,
-  context: RecipientPaymentContext,
-): Promise<readonly RecipientPaymentApplication[]> {
-  const result: RecipientPaymentApplication[] = []
+  context: {
+    readonly payloadDigest: string
+    readonly spendPublicKey?: Uint8Array
+  },
+): {
+  readonly groups: readonly GroupedRecipientAssetPayment[]
+  readonly unsupported: readonly number[]
+} {
+  const unsupported: number[] = []
   const groups = new Map<
     string,
     {
@@ -52,14 +60,13 @@ export async function recordRecipientAssetPayment(
     }
   >()
   for (const [index, transfer] of item.transfers.entries()) {
-    context.assertCurrent()
     // Unknown schemes are honest opaque claims, even when their keys resemble supported ones.
     if (
       transfer.derivationScheme !== 1 ||
       transfer.recipientSpendKey.keyType !== 1 ||
       transfer.stealthMetadata.keyType !== 1
     ) {
-      result.push({ index, status: 'unsupported' })
+      unsupported.push(index)
       continue
     }
     const entry = getChainRegistryEntry(transfer.chainIdentifier)
@@ -68,12 +75,13 @@ export async function recordRecipientAssetPayment(
       entry.family !== 'evm' &&
       !(entry.family === 'bitcoin' && transfer.asset.kind === 'native')
     ) {
-      result.push({ index, status: 'unsupported' })
+      unsupported.push(index)
       continue
     }
     if (
+      context.spendPublicKey !== undefined &&
       transfer.recipientSpendKey.publicKey.toLowerCase() !==
-      hex(context.spendPublicKey)
+        hex(context.spendPublicKey)
     )
       throw new Error('Recipient payment identity differs from this account')
     if (!transfer.rawTx)
@@ -128,12 +136,35 @@ export async function recordRecipientAssetPayment(
     group.transactions.set(transfer.txId.toLowerCase(), transfer.rawTx)
     group.claim = { ...group.claim, amountAtomic: total }
   }
-  for (const group of groups.values()) {
+  return {
+    unsupported,
+    groups: [...groups.values()].map(group => ({
+      indices: group.indices,
+      claim: {
+        ...group.claim,
+        rawTransactions: [...group.transactions.values()],
+      },
+    })),
+  }
+}
+
+/** Consumes an already validated application item. Family owners verify signed claims and
+ * discover balances; this function neither credits money nor dispatches outgoing wallet sync.
+ * A failure rejects the receive so its mailbox frontier remains retryable. Earlier successful
+ * entries are replayed through their owners' idempotent receipt operations.
+ */
+export async function recordRecipientAssetPayment(
+  item: RecipientAssetPaymentItem,
+  context: RecipientPaymentContext,
+): Promise<readonly RecipientPaymentApplication[]> {
+  context.assertCurrent()
+  const grouped = groupRecipientAssetPayment(item, context)
+  const result: RecipientPaymentApplication[] = grouped.unsupported.map(
+    index => ({ index, status: 'unsupported' }),
+  )
+  for (const group of grouped.groups) {
     context.assertCurrent()
-    const claim = {
-      ...group.claim,
-      rawTransactions: [...group.transactions.values()],
-    }
+    const claim = group.claim
     const wallet = await context.openWallet(claim.chainIdentifier)
     context.assertCurrent()
     if (wallet.chainIdentifier !== claim.chainIdentifier)

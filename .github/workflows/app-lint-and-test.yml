@@ -54,7 +54,7 @@ jobs:
       - name: Wallet Monad-chain regression
         run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts chain/monad-parallel-send.jest.test.ts chain/monad-outgoing-message-store.jest.test.ts chain/monad-fund-ahead.jest.test.ts chain/monad-canonical-dm-message-id.jest.test.ts chain/monad-contract-call-composition.jest.test.ts evm-spend-spacing.jest.test.ts monad-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts ci-payment-suites.jest.test.ts
       - name: Durable native operation and canonical inclusion regression
-        run: yarn workspace @frank/wallet test --ci --runInBand storage/evm-native-operation-journal.jest.test.ts chain/evm-legacy-consolidator.jest.test.ts chain/evm-contract-call.jest.test.ts
+        run: yarn workspace @frank/wallet test --ci --runInBand storage/evm-native-operation-journal.jest.test.ts chain/evm-legacy-consolidator.jest.test.ts chain/evm-contract-call.jest.test.ts chain/native-reserve-support.jest.test.ts
       # The same sends against a real EVM node (anvil, from the @foundry-rs/anvil package the
       # contracts workspace installs). The step fails if the binary is missing, so the suite
       # can never be silently skipped here.

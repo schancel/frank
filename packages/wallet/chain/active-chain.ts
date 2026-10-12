@@ -498,6 +498,13 @@ export interface DirectMessageClient {
     /** Authorizes only the explicitly named digests held behind their durability barrier. */
     onEnvelopeDurable?: (payloadDigest: string) => void | Promise<void>;
   }): Promise<Record<string, DirectMessageAttemptStatus>>;
+  /** Read-only durable delivery truth for paid attempts and host-bound free envelopes.
+   * Held or unresolved bytes return live; only a stored relay receipt returns delivered/dead.
+   * Absent returns undefined. Never resends, signs, observes the chain or writes defaults. */
+  deliveryOf?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): Promise<DirectMessageAttemptStatus | undefined>;
   /** Payload hashes of every attempt the wallet can still account for that is not in
    * `knownDigests`: payments no message points at. Re-sends live attempts first, so a
    * just-resumed one is included. An attempt with no outcome yet is always reported. A delivered

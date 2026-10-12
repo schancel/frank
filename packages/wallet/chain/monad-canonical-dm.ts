@@ -283,6 +283,8 @@ export interface OutgoingMessageStore {
    * same bytes: one digest, however many copies the relay ends up holding. Not a link and not
    * in `all()`: it stands for no payment. */
   unpaid(messageId: string): UnpaidEnvelope | undefined
+  /** Read-only linear lookup of host-bound free envelopes; no second recovery index. */
+  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined
   /** `undefined` drops the record. */
   setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined): Promise<void>
 }
@@ -321,6 +323,10 @@ export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   private readonly envelopes = new Map<string, UnpaidEnvelope>()
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
+  }
+  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined {
+    return [...this.envelopes.values()].find(envelope =>
+      envelope.hostBound && envelope.digest === payloadDigest)
   }
   async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
     if (envelope) this.envelopes.set(messageId, { ...envelope })
@@ -423,6 +429,10 @@ export class LevelOutgoingMessageStore implements OutgoingMessageStore {
   private readonly envelopes = new Map<string, UnpaidEnvelope>()
   unpaid(messageId: string): UnpaidEnvelope | undefined {
     return this.envelopes.get(messageId)
+  }
+  unpaidByDigest(payloadDigest: string): UnpaidEnvelope | undefined {
+    return [...this.envelopes.values()].find(envelope =>
+      envelope.hostBound && envelope.digest === payloadDigest)
   }
   async setUnpaid(messageId: string, envelope: UnpaidEnvelope | undefined) {
     if (envelope) {
@@ -2330,6 +2340,16 @@ export function canonicalDirectMessages(
   return {
     send: (params: Parameters<DirectMessageClient['send']>[0]) =>
       send(owner, params, resolveDefaultStamp),
+    deliveryOf: async (
+      params: Parameters<NonNullable<DirectMessageClient['deliveryOf']>>[0],
+    ): Promise<DirectMessageAttemptStatus | undefined> => {
+      if (!/^[0-9a-f]{64}$/.test(params.payloadDigest))
+        throw new Error('Expected canonical message payload digest')
+      const row = owner.messages.all().find(row => row.digest === params.payloadDigest)
+        ?? owner.messages.unpaidByDigest(params.payloadDigest)
+      if (!row) return undefined
+      return row.exposurePending ? 'live' : row.outcome ?? 'live'
+    },
     /**
      * The host's tick. Drives every unresolved message of this wallet one step (see `resend`),
      * whichever digests are named, and answers for the named ones. `maxPutAttempts` above 1 is

@@ -314,6 +314,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       else expect(first.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
       // Model interruption before the caller records this answer, then lose directory access.
       await reopen({ directory: false })
+      expect(await f.chain.directMessages.deliveryOf!({ wallet: alice, payloadDigest: digest! })).toBe(outcome)
       const callback = jest.fn()
       const replay = await attempt({ messageId: ID_A, stampValue: 0n, onEnvelopeDurable: callback })
       expect(replay.requests).toBe(0)
@@ -370,6 +371,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       await reopen()
       const [row] = await rows()
       expect(row.exposurePending).toBe(true)
+      expect(await f.chain.directMessages.deliveryOf!({ wallet: alice, payloadDigest: row.digest })).toBe('live')
       expect(claimed()).toContain('main')
       await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [row.digest], maxPutAttempts: 2 })
       expect(relayBodies).toHaveLength(0)

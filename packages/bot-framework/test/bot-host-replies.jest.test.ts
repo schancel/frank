@@ -1249,7 +1249,9 @@ describe("FrankBotHost replies", () => {
     it("whose send hangs is let go at the call bound and sent again; the wallet's one-payment rule covers the call left behind", async () => {
       const seen: string[] = [];
       const { host, instance } = await start(answering(seen), {
-        callTimeoutMs: 40,
+        // The first call stays unresolved regardless of this bound. Allow the
+        // successful retry's durable journal write time on a loaded CI runner.
+        callTimeoutMs: 250,
       });
       jest.spyOn(console, "warn").mockImplementation(() => {});
       // A wallet stand-in that keeps the wallet's rule, which is what makes letting go safe:

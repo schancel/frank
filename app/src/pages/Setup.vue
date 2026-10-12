@@ -379,47 +379,51 @@
                   data-test="replace-ack"
                 />
               </div>
-              <section
-                class="q-mt-lg"
-                aria-labelledby="mera-heading"
-                data-test="mera-options"
-              >
-                <div class="row items-center q-gutter-sm">
+              <section class="q-mt-lg q-mb-lg" data-test="mera-options">
+                <q-btn
+                  color="primary"
+                  no-caps
+                  data-test="mera-continue"
+                  :disable="!mayBegin || busy"
+                  :aria-expanded="passkeyChoicesOpen"
+                  @click="passkeyChoicesOpen = !passkeyChoicesOpen"
+                >
                   <img
                     :src="meraLogo"
                     alt=""
-                    width="32"
-                    height="32"
+                    width="24"
+                    height="24"
+                    class="q-mr-sm"
                     data-test="mera-logo"
                   />
-                  <h2
-                    id="mera-heading"
-                    class="text-subtitle1 text-weight-medium q-my-none"
-                  >
-                    {{ $t('accountRecovery.mera_title') }}
-                  </h2>
-                </div>
-                <p class="q-mt-sm" data-test="mera-description">
-                  {{ $t('accountRecovery.mera_description') }}
-                </p>
-                <div class="row q-gutter-sm items-center">
-                  <q-btn
-                    color="primary"
-                    no-caps
-                    :label="$t('accountRecovery.mera_login')"
-                    data-test="mera-login"
-                    :disable="!mayBegin || busy"
-                    @click="beginPasskey('login')"
-                  />
-                  <q-btn
-                    flat
-                    color="primary"
-                    no-caps
-                    :label="$t('accountRecovery.mera_create')"
-                    data-test="mera-create"
-                    :disable="!mayBegin || busy"
-                    @click="beginPasskey('create')"
-                  />
+                  <span>{{ $t('accountRecovery.mera_login') }}</span>
+                </q-btn>
+                <div
+                  v-if="passkeyChoicesOpen"
+                  class="q-mt-md"
+                  data-test="mera-choices"
+                >
+                  <p class="q-my-sm">{{ $t('accountRecovery.mera_choose') }}</p>
+                  <div class="row q-gutter-sm items-center">
+                    <q-btn
+                      outline
+                      color="primary"
+                      no-caps
+                      :label="$t('accountRecovery.mera_existing')"
+                      data-test="mera-login"
+                      :disable="!mayBegin || busy"
+                      @click="beginPasskey('login')"
+                    />
+                    <q-btn
+                      flat
+                      color="primary"
+                      no-caps
+                      :label="$t('accountRecovery.mera_new')"
+                      data-test="mera-create"
+                      :disable="!mayBegin || busy"
+                      @click="beginPasskey('create')"
+                    />
+                  </div>
                 </div>
                 <p
                   v-if="!passkeysSupported"
@@ -940,6 +944,7 @@ type Mode =
   | 'restore-shares'
   | 'restore-choose'
 const mode = ref<Mode>('choice')
+const passkeyChoicesOpen = ref(false)
 const heading = ref<HTMLElement>()
 const busy = ref(false)
 const error = ref('')

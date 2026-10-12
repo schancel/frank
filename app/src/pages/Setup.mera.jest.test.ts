@@ -69,7 +69,7 @@ function render(locale: 'en' | 'fr' = 'en') {
         QPage: { template: '<div><slot /></div>' },
         QBtn: {
           props: ['label', 'disable'],
-          template: '<button :disabled="disable">{{ label }}</button>',
+          template: '<button :disabled="disable">{{ label }}<slot /></button>',
         },
         QCheckbox: {
           props: ['modelValue'],
@@ -93,6 +93,14 @@ function render(locale: 'en' | 'fr' = 'en') {
       },
     },
   })
+}
+async function choosePasskey(
+  view: ReturnType<typeof render>,
+  action: 'create' | 'login',
+) {
+  if (!view.find('[data-test="mera-choices"]').exists())
+    await view.get('[data-test="mera-continue"]').trigger('click')
+  await view.get(`[data-test="mera-${action}"]`).trigger('click')
 }
 beforeEach(async () => {
   setActivePinia(createPinia())
@@ -156,7 +164,7 @@ test.each(['en', 'fr'] as const)(
           'failed',
         ] as const) {
           mockPasskey.mockRejectedValueOnce(new MeraAccountError(code))
-          await view.get(`[data-test="mera-${action}"]`).trigger('click')
+          await choosePasskey(view, action)
           await flushPromises()
           expect(mockPasskey).toHaveBeenLastCalledWith(action)
           expect(view.get('[data-test="account-error"]').text()).toBe(
@@ -181,12 +189,10 @@ test('passkey account replacement requires the existing explicit acknowledgement
   })
   const view = render()
   try {
-    for (const action of ['create', 'login']) {
-      expect(
-        view.get(`[data-test="mera-${action}"]`).attributes('disabled'),
-      ).toBeDefined()
-      await view.get(`[data-test="mera-${action}"]`).trigger('click')
-    }
+    const entry = view.get('[data-test="mera-continue"]')
+    expect(entry.attributes('disabled')).toBeDefined()
+    await entry.trigger('click')
+    expect(view.find('[data-test="mera-choices"]').exists()).toBe(false)
     expect(mockPasskey).not.toHaveBeenCalled()
   } finally {
     view.unmount()
@@ -220,10 +226,16 @@ test('successful passkey login enters pending review without activation or navig
   })
   const view = render()
   try {
-    await view.get('[data-test="mera-login"]').trigger('click')
+    await choosePasskey(view, 'login')
     await flushPromises()
     expect(mockPasskey).toHaveBeenCalledWith('login')
     expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+    expect(view.get('[data-test="account-found"]').text()).toBe(
+      'Confirm identity',
+    )
+    expect(view.get('[data-test="pending-identity"]').text()).toContain(
+      'Its published profile will be loaded separately',
+    )
     expect(mockSession.activatePending).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()
     expect(view.emitted('setupCompleted')).toBeUndefined()
@@ -261,7 +273,7 @@ test.each([
     const view = render()
     let unmounted = false
     try {
-      await view.get('[data-test="mera-login"]').trigger('click')
+      await choosePasskey(view, 'login')
       if (race === 'cancel') (view.vm as unknown as { cancel(): void }).cancel()
       if (race === 'unmount') {
         view.unmount()
@@ -316,7 +328,7 @@ test('a completed negative directory lookup is not retried by presentation', asy
   })
   const view = render()
   try {
-    await view.get('[data-test="mera-login"]').trigger('click')
+    await choosePasskey(view, 'login')
     await flushPromises()
     expect(probe).not.toHaveBeenCalled()
     expect(getCustomRelayBaseUrl()).toBe(home)
@@ -329,28 +341,26 @@ test('a completed negative directory lookup is not retried by presentation', asy
 })
 
 test.each(['en', 'fr'] as const)(
-  'Mera branding groups the official mark and distinct account actions in %s',
-  locale => {
+  'one Mera entry contains its logo and reveals explicit choices in %s',
+  async locale => {
     const view = render(locale)
     try {
-      const options = view.get('[data-test="mera-options"]')
-      expect(options.get('#mera-heading').text()).toBe('Mera')
-      const actions = view.findAll('button[data-test]')
-      expect(actions[0].attributes('data-test')).toBe('mera-login')
-      expect(
-        options.get('[data-test="mera-login"]').attributes('outline'),
-      ).toBeUndefined()
-      expect(options.get('[data-test="mera-logo"]').attributes('alt')).toBe('')
-      expect(options.get('[data-test="mera-create"]').text()).toBe(
-        t(locale)('accountRecovery.mera_create'),
+      const entry = view.get('[data-test="mera-continue"]')
+      expect(entry.text()).toBe(t(locale)('accountRecovery.mera_login'))
+      expect(entry.get('[data-test="mera-logo"]').attributes('alt')).toBe('')
+      expect(view.find('[data-test="mera-create"]').exists()).toBe(false)
+      expect(view.find('[data-test="mera-login"]').exists()).toBe(false)
+      expect(view.find('#mera-heading').exists()).toBe(false)
+      await entry.trigger('click')
+      expect(mockPasskey).not.toHaveBeenCalled()
+      expect(view.get('[data-test="mera-login"]').text()).toBe(
+        t(locale)('accountRecovery.mera_existing'),
       )
-      expect(options.get('[data-test="mera-login"]').text()).toBe(
-        t(locale)('accountRecovery.mera_login'),
+      expect(view.get('[data-test="mera-create"]').text()).toBe(
+        t(locale)('accountRecovery.mera_new'),
       )
-      expect(options.get('[data-test="mera-description"]').text()).toBe(
-        t(locale)('accountRecovery.mera_description'),
-      )
-      expect(options.find('[data-test="new-account"]').exists()).toBe(false)
+      await entry.trigger('click')
+      expect(view.find('[data-test="mera-choices"]').exists()).toBe(false)
     } finally {
       view.unmount()
     }
@@ -370,7 +380,7 @@ test.each(['existing', 'unverified', 'unreachable'] as const)(
     })
     const view = render()
     try {
-      await view.get('[data-test="mera-login"]').trigger('click')
+      await choosePasskey(view, 'login')
       await flushPromises()
       expect(mockSession.activatePending).toHaveBeenCalledTimes(
         loginVerification === 'existing' ? 1 : 0,
@@ -400,7 +410,7 @@ test('positive evidence cannot activate a different staged attempt', async () =>
   })
   const view = render()
   try {
-    await view.get('[data-test="mera-login"]').trigger('click')
+    await choosePasskey(view, 'login')
     await flushPromises()
     expect(mockSession.activatePending).not.toHaveBeenCalled()
   } finally {
@@ -408,7 +418,7 @@ test('positive evidence cannot activate a different staged attempt', async () =>
   }
 })
 
-test.each(['adopted', 'unreachable'] as const)(
+test.each(['adopted', 'missing', 'unreachable'] as const)(
   'automatic login keeps required profile restoration observable: %s',
   async profileOutcome => {
     const staged = {
@@ -436,7 +446,7 @@ test.each(['adopted', 'unreachable'] as const)(
       .mockResolvedValue(profileOutcome)
     const view = render()
     try {
-      await view.get('[data-test="mera-login"]').trigger('click')
+      await choosePasskey(view, 'login')
       await flushPromises()
       expect(mockSession.activatePending).toHaveBeenCalledWith(
         'attempt',
@@ -444,6 +454,8 @@ test.each(['adopted', 'unreachable'] as const)(
       )
       if (profileOutcome === 'adopted')
         expect(mockPush).toHaveBeenCalledWith('/wallet')
+      else if (profileOutcome === 'missing')
+        expect(mockPush).toHaveBeenCalledWith('/profile')
       else {
         expect(mockPush).not.toHaveBeenCalled()
         expect(view.get('[data-test="account-error"]').text()).toBe(
@@ -477,7 +489,7 @@ test('acknowledged local replacement still requires pending activation confirmat
   const view = render()
   try {
     await view.get('[data-test="replace-ack"]').setValue(true)
-    await view.get('[data-test="mera-login"]').trigger('click')
+    await choosePasskey(view, 'login')
     await flushPromises()
     expect(mockPasskey).toHaveBeenCalledWith('login')
     expect(mockSession.activatePending).not.toHaveBeenCalled()

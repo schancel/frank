@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "start": "tsx src/bin/daemon.ts",
+    "provision": "tsx src/bin/provision.ts",
     "test": "jest"
   },
   "dependencies": {

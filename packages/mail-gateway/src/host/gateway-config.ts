@@ -4,16 +4,23 @@ import { getAddress } from 'ethers';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain';
 
-export interface GatewayHostConfig {
+export interface GatewayIdentityConfig {
   readonly chain: EvmChainConfig;
   readonly rootFile: string;
   readonly expectedIdentityAddress: string;
   readonly journalFile: string;
   readonly blobDirectory: string;
-  readonly directoryStorage: string;
-  readonly journalMode: 'existing' | 'provision';
   readonly gatewayDomain: string;
   readonly relayBaseUrl: string;
+}
+
+export interface GatewayProvisionConfig extends GatewayIdentityConfig {
+  readonly backupRootFile: string;
+}
+
+export interface GatewayHostConfig extends GatewayIdentityConfig {
+  readonly directoryStorage: string;
+  readonly journalMode: 'existing' | 'provision';
   readonly resendApiKey: string;
   readonly resendWebhookSecret: string;
   readonly resendRawOrigins: readonly string[];
@@ -61,18 +68,35 @@ function positiveInteger(value: string, name: string, maximum: number): number {
   return result;
 }
 
-export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): GatewayHostConfig {
+function loadGatewayIdentityConfig(env: NodeJS.ProcessEnv): GatewayIdentityConfig {
   const walletStorageLocation = absolute(env, 'FRANK_MAIL_WALLET_STATE_DIR');
   const rootFile = absolute(env, 'FRANK_MAIL_ROOTS_FILE');
   const journalFile = absolute(env, 'FRANK_MAIL_JOURNAL_FILE');
   const blobDirectory = absolute(env, 'FRANK_MAIL_BLOB_DIR');
-  const directoryStorage = absolute(env, 'FRANK_MAIL_DIRECTORY_DIR');
   const gatewayDomain = required(env, 'FRANK_MAIL_GATEWAY_DOMAIN').toLowerCase();
   if (!/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(gatewayDomain))
     throw new Error('Invalid gateway mail domain');
   const relayBaseUrl = required(env, 'FRANK_MAIL_RELAY_URL');
   if (new URL(relayBaseUrl).protocol !== 'https:') throw new Error('Mail relay URL must use HTTPS');
   const expectedIdentityAddress = getAddress(required(env, 'FRANK_MAIL_EXPECTED_IDENTITY'));
+  const chain = {
+    ...loadMonadChainConfigFromEnv({ isTestnet: true }),
+    chainIdentifier: 'monad-testnet',
+    walletStorageLocation,
+    requireBoundWalletState: true,
+    relayBaseUrl,
+  } satisfies EvmChainConfig;
+  return { chain, rootFile, expectedIdentityAddress, journalFile, blobDirectory, gatewayDomain, relayBaseUrl };
+}
+
+/** The one-time local state initializer needs no Resend or listener credentials. */
+export function loadGatewayProvisionConfig(env: NodeJS.ProcessEnv = process.env): GatewayProvisionConfig {
+  return { ...loadGatewayIdentityConfig(env), backupRootFile: absolute(env, 'FRANK_MAIL_ROOTS_BACKUP_FILE') };
+}
+
+export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): GatewayHostConfig {
+  const identity = loadGatewayIdentityConfig(env);
+  const directoryStorage = absolute(env, 'FRANK_MAIL_DIRECTORY_DIR');
   const resendApiKey = ownerSecret(absolute(env, 'FRANK_MAIL_RESEND_API_KEY_FILE'));
   const resendWebhookSecret = ownerSecret(absolute(env, 'FRANK_MAIL_RESEND_WEBHOOK_SECRET_FILE'));
   const resendRawOrigins = required(env, 'FRANK_MAIL_RESEND_RAW_ORIGINS').split(',').map(origin => origin.trim());
@@ -87,16 +111,9 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
   const webhookHost = required(env, 'FRANK_MAIL_WEBHOOK_HOST');
   const webhookPort = positiveInteger(required(env, 'FRANK_MAIL_WEBHOOK_PORT'), 'Webhook port', 65535);
   const pollIntervalMs = positiveInteger(required(env, 'FRANK_MAIL_POLL_MS'), 'Poll interval', 3_600_000);
-  const chain = {
-    ...loadMonadChainConfigFromEnv({ isTestnet: true }),
-    chainIdentifier: 'monad-testnet',
-    walletStorageLocation,
-    requireBoundWalletState: true,
-    relayBaseUrl,
-  } satisfies EvmChainConfig;
   return {
-    chain, rootFile, expectedIdentityAddress, journalFile, blobDirectory, directoryStorage,
-    journalMode, gatewayDomain, relayBaseUrl, resendApiKey, resendWebhookSecret,
+    ...identity, directoryStorage,
+    journalMode, resendApiKey, resendWebhookSecret,
     resendRawOrigins, inboundStampValue, webhookHost, webhookPort, pollIntervalMs,
   };
 }

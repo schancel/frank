@@ -4,10 +4,15 @@ import {
   getChainRegistryEntry,
   loadMonadChainConfigFromEnv,
   type EvmChainConfig,
+  type EvmChainWalletHandle,
   type NativeAssetChain,
   type NativeWalletHandle,
 } from '@frank/wallet/chain'
 import { accountSession } from './session'
+import {
+  validateEvmWalletConfiguration,
+  verifyEvmWalletRpcIdentity,
+} from './evm-wallet-verification'
 
 export interface EvmOperatorCheckpoint {
   readonly blockNumber: number
@@ -75,9 +80,11 @@ export function openEvmWallet(
   chainIdentifier: string,
   operatorCheckpoint?: EvmOperatorCheckpoint,
 ): Promise<OpenEvmWallet> {
+  const checkpointInput = operatorCheckpoint && { ...operatorCheckpoint }
   const config = configured(chainIdentifier)
+  validateEvmWalletConfiguration(config, checkpointInput)
   const scope = scopeOf(config.relayBaseUrl)
-  const checkpoint = JSON.stringify(operatorCheckpoint ?? null)
+  const checkpoint = JSON.stringify(checkpointInput ?? null)
   const existing = opened.get(chainIdentifier)
   if (existing?.scope === scope) {
     if (existing.checkpoint !== checkpoint)
@@ -87,8 +94,15 @@ export function openEvmWallet(
     return existing.opening
   }
   existing?.cancellation.abort()
-  if (existing?.value && existing.ownsWallet)
-    void existing.value.wallet.close().catch(() => undefined)
+  const retiring =
+    existing?.value && existing.ownsWallet
+      ? existing.value.wallet.close()
+      : existing?.opening.then(
+          async value => {
+            if (existing.ownsWallet) await value.wallet.close()
+          },
+          () => undefined,
+        )
   const chain = createEvmChain(config)
   const cancellation = new AbortController()
   const entry: Opened = {
@@ -96,6 +110,13 @@ export function openEvmWallet(
     checkpoint,
     cancellation,
     opening: Promise.resolve().then(async () => {
+      await retiring
+      if (
+        cancellation.signal.aborted ||
+        scopeOf(config.relayBaseUrl) !== scope ||
+        opened.get(chainIdentifier) !== entry
+      )
+        throw new Error('Account changed')
       const primary =
         (await accountSession.getWallet()) as NativeWalletHandle & {
           close(): Promise<void>
@@ -105,11 +126,28 @@ export function openEvmWallet(
       const wallet = ownsWallet
         ? await accountSession.createEvmWallet({
             config,
-            operatorCheckpoint,
+            operatorCheckpoint: checkpointInput,
             signal: cancellation.signal,
           })
         : primary
       entry.ownsWallet = ownsWallet
+      if (!ownsWallet) {
+        const requireCurrent = () => {
+          if (
+            cancellation.signal.aborted ||
+            scopeOf(config.relayBaseUrl) !== scope ||
+            opened.get(chainIdentifier) !== entry
+          )
+            throw new Error('Account changed')
+        }
+        requireCurrent()
+        await verifyEvmWalletRpcIdentity(
+          config,
+          (primary as EvmChainWalletHandle).provider,
+          checkpointInput,
+          requireCurrent,
+        )
+      }
       if (ownsWallet) {
         const close = wallet.close.bind(wallet)
         wallet.close = async () => {

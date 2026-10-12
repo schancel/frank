@@ -1,0 +1,248 @@
+/**
+ * New eCash operations own claims, signed bytes, immutable intent and monotonic HD change
+ * allocation. The SDK/Chronik inventory remains derived. Existing native-attempt rows retain
+ * their separate, still-authorized submission obligations; this ledger never copies them.
+ * No keys or message content are stored here. Host composition persists the complete encrypted
+ * payload before asserting its bound exposure digest. Reopen is read-only until an authorized
+ * operation mutates. A source rollback must retain this namespace for signed-byte recovery.
+ */
+export interface EcashNativeIntent {
+  readonly recipient: string;
+  readonly value: string;
+  readonly maxFee?: string;
+}
+
+export interface EcashOperationExposureBinding {
+  readonly chainIdentifier: string;
+  readonly walletAddress: string;
+  readonly transactionHashes: ReadonlyArray<string>;
+  readonly externalPayloadDigest: string;
+}
+
+export interface EcashNativeOperation {
+  readonly operationId: string;
+  readonly intent: EcashNativeIntent;
+  readonly state:
+    | "prepared"
+    | "exposed"
+    | "submitted"
+    | "confirmed"
+    | "released";
+  readonly transactions: ReadonlyArray<{
+    readonly txid: string;
+    readonly rawTransaction: string;
+  }>;
+  readonly inputs: ReadonlyArray<{
+    readonly txid: string;
+    readonly vout: number;
+    readonly satoshis: string;
+  }>;
+  readonly fee: string;
+  readonly nextChangeIndex: number;
+  readonly exposure?:
+    | { readonly kind: "native-rpc" }
+    | {
+        readonly kind: "external-payload";
+        readonly binding: EcashOperationExposureBinding;
+      };
+}
+
+export interface EcashOperationLedger {
+  readonly version: 1;
+  readonly chainIdentifier: string;
+  readonly walletAddress: string;
+  readonly nextChangeIndex: number;
+  readonly operations: ReadonlyArray<EcashNativeOperation>;
+  /** Confirmed prior-obligation inputs. No lifecycle or signed bytes are copied here. */
+  readonly consumedInputs?: ReadonlyArray<{
+    readonly txid: string;
+    readonly vout: number;
+  }>;
+}
+
+export interface EcashOperationStore {
+  readonly coordinationScope: "single-realm" | "cross-process";
+  get(walletKey: string): EcashOperationLedger | undefined;
+  /** Must complete durably or throw. No volatile fallback is permitted. */
+  put(walletKey: string, ledger: EcashOperationLedger): void;
+}
+
+const hash = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+const quantity = (value: unknown): value is string =>
+  typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
+const text = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+const object = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const index = (value: unknown): value is number =>
+  Number.isSafeInteger(value) &&
+  Number(value) >= 0 &&
+  Number(value) < 0x80000000;
+
+/** Reject corruption visibly; never replace an unreadable obligation with an empty ledger. */
+export function parseEcashOperationLedger(
+  serialized: string
+): EcashOperationLedger {
+  const value: unknown = JSON.parse(serialized);
+  if (
+    !object(value) ||
+    value.version !== 1 ||
+    !text(value.chainIdentifier) ||
+    !text(value.walletAddress) ||
+    !index(value.nextChangeIndex) ||
+    !Array.isArray(value.operations)
+  )
+    throw new Error("Invalid eCash operation ledger");
+  if (value.consumedInputs !== undefined) {
+    if (!Array.isArray(value.consumedInputs))
+      throw new Error("Invalid eCash consumed inputs");
+    const consumed = new Set<string>();
+    for (const input of value.consumedInputs) {
+      if (
+        !object(input) ||
+        !hash(input.txid) ||
+        !Number.isSafeInteger(input.vout) ||
+        Number(input.vout) < 0 ||
+        Number(input.vout) > 0xffffffff
+      )
+        throw new Error("Invalid eCash consumed input");
+      const key = `${input.txid}:${input.vout}`;
+      if (consumed.has(key)) throw new Error("Duplicate eCash consumed input");
+      consumed.add(key);
+    }
+  }
+  const ids = new Set<string>();
+  const claimed = new Set<string>();
+  for (const operation of value.operations) {
+    if (
+      !object(operation) ||
+      !text(operation.operationId) ||
+      ids.has(operation.operationId) ||
+      !object(operation.intent) ||
+      !text(operation.intent.recipient) ||
+      !quantity(operation.intent.value) ||
+      operation.intent.value === "0" ||
+      (operation.intent.maxFee !== undefined &&
+        !quantity(operation.intent.maxFee)) ||
+      !["prepared", "exposed", "submitted", "confirmed", "released"].includes(
+        String(operation.state)
+      ) ||
+      !quantity(operation.fee) ||
+      !index(operation.nextChangeIndex) ||
+      operation.nextChangeIndex > value.nextChangeIndex ||
+      !Array.isArray(operation.transactions) ||
+      operation.transactions.length !== 1 ||
+      operation.transactions.some(
+        (tx: unknown) =>
+          !object(tx) ||
+          !hash(tx.txid) ||
+          typeof tx.rawTransaction !== "string" ||
+          !/^(?:[0-9a-f]{2})+$/.test(tx.rawTransaction)
+      ) ||
+      !Array.isArray(operation.inputs) ||
+      operation.inputs.length === 0 ||
+      operation.inputs.some(
+        (input: unknown) =>
+          !object(input) ||
+          !hash(input.txid) ||
+          !Number.isSafeInteger(input.vout) ||
+          Number(input.vout) < 0 ||
+          Number(input.vout) > 0xffffffff ||
+          !quantity(input.satoshis) ||
+          input.satoshis === "0"
+      )
+    )
+      throw new Error("Invalid eCash operation record");
+    ids.add(operation.operationId);
+    if (operation.state !== "released") {
+      for (const input of operation.inputs) {
+        const key = `${input.txid}:${input.vout}`;
+        if (claimed.has(key)) throw new Error("Overlapping eCash input claims");
+        claimed.add(key);
+      }
+    }
+    const exposure = operation.exposure;
+    if (operation.state === "prepared" || operation.state === "released") {
+      if (exposure !== undefined)
+        throw new Error("Unexposed eCash operation has exposure");
+    } else if (
+      !object(exposure) ||
+      (exposure.kind !== "native-rpc" && exposure.kind !== "external-payload")
+    ) {
+      throw new Error("Exposed eCash operation lacks binding");
+    } else if (exposure.kind === "external-payload") {
+      const binding = exposure.binding;
+      const transactions = operation.transactions;
+      if (
+        !object(binding) ||
+        binding.chainIdentifier !== value.chainIdentifier ||
+        binding.walletAddress !== value.walletAddress ||
+        !hash(binding.externalPayloadDigest) ||
+        !Array.isArray(binding.transactionHashes) ||
+        binding.transactionHashes.length !== operation.transactions.length ||
+        binding.transactionHashes.some(
+          (txid: unknown, i: number) => txid !== transactions[i].txid
+        )
+      )
+        throw new Error("Invalid eCash operation exposure binding");
+    }
+  }
+  // Parsing validated the complete public shape. Copying never retains mutable store aliases.
+  return value as unknown as EcashOperationLedger;
+}
+
+export class InMemoryEcashOperationStore implements EcashOperationStore {
+  readonly coordinationScope = "single-realm" as const;
+  private readonly records = new Map<string, string>();
+
+  get(key: string): EcashOperationLedger | undefined {
+    const value = this.records.get(key);
+    return value === undefined ? undefined : parseEcashOperationLedger(value);
+  }
+
+  put(key: string, ledger: EcashOperationLedger): void {
+    const value = JSON.stringify(ledger);
+    parseEcashOperationLedger(value);
+    this.records.set(key, value);
+  }
+}
+
+interface Storage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export class BrowserEcashOperationStore implements EcashOperationStore {
+  readonly coordinationScope = "single-realm" as const;
+  private readonly prefix = "frank:ecash-operations:v1:";
+
+  private storage(): Storage | undefined {
+    if (typeof window === "undefined") return undefined;
+    try {
+      const storage = globalThis.localStorage;
+      if (storage === undefined) throw new Error("Missing localStorage");
+      return storage;
+    } catch {
+      throw new Error("eCash operation persistence is unavailable");
+    }
+  }
+
+  get(key: string): EcashOperationLedger | undefined {
+    const storage = this.storage();
+    if (storage === undefined) return undefined;
+    const value = storage.getItem(this.prefix + key);
+    return value === null ? undefined : parseEcashOperationLedger(value);
+  }
+
+  put(key: string, ledger: EcashOperationLedger): void {
+    const storage = this.storage();
+    if (storage === undefined)
+      throw new Error("eCash operation persistence is unavailable");
+    const value = JSON.stringify(ledger);
+    parseEcashOperationLedger(value);
+    storage.setItem(this.prefix + key, value);
+  }
+}
+
+export const defaultEcashOperationStore = new BrowserEcashOperationStore();

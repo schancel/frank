@@ -1,6 +1,7 @@
 // Explicit legacy-import boundary; loaded only by EcashWallet.fromLegacyMnemonic.
 import * as bip39 from "bip39";
 import type { ChronikClient } from "chronik-client";
+import type { EcashSdkWallet } from "./ecash-sdk-backend";
 import type {
   EcashAddressPrefix,
   EcashWalletBackend,
@@ -45,14 +46,19 @@ export function legacyEcashBackendFactory(
             mnemonic: string,
             chronik: ChronikClient,
             options: { hd: true; prefix: EcashAddressPrefix }
-          ): EcashWalletBackend;
+          ): EcashSdkWallet;
         }
       | undefined;
     if (Wallet === undefined)
       throw new Error("ecash-wallet did not export Wallet");
-    return Wallet.fromMnemonic(params.mnemonic, params.chronik, {
-      hd: true,
-      prefix: "ecash",
-    });
+    const { EcashSdkBackend } = await import("./ecash-sdk-backend");
+    return new EcashSdkBackend(
+      Wallet.fromMnemonic(params.mnemonic, params.chronik, {
+        hd: true,
+        prefix: "ecash",
+      }),
+      params.chronik,
+      "ecash"
+    );
   };
 }

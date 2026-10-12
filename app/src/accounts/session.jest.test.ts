@@ -1645,4 +1645,246 @@ describe('session-owned UTXO stealth custody', () => {
       await f.session.close()
     },
   )
+  test.each([false, true])(
+    'public Chronik close synchronously revokes session-ready custody and actual SDK signing (historical=%s)',
+    async historical => {
+      const { openRelayUtxoChain } = jest.requireActual(
+        '@frank/wallet/chain/utxo-family',
+      )
+      const { createRequire } = jest.requireActual('node:module')
+      const walletRequire = createRequire(
+        require.resolve('@frank/wallet/chain/utxo-family'),
+      )
+      const { ChronikClient } = jest.requireActual(
+        walletRequire.resolve('chronik-client'),
+      )
+      const { Address, Ecc, Tx } = jest.requireActual('ecash-lib')
+      const { ECASH_TESTNET_CHECKPOINT_HASH } = jest.requireActual(
+        '@frank/wallet/ecash-wallet',
+      )
+      const { InMemoryNativeTransactionAttemptStore } = jest.requireActual(
+        '@frank/wallet/chain/chain-wallet',
+      )
+      let captured: EcashStealthCustody | undefined
+      let backend:
+        | import('@frank/wallet/ecash-sdk-backend').EcashSdkBackend
+        | undefined
+      let pkh = ''
+      const proto = ChronikClient.prototype
+      const networkSpies = [
+        jest
+          .spyOn(proto, 'script')
+          .mockImplementation((_type: string, payload: string) => ({
+            utxos: async () => ({
+              outputScript: '76a914' + payload + '88ac',
+              utxos: [],
+            }),
+          })),
+        jest.spyOn(proto, 'block').mockImplementation(async () => ({
+          blockInfo: { hash: ECASH_TESTNET_CHECKPOINT_HASH },
+        })),
+        jest
+          .spyOn(proto, 'blockchainInfo')
+          .mockImplementation(async () => ({ tipHeight: 900000 })),
+        jest
+          .spyOn(proto, 'batchSummary')
+          .mockImplementation(async (scripts: { payload: string }[]) =>
+            scripts.map(script => ({
+              numTxs: script.payload === pkh ? 1 : 0,
+              numUtxos: script.payload === pkh ? 1 : 0,
+            })),
+          ),
+        jest
+          .spyOn(proto, 'batchUtxos')
+          .mockImplementation(async (scripts: { payload: string }[]) =>
+            scripts.map(script => ({
+              utxos: {
+                outputScript: '76a914' + script.payload + '88ac',
+                utxos:
+                  script.payload === pkh
+                    ? [
+                        {
+                          outpoint: { txid: '71'.repeat(32), outIdx: 0 },
+                          sats: 10000n,
+                          blockHeight: 800000,
+                          isCoinbase: false,
+                          isFinal: true,
+                        },
+                      ]
+                    : [],
+              },
+            })),
+          ),
+      ]
+      let constructionParams:
+        | Parameters<import('@frank/wallet/ecash-wallet').EcashWalletFactory>[0]
+        | Parameters<
+            import('@frank/wallet/ecash-wallet').EcashBip39WalletFactory
+          >[0]
+        | undefined
+      const remember = (
+        result: import('@frank/wallet/ecash-sdk-backend').EcashSdkBackend,
+      ) => {
+        backend = result
+        pkh = Address.fromCashAddress(result.getReceiveAddress(0))
+          .toScript()
+          .toHex()
+          .slice(6, 46)
+        return result
+      }
+      const domainFactory = ecashSeedBoundary.createEcashStealthSeedBackend
+      const historicalFactory =
+        ecashSeedBoundary.createEcashStealthBip39SeedBackend
+      const factorySpy = historical
+        ? jest
+            .spyOn(ecashSeedBoundary, 'createEcashStealthBip39SeedBackend')
+            .mockImplementation(custody => {
+              captured = custody
+              const factory = historicalFactory(custody)
+              return async params => {
+                constructionParams = params
+                return remember(await factory(params))
+              }
+            })
+        : jest
+            .spyOn(ecashSeedBoundary, 'createEcashStealthSeedBackend')
+            .mockImplementation(custody => {
+              captured = custody
+              const factory = domainFactory(custody)
+              return async params => {
+                constructionParams = params
+                return remember(await factory(params))
+              }
+            })
+      const f = realIdentityFixture(historical)
+      const relay: RelayUtxoChain = openRelayUtxoChain({
+        chainIdentifier: 'xec-testnet',
+        relayBaseUrl: 'http://127.0.0.1:1',
+        nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+      })
+      let retainedOptions: Parameters<RelayUtxoChain['createWallet']>[1]
+      const create = relay.createWallet.bind(relay)
+      relay.createWallet = (material, options) => {
+        retainedOptions = options
+        return create(material, options)
+      }
+      let signingSpy: jest.SpyInstance | undefined
+      try {
+        await f.session.initialize()
+        const wallet = (await f.session.createUtxoWallet(
+          relay,
+        )) as import('@frank/wallet/ecash-wallet').EcashWallet
+        expect(await wallet.getBalance()).toBe(10000n)
+        const descriptor = {
+          chainIdentifier: 'xec-testnet',
+          identityPublicKey: hex(f.identity.compressedPubKey),
+          ephemeralPubKey: hex(
+            secp256k1.getPublicKey(new Uint8Array(32).fill(17), true),
+          ),
+        }
+        const destination = await backend!.describeStealthDerivation(descriptor)
+        const recipient = Address.p2pkh(
+          new Uint8Array(20).fill(31),
+          'ectest',
+        ).toString()
+        const construction = backend!.buildNativeConstruction({
+          recipient,
+          value: 1000n,
+          excludedInputs: [],
+        })
+        expect(
+          Tx.fromHex(construction.transactions[0].rawTransaction).inputs[0]
+            .script.bytecode.length,
+        ).toBeGreaterThan(64)
+        signingSpy = jest.spyOn(Ecc.prototype, 'schnorrSign')
+        const closing = relay.close()
+        expect(f.session.state.status).toBe('ready')
+        const blocked: Record<string, boolean> = {}
+        try {
+          captured!.assertActive()
+          blocked.assertActive = false
+        } catch {
+          blocked.assertActive = true
+        }
+        const callback = jest.fn()
+        await captured!.withDerivedStealthSecret(descriptor, callback).then(
+          () => {
+            blocked.derive = false
+          },
+          () => {
+            blocked.derive = true
+          },
+        )
+        await backend!.importStealthDerivation(descriptor, destination).then(
+          () => {
+            blocked.import = false
+          },
+          () => {
+            blocked.import = true
+          },
+        )
+        try {
+          backend!.buildNativeConstruction({
+            recipient,
+            value: 1000n,
+            excludedInputs: [],
+          })
+          blocked.sign = false
+        } catch {
+          blocked.sign = true
+        }
+        await wallet
+          .prepareNativeOperation({
+            operationId: 'after-relay-close',
+            recipient: { raw: recipient },
+            value: 1000n,
+          })
+          .then(
+            () => {
+              blocked.prepare = false
+            },
+            () => {
+              blocked.prepare = true
+            },
+          )
+        await f.session.createUtxoWallet(relay).then(
+          () => {
+            blocked.create = false
+          },
+          () => {
+            blocked.create = true
+          },
+        )
+        const retainedFactory = historical
+          ? retainedOptions!.ecashBip39WalletFactory!
+          : retainedOptions!.ecashWalletFactory!
+        await retainedFactory(constructionParams as never).then(
+          () => {
+            blocked.factory = false
+          },
+          () => {
+            blocked.factory = true
+          },
+        )
+        expect(blocked).toEqual({
+          assertActive: true,
+          derive: true,
+          import: true,
+          sign: true,
+          prepare: true,
+          create: true,
+          factory: true,
+        })
+        expect(callback).not.toHaveBeenCalled()
+        expect(signingSpy).not.toHaveBeenCalled()
+        await closing
+      } finally {
+        signingSpy?.mockRestore()
+        factorySpy.mockRestore()
+        networkSpies.forEach(spy => spy.mockRestore())
+        await relay.close()
+        await f.session.close()
+      }
+    },
+  )
 })

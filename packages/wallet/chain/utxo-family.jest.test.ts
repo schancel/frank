@@ -182,3 +182,37 @@ test("Electrum refuses eCash construction factories", async () => {
     open().createWallet(new Uint8Array(32), { ecashWalletFactory: jest.fn() })
   ).rejects.toThrow("unsupported");
 });
+
+test("Chronik close synchronously revokes lifecycle and new construction", async () => {
+  const relay = openRelayUtxoChain({
+    chainIdentifier: "xec-testnet",
+    relayBaseUrl: "https://relay.invalid",
+  });
+  expect(relay.assertActive).toEqual(expect.any(Function));
+  relay.assertActive!();
+  const closing = relay.close();
+  expect(() => relay.assertActive!()).toThrow("closed");
+  expect(() => relay.createWallet(new Uint8Array(32).fill(7))).toThrow(
+    "closed"
+  );
+  expect(mockCreateWallet).not.toHaveBeenCalled();
+  await closing;
+});
+test("Chronik close during construction rejects the wallet and wipes its copied material", async () => {
+  const relay = openRelayUtxoChain({
+    chainIdentifier: "xec-testnet",
+    relayBaseUrl: "https://relay.invalid",
+  });
+  let finish!: () => void, copy!: Uint8Array;
+  mockCreateWallet.mockImplementationOnce((material) => {
+    copy = material.bytes;
+    return new Promise((resolve) => {
+      finish = () => resolve({ chainIdentifier: "xec-testnet" });
+    });
+  });
+  const opening = relay.createWallet(new Uint8Array(32).fill(7));
+  await relay.close();
+  finish();
+  await expect(opening).rejects.toThrow("closed");
+  expect(copy.every((byte) => byte === 0)).toBe(true);
+});

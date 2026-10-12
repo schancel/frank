@@ -41,7 +41,9 @@ export interface RelayUtxoChain {
       ecashBip39WalletFactory?: EcashBip39WalletFactory;
     }
   ): Promise<NativeWalletHandle>;
-  /** Release the indexer connection. */
+  /** Nonsecret lifecycle check for session-owned custody bound to this relay. */
+  readonly assertActive?: () => void;
+  /** Release the indexer connection and synchronously revoke its signing lifetime. */
   close(): Promise<void>;
 }
 
@@ -91,6 +93,10 @@ export function openRelayUtxoChain(params: {
     ) {
       throw new Error(`No Chronik wallet is available for ${chainIdentifier}`);
     }
+    let closed = false;
+    const requireOpen = () => {
+      if (closed) throw new Error("UTXO wallet is closed");
+    };
     const chronik = new ChronikClient([
       `${relay}/chain-rpc/${chainIdentifier}/chronik`,
     ]);
@@ -109,13 +115,16 @@ export function openRelayUtxoChain(params: {
     const chain = makeChain();
     return {
       chain,
+      assertActive: requireOpen,
       createWallet: (root, options) => {
+        requireOpen();
         if (options?.stealthCustody)
           throw new Error(
             "Stealth custody is unsupported by the Chronik adapter"
           );
-        return withMaterial(root, (material) =>
-          makeChain(options).createWallet(
+        return withMaterial(root, async (material) => {
+          requireOpen();
+          const wallet = await makeChain(options).createWallet(
             material instanceof Uint8Array
               ? {
                   registry: "frank-domain-roots-v1",
@@ -123,10 +132,14 @@ export function openRelayUtxoChain(params: {
                   bytes: material,
                 }
               : material
-          )
-        );
+          );
+          requireOpen();
+          return wallet;
+        });
       },
-      close: async () => undefined,
+      close: async () => {
+        closed = true;
+      },
     };
   }
   if (entry.wallet.indexer === "electrum") {
@@ -151,6 +164,7 @@ export function openRelayUtxoChain(params: {
     const chain = makeChain();
     return {
       chain,
+      assertActive: requireOpen,
       createWallet: async (root, options) => {
         requireOpen();
         if (options?.ecashWalletFactory || options?.ecashBip39WalletFactory)

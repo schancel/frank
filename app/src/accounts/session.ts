@@ -469,6 +469,7 @@ export function createAccountSession(deps: {
       }
       const requireLive = () => {
         checkCurrent()
+        relay.assertActive?.()
         if (!live || state.status !== 'ready' || wallet !== currentWallet)
           throw new CustodyError('closed')
       }
@@ -598,13 +599,24 @@ export function createAccountSession(deps: {
             },
           }
         }
+        const guardConstruction =
+          <P, R>(create: (params: P) => Promise<R>) =>
+          async (params: P): Promise<R> => {
+            requireLive()
+            const result = await create(params)
+            requireLive()
+            return result
+          }
         const result = await relay.createWallet(
           material,
           entry.wallet.indexer === 'chronik' && ecashCustody
             ? {
-                ecashWalletFactory: createEcashStealthSeedBackend(ecashCustody),
-                ecashBip39WalletFactory:
+                ecashWalletFactory: guardConstruction(
+                  createEcashStealthSeedBackend(ecashCustody),
+                ),
+                ecashBip39WalletFactory: guardConstruction(
                   createEcashStealthBip39SeedBackend(ecashCustody),
+                ),
               }
             : stealthCustody
             ? { stealthCustody }

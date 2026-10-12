@@ -1,0 +1,86 @@
+# PWA packaging
+
+From the repository root, install the workspace dependencies with `yarn install`.
+Node 24 or newer is required. Build the PWA with explicit public network settings;
+for the local Monad testnet relay:
+
+```sh
+QCLI_MONAD_RPC_CHAIN=monad-testnet \
+QCLI_MONAD_NETWORK_ID=monad-testnet \
+QCLI_FRANK_NETWORK_TAG=MONT \
+QCLI_MONAD_CHAIN_ID=10143 \
+QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:28198 \
+yarn --cwd app build:pwa
+
+yarn --cwd app check:pwa
+yarn --cwd app serve:pwa --port 38770
+```
+
+`build:pwa` first compiles the workspace packages that export JavaScript from
+`dist`. The deployable static directory is `app/dist/pwa`. `serve:pwa` starts a
+localhost-only preview server; Quasar App CLI v3 does not implement `quasar serve`.
+For deployment, serve the directory over HTTPS
+(or localhost for local testing), not `file://`. Public relay URLs embedded in a
+remote deployment must be reachable from the user's device; `127.0.0.1` is only
+appropriate for the local setup above. The frontend bundle must never contain
+upstream provider credentials.
+
+Install from the browser's installation menu. Safari uses Add to Dock on macOS
+or Add to Home Screen on iOS. Keep a stable origin: wallet storage and passkey
+credentials are scoped to the website. An installed application on a different
+origin does not inherit another origin's wallet.
+
+The service worker precaches shipped static assets, excluding source maps. It
+has no runtime response cache: relay requests, RPC responses, profiles, balances,
+and private application records are not stored in Cache Storage. IndexedDB wallet
+persistence remains owned by the existing account and wallet services. An update
+waits for existing application windows to close before replacing their worker;
+there is no forced activation during an open wallet session.
+
+Offline availability means the application shell can reopen. It does not mean
+balances are fresh, a message was delivered, or a payment settled. Existing
+wallet journals and network reconciliation remain responsible for those facts.
+
+Verification of the production output used an isolated synthetic Chrome profile:
+manifest installability had no reported errors, setup rendered, reload and route
+navigation worked offline, and a synthetic POST remained unavailable offline.
+No funded account or payment was exercised. Safari installation and passkeys in
+an installed PWA still need device testing; a successful Chrome build does not
+establish those behaviors.
+
+## Updates and HTTP caching
+
+Configure the production host to revalidate `index.html`, `sw.js`, the manifest,
+and other unhashed resources (`Cache-Control: no-cache`). Content-addressed files
+under `assets/` may use `Cache-Control: public, max-age=31536000, immutable`.
+Do not apply immutable caching to the worker or HTML. Publish the complete build
+atomically and retain previous hashed assets when possible, including for older
+SPA tabs that were opened before service-worker installation. Relay/API paths
+must not use the frontend's navigation fallback or asset cache policy.
+
+The local `serve:pwa` command implements these headers. Verify the equivalent
+headers on the actual deployment host, including any CDN, before release:
+
+```sh
+curl -I http://127.0.0.1:38770/
+curl -I http://127.0.0.1:38770/sw.js
+curl -I http://127.0.0.1:38770/manifest.json
+# Also inspect one content-hashed /assets/*.js URL from the built index.html.
+```
+
+A new worker waits while any Frank windows still use the old worker. Reloading
+one window can therefore continue using the previous version. Close all Frank
+windows, then reopen to activate the waiting version. This preserves consistent
+code for an open wallet session; it does not reset application storage.
+
+The upgrade rehearsal used two actual builds with different entry and lazy-module
+hashes. With B deployed, A's open tab stayed on A and imported its old lazy module
+even though that file no longer existed on the server. B waited until all windows
+closed, then activated on reopen. B also cold-started and imported its lazy module
+offline. A synthetic IndexedDB marker survived the upgrade. These checks used an
+isolated Chrome profile and did not exercise account derivation or live payments.
+
+The service worker is event-driven. The browser can stop it between events; it
+is not a persistent wallet daemon and does not guarantee transaction or message
+reconciliation while every application window is closed. Financial recovery
+continues through the existing wallet services when the application resumes.

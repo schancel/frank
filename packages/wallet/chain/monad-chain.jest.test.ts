@@ -329,6 +329,31 @@ describe("custom relay configuration", () => {
     setCustomRelayBaseUrl(undefined);
   });
 
+  it("keeps the configured relay when the renderer has a native file origin", () => {
+    const before = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const configured = process.env.MONAD_RELAY_BASE_URL;
+    process.env.MONAD_RELAY_BASE_URL = "http://127.0.0.1:28198";
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          origin: "file://",
+          protocol: "file:",
+          hostname: "",
+          port: "",
+        },
+      },
+    });
+    try {
+      expect(getDefaultRelayBaseUrl()).toBe("http://127.0.0.1:28198");
+    } finally {
+      if (before) Object.defineProperty(globalThis, "window", before);
+      else Reflect.deleteProperty(globalThis, "window");
+      if (configured === undefined) delete process.env.MONAD_RELAY_BASE_URL;
+      else process.env.MONAD_RELAY_BASE_URL = configured;
+    }
+  });
+
   it("stores and retrieves custom relay url", () => {
     expect(getCustomRelayBaseUrl()).toBeUndefined();
     setCustomRelayBaseUrl("https://relay.custom.org");

@@ -33,6 +33,7 @@ export class CreditLedger {
   public readonly kysely: Kysely<GatewayDatabase>;
   readonly blobStore: BlobStore;
   private readonly rawDb?: DatabaseSync;
+  private sqliteClosed = false;
 
   constructor(
     init: CreditLedgerInit = ':memory:',
@@ -83,6 +84,15 @@ export class CreditLedger {
    */
   get sqlite(): DatabaseSync | undefined {
     return this.rawDb;
+  }
+
+  /** Release this ledger's SQLite file lock. Runtime hosts use this owner method,
+   * never the raw connection; tests may still inspect `sqlite` directly. */
+  closeSqlite(): void {
+    if (!this.rawDb) throw new Error('This credit ledger does not own a SQLite connection');
+    if (this.sqliteClosed) return;
+    this.rawDb.close();
+    this.sqliteClosed = true;
   }
 
   private atomicDepth = 0;

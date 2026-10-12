@@ -1,0 +1,30 @@
+name: Solana crypto package reproducibility
+on:
+  pull_request:
+    paths:
+      - "packages/wallet/solana-crypto-backend/**"
+      - "packages/wallet/solana-stealth-vectors/**"
+      - "docs/protocol/chains/v1.json"
+      - ".github/workflows/solana-crypto-package.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/wallet/solana-crypto-backend/**"
+      - "packages/wallet/solana-stealth-vectors/**"
+      - "docs/protocol/chains/v1.json"
+      - ".github/workflows/solana-crypto-package.yml"
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo install wasm-bindgen-cli --version 0.2.129 --locked
+      - run: cargo fetch --locked --manifest-path packages/wallet/solana-crypto-backend/Cargo.toml
+      - run: bash packages/wallet/solana-crypto-backend/build-wasm.sh --check
+      - run: node packages/wallet/solana-crypto-backend/package-test.mjs

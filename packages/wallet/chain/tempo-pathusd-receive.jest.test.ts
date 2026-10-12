@@ -126,6 +126,19 @@ describe('Tempo finalized PathUSD receive cursor', () => {
     expect(store.all()).toEqual([])
   })
 
+  test('lagging upstream finality cannot acknowledge an otherwise unchanged page', async () => {
+    const store = new MemoryRecordStore<TempoReceiveBatch>()
+    let headCalls = 0
+    const rpc: TempoReceiveRpc = {
+      finalizedHead: async () => ({ number: ++headCalls === 1 ? 9n : 8n, hash: BLOCK }),
+      blockHash: async () => BLOCK,
+      receivedTransfers: async () => [],
+    }
+    const scanner = new TempoPathUsdReceiveScanner('tempo-testnet', store, rpc, async (_recipient, task) => task())
+    await expect(scanner.syncOnce(RECIPIENT, 0n, async () => undefined)).rejects.toThrow('no longer finalized')
+    expect(store.all()).toEqual([])
+  })
+
   test('two cached tabs refresh under the recipient lock before extending one cursor', async () => {
     const backing = new MemoryRecordStore<TempoReceiveBatch>()
     const cached = () => {

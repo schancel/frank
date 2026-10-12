@@ -190,6 +190,10 @@ export class TempoPathUsdReceiveScanner {
           endBlockHash = await this.rpc.blockHash(end)
           if (before !== endBlockHash)
             throw new Error('Finalized Tempo receive page changed during scan')
+          const confirmed = await this.rpc.finalizedHead()
+          if (!HASH.test(confirmed.hash) || confirmed.number < end ||
+            (confirmed.number === end && confirmed.hash !== endBlockHash))
+            throw new Error('Tempo receive page is no longer finalized')
           break
         } catch (error) {
           // Only transient upstream failures may change the page size. No failed range is

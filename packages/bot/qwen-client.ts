@@ -49,8 +49,8 @@ interface QwenStreamChunk {
     index?: number
     finish_reason?: string | null
     delta?: {
-      content?: string
-      reasoning_content?: string
+      content?: string | null
+      reasoning_content?: string | null
     }
   }>
 }
@@ -199,14 +199,19 @@ export class QwenClient {
         const choice = parsed.choices.find((item) => (item.index ?? 0) === 0)
         if (!choice) return
         const delta = choice.delta
+        if (
+          delta !== undefined &&
+          (!delta || typeof delta !== 'object' || Array.isArray(delta))
+        )
+          return fail('Qwen stream contained an invalid delta')
         if (finished && (delta?.content || delta?.reasoning_content))
           return fail('Qwen stream continued after the answer finished')
-        if (delta?.content !== undefined) {
+        if (delta?.content != null) {
           if (typeof delta.content !== 'string')
             return fail('Qwen stream contained invalid answer content')
           content += delta.content
         }
-        if (delta?.reasoning_content !== undefined) {
+        if (delta?.reasoning_content != null) {
           if (typeof delta.reasoning_content !== 'string')
             return fail('Qwen stream contained invalid reasoning content')
           reasoning += delta.reasoning_content

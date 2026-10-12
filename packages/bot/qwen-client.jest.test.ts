@@ -113,6 +113,20 @@ it('preserves unicode and SSE frames split at every byte boundary', async () => 
   })
 })
 
+it('accepts null answer fields while reasoning is streamed', async () => {
+  respond([
+    Buffer.from(
+      'data: {"choices":[{"delta":{"content":null,"reasoning_content":"private"}}]}\n\n' +
+        completion('Answer') +
+        done,
+    ),
+  ])
+  expect(await client().chat(messages)).toEqual({
+    content: 'Answer',
+    reasoning: 'private',
+  })
+})
+
 it('joins multiline SSE data and keeps reasoning out of the answer', async () => {
   respond([
     Buffer.from(
@@ -200,4 +214,15 @@ it('does not carry a failed call prefix into a later call', async () => {
   await expect(sameClient.chat(messages)).rejects.toThrow(/before completion/)
   respond([Buffer.from(completion('Hey Shammah!') + done)])
   expect((await sameClient.chat(messages)).content).toBe('Hey Shammah!')
+})
+
+it.each(['corrupt', [], null])('rejects nonobject delta %j', async (delta) => {
+  respond([
+    Buffer.from(
+      completion('Hey Shamm') +
+        `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n` +
+        done,
+    ),
+  ])
+  await expect(client().chat(messages)).rejects.toThrow(/invalid delta/)
 })

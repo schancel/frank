@@ -32,21 +32,35 @@ test('Tempo host rejects a wrong RPC chain before opening financial stores', asy
   jest.mocked(accountSession.getWallet).mockResolvedValue(owner as never)
   jest.mocked(accountSession.peekWallet).mockReturnValue(owner as never)
   jest.mocked(accountSession.createTempoMainAccountSigner).mockResolvedValue({
-    source: { kind: 'main', address: '0x2222222222222222222222222222222222222222' },
+    source: {
+      kind: 'main',
+      address: '0x2222222222222222222222222222222222222222',
+    },
     signDigest: jest.fn(),
   })
-  jest.mocked(accountSession.getCurvePublicKey).mockResolvedValue(new Uint8Array(33).fill(2))
+  jest
+    .mocked(accountSession.getCurvePublicKey)
+    .mockResolvedValue(new Uint8Array(33).fill(2))
   const destroy = jest.fn()
   const send = jest.fn(async () => '0x1') // Moderato is 42431, not 1.
-  jest.mocked(createMonadJsonRpcProvider).mockReturnValue({ send, destroy } as never)
+  jest
+    .mocked(createMonadJsonRpcProvider)
+    .mockReturnValue({ send, destroy } as never)
   const storage = jest.spyOn(LevelRecordStore, 'open')
   try {
-    await expect(openTempoPathUsdWallet('tempo-testnet')).rejects.toThrow('chain ID mismatch')
-    expect(createMonadJsonRpcProvider).toHaveBeenCalledWith(expect.objectContaining({
-      rpcUrl: 'https://relay.example/chain-rpc/tempo-testnet/rpc',
-      chainId: 42431,
-      relayAuth: expect.objectContaining({ chain: 'tempo-testnet', networkTag: 'TMPT' }),
-    }))
+    await expect(openTempoPathUsdWallet('tempo-testnet')).rejects.toThrow(
+      'chain ID mismatch',
+    )
+    expect(createMonadJsonRpcProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rpcUrl: 'https://relay.example/chain-rpc/tempo-testnet/rpc',
+        chainId: 42431,
+        relayAuth: expect.objectContaining({
+          chain: 'tempo-testnet',
+          networkTag: 'TMPT',
+        }),
+      }),
+    )
     expect(storage).not.toHaveBeenCalled()
     expect(destroy).toHaveBeenCalledTimes(1)
   } finally {

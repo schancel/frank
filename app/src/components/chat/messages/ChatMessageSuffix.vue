@@ -60,6 +60,12 @@
         data-testid="outgoing-payment-summary"
         >{{ paymentSummaryText }}</span
       >
+      <span
+        v-if="showPaymentSuccess"
+        class="outgoing-payment-success"
+        data-testid="outgoing-payment-success"
+        >{{ $t(paymentSuccessKey) }}</span
+      >
       <time
         v-if="stamp"
         data-testid="outgoing-stamp"
@@ -69,12 +75,6 @@
       <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
         amount
       }}</span>
-      <span
-        v-if="showPaymentSuccess"
-        class="outgoing-payment-success"
-        data-testid="outgoing-payment-success"
-        >{{ $t(paymentSuccessKey) }}</span
-      >
       <chat-message-suffix-buttons
         :status="status"
         @replyClick="$emit('replyClick')"

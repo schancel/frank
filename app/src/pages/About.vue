@@ -28,7 +28,7 @@
           <div class="text-h4 text-weight-bold">
             {{ $t('about.appName') }}
           </div>
-          <div class="text-caption text-grey-8">v{{ appVersion }}</div>
+          <div class="text-caption text-grey-8" data-test="about-commit-hash">v{{ appVersion }} ({{ commitHash }})</div>
           <div class="text-subtitle1 text-grey-8 q-mt-xs">
             {{ $t('about.tagline') }}
           </div>
@@ -178,9 +178,12 @@ import {
 export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   setup(_, { emit }) {
+    const rawHash = import.meta.env.QCLI_GIT_COMMIT_HASH || 'unknown'
+    const commitHash = rawHash !== 'unknown' ? rawHash.substring(0, 7) : rawHash
     return {
       pageStyle: viewportPageStyle,
       appVersion,
+      commitHash,
       myDrawerOpen: useMyDrawerOpen(),
       notice: SILENCE_LABORATORIES_NOTICE,
       license: SILENCE_LABORATORIES_LICENSE,

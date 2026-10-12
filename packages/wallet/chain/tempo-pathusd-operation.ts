@@ -402,16 +402,6 @@ export class TempoPathUsdTransfers {
     quotedNonce: bigint
   }): Promise<TempoPathUsdOperation> {
     if (!HASH.test(params.operationId)) throw new Error('Invalid Tempo operation ID')
-    const existing = this.journal.get(params.operationId)
-    if (existing) {
-      if (
-        existing.chainIdentifier !== this.chainIdentifier ||
-        existing.source.address !== canonicalAddress(params.signer.source.address) ||
-        existing.recipient !== canonicalAddress(params.recipient) ||
-        atomic(existing.amountAtomic, 'amount') !== params.amountAtomic
-      ) throw new Error('Tempo operation ID has a different authorization')
-      return existing
-    }
     const source = canonicalAddress(params.signer.source.address)
     const recipient = canonicalAddress(params.recipient)
     if (params.amountAtomic <= 0n) throw new RangeError('Tempo amount must be positive')
@@ -421,6 +411,20 @@ export class TempoPathUsdTransfers {
         params.authorizedFeeAsset.decimals !== 6 ||
         params.authorizedFeeCeilingAtomic < 0n || params.quotedNonce < 0n)
       throw new Error('Invalid Tempo PathUSD fee authorization')
+    const assertExistingAuthorization = (row: TempoPathUsdOperation): void => {
+      if (
+        row.chainIdentifier !== this.chainIdentifier ||
+        row.source.address !== source || row.recipient !== recipient ||
+        atomic(row.amountAtomic, 'amount') !== params.amountAtomic ||
+        atomic(row.nonce, 'nonce') !== params.quotedNonce ||
+        atomic(row.maximumFeeAtomic, 'fee hold') > params.authorizedFeeCeilingAtomic
+      ) throw new Error('Tempo operation ID has a different authorization')
+    }
+    const existing = this.journal.get(params.operationId)
+    if (existing) {
+      assertExistingAuthorization(existing)
+      return existing
+    }
     await this.rpc.verifyChain(this.chainIdentifier)
     const data = transferData(recipient, params.amountAtomic)
     const quote = await this.rpc.quoteTransfer({ from: source, to: PATHUSD, data })
@@ -430,11 +434,7 @@ export class TempoPathUsdTransfers {
     return this.withSourceLock(source, async () => {
       const retry = this.journal.get(params.operationId)
       if (retry) {
-        if (
-          retry.source.address !== source ||
-          retry.recipient !== recipient ||
-          atomic(retry.amountAtomic, 'amount') !== params.amountAtomic
-        ) throw new Error('Tempo operation ID has a different authorization')
+        assertExistingAuthorization(retry)
         return retry
       }
       if (this.journal.hasActiveSource(this.chainIdentifier, source))

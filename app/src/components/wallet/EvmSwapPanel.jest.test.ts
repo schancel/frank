@@ -715,7 +715,7 @@ describe('confirming and executing', () => {
   it('describes the wallet submission wait without claiming that it is only signing', async () => {
     const s = scene()
     s.wallet.sendContractCall.mockImplementationOnce(
-      () => new Promise(() => {}),
+      () => new Promise(() => undefined),
     )
     const view = await mountPanel()
     await type(view, '0.02')

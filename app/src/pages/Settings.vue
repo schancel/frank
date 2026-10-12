@@ -29,278 +29,281 @@
           flat
           class="settings-content col column full-width full-height bg-transparent"
         >
-          <div class="col full-height overflow-hidden" :class="$q.screen.gt.xs ? 'row' : 'column'">
-              <q-tabs v-model="tab" :vertical="$q.screen.gt.xs" class="text-primary col-auto" outside-arrows mobile-arrows>
-                <q-tab
-                  name="networking"
-                  icon="cloud"
-                  :label="$t('settings.networking')"
-                />
-                <q-tab
-                  name="appearance"
-                  icon="color_lens"
-                  :label="$t('settings.appearance')"
-                />
-                <q-tab
-                  name="notifications"
-                  icon="notifications"
-                  :label="$t('notificationPermission.title')"
-                  data-test="settings-tab-notifications"
-                />
-                <q-tab
-                  name="storage"
-                  icon="save"
-                  :label="$t('persistentStorage.tab')"
-                />
-                <q-tab
-                  name="gateways"
-                  icon="alt_route"
-                  :label="$t('settings.gateways')"
-                  data-test="settings-tab-gateways"
-                />
-              </q-tabs>
-              <q-tab-panels
-                v-model="tab"
-                animated
-                swipeable
-                :vertical="$q.screen.gt.xs"
-                class="col"
-                transition-prev="jump-up"
-                transition-next="jump-up"
-              >
-                <q-tab-panel name="networking">
-                  <div class="row">
-                    <q-input
-                      outlined
-                      v-model="updateInterval"
-                      :label="$t('settings.contactRefreshInterval')"
-                      type="number"
-                      :hint="$t('settings.contactRefreshIntervalHint')"
-                      style="width: 100%"
-                      ref="contactRefreshInterval"
-                    />
-                  </div>
-                  <q-separator class="q-my-md" />
-                  <div class="text-subtitle2 q-mb-sm">
-                    {{ $t('settings.networkModeTitle') }}
-                  </div>
-                  <!-- Shown, on and locked: the app runs on testnet only for now. A future
-                  unlock belongs in the settings store's `networkMode`, not in a global swap. -->
-                  <div class="row items-center justify-between q-mb-sm">
-                    <div>
-                      <div class="text-body2 text-weight-medium">
-                        {{ $t('settings.testnetMode') }}
-                      </div>
-                      <div
-                        class="text-caption text-grey"
-                        data-test="mainnet-locked-hint"
-                      >
-                        {{ $t('settings.mainnetLockedBanner') }}
-                      </div>
-                    </div>
-                    <q-toggle
-                      :model-value="isTestnetMode"
-                      disable
-                      color="warning"
-                      data-test="testnet-mode-toggle"
-                    />
-                  </div>
-                  <q-banner
-                    v-if="isTestnetMode"
-                    dense
-                    rounded
-                    class="bg-amber-1 text-amber-10 q-mb-md"
-                  >
-                    <template #avatar>
-                      <q-icon name="info" color="amber-9" />
-                    </template>
-                    {{ $t('settings.testnetActiveBanner') }}
-                  </q-banner>
-                  <q-banner
-                    v-else
-                    dense
-                    rounded
-                    class="bg-blue-1 text-blue-10 q-mb-md"
-                  >
-                    <template #avatar>
-                      <q-icon name="verified" color="primary" />
-                    </template>
-                    {{ $t('settings.mainnetActiveBanner') }}
-                  </q-banner>
-
-                  <div
-                    class="text-caption text-weight-medium text-grey-8 q-mb-xs"
-                  >
-                    {{ $t('settings.supportedChainsTitle') }}
-                  </div>
-                  <q-list dense class="rounded-borders">
-                    <q-item
-                      v-for="chain in supportedChains"
-                      :key="chain.id"
-                      class="settings-chain-item q-px-none"
-                    >
-                      <q-item-section avatar style="min-width: 36px">
-                        <q-icon
-                          :name="chain.icon"
-                          size="20px"
-                          color="primary"
-                        />
-                      </q-item-section>
-                      <q-item-section>
-                        <q-item-label class="text-body2">
-                          {{ $t(chain.defaultNameKey) }}
-                        </q-item-label>
-                        <q-item-label caption class="text-grey-7">
-                          {{ getWalletNetworkLabel(chain, isTestnetMode, $t) }}
-                        </q-item-label>
-                      </q-item-section>
-                      <q-item-section side>
-                        <!-- What the app can actually do on each network now, from the
-                        chain registry. -->
-                        <q-badge
-                          :color="
-                            chainStatus(chain) === 'available'
-                              ? isTestnetMode
-                                ? 'warning'
-                                : 'primary'
-                              : 'grey-7'
-                          "
-                          outline
-                          :label="$t(chainStatusKey(chain))"
-                          :data-test="`settings-chain-${chain.id}-status`"
-                        />
-                      </q-item-section>
-                    </q-item>
-                  </q-list>
-                </q-tab-panel>
-                <q-tab-panel name="appearance">
-                  <div class="row items-center q-mb-md">
-                    <q-toggle
-                      :label="$t('settings.darkMode')"
-                      v-model="darkMode"
-                    />
-                  </div>
-                  <div class="q-mb-lg">
-                    <div class="text-subtitle2 q-mb-sm">
-                      {{ $t('settings.themeTitle') }}
-                    </div>
-                    <div class="row q-gutter-sm">
-                      <q-chip
-                        v-for="stone in themeOptions"
-                        :key="stone.id"
-                        clickable
-                        :selected="theme === stone.id"
-                        @click="selectTheme(stone.id)"
-                        outline
-                        :color="theme === stone.id ? 'primary' : ''"
-                        class="cursor-pointer"
-                      >
-                        <q-avatar
-                          :style="{ backgroundColor: stone.stoneColor }"
-                          size="18px"
-                          class="q-mr-xs"
-                        />
-                        <span>{{ stone.label }}</span>
-                      </q-chip>
-                    </div>
-                    <div class="text-caption text-grey q-mt-xs">
-                      {{ selectedThemeDescription }}
-                    </div>
-                  </div>
-                  <div class="row">
-                    <q-select
-                      v-model="locale"
-                      :options="localeOptions"
-                      :label="$t('settings.languageSelectorCaption')"
-                      dense
-                      borderless
-                      emit-value
-                      map-options
-                      options-dense
-                      style="min-width: 150px"
-                    />
-                  </div>
-                </q-tab-panel>
-                <q-tab-panel name="notifications">
-                  <notification-permission-panel />
-                </q-tab-panel>
-                <q-tab-panel name="storage">
-                  <persistent-storage-panel />
-                </q-tab-panel>
-                <q-tab-panel name="gateways">
-                  <div class="text-subtitle2 q-mb-sm">
-                    {{ $t('settings.networkSettings') }}
-                  </div>
-                  <div
-                    class="text-caption q-mb-sm"
-                    data-test="email-gateway-status"
-                  >
-                    <template v-if="emailGatewayStatus === 'ready'">
-                      {{ $t('settings.emailGatewayRelayLabel') }}
-                      {{ emailGatewayDomain }} ({{ emailGatewayAddress }})
-                    </template>
-                    <template v-else-if="emailGatewayStatus === 'changed'">
-                      {{ $t('settings.emailGatewayChanged') }}
-                    </template>
-                    <template v-else-if="emailGatewayStatus === 'loading'">
-                      {{ $t('settings.emailGatewayChecking') }}
-                    </template>
-                    <template v-else>
-                      {{ $t('settings.emailGatewayUnavailable') }}
-                    </template>
-                  </div>
+          <div
+            class="col full-height overflow-hidden"
+            :class="$q.screen.gt.xs ? 'row' : 'column'"
+          >
+            <q-tabs
+              v-model="tab"
+              :vertical="$q.screen.gt.xs"
+              class="text-primary col-auto"
+              outside-arrows
+              mobile-arrows
+            >
+              <q-tab
+                name="networking"
+                icon="cloud"
+                :label="$t('settings.networking')"
+              />
+              <q-tab
+                name="appearance"
+                icon="color_lens"
+                :label="$t('settings.appearance')"
+              />
+              <q-tab
+                name="notifications"
+                icon="notifications"
+                :label="$t('notificationPermission.title')"
+                data-test="settings-tab-notifications"
+              />
+              <q-tab
+                name="storage"
+                icon="save"
+                :label="$t('persistentStorage.tab')"
+              />
+              <q-tab
+                name="gateways"
+                icon="alt_route"
+                :label="$t('settings.gateways')"
+                data-test="settings-tab-gateways"
+              />
+            </q-tabs>
+            <q-tab-panels
+              v-model="tab"
+              animated
+              swipeable
+              :vertical="$q.screen.gt.xs"
+              class="col"
+              transition-prev="jump-up"
+              transition-next="jump-up"
+            >
+              <q-tab-panel name="networking">
+                <div class="row">
                   <q-input
-                    v-model="emailGatewayInput"
-                    :label="$t('settings.emailGatewayAddress')"
-                    dense
                     outlined
-                    :error="!!emailGatewayError"
-                    :error-message="emailGatewayError"
-                    :hint="$t('settings.emailGatewayOverrideHint')"
-                    data-test="email-gateway-input"
-                    data-testid="email-gateway-input"
-                    class="full-width q-mb-xs"
+                    v-model="updateInterval"
+                    :label="$t('settings.contactRefreshInterval')"
+                    type="number"
+                    :hint="$t('settings.contactRefreshIntervalHint')"
+                    style="width: 100%"
+                    ref="contactRefreshInterval"
                   />
-                  <div
-                    v-if="emailGatewayError"
-                    class="text-negative text-caption q-mb-xs error-msg"
-                    data-test="email-gateway-error"
-                  >
-                    {{ emailGatewayError }}
+                </div>
+                <q-separator class="q-my-md" />
+                <div class="text-subtitle2 q-mb-sm">
+                  {{ $t('settings.networkModeTitle') }}
+                </div>
+                <!-- Shown, on and locked: the app runs on testnet only for now. A future
+                  unlock belongs in the settings store's `networkMode`, not in a global swap. -->
+                <div class="row items-center justify-between q-mb-sm">
+                  <div>
+                    <div class="text-body2 text-weight-medium">
+                      {{ $t('settings.testnetMode') }}
+                    </div>
+                    <div
+                      class="text-caption text-grey"
+                      data-test="mainnet-locked-hint"
+                    >
+                      {{ $t('settings.mainnetLockedBanner') }}
+                    </div>
                   </div>
-                  <div
-                    class="row items-center justify-end q-gutter-x-sm q-mt-xs"
+                  <q-toggle
+                    :model-value="isTestnetMode"
+                    disable
+                    color="warning"
+                    data-test="testnet-mode-toggle"
+                  />
+                </div>
+                <q-banner
+                  v-if="isTestnetMode"
+                  dense
+                  rounded
+                  class="bg-amber-1 text-amber-10 q-mb-md"
+                >
+                  <template #avatar>
+                    <q-icon name="info" color="amber-9" />
+                  </template>
+                  {{ $t('settings.testnetActiveBanner') }}
+                </q-banner>
+                <q-banner
+                  v-else
+                  dense
+                  rounded
+                  class="bg-blue-1 text-blue-10 q-mb-md"
+                >
+                  <template #avatar>
+                    <q-icon name="verified" color="primary" />
+                  </template>
+                  {{ $t('settings.mainnetActiveBanner') }}
+                </q-banner>
+
+                <div
+                  class="text-caption text-weight-medium text-grey-8 q-mb-xs"
+                >
+                  {{ $t('settings.supportedChainsTitle') }}
+                </div>
+                <q-list dense class="rounded-borders">
+                  <q-item
+                    v-for="chain in supportedChains"
+                    :key="chain.id"
+                    class="settings-chain-item q-px-none"
                   >
-                    <q-btn
-                      flat
-                      dense
-                      no-caps
-                      size="sm"
-                      color="grey-7"
-                      :label="
-                        emailGatewayStatus === 'changed'
-                          ? $t('settings.acceptRelayGateway')
-                          : $t('settings.useRelayGateway')
-                      "
-                      data-test="reset-email-gateway-btn"
-                      data-testid="reset-email-gateway-btn"
-                      @click="resetEmailGateway"
-                    />
-                    <q-btn
-                      unelevated
-                      dense
-                      no-caps
-                      size="sm"
-                      color="primary"
-                      :label="$t('settings.save')"
-                      data-test="save-email-gateway-btn"
-                      data-testid="save-email-gateway-btn"
-                      @click="saveEmailGateway"
-                    />
+                    <q-item-section avatar style="min-width: 36px">
+                      <q-icon :name="chain.icon" size="20px" color="primary" />
+                    </q-item-section>
+                    <q-item-section>
+                      <q-item-label class="text-body2">
+                        {{ $t(chain.defaultNameKey) }}
+                      </q-item-label>
+                      <q-item-label caption class="text-grey-7">
+                        {{ getWalletNetworkLabel(chain, isTestnetMode, $t) }}
+                      </q-item-label>
+                    </q-item-section>
+                    <q-item-section side>
+                      <!-- What the app can actually do on each network now, from the
+                        chain registry. -->
+                      <q-badge
+                        :color="
+                          chainStatus(chain) === 'available'
+                            ? isTestnetMode
+                              ? 'warning'
+                              : 'primary'
+                            : 'grey-7'
+                        "
+                        outline
+                        :label="$t(chainStatusKey(chain))"
+                        :data-test="`settings-chain-${chain.id}-status`"
+                      />
+                    </q-item-section>
+                  </q-item>
+                </q-list>
+              </q-tab-panel>
+              <q-tab-panel name="appearance">
+                <div class="row items-center q-mb-md">
+                  <q-toggle
+                    :label="$t('settings.darkMode')"
+                    v-model="darkMode"
+                  />
+                </div>
+                <div class="q-mb-lg">
+                  <div class="text-subtitle2 q-mb-sm">
+                    {{ $t('settings.themeTitle') }}
                   </div>
-                </q-tab-panel>
-              </q-tab-panels>
-            </div>
+                  <div class="row q-gutter-sm">
+                    <q-chip
+                      v-for="stone in themeOptions"
+                      :key="stone.id"
+                      clickable
+                      :selected="theme === stone.id"
+                      @click="selectTheme(stone.id)"
+                      outline
+                      :color="theme === stone.id ? 'primary' : ''"
+                      class="cursor-pointer"
+                    >
+                      <q-avatar
+                        :style="{ backgroundColor: stone.stoneColor }"
+                        size="18px"
+                        class="q-mr-xs"
+                      />
+                      <span>{{ stone.label }}</span>
+                    </q-chip>
+                  </div>
+                  <div class="text-caption text-grey q-mt-xs">
+                    {{ selectedThemeDescription }}
+                  </div>
+                </div>
+                <div class="row">
+                  <q-select
+                    v-model="locale"
+                    :options="localeOptions"
+                    :label="$t('settings.languageSelectorCaption')"
+                    dense
+                    borderless
+                    emit-value
+                    map-options
+                    options-dense
+                    style="min-width: 150px"
+                  />
+                </div>
+              </q-tab-panel>
+              <q-tab-panel name="notifications">
+                <notification-permission-panel />
+              </q-tab-panel>
+              <q-tab-panel name="storage">
+                <persistent-storage-panel />
+              </q-tab-panel>
+              <q-tab-panel name="gateways">
+                <div class="text-subtitle2 q-mb-sm">
+                  {{ $t('settings.networkSettings') }}
+                </div>
+                <div
+                  class="text-caption q-mb-sm"
+                  data-test="email-gateway-status"
+                >
+                  <template v-if="emailGatewayStatus === 'ready'">
+                    {{ $t('settings.emailGatewayRelayLabel') }}
+                    {{ emailGatewayDomain }} ({{ emailGatewayAddress }})
+                  </template>
+                  <template v-else-if="emailGatewayStatus === 'changed'">
+                    {{ $t('settings.emailGatewayChanged') }}
+                  </template>
+                  <template v-else-if="emailGatewayStatus === 'loading'">
+                    {{ $t('settings.emailGatewayChecking') }}
+                  </template>
+                  <template v-else>
+                    {{ $t('settings.emailGatewayUnavailable') }}
+                  </template>
+                </div>
+                <q-input
+                  v-model="emailGatewayInput"
+                  :label="$t('settings.emailGatewayAddress')"
+                  dense
+                  outlined
+                  :error="!!emailGatewayError"
+                  :error-message="emailGatewayError"
+                  :hint="$t('settings.emailGatewayOverrideHint')"
+                  data-test="email-gateway-input"
+                  data-testid="email-gateway-input"
+                  class="full-width q-mb-xs"
+                />
+                <div
+                  v-if="emailGatewayError"
+                  class="text-negative text-caption q-mb-xs error-msg"
+                  data-test="email-gateway-error"
+                >
+                  {{ emailGatewayError }}
+                </div>
+                <div class="row items-center justify-end q-gutter-x-sm q-mt-xs">
+                  <q-btn
+                    flat
+                    dense
+                    no-caps
+                    size="sm"
+                    color="grey-7"
+                    :label="
+                      emailGatewayStatus === 'changed'
+                        ? $t('settings.acceptRelayGateway')
+                        : $t('settings.useRelayGateway')
+                    "
+                    data-test="reset-email-gateway-btn"
+                    data-testid="reset-email-gateway-btn"
+                    @click="resetEmailGateway"
+                  />
+                  <q-btn
+                    unelevated
+                    dense
+                    no-caps
+                    size="sm"
+                    color="primary"
+                    :label="$t('settings.save')"
+                    data-test="save-email-gateway-btn"
+                    data-testid="save-email-gateway-btn"
+                    @click="saveEmailGateway"
+                  />
+                </div>
+              </q-tab-panel>
+            </q-tab-panels>
+          </div>
           <q-separator />
           <q-card-actions align="right" class="q-pa-md bg-transparent">
             <q-btn

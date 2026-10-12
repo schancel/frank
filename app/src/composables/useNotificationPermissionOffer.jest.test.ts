@@ -9,11 +9,15 @@ let request: jest.Mock
 function boot(initialReady = true) {
   // A fresh module graph models a new installed-app process, retaining browser storage.
   jest.resetModules()
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { mount, flushPromises } = require('@vue/test-utils')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { defineComponent, ref, nextTick } = require('vue')
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { Notify } = require('quasar')
   const {
     useNotificationPermissionOffer,
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
   } = require('./useNotificationPermissionOffer')
   const ready = ref(initialReady)
   const Host = defineComponent({

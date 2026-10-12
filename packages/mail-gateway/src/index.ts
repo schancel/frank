@@ -24,6 +24,7 @@ export * from './mta/resend-outbound-reconciler';
 export * from './relay/mailbox-listener';
 export * from './relay/journaled-inbound-send';
 export * from './relay/journaled-frank-mailbox';
+export * from './relay/journaled-frank-outbound';
 export * from './dns/domain-resolver';
 
 import { BlobStore, createBlobStore } from './storage/blob-store';

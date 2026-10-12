@@ -101,7 +101,21 @@ describe('End-to-End Integration Test: Live Relay + SMTP Server + Checkout Webho
       stripeWebhookSecret,
     };
 
-    daemon = new EmailGatewayDaemon(config, stampProvider, { dbPath: ':memory:' });
+    daemon = new EmailGatewayDaemon(config, stampProvider, {
+      dbPath: ':memory:',
+      issuedMailboxLookup: async (localPart) => {
+        if (localPart === 'alice') {
+          return { accountAddress: '0x1111111111111111111111111111111111111111' };
+        }
+        if (localPart === 'bob_tombstone') {
+          return {
+            accountAddress: '0x2222222222222222222222222222222222222222',
+            isTombstoned: true,
+          };
+        }
+        return undefined;
+      },
+    });
     await daemon.start();
     httpPort = daemon.checkoutServer.getPort();
     smtpPort = daemon.smtpListener.getPort();

@@ -101,6 +101,35 @@ describe('End-to-End Email ↔ Frank Gateway Flow', () => {
     expect(stampProvider.sentMessages.length).toBe(0);
   });
 
+  it('rejects unissued and operational mailboxes before any credit or stamp effect', async () => {
+    const email: InboundEmail = {
+      messageId: '<unknown@trusted.com>',
+      fromAddress: 'sender@trusted.com',
+      fromDomain: 'trusted.com',
+      toAddress: 'unknown@frank.org',
+      localPart: 'unknown',
+      subject: 'Hello',
+      textBody: 'Hello',
+      dkimValid: true,
+      spfValid: true,
+      rawRfc822: new TextEncoder().encode('Hello'),
+    };
+
+    expect((await inboundHandler.processInboundEmail(email)).status).toBe('rejected_unknown');
+    expect((await inboundHandler.processInboundEmail({
+      ...email,
+      toAddress: 'SeCuRiTy@frank.org',
+      localPart: 'SeCuRiTy',
+    })).status).toBe('rejected_reserved');
+    expect((await inboundHandler.processInboundEmail({
+      ...email,
+      toAddress: '0x1111111111111111111111111111111111111111@frank.org',
+      localPart: '0x1111111111111111111111111111111111111111',
+    })).status).toBe('rejected_unknown');
+    expect(stampProvider.sentMessages).toHaveLength(0);
+    expect(ledger.findLatestHeldMessage('sender@trusted.com', '0x1111111111111111111111111111111111111111')).toBeUndefined();
+  });
+
   it('complete multi-turn flow: hold -> purchase -> delivery -> reply with allowance -> free return email', async () => {
     // Step 1: DKIM-authenticated email arrives from sender with 0 credits
     const firstContact: InboundEmail = {

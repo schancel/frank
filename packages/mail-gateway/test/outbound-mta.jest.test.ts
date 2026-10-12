@@ -569,7 +569,7 @@ describe('4. Inbound Bounce / NDR Processing & Sender Notification', () => {
     await listener.stop();
   });
 
-  it('handles envelope recipient bounce+<spoolId>@frank.org and notifies Frank sender', async () => {
+  it('rejects unauthenticated bounce+<spoolId> without spending', async () => {
     // 1. Spool an outbound job
     const spoolJobId = await ledger.enqueueOutboundSpool({
       recipientEmail: 'target@external.com',
@@ -597,18 +597,11 @@ describe('4. Inbound Bounce / NDR Processing & Sender Notification', () => {
 
     const result = await handler.processInboundEmail(bounceEmail);
 
-    expect(result.status).toBe('bounce');
-    expect(result.bounceNotificationSent).toBe(true);
-    expect(result.bounceRecipient).toBe('target@external.com');
-
-    // Verify Frank sender received direct message notification
-    expect(stampProvider.sentMessages.length).toBe(1);
-    expect(stampProvider.sentMessages[0].recipientAddress).toBe('0xsender_alice');
-    expect(stampProvider.sentMessages[0].text).toContain('[Delivery Status Notification - Bounce]');
-    expect(stampProvider.sentMessages[0].text).toContain('target@external.com');
+    expect(result.status).toBe('rejected_reserved');
+    expect(stampProvider.sentMessages).toHaveLength(0);
   });
 
-  it('handles envelope recipient mailer-daemon@frank.org and resolves sender from thread history', async () => {
+  it('reserves mailer-daemon without spending on an untrusted NDR', async () => {
     // 1. Frank sender 0xsender_bob previously sent email to client@partner.com
     ledger.grantReplyAllowance('client@partner.com', '0xsender_bob', 3);
 
@@ -635,17 +628,11 @@ describe('4. Inbound Bounce / NDR Processing & Sender Notification', () => {
 
     const result = await handler.processInboundEmail(bounceEmail);
 
-    expect(result.status).toBe('bounce');
-    expect(result.bounceNotificationSent).toBe(true);
-    expect(result.bounceRecipient).toBe('client@partner.com');
-
-    // Verify 0xsender_bob received DM
-    expect(stampProvider.sentMessages.length).toBe(1);
-    expect(stampProvider.sentMessages[0].recipientAddress).toBe('0xsender_bob');
-    expect(stampProvider.sentMessages[0].text).toContain('client@partner.com');
+    expect(result.status).toBe('rejected_reserved');
+    expect(stampProvider.sentMessages).toHaveLength(0);
   });
 
-  it('accepts bounce notifications over live SMTP connection returning 250 response', async () => {
+  it('rejects untrusted bounce notifications over live SMTP without spending', async () => {
     ledger.grantReplyAllowance('bounced_client@external.com', '0xsender_frank', 2);
 
     const client = net.createConnection({ port: testPort, host: '127.0.0.1' });
@@ -682,7 +669,7 @@ describe('4. Inbound Bounce / NDR Processing & Sender Notification', () => {
               'Diagnostic-Code: smtp; 550 5.1.1 User not found\r\n' +
               '\r\n.\r\n'
             );
-          } else if (line.includes('Bounce notification processed')) {
+          } else if (line.startsWith('550 5.1.1 Reserved recipient address')) {
             client.write('QUIT\r\n');
           } else if (line.startsWith('221')) {
             resolve();
@@ -691,8 +678,7 @@ describe('4. Inbound Bounce / NDR Processing & Sender Notification', () => {
       });
     });
 
-    expect(responses.some((r) => r.includes('250 2.0.0 Bounce notification processed'))).toBe(true);
-    expect(stampProvider.sentMessages.length).toBe(1);
-    expect(stampProvider.sentMessages[0].recipientAddress).toBe('0xsender_frank');
+    expect(responses.some((r) => r.includes('550 5.1.1 Reserved recipient address'))).toBe(true);
+    expect(stampProvider.sentMessages).toHaveLength(0);
   });
 });

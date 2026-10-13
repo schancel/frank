@@ -63,6 +63,17 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       }
     );
 
+    it('exposes dex adapters on chains that configure them', () => {
+      const monadAdapter = createChainAdapter('monad-testnet');
+      expect(monadAdapter.dex).toBeDefined();
+      expect(monadAdapter.dex?.length).toBeGreaterThan(0);
+      expect(monadAdapter.dex?.[0].adapter).toBe('uniswap-v4');
+
+      const solanaAdapter = createChainAdapter('solana-devnet');
+      expect(solanaAdapter.dex).toBeDefined();
+      expect(solanaAdapter.dex?.length).toBeGreaterThan(0);
+    });
+
     it('rejects unsupported chain discriminators with an informative error', () => {
       expect(() => createChainAdapter('native-evm' as unknown as ChainId)).toThrow(
         /Unsupported canonical chain/

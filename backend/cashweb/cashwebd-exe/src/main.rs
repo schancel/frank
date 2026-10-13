@@ -282,6 +282,7 @@ async fn main() -> Result<()> {
         conf.registry.net,
         Arc::clone(&event_bus),
     ));
+    registry.set_accepted_payment_networks(conf.registry.effective_accepted_payment_networks());
     let evm_rpc_conf = conf.registry.evm_rpc.clone();
     let bitcoin_proxy_conf = conf.registry.bitcoin_proxy.clone();
     let solana_proxy_conf = conf.registry.solana_proxy.clone();

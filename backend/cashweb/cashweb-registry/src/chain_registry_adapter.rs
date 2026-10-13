@@ -262,11 +262,30 @@ impl RelayChainAdapter {
     }
 }
 
+/// Resolved topic burn verification policy for an accepted payment network.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TopicBurnNetworkConfig {
+    /// Canonical protocol chain identifier (e.g. `monad-testnet`, `monad-mainnet`).
+    pub chain_id: String,
+    /// Optional numeric EIP-155 chain ID when the payment network is an EVM chain.
+    pub evm_chain_id: Option<u64>,
+    /// Configured upstream HTTP(S) RPC endpoints for verifying burn transactions on this chain.
+    pub rpc_urls: Vec<Url>,
+    /// Required burn sink address on this network.
+    pub burn_address: crate::monad_http::Address,
+}
+
 /// Stateless relay-wide registry of [`RelayChainAdapter`]s across all chains in
 /// [`cashweb_config::protocol_chain_registry`].
+///
+/// Separate from [`Self::accepted_payment_networks`]: all canonical protocol chains remain
+/// registered here so users can always use wallet RPC/indexer proxy APIs (`/chain-rpc/:chain/*`)
+/// and stealth payments on any configured chain, while `accepted_payment_networks` scopes which
+/// chains this relay accepts for stamp admission and topic burns.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayChainRegistry {
     adapters: BTreeMap<String, RelayChainAdapter>,
+    accepted_payment_networks: Vec<String>,
 }
 
 impl Default for RelayChainRegistry {
@@ -334,16 +353,21 @@ impl RelayChainRegistry {
         for chain in &protocol_chain_registry().chains {
             adapters.insert(chain.id.clone(), RelayChainAdapter::new(chain));
         }
-        Self { adapters }
+        Self {
+            adapters,
+            accepted_payment_networks: vec!["monad-testnet".to_string()],
+        }
     }
 
     /// Construct a registry from [`RegistryConf`] and an environment lookup function, populating
-    /// configured upstreams from `evm_rpc`, `bitcoin_proxy`, `solana_proxy`, and `monad_mailbox`.
+    /// configured upstreams from `evm_rpc`, `bitcoin_proxy`, `solana_proxy`, and `monad_mailbox`,
+    /// and recording `conf.effective_accepted_payment_networks()` for stamp and burn admission.
     pub fn from_conf_with_env(
         conf: &RegistryConf,
         env: impl Fn(&str) -> Option<String>,
     ) -> Self {
         let mut registry = Self::from_protocol_registry();
+        registry.accepted_payment_networks = conf.effective_accepted_payment_networks();
 
         if conf.evm_rpc.enabled {
             for row in &conf.evm_rpc.chains {
@@ -554,6 +578,53 @@ impl RelayChainRegistry {
             .filter(|adapter| adapter.has_configured_upstream())
             .collect()
     }
+
+    /// Canonical protocol chain IDs accepted by this relay for stamp admission and topic burns.
+    ///
+    /// Does not restrict wallet RPC/indexer proxy routes (`/chain-rpc/:chain/*`).
+    pub fn accepted_payment_networks(&self) -> &[String] {
+        &self.accepted_payment_networks
+    }
+
+    /// Override the accepted stamp/burn payment networks on this registry.
+    pub fn with_accepted_payment_networks(mut self, networks: Vec<String>) -> Self {
+        self.accepted_payment_networks = networks;
+        self
+    }
+
+    /// Whether `chain_id_or_tag` (canonical chain ID, 4-byte wire tag, or CAIP-2 string) is an
+    /// accepted stamp/burn payment network on this relay.
+    pub fn is_payment_network_accepted(&self, chain_id_or_tag: &str) -> bool {
+        let resolved_id = self
+            .adapter(chain_id_or_tag)
+            .or_else(|| self.adapter_by_tag(chain_id_or_tag.as_bytes()))
+            .map(RelayChainAdapter::chain_id)
+            .unwrap_or(chain_id_or_tag);
+        self.accepted_payment_networks
+            .iter()
+            .any(|accepted| accepted == resolved_id)
+    }
+
+    /// Resolve the topic burn verification policy for `chain_id_or_tag` when that chain is in
+    /// [`Self::accepted_payment_networks`].
+    pub fn resolve_topic_burn_policy(
+        &self,
+        chain_id_or_tag: &str,
+        burn_address: crate::monad_http::Address,
+    ) -> Option<TopicBurnNetworkConfig> {
+        if !self.is_payment_network_accepted(chain_id_or_tag) {
+            return None;
+        }
+        let adapter = self
+            .adapter(chain_id_or_tag)
+            .or_else(|| self.adapter_by_tag(chain_id_or_tag.as_bytes()))?;
+        Some(TopicBurnNetworkConfig {
+            chain_id: adapter.chain_id().to_string(),
+            evm_chain_id: adapter.evm_chain_id(),
+            rpc_urls: adapter.http_rpc_urls().to_vec(),
+            burn_address,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -660,6 +731,29 @@ mod tests {
             solana.primary_http_rpc_url().unwrap().as_str(),
             "https://api.devnet.solana.example/"
         );
+
+        // Payment networks scope stamps/burns to monad-testnet while keeping all wallet chains
+        // available for RPC/Chronik/Electrum proxy use.
+        assert_eq!(
+            registry.accepted_payment_networks(),
+            &["monad-testnet".to_string()]
+        );
+        assert!(registry.is_payment_network_accepted("monad-testnet"));
+        assert!(registry.is_payment_network_accepted("MONT"));
+        assert!(!registry.is_payment_network_accepted("solana-devnet"));
+        assert!(!registry.is_payment_network_accepted("tempo-testnet"));
+
+        let burn_sink = crate::monad_http::Address([0x11; 20]);
+        let burn_policy = registry
+            .resolve_topic_burn_policy("monad-testnet", burn_sink)
+            .unwrap();
+        assert_eq!(burn_policy.chain_id, "monad-testnet");
+        assert_eq!(burn_policy.evm_chain_id, Some(10_143));
+        assert_eq!(burn_policy.rpc_urls.len(), 2);
+        assert_eq!(burn_policy.burn_address, burn_sink);
+        assert!(registry
+            .resolve_topic_burn_policy("solana-devnet", burn_sink)
+            .is_none());
     }
 
     #[test]

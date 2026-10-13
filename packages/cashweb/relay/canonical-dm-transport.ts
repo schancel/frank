@@ -96,7 +96,7 @@ function invalid(message: string): never {
   throw new CanonicalTransportError('invalid', message)
 }
 export interface CanonicalNetworkDescriptor {
-  readonly tag: string
+  readonly tag: 'MONT' | 'MON1' | 'MONR'
   readonly network: string
   readonly chainId: bigint
 }
@@ -213,7 +213,7 @@ export function canonicalNetworkDescriptor(
       strippedHex === idHex
     ) {
       return {
-        tag: entry.networkTag ?? entry.id,
+        tag: (entry.networkTag ?? entry.id) as 'MONT' | 'MON1' | 'MONR',
         network: entry.id,
         chainId: entry.nativeChainId ? BigInt(entry.nativeChainId) : 0n,
       }

@@ -296,7 +296,13 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
     frame: &[u8],
     post: bool,
 ) -> Response {
-    let event = match parse_topic_event(frame, registry.expected_cbor_network()) {
+    let expected_network = registry.expected_cbor_network();
+    if !registry.is_payment_network_accepted(expected_network) {
+        return forum_error(invalid(format!(
+            "payment network {expected_network} is not in registry.accepted_payment_networks"
+        )));
+    }
+    let event = match parse_topic_event(frame, expected_network) {
         Ok(event) => event,
         Err(error) => return forum_error(invalid(error)),
     };
@@ -305,7 +311,7 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
         TopicEvent::Post(value) if post && value.schema_version >= 2 => (),
         TopicEvent::Vote(value) if !post => {
             match registry.forum().contains(
-                registry.expected_cbor_network(),
+                expected_network,
                 policy,
                 &value.target_hash,
             ) {
@@ -1428,6 +1434,56 @@ mod tests {
             let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
             assert!(String::from_utf8_lossy(&body).contains("forum_cursor_expired"));
         }
+    }
+
+    #[tokio::test]
+    async fn canonical_chain_agnostic_topic_routes_and_payment_network_boundary() {
+        if isolated(
+            "http::monad_topics::tests::canonical_chain_agnostic_topic_routes_and_payment_network_boundary",
+            "FRANK_FORUM_CANONICAL_TOPICS_CHILD",
+        ) {
+            return;
+        }
+        configure_reads();
+        use tower::ServiceExt;
+
+        let tempdir = tempdir::TempDir::new("cashweb-test--topics-canonical").unwrap();
+        let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
+        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
+        let router = test_server(registry).into_router();
+
+        for uri in ["/topics?topic=general", "/topics/discover"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .header(ACCEPT, "application/cbor")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "canonical route {uri} must serve CBOR responses"
+            );
+        }
+
+        let missing_hash = "aa".repeat(32);
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/topics/{missing_hash}"))
+                    .header(ACCEPT, "application/cbor")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     fn test_server(registry: Registry) -> RegistryServer {

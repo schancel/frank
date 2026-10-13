@@ -383,6 +383,11 @@ pub struct RegistryConf {
     /// Price and energy oracle (`GET /oracle/v1/feed`). Omitted means no collector and no route.
     #[serde(default)]
     pub oracle: Option<OracleConf>,
+    /// Canonical protocol chain IDs (`docs/protocol/chains/v1.json`) accepted by this relay for
+    /// stamp/burn payment verification across topics and messages. When omitted or empty, defaults
+    /// to the mailbox or directory network (`["monad-testnet"]`).
+    #[serde(default)]
+    pub accepted_payment_networks: Vec<String>,
 }
 
 /// Clustered relay configuration for multi-node deployments.
@@ -669,17 +674,23 @@ impl DirectoryConf {
     }
 }
 
-/// Invalid resource relationship spanning multiple registry proxy families.
+/// Invalid resource relationship or payment network configuration on `[registry]`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegistryConfigError {
     /// A configured concurrency-and-size product exceeds the process ceiling.
     InvalidLimit(&'static str),
+    /// An entry in `accepted_payment_networks` is unknown to the protocol chain registry or duplicated.
+    InvalidPaymentNetwork(String),
 }
 
 impl fmt::Display for RegistryConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidLimit(limit) => write!(formatter, "invalid registry limit: {limit}"),
+            Self::InvalidPaymentNetwork(id) => write!(
+                formatter,
+                "invalid or duplicate registry.accepted_payment_networks entry: {id}"
+            ),
         }
     }
 }
@@ -687,8 +698,44 @@ impl fmt::Display for RegistryConfigError {
 impl Error for RegistryConfigError {}
 
 impl RegistryConf {
+    /// Validate that every configured entry in `accepted_payment_networks` is a canonical protocol
+    /// chain ID in `docs/protocol/chains/v1.json` and is not duplicated.
+    pub fn validate_accepted_payment_networks(&self) -> Result<(), RegistryConfigError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for chain_id in &self.accepted_payment_networks {
+            if protocol_chain(chain_id).is_none() || !seen.insert(chain_id.as_str()) {
+                return Err(RegistryConfigError::InvalidPaymentNetwork(chain_id.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the effective list of canonical protocol chain IDs accepted for stamp/burn payment
+    /// verification on this relay.
+    ///
+    /// Uses `self.accepted_payment_networks` when explicitly configured; otherwise falls back to
+    /// the chain matching `monad_mailbox.expected_chain_id`, then `directory.network`, and finally
+    /// `["monad-testnet"]`.
+    pub fn effective_accepted_payment_networks(&self) -> Vec<String> {
+        if !self.accepted_payment_networks.is_empty() {
+            return self.accepted_payment_networks.clone();
+        }
+        if let Some(expected_chain_id) = self.monad_mailbox.expected_chain_id {
+            if let Some(descriptor) = protocol_chain_by_evm_chain_id(expected_chain_id) {
+                return vec![descriptor.id.clone()];
+            }
+        }
+        if let Some(dir) = &self.directory {
+            if let Some(descriptor) = protocol_chain(&dir.network) {
+                return vec![descriptor.id.clone()];
+            }
+        }
+        vec!["monad-testnet".to_string()]
+    }
+
     /// Validate process-wide resource bounds shared by otherwise independent proxy families.
     pub fn validate_rpc_resource_limits(&self) -> Result<(), RegistryConfigError> {
+        self.validate_accepted_payment_networks()?;
         let family_bytes = |enabled: bool, response: usize, concurrency: usize| {
             if enabled {
                 response.checked_mul(concurrency)
@@ -2113,6 +2160,7 @@ continuity_file = "/var/lib/frank/continuity"
                     spa_dir: None,
                     cluster: None,
                     oracle: None,
+                    accepted_payment_networks: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2194,6 +2242,7 @@ continuity_file = "/var/lib/frank/continuity"
                     spa_dir: None,
                     cluster: None,
                     oracle: None,
+                    accepted_payment_networks: vec![],
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2203,6 +2252,44 @@ continuity_file = "/var/lib/frank/continuity"
             }
         );
         Ok(())
+    }
+
+    #[test]
+    fn accepted_payment_networks_defaults_and_validates_protocol_chains() {
+        let mut conf = parse_conf(include_str!("../../cashwebd.local.toml")).unwrap();
+        assert!(conf.registry.accepted_payment_networks.is_empty());
+        assert_eq!(
+            conf.registry.effective_accepted_payment_networks(),
+            vec!["monad-testnet".to_string()]
+        );
+        assert_eq!(conf.registry.validate_accepted_payment_networks(), Ok(()));
+
+        conf.registry.accepted_payment_networks =
+            vec!["monad-testnet".to_string(), "monad-mainnet".to_string()];
+        assert_eq!(conf.registry.validate_accepted_payment_networks(), Ok(()));
+        assert_eq!(
+            conf.registry.effective_accepted_payment_networks(),
+            vec!["monad-testnet".to_string(), "monad-mainnet".to_string()]
+        );
+
+        // Duplicate entry is rejected.
+        conf.registry.accepted_payment_networks =
+            vec!["monad-testnet".to_string(), "monad-testnet".to_string()];
+        assert_eq!(
+            conf.registry.validate_accepted_payment_networks(),
+            Err(RegistryConfigError::InvalidPaymentNetwork(
+                "monad-testnet".to_string()
+            ))
+        );
+
+        // Unknown chain ID is rejected.
+        conf.registry.accepted_payment_networks = vec!["unknown-chain".to_string()];
+        assert_eq!(
+            conf.registry.validate_accepted_payment_networks(),
+            Err(RegistryConfigError::InvalidPaymentNetwork(
+                "unknown-chain".to_string()
+            ))
+        );
     }
 
     #[test]

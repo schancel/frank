@@ -941,7 +941,7 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it.each(['dogecoin', 'ethereum'])(
+  it.each(['lotus', 'unconfigured-chain'])(
     'shows no address for %s, which the app cannot read, and says it is unsupported',
     async chain => {
       mockRoute.value = { query: { chain }, path: '/wallet' }

@@ -72,21 +72,40 @@ jest.mock('@frank/wallet/chain', () => ({
   get PROTOCOL_CHAINS() {
     const entries = jest.requireActual('@frank/wallet/chain').PROTOCOL_CHAINS
     return Object.fromEntries(
-      Object.entries(entries).map(([id, entry]) => [
-        id,
-        mockEnabledPeerNetworks.has(id)
-          ? { ...(entry as object), wallet: true }
-          : entry,
-      ]),
+      Object.entries(entries).map(([id, entry]) => {
+        const e = entry as { family?: string; kind?: string; wallet?: unknown }
+        if (e.family === 'evm' && e.kind !== 'monad') {
+          return [
+            id,
+            {
+              ...e,
+              wallet: mockEnabledPeerNetworks.has(id)
+                ? e.wallet ?? true
+                : undefined,
+            },
+          ]
+        }
+        return [
+          id,
+          mockEnabledPeerNetworks.has(id) ? { ...e, wallet: true } : entry,
+        ]
+      }),
     )
   },
   getChainRegistryEntry: (id: string) => {
     const entry = jest
       .requireActual('@frank/wallet/chain')
       .getChainRegistryEntry(id)
-    return entry && mockEnabledPeerNetworks.has(id)
-      ? { ...entry, wallet: true }
-      : entry
+    if (!entry) return entry
+    if (entry.family === 'evm' && entry.kind !== 'monad') {
+      return {
+        ...entry,
+        wallet: mockEnabledPeerNetworks.has(id)
+          ? entry.wallet ?? true
+          : undefined,
+      }
+    }
+    return mockEnabledPeerNetworks.has(id) ? { ...entry, wallet: true } : entry
   },
   createNativeOnlyEvmChain: jest.fn(config => ({
     chainIdentifier: config.chainIdentifier,

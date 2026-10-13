@@ -20,6 +20,17 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
   const TEST_MNEMONIC =
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
+  let fetchSpy: jest.SpyInstance;
+  beforeEach(() => {
+    fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0x3b9aca00' }),
+    } as Response);
+  });
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+  });
+
   describe('ChainId & Protocol Registry Conformity', () => {
     it('defines exactly the 28 canonical chain identifiers', () => {
       expect(CANONICAL_CHAIN_IDS).toEqual([
@@ -713,6 +724,53 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       expect(events.some((e) => e.key === 'balance' && e.value === '42000000000000000000')).toBe(true);
 
       unsubscribe();
+    });
+  });
+
+  describe('ChainAdapter Capabilities, Supported Assets, and Receive Address', () => {
+    it('exposes accurate capability flags and supported assets per chain adapter', () => {
+      const monad = createChainAdapter('monad-testnet');
+      expect(monad.hasNativeCoin).toBe(true);
+      expect(monad.isPrimaryStampChain).toBe(true);
+      expect(monad.supportsSubAccountBreakdown).toBe(true);
+      expect(monad.supportsHeldContactPayments).toBe(true);
+      expect(monad.rotatesReceiveAddress).toBe(false);
+      expect(monad.getSupportedAssets()).toContainEqual(
+        expect.objectContaining({
+          asset: { kind: 'native' },
+          unit: 'MONT',
+          decimals: 18,
+        })
+      );
+
+      const tempo = createChainAdapter('tempo-testnet');
+      expect(tempo.hasNativeCoin).toBe(false);
+      expect(tempo.unit).toBe('PathUSD');
+      expect(tempo.isPrimaryStampChain).toBe(false);
+      expect(tempo.supportsSubAccountBreakdown).toBe(false);
+      expect(tempo.supportsHeldContactPayments).toBe(false);
+      expect(tempo.rotatesReceiveAddress).toBe(false);
+      expect(tempo.getSupportedAssets()).toEqual([
+        expect.objectContaining({
+          unit: 'USD',
+          decimals: 6,
+          nativeDecimals: 6,
+        }),
+      ]);
+
+      const btc = createChainAdapter('btc-testnet');
+      expect(btc.hasNativeCoin).toBe(true);
+      expect(btc.isPrimaryStampChain).toBe(false);
+      expect(btc.rotatesReceiveAddress).toBe(true);
+    });
+
+    it('resolves wallet.getReceiveAddress() with default and custom provider', async () => {
+      const walletMap = createWalletArray({ mnemonic: TEST_MNEMONIC });
+      const btcWallet = getPrimaryWallet('btc-testnet', walletMap)!;
+      expect(await btcWallet.getReceiveAddress()).toBe(btcWallet.address);
+
+      btcWallet.setReceiveAddressProvider(async () => 'tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl');
+      expect(await btcWallet.getReceiveAddress()).toBe('tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl');
     });
   });
 });

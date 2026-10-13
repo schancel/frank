@@ -1,6 +1,9 @@
 import type { StealthPaymentAsset } from '@frank/wallet/stealth-payment'
 import { activeChain } from '@frank/wallet/chain'
-import { listEvmSwapVenues } from '@frank/wallet/chain/dex-deployments'
+import {
+  resolveChainAdapter,
+  type ChainSupportedAssetDescriptor,
+} from '@frank/wallet/chain/chain-adapter'
 import {
   PROTOCOL_CHAINS,
   getChainRegistryEntry,
@@ -64,77 +67,41 @@ export async function configuredStealthAssets(
 
   for (const entry of chainEntries) {
     try {
-      if (entry.kind === 'tempo') {
-        const asset = {
-          kind: 'erc20',
-          contractAddress: '0x20c0000000000000000000000000000000000000',
-        } as const
-        const tokenBalance = context?.getBalance?.(entry.id, asset)
+      const adapter = resolveChainAdapter(entry.id, entry)
+      const descriptors: readonly ChainSupportedAssetDescriptor[] = adapter
+        ? adapter.getSupportedAssets()
+        : entry.nativeDecimals !== null
+        ? [
+            {
+              asset: { kind: 'native' },
+              label: `${entry.unit} (${entry.name})`,
+              unit: entry.unit,
+              decimals: entry.nativeDecimals,
+              nativeUnit: entry.unit,
+              nativeDecimals: entry.nativeDecimals,
+            },
+          ]
+        : []
+      for (const desc of descriptors) {
+        const balance =
+          context?.getBalance?.(entry.id, desc.asset) ??
+          (desc.asset.kind === 'native' &&
+          entry.id === configured &&
+          context?.activeBalance !== undefined &&
+          context.activeBalance !== null
+            ? context.activeBalance
+            : undefined)
         options.push({
-          key: stealthAssetKey(entry.id, asset),
+          key: stealthAssetKey(entry.id, desc.asset),
           chainIdentifier: entry.id,
-          asset,
-          label: `${entry.name} · pathUSD`,
-          unit: 'USD',
-          decimals: 6,
-          nativeUnit: 'USD',
-          nativeDecimals: 6,
-          ...(tokenBalance !== undefined
-            ? { balanceAtomic: tokenBalance }
-            : {}),
+          asset: desc.asset,
+          label: desc.label,
+          unit: desc.unit,
+          decimals: desc.decimals,
+          nativeUnit: desc.nativeUnit,
+          nativeDecimals: desc.nativeDecimals,
+          ...(balance !== undefined ? { balanceAtomic: balance } : {}),
         })
-        continue
-      }
-      const decimals = entry.nativeDecimals
-      // Networks without a native asset require their own configured fee-asset capability.
-      if (decimals === null) continue
-      const native = { kind: 'native' } as const
-      const nativeBalance =
-        context?.getBalance?.(entry.id, native) ??
-        (entry.id === configured &&
-        context?.activeBalance !== undefined &&
-        context.activeBalance !== null
-          ? context.activeBalance
-          : undefined)
-      options.push({
-        key: stealthAssetKey(entry.id, native),
-        chainIdentifier: entry.id,
-        asset: native,
-        label: `${entry.name} · ${entry.unit}`,
-        unit: entry.unit,
-        decimals,
-        nativeUnit: entry.unit,
-        nativeDecimals: decimals,
-        ...(nativeBalance !== undefined
-          ? { balanceAtomic: nativeBalance }
-          : {}),
-      })
-      if (entry.family !== 'evm') continue
-      const contracts = new Set<string>()
-      for (const venue of listEvmSwapVenues(entry.id)) {
-        for (const token of venue.tokens) {
-          if (!token.address || contracts.has(token.address.toLowerCase()))
-            continue
-          contracts.add(token.address.toLowerCase())
-          const asset = {
-            kind: 'erc20',
-            contractAddress: token.address.toLowerCase(),
-          } as const
-          const tokenBalance = context?.getBalance?.(entry.id, asset)
-          options.push({
-            key: stealthAssetKey(entry.id, asset),
-            chainIdentifier: entry.id,
-            asset,
-            label: `${entry.name} · ${token.symbol}`,
-            unit: token.symbol,
-            decimals: token.decimals,
-            nativeUnit: entry.unit,
-            nativeDecimals: decimals,
-            ...(tokenBalance !== undefined
-              ? { balanceAtomic: tokenBalance }
-              : {}),
-          })
-        }
       }
     } catch (error) {
       unavailable.push({ chainIdentifier: entry.id, error })

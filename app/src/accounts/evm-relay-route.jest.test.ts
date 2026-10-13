@@ -31,7 +31,7 @@ const route = {
 }
 
 it('requires the exact advertised Hyperliquid RPC route before opening custody', async () => {
-  expect(entry.wallet).toBeUndefined()
+  expect(entry.wallet).toEqual({ indexer: 'json-rpc' })
   const request = discovery([route])
   await expect(
     verifyEvmRelayRoute(config, undefined, request),

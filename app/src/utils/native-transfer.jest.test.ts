@@ -15,12 +15,12 @@ it.each([
   ['bitcoin', true, 'btc-testnet'],
   ['bitcoincash', true, 'bch-testnet'],
   ['ecash', false, undefined],
-  // No wallet at all.
-  ['dogecoin', true, undefined],
-  ['ethereum', true, undefined],
-  ['tempo', true, undefined],
-  ['hyperliquid', true, undefined],
-  ['bitcoin', false, undefined],
+  // Multi-chain wallets enabled in registry.
+  ['dogecoin', true, 'doge-testnet'],
+  ['ethereum', true, 'ethereum-sepolia'],
+  ['tempo', true, 'tempo-testnet'],
+  ['hyperliquid', true, 'hyperliquid-testnet'],
+  ['bitcoin', false, 'btc-mainnet'],
 ])(
   'resolves the selected native Send network %s (%s)',
   (wallet, testnet, expected) => {
@@ -34,7 +34,7 @@ it.each([
   ['monad-regtest', true, 'monad-testnet', 'monad-regtest'],
   ['monad', true, 'monad-regtest', 'monad-regtest'],
   ['monad', false, 'monad-testnet', 'monad-testnet'],
-  ['ethereum-sepolia', true, 'monad-testnet', undefined],
+  ['ethereum-sepolia', true, 'monad-testnet', 'ethereum-sepolia'],
   ['unknown', true, 'monad-mainnet', undefined],
 ])(
   'resolves %s against explicit configured network %s',

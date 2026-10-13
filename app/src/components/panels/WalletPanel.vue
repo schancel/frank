@@ -67,7 +67,7 @@
                   :data-test="`${wallet.id}-balance-stale-indicator`"
                 />{{ nativeBalance(wallet.id) }}
                 <mailbox-status-indicator
-                  v-if="wallet.id === 'monad'"
+                  v-if="wallet.isMain"
                   class="q-ml-xs"
                 />
               </q-item-label>
@@ -100,7 +100,7 @@ import { compactAmountText } from '../../utils/chain-amount'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
 import { walletSupport } from '../../utils/wallet-support'
-import { WALLET_CONFIGS } from '../../utils/wallet-configs'
+import { MAIN_WALLET_ID, WALLET_CONFIGS } from '../../utils/wallet-configs'
 import MailboxStatusIndicator from '../chat/MailboxStatusIndicator.vue'
 
 const isTestnet = shallowRef(activeChain.isTestnet ?? false)
@@ -160,7 +160,7 @@ const selectedChain = computed(() => {
   const currentPath = route?.path ?? ''
   if (currentPath.startsWith('/wallet')) {
     const parts = currentPath.toLowerCase().split('/').filter(Boolean)
-    return parts[1] || 'monad'
+    return parts[1] || MAIN_WALLET_ID
   }
   return null
 })
@@ -169,7 +169,7 @@ function getRouter() {
   return (router && router.push ? router : null) || instance?.proxy?.$router
 }
 function selectWallet(wallet: string) {
-  getRouter()?.push(wallet === 'monad' ? '/wallet' : `/wallet/${wallet}`)
+  getRouter()?.push(wallet === MAIN_WALLET_ID ? '/wallet' : `/wallet/${wallet}`)
 }
 function openBackup() {
   const router = getRouter()

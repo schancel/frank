@@ -55,6 +55,7 @@ import {
 } from './chains-registry';
 import type { EvmDexEntry } from './dex-entries';
 import type { SolanaDexEntry } from './solana-dex-entries';
+import { listEvmSwapVenues } from './dex-deployments';
 import { deriveEd25519MasterNode, deriveEd25519PathNode } from '../ed25519-hd-keyring';
 import {
   createWalletStorage,
@@ -327,6 +328,17 @@ export interface SimulateTransactionResult {
   readonly error?: string;
 }
 
+export interface ChainSupportedAssetDescriptor {
+  readonly asset:
+    | { readonly kind: 'native' }
+    | { readonly kind: 'erc20'; readonly contractAddress: string };
+  readonly label: string;
+  readonly unit: string;
+  readonly decimals: number;
+  readonly nativeUnit: string;
+  readonly nativeDecimals: number;
+}
+
 /**
  * Public wallet surface: strictly exposes high-level intents.
  * Ledger internals (SpendableInputs, nonces, EVM leader accounts, UTXO outpoints)
@@ -339,6 +351,8 @@ export interface ChainWallet {
   readonly address: string;
   readonly isPrimary: boolean;
   readonly storage: WalletStorageAdapter;
+  getReceiveAddress(): Promise<string>;
+  setReceiveAddressProvider(provider: () => Promise<string>): void;
   getBalance(): Promise<bigint>;
   setCachedBalance(balance: bigint): void;
   setBalanceProvider(provider: () => Promise<bigint>): void;
@@ -357,7 +371,13 @@ export interface ChainAdapter {
   readonly family: string;
   readonly rpcUrl: string;
   readonly unit: string;
+  readonly hasNativeCoin: boolean;
+  readonly isPrimaryStampChain: boolean;
+  readonly supportsSubAccountBreakdown: boolean;
+  readonly supportsHeldContactPayments: boolean;
+  readonly rotatesReceiveAddress: boolean;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
+  getSupportedAssets(): readonly ChainSupportedAssetDescriptor[];
   formatAddress(raw: Uint8Array | string): string;
   parseAddress(display: string): Uint8Array;
   isValidAddress(candidate: string): boolean;
@@ -438,6 +458,7 @@ abstract class BaseChainWallet implements ChainWallet {
   protected lastRecoveryError?: unknown;
   protected balanceProvider?: () => Promise<bigint>;
   protected recoverProvider?: () => Promise<void>;
+  protected receiveAddressProvider?: () => Promise<string>;
 
   constructor(params: {
     identifier: WalletIdentifier;
@@ -446,6 +467,7 @@ abstract class BaseChainWallet implements ChainWallet {
     storage?: WalletStorageAdapter;
     balanceProvider?: () => Promise<bigint>;
     recoverProvider?: () => Promise<void>;
+    receiveAddressProvider?: () => Promise<string>;
   }) {
     this.identifier = Object.freeze({ ...params.identifier });
     this.chainId = params.identifier.walletChainId;
@@ -456,12 +478,24 @@ abstract class BaseChainWallet implements ChainWallet {
     this.storage = params.storage ?? createWalletStorage(this.walletId);
     this.balanceProvider = params.balanceProvider;
     this.recoverProvider = params.recoverProvider;
+    this.receiveAddressProvider = params.receiveAddressProvider;
   }
 
   abstract getBalance(): Promise<bigint>;
   abstract sendLegacyTransaction(params: SendLegacyTransactionParams): Promise<TransactionIntentResult>;
   abstract sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult>;
   abstract sendStampTransaction(params: SendStampTransactionParams): Promise<TransactionIntentResult>;
+
+  async getReceiveAddress(): Promise<string> {
+    if (this.receiveAddressProvider) {
+      return this.receiveAddressProvider();
+    }
+    return this.address;
+  }
+
+  setReceiveAddressProvider(provider: () => Promise<string>): void {
+    this.receiveAddressProvider = provider;
+  }
 
   async recover(): Promise<void> {
     if (this.recoverProvider) {
@@ -978,15 +1012,58 @@ class EvmChainAdapter implements ChainAdapter {
   readonly family = 'evm';
   readonly rpcUrl: string;
   readonly unit: string;
+  readonly hasNativeCoin: boolean;
+  readonly isPrimaryStampChain: boolean;
+  readonly supportsSubAccountBreakdown: boolean;
+  readonly supportsHeldContactPayments: boolean;
+  readonly rotatesReceiveAddress = false;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   protected readonly decimals: number;
+  protected readonly entryName: string;
 
   constructor(chainId: ChainId, config?: ChainRegistryEntry, decimals = 18, unit?: string) {
+    const entry = config ?? getChainRegistryEntry(chainId);
     this.chainId = chainId;
-    this.decimals = config?.nativeDecimals ?? decimals;
-    this.unit = unit ?? config?.unit ?? (chainId.startsWith('hyperliquid') ? (chainId === 'hyperliquid-testnet' ? 'tHYPE' : 'HYPE') : 'MON');
-    this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
-    this.dex = config?.dex;
+    this.decimals = entry?.nativeDecimals ?? decimals;
+    this.hasNativeCoin = entry ? entry.nativeDecimals !== null : true;
+    const isMonad = (entry?.kind ?? '') === 'monad' || chainId.startsWith('monad-');
+    this.isPrimaryStampChain = isMonad;
+    this.supportsSubAccountBreakdown = isMonad;
+    this.supportsHeldContactPayments = isMonad;
+    this.entryName = entry?.name ?? chainId;
+    this.unit = unit ?? entry?.unit ?? (chainId.startsWith('hyperliquid') ? (chainId === 'hyperliquid-testnet' ? 'tHYPE' : 'HYPE') : 'MON');
+    this.rpcUrl = entry?.rpcUrl ?? entry?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = entry?.dex;
+  }
+
+  getSupportedAssets(): readonly ChainSupportedAssetDescriptor[] {
+    if (!this.hasNativeCoin) return [];
+    const assets: ChainSupportedAssetDescriptor[] = [
+      {
+        asset: { kind: 'native' },
+        label: `${this.entryName} · ${this.unit}`,
+        unit: this.unit,
+        decimals: this.decimals,
+        nativeUnit: this.unit,
+        nativeDecimals: this.decimals,
+      },
+    ];
+    const contracts = new Set<string>();
+    for (const venue of listEvmSwapVenues(this.chainId)) {
+      for (const token of venue.tokens) {
+        if (!token.address || contracts.has(token.address.toLowerCase())) continue;
+        contracts.add(token.address.toLowerCase());
+        assets.push({
+          asset: { kind: 'erc20', contractAddress: token.address.toLowerCase() },
+          label: `${this.entryName} · ${token.symbol}`,
+          unit: token.symbol,
+          decimals: token.decimals,
+          nativeUnit: this.unit,
+          nativeDecimals: this.decimals,
+        });
+      }
+    }
+    return assets;
   }
 
   formatAddress(raw: Uint8Array | string): string {
@@ -1315,10 +1392,24 @@ class EvmChainAdapter implements ChainAdapter {
  * Tempo Chain Adapter (EVM family with TIP-20 6 decimals).
  */
 class TempoChainAdapter extends EvmChainAdapter {
+  override readonly hasNativeCoin = false;
+
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
     // Tempo native coin is null in registry; TIP-20 pathUSD uses 6 decimals
-    const unit = (chainId === 'tempo-testnet' || config?.unit === 'tUSD') ? 'PathUSD' : (config?.unit ?? 'USD');
-    super(chainId, config, 6, unit);
+    super(chainId, config, 6, 'PathUSD');
+  }
+
+  override getSupportedAssets(): readonly ChainSupportedAssetDescriptor[] {
+    return [
+      {
+        asset: { kind: 'erc20', contractAddress: PATHUSD.toLowerCase() },
+        label: `${this.entryName} · pathUSD`,
+        unit: 'USD',
+        decimals: 6,
+        nativeUnit: 'USD',
+        nativeDecimals: 6,
+      },
+    ];
   }
 
   override getWallet(address?: string): ChainWallet {
@@ -1436,14 +1527,35 @@ class SolanaChainAdapter implements ChainAdapter {
   readonly family = 'solana';
   readonly rpcUrl: string;
   readonly unit: string;
+  readonly hasNativeCoin = true;
+  readonly isPrimaryStampChain = false;
+  readonly supportsSubAccountBreakdown = false;
+  readonly supportsHeldContactPayments = false;
+  readonly rotatesReceiveAddress = false;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   private readonly decimals = 9;
+  private readonly entryName: string;
 
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
+    const entry = config ?? getChainRegistryEntry(chainId);
     this.chainId = chainId;
-    this.unit = config?.unit ?? (chainId === 'solana-devnet' ? 'dSOL' : 'SOL');
-    this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
-    this.dex = config?.dex;
+    this.entryName = entry?.name ?? chainId;
+    this.unit = entry?.unit ?? (chainId === 'solana-devnet' ? 'dSOL' : 'SOL');
+    this.rpcUrl = entry?.rpcUrl ?? entry?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = entry?.dex;
+  }
+
+  getSupportedAssets(): readonly ChainSupportedAssetDescriptor[] {
+    return [
+      {
+        asset: { kind: 'native' },
+        label: `${this.entryName} · ${this.unit}`,
+        unit: this.unit,
+        decimals: this.decimals,
+        nativeUnit: this.unit,
+        nativeDecimals: this.decimals,
+      },
+    ];
   }
 
   formatAddress(raw: Uint8Array | string): string {
@@ -1769,16 +1881,37 @@ class EcashChainAdapter implements ChainAdapter {
   readonly family = 'bitcoin';
   readonly rpcUrl: string;
   readonly unit: string;
+  readonly hasNativeCoin = true;
+  readonly isPrimaryStampChain = false;
+  readonly supportsSubAccountBreakdown = false;
+  readonly supportsHeldContactPayments = false;
+  readonly rotatesReceiveAddress = true;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   private readonly decimals = 2;
   private readonly prefix: 'ecash' | 'ectest';
+  private readonly entryName: string;
 
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
+    const entry = config ?? getChainRegistryEntry(chainId);
     this.chainId = chainId;
+    this.entryName = entry?.name ?? chainId;
     this.prefix = chainId === 'ecash-mainnet' ? 'ecash' : 'ectest';
-    this.unit = config?.unit ?? (chainId === 'ecash-testnet' ? 'tXEC' : 'XEC');
-    this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
-    this.dex = config?.dex;
+    this.unit = entry?.unit ?? (chainId === 'ecash-testnet' ? 'tXEC' : 'XEC');
+    this.rpcUrl = entry?.rpcUrl ?? entry?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = entry?.dex;
+  }
+
+  getSupportedAssets(): readonly ChainSupportedAssetDescriptor[] {
+    return [
+      {
+        asset: { kind: 'native' },
+        label: `${this.entryName} · ${this.unit}`,
+        unit: this.unit,
+        decimals: this.decimals,
+        nativeUnit: this.unit,
+        nativeDecimals: this.decimals,
+      },
+    ];
   }
 
   formatAddress(raw: Uint8Array | string): string {
@@ -2221,25 +2354,46 @@ class BtcFamilyChainAdapter implements ChainAdapter {
   readonly family = 'bitcoin';
   readonly rpcUrl: string;
   readonly unit: string;
+  readonly hasNativeCoin = true;
+  readonly isPrimaryStampChain = false;
+  readonly supportsSubAccountBreakdown = false;
+  readonly supportsHeldContactPayments = false;
+  readonly rotatesReceiveAddress = true;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   private readonly decimals = 8;
   private readonly kind: string;
+  private readonly entryName: string;
 
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
+    const entry = config ?? getChainRegistryEntry(chainId);
     this.chainId = chainId;
-    this.kind = config?.kind ?? (
+    this.entryName = entry?.name ?? chainId;
+    this.kind = entry?.kind ?? (
       chainId.startsWith('btc') ? 'bitcoin' :
       chainId.startsWith('bch') ? 'bitcoincash' :
       chainId.startsWith('doge') ? 'dogecoin' : 'litecoin'
     );
-    this.unit = config?.unit ?? (
+    this.unit = entry?.unit ?? (
       this.kind === 'bitcoin' ? (chainId === 'btc-testnet' ? 'tBTC' : 'BTC') :
       this.kind === 'bitcoincash' ? (chainId === 'bch-testnet' ? 'tBCH' : 'BCH') :
       this.kind === 'dogecoin' ? (chainId === 'doge-testnet' ? 'tDOGE' : 'DOGE') :
       (chainId === 'litecoin-testnet' ? 'tLTC' : 'LTC')
     );
-    this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
-    this.dex = config?.dex;
+    this.rpcUrl = entry?.rpcUrl ?? entry?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = entry?.dex;
+  }
+
+  getSupportedAssets(): readonly ChainSupportedAssetDescriptor[] {
+    return [
+      {
+        asset: { kind: 'native' },
+        label: `${this.entryName} · ${this.unit}`,
+        unit: this.unit,
+        decimals: this.decimals,
+        nativeUnit: this.unit,
+        nativeDecimals: this.decimals,
+      },
+    ];
   }
 
   formatAddress(raw: Uint8Array | string): string {
@@ -2629,6 +2783,20 @@ export function createChainAdapter(
       throw new Error(`Unsupported canonical chain: ${String(_exhaustive)}`);
     }
   }
+}
+
+export function resolveChainAdapter(
+  chainOrAlias: string,
+  config?: ChainRegistryEntry
+): ChainAdapter | undefined {
+  const normalized =
+    chainOrAlias === 'xec-mainnet'
+      ? 'ecash-mainnet'
+      : chainOrAlias === 'xec-testnet'
+      ? 'ecash-testnet'
+      : chainOrAlias;
+  if (!isCanonicalChainId(normalized)) return undefined;
+  return createChainAdapter(normalized, config);
 }
 
 let activeWalletMap: Map<WalletId, ChainWallet> = new Map();

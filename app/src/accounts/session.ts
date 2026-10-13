@@ -26,6 +26,7 @@ import {
   type WalletHandle,
   createChainAdapter,
   isCanonicalChainId,
+  resolveChainAdapter,
 } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import type { HistoricalBip39Seed } from '@frank/wallet/monad-wallet-material'
@@ -1125,9 +1126,9 @@ export function createAccountSession(deps: {
         const material = await session.getActiveFamilyMaterial(purpose)
         const root = 'seed' in material ? material.seed : material.bytes
         try {
-          if (isCanonicalChainId(netId)) {
-            const adapter = createChainAdapter(netId)
-            const accountIndex = entry.family === 'evm' ? 1 : 0
+          const adapter = resolveChainAdapter(netId)
+          if (adapter) {
+            const accountIndex = entry?.family === 'evm' ? 1 : 0
             const chainWallet = await adapter.createWallet({
               root: { seed: root },
               accountIndex,

@@ -160,8 +160,12 @@ const orderedKinds = [
   ...discoveredKinds.filter(k => !PREFERRED_KIND_ORDER.includes(k)),
 ]
 
-export const WALLET_CONFIGS: WalletItemConfig[] =
-  orderedKinds.map(buildWalletItemConfig)
+export const WALLET_CONFIGS: WalletItemConfig[] = orderedKinds.map(
+  buildWalletItemConfig,
+)
+
+export const MAIN_WALLET_ID: string =
+  WALLET_CONFIGS.find(w => w.isMain)?.id ?? WALLET_CONFIGS[0]?.id ?? ''
 
 /** Shared caption for the existing wallet presentation aliases. */
 export function getWalletNetworkLabel(

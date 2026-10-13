@@ -21,6 +21,7 @@ import {
   qwenBotConfigFromEnv,
   DEFAULT_MODEL_TRIES,
   safeDisplayName,
+  cleanReplyContent,
   type QwenBotConfig,
   type QwenReplyGenerator,
 } from "../../qwen-reply";
@@ -201,7 +202,8 @@ export class QwenBot implements FrankBotDefinition {
           history.map((item) => ({ ...item })),
           { signal: stopping, userName }
         );
-        const content = boundedText(result?.content, MAX_HISTORY_CONTENT_BYTES);
+        const cleaned = cleanReplyContent(result?.content, userName);
+        const content = boundedText(cleaned, MAX_HISTORY_CONTENT_BYTES);
         if (content.trim()) return content;
         throw new Error("the model returned an empty answer");
       } catch (error) {

@@ -37,9 +37,15 @@ it('concatenates the streamed answer, with thinking off unless asked for', async
     stream: true,
     enable_thinking: false,
     messages,
+    temperature: 0.7,
+    top_p: 0.9,
   })
-  await client({ thinking: true }).chat(messages)
-  expect(mockAxios.mock.calls[1][0].data.enable_thinking).toBe(true)
+  await client({ thinking: true, temperature: 0.5, topP: 0.8 }).chat(messages)
+  expect(mockAxios.mock.calls[1][0].data).toMatchObject({
+    enable_thinking: true,
+    temperature: 0.5,
+    top_p: 0.8,
+  })
 })
 
 // On 05c93db0 the request had no time limit: both of these waited for ever.

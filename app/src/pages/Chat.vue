@@ -204,6 +204,7 @@
         :stamp-unavailable="stampUnavailable"
         @resetStampDefault="resetStampDefault"
         @sendMessage="sendMessage"
+        @sendFollowUp="sendFollowUpItems"
       />
     </q-footer>
     <!-- A blackjack challenge from the composer's message-type menu: any chat, any contact. -->

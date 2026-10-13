@@ -9,7 +9,10 @@
  */
 import { initBlackjackHandPlugin } from './blackjack-hand/plugin'
 import { initBlackjackMovePlugin } from './blackjack-move/plugin'
+import { initCalendarInvitePlugin } from './calendar-invite/plugin'
+import { initCalendarRsvpPlugin } from './calendar-rsvp/plugin'
 import { initChannelUpdatePlugin } from './channel-update/plugin'
+import { initContactCardPlugin } from './contact-card/plugin'
 import { initConversationStatePlugin } from './conversation-state/plugin'
 import { initDeviceClaimPlugin } from './device-claim/plugin'
 import { initDicePlugin } from './dice/plugin'
@@ -65,6 +68,9 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['dice', initDicePlugin],
   ['liars-dice', initLiarsDicePlugin],
   ['poker', initPokerPlugin],
+  ['calendar-invite', initCalendarInvitePlugin],
+  ['calendar-rsvp', initCalendarRsvpPlugin],
+  ['contact-card', initContactCardPlugin],
 ]
 
 /** Installs one plugin and checks it registered its own type and nothing else. */

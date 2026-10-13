@@ -261,6 +261,10 @@ import {
   LevelStampAttemptJournal,
 } from "../storage/stamp-attempt-journal";
 import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
+import {
+  ChainUnreachableError,
+  isChainUnreachableError,
+} from "../evm-block-watcher";
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
 // RPC -- the app silently fell back to `http://127.0.0.1:8545`, breaking every real chain call):
@@ -2753,84 +2757,93 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // `getBalance` is its sum, and the app's breakdown shows its rows.
             async getBalanceParts() {
               requireOpenWallet(wallet);
-              const now = Date.now();
-              let mainBalance: bigint;
-              let identityBalance: bigint;
+              try {
+                const now = Date.now();
+                let mainBalance: bigint;
+                let identityBalance: bigint;
 
-              if (
-                primaryBalanceCache !== undefined &&
-                now - primaryBalanceCache.cachedAtMs < PRIMARY_BALANCE_CACHE_TTL_MS
-              ) {
-                mainBalance = primaryBalanceCache.mainBalance;
-                identityBalance = primaryBalanceCache.identityBalance;
-              } else {
-                const mainCoins = accountUtxoPool.getCoinsByAddress(
-                  mainAccount.address,
-                  "monad"
-                );
                 if (
-                  mainCoins.length > 0 &&
-                  mainCoins[0].balanceWei > 0n &&
-                  mainCoins[0].status === "clean"
+                  primaryBalanceCache !== undefined &&
+                  now - primaryBalanceCache.cachedAtMs < PRIMARY_BALANCE_CACHE_TTL_MS
                 ) {
-                  mainBalance = mainCoins[0].balanceWei;
+                  mainBalance = primaryBalanceCache.mainBalance;
+                  identityBalance = primaryBalanceCache.identityBalance;
                 } else {
-                  mainBalance = await transactionBuilder.getBalance({
-                    address: mainAccount.address,
-                    provider,
-                  });
-                }
-                noteMainBalanceForFundAhead(wallet, mainBalance);
-
-                // Money at the identity address is the wallet's to spend like any other coin.
-                if (
-                  identity.address.raw.toLowerCase() ===
-                  mainAccount.address.toLowerCase()
-                ) {
-                  identityBalance = 0n;
-                } else {
-                  const identCoins = accountUtxoPool.getCoinsByAddress(
-                    identity.address.raw,
+                  const mainCoins = accountUtxoPool.getCoinsByAddress(
+                    mainAccount.address,
                     "monad"
                   );
                   if (
-                    identCoins.length > 0 &&
-                    identCoins[0].balanceWei > 0n &&
-                    identCoins[0].status === "clean"
+                    mainCoins.length > 0 &&
+                    mainCoins[0].balanceWei > 0n &&
+                    mainCoins[0].status === "clean"
                   ) {
-                    identityBalance = identCoins[0].balanceWei;
+                    mainBalance = mainCoins[0].balanceWei;
                   } else {
-                    identityBalance = await transactionBuilder.getBalance({
-                      address: identity.address.raw,
+                    mainBalance = await transactionBuilder.getBalance({
+                      address: mainAccount.address,
                       provider,
                     });
                   }
+                  noteMainBalanceForFundAhead(wallet, mainBalance);
+
+                  // Money at the identity address is the wallet's to spend like any other coin.
+                  if (
+                    identity.address.raw.toLowerCase() ===
+                    mainAccount.address.toLowerCase()
+                  ) {
+                    identityBalance = 0n;
+                  } else {
+                    const identCoins = accountUtxoPool.getCoinsByAddress(
+                      identity.address.raw,
+                      "monad"
+                    );
+                    if (
+                      identCoins.length > 0 &&
+                      identCoins[0].balanceWei > 0n &&
+                      identCoins[0].status === "clean"
+                    ) {
+                      identityBalance = identCoins[0].balanceWei;
+                    } else {
+                      identityBalance = await transactionBuilder.getBalance({
+                        address: identity.address.raw,
+                        provider,
+                      });
+                    }
+                  }
+
+                  primaryBalanceCache = {
+                    mainBalance,
+                    identityBalance,
+                    cachedAtMs: now,
+                  };
                 }
 
-                primaryBalanceCache = {
-                  mainBalance,
-                  identityBalance,
-                  cachedAtMs: now,
+                // Plus every received coin the chain shows funded. A pending coin (nothing seen on
+                // the chain yet) is never counted, whatever its message said.
+                await readCoins(PRIMARY_BALANCE_CACHE_TTL_MS);
+                const received = spendableCoins(coinStore.all());
+                // Plus what sits in the single-use sending accounts that are funded and not yet
+                // used: a message pays its stamp from those first.
+                const sending = await pool.availableBalanceTotal(
+                  provider,
+                  PRIMARY_BALANCE_CACHE_TTL_MS
+                );
+                return {
+                  main: mainBalance,
+                  profile: identityBalance,
+                  received: spendableCoinTotal(coinStore.all()),
+                  receivedCount: received.length,
+                  sending,
                 };
+              } catch (error) {
+                if (isChainUnreachableError(error)) {
+                  throw error instanceof ChainUnreachableError
+                    ? error
+                    : new ChainUnreachableError(error);
+                }
+                throw error;
               }
-
-              // Plus every received coin the chain shows funded. A pending coin (nothing seen on
-              // the chain yet) is never counted, whatever its message said.
-              await readCoins(PRIMARY_BALANCE_CACHE_TTL_MS);
-              const received = spendableCoins(coinStore.all());
-              // Plus what sits in the single-use sending accounts that are funded and not yet
-              // used: a message pays its stamp from those first.
-              const sending = await pool.availableBalanceTotal(
-                provider,
-                PRIMARY_BALANCE_CACHE_TTL_MS
-              );
-              return {
-                main: mainBalance,
-                profile: identityBalance,
-                received: spendableCoinTotal(coinStore.all()),
-                receivedCount: received.length,
-                sending,
-              };
             },
             getReceivedPayments() {
               return coinStore.all().map((coin) => receivedPaymentOf(coin));
@@ -2895,7 +2908,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             async flushNativeSync() {
               const owner = nativeOperationOwner(wallet);
-              await owner.flushSync();
+              try {
+                await owner.flushSync();
+              } catch (error) {
+                if (isChainUnreachableError(error)) {
+                  throw error instanceof ChainUnreachableError
+                    ? error
+                    : new ChainUnreachableError(error);
+                }
+                throw error;
+              }
               return owner.listOperations()
                 .filter((row) => !row.cancelled && row.members.some(
                   (member) => member.signed &&
@@ -2954,7 +2976,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
                 .then(() => owner.resendMissingContractCalls())
                 // What those looks showed frees the main account for whoever waits for it.
-                .then(() => releaseSettledMainAccounts(wallet, false));
+                .then(() => releaseSettledMainAccounts(wallet, false))
+                .catch((error) => {
+                  if (isChainUnreachableError(error)) {
+                    throw error instanceof ChainUnreachableError
+                      ? error
+                      : new ChainUnreachableError(error);
+                  }
+                  throw error;
+                });
             },
             async watchNativeOperation(operationId) {
               requireOpenWallet(wallet);

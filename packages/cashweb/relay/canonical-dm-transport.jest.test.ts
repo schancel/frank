@@ -670,8 +670,42 @@ describe('canonicalNetworkDescriptor', () => {
     expect(canonicalNetworkDescriptor('4d4f4e52')).toEqual(expected)
   })
 
+  it('resolves canonical multi-chain descriptors from chains-registry (EVM, Solana, Bitcoin/eCash)', () => {
+    expect(canonicalNetworkDescriptor('ethereum-mainnet')).toEqual({
+      tag: 'ETH1',
+      network: 'ethereum-mainnet',
+      chainId: 1n,
+    })
+    expect(canonicalNetworkDescriptor('ETH1')).toEqual({
+      tag: 'ETH1',
+      network: 'ethereum-mainnet',
+      chainId: 1n,
+    })
+    expect(canonicalNetworkDescriptor('eip155:8453')).toEqual({
+      tag: 'BASE',
+      network: 'base-mainnet',
+      chainId: 8453n,
+    })
+    expect(canonicalNetworkDescriptor('ARB1')).toEqual({
+      tag: 'ARB1',
+      network: 'arbitrum-mainnet',
+      chainId: 42161n,
+    })
+    expect(canonicalNetworkDescriptor('solana-devnet')).toEqual({
+      tag: 'SOLD',
+      network: 'solana-devnet',
+      chainId: 0n,
+    })
+    expect(canonicalNetworkDescriptor('XECT')).toEqual({
+      tag: 'XECT',
+      network: 'xec-testnet',
+      chainId: 0n,
+    })
+  })
+
   it('throws on unknown descriptors', () => {
     expect(() => canonicalNetworkDescriptor('unknown')).toThrow(/Unknown installed Monad network descriptor/)
   })
 })
+
 

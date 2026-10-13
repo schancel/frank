@@ -117,24 +117,24 @@ fn read_and_validate_conf_with_env(
     let mut conf =
         parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
     // The shipped configs enable the mailbox without a URL because the endpoint is secret-bearing:
-    // an explicit `rpc_url` wins, otherwise select the first configured endpoint. Validate the
-    // complete list while preserving the environment for proxy and topic fallback consumers.
-    let mailbox = &mut conf.registry.monad_mailbox;
-    if mailbox.enabled && mailbox.rpc_url.is_none() {
-        let raw = env(RPC_URL_ENV).filter(|value| !value.trim().is_empty());
-        let raw = raw.ok_or(MissingRpcUrlEnv)?;
-        let urls = raw
-            .split(',')
-            .map(|token| token.trim().parse())
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|_| InvalidRpcUrlEnv)?;
-        mailbox.rpc_url = urls.first().cloned();
-        if urls
-            .iter()
-            .any(|url| !matches!(url.scheme(), "http" | "https") || url.host_str().is_none())
-        {
-            return Err(InvalidRpcUrlEnv.into());
-        }
+    // an explicit `rpc_url` wins, otherwise resolve from the matching `evm_rpc` chain upstream
+    // (or `MONAD_TESTNET_HTTP_RPC_URL` fallback) via `RelayChainRegistry`.
+    if conf.registry.monad_mailbox.enabled && conf.registry.monad_mailbox.rpc_url.is_none() {
+        let resolved =
+            cashweb_registry::chain_registry_adapter::RelayChainRegistry::resolve_mailbox_rpc_url(
+                &conf.registry,
+                RPC_URL_ENV,
+                &env,
+            )
+            .map_err(|err| match err {
+                cashweb_registry::chain_registry_adapter::RelayChainRegistryError::MissingRpcUrlEnv {
+                    ..
+                } => CashwebdExeError::MissingRpcUrlEnv,
+                cashweb_registry::chain_registry_adapter::RelayChainRegistryError::InvalidRpcUrlEnv {
+                    ..
+                } => CashwebdExeError::InvalidRpcUrlEnv,
+            })?;
+        conf.registry.monad_mailbox.rpc_url = resolved;
     }
     // Validate the mailbox lifecycle before opening the database or binding a socket. The same
     // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
@@ -865,5 +865,42 @@ max_get_logs_range = 10\n\n\
             panic!("mailbox must stay enabled");
         };
         assert_eq!(rpc_url.as_str(), "https://rpc.example/");
+    }
+
+    #[test]
+    fn mailbox_falls_back_to_matching_evm_rpc_chain_upstream() {
+        let mainnet = LOCAL
+            .replace("id = \"monad-testnet\"", "id = \"monad-mainnet\"")
+            .replace("expected_chain_id = 10143", "expected_chain_id = 143")
+            .replace(
+                "upstream_env = \"MONAD_TESTNET_HTTP_RPC_URL\"",
+                "upstream_env = \"MONAD_MAINNET_HTTP_RPC_URL\"",
+            )
+            .replace(
+                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9",
+                "0x0c47353304f22b1c15706367d739b850cda80b5c87bbc335014fef3d88deaac9",
+            );
+        let (_, mode) = read_and_validate_conf_with_env(
+            "-",
+            &mut Cursor::new(mainnet),
+            env(&[
+                ("FRANK_NETWORK_TAG", "MON1"),
+                (
+                    "MONAD_MAINNET_HTTP_RPC_URL",
+                    "https://mainnet.monad.example/v1,https://backup.monad.example/v1",
+                ),
+            ]),
+        )
+        .expect("mailbox should resolve rpc_url from matching monad-mainnet evm_rpc upstream_env");
+        let MonadMailboxMode::Enabled {
+            rpc_url,
+            expected_chain_id,
+            ..
+        } = mode
+        else {
+            panic!("mailbox must stay enabled");
+        };
+        assert_eq!(expected_chain_id, 143);
+        assert_eq!(rpc_url.as_str(), "https://mainnet.monad.example/v1");
     }
 }

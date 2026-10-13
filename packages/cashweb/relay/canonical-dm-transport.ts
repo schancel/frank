@@ -15,6 +15,7 @@ import {
 import { randomBytes, sha256 } from '@frank/crypto-box'
 import { keccak_256 } from '@noble/hashes/sha3'
 import { isLoopbackHostname } from './directory-client'
+import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
 
 export const CANONICAL_DM_MAX_BYTES = 8 * 1024 * 1024
 export const CANONICAL_DM_MAX_STATUS_BYTES = 16 * 1024
@@ -94,6 +95,12 @@ export class CanonicalTransportError extends Error {
 function invalid(message: string): never {
   throw new CanonicalTransportError('invalid', message)
 }
+export interface CanonicalNetworkDescriptor {
+  readonly tag: string
+  readonly network: string
+  readonly chainId: bigint
+}
+
 export function canonicalNetworkDescriptor(
   tag:
     | 'MONT'
@@ -106,7 +113,7 @@ export function canonicalNetworkDescriptor(
     | Record<string, unknown>
     | bigint
     | number,
-) {
+): CanonicalNetworkDescriptor {
   if (typeof tag === 'object' && tag !== null) {
     const candidate =
       (tag as any).networkTag ??
@@ -125,7 +132,7 @@ export function canonicalNetworkDescriptor(
     .replace(/^["']|["']$/g, '')
   const lower = raw.toLowerCase()
 
-  // Testnet aliases (tag, network name, chain ID, CAIP-2, hex encodings)
+  // Monad testnet shorthand aliases (tag, network name, chain ID, CAIP-2, hex encodings)
   if (
     lower === 'mont' ||
     lower === 'monad-testnet' ||
@@ -141,7 +148,7 @@ export function canonicalNetworkDescriptor(
     return { tag: 'MONT', network: 'monad-testnet', chainId: 10143n } as const
   }
 
-  // Mainnet aliases
+  // Monad mainnet shorthand aliases
   if (
     lower === 'mon1' ||
     lower === 'monad-mainnet' ||
@@ -157,7 +164,7 @@ export function canonicalNetworkDescriptor(
     return { tag: 'MON1', network: 'monad-mainnet', chainId: 143n } as const
   }
 
-  // Regtest aliases
+  // Monad regtest shorthand aliases
   if (
     lower === 'monr' ||
     lower === 'monad-regtest' ||
@@ -174,6 +181,43 @@ export function canonicalNetworkDescriptor(
     lower === '6d6f6e61642d72656774657374' // hex of "monad-regtest"
   ) {
     return { tag: 'MONR', network: 'monad-regtest', chainId: 20143n } as const
+  }
+
+  const strippedHex = lower.startsWith('0x') ? lower.slice(2) : lower
+  let parsedNumericId: string | undefined
+  if (/^\d+$/.test(lower)) {
+    parsedNumericId = lower
+  } else if (/^0x[0-9a-f]+$/.test(lower)) {
+    try {
+      parsedNumericId = BigInt(lower).toString(10)
+    } catch {
+      parsedNumericId = undefined
+    }
+  }
+
+  for (const entry of Object.values(PROTOCOL_CHAINS)) {
+    const entryIdLower = entry.id.toLowerCase()
+    const entryTagLower = entry.networkTag?.toLowerCase()
+    const entryCaip2Lower = entry.caip2?.toLowerCase()
+    const tagHex = entry.networkTag ? toHex(text(entry.networkTag)) : undefined
+    const idHex = toHex(text(entry.id))
+    if (
+      lower === entryIdLower ||
+      lower === entryIdLower.replace(/-/g, '_') ||
+      (entryTagLower !== undefined && lower === entryTagLower) ||
+      (entryCaip2Lower !== undefined && lower === entryCaip2Lower) ||
+      (parsedNumericId !== undefined &&
+        entry.nativeChainId !== null &&
+        entry.nativeChainId === parsedNumericId) ||
+      (tagHex !== undefined && strippedHex === tagHex) ||
+      strippedHex === idHex
+    ) {
+      return {
+        tag: entry.networkTag ?? entry.id,
+        network: entry.id,
+        chainId: entry.nativeChainId ? BigInt(entry.nativeChainId) : 0n,
+      }
+    }
   }
 
   return invalid('Unknown installed Monad network descriptor')

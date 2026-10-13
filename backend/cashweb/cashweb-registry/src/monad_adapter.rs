@@ -41,6 +41,8 @@
 //! changes, go back through the original `0x`-prefixed hex (or [`crate::monad_http::Hash32`]'s own
 //! `to_hex`) rather than `Sha256d`'s own `Display`/`to_hex_be`.
 
+#![allow(deprecated)]
+
 use async_trait::async_trait;
 use bitcoinsuite_core::{Hashed, Script, Sha256, Sha256d};
 use bitcoinsuite_error::{bail, Result};
@@ -80,8 +82,14 @@ fn monad_hash_hex_to_sha256d(hex_str: &str) -> Result<Sha256d> {
 /// [`ChainAdapter`] implementation for Monad, combining [`MonadHttpClient`] (submit/read HTTPS
 /// JSON-RPC) and [`MonadBlockSubscriber`] (new-block WS notifications).
 ///
-/// Generic over [`JsonRpcTransport`] (like [`MonadHttpClient`] itself) so tests can substitute a
-/// mock transport; [`MonadAdapter::new`] (real HTTPS transport) covers ordinary construction.
+/// Deprecated in favor of [`crate::chain_registry_adapter::RelayChainAdapter`] and
+/// [`crate::chain_registry_adapter::RelayChainRegistry`], which provide stateless multi-chain RPC
+/// and verification machinery driven by `docs/protocol/chains/v1.json` without wrapping EVM hashes
+/// in Bitcoin's byte-reversed [`Sha256d`]. Legacy [`ChainAdapter`] remains reserved for
+/// [`crate::lotus_adapter::LotusAdapter`].
+#[deprecated(
+    note = "Use crate::chain_registry_adapter::{RelayChainAdapter, RelayChainRegistry} instead of Bitcoin Sha256d ChainAdapter for EVM chains"
+)]
 #[derive(Debug, Clone)]
 pub struct MonadAdapter<T: JsonRpcTransport = HttpTransport> {
     http: MonadHttpClient<T>,

@@ -22,7 +22,7 @@ pub use oracle::*;
 const PROTOCOL_CHAIN_REGISTRY_V1: &str = include_str!("../../../../docs/protocol/chains/v1.json");
 
 /// Versioned protocol registry used by clients and relay family dispatch.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProtocolChainRegistry {
     /// Registry schema version.
@@ -32,7 +32,7 @@ pub struct ProtocolChainRegistry {
 }
 
 /// One canonical protocol chain identifier and its permitted proxy surface.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProtocolChainDescriptor {
     /// Stable Frank identifier used in URLs and signed scopes.
@@ -263,6 +263,58 @@ pub fn protocol_chain(id: &str) -> Option<&'static ProtocolChainDescriptor> {
         .chains
         .iter()
         .find(|chain| chain.id == id)
+}
+
+/// Look up one protocol chain descriptor by its numeric EIP-155 chain ID.
+pub fn protocol_chain_by_evm_chain_id(
+    evm_chain_id: u64,
+) -> Option<&'static ProtocolChainDescriptor> {
+    protocol_chain_registry()
+        .chains
+        .iter()
+        .find(|chain| chain.evm_chain_id() == Some(evm_chain_id))
+}
+
+/// Look up one protocol chain descriptor by its CAIP-2 identifier (e.g. `eip155:10143`).
+pub fn protocol_chain_by_caip2(caip2: &str) -> Option<&'static ProtocolChainDescriptor> {
+    protocol_chain_registry()
+        .chains
+        .iter()
+        .find(|chain| chain.caip2.as_deref() == Some(caip2))
+}
+
+impl ProtocolChainDescriptor {
+    /// Return the parsed EIP-155 numeric chain ID when this descriptor is an EVM chain.
+    pub fn evm_chain_id(&self) -> Option<u64> {
+        if self.family != ProtocolChainFamily::Evm {
+            return None;
+        }
+        self.native_chain_id.as_deref()?.parse::<u64>().ok()
+    }
+
+    /// Return the protocol-pinned block hash checkpoint `(height, expected_hash)` for a proxy
+    /// capability, if any.
+    pub fn pinned_block_checkpoint(&self, capability: ProtocolProxyCapability) -> Option<(u64, &str)> {
+        self.identity_probes.iter().find_map(|probe| match probe {
+            ProtocolIdentityProbe::BlockHash {
+                capability: probe_capability,
+                height,
+                expected,
+            } if *probe_capability == capability => Some((*height, expected.as_str())),
+            _ => None,
+        })
+    }
+
+    /// Return the protocol-pinned genesis hash for a Solana chain, if any.
+    pub fn pinned_genesis_hash(&self) -> Option<&str> {
+        self.identity_probes.iter().find_map(|probe| match probe {
+            ProtocolIdentityProbe::GenesisHash {
+                capability: ProtocolProxyCapability::JsonRpc,
+                expected,
+            } => Some(expected.as_str()),
+            _ => None,
+        })
+    }
 }
 
 /// Configuration of a cashwebd instance

@@ -156,7 +156,7 @@
             <q-card
               flat
               bordered
-              class="q-mb-md email-card transition-generic"
+              class="q-mb-md email-card"
               :class="{
                 'email-card-expanded': isExpanded(card.id),
                 'email-card-outbound': card.isOutbound,
@@ -1385,7 +1385,8 @@ export default defineComponent({
         const emailItem = msg.items?.find(it => it.type === 'email') as
           | EmailItem
           | undefined
-        const timestamp = msg.serverTime || msg.receivedTime || Date.now()
+        const timestamp =
+          msg.serverTime || msg.receivedTime || (msg as any).localTime || 0
         const formattedDate = formatConversationTimestamp(timestamp)
 
         if (emailItem) {
@@ -1440,7 +1441,7 @@ export default defineComponent({
       return cards
     },
     isDraft(): boolean {
-      return this.parsedEmails.length === 0
+      return !this.messages || this.messages.length === 0
     },
     replyOptions(): Array<{ label: string; value: 'reply' | 'reply_all' }> {
       return [
@@ -1449,15 +1450,22 @@ export default defineComponent({
       ]
     },
     threadSubject(): string {
-      if (this.subject && this.isDraft) {
+      if (this.subject && (!this.messages || this.messages.length === 0)) {
         return this.subject
       }
       if (this.conversation?.name) {
         return this.conversation.name
       }
-      for (let i = this.parsedEmails.length - 1; i >= 0; i--) {
-        const sub = this.parsedEmails[i].subject
-        if (sub && sub !== 'No Subject') return sub
+      if (this.messages) {
+        for (let i = this.messages.length - 1; i >= 0; i--) {
+          const msg = this.messages[i]
+          const emailItem = msg.items?.find(it => it.type === 'email') as
+            | EmailItem
+            | undefined
+          if (emailItem?.subject && emailItem.subject !== 'No Subject') {
+            return emailItem.subject
+          }
+        }
       }
       if (this.toList.length > 0) {
         return `Draft to ${this.toList[0]}`
@@ -1787,10 +1795,10 @@ export default defineComponent({
       // Expand card and scroll to composer
       this.expandedMap[card.id] = true
     },
-    pageStyleFn(offset: number, height: number) {
+    pageStyleFn() {
       return {
-        height: `${height - offset}px`,
-        maxHeight: `${height - offset}px`,
+        height: '100%',
+        maxHeight: '100%',
       }
     },
     formatMessageBody(text: string): string {
@@ -2120,7 +2128,7 @@ export default defineComponent({
   background-color: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-  transition: all 0.2s ease;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
   overflow: hidden;
 }
 

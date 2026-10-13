@@ -139,6 +139,7 @@ describe('EmailThreadView', () => {
           },
           'q-menu': { template: '<div class="q-menu"><slot /></div>' },
           'q-slider': { template: '<div class="q-slider" />' },
+          'q-space': { template: '<div class="q-space" />' },
         },
       },
     })
@@ -884,6 +885,106 @@ describe('EmailThreadView', () => {
         const vm = wrapper.vm as any
         vm.resetToDefaultStamp()
         expect(wrapper.emitted('resetStampDefault')).toBeTruthy()
+      })
+    })
+
+    describe('Email Card Collapse Animation & Layout Hygiene', () => {
+      it('never applies transition-generic to email cards', () => {
+        const wrapper = mountView()
+        const cards = wrapper.findAll('.email-card')
+        expect(cards.length).toBeGreaterThan(0)
+        for (const card of cards) {
+          expect(card.classes()).not.toContain('transition-generic')
+        }
+      })
+
+      it('toggles expansion state cleanly on collapse without mutation loops', async () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+        const latestId = '<msg2@example.com>'
+        expect(vm.isExpanded(latestId)).toBe(true)
+
+        // Collapse latest
+        vm.toggleExpand(latestId)
+        expect(vm.isExpanded(latestId)).toBe(false)
+
+        // Expand again
+        vm.toggleExpand(latestId)
+        expect(vm.isExpanded(latestId)).toBe(true)
+      })
+
+      it('toggles all expanded state correctly', async () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+
+        // Expand all
+        vm.toggleAllExpanded()
+        expect(vm.allExpanded).toBe(true)
+        expect(vm.isExpanded('<msg1@example.com>')).toBe(true)
+        expect(vm.isExpanded('<msg2@example.com>')).toBe(true)
+
+        // Collapse all
+        vm.toggleAllExpanded()
+        expect(vm.allExpanded).toBe(false)
+        expect(vm.isExpanded('<msg1@example.com>')).toBe(false)
+        expect(vm.isExpanded('<msg2@example.com>')).toBe(false)
+      })
+
+      it('produces deterministic timestamps when serverTime and receivedTime are missing', () => {
+        const messageWithoutTimes: ChatMessage = {
+          outbound: true,
+          status: 'pending',
+          receivedTime: 0,
+          serverTime: 0,
+          localTime: 1234567,
+          items: [sampleEmail1],
+          outpoints: [],
+          senderAddress: '0x1111111111111111111111111111111111111111',
+          payloadDigest: 'digest-no-time',
+        } as any
+
+        const wrapper = mountView({
+          messages: [messageWithoutTimes],
+        })
+        const vm = wrapper.vm as any
+        const cardsFirst = vm.parsedEmails
+        expect(cardsFirst[0].timestamp).toBe(1234567)
+
+        const cardsSecond = vm.parsedEmails
+        expect(cardsSecond[0].timestamp).toBe(1234567)
+      })
+
+      it('breaks cyclic computed dependency between threadSubject and parsedEmails', () => {
+        const fallbackMsg: ChatMessage = {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 1500,
+          serverTime: 1500,
+          items: [{ type: 'text', text: 'plain update' }],
+          outpoints: [],
+          senderAddress: '0x1111111111111111111111111111111111111111',
+          payloadDigest: 'digest-fallback-msg',
+        }
+
+        const wrapper = mountView({
+          conversation: { ...conversation, name: 'Subject From Conv' },
+          messages: [fallbackMsg],
+        })
+        const vm = wrapper.vm as any
+
+        expect(vm.threadSubject).toBe('Subject From Conv')
+        expect(vm.parsedEmails.length).toBe(1)
+        expect(vm.parsedEmails[0].subject).toBe('Subject From Conv')
+      })
+
+      it('returns 100% height from pageStyleFn to fit container without pixel oscillations', () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+        const style = vm.pageStyleFn(64, 800)
+        expect(style).toEqual({
+          height: '100%',
+          maxHeight: '100%',
+        })
       })
     })
   })

@@ -31,8 +31,10 @@ import { createApp, watch } from 'vue'
 
 import {
   indexOutboundDeliveryOwners,
+  rehydrateChat,
   rehydateChat,
   rehydrateState,
+  freshChatState,
   useChatStore,
   collidedMessageId,
   setConversationIdSalt,
@@ -3780,6 +3782,84 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
       expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
       expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+    })
+
+    it('recovers cleanly on schema version mismatch without throwing, logs warning, and returns fresh clean chat state', async () => {
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const legacyState = {
+          activeChatAddr: RECIPIENT_ADDRESS,
+          chats: {
+            [RECIPIENT_ADDRESS]: {
+              address: RECIPIENT_ADDRESS,
+              messages: [],
+            } as any,
+          },
+          messages: {},
+          lastReceived: 50,
+        }
+
+        const state = await rehydrateChat(legacyState as any, false)
+        expect(state.conversations).toEqual({})
+        expect(state.messages).toEqual({})
+        expect(state.logicalMessages).toEqual({})
+        expect(warnSpy).toHaveBeenCalledWith(
+          '[chats] Schema version mismatch or incompatible metadata; resetting local conversation state for clean relay re-sync',
+        )
+
+        // Store restore also recovers cleanly on version mismatch
+        let persistence: any
+        const pinia = createPinia()
+        pinia.use(({ options, store }) => {
+          if (store.$id === 'chats') persistence = options.storage
+        })
+        createApp({}).use(pinia)
+        setActivePinia(pinia)
+        const chatStore = useChatStore()
+        const storage = {
+          get: jest.fn().mockResolvedValue(JSON.stringify(legacyState)),
+          put: jest.fn().mockResolvedValue(undefined),
+        } as any
+
+        const restored = await persistence.restore(
+          storage,
+          { networkName: 'test', version: 3 }, // STORE_SCHEMA_VERSION is 4
+          chatStore.$state,
+        )
+        expect(restored).toEqual(freshChatState())
+
+        // New messages can be received and processed into the fresh state
+        const conv = chatStore.createConversation({
+          kind: 'direct',
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+          topic: 'f1dab84f-56ba-5cd2-908a-5468b6e3012b',
+          name: 'Resynced Conversation',
+        })
+        await chatStore.receiveMessages([
+          {
+            outbound: false,
+            senderAddress: RECIPIENT_ADDRESS,
+            copartyAddress: RECIPIENT_ADDRESS,
+            copartyPubKey: {} as any,
+            index: 'new-resynced-msg',
+            stampValue: 10,
+            message: {
+              conversationId: conv.id,
+              outbound: false,
+              status: 'confirmed',
+              items: [{ type: 'text', text: 'synced from relay' }],
+              serverTime: 100,
+              receivedTime: 100,
+              outpoints: [],
+              stampValueWei: 100n,
+              senderAddress: RECIPIENT_ADDRESS,
+            },
+          },
+        ])
+        expect(chatStore.messages).toHaveProperty('new-resynced-msg')
+      } finally {
+        warnSpy.mockRestore()
+      }
     })
 
     it('enforces tombstone deletion semantics: ignores replayed messages and reopens on newer message', async () => {

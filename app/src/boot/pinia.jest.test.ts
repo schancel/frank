@@ -22,7 +22,13 @@ import { createPinia, defineStore } from 'pinia'
 import type { Pinia } from 'pinia'
 import type { LevelDB } from 'level'
 
-import { createStoragePlugin, StoreMetadata } from './pinia'
+import {
+  createStoragePlugin,
+  resolveStoreMetadata,
+  STORE_SCHEMA_VERSION,
+  StoreMetadata,
+} from './pinia'
+import { displayNetwork } from '../utils/constants'
 import { useAppearanceStore } from '../stores/appearance'
 import { useChatStore } from '../stores/chats'
 import { useContactStore } from '../stores/contacts'
@@ -387,5 +393,45 @@ describe('Pinia persistence barrier', () => {
       'test',
       JSON.stringify({ value: 100 }),
     )
+  })
+
+  describe('schema version migration', () => {
+    it('updates storeMetadata to STORE_SCHEMA_VERSION when version mismatches', async () => {
+      const storage = {
+        get: jest.fn().mockResolvedValue(
+          JSON.stringify({
+            networkName: displayNetwork,
+            version: STORE_SCHEMA_VERSION - 1,
+          }),
+        ),
+        put: jest.fn().mockResolvedValue(undefined),
+      } as unknown as LevelDB
+
+      const metadata = await resolveStoreMetadata(storage)
+      expect(metadata.version).toBe(STORE_SCHEMA_VERSION - 1)
+      expect(storage.put).toHaveBeenCalledWith(
+        'storeMetadata',
+        JSON.stringify({
+          networkName: displayNetwork,
+          version: STORE_SCHEMA_VERSION,
+        }),
+      )
+    })
+
+    it('does not overwrite storeMetadata when schema version matches', async () => {
+      const storage = {
+        get: jest.fn().mockResolvedValue(
+          JSON.stringify({
+            networkName: displayNetwork,
+            version: STORE_SCHEMA_VERSION,
+          }),
+        ),
+        put: jest.fn().mockResolvedValue(undefined),
+      } as unknown as LevelDB
+
+      const metadata = await resolveStoreMetadata(storage)
+      expect(metadata.version).toBe(STORE_SCHEMA_VERSION)
+      expect(storage.put).not.toHaveBeenCalled()
+    })
   })
 })

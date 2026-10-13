@@ -61,6 +61,7 @@ import {
   createAccountSession,
   importBip39Wallet,
   resetAccountStorage,
+  resetMessageAndChatStorage,
   type RuntimeWallet,
 } from './session'
 import { watch } from 'vue'
@@ -803,6 +804,43 @@ test('resetAccountStorage deletes all indexedDB databases matching frank- and le
     expect(deleted).toContain('frank-preview-vault-local-account-v1')
     expect(deleted).toContain('frank-monad-wallet-state-evm-0x123')
     expect(deleted).toContain('level-js-wallet-manifest')
+    expect(deleted).not.toContain('unrelated-app-db')
+  } finally {
+    ;(global as any).indexedDB = originalIndexedDb
+  }
+})
+
+test('resetMessageAndChatStorage deletes level-js, MessageStore, vuex-store, monad-wallet-state but explicitly preserves custody and vault', async () => {
+  const deleted: string[] = []
+  const originalIndexedDb = global.indexedDB
+
+  const mockIndexedDb = {
+    databases: jest.fn(async () => [
+      { name: 'frank-account-custody-local-account-v1' },
+      { name: 'frank-preview-vault-local-account-v1' },
+      { name: 'frank-monad-wallet-state-evm-0x123' },
+      { name: 'level-js-wallet-manifest' },
+      { name: 'MessageStore' },
+      { name: 'vuex-store' },
+      { name: 'unrelated-app-db' },
+    ]),
+    deleteDatabase: jest.fn((name: string) => {
+      deleted.push(name)
+      const req: any = {}
+      setTimeout(() => req.onsuccess?.({} as any), 0)
+      return req
+    }),
+  }
+
+  try {
+    ;(global as any).indexedDB = mockIndexedDb
+    await resetMessageAndChatStorage('local-account-v1')
+    expect(deleted).toContain('frank-monad-wallet-state-evm-0x123')
+    expect(deleted).toContain('level-js-wallet-manifest')
+    expect(deleted).toContain('MessageStore')
+    expect(deleted).toContain('vuex-store')
+    expect(deleted).not.toContain('frank-account-custody-local-account-v1')
+    expect(deleted).not.toContain('frank-preview-vault-local-account-v1')
     expect(deleted).not.toContain('unrelated-app-db')
   } finally {
     ;(global as any).indexedDB = originalIndexedDb

@@ -1522,6 +1522,57 @@ export async function resetAccountStorage(
   }
 }
 
+export async function resetMessageAndChatStorage(
+  _namespace = 'local-account-v1',
+): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  const names = new Set<string>()
+  try {
+    if (typeof indexedDB.databases === 'function') {
+      const dbs = await indexedDB.databases()
+      for (const db of dbs) {
+        if (
+          db.name &&
+          (db.name.includes('level-js') ||
+            db.name.includes('MessageStore') ||
+            db.name.includes('vuex-store') ||
+            db.name.includes('monad-wallet-state'))
+        ) {
+          names.add(db.name)
+        }
+      }
+    } else {
+      names.add('vuex-store')
+      names.add('MessageStore')
+      names.add('monad-wallet-state')
+    }
+  } catch {
+    names.add('vuex-store')
+    names.add('MessageStore')
+    names.add('monad-wallet-state')
+  }
+  for (const name of names) {
+    if (
+      name.startsWith('frank-account-custody-') ||
+      name.startsWith('frank-preview-vault-')
+    ) {
+      continue
+    }
+    await new Promise<void>(resolve => {
+      try {
+        const req = indexedDB.deleteDatabase(name)
+        req.onsuccess = () => resolve()
+        req.onerror = () => resolve()
+        req.onblocked = () => {
+          setTimeout(resolve, 300)
+        }
+      } catch {
+        resolve()
+      }
+    })
+  }
+}
+
 let accountChannel: BroadcastChannel | undefined
 export const accountSession = createAccountSession({
   listen(invalidate, foreground) {

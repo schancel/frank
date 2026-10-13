@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="welcome-container column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -16,9 +16,9 @@
       </q-toolbar>
     </q-header>
 
-    <q-page-container>
+    <q-page-container class="col full-height overflow-hidden">
       <q-page
-        class="q-pa-md welcome-page"
+        class="q-pa-md welcome-page col full-height overflow-y-auto"
         :style-fn="pageStyle"
         data-test="welcome-scroll"
       >
@@ -228,10 +228,16 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
+.welcome-container {
+  height: 100%;
+  min-height: 0;
+}
 .welcome-page {
   // Keep the document and its desktop drawer anchored while this page scrolls.
   overflow-y: auto;
   overscroll-behavior-y: contain;
+  height: 100%;
+  min-height: 0 !important;
 }
 .welcome-page > div {
   max-width: 56rem;

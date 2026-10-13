@@ -11,7 +11,6 @@
         :key="att.id"
         removable
         dense
-        icon="image"
         color="primary"
         text-color="white"
         data-testid="chat-attachment-chip"
@@ -21,6 +20,15 @@
         "
         @remove="removeAttachment(att.id)"
       >
+        <q-avatar
+          v-if="att.dataUrl"
+          square
+          size="20px"
+          class="q-mr-xs rounded-borders"
+        >
+          <img :src="att.dataUrl" alt="" style="object-fit: cover" />
+        </q-avatar>
+        <q-icon v-else name="image" class="q-mr-xs" />
         <span class="ellipsis" style="max-width: 140px">{{ att.name }}</span>
         <span class="q-ml-xs text-caption"
           >({{ formatAttachmentSize(att.sizeBytes) }})</span

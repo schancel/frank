@@ -121,6 +121,16 @@ export const useSettingsStore = defineStore('settings', {
         )
       this.emailGatewayOverride = { address }
     },
+    acceptAdvertisedEmailGateway() {
+      if (this.advertisedEmailGateway) {
+        this.acceptedEmailGateway = {
+          ...this.advertisedEmailGateway,
+          relayOrigin: this.emailGatewayRelayOrigin ?? '',
+        }
+        this.emailGatewayStatus = 'ready'
+        this.emailGatewayOverride = null
+      }
+    },
     resetEmailGatewayAddress() {
       this.emailGatewayOverride = null
       if (this.advertisedEmailGateway)

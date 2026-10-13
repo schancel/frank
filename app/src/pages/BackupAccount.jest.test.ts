@@ -172,10 +172,21 @@ function mountPage() {
           props: ['label', 'disable'],
           template: '<button :disabled="disable">{{ label }}<slot /></button>',
         },
+        QExpansionItem: { template: '<div><slot /></div>' },
         QInput: {
-          props: ['modelValue', 'label'],
-          template:
-            '<input :value="modelValue" @input="$emit(\'update:modelValue\', Number($event.target.value))" />',
+          props: ['modelValue', 'label', 'type'],
+          template: `
+            <textarea
+              v-if="type === 'textarea'"
+              :value="modelValue"
+              @input="$emit('update:modelValue', $event.target.value)"
+            />
+            <input
+              v-else
+              :value="modelValue"
+              @input="$emit('update:modelValue', type === 'number' ? Number($event.target.value) : $event.target.value)"
+            />
+          `,
         },
         QSpinner: { template: '<span data-test="spinner" />' },
         QTooltip: { template: '<span />' },
@@ -514,5 +525,41 @@ describe('BackupAccount page', () => {
     await backBtn.trigger('click')
     // navigateBack checks history.state.back; if unset, it pushes '/'
     expect(mockRouterPush).toHaveBeenCalledWith('/')
+  })
+
+  it('verifies shards successfully with threshold shards and with all shards', async () => {
+    await device()
+    const wrapper = mountPage()
+    const shares = await shownShares(wrapper, 3)
+
+    // Test with 2 of 3 shards
+    const input = wrapper.find('[data-test="verify-shards-input"]')
+    await input.setValue(`${shares[0]}\n${shares[1]}`)
+    const verifyBtn = wrapper.find('[data-test="verify-shards-btn"]')
+    await verifyBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="verify-success"]').exists()).toBe(true)
+
+    // Test with all 3 of 3 shards (>= threshold)
+    await input.setValue(`${shares[0]}\n${shares[1]}\n${shares[2]}`)
+    await verifyBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="verify-success"]').exists()).toBe(true)
+  })
+
+  it('displays error when verifying invalid shards without crashing', async () => {
+    await device()
+    const wrapper = mountPage()
+    await shownShares(wrapper, 3)
+
+    const input = wrapper.find('[data-test="verify-shards-input"]')
+    await input.setValue('invalid-shard-text')
+    const verifyBtn = wrapper.find('[data-test="verify-shards-btn"]')
+    await verifyBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="verify-error"]').exists()).toBe(true)
   })
 })

@@ -83,6 +83,10 @@ const mockResetEmailGatewayAddress = jest.fn(() => {
   mockSettingsStore.emailGatewayAddress = ''
   mockSettingsStore.emailGatewayOverride = null
 })
+const mockAcceptAdvertisedEmailGateway = jest.fn(() => {
+  mockSettingsStore.emailGatewayStatus = 'ready'
+  mockSettingsStore.emailGatewayOverride = null
+})
 const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayAddress: '',
   emailGatewayOverride: null as {
@@ -92,6 +96,7 @@ const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayStatus: 'unavailable',
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
+  acceptAdvertisedEmailGateway: mockAcceptAdvertisedEmailGateway,
 })
 jest.mock('src/stores/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
@@ -444,6 +449,21 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
 
     expect(mockResetEmailGatewayAddress).toHaveBeenCalled()
     expect(mockSettingsStore.emailGatewayAddress).toBe('')
+    expect((wrapper.vm as any).emailGatewayInput).toBe('')
+    wrapper.unmount()
+  })
+
+  it('calls acceptAdvertisedEmailGateway when status is changed', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    mockSettingsStore.emailGatewayStatus = 'changed'
+    await wrapper.vm.$nextTick()
+
+    const resetBtn = wrapper.find('[data-test="reset-email-gateway-btn"]')
+    expect(resetBtn.exists()).toBe(true)
+    await resetBtn.trigger('click')
+
+    expect(mockAcceptAdvertisedEmailGateway).toHaveBeenCalled()
     expect((wrapper.vm as any).emailGatewayInput).toBe('')
     wrapper.unmount()
   })

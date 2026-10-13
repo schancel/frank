@@ -234,7 +234,27 @@
         <q-separator />
         <q-item clickable class="drawer-balance-item">
           <q-item-section @click="openReceive">
-            <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
+            <div class="row items-center no-wrap">
+              <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
+              <q-icon
+                v-if="!accountBackedUp"
+                name="warning"
+                color="warning"
+                size="16px"
+                class="q-ml-xs cursor-pointer backup-warning-icon"
+                data-test="balance-backup-warning"
+                role="button"
+                :aria-label="$t('accountRecovery.not_backed_up_tooltip')"
+                tabindex="0"
+                @click.stop="openBackupFlow"
+                @keydown.enter.stop="openBackupFlow"
+                @keydown.space.stop="openBackupFlow"
+              >
+                <q-tooltip>{{
+                  $t('accountRecovery.not_backed_up_tooltip')
+                }}</q-tooltip>
+              </q-icon>
+            </div>
             <q-item-label
               caption
               role="status"
@@ -306,11 +326,13 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 import { accountStatus } from '../../accounts/session'
+import { useWalletStore } from 'src/stores/wallet'
+import { isAccountBackedUp } from '../../accounts/backup-status'
 
 const compactCutoff = 325
 
 export default defineComponent({
-  setup() {
+  setup(_, { emit }) {
     const q = inject<{ screen?: { width?: number } } | null>('_q_', null)
     const isNarrow = computed(() =>
       isNarrowWidth(
@@ -520,6 +542,40 @@ export default defineComponent({
       }
     }
 
+    const walletStore = useWalletStore()
+    const accountBackedUp = computed(() => {
+      const account = accountStatus.account
+      const accountId = account?.receipt.context.accountId
+      if (!accountId) {
+        return (
+          Boolean((account as any)?.backedUp) ||
+          Boolean((accountStatus as any).backedUp) ||
+          Boolean(walletStore.backedUp)
+        )
+      }
+      return (
+        isAccountBackedUp(accountId) ||
+        Boolean((account as any)?.backedUp) ||
+        Boolean((accountStatus as any).backedUp) ||
+        Boolean(walletStore.backedUp)
+      )
+    })
+
+    function openBackupFlow() {
+      if (isNarrow.value) {
+        emit('closeDrawer')
+      }
+      openPage(router, '/backup')
+    }
+
+    function openReceive() {
+      if (!accountBackedUp.value) {
+        openBackupFlow()
+        return
+      }
+      openPage(router, '/wallet')
+    }
+
     return {
       tab,
       isWelcomeActive,
@@ -539,6 +595,9 @@ export default defineComponent({
       isNarrow,
       legacyRelayEnabled: legacyLotusModeEnabled(),
       chats,
+      accountBackedUp,
+      openBackupFlow,
+      openReceive,
     }
   },
   emits: ['closeDrawer', 'updateWidth', 'resizing'],
@@ -603,9 +662,6 @@ export default defineComponent({
         'role': 'tabpanel',
         'aria-labelledby': `rail-tab-${name}`,
       }
-    },
-    openReceive() {
-      openPage(this.$router, '/wallet')
     },
     startResize(e: MouseEvent) {
       if (this.isNarrow) return
@@ -810,5 +866,12 @@ export default defineComponent({
   &:active {
     background-color: var(--q-primary);
   }
+}
+
+.backup-warning-icon {
+  font-size: 16px;
+  line-height: 1;
+  flex-shrink: 0;
+  vertical-align: middle;
 }
 </style>

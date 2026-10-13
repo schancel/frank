@@ -78,15 +78,15 @@ export const en = {
   the_new_identity_is_different_no_funds:
     '. The new identity is different; no funds, history or remote keys are migrated.',
   choose_how_many_shares_you_must_retain:
-    'Choose how many shares you must retain. Losing too many shares loses access permanently. Keep shares in separate safe places; anyone with the threshold can recover the account.',
+    'Choose how many shards you must retain. Losing too many shards loses access permanently. Keep shards in separate safe places; anyone with the threshold can recover the account.',
   generate_frank_account_backups: 'Generate backups',
   frank_account_backup: 'Frank account backup',
   save_each_share_before_moving_on_exactly:
-    '. Save each share before moving on. Exactly',
+    '. Save each shard before moving on. Exactly',
   consistent_shares_are_required_to_confirm:
-    'consistent shares are required to confirm.',
-  frank_account_backup_share: 'Frank account backup share',
-  copy_this_share: 'Copy this share',
+    'consistent shards are required to confirm.',
+  frank_account_backup_share: 'Frank account backup shard',
+  copy_this_share: 'Copy this shard',
   save_two_independent_copies_of_this_public:
     'Save two independent copies of this public account descriptor with your recovery records. It matches a recovered account, but is not self-authenticating evidence of ownership. Use your independently saved copy when restoring.',
   public_frankdesc_descriptor: 'Public frankdesc descriptor',
@@ -95,33 +95,33 @@ export const en = {
     'I saved two independent copies of the public descriptor.',
   confirm_my_saved_backups: 'Confirm backups',
   enter_the_public_frankdesc_descriptor_from_an:
-    'Enter the public frankdesc descriptor from an independent saved copy first. It is account matching metadata, not self-authenticating proof. Never use a descriptor inferred from the submitted shares.',
+    'Enter the public frankdesc descriptor from an independent saved copy first. It is account matching metadata, not self-authenticating proof. Never use a descriptor inferred from the submitted shards.',
   independently_saved_frankdesc_descriptor:
     'Independently saved frankdesc descriptor',
   pin_expected_account: 'Pin expected account',
   re_enter_exactly: 'Re-enter exactly',
   saved_frank_account_backup_shares_we_reconstruct:
-    'saved Frank account backup shares. We reconstruct and compare the complete account before staging.',
+    'saved Frank account backup shards. We reconstruct and compare the complete account before staging.',
   enter_at_least_the_threshold_number_of_shares:
-    'Enter at least the threshold number printed in your backup, one share per line. Extra shares from the same backup let the app detect a wrong one and tell you which.',
-  share_report_title: 'What the app found in the shares you entered:',
-  share_report_supports: 'Share {n} (index {index}): used.',
+    'Enter at least the threshold number printed in your backup, one shard per line. Extra shards from the same backup let the app detect a wrong one and tell you which.',
+  share_report_title: 'What the app found in the shards you entered:',
+  share_report_supports: 'Shard {n} (index {index}): used.',
   share_report_inconsistent:
-    'Share {n} (index {index}): does not belong to this backup. It is wrong or damaged.',
+    'Shard {n} (index {index}): does not belong to this backup. It is wrong or damaged.',
   share_report_different_set:
-    'Share {n} (set {identifier}): from a different backup set.',
-  share_report_duplicate: 'Share {n}: entered more than once.',
+    'Shard {n} (set {identifier}): from a different backup set.',
+  share_report_duplicate: 'Shard {n}: entered more than once.',
   share_report_invalid:
-    'Share {n}: could not be read. Check it for a typing error.',
+    'Shard {n}: could not be read. Check it for a typing error.',
   restore_choose_explained:
-    'These shares contain complete backups of more than one account. Frank will not choose for you. If you did not expect this, someone may have given you shares of an account they control. Restore only the address you recognise.',
+    'These shards contain complete backups of more than one account. Frank will not choose for you. If you did not expect this, someone may have given you shards of an account they control. Restore only the address you recognise.',
   restore_choose_identity: 'Account with this identity address:',
-  restore_choose_shares: 'Built from shares {shares}.',
+  restore_choose_shares: 'Built from shards {shares}.',
   restore_choose_pick: 'Restore this account',
   expected_account: 'Expected account:',
   insufficient_share_set:
-    'Backup {identifier}: {available} distinct shares available; {required} required.',
-  saved_codex32_shares_one_per_line: 'Saved recovery shares, one per line',
+    'Backup {identifier}: {available} distinct shards available; {required} required.',
+  saved_codex32_shares_one_per_line: 'Saved recovery shards, one per line',
   display_name: 'Display name',
   display_name_required:
     'Required. This is the name people you message will see; you can change it later in your profile.',
@@ -134,12 +134,12 @@ export const en = {
   main_wallet: 'Main wallet',
   frank_account_recovery: 'Frank account recovery',
   backup_shares_were_verified_before_activation_keep:
-    'Backup shares were verified before activation. Keep your saved copies safe. Resident domain roots cannot recreate the original master or backup shares.',
+    'Backup shards were verified before activation. Keep your saved copies safe. Resident domain roots cannot recreate the original master or backup shards.',
   public_recovery_descriptor: 'Public recovery descriptor',
   fingerprint: 'Fingerprint:',
   create_or_restore_account: 'Create or restore account',
   frank_account_backups_were_verified_before_activation:
-    'Frank account backups were verified before activation. Keep the saved shares and public descriptor; this device cannot recreate the original backup shares.',
+    'Frank account backups were verified before activation. Keep the saved shards and public descriptor; this device cannot recreate the original backup shards.',
   browser_storage: 'Browser storage',
   browser_persistence_reduces_automatic_eviction_it_is:
     'Browser persistence reduces automatic eviction. It is not a backup or protection against malicious code or a stolen browser profile.',
@@ -147,28 +147,37 @@ export const en = {
   keep_independent_account_backup:
     'Keep an independent backup of your account. Browser storage protection is not a backup.',
   import_bip39_seed: 'Import BIP39 seed',
-  backup_account_codex32: 'Backup account',
+  not_backed_up_tooltip:
+    "You haven't backed up your wallet or identity yet. Tap to back up now.",
+  backup_account_codex32:
+    "Backup account (Shamir's Keysharding (Based on Codex32))",
   codex32_threshold_explainer:
-    'Write down each share. Any {threshold} of these {count} shares restore the original account secret and its derivation.',
+    'Write down each shard. Any {threshold} of these {count} shards restore the original account secret and its derivation.',
   codex32_backup_sets_do_not_mix:
-    'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
+    'This is a new set. Shards from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
   cancel_scheme: 'Cancel',
   recovery_shares_privacy:
-    'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
+    'Anyone who sees these shards can take this account. Make sure nobody else can see your screen.',
   codex32_backup_unavailable_for_account:
-    'The original secret needed to issue backup shares is unavailable on this device. Your existing backup remains valid.',
+    'The original secret needed to issue backup shards is unavailable on this device. Your existing backup remains valid.',
   historical_share_keep_both_lines:
-    'Keep the Seed and Check lines together as one paper share. Enter both lines together when restoring.',
+    'Keep the Seed and Check lines together as one paper shard. Enter both lines together when restoring.',
   backup_seed_line: 'Seed',
   backup_check_line: 'Check',
-  configure_scheme: 'Configure threshold and shares',
-  custom_threshold_shares: 'Custom threshold and shares',
+  configure_scheme: 'Configure threshold and shards',
+  custom_threshold_shares: 'Custom threshold and shards',
   threshold: 'Threshold',
-  total_shares: 'Total shares',
+  total_shares: 'Total shards',
   apply: 'Apply',
-  generating_codex32_backup_shares: 'Generating recovery shares…',
-  share: 'Share',
+  generating_codex32_backup_shares: 'Generating recovery shards…',
+  share: 'Shard',
   copy_share: 'Copy',
+  verify_shards_title: 'Verify shards',
+  verify_shards_explainer:
+    'Test your saved shards by entering at least the threshold number to verify they reconstruct your account.',
+  verify_shards_button: 'Verify shards',
+  verify_shards_clear: 'Clear',
+  verify_shards_success: 'Shards verified successfully! Your backup is valid.',
   advanced_details: 'Advanced details',
   advanced_options: 'Advanced options',
   relay_server: 'Relay server',
@@ -341,7 +350,10 @@ export const fr = {
   keep_independent_account_backup:
     'Conservez une sauvegarde indépendante de votre compte. La protection du stockage du navigateur ne remplace pas une sauvegarde.',
   import_bip39_seed: 'Importer la graine BIP39',
-  backup_account_codex32: 'Sauvegarder le compte',
+  not_backed_up_tooltip:
+    "Vous n'avez pas encore sauvegardé votre portefeuille ou identité. Appuyez pour sauvegarder maintenant.",
+  backup_account_codex32:
+    'Sauvegarder le compte (Partage de clés de Shamir (basé sur Codex32))',
   codex32_threshold_explainer:
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
@@ -363,6 +375,13 @@ export const fr = {
   generating_codex32_backup_shares: 'Génération des parts de récupération…',
   share: 'Part',
   copy_share: 'Copier',
+  verify_shards_title: 'Vérifier les parts',
+  verify_shards_explainer:
+    'Testez vos parts enregistrées en saisissant au moins le nombre seuil pour vérifier qu’elles permettent de reconstituer votre compte.',
+  verify_shards_button: 'Vérifier les parts',
+  verify_shards_clear: 'Effacer',
+  verify_shards_success:
+    'Parts vérifiées avec succès ! Votre sauvegarde est valide.',
   advanced_details: 'Détails avancés',
   advanced_options: 'Options avancées',
   relay_server: 'Serveur relais',

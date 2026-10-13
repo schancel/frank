@@ -668,7 +668,7 @@ function recoverMaster(shares: readonly string[]): RecoveredCodex32 {
     return unwrap(recoverCodex32Exact(shares))
   const header = unwrap(decodeFrankRecoveryShare(shares[0] ?? ''))
   header.payload.fill(0)
-  if (shares.length !== header.threshold)
+  if (shares.length < header.threshold)
     throw new AccountRecoveryError('wrong-share-count')
   const found = searchShares(shares)
   try {

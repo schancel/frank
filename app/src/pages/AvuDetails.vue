@@ -1,5 +1,8 @@
 <template>
-  <div data-test="avu-details-page">
+  <div
+    data-test="avu-details-page"
+    class="avu-container column full-height overflow-hidden"
+  >
     <q-header>
       <q-toolbar>
         <q-btn
@@ -16,8 +19,11 @@
         }}</q-toolbar-title>
       </q-toolbar>
     </q-header>
-    <q-page-container>
-      <q-page class="q-pa-md">
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page
+        class="q-pa-md avu-page col full-height overflow-y-auto"
+        :style-fn="pageStyle"
+      >
         <q-card flat class="avu-details-card" data-test="avu-explainer-card">
           <q-card-section class="row items-center q-pb-none">
             <h2 class="text-h6 text-weight-bold q-my-none">
@@ -247,7 +253,9 @@ import {
   avuSpotAt,
   seriesName,
 } from '@frank/wallet/oracle'
+import { viewportPageStyle } from '../utils/layout'
 
+const pageStyle = viewportPageStyle
 const oracle = useSafeOracleStore()
 const t = useTranslate()
 const DAY = 86400
@@ -550,6 +558,17 @@ useOracleHistory(() =>
 </script>
 
 <style scoped>
+.avu-container {
+  height: 100%;
+  min-height: 0;
+}
+.avu-page {
+  max-width: 60rem;
+  margin: 0 auto;
+  height: 100%;
+  min-height: 0 !important;
+  overflow-y: auto;
+}
 .avu-details-card {
   width: 100%;
   max-width: 900px;

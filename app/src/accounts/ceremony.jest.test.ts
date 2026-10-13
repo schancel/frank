@@ -61,13 +61,12 @@ test('does not stage before exact confirmation; stages only the account root and
     f.ceremony.confirm(f.shares.slice(0, 2), 'Again'),
   ).rejects.toThrow()
 })
-test.each(['insufficient', 'excess', 'duplicate', 'checksum', 'other-account'])(
-  'rejects %s without staging and consumes the ceremony',
+test.each(['insufficient', 'duplicate', 'checksum', 'other-account'])(
+  'rejects %s without staging and preserves ceremony for retry',
   async kind => {
     const f = await signup()
     let shares = f.shares.slice(0, 2)
     if (kind === 'insufficient') shares = shares.slice(0, 1)
-    if (kind === 'excess') shares = f.shares
     if (kind === 'duplicate') shares = [shares[0], shares[0]]
     if (kind === 'checksum')
       shares = [
@@ -83,9 +82,15 @@ test.each(['insufficient', 'excess', 'duplicate', 'checksum', 'other-account'])(
     expect(accountSession.stage).not.toHaveBeenCalled()
     await expect(
       f.ceremony.confirm(f.shares.slice(0, 2), 'Fixture'),
-    ).rejects.toThrow()
+    ).resolves.toBeDefined()
+    expect(accountSession.stage).toHaveBeenCalledTimes(1)
   },
 )
+test('accepts all shares when count exceeds threshold without rejecting as excess', async () => {
+  const f = await signup()
+  await expect(f.ceremony.confirm(f.shares, 'Fixture')).resolves.toBeDefined()
+  expect(accountSession.stage).toHaveBeenCalledTimes(1)
+})
 test('independently pinned descriptor mismatch consumes restore rather than changing the expected account', async () => {
   const a = await signup(),
     b = await signup()
@@ -372,5 +377,22 @@ test('ten mixed root/historical strings require explicit selection before stagin
     root.fill(0)
     seed.fill(0)
     other.fill(0)
+  }
+})
+
+test('createDirect stages new account root immediately without backup shares', async () => {
+  const ceremony = createAccountCeremony()
+  try {
+    const outcome = await ceremony.createDirect('Alice')
+    expect(accountSession.stage).toHaveBeenCalledTimes(1)
+    expect(outcome.isRestore).toBe(false)
+    expect(typeof outcome.attemptId).toBe('string')
+    const staged = (accountSession.stage as jest.Mock).mock.calls[0][0]
+    expect(staged.displayName).toBe('Alice')
+    expect(staged.accountRoot).toBeInstanceOf(Uint8Array)
+    expect(staged.accountRoot.length).toBe(32)
+    expect(staged.metadata).toBeDefined()
+  } finally {
+    ceremony.cancel()
   }
 })

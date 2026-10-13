@@ -32,8 +32,9 @@ function resolveGitCommitHash() {
   ]) {
     try {
       const parsed = JSON.parse(fs.readFileSync(p, 'utf8'))
-      if (parsed.commitSha) return parsed.commitSha
-      if (parsed.resolvedOrigin) return parsed.resolvedOrigin // sometimes used in GCP
+      const hash =
+        parsed.public_source_sha || parsed.commitSha || parsed.resolvedOrigin
+      if (hash) return hash
     } catch (err) {}
   }
   try {
@@ -520,8 +521,8 @@ export default configure(ctx => {
       workboxMode: 'GenerateSW', // 'GenerateSW' or 'InjectManifest'
       extendPWAGenerateSWOptions(options) {
         return {
-          // Keep an open wallet on its current bundle until the user reloads.
-          skipWaiting: false,
+          // Activate the new bundle immediately so a reload gets the updated application.
+          skipWaiting: true,
           // Cache only shipped application assets, never source maps or live API responses.
           globIgnores: [...options.globIgnores, '**/*.map'],
           clientsClaim: true,

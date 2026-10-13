@@ -389,6 +389,14 @@ export default defineComponent({
 </script>
 
 <style lang="scss">
+.q-layout {
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
 // Long page content can grow q-layout beyond the viewport; Quasar's standard drawer is
 // positioned against that layout, so its pinned rail/footer would otherwise fall below
 // the visible screen. Dynamic viewport units also follow Safari's browser chrome.

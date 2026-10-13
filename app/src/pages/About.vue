@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="about-container column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -15,8 +15,11 @@
       </q-toolbar>
     </q-header>
 
-    <q-page-container>
-      <q-page class="q-pa-md about-page" :style-fn="pageStyle">
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page
+        class="q-pa-md col full-height overflow-y-auto about-page"
+        :style-fn="pageStyle"
+      >
         <!-- Hero section -->
         <div
           class="column items-center q-mb-lg text-center about-hero"
@@ -200,8 +203,14 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
+.about-container {
+  height: 100%;
+  min-height: 0;
+}
 .about-page {
   max-width: 60rem;
+  height: 100%;
+  min-height: 0 !important;
   overflow-y: auto;
 }
 .about-license {

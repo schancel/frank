@@ -278,3 +278,36 @@ body.body--dark {
 .game-waiting-quiet {
   opacity: 0.85;
 }
+
+// Holistic viewport clamping: prevent Quasar's layout from ever expanding beyond the viewport,
+// which would otherwise cause the browser window to scroll and push pinned drawers/footers off-screen.
+html,
+body,
+#q-app {
+  height: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+.q-layout {
+  height: 100% !important;
+  max-height: 100dvh !important;
+  overflow: hidden !important;
+}
+
+.q-layout .q-page-container {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.q-layout .q-page {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+}

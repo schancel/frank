@@ -23,6 +23,7 @@ const mockWalletStore = {
       | string
       | null,
   seedConfirmedAt: 123456789 as number | null,
+  backedUp: true as boolean,
 }
 const mockProfileStore = {
   profile: {
@@ -395,6 +396,43 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
     it('hides introduction link when user account setup is complete', () => {
       const wrapper = mountDrawer(true)
       expect(wrapper.find('[data-test="nav-welcome"]').exists()).toBe(false)
+    })
+  })
+
+  describe('balance backup warning indicator', () => {
+    it('shows warning icon when account is not backed up', () => {
+      mockWalletStore.backedUp = false
+      const wrapper = mountDrawer(true)
+      const warning = wrapper.find('[data-test="balance-backup-warning"]')
+      expect(warning.exists()).toBe(true)
+    })
+
+    it('clicking warning icon navigates to /backup', async () => {
+      mockWalletStore.backedUp = false
+      mockRouterPush.mockReset()
+      const wrapper = mountDrawer(true)
+      const warning = wrapper.get('[data-test="balance-backup-warning"]')
+      await warning.trigger('click')
+      expect(mockRouterPush).toHaveBeenCalledWith('/backup')
+    })
+
+    it('clicking balance navigates to /backup when not backed up', async () => {
+      mockWalletStore.backedUp = false
+      mockRouterPush.mockReset()
+      const wrapper = mountDrawer(true)
+      await (wrapper.vm as any).openReceive()
+      expect(mockRouterPush).toHaveBeenCalledWith('/backup')
+    })
+
+    it('hides warning icon and navigates to /wallet when account is backed up', async () => {
+      mockWalletStore.backedUp = true
+      mockRouterPush.mockReset()
+      const wrapper = mountDrawer(true)
+      expect(
+        wrapper.find('[data-test="balance-backup-warning"]').exists(),
+      ).toBe(false)
+      await (wrapper.vm as any).openReceive()
+      expect(mockRouterPush).toHaveBeenCalledWith('/wallet')
     })
   })
 })

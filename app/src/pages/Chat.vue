@@ -9,6 +9,13 @@
         :sending="sendingMessage"
         :stamp-status="stampPreparationStatus"
         :recipient-address="recipientAddress"
+        v-model:stamp-amount="stampAmount"
+        :minimum-stamp-wei="minimumStampWei"
+        :default-stamp-wei="defaultStampWei"
+        :stamp-basis-note="defaultStampBasisNote"
+        :default-stamp-mode="isDefaultStampMode"
+        :stamp-unavailable="stampUnavailable"
+        @resetStampDefault="resetStampDefault"
         @sendReply="sendEmailReply"
       />
       <q-page v-else class="chat-page-background column no-wrap">

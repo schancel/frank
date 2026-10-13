@@ -76,4 +76,13 @@ describe('mail executable configuration', () => {
     fs.chmodSync(key, 0o644);
     expect(() => loadGatewayHostConfig(env)).toThrow('owner-readable only');
   });
+
+  it('normalizes FRANK_NETWORK_TAG variations and aliases', () => {
+    const env = settings(dir);
+    env.FRANK_NETWORK_TAG = 'monad-testnet';
+    const config = loadGatewayHostConfig(env);
+    expect(config.chain.networkTag).toBe('MONT');
+    expect(config.chain.chainIdentifier).toBe('monad-testnet');
+    expect(config.chain.chainId).toBe(10143n);
+  });
 });

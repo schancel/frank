@@ -484,6 +484,38 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     wrapper.unmount()
   })
 
+  it('resets to relay gateway when saving an empty input rather than failing validation', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const input = wrapper.find('[data-test="email-gateway-input"]')
+    await input.setValue('   ')
+
+    const saveBtn = wrapper.find('[data-test="save-email-gateway-btn"]')
+    await saveBtn.trigger('click')
+
+    expect(mockResetEmailGatewayAddress).toHaveBeenCalled()
+    expect((wrapper.vm as any).emailGatewayError).toBe('')
+    wrapper.unmount()
+  })
+
+  it('populates input with advertised address when relay gateway is selected', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const relayAddr = '0x9999999999999999999999999999999999999999'
+    mockSettingsStore.advertisedEmailGateway = {
+      address: relayAddr,
+      domain: 'relay.example',
+    } as any
+    await wrapper.vm.$nextTick()
+
+    const resetBtn = wrapper.find('[data-test="reset-email-gateway-btn"]')
+    await resetBtn.trigger('click')
+
+    expect((wrapper.vm as any).emailGatewayInput).toBe(relayAddr)
+    mockSettingsStore.advertisedEmailGateway = null
+    wrapper.unmount()
+  })
+
   describe('Network Environment & Chains Section', () => {
     it('shows the Testnet toggle on and locked, and says mainnet switching is locked', async () => {
       const router = await openDirectly('#/settings')

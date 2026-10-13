@@ -43,7 +43,7 @@ describe('journaled mail host recovery', () => {
       outbound: { dispatchDue } as unknown as JournaledOutboundWorker,
       outboundReconciler: { reconcile } as unknown as ResendOutboundReconciler,
     });
-    await expect(runtime.runOnce()).rejects.toThrow('Frank mailbox: Error');
+    await expect(runtime.runOnce()).rejects.toThrow('Frank mailbox: relay unavailable');
     expect(dispatchDue).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });

@@ -1386,8 +1386,10 @@ async function canonicalSignedRequestWithin(
         challenge.expires_at_ms <= challengeNow ||
         challenge.expires_at_ms >
           challengeNow + MAX_CANONICAL_CHALLENGE_FUTURE_MS ||
-        challenge.network_tag !==
-          bytesToHex(new TextEncoder().encode(descriptor.tag))
+        (challenge.network_tag !==
+          bytesToHex(new TextEncoder().encode(descriptor.tag)) &&
+          challenge.network_tag !==
+            bytesToHex(new TextEncoder().encode(descriptor.network)))
       )
         canonicalProtocol(
           "Malformed or foreign canonical challenge; refusing to sign"

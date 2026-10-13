@@ -1382,6 +1382,8 @@ export default {
     languageSelectorCaption: 'Langue',
     networkSettings: 'Paramètres réseau et passerelle',
     emailGatewayAddress: 'Adresse de la passerelle e-mail',
+    emailGatewayFee:
+      'Frais de timbre pour les e-mails entrants : 0,01 MONT. La passerelle prend en charge l’envoi et la vérification anti-spam.',
     emailGatewayRelayLabel: 'Passerelle du relais :',
     emailGatewayChanged:
       'Le relais ou l’identité de sa passerelle e-mail a changé. Vérifiez la nouvelle adresse avant de l’utiliser.',

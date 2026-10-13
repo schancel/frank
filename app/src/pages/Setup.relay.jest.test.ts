@@ -322,6 +322,10 @@ describe('Setup page advanced relay configuration', () => {
     expect(view.find('[data-test="advanced-relay-expansion"]').exists()).toBe(
       true,
     )
+    expect(view.find('[data-test="backup-policy"]').exists()).toBe(false)
+    expect(
+      view.get('[data-test="generate-backups"]').attributes('disabled'),
+    ).toBeUndefined()
 
     // Inner input should have default relay URL
     const defaultRelay = getDefaultRelayBaseUrl()
@@ -336,11 +340,8 @@ describe('Setup page advanced relay configuration', () => {
     await view.get('[data-test="new-account"]').trigger('click')
     await flushPromises()
 
-    // Select policy
-    const policyRadios = view.findAll('input[type="radio"]')
-    expect(policyRadios.length).toBeGreaterThan(0)
-    await policyRadios[0].setValue(true)
-    await flushPromises()
+    // Shard policy selection is not shown during account creation
+    expect(view.find('[data-test="backup-policy"]').exists()).toBe(false)
 
     // Enter custom relay URL
     const customUrl = 'https://custom-relay.example.com'
@@ -366,10 +367,7 @@ describe('Setup page advanced relay configuration', () => {
     await view.get('[data-test="new-account"]').trigger('click')
     await flushPromises()
 
-    // Select policy
-    const policyRadios = view.findAll('input[type="radio"]')
-    await policyRadios[0].setValue(true)
-    await flushPromises()
+    expect(view.find('[data-test="backup-policy"]').exists()).toBe(false)
 
     const defaultRelay = getDefaultRelayBaseUrl()
     const customUrl = 'https://custom-relay.example.com'

@@ -588,17 +588,6 @@
                 autocomplete="off"
                 data-test="display-name"
               />
-              <p>
-                {{
-                  $t('accountRecovery.choose_how_many_shares_you_must_retain')
-                }}
-              </p>
-              <q-option-group
-                v-model="policy"
-                type="radio"
-                :options="policies"
-                data-test="backup-policy"
-              />
               <q-expansion-item
                 class="q-mt-md"
                 icon="tune"
@@ -646,7 +635,7 @@
                   no-caps
                   :label="$t('welcome.createAccount')"
                   data-test="generate-backups"
-                  :disable="!policy || busy"
+                  :disable="busy"
                   :loading="busy"
                 />
                 <q-btn
@@ -1071,11 +1060,6 @@ const heading = ref<HTMLElement>()
 const busy = ref(false)
 const error = ref('')
 const profileRecoveryFailed = ref(false)
-const policy = ref<string | null>('2-3')
-const policies = [
-  { label: '2 of 3 shards — tolerate losing one', value: '2-3' },
-  { label: '3 of 5 shards — tolerate losing two', value: '3-5' },
-]
 const threshold = ref<2 | 3>(2)
 const shareCount = ref<3 | 5>(3)
 const shareIndex = ref(0)
@@ -1170,7 +1154,6 @@ function cancel() {
   descriptor.value = ''
   descriptorInput.value = ''
   descriptorSaved.value = false
-  policy.value = null
   legacyAddress.value = ''
   customRelayUrl.value = getCustomRelayBaseUrl() ?? defaultRelayUrl
   discoveredRelay.value = null

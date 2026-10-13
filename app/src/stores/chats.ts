@@ -1810,11 +1810,13 @@ export async function rehydateChat(
         conv.name = emailItem.subject
       }
       const trustedGateway = getTrustedEmailGatewayAddress()
-      const isGateway = message.outbound
-        ? sameCanonicalAddress(conv.address, trustedGateway) ||
-          sameCanonicalAddress(copartyAddress, trustedGateway)
-        : sameCanonicalAddress(message.senderAddress, trustedGateway)
-      conv.verifiedGateway = isGateway
+      if (trustedGateway) {
+        const isGateway = message.outbound
+          ? sameCanonicalAddress(conv.address, trustedGateway) ||
+            sameCanonicalAddress(copartyAddress, trustedGateway)
+          : sameCanonicalAddress(message.senderAddress, trustedGateway)
+        conv.verifiedGateway = isGateway
+      }
     }
     recordLogicalMessage(logicalMessages, message, conv.id)
 
@@ -2004,6 +2006,21 @@ export const useChatStore = defineStore('chats', {
     },
   },
   actions: {
+    reverifyEmailGateways(gatewayAddress?: string): void {
+      const trusted = (
+        gatewayAddress || getTrustedEmailGatewayAddress()
+      )?.trim()
+      if (!trusted) return
+      for (const conv of Object.values(this.conversations)) {
+        if (conv.kind === 'email' || conv.emailRecipient) {
+          const isGateway =
+            sameCanonicalAddress(conv.address, trusted) ||
+            conv.participants?.some(p => sameCanonicalAddress(p, trusted)) ===
+              true
+          conv.verifiedGateway = isGateway
+        }
+      }
+    },
     async relayCursor(recipientAddress: string): Promise<number> {
       try {
         const canonical = toChainDisplayAddress(recipientAddress)

@@ -1006,7 +1006,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, type PropType, ref } from 'vue'
+import { defineComponent, type PropType } from 'vue'
 import type { Conversation, ChatMessage } from 'src/stores/chats'
 import type {
   EmailItem,
@@ -1028,9 +1028,14 @@ import {
   type MarkdownFormatAction,
 } from 'src/utils/post-editor'
 import { useSettingsStore } from 'src/stores/settings'
+import { useProfileStore } from 'src/stores/my-profile'
 import { isChainAddress } from 'src/utils/chain-address'
 import { cleanEmailSnippet } from 'src/utils/markdown-plain-text'
-import { sameCanonicalAddress } from 'src/utils/own-address'
+import {
+  getOwnCanonicalAddress,
+  sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
+} from 'src/utils/own-address'
 
 const DEFAULT_STAMP_MULTIPLIER_TENTHS = [
   1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 80, 100, 150, 200, 300, 500, 800, 1000,
@@ -1041,6 +1046,7 @@ function isValidRecipientAddress(addr: string | undefined | null): boolean {
   if (!addr) return false
   const trimmed = addr.trim()
   if (!trimmed) return false
+  if (trimmed.length < 3 || trimmed.length > 320) return false
   if (trimmed.toLowerCase() === 'me') return false
   if (trimmed.includes('@')) return true
   if (isChainAddress(trimmed)) return true
@@ -1118,6 +1124,7 @@ export default defineComponent({
   },
   data() {
     return {
+      ownAddress: useReactiveOwnCanonicalAddress(),
       composerActive: true,
       composerInitialized: false,
       preparingSend: false,
@@ -1860,17 +1867,8 @@ export default defineComponent({
       const val = this.newToInput.trim()
       if (val && isValidRecipientAddress(val) && !this.toList.includes(val)) {
         this.toList.push(val)
-        this.newToInput = ''
-      } else if (
-        val &&
-        val.toLowerCase() !== 'me' &&
-        (val.includes('@') || isChainAddress(val))
-      ) {
-        if (!this.toList.includes(val)) this.toList.push(val)
-        this.newToInput = ''
-      } else {
-        this.newToInput = ''
       }
+      this.newToInput = ''
     },
     removeToRecipient(index: number) {
       this.toList.splice(index, 1)
@@ -1879,17 +1877,8 @@ export default defineComponent({
       const val = this.newCcInput.trim()
       if (val && isValidRecipientAddress(val) && !this.ccList.includes(val)) {
         this.ccList.push(val)
-        this.newCcInput = ''
-      } else if (
-        val &&
-        val.toLowerCase() !== 'me' &&
-        (val.includes('@') || isChainAddress(val))
-      ) {
-        if (!this.ccList.includes(val)) this.ccList.push(val)
-        this.newCcInput = ''
-      } else {
-        this.newCcInput = ''
       }
+      this.newCcInput = ''
     },
     removeCcRecipient(index: number) {
       this.ccList.splice(index, 1)
@@ -1898,17 +1887,8 @@ export default defineComponent({
       const val = this.newBccInput.trim()
       if (val && isValidRecipientAddress(val) && !this.bccList.includes(val)) {
         this.bccList.push(val)
-        this.newBccInput = ''
-      } else if (
-        val &&
-        val.toLowerCase() !== 'me' &&
-        (val.includes('@') || isChainAddress(val))
-      ) {
-        if (!this.bccList.includes(val)) this.bccList.push(val)
-        this.newBccInput = ''
-      } else {
-        this.newBccInput = ''
       }
+      this.newBccInput = ''
     },
     removeBccRecipient(index: number) {
       this.bccList.splice(index, 1)
@@ -1989,6 +1969,94 @@ export default defineComponent({
       if (this.newCcInput.trim()) this.addCcRecipient()
       if (this.newBccInput.trim()) this.addBccRecipient()
 
+      const isGatewayRoute =
+        this.isVerifiedGateway || this.replyRouting === 'gateway'
+
+      let senderAddress =
+        (typeof this.ownAddress === 'string'
+          ? this.ownAddress
+          : (this.ownAddress as any)?.value) || ''
+      if (!senderAddress || senderAddress.length < 3) {
+        senderAddress = (await getOwnCanonicalAddress()) || ''
+      }
+      if (!senderAddress || senderAddress.length < 3) {
+        try {
+          const profile = useProfileStore()
+          if (profile.owner && profile.owner.length >= 3) {
+            senderAddress = profile.owner
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!senderAddress || senderAddress.length < 3) {
+        senderAddress = 'frank-user'
+      }
+
+      let gatewayDomain = ''
+      try {
+        const settings = useSettingsStore()
+        gatewayDomain =
+          settings.acceptedEmailGateway?.domain ||
+          settings.advertisedEmailGateway?.domain ||
+          'signet.mx'
+      } catch {
+        gatewayDomain = 'signet.mx'
+      }
+
+      if (isGatewayRoute && gatewayDomain && !senderAddress.includes('@')) {
+        senderAddress = `${senderAddress}@${gatewayDomain}`
+      }
+
+      let senderName: string | undefined
+      try {
+        const profile = useProfileStore()
+        const name = profile.profile?.name?.trim()
+        if (name && name.length >= 1 && name.length <= 256) {
+          senderName = name
+        }
+      } catch {
+        /* ignore */
+      }
+
+      const fromParty: EmailParty = {
+        address: senderAddress,
+        ...(senderName ? { name: senderName } : {}),
+      }
+
+      const isCleanRecipient = (addr: unknown): addr is string => {
+        if (typeof addr !== 'string') return false
+        const trimmed = addr.trim()
+        return (
+          trimmed.length >= 3 &&
+          trimmed.length <= 320 &&
+          trimmed.toLowerCase() !== 'me'
+        )
+      }
+
+      let validTos = this.toList
+        .map(a => (typeof a === 'string' ? a.trim() : ''))
+        .filter(isCleanRecipient)
+
+      if (validTos.length === 0 && this.conversation?.emailRecipient) {
+        const fallback = this.conversation.emailRecipient.trim()
+        if (isCleanRecipient(fallback)) {
+          validTos = [fallback]
+        }
+      }
+
+      if (validTos.length === 0) {
+        return // cannot send email without recipients
+      }
+
+      const validCcs = this.ccList
+        .map(a => (typeof a === 'string' ? a.trim() : ''))
+        .filter(isCleanRecipient)
+
+      const validBccs = this.bccList
+        .map(a => (typeof a === 'string' ? a.trim() : ''))
+        .filter(isCleanRecipient)
+
       const emailSubject =
         this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)
       const body = this.replyText
@@ -1997,13 +2065,13 @@ export default defineComponent({
         messageId: `<frank_${Date.now()}_${Math.random()
           .toString(36)
           .slice(2, 9)}@frank.org>`,
-        from: { address: 'me' },
-        to: this.toList.map(address => ({ address })),
-        cc: this.ccList.length
-          ? this.ccList.map(address => ({ address }))
+        from: fromParty,
+        to: validTos.map(address => ({ address })),
+        cc: validCcs.length
+          ? validCcs.map(address => ({ address }))
           : undefined,
-        bcc: this.bccList.length
-          ? this.bccList.map(address => ({ address }))
+        bcc: validBccs.length
+          ? validBccs.map(address => ({ address }))
           : undefined,
         subject: emailSubject,
         textBody: body,
@@ -2012,14 +2080,12 @@ export default defineComponent({
           ? [...this.activeReferences]
           : undefined,
       }
-      const isGatewayRoute =
-        this.isVerifiedGateway || this.replyRouting === 'gateway'
       const targetAddress =
         !this.isVerifiedGateway && this.replyRouting === 'gateway'
           ? this.emailGatewayAddress
           : undefined
       const fallbackText = isGatewayRoute
-        ? `[Email to ${this.toList.join(
+        ? `[Email to ${validTos.join(
             ', ',
           )}]\nSubject: ${emailSubject}\n\n${body}`
         : `[Direct P2P Email to ${this.peerFrankAddress} (external email recipients not notified)]\nSubject: ${emailSubject}\n\n${body}`

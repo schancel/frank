@@ -282,3 +282,5 @@ export {
   type ChainHealth,
 } from '../evm-block-watcher'
 
+export * from "./chain-adapter";
+

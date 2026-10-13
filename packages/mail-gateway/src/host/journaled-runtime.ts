@@ -50,7 +50,7 @@ export class JournaledMailRuntime {
         try {
           await run();
         } catch (error) {
-          failures.push(`${name}: ${error instanceof Error ? error.name : typeof error}`);
+          failures.push(`${name}: ${error instanceof Error ? error.message : typeof error}`);
         }
       };
       await stage('held release', async () => {

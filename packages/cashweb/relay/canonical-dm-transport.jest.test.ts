@@ -15,6 +15,7 @@ import {
 import {
   CANONICAL_DM_MAX_BYTES,
   CanonicalTransportError,
+  canonicalNetworkDescriptor,
   decodeCanonicalAcceptedStatus,
   decodeCanonicalTransactions,
   equalCanonicalRequests,
@@ -630,3 +631,47 @@ describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
     )
   })
 })
+
+describe('canonicalNetworkDescriptor', () => {
+  it('resolves monad-testnet by tag, name, chain ID, CAIP-2, hex, and objects', () => {
+    const expected = { tag: 'MONT', network: 'monad-testnet', chainId: 10143n }
+    expect(canonicalNetworkDescriptor('MONT')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('mont')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('monad-testnet')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('monad_testnet')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('testnet')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('10143')).toEqual(expected)
+    expect(canonicalNetworkDescriptor(10143n)).toEqual(expected)
+    expect(canonicalNetworkDescriptor('eip155:10143')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('4d4f4e54')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('0x4d4f4e54')).toEqual(expected)
+    expect(canonicalNetworkDescriptor({ networkTag: 'MONT' })).toEqual(expected)
+    expect(canonicalNetworkDescriptor({ chainIdentifier: 'monad-testnet' })).toEqual(expected)
+  })
+
+  it('resolves monad-mainnet by tag, name, chain ID, CAIP-2, and hex', () => {
+    const expected = { tag: 'MON1', network: 'monad-mainnet', chainId: 143n }
+    expect(canonicalNetworkDescriptor('MON1')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('mon1')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('monad-mainnet')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('mainnet')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('143')).toEqual(expected)
+    expect(canonicalNetworkDescriptor(143n)).toEqual(expected)
+    expect(canonicalNetworkDescriptor('eip155:143')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('4d4f4e31')).toEqual(expected)
+  })
+
+  it('resolves monad-regtest by tag, name, chain ID, and hex', () => {
+    const expected = { tag: 'MONR', network: 'monad-regtest', chainId: 20143n }
+    expect(canonicalNetworkDescriptor('MONR')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('monad-regtest')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('monad-solonet')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('20143')).toEqual(expected)
+    expect(canonicalNetworkDescriptor('4d4f4e52')).toEqual(expected)
+  })
+
+  it('throws on unknown descriptors', () => {
+    expect(() => canonicalNetworkDescriptor('unknown')).toThrow(/Unknown installed Monad network descriptor/)
+  })
+})
+

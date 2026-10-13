@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import { getAddress } from 'ethers';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain';
+import { canonicalNetworkDescriptor } from '@frank/cashweb/relay/canonical-dm-transport';
 
 export interface GatewayIdentityConfig {
   readonly chain: EvmChainConfig;
@@ -97,9 +98,14 @@ function loadGatewayIdentityConfig(env: NodeJS.ProcessEnv): GatewayIdentityConfi
   const relayBaseUrl = required(env, 'FRANK_MAIL_RELAY_URL');
   if (new URL(relayBaseUrl).protocol !== 'https:') throw new Error('Mail relay URL must use HTTPS');
   const expectedIdentityAddress = getAddress(required(env, 'FRANK_MAIL_EXPECTED_IDENTITY'));
+  const descriptor = canonicalNetworkDescriptor(env.FRANK_NETWORK_TAG ?? 'MONT');
   const chain = {
     ...loadMonadChainConfigFromEnv({ isTestnet: true }),
-    chainIdentifier: 'monad-testnet',
+    chainIdentifier: descriptor.network,
+    networkTag: descriptor.tag,
+    networkId: descriptor.network,
+    rpcChain: descriptor.network,
+    chainId: descriptor.chainId,
     walletStorageLocation,
     requireBoundWalletState: true,
     walletStateExists: existsSync,

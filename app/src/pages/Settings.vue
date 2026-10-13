@@ -263,7 +263,6 @@
                   dense
                   outlined
                   :error="!!emailGatewayError"
-                  :error-message="emailGatewayError"
                   :hint="$t('settings.emailGatewayOverrideHint')"
                   data-test="email-gateway-input"
                   data-testid="email-gateway-input"
@@ -275,6 +274,22 @@
                   data-test="email-gateway-error"
                 >
                   {{ emailGatewayError }}
+                </div>
+                <div
+                  class="text-caption text-grey-7 q-mt-sm"
+                  data-test="email-gateway-fee"
+                >
+                  <q-icon
+                    name="local_post_office"
+                    size="14px"
+                    class="q-mr-xs text-primary"
+                  />
+                  {{
+                    $t(
+                      'settings.emailGatewayFee',
+                      'Gateway delivery stamp: 0.01 MONT per email',
+                    )
+                  }}
                 </div>
                 <div class="row items-center justify-end q-gutter-x-sm q-mt-xs">
                   <q-btn
@@ -291,17 +306,6 @@
                     data-test="reset-email-gateway-btn"
                     data-testid="reset-email-gateway-btn"
                     @click="resetEmailGateway"
-                  />
-                  <q-btn
-                    unelevated
-                    dense
-                    no-caps
-                    size="sm"
-                    color="primary"
-                    :label="$t('settings.save')"
-                    data-test="save-email-gateway-btn"
-                    data-testid="save-email-gateway-btn"
-                    @click="saveEmailGateway"
                   />
                 </div>
               </q-tab-panel>
@@ -323,6 +327,8 @@
               color="primary"
               unelevated
               no-caps
+              data-test="save-email-gateway-btn"
+              data-testid="save-email-gateway-btn"
             />
           </q-card-actions>
         </q-card>
@@ -406,17 +412,9 @@ export default defineComponent({
       },
     )
 
-    function saveEmailGateway() {
-      emailGatewayError.value = ''
-      try {
-        settingsStore.setEmailGatewayAddress(emailGatewayInput.value.trim())
-        emailGatewayInput.value =
-          settingsStore.emailGatewayOverride?.address ?? ''
-      } catch (err: any) {
-        emailGatewayError.value =
-          err?.message || 'Invalid Ethereum address format'
-      }
-    }
+    const emailGatewayAddress = computed(
+      () => settingsStore.advertisedEmailGateway?.address ?? '',
+    )
 
     function resetEmailGateway() {
       emailGatewayError.value = ''
@@ -425,7 +423,28 @@ export default defineComponent({
       } else {
         settingsStore.resetEmailGatewayAddress()
       }
-      emailGatewayInput.value = ''
+      emailGatewayInput.value = emailGatewayAddress.value
+    }
+
+    function saveEmailGateway() {
+      emailGatewayError.value = ''
+      const trimmed = emailGatewayInput.value.trim()
+      if (
+        !trimmed ||
+        (emailGatewayAddress.value &&
+          trimmed.toLowerCase() === emailGatewayAddress.value.toLowerCase())
+      ) {
+        resetEmailGateway()
+        return
+      }
+      try {
+        settingsStore.setEmailGatewayAddress(trimmed)
+        emailGatewayInput.value =
+          settingsStore.emailGatewayOverride?.address ?? ''
+      } catch (err: any) {
+        emailGatewayError.value =
+          err?.message || 'Invalid Ethereum address format'
+      }
     }
 
     // Stated, not chosen: the toggle shows the network the app is running on and cannot be
@@ -501,6 +520,11 @@ export default defineComponent({
       this.selectTheme(stoneId)
     },
     save() {
+      this.saveEmailGateway()
+      if (this.emailGatewayError) {
+        this.isSaved = false
+        return
+      }
       this.isSaved = true
       if (typeof this.appearanceStore?.setDarkMode === 'function') {
         this.appearanceStore.setDarkMode(this.darkMode)

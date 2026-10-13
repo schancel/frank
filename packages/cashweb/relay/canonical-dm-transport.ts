@@ -95,14 +95,87 @@ function invalid(message: string): never {
   throw new CanonicalTransportError('invalid', message)
 }
 export function canonicalNetworkDescriptor(
-  tag: 'MONT' | 'MON1' | 'MONR' | 'monad-testnet' | 'monad-mainnet' | string,
+  tag:
+    | 'MONT'
+    | 'MON1'
+    | 'MONR'
+    | 'monad-testnet'
+    | 'monad-mainnet'
+    | 'monad-regtest'
+    | string
+    | Record<string, unknown>
+    | bigint
+    | number,
 ) {
-  if (tag === 'MONT' || tag === 'monad-testnet')
+  if (typeof tag === 'object' && tag !== null) {
+    const candidate =
+      (tag as any).networkTag ??
+      (tag as any).tag ??
+      (tag as any).chainIdentifier ??
+      (tag as any).networkId ??
+      (tag as any).network ??
+      (tag as any).rpcChain ??
+      (tag as any).chainId
+    if (candidate !== undefined && candidate !== tag) {
+      return canonicalNetworkDescriptor(candidate)
+    }
+  }
+  const raw = String(tag ?? '')
+    .trim()
+    .replace(/^["']|["']$/g, '')
+  const lower = raw.toLowerCase()
+
+  // Testnet aliases (tag, network name, chain ID, CAIP-2, hex encodings)
+  if (
+    lower === 'mont' ||
+    lower === 'monad-testnet' ||
+    lower === 'monad_testnet' ||
+    lower === 'testnet' ||
+    lower === '10143' ||
+    lower === '0x279f' ||
+    lower === 'eip155:10143' ||
+    lower === '4d4f4e54' ||
+    lower === '0x4d4f4e54' ||
+    lower === '6d6f6e61642d746573746e6574' // hex of "monad-testnet"
+  ) {
     return { tag: 'MONT', network: 'monad-testnet', chainId: 10143n } as const
-  if (tag === 'MON1' || tag === 'monad-mainnet')
+  }
+
+  // Mainnet aliases
+  if (
+    lower === 'mon1' ||
+    lower === 'monad-mainnet' ||
+    lower === 'monad_mainnet' ||
+    lower === 'mainnet' ||
+    lower === '143' ||
+    lower === '0x8f' ||
+    lower === 'eip155:143' ||
+    lower === '4d4f4e31' ||
+    lower === '0x4d4f4e31' ||
+    lower === '6d6f6e61642d6d61696e6e6574' // hex of "monad-mainnet"
+  ) {
     return { tag: 'MON1', network: 'monad-mainnet', chainId: 143n } as const
-  if (tag === 'MONR' || tag === 'monad-regtest')
+  }
+
+  // Regtest aliases
+  if (
+    lower === 'monr' ||
+    lower === 'monad-regtest' ||
+    lower === 'monad_regtest' ||
+    lower === 'monad-solonet' ||
+    lower === 'monad_solonet' ||
+    lower === 'regtest' ||
+    lower === 'solonet' ||
+    lower === '20143' ||
+    lower === '0x4eaf' ||
+    lower === 'eip155:20143' ||
+    lower === '4d4f4e52' ||
+    lower === '0x4d4f4e52' ||
+    lower === '6d6f6e61642d72656774657374' // hex of "monad-regtest"
+  ) {
     return { tag: 'MONR', network: 'monad-regtest', chainId: 20143n } as const
+  }
+
   return invalid('Unknown installed Monad network descriptor')
 }
 function concat(

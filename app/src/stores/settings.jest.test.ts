@@ -212,3 +212,81 @@ describe('email gateway settings', () => {
     })
   })
 })
+
+describe('coldVaultSweep settings (Issue #1572)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('starts disabled with default 1500 MON hot-float ceiling', () => {
+    const store = useSettingsStore()
+    expect(store.coldVaultSweep).toEqual({
+      enabled: false,
+      externalVaultAddress: '',
+      maxHotBalanceDisplay: '1500',
+    })
+  })
+
+  it('validates and persists EVM and Solana external vault addresses and hot-float ceiling', async () => {
+    const values: Record<string, string> = {}
+    const storage = {
+      put: jest.fn(async (key: string, value: string) => {
+        values[key] = value
+      }),
+      get: jest.fn(async (key: string) => values[key]),
+    } as any
+
+    const store = useSettingsStore()
+    store.setColdVaultSweep({
+      enabled: true,
+      externalVaultAddress: '0x9999999999999999999999999999999999999999',
+      maxHotBalanceDisplay: '1500',
+    })
+    expect(store.coldVaultSweep).toEqual({
+      enabled: true,
+      externalVaultAddress: '0x9999999999999999999999999999999999999999',
+      maxHotBalanceDisplay: '1500',
+    })
+
+    await saveSettings(storage, store.$state)
+    expect(await restoreSettings(storage)).toEqual({
+      coldVaultSweep: {
+        enabled: true,
+        externalVaultAddress: '0x9999999999999999999999999999999999999999',
+        maxHotBalanceDisplay: '1500',
+      },
+    })
+
+    store.resetColdVaultSweep()
+    expect(store.coldVaultSweep).toEqual({
+      enabled: false,
+      externalVaultAddress: '',
+      maxHotBalanceDisplay: '1500',
+    })
+  })
+
+  it('rejects enabling without a vault address or with an invalid address or ceiling', () => {
+    const store = useSettingsStore()
+    expect(() =>
+      store.setColdVaultSweep({
+        enabled: true,
+        externalVaultAddress: '',
+      }),
+    ).toThrow(/External vault address is required/)
+
+    expect(() =>
+      store.setColdVaultSweep({
+        enabled: true,
+        externalVaultAddress: 'invalid-addr',
+      }),
+    ).toThrow(/Invalid external vault address/)
+
+    expect(() =>
+      store.setColdVaultSweep({
+        enabled: false,
+        externalVaultAddress: '0x9999999999999999999999999999999999999999',
+        maxHotBalanceDisplay: '0',
+      }),
+    ).toThrow(/Hot-wallet ceiling must be a positive number/)
+  })
+})

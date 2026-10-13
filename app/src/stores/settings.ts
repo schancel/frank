@@ -7,6 +7,30 @@ import {
 } from 'src/utils/email-gateway-discovery'
 
 export const ETHEREUM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/
+export const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
+
+export interface ColdVaultSweepSettings {
+  enabled: boolean
+  externalVaultAddress: string
+  maxHotBalanceDisplay: string
+}
+
+export const DEFAULT_COLD_VAULT_MAX_HOT_BALANCE_DISPLAY = '1500'
+
+export const DEFAULT_COLD_VAULT_SWEEP_SETTINGS: Readonly<ColdVaultSweepSettings> =
+  Object.freeze({
+    enabled: false,
+    externalVaultAddress: '',
+    maxHotBalanceDisplay: DEFAULT_COLD_VAULT_MAX_HOT_BALANCE_DISPLAY,
+  })
+
+export function isValidExternalVaultAddress(address: string): boolean {
+  const trimmed = (address || '').trim()
+  if (!trimmed) return false
+  return (
+    ETHEREUM_ADDRESS_REGEX.test(trimmed) || SOLANA_ADDRESS_REGEX.test(trimmed)
+  )
+}
 
 type GatewayIdentity = Pick<AdvertisedEmailGateway, 'address'>
 type AcceptedGatewayIdentity = AdvertisedEmailGateway & { relayOrigin: string }
@@ -30,6 +54,8 @@ export interface SettingsState {
   notificationFeeThresholdAvu: number
   /** Whether contacts with pre-shared wakeup tokens bypass the notification fee threshold (#1574). */
   allowContactNotificationBypass: boolean
+  /** Cold-Wallet Auto-Sweep Vault configuration (Issue #1572). */
+  coldVaultSweep: ColdVaultSweepSettings
 }
 
 function validIdentity(value: unknown): value is GatewayIdentity {
@@ -59,12 +85,43 @@ function normalizeThresholdAvu(value: unknown): number {
   return num
 }
 
+function validColdVaultSweep(value: unknown): value is ColdVaultSweepSettings {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  if (typeof item.enabled !== 'boolean') return false
+  if (typeof item.externalVaultAddress !== 'string') return false
+  if (
+    item.externalVaultAddress.trim() !== '' &&
+    !isValidExternalVaultAddress(item.externalVaultAddress)
+  ) {
+    return false
+  }
+  if (
+    typeof item.maxHotBalanceDisplay !== 'string' ||
+    !item.maxHotBalanceDisplay.trim() ||
+    !Number.isFinite(Number(item.maxHotBalanceDisplay)) ||
+    Number(item.maxHotBalanceDisplay) <= 0
+  ) {
+    return false
+  }
+  return true
+}
+
 export function saveSettings(
   storage: LevelDB,
   state: SettingsState,
 ): Promise<void> {
   const threshold = normalizeThresholdAvu(state.notificationFeeThresholdAvu)
   const allowBypass = state.allowContactNotificationBypass !== false
+  const hasCustomColdVaultSweep =
+    state.coldVaultSweep &&
+    (state.coldVaultSweep.enabled !==
+      DEFAULT_COLD_VAULT_SWEEP_SETTINGS.enabled ||
+      state.coldVaultSweep.externalVaultAddress !==
+        DEFAULT_COLD_VAULT_SWEEP_SETTINGS.externalVaultAddress ||
+      state.coldVaultSweep.maxHotBalanceDisplay !==
+        DEFAULT_COLD_VAULT_SWEEP_SETTINGS.maxHotBalanceDisplay)
+
   return storage.put(
     'settings',
     JSON.stringify({
@@ -73,6 +130,9 @@ export function saveSettings(
       networkMode: 'testnet',
       ...(threshold > 0 ? { notificationFeeThresholdAvu: threshold } : {}),
       ...(!allowBypass ? { allowContactNotificationBypass: false } : {}),
+      ...(hasCustomColdVaultSweep
+        ? { coldVaultSweep: state.coldVaultSweep }
+        : {}),
     }),
   )
 }
@@ -111,6 +171,17 @@ export async function restoreSettings(
           allowContactNotificationBypass: false,
         }
       : {}),
+    ...(validColdVaultSweep(stored.coldVaultSweep)
+      ? {
+          coldVaultSweep: {
+            enabled: stored.coldVaultSweep.enabled,
+            externalVaultAddress:
+              stored.coldVaultSweep.externalVaultAddress.trim(),
+            maxHotBalanceDisplay:
+              stored.coldVaultSweep.maxHotBalanceDisplay.trim(),
+          },
+        }
+      : {}),
   }
 }
 
@@ -127,6 +198,9 @@ export const useSettingsStore = defineStore('settings', {
     networkMode: 'testnet',
     notificationFeeThresholdAvu: 0,
     allowContactNotificationBypass: true,
+    coldVaultSweep: {
+      ...DEFAULT_COLD_VAULT_SWEEP_SETTINGS,
+    },
   }),
   getters: {
     emailGatewayAddress(state): string {
@@ -150,6 +224,50 @@ export const useSettingsStore = defineStore('settings', {
     },
     setAllowContactNotificationBypass(allow: boolean) {
       this.allowContactNotificationBypass = Boolean(allow)
+    },
+    setColdVaultSweep(input: Partial<ColdVaultSweepSettings>) {
+      const enabled = input.enabled ?? this.coldVaultSweep.enabled
+      const externalVaultAddress = (
+        input.externalVaultAddress ?? this.coldVaultSweep.externalVaultAddress
+      ).trim()
+      const maxHotBalanceDisplay = (
+        input.maxHotBalanceDisplay ?? this.coldVaultSweep.maxHotBalanceDisplay
+      ).trim()
+
+      if (enabled && !externalVaultAddress) {
+        throw new Error(
+          'External vault address is required when Cold-Wallet Auto-Sweep is enabled.',
+        )
+      }
+      if (
+        externalVaultAddress &&
+        !isValidExternalVaultAddress(externalVaultAddress)
+      ) {
+        throw new Error(
+          `Invalid external vault address: "${externalVaultAddress}". Expected an EVM (0x...) or Solana base58 address.`,
+        )
+      }
+      const parsedCeiling = Number(maxHotBalanceDisplay)
+      if (
+        !maxHotBalanceDisplay ||
+        !Number.isFinite(parsedCeiling) ||
+        parsedCeiling <= 0
+      ) {
+        throw new Error(
+          'Hot-wallet ceiling must be a positive number (default: 1500 MON).',
+        )
+      }
+
+      this.coldVaultSweep = {
+        enabled,
+        externalVaultAddress,
+        maxHotBalanceDisplay,
+      }
+    },
+    resetColdVaultSweep() {
+      this.coldVaultSweep = {
+        ...DEFAULT_COLD_VAULT_SWEEP_SETTINGS,
+      }
     },
     setEmailGatewayAddress(address: string) {
       if (!ETHEREUM_ADDRESS_REGEX.test(address))

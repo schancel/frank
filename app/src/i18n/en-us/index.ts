@@ -711,6 +711,17 @@ export default {
     openingConversation: 'Opening conversation…',
     selectChatOrAddContact:
       'Select a conversation or add a contact to start messaging.',
+    searchPlaceholder: 'Search messages, subjects, contacts… (⌘K)',
+    clearSearch: 'Clear search',
+    noSearchResults: 'No matching messages or conversations found.',
+    screenerFilterLabel: 'Screener ({count}) · {value}',
+    screenerFilterEmpty: 'No paid stranger requests waiting.',
+    allConversationsFilter: 'All',
+    screenerBannerTitle:
+      'Tollbooth Screener: Sender paid {value} in stamps to reach you',
+    screenerApprove: 'Approve & Add Contact',
+    screenerReplyOnce: 'Reply Once',
+    screenerDismissKeepStamp: 'Dismiss & Keep Stamp',
   },
   selfChat: {
     you: 'You',
@@ -1162,6 +1173,8 @@ export default {
     formatCode: 'Code',
     formatBullet: 'Bullet List',
     formatLink: 'Link',
+    showQuotedText: 'Show quoted text',
+    hideQuotedText: 'Hide quoted text',
   },
   newTopicDialog: {
     newTopic: 'Add Topic',

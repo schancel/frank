@@ -213,6 +213,7 @@ export interface Conversation {
    * hold conversations of an account that was replaced here. */
   actedBy?: string
   verifiedGateway?: boolean
+  screenerStatus?: 'pending' | 'approved' | 'dismissed'
 }
 
 export type ChatState = Conversation
@@ -4220,6 +4221,17 @@ export const useChatStore = defineStore('chats', {
     }) {
       const chat = this.chats[address] || this.conversations[address]
       if (chat) chat.stampWei = stampWei?.toString()
+    },
+    setScreenerStatus(
+      addressOrId: string,
+      status: 'pending' | 'approved' | 'dismissed',
+    ) {
+      const chat =
+        this.conversations[addressOrId] ||
+        this.chats[safeChainDisplayAddress(addressOrId) || addressOrId]
+      if (chat) {
+        chat.screenerStatus = status
+      }
     },
     requestComposeFocus(conversationId?: string | null): void {
       const targetId =

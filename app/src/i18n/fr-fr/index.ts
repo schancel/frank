@@ -723,6 +723,17 @@ export default {
     openingConversation: 'Ouverture de la conversation…',
     selectChatOrAddContact:
       'Sélectionnez une conversation ou ajoutez un contact pour commencer à échanger.',
+    searchPlaceholder: 'Rechercher messages, sujets, contacts… (⌘K)',
+    clearSearch: 'Effacer la recherche',
+    noSearchResults: 'Aucun message ou conversation correspondant trouvé.',
+    screenerFilterLabel: 'Filtrage ({count}) · {value}',
+    screenerFilterEmpty: 'Aucune demande payante d’inconnu en attente.',
+    allConversationsFilter: 'Tous',
+    screenerBannerTitle:
+      'Péage de filtrage : L’expéditeur a payé {value} en timbres pour vous joindre',
+    screenerApprove: 'Approuver et ajouter aux contacts',
+    screenerReplyOnce: 'Répondre une fois',
+    screenerDismissKeepStamp: 'Ignorer et garder le timbre',
   },
   selfChat: {
     you: 'Vous',
@@ -1194,6 +1205,8 @@ export default {
     formatCode: 'Code',
     formatBullet: 'Liste à puces',
     formatLink: 'Lien',
+    showQuotedText: 'Afficher le texte cité',
+    hideQuotedText: 'Masquer le texte cité',
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',

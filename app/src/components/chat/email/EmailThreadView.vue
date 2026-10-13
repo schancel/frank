@@ -226,8 +226,10 @@
 
                   <!-- Collapsed summary preview -->
                   <div
-                    class="row items-center justify-between text-caption text-grey-7 no-wrap"
+                    class="row items-center justify-between text-caption text-grey-7 no-wrap collapsed-email-summary"
                     v-if="!isExpanded(card.id)"
+                    data-test="collapsed-email-summary"
+                    data-testid="collapsed-email-summary"
                   >
                     <span class="ellipsis col text-grey-8">
                       {{ card.snippet }}
@@ -296,11 +298,37 @@
                       sandbox="allow-same-origin"
                       class="email-html-frame"
                     />
-                    <div
-                      v-else
-                      class="email-body-text text-body1"
-                      v-html="formatMessageBody(card.textBody)"
-                    />
+                    <div v-else>
+                      <div
+                        class="email-body-text text-body1"
+                        v-html="formatMessageBody(card.mainBody || card.textBody)"
+                      />
+                      <div v-if="card.quotedBody" class="q-mt-sm">
+                        <q-btn
+                          flat
+                          dense
+                          no-caps
+                          size="xs"
+                          color="grey-7"
+                          icon="more_horiz"
+                          :label="
+                            isQuoteExpanded(card.id)
+                              ? $t('emailThread.hideQuotedText')
+                              : $t('emailThread.showQuotedText')
+                          "
+                          data-test="toggle-quoted-text"
+                          data-testid="toggle-quoted-text"
+                          @click.stop="toggleQuoteExpanded(card.id)"
+                        />
+                        <div
+                          v-if="isQuoteExpanded(card.id)"
+                          class="email-quoted-block q-mt-xs q-pl-sm text-body2 text-grey-7"
+                          data-test="email-quoted-block"
+                          data-testid="email-quoted-block"
+                          v-html="formatMessageBody(card.quotedBody)"
+                        />
+                      </div>
+                    </div>
 
                     <!-- Attachments -->
                     <div
@@ -1053,6 +1081,51 @@ function isValidRecipientAddress(addr: string | undefined | null): boolean {
   return false
 }
 
+export function splitQuotedEmailBody(text: string): {
+  mainBody: string
+  visibleBody: string
+  quotedBody: string
+} {
+  if (!text) return { mainBody: '', visibleBody: '', quotedBody: '' }
+  const lines = text.split(/\r?\n/)
+  let quoteStartIdx = -1
+
+  // Look for a trailing block of `>` quoted lines (optionally preceded by `On ... wrote:`)
+  let idx = lines.length - 1
+  while (idx >= 0 && lines[idx].trim() === '') {
+    idx--
+  }
+
+  let hasTrailingQuoteLines = false
+  while (idx >= 0 && /^\s*>/.test(lines[idx])) {
+    hasTrailingQuoteLines = true
+    quoteStartIdx = idx
+    idx--
+  }
+
+  if (hasTrailingQuoteLines) {
+    // Check if the line immediately preceding the `>` block (skipping blank lines) is an attribution header like `On ..., ... wrote:`
+    let attrIdx = quoteStartIdx - 1
+    while (attrIdx >= 0 && lines[attrIdx].trim() === '') {
+      attrIdx--
+    }
+    if (
+      attrIdx >= 0 &&
+      /^on\s+.+wrote:\s*$/i.test(lines[attrIdx].trim())
+    ) {
+      quoteStartIdx = attrIdx
+    }
+
+    const mainBody = lines.slice(0, quoteStartIdx).join('\n').trim()
+    const quotedBody = lines.slice(quoteStartIdx).join('\n').trim()
+    if (mainBody.length > 0 && quotedBody.length > 0) {
+      return { mainBody, visibleBody: mainBody, quotedBody }
+    }
+  }
+
+  return { mainBody: text, visibleBody: text, quotedBody: '' }
+}
+
 interface ParsedEmailCard {
   id: string
   fromAddress: string
@@ -1062,10 +1135,13 @@ interface ParsedEmailCard {
   bcc?: EmailParty[]
   subject: string
   textBody: string
+  mainBody: string
+  quotedBody: string
   snippet: string
   formattedDate: string
   timestamp: number
   isOutbound: boolean
+  isUnread: boolean
   attachments?: EmailAttachment[]
   rawEmail?: EmailItem
   isDkimVerified?: boolean
@@ -1121,6 +1197,8 @@ export default defineComponent({
     'sendReply': (_payload: EmailReply) => true,
     'update:stampAmount': (_amount: string) => true,
     'resetStampDefault': () => true,
+    'navigateThread': (_direction: 'next' | 'prev') => true,
+    'archiveThread': () => true,
   },
   data() {
     return {
@@ -1135,6 +1213,8 @@ export default defineComponent({
           STAMP_MULTIPLIER_TENTHS) ||
         DEFAULT_STAMP_MULTIPLIER_TENTHS,
       expandedMap: {} as Record<string, boolean>,
+      quoteExpandedMap: {} as Record<string, boolean>,
+      focusedCardIndex: 0,
       allExpanded: false,
       replyMode: 'reply_all' as 'reply' | 'reply_all',
       showCc: false,
@@ -1388,6 +1468,12 @@ export default defineComponent({
     },
     parsedEmails(): ParsedEmailCard[] {
       const cards: ParsedEmailCard[] = []
+      const lastRead = this.conversation?.lastRead ?? 0
+      const hasLastRead =
+        this.conversation !== null &&
+        this.conversation !== undefined &&
+        this.conversation.lastRead !== undefined
+
       for (const msg of this.messages) {
         const emailItem = msg.items?.find(it => it.type === 'email') as
           | EmailItem
@@ -1395,12 +1481,18 @@ export default defineComponent({
         const timestamp =
           msg.serverTime || msg.receivedTime || (msg as any).localTime || 0
         const formattedDate = formatConversationTimestamp(timestamp)
+        const isUnread =
+          !msg.outbound &&
+          ((hasLastRead && timestamp > lastRead) ||
+            (!hasLastRead && (this.conversation?.totalUnreadMessages ?? 0) > 0))
 
         if (emailItem) {
           const fromAddr = emailItem.from?.address || msg.senderAddress
           const fromName = emailItem.from?.name
           const text = emailItem.textBody || ''
-          const snippet = text.replace(/\s+/g, ' ').slice(0, 100)
+          const { mainBody, quotedBody } = splitQuotedEmailBody(text)
+          const snippetSource = mainBody || text
+          const snippet = snippetSource.replace(/\s+/g, ' ').slice(0, 100)
 
           cards.push({
             id: emailItem.messageId || msg.payloadDigest,
@@ -1410,10 +1502,13 @@ export default defineComponent({
             cc: emailItem.cc || [],
             subject: emailItem.subject || 'No Subject',
             textBody: text,
+            mainBody,
+            quotedBody,
             snippet,
             formattedDate,
             timestamp,
             isOutbound: msg.outbound,
+            isUnread,
             attachments: emailItem.attachments,
             rawEmail: emailItem,
             isDkimVerified: Boolean(
@@ -1427,7 +1522,9 @@ export default defineComponent({
             | undefined
           const text = textItem?.text || ''
           const cleanText = cleanEmailSnippet(text)
-          const snippet = cleanText.replace(/\s+/g, ' ').slice(0, 100)
+          const { mainBody, quotedBody } = splitQuotedEmailBody(cleanText)
+          const snippetSource = mainBody || cleanText
+          const snippet = snippetSource.replace(/\s+/g, ' ').slice(0, 100)
 
           cards.push({
             id: msg.payloadDigest,
@@ -1435,10 +1532,13 @@ export default defineComponent({
             to: [{ address: msg.destinationAddress || this.recipientAddress }],
             subject: this.threadSubject,
             textBody: cleanText,
+            mainBody,
+            quotedBody,
             snippet,
             formattedDate,
             timestamp,
             isOutbound: msg.outbound,
+            isUnread,
           })
         }
       }
@@ -1573,11 +1673,17 @@ export default defineComponent({
       immediate: true,
       handler(cards: ParsedEmailCard[]) {
         if (cards.length > 0) {
-          // Default latest message to expanded, earlier ones collapsed
+          // Default latest message and any unread messages to expanded, earlier read ones collapsed
           const latestId = cards[cards.length - 1].id
           if (!(latestId in this.expandedMap)) {
             this.expandedMap[latestId] = true
           }
+          for (const card of cards) {
+            if (card.isUnread && !(card.id in this.expandedMap)) {
+              this.expandedMap[card.id] = true
+            }
+          }
+          this.focusedCardIndex = cards.length - 1
         }
         // This component is keyed by conversation ID. Initialize once; empty fields do not
         // imply an untouched draft or permission to replace an explicitly selected parent.
@@ -1634,6 +1740,11 @@ export default defineComponent({
         this.focusInput(this.$refs.bodyInputRef)
       }
     },
+    focusReplyComposer() {
+      this.focusInput(this.$refs.bodyInputRef)
+      const textarea = this.getTextareaElement()
+      textarea?.focus?.()
+    },
     focusInput(inputComp: any) {
       if (!inputComp) return
       if (typeof inputComp.focus === 'function') {
@@ -1649,11 +1760,74 @@ export default defineComponent({
     toggleExpand(id: string) {
       this.expandedMap[id] = !this.expandedMap[id]
     },
+    isQuoteExpanded(id: string): boolean {
+      return !!this.quoteExpandedMap[id]
+    },
+    toggleQuoteExpanded(id: string) {
+      this.quoteExpandedMap[id] = !this.quoteExpandedMap[id]
+    },
     toggleAllExpanded() {
       this.allExpanded = !this.allExpanded
       for (const card of this.parsedEmails) {
         this.expandedMap[card.id] = this.allExpanded
       }
+    },
+    handleTriageKeydown(event: KeyboardEvent): boolean {
+      if (event.metaKey || event.ctrlKey || event.altKey) return false
+      const target = (event.target || document.activeElement) as
+        | HTMLElement
+        | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return false
+      }
+      const key = event.key.toLowerCase()
+      const cards = this.parsedEmails
+      if (key === 'j') {
+        event.preventDefault()
+        if (this.focusedCardIndex < cards.length - 1) {
+          this.focusedCardIndex += 1
+          const nextCard = cards[this.focusedCardIndex]
+          if (nextCard) this.expandedMap[nextCard.id] = true
+        } else {
+          this.$emit('navigateThread', 'next')
+        }
+        return true
+      }
+      if (key === 'k') {
+        event.preventDefault()
+        if (this.focusedCardIndex > 0) {
+          this.focusedCardIndex -= 1
+          const prevCard = cards[this.focusedCardIndex]
+          if (prevCard) this.expandedMap[prevCard.id] = true
+        } else {
+          this.$emit('navigateThread', 'prev')
+        }
+        return true
+      }
+      if (key === 'r') {
+        event.preventDefault()
+        const targetCard =
+          cards[this.focusedCardIndex] || cards[cards.length - 1]
+        if (targetCard) {
+          this.prepareReply(
+            targetCard,
+            this.canReplyAll(targetCard) ? 'reply_all' : 'reply',
+          )
+        }
+        this.focusReplyComposer()
+        return true
+      }
+      if (key === 'e') {
+        event.preventDefault()
+        this.$emit('archiveThread')
+        return true
+      }
+      return false
     },
     getInitials(nameOrAddress: string): string {
       if (!nameOrAddress) return '?'

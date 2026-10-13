@@ -82,6 +82,7 @@ export function createRoutes(): RouteRecordRaw[] {
           component: () => import('pages/AddTopic.vue'),
         },
         { path: 'setup', component: () => import('pages/Setup.vue') },
+        { path: 'onboard', component: () => import('pages/Onboard.vue') },
       ],
     },
   ]

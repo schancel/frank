@@ -13,6 +13,7 @@ import {
   bindForumAuthority,
   classifyForumOperation,
   reconcileForumOperations,
+  submitForumOperation,
   MAX_FORUM_BURN,
 } from './monad-forum-operation'
 import type { OutgoingTopicOperation } from './storage/topic-operation-journal'
@@ -119,6 +120,10 @@ async function fixture() {
     )
   }
   return {
+    key,
+    lease,
+    post,
+    hash,
     bundle,
     operation,
     wallet,
@@ -329,3 +334,52 @@ test('provider chain mismatch fails before relay transport and never settles', a
   expect(f.bundle.topicOperationJournal.getAll()).toEqual([f.operation])
   await f.bundle.close()
 })
+
+test('submitForumOperation retries with bounded gas limit when signer throws CALL_EXCEPTION without gasLimit', async () => {
+  const f = await fixture()
+  f.bundle.leaseManager.releaseLease(f.lease, 'unused')
+  await f.bundle.topicOperationJournal.delete(f.operation)
+  const callException = Object.assign(new Error('missing revert data'), {
+    code: 'CALL_EXCEPTION',
+    action: 'estimateGas',
+  })
+  let callCount = 0
+  let capturedGasLimit: bigint | undefined
+  jest.spyOn(f.bundle.pool, 'getSigner').mockImplementation(() => ({
+    buildAndSignCall: jest.fn(async (to: string, val: bigint, data: string, overrides?: any) => {
+      callCount++
+      if (callCount === 1 && overrides?.gasLimit === undefined) {
+        throw callException
+      }
+      capturedGasLimit = overrides?.gasLimit
+      return {
+        rawTx: f.operation.rawTx,
+        txHash: f.operation.txHash,
+        from: f.key.address,
+        to,
+        value: val,
+        data,
+        gasLimit: overrides?.gasLimit ?? 21000n,
+        maxFeePerGas: 2_000_000_000n,
+        chainId: 10143n,
+      }
+    }),
+  } as any))
+
+  http.mockResolvedValue(response(f.status()) as any)
+
+  const result = await submitForumOperation(f.wallet, {
+    kind: 'post',
+    target: f.hash,
+    direction: 'up',
+    burnAddress: burn,
+    value: 7n,
+    encode: (burnTx: Uint8Array) => encodeTopicPostSubmission(f.post, burnTx),
+  })
+
+  expect(callCount).toBe(2)
+  expect(capturedGasLimit).toBeGreaterThan(21000n)
+  expect(result.operation.txHash).toBe(f.operation.txHash)
+  await f.bundle.close()
+})
+

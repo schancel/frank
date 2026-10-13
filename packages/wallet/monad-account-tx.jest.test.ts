@@ -222,6 +222,90 @@ describe('MonadAccountTxSigner', () => {
         ).rejects.toThrow(/non-empty calldata/)
       },
     )
+
+    it('falls back to bounded gas limit when estimateGas throws CALL_EXCEPTION (e.g. missing revert data)', async () => {
+      const callException = Object.assign(new Error('missing revert data'), {
+        code: 'CALL_EXCEPTION',
+        action: 'estimateGas',
+      })
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'getTransactionCount') return '0x0'
+        if (req.method === 'estimateGas') throw callException
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+      const signer = new MonadAccountTxSigner({
+        privateKey: TEST_PRIVATE_KEY,
+        provider,
+        httpClient: makeMockHttpClient(),
+      })
+      const commitment = '0x' + 'ff'.repeat(38) // 38 bytes
+      const signed = await signer.buildAndSignCall(
+        RECIPIENT,
+        1n,
+        commitment,
+        {
+          maxFeePerGas: 1_000_000_000n,
+          maxPriorityFeePerGas: 1_000_000_000n,
+        },
+      )
+      // 21000n base + 38 * 16n + 10000n = 31608n
+      expect(signed.gasLimit).toBe(31608n)
+      expect(signed.data).toBe(commitment)
+    })
+
+    it('re-throws non-CALL_EXCEPTION errors during estimateGas', async () => {
+      const networkError = new Error('network timeout')
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'getTransactionCount') return '0x0'
+        if (req.method === 'estimateGas') throw networkError
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+      const signer = new MonadAccountTxSigner({
+        privateKey: TEST_PRIVATE_KEY,
+        provider,
+        httpClient: makeMockHttpClient(),
+      })
+      await expect(
+        signer.buildAndSignCall(
+          RECIPIENT,
+          1n,
+          '0x1234',
+          {
+            maxFeePerGas: 1_000_000_000n,
+            maxPriorityFeePerGas: 1_000_000_000n,
+          },
+        ),
+      ).rejects.toThrow('network timeout')
+    })
+
+    it('populateUnsignedCall falls back to bounded gas limit on CALL_EXCEPTION', async () => {
+      const callException = Object.assign(new Error('missing revert data'), {
+        code: 'CALL_EXCEPTION',
+        action: 'estimateGas',
+      })
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'estimateGas') throw callException
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+      const signer = new MonadAccountTxSigner({
+        privateKey: TEST_PRIVATE_KEY,
+        provider,
+        httpClient: makeMockHttpClient(),
+      })
+      const commitment = '0x' + 'ff'.repeat(38)
+      const frozen = await signer.populateUnsignedCall(
+        RECIPIENT,
+        1n,
+        commitment,
+        {
+          nonce: 0,
+          maxFeePerGas: 1_000_000_000n,
+          maxPriorityFeePerGas: 1_000_000_000n,
+        },
+      )
+      const parsed = Transaction.from(frozen.unsignedSerialized)
+      expect(parsed.gasLimit).toBe(31608n)
+    })
   })
 
   describe('submit', () => {

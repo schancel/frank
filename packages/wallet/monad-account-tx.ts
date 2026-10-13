@@ -30,7 +30,14 @@
  * real `ChainAdapter` assembly (#2) may want to fold these into one client; that consolidation is
  * out of scope here.
  */
-import { Provider, Transaction, TransactionRequest, Wallet } from "ethers";
+import {
+  getBytes,
+  isCallException,
+  Provider,
+  Transaction,
+  TransactionRequest,
+  Wallet,
+} from "ethers";
 
 import { MonadTxReceipt } from "./monad-http";
 
@@ -91,6 +98,39 @@ export interface FrozenUnsignedMonadTx {
 }
 
 export type MonadTxStatus = "pending" | "confirmed" | "failed";
+
+/**
+ * Detects whether an error thrown during transaction preparation was caused by `eth_estimateGas`
+ * failing with a CALL_EXCEPTION (e.g. missing revert data, execution revert, or insufficient balance
+ * during simulation on a burn transfer or zero-balance probe account).
+ */
+export function isEstimateGasCallException(err: unknown): boolean {
+  if (isCallException(err)) return true;
+  if (err instanceof Error) {
+    const action = (err as { action?: unknown }).action;
+    const code = (err as { code?: unknown }).code;
+    if (action === "estimateGas" || code === "CALL_EXCEPTION") return true;
+    return /missing revert data|CALL_EXCEPTION|insufficient balance/i.test(
+      err.message
+    );
+  }
+  return false;
+}
+
+/**
+ * Calculates a bounded fallback gas limit for native value or calldata-bearing transfers (such as
+ * topic burns or stamp payments) when RPC gas estimation fails with a CALL_EXCEPTION.
+ * Base transfer is 21,000 gas; each calldata byte costs at most 16 gas (EIP-2028), plus a 10,000 gas buffer.
+ */
+export function fallbackDataTxGasLimit(data: string | undefined): bigint {
+  const bytes =
+    typeof data === "string" && data !== "0x" && data !== ""
+      ? getBytes(data)
+      : new Uint8Array(0);
+  return bytes.length > 0
+    ? 21000n + BigInt(bytes.length * 16) + 10000n
+    : 21000n;
+}
 
 /**
  * Builds, signs, submits, and tracks Monad transactions for a single EOA held in memory (a raw
@@ -172,6 +212,25 @@ export class MonadAccountTxSigner {
     return this.populateUnsigned(to, value, "0x", overrides);
   }
 
+  private async populateSafe(
+    request: TransactionRequest
+  ): Promise<ReturnType<Wallet["populateTransaction"]>> {
+    try {
+      return await this.wallet.populateTransaction(request);
+    } catch (err) {
+      if (request.gasLimit === undefined && isEstimateGasCallException(err)) {
+        const fallbackGasLimit = fallbackDataTxGasLimit(
+          typeof request.data === "string" ? request.data : undefined
+        );
+        return await this.wallet.populateTransaction({
+          ...request,
+          gasLimit: fallbackGasLimit,
+        });
+      }
+      throw err;
+    }
+  }
+
   private async populateUnsigned(
     to: string,
     value: bigint,
@@ -185,7 +244,7 @@ export class MonadAccountTxSigner {
     ) {
       delete cleanOverrides.gasPrice;
     }
-    const populated = await this.wallet.populateTransaction({
+    const populated = await this.populateSafe({
       to,
       value,
       data,
@@ -281,7 +340,7 @@ export class MonadAccountTxSigner {
     // via `eth_estimateGas`, fee fields via `eth_feeHistory`/`eth_gasPrice` (auto-detecting
     // EIP-1559 support), and chainId via `eth_chainId`. See `ethers`'
     // `AbstractSigner.populateTransaction` (providers/abstract-signer.ts).
-    const populated = await this.wallet.populateTransaction(request);
+    const populated = await this.populateSafe(request);
     const rawTx = await this.wallet.signTransaction(populated);
 
     // Re-derive every field from the signed encoding itself (rather than trusting `populated`

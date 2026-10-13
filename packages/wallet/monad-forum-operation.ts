@@ -1,6 +1,6 @@
 /** Exact signed Forum authority. Codec matching compares claims; this module checks chain facts. */
 import axios from 'axios'
-import { Transaction, getAddress, getBytes, hexlify } from 'ethers'
+import { Transaction, getAddress, getBytes, hexlify, isCallException } from 'ethers'
 import {
   defaultContext,
   validateFrame,
@@ -294,17 +294,42 @@ async function submitForumOperationAdmitted(
       provider: wallet.provider,
       httpClient: wallet.httpClient,
     })
-    const signed = await signer.buildAndSignCall(
-      params.burnAddress,
-      params.value,
-      hexlify(
-        topicBurnCalldata(
-          params.direction,
-          topicVoteCommitment(wallet.cborNetwork!, params.target),
-        ),
+    const burnData = hexlify(
+      topicBurnCalldata(
+        params.direction,
+        topicVoteCommitment(wallet.cborNetwork!, params.target),
       ),
-      params.overrides,
     )
+    let signed
+    try {
+      signed = await signer.buildAndSignCall(
+        params.burnAddress,
+        params.value,
+        burnData,
+        params.overrides,
+      )
+    } catch (err) {
+      if (
+        params.overrides?.gasLimit === undefined &&
+        (isCallException(err) ||
+          (err instanceof Error &&
+            /missing revert data|CALL_EXCEPTION|insufficient balance/i.test(
+              err.message,
+            )))
+      ) {
+        const calldataBytes = getBytes(burnData)
+        const fallbackGasLimit =
+          21000n + BigInt(calldataBytes.length * 16) + 10000n
+        signed = await signer.buildAndSignCall(
+          params.burnAddress,
+          params.value,
+          burnData,
+          { ...params.overrides, gasLimit: fallbackGasLimit },
+        )
+      } else {
+        throw err
+      }
+    }
     if (signed.value !== params.value)
       throw new Error('Signer returned a different Forum burn value')
     operation = {

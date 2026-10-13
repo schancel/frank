@@ -884,7 +884,7 @@ export class RelayClient extends ReadOnlyRelayClient {
 
   async receiveMessage(
     rawMessage: MessageMsg,
-    receivedTime = Date.now(),
+    receivedTime?: number,
   ): Promise<ReceivedMessageWrapper | null> {
     // Parse message
     const message = messageMixin(this.displayNetwork, rawMessage)
@@ -901,6 +901,8 @@ export class RelayClient extends ReadOnlyRelayClient {
     assert(myAddress, 'Address or wallet not set')
     const outbound = senderAddress === myAddress
     const serverTime = preParsedMessage.receivedTime
+    const authoritativeReceivedTime =
+      receivedTime ?? (serverTime > 0 ? serverTime : Date.now())
 
     // if this client sent the message, we already have the data and don't need to process it or get the payload again
     if (preParsedMessage.payloadDigest.length !== 0) {
@@ -1057,7 +1059,7 @@ export class RelayClient extends ReadOnlyRelayClient {
       status: 'confirmed',
       items: [] as MessageItem[],
       serverTime,
-      receivedTime,
+      receivedTime: authoritativeReceivedTime,
       outpoints,
       senderAddress,
       destinationAddress,

@@ -19,7 +19,10 @@ import { initDicePlugin } from './dice/plugin'
 import { initDigitalGoodsPlugin } from './digital-goods/plugin'
 import { initEmailPlugin } from './email/plugin'
 import { initImagePlugin } from './image/plugin'
+import { initJournalCheckpointPlugin } from './journal-checkpoint/plugin'
 import { initLiarsDicePlugin } from './liars-dice/plugin'
+import { initMessageTombstonePlugin } from './message-tombstone/plugin'
+import { initOutboxMessagePlugin } from './outbox-message/plugin'
 import { initP2pkhPlugin } from './p2pkh/plugin'
 import { initPaymentTransferPlugin } from './payment-transfer/plugin'
 import { initRecipientAssetPaymentPlugin } from './stealth-asset/plugin'
@@ -60,6 +63,9 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['swap-record', initSwapRecordPlugin],
   ['received-coin', initReceivedCoinPlugin],
   ['conversation-state', initConversationStatePlugin],
+  ['outbox-message', initOutboxMessagePlugin],
+  ['message-tombstone', initMessageTombstonePlugin],
+  ['journal-checkpoint', initJournalCheckpointPlugin],
   ['digital-goods', initDigitalGoodsPlugin],
   ['raffle', initRafflePlugin],
   ['blackjack-move', initBlackjackMovePlugin],

@@ -87,6 +87,12 @@ const mockAcceptAdvertisedEmailGateway = jest.fn(() => {
   mockSettingsStore.emailGatewayStatus = 'ready'
   mockSettingsStore.emailGatewayOverride = null
 })
+const mockSetNotificationFeeThresholdAvu = jest.fn((val: number | string) => {
+  mockSettingsStore.notificationFeeThresholdAvu = Math.max(0, Number(val) || 0)
+})
+const mockSetAllowContactNotificationBypass = jest.fn((allow: boolean) => {
+  mockSettingsStore.allowContactNotificationBypass = Boolean(allow)
+})
 const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayAddress: '',
   emailGatewayOverride: null as {
@@ -94,9 +100,13 @@ const mockSettingsStore = jest.requireActual('vue').reactive({
   } | null,
   advertisedEmailGateway: null,
   emailGatewayStatus: 'unavailable',
+  notificationFeeThresholdAvu: 0,
+  allowContactNotificationBypass: true,
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
   acceptAdvertisedEmailGateway: mockAcceptAdvertisedEmailGateway,
+  setNotificationFeeThresholdAvu: mockSetNotificationFeeThresholdAvu,
+  setAllowContactNotificationBypass: mockSetAllowContactNotificationBypass,
 })
 jest.mock('src/stores/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
@@ -582,6 +592,31 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
         ethereum: 'settings.chainUnsupported',
         hyperliquid: 'settings.chainUnsupported',
       })
+      wrapper.unmount()
+    })
+  })
+
+  describe('Notification Fee Threshold (AVU) (#1574)', () => {
+    it('renders Notification Fee Threshold (AVU) input and saves to settingsStore on Save', async () => {
+      mockSettingsStore.notificationFeeThresholdAvu = 0
+      mockSettingsStore.allowContactNotificationBypass = true
+      mockSetNotificationFeeThresholdAvu.mockClear()
+      mockSetAllowContactNotificationBypass.mockClear()
+
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router, {}, true)
+
+      const input = wrapper.find('[data-test="notification-fee-threshold-input"]')
+      expect(input.exists()).toBe(true)
+
+      ;(wrapper.vm as any).notificationFeeThresholdAvu = 0.25
+      ;(wrapper.vm as any).allowContactNotificationBypass = false
+      ;(wrapper.vm as unknown as SettingsVm).save()
+
+      expect(mockSetNotificationFeeThresholdAvu).toHaveBeenCalledWith(0.25)
+      expect(mockSetAllowContactNotificationBypass).toHaveBeenCalledWith(false)
+      expect(mockSettingsStore.notificationFeeThresholdAvu).toBe(0.25)
+      expect(mockSettingsStore.allowContactNotificationBypass).toBe(false)
       wrapper.unmount()
     })
   })

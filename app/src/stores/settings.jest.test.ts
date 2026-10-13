@@ -185,4 +185,30 @@ describe('email gateway settings', () => {
     expect(storage.put).toHaveBeenCalledTimes(1)
     expect(discover).not.toHaveBeenCalled()
   })
+
+  it('persists and restores notificationFeeThresholdAvu and allowContactNotificationBypass (#1574)', async () => {
+    const values: Record<string, string> = {}
+    const storage = {
+      put: jest.fn(async (key: string, value: string) => {
+        values[key] = value
+      }),
+      get: jest.fn(async (key: string) => values[key]),
+    } as any
+    const store = useSettingsStore()
+    expect(store.notificationFeeThresholdAvu).toBe(0)
+    expect(store.notificationFeeThresholdAvuMicros).toBe(0)
+    expect(store.allowContactNotificationBypass).toBe(true)
+
+    store.setNotificationFeeThresholdAvu(0.25)
+    store.setAllowContactNotificationBypass(false)
+    expect(store.notificationFeeThresholdAvu).toBe(0.25)
+    expect(store.notificationFeeThresholdAvuMicros).toBe(250_000)
+    expect(store.allowContactNotificationBypass).toBe(false)
+
+    await saveSettings(storage, store.$state)
+    expect(await restoreSettings(storage)).toEqual({
+      notificationFeeThresholdAvu: 0.25,
+      allowContactNotificationBypass: false,
+    })
+  })
 })

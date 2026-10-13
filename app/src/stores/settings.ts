@@ -26,6 +26,10 @@ export interface SettingsState {
   emailGatewayGeneration: number
   /** Always 'testnet' for now. */
   networkMode: 'testnet'
+  /** Minimum stamp value in AVU required for a non-contact message to fire a notification (#1574). */
+  notificationFeeThresholdAvu: number
+  /** Whether contacts with pre-shared wakeup tokens bypass the notification fee threshold (#1574). */
+  allowContactNotificationBypass: boolean
 }
 
 function validIdentity(value: unknown): value is GatewayIdentity {
@@ -49,16 +53,26 @@ function validAcceptedIdentity(
   )
 }
 
+function normalizeThresholdAvu(value: unknown): number {
+  const num = typeof value === 'string' ? Number(value.trim()) : Number(value)
+  if (!Number.isFinite(num) || num < 0) return 0
+  return num
+}
+
 export function saveSettings(
   storage: LevelDB,
   state: SettingsState,
 ): Promise<void> {
+  const threshold = normalizeThresholdAvu(state.notificationFeeThresholdAvu)
+  const allowBypass = state.allowContactNotificationBypass !== false
   return storage.put(
     'settings',
     JSON.stringify({
       emailGatewayOverride: state.emailGatewayOverride,
       acceptedEmailGateway: state.acceptedEmailGateway,
       networkMode: 'testnet',
+      ...(threshold > 0 ? { notificationFeeThresholdAvu: threshold } : {}),
+      ...(!allowBypass ? { allowContactNotificationBypass: false } : {}),
     }),
   )
 }
@@ -87,6 +101,16 @@ export async function restoreSettings(
     ...(validAcceptedIdentity(stored.acceptedEmailGateway)
       ? { acceptedEmailGateway: stored.acceptedEmailGateway }
       : {}),
+    ...(typeof stored.notificationFeeThresholdAvu === 'number' &&
+    Number.isFinite(stored.notificationFeeThresholdAvu) &&
+    stored.notificationFeeThresholdAvu > 0
+      ? { notificationFeeThresholdAvu: stored.notificationFeeThresholdAvu }
+      : {}),
+    ...(stored.allowContactNotificationBypass === false
+      ? {
+          allowContactNotificationBypass: false,
+        }
+      : {}),
   }
 }
 
@@ -101,6 +125,8 @@ export const useSettingsStore = defineStore('settings', {
     emailGatewayVerifiedNetwork: null,
     emailGatewayGeneration: 0,
     networkMode: 'testnet',
+    notificationFeeThresholdAvu: 0,
+    allowContactNotificationBypass: true,
   }),
   getters: {
     emailGatewayAddress(state): string {
@@ -112,8 +138,19 @@ export const useSettingsStore = defineStore('settings', {
         return ''
       return state.advertisedEmailGateway.address
     },
+    notificationFeeThresholdAvuMicros(state): number {
+      return Math.round(
+        normalizeThresholdAvu(state.notificationFeeThresholdAvu) * 1_000_000,
+      )
+    },
   },
   actions: {
+    setNotificationFeeThresholdAvu(value: number | string) {
+      this.notificationFeeThresholdAvu = normalizeThresholdAvu(value)
+    },
+    setAllowContactNotificationBypass(allow: boolean) {
+      this.allowContactNotificationBypass = Boolean(allow)
+    },
     setEmailGatewayAddress(address: string) {
       if (!ETHEREUM_ADDRESS_REGEX.test(address))
         throw new Error(

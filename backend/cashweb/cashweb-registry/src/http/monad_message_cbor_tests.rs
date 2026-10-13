@@ -1201,3 +1201,168 @@ async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
         std::panic::resume_unwind(panic);
     }
 }
+
+#[tokio::test]
+async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero_value_inbox_storage(
+) {
+    use crate::monad_http::Hash32;
+    use futures::FutureExt;
+    let genuine = genuine_fixture();
+    let fixture = NativeDirectoryFixture::new().await;
+    let rpc = axum::Router::new().route(
+        "/",
+        axum::routing::post(|Json(query): Json<serde_json::Value>| async move {
+            Json(serde_json::json!({"jsonrpc":"2.0","id":query["id"],"result":Hash32([7;32]).to_hex()}))
+        }),
+    );
+    let (rpc_url, rpc_stop, rpc_task) = serve_http(rpc).await;
+    let runtime_server = server(&fixture, &rpc_url);
+    let (url, http_stop, http_task) = serve_http(
+        runtime_server
+            .clone()
+            .into_router_with_directory(Some(fixture.directory.clone())),
+    )
+    .await;
+
+    let outcome = std::panic::AssertUnwindSafe(async {
+        let secp = secp256k1_abc::Secp256k1::new();
+        let sk = secp256k1_abc::SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let pk = secp256k1_abc::PublicKey::from_secret_key(&secp, &sk);
+        let pubkey_bytes = pk.serialize();
+        let owner_addr =
+            crate::monad_stamp_stealth::recipient_address_from_public_key(&pubkey_bytes).unwrap();
+        let owner_hex = owner_addr.to_hex();
+        let ts = "1700000000000";
+
+        let sign_auth = |method: &str| -> String {
+            let preimage = format!("frank-notification-policy-auth-v1:{method}:{owner_hex}:{ts}");
+            let digest = Sha256::digest(preimage.into_bytes().into());
+            let msg = secp256k1_abc::Message::from_slice(digest.as_slice()).unwrap();
+            let sig = secp.sign(&msg, &sk);
+            hex::encode(sig.serialize_compact())
+        };
+
+        // 1. Unauthenticated GET is rejected with 401
+        let unauth = reqwest::Client::new()
+            .get(format!(
+                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+        // 2. Authenticated GET returns default policy
+        let get_default = reqwest::Client::new()
+            .get(format!(
+                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
+            ))
+            .header("x-cashweb-auth-pubkey", hex::encode(pubkey_bytes))
+            .header("x-cashweb-auth-timestamp", ts)
+            .header("x-cashweb-auth-signature", sign_auth("GET"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get_default.status(), StatusCode::OK);
+        let default_policy: crate::store::notification_policy::MailboxNotificationPolicy =
+            serde_json::from_slice(&get_default.bytes().await.unwrap()).unwrap();
+        assert_eq!(default_policy.min_notification_value_wei, "0");
+        assert_eq!(default_policy.min_notification_avu_micros, 0);
+        assert!(default_policy.allow_contact_bypass);
+
+        // 3. Authenticated PUT updates policy and GET reads it back
+        let preimage = b"alice-contact-wakeup-secret-32b!";
+        let token_hash = crate::store::notification_policy::blind_wakeup_token(preimage);
+        let new_policy = crate::store::notification_policy::MailboxNotificationPolicy {
+            min_notification_value_wei: "100".to_string(),
+            min_notification_avu_micros: 250_000,
+            allow_contact_bypass: true,
+            contact_wakeup_tokens: vec![token_hash],
+            push_subscriptions: vec![crate::store::notification_policy::BlindPushSubscription {
+                endpoint: "https://push.example.test/sub/owner".to_string(),
+                p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM".to_string(),
+                auth: "tBHItJI5svbpez7KI4CCXg".to_string(),
+            }],
+            coalesce_window_seconds: 0,
+            updated_at_ms: 1700000000000,
+        };
+        let put_res = reqwest::Client::new()
+            .put(format!(
+                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
+            ))
+            .header("content-type", "application/json")
+            .header("x-cashweb-auth-pubkey", hex::encode(pubkey_bytes))
+            .header("x-cashweb-auth-timestamp", ts)
+            .header("x-cashweb-auth-signature", sign_auth("PUT"))
+            .body(serde_json::to_vec(&new_policy).unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::OK);
+
+        let get_updated = reqwest::Client::new()
+            .get(format!(
+                "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
+            ))
+            .header("x-cashweb-auth-pubkey", hex::encode(pubkey_bytes))
+            .header("x-cashweb-auth-timestamp", ts)
+            .header("x-cashweb-auth-signature", sign_auth("GET"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(get_updated.status(), StatusCode::OK);
+        let fetched_policy: crate::store::notification_policy::MailboxNotificationPolicy =
+            serde_json::from_slice(&get_updated.bytes().await.unwrap()).unwrap();
+        assert_eq!(fetched_policy, new_policy);
+
+        // 4. Configure the fixture recipient's notification policy with threshold > 1 wei (100 wei)
+        let principals = request_principals(&genuine, "monad-testnet").unwrap();
+        let recipient =
+            crate::monad_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
+                .unwrap();
+        let owner = fixture.registry.canonical_dm();
+        owner
+            .put_notification_policy(recipient, &new_policy)
+            .unwrap();
+
+        // Deliver a sub-threshold message (1 wei < 100 wei) without wakeup token:
+        // Must still be stored in `'I'` (#1367), but must NOT emit a blind wakeup.
+        let sub_res = reqwest::Client::new()
+            .put(format!("{url}/message"))
+            .header("content-type", genuine.content_type())
+            .body(genuine.body().to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sub_res.status(), StatusCode::OK);
+        assert_eq!(owner.inbox(recipient, 0, None, 8).unwrap().len(), 1);
+        assert!(owner.drain_wakeups(recipient).is_empty());
+
+        // Deliver with valid contact wakeup token preimage: bypasses threshold and emits blind wakeup {"type":"sync"}
+        let bypass_res = reqwest::Client::new()
+            .put(format!("{url}/message"))
+            .header("content-type", genuine.content_type())
+            .header("x-wakeup-token", std::str::from_utf8(preimage).unwrap())
+            .body(genuine.body().to_vec())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bypass_res.status(), StatusCode::OK);
+        let wakeups = owner.drain_wakeups(recipient);
+        assert_eq!(wakeups.len(), 1);
+        assert_eq!(wakeups[0].payload.kind, "sync");
+        assert_eq!(wakeups[0].subscriptions.len(), 1);
+    })
+    .catch_unwind()
+    .await;
+
+    http_stop.send(()).unwrap();
+    http_task.await.unwrap();
+    rpc_stop.send(()).unwrap();
+    rpc_task.await.unwrap();
+    fixture.stop().await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+

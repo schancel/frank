@@ -1386,6 +1386,11 @@ export default {
     supportedChainsTitle: 'Supported Settlement Networks',
     chainSendReceive: 'Send and receive',
     chainUnsupported: 'Not supported',
+    notificationFeeThresholdAvu: 'Notification Fee Threshold (AVU)',
+    notificationFeeThresholdAvuHint:
+      'Minimum stamp value in AVU required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',
+    allowContactNotificationBypass:
+      'Allow contacts with wakeup tokens to notify without a stamp',
   },
   profile: {
     name: 'Display Name',

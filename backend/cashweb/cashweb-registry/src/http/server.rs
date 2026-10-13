@@ -348,6 +348,15 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["message", "inbox", _] => Cow::Borrowed("/message/inbox/:recipient"),
         ["message", "mailbox", _] => Cow::Borrowed("/message/mailbox/:address"),
         ["message", "mailbox", _, "ws"] => Cow::Borrowed("/message/mailbox/:address/ws"),
+        ["message", "mailbox", _, "notification-policy"] => {
+            Cow::Borrowed("/message/mailbox/:address/notification-policy")
+        }
+        ["message", "monad", "mailbox", _, "notification-policy"] => {
+            Cow::Borrowed("/message/monad/mailbox/:address/notification-policy")
+        }
+        ["mailbox", _, "notification-policy"] => {
+            Cow::Borrowed("/mailbox/:address/notification-policy")
+        }
         ["message", "monad", "topics"] => Cow::Borrowed("/message/monad/topics"),
         ["message", "monad", "topics", "vote"] => Cow::Borrowed("/message/monad/topics/vote"),
         ["message", "monad", "topics", "discover"] => {
@@ -649,6 +658,21 @@ impl RegistryServer {
             .route(
                 "/message/monad/topics/:payload_hash",
                 routing::get(handle_get_monad_topic_post),
+            )
+            .route(
+                "/message/monad/mailbox/:address/notification-policy",
+                routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
+                    .put(crate::http::monad_message_cbor::handle_put_notification_policy),
+            )
+            .route(
+                "/message/mailbox/:address/notification-policy",
+                routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
+                    .put(crate::http::monad_message_cbor::handle_put_notification_policy),
+            )
+            .route(
+                "/mailbox/:address/notification-policy",
+                routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
+                    .put(crate::http::monad_message_cbor::handle_put_notification_policy),
             );
         if canonical_enabled {
             use crate::http::monad_message_cbor::{
@@ -719,6 +743,12 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-mailbox-signature"),
                         header::HeaderName::from_static("x-frank-mailbox-token"),
                         header::HeaderName::from_static("x-frank-mailbox-subject"),
+                        header::HeaderName::from_static("x-cashweb-auth-pubkey"),
+                        header::HeaderName::from_static("x-cashweb-auth-timestamp"),
+                        header::HeaderName::from_static("x-cashweb-auth-signature"),
+                        header::HeaderName::from_static("x-cashweb-stamp-avu-micros"),
+                        header::HeaderName::from_static("x-wakeup-token"),
+                        header::HeaderName::from_static("x-cashweb-wakeup-token"),
                         header::HeaderName::from_static("x-frank-rpc-subject"),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[0]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[1]),

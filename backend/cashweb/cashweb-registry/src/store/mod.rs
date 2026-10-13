@@ -11,5 +11,6 @@ pub mod metadata;
 pub(crate) mod monad_dm_cbor;
 pub mod monad_profiles;
 pub mod monad_topics;
+pub mod notification_policy;
 pub mod pubkeyhash;
 pub mod topics;

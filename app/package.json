@@ -16,7 +16,7 @@
     "prepare:packages": "tsc -p ../packages/nakamoto/tsconfig.json && tsc -p ../packages/crypto-box/tsconfig.json",
     "prebuild": "yarn prepare:packages",
     "prebuild:pwa": "yarn prepare:packages",
-    "build:pwa": "quasar build -m pwa",
+    "build:pwa": "node scripts/build-pwa.mjs",
     "serve:pwa": "node scripts/serve-pwa.mjs",
     "check:pwa": "node scripts/check-pwa-build.mjs",
     "test": "echo \"See package.json => scripts for available tests.\" && exit 0",

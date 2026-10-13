@@ -21,7 +21,8 @@ describe('Changelog layout and rendering', () => {
               '<button :aria-label="ariaLabel" @click="$emit(\'click\')"><slot /></button>',
           },
           QPageContainer: {
-            template: '<main class="col full-height overflow-hidden"><slot /></main>',
+            template:
+              '<main class="col full-height overflow-hidden"><slot /></main>',
           },
           QPage: {
             props: ['styleFn'],

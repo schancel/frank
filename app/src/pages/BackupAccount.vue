@@ -25,8 +25,13 @@
         />
       </q-toolbar>
     </q-header>
-    <q-page-container class="backup-page-container col full-height overflow-hidden">
-      <q-page class="backup-page q-ma-none col full-height" data-test="backup-account-page">
+    <q-page-container
+      class="backup-page-container col full-height overflow-hidden"
+    >
+      <q-page
+        class="backup-page q-ma-none col full-height"
+        data-test="backup-account-page"
+      >
         <q-card flat class="backup-card bg-transparent">
           <q-card-section class="backup-section">
             <div v-if="!backupUnavailable" class="backup-controls">

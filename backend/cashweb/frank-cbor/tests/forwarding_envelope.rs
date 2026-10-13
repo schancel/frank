@@ -18,11 +18,12 @@ fn sample_delivery_frame() -> Vec<u8> {
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
     let payment = cbor_map(vec![
-        (0, int(0)),
+        (0, CborValue::Text(NET.to_string())),
         (1, CborValue::Bytes(bytes_of(32, 10))),
         (2, CborValue::Bytes(vec![0x00; 32])),
         (3, CborValue::Bytes(bytes_of(20, 20))),
         (4, CborValue::Bytes(payment_commitment(&t3, 0).to_vec())),
+        (7, int(0)),
     ]);
     fr(
         TYPE_DIRECT_MESSAGE,
@@ -45,34 +46,71 @@ fn relay_account(seed: u32) -> AccountRef {
     }
 }
 
+fn stamp(
+    child: u32,
+    txid: Vec<u8>,
+    value: PaymentValue,
+    address: Vec<u8>,
+    commitment: Vec<u8>,
+    vout: Option<u32>,
+) -> PaymentMember {
+    PaymentMember {
+        network: NET.to_string(),
+        transaction_id: txid,
+        value,
+        address,
+        commitment: Some(commitment),
+        vout,
+        raw_tx: None,
+        child_index: Some(child),
+        stealth: None,
+        token: None,
+    }
+}
+
+fn envelope(
+    destination: AccountRef,
+    payload_frame: Vec<u8>,
+    payload_digest: Option<Vec<u8>>,
+    payments: Vec<PaymentMember>,
+    endpoint: Option<String>,
+    expires_at: Option<u64>,
+) -> ForwardingDeliveryEnvelope {
+    ForwardingDeliveryEnvelope {
+        destination,
+        payload_frame,
+        payload_digest,
+        payments,
+        endpoint,
+        expires_at,
+        unknown: vec![],
+    }
+}
+
 #[test]
 fn test_forwarding_envelope_encode_and_validate() {
     let inner_frame = sample_delivery_frame();
     let dest_relay = relay_account(42);
-    let digest = forwarding_payload_digest(NET, &inner_frame).expect("digest");
+    let digest = forwarding_payload_digest(&inner_frame).expect("digest");
 
-    let payment = PaymentMember {
-        child_index: 0,
-        transaction_id: bytes_of(32, 101),
-        value: PaymentValue::Satoshis(100_000),
-        address: bytes_of(20, 1),
-        commitment: storage_payment_commitment(&digest, 0).to_vec(),
-        vout: Some(0),
-        raw_tx: None,
-    };
+    let payment = stamp(
+        0,
+        bytes_of(32, 101),
+        PaymentValue::Satoshis(100_000),
+        bytes_of(20, 1),
+        storage_payment_commitment(&digest, 0).to_vec(),
+        Some(0),
+    );
 
-    let envelope = ForwardingDeliveryEnvelope {
-        network: NET.to_string(),
-        destination: dest_relay.clone(),
-        payload_frame: inner_frame.clone(),
-        payload_digest: Some(digest.to_vec()),
-        payments: vec![payment],
-        endpoint: Some("https://relay.frank.org/message/cbor".to_string()),
-        expires_at: Some(1750000000),
-        unknown: vec![],
-    };
-
-    let frame = encode_forwarding_delivery(&envelope).expect("encode");
+    let frame = encode_forwarding_delivery(&envelope(
+        dest_relay.clone(),
+        inner_frame.clone(),
+        Some(digest.to_vec()),
+        vec![payment],
+        Some("https://relay.frank.org/message/cbor".to_string()),
+        Some(1750000000),
+    ))
+    .expect("encode");
     assert!(frame.len() > inner_frame.len());
 
     let result = validate_frame(&frame, &default_context()).expect("valid frame");
@@ -81,7 +119,6 @@ fn test_forwarding_envelope_encode_and_validate() {
         assert!(is_forwarding_delivery_frame(&parsed));
 
         if let Some(TypedPayload::ForwardingDelivery {
-            network,
             destination,
             payload_frame,
             payments,
@@ -90,7 +127,6 @@ fn test_forwarding_envelope_encode_and_validate() {
             ..
         }) = parsed.typed.as_deref()
         {
-            assert_eq!(network, NET);
             assert_eq!(destination.key_type, 1);
             assert_eq!(destination.key_bytes, dest_relay.key_bytes);
             assert_eq!(
@@ -99,15 +135,15 @@ fn test_forwarding_envelope_encode_and_validate() {
             );
             assert_eq!(*expires_at, Some(1750000000));
             assert_eq!(payments.len(), 1);
-            assert_eq!(payments[0].child_index, 0);
+            assert_eq!(payments[0].network, NET);
+            assert_eq!(payments[0].child_index, Some(0));
             assert_eq!(payments[0].value, PaymentValue::Satoshis(100_000));
             assert_eq!(payments[0].vout, Some(0));
 
-            // Inner delivery frame is opened as Type 1 DirectMessage
             assert_eq!(payload_frame.type_id, TYPE_DIRECT_MESSAGE);
             assert!(matches!(
                 payload_frame.typed.as_deref(),
-                Some(TypedPayload::DirectMessage { .. })
+                Some(TypedPayload::DirectMessage { network, .. }) if network == NET
             ));
         } else {
             panic!("expected ForwardingDelivery typed payload");
@@ -120,31 +156,25 @@ fn test_forwarding_envelope_encode_and_validate() {
 #[test]
 fn test_forwarding_envelope_optional_fields_absent() {
     let inner_frame = sample_delivery_frame();
-    let dest_relay = relay_account(42);
-    let digest = forwarding_payload_digest(NET, &inner_frame).expect("digest");
+    let payment = stamp(
+        0,
+        bytes_of(32, 102),
+        PaymentValue::Quantity(vec![0x00; 32]),
+        bytes_of(20, 2),
+        storage_payment_commitment(&forwarding_payload_digest(&inner_frame).expect("digest"), 0)
+            .to_vec(),
+        None,
+    );
 
-    let payment = PaymentMember {
-        child_index: 0,
-        transaction_id: bytes_of(32, 102),
-        value: PaymentValue::Quantity(vec![0x00; 32]),
-        address: bytes_of(20, 2),
-        commitment: storage_payment_commitment(&digest, 0).to_vec(),
-        vout: None,
-        raw_tx: None,
-    };
-
-    let envelope = ForwardingDeliveryEnvelope {
-        network: NET.to_string(),
-        destination: dest_relay,
-        payload_frame: inner_frame,
-        payload_digest: None, // Auto-computed
-        payments: vec![payment],
-        endpoint: None,
-        expires_at: None,
-        unknown: vec![],
-    };
-
-    let frame = encode_forwarding_delivery(&envelope).expect("encode");
+    let frame = encode_forwarding_delivery(&envelope(
+        relay_account(42),
+        inner_frame,
+        None,
+        vec![payment],
+        None,
+        None,
+    ))
+    .expect("encode");
     let result = validate_frame(&frame, &default_context()).expect("valid frame");
     if let ValidationResult::Parsed(parsed) = result {
         if let Some(TypedPayload::ForwardingDelivery {
@@ -169,40 +199,33 @@ fn test_forwarding_envelope_optional_fields_absent() {
 #[test]
 fn test_forwarding_envelope_multiple_ordered_payments() {
     let inner_frame = sample_delivery_frame();
-    let dest_relay = relay_account(42);
-    let digest = forwarding_payload_digest(NET, &inner_frame).expect("digest");
+    let digest = forwarding_payload_digest(&inner_frame).expect("digest");
+    let p0 = stamp(
+        0,
+        bytes_of(32, 201),
+        PaymentValue::Satoshis(50_000),
+        bytes_of(20, 1),
+        storage_payment_commitment(&digest, 0).to_vec(),
+        Some(0),
+    );
+    let p1 = stamp(
+        1,
+        bytes_of(32, 201),
+        PaymentValue::Satoshis(50_000),
+        bytes_of(20, 2),
+        storage_payment_commitment(&digest, 1).to_vec(),
+        Some(1),
+    );
 
-    let p0 = PaymentMember {
-        child_index: 0,
-        transaction_id: bytes_of(32, 201),
-        value: PaymentValue::Satoshis(50_000),
-        address: bytes_of(20, 1),
-        commitment: storage_payment_commitment(&digest, 0).to_vec(),
-        vout: Some(0),
-        raw_tx: None,
-    };
-    let p1 = PaymentMember {
-        child_index: 1,
-        transaction_id: bytes_of(32, 201), // same txid, different vout
-        value: PaymentValue::Satoshis(50_000),
-        address: bytes_of(20, 2),
-        commitment: storage_payment_commitment(&digest, 1).to_vec(),
-        vout: Some(1),
-        raw_tx: None,
-    };
-
-    let envelope = ForwardingDeliveryEnvelope {
-        network: NET.to_string(),
-        destination: dest_relay,
-        payload_frame: inner_frame,
-        payload_digest: Some(digest.to_vec()),
-        payments: vec![p0, p1],
-        endpoint: None,
-        expires_at: None,
-        unknown: vec![],
-    };
-
-    let frame = encode_forwarding_delivery(&envelope).expect("encode");
+    let frame = encode_forwarding_delivery(&envelope(
+        relay_account(42),
+        inner_frame,
+        Some(digest.to_vec()),
+        vec![p0, p1],
+        None,
+        None,
+    ))
+    .expect("encode");
     let result = validate_frame(&frame, &default_context()).expect("valid frame");
     if let ValidationResult::Parsed(parsed) = result {
         if let Some(TypedPayload::ForwardingDelivery { payments, .. }) = parsed.typed.as_deref() {
@@ -218,73 +241,34 @@ fn test_forwarding_envelope_multiple_ordered_payments() {
 }
 
 #[test]
-fn test_forwarding_envelope_rejects_network_mismatch() {
-    let inner_frame = sample_delivery_frame(); // inner network is NET ("frank-test")
-    let dest_relay = relay_account(42);
-
-    let payment = PaymentMember {
-        child_index: 0,
-        transaction_id: bytes_of(32, 301),
-        value: PaymentValue::Satoshis(10_000),
-        address: bytes_of(20, 1),
-        commitment: vec![0xaa; 32],
-        vout: None,
-        raw_tx: None,
-    };
-
-    let envelope = ForwardingDeliveryEnvelope {
-        network: "different-network".to_string(),
-        destination: dest_relay,
-        payload_frame: inner_frame,
-        payload_digest: Some(vec![0xbb; 32]),
-        payments: vec![payment],
-        endpoint: None,
-        expires_at: None,
-        unknown: vec![],
-    };
-
-    let frame = encode_forwarding_delivery(&envelope).expect("encode");
-    let err = validate_frame(&frame, &default_context()).expect_err("should reject");
-    assert!(err.to_string().contains("forwarding network differs"));
-}
-
-#[test]
 fn test_forwarding_envelope_rejects_duplicate_child_index() {
     let inner_frame = sample_delivery_frame();
-    let dest_relay = relay_account(42);
-    let digest = forwarding_payload_digest(NET, &inner_frame).expect("digest");
-
-    let p0 = PaymentMember {
-        child_index: 0,
-        transaction_id: vec![1; 32],
-        value: PaymentValue::Satoshis(10_000),
-        address: bytes_of(20, 1),
-        commitment: storage_payment_commitment(&digest, 0).to_vec(),
-        vout: None,
-        raw_tx: None,
-    };
-    let p_dup = PaymentMember {
-        child_index: 0, // Duplicate child index 0, but sorted txid
-        transaction_id: vec![2; 32],
-        value: PaymentValue::Satoshis(10_000),
-        address: bytes_of(20, 2),
-        commitment: storage_payment_commitment(&digest, 0).to_vec(),
-        vout: None,
-        raw_tx: None,
-    };
-
-    let envelope = ForwardingDeliveryEnvelope {
-        network: NET.to_string(),
-        destination: dest_relay,
-        payload_frame: inner_frame,
-        payload_digest: Some(digest.to_vec()),
-        payments: vec![p0, p_dup],
-        endpoint: None,
-        expires_at: None,
-        unknown: vec![],
-    };
-
-    let frame = encode_forwarding_delivery(&envelope).expect("encode");
+    let digest = forwarding_payload_digest(&inner_frame).expect("digest");
+    let p0 = stamp(
+        0,
+        vec![1; 32],
+        PaymentValue::Satoshis(10_000),
+        bytes_of(20, 1),
+        storage_payment_commitment(&digest, 0).to_vec(),
+        None,
+    );
+    let p_dup = stamp(
+        0,
+        vec![2; 32],
+        PaymentValue::Satoshis(10_000),
+        bytes_of(20, 2),
+        storage_payment_commitment(&digest, 0).to_vec(),
+        None,
+    );
+    let frame = encode_forwarding_delivery(&envelope(
+        relay_account(42),
+        inner_frame,
+        Some(digest.to_vec()),
+        vec![p0, p_dup],
+        None,
+        None,
+    ))
+    .expect("encode");
     let err = validate_frame(&frame, &default_context()).expect_err("should reject");
     assert!(err.to_string().contains("duplicate child index"));
 }
@@ -292,40 +276,32 @@ fn test_forwarding_envelope_rejects_duplicate_child_index() {
 #[test]
 fn test_forwarding_envelope_rejects_non_contiguous_child_index() {
     let inner_frame = sample_delivery_frame();
-    let dest_relay = relay_account(42);
-    let digest = forwarding_payload_digest(NET, &inner_frame).expect("digest");
-
-    let p0 = PaymentMember {
-        child_index: 0,
-        transaction_id: bytes_of(32, 501),
-        value: PaymentValue::Satoshis(10_000),
-        address: bytes_of(20, 1),
-        commitment: storage_payment_commitment(&digest, 0).to_vec(),
-        vout: None,
-        raw_tx: None,
-    };
-    let p_gap = PaymentMember {
-        child_index: 2, // Missing 1
-        transaction_id: bytes_of(32, 502),
-        value: PaymentValue::Satoshis(10_000),
-        address: bytes_of(20, 2),
-        commitment: storage_payment_commitment(&digest, 2).to_vec(),
-        vout: None,
-        raw_tx: None,
-    };
-
-    let envelope = ForwardingDeliveryEnvelope {
-        network: NET.to_string(),
-        destination: dest_relay,
-        payload_frame: inner_frame,
-        payload_digest: Some(digest.to_vec()),
-        payments: vec![p0, p_gap],
-        endpoint: None,
-        expires_at: None,
-        unknown: vec![],
-    };
-
-    let frame = encode_forwarding_delivery(&envelope).expect("encode");
+    let digest = forwarding_payload_digest(&inner_frame).expect("digest");
+    let p0 = stamp(
+        0,
+        bytes_of(32, 501),
+        PaymentValue::Satoshis(10_000),
+        bytes_of(20, 1),
+        storage_payment_commitment(&digest, 0).to_vec(),
+        None,
+    );
+    let p_gap = stamp(
+        2,
+        bytes_of(32, 502),
+        PaymentValue::Satoshis(10_000),
+        bytes_of(20, 2),
+        storage_payment_commitment(&digest, 2).to_vec(),
+        None,
+    );
+    let frame = encode_forwarding_delivery(&envelope(
+        relay_account(42),
+        inner_frame,
+        Some(digest.to_vec()),
+        vec![p0, p_gap],
+        None,
+        None,
+    ))
+    .expect("encode");
     let err = validate_frame(&frame, &default_context()).expect_err("should reject");
     assert!(err.to_string().contains("contiguous"));
 }
@@ -333,41 +309,33 @@ fn test_forwarding_envelope_rejects_non_contiguous_child_index() {
 #[test]
 fn test_forwarding_envelope_rejects_duplicate_txid_without_vout() {
     let inner_frame = sample_delivery_frame();
-    let dest_relay = relay_account(42);
-    let digest = forwarding_payload_digest(NET, &inner_frame).expect("digest");
+    let digest = forwarding_payload_digest(&inner_frame).expect("digest");
     let shared_txid = bytes_of(32, 601);
-
-    let p0 = PaymentMember {
-        child_index: 0,
-        transaction_id: shared_txid.clone(),
-        value: PaymentValue::Satoshis(10_000),
-        address: bytes_of(20, 1),
-        commitment: storage_payment_commitment(&digest, 0).to_vec(),
-        vout: None,
-        raw_tx: None,
-    };
-    let p1 = PaymentMember {
-        child_index: 1,
-        transaction_id: shared_txid, // Duplicate txid and neither has vout
-        value: PaymentValue::Satoshis(10_000),
-        address: bytes_of(20, 2),
-        commitment: storage_payment_commitment(&digest, 1).to_vec(),
-        vout: None,
-        raw_tx: None,
-    };
-
-    let envelope = ForwardingDeliveryEnvelope {
-        network: NET.to_string(),
-        destination: dest_relay,
-        payload_frame: inner_frame,
-        payload_digest: Some(digest.to_vec()),
-        payments: vec![p0, p1],
-        endpoint: None,
-        expires_at: None,
-        unknown: vec![],
-    };
-
-    let frame = encode_forwarding_delivery(&envelope).expect("encode");
+    let p0 = stamp(
+        0,
+        shared_txid.clone(),
+        PaymentValue::Satoshis(10_000),
+        bytes_of(20, 1),
+        storage_payment_commitment(&digest, 0).to_vec(),
+        None,
+    );
+    let p1 = stamp(
+        1,
+        shared_txid,
+        PaymentValue::Satoshis(10_000),
+        bytes_of(20, 2),
+        storage_payment_commitment(&digest, 1).to_vec(),
+        None,
+    );
+    let frame = encode_forwarding_delivery(&envelope(
+        relay_account(42),
+        inner_frame,
+        Some(digest.to_vec()),
+        vec![p0, p1],
+        None,
+        None,
+    ))
+    .expect("encode");
     let err = validate_frame(&frame, &default_context()).expect_err("should reject");
     assert!(err.to_string().contains("duplicate transaction id"));
 }

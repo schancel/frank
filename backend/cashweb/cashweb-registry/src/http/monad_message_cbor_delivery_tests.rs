@@ -164,7 +164,7 @@ fn build(
                 .to_be_bytes(),
         );
         members.push(frank_cbor::cbor_map(vec![
-            (0, CborValue::Int(index.into())),
+            (0, CborValue::Text(NETWORK.into())),
             (1, CborValue::Bytes(Keccak256::digest(&raw).to_vec())),
             (2, CborValue::Bytes(value.to_vec())),
             (3, CborValue::Bytes(paid_to.to_vec())),
@@ -172,6 +172,7 @@ fn build(
                 4,
                 CborValue::Bytes(frank_cbor::payment_commitment(&digest, index).to_vec()),
             ),
+            (7, CborValue::Int(index.into())),
         ]));
         raws.push(CborValue::Bytes(raw));
     }

@@ -1258,11 +1258,12 @@ export class MonadCanonicalStampClient {
         const value = getBytes('0x' + tx.value.toString(16).padStart(64, '0'))
         const rawBytes = member.rawTx ? getBytes(member.rawTx) : undefined
         const entries: [number, Encodable][] = [
-          [0, i],
+          [0, intent.prepared.network],
           [1, getBytes(tx.hash!)],
           [2, value],
           [3, getBytes(tx.to!)],
           [4, paymentCommitment(digest, i)],
+          [7, i],
         ]
         if (rawBytes && rawBytes.length > 0) {
           entries.push([6, rawBytes])

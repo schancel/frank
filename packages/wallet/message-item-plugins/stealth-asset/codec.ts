@@ -30,10 +30,10 @@ function claimKeyType(keyType: number): RecipientPaymentClaimKeyType {
 
 /** Dedicated frame only. Pure serialization; no signing, verification or wallet mutation. */
 export function encodeRecipientAssetPaymentItem(
-  item: RecipientAssetPaymentItem
+  item: RecipientAssetPaymentItem,
 ): Uint8Array {
   return encodeStealthAssetMessageItem({
-    transfers: item.transfers.map((entry) => {
+    transfers: item.transfers.map(entry => {
       canonicalChain(entry.chainIdentifier)
       if (!/^[1-9][0-9]*$/.test(entry.amountAtomic))
         throw new Error('Expected positive decimal atomic amount')
@@ -41,9 +41,9 @@ export function encodeRecipientAssetPaymentItem(
         throw new Error('Unsupported payment asset')
       return {
         transfer: {
-          networkTag: entry.chainIdentifier,
-          txId: entry.txId,
-          destination: entry.destination,
+          network: entry.chainIdentifier,
+          transactionId: entry.txId,
+          address: entry.destination,
           value: BigInt(entry.amountAtomic),
           ...(entry.asset.kind === 'token'
             ? { token: entry.asset.identifier }
@@ -75,19 +75,19 @@ export function encodeRecipientAssetPaymentItem(
 /** Uses the enclosing frame/budget. Unknown schemes are projected as claims, never executed. */
 export function decodeRecipientAssetPaymentItem(
   bytes: Uint8Array,
-  context: MessageItemDecodeContext
+  context: MessageItemDecodeContext,
 ): RecipientAssetPaymentItem {
   const parsed = openItemFrame('stealth-asset', bytes, context)
   if (!isStealthAssetMessageItemFrame(parsed))
     throw new MessageItemDecodeError(
       'stealth-asset',
-      'expected schema-2 recipient payment frame'
+      'expected schema-2 recipient payment frame',
     )
   return decodeWith('stealth-asset', () => ({
     type: 'stealth-asset',
-    transfers: parsed.typed.transfers.map((entry) => {
+    transfers: parsed.typed.transfers.map(entry => {
       const transfer = entry.transfer
-      canonicalChain(transfer.networkTag)
+      canonicalChain(transfer.network)
       const metadata = transfer.stealthMetadata
       if (!metadata) throw new Error('Missing recipient stealth metadata')
       const amount =
@@ -97,9 +97,9 @@ export function decodeRecipientAssetPaymentItem(
       if (amount <= 0n)
         throw new Error('Expected positive recipient payment amount')
       return {
-        chainIdentifier: transfer.networkTag,
-        txId: toHex(transfer.txId),
-        destination: toHex(transfer.destination),
+        chainIdentifier: transfer.network,
+        txId: toHex(transfer.transactionId),
+        destination: toHex(transfer.address),
         amountAtomic: amount.toString(),
         asset:
           transfer.token !== undefined

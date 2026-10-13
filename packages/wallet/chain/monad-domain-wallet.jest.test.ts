@@ -1228,11 +1228,12 @@ async function retainedCanonicalAttempt() {
         4,
         [
           cborMap([
-            [0, 0],
+            [0, wire.network],
             [1, getBytes(Transaction.from(raw).hash!)],
             [2, new Uint8Array(32).map((_, i) => (i === 31 ? 1 : 0))],
             [3, fromHex(wire.destination)],
             [4, fromHex(wire.t4)],
+            [7, 0],
           ]),
         ],
       ],

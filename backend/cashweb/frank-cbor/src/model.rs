@@ -347,23 +347,47 @@ pub enum PaymentValue {
     Satoshis(u64),
 }
 
-/// One payment member. `value` is a 32-byte big-endian quantity or satoshis uint64.
+/// Optional view tag on stealth metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewTag {
+    /// `uint .le 65535`.
+    Uint(u16),
+    /// 1..=32 bytes.
+    Bytes(Vec<u8>),
+}
+
+/// Stealth metadata. Field 8 of a payment member.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StealthMetadata {
+    /// Ephemeral public key.
+    pub ephemeral: AccountRef,
+    /// Optional view tag.
+    pub view_tag: Option<ViewTag>,
+}
+
+/// One payment member: a stamp (field 7) or a stealth payment (field 8), on its own network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaymentMember {
-    /// Non-hardened BIP32 index.
-    pub child_index: u32,
+    /// Field 0: chain this payment settles on.
+    pub network: String,
     /// Chain transaction identifier.
     pub transaction_id: Vec<u8>,
     /// 32-byte big-endian value or satoshis uint64.
     pub value: PaymentValue,
     /// Destination address bytes.
     pub address: Vec<u8>,
-    /// 32-byte T4 commitment.
-    pub commitment: Vec<u8>,
+    /// 32-byte T4 commitment. Required when `child_index` is set.
+    pub commitment: Option<Vec<u8>>,
     /// Optional UTXO output index (vout).
     pub vout: Option<u32>,
     /// Optional explicit raw signed transaction bytes.
     pub raw_tx: Option<Vec<u8>>,
+    /// Field 7. Present means a stamp payment.
+    pub child_index: Option<u32>,
+    /// Field 8. Present means a stealth payment.
+    pub stealth: Option<StealthMetadata>,
+    /// Field 9. Allowed only with stealth metadata.
+    pub token: Option<Vec<u8>>,
 }
 
 impl PaymentMember {
@@ -551,8 +575,6 @@ pub struct OpaqueSection {
 pub enum TypedPayload {
     /// Type 25.
     ForwardingDelivery {
-        /// Field 0.
-        network: String,
         /// Field 1.
         destination: AccountRef,
         /// Field 2, opened as type 1.
@@ -1041,14 +1063,6 @@ pub struct BlackjackHandV3Fields<H, Q> {
 /// Closed type-18 schema-3 wire projection; exact frame bytes stay on ParsedFrame.
 pub type BlackjackHandV3MessageItem = BlackjackHandV3Fields<Vec<u8>, Vec<u8>>;
 
-/// Exact transfer quantity without a chain-family interpretation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StealthQuantity {
-    /// Positive uint64 base units.
-    Uint64(u64),
-    /// Positive unsigned 256-bit big-endian base units.
-    Quantity256([u8; 32]),
-}
 /// Native schema-1 recovery data, with exact uint64 amount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeStealthItem {
@@ -1065,35 +1079,11 @@ pub struct NativeStealthItem {
     /// Compatible future outer fields, preserved as data.
     pub unknown: Vec<(u64, CborValue)>,
 }
-/// Structurally validated nested payment transfer; chain settlement is not established.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StealthTransfer {
-    /// Exact wire network tag; interpreted by chain composition.
-    pub network: String,
-    /// Chain-specific transaction identifier bytes.
-    pub tx_id: Vec<u8>,
-    /// Optional UTXO output index.
-    pub vout: Option<u32>,
-    /// Chain-specific destination bytes.
-    pub destination: Vec<u8>,
-    /// Exact positive transfer quantity.
-    pub value: StealthQuantity,
-    /// Optional chain-specific token identifier.
-    pub token: Option<Vec<u8>>,
-    /// Published ephemeral account reference.
-    pub ephemeral: AccountRef,
-    /// Optional uint16 or bounded byte-string view tag.
-    pub view_tag: Option<CborValue>,
-    /// Optional 32-byte commitment.
-    pub commitment: Option<Vec<u8>>,
-    /// Optional original signed transaction bytes.
-    pub raw_tx: Option<Vec<u8>>,
-}
 /// Schema-2 entry. Unknown schemes are data, never execution authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StealthPaymentEntry {
-    /// Validated nested transfer description.
-    pub transfer: StealthTransfer,
+    /// Stealth arm of one payment member.
+    pub transfer: PaymentMember,
     /// Numeric scheme; only 1 is allocated here.
     pub scheme: u32,
     /// Intended recipient spend public key.

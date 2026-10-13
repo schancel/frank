@@ -992,11 +992,12 @@ function canonicalDelivery(): Uint8Array {
   value[31] = 1;
   payload.set(4n, [
     cborMap([
-      [0, 0],
+      [0, payload.get(0n)],
       [1, canonicalTxHash],
       [2, value],
       [3, fromHex(canonicalWire.destination)],
       [4, fromHex(canonicalWire.t4)],
+      [7, 0],
     ]),
   ]);
   return encodeFrame(

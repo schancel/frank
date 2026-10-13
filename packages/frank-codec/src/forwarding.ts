@@ -9,6 +9,7 @@ import {
 import { FrankCodecError } from './errors'
 import { encodeFrame } from './frame'
 import { forwardingPayloadDigest } from './hash'
+import { paymentMemberToCborMap } from './stealth'
 import type {
   AccountRef,
   ForwardingDeliveryEnvelope,
@@ -26,11 +27,10 @@ const bad = (msg: string, location = 'forwarding-envelope') =>
   new FrankCodecError('schema', '8.2', msg, location)
 
 export interface CanonicalForwardingEnvelope {
-  network: string
   destination: AccountRef
   /** Complete serialized inner frame (Type 1 direct message delivery). */
   payloadFrame: Uint8Array
-  /** Digest of the inner frame. Defaults to `forwardingPayloadDigest(network, payloadFrame)`. */
+  /** Digest of the inner frame. Defaults to `forwardingPayloadDigest(payloadFrame)`. */
   payloadDigest?: Uint8Array
   /** Storage payment stamps compensating the destination relay. */
   payments: PaymentMember[]
@@ -54,36 +54,12 @@ function encodeAccount(acc: AccountRef): Map<number | bigint, any> {
   ])
 }
 
-function encodePaymentMember(p: PaymentMember): Map<number | bigint, any> {
-  const entries: Array<[number, any]> = [
-    [0, p.childIndex],
-    [1, p.transactionId],
-    [2, typeof p.value === 'bigint' ? p.value : p.value],
-    [3, p.address],
-    [4, p.commitment],
-  ]
-  if (p.vout !== undefined) {
-    entries.push([5, p.vout])
-  }
-  if (p.rawTx !== undefined) {
-    entries.push([6, p.rawTx])
-  }
-  return cborMap(entries)
-}
-
 /**
  * Encodes a canonical Type 25 forwarding delivery envelope frame.
  */
 export function encodeForwardingEnvelope(
   envelope: CanonicalForwardingEnvelope,
 ): Uint8Array {
-  if (
-    !envelope.network ||
-    envelope.network.length === 0 ||
-    envelope.network.length > 64
-  ) {
-    throw bad('network must be 1..64 characters')
-  }
   if (!envelope.payloadFrame || envelope.payloadFrame.length < 9) {
     throw bad('payloadFrame must be a valid frame of at least 9 bytes')
   }
@@ -96,18 +72,16 @@ export function encodeForwardingEnvelope(
   }
 
   const digest =
-    envelope.payloadDigest ??
-    forwardingPayloadDigest(envelope.network, envelope.payloadFrame)
+    envelope.payloadDigest ?? forwardingPayloadDigest(envelope.payloadFrame)
   if (digest.length !== 32) {
     throw bad('payloadDigest must be 32 bytes')
   }
 
   const entries: Array<[number, any]> = [
-    [0, envelope.network],
     [1, encodeAccount(envelope.destination)],
     [2, envelope.payloadFrame],
     [3, digest],
-    [4, envelope.payments.map(encodePaymentMember)],
+    [4, envelope.payments.map(paymentMemberToCborMap)],
   ]
 
   if (envelope.endpoint !== undefined) {
@@ -175,7 +149,6 @@ export function projectForwardingEnvelope(
   }
   const typed = frame.typed
   return {
-    network: typed.network,
     destination: typed.destination,
     payloadFrame: typed.payloadFrame.frame,
     payloadDigest: typed.payloadDigest,

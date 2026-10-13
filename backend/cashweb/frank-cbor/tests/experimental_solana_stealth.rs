@@ -1,7 +1,7 @@
 //! Experimental cross-language proof only. No helper is installed in the generic parser.
 use frank_cbor::{
-    decode_canonical, default_context, encode_canonical, validate_frame, CborValue,
-    StealthQuantity, TypedPayload, ValidationResult,
+    decode_canonical, default_context, encode_canonical, validate_frame, CborValue, PaymentValue,
+    TypedPayload, ValidationResult,
 };
 
 fn corpus() -> serde_json::Value {
@@ -43,13 +43,14 @@ fn experimental_public_bindings_match_typescript_without_scheme_allocation() {
         assert_eq!(item.entries.len(), 1);
         let e = &item.entries[0];
         let t = &e.transfer;
+        let meta = t.stealth.as_ref().expect("stealth metadata");
         assert_eq!(e.scheme, 2); // Still unknown to the generic reader.
-        assert_eq!((e.recipient.key_type, t.ephemeral.key_type), (2, 2));
+        assert_eq!((e.recipient.key_type, meta.ephemeral.key_type), (2, 2));
         assert_eq!(
-            (e.recipient.key_bytes.len(), t.ephemeral.key_bytes.len()),
+            (e.recipient.key_bytes.len(), meta.ephemeral.key_bytes.len()),
             (32, 32)
         );
-        assert_eq!((t.destination.len(), t.tx_id.len()), (32, 64));
+        assert_eq!((t.address.len(), t.transaction_id.len()), (32, 64));
         assert!((1..=16384).contains(&t.raw_tx.as_ref().unwrap().len()));
         assert!(t.vout.is_none());
         let registry: serde_json::Value =
@@ -59,7 +60,7 @@ fn experimental_public_bindings_match_typescript_without_scheme_allocation() {
             .unwrap()
             .iter()
             .any(|c| c["id"] == t.network && c["family"] == "solana"));
-        let StealthQuantity::Uint64(amount) = t.value else {
+        let PaymentValue::Satoshis(amount) = t.value else {
             panic!("uint64 required");
         };
         assert!(amount > 0);
@@ -99,7 +100,7 @@ fn experimental_public_bindings_match_typescript_without_scheme_allocation() {
             CborValue::Text(t.network.clone()),
             asset,
             CborValue::Bytes(e.recipient.key_bytes.clone()),
-            CborValue::Bytes(t.ephemeral.key_bytes.clone()),
+            CborValue::Bytes(meta.ephemeral.key_bytes.clone()),
             CborValue::Bytes(operation.to_vec()),
             CborValue::Int(i128::from(index)),
             CborValue::Bytes(random.to_vec()),

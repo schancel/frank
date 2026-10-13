@@ -284,8 +284,9 @@ fn plaintext_bound_is_not_route_bound() {
 
 #[test]
 fn aggregate_counters_across_encryption_exact_ceiling_and_one_over() {
-    // Identical counts to TS: root 10 containers/80 items; content 7 containers/45 items.
-    for (containers, root_count, at) in [(true, 8000, 8360), (false, 60000, 70908)] {
+    // Identical counts to TS. Container pressure still binds at 8360.
+    // Two stamp key-7 pairs add four items, so the item ceiling is 70904.
+    for (containers, root_count, at) in [(true, 8000, 8360), (false, 60000, 70904)] {
         let r = root(Some(grouped(root_count, containers)));
         assert_eq!(outcome(parse_frame(&r, &default_context())), "parsed");
         for n in [at, at + 1] {

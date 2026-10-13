@@ -1,6 +1,8 @@
 import {
   FrankCodecError,
+  decodeCanonical,
   defaultContext,
+  encodeFrame,
   validateFrame,
   storagePaymentCommitment,
   forwardingPayloadDigest,
@@ -15,7 +17,7 @@ import {
   type PaymentMember,
   type AccountRef,
 } from '../src'
-import { M, bytesOf, deliveryFrame, NET } from '../fixtures/builders'
+import { bytesOf, deliveryFrame, NET } from '../fixtures/builders'
 
 const ctx = defaultContext()
 
@@ -29,9 +31,10 @@ function relayAccount(seed: number): AccountRef {
 describe('Type 25: Forwarding Delivery Envelope', () => {
   const innerFrame = deliveryFrame()
   const destinationRelay = relayAccount(42)
-  const digest = forwardingPayloadDigest(NET, innerFrame)
+  const digest = forwardingPayloadDigest(innerFrame)
 
   const samplePayment: PaymentMember = {
+    network: NET,
     childIndex: 0,
     transactionId: bytesOf(32, 101),
     value: 100_000n,
@@ -42,7 +45,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
   it('encodes, validates, and projects a valid forwarding delivery envelope', () => {
     const envelope: CanonicalForwardingEnvelope = {
-      network: NET,
       destination: destinationRelay,
       payloadFrame: innerFrame,
       payments: [samplePayment],
@@ -59,7 +61,11 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
     const typed = validated.typed!
     expect(typed.type).toBe(25)
-    expect(typed.network).toBe(NET)
+    expect(typed.payloadFrame.typed?.type).toBe(1)
+    if (typed.payloadFrame.typed?.type === 1) {
+      expect(typed.payloadFrame.typed.network).toBe(NET)
+    }
+    expect(typed.payments[0].network).toBe(NET)
     expect(typed.destination.keyType).toBe(1)
     expect(typed.destination.keyBytes).toEqual(destinationRelay.keyBytes)
     expect(typed.endpoint).toBe('https://relay.frank.org/message/cbor')
@@ -75,7 +81,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
     // Projection matches
     const projected = projectForwardingEnvelope(validated)
-    expect(projected.network).toBe(NET)
     expect(projected.endpoint).toBe('https://relay.frank.org/message/cbor')
     expect(projected.expiresAt).toBe(1750000000)
     expect(projected.payments).toHaveLength(1)
@@ -83,7 +88,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
   it('accepts envelope without optional endpoint and expiresAt', () => {
     const envelope: CanonicalForwardingEnvelope = {
-      network: NET,
       destination: destinationRelay,
       payloadFrame: innerFrame,
       payments: [samplePayment],
@@ -97,6 +101,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
   it('validates multiple ordered payments with UTXO vouts', () => {
     const p0: PaymentMember = {
+      network: NET,
       childIndex: 0,
       transactionId: bytesOf(32, 201),
       value: 50_000n,
@@ -105,6 +110,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
       vout: 0,
     }
     const p1: PaymentMember = {
+      network: NET,
       childIndex: 1,
       transactionId: bytesOf(32, 201), // same txid, different vout
       value: 50_000n,
@@ -114,7 +120,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     }
 
     const envelope: CanonicalForwardingEnvelope = {
-      network: NET,
       destination: destinationRelay,
       payloadFrame: innerFrame,
       payments: [p0, p1],
@@ -127,19 +132,31 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     expect(validated.typed?.payments[1].vout).toBe(1)
   })
 
-  it('rejects envelope if network does not match inner delivery frame network', () => {
-    const envelope: CanonicalForwardingEnvelope = {
-      network: 'different-network',
+  it('rejects a type 25 map that still carries key 0', () => {
+    const frameBytes = encodeForwardingEnvelope({
       destination: destinationRelay,
-      payloadFrame: innerFrame, // inner network is NET ('frank-test')
+      payloadFrame: innerFrame,
       payments: [samplePayment],
-    }
-
-    const frameBytes = encodeForwardingEnvelope(envelope)
-    expect(() => validateFrame(frameBytes, ctx)).toThrow(FrankCodecError)
-    expect(() => validateFrame(frameBytes, ctx)).toThrow(
-      /forwarding network differs from the type-1 network/,
+    })
+    const envelope = decodeCanonical(frameBytes.subarray(9)) as Map<
+      bigint,
+      unknown
+    >
+    const payload = decodeCanonical(envelope.get(3n) as Uint8Array) as Map<
+      bigint,
+      unknown
+    >
+    payload.set(0n, NET)
+    const rejected = encodeFrame(
+      {
+        typeId: TYPE_FORWARDING_DELIVERY_ENVELOPE,
+        schemaVersion: 1,
+        minReaderVersion: 1,
+      },
+      payload,
     )
+    expect(() => validateFrame(rejected, ctx)).toThrow(FrankCodecError)
+    expect(() => validateFrame(rejected, ctx)).toThrow(/undeclared key 0/)
   })
 
   it('rejects destination account with keyType other than 1', () => {
@@ -150,7 +167,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
     expect(() =>
       encodeForwardingEnvelope({
-        network: NET,
         destination: badDest,
         payloadFrame: innerFrame,
         payments: [samplePayment],
@@ -160,6 +176,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
   it('rejects duplicate childIndex in storage payment members', () => {
     const p0: PaymentMember = {
+      network: NET,
       childIndex: 0,
       transactionId: bytesOf(32, 301),
       value: 10_000n,
@@ -167,6 +184,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
       commitment: storagePaymentCommitment(digest, 0),
     }
     const pDup: PaymentMember = {
+      network: NET,
       childIndex: 0,
       transactionId: bytesOf(32, 302),
       value: 10_000n,
@@ -175,7 +193,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     }
 
     const envelope: CanonicalForwardingEnvelope = {
-      network: NET,
       destination: destinationRelay,
       payloadFrame: innerFrame,
       payments: [p0, pDup],
@@ -190,6 +207,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
 
   it('rejects non-contiguous childIndex in payment members', () => {
     const p0: PaymentMember = {
+      network: NET,
       childIndex: 0,
       transactionId: bytesOf(32, 401),
       value: 10_000n,
@@ -197,6 +215,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
       commitment: storagePaymentCommitment(digest, 0),
     }
     const pGap: PaymentMember = {
+      network: NET,
       childIndex: 2, // gap: missing index 1
       transactionId: bytesOf(32, 402),
       value: 10_000n,
@@ -205,7 +224,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     }
 
     const envelope: CanonicalForwardingEnvelope = {
-      network: NET,
       destination: destinationRelay,
       payloadFrame: innerFrame,
       payments: [p0, pGap],
@@ -219,6 +237,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
   it('rejects duplicate transaction ID without distinguishing vout', () => {
     const sharedTxId = bytesOf(32, 501)
     const p0: PaymentMember = {
+      network: NET,
       childIndex: 0,
       transactionId: sharedTxId,
       value: 10_000n,
@@ -226,6 +245,7 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
       commitment: storagePaymentCommitment(digest, 0),
     }
     const p1: PaymentMember = {
+      network: NET,
       childIndex: 1,
       transactionId: sharedTxId, // same txid, no vout
       value: 10_000n,
@@ -234,7 +254,6 @@ describe('Type 25: Forwarding Delivery Envelope', () => {
     }
 
     const envelope: CanonicalForwardingEnvelope = {
-      network: NET,
       destination: destinationRelay,
       payloadFrame: innerFrame,
       payments: [p0, p1],

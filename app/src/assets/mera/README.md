@@ -1,9 +1,11 @@
-# Mera branding asset
+# Mera branding assets
 
-`favicon.svg` is an unmodified copy of Mera's official documentation favicon,
-from Category Labs' repository at commit `86a1937d357185be44fd35664e0fc8bab874d10d`:
+Mera's brand mark is the signature lowercase italic 'm' from Category Labs' Mera project:
+https://github.com/category-labs/mera
 
-https://github.com/category-labs/mera/blob/86a1937d357185be44fd35664e0fc8bab874d10d/docs/public/favicon.svg
+The upstream MIT license is retained in `LICENSE-MIT`. These assets are used beside
+the Mera name to represent the Mera passkey authentication provider:
 
-The upstream MIT license is retained in `LICENSE-MIT`. The asset is used beside
-the Mera name; it is not a new Frank-designed logo.
+- `mera-logo.svg`: Polished circular badge with Mera's signature italic 'm' on a clean circular disc, styled for auth buttons and provider badges.
+- `mera-icon.svg`: Clean vector glyph with transparent background and `fill="currentColor"` for adaptable monochrome UI contexts.
+- `favicon.svg`: Refined vector favicon with rounded squircle bounds and vector glyph.

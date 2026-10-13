@@ -439,6 +439,7 @@
                 <q-btn
                   color="primary"
                   no-caps
+                  class="mera-continue-btn"
                   data-test="mera-continue"
                   :disable="!mayBegin || busy"
                   :aria-expanded="passkeyChoicesOpen"
@@ -449,7 +450,7 @@
                     alt=""
                     width="24"
                     height="24"
-                    class="q-mr-sm"
+                    class="mera-logo q-mr-sm"
                     data-test="mera-logo"
                   />
                   <span>{{ $t('accountRecovery.mera_login') }}</span>
@@ -910,7 +911,7 @@ import {
   type ShareVerdict,
 } from '@frank/account-recovery'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import meraLogo from '../assets/mera/favicon.svg'
+import meraLogo from '../assets/mera/mera-logo.svg'
 import { useRouter } from 'vue-router'
 import { useTranslate } from '../composables/useTranslate'
 import {
@@ -1518,5 +1519,18 @@ onBeforeUnmount(() => {
 }
 .recovery-text {
   overflow-wrap: anywhere;
+}
+.mera-continue-btn {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.mera-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
 }
 </style>

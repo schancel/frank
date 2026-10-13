@@ -654,8 +654,8 @@ pub enum TypedPayload {
         schema_version: u32,
         /// Field 0.
         network: String,
-        /// Field 1.
-        sender: AccountRef,
+        /// Schema 1 field 1. Absent in production schema 2.
+        sender: Option<AccountRef>,
         /// Field 2.
         recipient: AccountRef,
         /// Field 3.
@@ -689,6 +689,8 @@ pub enum TypedPayload {
         conversation_id: Option<Vec<u8>>,
         /// Field 5, optional.
         conversation_name: Option<String>,
+        /// Field 7, the sender identity key. Required.
+        sender_identity: AccountRef,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

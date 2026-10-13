@@ -201,6 +201,7 @@ export function type6Frame(
   if (tokenTransfer !== undefined) {
     entries.push([6, encodeTokenTransferMap(tokenTransfer)])
   }
+  entries.push([7, acct1(9)])
   return fr(6, M(entries))
 }
 

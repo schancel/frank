@@ -5,8 +5,7 @@
 //! | key | value | what it is |
 //! |---|---|---|
 //! | `R` + payload hash | the stored message | the request bytes as submitted, and when it was delivered |
-//! | `I` + recipient + time + payload hash | payload hash | the recipient's inbox, in delivery order |
-//! | `O` + sender + time + payload hash | payload hash | the sender's own copies, in delivery order |
+//! | `I` + recipient + time + payload hash | payload hash | the clear recipient's inbox, in delivery order |
 //! | `T` + transaction hash | payload hash | a payment already used, so it pays for one message only |
 //! | `L` | time | the last delivery time issued |
 //! | `N` + recipient + epoch + nonce | expiry | a login challenge already used |
@@ -39,14 +38,14 @@ pub(crate) const STORE_EXTENSION: &str = "messages-v2";
 pub(crate) const OLD_STORE_EXTENSIONS: &[&str] = &["monad-dm-cbor-v1"];
 const ROW_VERSION: i128 = 2;
 
-/// What admission established about a message, kept with it: who it is from and to, and the
-/// directory facts its context was checked against.
+/// What admission established about a message, kept with it. The clear recipient is the only
+/// identity. `sender_m` and `sender_t1` are the context's message key and directory hash; the
+/// relay does not look them up and does not index a sender.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FrozenCanonicalPolicy {
     pub(crate) network: String,
     pub(crate) chain_id: u64,
     pub(crate) minimum: u128,
-    pub(crate) sender_p: Vec<u8>,
     pub(crate) recipient_p: Vec<u8>,
     pub(crate) sender_m: Vec<u8>,
     pub(crate) recipient_m: Vec<u8>,
@@ -56,11 +55,6 @@ pub(crate) struct FrozenCanonicalPolicy {
     pub(crate) payload_hash: [u8; 32],
 }
 impl FrozenCanonicalPolicy {
-    pub(crate) fn sender(&self) -> Result<Address> {
-        crate::monad_stamp_stealth::recipient_address_from_public_key(&self.sender_p)
-            .map_err(|_| CanonicalError::Unavailable)
-    }
-
     pub(crate) fn recipient(&self) -> Result<Address> {
         crate::monad_stamp_stealth::recipient_address_from_public_key(&self.recipient_p)
             .map_err(|_| CanonicalError::Unavailable)
@@ -85,7 +79,6 @@ impl MailboxDirection {
 /// A delivered message as announced to open mailbox sockets.
 #[derive(Debug, Clone)]
 pub(crate) struct FinalizedEnvelope {
-    pub(crate) sender: Address,
     pub(crate) recipient: Address,
     pub(crate) payload_hash: [u8; 32],
     pub(crate) submission_identity: [u8; 32],
@@ -230,10 +223,9 @@ impl Owner {
         self.with(false, |db| find_request_locked(db, request))
             .map(Option::flatten)
     }
-    /// Store a checked message in the recipient's inbox and the sender's own mailbox, in one
-    /// durable write. An exact repeat returns what is already stored. A refusal (a payment
-    /// already used for another message) leaves nothing behind. The number of messages already
-    /// stored never refuses one.
+    /// Store a checked message under the clear recipient's inbox only. An exact repeat returns
+    /// what is already stored. A refusal (a payment already used for another message) leaves
+    /// nothing behind. The number of messages already stored never refuses one.
     ///
     /// `now` is the caller's clock; the delivery time is decided here, under the store's
     /// lock: see [`next_delivery_time`].
@@ -267,21 +259,15 @@ impl Owner {
                     delivered_at,
                 };
                 batch.put(row_key(&hash), encode_row(&message)?);
-                let (sender, recipient) = (message.policy.sender()?, message.policy.recipient()?);
+                let recipient = message.policy.recipient()?;
                 batch.put(mailbox_key(b'I', recipient, delivered_at, &hash), hash);
-                if sender != recipient {
-                    batch.put(mailbox_key(b'O', sender, delivered_at, &hash), hash);
-                }
                 write(db, batch)?;
                 Ok((message, true))
             })?
             .ok_or(CanonicalError::Unavailable)?;
         if stored {
-            if let (Ok(sender), Ok(recipient)) =
-                (message.policy.sender(), message.policy.recipient())
-            {
+            if let Ok(recipient) = message.policy.recipient() {
                 let _ = self.broadcast.send(FinalizedEnvelope {
-                    sender,
                     recipient,
                     payload_hash: message.policy.payload_hash,
                     submission_identity: message.request.submission_identity(),
@@ -395,8 +381,8 @@ impl Owner {
         })
         .map(|rows| rows.unwrap_or_default())
     }
-    /// Up to `limit` messages `address` received or sent, at or after `since` and strictly
-    /// after the position `after`, in delivery order. Both scans start at that position.
+    /// Up to `limit` messages whose clear recipient is `address`, at or after `since` and strictly
+    /// after the position `after`, in delivery order. The relay has no sender index.
     pub(crate) fn mailbox(
         &self,
         address: Address,
@@ -406,42 +392,19 @@ impl Owner {
     ) -> Result<Vec<(Claim, MailboxDirection)>> {
         self.with(false, |db| {
             let mut received = Entries::new(db, b'I', address, since, after);
-            let mut sent = Entries::new(db, b'O', address, since, after);
             let mut result = Vec::new();
             if limit == 0 {
                 return Ok(result);
             }
-            let (mut next_received, mut next_sent) = (received.next()?, sent.next()?);
             while result.len() < limit {
-                let take_received = match (next_received, next_sent) {
-                    (Some(received), Some(sent)) => received <= sent,
-                    (Some(_), None) => true,
-                    (None, Some(_)) => false,
-                    (None, None) => break,
-                };
-                let (time, hash) = if take_received {
-                    let entry = next_received.expect("checked above");
-                    next_received = received.next()?;
-                    entry
-                } else {
-                    let entry = next_sent.expect("checked above");
-                    next_sent = sent.next()?;
-                    entry
+                let Some((time, hash)) = received.next()? else {
+                    break;
                 };
                 let message = load_delivered(db, &hash, time)?;
-                let direction = if take_received {
-                    MailboxDirection::In
-                } else {
-                    MailboxDirection::Out
-                };
-                let party = match direction {
-                    MailboxDirection::In => message.policy.recipient(),
-                    MailboxDirection::Out => message.policy.sender(),
-                };
-                if party != Ok(address) {
+                if message.policy.recipient() != Ok(address) {
                     return Err(CanonicalError::Unavailable);
                 }
-                result.push((message, direction));
+                result.push((message, MailboxDirection::In));
             }
             Ok(result)
         })
@@ -449,7 +412,7 @@ impl Owner {
     }
 }
 
-/// One address's `I` or `O` entries from a starting position onward, in delivery order.
+/// One address's `I` inbox entries from a starting position onward, in delivery order.
 struct Entries<'a> {
     rows: rocksdb::DBIteratorWithThreadMode<'a, rocksdb::DB>,
     prefix: Vec<u8>,
@@ -642,7 +605,6 @@ fn encode_row(message: &Claim) -> Result<Vec<u8>> {
         CborValue::Text(p.network.clone()),
         int(p.chain_id),
         blob(p.minimum.to_be_bytes()),
-        blob(&p.sender_p),
         blob(&p.recipient_p),
         blob(&p.sender_m),
         blob(&p.recipient_m),
@@ -687,7 +649,7 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
     else {
         return Err(CanonicalError::Unavailable);
     };
-    if number(version)? != ROW_VERSION || p.len() != 11 {
+    if number(version)? != ROW_VERSION || p.len() != 10 {
         return Err(CanonicalError::Unavailable);
     }
     let request = ExactRequest::parse(bytes(body)?.to_vec(), text(content_type)?.into())
@@ -696,14 +658,13 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         network: text(&p[0])?.into(),
         chain_id: convert(&p[1])?,
         minimum: u128::from_be_bytes(fixed(&p[2])?),
-        sender_p: bytes(&p[3])?.to_vec(),
-        recipient_p: bytes(&p[4])?.to_vec(),
-        sender_m: bytes(&p[5])?.to_vec(),
-        recipient_m: bytes(&p[6])?.to_vec(),
-        stamp: bytes(&p[7])?.to_vec(),
-        sender_t1: fixed(&p[8])?,
-        recipient_t1: fixed(&p[9])?,
-        payload_hash: fixed(&p[10])?,
+        recipient_p: bytes(&p[3])?.to_vec(),
+        sender_m: bytes(&p[4])?.to_vec(),
+        recipient_m: bytes(&p[5])?.to_vec(),
+        stamp: bytes(&p[6])?.to_vec(),
+        sender_t1: fixed(&p[7])?,
+        recipient_t1: fixed(&p[8])?,
+        payload_hash: fixed(&p[9])?,
     };
     if policy.payload_hash != *hash {
         return Err(CanonicalError::Unavailable);

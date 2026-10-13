@@ -1113,6 +1113,7 @@ fn open_children(
             content_digest,
             conversation_id,
             conversation_name,
+            sender_identity,
             unknown,
         } => Ok(TypedPayload::EncryptedContent {
             network,
@@ -1127,6 +1128,7 @@ fn open_children(
             content_digest,
             conversation_id,
             conversation_name,
+            sender_identity,
             unknown,
         }),
         Draft::TransitionStatement {

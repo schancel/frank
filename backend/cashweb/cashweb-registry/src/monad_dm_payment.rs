@@ -85,7 +85,8 @@ pub(crate) fn validate_canonical_payment_set(
         return Err(Error::Invalid);
     };
     let Some(TypedPayload::RecipientPayload {
-        sender: sender_p,
+        schema_version: 2,
+        sender: None,
         recipient: recipient_p,
         ..
     }) = payload_frame.typed.as_deref()
@@ -99,7 +100,6 @@ pub(crate) fn validate_canonical_payment_set(
         network: network.to_owned(),
         chain_id,
         minimum,
-        sender_p: sender_p.key_bytes.clone(),
         recipient_p: recipient_p.key_bytes.clone(),
         sender_m: checks.sender_message_key.key_bytes.clone(),
         recipient_m: recipient.message_key.key_bytes.clone(),
@@ -110,7 +110,7 @@ pub(crate) fn validate_canonical_payment_set(
     };
     // Both parties' mailboxes are keyed by the address of their key, so a key that is not a
     // point on the curve is a malformed message, refused here rather than failing in the store.
-    if policy.sender().is_err() || policy.recipient().is_err() {
+    if policy.recipient().is_err() {
         return Err(Error::Invalid);
     }
     let payments = canonical_signed_set(&request, &policy)?;
@@ -152,7 +152,7 @@ fn canonical_signed_set(
     let Some(TypedPayload::RecipientPayload {
         schema_version: 2,
         network: inner_network,
-        sender,
+        sender: None,
         recipient,
         suite: 1,
         ephemeral_point,
@@ -171,7 +171,6 @@ fn canonical_signed_set(
         || inner_network != network
         || payload_frame.schema_version != 2
         || payload_frame.min_reader_version != 2
-        || sender != &account(&policy.sender_p)
         || recipient != &account(&policy.recipient_p)
         || destination != &account(&policy.stamp)
         || recipient_payload_digest(network, &payload_frame.frame).map_err(|_| Error::Invalid)?
@@ -186,7 +185,6 @@ fn canonical_signed_set(
     let recipient_m = account(&policy.recipient_m);
     let context = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
         network,
-        sender,
         recipient,
         sender_directory_hash: &policy.sender_t1,
         recipient_directory_hash: &policy.recipient_t1,

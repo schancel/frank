@@ -220,7 +220,7 @@ export function inspectCanonicalPreparedEnvelope(
   )
     throw new Error('canonical-stamp:payload')
   const fields = decodeCanonical(context)
-  if (!(fields instanceof Map) || fields.size !== 16)
+  if (!(fields instanceof Map) || fields.size !== 15 || fields.has(2n))
     throw new Error('canonical-stamp:context')
   const account = (key: bigint): AccountRef => {
     const value = fields.get(key)
@@ -247,7 +247,6 @@ export function inspectCanonicalPreparedEnvelope(
     stampKey = account(8n)
   const expected = encodeDirectMessageCryptoContext({
     network: frame.network,
-    sender: frame.sender,
     recipient: frame.recipient,
     senderDirectoryHash: senderT1,
     recipientDirectoryHash: recipientT1,

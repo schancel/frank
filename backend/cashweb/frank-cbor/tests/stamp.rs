@@ -45,7 +45,6 @@ fn outcome(frame: &[u8]) -> String {
 fn production_type5(suite: u32) -> Vec<u8> {
     let payload = cbor_map(vec![
         (0, CborValue::Text(NET.to_string())),
-        (1, acct1(9)),
         (2, acct1(3)),
         (3, int(i128::from(suite))),
         (4, CborValue::Bytes(vec![0xa0])),

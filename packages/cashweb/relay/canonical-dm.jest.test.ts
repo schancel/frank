@@ -6,6 +6,8 @@ import type { Current, DirectoryStore } from '@frank/directory-admission'
 import {
   parseFrame,
   messageContentDigest,
+  decodeCanonical,
+  encodeCanonical,
   fromHex,
   toHex,
   verifyPreviewDirectoryEvidence,
@@ -20,14 +22,17 @@ import {
   selfOpenEphemeral,
   selfOpenKeyFromRoot,
 } from '@frank/crypto-box'
+import { sealAuthAsRecipient } from '../../crypto-box/src/seal'
 import directoryVectors from '../../../docs/protocol/proposals/suite1-directory/vectors.json'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 import blackjackCorpus from '../../../docs/protocol/cbor/vectors/blackjack-items.json'
 import {
   prepareDirectMessage,
+  prepareSenderSyncCopy,
   openDirectMessage,
   openOwnDirectMessage,
   directMessageText,
+  DirectMessageError,
   DirectMessageRoles,
   PreparedDirectMessage,
 } from './canonical-dm'
@@ -244,6 +249,18 @@ const container = (items: Uint8Array[]) =>
     { typeId: 16, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([[0, items]]),
   )
+const identityMap = (key?: Uint8Array) =>
+  cborMap([
+    [0, 1],
+    [
+      1,
+      key ??
+        verifyPreviewDirectoryEvidence(
+          current.evidence.attestation,
+          corpus.network,
+        ).statement.subject.keyBytes,
+    ],
+  ])
 function contentWithItems(items: Uint8Array[]): Uint8Array {
   const revision = encodeFrame(
     { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
@@ -260,6 +277,7 @@ function contentWithItems(items: Uint8Array[]): Uint8Array {
       [2, revision],
       [3, messageContentDigest(revision)],
       [4, new Uint8Array(16)],
+      [7, identityMap()],
     ]),
   )
 }
@@ -581,7 +599,6 @@ test.each(['deep', 'items'])(
   },
 )
 test.each([
-  'sender-P',
   'recipient-P',
   'proof',
   'ephemeral',
@@ -613,14 +630,6 @@ test.each([
     },
     cborMap([
       [0, corpus.network],
-      [
-        1,
-        a(
-          change === 'sender-P'
-            ? current.messageKey.keyBytes
-            : t.sender.keyBytes,
-        ),
-      ],
       [
         2,
         a(
@@ -819,6 +828,7 @@ test('authenticated aggregate containers retain original ciphertext graph budget
       [2, revision],
       [3, messageContentDigest(revision)],
       [4, new Uint8Array(16)],
+      [7, identityMap()],
       [99, nested],
     ]),
   )
@@ -857,7 +867,6 @@ test('authenticated aggregate containers retain original ciphertext graph budget
     { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
     cborMap([
       [0, corpus.network],
-      [1, a(t.sender.keyBytes)],
       [2, a(t.recipient.keyBytes)],
       [3, 1],
       [4, t.cryptoBoxEnvelope],
@@ -1071,6 +1080,7 @@ test('a message from a client that sent no conversation ID opens with none', () 
       [1, new Uint8Array(16).fill(0x21)],
       [2, revision],
       [3, messageContentDigest(revision)],
+      [7, identityMap()],
     ]),
   )
   const sender = roles()
@@ -1137,4 +1147,129 @@ test('ticket #970: explicit conversationId and conversationName are preserved ac
   expect(toHex(selfOpened.conversationId)).toBe(toHex(conversationId))
   expect(selfOpened.conversationName).toBe(conversationName)
   expect(selfOpened.mode).toBe('send')
+})
+test('a schema-2 type 5 map that contains key 1 is a schema error', () => {
+  const parsed = parseFrame(fixturePrepared.payload)
+  if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+    throw new Error('fixture')
+  const payload = new Map(parsed.payload)
+  payload.set(1n, identityMap())
+  expect(() =>
+    parseFrame(
+      encodeFrame({ typeId: 5, schemaVersion: 2, minReaderVersion: 2 }, payload),
+    ),
+  ).toThrow('routing sender is not a production field')
+})
+test('open fails when type 6 field 7 is not the directory subject for context field 6', () => {
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId: new Uint8Array(16).fill(0x46),
+    items: [directMessageText('identity')],
+    roles: roles(),
+  })
+  const envelope = decodeCanonical(prepared.content.subarray(9)) as Map<
+    bigint,
+    unknown
+  >
+  const fields = decodeCanonical(
+    Uint8Array.from(envelope.get(3n) as Uint8Array),
+  ) as Map<bigint, unknown>
+  fields.set(7n, identityMap(current.stampKey.keyBytes))
+  const mutated = encodeFrame(
+    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    { bytes: encodeCanonical(fields) },
+  )
+  const sealed = seal({
+    suiteId: 1,
+    recipientPublicKey: current.messageKey.keyBytes,
+    senderPublicKey: current.messageKey.keyBytes,
+    senderPrivateKey: fromHex(v.message_secret_test_only),
+    plaintext: mutated,
+    context: prepared.context,
+  })
+  if (!sealed.ok) throw new Error(sealed.error.code)
+  const parsed = parseFrame(prepared.payload)
+  if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+    throw new Error('payload')
+  const payload = encodeFrame(
+    { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+    new Map(parsed.payload).set(4n, sealed.value),
+  )
+  expect(() =>
+    openDirectMessage({
+      ...receive(),
+      payload,
+      context: prepared.context,
+    }),
+  ).toThrow(DirectMessageError)
+  try {
+    openDirectMessage({ ...receive(), payload, context: prepared.context })
+  } catch (error) {
+    expect(error).toBeInstanceOf(DirectMessageError)
+    expect((error as DirectMessageError).code).toBe('context')
+  }
+})
+test('openAsSender accepts the sender sync copy and rejects a recipient forgery', () => {
+  const role = selfOpenRoles()
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId: new Uint8Array(16).fill(0x44),
+    items: [directMessageText('sync copy')],
+    roles: role,
+  })
+  const sync = prepareSenderSyncCopy({
+    network: corpus.network,
+    senderCurrent: current,
+    content: prepared.content,
+    roles: role,
+  })
+  const opened = openOwnDirectMessage({
+    network: corpus.network,
+    payload: sync.payload,
+    context: sync.context,
+    roles: role,
+    senderCurrent: current,
+    recipientCurrent: current,
+  })
+  expect(opened.mode).toBe('send')
+  expect(toHex(opened.messageId)).toBe('44'.repeat(16))
+  const forged = sealAuthAsRecipient({
+    suiteId: 1,
+    recipientPrivateKey: fromHex(v.message_secret_test_only),
+    recipientPublicKey: current.messageKey.keyBytes,
+    senderPublicKey: current.messageKey.keyBytes,
+    plaintext: prepared.content,
+    context: sync.context,
+    ephemeralSecret: new Uint8Array(32).fill(0x11),
+    salt: new Uint8Array(32).fill(0x22),
+  })
+  if (!forged.ok) throw new Error(forged.error.code)
+  const parsed = parseFrame(sync.payload)
+  if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+    throw new Error('sync payload')
+  const payload = encodeFrame(
+    { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+    new Map(parsed.payload).set(4n, forged.value),
+  )
+  const asRecipient = openDirectMessage({
+    ...receive(role),
+    payload,
+    context: sync.context,
+  })
+  expect(asRecipient.mode).toBe('receive')
+  expect(toHex(asRecipient.messageId)).toBe('44'.repeat(16))
+  expect(() =>
+    openOwnDirectMessage({
+      network: corpus.network,
+      payload,
+      context: sync.context,
+      roles: role,
+      senderCurrent: current,
+      recipientCurrent: current,
+    }),
+  ).toThrow('canonical-dm:crypto')
 })

@@ -29,21 +29,18 @@ import {
 } from '../fixtures/builders'
 
 function encrypted(suite = 1, schema = 2, min = 2): Uint8Array {
-  return fr(
-    5,
-    M([
-      [0, NET],
-      [1, acct1(9)],
-      [2, acct1(3)],
-      [3, suite],
-      [4, Uint8Array.of(0xa0)],
-      [5, T3C.ephemeral],
-      [6, T3C.shared],
-      [7, T3C.proof],
-    ]),
-    schema,
-    min,
-  )
+  const fields: Array<[number, Encodable]> = [
+    [0, NET],
+    [2, acct1(3)],
+    [3, suite],
+    [4, Uint8Array.of(0xa0)],
+    [5, T3C.ephemeral],
+    [6, T3C.shared],
+    [7, T3C.proof],
+  ]
+  // Schema 1 still carries the proof-fixture sender. Production schema 2 rejects key 1.
+  if (schema < 2) fields.splice(1, 0, [1, acct1(9)])
+  return fr(5, M(fields), schema, min)
 }
 function root(extra?: Encodable): Uint8Array {
   const payload = deliveryPayload({ payloadFrame: encrypted() })
@@ -58,6 +55,7 @@ function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
     [2, rev8Frame(items)],
     [3, bytesOf(32, 8)],
     [4, bytesOf(16, 8)],
+    [7, acct1(9)],
   ])
   if (extra !== undefined) payload.set(99, extra)
   return fr(6, payload, extra === undefined ? 1 : 2, 1)

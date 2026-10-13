@@ -229,7 +229,6 @@ export interface PreviewDirectoryRoles {
 interface RecipientEncryptedPayloadCommon {
   type: 5
   network: string
-  sender: AccountRef
   recipient: AccountRef
   suite: number
   /** Field 5 in schema 2, `E = e*G`; field 6 in legacy proof schema 1. */
@@ -244,6 +243,8 @@ interface RecipientEncryptedPayloadCommon {
 export interface RecipientEncryptedPayloadV1
   extends RecipientEncryptedPayloadCommon {
   readonly schemaVersion: 1
+  /** Schema 1 proof fixture only. Production schema 2 has no clear sender. */
+  sender: AccountRef
   nonce: Uint8Array
   ciphertext: Uint8Array
 }
@@ -280,6 +281,8 @@ export interface EncryptedMessageContent<F> {
   /** The type-8 message-content-revision frame. */
   revisionFrame: F
   contentDigest: Uint8Array
+  /** Field 7. The sender identity key. Required. The relay does not read it. */
+  senderIdentity: AccountRef
   unknownFields: UnknownFields
 }
 

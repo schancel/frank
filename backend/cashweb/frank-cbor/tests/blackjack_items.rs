@@ -374,6 +374,7 @@ fn content(items: Vec<Vec<u8>>, extra: Option<CborValue>) -> Vec<u8> {
         (2, CborValue::Bytes(revision)),
         (3, CborValue::Bytes(vec![2; 32])),
         (4, CborValue::Bytes(vec![3; 16])),
+        (7, common::acct1(9)),
     ];
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {
@@ -386,7 +387,6 @@ fn dm_root(extra: Option<CborValue>) -> Vec<u8> {
         5,
         &cbor_map(vec![
             (0, CborValue::Text(common::NET.into())),
-            (1, common::acct1(9)),
             (2, common::acct1(3)),
             (3, CborValue::Int(1)),
             (4, CborValue::Bytes(vec![0xa0])),
@@ -596,6 +596,7 @@ fn retained_order_high_reader_and_required_family_remain_distinct() {
             (2, CborValue::Bytes(welcome)),
             (3, CborValue::Bytes(vec![2; 32])),
             (4, CborValue::Bytes(vec![4; 16])),
+            (7, common::acct1(9)),
         ]),
     );
     assert_eq!(

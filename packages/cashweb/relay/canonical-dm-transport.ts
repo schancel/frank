@@ -411,11 +411,10 @@ export function inspectCanonicalPair(
   const recipient = delivery.recipient ?? payload.recipient
   const dleqProof = delivery.dleqProof ?? payload.dleqProof
   const decoded = decodeCanonical(parts.context)
-  if (!(decoded instanceof Map) || decoded.size !== 16)
+  if (!(decoded instanceof Map) || decoded.size !== 15 || decoded.has(2n))
     invalid('Exact allocated context required')
   const context: DirectMessageCryptoContext = {
     network: delivery.network,
-    sender: payload.sender,
     recipient,
     senderDirectoryHash: field(decoded, 4, 32),
     recipientDirectoryHash: field(decoded, 5, 32),

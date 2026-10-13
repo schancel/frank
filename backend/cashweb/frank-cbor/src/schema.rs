@@ -575,7 +575,8 @@ pub(crate) enum Draft {
     Recipient {
         schema_version: u32,
         network: String,
-        sender: AccountRef,
+        /// Schema 1 proof fixture only. Production schema 2 leaves this empty.
+        sender: Option<AccountRef>,
         recipient: AccountRef,
         suite: u32,
         nonce: Option<Vec<u8>>,
@@ -593,6 +594,8 @@ pub(crate) enum Draft {
         content_digest: Vec<u8>,
         conversation_id: Option<Vec<u8>>,
         conversation_name: Option<String>,
+        /// Field 7, the sender identity key.
+        sender_identity: AccountRef,
         unknown: Vec<(u64, CborValue)>,
     },
     TransitionStatement {
@@ -1294,10 +1297,15 @@ pub(crate) fn parse_draft(
         }
         TYPE_RECIPIENT_PAYLOAD => {
             if schema.effective >= 2 {
+                if let CborValue::Map(entries) = payload {
+                    if entries.iter().any(|(key, _)| *key == 1) {
+                        return Err(bad(path, "routing sender is not a production field"));
+                    }
+                }
                 let map = fields(
                     Some(payload),
                     path,
-                    &[0, 1, 2, 3, 4, 5, 6, 7],
+                    &[0, 2, 3, 4, 5, 6, 7],
                     &[],
                     true,
                     allow,
@@ -1305,7 +1313,7 @@ pub(crate) fn parse_draft(
                 Ok(Draft::Recipient {
                     schema_version: 2,
                     network: network_tag(map.get(0), &format!("{path}.0"))?,
-                    sender: account(map.get(1), &format!("{path}.1"))?,
+                    sender: None,
                     recipient: account(map.get(2), &format!("{path}.2"))?,
                     suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
                     nonce: None,
@@ -1333,7 +1341,7 @@ pub(crate) fn parse_draft(
                 Ok(Draft::Recipient {
                     schema_version: 1,
                     network: network_tag(map.get(0), &format!("{path}.0"))?,
-                    sender: account(map.get(1), &format!("{path}.1"))?,
+                    sender: Some(account(map.get(1), &format!("{path}.1"))?),
                     recipient: account(map.get(2), &format!("{path}.2"))?,
                     suite: u32_in(map.get(3), &format!("{path}.3"), 0, 65_535)?,
                     nonce: Some(bstr(map.get(4), &format!("{path}.4"), 1, 64)?),
@@ -1353,7 +1361,15 @@ pub(crate) fn parse_draft(
         }
         crate::limits::TYPE_ENCRYPTED_CONTENT => {
             // Field 4 is optional on the wire: writers should send it, readers accept absence.
-            let map = fields(Some(payload), path, &[0, 1, 2, 3], &[4, 5], true, allow)?;
+            // Field 7, the sender identity, is required. Field 6 stays the optional token transfer.
+            let map = fields(
+                Some(payload),
+                path,
+                &[0, 1, 2, 3, 7],
+                &[4, 5, 6],
+                true,
+                allow,
+            )?;
             let conversation_id = if map.has(4) {
                 Some(bstr(map.get(4), &format!("{path}.4"), 16, 16)?)
             } else {
@@ -1371,6 +1387,7 @@ pub(crate) fn parse_draft(
                 content_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
                 conversation_id,
                 conversation_name,
+                sender_identity: account(map.get(7), &format!("{path}.7"))?,
                 unknown: map.unknown,
             })
         }
@@ -1634,7 +1651,9 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             schema_version,
             ..
         } => {
-            check_key_type(sender, &format!("{path}.1"))?;
+            if let Some(sender) = sender {
+                check_key_type(sender, &format!("{path}.1"))?;
+            }
             check_key_type(recipient, &format!("{path}.2"))?;
             if (*schema_version == 1 && *suite != ENCRYPTION_SUITE_PROOF)
                 || (*schema_version == 2 && *suite != ENCRYPTION_SUITE_DM_AUTH_XCHACHA)
@@ -1665,8 +1684,10 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
             }
             Ok(())
         }
-        Draft::Encrypted { .. }
-        | Draft::TopicPost { .. }
+        Draft::Encrypted {
+            sender_identity, ..
+        } => check_key_type(sender_identity, &format!("{path}.7")),
+        Draft::TopicPost { .. }
         | Draft::TopicPostSubmission { .. }
         | Draft::TopicVoteSubmission { .. }
         | Draft::ForumView(_)

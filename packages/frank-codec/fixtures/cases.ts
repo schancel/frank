@@ -1783,6 +1783,7 @@ rej(
       [2, textItem()],
       [3, bytesOf(32, 1)],
       [4, bytesOf(16, 8)],
+      [7, acct1(9)],
     ]),
   ),
   'semantic',
@@ -2861,6 +2862,7 @@ const t6 = (
   if (convName !== undefined) {
     entries.push([5, convName])
   }
+  entries.push([7, acct1(9)])
   return fr(6, M(entries))
 }
 acc(
@@ -3138,6 +3140,7 @@ pair(
         [2, child2(8, revision8([textItem()]), n)],
         [3, bytesOf(32, 1)],
         [4, bytesOf(16, 8)],
+        [7, acct1(9)],
       ]),
     ),
   {},

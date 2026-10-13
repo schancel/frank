@@ -344,12 +344,15 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
         return Err(CanonicalError::Invalid);
     };
     let Some(TypedPayload::RecipientPayload {
-        sender, recipient, ..
+        schema_version: 2,
+        sender: None,
+        recipient,
+        ..
     }) = payload_frame.typed.as_deref()
     else {
         return Err(CanonicalError::Invalid);
     };
-    if actual != network || sender.key_type != 1 || recipient.key_type != 1 {
+    if actual != network || recipient.key_type != 1 {
         return Err(CanonicalError::Invalid);
     }
     let (sender_t1, recipient_t1) = if !request.context().is_empty() {
@@ -1405,22 +1408,6 @@ pub(crate) async fn handle_mailbox_ws(
                                 seen_payloads.insert(envelope.payload_hash);
                                 let push = MailboxWsPush {
                                     direction: "in",
-                                    submission_identity: hex::encode(envelope.submission_identity),
-                                    payload_hash: hex::encode(envelope.payload_hash),
-                                    timestamp_ms: envelope.timestamp,
-                                    delivery: hex::encode(&envelope.delivery),
-                                    context: hex::encode(&envelope.context),
-                                };
-                                let json = match serde_json::to_string(&push) {
-                                    Ok(j) => j,
-                                    Err(_) => continue,
-                                };
-                                if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
-                                    break;
-                                }
-                            } else if envelope.sender == address {
-                                let push = MailboxWsPush {
-                                    direction: "out",
                                     submission_identity: hex::encode(envelope.submission_identity),
                                     payload_hash: hex::encode(envelope.payload_hash),
                                     timestamp_ms: envelope.timestamp,

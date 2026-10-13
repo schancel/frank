@@ -212,7 +212,6 @@ function cryptoContext(
 ): Uint8Array {
   return encodeDirectMessageCryptoContext({
     network,
-    sender: sender.statement.subject,
     recipient: recipient.statement.subject,
     senderDirectoryHash: sender.statementHash,
     recipientDirectoryHash: recipient.statementHash,
@@ -297,6 +296,7 @@ export function prepareDirectMessage(input: {
     if (input.conversationName !== undefined) {
       contentEntries.push([5, input.conversationName])
     }
+    contentEntries.push([7, account(sender.statement.subject)])
     plaintext = frame(6, cborMap(contentEntries))
     // Reject invalid authoring before invoking the capability or consuming entropy.
     parseFrame(plaintext)
@@ -323,7 +323,6 @@ export function prepareDirectMessage(input: {
       5,
       cborMap([
         [0, input.network],
-        [1, account(sender.statement.subject)],
         [2, account(recipient.statement.subject)],
         [3, 1],
         [4, copy(sealed.value)],
@@ -366,6 +365,91 @@ export function prepareDirectMessage(input: {
     throw error
   } finally {
     plaintext?.fill(0)
+  }
+}
+
+/**
+ * A delivery whose clear recipient is the sender, sealed auth-mode from the sender's message
+ * key to that same key. `content` is the recipient delivery's exact type 6 frame, including
+ * field 7. The relay indexes this copy by that clear recipient only.
+ */
+export function prepareSenderSyncCopy(input: {
+  network: string
+  senderCurrent: Current
+  content: Uint8Array
+  roles: DirectMessageRoles
+}): PreparedDirectMessage {
+  input = { ...input, content: copy(input.content) }
+  try {
+    const sender = current(input.network, input.senderCurrent)
+    localRoles(input.roles, sender, true)
+    const parsed = parseFrame(input.content)
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 6)
+      throw new DirectMessageError('context')
+    if (!accountEqual(parsed.typed.senderIdentity, sender.statement.subject))
+      throw new DirectMessageError('context')
+    const proof = createCanonicalStampProof({
+      network: input.network,
+      stampKey: sender.statement.stampKey,
+    })
+    const context = cryptoContext(input.network, sender, sender, proof)
+    const borrowed = copy(input.content)
+    let sealed: SuiteResult<Uint8Array>
+    try {
+      sealed = input.roles.sealMessage({
+        recipientPublicKey: copy(sender.statement.preview.messageDhKey.keyBytes),
+        plaintext: borrowed,
+        context: copy(context),
+      })
+    } finally {
+      borrowed.fill(0)
+    }
+    if (!sealed.ok) throw new DirectMessageError('crypto')
+    const payload = frame(
+      5,
+      cborMap([
+        [0, input.network],
+        [2, account(sender.statement.subject)],
+        [3, 1],
+        [4, copy(sealed.value)],
+        [5, proof.ephemeralPoint],
+        [6, proof.sharedPoint],
+        [7, proof.dleqProof],
+      ]),
+      2,
+    )
+    beginDirectMessageValidation(
+      payload,
+      defaultContext(),
+    ).completeAuthenticatedContent(input.content)
+    const bytes = ownedBytes({
+      payload,
+      context,
+      t3: recipientPayloadDigest(input.network, payload),
+      messageId: parsed.typed.messageId,
+      ...(parsed.typed.conversationId === undefined
+        ? {}
+        : { conversationId: parsed.typed.conversationId }),
+      contentDigest: parsed.typed.contentDigest,
+      content: input.content,
+      revision: parsed.typed.revisionFrame.frame,
+      senderT1: sender.statementHash,
+      recipientT1: sender.statementHash,
+    })
+    const result = Object.defineProperties(
+      {},
+      Object.getOwnPropertyDescriptors(bytes),
+    ) as PreparedDirectMessage
+    if (parsed.typed.conversationName !== undefined) {
+      Object.defineProperty(result, 'conversationName', {
+        enumerable: true,
+        value: parsed.typed.conversationName,
+      })
+    }
+    return Object.freeze(result)
+  } catch (error) {
+    input.roles.dispose()
+    throw error
   }
 }
 
@@ -477,7 +561,6 @@ export function openDirectMessage(
     }
     if (
       encrypted.network !== input.network ||
-      !accountEqual(encrypted.sender, sender.statement.subject) ||
       !accountEqual(encrypted.recipient, recipient.statement.subject)
     )
       throw new DirectMessageError('context')
@@ -512,6 +595,8 @@ export function openDirectMessage(
     const completed = continuation.completeAuthenticatedContent(plaintext)
     const content = completed.content.typed
     if (content?.type !== 6 || content.revisionFrame.typed?.type !== 8)
+      throw new DirectMessageError('context')
+    if (!accountEqual(content.senderIdentity, sender.statement.subject))
       throw new DirectMessageError('context')
     if (content.network !== encrypted.network)
       throw new DirectMessageError('network')
@@ -643,7 +728,6 @@ export function openOwnDirectMessage(
 
     if (
       encrypted.network !== input.network ||
-      !accountEqual(encrypted.sender, sender.statement.subject) ||
       !accountEqual(encrypted.recipient, recipient.statement.subject)
     )
       throw new DirectMessageError('context')
@@ -672,6 +756,8 @@ export function openOwnDirectMessage(
     const completed = continuation.completeAuthenticatedContent(plaintext)
     const content = completed.content.typed
     if (content?.type !== 6 || content.revisionFrame.typed?.type !== 8)
+      throw new DirectMessageError('context')
+    if (!accountEqual(content.senderIdentity, sender.statement.subject))
       throw new DirectMessageError('context')
     if (content.network !== encrypted.network)
       throw new DirectMessageError('network')

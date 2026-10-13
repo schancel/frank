@@ -584,6 +584,10 @@ export async function tokenSendCommand(
       conversationId,
       revisionFrame,
       tokenTransfer,
+      senderIdentity: {
+        keyType: 1,
+        keyBytes: identity.compressedPubKey,
+      },
     })
 
     const envelope = buildEnvelope({

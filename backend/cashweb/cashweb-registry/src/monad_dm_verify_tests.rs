@@ -1,7 +1,7 @@
 use super::*;
 use crate::directory_admission::{Checkpoint, CheckpointKind, Status};
 use frank_cbor::{
-    decode_canonical, directory_signature_digest, encode_canonical, encode_frame,
+    decode_canonical, default_context, directory_signature_digest, encode_canonical, encode_frame,
     preview_directory_context, CborValue, EnvelopeFields, FramePayload,
 };
 use secp256k1_abc::Message;
@@ -122,6 +122,13 @@ fn map_value(value: &mut CborValue, key: u64) -> &mut CborValue {
         panic!("map")
     };
     &mut entries.iter_mut().find(|(k, _)| *k == key).unwrap().1
+}
+
+fn remove_map_key(value: &mut CborValue, key: u64) {
+    let CborValue::Map(entries) = value else {
+        panic!("map")
+    };
+    entries.retain(|(k, _)| *k != key);
 }
 
 fn test_secret(index: u8) -> SecretKey {
@@ -258,9 +265,9 @@ fn directional_fixture(sender: &Current, recipient: &Current) -> (Vec<u8>, Vec<u
         panic!("delivery")
     };
     let mut payload = payload_frame.payload.clone();
-    let sender_p = test_account(7);
     let recipient_p = test_account(1);
-    *map_value(&mut payload, 1) = account_value(&sender_p);
+    // Production schema 2 has no clear sender. Key 1 is a schema error, not a field to rewrite.
+    remove_map_key(&mut payload, 1);
     *map_value(&mut payload, 2) = account_value(&recipient_p);
     // Opaque ciphertext is immaterial to this partial stamp verifier. This constructed
     // frame deliberately makes no claim to be a newly authenticated encryption fixture.
@@ -275,7 +282,6 @@ fn directional_fixture(sender: &Current, recipient: &Current) -> (Vec<u8>, Vec<u
     *map_value(&mut members[0], 4) = CborValue::Bytes(payment_commitment(&t3, 0).to_vec());
     let context = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
         network: "monad",
-        sender: &sender_p,
         recipient: &recipient_p,
         sender_directory_hash: &sender.evidence.hash,
         recipient_directory_hash: &recipient.evidence.hash,
@@ -373,7 +379,7 @@ fn recipient_fields_are_bound_and_what_the_context_says_of_the_sender_entry_is_n
     assert_ne!(sender.evidence.hash, recipient.evidence.hash);
     let (delivery, context) = directional_fixture(&sender, &recipient);
     assert!(check(&delivery, &context, &recipient).is_ok());
-    for (field, other) in [(2, 3), (3, 2), (6, 7), (7, 6), (4, 5), (5, 4)] {
+    for (field, other) in [(3, 8), (8, 3), (6, 7), (7, 6), (4, 5), (5, 4)] {
         let mut substituted = decode_canonical(&context).unwrap();
         let replacement = map_value(&mut substituted, other).clone();
         assert_ne!(&*map_value(&mut substituted, field), &replacement);
@@ -393,6 +399,20 @@ fn recipient_fields_are_bound_and_what_the_context_says_of_the_sender_entry_is_n
             "context field {field}"
         );
     }
+    let mut with_sender = decode_canonical(&context).unwrap();
+    let retired_sender = map_value(&mut with_sender, 3).clone();
+    {
+        let CborValue::Map(entries) = &mut with_sender else {
+            panic!("context")
+        };
+        entries.push((2, retired_sender));
+    }
+    let encoded = encode_canonical(&with_sender).unwrap();
+    assert_eq!(
+        check(&delivery, &encoded, &recipient).map(|_| ()),
+        Err(CanonicalStampError::DirectoryContext),
+        "context key 2 is not a context field"
+    );
     assert!(
         check(&delivery, &context, &sender).is_err(),
         "the sender's entry cannot stand in for the recipient's"

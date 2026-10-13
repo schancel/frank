@@ -20,21 +20,19 @@ fn frame(kind: u32, payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
     .unwrap()
 }
 fn encrypted_with(suite: i128, schema: u32, min: u32) -> Vec<u8> {
-    frame(
-        5,
-        &cbor_map(vec![
-            (0, CborValue::Text(NET.into())),
-            (1, acct1(9)),
-            (2, acct1(3)),
-            (3, int(suite)),
-            (4, CborValue::Bytes(vec![0xa0])),
-            (5, CborValue::Bytes(hex::decode(T3C_EPHEMERAL).unwrap())),
-            (6, CborValue::Bytes(hex::decode(T3C_SHARED).unwrap())),
-            (7, CborValue::Bytes(hex::decode(T3C_PROOF).unwrap())),
-        ]),
-        schema,
-        min,
-    )
+    let mut fields = vec![
+        (0, CborValue::Text(NET.into())),
+        (2, acct1(3)),
+        (3, int(suite)),
+        (4, CborValue::Bytes(vec![0xa0])),
+        (5, CborValue::Bytes(hex::decode(T3C_EPHEMERAL).unwrap())),
+        (6, CborValue::Bytes(hex::decode(T3C_SHARED).unwrap())),
+        (7, CborValue::Bytes(hex::decode(T3C_PROOF).unwrap())),
+    ];
+    if schema < 2 {
+        fields.insert(1, (1, acct1(9)));
+    }
+    frame(5, &cbor_map(fields), schema, min)
 }
 fn encrypted() -> Vec<u8> {
     encrypted_with(1, 2, 2)
@@ -73,6 +71,7 @@ fn content_items(extra: Option<CborValue>, items: Vec<Vec<u8>>) -> Vec<u8> {
         (2, CborValue::Bytes(revision)),
         (3, CborValue::Bytes(bytes_of(32, 8))),
         (4, CborValue::Bytes(bytes_of(16, 8))),
+        (7, acct1(9)),
     ];
     let schema = if extra.is_some() { 2 } else { 1 };
     if let Some(extra) = extra {

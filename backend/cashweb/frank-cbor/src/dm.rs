@@ -20,8 +20,6 @@ pub const DM_CRYPTO_MIN_READER_VERSION: u32 = 2;
 pub struct DirectMessageCryptoContext<'a> {
     /// Canonical network tag.
     pub network: &'a str,
-    /// Outer routing sender identity.
-    pub sender: &'a AccountRef,
     /// Outer routing recipient identity.
     pub recipient: &'a AccountRef,
     /// T1 hash of the exact opened sender directory statement.
@@ -104,7 +102,6 @@ pub fn encode_direct_message_crypto_context(
     encode_canonical(&CborValue::Map(vec![
         (0, CborValue::Text(DM_CRYPTO_CONTEXT_DOMAIN.into())),
         (1, CborValue::Text(input.network.into())),
-        (2, account(input.sender, "sender", false)?),
         (3, account(input.recipient, "recipient", false)?),
         (
             4,

@@ -47,6 +47,8 @@ export interface EncryptedMessageContentFields {
   messageId: Uint8Array
   conversationId: Uint8Array
   revisionFrame: Uint8Array
+  /** Directory subject. Writers always emit type 6 field 7. */
+  senderIdentity: { keyType: number; keyBytes: Uint8Array }
   contentDigest?: Uint8Array
   conversationName?: string
   tokenTransfer?: TokenTransfer
@@ -70,6 +72,13 @@ export function encodeEncryptedMessageContent(
   if (fields.tokenTransfer !== undefined) {
     entries.push([6, encodeTokenTransferMap(fields.tokenTransfer)])
   }
+  entries.push([
+    7,
+    cborMap([
+      [0, fields.senderIdentity.keyType],
+      [1, fields.senderIdentity.keyBytes],
+    ]),
+  ])
   const payload = encodeCanonical(cborMap(entries))
   return encodeFrame(
     {

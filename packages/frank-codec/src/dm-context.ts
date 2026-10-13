@@ -12,7 +12,6 @@ export const DM_CRYPTO_MIN_READER_VERSION = 2
 
 export interface DirectMessageCryptoContext {
   readonly network: string
-  readonly sender: AccountRef
   readonly recipient: AccountRef
   readonly senderDirectoryHash: Uint8Array
   readonly recipientDirectoryHash: Uint8Array
@@ -76,7 +75,6 @@ export function encodeDirectMessageCryptoContext(
     new Map<number, Encodable>([
       [0, DM_CRYPTO_CONTEXT_DOMAIN],
       [1, input.network],
-      [2, account(input.sender, 'sender')],
       [3, account(input.recipient, 'recipient')],
       [4, exact(input.senderDirectoryHash, 32, 'senderDirectoryHash')],
       [5, exact(input.recipientDirectoryHash, 32, 'recipientDirectoryHash')],
@@ -113,6 +111,9 @@ export function decodeDirectMessageCryptoContext(
   if (typeof network !== 'string' || network.length === 0) {
     throw new TypeError('network must be a non-empty string')
   }
+  if (value.has(2n)) {
+    throw new RangeError('routing sender is not a context field')
+  }
   const parseAccount = (v: unknown, name: string, secpOnly = false): AccountRef => {
     if (!(v instanceof Map)) throw new TypeError(`${name} must be an account map`)
     const rawKeyType = v.get(0n)
@@ -127,7 +128,6 @@ export function decodeDirectMessageCryptoContext(
     }
     return { keyType, keyBytes }
   }
-  const sender = parseAccount(value.get(2n), 'sender')
   const recipient = parseAccount(value.get(3n), 'recipient')
   const senderDirectoryHash = exact(value.get(4n) as Uint8Array, 32, 'senderDirectoryHash')
   const recipientDirectoryHash = exact(value.get(5n) as Uint8Array, 32, 'recipientDirectoryHash')
@@ -154,7 +154,6 @@ export function decodeDirectMessageCryptoContext(
 
   return {
     network,
-    sender,
     recipient,
     senderDirectoryHash,
     recipientDirectoryHash,

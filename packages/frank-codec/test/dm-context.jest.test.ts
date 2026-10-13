@@ -4,9 +4,12 @@ import { join } from 'path'
 import {
   DM_CRYPTO_CONTEXT_DOMAIN,
   cborMap,
+  decodeCanonical,
   decodeDirectMessageCryptoContext,
+  encodeCanonical,
   encodeDirectMessageCryptoContext,
   encodeFrame,
+  parseFrame,
   toHex,
   type DirectMessageCryptoContext,
 } from '../src'
@@ -22,7 +25,6 @@ interface CorpusAccount {
 
 interface CorpusContext {
   network: string
-  sender: CorpusAccount
   recipient: CorpusAccount
   senderDirectoryHashHex: string
   recipientDirectoryHashHex: string
@@ -58,7 +60,6 @@ const accountMap = (value: CorpusAccount) =>
 
 const VECTOR: DirectMessageCryptoContext = {
   network: C.network,
-  sender: account(C.sender),
   recipient: account(C.recipient),
   senderDirectoryHash: fromHex(C.senderDirectoryHashHex),
   recipientDirectoryHash: fromHex(C.recipientDirectoryHashHex),
@@ -79,7 +80,6 @@ describe('DM crypto context v1', () => {
   it('matches the shared type-5 schema-2 frame', () => {
     const payload = cborMap([
       [0, C.network],
-      [1, accountMap(C.sender)],
       [2, accountMap(C.recipient)],
       [3, 1],
       [4, fromHex(CORPUS.cryptoBox.envelopeHex)],
@@ -99,7 +99,6 @@ describe('DM crypto context v1', () => {
 
   it.each([
     'network',
-    'sender',
     'recipient',
     'senderDirectoryHash',
     'recipientDirectoryHash',
@@ -111,8 +110,7 @@ describe('DM crypto context v1', () => {
     'dleqProof',
   ] as const)('binds %s', field => {
     const baseline = toHex(encodeDirectMessageCryptoContext(VECTOR))
-    const changed = { ...VECTOR } as DirectMessageCryptoContext &
-      Record<string, unknown>
+    const changed: Record<string, unknown> = { ...VECTOR }
     if (field === 'network') changed.network = 'monad-mainnet'
     else if (field === 'recipient') {
       const prior = VECTOR[field]
@@ -120,7 +118,7 @@ describe('DM crypto context v1', () => {
         ...prior,
         keyBytes: Uint8Array.from(prior.keyBytes, b => b ^ 1),
       }
-    } else if (field === 'sender' || field.endsWith('Key')) {
+    } else if (field.endsWith('Key')) {
       const prior = VECTOR[field]
       changed[field] = { ...prior, keyBytes: fromHex(C.ephemeralPointHex) }
     } else if (field === 'ephemeralPoint') {
@@ -130,7 +128,11 @@ describe('DM crypto context v1', () => {
     } else {
       changed[field] = bytes(VECTOR[field].length, 0x99)
     }
-    expect(toHex(encodeDirectMessageCryptoContext(changed))).not.toBe(baseline)
+    expect(
+      toHex(
+        encodeDirectMessageCryptoContext(changed as DirectMessageCryptoContext),
+      ),
+    ).not.toBe(baseline)
   })
 
   it('rejects wrong key roles and field lengths', () => {
@@ -146,6 +148,42 @@ describe('DM crypto context v1', () => {
         dleqProof: bytes(63, 1),
       }),
     ).toThrow('two scalars in 1..n-1')
+  })
+
+  it('rejects a context that still carries routing sender key 2', () => {
+    const encoded = encodeDirectMessageCryptoContext(VECTOR)
+    const fields = decodeCanonical(encoded) as Map<bigint, unknown>
+    fields.set(
+      2n,
+      cborMap([
+        [0, 1],
+        [1, fromHex(C.senderMessageKey.keyHex)],
+      ]),
+    )
+    expect(() => decodeDirectMessageCryptoContext(encodeCanonical(fields))).toThrow(
+      'routing sender is not a context field',
+    )
+  })
+
+  it('rejects a schema-2 type 5 map that contains key 1', () => {
+    const payload = cborMap([
+      [0, C.network],
+      [1, accountMap(C.senderMessageKey)],
+      [2, accountMap(C.recipient)],
+      [3, 1],
+      [4, fromHex(CORPUS.cryptoBox.envelopeHex)],
+      [5, fromHex(C.ephemeralPointHex)],
+      [6, fromHex(C.sharedPointHex)],
+      [7, fromHex(C.dleqProofHex)],
+    ])
+    expect(() =>
+      parseFrame(
+        encodeFrame(
+          { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+          payload,
+        ),
+      ),
+    ).toThrow('routing sender is not a production field')
   })
 
   it('round-trips through decodeDirectMessageCryptoContext', () => {

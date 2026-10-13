@@ -3,10 +3,10 @@
 
 use crate::directory_admission::{Current, HistoricalEvidence};
 use frank_cbor::{
-    address_from_compressed_pubkey, default_context, encode_direct_message_crypto_context,
-    payment_commitment, recipient_payload_digest, relay_context, validate_frame,
-    verify_preview_directory_evidence, AccountRef, DirectMessageCryptoContext, PaymentMember,
-    Timestamp, TypedPayload, ValidationResult,
+    address_from_compressed_pubkey, encode_direct_message_crypto_context, payment_commitment,
+    recipient_payload_digest, relay_context, validate_frame, verify_preview_directory_evidence,
+    AccountRef, DirectMessageCryptoContext, PaymentMember, Timestamp, TypedPayload,
+    ValidationResult,
 };
 use secp256k1_abc::{All, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
@@ -276,7 +276,7 @@ pub fn verify_canonical_stamp(input: CanonicalStampCheckInput<'_>) -> Result<Can
     let Some(TypedPayload::RecipientPayload {
         schema_version: 2,
         network: payload_network,
-        sender,
+        sender: None,
         recipient,
         suite: 1,
         ephemeral_point,
@@ -313,7 +313,6 @@ pub fn verify_canonical_stamp(input: CanonicalStampCheckInput<'_>) -> Result<Can
     }
     let expected_context = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
         network,
-        sender,
         recipient,
         sender_directory_hash: &sender_directory_hash,
         recipient_directory_hash: &evidence.hash,

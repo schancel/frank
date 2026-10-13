@@ -173,7 +173,7 @@ async function canonicalFixture(
             [1, getBytes(tx.hash!)],
             [2, new Uint8Array(32).fill(0).map((_, i) => (i === 31 ? 1 : 0))],
             [3, fromHex(captured.destination)],
-            [4, fromHex(captured.t4)],
+            [4, paymentCommitment(fromHex(captured.t3), 0)],
           ]),
         ],
       ],
@@ -188,7 +188,8 @@ async function canonicalFixture(
     accountId: 'account-test',
     chainId: '10143',
     network: captured.network,
-    senderSubject: toHex(parsed.typed.sender.keyBytes),
+    senderSubject:
+      corpus.canonical_facade_final_http_case.installed_principals[0].subject,
     recipientSubject: toHex(parsed.typed.recipient.keyBytes),
     senderT1: captured.sender_t1,
     recipientT1: captured.recipient_t1,

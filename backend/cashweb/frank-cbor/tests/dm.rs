@@ -24,7 +24,6 @@ fn dm_context_matches_typescript_vector() {
     ))
     .expect("vector JSON");
     let context = &corpus["context"];
-    let sender = account(&context["sender"]);
     let recipient = account(&context["recipient"]);
     let sender_message_key = account(&context["senderMessageKey"]);
     let recipient_message_key = account(&context["recipientMessageKey"]);
@@ -38,7 +37,6 @@ fn dm_context_matches_typescript_vector() {
     let encode_with = |message_key: &AccountRef, ephemeral_point: &[u8]| {
         encode_direct_message_crypto_context(&DirectMessageCryptoContext {
             network: context["network"].as_str().unwrap(),
-            sender: &sender,
             recipient: &recipient,
             sender_directory_hash: &sender_hash,
             recipient_directory_hash: &recipient_hash,
@@ -78,7 +76,6 @@ fn dm_context_matches_typescript_vector() {
             0,
             CborValue::Text(context["network"].as_str().unwrap().into()),
         ),
-        (1, account_value(&sender)),
         (2, account_value(&recipient)),
         (3, CborValue::Int(1)),
         (

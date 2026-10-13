@@ -55,8 +55,9 @@ encrypted-message-content = {
   2: framed-object, ; type-8 message-content-revision frame
   3: digest-32, ; T1a digest of field 2
   ? 4: uuid-16, ; stable logical conversation_id (ticket #818), allocated by whoever starts the conversation and carried by every message in it. Writers SHOULD always send it: when opening a chat with a peer, the UUIDv5 whose namespace is the writer's private conversation-ID salt and whose name is the peer (no topic); for a further conversation with the same peer, a random UUIDv4. Readers MUST accept its absence and file the message under the ID they would themselves allocate for its sender.
-  ? 5: conversation-name, ; the conversation's subject (ticket #818). Sent on the first message of a conversation that has one and on a message that renames it; other messages omit it. A reader applies it when the message is from the conversation's peer or is its own account's message (read back from its mailbox); of two, the later relay time wins. A third party's is ignored.
+  ? 5: conversation-name, ; the conversation's subject (ticket #818). Sent on the first message of a conversation that has one and on a message that renames it; other messages omit it. A reader applies it when the message is from the conversation's peer or is its own account's message, which other devices accept only after openAsSender; of two, the later relay time wins. A third party's is ignored.
   ? 6: token-transfer, ; optional token transfer attached to message (tickets #1152, #1153)
+  7: account-ref, ; sender identity key. Required. Inside the ciphertext; the relay does not read it.
   * uint => frank-value,
 }
 
@@ -89,9 +90,10 @@ recipient-encrypted-payload-v1 = {
 }
 
 ; Type 5 schema 2, min_reader_version 2, is the production DM payload.
+; Key 1 is not a field. A schema-2 map that contains key 1 is a schema error.
+; The sender identity key is type 6 field 7, inside the ciphertext.
 recipient-encrypted-payload-v2 = {
   0: network-tag,
-  1: account-ref, ; routing sender identity, not transferable authorship proof
   2: account-ref, ; routing recipient identity
   3: 1, ; Frank-CBOR authenticated XChaCha20-Poly1305 suite
   4: bstr .size (1..524376), ; complete deterministic-CBOR crypto-box v2 envelope
@@ -102,10 +104,11 @@ recipient-encrypted-payload-v2 = {
 }
 
 ; Deterministic-CBOR bytes passed as crypto-box `context`; not a FRNK frame.
+; Key 2 is not a field. A context that contains key 2 is rejected.
+; Every remaining key is required. The sender identity is not in this map.
 dm-crypto-context-v1 = {
   0: "frank/dm-crypto-context/v1",
   1: network-tag,
-  2: account-ref, ; routing sender
   3: account-ref, ; routing recipient
   4: digest-32, ; exact opened sender directory-statement T1 hash
   5: digest-32, ; exact opened recipient directory-statement T1 hash

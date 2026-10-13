@@ -1084,7 +1084,8 @@ async function retainedCanonicalAttempt() {
     accountId: expected[0].main.toLowerCase(),
     chainId: '10143',
     network: wire.network,
-    senderSubject: toHex(parsed.typed.sender.keyBytes),
+    senderSubject:
+      dmCorpus.canonical_facade_final_http_case.installed_principals[0].subject,
     recipientSubject: toHex(parsed.typed.recipient.keyBytes),
     senderT1: wire.sender_t1,
     recipientT1: wire.recipient_t1,

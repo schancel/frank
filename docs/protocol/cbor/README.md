@@ -462,19 +462,26 @@ FRNK frame. The codec never infers a suite from a nonce or ciphertext length.
 
 S2d. Suite 1 passes the canonical deterministic-CBOR encoding of
 `dm-crypto-context-v1` to crypto-box as its `context`. The context binds, in
-numeric-key order: domain `frank/dm-crypto-context/v1`; network; routing sender
-and recipient account references; the exact opened sender and recipient
+numeric-key order: domain `frank/dm-crypto-context/v1`; network; the routing
+recipient account reference; the exact opened sender and recipient
 directory-statement T1 hashes; the distinct sender and recipient message-DH
 keys `M`; recipient stamp key `P'`; `E`, `X`, and the DLEQ proof; suite `1`;
 object type `5`; schema `2`; and minimum reader `2`. Account references use the
 common two-field schema and every `M`/`P'` entry MUST be key type 1 with a
-33-byte compressed SEC1 point. No context field is optional. The sender and
-recipient public keys supplied separately to crypto-box MUST byte-match fields
-6 and 7. A context, key, outer/inner suite, envelope-version, KEM, or routing
-mismatch fails as one non-oracular `cryptographic` result at stage 10.1 before
-payment ownership, durable storage, or forwarding. The recipient can construct
-the same authenticated-mode transcript and therefore no ciphertext is a
-transferable proof of sender authorship.
+33-byte compressed SEC1 point. Every remaining field is required. Key 2 is not
+a context field; a map that contains it is rejected. The sender and recipient
+public keys supplied separately to crypto-box MUST byte-match fields 6 and 7.
+Field 6 is the sender message key `M_s`, not the directory subject. The
+sender identity key is type 6 field 7, inside the ciphertext. After the box
+opens, that identity MUST equal the directory subject of the statement whose
+message key is context field 6 and whose T1 hash is context field 4. The relay
+does not read field 7 and does not look up field 4 or field 6. A context, key,
+outer/inner suite, envelope-version, KEM, or routing mismatch fails as one
+non-oracular `cryptographic` result at stage 10.1 before payment ownership,
+durable storage, or forwarding. The recipient can construct the same
+authenticated-mode transcript and therefore no ciphertext is a transferable
+proof of sender authorship. A sender's own devices accept their cross-device
+copy only when `openAsSender` recomputes the ephemeral from the messaging root.
 
 Because this context is the complete schema-2 field contract, a reader that supports type 5
 through schema 2 MUST reject a higher type-5 schema as `unsupported` at stage 7 rather than
@@ -529,7 +536,10 @@ S8. A type-1 delivery's network (field 0) MUST equal the opened type-5
 payload's network (field 0); this is a stage 9 `semantic` check. Its
 destination account (field 1) is the stamp key `P'` of S9, which is a payment
 key and is not compared with the type-5 recipient account (field 2); that
-field stays the routing recipient identity (no codec rule relates the two). For `full`, the decrypted type-6
+field stays the routing recipient identity (no codec rule relates the two).
+Production type 5 schema 2 has no routing sender. Key 1 on that map is a
+schema error. Schema 1 keeps field 1 only as the permanently reserved proof
+fixture. For `full`, the decrypted type-6
 frame's network (field 0) MUST equal the type-5 network (`semantic`), and its
 digest (field 3) MUST equal the T1a digest of its opened type-8 frame (field 2)
 (`cryptographic`); these are steps 10.2 and 10.3 of section 9. A framed field

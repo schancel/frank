@@ -731,16 +731,15 @@ function assertPrepared(
     parsed.typed?.type !== 5 ||
     parsed.typed.suite !== 1 ||
     parsed.typed.network !== prepared.network ||
-    parsed.typed.sender.keyType !== 1 ||
     parsed.typed.recipient.keyType !== 1 ||
-    toHex(parsed.typed.sender.keyBytes) !== prepared.senderSubject ||
     toHex(parsed.typed.recipient.keyBytes) !== prepared.recipientSubject
   )
     canonicalFail('invalid')
   const context = decodeCanonical(prepared.context)
   if (
     !(context instanceof Map) ||
-    context.size !== 16 ||
+    context.size !== 15 ||
+    context.has(2n) ||
     context.get(0n) !== 'frank/dm-crypto-context/v1' ||
     context.get(1n) !== prepared.network ||
     context.get(12n) !== 1n ||
@@ -749,10 +748,7 @@ function assertPrepared(
     context.get(15n) !== 2n
   )
     canonicalFail('invalid')
-  for (const [key, expected] of [
-    [2n, prepared.senderSubject],
-    [3n, prepared.recipientSubject],
-  ] as const) {
+  for (const [key, expected] of [[3n, prepared.recipientSubject]] as const) {
     const subject = context.get(key)
     if (
       !(subject instanceof Map) ||

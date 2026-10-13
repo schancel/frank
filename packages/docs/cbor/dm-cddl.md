@@ -55,7 +55,6 @@ dleq-proof = bstr .size 64  ; 64-byte Chaum-Pedersen DLEQ proof (c || s)
 ; Type 5 schema 2, min_reader_version 2: production DM payload
 recipient-encrypted-payload-v2 = {
   0: network-tag,
-  1: account-ref,          ; routing sender identity
   2: account-ref,          ; routing recipient identity
   3: 1,                    ; Frank-CBOR authenticated XChaCha20-Poly1305 suite
   4: bstr .size (1..524376), ; complete crypto-box v2 envelope
@@ -70,9 +69,10 @@ encrypted-message-content = {
   1: uuid-16,              ; stable logical message_id
   2: framed-object,        ; type-8 message-content-revision frame
   3: digest-32,            ; T1a digest of field 2
-  4: uuid-16,              ; stable logical conversation_id
+  ? 4: uuid-16,              ; stable logical conversation_id
   ? 5: tstr .size (1..512),; optional conversation name
   ? 6: token-transfer,     ; optional token transfer
+  7: account-ref,          ; sender identity key, inside the ciphertext
   * uint => frank-value,
 }
 

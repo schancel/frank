@@ -13,6 +13,7 @@ import {
   rev8Frame,
   DEFAULT_CONVERSATION_ID,
   bytesOf,
+  acct1,
   textItem,
 } from '../fixtures/builders'
 
@@ -50,6 +51,7 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       [1, bytesOf(16, 1)],
       [2, rev8Frame([textItem('test')])],
       [3, messageContentDigest(rev8Frame([textItem('test')]))],
+      [7, acct1(9)],
     ])
     const frame = encodeFrame(
       { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
@@ -66,6 +68,7 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       messageId: bytesOf(16, 1),
       conversationId: bytesOf(16, 9),
       revisionFrame: rev8Frame([textItem('test')]),
+      senderIdentity: { keyType: 1, keyBytes: bytesOf(33, 9) },
     })
     const reopened = parseFrame(named, defaultContext())
     if (reopened.kind !== 'parsed' || reopened.typed?.type !== 6)
@@ -84,6 +87,7 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
         [2, rev8Frame([textItem('test')])],
         [3, bytesOf(32, 2)],
         [4, bytesOf(len, 4)],
+        [7, acct1(9)],
       ])
       const frame = encodeFrame(
         { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },

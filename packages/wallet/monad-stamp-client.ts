@@ -774,7 +774,7 @@ export class MonadCanonicalStampClient {
       accountId: bound.main,
       chainId: bound.chainId,
       network: parsed.typed.network,
-      senderSubject: toHex(parsed.typed.sender.keyBytes),
+      senderSubject: String(bound.auth).replace(/^0x/, '').toLowerCase(),
       recipientSubject: toHex(parsed.typed.recipient.keyBytes),
       senderT1: t1(4n),
       recipientT1: t1(5n),

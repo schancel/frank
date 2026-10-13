@@ -67,8 +67,8 @@ enum Parties {
     /// The captured parties, with the context naming this hash as the sender's directory
     /// entry instead of the sender's real one.
     SenderEntry([u8; 32]),
-    /// The captured recipient, from a sender whose key is these 33 bytes.
-    SenderKey([u8; 33]),
+    /// Schema 2 with the retired clear sender (type-5 key 1 and context key 2) put back.
+    ClearSender,
     /// The captured recipient writing to itself.
     ToSelf,
 }
@@ -111,16 +111,13 @@ fn build(
         Parties::SenderEntry(hash) => {
             *entry(&mut context, 4) = CborValue::Bytes(hash.to_vec());
         }
-        Parties::SenderKey(key) => {
-            let mut account = map(entry(&mut sealed, 1).clone());
-            *entry(&mut account, 1) = CborValue::Bytes(key.to_vec());
-            let account = CborValue::Map(account);
-            *entry(&mut sealed, 1) = account.clone();
-            *entry(&mut context, 2) = account;
+        Parties::ClearSender => {
+            let account = entry(&mut sealed, 2).clone();
+            sealed.push((1, account.clone()));
+            context.push((2, account));
         }
         Parties::ToSelf => {
-            *entry(&mut sealed, 1) = entry(&mut sealed, 2).clone();
-            for (sender, recipient) in [(2, 3), (4, 5), (6, 7)] {
+            for (sender, recipient) in [(4, 5), (6, 7)] {
                 *entry(&mut context, sender) = entry(&mut context, recipient).clone();
             }
         }
@@ -374,7 +371,7 @@ impl Relay {
             .map(|(claim, direction)| (claim.policy.payload_hash, *direction))
             .collect()
     }
-    /// The message is in the recipient's inbox and in the sender's own mailbox as sent.
+    /// The message is in the recipient's inbox only. The relay does not index a sender.
     fn assert_delivered_to_both(&self, request: &ExactRequest) {
         let hash = payload_hash(request);
         assert_eq!(self.inbox(), [hash]);
@@ -382,7 +379,7 @@ impl Relay {
             self.mailbox(self.recipient()),
             [(hash, MailboxDirection::In)]
         );
-        assert_eq!(self.mailbox(self.sender()), [(hash, MailboxDirection::Out)]);
+        assert!(self.mailbox(self.sender()).is_empty());
     }
     fn assert_nothing_stored(&self, request: &ExactRequest) {
         assert!(self.owner().find_request(request).unwrap().is_none());
@@ -523,12 +520,13 @@ async fn a_message_from_a_sender_with_no_entry_on_this_relay_is_delivered() {
         delivered(&relay.put(request).await, request);
     }
     assert_eq!(relay.inbox(), [payload_hash(&paid), payload_hash(&free)]);
-    // The sender's own mailbox is keyed by the sender key in the message, entry or no entry.
+    // The clear recipient is the only mailbox index. No directory entry reveals a sender.
+    assert!(relay.mailbox(relay.sender()).is_empty());
     assert_eq!(
-        relay.mailbox(relay.sender()),
+        relay.mailbox(relay.recipient()),
         [
-            (payload_hash(&paid), MailboxDirection::Out),
-            (payload_hash(&free), MailboxDirection::Out)
+            (payload_hash(&paid), MailboxDirection::In),
+            (payload_hash(&free), MailboxDirection::In)
         ]
     );
     assert_eq!(sorted(relay.broadcasts()), sorted(raws(&paid)));
@@ -663,7 +661,7 @@ async fn with_the_monad_rpc_down_at_startup_a_paid_message_is_still_delivered() 
     let recipient = address(&hex::decode(&fixture.accounts[1].subject).unwrap());
     let sender = address(&hex::decode(&fixture.accounts[0].subject).unwrap());
     assert_eq!(owner.inbox(recipient, 0, None, 10).unwrap().len(), 1);
-    assert_eq!(owner.mailbox(sender, 0, None, 10).unwrap().len(), 1);
+    assert!(owner.mailbox(sender, 0, None, 10).unwrap().is_empty());
 
     // The chain's RPC proxy route, meanwhile, answers unavailable rather than forwarding.
     let proxied = client
@@ -790,17 +788,8 @@ async fn a_message_that_fails_a_check_is_refused_with_nothing_stored_and_nothing
         ),
         ("payments totalling less than the minimum", message(12, 4)),
         (
-            "a sender key that is not a point on the curve",
-            build(
-                16,
-                Parties::SenderKey({
-                    let mut key = [0xff; 33];
-                    key[0] = 2;
-                    key
-                }),
-                5,
-                Payment::signed,
-            ),
+            "a schema-2 payload that still names a clear sender",
+            build(16, Parties::ClearSender, 5, Payment::signed),
         ),
         (
             "a payment of nothing",
@@ -873,7 +862,8 @@ async fn a_repeated_submit_stores_once_and_broadcasts_again() {
     assert_eq!(left, right);
     assert_eq!(relay.broadcasts().len(), 5);
     assert_eq!(relay.inbox().len(), 2);
-    assert_eq!(relay.mailbox(relay.sender()).len(), 2);
+    assert!(relay.mailbox(relay.sender()).is_empty());
+    assert_eq!(relay.mailbox(relay.recipient()).len(), 2);
     relay.stop().await;
 }
 
@@ -1036,8 +1026,8 @@ async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_
         .map(|claim| claim.policy.payload_hash)
         .collect();
     assert_eq!(after_b, [c.policy.payload_hash]);
-    // The sender's own mailbox holds each message under the same time as the inbox.
-    let sent = owner.mailbox(relay.sender(), clock, None, 100).unwrap();
+    // The recipient mailbox holds each later message under the same time as the inbox.
+    let sent = owner.mailbox(relay.recipient(), clock, None, 100).unwrap();
     assert_eq!(
         sent.iter()
             .map(|(claim, _)| delivery_time(claim))
@@ -1131,7 +1121,7 @@ async fn reading_after_a_position_reads_only_what_follows_it() {
         let returned = read();
         (returned, ROWS_READ.with(|count| count.get()))
     };
-    let (recipient, sender) = (relay.recipient(), relay.sender());
+    let recipient = relay.recipient();
     // The last three messages, by time and by cursor, from either side of the conversation.
     let since = times[times.len() - 3];
     assert_eq!(
@@ -1145,7 +1135,7 @@ async fn reading_after_a_position_reads_only_what_follows_it() {
         (3, 3)
     );
     assert_eq!(
-        rows_read(&|| owner.mailbox(sender, 0, after, 100).unwrap().len()),
+        rows_read(&|| owner.mailbox(recipient, 0, after, 100).unwrap().len()),
         (3, 3)
     );
     // A page of one reads one, wherever it starts.
@@ -1186,7 +1176,8 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
         relay.owner().claim(input, now_ms()).unwrap();
     }
     assert_eq!(relay.inbox().len(), MESSAGES as usize);
-    assert_eq!(relay.mailbox(relay.sender()).len(), MESSAGES as usize);
+    assert!(relay.mailbox(relay.sender()).is_empty());
+    assert_eq!(relay.mailbox(relay.recipient()).len(), MESSAGES as usize);
     // One more over HTTP, paid, is delivered and broadcast like the first.
     let last = message(200_000, 2);
     delivered(&relay.put(&last).await, &last);

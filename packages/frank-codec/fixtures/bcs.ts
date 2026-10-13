@@ -51,6 +51,8 @@ export function toBcs(p: ParsedFrame): Uint8Array {
       }
       return w.toBytes()
     case 5:
+      if (t.schemaVersion !== 1)
+        throw new Error('BCS covers the schema-1 proof fixture')
       w.string(t.network)
       acct(w, t.sender)
       acct(w, t.recipient)

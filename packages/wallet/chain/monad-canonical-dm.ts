@@ -45,6 +45,8 @@ import {
   openDirectMessage,
   openOwnDirectMessage,
   prepareDirectMessage,
+  prepareSenderSyncCopy,
+  type OpenedDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
   freezeCanonicalRequest,
@@ -264,6 +266,12 @@ export interface StoredMessage {
    * (`reason`) and stored nothing. Absent: not known yet; it is re-sent until it is. */
   outcome?: 'delivered' | 'dead'
   reason?: string
+  /** Unpaid delivery of this message's type 6 into the sender's own mailbox. The relay indexes
+   * it by that clear recipient only. Submitted after the recipient delivery is accepted, and
+   * only these bytes are ever sent for it. */
+  syncRequest?: { body: string; contentType: string }
+  /** The own-mailbox copy reached a terminal relay answer. Absent: submit it again. */
+  syncOutcome?: 'delivered' | 'dead'
   /** A host message points at this attempt, or the user answered for it. */
   accounted?: boolean
   /** Complete bytes exist, but the host has not durably bound their financial effects. */
@@ -305,6 +313,9 @@ export interface UnpaidEnvelope {
    * part of the request that is not fixed by the envelope. A record without it, written by
    * earlier code, cannot be repeated exactly and is not used: the message is sealed again. */
   boundary: string
+  /** Same own-mailbox copy as {@link StoredMessage.syncRequest}. */
+  syncRequest?: { body: string; contentType: string }
+  syncOutcome?: 'delivered' | 'dead'
 }
 export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   private readonly rows = new Map<string, StoredMessage>()
@@ -613,11 +624,17 @@ const consumerOf = (messageId: Uint8Array) => `frank-dm:${toHex(messageId)}`
 const holderOf = (owner: CanonicalMessagingOwner, consumerId: string) =>
   `${owner.subject}:${consumerId}`
 const isPending = (payment: StoredPayment) => payment.state === 'pending'
+/** The recipient delivery landed and the sender's own copy has not had a terminal answer. */
+const syncOutstanding = (row: { outcome?: string; syncRequest?: unknown; syncOutcome?: string }) =>
+  row.outcome === 'delivered' &&
+  row.syncRequest !== undefined &&
+  row.syncOutcome === undefined
 /** Delivery or payment is not known to be finished: the resend pass still has work on it. */
 const isUnresolved = (row: StoredMessage) =>
   row.outcome === undefined ||
   row.payments.some(isPending) ||
-  owedRepayments(row).length > 0
+  owedRepayments(row).length > 0 ||
+  syncOutstanding(row)
 /** The payments of a delivered message that the chain reverted and that have not been repeated
  * yet: positions in `payments`. The message arrived, so its payment is still owed. */
 function owedRepayments(row: StoredMessage): number[] {
@@ -650,6 +667,7 @@ interface MessageWork {
   submit: Pace
   chain: Pace
   repay: Pace
+  sync: Pace
   /** When a waiter last made the chain look at this message's payments, and how long the next
    * waiter's look must wait after it. One look serves every waiter. */
   lookedAtMs?: number
@@ -679,6 +697,7 @@ function workOf(owner: CanonicalMessagingOwner, consumerId: string): MessageWork
       submit: { passes: 0, next: 1, gap: 0 },
       chain: { passes: 0, next: 1, gap: 0 },
       repay: { passes: 0, next: 1, gap: 0 },
+      sync: { passes: 0, next: 1, gap: 0 },
     }
     map.set(consumerId, work)
   }
@@ -767,6 +786,45 @@ export class UnpaidDirectMessageNotDeliveredError extends Error {
   }
 }
 
+/** Unpaid type-1 frame around an already sealed type-5 payload. Nothing is stored or sent. */
+function unpaidDeliveryRequest(
+  network: string,
+  sealed: { payload: Uint8Array; context: Uint8Array },
+) {
+  const payload = parseFrame(sealed.payload)
+  if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+    throw new Error('canonical-wallet:payload-required')
+  const digest = recipientPayloadDigest(network, sealed.payload)
+  const account = (ref: { keyType: number; keyBytes: Uint8Array }) =>
+    cborMap([
+      [0, ref.keyType],
+      [1, ref.keyBytes],
+    ])
+  const delivery = encodeFrame(
+    { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+    cborMap([
+      [0, network],
+      [1, account(decodeDirectMessageCryptoContext(sealed.context).stampKey)],
+      [2, sealed.payload],
+      [3, digest],
+      [4, []],
+      [5, account(payload.typed.recipient)],
+      [6, payload.typed.dleqProof],
+    ]),
+  )
+  const boundary = `frank-${toHex(randomBytes(24))}`
+  return {
+    digest,
+    delivery,
+    context: sealed.context,
+    boundary,
+    request: freezeCanonicalRequest(
+      { delivery, context: sealed.context, transactions: [] },
+      boundary,
+    ),
+  }
+}
+
 /** Seals one message and frames it as an unpaid delivery: type 1 at schema 2 with an empty
  * payment list and no transactions. Pure: nothing is stored, reserved or sent. */
 function sealUnpaid(
@@ -789,39 +847,98 @@ function sealUnpaid(
   } finally {
     roles.dispose()
   }
-  const payload = parseFrame(sealed.payload)
-  if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
-    throw new Error('canonical-wallet:payload-required')
-  const digest = recipientPayloadDigest(directory.network, sealed.payload)
-  const account = (ref: { keyType: number; keyBytes: Uint8Array }) =>
-    cborMap([
-      [0, ref.keyType],
-      [1, ref.keyBytes],
-    ])
-  // The paid delivery's fields in the same order, without payment members.
-  const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
-    cborMap([
-      [0, directory.network],
-      [1, account(decodeDirectMessageCryptoContext(sealed.context).stampKey)],
-      [2, sealed.payload],
-      [3, digest],
-      [4, []],
-      [5, account(payload.typed.recipient)],
-      [6, payload.typed.dleqProof],
-    ]),
-  )
-  const boundary = `frank-${toHex(randomBytes(24))}`
+  const framed = unpaidDeliveryRequest(directory.network, sealed)
   return {
-    digest: toHex(digest),
-    delivery,
-    context: sealed.context,
-    boundary,
-    request: freezeCanonicalRequest(
-      { delivery, context: sealed.context, transactions: [] },
-      boundary,
-    ),
+    digest: toHex(framed.digest),
+    delivery: framed.delivery,
+    context: framed.context,
+    content: sealed.content,
+    boundary: framed.boundary,
+    request: framed.request,
   }
+}
+
+/** Unpaid own-mailbox copy of the same type 6. A seal failure leaves the recipient delivery
+ * to proceed without a copy. */
+function sealSyncRequest(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  senderCurrent: Current,
+  content: Uint8Array,
+): { body: string; contentType: string } | undefined {
+  const roles = owner.roles.create(directory.network, senderCurrent)
+  try {
+    const synced = prepareSenderSyncCopy({
+      network: directory.network,
+      senderCurrent,
+      content,
+      roles,
+    })
+    const framed = unpaidDeliveryRequest(directory.network, synced)
+    return {
+      body: toHex(framed.request.body),
+      contentType: framed.request.contentType,
+    }
+  } catch {
+    return undefined
+  } finally {
+    try {
+      roles.dispose()
+    } catch {
+      // prepareSenderSyncCopy already disposed the session when the seal failed.
+    }
+  }
+}
+
+/** Submits one stored own-mailbox copy. Never throws: the recipient delivery already stands. */
+async function deliverSyncCopy(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  request: { body: string; contentType: string },
+): Promise<'delivered' | 'dead' | 'retry'> {
+  try {
+    const accepted = await submitCanonicalRequest({
+      installedRelayOrigin: owner.relayBaseUrl,
+      expectedNetworkTag: owner.installedNetworkTag,
+      request: restoreCanonicalRequest({
+        body: fromHex(request.body),
+        contentType: request.contentType,
+      }),
+      fetch: directory.fetch,
+    })
+    if (accepted.phase === 'delivered') return 'delivered'
+    if (accepted.phase === 'dead') return 'dead'
+    return 'retry'
+  } catch (error) {
+    if (
+      error instanceof CanonicalTransportError &&
+      error.status !== undefined &&
+      REFUSED_FOR_GOOD.has(error.status)
+    )
+      return 'dead'
+    return 'retry'
+  }
+}
+
+/** Records a terminal answer for one stored own-mailbox copy. A retry leaves the row unchanged. */
+async function recordSync(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  row: StoredMessage,
+): Promise<StoredMessage> {
+  if (!syncOutstanding(row) || row.syncRequest === undefined) return row
+  const answer = await deliverSyncCopy(owner, directory, row.syncRequest)
+  if (answer === 'retry') return row
+  if (answer === 'dead')
+    console.warn(
+      '[monad-canonical-dm] own-mailbox copy was refused; it is not retried',
+    )
+  const next: StoredMessage = {
+    ...owner.messages.get(row.consumerId)!,
+    syncOutcome: answer,
+  }
+  await owner.messages.put(next)
+  return next
 }
 
 /** The relay request of one paid message: the delivery envelope naming each signed payment, the
@@ -1341,8 +1458,8 @@ async function validateOriginalEnvelope(
   const payload = delivery.typed.payloadFrame.typed
   if (
     payload?.type !== 5 ||
+    payload.schemaVersion !== 2 ||
     payload.network !== directory.network ||
-    toHex(payload.sender.keyBytes) !== owner.subject ||
     toHex(payload.recipient.keyBytes) !== envelope.recipientSubject ||
     toHex(delivery.typed.payloadDigest) !== envelope.digest ||
     toHex(
@@ -1409,7 +1526,13 @@ async function resend(
   const freeResends = Promise.all(
     [...(options.digests ?? [])].map(async digest => {
       const found = owner.messages.unpaidByDigest(digest)
-      if (!found || found.outcome !== undefined) return
+      if (!found || found.outcome === 'dead') return
+      if (
+        found.outcome === 'delivered' &&
+        (found.syncOutcome !== undefined || found.syncRequest === undefined)
+      )
+        return
+      const syncOnly = found.outcome === 'delivered'
       const consumerId = consumerOf(fromHex(found.messageId))
       const work = workOf(owner, consumerId)
       if (work.creating) return
@@ -1420,43 +1543,70 @@ async function resend(
       let ended!: () => void
       work.busy = new Promise<void>(resolve => (ended = resolve))
       try {
-        await validateOriginalEnvelope(owner, directory, found)
         let envelope = owner.messages.unpaid(found.messageId)!
-        if (envelope.exposurePending) {
-          if (!options.onEnvelopeDurable) return
-          await owner.lifetime(async () =>
-            options.onEnvelopeDurable!(
-              digest,
-              formatUuid(fromHex(found.messageId)),
+        if (!syncOnly) {
+          await validateOriginalEnvelope(owner, directory, found)
+          if (envelope.exposurePending) {
+            if (!options.onEnvelopeDurable) return
+            await owner.lifetime(async () =>
+              options.onEnvelopeDurable!(
+                digest,
+                formatUuid(fromHex(found.messageId)),
+              ),
+            )
+            const { exposurePending: _pending, ...authorized } = envelope
+            await owner.lifetime(() =>
+              owner.messages.setUnpaid(found.messageId, authorized),
+            )
+            envelope = authorized
+          }
+          const accepted = await submitCanonicalRequest({
+            installedRelayOrigin: owner.relayBaseUrl,
+            expectedNetworkTag: owner.installedNetworkTag,
+            request: freezeCanonicalRequest(
+              {
+                delivery: fromHex(envelope.delivery),
+                context: fromHex(envelope.context),
+                transactions: [],
+              },
+              envelope.boundary,
             ),
-          )
-          const { exposurePending: _pending, ...authorized } = envelope
-          await owner.lifetime(() =>
-            owner.messages.setUnpaid(found.messageId, authorized),
-          )
-          envelope = authorized
-        }
-        const accepted = await submitCanonicalRequest({
-          installedRelayOrigin: owner.relayBaseUrl,
-          expectedNetworkTag: owner.installedNetworkTag,
-          request: freezeCanonicalRequest(
-            {
-              delivery: fromHex(envelope.delivery),
-              context: fromHex(envelope.context),
-              transactions: [],
-            },
-            envelope.boundary,
-          ),
-          fetch: directory.fetch,
-        })
-        if (accepted.phase === 'delivered' || accepted.phase === 'dead')
-          await owner.lifetime(() =>
-            owner.messages.setUnpaid(found.messageId, {
+            fetch: directory.fetch,
+          })
+          if (accepted.phase === 'delivered' || accepted.phase === 'dead') {
+            envelope = {
               ...envelope,
               outcome: accepted.phase as 'delivered' | 'dead',
               ...(accepted.phase === 'dead' ? { reason: accepted.reason } : {}),
-            }),
+            }
+            await owner.lifetime(() =>
+              owner.messages.setUnpaid(found.messageId, envelope),
+            )
+          }
+        }
+        if (
+          envelope.outcome === 'delivered' &&
+          envelope.syncRequest !== undefined &&
+          envelope.syncOutcome === undefined
+        ) {
+          const answer = await deliverSyncCopy(
+            owner,
+            directory,
+            envelope.syncRequest,
           )
+          if (answer !== 'retry') {
+            if (answer === 'dead')
+              console.warn(
+                '[monad-canonical-dm] own-mailbox copy was refused; it is not retried',
+              )
+            await owner.lifetime(() =>
+              owner.messages.setUnpaid(found.messageId, {
+                ...owner.messages.unpaid(found.messageId)!,
+                syncOutcome: answer,
+              }),
+            )
+          }
+        }
       } finally {
         work.busy = undefined
         ended()
@@ -1497,9 +1647,13 @@ async function resend(
               )
             row = submitted.row
             // Just delivered: its payments are broadcast in this same pass.
-            if (row.outcome === 'delivered')
+            if (row.outcome === 'delivered') {
               work.chain = { passes: 0, next: 1, gap: 0 }
-          }
+              if (syncOutstanding(row))
+                row = await recordSync(owner, directory, row)
+            }
+          } else if (syncOutstanding(row) && due(work.sync, SUBMIT_EVERY, now))
+            row = await recordSync(owner, directory, row)
           if (
             row.payments.some(isPending) &&
             due(work.chain, CHAIN_EVERY, now)
@@ -1739,6 +1893,7 @@ async function send(
         throw new DirectMessageArgumentError('messageId')
       let request: ReturnType<typeof freezeCanonicalRequest>
       let digest: string
+      let freshSync: { body: string; contentType: string } | undefined
       if (kept) {
         digest = kept.digest
         request = freezeCanonicalRequest(
@@ -1750,8 +1905,9 @@ async function send(
           kept.boundary,
         )
       } else {
+        const senderCurrent = await directory.selfCurrent()
         const unpaid = sealUnpaid(owner, directory, {
-          senderCurrent: await directory.selfCurrent(),
+          senderCurrent,
           recipientCurrent: peer.current,
           messageId,
           // Sealed into the kept envelope, so a repeat resends these same bytes: a stored
@@ -1760,6 +1916,12 @@ async function send(
           ...conversationName,
           items,
         })
+        freshSync = sealSyncRequest(
+          owner,
+          directory,
+          senderCurrent,
+          unpaid.content,
+        )
         digest = unpaid.digest
         request = unpaid.request
         if (name)
@@ -1769,6 +1931,7 @@ async function send(
             context: toHex(unpaid.context),
             recipientSubject: peer.subject,
             boundary: unpaid.boundary,
+            ...(freshSync ? { syncRequest: freshSync } : {}),
             ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
             ...(params.onEnvelopeDurable ? { hostBound: true as const } : {}),
           })
@@ -1806,10 +1969,29 @@ async function send(
       // Anything but delivered is the caller's error to act on; the envelope stays for its repeat.
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
+      const syncRequest =
+        (name ? owner.messages.unpaid(name)?.syncRequest : undefined) ??
+        freshSync
+      const priorSync = name
+        ? owner.messages.unpaid(name)?.syncOutcome
+        : undefined
+      const syncOutcome =
+        priorSync ??
+        (syncRequest
+          ? await deliverSyncCopy(owner, directory, syncRequest)
+          : undefined)
+      if (syncOutcome === 'dead')
+        console.warn(
+          '[monad-canonical-dm] own-mailbox copy was refused; it is not retried',
+        )
       if (name) {
         const envelope = owner.messages.unpaid(name)!
+        const terminal =
+          syncOutcome === 'retry' || syncOutcome === undefined
+            ? {}
+            : { syncOutcome }
         await owner.messages.setUnpaid(name, envelope.hostBound
-          ? { ...envelope, outcome: 'delivered' }
+          ? { ...envelope, outcome: 'delivered', ...terminal }
           : undefined)
       }
       return unpaidResult(digest)
@@ -1923,6 +2105,12 @@ async function send(
       digestBytes,
       signed.map(payment => payment.rawTx),
     )
+    const syncRequest = sealSyncRequest(
+      owner,
+      directory,
+      senderCurrent,
+      sealed.content,
+    )
     // The complete message and its signed payments are on stable storage before any byte is
     // handed to anything that can broadcast. From here only these bytes are ever sent for it.
     let row: StoredMessage = {
@@ -1931,6 +2119,7 @@ async function send(
       digest,
       recipientSubject: toHex(payload.typed.recipient.keyBytes),
       request: { body: toHex(request.body), contentType: request.contentType },
+      ...(syncRequest ? { syncRequest } : {}),
       payments: signed.map(payment => ({ ...payment, state: 'pending' })),
       createdAt: Date.now(),
       ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
@@ -1982,6 +2171,8 @@ async function send(
           )
         throw new MonadStampPendingAttemptError([digest])
       }
+      if (syncOutstanding(row))
+        row = await owner.lifetime(() => recordSync(owner, directory, row))
       // The relay has the message. Now, and only now, this wallet broadcasts the payments
       // itself as well; the relay does the same, so the usual answer is "already known".
       // "Spent" is learned from the chain by the resend pass, never from either answer.
@@ -2196,6 +2387,188 @@ export function paymentsToSelf<T extends { address: Uint8Array; childIndex: numb
   )
 }
 
+type MailboxPeer = { subject: string; endpoint: string; current: Current }
+type MailboxAttribution =
+  | {
+      status: 'open'
+      outbound: boolean
+      peer: MailboxPeer
+      opened: OpenedDirectMessage
+      items: MessageItem[]
+    }
+  | { status: 'quarantine' }
+  | { status: 'later' }
+  | { status: 'peer-error'; error: unknown }
+
+/** Opens one mailbox row. Own-device state is applied only when openAsSender succeeds.
+ * A row that opens under the recipient key but names this account in type 6 field 7 is not
+ * applied. Display of someone else's message uses that field after the directory check. */
+async function attributeMailboxDelivery(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  self: Current,
+  registry: MessageItemRegistry,
+  wallet: WalletHandle,
+  payloadFrame: Uint8Array,
+  contextBytes: Uint8Array,
+  payload: {
+    schemaVersion: number
+    recipient: { keyBytes: Uint8Array }
+    cryptoBoxEnvelope: Uint8Array
+  },
+  timestampMs: number,
+): Promise<MailboxAttribution> {
+  if (payload.schemaVersion !== 2) return { status: 'quarantine' }
+  let ctx: ReturnType<typeof decodeDirectMessageCryptoContext>
+  try {
+    ctx = decodeDirectMessageCryptoContext(contextBytes)
+  } catch {
+    // A context this build cannot read is not proof the ciphertext is unopenable.
+    return { status: 'later' }
+  }
+  const senderIsSelf =
+    toHex(ctx.senderMessageKey.keyBytes) === toHex(self.messageKey.keyBytes)
+  const clearRecipient = toHex(payload.recipient.keyBytes)
+  const resolvePeer = async (subjectHex: string): Promise<MailboxPeer | undefined> => {
+    if (subjectHex.toLowerCase() === owner.subject.toLowerCase())
+      return {
+        subject: owner.subject,
+        endpoint: directory.homeEndpoint,
+        current: self,
+      }
+    return directory.peerCurrent({ subject: subjectHex })
+  }
+  const decisive = (error: unknown) =>
+    error instanceof MessageItemBudgetExceededError ||
+    (error instanceof DirectMessageError &&
+      (error.code === 'crypto' ||
+        error.code === 'context' ||
+        error.code === 'digest' ||
+        error.code === 'network'))
+  const roles = owner.roles.create(directory.network, self)
+  try {
+    if (senderIsSelf) {
+      let peer: MailboxPeer | undefined
+      try {
+        peer = await resolvePeer(clearRecipient)
+      } catch (error) {
+        return { status: 'peer-error', error }
+      }
+      if (!peer) return { status: 'quarantine' }
+      try {
+        const { senderEvidence, recipientEvidence } =
+          await resolveHistoricalEvidence(
+            directory,
+            contextBytes,
+            true,
+            self,
+            owner.subject,
+            peer,
+          )
+        const opened = openOwnDirectMessage({
+          mode: 'send',
+          network: directory.network,
+          payload: payloadFrame,
+          context: contextBytes,
+          roles,
+          senderCurrent: self,
+          senderEvidence,
+          recipientCurrent: peer.current,
+          recipientEvidence,
+        })
+        return {
+          status: 'open',
+          outbound: true,
+          peer,
+          opened,
+          items: receivedItems(
+            registry,
+            opened,
+            wallet,
+            true,
+            timestampMs,
+            isOwnSubject(owner, clearRecipient, peer.subject),
+          ),
+        }
+      } catch (error) {
+        return decisive(error)
+          ? { status: 'quarantine' }
+          : { status: 'later' }
+      }
+    }
+    const peeked = roles.openMessage({
+      envelope: payload.cryptoBoxEnvelope,
+      senderPublicKey: ctx.senderMessageKey.keyBytes,
+      context: contextBytes,
+    })
+    if (!peeked.ok) return { status: 'quarantine' }
+    let identityHex: string
+    try {
+      const parsed = parseFrame(peeked.value)
+      if (parsed.kind !== 'parsed' || parsed.typed?.type !== 6)
+        return { status: 'quarantine' }
+      identityHex = toHex(parsed.typed.senderIdentity.keyBytes)
+    } finally {
+      peeked.value.fill(0)
+    }
+    // A box this account can open as recipient, whose plaintext names this account, is not
+    // this account's own state. openAsSender already failed by the sender-key test above.
+    if (identityHex.toLowerCase() === owner.subject.toLowerCase())
+      return { status: 'quarantine' }
+    let peer: MailboxPeer | undefined
+    try {
+      peer = await resolvePeer(identityHex)
+    } catch (error) {
+      return { status: 'peer-error', error }
+    }
+    if (!peer) return { status: 'quarantine' }
+    try {
+      const { senderEvidence, recipientEvidence } =
+        await resolveHistoricalEvidence(
+          directory,
+          contextBytes,
+          false,
+          self,
+          owner.subject,
+          peer,
+        )
+      const opened = openDirectMessage({
+        mode: 'receive',
+        network: directory.network,
+        payload: payloadFrame,
+        context: contextBytes,
+        roles,
+        senderCurrent: peer.current,
+        senderEvidence,
+        recipientCurrent: self,
+        recipientEvidence,
+      })
+      return {
+        status: 'open',
+        outbound: false,
+        peer,
+        opened,
+        items: receivedItems(
+          registry,
+          opened,
+          wallet,
+          false,
+          timestampMs,
+          isOwnSubject(owner, identityHex, peer.subject),
+        ),
+      }
+    } catch (error) {
+      return decisive(error) ? { status: 'quarantine' } : { status: 'later' }
+    }
+  } finally {
+    try {
+      roles.dispose()
+    } catch {
+      // The open already disposed this session.
+    }
+  }
+}
+
 async function fetchSince(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
@@ -2264,32 +2637,25 @@ async function fetchSince(
       if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue
       const deliveryTyped = delivery.typed
       const payload = deliveryTyped.payloadFrame.typed
-      if (payload?.type !== 5) continue
+      if (payload?.type !== 5 || payload.schemaVersion !== 2) continue
       const digest = toHex(deliveryTyped.payloadDigest)
-      const isOutbound = record.direction === 'out'
-      const peerSubjectKeyBytes = isOutbound
-        ? payload.recipient.keyBytes
-        : payload.sender.keyBytes
-      const peerSubjectHex = toHex(peerSubjectKeyBytes)
-
-      // Any peer with a published entry that verifies is shown; no peer list is consulted.
-      let peer
-      try {
-        peer = await directory.peerCurrent({
-          subject: peerSubjectHex,
-        })
-      } catch (error) {
-        const code = (error as { code?: string } | null)?.code
+      const attributed = await attributeMailboxDelivery(
+        owner,
+        directory,
+        self,
+        registry,
+        params.wallet,
+        delivery.typed.payloadFrame.frame,
+        record.context,
+        payload,
+        record.timestampMs,
+      )
+      if (attributed.status === 'peer-error') {
+        const code = (attributed.error as { code?: string } | null)?.code
         if (code === 'invalid' || code === 'fork') {
-          // The peer's entry is not signed by that peer, or conflicts with the one pinned
-          // for it: this message is never shown.
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
           continue
         }
-        // Anything else is about this one peer right now: its entry expired or was rolled
-        // back, its history could not be read, the lookup failed. The message is left for a
-        // later read and every other peer's mail is still delivered. It is retried for a
-        // bounded time, after which it is given up on so it cannot pin the inbox scan forever.
         const waiting = unreadable.get(owner.messages) ?? new Map<string, number>()
         unreadable.set(owner.messages, waiting)
         const since = waiting.get(digest) ?? Date.now()
@@ -2302,86 +2668,23 @@ async function fetchSince(
         } else params.onIncompleteTimestamp?.(record.timestampMs)
         continue
       }
-      unreadable.get(owner.messages)?.delete(digest)
-      if (!peer) {
-        // No published entry for the key: nothing can authenticate this message.
+      if (attributed.status === 'quarantine') {
+        unreadable.get(owner.messages)?.delete(digest)
         params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         continue
       }
-      const { senderEvidence, recipientEvidence } =
-        await resolveHistoricalEvidence(
-          directory,
-          record.context,
-          isOutbound,
-          self,
-          owner.subject,
-          peer,
-        )
-      const roles = owner.roles.create(directory.network, self)
-      let items: MessageItem[]
-      let conversationIdStr: string | undefined
-      let conversationNameStr: string | undefined
-      let messageIdStr: string | undefined
-      try {
-        const opened = isOutbound
-          ? openOwnDirectMessage({
-              mode: 'send',
-              network: directory.network,
-              payload: delivery.typed.payloadFrame.frame,
-              context: record.context,
-              roles,
-              senderCurrent: self,
-              senderEvidence,
-              recipientCurrent: peer.current,
-              recipientEvidence,
-            })
-          : openDirectMessage({
-              mode: 'receive',
-              network: directory.network,
-              payload: delivery.typed.payloadFrame.frame,
-              context: record.context,
-              roles,
-              senderCurrent: peer.current,
-              senderEvidence,
-              recipientCurrent: self,
-              recipientEvidence,
-            })
-        if (opened.conversationId) {
-          conversationIdStr = formatUuid(opened.conversationId)
-        }
-        conversationNameStr = opened.conversationName
-        if (opened.messageId) {
-          messageIdStr = formatUuid(opened.messageId)
-        }
-        items = receivedItems(
-          registry,
-          opened,
-          params.wallet,
-          isOutbound,
-          record.timestampMs,
-          // The message opened with this wallet's own key as its other party: its sender and
-          // its recipient are both this wallet.
-          isOwnSubject(owner, peerSubjectHex, peer.subject),
-        )
-      } catch (error) {
-        // Tampered, stale-keyed or foreign ciphertext never reaches display or payment import.
-        // A message whose items together exceed its limits is refused as a whole and for good.
-        // So is one that fails at or after decryption: its sender, recipient, entries and keys
-        // all matched what this wallet holds, so no later read can open it. A forged message,
-        // also one addressed from this wallet to itself, ends here. Failures before decryption
-        // (an entry or key this wallet could not look up yet) are left for a later read.
-        if (
-          error instanceof MessageItemBudgetExceededError ||
-          (error instanceof DirectMessageError &&
-            (error.code === 'crypto' ||
-              error.code === 'network' ||
-              error.code === 'digest'))
-        )
-          params.onQuarantinedTimestamp?.(record.timestampMs, digest)
-        continue
-      } finally {
-        roles.dispose()
-      }
+      if (attributed.status !== 'open') continue
+      unreadable.get(owner.messages)?.delete(digest)
+      const isOutbound = attributed.outbound
+      const peer = attributed.peer
+      const items = attributed.items
+      const conversationIdStr = attributed.opened.conversationId
+        ? formatUuid(attributed.opened.conversationId)
+        : undefined
+      const conversationNameStr = attributed.opened.conversationName
+      const messageIdStr = attributed.opened.messageId
+        ? formatUuid(attributed.opened.messageId)
+        : undefined
       const paidHere = isOutbound
         ? deliveryTyped.payments
         : paymentsToSelf(
@@ -2678,73 +2981,31 @@ export function canonicalDirectMessages(
                   return
                 const deliveryTyped = delivery.typed
                 const payload = deliveryTyped.payloadFrame.typed
-                if (payload?.type !== 5) return
+                if (payload?.type !== 5 || payload.schemaVersion !== 2) return
                 const digest = toHex(deliveryTyped.payloadDigest)
-                const isOutbound = record.direction === 'out'
-                const peerSubjectKeyBytes = isOutbound
-                ? payload.recipient.keyBytes
-                : payload.sender.keyBytes
-                const peerSubjectHex = toHex(peerSubjectKeyBytes)
-                const peer = await directory.peerCurrent({
-                  subject: peerSubjectHex,
-                })
-                if (!peer) return
-                const { senderEvidence, recipientEvidence } =
-                  await resolveHistoricalEvidence(
-                    directory,
-                    record.context,
-                    isOutbound,
-                    self,
-                    owner.subject,
-                    peer,
-                  )
-                const roles = owner.roles.create(directory.network, self)
-                let items: MessageItem[]
-                let conversationIdStr: string | undefined
-                let conversationNameStr: string | undefined
-                let messageIdStr: string | undefined
-                try {
-                  const opened = isOutbound
-                    ? openOwnDirectMessage({
-                        mode: 'send',
-                        network: directory.network,
-                        payload: delivery.typed.payloadFrame.frame,
-                        context: record.context,
-                        roles,
-                        senderCurrent: self,
-                        senderEvidence,
-                        recipientCurrent: peer.current,
-                        recipientEvidence,
-                      })
-                    : openDirectMessage({
-                        mode: 'receive',
-                        network: directory.network,
-                        payload: delivery.typed.payloadFrame.frame,
-                        context: record.context,
-                        roles,
-                        senderCurrent: peer.current,
-                        senderEvidence,
-                        recipientCurrent: self,
-                        recipientEvidence,
-                      })
-                  if (opened.conversationId) {
-                    conversationIdStr = formatUuid(opened.conversationId)
-                  }
-                  conversationNameStr = opened.conversationName
-                  if (opened.messageId) {
-                    messageIdStr = formatUuid(opened.messageId)
-                  }
-                  items = receivedItems(
-                    registry,
-                    opened,
-                    params.wallet,
-                    isOutbound,
-                    record.timestampMs,
-                    isOwnSubject(owner, peerSubjectHex, peer.subject),
-                  )
-                } finally {
-                  roles.dispose()
-                }
+                const attributed = await attributeMailboxDelivery(
+                  owner,
+                  directory,
+                  self,
+                  registry,
+                  params.wallet,
+                  delivery.typed.payloadFrame.frame,
+                  record.context,
+                  payload,
+                  record.timestampMs,
+                )
+                if (attributed.status === 'peer-error') throw attributed.error
+                if (attributed.status !== 'open') return
+                const isOutbound = attributed.outbound
+                const peer = attributed.peer
+                const items = attributed.items
+                const conversationIdStr = attributed.opened.conversationId
+                  ? formatUuid(attributed.opened.conversationId)
+                  : undefined
+                const conversationNameStr = attributed.opened.conversationName
+                const messageIdStr = attributed.opened.messageId
+                  ? formatUuid(attributed.opened.messageId)
+                  : undefined
                 const paidHere = isOutbound
                   ? deliveryTyped.payments
                   : paymentsToSelf(

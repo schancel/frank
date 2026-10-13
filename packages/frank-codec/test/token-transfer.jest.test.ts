@@ -62,6 +62,10 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
     const rev8 = rev8Frame([textItem('Hello with payment')])
     const convId = bytesOf(16, 42)
     const msgId = bytesOf(16, 7)
+    const senderKey = new Uint8Array(33)
+    senderKey[0] = 0x02
+    senderKey.fill(9, 1)
+    const senderIdentity = { keyType: 1, keyBytes: senderKey }
 
     it('round-trips Type 6 message-content without tokenTransfer', () => {
       const frameBytes = encodeEncryptedMessageContent({
@@ -70,6 +74,7 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
         conversationId: convId,
         revisionFrame: rev8,
         conversationName: 'General Chat',
+        senderIdentity,
       })
 
       const decoded = decodeEncryptedMessageContent(frameBytes)
@@ -87,6 +92,7 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
         revisionFrame: rev8,
         conversationName: 'Token Transfer Chat',
         tokenTransfer: sampleTransfer,
+        senderIdentity,
       })
 
       const decoded = decodeEncryptedMessageContent(frameBytes)
@@ -234,6 +240,9 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
         [4, 6],
         [5, 'USDC'],
       ])
+      const senderKey = new Uint8Array(33)
+      senderKey[0] = 0x02
+      senderKey.fill(9, 1)
       const payloadMap = cborMap([
         [0, 'frank-test'],
         [1, msgId],
@@ -241,6 +250,7 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
         [3, new Uint8Array(32)],
         [4, convId],
         [6, transferMap],
+        [7, cborMap([[0, 1], [1, senderKey]])],
       ])
       const frame = encodeFrame(
         {

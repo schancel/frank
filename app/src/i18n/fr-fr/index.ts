@@ -852,6 +852,19 @@ export default {
       'Vous avez ajouté ce contact sous {username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.',
   },
   sendStealthDialog: {
+    nativeBalance: 'Solde natif',
+    insufficientFunds:
+      'Solde de l’actif ou solde natif insuffisant pour ce paiement et ses frais réseau.',
+
+    assetLabel: 'Actif et réseau',
+    reviewBtnLabel: 'Vérifier le paiement',
+    checkingQuote: 'Vérification des soldes et des frais…',
+    recipientAmount: 'Montant au destinataire',
+    nativeFee: 'Frais du réseau',
+    feeCeiling: 'Frais réseau maximum',
+    messageStampFee: 'Frais réseau estimés du message',
+    messageStamp: 'Timbre du message',
+
     preparing: 'Préparation du paiement furtif : {amount}',
     sendStealthTo: 'Envoyer un paiement furtif à',
     subtitle:

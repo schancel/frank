@@ -404,7 +404,28 @@ export interface DirectMessageFundAheadResult {
   reason?: string;
 }
 
+/** Read-only stamp affordability on the messaging wallet's canonical chain. A quote grants
+ * no reservation; send performs its normal final checks. Capacity is after maximum fees,
+ * using the sender's supported spending routes; fragment rules also affect availability. */
+export type DirectMessageStampQuote = {
+  readonly chainIdentifier: string;
+  readonly stampValueAtomic: bigint;
+  readonly spendableCapacityAtomic: bigint;
+} & (
+  | { readonly status: "available"; readonly maximumNativeFeeAtomic: bigint }
+  | { readonly status: "insufficient" }
+);
+
 export interface DirectMessageClient {
+  /** Absent means unsupported. Reads only: no funding, signing, reservation or persistence.
+   * Exclude financial plan sources on this same chain before preparing that payment; quote
+   * again after preparation to see the owner's current reservations. RPC failures reject. */
+  quoteStamp?(params: {
+    wallet: WalletHandle;
+    stampValue: bigint;
+    excludedAddresses?: readonly string[];
+  }): Promise<DirectMessageStampQuote>;
+
   /**
    * Funds the single-use sender accounts of the next {@link FUND_AHEAD_MESSAGES} message, at the
    * wallet's default stamp value, before that message exists, so its `send` does not wait for

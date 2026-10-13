@@ -832,6 +832,19 @@ export default {
       'You added this contact as {username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.',
   },
   sendStealthDialog: {
+    nativeBalance: 'Native balance',
+    insufficientFunds:
+      'Insufficient asset or native balance for this payment and its network fee.',
+
+    assetLabel: 'Asset and network',
+    reviewBtnLabel: 'Review payment',
+    checkingQuote: 'Checking balances and fees…',
+    recipientAmount: 'Recipient amount',
+    nativeFee: 'Network fee',
+    feeCeiling: 'Maximum network fee',
+    messageStampFee: 'Estimated message network fee',
+    messageStamp: 'Message stamp',
+
     preparing: 'Preparing stealth payment: {amount}',
     sendStealthTo: 'Send Stealth Payment to',
     subtitle:

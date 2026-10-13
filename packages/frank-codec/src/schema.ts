@@ -75,7 +75,6 @@ import type {
   KeyTransition,
   OpaqueSection,
   PaymentMember,
-  PaymentTransfer,
   TokenTransfer,
   StealthMetadata,
   StealthAssetTransfer,
@@ -760,8 +759,11 @@ export function checkTypeLimits(
 const framed = (v: FrankValue | undefined, path: string): Uint8Array =>
   bstr(v, path, 9, MAX_FRAME_BYTES)
 
-function paymentMember(v: FrankValue | undefined, path: string): PaymentMember {
-  const m = fields(v, path, [0, 1, 2, 3, 4], [5, 6], false, false)
+export function paymentMember(
+  v: FrankValue | undefined,
+  path: string,
+): PaymentMember {
+  const m = fields(v, path, [0, 1, 2, 3], [4, 5, 6, 7, 8, 9], false, false)
   const rawVal = m.get(2)
   let value: Uint8Array | bigint
   if (rawVal instanceof Uint8Array) {
@@ -771,16 +773,38 @@ function paymentMember(v: FrankValue | undefined, path: string): PaymentMember {
   } else {
     throw bad(`${path}.2`, 'expected a 32-byte string or an unsigned integer')
   }
-  const txField = bstr(m.get(1), `${path}.1`, 1, 128)
+  const stamp = m.has(7)
+  const stealth = m.has(8)
+  if (stamp === stealth) {
+    throw bad(path, 'payment member requires exactly one of field 7 or field 8')
+  }
+  if (stamp && !m.has(4)) {
+    throw bad(`${path}.4`, 'stamp payment requires a T4 commitment')
+  }
+  if (m.has(9) && !stealth) {
+    throw bad(
+      `${path}.9`,
+      'token identifier is allowed only on a stealth payment',
+    )
+  }
+  const commitment = m.has(4) ? bstr(m.get(4), `${path}.4`, 32, 32) : undefined
   const rawTx = m.has(6) ? bstr(m.get(6), `${path}.6`, 1, 16384) : undefined
+  const token = m.has(9) ? bstr(m.get(9), `${path}.9`, 1, 128) : undefined
+  const childIndex = stamp
+    ? u32ish(m.get(7), `${path}.7`, 0, 2147483647)
+    : undefined
+  const meta = stealth ? stealthMetadata(m.get(8), `${path}.8`) : undefined
   return {
-    childIndex: u32ish(m.get(0), `${path}.0`, 0, 2147483647),
-    transactionId: txField,
+    network: networkTag(m.get(0), `${path}.0`),
+    transactionId: bstr(m.get(1), `${path}.1`, 1, 128),
     value,
     address: bstr(m.get(3), `${path}.3`, 1, 128),
-    commitment: bstr(m.get(4), `${path}.4`, 32, 32),
+    ...(commitment !== undefined ? { commitment } : {}),
     vout: m.has(5) ? u32ish(m.get(5), `${path}.5`, 0, 4294967295) : undefined,
     ...(rawTx !== undefined ? { rawTx } : {}),
+    ...(childIndex !== undefined ? { childIndex } : {}),
+    ...(meta !== undefined ? { stealthMetadata: meta } : {}),
+    ...(token !== undefined ? { token } : {}),
   }
 }
 
@@ -806,53 +830,20 @@ export function stealthMetadata(
   }
 }
 
-export function paymentTransfer(
-  v: FrankValue | undefined,
-  path = 'payment-transfer',
-): PaymentTransfer {
-  const m = fields(v, path, [0, 1, 3, 4], [2, 5, 6, 7, 8], false, false)
-  const rawVal = m.get(4)
-  let value: Uint8Array | bigint
-  if (rawVal instanceof Uint8Array) {
-    value = bstr(rawVal, `${path}.4`, 32, 32)
-  } else if (typeof rawVal === 'bigint') {
-    value = uintRange(rawVal, `${path}.4`, 0n, U64_MAX)
-  } else {
-    throw bad(`${path}.4`, 'expected a 32-byte string or an unsigned integer')
-  }
-
-  const txField = bstr(m.get(1), `${path}.1`, 1, 128)
-  const rawTx = m.has(8) ? bstr(m.get(8), `${path}.8`, 1, 16384) : undefined
-
-  return {
-    networkTag: tstr(m.get(0), `${path}.0`, 1, 64),
-    txId: txField,
-    vout: m.has(2) ? u32ish(m.get(2), `${path}.2`, 0, 4294967295) : undefined,
-    destination: bstr(m.get(3), `${path}.3`, 1, 128),
-    value,
-    token: m.has(5) ? bstr(m.get(5), `${path}.5`, 1, 128) : undefined,
-    stealthMetadata: m.has(6)
-      ? stealthMetadata(m.get(6), `${path}.6`)
-      : undefined,
-    commitment: m.has(7) ? bstr(m.get(7), `${path}.7`, 32, 32) : undefined,
-    ...(rawTx !== undefined ? { rawTx } : {}),
-  }
-}
-
 function stealthAssetTransfer(
   v: FrankValue | undefined,
   path: string,
 ): StealthAssetTransfer {
   const m = fields(v, path, [0, 1, 2], [3, 4], false, false)
-  const transfer = paymentTransfer(m.get(0), `${path}.0`)
+  const transfer = paymentMember(m.get(0), `${path}.0`)
   if (transfer.stealthMetadata === undefined)
-    throw bad(`${path}.0.6`, 'a recipient payment requires stealth metadata')
+    throw bad(`${path}.0.8`, 'a recipient payment requires stealth metadata')
   if (
     typeof transfer.value === 'bigint'
       ? transfer.value === 0n
       : transfer.value.every(byte => byte === 0)
   )
-    throw bad(`${path}.0.4`, 'a recipient payment requires a positive amount')
+    throw bad(`${path}.0.2`, 'a recipient payment requires a positive amount')
   const derivationScheme = u32ish(m.get(1), `${path}.1`, 1, U32_MAX)
   const recipientSpendKey = account(m.get(2), `${path}.2`)
   if (
@@ -1723,10 +1714,11 @@ export function parseDraft(
       }
     }
     case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
+      if (isMap(payload) && payload.has(0n))
+        throw bad(P, 'undeclared key 0 (C12)')
+      const m = fields(payload, P, [1, 2, 3, 4], [5, 6], true, allow)
       const res: ForwardingDeliveryEnvelope<Uint8Array> = {
         type: 25,
-        network: networkTag(m.get(0), `${P}.0`),
         destination: account(m.get(1), `${P}.1`),
         payloadFrame: framed(m.get(2), `${P}.2`),
         payloadDigest: bstr(m.get(3), `${P}.3`, 32, 32),

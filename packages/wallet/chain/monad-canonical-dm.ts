@@ -33,20 +33,15 @@ import {
   isStealthMessageItemFrame,
   parseFrame,
   paymentCommitment,
-  paymentTransferFromMember,
-  paymentTransferFromStealthItem,
-  paymentTransferToStealthItem,
   projectStealthMessageItem,
   recipientPayloadDigest,
   standaloneItemBudget,
   toHex,
   validateFrame,
-  type CanonicalStealthItem,
   type ChildFrame,
   type Encodable,
   type NestedItemBudget,
   type PaymentMember,
-  type PaymentTransfer,
 } from '@frank/codec'
 import { randomBytes } from '@frank/crypto-box'
 import type { Current, HistoricalEvidence } from '../../directory-admission/src'
@@ -78,7 +73,6 @@ import {
 import type {
   MessageItem,
   OutboxMessageItem,
-  StealthItem,
 } from '@frank/cashweb/types/messages'
 import type { MessageItemRegistry } from '../message-item-plugins/registry'
 import {
@@ -566,8 +560,8 @@ export function constructStampPaymentTransfers(params: {
   networkTag: string
   transactions: readonly Uint8Array[]
   vout?: number
-}): PaymentTransfer[] {
-  return params.transactions.flatMap(raw => {
+}): PaymentMember[] {
+  return params.transactions.flatMap((raw, childIndex) => {
     const tx = Transaction.from(hexlify(raw))
     if (tx.hash === null || tx.to === null) return []
     const hashHex = tx.hash.startsWith('0x')
@@ -578,48 +572,29 @@ export function constructStampPaymentTransfers(params: {
       : tx.to.toLowerCase()
     return [
       {
-        networkTag: params.networkTag,
-        txId: fromHex(hashHex),
+        network: params.networkTag,
+        transactionId: fromHex(hashHex),
         ...(params.vout !== undefined ? { vout: params.vout } : {}),
-        destination: fromHex(toHexStr),
+        address: fromHex(toHexStr),
         value: tx.value,
         rawTx: raw,
+        childIndex,
       },
     ]
   })
 }
 
-export function constructPaymentTransferFromMember(
-  member: PaymentMember,
-  networkTag: string,
-): PaymentTransfer {
-  return paymentTransferFromMember(member, networkTag)
-}
-
-export function constructPaymentTransferFromStealth(
-  item: CanonicalStealthItem | StealthItem,
-  destination?: string | Uint8Array,
-): PaymentTransfer {
-  return paymentTransferFromStealthItem(item as any, destination)
-}
-
 export function consumePaymentTransferToStamp(
-  transfer: PaymentTransfer,
+  member: PaymentMember,
 ): StampPaymentInfo {
   return {
-    txHash: '0x' + toHex(transfer.txId),
-    destinationAddress: getAddress('0x' + toHex(transfer.destination)),
+    txHash: '0x' + toHex(member.transactionId),
+    destinationAddress: getAddress('0x' + toHex(member.address)),
     valueWei:
-      typeof transfer.value === 'bigint'
-        ? transfer.value
-        : BigInt('0x' + toHex(transfer.value)),
+      typeof member.value === 'bigint'
+        ? member.value
+        : BigInt('0x' + toHex(member.value)),
   }
-}
-
-export function consumePaymentTransferToStealth(
-  transfer: PaymentTransfer,
-): CanonicalStealthItem {
-  return paymentTransferToStealthItem(transfer)
 }
 
 const consumerOf = (messageId: Uint8Array) => `frank-dm:${toHex(messageId)}`
@@ -853,12 +828,13 @@ function freezePaidMessage(
   const payments = rawTransactions.map((rawTx, i) => {
     const tx = Transaction.from(rawTx)
     const entries: [number, Encodable][] = [
-      [0, i],
+      [0, network],
       [1, getBytes(tx.hash!)],
       [2, getBytes('0x' + tx.value.toString(16).padStart(64, '0'))],
       [3, getBytes(tx.to!)],
       [4, paymentCommitment(digest, i)],
       [6, getBytes(rawTx)],
+      [7, i],
     ]
     return cborMap(entries)
   })
@@ -2340,8 +2316,10 @@ export function projectOutboxMessageRecord(
  * shared point. The delivery frame is written by the sender, so a member paying any other address
  * is somebody else's money and is never reported as received. Not a chain check: whether a
  * reported transfer was mined is for the caller to look up. */
-export function paymentsToSelf<T extends { address: Uint8Array; childIndex: number }>(
-  network: string,
+export function paymentsToSelf<
+  T extends { address: Uint8Array; childIndex?: number; network: string },
+>(
+  _deliveryNetwork: string,
   self: Current,
   sharedPoint: Uint8Array,
   payments: readonly T[],
@@ -2349,24 +2327,25 @@ export function paymentsToSelf<T extends { address: Uint8Array; childIndex: numb
   const keys = [self.stampKey, self.previousStamp].filter(
     (key): key is NonNullable<typeof key> => !!key,
   )
-  return payments.filter(member =>
-    keys.some(stampKey => {
+  return payments.filter(member => {
+    if (member.childIndex === undefined) return false
+    return keys.some(stampKey => {
       try {
         return (
           toHex(
             canonicalStampDestination({
-              network,
+              network: member.network,
               stampKey,
               sharedPoint,
-              childIndex: member.childIndex,
+              childIndex: member.childIndex!,
             }).address,
           ) === toHex(member.address)
         )
       } catch {
         return false
       }
-    }),
-  )
+    })
+  })
 }
 
 async function fetchSince(
@@ -2563,19 +2542,23 @@ async function fetchSince(
             payload.sharedPoint,
             deliveryTyped.payments,
           )
-      const stampPayments = paidHere.map(member => ({
-        childIndex: member.childIndex,
-        ...(member.rawTx ? { rawTx: hexlify(member.rawTx) } : {}),
-        txHash: hexlify(member.transactionId),
-        destinationAddress: getAddress(hexlify(member.address)),
-        valueWei:
-          typeof member.value === 'bigint'
-            ? member.value
-            : BigInt(hexlify(member.value)),
-      }))
-      const paymentTransfers = paidHere.map(member =>
-        constructPaymentTransferFromMember(member, deliveryTyped.network),
+      const stampPayments = paidHere.flatMap(member =>
+        member.childIndex === undefined
+          ? []
+          : [
+              {
+                childIndex: member.childIndex,
+                ...(member.rawTx ? { rawTx: hexlify(member.rawTx) } : {}),
+                txHash: hexlify(member.transactionId),
+                destinationAddress: getAddress(hexlify(member.address)),
+                valueWei:
+                  typeof member.value === 'bigint'
+                    ? member.value
+                    : BigInt(hexlify(member.value)),
+              },
+            ],
       )
+      const paymentTransfers = paidHere
       const peerAddress: ChainAddress = {
         raw: getAddress(computeAddress('0x' + peer.subject)),
       }
@@ -2934,20 +2917,21 @@ export function canonicalDirectMessages(
                       payload.sharedPoint,
                       deliveryTyped.payments,
                     )
-                const stampPayments = paidHere.map(member => ({
-                  txHash: hexlify(member.transactionId),
-                  destinationAddress: getAddress(hexlify(member.address)),
-                  valueWei:
-                    typeof member.value === 'bigint'
-                      ? member.value
-                      : BigInt(hexlify(member.value)),
-                }))
-                const paymentTransfers = paidHere.map(member =>
-                  constructPaymentTransferFromMember(
-                    member,
-                    deliveryTyped.network,
-                  ),
+                const stampPayments = paidHere.flatMap(member =>
+                  member.childIndex === undefined
+                    ? []
+                    : [
+                        {
+                          txHash: hexlify(member.transactionId),
+                          destinationAddress: getAddress(hexlify(member.address)),
+                          valueWei:
+                            typeof member.value === 'bigint'
+                              ? member.value
+                              : BigInt(hexlify(member.value)),
+                        },
+                      ],
                 )
+                const paymentTransfers = paidHere
                 const own: ChainAddress = {
                   raw: getAddress(owner.identityAddress),
                 }

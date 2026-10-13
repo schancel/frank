@@ -372,10 +372,13 @@ function publicRecovery(
   )
     canonicalFail('invalid')
   // Every retained raw member is checked, including an as-yet unconfirmed prefix suffix.
+  // The child address is derived from that member's own network, not the delivery network.
   const all = delivery.typed.payments.map((payment, childIndex) => {
+    if (payment.childIndex !== childIndex || payment.commitment === undefined)
+      canonicalFail('invalid')
     const tx = Transaction.from(hexlify(request.parts.transactions[childIndex]))
     const destination = canonicalStampDestination({
-      network: request.identity.network,
+      network: payment.network,
       stampKey: envelope.stampKey,
       sharedPoint: envelope.payload.sharedPoint,
       childIndex,

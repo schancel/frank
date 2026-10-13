@@ -259,12 +259,12 @@ describe('opaque DM structural continuation', () => {
 
   it.each([
     ['containers', true, 8000, 8360],
-    ['items', false, 60000, 70908],
+    ['items', false, 60000, 70904],
   ] as const)(
     'retains aggregate %s across encryption: exact ceiling and one over',
     (_label, containers, rootCount, at) => {
-      // Same deterministic counts in Rust. Baselines: root 10 containers/80 items;
-      // content 7 containers/45 items. Each extension adds one outer array and chunk arrays.
+      // Same deterministic counts in Rust. Container pressure still binds at 8360.
+      // Two stamp key-7 pairs add four items, so the item ceiling is 70904.
       const r = root(grouped(rootCount, containers))
       expect(outcome(() => parseFrame(r))).toBe('parsed')
       for (const n of [at, at + 1]) {

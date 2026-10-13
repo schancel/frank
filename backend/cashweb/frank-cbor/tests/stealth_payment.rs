@@ -3,7 +3,7 @@ mod common;
 use common::{acct1, acct2, fr, int};
 use frank_cbor::{
     cbor_map, default_context, encode_frame, validate_frame, CborValue, EnvelopeFields,
-    FramePayload, Projection, StealthQuantity, TypedPayload, ValidationResult,
+    FramePayload, PaymentValue, Projection, TypedPayload, ValidationResult,
 };
 
 fn set(v: &mut CborValue, key: u64, value: Option<CborValue>) {
@@ -18,11 +18,11 @@ fn transfer() -> CborValue {
     cbor_map(vec![
         (0, CborValue::Text("monad-testnet".into())),
         (1, CborValue::Bytes(vec![7; 32])),
+        (2, CborValue::Bytes(vec![255; 32])),
         (3, CborValue::Bytes(vec![8; 20])),
-        (4, CborValue::Bytes(vec![255; 32])),
-        (5, CborValue::Bytes(vec![9; 20])),
-        (6, cbor_map(vec![(0, acct1(1)), (1, int(65535))])),
-        (8, CborValue::Bytes(vec![10; 100])),
+        (6, CborValue::Bytes(vec![10; 100])),
+        (8, cbor_map(vec![(0, acct1(1)), (1, int(65535))])),
+        (9, CborValue::Bytes(vec![9; 20])),
     ])
 }
 fn entry() -> CborValue {
@@ -59,8 +59,8 @@ fn projected(p: &CborValue) -> frank_cbor::ParsedFrame {
 fn exact_token_quantity_and_native_uint64_round_trip() {
     let mut native = entry();
     let mut t = transfer();
-    set(&mut t, 4, Some(int(u64::MAX as i128)));
-    set(&mut t, 5, None);
+    set(&mut t, 2, Some(int(u64::MAX as i128)));
+    set(&mut t, 9, None);
     set(&mut native, 0, Some(t));
     let parsed = projected(&payload(vec![entry(), native]));
     assert_eq!(parsed.projection, Projection::Exact);
@@ -69,11 +69,11 @@ fn exact_token_quantity_and_native_uint64_round_trip() {
     };
     assert_eq!(
         p.entries[0].transfer.value,
-        StealthQuantity::Quantity256([255; 32])
+        PaymentValue::Quantity(vec![255; 32])
     );
     assert_eq!(
         p.entries[1].transfer.value,
-        StealthQuantity::Uint64(u64::MAX)
+        PaymentValue::Satoshis(u64::MAX)
     );
     assert_eq!(p.entries[0].transfer.token, Some(vec![9; 20]));
     assert_eq!(p.entries[1].transfer.token, None);
@@ -117,7 +117,7 @@ fn unknown_schemes_preserve_data_without_allocating_solana() {
         let mut t = transfer();
         set(
             &mut t,
-            6,
+            8,
             Some(cbor_map(vec![
                 (0, acct2(1)),
                 (1, CborValue::Bytes(vec![12; 32])),
@@ -148,11 +148,11 @@ fn rejects_unsafe_or_ambiguous_entries() {
     ] {
         let mut e = entry();
         let mut t = transfer();
-        set(&mut t, 4, Some(value));
+        set(&mut t, 2, Some(value));
         set(&mut e, 0, Some(t));
         bad.push(e);
     }
-    for field in [6] {
+    for field in [8] {
         let mut e = entry();
         let mut t = transfer();
         set(&mut t, field, None);
@@ -171,7 +171,7 @@ fn rejects_unsafe_or_ambiguous_entries() {
     set(&mut no_token, 1, Some(int(99)));
     set(&mut no_token, 3, Some(CborValue::Bytes(vec![1; 32])));
     let mut t = transfer();
-    set(&mut t, 5, None);
+    set(&mut t, 9, None);
     set(&mut no_token, 0, Some(t));
     bad.push(no_token);
     let mut extra = entry();
@@ -179,7 +179,7 @@ fn rejects_unsafe_or_ambiguous_entries() {
     bad.push(extra);
     let mut nested_extra = entry();
     let mut t = transfer();
-    set(&mut t, 9, Some(int(1)));
+    set(&mut t, 10, Some(int(1)));
     set(&mut nested_extra, 0, Some(t));
     bad.push(nested_extra);
     for (i, e) in bad.into_iter().enumerate() {
@@ -255,7 +255,7 @@ fn unallocated_key_types_fail_allocated_stage() {
     set(&mut e, 1, Some(int(99)));
     set(&mut e, 2, Some(unknown_key.clone()));
     let mut t = transfer();
-    set(&mut t, 6, Some(cbor_map(vec![(0, unknown_key)])));
+    set(&mut t, 8, Some(cbor_map(vec![(0, unknown_key)])));
     set(&mut e, 0, Some(t));
     match validate_frame(&frame(&payload(vec![e]), 2, 2), &default_context()) {
         Err(frank_cbor::Error::Codec(e)) => {

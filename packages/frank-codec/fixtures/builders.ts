@@ -277,11 +277,12 @@ export function payment(t3: Uint8Array, o: PaymentOpts): Fields {
   value[31] = 1 + (o.index % 200)
   value[30] = 0x0f
   return M([
-    [0, o.index],
+    [0, NET],
     [1, bytesOf(32, o.txSeed ?? 100 + o.index)],
     [2, value],
     [3, bytesOf(20, o.addrSeed ?? 50 + o.index)],
     [4, paymentCommitment(t3, o.index)],
+    [7, o.index],
   ])
 }
 

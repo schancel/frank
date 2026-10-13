@@ -40,13 +40,18 @@ direct-message-delivery = {
   * uint => frank-value,
 }
 
+; Exactly one of field 7 or field 8. Field 7 requires field 4. Field 9 only with field 8.
 payment-member = {
-  0: uint .le 2147483647,  ; stamp child index i
-  1: bstr .size (1..128),  ; chain transaction identifier
-  2: evm-quantity-256 / uint, ; verified value in wei or satoshis
-  3: bstr .size (1..128),  ; derived destination/address bytes
-  4: digest-32,            ; exact T4 commitment verified in the transaction
-  ? 5: uint .le 4294967295, ; UTXO output index (vout)
+  0: network-tag,                 ; chain this payment settles on
+  1: bstr .size (1..128),          ; transaction id
+  2: evm-quantity-256 / uint,     ; value
+  3: bstr .size (1..128),          ; destination address or key bytes
+  ? 4: digest-32,                ; T4 commitment; required when field 7 is present
+  ? 5: uint .le 4294967295,      ; vout
+  ? 6: bstr .size (1..16384),    ; raw signed transaction
+  ? 7: uint .le 2147483647,      ; stamp child index; present means stamp payment
+  ? 8: stealth-metadata,         ; present means stealth payment
+  ? 9: bstr .size (1..128),      ; token contract or mint; stealth only
 }
 
 stamp-point = bstr .size 33 ; 33-byte compressed SEC1 secp256k1 point
@@ -124,15 +129,15 @@ channel-update-item = {
   * uint => frank-value,
 }
 
-; Type 25 schema 1: Store-and-forward relay forwarding delivery envelope
+; Type 25 schema 1: Store-and-forward relay forwarding delivery envelope.
+; Key 0 is not a field. The forwarding digest uses the inner type-1 frame's own network tag.
 forwarding-delivery-envelope = {
-  0: network-tag,          ; destination relay network
-  1: account-ref,          ; destination relay routing identity
-  2: framed-object,        ; inner Type 1 direct-message-delivery frame
-  3: digest-32,            ; forwarding payload digest of field 2
-  4: [1*64 payment-member],; relay storage payment stamps
-  ? 5: tstr .size (1..256),; optional destination relay endpoint URI
-  ? 6: uint .le 4294967295,; optional delivery TTL timestamp
-  * uint => frank-value,
+  1: account-ref,                       ; destination relay routing identity (key type 1)
+  2: framed-object,                     ; inner direct-message-delivery (Type 1) frame
+  3: digest-32,                         ; forwarding payload digest of field 2
+  4: [1*64 payment-member],             ; storage payment stamps compensating destination relay
+  ? 5: tstr .size (1..256),             ; optional destination relay endpoint URI
+  ? 6: uint .le 4294967295,             ; optional delivery TTL / expiration timestamp (seconds)
+  * (uint .ge 7) => frank-value,        ; additive extensible fields; key 0 is a schema error
 }
 ```

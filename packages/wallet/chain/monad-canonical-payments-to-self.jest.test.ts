@@ -14,6 +14,7 @@ const previous = key('22')
 const someoneElse = key('33')
 const sharedPoint = key('44').keyBytes
 const child = (stampKey: ReturnType<typeof key>, childIndex: number) => ({
+  network: NETWORK,
   childIndex,
   address: canonicalStampDestination({
     network: NETWORK,
@@ -38,6 +39,7 @@ describe('paymentsToSelf', () => {
   it('drops a payment whose address is the child of another index or shared point', () => {
     const wrongIndex = { ...child(mine, 0), childIndex: 1 }
     const otherPoint = {
+      network: NETWORK,
       childIndex: 0,
       address: canonicalStampDestination({
         network: NETWORK,

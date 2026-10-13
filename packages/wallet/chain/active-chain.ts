@@ -63,8 +63,8 @@ export type {
   WalletSyncItem,
   PaymentTransferItem,
 } from "@frank/cashweb/types/messages";
-import type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
-export type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
+import type { AccountType, BotRole, PaymentMember } from "@frank/codec";
+export type { AccountType, BotRole, PaymentMember } from "@frank/codec";
 import type { MonadRootBundle, HistoricalBip39Seed } from "../monad-wallet-material";
 export type { MonadRootBundle } from "../monad-wallet-material";
 import {
@@ -165,7 +165,7 @@ export interface DirectMessageSendResult {
   payloadDigest: string;
   stampValueWei: bigint;
   stampPayments: StampPaymentInfo[];
-  paymentTransfers?: PaymentTransfer[];
+  paymentTransfers?: PaymentMember[];
   /** Main-account transactions used to prepare sender inventory for this Send, if any. */
   preparationTxHashes: string[];
 }
@@ -218,7 +218,7 @@ export interface DirectMessageReceived {
   stampPayments: StampPaymentInfo[];
   /** A canonical message: the public shared point its stamp accounts are derived from (hex). */
   stampSharedPoint?: string;
-  paymentTransfers?: PaymentTransfer[];
+  paymentTransfers?: PaymentMember[];
   /** Milliseconds since the Unix epoch, as recorded by the relay. */
   receivedTime: number;
 }

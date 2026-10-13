@@ -199,7 +199,6 @@ impl<S: BundleClaimStore> ClusteredBundleForwarder<S> {
     /// Build a Type 25 forwarding envelope outbound bundle targeting a remote relay descriptor.
     pub fn build_type25_bundle(
         bundle_id: String,
-        network: String,
         destination: AccountRef,
         payload_frame: Vec<u8>,
         payments: Vec<PaymentMember>,
@@ -218,7 +217,6 @@ impl<S: BundleClaimStore> ClusteredBundleForwarder<S> {
             .unwrap_or_else(|| target_descriptor.public_endpoints[0].clone());
 
         let envelope = ForwardingDeliveryEnvelope {
-            network,
             destination,
             payload_frame,
             payload_digest: None,
@@ -330,7 +328,7 @@ mod tests {
     };
     use bitcoinsuite_core::ecc::Ecc;
     use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
-    use frank_cbor::PaymentValue;
+    use frank_cbor::{encode_frame, CborValue, EnvelopeFields, FramePayload, PaymentValue};
     use rand::RngCore;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use uuid::Uuid;
@@ -413,20 +411,30 @@ mod tests {
             key_type: 1,
             key_bytes: vec![2u8; 33],
         };
-        let payload_frame = vec![0x01; 64]; // dummy inner frame
+        let payload_frame = encode_frame(
+            EnvelopeFields {
+                type_id: 1,
+                schema_version: 1,
+                min_reader_version: 1,
+            },
+            FramePayload::Value(&CborValue::Map(vec![(0, CborValue::Text("lotus".into()))])),
+        )
+        .expect("minimal type-1 frame");
         let payments = vec![PaymentMember {
-            child_index: 0,
+            network: "lotus".into(),
             transaction_id: vec![0x11; 32],
             value: PaymentValue::Satoshis(1000),
             address: vec![0x22; 20],
-            commitment: vec![0x33; 32],
+            commitment: Some(vec![0x33; 32]),
             vout: Some(0),
             raw_tx: None,
+            child_index: Some(0),
+            stealth: None,
+            token: None,
         }];
 
         let bundle = ClusteredBundleForwarder::<MemoryBundleClaimStore>::build_type25_bundle(
             "bundle-dm-1001".to_string(),
-            "lotus".to_string(),
             destination,
             payload_frame,
             payments,

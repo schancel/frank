@@ -216,14 +216,18 @@ fn canonical_signed_set(
     let mut total = 0u128;
     for (position, (member, raw)) in payments.iter().zip(request.raw_transactions()).enumerate() {
         let signed = decode_signed_transaction(raw).map_err(|_| Error::Invalid)?;
+        let child_index = member.child_index.ok_or(Error::Invalid)?;
+        if member.stealth.is_some() {
+            return Err(Error::Invalid);
+        }
         let (_, address) = crate::monad_dm_verify::canonical_stamp_destination(
-            network,
+            &member.network,
             destination,
             shared_point,
-            member.child_index,
+            child_index,
         )
         .map_err(|_| Error::Invalid)?;
-        let commitment = payment_commitment(&policy.payload_hash, member.child_index);
+        let commitment = payment_commitment(&policy.payload_hash, child_index);
         let member_value_wei = match &member.value {
             frank_cbor::PaymentValue::Quantity(b) => {
                 if b.len() != 32 || b[..16].iter().any(|byte| *byte != 0) {
@@ -233,7 +237,7 @@ fn canonical_signed_set(
             }
             frank_cbor::PaymentValue::Satoshis(s) => *s as u128,
         };
-        if member.child_index as usize != position
+        if child_index as usize != position
             || signed.chain_id != Some(policy.chain_id)
             || member.transaction_id.as_slice() != signed.tx_hash.0
             || !hashes.insert(signed.tx_hash)
@@ -242,7 +246,7 @@ fn canonical_signed_set(
             || signed.value_wei == 0
             || signed.destination != Some(Address(address))
             || member.address.as_slice() != address
-            || member.commitment.as_slice() != commitment
+            || member.commitment.as_deref() != Some(commitment.as_slice())
             // A direct-message stamp is a plain value transfer. Any calldata, including the
             // retired `POND` commitment, would make the payment identifiable on chain.
             || !signed.input.is_empty()

@@ -95,7 +95,7 @@ export function projectExperimentalSolanaStealthTransfer(
     )
   if (
     !chains.chains.some(
-      chain => chain.id === transfer.networkTag && chain.family === 'solana',
+      chain => chain.id === transfer.network && chain.family === 'solana',
     )
   )
     throw new RangeError('expected an exact canonical Solana chain identifier')
@@ -134,7 +134,7 @@ export function projectExperimentalSolanaStealthTransfer(
     throw new RangeError('experimental context is required')
   return {
     ...decodeExperimentalSolanaStealthContext(entry.derivationContext),
-    chainIdentifier: transfer.networkTag,
+    chainIdentifier: transfer.network,
     asset,
     recipient: exact(entry.recipientSpendKey.keyBytes, 32, 'recipient'),
     ephemeral: exact(
@@ -143,12 +143,8 @@ export function projectExperimentalSolanaStealthTransfer(
       'ephemeral',
     ),
     recipientAmount: transfer.value,
-    recipientDestination: exact(
-      transfer.destination,
-      32,
-      'recipientDestination',
-    ),
-    transactionId: exact(transfer.txId, 64, 'transactionId'),
+    recipientDestination: exact(transfer.address, 32, 'recipientDestination'),
+    transactionId: exact(transfer.transactionId, 64, 'transactionId'),
     rawSignedTransaction: Uint8Array.from(transfer.rawTx),
   }
 }

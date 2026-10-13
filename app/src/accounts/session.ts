@@ -24,6 +24,8 @@ import {
   type RelayUtxoChain,
   type SupportedCurve,
   type WalletHandle,
+  createChainAdapter,
+  isCanonicalChainId,
 } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import type { HistoricalBip39Seed } from '@frank/wallet/monad-wallet-material'
@@ -1046,7 +1048,8 @@ export function createAccountSession(deps: {
         chain === 'monad'
           ? activeChain.chainIdentifier
           : resolveNetworkId(chain, isTestnet)
-      if (getChainRegistryEntry(netId)?.kind === 'monad') {
+      const entry = getChainRegistryEntry(netId)
+      if (entry?.kind === 'monad' || entry?.family !== 'evm') {
         // Only a completed receive-address read can seed this cache. The profile
         // identity is a different account, and another network's entry is not usable.
         return chainAddressCache.get(netId)
@@ -1054,17 +1057,7 @@ export function createAccountSession(deps: {
       return (
         chainAddressCache.get(netId) ??
         chainAddressCache.get(chain) ??
-        (chain !== 'ecash' &&
-        chain !== 'solana' &&
-        chain !== 'bitcoin' &&
-        chain !== 'bitcoincash' &&
-        chain !== 'dogecoin' &&
-        !netId.startsWith('xec-') &&
-        !netId.startsWith('solana-') &&
-        !netId.startsWith('btc-') &&
-        !netId.startsWith('bch-') &&
-        !netId.startsWith('doge-') &&
-        wallet?.identity?.displayAddress
+        (wallet?.identity?.displayAddress
           ? wallet.identity.displayAddress
           : undefined)
       )
@@ -1124,21 +1117,23 @@ export function createAccountSession(deps: {
         if (entry?.family === 'solana')
           return (await session.getSolanaSigner()).publicKey.toBase58()
         const purpose =
-          chain === 'ecash' ||
-          chain === 'bitcoin' ||
-          chain === 'bitcoincash' ||
-          chain === 'dogecoin' ||
-          netId.startsWith('xec-') ||
-          netId.startsWith('btc-') ||
-          netId.startsWith('bch-') ||
-          netId.startsWith('doge-')
+          entry?.family === 'bitcoin'
             ? 'ecash-bch-wallet'
-            : chain === 'solana' || netId.startsWith('solana-')
+            : entry?.family === 'solana'
             ? 'solana-wallet'
             : 'evm-wallet'
         const material = await session.getActiveFamilyMaterial(purpose)
         const root = 'seed' in material ? material.seed : material.bytes
         try {
+          if (isCanonicalChainId(netId)) {
+            const adapter = createChainAdapter(netId)
+            const accountIndex = entry.family === 'evm' ? 1 : 0
+            const chainWallet = await adapter.createWallet({
+              root: { seed: root },
+              accountIndex,
+            })
+            return chainWallet.address
+          }
           if (chain === 'ecash' || netId.startsWith('xec-')) {
             const { HDNodeWallet } = await import('ethers')
             const { encodeCashAddress } = await import('ecashaddrjs')

@@ -387,6 +387,120 @@
         { "kind": "operator-block-checkpoint", "capability": "chronik" },
         { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
+    },
+    {
+      "id": "base-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:8453",
+      "native_chain_id": "8453",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "8453" }
+      ]
+    },
+    {
+      "id": "base-sepolia",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:84532",
+      "native_chain_id": "84532",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "84532" }
+      ]
+    },
+    {
+      "id": "arbitrum-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:42161",
+      "native_chain_id": "42161",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "42161" }
+      ]
+    },
+    {
+      "id": "arbitrum-sepolia",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:421614",
+      "native_chain_id": "421614",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "421614" }
+      ]
+    },
+    {
+      "id": "polygon-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:137",
+      "native_chain_id": "137",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "137" }
+      ]
+    },
+    {
+      "id": "polygon-amoy",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:80002",
+      "native_chain_id": "80002",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "80002" }
+      ]
+    },
+    {
+      "id": "bnb-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:56",
+      "native_chain_id": "56",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "56" }
+      ]
+    },
+    {
+      "id": "bnb-testnet",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:97",
+      "native_chain_id": "97",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "97" }
+      ]
+    },
+    {
+      "id": "litecoin-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
+      ]
+    },
+    {
+      "id": "litecoin-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
+      ]
     }
   ]
 }

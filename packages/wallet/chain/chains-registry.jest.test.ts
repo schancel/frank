@@ -592,7 +592,7 @@ describe("chains-registry", () => {
 
     it("verifies protocol registry schema version and chain count", () => {
       expect(protocolRegistry.schema_version).toBe(1);
-      expect(protocolRegistry.chains.length).toBe(27);
+      expect(protocolRegistry.chains.length).toBe(37);
     });
 
     it("agrees with every supported protocol row, including Bitcoin-family probes and capability limits", () => {
@@ -650,6 +650,16 @@ describe("chains-registry", () => {
         "bch-testnet",
         "doge-mainnet",
         "doge-testnet",
+        "litecoin-mainnet",
+        "litecoin-testnet",
+        "bnb-mainnet",
+        "bnb-testnet",
+        "polygon-mainnet",
+        "polygon-amoy",
+        "base-mainnet",
+        "base-sepolia",
+        "arbitrum-mainnet",
+        "arbitrum-sepolia",
       ];
       expect(Object.keys(PROTOCOL_CHAINS)).toEqual(supported);
       expect(
@@ -810,12 +820,28 @@ describe("wallet support", () => {
       "solana-mainnet": { indexer: "json-rpc" },
       "xec-testnet": { indexer: "chronik" },
       "xec-regtest": { indexer: "chronik" },
+      "btc-mainnet": { indexer: "electrum" },
       "btc-testnet": { indexer: "electrum" },
+      "bch-mainnet": { indexer: "electrum" },
       "bch-testnet": { indexer: "electrum" },
       "hyperliquid-mainnet": { indexer: "json-rpc" },
       "hyperliquid-testnet": { indexer: "json-rpc" },
       "tempo-mainnet": { indexer: "json-rpc" },
       "tempo-testnet": { indexer: "json-rpc" },
+      "ethereum-mainnet": { indexer: "json-rpc" },
+      "ethereum-sepolia": { indexer: "json-rpc" },
+      "doge-mainnet": { indexer: "electrum" },
+      "doge-testnet": { indexer: "electrum" },
+      "litecoin-mainnet": { indexer: "electrum" },
+      "litecoin-testnet": { indexer: "electrum" },
+      "bnb-mainnet": { indexer: "json-rpc" },
+      "bnb-testnet": { indexer: "json-rpc" },
+      "polygon-mainnet": { indexer: "json-rpc" },
+      "polygon-amoy": { indexer: "json-rpc" },
+      "base-mainnet": { indexer: "json-rpc" },
+      "base-sepolia": { indexer: "json-rpc" },
+      "arbitrum-mainnet": { indexer: "json-rpc" },
+      "arbitrum-sepolia": { indexer: "json-rpc" },
     });
   });
 

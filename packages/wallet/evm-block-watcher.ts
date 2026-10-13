@@ -63,6 +63,13 @@ export function isChainUnreachableError(error: unknown): boolean {
   if (!error) return false
   if (error instanceof ChainUnreachableError) return true
   const message = error instanceof Error ? error.message : String(error)
+  if (
+    /40[13]|unauthorized|forbidden/i.test(message) ||
+    (error as { status?: unknown })?.status === 401 ||
+    (error as { status?: unknown })?.status === 403
+  ) {
+    return false
+  }
   const code = (error as { code?: unknown })?.code
   if (code === 'SERVER_ERROR' || code === 'TIMEOUT' || code === 'NETWORK_ERROR')
     return true

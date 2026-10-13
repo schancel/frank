@@ -17,6 +17,10 @@ import {
 } from "../ecash-wallet";
 import type { ChronikClient } from "chronik-client";
 import type { ChainUtxoPool } from "../chain-utxo-pool";
+import {
+  type EcashOperationStore,
+  InMemoryEcashOperationStore,
+} from "../ecash-operation-store";
 
 export interface EcashChainConfig {
   /** Optional chain identifier override; defaults to networkId. */
@@ -32,6 +36,7 @@ export interface EcashChainConfig {
   /** Historical raw-seed custody uses its own construction seam, never a v1 domain root. */
   bip39WalletFactory?: EcashBip39WalletFactory;
   nativeAttemptStore?: NativeTransactionAttemptStore;
+  operationStore?: EcashOperationStore;
   chainUtxoPool?: ChainUtxoPool;
 }
 
@@ -113,6 +118,12 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
       return parseEcashAddress(config, input);
     },
     async createWallet(domainRoot) {
+      const operationStore =
+        config.operationStore ??
+        (typeof window === "undefined" &&
+        typeof globalThis.localStorage === "undefined"
+          ? new InMemoryEcashOperationStore()
+          : undefined);
       return EcashWallet.fromDerivationMaterial({
         material: domainRoot,
         chronik: config.chronik,
@@ -121,6 +132,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         walletFactory: config.walletFactory,
         bip39WalletFactory: config.bip39WalletFactory,
         nativeAttemptStore: config.nativeAttemptStore,
+        operationStore,
         chainUtxoPool: config.chainUtxoPool,
         getTransactionStatus: (transaction) =>
           getEcashTransactionStatus(config, transaction),

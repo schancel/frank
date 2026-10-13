@@ -1,6 +1,11 @@
 import type { StealthPaymentAsset } from '@frank/wallet/stealth-payment'
 import { activeChain } from '@frank/wallet/chain'
 import { listEvmSwapVenues } from '@frank/wallet/chain/dex-deployments'
+import {
+  PROTOCOL_CHAINS,
+  getChainRegistryEntry,
+  type ChainRegistryEntry,
+} from '@frank/wallet/chain/chains-registry'
 import { WALLET_CONFIGS } from '../utils/wallet-configs'
 import { walletNetworkMetadata } from '../utils/wallet-support'
 import { stealthAssetKey, type StealthAssetOption } from './options'
@@ -35,12 +40,51 @@ export async function configuredStealthAssets(
   const options: StealthAssetOption[] = []
   const unavailable: { chainIdentifier: string; error: unknown }[] = []
   const seen = new Set<string>()
+
+  const configuredEntry = getChainRegistryEntry(configured)
+  const chainEntries: ChainRegistryEntry[] = []
   for (const wallet of WALLET_CONFIGS) {
     if (!wallet.enabled) continue
     const entry = walletNetworkMetadata(wallet.id, isTestnet, configured)
-    if (!entry?.wallet || seen.has(entry.id)) continue
+    if (entry?.wallet && !seen.has(entry.id)) {
+      seen.add(entry.id)
+      chainEntries.push(entry)
+    }
+  }
+  for (const entry of Object.values(PROTOCOL_CHAINS)) {
+    if (!entry.wallet || seen.has(entry.id)) continue
+    if (configuredEntry && entry.kind === configuredEntry.kind) {
+      if (entry.id !== configured) continue
+    } else if (entry.isTestnet !== isTestnet) {
+      continue
+    }
     seen.add(entry.id)
+    chainEntries.push(entry)
+  }
+
+  for (const entry of chainEntries) {
     try {
+      if (entry.kind === 'tempo') {
+        const asset = {
+          kind: 'erc20',
+          contractAddress: '0x20c0000000000000000000000000000000000000',
+        } as const
+        const tokenBalance = context?.getBalance?.(entry.id, asset)
+        options.push({
+          key: stealthAssetKey(entry.id, asset),
+          chainIdentifier: entry.id,
+          asset,
+          label: `${entry.name} · pathUSD`,
+          unit: 'USD',
+          decimals: 6,
+          nativeUnit: 'USD',
+          nativeDecimals: 6,
+          ...(tokenBalance !== undefined
+            ? { balanceAtomic: tokenBalance }
+            : {}),
+        })
+        continue
+      }
       const decimals = entry.nativeDecimals
       // Networks without a native asset require their own configured fee-asset capability.
       if (decimals === null) continue

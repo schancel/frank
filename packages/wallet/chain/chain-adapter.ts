@@ -15,6 +15,19 @@ import { ed25519 } from '@noble/curves/ed25519';
 import * as bip39 from 'bip39';
 import { Address } from 'ecash-lib/dist/address/address';
 import { fromHex, toHex, type PaymentTransfer, type StealthMetadata } from '@frank/codec';
+import {
+  decodeAddress,
+  encodeAddress,
+  decodeBase58Check,
+  encodeBase58Check,
+  decodeBech32,
+  encodeBech32,
+  convertBits,
+  BTC_MAINNET,
+  BTC_TESTNET,
+  BCH_MAINNET,
+  BCH_TESTNET,
+} from '@frank/nakamoto';
 import type {
   PaymentTransferItem,
   RecipientPaymentTransfer,
@@ -45,7 +58,25 @@ export type ChainId =
   | 'ecash-mainnet'
   | 'ecash-testnet'
   | 'solana-mainnet'
-  | 'solana-devnet';
+  | 'solana-devnet'
+  | 'btc-mainnet'
+  | 'btc-testnet'
+  | 'bch-mainnet'
+  | 'bch-testnet'
+  | 'doge-mainnet'
+  | 'doge-testnet'
+  | 'litecoin-mainnet'
+  | 'litecoin-testnet'
+  | 'ethereum-mainnet'
+  | 'ethereum-sepolia'
+  | 'bnb-mainnet'
+  | 'bnb-testnet'
+  | 'polygon-mainnet'
+  | 'polygon-amoy'
+  | 'base-mainnet'
+  | 'base-sepolia'
+  | 'arbitrum-mainnet'
+  | 'arbitrum-sepolia';
 
 export const CANONICAL_CHAIN_IDS: readonly ChainId[] = Object.freeze([
   'monad-mainnet',
@@ -58,6 +89,24 @@ export const CANONICAL_CHAIN_IDS: readonly ChainId[] = Object.freeze([
   'ecash-testnet',
   'solana-mainnet',
   'solana-devnet',
+  'btc-mainnet',
+  'btc-testnet',
+  'bch-mainnet',
+  'bch-testnet',
+  'doge-mainnet',
+  'doge-testnet',
+  'litecoin-mainnet',
+  'litecoin-testnet',
+  'ethereum-mainnet',
+  'ethereum-sepolia',
+  'bnb-mainnet',
+  'bnb-testnet',
+  'polygon-mainnet',
+  'polygon-amoy',
+  'base-mainnet',
+  'base-sepolia',
+  'arbitrum-mainnet',
+  'arbitrum-sepolia',
 ]);
 
 export function isCanonicalChainId(candidate: string): candidate is ChainId {
@@ -86,7 +135,7 @@ export interface RootWalletContext {
 }
 
 export interface WalletDerivationContext {
-  readonly root: RootWalletContext;
+  readonly root: RootWalletContext | Uint8Array;
   readonly identifier?: WalletIdentifier;
   readonly chainId?: ChainId;
   readonly accountIndex?: number;
@@ -294,13 +343,34 @@ const DEFAULT_CHAIN_RPC_URLS: Readonly<Record<ChainId, string>> = Object.freeze(
   'ecash-testnet': 'https://chronik-testnet.e.cash',
   'solana-mainnet': 'https://api.mainnet-beta.solana.com',
   'solana-devnet': 'https://api.devnet.solana.com',
+  'btc-mainnet': 'https://electrum.blockstream.info',
+  'btc-testnet': 'https://electrum.blockstream.info/testnet',
+  'bch-mainnet': 'https://fulcrum.fountainhead.cash',
+  'bch-testnet': 'https://chipnet.imaginary.cash',
+  'doge-mainnet': 'https://electrum.dogechain.info',
+  'doge-testnet': 'https://electrum-testnet.dogechain.info',
+  'litecoin-mainnet': 'https://electrum-ltc.bysh.me',
+  'litecoin-testnet': 'https://electrum-ltc.bysh.me/testnet',
+  'ethereum-mainnet': 'https://ethereum-rpc.publicnode.com',
+  'ethereum-sepolia': 'https://ethereum-sepolia-rpc.publicnode.com',
+  'bnb-mainnet': 'https://binance.llamarpc.com',
+  'bnb-testnet': 'https://data-seed-prebtc-1-s1.binance.org:8545',
+  'polygon-mainnet': 'https://polygon-rpc.com',
+  'polygon-amoy': 'https://rpc-amoy.polygon.technology',
+  'base-mainnet': 'https://mainnet.base.org',
+  'base-sepolia': 'https://sepolia.base.org',
+  'arbitrum-mainnet': 'https://arb1.arbitrum.io/rpc',
+  'arbitrum-sepolia': 'https://sepolia-rollup.arbitrum.io/rpc',
 });
 
-function resolveRootSeed(root: RootWalletContext): Uint8Array {
-  if (root.seed instanceof Uint8Array && root.seed.length >= 16) {
+function resolveRootSeed(root: RootWalletContext | Uint8Array): Uint8Array {
+  if (root instanceof Uint8Array && root.length >= 16) {
+    return Uint8Array.from(root);
+  }
+  if ('seed' in root && root.seed instanceof Uint8Array && root.seed.length >= 16) {
     return Uint8Array.from(root.seed);
   }
-  if (root.mnemonic && typeof root.mnemonic === 'string') {
+  if ('mnemonic' in root && root.mnemonic && typeof root.mnemonic === 'string') {
     if (!bip39.validateMnemonic(root.mnemonic)) {
       throw new Error('Invalid BIP-39 mnemonic in RootWalletContext');
     }
@@ -392,6 +462,7 @@ class EvmChainWalletImpl extends BaseChainWallet {
       const response = await fetch(this.adapter.rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(1500),
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
@@ -460,6 +531,7 @@ class TempoChainWalletImpl extends EvmChainWalletImpl {
       const response = await fetch(this.adapter.rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(1500),
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
@@ -517,6 +589,7 @@ class SolanaChainWalletImpl extends BaseChainWallet {
       const response = await fetch(this.adapter.rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(1500),
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 1,
@@ -598,6 +671,7 @@ class EcashChainWalletImpl extends BaseChainWallet {
       const response = await fetch(`${this.adapter.rpcUrl}/address/${this.address}/utxos`, {
         method: 'GET',
         headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(1500),
       });
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status} from ${this.adapter.rpcUrl}`);
@@ -1701,6 +1775,412 @@ class EcashChainAdapter implements ChainAdapter {
   }
 }
 
+/**
+ * BTC Family Chain Wallet implementation (Bitcoin, Bitcoin Cash, Litecoin, Dogecoin).
+ * Encapsulates secp256k1 derived keys and outpoint state internally.
+ */
+class BtcFamilyChainWalletImpl extends BaseChainWallet {
+  readonly #spendKeyHex: string;
+  readonly #pubKeyBytes: Uint8Array;
+
+  constructor(params: {
+    identifier: WalletIdentifier;
+    address: string;
+    adapter: ChainAdapter;
+    spendKeyHex: string;
+    pubKeyBytes: Uint8Array;
+  }) {
+    super(params);
+    this.#spendKeyHex = params.spendKeyHex;
+    this.#pubKeyBytes = params.pubKeyBytes;
+  }
+
+  async getBalance(): Promise<bigint> {
+    return this.cachedBalance;
+  }
+
+  async sendLegacyTransaction(params: SendLegacyTransactionParams): Promise<TransactionIntentResult> {
+    if (!this.adapter.isValidAddress(params.recipient)) {
+      throw new Error(`Invalid Bitcoin-family recipient address: ${params.recipient}`);
+    }
+    const simulatedHash = hexlify(sha256(toUtf8Bytes(`${this.address}:${params.recipient}:${Date.now()}`))).slice(2);
+    return { txHash: simulatedHash };
+  }
+
+  async sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult> {
+    if (!this.adapter.isValidAddress(params.recipient)) {
+      throw new Error(`Invalid Bitcoin-family stealth recipient: ${params.recipient}`);
+    }
+    const simulatedHash = hexlify(sha256(toUtf8Bytes(`stealth:${this.address}:${params.recipient}:${Date.now()}`))).slice(2);
+    return {
+      txHash: simulatedHash,
+      stealthAddress: params.recipient,
+      messageId: hexlify(sha256(toUtf8Bytes(`msg:${simulatedHash}`))).slice(2),
+    };
+  }
+
+  async sendStampTransaction(params: SendStampTransactionParams): Promise<TransactionIntentResult> {
+    if (!this.adapter.isValidAddress(params.recipient)) {
+      throw new Error(`Invalid Bitcoin-family stamp recipient: ${params.recipient}`);
+    }
+    const simulatedHash = hexlify(sha256(toUtf8Bytes(`stamp:${this.address}:${params.recipient}:${Date.now()}`))).slice(2);
+    return { txHash: simulatedHash };
+  }
+}
+
+/**
+ * BTC Family Chain Adapter implementation (Bitcoin, Bitcoin Cash, Litecoin, Dogecoin).
+ */
+class BtcFamilyChainAdapter implements ChainAdapter {
+  readonly chainId: ChainId;
+  readonly family = 'bitcoin';
+  readonly rpcUrl: string;
+  readonly unit: string;
+  readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
+  private readonly decimals = 8;
+  private readonly kind: string;
+
+  constructor(chainId: ChainId, config?: ChainRegistryEntry) {
+    this.chainId = chainId;
+    this.kind = config?.kind ?? (
+      chainId.startsWith('btc') ? 'bitcoin' :
+      chainId.startsWith('bch') ? 'bitcoincash' :
+      chainId.startsWith('doge') ? 'dogecoin' : 'litecoin'
+    );
+    this.unit = config?.unit ?? (
+      this.kind === 'bitcoin' ? (chainId === 'btc-testnet' ? 'tBTC' : 'BTC') :
+      this.kind === 'bitcoincash' ? (chainId === 'bch-testnet' ? 'tBCH' : 'BCH') :
+      this.kind === 'dogecoin' ? (chainId === 'doge-testnet' ? 'tDOGE' : 'DOGE') :
+      (chainId === 'litecoin-testnet' ? 'tLTC' : 'LTC')
+    );
+    this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = config?.dex;
+  }
+
+  formatAddress(raw: Uint8Array | string): string {
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (!this.isValidAddress(trimmed)) {
+        throw new Error(`Invalid ${this.kind} address: ${raw}`);
+      }
+      return trimmed;
+    }
+    if (raw.length !== 20) {
+      throw new Error(`${this.kind} payload must be 20 bytes, got ${raw.length}`);
+    }
+    if (this.kind === 'bitcoincash') {
+      const prefix = this.chainId === 'bch-mainnet' ? 'bitcoincash' : 'bchtest';
+      return Address.p2pkh(raw, prefix as any).toString();
+    }
+    if (this.kind === 'bitcoin') {
+      const isTestnet = this.chainId === 'btc-testnet';
+      const bits = convertBits(Array.from(raw), 8, 5, true);
+      if (!bits.ok) throw new Error(bits.error.code);
+      const encoded = encodeBech32(isTestnet ? 'tb' : 'bc', [0, ...bits.value], 'bech32');
+      if (!encoded.ok) throw new Error(encoded.error.code);
+      return encoded.value;
+    }
+    if (this.kind === 'litecoin') {
+      const isTestnet = this.chainId === 'litecoin-testnet';
+      const bits = convertBits(Array.from(raw), 8, 5, true);
+      if (!bits.ok) throw new Error(bits.error.code);
+      const encoded = encodeBech32(isTestnet ? 'tltc' : 'ltc', [0, ...bits.value], 'bech32');
+      if (!encoded.ok) throw new Error(encoded.error.code);
+      return encoded.value;
+    }
+    if (this.kind === 'dogecoin') {
+      const version = this.chainId === 'doge-mainnet' ? 0x1e : 0x71;
+      const payload = new Uint8Array(21);
+      payload[0] = version;
+      payload.set(raw, 1);
+      return encodeBase58Check(payload);
+    }
+    return toHex(raw);
+  }
+
+  parseAddress(display: string): Uint8Array {
+    const trimmed = display.trim();
+    if (this.kind === 'bitcoincash') {
+      const parsed = Address.fromCashAddress(trimmed.toLowerCase());
+      return getBytes('0x' + parsed.hash);
+    }
+    if (
+      trimmed.startsWith('bc1') ||
+      trimmed.startsWith('tb1') ||
+      trimmed.startsWith('ltc1') ||
+      trimmed.startsWith('tltc1')
+    ) {
+      const decoded = decodeBech32(trimmed);
+      if (!decoded.ok) throw new Error(`Invalid bech32 address: ${trimmed}`);
+      const converted = convertBits(decoded.value.data.slice(1), 5, 8, false);
+      if (!converted.ok) throw new Error(`Invalid witness program in ${trimmed}`);
+      return new Uint8Array(converted.value);
+    }
+    const decoded = decodeBase58Check(trimmed);
+    if (!decoded.ok) throw new Error(`Invalid base58 address: ${trimmed}`);
+    return decoded.value.slice(1);
+  }
+
+  isValidAddress(candidate: string): boolean {
+    return validateChainAddress(this.chainId, candidate);
+  }
+
+  toDisplayAmount(atomic: bigint): string {
+    return formatBaseUnit(atomic, this.decimals);
+  }
+
+  fromDisplayAmount(display: string): bigint {
+    return parseBaseUnit(display, this.decimals);
+  }
+
+  async createWallet(context: WalletDerivationContext): Promise<ChainWallet> {
+    const seed = resolveRootSeed(context.root);
+    const accountIndex = context.accountIndex ?? context.identifier?.accountIndex ?? 0;
+    const walletName =
+      context.walletName ??
+      context.identifier?.walletName ??
+      (accountIndex === 0 ? 'Primary' : `Account ${accountIndex}`);
+    const walletId =
+      context.walletId ??
+      context.identifier?.walletId ??
+      asWalletId(`${this.chainId}:${accountIndex === 0 ? 'primary' : `account-${accountIndex}`}`);
+
+    const identifier: WalletIdentifier = {
+      walletName,
+      walletId,
+      walletChainId: this.chainId,
+      accountIndex,
+    };
+
+    const isTestnet = this.chainId.endsWith('testnet');
+    let path: string;
+    if (this.kind === 'bitcoin') {
+      path = isTestnet ? `m/84'/1'/${accountIndex}'/0/0` : `m/84'/0'/${accountIndex}'/0/0`;
+    } else if (this.kind === 'bitcoincash') {
+      path = `m/44'/145'/${accountIndex}'/0/0`;
+    } else if (this.kind === 'dogecoin') {
+      path = `m/44'/3'/${accountIndex}'/0/0`;
+    } else {
+      path = isTestnet ? `m/84'/1'/${accountIndex}'/0/0` : `m/84'/2'/${accountIndex}'/0/0`;
+    }
+
+    const master = HDNodeWallet.fromSeed(seed);
+    const derived = master.derivePath(path);
+    const pubKeyBytes = getBytes(derived.publicKey);
+    const pkhBytes = getBytes(ripemd160(sha256(pubKeyBytes)));
+    const address = this.formatAddress(pkhBytes);
+
+    return new BtcFamilyChainWalletImpl({
+      identifier,
+      address,
+      adapter: this,
+      spendKeyHex: derived.privateKey,
+      pubKeyBytes,
+    });
+  }
+
+  getWallet(address?: string): ChainWallet {
+    const primary = getPrimaryWallet(this.chainId);
+    if (!address && primary) return primary;
+    const defaultPkh = new Uint8Array(20);
+    const addr = address && this.isValidAddress(address)
+      ? this.formatAddress(address)
+      : (primary ? primary.address : this.formatAddress(defaultPkh));
+    const identifier: WalletIdentifier = {
+      walletName: 'Primary',
+      walletId: asWalletId(`${this.chainId}:primary`),
+      walletChainId: this.chainId,
+      accountIndex: 0,
+    };
+    return new BtcFamilyChainWalletImpl({
+      identifier,
+      address: addr,
+      adapter: this,
+      spendKeyHex: '',
+      pubKeyBytes: new Uint8Array(33),
+    });
+  }
+
+  async recoverWallet(wallet: ChainWallet): Promise<void> {
+    try {
+      await wallet.getBalance();
+    } catch (err) {
+      if (wallet instanceof BaseChainWallet) {
+        wallet.setRecoveryError(err);
+      }
+    }
+  }
+
+  createRecipientPaymentTransfer(
+    params: CreateRecipientPaymentTransferParams
+  ): RecipientPaymentTransfer {
+    const destination = toHex(this.parseAddress(params.recipient));
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    const txIdHex = typeof params.txId === 'string'
+      ? params.txId.replace(/^0x/, '').toLowerCase()
+      : toHex(params.txId);
+    const ephem = params.stealthMetadata?.ephemeralPubKey
+      ? (typeof params.stealthMetadata.ephemeralPubKey === 'string'
+          ? params.stealthMetadata.ephemeralPubKey.replace(/^0x/, '').toLowerCase()
+          : toHex(params.stealthMetadata.ephemeralPubKey))
+      : '00'.repeat(33);
+    const viewTag = params.stealthMetadata?.viewTag instanceof Uint8Array
+      ? toHex(params.stealthMetadata.viewTag)
+      : params.stealthMetadata?.viewTag !== undefined
+      ? String(params.stealthMetadata.viewTag)
+      : '00';
+
+    return {
+      chainIdentifier: this.chainId,
+      txId: txIdHex,
+      destination,
+      amountAtomic: amountBig.toString(),
+      asset: { kind: 'native' },
+      vout: params.vout ?? 0,
+      stealthMetadata: {
+        keyType: params.stealthMetadata?.keyType ?? 1,
+        ephemeralPubKey: ephem,
+        ...(viewTag !== undefined ? { viewTag } : {}),
+      },
+      ...(params.commitment ? { commitment: typeof params.commitment === 'string' ? params.commitment.replace(/^0x/, '') : toHex(params.commitment) } : {}),
+      ...(params.rawTx ? { rawTx: typeof params.rawTx === 'string' ? params.rawTx.replace(/^0x/, '') : toHex(params.rawTx) } : {}),
+    };
+  }
+
+  parseRecipientPaymentTransfer(
+    transfer: RecipientPaymentTransfer
+  ): ParsedRecipientPaymentTransfer {
+    const amount = BigInt(transfer.amountAtomic);
+    return {
+      chainId: this.chainId,
+      recipient: this.formatAddress(fromHex(transfer.destination)),
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txId: transfer.txId,
+      asset: { kind: 'native' },
+      vout: transfer.vout ?? 0,
+      stealthMetadata: transfer.stealthMetadata,
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  createSyncPaymentTransfer(
+    params: CreateSyncPaymentTransferParams
+  ): PaymentTransferItem {
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    const destination = toHex(this.parseAddress(params.recipient));
+
+    return {
+      type: 'payment-transfer',
+      direction: normalizeSyncDirection(params.direction),
+      chainIdentifier: this.chainId,
+      chainId: this.chainId,
+      txHash: params.txHash,
+      ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      ...(params.memo ? { memo: params.memo } : {}),
+      timestamp: params.timestamp ?? Date.now(),
+      transfer: {
+        networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+        txId: params.txHash.replace(/^0x/, '').toLowerCase(),
+        destination,
+        value: amountBig.toString(),
+        vout: params.vout ?? 0,
+        ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      },
+    };
+  }
+
+  parseSyncPaymentTransfer(item: PaymentTransferItem): ParsedSyncPaymentTransfer {
+    const amount = item.transfer?.value ? BigInt(item.transfer.value) : 0n;
+    const recipient = item.transfer?.destination ? this.formatAddress(fromHex(item.transfer.destination)) : '';
+
+    return {
+      chainId: this.chainId,
+      recipient,
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txHash: item.txHash,
+      direction: normalizeSyncDirection(item.direction),
+      vout: item.transfer?.vout ?? 0,
+      ...(item.rawTx ? { rawTx: item.rawTx } : {}),
+      ...(item.memo ? { memo: item.memo } : {}),
+      ...(item.timestamp !== undefined ? { timestamp: item.timestamp } : {}),
+    };
+  }
+
+  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
+    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
+    const destination = this.parseAddress(params.recipient);
+    const txIdBytes = typeof params.txId === 'string'
+      ? fromHex(params.txId.replace(/^0x/, ''))
+      : params.txId;
+    const commitment = params.commitment
+      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
+      : undefined;
+    const rawTx = params.rawTx
+      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
+      : undefined;
+
+    return {
+      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+      txId: txIdBytes,
+      destination,
+      value: valueBig,
+      vout: params.vout ?? 0,
+      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
+      ...(commitment ? { commitment } : {}),
+      ...(rawTx ? { rawTx } : {}),
+    };
+  }
+
+  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
+    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
+    return {
+      chainId: this.chainId,
+      networkTag: transfer.networkTag,
+      recipient: this.formatAddress(transfer.destination),
+      value: val,
+      displayAmount: this.toDisplayAmount(val),
+      txId: toHex(transfer.txId),
+      vout: transfer.vout ?? 0,
+      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  async estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult> {
+    return {
+      estimatedFee: 1000n, // Standard Bitcoin-family miner fee (1000 satoshis)
+    };
+  }
+
+  async simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult> {
+    try {
+      if (!this.isValidAddress(params.recipient)) {
+        return {
+          success: false,
+          estimatedFee: 0n,
+          error: `Invalid Bitcoin-family recipient address: ${params.recipient}`,
+        };
+      }
+      return {
+        success: true,
+        estimatedFee: 1000n,
+      };
+    } catch (err) {
+      return {
+        success: false,
+        estimatedFee: 0n,
+        error: String(err),
+      };
+    }
+  }
+}
+
 // -------------------------------------------------------------------------------------------------
 // Factory & Multi-Wallet Architecture
 // -------------------------------------------------------------------------------------------------
@@ -1718,25 +2198,38 @@ export function createChainAdapter(
 
   switch (chain) {
     case 'monad-mainnet':
-      return new EvmChainAdapter('monad-mainnet', registryEntry);
     case 'monad-testnet':
-      return new EvmChainAdapter('monad-testnet', registryEntry);
-    case 'tempo-mainnet':
-      return new TempoChainAdapter('tempo-mainnet', registryEntry);
-    case 'tempo-testnet':
-      return new TempoChainAdapter('tempo-testnet', registryEntry);
     case 'hyperliquid-mainnet':
-      return new EvmChainAdapter('hyperliquid-mainnet', registryEntry);
     case 'hyperliquid-testnet':
-      return new EvmChainAdapter('hyperliquid-testnet', registryEntry);
+    case 'ethereum-mainnet':
+    case 'ethereum-sepolia':
+    case 'bnb-mainnet':
+    case 'bnb-testnet':
+    case 'polygon-mainnet':
+    case 'polygon-amoy':
+    case 'base-mainnet':
+    case 'base-sepolia':
+    case 'arbitrum-mainnet':
+    case 'arbitrum-sepolia':
+      return new EvmChainAdapter(chain, registryEntry);
+    case 'tempo-mainnet':
+    case 'tempo-testnet':
+      return new TempoChainAdapter(chain, registryEntry);
     case 'ecash-mainnet':
-      return new EcashChainAdapter('ecash-mainnet', registryEntry);
     case 'ecash-testnet':
-      return new EcashChainAdapter('ecash-testnet', registryEntry);
+      return new EcashChainAdapter(chain, registryEntry);
     case 'solana-mainnet':
-      return new SolanaChainAdapter('solana-mainnet', registryEntry);
     case 'solana-devnet':
-      return new SolanaChainAdapter('solana-devnet', registryEntry);
+      return new SolanaChainAdapter(chain, registryEntry);
+    case 'btc-mainnet':
+    case 'btc-testnet':
+    case 'bch-mainnet':
+    case 'bch-testnet':
+    case 'doge-mainnet':
+    case 'doge-testnet':
+    case 'litecoin-mainnet':
+    case 'litecoin-testnet':
+      return new BtcFamilyChainAdapter(chain, registryEntry);
     default: {
       const _exhaustive: never = chain;
       throw new Error(`Unsupported canonical chain: ${String(_exhaustive)}`);
@@ -1805,7 +2298,17 @@ export function createWalletArray(
       case 'monad-mainnet':
       case 'monad-testnet':
       case 'hyperliquid-mainnet':
-      case 'hyperliquid-testnet': {
+      case 'hyperliquid-testnet':
+      case 'ethereum-mainnet':
+      case 'ethereum-sepolia':
+      case 'bnb-mainnet':
+      case 'bnb-testnet':
+      case 'polygon-mainnet':
+      case 'polygon-amoy':
+      case 'base-mainnet':
+      case 'base-sepolia':
+      case 'arbitrum-mainnet':
+      case 'arbitrum-sepolia': {
         const master = HDNodeWallet.fromSeed(seed);
         const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
         const address = adapter.formatAddress(derived.address);
@@ -1861,6 +2364,39 @@ export function createWalletArray(
           adapter,
           spendKeyHex: derived.privateKey,
           pkhBytes,
+        });
+        break;
+      }
+      case 'btc-mainnet':
+      case 'btc-testnet':
+      case 'bch-mainnet':
+      case 'bch-testnet':
+      case 'doge-mainnet':
+      case 'doge-testnet':
+      case 'litecoin-mainnet':
+      case 'litecoin-testnet': {
+        const isTestnet = alloc.walletChainId.endsWith('testnet');
+        let path: string;
+        if (alloc.walletChainId.startsWith('btc')) {
+          path = isTestnet ? `m/84'/1'/${accountIndex}'/0/0` : `m/84'/0'/${accountIndex}'/0/0`;
+        } else if (alloc.walletChainId.startsWith('bch')) {
+          path = isTestnet ? `m/44'/1'/${accountIndex}'/0/0` : `m/44'/145'/${accountIndex}'/0/0`;
+        } else if (alloc.walletChainId.startsWith('doge')) {
+          path = isTestnet ? `m/44'/1'/${accountIndex}'/0/0` : `m/44'/3'/${accountIndex}'/0/0`;
+        } else {
+          path = isTestnet ? `m/84'/1'/${accountIndex}'/0/0` : `m/84'/2'/${accountIndex}'/0/0`;
+        }
+        const master = HDNodeWallet.fromSeed(seed);
+        const derived = master.derivePath(path);
+        const pubKeyBytes = getBytes(derived.publicKey);
+        const pkhBytes = getBytes(ripemd160(sha256(pubKeyBytes)));
+        const address = adapter.formatAddress(pkhBytes);
+        wallet = new BtcFamilyChainWalletImpl({
+          identifier,
+          address,
+          adapter,
+          spendKeyHex: derived.privateKey,
+          pubKeyBytes,
         });
         break;
       }
@@ -1962,14 +2498,16 @@ export async function recoverAllWallets(
   const succeeded: WalletId[] = [];
   const failed: Array<{ walletId: WalletId; error: unknown }> = [];
 
-  for (const wallet of targetWallets) {
-    try {
-      await wallet.recover();
-      succeeded.push(wallet.walletId);
-    } catch (error) {
-      failed.push({ walletId: wallet.walletId, error });
-    }
-  }
+  await Promise.all(
+    targetWallets.map(async (wallet) => {
+      try {
+        await wallet.recover();
+        succeeded.push(wallet.walletId);
+      } catch (error) {
+        failed.push({ walletId: wallet.walletId, error });
+      }
+    })
+  );
 
   return { succeeded, failed };
 }

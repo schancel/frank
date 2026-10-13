@@ -441,21 +441,17 @@ describe('markdownPlainText (the chat list preview and notifications)', () => {
         '&#115;&#104;&#97;&#109;&#109;&#97;&#104;&#64;&#103;&#109;&#97;&#105;&#108;&#46;&#99;&#111;&#109;',
       ),
     ).toBe('shammah@gmail.com')
-    expect(decodeHtmlEntities('Tom &amp; Jerry &quot;Show&quot; &lt;3&gt;')).toBe(
-      'Tom & Jerry "Show" <3>',
-    )
+    expect(
+      decodeHtmlEntities('Tom &amp; Jerry &quot;Show&quot; &lt;3&gt;'),
+    ).toBe('Tom & Jerry "Show" <3>')
   })
 
   it('cleans email wire fallback headers and extracts clean body or subject', () => {
     // Standard gateway fallback with Subject and Body
     const wire1 =
       '[Email to bob@remote.com]\nSubject: Project Update\n\nHere is the latest progress report.'
-    expect(cleanEmailSnippet(wire1)).toBe(
-      'Here is the latest progress report.',
-    )
-    expect(formatSnippet(wire1)).toBe(
-      'Here is the latest progress report.',
-    )
+    expect(cleanEmailSnippet(wire1)).toBe('Here is the latest progress report.')
+    expect(formatSnippet(wire1)).toBe('Here is the latest progress report.')
 
     // Direct P2P Email fallback header
     const wire2 =
@@ -473,28 +469,18 @@ describe('markdownPlainText (the chat list preview and notifications)', () => {
     expect(cleanEmailSnippet(wireMangled)).toBe(
       'Hey there, welcome to the team!',
     )
-    expect(formatSnippet(wireMangled)).toBe(
-      'Hey there, welcome to the team!',
-    )
+    expect(formatSnippet(wireMangled)).toBe('Hey there, welcome to the team!')
 
     // Email with only Subject and no body
     const wireSubjectOnly = '[Email to bob@remote.com]\nSubject: Quick check-in'
-    expect(cleanEmailSnippet(wireSubjectOnly)).toBe(
-      'Subject: Quick check-in',
-    )
-    expect(formatSnippet(wireSubjectOnly)).toBe(
-      'Subject: Quick check-in',
-    )
+    expect(cleanEmailSnippet(wireSubjectOnly)).toBe('Subject: Quick check-in')
+    expect(formatSnippet(wireSubjectOnly)).toBe('Subject: Quick check-in')
 
     // Inbound Email from gateway
     const wireInbound =
       '[Email from alice@example.com]\nSubject: Meeting Notes\n\nThanks everyone for joining.'
-    expect(cleanEmailSnippet(wireInbound)).toBe(
-      'Thanks everyone for joining.',
-    )
-    expect(formatSnippet(wireInbound)).toBe(
-      'Thanks everyone for joining.',
-    )
+    expect(cleanEmailSnippet(wireInbound)).toBe('Thanks everyone for joining.')
+    expect(formatSnippet(wireInbound)).toBe('Thanks everyone for joining.')
 
     // Email plugin previewText format
     const pluginText = '✉️ Greetings!: Looking forward to our meeting tomorrow.'
@@ -506,4 +492,3 @@ describe('markdownPlainText (the chat list preview and notifications)', () => {
     )
   })
 })
-

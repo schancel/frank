@@ -68,7 +68,9 @@ export function cleanEmailSnippet(input: string): string {
   }
 
   // Check for Subject header: `Subject: ...`
-  const subjectMatch = text.match(/^Subject:\s*([^\r\n]*)(?:\r?\n+([\s\S]*))?$/i)
+  const subjectMatch = text.match(
+    /^Subject:\s*([^\r\n]*)(?:\r?\n+([\s\S]*))?$/i,
+  )
   if (subjectMatch) {
     const subj = subjectMatch[1].trim()
     const body = subjectMatch[2]?.trim() || ''
@@ -166,4 +168,3 @@ export function markdownPlainText(input: string, imageLabel = ''): string {
 export function formatSnippet(input: string, imageLabel = ''): string {
   return markdownPlainText(input, imageLabel)
 }
-

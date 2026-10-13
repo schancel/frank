@@ -197,7 +197,10 @@
 <script lang="ts">
 import { type Conversation, useChatStore } from 'src/stores/chats'
 import { picturePreviewText } from '../../utils/chat-attachments'
-import { markdownPlainText, formatSnippet } from '../../utils/markdown-plain-text'
+import {
+  markdownPlainText,
+  formatSnippet,
+} from '../../utils/markdown-plain-text'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { defineComponent, ref, type PropType } from 'vue'

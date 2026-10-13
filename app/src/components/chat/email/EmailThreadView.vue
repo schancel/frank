@@ -87,16 +87,30 @@
         class="email-thread-subbar row items-center justify-between no-wrap q-mt-xs text-caption"
         v-if="allParticipants.length > 0 || parsedEmails.length > 0"
       >
-        <div class="row items-center no-wrap ellipsis col q-mr-md" v-if="allParticipants.length > 0">
-          <q-icon name="people_outline" size="16px" color="grey-6" class="q-mr-xs flex-shrink-0" />
+        <div
+          class="row items-center no-wrap ellipsis col q-mr-md"
+          v-if="allParticipants.length > 0"
+        >
+          <q-icon
+            name="people_outline"
+            size="16px"
+            color="grey-6"
+            class="q-mr-xs flex-shrink-0"
+          />
           <span class="text-weight-medium text-grey-7 q-mr-xs flex-shrink-0"
             >{{ $t('emailThread.participants') }}:</span
           >
-          <span class="ellipsis text-grey-8 participant-list" :title="allParticipants.join(', ')">
+          <span
+            class="ellipsis text-grey-8 participant-list"
+            :title="allParticipants.join(', ')"
+          >
             {{ allParticipants.join(', ') }}
           </span>
         </div>
-        <div class="col-auto row items-center q-gutter-x-xs q-ml-auto" v-if="parsedEmails.length > 0">
+        <div
+          class="col-auto row items-center q-gutter-x-xs q-ml-auto"
+          v-if="parsedEmails.length > 0"
+        >
           <q-badge
             rounded
             outline
@@ -178,7 +192,11 @@
                       <span
                         class="text-weight-bold text-body2 q-mr-xs ellipsis sender-name"
                       >
-                        {{ card.isOutbound ? (card.fromName || $t('selfChat.you', 'You')) : (card.fromName || card.fromAddress) }}
+                        {{
+                          card.isOutbound
+                            ? card.fromName || $t('selfChat.you', 'You')
+                            : card.fromName || card.fromAddress
+                        }}
                       </span>
                       <span
                         class="text-caption text-grey-6 ellipsis q-mr-xs sender-address"
@@ -432,11 +450,17 @@
               @update:model-value="onReplyModeChanged"
             />
           </template>
-          <span v-else-if="isOutboundFollowUp" class="text-weight-bold text-caption text-primary composer-draft-indicator">
+          <span
+            v-else-if="isOutboundFollowUp"
+            class="text-weight-bold text-caption text-primary composer-draft-indicator"
+          >
             <q-icon name="forward_to_inbox" size="18px" class="q-mr-xs" />
             {{ $t('emailThread.followUp', 'Follow-up') }}
           </span>
-          <span v-else-if="isDraft" class="text-weight-bold text-caption text-primary composer-draft-indicator">
+          <span
+            v-else-if="isDraft"
+            class="text-weight-bold text-caption text-primary composer-draft-indicator"
+          >
             <q-icon name="edit_note" size="18px" class="q-mr-xs" />
             {{ $t('emailThread.newEmail') }}
           </span>
@@ -447,7 +471,9 @@
             size="sm"
             class="recipient-toggle-btn q-px-sm"
             :class="{ 'recipient-toggle-btn--active': showCc }"
-            :label="showCc ? $t('emailThread.hideCc') : $t('emailThread.showCc')"
+            :label="
+              showCc ? $t('emailThread.hideCc') : $t('emailThread.showCc')
+            "
             @click="showCc = !showCc"
           />
           <q-btn
@@ -457,7 +483,9 @@
             size="sm"
             class="recipient-toggle-btn q-px-sm"
             :class="{ 'recipient-toggle-btn--active': showBcc }"
-            :label="showBcc ? $t('emailThread.hideBcc') : $t('emailThread.showBcc')"
+            :label="
+              showBcc ? $t('emailThread.hideBcc') : $t('emailThread.showBcc')
+            "
             @click="showBcc = !showBcc"
           />
         </div>
@@ -483,8 +511,16 @@
               class="recipient-chip q-ma-none text-caption"
               @remove="removeToRecipient(idx)"
             >
-              <q-avatar icon="person" size="18px" color="primary" text-color="white" class="q-mr-xs" />
-              <span class="ellipsis recipient-chip-text" :title="addr">{{ addr }}</span>
+              <q-avatar
+                icon="person"
+                size="18px"
+                color="primary"
+                text-color="white"
+                class="q-mr-xs"
+              />
+              <span class="ellipsis recipient-chip-text" :title="addr">{{
+                addr
+              }}</span>
             </q-chip>
             <q-input
               ref="toInputRef"
@@ -500,7 +536,10 @@
         </div>
 
         <!-- Recipient Cc Field -->
-        <div class="recipient-row row items-center no-wrap" v-if="showCc || ccList.length > 0">
+        <div
+          class="recipient-row row items-center no-wrap"
+          v-if="showCc || ccList.length > 0"
+        >
           <span class="recipient-label col-auto"
             >{{ $t('emailThread.cc') }}:</span
           >
@@ -514,7 +553,9 @@
               class="recipient-chip recipient-chip--cc q-ma-none text-caption"
               @remove="removeCcRecipient(idx)"
             >
-              <span class="ellipsis recipient-chip-text" :title="addr">{{ addr }}</span>
+              <span class="ellipsis recipient-chip-text" :title="addr">{{
+                addr
+              }}</span>
             </q-chip>
             <q-input
               ref="ccInputRef"
@@ -548,7 +589,9 @@
               class="recipient-chip recipient-chip--bcc q-ma-none text-caption"
               @remove="removeBccRecipient(idx)"
             >
-              <span class="ellipsis recipient-chip-text" :title="addr">{{ addr }}</span>
+              <span class="ellipsis recipient-chip-text" :title="addr">{{
+                addr
+              }}</span>
             </q-chip>
             <q-input
               ref="bccInputRef"
@@ -565,9 +608,9 @@
 
         <!-- Subject Field -->
         <div class="recipient-row row items-center no-wrap">
-          <span class="recipient-label col-auto"
-            >{{ $t('emailThread.subjectLabel') }}</span
-          >
+          <span class="recipient-label col-auto">{{
+            $t('emailThread.subjectLabel')
+          }}</span>
           <q-input
             ref="subjectInputRef"
             v-model="subject"
@@ -802,7 +845,9 @@
             :disable="sending"
             data-testid="email-stamp-btn"
           >
-            <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
+            <span class="chat-stamp-pill-text q-ml-xs">{{
+              stampPillText
+            }}</span>
             <span
               v-if="stampMultiplier && stampMultiplier !== '1'"
               class="chat-stamp-pill-multiple q-ml-xs"
@@ -831,10 +876,7 @@
                 <div class="row items-center justify-between q-mb-xs">
                   <div class="text-subtitle2 text-weight-medium">
                     {{
-                      $t(
-                        'chatInput.stampPayment',
-                        'Email Stamp / Delivery Fee',
-                      )
+                      $t('chatInput.stampPayment', 'Email Stamp / Delivery Fee')
                     }}
                   </div>
                 </div>
@@ -1069,9 +1111,9 @@ export default defineComponent({
     stampUnavailable: { type: String, default: '' },
   },
   emits: {
-    sendReply: (_payload: EmailReply) => true,
+    'sendReply': (_payload: EmailReply) => true,
     'update:stampAmount': (_amount: string) => true,
-    resetStampDefault: () => true,
+    'resetStampDefault': () => true,
   },
   data() {
     return {
@@ -1081,7 +1123,8 @@ export default defineComponent({
       replyRouting: 'peer' as 'peer' | 'gateway',
       typedStamp: null as string | null,
       multiplierSteps:
-        (typeof STAMP_MULTIPLIER_TENTHS !== 'undefined' && STAMP_MULTIPLIER_TENTHS) ||
+        (typeof STAMP_MULTIPLIER_TENTHS !== 'undefined' &&
+          STAMP_MULTIPLIER_TENTHS) ||
         DEFAULT_STAMP_MULTIPLIER_TENTHS,
       expandedMap: {} as Record<string, boolean>,
       allExpanded: false,
@@ -1139,9 +1182,11 @@ export default defineComponent({
       if (this.isVerifiedGateway) {
         tip = 'Send via Frank Email Gateway (Ctrl+Enter)'
       } else if (this.replyRouting === 'gateway') {
-        tip = 'Route through Frank Email Gateway to dispatch to external recipients (Ctrl+Enter)'
+        tip =
+          'Route through Frank Email Gateway to dispatch to external recipients (Ctrl+Enter)'
       } else {
-        tip = 'Reply will only be delivered as a Frank direct message to the peer, not dispatched to external email addresses via MX (Ctrl+Enter)'
+        tip =
+          'Reply will only be delivered as a Frank direct message to the peer, not dispatched to external email addresses via MX (Ctrl+Enter)'
       }
       const fee = this.stampPillText
       return fee ? `${tip} [Fee: ${fee}]` : tip
@@ -1183,10 +1228,7 @@ export default defineComponent({
         let distance: bigint | undefined
         const steps = this.multiplierSteps || DEFAULT_STAMP_MULTIPLIER_TENTHS
         for (let i = 0; i < steps.length; i++) {
-          const raw =
-            (this.effectiveDefaultStampWei *
-              BigInt(steps[i])) /
-            10n
+          const raw = (this.effectiveDefaultStampWei * BigInt(steps[i])) / 10n
           const delta =
             raw > this.stampWei ? raw - this.stampWei : this.stampWei - raw
           if (distance === undefined || delta < distance) {
@@ -1203,10 +1245,7 @@ export default defineComponent({
         )
           return
         const steps = this.multiplierSteps || DEFAULT_STAMP_MULTIPLIER_TENTHS
-        const i = Math.max(
-          0,
-          Math.min(steps.length - 1, Math.round(index)),
-        )
+        const i = Math.max(0, Math.min(steps.length - 1, Math.round(index)))
         const raw = this.multipliedStamp(steps[i])
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
@@ -1525,7 +1564,11 @@ export default defineComponent({
           ? this.conversation.name
           : undefined)
 
-      if (recipient && isValidRecipientAddress(recipient) && !this.toList.includes(recipient)) {
+      if (
+        recipient &&
+        isValidRecipientAddress(recipient) &&
+        !this.toList.includes(recipient)
+      ) {
         this.toList = [recipient]
       }
 
@@ -1772,7 +1815,11 @@ export default defineComponent({
       if (val && isValidRecipientAddress(val) && !this.toList.includes(val)) {
         this.toList.push(val)
         this.newToInput = ''
-      } else if (val && val.toLowerCase() !== 'me' && (val.includes('@') || isChainAddress(val))) {
+      } else if (
+        val &&
+        val.toLowerCase() !== 'me' &&
+        (val.includes('@') || isChainAddress(val))
+      ) {
         if (!this.toList.includes(val)) this.toList.push(val)
         this.newToInput = ''
       } else {
@@ -1787,7 +1834,11 @@ export default defineComponent({
       if (val && isValidRecipientAddress(val) && !this.ccList.includes(val)) {
         this.ccList.push(val)
         this.newCcInput = ''
-      } else if (val && val.toLowerCase() !== 'me' && (val.includes('@') || isChainAddress(val))) {
+      } else if (
+        val &&
+        val.toLowerCase() !== 'me' &&
+        (val.includes('@') || isChainAddress(val))
+      ) {
         if (!this.ccList.includes(val)) this.ccList.push(val)
         this.newCcInput = ''
       } else {
@@ -1802,7 +1853,11 @@ export default defineComponent({
       if (val && isValidRecipientAddress(val) && !this.bccList.includes(val)) {
         this.bccList.push(val)
         this.newBccInput = ''
-      } else if (val && val.toLowerCase() !== 'me' && (val.includes('@') || isChainAddress(val))) {
+      } else if (
+        val &&
+        val.toLowerCase() !== 'me' &&
+        (val.includes('@') || isChainAddress(val))
+      ) {
         if (!this.bccList.includes(val)) this.bccList.push(val)
         this.newBccInput = ''
       } else {

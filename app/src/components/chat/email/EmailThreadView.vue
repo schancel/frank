@@ -2038,15 +2038,17 @@ export default defineComponent({
         .map(a => (typeof a === 'string' ? a.trim() : ''))
         .filter(isCleanRecipient)
 
-      if (validTos.length === 0 && this.conversation?.emailRecipient) {
+      if (
+        validTos.length === 0 &&
+        this.toList.some(
+          t => typeof t === 'string' && t.trim().toLowerCase() === 'me',
+        ) &&
+        this.conversation?.emailRecipient
+      ) {
         const fallback = this.conversation.emailRecipient.trim()
         if (isCleanRecipient(fallback)) {
           validTos = [fallback]
         }
-      }
-
-      if (validTos.length === 0) {
-        return // cannot send email without recipients
       }
 
       const validCcs = this.ccList
@@ -2056,6 +2058,10 @@ export default defineComponent({
       const validBccs = this.bccList
         .map(a => (typeof a === 'string' ? a.trim() : ''))
         .filter(isCleanRecipient)
+
+      if (validTos.length === 0 && validBccs.length === 0) {
+        return // cannot send email without at least a To or Bcc recipient
+      }
 
       const emailSubject =
         this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)

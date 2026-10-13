@@ -28,7 +28,6 @@ import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 import blackjackCorpus from '../../../docs/protocol/cbor/vectors/blackjack-items.json'
 import {
   prepareDirectMessage,
-  prepareSenderSyncCopy,
   openDirectMessage,
   openOwnDirectMessage,
   directMessageText,
@@ -1211,26 +1210,20 @@ test('open fails when type 6 field 7 is not the directory subject for context fi
     expect((error as DirectMessageError).code).toBe('context')
   }
 })
-test('openAsSender accepts the sender sync copy and rejects a recipient forgery', () => {
+test('openAsSender accepts the recipient envelope and rejects a recipient forgery', () => {
   const role = selfOpenRoles()
   const prepared = prepareDirectMessage({
     network: corpus.network,
     senderCurrent: current,
     recipientCurrent: current,
     messageId: new Uint8Array(16).fill(0x44),
-    items: [directMessageText('sync copy')],
-    roles: role,
-  })
-  const sync = prepareSenderSyncCopy({
-    network: corpus.network,
-    senderCurrent: current,
-    content: prepared.content,
+    items: [directMessageText('one envelope')],
     roles: role,
   })
   const opened = openOwnDirectMessage({
     network: corpus.network,
-    payload: sync.payload,
-    context: sync.context,
+    payload: prepared.payload,
+    context: prepared.context,
     roles: role,
     senderCurrent: current,
     recipientCurrent: current,
@@ -1243,14 +1236,14 @@ test('openAsSender accepts the sender sync copy and rejects a recipient forgery'
     recipientPublicKey: current.messageKey.keyBytes,
     senderPublicKey: current.messageKey.keyBytes,
     plaintext: prepared.content,
-    context: sync.context,
+    context: prepared.context,
     ephemeralSecret: new Uint8Array(32).fill(0x11),
     salt: new Uint8Array(32).fill(0x22),
   })
   if (!forged.ok) throw new Error(forged.error.code)
-  const parsed = parseFrame(sync.payload)
+  const parsed = parseFrame(prepared.payload)
   if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
-    throw new Error('sync payload')
+    throw new Error('payload')
   const payload = encodeFrame(
     { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
     new Map(parsed.payload).set(4n, forged.value),
@@ -1258,7 +1251,7 @@ test('openAsSender accepts the sender sync copy and rejects a recipient forgery'
   const asRecipient = openDirectMessage({
     ...receive(role),
     payload,
-    context: sync.context,
+    context: prepared.context,
   })
   expect(asRecipient.mode).toBe('receive')
   expect(toHex(asRecipient.messageId)).toBe('44'.repeat(16))
@@ -1266,7 +1259,7 @@ test('openAsSender accepts the sender sync copy and rejects a recipient forgery'
     openOwnDirectMessage({
       network: corpus.network,
       payload,
-      context: sync.context,
+      context: prepared.context,
       roles: role,
       senderCurrent: current,
       recipientCurrent: current,

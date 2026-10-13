@@ -167,6 +167,24 @@ describe('canonical exact request', () => {
       ).toBe('retained')
     expect(seen).toEqual([frozen.body, frozen.body])
   })
+  test('an outbox address is a header and is not part of the body', async () => {
+    const frozen = request()
+    const fetch: CanonicalFetch = async (url, input) => {
+      expect(input.headers['X-Frank-Outbox']).toBe('ab'.repeat(20))
+      expect(input.body).toEqual(frozen.body)
+      return canonicalTestResponse(url, 202, statusBytes(frozen), {
+        'content-type': 'application/json',
+      })
+    }
+    const accepted = await submitCanonicalRequest({
+      installedRelayOrigin: 'https://one.example',
+      expectedNetworkTag: 'MONT',
+      request: frozen,
+      outbox: '0x' + 'AB'.repeat(20),
+      fetch,
+    })
+    expect(accepted.phase).toBe('retained')
+  })
   test('installed descriptor mismatch rejects before any PUT', async () => {
     const fetch = jest.fn()
     await expect(

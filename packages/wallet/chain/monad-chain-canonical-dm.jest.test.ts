@@ -344,7 +344,7 @@ async function fixture(funded = true) {
       current: () => store.current({ now: NOW, relay: tuple }),
     }
   }
-  const requests: { body: Uint8Array; contentType: string }[] = []
+  const requests: { body: Uint8Array; contentType: string; outbox: string }[] = []
   const broadcastPayments = new Map<string, bigint>()
   const broadcast = (requestIndex: number, members?: readonly number[]) => {
     const request = restoreCanonicalRequest(requests[requestIndex])
@@ -372,7 +372,10 @@ async function fixture(funded = true) {
       throw new Error(`unexpected relay request ${init.method} ${url}`)
     if (phase === 'fail') throw new Error('relay unreachable')
     const body = new Uint8Array(init.body!)
-    requests.push({ body, contentType: init.headers['Content-Type'] })
+    const outbox = init.headers['X-Frank-Outbox']
+    if (typeof outbox !== 'string' || !/^[0-9a-f]{40}$/.test(outbox))
+      throw new Error(`X-Frank-Outbox must name the sender mailbox, got ${outbox}`)
+    requests.push({ body, contentType: init.headers['Content-Type'], outbox })
     if (phase === 'lost') throw new Error('relay response lost after acceptance')
     const identity = restoreCanonicalRequest({
       body,
@@ -679,7 +682,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     const claims = structuredClone(f.alice.pool.records())
     await expect(f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('no quote') })).rejects.toBeInstanceOf(DefaultStampUnavailableError)
     expect(f.alice.pool.records()).toEqual(claims)
-    expect(f.requests).toHaveLength(2)
+    expect(f.requests).toHaveLength(1)
     offline.mockClear()
     await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('free'), stampValue: 0n })
     await f.chain.directMessages.send({ wallet: f.alice, recipient: f.bob.identity.address, items: text('explicit'), stampValue: DEFAULT_STAMP })
@@ -756,7 +759,12 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       items: text('hello bob'),
       onAttemptCreated: digest => void created.push(digest),
     })
-    expect(f.requests).toHaveLength(2)
+    expect(f.requests).toHaveLength(1)
+    expect(f.requests[0].outbox).toBe(
+      computeAddress('0x' + toHex(f.alice.identity.compressedPubKey))
+        .slice(2)
+        .toLowerCase(),
+    )
     const request = restoreCanonicalRequest(f.requests[0])
     expect(request.identity.payload_hash).toBe(sent.payloadDigest)
     expect(created).toEqual([sent.payloadDigest])
@@ -785,7 +793,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       ['ff'.repeat(32)]: 'unknown',
     })
     // Reconciling a delivered attempt re-sends nothing.
-    expect(f.requests).toHaveLength(2)
+    expect(f.requests).toHaveLength(1)
 
     inboxPage.mockResolvedValue({
       records: [
@@ -842,7 +850,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       recipient: f.bob.identity.address,
       items: [stealthItem],
     })
-    expect(f.requests).toHaveLength(2)
+    expect(f.requests).toHaveLength(1)
     const request = restoreCanonicalRequest(f.requests[0])
     expect(request.identity.payload_hash).toBe(sent.payloadDigest)
 
@@ -980,7 +988,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       recipient: f.bob.identity.address,
       items: [channelItem],
     })
-    expect(f.requests).toHaveLength(2)
+    expect(f.requests).toHaveLength(1)
     const request = restoreCanonicalRequest(f.requests[0])
     expect(request.identity.payload_hash).toBe(sent.payloadDigest)
 
@@ -1181,11 +1189,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       items: text('twice'),
     })
     expect(second.payloadDigest).not.toBe(digest)
-    const hashes = f.requests.map(
-      r => restoreCanonicalRequest(r).identity.payload_hash,
-    )
-    expect(hashes.slice(0, 2)).toEqual([digest, second.payloadDigest])
-    expect(hashes).toHaveLength(3)
+    expect(
+      f.requests.map(r => restoreCanonicalRequest(r).identity.payload_hash),
+    ).toEqual([digest, second.payloadDigest])
     const payer = (index: number) =>
       restoreCanonicalRequest(f.requests[index]).parts.transactions.map(raw =>
         Transaction.from('0x' + toHex(raw)).from!.toLowerCase(),
@@ -1210,7 +1216,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       .map(r => toHex(r.body))
     expect(firstBodies).toHaveLength(2)
     expect(new Set(firstBodies).size).toBe(1)
-    expect(f.requests).toHaveLength(5)
+    expect(f.requests).toHaveLength(3)
     sign.mockRestore()
   })
 
@@ -1390,9 +1396,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       } finally {
         sign.mockRestore()
       }
-      const bodies = f.requests.map(r => toHex(r.body))
-      const peer = bodies[0]
-      expect(bodies.filter(body => body !== peer)).toHaveLength(1)
+      expect(new Set(f.requests.map(r => toHex(r.body))).size).toBe(1)
       // Finished: delivered, both payments seen on chain, both accounts spent and let go.
       const finished = await retainedAttempt(f.alice, row)
       expect(finished.outcome).toBe('delivered')
@@ -1437,7 +1441,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         }),
       ).toEqual({ [digest]: 'delivered' })
       expect(await orphans(wallet)).toEqual([digest])
-      expect(f.requests).toHaveLength(2)
+      expect(f.requests).toHaveLength(1)
       expect(restoreCanonicalRequest(f.requests[0]).identity.payload_hash).toBe(
         digest,
       )
@@ -1456,7 +1460,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         await wallet.close()
       }
       // Nothing was paid or sent again by any of those sessions.
-      expect(f.requests).toHaveLength(2)
+      expect(f.requests).toHaveLength(1)
     } finally {
       await wallet.close()
     }
@@ -1498,7 +1502,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           payloadDigests: [digest],
         }),
       ).toEqual({ [digest]: 'delivered' })
-      expect(f.requests).toHaveLength(2)
+      expect(f.requests).toHaveLength(1)
     } finally {
       await wallet.close()
     }
@@ -1559,12 +1563,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           payloadDigests: [digest],
         }),
       ).toEqual({ [digest]: 'delivered' })
-      const repeated = f.requests.filter(
-        r => restoreCanonicalRequest(r).identity.payload_hash === digest,
-      )
-      expect(new Set(repeated.map(r => toHex(r.body))).size).toBe(1)
-      expect(repeated).toHaveLength(2)
-      expect(f.requests).toHaveLength(3)
+      expect(new Set(f.requests.map(r => toHex(r.body))).size).toBe(1)
     } finally {
       await wallet.close()
     }
@@ -1704,8 +1703,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           paymentTransfers: [],
           preparationTxHashes: [],
         })
-        // The peer delivery is first; the own-mailbox copy follows it.
-        expect(f.requests).toHaveLength(2)
+        // One request: a schema-2 delivery with no payment member and no transaction.
+        expect(f.requests).toHaveLength(1)
         const request = restoreCanonicalRequest(f.requests[0])
         expect(request.parts.transactions).toEqual([])
         expect(request.identity.payload_hash).toBe(sent.payloadDigest)
@@ -1731,7 +1730,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
             payloadDigests: [sent.payloadDigest],
           }),
         ).toEqual({ [sent.payloadDigest]: 'unknown' })
-        expect(f.requests).toHaveLength(2)
+        expect(f.requests).toHaveLength(1)
 
         inboxPage.mockResolvedValue({ records: [record(0, 7)] })
         const received = await f.chain.directMessages.fetchSince({
@@ -1771,7 +1770,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         stampValue: 0n,
       })
       await machinery.expectUntouched()
-      expect(f.requests).toHaveLength(3)
+      expect(f.requests).toHaveLength(2)
       expect(restoreCanonicalRequest(f.requests[1]).identity.payload_hash).toBe(
         unpaid.payloadDigest,
       )
@@ -1814,7 +1813,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       expect(paid.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
         42_000n,
       )
-      const last = restoreCanonicalRequest(f.requests[f.requests.length - 2])
+      const last = restoreCanonicalRequest(f.requests[f.requests.length - 1])
       expect(last.identity.payload_hash).toBe(paid.payloadDigest)
       expect(last.parts.transactions.length).toBeGreaterThan(0)
       const paidDelivery = parseFrame(last.parts.delivery)
@@ -1867,8 +1866,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           messageId,
         })
         expect(again.stampPayments).toEqual([])
-        expect(f.requests).toHaveLength(requests + 2)
-        const last = f.requests[requests]
+        expect(f.requests).toHaveLength(requests + 1)
+        const last = f.requests[f.requests.length - 1]
         expect(restoreCanonicalRequest(last).identity.payload_hash).toBe(
           again.payloadDigest,
         )
@@ -1937,7 +1936,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         conversationName: 'Another subject',
       })
       expect(sealing).toHaveBeenCalledTimes(1)
-      expect(f.requests).toHaveLength(requests + 2)
+      expect(f.requests).toHaveLength(requests + 1)
       const first = restoreCanonicalRequest(f.requests[requests - 1])
       const repeat = restoreCanonicalRequest(f.requests[requests])
       expect(toHex(repeat.parts.delivery)).toBe(toHex(first.parts.delivery))
@@ -1978,7 +1977,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       f.setPhase('delivered')
       const sent = await unpaid(wallet)
       expect(sent.stampPayments).toEqual([])
-      expect(handed()).toHaveLength(4)
+      expect(handed()).toHaveLength(3)
       expect(handed()[2]).toEqual(handed()[0])
       expect(handed()[0].contentType).toMatch(
         /^multipart\/form-data; boundary=frank-[0-9a-f]{48}$/,
@@ -2029,7 +2028,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       // The new envelope replaced the old record and is repeated exactly.
       f.setPhase('delivered')
       await unpaid(wallet)
-      expect(f.requests).toHaveLength(4)
+      expect(f.requests).toHaveLength(3)
       expect(toHex(f.requests[2].body)).toBe(toHex(f.requests[1].body))
       expect(f.requests[2].contentType).toBe(f.requests[1].contentType)
     })
@@ -2051,7 +2050,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(sent.preparationTxHashes).toEqual([])
     expect(mockFunded).toEqual([])
     expect(sent.stampPayments.map(p => p.valueWei)).toEqual([DEFAULT_STAMP])
-    expect(f.requests).toHaveLength(2)
+    expect(f.requests).toHaveLength(1)
     expect(
       restoreCanonicalRequest(f.requests[0]).parts.transactions.map(raw =>
         Transaction.from('0x' + toHex(raw)).from!.toLowerCase(),
@@ -2250,12 +2249,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         recipient: f.bob.identity.address,
         items: text('not behind anything'),
       })
-      const hashes = f.requests.map(
-        r => restoreCanonicalRequest(r).identity.payload_hash,
-      )
-      expect(hashes[0]).toBe(next.payloadDigest)
-      expect(hashes).toHaveLength(2)
-      expect(hashes).not.toContain(digest)
+      expect(
+        f.requests.map(r => restoreCanonicalRequest(r).identity.payload_hash),
+      ).toEqual([next.payloadDigest])
       expect(await unlinked()).toEqual([digest, next.payloadDigest])
     })
 
@@ -2589,7 +2585,7 @@ describe('two typed wallets on the open directory', () => {
       items: text('hello alice'),
     })
     inboxPage.mockResolvedValue({
-      records: [inboxRecord(f.requests.length - 2, 9)],
+      records: [inboxRecord(f.requests.length - 1, 9)],
     })
     const atAlice = await f.chain.directMessages.fetchSince({
       wallet: f.alice,
@@ -2903,7 +2899,7 @@ describe('two typed wallets on the open directory', () => {
     // The first message stands in for a sender whose entry cannot be read right now: only the
     // first directory lookup of each read fails.
     const stuck = inboxRecord(0, 5),
-      good = inboxRecord(2, 9)
+      good = inboxRecord(1, 9)
     inboxPage.mockResolvedValue({ records: [stuck, good] })
     const real = bobDirectory.peerCurrent
     let lookups = 0
@@ -3052,7 +3048,7 @@ describe('two typed wallets on the open directory', () => {
     const context = new Uint8Array(mismatched.context)
     context[context.length - 1] ^= 1
     inboxPage.mockResolvedValue({
-      records: [forged, { ...mismatched, context }, inboxRecord(2, 9)],
+      records: [forged, { ...mismatched, context }, inboxRecord(1, 9)],
     })
     const quarantined: [number, string][] = []
     const received = await f.chain.directMessages.fetchSince({
@@ -3084,14 +3080,14 @@ describe('two typed wallets on the open directory', () => {
           items: text(body),
         })
       }
-      const original = inboxRecord(2, 7)
+      const original = inboxRecord(1, 7)
       const delivered = parseFrame(original.delivery)
       if (delivered.kind !== 'parsed' || delivered.typed?.type !== 1)
         throw new Error('fixture')
       const records: ServedRecord[] = [
         inboxRecord(0, 5),
         { ...original, ...spoil(original), submissionIdentity: 'ab'.repeat(32) },
-        inboxRecord(4, 9),
+        inboxRecord(2, 9),
       ]
       return {
         records,
@@ -3241,7 +3237,7 @@ describe('two typed wallets on the open directory', () => {
         items: text('across relays'),
       })
       // Submitted to Alice's own relay, sealed to the key in Bob's entry on the other relay.
-      expect(f.requests).toHaveLength(2)
+      expect(f.requests).toHaveLength(1)
     })
 
   })
@@ -3442,7 +3438,7 @@ describe('a stamp account a native send spends from (#1235)', () => {
       expect(sent.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
         STAMP,
       )
-      expect(f.requests).toHaveLength(2)
+      expect(f.requests).toHaveLength(1)
       // The free funded account alone does not cover the stamp, and the reserved one is not
       // taken: the whole stamp is one payment from the main account. A send funds nothing.
       expect(r.payers(0)).toEqual([r.main])

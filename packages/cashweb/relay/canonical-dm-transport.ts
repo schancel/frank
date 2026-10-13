@@ -959,6 +959,8 @@ export async function submitCanonicalRequest(input: {
     | 'monad-mainnet'
     | string
   request: CanonicalExactRequest
+  /** 20-byte mailbox, hex with or without `0x`, that also stores this exact body. */
+  outbox?: string
   fetch?: CanonicalFetch
   signal?: AbortSignal
 }): Promise<CanonicalAcceptedBody> {
@@ -988,6 +990,13 @@ export async function submitCanonicalRequest(input: {
         headers: {
           'Content-Type': request.contentType,
           'Accept': 'application/json',
+          ...(input.outbox === undefined
+            ? {}
+            : {
+                'X-Frank-Outbox': input.outbox
+                  .replace(/^0x/i, '')
+                  .toLowerCase(),
+              }),
         },
         body: request.body,
         signal: controller.signal,

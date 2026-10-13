@@ -46,12 +46,14 @@ impl CanonicalPaymentInput {
 }
 
 /// New admission consumes a genuine facade snapshot of the recipient, never a decoded
-/// statement as Current. The sender is whoever the request says: the relay neither looks the
-/// sender up nor checks what the context states about the sender's directory entry.
+/// statement as Current. `outbox` is the sender mailbox named by the submission, not an
+/// identity read from the frame. The relay neither looks the sender up nor checks what the
+/// context states about the sender's directory entry.
 pub(crate) fn validate_canonical_payment_set(
     request: crate::http::monad_message_cbor::ExactRequest,
     recipient: &crate::directory_admission::Current,
     recipient_evidence: Option<&crate::directory_admission::HistoricalEvidence>,
+    outbox: Option<Address>,
     network: &str,
     chain_id: u64,
     minimum: u128,
@@ -107,6 +109,7 @@ pub(crate) fn validate_canonical_payment_set(
         sender_t1: checks.sender_directory_hash,
         recipient_t1: recipient_evidence.unwrap_or(&recipient.evidence).hash,
         payload_hash: checks.payload_digest,
+        outbox,
     };
     // Both parties' mailboxes are keyed by the address of their key, so a key that is not a
     // point on the curve is a malformed message, refused here rather than failing in the store.

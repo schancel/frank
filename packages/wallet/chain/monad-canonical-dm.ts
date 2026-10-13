@@ -45,7 +45,6 @@ import {
   openDirectMessage,
   openOwnDirectMessage,
   prepareDirectMessage,
-  prepareSenderSyncCopy,
   type OpenedDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
@@ -266,12 +265,6 @@ export interface StoredMessage {
    * (`reason`) and stored nothing. Absent: not known yet; it is re-sent until it is. */
   outcome?: 'delivered' | 'dead'
   reason?: string
-  /** Unpaid delivery of this message's type 6 into the sender's own mailbox. The relay indexes
-   * it by that clear recipient only. Submitted after the recipient delivery is accepted, and
-   * only these bytes are ever sent for it. */
-  syncRequest?: { body: string; contentType: string }
-  /** The own-mailbox copy reached a terminal relay answer. Absent: submit it again. */
-  syncOutcome?: 'delivered' | 'dead'
   /** A host message points at this attempt, or the user answered for it. */
   accounted?: boolean
   /** Complete bytes exist, but the host has not durably bound their financial effects. */
@@ -313,9 +306,6 @@ export interface UnpaidEnvelope {
    * part of the request that is not fixed by the envelope. A record without it, written by
    * earlier code, cannot be repeated exactly and is not used: the message is sealed again. */
   boundary: string
-  /** Same own-mailbox copy as {@link StoredMessage.syncRequest}. */
-  syncRequest?: { body: string; contentType: string }
-  syncOutcome?: 'delivered' | 'dead'
 }
 export class MemoryOutgoingMessageStore implements OutgoingMessageStore {
   private readonly rows = new Map<string, StoredMessage>()
@@ -624,17 +614,14 @@ const consumerOf = (messageId: Uint8Array) => `frank-dm:${toHex(messageId)}`
 const holderOf = (owner: CanonicalMessagingOwner, consumerId: string) =>
   `${owner.subject}:${consumerId}`
 const isPending = (payment: StoredPayment) => payment.state === 'pending'
-/** The recipient delivery landed and the sender's own copy has not had a terminal answer. */
-const syncOutstanding = (row: { outcome?: string; syncRequest?: unknown; syncOutcome?: string }) =>
-  row.outcome === 'delivered' &&
-  row.syncRequest !== undefined &&
-  row.syncOutcome === undefined
 /** Delivery or payment is not known to be finished: the resend pass still has work on it. */
 const isUnresolved = (row: StoredMessage) =>
   row.outcome === undefined ||
   row.payments.some(isPending) ||
-  owedRepayments(row).length > 0 ||
-  syncOutstanding(row)
+  owedRepayments(row).length > 0
+/** The mailbox address this wallet reads, which is where the same delivery is also filed. */
+const outboxOf = (owner: CanonicalMessagingOwner) =>
+  computeAddress('0x' + owner.subject).slice(2).toLowerCase()
 /** The payments of a delivered message that the chain reverted and that have not been repeated
  * yet: positions in `payments`. The message arrived, so its payment is still owed. */
 function owedRepayments(row: StoredMessage): number[] {
@@ -667,7 +654,6 @@ interface MessageWork {
   submit: Pace
   chain: Pace
   repay: Pace
-  sync: Pace
   /** When a waiter last made the chain look at this message's payments, and how long the next
    * waiter's look must wait after it. One look serves every waiter. */
   lookedAtMs?: number
@@ -697,7 +683,6 @@ function workOf(owner: CanonicalMessagingOwner, consumerId: string): MessageWork
       submit: { passes: 0, next: 1, gap: 0 },
       chain: { passes: 0, next: 1, gap: 0 },
       repay: { passes: 0, next: 1, gap: 0 },
-      sync: { passes: 0, next: 1, gap: 0 },
     }
     map.set(consumerId, work)
   }
@@ -858,89 +843,6 @@ function sealUnpaid(
   }
 }
 
-/** Unpaid own-mailbox copy of the same type 6. A seal failure leaves the recipient delivery
- * to proceed without a copy. */
-function sealSyncRequest(
-  owner: CanonicalMessagingOwner,
-  directory: CanonicalDirectory,
-  senderCurrent: Current,
-  content: Uint8Array,
-): { body: string; contentType: string } | undefined {
-  const roles = owner.roles.create(directory.network, senderCurrent)
-  try {
-    const synced = prepareSenderSyncCopy({
-      network: directory.network,
-      senderCurrent,
-      content,
-      roles,
-    })
-    const framed = unpaidDeliveryRequest(directory.network, synced)
-    return {
-      body: toHex(framed.request.body),
-      contentType: framed.request.contentType,
-    }
-  } catch {
-    return undefined
-  } finally {
-    try {
-      roles.dispose()
-    } catch {
-      // prepareSenderSyncCopy already disposed the session when the seal failed.
-    }
-  }
-}
-
-/** Submits one stored own-mailbox copy. Never throws: the recipient delivery already stands. */
-async function deliverSyncCopy(
-  owner: CanonicalMessagingOwner,
-  directory: CanonicalDirectory,
-  request: { body: string; contentType: string },
-): Promise<'delivered' | 'dead' | 'retry'> {
-  try {
-    const accepted = await submitCanonicalRequest({
-      installedRelayOrigin: owner.relayBaseUrl,
-      expectedNetworkTag: owner.installedNetworkTag,
-      request: restoreCanonicalRequest({
-        body: fromHex(request.body),
-        contentType: request.contentType,
-      }),
-      fetch: directory.fetch,
-    })
-    if (accepted.phase === 'delivered') return 'delivered'
-    if (accepted.phase === 'dead') return 'dead'
-    return 'retry'
-  } catch (error) {
-    if (
-      error instanceof CanonicalTransportError &&
-      error.status !== undefined &&
-      REFUSED_FOR_GOOD.has(error.status)
-    )
-      return 'dead'
-    return 'retry'
-  }
-}
-
-/** Records a terminal answer for one stored own-mailbox copy. A retry leaves the row unchanged. */
-async function recordSync(
-  owner: CanonicalMessagingOwner,
-  directory: CanonicalDirectory,
-  row: StoredMessage,
-): Promise<StoredMessage> {
-  if (!syncOutstanding(row) || row.syncRequest === undefined) return row
-  const answer = await deliverSyncCopy(owner, directory, row.syncRequest)
-  if (answer === 'retry') return row
-  if (answer === 'dead')
-    console.warn(
-      '[monad-canonical-dm] own-mailbox copy was refused; it is not retried',
-    )
-  const next: StoredMessage = {
-    ...owner.messages.get(row.consumerId)!,
-    syncOutcome: answer,
-  }
-  await owner.messages.put(next)
-  return next
-}
-
 /** The relay request of one paid message: the delivery envelope naming each signed payment, the
  * context, and the payments' bytes, frozen exactly as they will be sent every time. */
 function freezePaidMessage(
@@ -1023,6 +925,7 @@ async function submitStored(
         body: fromHex(row.request.body),
         contentType: row.request.contentType,
       }),
+      outbox: outboxOf(owner),
       fetch: directory.fetch,
     })
   } catch (error) {
@@ -1526,13 +1429,8 @@ async function resend(
   const freeResends = Promise.all(
     [...(options.digests ?? [])].map(async digest => {
       const found = owner.messages.unpaidByDigest(digest)
-      if (!found || found.outcome === 'dead') return
-      if (
-        found.outcome === 'delivered' &&
-        (found.syncOutcome !== undefined || found.syncRequest === undefined)
-      )
+      if (!found || found.outcome === 'dead' || found.outcome === 'delivered')
         return
-      const syncOnly = found.outcome === 'delivered'
       const consumerId = consumerOf(fromHex(found.messageId))
       const work = workOf(owner, consumerId)
       if (work.creating) return
@@ -1544,68 +1442,44 @@ async function resend(
       work.busy = new Promise<void>(resolve => (ended = resolve))
       try {
         let envelope = owner.messages.unpaid(found.messageId)!
-        if (!syncOnly) {
-          await validateOriginalEnvelope(owner, directory, found)
-          if (envelope.exposurePending) {
-            if (!options.onEnvelopeDurable) return
-            await owner.lifetime(async () =>
-              options.onEnvelopeDurable!(
-                digest,
-                formatUuid(fromHex(found.messageId)),
-              ),
-            )
-            const { exposurePending: _pending, ...authorized } = envelope
-            await owner.lifetime(() =>
-              owner.messages.setUnpaid(found.messageId, authorized),
-            )
-            envelope = authorized
-          }
-          const accepted = await submitCanonicalRequest({
-            installedRelayOrigin: owner.relayBaseUrl,
-            expectedNetworkTag: owner.installedNetworkTag,
-            request: freezeCanonicalRequest(
-              {
-                delivery: fromHex(envelope.delivery),
-                context: fromHex(envelope.context),
-                transactions: [],
-              },
-              envelope.boundary,
+        await validateOriginalEnvelope(owner, directory, found)
+        if (envelope.exposurePending) {
+          if (!options.onEnvelopeDurable) return
+          await owner.lifetime(async () =>
+            options.onEnvelopeDurable!(
+              digest,
+              formatUuid(fromHex(found.messageId)),
             ),
-            fetch: directory.fetch,
-          })
-          if (accepted.phase === 'delivered' || accepted.phase === 'dead') {
-            envelope = {
-              ...envelope,
-              outcome: accepted.phase as 'delivered' | 'dead',
-              ...(accepted.phase === 'dead' ? { reason: accepted.reason } : {}),
-            }
-            await owner.lifetime(() =>
-              owner.messages.setUnpaid(found.messageId, envelope),
-            )
-          }
-        }
-        if (
-          envelope.outcome === 'delivered' &&
-          envelope.syncRequest !== undefined &&
-          envelope.syncOutcome === undefined
-        ) {
-          const answer = await deliverSyncCopy(
-            owner,
-            directory,
-            envelope.syncRequest,
           )
-          if (answer !== 'retry') {
-            if (answer === 'dead')
-              console.warn(
-                '[monad-canonical-dm] own-mailbox copy was refused; it is not retried',
-              )
-            await owner.lifetime(() =>
-              owner.messages.setUnpaid(found.messageId, {
-                ...owner.messages.unpaid(found.messageId)!,
-                syncOutcome: answer,
-              }),
-            )
+          const { exposurePending: _pending, ...authorized } = envelope
+          await owner.lifetime(() =>
+            owner.messages.setUnpaid(found.messageId, authorized),
+          )
+          envelope = authorized
+        }
+        const accepted = await submitCanonicalRequest({
+          installedRelayOrigin: owner.relayBaseUrl,
+          expectedNetworkTag: owner.installedNetworkTag,
+          request: freezeCanonicalRequest(
+            {
+              delivery: fromHex(envelope.delivery),
+              context: fromHex(envelope.context),
+              transactions: [],
+            },
+            envelope.boundary,
+          ),
+          outbox: outboxOf(owner),
+          fetch: directory.fetch,
+        })
+        if (accepted.phase === 'delivered' || accepted.phase === 'dead') {
+          envelope = {
+            ...envelope,
+            outcome: accepted.phase as 'delivered' | 'dead',
+            ...(accepted.phase === 'dead' ? { reason: accepted.reason } : {}),
           }
+          await owner.lifetime(() =>
+            owner.messages.setUnpaid(found.messageId, envelope),
+          )
         }
       } finally {
         work.busy = undefined
@@ -1647,13 +1521,9 @@ async function resend(
               )
             row = submitted.row
             // Just delivered: its payments are broadcast in this same pass.
-            if (row.outcome === 'delivered') {
+            if (row.outcome === 'delivered')
               work.chain = { passes: 0, next: 1, gap: 0 }
-              if (syncOutstanding(row))
-                row = await recordSync(owner, directory, row)
-            }
-          } else if (syncOutstanding(row) && due(work.sync, SUBMIT_EVERY, now))
-            row = await recordSync(owner, directory, row)
+          }
           if (
             row.payments.some(isPending) &&
             due(work.chain, CHAIN_EVERY, now)
@@ -1893,7 +1763,6 @@ async function send(
         throw new DirectMessageArgumentError('messageId')
       let request: ReturnType<typeof freezeCanonicalRequest>
       let digest: string
-      let freshSync: { body: string; contentType: string } | undefined
       if (kept) {
         digest = kept.digest
         request = freezeCanonicalRequest(
@@ -1916,12 +1785,6 @@ async function send(
           ...conversationName,
           items,
         })
-        freshSync = sealSyncRequest(
-          owner,
-          directory,
-          senderCurrent,
-          unpaid.content,
-        )
         digest = unpaid.digest
         request = unpaid.request
         if (name)
@@ -1931,7 +1794,6 @@ async function send(
             context: toHex(unpaid.context),
             recipientSubject: peer.subject,
             boundary: unpaid.boundary,
-            ...(freshSync ? { syncRequest: freshSync } : {}),
             ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
             ...(params.onEnvelopeDurable ? { hostBound: true as const } : {}),
           })
@@ -1954,6 +1816,7 @@ async function send(
         installedRelayOrigin: owner.relayBaseUrl,
         expectedNetworkTag: owner.installedNetworkTag,
         request,
+        outbox: outboxOf(owner),
         fetch: directory.fetch,
       })
       if (accepted.phase === 'dead') {
@@ -1969,29 +1832,10 @@ async function send(
       // Anything but delivered is the caller's error to act on; the envelope stays for its repeat.
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
-      const syncRequest =
-        (name ? owner.messages.unpaid(name)?.syncRequest : undefined) ??
-        freshSync
-      const priorSync = name
-        ? owner.messages.unpaid(name)?.syncOutcome
-        : undefined
-      const syncOutcome =
-        priorSync ??
-        (syncRequest
-          ? await deliverSyncCopy(owner, directory, syncRequest)
-          : undefined)
-      if (syncOutcome === 'dead')
-        console.warn(
-          '[monad-canonical-dm] own-mailbox copy was refused; it is not retried',
-        )
       if (name) {
         const envelope = owner.messages.unpaid(name)!
-        const terminal =
-          syncOutcome === 'retry' || syncOutcome === undefined
-            ? {}
-            : { syncOutcome }
         await owner.messages.setUnpaid(name, envelope.hostBound
-          ? { ...envelope, outcome: 'delivered', ...terminal }
+          ? { ...envelope, outcome: 'delivered' }
           : undefined)
       }
       return unpaidResult(digest)
@@ -2105,12 +1949,6 @@ async function send(
       digestBytes,
       signed.map(payment => payment.rawTx),
     )
-    const syncRequest = sealSyncRequest(
-      owner,
-      directory,
-      senderCurrent,
-      sealed.content,
-    )
     // The complete message and its signed payments are on stable storage before any byte is
     // handed to anything that can broadcast. From here only these bytes are ever sent for it.
     let row: StoredMessage = {
@@ -2119,7 +1957,6 @@ async function send(
       digest,
       recipientSubject: toHex(payload.typed.recipient.keyBytes),
       request: { body: toHex(request.body), contentType: request.contentType },
-      ...(syncRequest ? { syncRequest } : {}),
       payments: signed.map(payment => ({ ...payment, state: 'pending' })),
       createdAt: Date.now(),
       ...(params.onEnvelopeDurable ? { exposurePending: true as const } : {}),
@@ -2171,8 +2008,6 @@ async function send(
           )
         throw new MonadStampPendingAttemptError([digest])
       }
-      if (syncOutstanding(row))
-        row = await owner.lifetime(() => recordSync(owner, directory, row))
       // The relay has the message. Now, and only now, this wallet broadcasts the payments
       // itself as well; the relay does the same, so the usual answer is "already known".
       // "Spent" is learned from the chain by the resend pass, never from either answer.

@@ -18,6 +18,7 @@ import { inspectCanonicalPreparedEnvelope } from './monad-stamp-stealth'
 import {
   Provider,
   Transaction,
+  computeAddress,
   concat,
   getBytes,
   hexlify,
@@ -1397,10 +1398,18 @@ export class MonadCanonicalStampClient {
         )
         // Step 2. No queue is held from here until step 3.
         this.wallet.walletState.assertOpen()
+        const identity = this.wallet.identity
         const accepted = await submitCanonicalRequest({
           installedRelayOrigin: this.wallet.relayBaseUrl,
           expectedNetworkTag: this.wallet.installedNetworkTag,
           request: attempt.request,
+          ...(identity
+            ? {
+                outbox: computeAddress(
+                  '0x' + toHex(identity.compressedPubKey),
+                ).slice(2),
+              }
+            : {}),
           ...options,
         })
         if (accepted.phase === 'retained') return accepted

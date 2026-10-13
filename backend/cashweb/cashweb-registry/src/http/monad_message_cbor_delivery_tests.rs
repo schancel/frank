@@ -325,6 +325,7 @@ impl Relay {
         let response = reqwest::Client::new()
             .put(format!("{}/message", self.url))
             .header("content-type", request.content_type())
+            .header("x-frank-outbox", hex::encode(self.sender().0))
             .body(request.body().to_vec())
             .send()
             .await
@@ -371,7 +372,7 @@ impl Relay {
             .map(|(claim, direction)| (claim.policy.payload_hash, *direction))
             .collect()
     }
-    /// The message is in the recipient's inbox only. The relay does not index a sender.
+    /// The same request is in the recipient's inbox and the sender's outbox.
     fn assert_delivered_to_both(&self, request: &ExactRequest) {
         let hash = payload_hash(request);
         assert_eq!(self.inbox(), [hash]);
@@ -379,7 +380,10 @@ impl Relay {
             self.mailbox(self.recipient()),
             [(hash, MailboxDirection::In)]
         );
-        assert!(self.mailbox(self.sender()).is_empty());
+        assert_eq!(
+            self.mailbox(self.sender()),
+            [(hash, MailboxDirection::Out)]
+        );
     }
     fn assert_nothing_stored(&self, request: &ExactRequest) {
         assert!(self.owner().find_request(request).unwrap().is_none());
@@ -504,7 +508,8 @@ async fn a_message_to_oneself_is_in_the_mailbox_once() {
 
 /// The relay does not look the sender up. A message from someone with no directory entry
 /// here, paid or free, is checked against the recipient and its payments like any other and
-/// delivered. Who wrote it is for the recipient's client to check when it opens the message.
+/// delivered. The outbox address on the submission is filed as given. Who wrote the
+/// ciphertext is for the recipient's client to check when it opens the message.
 #[tokio::test]
 async fn a_message_from_a_sender_with_no_entry_on_this_relay_is_delivered() {
     // Only the recipient has published here.
@@ -520,8 +525,14 @@ async fn a_message_from_a_sender_with_no_entry_on_this_relay_is_delivered() {
         delivered(&relay.put(request).await, request);
     }
     assert_eq!(relay.inbox(), [payload_hash(&paid), payload_hash(&free)]);
-    // The clear recipient is the only mailbox index. No directory entry reveals a sender.
-    assert!(relay.mailbox(relay.sender()).is_empty());
+    // The named outbox is filed without a directory lookup of the sender.
+    assert_eq!(
+        relay.mailbox(relay.sender()),
+        [
+            (payload_hash(&paid), MailboxDirection::Out),
+            (payload_hash(&free), MailboxDirection::Out)
+        ]
+    );
     assert_eq!(
         relay.mailbox(relay.recipient()),
         [
@@ -862,7 +873,7 @@ async fn a_repeated_submit_stores_once_and_broadcasts_again() {
     assert_eq!(left, right);
     assert_eq!(relay.broadcasts().len(), 5);
     assert_eq!(relay.inbox().len(), 2);
-    assert!(relay.mailbox(relay.sender()).is_empty());
+    assert_eq!(relay.mailbox(relay.sender()).len(), 2);
     assert_eq!(relay.mailbox(relay.recipient()).len(), 2);
     relay.stop().await;
 }
@@ -879,6 +890,10 @@ async fn a_submit_abandoned_while_the_node_hangs_is_already_delivered_and_nothin
     let submit = || {
         let mut headers = HeaderMap::new();
         headers.insert("content-type", request.content_type().parse().unwrap());
+        headers.insert(
+            "x-frank-outbox",
+            hex::encode(relay.sender().0).parse().unwrap(),
+        );
         handle_put(
             Extension(relay.server.clone()),
             headers,
@@ -925,6 +940,7 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
         request.clone(),
         &recipient,
         None,
+        Some(relay.sender()),
         NETWORK,
         CHAIN_ID,
         1,
@@ -976,6 +992,18 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
             .unwrap()
             .len(),
         1
+    );
+    // The first store named the outbox. A later exact body, even without the header, keeps that row.
+    let outbox = stored.policy.outbox.expect("the first store named an outbox");
+    let rows: Vec<_> = owner
+        .mailbox(outbox, 0, None, 10)
+        .unwrap()
+        .into_iter()
+        .map(|(claim, direction)| (claim.policy.payload_hash, direction))
+        .collect();
+    assert_eq!(
+        rows,
+        [(stored.policy.payload_hash, MailboxDirection::Out)]
     );
     http_stop.send(()).unwrap();
     http_task.await.unwrap();
@@ -1176,7 +1204,7 @@ async fn a_mailbox_keeps_accepting_messages_far_past_the_old_limits() {
         relay.owner().claim(input, now_ms()).unwrap();
     }
     assert_eq!(relay.inbox().len(), MESSAGES as usize);
-    assert!(relay.mailbox(relay.sender()).is_empty());
+    assert_eq!(relay.mailbox(relay.sender()).len(), MESSAGES as usize);
     assert_eq!(relay.mailbox(relay.recipient()).len(), MESSAGES as usize);
     // One more over HTTP, paid, is delivered and broadcast like the first.
     let last = message(200_000, 2);

@@ -6,6 +6,7 @@
 //! |---|---|---|
 //! | `R` + payload hash | the stored message | the request bytes as submitted, and when it was delivered |
 //! | `I` + recipient + time + payload hash | payload hash | the clear recipient's inbox, in delivery order |
+//! | `O` + outbox + time + payload hash | payload hash | the same message in the sender's mailbox |
 //! | `T` + transaction hash | payload hash | a payment already used, so it pays for one message only |
 //! | `L` | time | the last delivery time issued |
 //! | `N` + recipient + epoch + nonce | expiry | a login challenge already used |
@@ -39,8 +40,9 @@ pub(crate) const OLD_STORE_EXTENSIONS: &[&str] = &["monad-dm-cbor-v1"];
 const ROW_VERSION: i128 = 2;
 
 /// What admission established about a message, kept with it. The clear recipient is the only
-/// identity. `sender_m` and `sender_t1` are the context's message key and directory hash; the
-/// relay does not look them up and does not index a sender.
+/// identity in the frame. `outbox`, when the submission names one, is the address of the
+/// sender's mailbox and is not read from the frame. `sender_m` and `sender_t1` are the
+/// context's message key and directory hash; the relay does not look them up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FrozenCanonicalPolicy {
     pub(crate) network: String,
@@ -53,6 +55,8 @@ pub(crate) struct FrozenCanonicalPolicy {
     pub(crate) sender_t1: [u8; 32],
     pub(crate) recipient_t1: [u8; 32],
     pub(crate) payload_hash: [u8; 32],
+    /// Address whose mailbox holds this same delivery. Absent when the submission named none.
+    pub(crate) outbox: Option<Address>,
 }
 impl FrozenCanonicalPolicy {
     pub(crate) fn recipient(&self) -> Result<Address> {
@@ -80,6 +84,7 @@ impl MailboxDirection {
 #[derive(Debug, Clone)]
 pub(crate) struct FinalizedEnvelope {
     pub(crate) recipient: Address,
+    pub(crate) outbox: Option<Address>,
     pub(crate) payload_hash: [u8; 32],
     pub(crate) submission_identity: [u8; 32],
     pub(crate) timestamp: i64,
@@ -223,7 +228,9 @@ impl Owner {
         self.with(false, |db| find_request_locked(db, request))
             .map(Option::flatten)
     }
-    /// Store a checked message under the clear recipient's inbox only. An exact repeat returns
+    /// Store a checked message under the clear recipient's inbox and, when the submission names
+    /// a different outbox, under that mailbox too. Both keys point at one stored request.
+    /// An exact repeat returns
     /// what is already stored. A refusal (a payment already used for another message) leaves
     /// nothing behind. The number of messages already stored never refuses one.
     ///
@@ -261,6 +268,11 @@ impl Owner {
                 batch.put(row_key(&hash), encode_row(&message)?);
                 let recipient = message.policy.recipient()?;
                 batch.put(mailbox_key(b'I', recipient, delivered_at, &hash), hash);
+                if let Some(outbox) = message.policy.outbox {
+                    if outbox != recipient {
+                        batch.put(mailbox_key(b'O', outbox, delivered_at, &hash), hash);
+                    }
+                }
                 write(db, batch)?;
                 Ok((message, true))
             })?
@@ -269,6 +281,7 @@ impl Owner {
             if let Ok(recipient) = message.policy.recipient() {
                 let _ = self.broadcast.send(FinalizedEnvelope {
                     recipient,
+                    outbox: message.policy.outbox,
                     payload_hash: message.policy.payload_hash,
                     submission_identity: message.request.submission_identity(),
                     timestamp: message.delivered_at,
@@ -381,8 +394,9 @@ impl Owner {
         })
         .map(|rows| rows.unwrap_or_default())
     }
-    /// Up to `limit` messages whose clear recipient is `address`, at or after `since` and strictly
-    /// after the position `after`, in delivery order. The relay has no sender index.
+    /// Up to `limit` messages `address` received or sent, at or after `since` and strictly
+    /// after the position `after`, in delivery order. Both scans start at that position.
+    /// An outbox row is the same stored request as the recipient's inbox row.
     pub(crate) fn mailbox(
         &self,
         address: Address,
@@ -392,19 +406,42 @@ impl Owner {
     ) -> Result<Vec<(Claim, MailboxDirection)>> {
         self.with(false, |db| {
             let mut received = Entries::new(db, b'I', address, since, after);
+            let mut sent = Entries::new(db, b'O', address, since, after);
             let mut result = Vec::new();
             if limit == 0 {
                 return Ok(result);
             }
+            let (mut next_received, mut next_sent) = (received.next()?, sent.next()?);
             while result.len() < limit {
-                let Some((time, hash)) = received.next()? else {
-                    break;
+                let take_received = match (next_received, next_sent) {
+                    (Some(received), Some(sent)) => received <= sent,
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    (None, None) => break,
+                };
+                let (time, hash) = if take_received {
+                    let entry = next_received.expect("checked above");
+                    next_received = received.next()?;
+                    entry
+                } else {
+                    let entry = next_sent.expect("checked above");
+                    next_sent = sent.next()?;
+                    entry
                 };
                 let message = load_delivered(db, &hash, time)?;
-                if message.policy.recipient() != Ok(address) {
+                let direction = if take_received {
+                    MailboxDirection::In
+                } else {
+                    MailboxDirection::Out
+                };
+                let party = match direction {
+                    MailboxDirection::In => message.policy.recipient().ok(),
+                    MailboxDirection::Out => message.policy.outbox,
+                };
+                if party != Some(address) {
                     return Err(CanonicalError::Unavailable);
                 }
-                result.push((message, MailboxDirection::In));
+                result.push((message, direction));
             }
             Ok(result)
         })
@@ -612,6 +649,7 @@ fn encode_row(message: &Claim) -> Result<Vec<u8>> {
         blob(p.sender_t1),
         blob(p.recipient_t1),
         blob(p.payload_hash),
+        blob(p.outbox.map(|address| address.0.to_vec()).unwrap_or_default()),
     ]);
     encode_canonical(&cbor_map(vec![
         (0, int(ROW_VERSION)),
@@ -649,7 +687,7 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
     else {
         return Err(CanonicalError::Unavailable);
     };
-    if number(version)? != ROW_VERSION || p.len() != 10 {
+    if number(version)? != ROW_VERSION || p.len() != 11 {
         return Err(CanonicalError::Unavailable);
     }
     let request = ExactRequest::parse(bytes(body)?.to_vec(), text(content_type)?.into())
@@ -665,6 +703,14 @@ fn load(db: &rocksdb::DB, hash: &[u8; 32]) -> Result<Option<Claim>> {
         sender_t1: fixed(&p[7])?,
         recipient_t1: fixed(&p[8])?,
         payload_hash: fixed(&p[9])?,
+        outbox: match bytes(&p[10])? {
+            [] => None,
+            bytes => Some(Address(
+                bytes
+                    .try_into()
+                    .map_err(|_| CanonicalError::Unavailable)?,
+            )),
+        },
     };
     if policy.payload_hash != *hash {
         return Err(CanonicalError::Unavailable);

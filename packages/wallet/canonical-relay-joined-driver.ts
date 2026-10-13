@@ -304,6 +304,7 @@ async function openWallet(
     },
     walletState: state,
     canonicalRoles: material.canonicalRoles!,
+    identity: material.identity,
     installedNetworkTag: NETWORK_TAG,
     relayBaseUrl: config.principals[1].endpoint,
     runCanonicalExclusive: operation =>

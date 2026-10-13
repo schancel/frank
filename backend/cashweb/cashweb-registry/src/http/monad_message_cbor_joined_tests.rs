@@ -14,6 +14,14 @@ const JOINED_CLOCK_SECONDS: &str = "1700000100";
 const JOINED_STAMP_VALUE_WEI: u128 = 1500;
 const JOINED_TEXT: &str = "joined wallet to native relay";
 
+/// The mailbox address of a directory subject: the same address the wallet names as its outbox.
+fn sender_mailbox(subject_hex: &str) -> crate::monad_http::Address {
+    crate::monad_stamp_stealth::recipient_address_from_public_key(
+        &hex::decode(subject_hex).unwrap(),
+    )
+    .unwrap()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ChainMode {
     /// Every broadcast is accepted. Nothing is ever mined: there are no receipts to wait for.
@@ -290,6 +298,7 @@ impl Joined {
             request.clone(),
             &recipient,
             None,
+            None,
             "monad-testnet",
             10143,
             1,
@@ -346,6 +355,10 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
         assert_eq!(delivered["workflowAcknowledged"], true);
         assert_eq!(statuses(&delivered["pool"]), ["spent", "spent"]);
         let claim = joined.claim(&freeze).expect("the relay stored the message");
+        assert_eq!(
+            claim.policy.outbox,
+            Some(sender_mailbox(&joined.fixture.accounts[0].subject))
+        );
         let committed = claim.delivered_at;
         assert_eq!(delivered["accepted"]["mailbox_committed_at_ms"], committed);
         assert!(claim.request.exact_equal(&request));
@@ -424,6 +437,10 @@ async fn joined_real_wallet_message_is_delivered_and_opened_although_the_node_re
         assert_eq!(joined.chain.count("eth_sendRawTransaction"), 2);
         assert_eq!(joined.chain.broadcasts().len(), 1);
         let claim = joined.claim(&freeze).expect("the relay stored the message");
+        assert_eq!(
+            claim.policy.outbox,
+            Some(sender_mailbox(&joined.fixture.accounts[0].subject))
+        );
         assert!(claim.delivered_at > 0);
 
         let read = wallet_phase(&joined.work, "recipient-read").await;

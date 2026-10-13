@@ -480,8 +480,11 @@ outer/inner suite, envelope-version, KEM, or routing mismatch fails as one
 non-oracular `cryptographic` result at stage 10.1 before payment ownership,
 durable storage, or forwarding. The recipient can construct the same
 authenticated-mode transcript and therefore no ciphertext is a transferable
-proof of sender authorship. A sender's own devices accept their cross-device
-copy only when `openAsSender` recomputes the ephemeral from the messaging root.
+proof of sender authorship. The same delivery bytes are filed in the clear
+recipient's inbox and, when the submission names an outbox address outside the
+frame, in that mailbox. The sender's devices open those bytes with
+`openAsSender`, which recomputes the ephemeral from the messaging root. A
+recipient's forgery fails that check.
 
 Because this context is the complete schema-2 field contract, a reader that supports type 5
 through schema 2 MUST reject a higher type-5 schema as `unsupported` at stage 7 rather than

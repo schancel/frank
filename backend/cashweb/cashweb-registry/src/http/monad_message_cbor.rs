@@ -93,9 +93,8 @@ pub(crate) async fn handle_put(
                 "undeliverable",
             );
         };
-        // The sender is whoever the message says. The relay does not look the sender up:
-        // checking who wrote a message is the job of the recipient's client, which opens it
-        // with the key the sender published.
+        // The frame names no sender. An outbox address, when the submission carries one, files
+        // the same request in that mailbox. The relay does not look a sender up.
         let Principals {
             recipient,
             recipient_t1,
@@ -113,6 +112,7 @@ pub(crate) async fn handle_put(
             request,
             &recipient_current,
             historical.as_ref(),
+            outbox_header(&headers)?,
             descriptor.cbor_identifier,
             descriptor.evm_chain_id,
             runtime.min_value_wei(),
@@ -208,6 +208,25 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|time| time.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+/// `X-Frank-Outbox` is the 20-byte mailbox that also receives this exact delivery.
+/// Absent files the recipient only. A malformed or repeated value is refused.
+fn outbox_header(headers: &HeaderMap) -> Result<Option<Address>> {
+    let mut values = headers.get_all("x-frank-outbox").iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(CanonicalError::Invalid);
+    }
+    let value = value.to_str().map_err(|_| CanonicalError::Invalid)?;
+    let hex = value.strip_prefix("0x").unwrap_or(value);
+    if hex.len() != 40 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CanonicalError::Invalid);
+    }
+    let mut address = [0u8; 20];
+    hex::decode_to_slice(hex, &mut address).map_err(|_| CanonicalError::Invalid)?;
+    Ok(Some(Address(address)))
 }
 fn single_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
     let mut values = headers.get_all(name).iter();
@@ -1401,13 +1420,15 @@ pub(crate) async fn handle_mailbox_ws(
                 res = rx.recv() => {
                     match res {
                         Ok(envelope) => {
-                            if envelope.recipient == address {
+                            let inbound = envelope.recipient == address;
+                            let outbound = envelope.outbox == Some(address) && !inbound;
+                            if inbound || outbound {
                                 if seen_payloads.contains(&envelope.payload_hash) {
                                     continue;
                                 }
                                 seen_payloads.insert(envelope.payload_hash);
                                 let push = MailboxWsPush {
-                                    direction: "in",
+                                    direction: if inbound { "in" } else { "out" },
                                     submission_identity: hex::encode(envelope.submission_identity),
                                     payload_hash: hex::encode(envelope.payload_hash),
                                     timestamp_ms: envelope.timestamp,

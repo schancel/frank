@@ -393,8 +393,7 @@ export default defineComponent({
         | { focus?: () => void; nativeEl?: HTMLElement; $el?: HTMLElement }
         | undefined
       box?.focus?.()
-      const el =
-        box?.nativeEl ?? box?.$el?.querySelector?.('textarea, input')
+      const el = box?.nativeEl ?? box?.$el?.querySelector?.('textarea, input')
       if (el instanceof HTMLElement && document.activeElement !== el) {
         el.focus()
       }

@@ -454,10 +454,7 @@ export default defineComponent({
       if (this.address && this.address === idOrAddress) return true
       if (this.conversation?.id && this.conversation.id === idOrAddress)
         return true
-      if (
-        this.recipientAddress &&
-        this.recipientAddress === idOrAddress
-      )
+      if (this.recipientAddress && this.recipientAddress === idOrAddress)
         return true
       const storeConv =
         this.chatStore?.conversations?.[idOrAddress] ??
@@ -1624,7 +1621,10 @@ export default defineComponent({
     'chatStore.composeFocusRequest': {
       deep: true,
       handler(
-        req: { conversationId: string | null; nonce: number } | null | undefined,
+        req:
+          | { conversationId: string | null; nonce: number }
+          | null
+          | undefined,
       ) {
         if (!req || req.nonce <= this.lastHandledFocusNonce) return
         if (this.matchesConversation(req.conversationId)) {

@@ -8,6 +8,7 @@ import { canonicalEmailAddress } from '../mta/outbound-delivery';
 import { emailItemKey, mailKey } from '../rfc/mail-keys';
 import { assertHeaderValue, parseMessageId } from '../rfc/message-headers';
 import type { FrankInboundRejectReason } from '../types';
+import { wkdHashLocalPart } from '../wkd/wkd';
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const MAX_SUBJECT_BYTES = 600;
@@ -80,12 +81,15 @@ function renderMail(
   replyToAddress: string,
   recipient: string,
   receivedTime: number,
+  openPgpUrl?: string,
+  overrideTextBody?: string,
 ): Uint8Array {
   const subject = item.subject.trim();
   assertHeaderValue(subject);
   if (Buffer.byteLength(subject, 'utf8') > MAX_SUBJECT_BYTES) throw new Error('Email subject is too long');
   const mailSubject = encodedSubject(subject);
-  const normalizedBody = item.textBody.replace(/\r?\n/g, '\r\n');
+  const bodySource = overrideTextBody ?? item.textBody;
+  const normalizedBody = bodySource.replace(/\r?\n/g, '\r\n');
   const use7Bit = isSafe7BitBody(normalizedBody);
   const transferEncoding = use7Bit ? '7bit' : 'base64';
   const renderedBody = use7Bit
@@ -100,6 +104,7 @@ function renderMail(
     `Message-ID: ${rfcMessageId}`,
     ...(item.inReplyTo ? [`In-Reply-To: ${item.inReplyTo}`] : []),
     ...(item.references?.length ? [`References: ${item.references.join(' ')}`] : []),
+    ...(openPgpUrl ? [`OpenPGP: url=${openPgpUrl}`] : []),
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=utf-8',
     `Content-Transfer-Encoding: ${transferEncoding}`,
@@ -116,6 +121,13 @@ export interface JournaledFrankOutboundOptions {
   readonly now?: () => number;
   readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
   readonly useUserIdFallback?: boolean;
+  readonly discoverRecipientWkdKey?: (
+    address: string,
+  ) => Promise<{ keyBytes: Uint8Array; url: string } | undefined>;
+  readonly encryptBodyWithOpenPgp?: (
+    plaintext: string,
+    recipientKeys: Uint8Array[],
+  ) => Promise<string>;
 }
 
 /**
@@ -131,6 +143,13 @@ export class JournaledFrankOutbound {
   private readonly now: () => number;
   private readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
   private readonly useUserIdFallback: boolean;
+  private readonly discoverRecipientWkdKey?: (
+    address: string,
+  ) => Promise<{ keyBytes: Uint8Array; url: string } | undefined>;
+  private readonly encryptBodyWithOpenPgp?: (
+    plaintext: string,
+    recipientKeys: Uint8Array[],
+  ) => Promise<string>;
 
   constructor(options: JournaledFrankOutboundOptions) {
     this.journal = options.journal;
@@ -146,6 +165,8 @@ export class JournaledFrankOutbound {
     this.now = options.now ?? Date.now;
     this.resolveSenderUsername = options.resolveSenderUsername;
     this.useUserIdFallback = options.useUserIdFallback ?? Boolean(options.resolveSenderUsername);
+    this.discoverRecipientWkdKey = options.discoverRecipientWkdKey;
+    this.encryptBodyWithOpenPgp = options.encryptBodyWithOpenPgp;
   }
 
   private async resolveFromLocalPart(item: EmailItem, scope: string, alias: string): Promise<string> {
@@ -219,6 +240,18 @@ export class JournaledFrankOutbound {
     const replyToAddress = `${alias}@${this.domain}`;
     const fromLocalPart = await this.resolveFromLocalPart(item, scope, alias);
     const fromAddress = `${fromLocalPart}@${this.domain}`;
+    const openPgpUrl = `https://${this.domain}/.well-known/openpgpkey/hu/${wkdHashLocalPart(fromLocalPart)}?l=${encodeURIComponent(fromLocalPart)}`;
+    let effectiveBody: string | undefined;
+    if (this.discoverRecipientWkdKey) {
+      try {
+        const wkdKey = await this.discoverRecipientWkdKey(recipient);
+        if (wkdKey && this.encryptBodyWithOpenPgp) {
+          effectiveBody = await this.encryptBodyWithOpenPgp(item.textBody, [wkdKey.keyBytes]);
+        }
+      } catch {
+        // WKD discovery or optional encryption failure falls back to standard delivery.
+      }
+    }
     const input = {
       ...base,
       outcome: 'bridged' as const,
@@ -235,7 +268,16 @@ export class JournaledFrankOutbound {
     let bytes: Uint8Array;
     try {
       const fromHeader = formatFromHeader(fromAddress, item.from?.name);
-      bytes = renderMail(item, first.rfcMessageId, fromHeader, replyToAddress, recipient, message.receivedTime);
+      bytes = renderMail(
+        item,
+        first.rfcMessageId,
+        fromHeader,
+        replyToAddress,
+        recipient,
+        message.receivedTime,
+        openPgpUrl,
+        effectiveBody,
+      );
     } catch {
       return reject('header_unsafe');
     }

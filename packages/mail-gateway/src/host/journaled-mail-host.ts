@@ -36,6 +36,10 @@ export interface JournaledMailHostOptions {
   readonly operatorAccountAddress?: string;
   readonly operatorForwardEmail?: string;
   readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
+  readonly resolveAccountPublicKey?: (
+    accountAddress: string,
+    localPart?: string,
+  ) => Promise<Uint8Array | string | undefined>;
   readonly nativeSmtp?: {
     readonly hostname: string;
     readonly tlsKey: Buffer;
@@ -152,22 +156,42 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       ...(input.relayBaseUrl ? { relayUrl: input.relayBaseUrl } : {}),
       ...(input.operatorAccountAddress ? { operatorAccountAddress: input.operatorAccountAddress } : {}),
     };
+    const issuedMailboxLookup = createIssuedMailboxLookup(journal, lookupOptions);
     const importer = new ResendInboundWebhook({
       port: createResendInboundPort(input.resendApiKey),
       webhookSecret: input.resendWebhookSecret,
       gatewayDomain: input.gatewayDomain,
       rawOrigins: input.resendRawOrigins,
-      issuedMailboxLookup: createIssuedMailboxLookup(journal, lookupOptions),
+      issuedMailboxLookup,
       sender: inbound,
       stampValue: input.inboundStampValue,
     });
+    const gatewayPubKey = (
+      input.wallet.identity as unknown as {
+        signingPublicKey?: Uint8Array | string;
+        publicKey?: Uint8Array | string;
+      }
+    )?.signingPublicKey ??
+      (input.wallet.identity as unknown as { publicKey?: Uint8Array | string })?.publicKey;
     const webhook = new ResendWebhookHttp({
-      importer, host: input.webhookHost, port: input.webhookPort,
+      importer,
+      host: input.webhookHost,
+      port: input.webhookPort,
+      wkd: {
+        gatewayDomain: input.gatewayDomain,
+        journal,
+        issuedMailboxLookup,
+        ...(input.relayBaseUrl ? { relayUrl: input.relayBaseUrl } : {}),
+        ...(gatewayPubKey ? { gatewayPublicKey: gatewayPubKey } : {}),
+        ...(input.resolveAccountPublicKey
+          ? { resolveAccountPublicKey: input.resolveAccountPublicKey }
+          : {}),
+      },
     });
     const smtp = input.nativeSmtp && new JournaledSmtpServer({
       ingress: new JournaledSmtpIngress({
         gatewayDomain: input.gatewayDomain,
-        issuedMailboxLookup: createIssuedMailboxLookup(journal, lookupOptions),
+        issuedMailboxLookup,
         sender: inbound,
         stampValue: input.inboundStampValue,
       }),

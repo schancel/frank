@@ -26,6 +26,7 @@ export * from './relay/journaled-inbound-send';
 export * from './relay/journaled-frank-mailbox';
 export * from './relay/journaled-frank-outbound';
 export * from './dns/domain-resolver';
+export * from './wkd/wkd';
 
 import { BlobStore, createBlobStore } from './storage/blob-store';
 import { CreditLedger } from './ledger/credit-ledger';

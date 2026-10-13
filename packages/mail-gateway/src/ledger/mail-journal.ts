@@ -81,6 +81,7 @@ import {
 } from '../types';
 import type { CreditLedger } from './credit-ledger';
 import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
+import { isValidWkdHash, wkdHashLocalPart } from '../wkd/wkd';
 import type {
   FrankInboundRow,
   FrankSendRow,
@@ -878,6 +879,30 @@ export class MailJournal {
       scopeAccount: row.scope_account,
       ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
     };
+  }
+
+  /**
+   * Resolves an issued mailbox by its 32-character z-base-32 WKD hash (`<hu>`),
+   * enabling WKD lookups even when the client omits the `?l=<localPart>` query string.
+   */
+  issuedMailboxByWkdHash(
+    hu: string,
+  ): { localPart: string; scopeAccount: string; conversationId?: string } | undefined {
+    const normalizedHu = typeof hu === 'string' ? hu.trim().toLowerCase() : '';
+    if (!isValidWkdHash(normalizedHu)) return undefined;
+    const rows = this.all<{ local_part: string; scope_account: string; conversation_id: string | null }>(
+      'SELECT local_part, scope_account, conversation_id FROM issued_mailbox ORDER BY created_at ASC, local_part ASC',
+    );
+    for (const row of rows) {
+      if (wkdHashLocalPart(row.local_part) === normalizedHu) {
+        return {
+          localPart: row.local_part,
+          scopeAccount: row.scope_account,
+          ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+        };
+      }
+    }
+    return undefined;
   }
 
   /** Explicit, immutable issuance. Repeating the same assignment is safe; changing its owner is refused. */

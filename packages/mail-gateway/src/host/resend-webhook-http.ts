@@ -1,5 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { handleResendWebhookRequest, type ResendInboundWebhook } from '../smtp/resend-inbound-webhook';
+import {
+  createWkdHttpHandler,
+  type WkdHttpHandler,
+  type WkdHttpHandlerOptions,
+} from '../wkd/wkd';
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -7,17 +12,22 @@ export interface ResendWebhookHttpOptions {
   readonly importer: ResendInboundWebhook;
   readonly port: number;
   readonly host: string;
+  readonly wkdHandler?: WkdHttpHandler;
+  readonly wkd?: WkdHttpHandlerOptions;
 }
 
-/** The only public HTTP route for a journaled Resend ingress. */
+/** Public HTTP ingress for Resend signed webhooks and OpenPGP Web Key Directory (WKD) routes. */
 export class ResendWebhookHttp {
   private server?: Server;
   private ready = false;
+  private readonly wkdHandler?: WkdHttpHandler;
 
   constructor(private readonly options: ResendWebhookHttpOptions) {
     if (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535)
       throw new Error('Invalid Resend webhook port');
     if (!options.host) throw new Error('Resend webhook bind host is required');
+    this.wkdHandler =
+      options.wkdHandler ?? (options.wkd ? createWkdHttpHandler(options.wkd) : undefined);
   }
 
   async start(): Promise<void> {
@@ -65,6 +75,20 @@ export class ResendWebhookHttp {
       incoming.resume();
       outgoing.writeHead(this.ready ? 200 : 503).end();
       return;
+    }
+    if (this.wkdHandler && incoming.url && incoming.url.startsWith('/.well-known/openpgpkey/')) {
+      incoming.resume();
+      const parsedUrl = new URL(incoming.url, 'https://mail-gateway.invalid');
+      const wkdResult = await this.wkdHandler({
+        pathname: parsedUrl.pathname,
+        searchParams: parsedUrl.searchParams,
+        method: incoming.method ?? 'GET',
+      });
+      if (wkdResult) {
+        outgoing.writeHead(wkdResult.status, wkdResult.headers);
+        outgoing.end(wkdResult.body);
+        return;
+      }
     }
     if (incoming.url !== '/webhooks/resend') {
       incoming.resume();

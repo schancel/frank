@@ -278,5 +278,7 @@ export type { EvmNativeOperationStatus } from "./evm-native-operation-status";
 export {
   ChainUnreachableError,
   ChainWaitCancelledError,
+  isChainUnreachableError,
   type ChainHealth,
 } from '../evm-block-watcher'
+

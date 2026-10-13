@@ -22,6 +22,7 @@ import {
   activeChain,
   fetchSolanaBalance,
   fetchSolanaTokenAccounts,
+  isChainUnreachableError,
   loadMonadChainConfigFromEnv,
   type SolanaTokenAccount,
 } from '@frank/wallet/chain'
@@ -307,7 +308,14 @@ export async function fetchChainBalance(
       }
     } catch (err) {
       if (!isCurrent()) return
-      console.error(`Failed to fetch ${chainIdentifier} balance`, err)
+      if (isChainUnreachableError(err)) {
+        console.warn(
+          `Failed to fetch ${chainIdentifier} balance (chain unreachable)`,
+          err,
+        )
+      } else {
+        console.error(`Failed to fetch ${chainIdentifier} balance`, err)
+      }
       secondaryStates[chainIdentifier] = {
         ...secondaryState(chain),
         revision,

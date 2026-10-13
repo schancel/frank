@@ -47,10 +47,37 @@ export function errorKindOf(error: unknown): string {
   if (typeof code === 'string' && /^[A-Z_]{1,40}$/.test(code)) return code
   const text = String((error as { message?: unknown })?.message ?? error)
   if (/timeout|timed out/i.test(text)) return 'TIMEOUT'
-  if (/fetch|network|ECONN|ENOTFOUND|socket/i.test(text)) return 'NETWORK_ERROR'
-  if (/50[234]|429/.test(text)) return 'SERVER_ERROR'
+  if (
+    /fetch|network|ECONN|ENOTFOUND|socket|access-control|access control|cors|load failed/i.test(
+      text,
+    )
+  )
+    return 'NETWORK_ERROR'
+  if (/50[234]|429|gateway|bad gateway|server response 502/i.test(text))
+    return 'SERVER_ERROR'
   return 'ERROR'
 }
+
+/** Whether an error indicates the chain or relay RPC endpoint is unreachable or returning gateway/network errors. */
+export function isChainUnreachableError(error: unknown): boolean {
+  if (!error) return false
+  if (error instanceof ChainUnreachableError) return true
+  const message = error instanceof Error ? error.message : String(error)
+  const code = (error as { code?: unknown })?.code
+  if (code === 'SERVER_ERROR' || code === 'TIMEOUT' || code === 'NETWORK_ERROR')
+    return true
+  return (
+    /50[234]|429|gateway|bad gateway|server response 502/i.test(message) ||
+    /fetch|network|ECONN|ENOTFOUND|socket|access-control|access control|cors|load failed/i.test(
+      message,
+    ) ||
+    /relay RPC transport failed/i.test(message) ||
+    /invalid_rpc_upstream_response/i.test(message) ||
+    /rpc_upstream_unavailable/i.test(message) ||
+    /no RPC endpoints available/i.test(message)
+  )
+}
+
 
 interface Waiter {
   /** Called on every look with the head, or `undefined` when the look failed. True: done. */

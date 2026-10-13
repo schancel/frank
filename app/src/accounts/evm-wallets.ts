@@ -4,6 +4,7 @@ import {
   createNativeOnlyEvmChain,
   DirectMessageAlreadyAttemptedError,
   getChainRegistryEntry,
+  isChainUnreachableError,
   loadMonadChainConfigFromEnv,
   PROTOCOL_CHAINS,
   type EvmChainConfig,
@@ -89,6 +90,9 @@ function configured(
     !entry ||
     entry.family !== 'evm' ||
     !entry.wallet ||
+    entry.kind === 'tempo' ||
+    entry.nativeDecimals === null ||
+    (entry.kind !== 'monad' && home && entry.isTestnet !== home.isTestnet) ||
     entry.nativeChainId === undefined ||
     !entry.networkTag ||
     !entry.allowedProxyCapabilities.includes('json-rpc')
@@ -320,31 +324,58 @@ export function peekOpenedEvmWallets(): readonly OpenEvmWallet[] {
       : [],
   )
 }
+function isSecondaryRecoveryNonFatal(error: unknown): boolean {
+  if (!error) return false
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes('owner changed')) return false
+  if (message.includes('Wallet sync remains pending')) return false
+  return true
+}
+
 /** Active-session recovery of secondary EVM journals. Network looks and self-note retries use
  * the original signed members; this path never constructs or authorizes another payment. */
 export async function recoverSecondaryEvmWallets(
   primary: NativeWalletHandle,
 ): Promise<void> {
+  const home = getChainRegistryEntry(primary.chainIdentifier)
+  const isTestnet =
+    home?.isTestnet ??
+    (primary.chainIdentifier.includes('testnet') ||
+      primary.chainIdentifier.includes('regtest'))
   const peers = Object.values(PROTOCOL_CHAINS).filter(
-    entry => entry.family === 'evm' && entry.kind !== 'monad' && entry.wallet,
+    entry =>
+      entry.family === 'evm' &&
+      entry.kind !== 'monad' &&
+      entry.kind !== 'tempo' &&
+      entry.nativeDecimals !== null &&
+      entry.wallet &&
+      (home ? entry.isTestnet === home.isTestnet : entry.isTestnet === isTestnet),
   )
   if (peers.length === 0) return
   if (accountSession.peekWallet() !== primary)
     throw new Error('EVM recovery owner changed')
   const results = await Promise.allSettled(
     peers.map(async peer => {
-      const opened = await openEvmWallet(peer.id)
-      if (
-        accountSession.peekWallet() !== primary ||
-        opened.wallet.chainIdentifier !== peer.id
-      )
-        throw new Error(`EVM recovery owner changed for ${peer.id}`)
-      await opened.wallet.reobserveNativeOperations?.()
-      const remaining = await opened.wallet.flushNativeSync?.()
-      if (remaining?.length)
-        throw new Error(
-          `Wallet sync remains pending for ${peer.id}: ${remaining.join(', ')}`,
+      try {
+        const opened = await openEvmWallet(peer.id)
+        if (
+          accountSession.peekWallet() !== primary ||
+          opened.wallet.chainIdentifier !== peer.id
         )
+          throw new Error(`EVM recovery owner changed for ${peer.id}`)
+        await opened.wallet.reobserveNativeOperations?.()
+        const remaining = await opened.wallet.flushNativeSync?.()
+        if (remaining?.length)
+          throw new Error(
+            `Wallet sync remains pending for ${peer.id}: ${remaining.join(', ')}`,
+          )
+      } catch (error) {
+        if (isChainUnreachableError(error) || isSecondaryRecoveryNonFatal(error)) {
+          console.warn(`Secondary EVM recovery skipped for ${peer.id}:`, error)
+          return
+        }
+        throw error
+      }
     }),
   )
   const errors = results.flatMap((result, index) =>

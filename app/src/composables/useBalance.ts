@@ -27,7 +27,7 @@ import {
   ref,
   watch,
 } from 'vue'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, isChainUnreachableError } from '@frank/wallet/chain'
 import { accountStatus } from '../accounts/session'
 import { messagingState } from '../utils/messaging-state'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -218,6 +218,8 @@ async function fetchBalance(force: boolean) {
           ? ' ' + JSON.stringify((err as any).info)
           : '')
       const isTransientRpc =
+        isChainUnreachableError(err) ||
+        errStr.includes('ChainUnreachableError') ||
         errStr.includes('502') ||
         errStr.includes('503') ||
         errStr.includes('504') ||
@@ -228,7 +230,11 @@ async function fetchBalance(force: boolean) {
         errStr.includes('rpc_upstream_unavailable') ||
         errStr.includes('network') ||
         errStr.includes('failed to fetch') ||
-        errStr.includes('Failed to fetch')
+        errStr.includes('Failed to fetch') ||
+        errStr.includes('Load failed') ||
+        errStr.includes('Access-Control') ||
+        errStr.includes('access control') ||
+        errStr.includes('cors')
 
       if (isTransientRpc) {
         if (isCurrent()) chainUnreachable.value = true

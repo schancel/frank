@@ -43,7 +43,9 @@ export function walletSupport(
     isTestnet,
     configuredChainIdentifier,
   )
-  return entry?.wallet
+  const isAvailable =
+    entry?.wallet && (entry.kind === 'monad' || entry.isTestnet === isTestnet)
+  return isAvailable
     ? { status: 'available', entry }
     : { status: 'unsupported', entry }
 }

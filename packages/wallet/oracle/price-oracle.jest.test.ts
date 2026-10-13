@@ -71,7 +71,7 @@ describe('the rates computed once from the feed', () => {
 
   it('knows every wallet asset', () => {
     expect(SUPPORTED_ASSETS).toContain('monad')
-    expect(SUPPORTED_ASSETS).toHaveLength(9)
+    expect(SUPPORTED_ASSETS).toHaveLength(14)
   })
 })
 

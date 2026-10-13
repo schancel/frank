@@ -1,3 +1,4 @@
+import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
 import { walletNetworkMetadata } from './wallet-support'
 
 export interface WalletItemConfig {
@@ -20,12 +21,9 @@ export interface WalletItemConfig {
   testnetBalanceZeroKey?: string
 }
 
-// Monad is intentionally placed first as the primary stamp wallet
-export const WALLET_CONFIGS: WalletItemConfig[] = [
-  {
-    id: 'monad',
+const WALLET_UI_OVERRIDES: Record<string, Partial<WalletItemConfig>> = {
+  monad: {
     isMain: true,
-    enabled: true,
     icon: 'account_balance_wallet',
     dataTest: 'wallet-row',
     nameDataTest: 'wallet-name',
@@ -38,149 +36,132 @@ export const WALLET_CONFIGS: WalletItemConfig[] = [
     chainKey: 'walletPanel.monad',
     testnetChainKey: 'walletPanel.monadTestnet',
   },
-  {
-    id: 'bitcoin',
-    enabled: true,
+  bitcoin: {
     icon: 'currency_bitcoin',
-    dataTest: 'bitcoin-wallet-row',
-    nameDataTest: 'bitcoin-wallet-name',
-    nameTextDataTest: 'bitcoin-wallet-name-text',
-    badgeDataTest: 'bitcoin-testnet-badge',
-    renameBtnDataTest: 'rename-bitcoin-btn',
-    chainDataTest: 'bitcoin-wallet-chain',
-    balanceDataTest: 'bitcoin-wallet-balance',
-    defaultNameKey: 'walletPanel.bitcoin',
     testnetDefaultNameKey: 'walletPanel.bitcoinTestnet',
-    chainKey: 'walletPanel.bitcoin',
-    testnetChainKey: 'walletPanel.bitcoinTestnet',
     balanceZeroKey: 'walletPanel.zeroBtc',
     testnetBalanceZeroKey: 'walletPanel.zeroTbtc',
   },
-  {
-    id: 'bitcoincash',
-    enabled: true,
+  bitcoincash: {
     icon: 'paid',
-    dataTest: 'bitcoincash-wallet-row',
-    nameDataTest: 'bitcoincash-wallet-name',
-    nameTextDataTest: 'bitcoincash-wallet-name-text',
-    badgeDataTest: 'bitcoincash-testnet-badge',
-    renameBtnDataTest: 'rename-bitcoincash-btn',
-    chainDataTest: 'bitcoincash-wallet-chain',
-    balanceDataTest: 'bitcoincash-wallet-balance',
-    defaultNameKey: 'walletPanel.bitcoincash',
     testnetDefaultNameKey: 'walletPanel.bitcoincashTestnet',
-    chainKey: 'walletPanel.bitcoincash',
-    testnetChainKey: 'walletPanel.bitcoincashTestnet',
     balanceZeroKey: 'walletPanel.zeroBch',
     testnetBalanceZeroKey: 'walletPanel.zeroTbch',
   },
-  {
-    id: 'dogecoin',
-    enabled: true,
+  dogecoin: {
     icon: 'pets',
-    dataTest: 'dogecoin-wallet-row',
-    nameDataTest: 'dogecoin-wallet-name',
-    nameTextDataTest: 'dogecoin-wallet-name-text',
-    badgeDataTest: 'dogecoin-testnet-badge',
-    renameBtnDataTest: 'rename-dogecoin-btn',
-    chainDataTest: 'dogecoin-wallet-chain',
-    balanceDataTest: 'dogecoin-wallet-balance',
-    defaultNameKey: 'walletPanel.dogecoin',
     testnetDefaultNameKey: 'walletPanel.dogecoinTestnet',
-    chainKey: 'walletPanel.dogecoin',
-    testnetChainKey: 'walletPanel.dogecoinTestnet',
     balanceZeroKey: 'walletPanel.zeroDoge',
     testnetBalanceZeroKey: 'walletPanel.zeroTdoge',
   },
-  {
-    id: 'ecash',
-    enabled: true,
+  ecash: {
     icon: 'toll',
-    dataTest: 'ecash-wallet-row',
-    nameDataTest: 'ecash-wallet-name',
-    nameTextDataTest: 'ecash-wallet-name-text',
-    badgeDataTest: 'ecash-testnet-badge',
-    renameBtnDataTest: 'rename-ecash-btn',
-    chainDataTest: 'ecash-wallet-chain',
-    balanceDataTest: 'ecash-wallet-balance',
-    defaultNameKey: 'walletPanel.ecash',
-    chainKey: 'walletPanel.ecash',
-    testnetChainKey: 'walletPanel.ecashTestnet',
     balanceZeroKey: 'walletPanel.zeroXec',
     testnetBalanceZeroKey: 'walletPanel.zeroTxec',
   },
-  {
-    id: 'solana',
-    enabled: true,
+  solana: {
     icon: 'account_balance',
-    dataTest: 'solana-wallet-row',
-    nameDataTest: 'solana-wallet-name',
-    nameTextDataTest: 'solana-wallet-name-text',
-    badgeDataTest: 'solana-testnet-badge',
-    renameBtnDataTest: 'rename-solana-btn',
-    chainDataTest: 'solana-wallet-chain',
-    balanceDataTest: 'solana-wallet-balance',
-    defaultNameKey: 'walletPanel.solana',
-    chainKey: 'walletPanel.solana',
-    testnetChainKey: 'walletPanel.solanaTestnet',
     balanceZeroKey: 'walletPanel.zeroSol',
     testnetBalanceZeroKey: 'walletPanel.zeroTsol',
   },
-  {
-    id: 'tempo',
-    enabled: true,
+  tempo: {
     icon: 'speed',
-    dataTest: 'tempo-wallet-row',
-    nameDataTest: 'tempo-wallet-name',
-    nameTextDataTest: 'tempo-wallet-name-text',
-    badgeDataTest: 'tempo-testnet-badge',
-    renameBtnDataTest: 'rename-tempo-btn',
-    chainDataTest: 'tempo-wallet-chain',
-    balanceDataTest: 'tempo-wallet-balance',
-    defaultNameKey: 'walletPanel.tempo',
     testnetDefaultNameKey: 'walletPanel.tempoTestnet',
-    chainKey: 'walletPanel.tempo',
-    testnetChainKey: 'walletPanel.tempoTestnet',
     balanceZeroKey: 'walletPanel.zeroUsd',
     testnetBalanceZeroKey: 'walletPanel.zeroTusd',
   },
-  {
-    id: 'ethereum',
-    enabled: true,
+  ethereum: {
     icon: 'diamond',
-    dataTest: 'ethereum-wallet-row',
-    nameDataTest: 'ethereum-wallet-name',
-    nameTextDataTest: 'ethereum-wallet-name-text',
-    badgeDataTest: 'ethereum-testnet-badge',
-    renameBtnDataTest: 'rename-ethereum-btn',
-    chainDataTest: 'ethereum-wallet-chain',
-    balanceDataTest: 'ethereum-wallet-balance',
-    defaultNameKey: 'walletPanel.ethereum',
     testnetDefaultNameKey: 'walletPanel.ethereumTestnet',
-    chainKey: 'walletPanel.ethereum',
-    testnetChainKey: 'walletPanel.ethereumTestnet',
     balanceZeroKey: 'walletPanel.zeroEth',
     testnetBalanceZeroKey: 'walletPanel.zeroEth',
   },
-  {
-    id: 'hyperliquid',
-    enabled: true,
+  hyperliquid: {
     icon: 'waves',
-    dataTest: 'hyperliquid-wallet-row',
-    nameDataTest: 'hyperliquid-wallet-name',
-    nameTextDataTest: 'hyperliquid-wallet-name-text',
-    badgeDataTest: 'hyperliquid-testnet-badge',
-    renameBtnDataTest: 'rename-hyperliquid-btn',
-    chainDataTest: 'hyperliquid-wallet-chain',
-    balanceDataTest: 'hyperliquid-wallet-balance',
-    defaultNameKey: 'walletPanel.hyperliquid',
     testnetDefaultNameKey: 'walletPanel.hyperliquidTestnet',
-    chainKey: 'walletPanel.hyperliquid',
-    testnetChainKey: 'walletPanel.hyperliquidTestnet',
     balanceZeroKey: 'walletPanel.zeroHype',
     testnetBalanceZeroKey: 'walletPanel.zeroThype',
   },
+  litecoin: {
+    icon: 'generating_tokens',
+    testnetDefaultNameKey: 'walletPanel.litecoinTestnet',
+    balanceZeroKey: 'walletPanel.zeroLtc',
+    testnetBalanceZeroKey: 'walletPanel.zeroTltc',
+  },
+  bnb: {
+    icon: 'token',
+    testnetDefaultNameKey: 'walletPanel.bnbTestnet',
+    balanceZeroKey: 'walletPanel.zeroBnb',
+    testnetBalanceZeroKey: 'walletPanel.zeroTbnb',
+  },
+  polygon: {
+    icon: 'polyline',
+    testnetDefaultNameKey: 'walletPanel.polygonTestnet',
+    balanceZeroKey: 'walletPanel.zeroPol',
+    testnetBalanceZeroKey: 'walletPanel.zeroTpol',
+  },
+  base: {
+    icon: 'change_history',
+    testnetDefaultNameKey: 'walletPanel.baseTestnet',
+    balanceZeroKey: 'walletPanel.zeroEth',
+    testnetBalanceZeroKey: 'walletPanel.zeroEth',
+  },
+  arbitrum: {
+    icon: 'hub',
+    testnetDefaultNameKey: 'walletPanel.arbitrumTestnet',
+    balanceZeroKey: 'walletPanel.zeroEth',
+    testnetBalanceZeroKey: 'walletPanel.zeroEth',
+  },
+}
+
+const PREFERRED_KIND_ORDER = [
+  'monad',
+  'bitcoin',
+  'bitcoincash',
+  'dogecoin',
+  'ecash',
+  'solana',
+  'tempo',
+  'ethereum',
+  'hyperliquid',
+  'litecoin',
+  'bnb',
+  'polygon',
+  'base',
+  'arbitrum',
 ]
+
+function buildWalletItemConfig(kind: string): WalletItemConfig {
+  const overrides = WALLET_UI_OVERRIDES[kind] ?? {}
+  return {
+    id: kind,
+    enabled: true,
+    icon: 'account_balance_wallet',
+    dataTest: `${kind}-wallet-row`,
+    nameDataTest: `${kind}-wallet-name`,
+    nameTextDataTest: `${kind}-wallet-name-text`,
+    badgeDataTest: `${kind}-testnet-badge`,
+    renameBtnDataTest: `rename-${kind}-btn`,
+    chainDataTest: `${kind}-wallet-chain`,
+    balanceDataTest: `${kind}-wallet-balance`,
+    defaultNameKey: `walletPanel.${kind}`,
+    chainKey: `walletPanel.${kind}`,
+    testnetChainKey: `walletPanel.${kind}Testnet`,
+    ...overrides,
+  }
+}
+
+// Derived from PROTOCOL_CHAINS so adding a chain to the registry automatically populates WALLET_CONFIGS
+const discoveredKinds = Array.from(
+  new Set(Object.values(PROTOCOL_CHAINS).map(entry => entry.kind)),
+)
+const orderedKinds = [
+  ...PREFERRED_KIND_ORDER.filter(k => discoveredKinds.includes(k)),
+  ...discoveredKinds.filter(k => !PREFERRED_KIND_ORDER.includes(k)),
+]
+
+export const WALLET_CONFIGS: WalletItemConfig[] =
+  orderedKinds.map(buildWalletItemConfig)
 
 /** Shared caption for the existing wallet presentation aliases. */
 export function getWalletNetworkLabel(

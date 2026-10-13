@@ -67,10 +67,17 @@ test('renders only available wallets with icon, name and one native balance line
     'monad',
     'bitcoin',
     'bitcoincash',
+    'dogecoin',
     'ecash',
     'solana',
     'tempo',
+    'ethereum',
     'hyperliquid',
+    'litecoin',
+    'bnb',
+    'polygon',
+    'base',
+    'arbitrum',
   ]) {
     const prefix = id === 'monad' ? '' : `${id}-`
     const row = view.get(`[data-test="${prefix}wallet-row"]`)
@@ -87,8 +94,6 @@ test('renders only available wallets with icon, name and one native balance line
     )
     expect(row.findAll('button')).toHaveLength(0)
   }
-  for (const id of ['dogecoin', 'ethereum'])
-    expect(view.find(`[data-test="${id}-wallet-row"]`).exists()).toBe(false)
   expect(view.text()).not.toContain('Not supported')
   expect(view.find('[data-test="drawer-avu-explainer-link"]').exists()).toBe(
     false,
@@ -103,10 +108,17 @@ test('clicking wallet rows preserves their respective routes', async () => {
     'monad',
     'bitcoin',
     'bitcoincash',
+    'dogecoin',
     'ecash',
     'solana',
     'tempo',
+    'ethereum',
     'hyperliquid',
+    'litecoin',
+    'bnb',
+    'polygon',
+    'base',
+    'arbitrum',
   ]) {
     const prefix = id === 'monad' ? '' : `${id}-`
     await view.get(`[data-test="${prefix}wallet-row"]`).trigger('click')
@@ -210,7 +222,7 @@ test('marks configured test networks and removes badges when the selected networ
   const original = getActiveChain()
   const view = render()
   try {
-    expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(7)
+    expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(14)
     setActiveChain({
       ...original,
       chainIdentifier: 'monad-mainnet',
@@ -220,8 +232,22 @@ test('marks configured test networks and removes badges when the selected networ
     expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(0)
     expect(
       view.findAll('[data-test$="wallet-name-text"]').map(row => row.text()),
-    ).toEqual(['Main wallet', 'Solana', 'Tempo', 'Hyperliquid'])
-    expect(view.findAll('[data-test$="wallet-balance"]')).toHaveLength(4)
+    ).toEqual([
+      'Main wallet',
+      'Bitcoin',
+      'Bitcoin Cash',
+      'Dogecoin',
+      'Solana',
+      'Tempo',
+      'Ethereum',
+      'Hyperliquid',
+      'Litecoin',
+      'BNB Chain',
+      'Polygon',
+      'Base',
+      'Arbitrum One',
+    ])
+    expect(view.findAll('[data-test$="wallet-balance"]')).toHaveLength(13)
   } finally {
     view.unmount()
     setActiveChain(original)

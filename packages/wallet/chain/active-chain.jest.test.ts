@@ -56,6 +56,8 @@ describe('ActiveChain contract address helpers', () => {
       rpcUrl: 'http://127.0.0.1:8545',
       chainId: 10143,
       chainIdentifier: 'monad-testnet',
+      networkId: 'monad-testnet',
+      rpcChain: 'monad-testnet',
       networkTag: 'MONT',
       isTestnet: true,
     } as any)
@@ -75,19 +77,14 @@ describe('ActiveChain contract address helpers', () => {
 
   it('throws a clear error if network does not support the requested contract', async () => {
     const { createEvmChain } = await import('./monad-chain')
-    const unsupportedChain = createEvmChain({
-      relayBaseUrl: 'http://127.0.0.1:8098',
-      rpcUrl: 'http://127.0.0.1:8545',
-      chainId: 99999,
-      networkTag: 'UNSUPPORTED_TAG',
-      isTestnet: false,
-    } as any)
-
-    expect(() => unsupportedChain.getStateChannelAddress()).toThrow(
-      'Unknown chain identifier "UNSUPPORTED_TAG"',
-    )
-    expect(() => unsupportedChain.getHtlcAddress()).toThrow(
-      'Unknown chain identifier "UNSUPPORTED_TAG"',
-    )
+    expect(() =>
+      createEvmChain({
+        relayBaseUrl: 'http://127.0.0.1:8098',
+        rpcUrl: 'http://127.0.0.1:8545',
+        chainId: 99999,
+        networkTag: 'UNSUPPORTED_TAG',
+        isTestnet: false,
+      } as any),
+    ).toThrow(/Unsupported EVM network|Unknown chain identifier/)
   })
 })

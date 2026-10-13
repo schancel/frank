@@ -18,7 +18,12 @@ export type SupportedAsset =
   | "hyperliquid"
   | "bitcoin"
   | "bitcoincash"
-  | "dogecoin";
+  | "dogecoin"
+  | "litecoin"
+  | "bnb"
+  | "polygon"
+  | "base"
+  | "arbitrum";
 
 export const ASSET_DECIMALS: Record<SupportedAsset, number> = {
   monad: 18,
@@ -30,6 +35,11 @@ export const ASSET_DECIMALS: Record<SupportedAsset, number> = {
   bitcoin: 8,
   bitcoincash: 8,
   dogecoin: 8,
+  litecoin: 8,
+  bnb: 18,
+  polygon: 18,
+  base: 18,
+  arbitrum: 18,
 };
 
 /**

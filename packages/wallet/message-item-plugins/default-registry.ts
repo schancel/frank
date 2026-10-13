@@ -18,6 +18,8 @@ import { initDeviceClaimPlugin } from './device-claim/plugin'
 import { initDicePlugin } from './dice/plugin'
 import { initDigitalGoodsPlugin } from './digital-goods/plugin'
 import { initEmailPlugin } from './email/plugin'
+import { initGroupControlPlugin } from './group-control/plugin'
+import { initGroupWelcomePlugin } from './group-welcome/plugin'
 import { initImagePlugin } from './image/plugin'
 import { initJournalCheckpointPlugin } from './journal-checkpoint/plugin'
 import { initLiarsDicePlugin } from './liars-dice/plugin'
@@ -77,6 +79,8 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['calendar-invite', initCalendarInvitePlugin],
   ['calendar-rsvp', initCalendarRsvpPlugin],
   ['contact-card', initContactCardPlugin],
+  ['group-welcome', initGroupWelcomePlugin],
+  ['group-control', initGroupControlPlugin],
 ]
 
 /** Installs one plugin and checks it registered its own type and nothing else. */

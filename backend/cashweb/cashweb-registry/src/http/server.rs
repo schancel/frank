@@ -373,6 +373,8 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         }
         ["message", "monad", "topics", "status"] => Cow::Borrowed("/message/monad/topics/status"),
         ["message", "monad", "topics", _] => Cow::Borrowed("/message/monad/topics/:payload_hash"),
+        ["groups", _, "epochs"] => Cow::Borrowed("/groups/:group_id/epochs"),
+        ["groups", _, "messages"] => Cow::Borrowed("/groups/:group_id/messages"),
         // Unknown paths under this namespace are fail-closed. Routers may percent-decode
         // or normalize segments differently than this logging middleware, so no
         // chain-rpc-shaped miss is allowed to copy attacker-controlled path text to logs.
@@ -694,7 +696,8 @@ impl RegistryServer {
                 "/mailbox/:address/notification-policy",
                 routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
                     .put(crate::http::monad_message_cbor::handle_put_notification_policy),
-            );
+            )
+            .merge(crate::http::groups::router());
         if canonical_enabled {
             use crate::http::monad_message_cbor::{
                 handle_challenge, handle_inbox, handle_mailbox, handle_mailbox_ws, handle_put,
@@ -771,6 +774,9 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-wakeup-token"),
                         header::HeaderName::from_static("x-cashweb-wakeup-token"),
                         header::HeaderName::from_static("x-frank-rpc-subject"),
+                        header::HeaderName::from_static(crate::http::groups::GROUP_CORS_HEADERS[0]),
+                        header::HeaderName::from_static(crate::http::groups::GROUP_CORS_HEADERS[1]),
+                        header::HeaderName::from_static(crate::http::groups::GROUP_CORS_HEADERS[2]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[0]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[1]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[2]),
@@ -791,6 +797,9 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-directory-disposition"),
                         header::HeaderName::from_static("x-frank-directory-subject"),
                         header::HeaderName::from_static("x-cashweb-vapid-public-key"),
+                        header::HeaderName::from_static(
+                            crate::http::groups::HEADER_GROUP_RELAY_MODE,
+                        ),
                     ])
                     // Topic list/discovery responses negotiate on Accept. tower-http replaces a
                     // handler's Vary values with this CORS list, so retain its three defaults and

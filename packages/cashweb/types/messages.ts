@@ -826,6 +826,48 @@ export interface ApplicationMessageItem {
   value: unknown
 }
 
+export interface GroupWelcomeMember {
+  index: number
+  address: string
+  epochSigningPubKeyHex: string
+  role?: 'admin' | 'member'
+}
+
+/**
+ * Group invitation item delivered via an end-to-end encrypted 1:1 DM (Issues #70 & #1365).
+ * Carries the group's public identity (`groupId`, `groupPubKey`), primary relay URL, and
+ * initial epoch secret $S_e$. When received from an untrusted/unjoined peer, the group
+ * conversation is quarantined in `'invited'` status until explicitly approved by the user.
+ */
+export interface GroupWelcomeItem {
+  type: 'group-welcome'
+  groupId: string
+  groupPubKey: string
+  groupName: string
+  homeRelay: string
+  epoch: number
+  epochSecretHex: string
+  memberIndex: number
+  inviterAddress?: string
+  rosterMembers?: GroupWelcomeMember[]
+}
+
+/**
+ * Group epoch transition & membership control item (Issue #70).
+ */
+export interface GroupControlItem {
+  type: 'group-control'
+  groupId: string
+  action: 'rotate-epoch' | 'add-member' | 'remove-member' | 'leave'
+  epoch: number
+  prevEpochHash: string
+  epochSecretHex?: string
+  targetAddress?: string
+  targetMemberIndex?: number
+  targetEpochSigningPubKeyHex?: string
+  authoritySigHex: string
+}
+
 export type MessageItem =
   | ApplicationMessageItem
   | StealthItem
@@ -856,6 +898,8 @@ export type MessageItem =
   | CalendarInviteItem
   | CalendarRsvpItem
   | ContactCardItem
+  | GroupWelcomeItem
+  | GroupControlItem
   | UnsupportedItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the

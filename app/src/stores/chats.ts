@@ -64,7 +64,14 @@ import type {
   OutboxMessageItem,
   MessageTombstoneItem,
   JournalCheckpointItem,
+  GroupWelcomeItem,
+  GroupControlItem,
 } from '@frank/cashweb/types/messages'
+import {
+  deriveNextEpochSecretHex,
+  formatGroupIdentifier,
+  groupConversationUuid,
+} from '@frank/cashweb/groups/group-crypto'
 import {
   joinDeliveryStatus,
   joinMessageTimestamp,
@@ -138,6 +145,16 @@ export type ChatMessage = {
  */
 export type ConversationKind = 'direct' | 'group' | 'email'
 export type ConversationRole = 'owner' | 'admin' | 'member'
+export type GroupMembershipStatus = 'invited' | 'joined' | 'declined' | 'left'
+
+export interface PendingParticipantRequest {
+  senderAddress: string
+  senderConversationId: string
+  referencedConversationId: string
+  payloadDigest: string
+  receivedAt: number
+  pubKeyHex?: string
+}
 
 export interface ConversationMember {
   address: string
@@ -195,6 +212,16 @@ export interface Conversation {
   participants: string[]
   members?: Record<string, ConversationMember>
   epoch?: ConversationEpoch
+  /** Issue #70 / #1365: Shared group mailbox metadata and invitation gate state. */
+  membershipStatus?: GroupMembershipStatus
+  invitedBy?: string
+  groupId?: string
+  groupPubKey?: string
+  groupRelayUrl?: string
+  groupEpochSecretHex?: string
+  groupMemberIndex?: number
+  /** Issue #1365: Third-party senders who referenced this 1:1 direct conversation ID. */
+  pendingParticipantRequests?: Record<string, PendingParticipantRequest>
   messages: ChatMessage[]
   totalUnreadMessages: number
   totalUnreadValue: number
@@ -911,17 +938,38 @@ function assertConversationPeer(
   }
 }
 
-/** Whoever posts into a conversation is one of its participants from then on. A message is
- * filed under the conversation ID it carries, so this can be someone other than the peer the
- * conversation was opened with; recording them is what lets the chat show who said what. */
+/** Whoever posts into a group or addressless multi-party conversation is one of its participants
+ * from then on. Issue #1365: A `kind: 'direct'` conversation with a chain-address peer has a
+ * closed 2-participant set (`{self, peer}`); third-party senders never mutate its participants. */
 function addParticipant(
   conversation: Conversation,
   address: string,
   pubKeyHex?: string,
 ): void {
   const member = safeChainDisplayAddress(address) || address
-  if (conversation.participants.some(p => sameCanonicalAddress(p, member)))
+  if (
+    conversation.kind === 'direct' &&
+    isChainAddress(conversation.address) &&
+    !sameCanonicalAddress(conversation.address, member)
+  ) {
     return
+  }
+  if (conversation.participants.some(p => sameCanonicalAddress(p, member))) {
+    if (
+      pubKeyHex &&
+      conversation.members?.[member] &&
+      !conversation.members[member].pubKeyHex
+    ) {
+      conversation.members = {
+        ...conversation.members,
+        [member]: {
+          ...conversation.members[member],
+          pubKeyHex,
+        },
+      }
+    }
+    return
+  }
   conversation.participants = [...conversation.participants, member].sort()
   conversation.members = {
     ...conversation.members,
@@ -931,6 +979,250 @@ function addParticipant(
       joinedAt: Date.now(),
       pubKeyHex,
     },
+  }
+}
+
+/** Issue #1365: Whether an inbound message from `message.senderAddress` is an unapproved third
+ * party attempting to post into a closed 2-participant `kind: 'direct'` conversation. */
+function isUnapprovedThirdPartyForDirect(
+  conversation: Conversation,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    destinationAddress?: string
+  },
+): boolean {
+  if (
+    message.outbound ||
+    isOwnMessage(message) ||
+    conversation.kind !== 'direct' ||
+    !isChainAddress(conversation.address)
+  ) {
+    return false
+  }
+  return (
+    !sameCanonicalAddress(message.senderAddress, conversation.address) &&
+    !conversation.participants.some(p =>
+      sameCanonicalAddress(p, message.senderAddress),
+    )
+  )
+}
+
+/** Issue #1365: Routes an unsolicited third-party message that claimed a `kind: 'direct'`
+ * conversation ID into the sender's own 1:1 direct conversation, and records a non-spoofable
+ * `PendingParticipantRequest` on the referenced 1:1 conversation. */
+function redirectThirdPartyDirectMessage(
+  conversations: Record<string, Conversation>,
+  referencedConv: Conversation,
+  senderAddress: string,
+  payloadDigest: string,
+  receivedAt: number,
+  ownAddress: string | null,
+  pubKeyHex?: string,
+): Conversation {
+  const senderPeer = safeChainDisplayAddress(senderAddress) || senderAddress
+  const participants = ownAddress ? [ownAddress, senderPeer] : [senderPeer]
+  let senderConv = peerThread(conversations, senderPeer)
+  if (!senderConv) {
+    if (conversationIdSalt.value) {
+      senderConv = openAllocatedConversation(
+        conversations,
+        senderPeer,
+        participants,
+      )
+    } else {
+      const redirectedId = uuidv5(
+        NULL_CONVERSATION_NAMESPACE,
+        `frank-direct-sender:${referencedConv.id}:${senderPeer.toLowerCase()}`,
+      )
+      senderConv =
+        conversations[redirectedId] ??
+        newConversation({
+          id: redirectedId,
+          address: senderPeer,
+          participants,
+        })
+      conversations[redirectedId] = senderConv
+    }
+  }
+  addParticipant(senderConv, senderPeer, pubKeyHex)
+  referencedConv.pendingParticipantRequests = {
+    ...referencedConv.pendingParticipantRequests,
+    [senderPeer]: {
+      senderAddress: senderPeer,
+      senderConversationId: senderConv.id,
+      referencedConversationId: referencedConv.id,
+      payloadDigest,
+      receivedAt,
+      ...(pubKeyHex ? { pubKeyHex } : {}),
+    },
+  }
+  return senderConv
+}
+
+/** Issue #70 & #1365: Creates or updates a `kind: 'group'` conversation from a `GroupWelcomeItem`.
+ * Inbound invites from peers enter `membershipStatus: 'invited'` until explicitly approved. */
+function applyGroupWelcomeItem(
+  conversations: Record<string, Conversation>,
+  welcome: GroupWelcomeItem,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    destinationAddress?: string
+    serverTime: number
+  },
+  ownAddress: string | null,
+): Conversation {
+  const groupConvId = groupConversationUuid(welcome.groupId)
+  const groupAddress = formatGroupIdentifier(welcome.groupId)
+  const inviter =
+    safeChainDisplayAddress(message.senderAddress) || message.senderAddress
+  const participantSet = new Set<string>(
+    welcome.members.map(m => safeChainDisplayAddress(m.address) || m.address),
+  )
+  if (inviter) participantSet.add(inviter)
+  if (ownAddress && isChainAddress(ownAddress)) {
+    participantSet.add(safeChainDisplayAddress(ownAddress) || ownAddress)
+  }
+  const participants = [...participantSet].sort()
+  const members: Record<string, ConversationMember> = {}
+  for (const addr of participants) {
+    const welcomeMember = welcome.members.find(m =>
+      sameCanonicalAddress(m.address, addr),
+    )
+    members[addr] = {
+      address: addr,
+      role: sameCanonicalAddress(addr, inviter) ? 'admin' : 'member',
+      pubKeyHex: welcomeMember?.pubKey,
+    }
+  }
+
+  const existing = conversations[groupConvId]
+  const defaultStatus: GroupMembershipStatus = isOwnMessage(message)
+    ? 'joined'
+    : 'invited'
+  if (!existing) {
+    const created = newConversation({
+      id: groupConvId,
+      kind: 'group',
+      name: usableSubject(welcome.groupName) ?? welcome.groupName,
+      address: groupAddress,
+      participants,
+      members,
+      groupId: welcome.groupId,
+      groupPubKey: welcome.groupPubKey,
+      groupRelayUrl: welcome.homeRelay,
+      groupEpochSecretHex: welcome.epochSecretHex,
+      groupMemberIndex: welcome.memberIndex,
+      epoch: {
+        generation: welcome.epoch,
+        updatedAt: message.serverTime,
+      },
+      invitedBy: inviter,
+      membershipStatus: defaultStatus,
+    })
+    conversations[groupConvId] = created
+    return created
+  }
+
+  existing.kind = 'group'
+  existing.address = groupAddress
+  existing.groupId = welcome.groupId
+  existing.groupPubKey = welcome.groupPubKey
+  existing.groupRelayUrl = welcome.homeRelay
+  existing.invitedBy ??= inviter
+  if (!existing.membershipStatus) {
+    existing.membershipStatus = defaultStatus
+  }
+  if (welcome.epoch >= (existing.epoch?.generation ?? -1)) {
+    existing.groupEpochSecretHex = welcome.epochSecretHex
+    existing.groupMemberIndex = welcome.memberIndex
+    existing.epoch = {
+      generation: welcome.epoch,
+      updatedAt: message.serverTime,
+    }
+    if (welcome.groupName) {
+      existing.name = usableSubject(welcome.groupName) ?? welcome.groupName
+    }
+    existing.participants = Array.from(
+      new Set([...existing.participants, ...participants]),
+    ).sort()
+    existing.members = {
+      ...existing.members,
+      ...members,
+    }
+  }
+  return existing
+}
+
+/** Issue #70: Applies an in-band `GroupControlItem` epoch/membership update to a group conversation. */
+function applyGroupControlItem(
+  conversations: Record<string, Conversation>,
+  control: GroupControlItem,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    destinationAddress?: string
+    serverTime: number
+  },
+  ownAddress: string | null,
+): void {
+  const groupConvId = groupConversationUuid(control.groupId)
+  const groupConv = conversations[groupConvId]
+  if (!groupConv || groupConv.kind !== 'group') return
+  const authorized =
+    isOwnMessage(message) ||
+    groupConv.participants.some(p =>
+      sameCanonicalAddress(p, message.senderAddress),
+    )
+  if (!authorized) return
+  if (control.epoch <= (groupConv.epoch?.generation ?? -1)) return
+
+  groupConv.epoch = {
+    generation: control.epoch,
+    updatedAt: message.serverTime,
+  }
+  if (control.epochSecretHex) {
+    groupConv.groupEpochSecretHex = control.epochSecretHex
+  } else if (groupConv.groupEpochSecretHex && control.action === 'add') {
+    groupConv.groupEpochSecretHex = deriveNextEpochSecretHex(
+      groupConv.groupEpochSecretHex,
+      control.groupId,
+      control.epoch,
+    )
+  }
+  if (control.action === 'rename' && control.groupName) {
+    groupConv.name = usableSubject(control.groupName) ?? control.groupName
+  }
+  if (control.members?.length) {
+    const nextParticipants = new Set<string>(
+      control.action === 'remove'
+        ? []
+        : groupConv.participants.map(p => safeChainDisplayAddress(p) || p),
+    )
+    const nextMembers: Record<string, ConversationMember> =
+      control.action === 'remove' ? {} : { ...groupConv.members }
+    for (const m of control.members) {
+      const addr = safeChainDisplayAddress(m.address) || m.address
+      nextParticipants.add(addr)
+      nextMembers[addr] = {
+        address: addr,
+        role: nextMembers[addr]?.role ?? 'member',
+        pubKeyHex: m.pubKey,
+      }
+    }
+    groupConv.participants = [...nextParticipants].sort()
+    groupConv.members = nextMembers
+  }
+  if (control.action === 'leave') {
+    const leaving =
+      safeChainDisplayAddress(message.senderAddress) || message.senderAddress
+    groupConv.participants = groupConv.participants.filter(
+      p => !sameCanonicalAddress(p, leaving),
+    )
+    if (ownAddress && sameCanonicalAddress(leaving, ownAddress)) {
+      groupConv.membershipStatus = 'left'
+    }
   }
 }
 
@@ -1137,6 +1429,9 @@ export async function rehydrateChat(
     })
     conversations[conversation.id] = conversation
   }
+  const establishedDirectConversations = new Set<string>(
+    Object.keys(conversations),
+  )
 
   // Rows are read in the order they were received in: relay time, then payload hash.
   const orderedRows = [...validatedRows].sort((a, b) =>
@@ -1162,6 +1457,18 @@ export async function rehydrateChat(
     // under the ID it carries, whoever sent it.
     if (existing && message.outbound) assertConversationPeer(existing, peer)
     const id = conversationId!
+    const welcomeItem = message.items?.find(
+      (it): it is GroupWelcomeItem => !!it && it.type === 'group-welcome',
+    )
+    if (welcomeItem && groupConversationUuid(welcomeItem.groupId) === id) {
+      applyGroupWelcomeItem(
+        conversations,
+        welcomeItem,
+        message,
+        messageDestinationAddress(message) ?? null,
+      )
+      continue
+    }
     conversations[id] ??= newConversation({
       id,
       address: peer,
@@ -1171,6 +1478,12 @@ export async function rehydrateChat(
         ? 'email'
         : 'direct',
     })
+    if (
+      message.outbound ||
+      sameCanonicalAddress(message.senderAddress, conversations[id].address)
+    ) {
+      establishedDirectConversations.add(id)
+    }
   }
 
   // Only our own records are bound to the conversation's peer, as with conversational rows.
@@ -1220,6 +1533,31 @@ export async function rehydrateChat(
         message.logicalMessageId !== other.message.logicalMessageId)
     ) {
       throw new Error(`Conflicting stored attempt ownership for ${index}`)
+    }
+  }
+
+  // Issue #1365: Redirect unapproved third-party messages targeting established `kind: 'direct'`
+  // conversations before assigning logical message owners, while leaving rows targeting deleted
+  // conversations in place so deleted-conversation suppression handles them identically.
+  for (const row of orderedRows) {
+    if (row.internal || !row.conversationId) continue
+    const targetConv = conversations[row.conversationId]
+    if (
+      targetConv &&
+      establishedDirectConversations.has(targetConv.id) &&
+      inDeletedConversation(targetConv, row.wrapper.message) !== 'gone' &&
+      isUnapprovedThirdPartyForDirect(targetConv, row.wrapper.message)
+    ) {
+      const ownAddr = messageDestinationAddress(row.wrapper.message) ?? null
+      const redirected = redirectThirdPartyDirectMessage(
+        conversations,
+        targetConv,
+        row.wrapper.message.senderAddress,
+        row.wrapper.index,
+        row.wrapper.message.serverTime ?? row.wrapper.message.receivedTime ?? 0,
+        ownAddr,
+      )
+      row.conversationId = redirected.id
     }
   }
 
@@ -1314,6 +1652,14 @@ export async function rehydrateChat(
       conv.messages.push(message)
     }
     if (!message.outbound) addParticipant(conv, message.senderAddress)
+    const ownAddr = messageDestinationAddress(message) ?? null
+    for (const item of message.items ?? []) {
+      if (item?.type === 'group-welcome') {
+        applyGroupWelcomeItem(conversations, item, message, ownAddr)
+      } else if (item?.type === 'group-control') {
+        applyGroupControlItem(conversations, item, message, ownAddr)
+      }
+    }
     if (emailItem && speaksForConversation(conv, message)) {
       conv.kind = 'email'
       if (!conv.name && emailItem.subject) {
@@ -4492,26 +4838,32 @@ export const useChatStore = defineStore('chats', {
         if (conv && (loopback || wrapper.outbound))
           assertConversationPeer(conv, peer)
         const existing = this.messages[wrapper.index]
-        if (
-          existing?.conversationId &&
-          id &&
-          existing.conversationId !== id &&
-          !replacedAccountCollisions.has(wrapper.index)
-        ) {
-          throw new Error(
-            'Conversation identity differs from the existing message owner',
-          )
-        }
         const created = !conv
         if (!conv) {
-          const participants = ownAddress ? [ownAddress, peer] : [peer]
-          conv = id
-            ? newConversation({ id, address: peer, participants })
-            : openAllocatedConversation(
-                preparedConversations,
-                peer,
-                participants,
-              )
+          const welcomeItem = wrapper.message.items?.find(
+            (it): it is GroupWelcomeItem => !!it && it.type === 'group-welcome',
+          )
+          if (
+            welcomeItem &&
+            id &&
+            groupConversationUuid(welcomeItem.groupId) === id
+          ) {
+            conv = applyGroupWelcomeItem(
+              preparedConversations,
+              welcomeItem,
+              wrapper.message,
+              ownAddress,
+            )
+          } else {
+            const participants = ownAddress ? [ownAddress, peer] : [peer]
+            conv = id
+              ? newConversation({ id, address: peer, participants })
+              : openAllocatedConversation(
+                  preparedConversations,
+                  peer,
+                  participants,
+                )
+          }
         }
         // What deleting a conversation means is decided here, before anything is saved: a row
         // that would not be shown is not kept at all.
@@ -4530,6 +4882,43 @@ export const useChatStore = defineStore('chats', {
           if (deleted === 'reopens') reopened.add(conv.id)
         }
         const sender = loopback?.message.senderAddress ?? wrapper.senderAddress
+        // Issue #1365: A `kind: 'direct'` conversation with a chain-address peer has a closed
+        // 2-participant set ({self, peer}). An unapproved third party referencing its ID is
+        // routed to their own 1:1 direct conversation and recorded as a pending request.
+        if (
+          !loopback &&
+          !created &&
+          isUnapprovedThirdPartyForDirect(conv, wrapper.message)
+        ) {
+          const key = wrapper.copartyPubKey?.toBuffer?.()
+          const pubKeyHex = key
+            ? Array.from(key, byte => byte.toString(16).padStart(2, '0')).join(
+                '',
+              )
+            : undefined
+          conv = redirectThirdPartyDirectMessage(
+            preparedConversations,
+            conv,
+            sender,
+            wrapper.index,
+            wrapper.message.serverTime ??
+              wrapper.message.receivedTime ??
+              Date.now(),
+            ownAddress,
+            pubKeyHex,
+          )
+        }
+        if (
+          existing?.conversationId &&
+          id &&
+          existing.conversationId !== conv.id &&
+          existing.conversationId !== id &&
+          !replacedAccountCollisions.has(wrapper.index)
+        ) {
+          throw new Error(
+            'Conversation identity differs from the existing message owner',
+          )
+        }
         const named =
           loopback?.message.logicalMessageId ||
           wrapper.message.logicalMessageId ||
@@ -4824,6 +5213,14 @@ export const useChatStore = defineStore('chats', {
             for (const item of swaps) useSwapStore().handleSwapItem(item)
           })
 
+        for (const item of message.items ?? []) {
+          if (item?.type === 'group-welcome') {
+            applyGroupWelcomeItem(this.conversations, item, message, ownAddress)
+          } else if (item?.type === 'group-control') {
+            applyGroupControlItem(this.conversations, item, message, ownAddress)
+          }
+        }
+
         if (index in this.messages) {
           const existingMessage = this.messages[index]
           assert(existingMessage, 'For great typescript')
@@ -5015,6 +5412,63 @@ export const useChatStore = defineStore('chats', {
         cancelled: false,
       }
     },
+    /** Issue #70 & #1365: Transitions an invited group conversation to `'joined'` so the client
+     * can begin polling the shared group mailbox. */
+    approveGroupInvite(conversationId: string): Conversation | undefined {
+      const conv = this.conversations[conversationId]
+      if (!conv || conv.kind !== 'group') return undefined
+      conv.membershipStatus = 'joined'
+      conv.deletedAt = undefined
+      conv.updatedAt = Date.now()
+      return conv
+    },
+    /** Issue #70 & #1365: Declines an invited group conversation and hides it from active chat lists. */
+    declineGroupInvite(conversationId: string): Conversation | undefined {
+      const conv = this.conversations[conversationId]
+      if (!conv || conv.kind !== 'group') return undefined
+      conv.membershipStatus = 'declined'
+      conv.deletedAt = Math.max(
+        newestRelayTime(conv.messages),
+        conv.removedRelayTime ?? 0,
+        1,
+      )
+      conv.totalUnreadMessages = 0
+      conv.totalUnreadValue = 0
+      conv.updatedAt = Date.now()
+      if (this.activeConversationId === conversationId) {
+        this.activeConversationId = null
+      }
+      return conv
+    },
+    /** Issue #1365: Dismisses a pending third-party participant request banner on a 1:1 conversation. */
+    dismissPendingParticipantRequest(
+      conversationId: string,
+      senderAddress: string,
+    ): void {
+      const conv = this.conversations[conversationId]
+      if (!conv?.pendingParticipantRequests) return
+      const next = { ...conv.pendingParticipantRequests }
+      for (const key of Object.keys(next)) {
+        if (sameCanonicalAddress(key, senderAddress)) {
+          delete next[key]
+        }
+      }
+      conv.pendingParticipantRequests =
+        Object.keys(next).length > 0 ? next : undefined
+    },
+    /** Issue #70 & #1365: Whether this device should poll the shared group mailbox for `conversationId`.
+     * Never polls while `membershipStatus === 'invited'`, `'declined'`, or `'left'`. */
+    shouldPollGroupMailbox(conversationId: string): boolean {
+      const conv = this.conversations[conversationId]
+      return Boolean(
+        conv &&
+          conv.kind === 'group' &&
+          conv.membershipStatus === 'joined' &&
+          !conv.deletedAt &&
+          conv.groupId &&
+          conv.groupEpochSecretHex,
+      )
+    },
     async notifyReceivedMessages(
       messageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
@@ -5042,11 +5496,25 @@ export const useChatStore = defineStore('chats', {
         const contacts = useContactStore()
         // The peer of a conversation becomes a contact when they write. Someone else who posts
         // into that conversation does not: they stay marked as not in the contacts.
+        const rawClaimedId =
+          messageWrapper.message.conversationId || messageWrapper.conversationId
+        let claimedConv: Conversation | undefined
+        if (rawClaimedId) {
+          try {
+            claimedConv =
+              this.conversations[canonicalConversationId(rawClaimedId)]
+          } catch {
+            claimedConv = undefined
+          }
+        }
         const conversation = this.conversations[stored.conversationId ?? '']
         const isPeer =
-          !conversation ||
-          !isChainAddress(conversation.address) ||
-          sameCanonicalAddress(conversation.address, copartyAddress)
+          (!conversation ||
+            !isChainAddress(conversation.address) ||
+            sameCanonicalAddress(conversation.address, copartyAddress)) &&
+          (!claimedConv ||
+            !isChainAddress(claimedConv.address) ||
+            sameCanonicalAddress(claimedConv.address, copartyAddress))
         if (isPeer && !contacts.isContact(copartyAddress)) {
           contacts.addLoadingContact({
             address: copartyAddress,

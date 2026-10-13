@@ -231,6 +231,40 @@ export const GENERIC_SAMPLES: MessageItem[] = [
     url: 'https://frank.local',
     note: 'Key fingerprint verified',
   },
+  {
+    type: 'group-welcome',
+    groupId: HASH,
+    groupPubKey: alicePub,
+    groupName: 'Shared Mailbox Team',
+    homeRelay: 'https://relay.frank.example',
+    epoch: 0,
+    epochSecretHex: '11'.repeat(32),
+    memberIndex: 1,
+    inviterAddress: ALICE,
+    rosterMembers: [
+      {
+        index: 0,
+        address: ALICE,
+        epochSigningPubKeyHex: alicePub,
+        role: 'admin',
+      },
+      {
+        index: 1,
+        address: BOB,
+        epochSigningPubKeyHex: bobPub,
+        role: 'member',
+      },
+    ],
+  },
+  {
+    type: 'group-control',
+    groupId: HASH,
+    action: 'rotate-epoch',
+    epoch: 1,
+    prevEpochHash: '22'.repeat(32),
+    epochSecretHex: '33'.repeat(32),
+    authoritySigHex: '44'.repeat(64),
+  },
 ]
 
 /** Well-formed items of two registered types this path does not carry: a peer's proposal that

@@ -47,6 +47,8 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'calendar-invite': true,
   'calendar-rsvp': true,
   'contact-card': true,
+  'group-welcome': true,
+  'group-control': true,
   // Not a plugin: what a reader keeps in place of an item it cannot interpret.
   'unsupported': true,
   // Neutral carrier: features register their own itemType, not this discriminator.

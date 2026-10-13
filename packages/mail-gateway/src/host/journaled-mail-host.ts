@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import type { ActiveChain, WalletHandle } from '@frank/wallet/chain/active-chain';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { MailJournal, MAIL_JOURNAL_FORMAT } from '../ledger/mail-journal';
@@ -16,6 +16,13 @@ import { JournaledOutboundWorker } from '../mta/journaled-outbound-worker';
 import { JournaledMailRuntime } from './journaled-runtime';
 import { ResendWebhookHttp } from './resend-webhook-http';
 import { JournaledSmtpIngress, JournaledSmtpServer } from '../smtp/journaled-smtp-ingress';
+import { CheckoutServer } from '../http/checkout-server';
+import { parseRawRfc822 } from '../smtp/smtp-listener';
+import {
+  SecureMessagePortal,
+  type SecureLinkPolicy,
+  type SecureMessageAuthMode,
+} from '../secure-link/secure-message-portal';
 
 export interface JournaledMailHostOptions {
   readonly chain: ActiveChain;
@@ -33,6 +40,11 @@ export interface JournaledMailHostOptions {
   readonly webhookHost: string;
   readonly webhookPort: number;
   readonly relayBaseUrl?: string;
+  readonly frankAppUrl?: string;
+  readonly stripeWebhookSecret?: string;
+  readonly stripePaymentLinkTier1?: string;
+  readonly stripePaymentLinkTier2?: string;
+  readonly stripePaymentLinkTier3?: string;
   readonly operatorAccountAddress?: string;
   readonly operatorForwardEmail?: string;
   readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
@@ -40,6 +52,9 @@ export interface JournaledMailHostOptions {
     accountAddress: string,
     localPart?: string,
   ) => Promise<Uint8Array | string | undefined>;
+  readonly secureLinkPolicy?: SecureLinkPolicy;
+  readonly secureLinkDefaultAuthMode?: SecureMessageAuthMode;
+  readonly secureMessagePortal?: SecureMessagePortal;
   readonly nativeSmtp?: {
     readonly hostname: string;
     readonly tlsKey: Buffer;
@@ -51,6 +66,8 @@ export interface JournaledMailHost {
   readonly journal: MailJournal;
   readonly runtime: JournaledMailRuntime;
   readonly webhook: ResendWebhookHttp;
+  readonly securePortal: SecureMessagePortal;
+  readonly checkoutServer: CheckoutServer;
   readonly smtp?: JournaledSmtpServer;
   close(): Promise<void>;
 }
@@ -122,14 +139,105 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
 
   const blobStore = new LocalFsBlobStore({ storageDir: input.blobDirectory });
   const ledger = new CreditLedger(input.journalFile, blobStore);
+  let createdPortal: SecureMessagePortal | undefined;
   try {
     const journal = new MailJournal(ledger, {
       chainIdentifier: input.chain.chainIdentifier,
       gatewayAccount: input.wallet.identity.address.raw.toLowerCase(),
       gatewayDomain: input.gatewayDomain,
     });
+    mkdirSync(input.blobDirectory, { recursive: true });
+    const securePortal =
+      input.secureMessagePortal ??
+      (createdPortal = new SecureMessagePortal({
+        gatewayDomain: input.gatewayDomain,
+        masterSecret: input.mailboxSalt,
+        ...(input.frankAppUrl ? { frankAppUrl: input.frankAppUrl } : {}),
+        dbPath: join(input.blobDirectory, 'secure-portal.db'),
+        resolveClaimedPayThread: async (payload) => {
+          const found = journal.findInboundEmailByKey(payload.id);
+          if (!found) return undefined;
+          let subject = payload.subject ?? 'Held Message';
+          let textBody = '';
+          let htmlBody: string | undefined;
+          if (found.raw) {
+            try {
+              const rawBytes =
+                found.raw.kind === 'inline'
+                  ? Buffer.from(found.raw.bytes)
+                  : Buffer.from((await blobStore.get(found.raw.sha256)) ?? new Uint8Array());
+              const parsed = parseRawRfc822(
+                rawBytes,
+                found.senderEmail,
+                found.mailboxLocalPart
+                  ? `${found.mailboxLocalPart}@${input.gatewayDomain}`
+                  : found.scopeAccount,
+              );
+              subject = parsed.subject || subject;
+              textBody = parsed.textBody || '';
+              htmlBody = parsed.htmlBody;
+            } catch {
+              // Keep fallback metadata if raw blob cannot be read
+            }
+          }
+          return {
+            kind: 'pay',
+            peerAddress: found.scopeAccount,
+            email: found.senderEmail,
+            conversationId: found.conversationId ?? payload.conversationId,
+            subject,
+            textBody,
+            ...(htmlBody ? { htmlBody } : {}),
+            createdAt: found.createdAtMs,
+          };
+        },
+      }));
     const inbound = new JournaledInboundSend({
       chain: input.chain, wallet: input.wallet, ledger, journal, blobStore,
+    });
+    const checkoutServer = new CheckoutServer({
+      port: 0,
+      ledger,
+      stripeWebhookSecret: input.stripeWebhookSecret,
+      stripePaymentLinkTier1: input.stripePaymentLinkTier1,
+      stripePaymentLinkTier2: input.stripePaymentLinkTier2,
+      stripePaymentLinkTier3: input.stripePaymentLinkTier3,
+      frankAppUrl: input.frankAppUrl ?? `https://${input.gatewayDomain}`,
+      onboardingSecret: input.mailboxSalt,
+      findHeldMail: (tokenOrId) => {
+        const found = journal.findInboundEmailByKey(tokenOrId);
+        if (!found) return undefined;
+        let subject = 'Held Email';
+        if (found.raw?.kind === 'inline') {
+          try {
+            const parsed = parseRawRfc822(
+              Buffer.from(found.raw.bytes),
+              found.senderEmail,
+              found.scopeAccount,
+            );
+            if (parsed.subject) subject = parsed.subject;
+          } catch {
+            // Keep default subject
+          }
+        }
+        return {
+          id: found.heldMessageId ?? found.mailKey,
+          senderEmail: found.senderEmail,
+          recipientAddress: found.scopeAccount,
+          subject,
+          status:
+            found.disposition === 'held'
+              ? 'held'
+              : found.disposition === 'expired'
+                ? 'expired'
+                : 'released',
+          expiresAtMs: found.expiresAtMs ?? found.createdAtMs + 72 * 60 * 60 * 1000,
+          conversationId: found.conversationId,
+        };
+      },
+      onPaymentVerified: async () => {
+        await inbound.releaseHeld(100);
+      },
     });
     const resolveSenderUsername =
       input.resolveSenderUsername ??
@@ -139,6 +247,11 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       ledger,
       gatewayDomain: input.gatewayDomain,
       mailboxSalt: input.mailboxSalt,
+      secureMessagePortal: securePortal,
+      ...(input.secureLinkPolicy ? { secureLinkPolicy: input.secureLinkPolicy } : {}),
+      ...(input.secureLinkDefaultAuthMode
+        ? { secureLinkDefaultAuthMode: input.secureLinkDefaultAuthMode }
+        : {}),
       ...(resolveSenderUsername ? { resolveSenderUsername } : {}),
     });
     const mailbox = new JournaledFrankMailbox({
@@ -177,6 +290,8 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       importer,
       host: input.webhookHost,
       port: input.webhookPort,
+      securePortal,
+      checkoutServer,
       wkd: {
         gatewayDomain: input.gatewayDomain,
         journal,
@@ -203,16 +318,22 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       journal,
       runtime: new JournaledMailRuntime({ inbound, frankMailbox: mailbox, outbound, outboundReconciler }),
       webhook,
+      securePortal,
+      checkoutServer,
       smtp,
       close: async () => {
         try { if (smtp) await smtp.stop(); }
         finally {
           try { await webhook.stop(); }
-          finally { ledger.closeSqlite(); }
+          finally {
+            try { if (createdPortal) createdPortal.close(); }
+            finally { ledger.closeSqlite(); }
+          }
         }
       },
     };
   } catch (error) {
+    if (createdPortal) createdPortal.close();
     ledger.closeSqlite();
     throw error;
   }

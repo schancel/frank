@@ -971,6 +971,27 @@ export class MailJournal {
     return row && toInboundEmail(row);
   }
 
+  /**
+   * Resolves an inbound email by its 64-hex `mail_key` or `held_message_id` for the `/pay/:mailKey`
+   * payment portal and `/onboard/claim/:claimToken` endpoint.
+   */
+  findInboundEmailByKey(mailKeyOrHeldId: string): InboundEmailRecord | undefined {
+    const trimmed = typeof mailKeyOrHeldId === 'string' ? mailKeyOrHeldId.trim() : '';
+    if (!trimmed) return undefined;
+    if (HEX_64.test(trimmed.toLowerCase())) {
+      const byKey = this.get<InboundEmailRow>(
+        'SELECT * FROM inbound_email WHERE mail_key = ? ORDER BY created_at DESC LIMIT 1',
+        trimmed.toLowerCase(),
+      );
+      if (byKey) return toInboundEmail(byKey);
+    }
+    const byHeld = this.get<InboundEmailRow>(
+      'SELECT * FROM inbound_email WHERE held_message_id = ? LIMIT 1',
+      trimmed,
+    );
+    return byHeld && toInboundEmail(byHeld);
+  }
+
   /** Bounded, stable page for a host to revisit authenticated mail after credit arrives. */
   listHeldInboundEmails(limit = 100, after?: { scopeAccount: string; mailKey: string }): InboundEmailRecord[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');

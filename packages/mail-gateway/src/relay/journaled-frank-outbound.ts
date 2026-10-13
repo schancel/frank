@@ -7,6 +7,14 @@ import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
 import { canonicalEmailAddress } from '../mta/outbound-delivery';
 import { emailItemKey, mailKey } from '../rfc/mail-keys';
 import { assertHeaderValue, parseMessageId } from '../rfc/message-headers';
+import {
+  parseSubjectSecureDirective,
+  renderSecureLinkNotificationEmail,
+  type SecureLinkPolicy,
+  type SecureMessageAttachment,
+  type SecureMessageAuthMode,
+  type SecureMessagePortal,
+} from '../secure-link/secure-message-portal';
 import type { FrankInboundRejectReason } from '../types';
 import { wkdHashLocalPart } from '../wkd/wkd';
 
@@ -83,8 +91,9 @@ function renderMail(
   receivedTime: number,
   openPgpUrl?: string,
   overrideTextBody?: string,
+  overrideSubject?: string,
 ): Uint8Array {
-  const subject = item.subject.trim();
+  const subject = (overrideSubject ?? item.subject).trim();
   assertHeaderValue(subject);
   if (Buffer.byteLength(subject, 'utf8') > MAX_SUBJECT_BYTES) throw new Error('Email subject is too long');
   const mailSubject = encodedSubject(subject);
@@ -128,6 +137,10 @@ export interface JournaledFrankOutboundOptions {
     plaintext: string,
     recipientKeys: Uint8Array[],
   ) => Promise<string>;
+  readonly secureMessagePortal?: SecureMessagePortal;
+  readonly secureLinkPolicy?: SecureLinkPolicy;
+  readonly secureLinkDefaultAuthMode?: SecureMessageAuthMode;
+  readonly secureLinkPassphrase?: string;
 }
 
 /**
@@ -150,6 +163,10 @@ export class JournaledFrankOutbound {
     plaintext: string,
     recipientKeys: Uint8Array[],
   ) => Promise<string>;
+  private readonly secureMessagePortal?: SecureMessagePortal;
+  private readonly secureLinkPolicy: SecureLinkPolicy;
+  private readonly secureLinkDefaultAuthMode: SecureMessageAuthMode;
+  private readonly secureLinkPassphrase?: string;
 
   constructor(options: JournaledFrankOutboundOptions) {
     this.journal = options.journal;
@@ -167,6 +184,10 @@ export class JournaledFrankOutbound {
     this.useUserIdFallback = options.useUserIdFallback ?? Boolean(options.resolveSenderUsername);
     this.discoverRecipientWkdKey = options.discoverRecipientWkdKey;
     this.encryptBodyWithOpenPgp = options.encryptBodyWithOpenPgp;
+    this.secureMessagePortal = options.secureMessagePortal;
+    this.secureLinkPolicy = options.secureLinkPolicy ?? 'subject-tag';
+    this.secureLinkDefaultAuthMode = options.secureLinkDefaultAuthMode ?? 'otp';
+    this.secureLinkPassphrase = options.secureLinkPassphrase;
   }
 
   private async resolveFromLocalPart(item: EmailItem, scope: string, alias: string): Promise<string> {
@@ -228,10 +249,20 @@ export class JournaledFrankOutbound {
       (!Array.isArray(item.references) || item.references.some(id => typeof id !== 'string' || parseMessageId(id) !== id)))
       return reject('bad_reference');
     if (typeof item.subject !== 'string' || typeof item.textBody !== 'string') return reject('header_unsafe');
+
+    const directive = parseSubjectSecureDirective(item.subject);
+    const hasAttachments = Array.isArray(item.attachments) && item.attachments.length > 0;
+    const canInterceptAttachments =
+      Boolean(this.secureMessagePortal) &&
+      this.secureLinkPolicy !== 'off' &&
+      (this.secureLinkPolicy === 'always' ||
+        this.secureLinkPolicy === 'when-no-wkd' ||
+        directive.triggered);
+
     if (!Array.isArray(item.to) || item.to.length !== 1 ||
       (item.cc !== undefined && (!Array.isArray(item.cc) || item.cc.length > 0)) ||
       (item.bcc !== undefined && (!Array.isArray(item.bcc) || item.bcc.length > 0)) ||
-      (item.attachments !== undefined && (!Array.isArray(item.attachments) || item.attachments.length > 0)) ||
+      (item.attachments !== undefined && (!Array.isArray(item.attachments) || (hasAttachments && !canInterceptAttachments))) ||
       item.htmlBody || item.replyTo)
       return reject('bad_recipient');
     const recipient = canonicalEmailAddress(item.to[0]?.address);
@@ -242,16 +273,28 @@ export class JournaledFrankOutbound {
     const fromAddress = `${fromLocalPart}@${this.domain}`;
     const openPgpUrl = `https://${this.domain}/.well-known/openpgpkey/hu/${wkdHashLocalPart(fromLocalPart)}?l=${encodeURIComponent(fromLocalPart)}`;
     let effectiveBody: string | undefined;
+    let effectiveSubject: string | undefined;
+    let wkdKey: { keyBytes: Uint8Array; url: string } | undefined;
     if (this.discoverRecipientWkdKey) {
       try {
-        const wkdKey = await this.discoverRecipientWkdKey(recipient);
+        wkdKey = await this.discoverRecipientWkdKey(recipient);
         if (wkdKey && this.encryptBodyWithOpenPgp) {
           effectiveBody = await this.encryptBodyWithOpenPgp(item.textBody, [wkdKey.keyBytes]);
         }
       } catch {
-        // WKD discovery or optional encryption failure falls back to standard delivery.
+        // WKD discovery or optional encryption failure falls back to secure link or standard delivery.
       }
     }
+
+    const shouldUseSecureLink =
+      Boolean(this.secureMessagePortal) &&
+      this.secureLinkPolicy !== 'off' &&
+      !effectiveBody &&
+      (this.secureLinkPolicy === 'always' ||
+        (this.secureLinkPolicy === 'when-no-wkd' && !wkdKey) ||
+        (this.secureLinkPolicy === 'subject-tag' && directive.triggered));
+
+    const itemForKey: EmailItem = hasAttachments ? { ...item, attachments: undefined } : item;
     const input = {
       ...base,
       outcome: 'bridged' as const,
@@ -259,12 +302,51 @@ export class JournaledFrankOutbound {
       frankMessageId: message.messageId,
       conversationId,
       authoredMessageId: item.messageId,
-      itemKey: emailItemKey(item),
+      itemKey: emailItemKey(itemForKey),
       ...(item.inReplyTo ? { inReplyTo: item.inReplyTo } : {}),
     };
     const first = this.journal.recordFrankMessage(input);
     if (first.kind === 'duplicate' || first.kind === 'same_message') return;
     if (first.kind !== 'needs_render') throw new Error('Unexpected Frank mail disposition');
+
+    if (shouldUseSecureLink && this.secureMessagePortal) {
+      const passphrase = directive.passphrase ?? this.secureLinkPassphrase;
+      const authMode: SecureMessageAuthMode = passphrase
+        ? 'passphrase'
+        : (directive.authMode ?? this.secureLinkDefaultAuthMode);
+      const portalAttachments: SecureMessageAttachment[] | undefined = hasAttachments
+        ? item.attachments!.map((att) => ({
+            filename: att.filename,
+            contentType: att.contentType,
+            contentBase64: Buffer.from(att.content ?? new Uint8Array()).toString('base64'),
+          }))
+        : undefined;
+      const created = this.secureMessagePortal.createSecureMessage({
+        senderScope: scope,
+        authMode,
+        passphrase,
+        cleartext: {
+          subject: directive.cleanSubject,
+          textBody: item.textBody,
+          senderAddress: fromAddress,
+          ...(item.from?.name ? { senderDisplayName: item.from.name } : {}),
+          recipientEmail: recipient,
+          conversationId,
+          createdAtMs: message.receivedTime,
+          ...(portalAttachments ? { attachments: portalAttachments } : {}),
+        },
+      });
+      effectiveSubject = directive.cleanSubject;
+      effectiveBody = renderSecureLinkNotificationEmail({
+        gatewayDomain: this.domain,
+        tokenId: created.tokenId,
+        senderAddress: fromAddress,
+        senderDisplayName: item.from?.name,
+        authMode: created.authMode,
+        expiresAtMs: created.expiresAtMs,
+      });
+    }
+
     let bytes: Uint8Array;
     try {
       const fromHeader = formatFromHeader(fromAddress, item.from?.name);
@@ -277,6 +359,7 @@ export class JournaledFrankOutbound {
         message.receivedTime,
         openPgpUrl,
         effectiveBody,
+        effectiveSubject,
       );
     } catch {
       return reject('header_unsafe');

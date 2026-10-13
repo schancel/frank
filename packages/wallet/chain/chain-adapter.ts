@@ -22,6 +22,8 @@ import {
   validateChainAddress,
   type ChainRegistryEntry,
 } from './chains-registry';
+import type { EvmDexEntry } from './dex-entries';
+import type { SolanaDexEntry } from './solana-dex-entries';
 import { deriveEd25519MasterNode, deriveEd25519PathNode } from '../ed25519-hd-keyring';
 
 export type ChainId =
@@ -131,6 +133,7 @@ export interface ChainAdapter {
   readonly chainId: ChainId;
   readonly family: string;
   readonly rpcUrl: string;
+  readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   formatAddress(raw: Uint8Array | string): string;
   parseAddress(display: string): Uint8Array;
   isValidAddress(candidate: string): boolean;
@@ -459,12 +462,14 @@ class EvmChainAdapter implements ChainAdapter {
   readonly chainId: ChainId;
   readonly family = 'evm';
   readonly rpcUrl: string;
+  readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   protected readonly decimals: number;
 
   constructor(chainId: ChainId, config?: ChainRegistryEntry, decimals = 18) {
     this.chainId = chainId;
     this.decimals = config?.nativeDecimals ?? decimals;
     this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = config?.dex;
   }
 
   formatAddress(raw: Uint8Array | string): string {
@@ -560,11 +565,13 @@ class SolanaChainAdapter implements ChainAdapter {
   readonly chainId: ChainId;
   readonly family = 'solana';
   readonly rpcUrl: string;
+  readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   private readonly decimals = 9;
 
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
     this.chainId = chainId;
     this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = config?.dex;
   }
 
   formatAddress(raw: Uint8Array | string): string {
@@ -650,6 +657,7 @@ class EcashChainAdapter implements ChainAdapter {
   readonly chainId: ChainId;
   readonly family = 'bitcoin';
   readonly rpcUrl: string;
+  readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   private readonly decimals = 2;
   private readonly prefix: 'ecash' | 'ectest';
 
@@ -657,6 +665,7 @@ class EcashChainAdapter implements ChainAdapter {
     this.chainId = chainId;
     this.prefix = chainId === 'ecash-mainnet' ? 'ecash' : 'ectest';
     this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
+    this.dex = config?.dex;
   }
 
   formatAddress(raw: Uint8Array | string): string {

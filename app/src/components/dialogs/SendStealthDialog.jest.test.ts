@@ -360,9 +360,7 @@ describe('multiasset stealth review dialog', () => {
       wrapper.find('[data-testid="stealth-amount-input"] .error-msg').text(),
     ).toBe('Amount exceeds available balance')
     expect(
-      wrapper
-        .find('[data-testid="stealth-review-btn"]')
-        .attributes('disabled'),
+      wrapper.find('[data-testid="stealth-review-btn"]').attributes('disabled'),
     ).toBeDefined()
     await wrapper.find('[data-testid="stealth-review-btn"]').trigger('click')
     expect(wrapper.emitted('review')).toBeUndefined()

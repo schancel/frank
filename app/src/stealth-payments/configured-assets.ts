@@ -61,7 +61,9 @@ export async function configuredStealthAssets(
         decimals,
         nativeUnit: entry.unit,
         nativeDecimals: decimals,
-        ...(nativeBalance !== undefined ? { balanceAtomic: nativeBalance } : {}),
+        ...(nativeBalance !== undefined
+          ? { balanceAtomic: nativeBalance }
+          : {}),
       })
       if (entry.family !== 'evm') continue
       const contracts = new Set<string>()
@@ -84,7 +86,9 @@ export async function configuredStealthAssets(
             decimals: token.decimals,
             nativeUnit: entry.unit,
             nativeDecimals: decimals,
-            ...(tokenBalance !== undefined ? { balanceAtomic: tokenBalance } : {}),
+            ...(tokenBalance !== undefined
+              ? { balanceAtomic: tokenBalance }
+              : {}),
           })
         }
       }

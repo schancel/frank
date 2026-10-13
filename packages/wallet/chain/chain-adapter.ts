@@ -45,6 +45,31 @@ import {
 import type { EvmDexEntry } from './dex-entries';
 import type { SolanaDexEntry } from './solana-dex-entries';
 import { deriveEd25519MasterNode, deriveEd25519PathNode } from '../ed25519-hd-keyring';
+import {
+  createWalletStorage,
+  listAllocatedWalletDatabases,
+  deleteWalletDatabase,
+  clearAllWalletDatabases,
+  WALLET_DB_REGISTRY_KEY,
+  WALLET_DB_REGISTRY_NAME,
+  type WalletStorageAdapter,
+  type StorageChangeEvent,
+  type StorageChangeListener,
+  type StorageChangeType,
+} from '../storage/wallet-storage-adapter';
+
+export {
+  createWalletStorage,
+  listAllocatedWalletDatabases,
+  deleteWalletDatabase,
+  clearAllWalletDatabases,
+  WALLET_DB_REGISTRY_KEY,
+  WALLET_DB_REGISTRY_NAME,
+  type WalletStorageAdapter,
+  type StorageChangeEvent,
+  type StorageChangeListener,
+  type StorageChangeType,
+};
 
 export const PATHUSD = '0x20c0000000000000000000000000000000000000';
 
@@ -141,6 +166,7 @@ export interface WalletDerivationContext {
   readonly accountIndex?: number;
   readonly walletName?: string;
   readonly walletId?: WalletId;
+  readonly storage?: WalletStorageAdapter;
 }
 
 export interface SendLegacyTransactionParams {
@@ -298,6 +324,7 @@ export interface ChainWallet {
   readonly walletId: WalletId;
   readonly address: string;
   readonly isPrimary: boolean;
+  readonly storage?: WalletStorageAdapter;
   getBalance(): Promise<bigint>;
   sendLegacyTransaction(params: SendLegacyTransactionParams): Promise<TransactionIntentResult>;
   sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult>;
@@ -388,6 +415,7 @@ abstract class BaseChainWallet implements ChainWallet {
   readonly walletId: WalletId;
   readonly address: string;
   readonly isPrimary: boolean;
+  readonly storage?: WalletStorageAdapter;
   protected readonly adapter: ChainAdapter;
   protected cachedBalance: bigint = 0n;
   protected lastRecoveryError?: unknown;
@@ -396,6 +424,7 @@ abstract class BaseChainWallet implements ChainWallet {
     identifier: WalletIdentifier;
     address: string;
     adapter: ChainAdapter;
+    storage?: WalletStorageAdapter;
   }) {
     this.identifier = Object.freeze({ ...params.identifier });
     this.chainId = params.identifier.walletChainId;
@@ -403,6 +432,7 @@ abstract class BaseChainWallet implements ChainWallet {
     this.address = params.address;
     this.isPrimary = (params.identifier.accountIndex ?? 0) === 0;
     this.adapter = params.adapter;
+    this.storage = params.storage;
   }
 
   abstract getBalance(): Promise<bigint>;
@@ -416,6 +446,7 @@ abstract class BaseChainWallet implements ChainWallet {
 
   setCachedBalance(balance: bigint): void {
     this.cachedBalance = balance;
+    void this.storage?.set('balance', balance.toString());
   }
 
   setRecoveryError(error: unknown): void {
@@ -449,6 +480,7 @@ class EvmChainWalletImpl extends BaseChainWallet {
     identifier: WalletIdentifier;
     address: string;
     adapter: ChainAdapter;
+    storage?: WalletStorageAdapter;
     privateKey: string;
     publicKey: string;
   }) {
@@ -576,6 +608,7 @@ class SolanaChainWalletImpl extends BaseChainWallet {
     identifier: WalletIdentifier;
     address: string;
     adapter: ChainAdapter;
+    storage?: WalletStorageAdapter;
     privateKeyBytes: Uint8Array;
     publicKeyBytes: Uint8Array;
   }) {
@@ -658,6 +691,7 @@ class EcashChainWalletImpl extends BaseChainWallet {
     identifier: WalletIdentifier;
     address: string;
     adapter: ChainAdapter;
+    storage?: WalletStorageAdapter;
     spendKeyHex: string;
     pkhBytes: Uint8Array;
   }) {
@@ -797,10 +831,12 @@ class EvmChainAdapter implements ChainAdapter {
     const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
     const address = this.formatAddress(derived.address);
 
+    const storage = context.storage ?? createWalletStorage(walletId);
     return new EvmChainWalletImpl({
       identifier,
       address,
       adapter: this,
+      storage,
       privateKey: derived.privateKey,
       publicKey: derived.publicKey,
     });
@@ -818,10 +854,12 @@ class EvmChainAdapter implements ChainAdapter {
       walletChainId: this.chainId,
       accountIndex: 0,
     };
+    const storage = primary?.storage ?? createWalletStorage(identifier.walletId);
     return new EvmChainWalletImpl({
       identifier,
       address: addr,
       adapter: this,
+      storage,
       privateKey: '',
       publicKey: '',
     });
@@ -1108,10 +1146,12 @@ class TempoChainAdapter extends EvmChainAdapter {
     const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
     const address = this.formatAddress(derived.address);
 
+    const storage = context.storage ?? createWalletStorage(walletId);
     return new TempoChainWalletImpl({
       identifier,
       address,
       adapter: this,
+      storage,
       privateKey: derived.privateKey,
       publicKey: derived.publicKey,
     });
@@ -1237,10 +1277,12 @@ class SolanaChainAdapter implements ChainAdapter {
     const pubKeyBytes = ed25519.getPublicKey(node.key);
     const address = new PublicKey(pubKeyBytes).toBase58();
 
+    const storage = context.storage ?? createWalletStorage(walletId);
     return new SolanaChainWalletImpl({
       identifier,
       address,
       adapter: this,
+      storage,
       privateKeyBytes: node.key,
       publicKeyBytes: pubKeyBytes,
     });
@@ -1258,10 +1300,12 @@ class SolanaChainAdapter implements ChainAdapter {
       walletChainId: this.chainId,
       accountIndex: 0,
     };
+    const storage = primary?.storage ?? createWalletStorage(identifier.walletId);
     return new SolanaChainWalletImpl({
       identifier,
       address: addr,
       adapter: this,
+      storage,
       privateKeyBytes: new Uint8Array(32),
       publicKeyBytes: new Uint8Array(32),
     });
@@ -1566,10 +1610,12 @@ class EcashChainAdapter implements ChainAdapter {
     const pkhBytes = getBytes(ripemd160(sha256(pubKeyBytes)));
     const address = Address.p2pkh(pkhBytes, this.prefix).toString();
 
+    const storage = context.storage ?? createWalletStorage(walletId);
     return new EcashChainWalletImpl({
       identifier,
       address,
       adapter: this,
+      storage,
       spendKeyHex: derived.privateKey,
       pkhBytes,
     });
@@ -1588,10 +1634,12 @@ class EcashChainAdapter implements ChainAdapter {
       walletChainId: this.chainId,
       accountIndex: 0,
     };
+    const storage = primary?.storage ?? createWalletStorage(identifier.walletId);
     return new EcashChainWalletImpl({
       identifier,
       address: addr,
       adapter: this,
+      storage,
       spendKeyHex: '',
       pkhBytes: new Uint8Array(20),
     });
@@ -1787,6 +1835,7 @@ class BtcFamilyChainWalletImpl extends BaseChainWallet {
     identifier: WalletIdentifier;
     address: string;
     adapter: ChainAdapter;
+    storage?: WalletStorageAdapter;
     spendKeyHex: string;
     pubKeyBytes: Uint8Array;
   }) {
@@ -1970,10 +2019,12 @@ class BtcFamilyChainAdapter implements ChainAdapter {
     const pkhBytes = getBytes(ripemd160(sha256(pubKeyBytes)));
     const address = this.formatAddress(pkhBytes);
 
+    const storage = context.storage ?? createWalletStorage(walletId);
     return new BtcFamilyChainWalletImpl({
       identifier,
       address,
       adapter: this,
+      storage,
       spendKeyHex: derived.privateKey,
       pubKeyBytes,
     });
@@ -1992,10 +2043,12 @@ class BtcFamilyChainAdapter implements ChainAdapter {
       walletChainId: this.chainId,
       accountIndex: 0,
     };
+    const storage = primary?.storage ?? createWalletStorage(identifier.walletId);
     return new BtcFamilyChainWalletImpl({
       identifier,
       address: addr,
       adapter: this,
+      storage,
       spendKeyHex: '',
       pubKeyBytes: new Uint8Array(33),
     });
@@ -2293,6 +2346,7 @@ export function createWalletArray(
       accountIndex,
     };
 
+    const storage = createWalletStorage(identifier.walletId);
     let wallet: ChainWallet;
     switch (alloc.walletChainId) {
       case 'monad-mainnet':
@@ -2316,6 +2370,7 @@ export function createWalletArray(
           identifier,
           address,
           adapter,
+          storage,
           privateKey: derived.privateKey,
           publicKey: derived.publicKey,
         });
@@ -2330,6 +2385,7 @@ export function createWalletArray(
           identifier,
           address,
           adapter,
+          storage,
           privateKey: derived.privateKey,
           publicKey: derived.publicKey,
         });
@@ -2345,6 +2401,7 @@ export function createWalletArray(
           identifier,
           address,
           adapter,
+          storage,
           privateKeyBytes: node.key,
           publicKeyBytes: pubKeyBytes,
         });
@@ -2362,6 +2419,7 @@ export function createWalletArray(
           identifier,
           address,
           adapter,
+          storage,
           spendKeyHex: derived.privateKey,
           pkhBytes,
         });
@@ -2395,6 +2453,7 @@ export function createWalletArray(
           identifier,
           address,
           adapter,
+          storage,
           spendKeyHex: derived.privateKey,
           pubKeyBytes,
         });

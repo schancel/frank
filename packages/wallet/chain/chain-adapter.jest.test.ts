@@ -687,4 +687,30 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       mockFetch.mockRestore();
     });
   });
+
+  describe('Observable Wallet Storage Integration', () => {
+    it('allocates an isolated storage adapter per wallet and notifies on state mutations', async () => {
+      const adapter = createChainAdapter('monad-testnet');
+      const wallet = await adapter.createWallet({
+        root: { mnemonic: TEST_MNEMONIC },
+        accountIndex: 0,
+      });
+
+      expect(wallet.storage).toBeDefined();
+      expect(wallet.storage?.walletId).toBe(wallet.walletId);
+      expect(wallet.storage?.dbName).toBe(`frank-wallet-${wallet.walletId.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
+
+      const events: any[] = [];
+      const unsubscribe = wallet.storage?.subscribe((event) => {
+        events.push(event);
+      });
+
+      await wallet.storage?.set('custom_key', 'custom_val');
+      expect(events).toHaveLength(1);
+      expect(events[0].key).toBe('custom_key');
+      expect(events[0].value).toBe('custom_val');
+
+      unsubscribe?.();
+    });
+  });
 });

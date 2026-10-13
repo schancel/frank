@@ -27,6 +27,10 @@ import {
   createChainAdapter,
   isCanonicalChainId,
 } from '@frank/wallet/chain'
+import {
+  listAllocatedWalletDatabases,
+  clearAllWalletDatabases,
+} from '@frank/wallet/storage/wallet-storage-adapter'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import type { HistoricalBip39Seed } from '@frank/wallet/monad-wallet-material'
 import { BIP39_DERIVATION, BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
@@ -1485,6 +1489,15 @@ export async function resetAccountStorage(
     `frank-preview-vault-${namespace}`,
   ])
   try {
+    const allocated = await listAllocatedWalletDatabases()
+    for (const dbName of allocated) {
+      names.add(dbName)
+    }
+    await clearAllWalletDatabases()
+  } catch {
+    // ignore
+  }
+  try {
     if (typeof indexedDB.databases === 'function') {
       const dbs = await indexedDB.databases()
       for (const db of dbs) {
@@ -1523,6 +1536,15 @@ export async function resetMessageAndChatStorage(
   if (typeof indexedDB === 'undefined') return
   const names = new Set<string>()
   try {
+    const allocated = await listAllocatedWalletDatabases()
+    for (const dbName of allocated) {
+      names.add(dbName)
+    }
+    await clearAllWalletDatabases()
+  } catch {
+    // ignore
+  }
+  try {
     if (typeof indexedDB.databases === 'function') {
       const dbs = await indexedDB.databases()
       for (const db of dbs) {
@@ -1531,7 +1553,8 @@ export async function resetMessageAndChatStorage(
           (db.name.includes('level-js') ||
             db.name.includes('MessageStore') ||
             db.name.includes('vuex-store') ||
-            db.name.includes('monad-wallet-state'))
+            db.name.includes('monad-wallet-state') ||
+            db.name.startsWith('frank-wallet-'))
         ) {
           names.add(db.name)
         }

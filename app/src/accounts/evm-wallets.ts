@@ -7,6 +7,7 @@ import {
   isChainUnreachableError,
   loadMonadChainConfigFromEnv,
   PROTOCOL_CHAINS,
+  recoverAllWallets,
   type EvmChainConfig,
   type EvmChainWalletHandle,
   type NativeAssetChain,
@@ -337,6 +338,7 @@ function isSecondaryRecoveryNonFatal(error: unknown): boolean {
 export async function recoverSecondaryEvmWallets(
   primary: NativeWalletHandle,
 ): Promise<void> {
+  if (!primary?.chainIdentifier) return
   const home = getChainRegistryEntry(primary.chainIdentifier)
   const isTestnet =
     home?.isTestnet ??
@@ -375,7 +377,8 @@ export async function recoverSecondaryEvmWallets(
           )
       } catch (error) {
         if (
-          isChainUnreachableError(error) ||
+          (typeof isChainUnreachableError === 'function' &&
+            isChainUnreachableError(error)) ||
           isSecondaryRecoveryNonFatal(error)
         ) {
           console.warn(`Secondary EVM recovery skipped for ${peer.id}:`, error)
@@ -385,6 +388,17 @@ export async function recoverSecondaryEvmWallets(
       }
     }),
   )
+  try {
+    const recovery = await recoverAllWallets()
+    for (const failure of recovery.failed) {
+      console.warn(
+        `Wallet recovery skipped for ${failure.walletId}:`,
+        failure.error,
+      )
+    }
+  } catch (err) {
+    console.warn('Wallet recovery loop warning:', err)
+  }
   const errors = results.flatMap((result, index) =>
     result.status === 'rejected'
       ? [`${peers[index]!.id}: ${String(result.reason)}`]

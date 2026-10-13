@@ -1,6 +1,6 @@
 /** @jest-environment jsdom */
 import { nextTick, reactive, ref } from 'vue'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, createChainAdapter } from '@frank/wallet/chain'
 import { shallowMount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { useOracleStore } from '../stores/oracle'
@@ -127,16 +127,21 @@ const mockFetchSolanaTokenAccounts = jest.fn().mockResolvedValue([
   },
 ])
 
-jest.mock('@frank/wallet/chain', () => ({
-  // Preserve the real adapter and its change subscription; mock only this test's I/O.
-  ...jest.requireActual('@frank/wallet/chain'),
-  fetchSolanaBalance: (...args: unknown[]) => mockFetchSolanaBalance(...args),
-  fetchSolanaTokenAccounts: (...args: unknown[]) =>
-    mockFetchSolanaTokenAccounts(...args),
-  loadMonadChainConfigFromEnv: () => ({
-    relayBaseUrl: 'http://127.0.0.1:8098',
-  }),
-}))
+jest.mock('@frank/wallet/chain', () => {
+  const actual = jest.requireActual('@frank/wallet/chain')
+  return {
+    ...actual,
+    createChainAdapter: jest.fn((chainId: string) =>
+      actual.createChainAdapter(chainId),
+    ),
+    fetchSolanaBalance: (...args: unknown[]) => mockFetchSolanaBalance(...args),
+    fetchSolanaTokenAccounts: (...args: unknown[]) =>
+      mockFetchSolanaTokenAccounts(...args),
+    loadMonadChainConfigFromEnv: () => ({
+      relayBaseUrl: 'http://127.0.0.1:8098',
+    }),
+  }
+})
 
 // Keep this integration fixture on the display boundary; no custody, transport or price polling.
 jest.mock('vue-router', () => ({
@@ -196,9 +201,10 @@ describe('useChainBalance', () => {
     )
   })
 
-  it('reads Hyperliquid through openEvmWallet and formats native balance', async () => {
+  it('reads Hyperliquid through EVM session wallet and formats native balance via ChainAdapter', async () => {
     await fetchChainBalance('hyperliquid', true)
     expect(mockOpenEvmWallet).toHaveBeenCalledWith('hyperliquid-testnet')
+    expect(createChainAdapter).toHaveBeenCalledWith('hyperliquid-testnet')
     expect(useChainBalance('hyperliquid').formattedBalance.value).toBe(
       '42 tHYPE',
     )
@@ -257,7 +263,7 @@ describe('useChainBalance', () => {
           const formattedBalance =
             chain === 'ecash'
               ? `${Number(amount) / 100} tXEC`
-              : `${amount} dSOL`
+              : `${amount === 0n ? '0' : '0.000000025'} dSOL`
           fetchBalance.mockResolvedValueOnce(
             chain === 'ecash'
               ? amount
@@ -388,7 +394,7 @@ describe('useChainBalance', () => {
     expect(peer.presentation.value.status).toBe('loading')
     expect(mockOpenEvmWallet).not.toHaveBeenCalled()
     await peer.refresh()
-    expect(mockOpenEvmWallet).toHaveBeenCalledWith('monad-mainnet')
+    expect(createChainAdapter).toHaveBeenCalledWith('monad-mainnet')
     expect(peer.balance.value).toBe(7n)
     expect(canonicalPrimary.balance.value).toBe(mockMonadBalance.total.value)
     await fetchChainBalance('xec-testnet', true)
@@ -412,7 +418,7 @@ describe('useChainBalance', () => {
     })
     try {
       await flushPromises()
-      expect(mockOpenEvmWallet).toHaveBeenCalledWith('monad-mainnet')
+      expect(createChainAdapter).toHaveBeenCalledWith('monad-mainnet')
       mockOpenEvmWallet.mockClear()
       selected.value = activeChain.chainIdentifier
       await nextTick()

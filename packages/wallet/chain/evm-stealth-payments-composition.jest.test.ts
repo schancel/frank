@@ -800,3 +800,52 @@ test('a crash after signing before the manifest journal link recovers the origin
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('fast-path native quoting queries mainAccount directly and avoids scanning sub-accounts over RPC', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-fast-quote-'))
+  const cfg: EvmChainConfig = {
+    ...config,
+    subAccountPoolSize: 50,
+    walletStorageLocation: join(dir, 'wallet'),
+  }
+  const wallet = (await createEvmChain(cfg).createWallet(
+    roots(),
+  )) as EvmChainWalletHandle
+  try {
+    stubNode(wallet, 5_000_000n)
+    const getBalanceSpy = jest.spyOn(wallet.provider, 'getBalance')
+
+    const unsignedIntent = {
+      operationId: 'fast-quote-op',
+      chainIdentifier: 'monad-testnet',
+      asset: { kind: 'native' as const },
+      recipientSpendPublicKey: wallet.identity!.compressedPubKey,
+      amountAtomic: 10_000n,
+    }
+
+    const start = performance.now()
+    const quote = await wallet.stealthPayments!.quote!(unsignedIntent)
+    const elapsed = performance.now() - start
+
+    expect(quote).toMatchObject({
+      sourceAddress: MAIN.toLowerCase(),
+      amountAtomic: 10_000n,
+      nativeBalanceAtomic: 5_000_000n,
+      assetBalanceAtomic: 5_000_000n,
+      estimatedNativeFeeAtomic: 21_000n,
+    })
+    expect(quote.sources).toHaveLength(1)
+    expect(quote.sources![0]!.sourceAddress).toBe(MAIN.toLowerCase())
+
+    // Must ONLY query mainAccount balance (exactly 1 getBalance call), never 50 sub-accounts!
+    const balanceQueriedAddresses = getBalanceSpy.mock.calls.map(call =>
+      String(call[0]).toLowerCase(),
+    )
+    expect(balanceQueriedAddresses).toEqual([MAIN.toLowerCase()])
+    expect(elapsed).toBeLessThan(500)
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+

@@ -64,7 +64,7 @@ const GAS_PRICE = 2_000_000_000n
 const GAS_LIMIT = 60_000n
 
 const CONFIG: EvmChainConfig = {
-  networkId: 'monad-test',
+  networkId: 'monad-testnet',
   chainId: CHAIN_ID,
   rpcChain: 'monad-testnet',
   relayBaseUrl: 'http://relay.test',
@@ -385,6 +385,41 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
     expect(puts[0].url).toContain('/message/monad/topics/vote')
     expect(fake.pool.records().filter(r => r.status === 'spent')).toHaveLength(
       1,
+    )
+  })
+
+  it('succeeds and uses fallback gas limit when provider.estimateGas fails with CALL_EXCEPTION', async () => {
+    const chain = createEvmChain(CONFIG)
+    const fake = makeFakeChain()
+    const puts = fakeRelay()
+
+    ;(fake.wallet.provider as any).estimateGas = jest.fn(async () => {
+      throw Object.assign(new Error('missing revert data'), {
+        code: 'CALL_EXCEPTION',
+        action: 'estimateGas',
+      })
+    })
+
+    const result = await chain.topics.post({
+      wallet: fake.wallet,
+      topic: 'help',
+      entries: [ENTRY],
+      direction: 'up',
+      voteWeightWei: WEIGHT,
+    })
+
+    expect(puts).toHaveLength(1)
+    const submitted = decodePostSubmission(puts[0].body)
+    const burn = Transaction.from(
+      '0x' + Buffer.from(submitted.submission.burnTx).toString('hex'),
+    )
+    expect(burn.to).toBe(BURN_ADDRESS)
+    expect(burn.value).toBe(WEIGHT)
+    expect(burn.gasLimit).toBe(31608n)
+    expect(result.payloadDigest).toBe(
+      Buffer.from(
+        topicBurnCommitment(submitted.submission.postFrame.frame).hash,
+      ).toString('hex'),
     )
   })
 

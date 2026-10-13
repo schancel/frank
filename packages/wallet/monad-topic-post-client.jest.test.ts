@@ -1,6 +1,7 @@
 import {
   MonadTopicPostClient,
   MonadTopicPostAbandonedError,
+  quoteMonadTopicBurnGasReserve,
 } from './monad-topic-post-client'
 import axios from 'axios'
 import { Wallet, Transaction, getBytes, hexlify, getAddress } from 'ethers'
@@ -277,4 +278,46 @@ test('signs post with wallet.identity or params.authorIdentity when present', as
   expect(getAddress('0x' + toHex(verifiedAddress!))).toBe(identity.address.raw)
   await f.bundle.close()
 })
+
+test('quoteMonadTopicBurnGasReserve retries with bounded gas limit when signer throws CALL_EXCEPTION without gasLimit', async () => {
+  const callException = Object.assign(new Error('missing revert data'), {
+    code: 'CALL_EXCEPTION',
+    action: 'estimateGas',
+  })
+  let callCount = 0
+  const signer = {
+    buildAndSignCall: jest.fn(async (_to: string, _value: bigint, _data: string, overrides?: any) => {
+      callCount++
+      if (callCount === 1 && overrides?.gasLimit === undefined) {
+        throw callException
+      }
+      return {
+        rawTx: '0x1234',
+        txHash: '0xabcd',
+        from: '0x1111111111111111111111111111111111111111',
+        to: _to,
+        value: _value,
+        data: _data,
+        gasLimit: overrides?.gasLimit ?? 21000n,
+        maxFeePerGas: 2_000_000_000n,
+        chainId: 10143n,
+      }
+    }),
+  } as any
+
+  const reserve = await quoteMonadTopicBurnGasReserve({
+    signer,
+    burnAddress: burn,
+  })
+  expect(callCount).toBe(2)
+  expect(signer.buildAndSignCall).toHaveBeenLastCalledWith(
+    burn,
+    1n,
+    expect.any(String),
+    expect.objectContaining({ gasLimit: 31608n }),
+  )
+  // (31608n * 2000000000n * 5n) / 4n = 79020000000000n
+  expect(reserve).toBe(79020000000000n)
+})
+
 

@@ -1,5 +1,5 @@
 /** Canonical schema-2 public Forum posts and exact signed-operation reconciliation. */
-import { hexlify } from 'ethers'
+import { getBytes, hexlify, isCallException } from 'ethers'
 import {
   encodeForumPost,
   encodeForumPostContent,
@@ -10,7 +10,7 @@ import {
 } from '@frank/codec'
 import type { AccountRef } from '@frank/codec'
 import type { ForumMessageEntry } from './forum-model'
-import type { MonadAccountTxSigner, MonadTxOverrides } from './monad-account-tx'
+import type { MonadAccountTxSigner, MonadTxOverrides, SignedMonadTx } from './monad-account-tx'
 import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
 import type { EvmWalletHandle } from "./evm-wallet-handle";
 import type { MonadIdentity } from './monad-identity'
@@ -37,12 +37,37 @@ export async function quoteMonadTopicBurnGasReserve(params: {
   burnAddress: string
   overrides?: MonadTxOverrides
 }): Promise<bigint> {
-  const probe = await params.signer.buildAndSignCall(
-    params.burnAddress,
-    1n,
-    buildCborTopicVoteCalldata('up', new Uint8Array(32).fill(0xff)),
-    params.overrides,
-  )
+  const calldata = buildCborTopicVoteCalldata('up', new Uint8Array(32).fill(0xff))
+  let probe: SignedMonadTx
+  try {
+    probe = await params.signer.buildAndSignCall(
+      params.burnAddress,
+      1n,
+      calldata,
+      params.overrides,
+    )
+  } catch (err) {
+    if (
+      params.overrides?.gasLimit === undefined &&
+      (isCallException(err) ||
+        (err instanceof Error &&
+          /missing revert data|CALL_EXCEPTION|insufficient balance/i.test(
+            err.message,
+          )))
+    ) {
+      const calldataBytes = getBytes(calldata)
+      const fallbackGasLimit =
+        21000n + BigInt(calldataBytes.length * 16) + 10000n
+      probe = await params.signer.buildAndSignCall(
+        params.burnAddress,
+        1n,
+        calldata,
+        { ...params.overrides, gasLimit: fallbackGasLimit },
+      )
+    } else {
+      throw err
+    }
+  }
   const fee = probe.maxFeePerGas ?? probe.gasPrice
   if (fee === undefined)
     throw new Error('Unable to determine a maximum fee for a topic burn')

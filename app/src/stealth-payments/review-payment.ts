@@ -68,7 +68,8 @@ export async function reviewStealthPayment({
   await assertCurrent()
   const registeredKey =
     profile?.curveKeys?.[network.curve] ??
-    (network.curve === 'secp256k1' ? profile?.pubKey : undefined)
+    (network.curve === 'secp256k1' ? profile?.pubKey : undefined) ??
+    request.recipientSpendPublicKey
   if (!registeredKey) throw new Error('Recipient spend identity is unavailable')
   const recipientSpendPublicKey = registeredKey.slice()
   const context = await createNativeTransferContext(request.chainIdentifier)

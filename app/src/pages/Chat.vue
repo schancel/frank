@@ -981,9 +981,20 @@ export default defineComponent({
           throw new Error(
             this.stampUnavailable || this.$t('chat.sendContextChanged'),
           )
-        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+        let stampValue = 0n
+        try {
+          stampValue = activeChain.fromDisplayAmount(this.stampAmount || '0')
+        } catch {
+          stampValue = this.defaultStampWei ?? 0n
+        }
+        const contactKey = this.contact?.profile?.pubKey?.toBuffer?.()
+        const effectiveRequest: StealthDialogRequest = {
+          ...request,
+          recipientSpendPublicKey:
+            request.recipientSpendPublicKey ?? contactKey,
+        }
         const captured = await reviewStealthPayment({
-          request,
+          request: effectiveRequest,
           stampValue,
           isCurrent: () =>
             sequence === this.stealthReviewSequence &&

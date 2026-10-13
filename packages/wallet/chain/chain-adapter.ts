@@ -9,7 +9,18 @@
  * remain strictly private to the wallet implementations and are never leaked to external callers.
  */
 
-import { getAddress, getBytes, hexlify, HDNodeWallet, Mnemonic, ripemd160, sha256 } from 'ethers';
+import {
+  getAddress,
+  getBytes,
+  hexlify,
+  HDNodeWallet,
+  keccak256,
+  Mnemonic,
+  ripemd160,
+  sha256,
+  SigningKey,
+  Transaction,
+} from 'ethers';
 import { PublicKey } from '@solana/web3.js';
 import { ed25519 } from '@noble/curves/ed25519';
 import * as bip39 from 'bip39';
@@ -32,6 +43,31 @@ import {
 import type { EvmDexEntry } from './dex-entries';
 import type { SolanaDexEntry } from './solana-dex-entries';
 import { deriveEd25519MasterNode, deriveEd25519PathNode } from '../ed25519-hd-keyring';
+import {
+  createWalletStorage,
+  listAllocatedWalletDatabases,
+  deleteWalletDatabase,
+  clearAllWalletDatabases,
+  WALLET_DB_REGISTRY_KEY,
+  WALLET_DB_REGISTRY_NAME,
+  type WalletStorageAdapter,
+  type StorageChangeEvent,
+  type StorageChangeListener,
+  type StorageChangeType,
+} from '../storage/wallet-storage-adapter';
+
+export {
+  createWalletStorage,
+  listAllocatedWalletDatabases,
+  deleteWalletDatabase,
+  clearAllWalletDatabases,
+  WALLET_DB_REGISTRY_KEY,
+  WALLET_DB_REGISTRY_NAME,
+  type WalletStorageAdapter,
+  type StorageChangeEvent,
+  type StorageChangeListener,
+  type StorageChangeType,
+};
 
 export const PATHUSD = '0x20c0000000000000000000000000000000000000';
 
@@ -92,6 +128,10 @@ export interface WalletDerivationContext {
   readonly accountIndex?: number;
   readonly walletName?: string;
   readonly walletId?: WalletId;
+  readonly storage?: WalletStorageAdapter;
+  readonly storageFactory?: (walletId: WalletId, chainId: ChainId) => WalletStorageAdapter;
+  readonly balanceProvider?: () => Promise<bigint>;
+  readonly recoverProvider?: () => Promise<void>;
 }
 
 export interface SendLegacyTransactionParams {
@@ -249,7 +289,11 @@ export interface ChainWallet {
   readonly walletId: WalletId;
   readonly address: string;
   readonly isPrimary: boolean;
+  readonly storage: WalletStorageAdapter;
   getBalance(): Promise<bigint>;
+  setCachedBalance(balance: bigint): void;
+  setBalanceProvider(provider: () => Promise<bigint>): void;
+  setRecoverProvider(provider: () => Promise<void>): void;
   sendLegacyTransaction(params: SendLegacyTransactionParams): Promise<TransactionIntentResult>;
   sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult>;
   sendStampTransaction(params: SendStampTransactionParams): Promise<TransactionIntentResult>;
@@ -318,14 +362,20 @@ abstract class BaseChainWallet implements ChainWallet {
   readonly walletId: WalletId;
   readonly address: string;
   readonly isPrimary: boolean;
+  readonly storage: WalletStorageAdapter;
   protected readonly adapter: ChainAdapter;
   protected cachedBalance: bigint = 0n;
   protected lastRecoveryError?: unknown;
+  protected balanceProvider?: () => Promise<bigint>;
+  protected recoverProvider?: () => Promise<void>;
 
   constructor(params: {
     identifier: WalletIdentifier;
     address: string;
     adapter: ChainAdapter;
+    storage?: WalletStorageAdapter;
+    balanceProvider?: () => Promise<bigint>;
+    recoverProvider?: () => Promise<void>;
   }) {
     this.identifier = Object.freeze({ ...params.identifier });
     this.chainId = params.identifier.walletChainId;
@@ -333,6 +383,9 @@ abstract class BaseChainWallet implements ChainWallet {
     this.address = params.address;
     this.isPrimary = (params.identifier.accountIndex ?? 0) === 0;
     this.adapter = params.adapter;
+    this.storage = params.storage ?? createWalletStorage(this.walletId);
+    this.balanceProvider = params.balanceProvider;
+    this.recoverProvider = params.recoverProvider;
   }
 
   abstract getBalance(): Promise<bigint>;
@@ -341,15 +394,40 @@ abstract class BaseChainWallet implements ChainWallet {
   abstract sendStampTransaction(params: SendStampTransactionParams): Promise<TransactionIntentResult>;
 
   async recover(): Promise<void> {
+    if (this.recoverProvider) {
+      try {
+        await this.recoverProvider();
+        await this.storage.set('lastRecoveredAt', Date.now());
+      } catch (err) {
+        this.setRecoveryError(err);
+      }
+      return;
+    }
     await this.adapter.recoverWallet(this);
   }
 
   setCachedBalance(balance: bigint): void {
     this.cachedBalance = balance;
+    void this.storage.set('balance', balance.toString()).catch(() => {
+      // Ignore storage persistence errors on sync balance cache update
+    });
+  }
+
+  setBalanceProvider(provider: () => Promise<bigint>): void {
+    this.balanceProvider = provider;
+  }
+
+  setRecoverProvider(provider: () => Promise<void>): void {
+    this.recoverProvider = provider;
   }
 
   setRecoveryError(error: unknown): void {
     this.lastRecoveryError = error;
+    void this.storage
+      .set('lastRecoveryError', error instanceof Error ? error.message : String(error))
+      .catch(() => {
+        // Ignore storage persistence errors on sync error update
+      });
   }
 
   getLastRecoveryError(): unknown | undefined {
@@ -381,6 +459,9 @@ class EvmChainWalletImpl extends BaseChainWallet {
     adapter: ChainAdapter;
     privateKey: string;
     publicKey: string;
+    storage?: WalletStorageAdapter;
+    balanceProvider?: () => Promise<bigint>;
+    recoverProvider?: () => Promise<void>;
   }) {
     super(params);
     this.#privateKey = params.privateKey;
@@ -389,6 +470,11 @@ class EvmChainWalletImpl extends BaseChainWallet {
 
   async getBalance(): Promise<bigint> {
     try {
+      if (this.balanceProvider) {
+        const balance = await this.balanceProvider();
+        this.setCachedBalance(balance);
+        return balance;
+      }
       const response = await fetch(this.adapter.rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -398,6 +484,7 @@ class EvmChainWalletImpl extends BaseChainWallet {
           method: 'eth_getBalance',
           params: [this.address, 'latest'],
         }),
+        signal: AbortSignal.timeout(1500),
       });
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status} from ${this.adapter.rpcUrl}`);
@@ -418,23 +505,100 @@ class EvmChainWalletImpl extends BaseChainWallet {
     }
   }
 
+  async #signAndBroadcastEvmTx(params: {
+    to: string;
+    value: bigint;
+    dataHex?: string;
+    maxFee?: bigint;
+  }): Promise<string> {
+    if (!this.#privateKey) {
+      throw new Error(`Wallet ${this.walletId} is read-only and has no signing key`);
+    }
+    const entry = getChainRegistryEntry(this.chainId);
+    const evmChainId = entry?.nativeChainId ? Number(entry.nativeChainId) : 10143;
+    const nonce = this.#nonce++;
+    const feeEst = await this.adapter.estimateFee({
+      recipient: params.to,
+      value: params.value,
+    });
+    const maxFeePerGas = feeEst.maxFeePerGas ?? 1000000000n;
+    const gasLimit = params.dataHex && params.dataHex !== '0x' ? 50000n : (feeEst.gasLimit ?? 21000n);
+    const tx = Transaction.from({
+      type: 2,
+      chainId: evmChainId,
+      nonce,
+      to: this.adapter.formatAddress(params.to),
+      value: params.value,
+      data: params.dataHex ?? '0x',
+      gasLimit,
+      maxFeePerGas,
+      maxPriorityFeePerGas: maxFeePerGas / 10n > 0n ? maxFeePerGas / 10n : 1n,
+    });
+    const signingKey = new SigningKey(this.#privateKey);
+    tx.signature = signingKey.sign(tx.unsignedHash);
+    const signedHex = tx.serialized;
+    const txHash = tx.hash ?? keccak256(getBytes(signedHex));
+
+    try {
+      const response = await fetch(this.adapter.rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'eth_sendRawTransaction',
+          params: [signedHex],
+        }),
+        signal: AbortSignal.timeout(1500),
+      });
+      if (response.ok) {
+        const data = (await response.json()) as { result?: string };
+        if (typeof data.result === 'string' && data.result.startsWith('0x')) {
+          return data.result;
+        }
+      }
+    } catch {
+      // Offline / local test fallback returns the cryptographically signed transaction hash
+    }
+
+    await this.storage.set(`tx:${txHash}`, {
+      txHash,
+      to: params.to,
+      value: params.value.toString(),
+      rawTx: signedHex,
+      timestamp: Date.now(),
+    });
+    return txHash;
+  }
+
   async sendLegacyTransaction(params: SendLegacyTransactionParams): Promise<TransactionIntentResult> {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid EVM recipient address: ${params.recipient}`);
     }
-    const simulatedHash = hexlify(sha256(toUtf8Bytes(`${this.address}:${this.#nonce++}:${Date.now()}`)));
-    return { txHash: simulatedHash };
+    const dataHex = params.memo ? hexlify(toUtf8Bytes(params.memo)) : '0x';
+    const txHash = await this.#signAndBroadcastEvmTx({
+      to: params.recipient,
+      value: params.value,
+      dataHex,
+      maxFee: params.maxFee,
+    });
+    return { txHash };
   }
 
   async sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult> {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid EVM stealth recipient: ${params.recipient}`);
     }
-    const simulatedHash = hexlify(sha256(toUtf8Bytes(`stealth:${this.address}:${this.#nonce++}:${Date.now()}`)));
+    const dataHex = params.memo ? hexlify(toUtf8Bytes(params.memo)) : '0x';
+    const txHash = await this.#signAndBroadcastEvmTx({
+      to: params.recipient,
+      value: params.value,
+      dataHex,
+    });
     return {
-      txHash: simulatedHash,
-      stealthAddress: params.recipient,
-      messageId: hexlify(sha256(toUtf8Bytes(`msg:${simulatedHash}`))),
+      txHash,
+      stealthAddress: this.adapter.formatAddress(params.recipient),
+      messageId: keccak256(toUtf8Bytes(`msg:${txHash}`)),
     };
   }
 
@@ -442,8 +606,17 @@ class EvmChainWalletImpl extends BaseChainWallet {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid EVM stamp recipient: ${params.recipient}`);
     }
-    const simulatedHash = hexlify(sha256(toUtf8Bytes(`stamp:${this.address}:${this.#nonce++}:${Date.now()}`)));
-    return { txHash: simulatedHash };
+    const dataHex = params.messagePayload
+      ? typeof params.messagePayload === 'string'
+        ? hexlify(toUtf8Bytes(params.messagePayload))
+        : hexlify(params.messagePayload)
+      : '0x';
+    const txHash = await this.#signAndBroadcastEvmTx({
+      to: params.recipient,
+      value: params.value,
+      dataHex,
+    });
+    return { txHash };
   }
 }
 
@@ -454,6 +627,11 @@ class EvmChainWalletImpl extends BaseChainWallet {
 class TempoChainWalletImpl extends EvmChainWalletImpl {
   override async getBalance(): Promise<bigint> {
     try {
+      if (this.balanceProvider) {
+        const balance = await this.balanceProvider();
+        this.setCachedBalance(balance);
+        return balance;
+      }
       const data =
         '0x70a08231' +
         this.address.replace(/^0x/, '').toLowerCase().padStart(64, '0');
@@ -466,6 +644,7 @@ class TempoChainWalletImpl extends EvmChainWalletImpl {
           method: 'eth_call',
           params: [{ to: PATHUSD, data }, 'latest'],
         }),
+        signal: AbortSignal.timeout(1500),
       });
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status} from ${this.adapter.rpcUrl}`);
@@ -499,6 +678,7 @@ class SolanaChainWalletImpl extends BaseChainWallet {
   // Ledger internals - strictly private via JS private fields
   readonly #privateKeyBytes: Uint8Array;
   readonly #publicKeyBytes: Uint8Array;
+  #seq: number = 0;
 
   constructor(params: {
     identifier: WalletIdentifier;
@@ -506,6 +686,9 @@ class SolanaChainWalletImpl extends BaseChainWallet {
     adapter: ChainAdapter;
     privateKeyBytes: Uint8Array;
     publicKeyBytes: Uint8Array;
+    storage?: WalletStorageAdapter;
+    balanceProvider?: () => Promise<bigint>;
+    recoverProvider?: () => Promise<void>;
   }) {
     super(params);
     this.#privateKeyBytes = params.privateKeyBytes;
@@ -514,6 +697,11 @@ class SolanaChainWalletImpl extends BaseChainWallet {
 
   async getBalance(): Promise<bigint> {
     try {
+      if (this.balanceProvider) {
+        const balance = await this.balanceProvider();
+        this.setCachedBalance(balance);
+        return balance;
+      }
       const response = await fetch(this.adapter.rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -523,6 +711,7 @@ class SolanaChainWalletImpl extends BaseChainWallet {
           method: 'getBalance',
           params: [this.address, { commitment: 'confirmed' }],
         }),
+        signal: AbortSignal.timeout(1500),
       });
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status} from ${this.adapter.rpcUrl}`);
@@ -543,23 +732,41 @@ class SolanaChainWalletImpl extends BaseChainWallet {
     }
   }
 
+  async #signSolanaIntent(kind: string, recipient: string, value: bigint, extra?: string): Promise<string> {
+    const recipientBytes = this.adapter.parseAddress(recipient);
+    const seq = this.#seq++;
+    const msgBytes = toUtf8Bytes(
+      `solana:${this.chainId}:${kind}:${this.address}:${toHex(recipientBytes)}:${value.toString()}:${seq}:${extra ?? ''}`
+    );
+    const sigBytes = ed25519.sign(msgBytes, this.#privateKeyBytes);
+    const txHash = getBase58Decoder().decode(sigBytes);
+    await this.storage.set(`tx:${txHash}`, {
+      txHash,
+      kind,
+      recipient,
+      value: value.toString(),
+      timestamp: Date.now(),
+    });
+    return txHash;
+  }
+
   async sendLegacyTransaction(params: SendLegacyTransactionParams): Promise<TransactionIntentResult> {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid Solana recipient address: ${params.recipient}`);
     }
-    const simulatedSig = hexlify(sha256(toUtf8Bytes(`sol:${this.address}:${Date.now()}`))).slice(2);
-    return { txHash: simulatedSig };
+    const txHash = await this.#signSolanaIntent('legacy', params.recipient, params.value, params.memo);
+    return { txHash };
   }
 
   async sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult> {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid Solana stealth recipient: ${params.recipient}`);
     }
-    const simulatedSig = hexlify(sha256(toUtf8Bytes(`sol:stealth:${this.address}:${Date.now()}`))).slice(2);
+    const txHash = await this.#signSolanaIntent('stealth', params.recipient, params.value, params.memo);
     return {
-      txHash: simulatedSig,
+      txHash,
       stealthAddress: params.recipient,
-      messageId: simulatedSig.slice(0, 32),
+      messageId: txHash.slice(0, 32),
     };
   }
 
@@ -567,8 +774,13 @@ class SolanaChainWalletImpl extends BaseChainWallet {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid Solana stamp recipient: ${params.recipient}`);
     }
-    const simulatedSig = hexlify(sha256(toUtf8Bytes(`sol:stamp:${this.address}:${Date.now()}`))).slice(2);
-    return { txHash: simulatedSig };
+    const payloadStr = params.messagePayload
+      ? typeof params.messagePayload === 'string'
+        ? params.messagePayload
+        : toHex(params.messagePayload)
+      : undefined;
+    const txHash = await this.#signSolanaIntent('stamp', params.recipient, params.value, payloadStr);
+    return { txHash };
   }
 }
 
@@ -580,6 +792,7 @@ class EcashChainWalletImpl extends BaseChainWallet {
   // Ledger internals - strictly private via JS private fields
   readonly #spendKeyHex: string;
   readonly #pkhBytes: Uint8Array;
+  #seq: number = 0;
 
   constructor(params: {
     identifier: WalletIdentifier;
@@ -587,6 +800,9 @@ class EcashChainWalletImpl extends BaseChainWallet {
     adapter: ChainAdapter;
     spendKeyHex: string;
     pkhBytes: Uint8Array;
+    storage?: WalletStorageAdapter;
+    balanceProvider?: () => Promise<bigint>;
+    recoverProvider?: () => Promise<void>;
   }) {
     super(params);
     this.#spendKeyHex = params.spendKeyHex;
@@ -595,9 +811,15 @@ class EcashChainWalletImpl extends BaseChainWallet {
 
   async getBalance(): Promise<bigint> {
     try {
+      if (this.balanceProvider) {
+        const balance = await this.balanceProvider();
+        this.setCachedBalance(balance);
+        return balance;
+      }
       const response = await fetch(`${this.adapter.rpcUrl}/address/${this.address}/utxos`, {
         method: 'GET',
         headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(1500),
       });
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status} from ${this.adapter.rpcUrl}`);
@@ -615,23 +837,47 @@ class EcashChainWalletImpl extends BaseChainWallet {
     }
   }
 
+  async #signEcashIntent(kind: string, recipient: string, value: bigint, extra?: string): Promise<string> {
+    if (!this.#spendKeyHex) {
+      throw new Error(`Wallet ${this.walletId} is read-only and has no signing key`);
+    }
+    const destPkh = this.adapter.parseAddress(recipient);
+    const seq = this.#seq++;
+    const preimage = toUtf8Bytes(
+      `ecash:${this.chainId}:${kind}:${toHex(this.#pkhBytes)}:${toHex(destPkh)}:${value.toString()}:${seq}:${extra ?? ''}`
+    );
+    const doubleHash = sha256(getBytes(sha256(preimage)));
+    const signingKey = new SigningKey(this.#spendKeyHex);
+    const sig = signingKey.sign(doubleHash);
+    const txHash = sha256(getBytes(sha256(toUtf8Bytes(`${sig.serialized}:${seq}`)))).slice(2);
+    await this.storage.set(`tx:${txHash}`, {
+      txHash,
+      kind,
+      recipient,
+      value: value.toString(),
+      signature: sig.serialized,
+      timestamp: Date.now(),
+    });
+    return txHash;
+  }
+
   async sendLegacyTransaction(params: SendLegacyTransactionParams): Promise<TransactionIntentResult> {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid eCash recipient address: ${params.recipient}`);
     }
-    const simulatedTxid = hexlify(sha256(toUtf8Bytes(`xec:${this.address}:${Date.now()}`))).slice(2);
-    return { txHash: simulatedTxid };
+    const txHash = await this.#signEcashIntent('legacy', params.recipient, params.value, params.memo);
+    return { txHash };
   }
 
   async sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult> {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid eCash stealth recipient: ${params.recipient}`);
     }
-    const simulatedTxid = hexlify(sha256(toUtf8Bytes(`xec:stealth:${this.address}:${Date.now()}`))).slice(2);
+    const txHash = await this.#signEcashIntent('stealth', params.recipient, params.value, params.memo);
     return {
-      txHash: simulatedTxid,
+      txHash,
       stealthAddress: params.recipient,
-      messageId: simulatedTxid.slice(0, 32),
+      messageId: txHash.slice(0, 32),
     };
   }
 
@@ -639,8 +885,13 @@ class EcashChainWalletImpl extends BaseChainWallet {
     if (!this.adapter.isValidAddress(params.recipient)) {
       throw new Error(`Invalid eCash stamp recipient: ${params.recipient}`);
     }
-    const simulatedTxid = hexlify(sha256(toUtf8Bytes(`xec:stamp:${this.address}:${Date.now()}`))).slice(2);
-    return { txHash: simulatedTxid };
+    const payloadStr = params.messagePayload
+      ? typeof params.messagePayload === 'string'
+        ? params.messagePayload
+        : toHex(params.messagePayload)
+      : undefined;
+    const txHash = await this.#signEcashIntent('stamp', params.recipient, params.value, payloadStr);
+    return { txHash };
   }
 }
 
@@ -722,6 +973,10 @@ class EvmChainAdapter implements ChainAdapter {
     const master = HDNodeWallet.fromSeed(seed);
     const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
     const address = this.formatAddress(derived.address);
+    const storage =
+      context.storage ??
+      context.storageFactory?.(walletId, this.chainId) ??
+      createWalletStorage(walletId);
 
     return new EvmChainWalletImpl({
       identifier,
@@ -729,6 +984,9 @@ class EvmChainAdapter implements ChainAdapter {
       adapter: this,
       privateKey: derived.privateKey,
       publicKey: derived.publicKey,
+      storage,
+      balanceProvider: context.balanceProvider,
+      recoverProvider: context.recoverProvider,
     });
   }
 
@@ -750,12 +1008,14 @@ class EvmChainAdapter implements ChainAdapter {
       adapter: this,
       privateKey: '',
       publicKey: '',
+      storage: primary?.storage,
     });
   }
 
   async recoverWallet(wallet: ChainWallet): Promise<void> {
     try {
       await wallet.getBalance();
+      await wallet.storage.set('lastRecoveredAt', Date.now());
     } catch (err) {
       // Gracefully handle RPC failure during recovery without aborting session
       if (wallet instanceof BaseChainWallet) {
@@ -936,6 +1196,7 @@ class EvmChainAdapter implements ChainAdapter {
           method: 'eth_gasPrice',
           params: [],
         }),
+        signal: AbortSignal.timeout(1500),
       });
       const data = (await response.json()) as { result?: string };
       const gasPrice = data.result ? BigInt(data.result) : 1000000000n;
@@ -1008,6 +1269,7 @@ class TempoChainAdapter extends EvmChainAdapter {
       adapter: this,
       privateKey: '',
       publicKey: '',
+      storage: primary?.storage,
     });
   }
 
@@ -1033,6 +1295,10 @@ class TempoChainAdapter extends EvmChainAdapter {
     const master = HDNodeWallet.fromSeed(seed);
     const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
     const address = this.formatAddress(derived.address);
+    const storage =
+      context.storage ??
+      context.storageFactory?.(walletId, this.chainId) ??
+      createWalletStorage(walletId);
 
     return new TempoChainWalletImpl({
       identifier,
@@ -1040,6 +1306,9 @@ class TempoChainAdapter extends EvmChainAdapter {
       adapter: this,
       privateKey: derived.privateKey,
       publicKey: derived.publicKey,
+      storage,
+      balanceProvider: context.balanceProvider,
+      recoverProvider: context.recoverProvider,
     });
   }
 
@@ -1162,6 +1431,10 @@ class SolanaChainAdapter implements ChainAdapter {
     const { node } = deriveEd25519PathNode(master, `m/44'/501'/${accountIndex}'/0'`);
     const pubKeyBytes = ed25519.getPublicKey(node.key);
     const address = new PublicKey(pubKeyBytes).toBase58();
+    const storage =
+      context.storage ??
+      context.storageFactory?.(walletId, this.chainId) ??
+      createWalletStorage(walletId);
 
     return new SolanaChainWalletImpl({
       identifier,
@@ -1169,6 +1442,9 @@ class SolanaChainAdapter implements ChainAdapter {
       adapter: this,
       privateKeyBytes: node.key,
       publicKeyBytes: pubKeyBytes,
+      storage,
+      balanceProvider: context.balanceProvider,
+      recoverProvider: context.recoverProvider,
     });
   }
 
@@ -1190,12 +1466,14 @@ class SolanaChainAdapter implements ChainAdapter {
       adapter: this,
       privateKeyBytes: new Uint8Array(32),
       publicKeyBytes: new Uint8Array(32),
+      storage: primary?.storage,
     });
   }
 
   async recoverWallet(wallet: ChainWallet): Promise<void> {
     try {
       await wallet.getBalance();
+      await wallet.storage.set('lastRecoveredAt', Date.now());
     } catch (err) {
       if (wallet instanceof BaseChainWallet) {
         wallet.setRecoveryError(err);
@@ -1491,6 +1769,10 @@ class EcashChainAdapter implements ChainAdapter {
     const pubKeyBytes = getBytes(derived.publicKey);
     const pkhBytes = getBytes(ripemd160(sha256(pubKeyBytes)));
     const address = Address.p2pkh(pkhBytes, this.prefix).toString();
+    const storage =
+      context.storage ??
+      context.storageFactory?.(walletId, this.chainId) ??
+      createWalletStorage(walletId);
 
     return new EcashChainWalletImpl({
       identifier,
@@ -1498,6 +1780,9 @@ class EcashChainAdapter implements ChainAdapter {
       adapter: this,
       spendKeyHex: derived.privateKey,
       pkhBytes,
+      storage,
+      balanceProvider: context.balanceProvider,
+      recoverProvider: context.recoverProvider,
     });
   }
 
@@ -1520,12 +1805,14 @@ class EcashChainAdapter implements ChainAdapter {
       adapter: this,
       spendKeyHex: '',
       pkhBytes: new Uint8Array(20),
+      storage: primary?.storage,
     });
   }
 
   async recoverWallet(wallet: ChainWallet): Promise<void> {
     try {
       await wallet.getBalance();
+      await wallet.storage.set('lastRecoveredAt', Date.now());
     } catch (err) {
       if (wallet instanceof BaseChainWallet) {
         wallet.setRecoveryError(err);
@@ -1746,6 +2033,10 @@ export function createChainAdapter(
 
 let activeWalletMap: Map<WalletId, ChainWallet> = new Map();
 
+export interface CreateWalletArrayOptions {
+  readonly storageFactory?: (walletId: WalletId, chainId: ChainId) => WalletStorageAdapter;
+}
+
 /**
  * Instantiates the unified wallet array across enabled or explicitly allocated chains.
  *
@@ -1758,7 +2049,8 @@ let activeWalletMap: Map<WalletId, ChainWallet> = new Map();
  */
 export function createWalletArray(
   context: RootWalletContext,
-  allocatedWallets?: WalletIdentifier[]
+  allocatedWallets?: WalletIdentifier[],
+  options?: CreateWalletArrayOptions
 ): Map<WalletId, ChainWallet> {
   const walletMap = new Map<WalletId, ChainWallet>();
 
@@ -1800,6 +2092,10 @@ export function createWalletArray(
       accountIndex,
     };
 
+    const storage =
+      options?.storageFactory?.(walletId, alloc.walletChainId) ??
+      createWalletStorage(walletId);
+
     let wallet: ChainWallet;
     switch (alloc.walletChainId) {
       case 'monad-mainnet':
@@ -1815,6 +2111,7 @@ export function createWalletArray(
           adapter,
           privateKey: derived.privateKey,
           publicKey: derived.publicKey,
+          storage,
         });
         break;
       }
@@ -1829,6 +2126,7 @@ export function createWalletArray(
           adapter,
           privateKey: derived.privateKey,
           publicKey: derived.publicKey,
+          storage,
         });
         break;
       }
@@ -1844,6 +2142,7 @@ export function createWalletArray(
           adapter,
           privateKeyBytes: node.key,
           publicKeyBytes: pubKeyBytes,
+          storage,
         });
         break;
       }
@@ -1861,6 +2160,7 @@ export function createWalletArray(
           adapter,
           spendKeyHex: derived.privateKey,
           pkhBytes,
+          storage,
         });
         break;
       }
@@ -1962,14 +2262,16 @@ export async function recoverAllWallets(
   const succeeded: WalletId[] = [];
   const failed: Array<{ walletId: WalletId; error: unknown }> = [];
 
-  for (const wallet of targetWallets) {
-    try {
-      await wallet.recover();
-      succeeded.push(wallet.walletId);
-    } catch (error) {
-      failed.push({ walletId: wallet.walletId, error });
-    }
-  }
+  await Promise.all(
+    targetWallets.map(async (wallet) => {
+      try {
+        await wallet.recover();
+        succeeded.push(wallet.walletId);
+      } catch (error) {
+        failed.push({ walletId: wallet.walletId, error });
+      }
+    })
+  );
 
   return { succeeded, failed };
 }

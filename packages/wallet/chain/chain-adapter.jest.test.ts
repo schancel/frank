@@ -614,4 +614,33 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       mockFetch.mockRestore();
     });
   });
+
+  describe('Per-Wallet Observable Storage Adapter & Provider Delegation', () => {
+    it('allocates an isolated WalletStorageAdapter per wallet and emits notifications on balance/tx updates', async () => {
+      const walletMap = createWalletArray({ mnemonic: TEST_MNEMONIC });
+      const monadWallet = getPrimaryWallet('monad-testnet', walletMap)!;
+      const solanaWallet = getPrimaryWallet('solana-devnet', walletMap)!;
+
+      expect(monadWallet.storage).toBeDefined();
+      expect(solanaWallet.storage).toBeDefined();
+      expect(monadWallet.storage.dbName).not.toBe(solanaWallet.storage.dbName);
+
+      const events: Array<{ key?: string; value?: unknown }> = [];
+      const unsubscribe = monadWallet.storage.subscribe((evt) => {
+        events.push({ key: evt.key, value: evt.value });
+      });
+
+      monadWallet.setBalanceProvider(async () => 42000000000000000000n);
+      const bal = await monadWallet.getBalance();
+      expect(bal).toBe(42000000000000000000n);
+
+      // Wait a microtask for async set('balance') to complete
+      await new Promise((r) => setTimeout(r, 10));
+      expect(await monadWallet.storage.get('balance')).toBe('42000000000000000000');
+      expect(events.some((e) => e.key === 'balance' && e.value === '42000000000000000000')).toBe(true);
+
+      unsubscribe();
+    });
+  });
 });
+

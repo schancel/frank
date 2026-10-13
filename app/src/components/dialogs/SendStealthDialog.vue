@@ -171,6 +171,7 @@
         <q-btn
           flat
           :disable="!canReview || busy || quote.status === 'pending'"
+          :loading="quote.status === 'pending'"
           :label="$t('sendStealthDialog.reviewBtnLabel')"
           color="primary"
           data-testid="stealth-review-btn"
@@ -238,6 +239,7 @@ export default defineComponent({
       memo: '',
       reviewedRequest: undefined as StealthDialogRequest | undefined,
       quoteAtReview: undefined as StealthDialogQuoteState | undefined,
+      autoReviewTimer: undefined as ReturnType<typeof setTimeout> | undefined,
     }
   },
   computed: {
@@ -369,27 +371,48 @@ export default defineComponent({
   },
   watch: {
     selectedKey() {
+      this.cancelAutoReview()
       this.amount = ''
       this.reviewedRequest = undefined
     },
     amount() {
       this.reviewedRequest = undefined
+      this.scheduleAutoReview()
     },
     memo() {
       this.reviewedRequest = undefined
+      this.scheduleAutoReview()
     },
     address() {
+      this.cancelAutoReview()
       this.reviewedRequest = undefined
     },
     options() {
       if (!this.options.some(option => option.key === this.selectedKey))
         this.selectedKey = this.options[0]?.key ?? ''
+      this.cancelAutoReview()
       this.reviewedRequest = undefined
     },
   },
   methods: {
     format: formatStealthAmount,
+    scheduleAutoReview() {
+      this.cancelAutoReview()
+      if (!this.canReview || this.busy) return
+      this.autoReviewTimer = setTimeout(() => {
+        if (this.canReview && !this.busy && !this.matchingQuote) {
+          this.reviewStealth()
+        }
+      }, 400)
+    },
+    cancelAutoReview() {
+      if (this.autoReviewTimer) {
+        clearTimeout(this.autoReviewTimer)
+        this.autoReviewTimer = undefined
+      }
+    },
     reviewStealth() {
+      this.cancelAutoReview()
       if (
         this.busy ||
         !this.canReview ||
@@ -423,6 +446,9 @@ export default defineComponent({
   },
   mounted() {
     ;(this.$refs.amountInput as { focus?: () => void } | undefined)?.focus?.()
+  },
+  beforeUnmount() {
+    this.cancelAutoReview()
   },
 })
 </script>

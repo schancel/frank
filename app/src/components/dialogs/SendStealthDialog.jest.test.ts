@@ -394,4 +394,21 @@ describe('multiasset stealth review dialog', () => {
       mockBalanceLoaded.value = false
     }
   })
+  it('automatically triggers review after debounced typing for valid amounts', async () => {
+    jest.useFakeTimers()
+    try {
+      const wrapper = mountDialog()
+      await wrapper
+        .find('[data-testid="stealth-amount-input"] input')
+        .setValue('5')
+      expect(wrapper.emitted('review')).toBeUndefined()
+      jest.advanceTimersByTime(450)
+      expect(wrapper.emitted('review')).toBeDefined()
+      expect(wrapper.emitted('review')!.length).toBe(1)
+      const request = wrapper.emitted('review')![0][0] as StealthDialogRequest
+      expect(request.amountAtomic).toBe(5n * 10n ** 18n)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
 })

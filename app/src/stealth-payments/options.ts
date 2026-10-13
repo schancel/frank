@@ -21,6 +21,7 @@ export interface StealthDialogRequest {
   readonly asset: StealthPaymentAsset
   readonly amountAtomic: bigint
   readonly memo: string
+  readonly recipientSpendPublicKey?: Uint8Array
 }
 export type StealthDialogQuoteState =
   | { readonly status: 'idle' | 'pending' }

@@ -197,7 +197,10 @@
 <script lang="ts">
 import { type Conversation, useChatStore } from 'src/stores/chats'
 import { picturePreviewText } from '../../utils/chat-attachments'
-import { markdownPlainText } from '../../utils/markdown-plain-text'
+import {
+  markdownPlainText,
+  formatSnippet,
+} from '../../utils/markdown-plain-text'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
 import { defineComponent, ref, type PropType } from 'vue'
@@ -404,7 +407,7 @@ export default defineComponent({
       }
       // The preview is plain text: the words of the message, without its Markdown syntax.
       const photoLabel = this.$t('chatImage.onePhoto')
-      const plain = markdownPlainText(info.text, photoLabel)
+      const plain = formatSnippet(info.text, photoLabel)
       const previewText = info.photos
         ? picturePreviewText({ photos: info.photos, text: plain }, this.$t)
         : plain

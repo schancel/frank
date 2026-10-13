@@ -84,21 +84,48 @@
 
       <!-- Participants summary -->
       <div
-        class="row items-center text-caption text-grey-7 q-gutter-x-sm ellipsis"
-        v-if="allParticipants.length > 0"
+        class="email-thread-subbar row items-center justify-between no-wrap q-mt-xs text-caption"
+        v-if="allParticipants.length > 0 || parsedEmails.length > 0"
       >
-        <span class="text-weight-medium"
-          >{{ $t('emailThread.participants') }}:</span
+        <div
+          class="row items-center no-wrap ellipsis col q-mr-md"
+          v-if="allParticipants.length > 0"
         >
-        <span class="ellipsis">{{ allParticipants.join(', ') }}</span>
-        <q-badge color="grey-5" text-color="black" class="text-caption">
-          {{ parsedEmails.length }}
-          {{
-            parsedEmails.length === 1
-              ? $t('emailThread.messageSingle')
-              : $t('emailThread.messagePlural')
-          }}
-        </q-badge>
+          <q-icon
+            name="people_outline"
+            size="16px"
+            color="grey-6"
+            class="q-mr-xs flex-shrink-0"
+          />
+          <span class="text-weight-medium text-grey-7 q-mr-xs flex-shrink-0"
+            >{{ $t('emailThread.participants') }}:</span
+          >
+          <span
+            class="ellipsis text-grey-8 participant-list"
+            :title="allParticipants.join(', ')"
+          >
+            {{ allParticipants.join(', ') }}
+          </span>
+        </div>
+        <div
+          class="col-auto row items-center q-gutter-x-xs q-ml-auto"
+          v-if="parsedEmails.length > 0"
+        >
+          <q-badge
+            rounded
+            outline
+            color="grey-6"
+            class="email-count-pill q-px-sm q-py-none text-caption text-weight-medium"
+          >
+            <q-icon name="chat_bubble_outline" size="12px" class="q-mr-xs" />
+            {{ parsedEmails.length }}
+            {{
+              parsedEmails.length === 1
+                ? $t('emailThread.messageSingle')
+                : $t('emailThread.messagePlural')
+            }}
+          </q-badge>
+        </div>
       </div>
     </div>
 
@@ -147,7 +174,12 @@
                 }"
               >
                 <q-item-section avatar top>
-                  <q-avatar size="36px" color="primary" text-color="white">
+                  <q-avatar
+                    size="36px"
+                    :color="card.isOutbound ? 'secondary' : 'primary'"
+                    text-color="white"
+                    class="email-card-avatar"
+                  >
                     <span class="text-weight-bold">{{
                       getInitials(card.fromName || card.fromAddress)
                     }}</span>
@@ -158,13 +190,17 @@
                   <div class="row items-center justify-between no-wrap">
                     <div class="row items-center no-wrap ellipsis col">
                       <span
-                        class="text-weight-bold text-body2 q-mr-xs ellipsis"
+                        class="text-weight-bold text-body2 q-mr-xs ellipsis sender-name"
                       >
-                        {{ card.fromName || card.fromAddress }}
+                        {{
+                          card.isOutbound
+                            ? card.fromName || $t('selfChat.you', 'You')
+                            : card.fromName || card.fromAddress
+                        }}
                       </span>
                       <span
-                        class="text-caption text-grey-6 ellipsis q-mr-xs"
-                        v-if="card.fromName"
+                        class="text-caption text-grey-6 ellipsis q-mr-xs sender-address"
+                        v-if="card.fromName || card.isOutbound"
                       >
                         &lt;{{ card.fromAddress }}&gt;
                       </span>
@@ -172,7 +208,7 @@
                         v-if="isVerifiedGateway && card.isDkimVerified"
                         color="positive"
                         outline
-                        class="text-caption q-px-xs q-ml-xs"
+                        class="text-caption q-px-xs q-ml-xs dkim-pill"
                         data-testid="dkim-badge"
                       >
                         <q-icon
@@ -396,42 +432,60 @@
       </div>
 
       <!-- Composer Controls Header -->
-      <div class="row items-center justify-between q-mb-sm">
+      <div class="row items-center justify-between q-mb-sm composer-header-bar">
         <div class="row items-center q-gutter-x-sm">
-          <template v-if="!isDraft">
+          <template v-if="showReplyModeToggle">
             <q-btn-toggle
               v-model="replyMode"
               dense
               rounded
+              unelevated
+              no-caps
               toggle-color="primary"
-              color="grey-4"
+              color="grey-3"
               text-color="grey-8"
               size="sm"
+              class="reply-mode-toggle"
               :options="replyOptions"
               @update:model-value="onReplyModeChanged"
             />
           </template>
-          <span v-else class="text-weight-medium text-caption text-primary">
+          <span
+            v-else-if="isOutboundFollowUp"
+            class="text-weight-bold text-caption text-primary composer-draft-indicator"
+          >
+            <q-icon name="forward_to_inbox" size="18px" class="q-mr-xs" />
+            {{ $t('emailThread.followUp', 'Follow-up') }}
+          </span>
+          <span
+            v-else-if="isDraft"
+            class="text-weight-bold text-caption text-primary composer-draft-indicator"
+          >
+            <q-icon name="edit_note" size="18px" class="q-mr-xs" />
             {{ $t('emailThread.newEmail') }}
           </span>
           <q-btn
             flat
             dense
+            no-caps
             size="sm"
+            class="recipient-toggle-btn q-px-sm"
+            :class="{ 'recipient-toggle-btn--active': showCc }"
             :label="
               showCc ? $t('emailThread.hideCc') : $t('emailThread.showCc')
             "
-            color="primary"
             @click="showCc = !showCc"
           />
           <q-btn
             flat
             dense
+            no-caps
             size="sm"
+            class="recipient-toggle-btn q-px-sm"
+            :class="{ 'recipient-toggle-btn--active': showBcc }"
             :label="
               showBcc ? $t('emailThread.hideBcc') : $t('emailThread.showBcc')
             "
-            color="primary"
             @click="showBcc = !showBcc"
           />
         </div>
@@ -440,124 +494,132 @@
         </div>
       </div>
 
-      <!-- Recipient To Field -->
-      <div class="row items-center q-mb-xs">
-        <span
-          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
-          style="width: 32px"
-          >{{ $t('emailThread.to') }}:</span
-        >
-        <div class="col row items-center q-gutter-xs">
-          <q-chip
-            v-for="(addr, idx) in toList"
-            :key="idx"
-            removable
-            dense
-            size="sm"
-            color="primary"
-            text-color="white"
-            @remove="removeToRecipient(idx)"
+      <!-- Recipient Container -->
+      <div class="recipients-container q-mb-sm">
+        <!-- Recipient To Field -->
+        <div class="recipient-row row items-center no-wrap">
+          <span class="recipient-label col-auto"
+            >{{ $t('emailThread.to') }}:</span
           >
-            {{ addr }}
-          </q-chip>
+          <div class="col row items-center q-gutter-xs">
+            <q-chip
+              v-for="(addr, idx) in toList"
+              :key="idx"
+              removable
+              dense
+              size="sm"
+              class="recipient-chip q-ma-none text-caption"
+              @remove="removeToRecipient(idx)"
+            >
+              <q-avatar
+                icon="person"
+                size="18px"
+                color="primary"
+                text-color="white"
+                class="q-mr-xs"
+              />
+              <span class="ellipsis recipient-chip-text" :title="addr">{{
+                addr
+              }}</span>
+            </q-chip>
+            <q-input
+              ref="toInputRef"
+              v-model="newToInput"
+              dense
+              borderless
+              :placeholder="$t('emailThread.addRecipient')"
+              class="col text-caption input-inline"
+              @keydown.enter.prevent="addToRecipient"
+              @keydown="handleRecipientKeydown($event, 'to')"
+            />
+          </div>
+        </div>
+
+        <!-- Recipient Cc Field -->
+        <div
+          class="recipient-row row items-center no-wrap"
+          v-if="showCc || ccList.length > 0"
+        >
+          <span class="recipient-label col-auto"
+            >{{ $t('emailThread.cc') }}:</span
+          >
+          <div class="col row items-center q-gutter-xs">
+            <q-chip
+              v-for="(addr, idx) in ccList"
+              :key="idx"
+              removable
+              dense
+              size="sm"
+              class="recipient-chip recipient-chip--cc q-ma-none text-caption"
+              @remove="removeCcRecipient(idx)"
+            >
+              <span class="ellipsis recipient-chip-text" :title="addr">{{
+                addr
+              }}</span>
+            </q-chip>
+            <q-input
+              ref="ccInputRef"
+              v-model="newCcInput"
+              dense
+              borderless
+              :placeholder="$t('emailThread.addCcRecipient')"
+              class="col text-caption input-inline"
+              @keydown.enter.prevent="addCcRecipient"
+              @keydown="handleRecipientKeydown($event, 'cc')"
+            />
+          </div>
+        </div>
+
+        <!-- Recipient Bcc Field -->
+        <div
+          class="recipient-row row items-center no-wrap"
+          v-if="showBcc || bccList.length > 0"
+          data-testid="composer-bcc-row"
+        >
+          <span class="recipient-label col-auto"
+            >{{ $t('emailThread.bcc') }}:</span
+          >
+          <div class="col row items-center q-gutter-xs">
+            <q-chip
+              v-for="(addr, idx) in bccList"
+              :key="idx"
+              removable
+              dense
+              size="sm"
+              class="recipient-chip recipient-chip--bcc q-ma-none text-caption"
+              @remove="removeBccRecipient(idx)"
+            >
+              <span class="ellipsis recipient-chip-text" :title="addr">{{
+                addr
+              }}</span>
+            </q-chip>
+            <q-input
+              ref="bccInputRef"
+              v-model="newBccInput"
+              dense
+              borderless
+              :placeholder="$t('emailThread.addBccRecipient')"
+              class="col text-caption input-inline"
+              @keydown.enter.prevent="addBccRecipient"
+              @keydown="handleRecipientKeydown($event, 'bcc')"
+            />
+          </div>
+        </div>
+
+        <!-- Subject Field -->
+        <div class="recipient-row row items-center no-wrap">
+          <span class="recipient-label col-auto">{{
+            $t('emailThread.subjectLabel')
+          }}</span>
           <q-input
-            ref="toInputRef"
-            v-model="newToInput"
+            ref="subjectInputRef"
+            v-model="subject"
             dense
             borderless
-            :placeholder="$t('emailThread.addRecipient')"
+            :placeholder="$t('emailThread.subjectPlaceholder')"
             class="col text-caption input-inline"
-            @keydown.enter.prevent="addToRecipient"
-            @keydown="handleRecipientKeydown($event, 'to')"
           />
         </div>
-      </div>
-
-      <!-- Recipient Cc Field -->
-      <div class="row items-center q-mb-xs" v-if="showCc || ccList.length > 0">
-        <span
-          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
-          style="width: 32px"
-          >{{ $t('emailThread.cc') }}:</span
-        >
-        <div class="col row items-center q-gutter-xs">
-          <q-chip
-            v-for="(addr, idx) in ccList"
-            :key="idx"
-            removable
-            dense
-            size="sm"
-            color="secondary"
-            text-color="white"
-            @remove="removeCcRecipient(idx)"
-          >
-            {{ addr }}
-          </q-chip>
-          <q-input
-            ref="ccInputRef"
-            v-model="newCcInput"
-            dense
-            borderless
-            :placeholder="$t('emailThread.addCcRecipient')"
-            class="col text-caption input-inline"
-            @keydown.enter.prevent="addCcRecipient"
-            @keydown="handleRecipientKeydown($event, 'cc')"
-          />
-        </div>
-      </div>
-
-      <!-- Recipient Bcc Field -->
-      <div
-        class="row items-center q-mb-xs"
-        v-if="showBcc || bccList.length > 0"
-        data-testid="composer-bcc-row"
-      >
-        <span
-          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
-          style="width: 32px"
-          >{{ $t('emailThread.bcc') }}:</span
-        >
-        <div class="col row items-center q-gutter-xs">
-          <q-chip
-            v-for="(addr, idx) in bccList"
-            :key="idx"
-            removable
-            dense
-            size="sm"
-            color="deep-purple-7"
-            text-color="white"
-            @remove="removeBccRecipient(idx)"
-          >
-            {{ addr }}
-          </q-chip>
-          <q-input
-            ref="bccInputRef"
-            v-model="newBccInput"
-            dense
-            borderless
-            :placeholder="$t('emailThread.addBccRecipient')"
-            class="col text-caption input-inline"
-            @keydown.enter.prevent="addBccRecipient"
-            @keydown="handleRecipientKeydown($event, 'bcc')"
-          />
-        </div>
-      </div>
-
-      <!-- Subject Field -->
-      <div class="row items-center q-mb-sm">
-        <span
-          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
-          style="width: 32px"
-          >{{ $t('emailThread.subjectLabel') }}</span
-        >
-        <q-input
-          ref="subjectInputRef"
-          v-model="subject"
-          dense
-          outlined
-          :placeholder="$t('emailThread.subjectPlaceholder')"
-          class="col text-caption"
-        />
       </div>
 
       <!-- Staged Attachments List -->
@@ -738,11 +800,7 @@
             :rows="isDraft ? 5 : 3"
             outlined
             dense
-            :placeholder="
-              isDraft
-                ? $t('emailThread.writeMessagePlaceholder')
-                : $t('emailThread.writeReplyPlaceholder')
-            "
+            :placeholder="composerPlaceholder"
             class="email-textarea"
             :disable="sending"
             @keydown.ctrl.enter="handleSend"
@@ -764,9 +822,10 @@
             flat
             round
             dense
-            color="primary"
+            color="grey-7"
             icon="attach_file"
             :disable="sending"
+            class="attach-btn"
             @click="triggerFileInput"
             data-testid="attach-file-btn"
           >
@@ -774,7 +833,155 @@
               $t('emailThread.attachFiles', 'Attach files')
             }}</q-tooltip>
           </q-btn>
+          <!-- Email Stamp Price / Multiplier Pill -->
           <q-btn
+            flat
+            rounded
+            no-caps
+            icon="local_post_office"
+            class="chat-stamp-btn q-mr-xs"
+            :aria-label="$t('a11y.stampPayment')"
+            aria-haspopup="menu"
+            :disable="sending"
+            data-testid="email-stamp-btn"
+          >
+            <span class="chat-stamp-pill-text q-ml-xs">{{
+              stampPillText
+            }}</span>
+            <span
+              v-if="stampMultiplier && stampMultiplier !== '1'"
+              class="chat-stamp-pill-multiple q-ml-xs"
+              data-testid="stamp-pill-multiple"
+              >{{ stampMultiplier }}×</span
+            >
+            <q-tooltip max-width="280px">
+              <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+              <div>
+                {{
+                  $t(
+                    'chatInput.stampWhat',
+                    'A stamp fee is burned to prioritize and deliver email via the gateway.',
+                  )
+                }}
+              </div>
+              <div
+                v-if="defaultStampMode && stampBasisNote"
+                data-testid="stamp-basis-note"
+              >
+                {{ stampBasisNote }}
+              </div>
+            </q-tooltip>
+            <q-menu anchor="top middle" self="bottom middle">
+              <div class="q-pa-md" style="min-width: 320px">
+                <div class="row items-center justify-between q-mb-xs">
+                  <div class="text-subtitle2 text-weight-medium">
+                    {{
+                      $t('chatInput.stampPayment', 'Email Stamp / Delivery Fee')
+                    }}
+                  </div>
+                </div>
+
+                <div
+                  class="text-caption chat-stamp-explanation q-mb-sm"
+                  data-testid="stamp-explanation"
+                >
+                  <div>
+                    {{
+                      $t(
+                        'emailThread.stampExplanation',
+                        'The email gateway requires a stamp (default 0.01 MONT) to bridge and dispatch email.',
+                      )
+                    }}
+                  </div>
+                  <div
+                    v-if="defaultStampMode && stampBasisNote"
+                    data-testid="stamp-basis-note"
+                  >
+                    {{ stampBasisNote }}
+                  </div>
+                </div>
+
+                <q-input
+                  v-model="innerStampAmount"
+                  dense
+                  autofocus
+                  type="number"
+                  min="0"
+                  step="any"
+                  data-testid="email-input-stamp-amount"
+                  :suffix="chainUnit"
+                  :label="$t('chatInput.stampPayment', 'Stamp Amount')"
+                />
+                <q-btn
+                  flat
+                  dense
+                  color="primary"
+                  data-testid="email-input-stamp-free"
+                  :label="$t('chatInput.stampFree', 'Free')"
+                  :disable="sending"
+                  @click="chooseFreeStamp"
+                />
+
+                <div class="q-mt-sm q-px-md">
+                  <q-slider
+                    v-model="decadeIndex"
+                    class="q-mt-md"
+                    :min="0"
+                    :max="(multiplierSteps?.length || 1) - 1"
+                    :disable="sending"
+                    :step="1"
+                    label
+                    label-always
+                    :label-value="stampMultiplier ? `${stampMultiplier}×` : ''"
+                    markers
+                    :marker-labels="decadeMarkerLabels"
+                    data-testid="email-input-stamp-slider"
+                  />
+                </div>
+
+                <div
+                  class="text-caption q-mt-sm"
+                  style="overflow-wrap: anywhere"
+                  data-testid="email-input-stamp-selection"
+                >
+                  {{ sliderLabelValue }}
+                </div>
+                <div class="text-caption text-grey-7 q-mt-sm">
+                  {{
+                    $t(
+                      'chatInput.stampQuickSelection',
+                      'Quick multiplier selection',
+                    )
+                  }}
+                </div>
+
+                <div
+                  v-if="!isDefaultStamp"
+                  class="row items-center justify-between q-mt-sm"
+                >
+                  <div class="text-caption text-grey-7">
+                    {{
+                      $t('chatInput.defaultStamp', {
+                        amount: defaultStampText,
+                      })
+                    }}
+                  </div>
+                  <q-btn
+                    flat
+                    dense
+                    size="sm"
+                    color="primary"
+                    :label="$t('chatInput.stampReset', 'Default')"
+                    @click="resetToDefaultStamp"
+                    data-testid="email-input-stamp-reset"
+                  />
+                </div>
+              </div>
+            </q-menu>
+          </q-btn>
+          <q-btn
+            unelevated
+            no-caps
             :color="
               isVerifiedGateway
                 ? 'primary'
@@ -787,7 +994,7 @@
             :loading="sending"
             :disable="sending || !canSend"
             @click="handleSend"
-            class="q-px-md"
+            class="send-btn q-px-md"
             data-testid="send-email-btn"
           >
             <q-tooltip>{{ sendButtonTooltip }}</q-tooltip>
@@ -808,12 +1015,36 @@ import type {
   MessageItem,
 } from '@frank/cashweb/types/messages'
 import { formatConversationTimestamp } from 'src/utils/formatting'
+import {
+  formatCompactAmount,
+  formatDisplayAmount,
+} from 'src/utils/chain-amount'
+import { STAMP_MULTIPLIER_TENTHS } from 'src/components/chat/ChatInput.vue'
+import { defaultStaticStampForChain } from '@frank/wallet/oracle'
+import { activeChain } from '@frank/wallet/chain'
 import { purify, renderMarkdown } from 'src/utils/markdown'
 import {
   applyMarkdownFormat,
   type MarkdownFormatAction,
 } from 'src/utils/post-editor'
 import { useSettingsStore } from 'src/stores/settings'
+import { isChainAddress } from 'src/utils/chain-address'
+import { cleanEmailSnippet } from 'src/utils/markdown-plain-text'
+
+const DEFAULT_STAMP_MULTIPLIER_TENTHS = [
+  1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 80, 100, 150, 200, 300, 500, 800, 1000,
+  1500, 2000, 3000, 5000, 8000, 10000,
+]
+
+function isValidRecipientAddress(addr: string | undefined | null): boolean {
+  if (!addr) return false
+  const trimmed = addr.trim()
+  if (!trimmed) return false
+  if (trimmed.toLowerCase() === 'me') return false
+  if (trimmed.includes('@')) return true
+  if (isChainAddress(trimmed)) return true
+  return false
+}
 
 interface ParsedEmailCard {
   id: string
@@ -863,14 +1094,38 @@ export default defineComponent({
       type: String,
       default: '',
     },
+    stampAmount: {
+      type: String,
+      default: () => '',
+    },
+    minimumStampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: () => 0n,
+    },
+    defaultStampWei: {
+      type: BigInt as unknown as PropType<bigint>,
+      default: undefined,
+    },
+    stampBasisNote: { type: String, default: '' },
+    defaultStampMode: { type: Boolean, default: true },
+    stampUnavailable: { type: String, default: '' },
   },
-  emits: { sendReply: (_payload: EmailReply) => true },
+  emits: {
+    'sendReply': (_payload: EmailReply) => true,
+    'update:stampAmount': (_amount: string) => true,
+    'resetStampDefault': () => true,
+  },
   data() {
     return {
       composerActive: true,
       composerInitialized: false,
       preparingSend: false,
       replyRouting: 'peer' as 'peer' | 'gateway',
+      typedStamp: null as string | null,
+      multiplierSteps:
+        (typeof STAMP_MULTIPLIER_TENTHS !== 'undefined' &&
+          STAMP_MULTIPLIER_TENTHS) ||
+        DEFAULT_STAMP_MULTIPLIER_TENTHS,
       expandedMap: {} as Record<string, boolean>,
       allExpanded: false,
       replyMode: 'reply_all' as 'reply' | 'reply_all',
@@ -923,12 +1178,180 @@ export default defineComponent({
         : 'Send to Peer (P2P)'
     },
     sendButtonTooltip(): string {
+      let tip = ''
       if (this.isVerifiedGateway) {
-        return 'Send via Frank Email Gateway (Ctrl+Enter)'
+        tip = 'Send via Frank Email Gateway (Ctrl+Enter)'
+      } else if (this.replyRouting === 'gateway') {
+        tip =
+          'Route through Frank Email Gateway to dispatch to external recipients (Ctrl+Enter)'
+      } else {
+        tip =
+          'Reply will only be delivered as a Frank direct message to the peer, not dispatched to external email addresses via MX (Ctrl+Enter)'
       }
-      return this.replyRouting === 'gateway'
-        ? 'Route through Frank Email Gateway to dispatch to external recipients (Ctrl+Enter)'
-        : 'Reply will only be delivered as a Frank direct message to the peer, not dispatched to external email addresses via MX (Ctrl+Enter)'
+      const fee = this.stampPillText
+      return fee ? `${tip} [Fee: ${fee}]` : tip
+    },
+    chainUnit() {
+      return activeChain.unit
+    },
+    fallbackStaticStampWei(): bigint {
+      const fallbackCoin = defaultStaticStampForChain(
+        activeChain.chainIdentifier,
+      )
+      try {
+        return activeChain.fromDisplayAmount(fallbackCoin)
+      } catch {
+        return 0n
+      }
+    },
+    effectiveDefaultStampWei(): bigint {
+      return this.defaultStampWei ?? this.fallbackStaticStampWei
+    },
+    decadeMarkerLabels(): Record<number, string> {
+      return {
+        0: this.$t('chatInput.stampFree', 'Free'),
+        5: '1×',
+        8: '10×',
+        11: '100×',
+        14: '1k×',
+        17: '10k×',
+      }
+    },
+    decadeIndex: {
+      get(): number {
+        if (
+          this.effectiveDefaultStampWei === undefined ||
+          this.stampWei === undefined
+        )
+          return 0
+        let closest = 0
+        let distance: bigint | undefined
+        const steps = this.multiplierSteps || DEFAULT_STAMP_MULTIPLIER_TENTHS
+        for (let i = 0; i < steps.length; i++) {
+          const raw = (this.effectiveDefaultStampWei * BigInt(steps[i])) / 10n
+          const delta =
+            raw > this.stampWei ? raw - this.stampWei : this.stampWei - raw
+          if (distance === undefined || delta < distance) {
+            distance = delta
+            closest = i
+          }
+        }
+        return closest
+      },
+      set(index: number) {
+        if (
+          this.effectiveDefaultStampWei === undefined ||
+          !Number.isFinite(index)
+        )
+          return
+        const steps = this.multiplierSteps || DEFAULT_STAMP_MULTIPLIER_TENTHS
+        const i = Math.max(0, Math.min(steps.length - 1, Math.round(index)))
+        const raw = this.multipliedStamp(steps[i])
+        this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
+      },
+    },
+    sliderLabelValue(): string {
+      if (this.stampWei === 0n) return this.$t('chatInput.stampFree', 'Free')
+      if (this.stampWei === undefined)
+        return this.$t('chatInput.stampQuoteUnavailable', 'Quote unavailable')
+      const amount = `${activeChain.toDisplayAmount(this.stampWei)} ${
+        this.chainUnit
+      }`
+      return this.stampMultiplier
+        ? this.$t('chatInput.stampMultiplierValue', {
+            multiplier: this.stampMultiplier,
+            amount,
+          })
+        : amount
+    },
+    stampMultiplier(): string {
+      const selected = this.stampWei
+      const reference = this.effectiveDefaultStampWei
+      if (
+        selected === undefined ||
+        selected === 0n ||
+        reference === undefined ||
+        reference <= 0n
+      )
+        return ''
+      const scaled = (selected * 10000n + reference / 2n) / reference
+      const whole = scaled / 10000n
+      const fraction = (scaled % 10000n)
+        .toString()
+        .padStart(4, '0')
+        .replace(/0+$/, '')
+      const approximate = (selected * 10000n) % reference !== 0n
+      return `${approximate ? '≈' : ''}${whole}${
+        fraction ? '.' + fraction : ''
+      }`
+    },
+    stampWei(): bigint | undefined {
+      try {
+        return activeChain.fromDisplayAmount(this.stampAmount)
+      } catch {
+        return undefined
+      }
+    },
+    isDefaultStamp(): boolean {
+      return this.defaultStampMode
+    },
+    defaultStampText(): string {
+      const stamp = this.effectiveDefaultStampWei
+      return stamp === undefined || stamp <= 0n
+        ? this.$t('chatInput.stampQuoteUnavailable', 'Quote unavailable')
+        : formatCompactAmount(activeChain, stamp)
+    },
+    stampPillText(): string {
+      if (this.stampWei === 0n) return this.$t('chatInput.stampFree', 'Free')
+      try {
+        return formatCompactAmount(
+          activeChain,
+          activeChain.fromDisplayAmount(this.stampAmount),
+        )
+      } catch {
+        return `${this.stampAmount} ${activeChain.unit}`
+      }
+    },
+    stampLabel(): string {
+      if (this.stampWei === 0n)
+        return this.$t('chatInput.stampChipFree', 'Free stamp')
+      let amount = `${this.stampAmount} ${activeChain.unit}`
+      try {
+        amount = formatDisplayAmount(
+          activeChain,
+          activeChain.fromDisplayAmount(this.stampAmount),
+        )
+      } catch {
+        // Shown as typed.
+      }
+      return !this.stampMultiplier || this.stampMultiplier === '1'
+        ? this.$t('chatInput.stampChip', { amount })
+        : this.$t('chatInput.stampChipMultiple', {
+            amount,
+            multiplier: this.stampMultiplier,
+          })
+    },
+    innerStampAmount: {
+      get(): string {
+        if (this.typedStamp !== null) {
+          try {
+            if (
+              activeChain.fromDisplayAmount(this.typedStamp) === this.stampWei
+            ) {
+              return this.typedStamp
+            }
+          } catch {
+            // What is typed is not an amount: the chosen one is shown below.
+          }
+        }
+        return this.stampAmount.includes('.')
+          ? this.stampAmount.replace(/\.?0+$/, '')
+          : this.stampAmount
+      },
+      set(val: string | number | null) {
+        this.typedStamp = val === null ? '' : String(val)
+        this.$emit('update:stampAmount', this.typedStamp)
+      },
     },
     emailGatewayAddress(): string {
       try {
@@ -977,14 +1400,15 @@ export default defineComponent({
             | { text?: string }
             | undefined
           const text = textItem?.text || ''
-          const snippet = text.replace(/\s+/g, ' ').slice(0, 100)
+          const cleanText = cleanEmailSnippet(text)
+          const snippet = cleanText.replace(/\s+/g, ' ').slice(0, 100)
 
           cards.push({
             id: msg.payloadDigest,
             fromAddress: msg.senderAddress,
             to: [{ address: msg.destinationAddress || this.recipientAddress }],
             subject: this.threadSubject,
-            textBody: text,
+            textBody: cleanText,
             snippet,
             formattedDate,
             timestamp,
@@ -1025,18 +1449,52 @@ export default defineComponent({
     allParticipants(): string[] {
       const set = new Set<string>()
       for (const email of this.parsedEmails) {
-        if (email.fromName) {
+        if (email.fromName && isValidRecipientAddress(email.fromAddress)) {
           set.add(`${email.fromName} <${email.fromAddress}>`)
-        } else if (email.fromAddress) {
+        } else if (isValidRecipientAddress(email.fromAddress)) {
           set.add(email.fromAddress)
         }
+        for (const party of email.to || []) {
+          if (isValidRecipientAddress(party.address)) {
+            if (party.name) set.add(`${party.name} <${party.address}>`)
+            else set.add(party.address)
+          }
+        }
+        for (const party of email.cc || []) {
+          if (isValidRecipientAddress(party.address)) {
+            if (party.name) set.add(`${party.name} <${party.address}>`)
+            else set.add(party.address)
+          }
+        }
       }
-      if (this.isDraft && this.toList.length > 0) {
+      if (this.toList.length > 0) {
         for (const t of this.toList) {
-          set.add(t)
+          if (isValidRecipientAddress(t)) set.add(t)
+        }
+      }
+      if (set.size === 0 && this.conversation?.emailRecipient) {
+        if (isValidRecipientAddress(this.conversation.emailRecipient)) {
+          set.add(this.conversation.emailRecipient)
         }
       }
       return Array.from(set)
+    },
+    isOutboundFollowUp(): boolean {
+      if (this.isDraft) return false
+      const target = this.activeReplyCard || this.latestEmail
+      return Boolean(target?.isOutbound)
+    },
+    showReplyModeToggle(): boolean {
+      if (this.isDraft) return false
+      const target = this.activeReplyCard || this.latestEmail
+      if (!target || target.isOutbound) return false
+      return this.canReplyAll(target)
+    },
+    composerPlaceholder(): string {
+      if (this.isDraft || this.isOutboundFollowUp) {
+        return this.$t('emailThread.writeMessagePlaceholder')
+      }
+      return this.$t('emailThread.writeReplyPlaceholder')
     },
     canSend(): boolean {
       if (
@@ -1106,7 +1564,11 @@ export default defineComponent({
           ? this.conversation.name
           : undefined)
 
-      if (recipient && !this.toList.includes(recipient)) {
+      if (
+        recipient &&
+        isValidRecipientAddress(recipient) &&
+        !this.toList.includes(recipient)
+      ) {
         this.toList = [recipient]
       }
 
@@ -1165,6 +1627,7 @@ export default defineComponent({
     },
     formatParties(parties: EmailParty[]): string {
       return parties
+        .filter(p => isValidRecipientAddress(p.address))
         .map(p => (p.name ? `${p.name} <${p.address}>` : p.address))
         .join(', ')
     },
@@ -1176,6 +1639,7 @@ export default defineComponent({
       return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
     },
     canReplyAll(card: ParsedEmailCard): boolean {
+      if (card.isOutbound) return false
       const recipientCount = (card.to?.length || 0) + (card.cc?.length || 0)
       return recipientCount > 1
     },
@@ -1202,21 +1666,41 @@ export default defineComponent({
       card: ParsedEmailCard,
       mode: 'reply' | 'reply_all',
     ) {
+      if (card.isOutbound) {
+        // Outbound email follow-up: send to original external recipients, not 'me'!
+        const validTos = (card.to || [])
+          .map(t => t.address)
+          .filter(isValidRecipientAddress)
+        const validCcs = (card.cc || [])
+          .map(c => c.address)
+          .filter(isValidRecipientAddress)
+
+        this.toList = validTos.length > 0 ? validTos : []
+        if (this.toList.length === 0 && this.conversation?.emailRecipient) {
+          if (isValidRecipientAddress(this.conversation.emailRecipient)) {
+            this.toList = [this.conversation.emailRecipient]
+          }
+        }
+        this.ccList = validCcs
+        if (validCcs.length > 0) this.showCc = true
+        return
+      }
+
       const fromAddr = card.fromAddress
 
       if (mode === 'reply') {
-        this.toList = [fromAddr]
+        this.toList = isValidRecipientAddress(fromAddr) ? [fromAddr] : []
         this.ccList = []
       } else {
         // Reply All
-        this.toList = [fromAddr]
+        this.toList = isValidRecipientAddress(fromAddr) ? [fromAddr] : []
         const ccs: string[] = []
 
         // Add remaining 'To' recipients (excluding sender)
         if (card.to) {
           for (const t of card.to) {
             if (
-              t.address &&
+              isValidRecipientAddress(t.address) &&
               t.address.toLowerCase() !== fromAddr.toLowerCase()
             ) {
               if (!ccs.includes(t.address)) ccs.push(t.address)
@@ -1227,7 +1711,7 @@ export default defineComponent({
         if (card.cc) {
           for (const c of card.cc) {
             if (
-              c.address &&
+              isValidRecipientAddress(c.address) &&
               c.address.toLowerCase() !== fromAddr.toLowerCase()
             ) {
               if (!ccs.includes(c.address)) ccs.push(c.address)
@@ -1328,30 +1812,57 @@ export default defineComponent({
     },
     addToRecipient() {
       const val = this.newToInput.trim()
-      if (val && !this.toList.includes(val)) {
+      if (val && isValidRecipientAddress(val) && !this.toList.includes(val)) {
         this.toList.push(val)
+        this.newToInput = ''
+      } else if (
+        val &&
+        val.toLowerCase() !== 'me' &&
+        (val.includes('@') || isChainAddress(val))
+      ) {
+        if (!this.toList.includes(val)) this.toList.push(val)
+        this.newToInput = ''
+      } else {
+        this.newToInput = ''
       }
-      this.newToInput = ''
     },
     removeToRecipient(index: number) {
       this.toList.splice(index, 1)
     },
     addCcRecipient() {
       const val = this.newCcInput.trim()
-      if (val && !this.ccList.includes(val)) {
+      if (val && isValidRecipientAddress(val) && !this.ccList.includes(val)) {
         this.ccList.push(val)
+        this.newCcInput = ''
+      } else if (
+        val &&
+        val.toLowerCase() !== 'me' &&
+        (val.includes('@') || isChainAddress(val))
+      ) {
+        if (!this.ccList.includes(val)) this.ccList.push(val)
+        this.newCcInput = ''
+      } else {
+        this.newCcInput = ''
       }
-      this.newCcInput = ''
     },
     removeCcRecipient(index: number) {
       this.ccList.splice(index, 1)
     },
     addBccRecipient() {
       const val = this.newBccInput.trim()
-      if (val && !this.bccList.includes(val)) {
+      if (val && isValidRecipientAddress(val) && !this.bccList.includes(val)) {
         this.bccList.push(val)
+        this.newBccInput = ''
+      } else if (
+        val &&
+        val.toLowerCase() !== 'me' &&
+        (val.includes('@') || isChainAddress(val))
+      ) {
+        if (!this.bccList.includes(val)) this.bccList.push(val)
+        this.newBccInput = ''
+      } else {
+        this.newBccInput = ''
       }
-      this.newBccInput = ''
     },
     removeBccRecipient(index: number) {
       this.bccList.splice(index, 1)
@@ -1500,6 +2011,24 @@ export default defineComponent({
         this.preparingSend = false
       }
     },
+    multipliedStamp(tenths: number): bigint {
+      const base = this.effectiveDefaultStampWei
+      const raw = (base * BigInt(tenths)) / 10n
+      return tenths === 0
+        ? 0n
+        : raw < this.minimumStampWei
+        ? this.minimumStampWei
+        : raw
+    },
+    chooseFreeStamp() {
+      if (this.sending) return
+      this.typedStamp = '0'
+      this.$emit('update:stampAmount', '0')
+    },
+    resetToDefaultStamp() {
+      this.typedStamp = null
+      this.$emit('resetStampDefault')
+    },
   },
 })
 </script>
@@ -1522,42 +2051,262 @@ export default defineComponent({
   flex-shrink: 0;
 }
 
+.body--dark .email-thread-header {
+  background-color: #1e1e1e;
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.email-thread-subbar {
+  min-height: 24px;
+}
+
+.participant-list {
+  color: #3c4043;
+}
+
+.body--dark .participant-list {
+  color: #bdc1c6;
+}
+
+.email-count-pill {
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.body--dark .email-count-pill {
+  background: rgba(255, 255, 255, 0.05);
+}
+
 .email-card {
-  border-radius: 8px;
+  border-radius: 12px;
   background-color: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s ease;
   overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.email-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);
 }
 
 .body--dark .email-card {
   background-color: #1e1e1e;
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 .email-card-header {
-  min-height: 56px;
+  min-height: 60px;
+  padding: 10px 16px;
   user-select: none;
+  transition: background-color 0.15s ease;
+}
+
+.email-card-avatar {
+  border-radius: 50%;
+  font-weight: 600;
+}
+
+.sender-name {
+  color: #202124;
+}
+
+.body--dark .sender-name {
+  color: #e8eaed;
+}
+
+.sender-address {
+  color: #5f6368;
+}
+
+.body--dark .sender-address {
+  color: #9aa0a6;
+}
+
+.dkim-pill {
+  font-size: 10px;
+  border-radius: 4px;
+}
+
+.email-card-body {
+  padding: 16px 20px 20px 20px;
 }
 
 .email-body-text {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+  font-size: 14.5px;
+  line-height: 1.65;
+  color: #202124;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.6;
+  padding: 4px 0;
+}
+
+.body--dark .email-body-text {
+  color: #e8eaed;
 }
 
 .email-composer-dock {
   background-color: var(--q-card-background, #ffffff);
-  border-top: 1px solid rgba(0, 0, 0, 0.12);
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.05);
   z-index: 20;
   flex-shrink: 0;
 }
 
 .body--dark .email-composer-dock {
   background-color: #181818;
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+
+.composer-header-bar {
+  min-height: 32px;
+}
+
+.composer-draft-indicator {
+  display: inline-flex;
+  align-items: center;
+}
+
+.reply-mode-toggle {
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.body--dark .reply-mode-toggle {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.recipient-toggle-btn {
+  border: 1px dashed rgba(0, 0, 0, 0.18);
+  border-radius: 16px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--q-primary, #1976d2);
+  transition: all 0.15s ease;
+  min-height: 24px;
+}
+
+.recipient-toggle-btn:hover {
+  background: rgba(25, 118, 210, 0.08);
+  border-style: solid;
+}
+
+.recipient-toggle-btn--active {
+  background: rgba(25, 118, 210, 0.12);
+  border-style: solid;
+  border-color: var(--q-primary, #1976d2);
+}
+
+.body--dark .recipient-toggle-btn {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.recipients-container {
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 4px 10px;
+}
+
+.body--dark .recipients-container {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.recipient-row {
+  min-height: 36px;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.recipient-row:last-child {
+  border-bottom: none;
+}
+
+.body--dark .recipient-row {
+  border-bottom-color: rgba(255, 255, 255, 0.04);
+}
+
+.recipient-label {
+  width: 48px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5f6368;
+  user-select: none;
+}
+
+.body--dark .recipient-label {
+  color: #9aa0a6;
+}
+
+.recipient-chip {
+  background: rgba(25, 118, 210, 0.08);
+  border: 1px solid rgba(25, 118, 210, 0.2);
+  color: var(--q-primary, #1976d2);
+  font-weight: 500;
+  border-radius: 14px;
+  padding: 1px 4px 1px 6px;
+  max-width: 260px;
+}
+
+.recipient-chip--cc {
+  background: rgba(38, 166, 154, 0.08);
+  border-color: rgba(38, 166, 154, 0.25);
+  color: #00796b;
+}
+
+.recipient-chip--bcc {
+  background: rgba(103, 58, 183, 0.08);
+  border-color: rgba(103, 58, 183, 0.25);
+  color: #512da8;
+}
+
+.body--dark .recipient-chip {
+  background: rgba(25, 118, 210, 0.2);
+  border-color: rgba(25, 118, 210, 0.4);
+  color: #90caf9;
+}
+
+.body--dark .recipient-chip--cc {
+  background: rgba(38, 166, 154, 0.2);
+  border-color: rgba(38, 166, 154, 0.4);
+  color: #80cbc4;
+}
+
+.body--dark .recipient-chip--bcc {
+  background: rgba(103, 58, 183, 0.2);
+  border-color: rgba(103, 58, 183, 0.4);
+  color: #b39ddb;
+}
+
+.recipient-chip-text {
+  max-width: 200px;
 }
 
 .formatting-toolbar {
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-  padding-bottom: 4px;
+  padding: 2px 0 6px 0;
+}
+
+.body--dark .formatting-toolbar {
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
+.email-textarea :deep(.q-field__control) {
+  border-radius: 8px;
+}
+
+.staged-attachment-chip {
+  border-radius: 14px;
+}
+
+.send-btn {
+  border-radius: 8px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
 }
 
 .email-body-preview {
@@ -1578,5 +2327,47 @@ export default defineComponent({
   border: none;
   background-color: transparent;
   display: block;
+}
+
+.chat-stamp-btn {
+  flex-shrink: 0;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 14px;
+  font-size: 12px;
+  color: var(--q-primary);
+  background-color: var(--q-chat-stamp-bg, rgba(0, 0, 0, 0.05));
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-stamp-btn:hover:not(:disabled) {
+  background-color: var(--q-chat-stamp-bg-hover, rgba(0, 0, 0, 0.09));
+}
+
+.chat-stamp-pill-text {
+  font-weight: 600;
+  font-size: 11px;
+  font-family: inherit;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+.chat-stamp-pill-multiple {
+  font-size: 10px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.chat-stamp-explanation {
+  opacity: 0.8;
+  max-width: 320px;
+}
+
+.body--dark .chat-stamp-btn {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.body--dark .chat-stamp-btn:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.14);
 }
 </style>

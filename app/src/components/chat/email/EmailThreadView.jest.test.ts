@@ -137,6 +137,8 @@ describe('EmailThreadView', () => {
           'q-slide-transition': {
             template: '<div class="q-slide-transition"><slot /></div>',
           },
+          'q-menu': { template: '<div class="q-menu"><slot /></div>' },
+          'q-slider': { template: '<div class="q-slider" />' },
         },
       },
     })
@@ -716,6 +718,172 @@ describe('EmailThreadView', () => {
           targetAddress?: string
         }
         expect(emitted.targetAddress).toBe(customGateway)
+      })
+    })
+
+    describe('Outbound Email Follow-up & Recipient Hygiene', () => {
+      it('populates external recipient instead of me when latest email is outbound, and hides reply-all toggle', () => {
+        const outboundMsg: ChatMessage = {
+          outbound: true,
+          status: 'confirmed',
+          receivedTime: 5000,
+          serverTime: 5000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<outbound-msg-1@frank.org>',
+              from: { address: 'me', name: 'Me' },
+              to: [{ address: 'shammah.chancellor@gmail.com' }],
+              subject: 'Initial Outbound Email',
+              textBody: 'Hello external world!',
+            },
+          ],
+          outpoints: [],
+          senderAddress: 'me',
+          payloadDigest: 'digest-outbound-1',
+        }
+        const outboundConv: Conversation = {
+          id: 'conv-outbound-email',
+          kind: 'email',
+          name: 'Initial Outbound Email',
+          address: '0x1111111111111111111111111111111111111111',
+          participants: ['0x1111111111111111111111111111111111111111'],
+          messages: [outboundMsg],
+          totalUnreadMessages: 0,
+          totalUnreadValue: 0,
+          totalValue: 0,
+          lastReceived: 5000,
+          lastRead: 5000,
+          verifiedGateway: true,
+        }
+
+        const wrapper = mountView({
+          conversation: outboundConv,
+          messages: [outboundMsg],
+        })
+        const vm = wrapper.vm as any
+
+        // Must populate the external recipient, NOT 'me'
+        expect(vm.toList).toEqual(['shammah.chancellor@gmail.com'])
+        expect(vm.toList).not.toContain('me')
+        expect(vm.ccList).toEqual([])
+
+        // Must hide reply-all toggle because this is an outbound follow-up
+        expect(vm.isOutboundFollowUp).toBe(true)
+        expect(vm.showReplyModeToggle).toBe(false)
+        expect(vm.canReplyAll(vm.parsedEmails[0])).toBe(false)
+
+        // allParticipants must contain external recipient, never 'me'
+        expect(vm.allParticipants).toContain('shammah.chancellor@gmail.com')
+        expect(vm.allParticipants).not.toContain('me')
+      })
+
+      it('rejects adding awkward me tag as recipient in To, Cc, and Bcc fields', () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+
+        vm.newToInput = 'me'
+        vm.addToRecipient()
+        expect(vm.toList).not.toContain('me')
+
+        vm.newCcInput = 'ME'
+        vm.addCcRecipient()
+        expect(vm.ccList).not.toContain('ME')
+
+        vm.newBccInput = 'me'
+        vm.addBccRecipient()
+        expect(vm.bccList).not.toContain('me')
+
+        // Valid addresses are accepted
+        vm.newToInput = 'valid.user@example.com'
+        vm.addToRecipient()
+        expect(vm.toList).toContain('valid.user@example.com')
+      })
+
+      it('cleans fallback card textBody and snippet from wire headers', () => {
+        const fallbackMsg: ChatMessage = {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 6000,
+          serverTime: 6000,
+          items: [
+            {
+              type: 'text',
+              text: '[Direct P2P Email to 0x1111111111111111111111111111111111111111 (external email recipients not notified)]\nSubject: Fallback Notice\n\nClean body content.',
+            },
+          ],
+          outpoints: [],
+          senderAddress: '0x1111111111111111111111111111111111111111',
+          payloadDigest: 'digest-fallback-1',
+        }
+        const wrapper = mountView({
+          conversation: {
+            id: 'conv-fallback',
+            kind: 'email',
+            name: 'Fallback Notice',
+            address: '0x1111111111111111111111111111111111111111',
+            participants: ['0x1111111111111111111111111111111111111111'],
+            messages: [fallbackMsg],
+            totalUnreadMessages: 0,
+            totalUnreadValue: 0,
+            totalValue: 0,
+            lastReceived: 6000,
+            lastRead: 6000,
+            verifiedGateway: false,
+          },
+          messages: [fallbackMsg],
+        })
+        const vm = wrapper.vm as any
+        const card = vm.parsedEmails[0]
+
+        expect(card.textBody).toBe('Clean body content.')
+        expect(card.snippet).toBe('Clean body content.')
+        expect(card.snippet).not.toContain('[Direct P2P Email')
+      })
+    })
+
+    describe('Email Stamp Fee and Multiplier Controls', () => {
+      it('renders email stamp button with default pill text and fee in tooltip', () => {
+        const wrapper = mountView({
+          stampAmount: '0.01',
+          defaultStampWei: 10000000000000000n,
+          defaultStampMode: true,
+        })
+        const stampBtn = wrapper.find('[data-testid="email-stamp-btn"]')
+        expect(stampBtn.exists()).toBe(true)
+        const vm = wrapper.vm as any
+        expect(vm.stampPillText).toBeDefined()
+        expect(vm.sendButtonTooltip).toContain('[Fee:')
+      })
+
+      it('displays multiplier badge when stamp is higher than default', () => {
+        const wrapper = mountView({
+          stampAmount: '0.02',
+          defaultStampWei: 10000000000000000n,
+          defaultStampMode: false,
+        })
+        const vm = wrapper.vm as any
+        expect(vm.stampMultiplier).toBe('2')
+        expect(vm.isDefaultStamp).toBe(false)
+      })
+
+      it('emits update:stampAmount with 0 when Free button is clicked', async () => {
+        const wrapper = mountView({
+          stampAmount: '0.01',
+        })
+        const vm = wrapper.vm as any
+        vm.chooseFreeStamp()
+        expect(wrapper.emitted('update:stampAmount')?.[0]).toEqual(['0'])
+      })
+
+      it('emits resetStampDefault when resetToDefaultStamp is called', () => {
+        const wrapper = mountView({
+          stampAmount: '0.05',
+          defaultStampMode: false,
+        })
+        const vm = wrapper.vm as any
+        vm.resetToDefaultStamp()
+        expect(wrapper.emitted('resetStampDefault')).toBeTruthy()
       })
     })
   })

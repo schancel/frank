@@ -1977,11 +1977,14 @@ export const useChatStore = defineStore('chats', {
       // A message with pictures is previewed as its picture count and its text, not as the
       // attachment references the text carries. `photos` is 0 for any other message.
       const pictures = picturePreview(items)
+      // If the message contains a structured email item, prioritize it over wire fallback text items
+      const emailItem = items.find(it => it.type === 'email')
+      const previewItem = emailItem || lastItem
       return {
         outbound: lastMessage.outbound,
         senderAddress: lastMessage.senderAddress,
         photos: pictures?.photos ?? 0,
-        text: pictures ? pictures.text : messageItems.previewText(lastItem),
+        text: pictures ? pictures.text : messageItems.previewText(previewItem),
       }
     },
     getLastReceived(state) {

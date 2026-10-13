@@ -1,12 +1,89 @@
 import * as marked from 'marked'
 
-const unescapeHtml = (text: string) =>
-  text
+/**
+ * Decodes all HTML entities including hexadecimal (&#x...), decimal (&#...),
+ * and common named entities (&quot;, &amp;, &lt;, &gt;, etc.).
+ */
+export function decodeHtmlEntities(text: string): string {
+  if (!text) return ''
+  return text
+    .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => {
+      try {
+        const code = parseInt(hex, 16)
+        return Number.isNaN(code) ? _ : String.fromCodePoint(code)
+      } catch {
+        return _
+      }
+    })
+    .replace(/&#([0-9]+);/g, (_, dec) => {
+      try {
+        const code = parseInt(dec, 10)
+        return Number.isNaN(code) ? _ : String.fromCodePoint(code)
+      } catch {
+        return _
+      }
+    })
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#39;/g, "'")
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
+}
+
+/**
+ * Strips internal wire fallback headers like `[Email to ...]` or
+ * `[Direct P2P Email to ...]` and extracts a clean email snippet
+ * (the clean email body preview, or `Subject: ...` if no body is present).
+ */
+export function cleanEmailSnippet(input: string): string {
+  if (!input) return ''
+
+  // Decode entities upfront in case the headers or body contain them
+  let text = decodeHtmlEntities(input).trim()
+
+  // Match wire headers:
+  // [Email to ...]
+  // [Email from ...]
+  // [Direct P2P Email to ... (external email recipients not notified)]
+  // [Direct P2P Email from ...]
+  // Followed optionally by [Cc ...]
+  const wireHeaderRegex =
+    /^\s*\[(?:(?:Direct P2P\s+)?Email\s+(?:to|from)|Email)[^\]]*\](?:\s*\[Cc\s+[^\]]*\])?\s*/i
+
+  const hasWireHeader = wireHeaderRegex.test(text)
+  if (hasWireHeader) {
+    text = text.replace(wireHeaderRegex, '').trim()
+  }
+
+  // Also check if text starts with ✉️ prefix (from email plugin previewText)
+  const pluginPreviewRegex = /^✉️\s*([^:]+):\s*(.*)$/s
+  const pluginMatch = text.match(pluginPreviewRegex)
+  if (pluginMatch) {
+    const subj = pluginMatch[1].trim()
+    const body = pluginMatch[2].trim()
+    if (body) return body
+    return subj && subj !== '(No Subject)' ? `Subject: ${subj}` : ''
+  }
+
+  // Check for Subject header: `Subject: ...`
+  const subjectMatch = text.match(
+    /^Subject:\s*([^\r\n]*)(?:\r?\n+([\s\S]*))?$/i,
+  )
+  if (subjectMatch) {
+    const subj = subjectMatch[1].trim()
+    const body = subjectMatch[2]?.trim() || ''
+    if (body) {
+      return body
+    }
+    return subj ? `Subject: ${subj}` : ''
+  }
+
+  return text
+}
+
+const unescapeHtml = (text: string) => decodeHtmlEntities(text)
 
 interface PlainToken {
   type: string
@@ -73,11 +150,21 @@ function plainTextOf(tokens: readonly PlainToken[], imageLabel: string) {
  * (its alt text when no label is given). The result is text, never HTML: show it as text.
  */
 export function markdownPlainText(input: string, imageLabel = ''): string {
+  const cleaned = cleanEmailSnippet(input)
   let text: string
   try {
-    text = plainTextOf(marked.lexer(input) as PlainToken[], imageLabel)
+    text = plainTextOf(marked.lexer(cleaned) as PlainToken[], imageLabel)
   } catch {
-    text = input
+    text = cleaned
   }
-  return text.replace(/\s+/g, ' ').trim()
+  return decodeHtmlEntities(text).replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Formats a message snippet for conversation list preview and notifications.
+ * If the message is an email or wire email fallback, strips internal headers
+ * and returns a clean body preview or subject.
+ */
+export function formatSnippet(input: string, imageLabel = ''): string {
+  return markdownPlainText(input, imageLabel)
 }

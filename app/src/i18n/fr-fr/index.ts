@@ -158,6 +158,7 @@ export default {
       'unsupported': 'messagerie non prise en charge',
     },
     resetToDefault: 'Revenir au montant par défaut',
+    stampReset: 'Par défaut',
     stampFree: 'Gratuit',
     stampChipFree: 'Sans timbre : ce message est gratuit',
     stampChip: 'Timbre : {amount}',
@@ -1183,6 +1184,9 @@ export default {
     newDraftSubtitle:
       'Rédigez votre message ci-dessous. Frank l’acheminera via la passerelle e-mail Frank vers le destinataire par e-mail standard.',
     newEmail: 'Nouvel e-mail sortant',
+    followUp: 'Brouillon de suivi',
+    stampExplanation:
+      'Distribué via la passerelle d’e-mails Frank. Le timbre couvre l’envoi et la protection anti-spam.',
     formatBold: 'Gras',
     formatItalic: 'Italique',
     formatHeading: 'Titre',

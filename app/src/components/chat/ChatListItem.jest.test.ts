@@ -682,4 +682,22 @@ describe('ChatListItem subject', () => {
       false,
     )
   })
+
+  it('formats clean email snippet without wire headers or un-decoded entities in preview', () => {
+    latest = {
+      text: '[Email to &#x73;&#x68;&#x61;&#x109;;&#x6d;&#x61;&#x68;]\nSubject: Invoice 12\n\nPayment has been received successfully.',
+      outbound: true,
+    }
+    const wrapper = mountRow({
+      id: 'conv-email',
+      kind: 'email',
+      name: 'Invoice 12',
+      address: PEER,
+      participants: [PEER],
+      verifiedGateway: true,
+    })
+    expect(wrapper.get('.chat-list-preview').text()).toBe(
+      'You: Payment has been received successfully.',
+    )
+  })
 })

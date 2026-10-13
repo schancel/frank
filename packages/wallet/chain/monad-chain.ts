@@ -463,6 +463,15 @@ const walletMaterial = new WeakMap<
   EvmChainWalletHandle,
   MonadWalletMaterial
 >();
+const walletFundingCandidates = new WeakMap<
+  EvmChainWalletHandle,
+  () => readonly {
+    source: "main" | "identity" | "coin";
+    address: string;
+    privateKey: () => string;
+    balanceWei?: bigint;
+  }[]
+>();
 // Facades may receive a handle created by another factory on the same configured network.
 // Its key ownership and send queue travel with that handle, not with the receiving facade.
 const walletSendQueues = new WeakMap<EvmChainWalletHandle, Promise<void>>();
@@ -1375,41 +1384,240 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     const leaseHolder = `${wallet.identity.address.raw.toLowerCase()}:topic:${hexlify(
       randomBytes(8)
     )}`;
+    const mainPrivateKeyHex = mainPrivateKey(wallet);
     const mainAccountSigner = new MonadAccountTxSigner({
-      privateKey: mainPrivateKey(wallet),
+      privateKey: mainPrivateKeyHex,
       provider: wallet.provider,
       httpClient: wallet.httpClient,
     });
+    const mainAddress =
+      walletMaterial.get(wallet)?.mainAccount.address ??
+      wallet.identity.address.raw;
+
     try {
       onProgress?.({ stage: "checking" });
+
+      const burnAddress = creatorForumPolicy(
+        privateTopicWallets.get(wallet) ?? wallet
+      ).burnAddress;
+      const gasReserveWei = await quoteMonadTopicBurnGasReserve({
+        signer: mainAccountSigner,
+        burnAddress,
+      });
+
+      const feeData =
+        typeof wallet.provider?.getFeeData === "function"
+          ? await wallet.provider.getFeeData().catch(() => undefined)
+          : undefined;
+      const gasPrice = feeData?.maxFeePerGas ?? feeData?.gasPrice ?? 0n;
+      const fundingGasLimit =
+        typeof wallet.provider?.estimateGas === "function"
+          ? await wallet.provider
+              .estimateGas({ from: mainAddress, to: mainAddress, value: 1n })
+              .catch(() => 21000n)
+          : 21000n;
+      const fundingGasFee = fundingGasLimit * gasPrice;
+      const requiredTotalWei = voteWeightWei + gasReserveWei + fundingGasFee;
+      const neededTargetBalance = voteWeightWei + gasReserveWei;
+
+      const getBal = async (addr: string) =>
+        typeof wallet.provider?.getBalance === "function"
+          ? await wallet.provider.getBalance(addr, "pending").catch(() => 0n)
+          : 0n;
+
+      const candidateGetter = walletFundingCandidates.get(wallet);
+      const candidates = candidateGetter
+        ? candidateGetter()
+        : [
+            {
+              source: "main" as const,
+              address: mainAddress,
+              privateKey: () => mainPrivateKeyHex,
+            },
+          ];
+
+      const isEligible = (address: string) =>
+        !sourceIsHeld(wallet, address) &&
+        (typeof wallet.pool?.accountClaimedBy !== "function" ||
+          wallet.pool.accountClaimedBy(address) === undefined);
+
+      // 1. Check mainAccount first (if not held and balance >= requiredTotalWei -> fast path)
+      const mainCandidate = candidates.find((c) => c.source === "main");
+      let mainBalance = 0n;
+      if (mainCandidate && isEligible(mainCandidate.address)) {
+        mainBalance = await getBal(mainCandidate.address);
+      }
+
       if (
-        sourceIsHeld(
+        mainCandidate &&
+        isEligible(mainCandidate.address) &&
+        mainBalance >= requiredTotalWei
+      ) {
+        const preparation = await runMainAccountExclusive(
           wallet,
-          walletMaterial.get(wallet)?.mainAccount.address ??
-            wallet.identity.address.raw
-        )
-      )
-        throw new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT);
-      const preparation = await runMainAccountExclusive(wallet, async () => {
-        // The fee quote itself signs a probe, so it belongs behind admission too.
-        const gasReserveWei = await quoteMonadTopicBurnGasReserve({
-          signer: mainAccountSigner,
-          burnAddress: creatorForumPolicy(
-            privateTopicWallets.get(wallet) ?? wallet
-          ).burnAddress,
+          async () => {
+            return wallet.pool.prepareBurnAccount({
+              mainAccountSigner,
+              mainAccountAddress: mainAddress,
+              provider: wallet.provider,
+              burnValueWei: voteWeightWei,
+              gasReserveWei,
+              onProgress,
+              claimFor: leaseHolder,
+            });
+          },
+          {
+            ...FUNDING_FROM_MAIN,
+            onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
+          }
+        );
+        return { leaseIndex: preparation.index, leaseHolder };
+      }
+
+      // 2. If mainAccount balance < requiredTotalWei, check remaining candidates (identity, then received coins)
+      const otherCandidates = candidates.filter((c) => c.source !== "main");
+      let singleChosen: (typeof candidates)[number] | undefined;
+      const candidateBalances = new Map<string, bigint>();
+      if (mainCandidate) {
+        candidateBalances.set(mainCandidate.address.toLowerCase(), mainBalance);
+      }
+
+      for (const candidate of otherCandidates) {
+        if (!isEligible(candidate.address)) continue;
+        const bal = await getBal(candidate.address);
+        candidateBalances.set(candidate.address.toLowerCase(), bal);
+        if (bal >= requiredTotalWei) {
+          singleChosen = candidate;
+          break;
+        }
+      }
+
+      if (singleChosen !== undefined) {
+        const funderSigner = new MonadAccountTxSigner({
+          privateKey: singleChosen.privateKey(),
+          provider: wallet.provider,
+          httpClient: wallet.httpClient,
         });
-        return wallet.pool.prepareBurnAccount({
-          mainAccountSigner,
+        const preparation = await wallet.pool.prepareBurnAccount({
+          mainAccountSigner: funderSigner,
+          mainAccountAddress: mainAddress,
           provider: wallet.provider,
           burnValueWei: voteWeightWei,
           gasReserveWei,
           onProgress,
           claimFor: leaseHolder,
         });
-      }, {
-        ...FUNDING_FROM_MAIN,
-        onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
-      });
+        if (singleChosen.source === "coin") {
+          wallet.invalidateBalanceCache?.();
+        }
+        return { leaseIndex: preparation.index, leaseHolder };
+      }
+
+      // 3. Multi-transaction aggregation across candidates
+      const contributableCandidates: Array<{
+        candidate: (typeof candidates)[number];
+        capacity: bigint;
+      }> = [];
+
+      for (const candidate of candidates) {
+        if (!isEligible(candidate.address)) continue;
+        let bal = candidateBalances.get(candidate.address.toLowerCase());
+        if (bal === undefined) {
+          bal = await getBal(candidate.address);
+          candidateBalances.set(candidate.address.toLowerCase(), bal);
+        }
+        if (bal > fundingGasFee) {
+          contributableCandidates.push({
+            candidate,
+            capacity: bal - fundingGasFee,
+          });
+        }
+      }
+
+      contributableCandidates.sort((a, b) =>
+        a.capacity > b.capacity ? -1 : 1
+      );
+
+      let remaining = neededTargetBalance;
+      const selectedFunders: Array<{
+        candidate: (typeof candidates)[number];
+        amountWei: bigint;
+      }> = [];
+
+      for (const item of contributableCandidates) {
+        if (remaining === 0n) break;
+        const contribution =
+          item.capacity < remaining ? item.capacity : remaining;
+        if (contribution <= 0n) continue;
+        selectedFunders.push({
+          candidate: item.candidate,
+          amountWei: contribution,
+        });
+        remaining -= contribution;
+      }
+
+      if (remaining === 0n && selectedFunders.length > 0) {
+        const funders = selectedFunders.map((f) => ({
+          signer: new MonadAccountTxSigner({
+            privateKey: f.candidate.privateKey(),
+            provider: wallet.provider,
+            httpClient: wallet.httpClient,
+          }),
+          amountWei: f.amountWei,
+          source: f.candidate.source,
+        }));
+
+        const hasMain = funders.some((f) => f.source === "main");
+        const hasCoin = funders.some((f) => f.source === "coin");
+
+        const executeMultiFund = async () => {
+          return wallet.pool.prepareBurnAccount({
+            mainAccountSigner: funders[0].signer,
+            mainAccountAddress: mainAddress,
+            funders,
+            provider: wallet.provider,
+            burnValueWei: voteWeightWei,
+            gasReserveWei,
+            onProgress,
+            claimFor: leaseHolder,
+          });
+        };
+
+        const preparation = hasMain
+          ? await runMainAccountExclusive(wallet, executeMultiFund, {
+              ...FUNDING_FROM_MAIN,
+              onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
+            })
+          : await executeMultiFund();
+
+        if (hasCoin) {
+          wallet.invalidateBalanceCache?.();
+        }
+        return { leaseIndex: preparation.index, leaseHolder };
+      }
+
+      // 4. Fallback to mainAccountSigner within runMainAccountExclusive so deficit error is surfaced cleanly
+      if (sourceIsHeld(wallet, mainAddress))
+        throw new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT);
+
+      const preparation = await runMainAccountExclusive(
+        wallet,
+        async () => {
+          return wallet.pool.prepareBurnAccount({
+            mainAccountSigner,
+            mainAccountAddress: mainAddress,
+            provider: wallet.provider,
+            burnValueWei: voteWeightWei,
+            gasReserveWei,
+            onProgress,
+            claimFor: leaseHolder,
+          });
+        },
+        {
+          ...FUNDING_FROM_MAIN,
+          onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
+        }
+      );
       return { leaseIndex: preparation.index, leaseHolder };
     } catch (err) {
       const reason =
@@ -2293,6 +2501,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         const pool = new MonadSubAccountPool({
           keyring,
           store: subAccountStore,
+          mainAccountAddress: mainAccount.address,
         });
         const changePool = new MonadChangePool({
           keyring: changeKeyring,
@@ -5830,6 +6039,38 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
+          walletFundingCandidates.set(wallet, () => [
+            {
+              source: "main" as const,
+              address: mainAccount.address,
+              privateKey: () => mainAccount.privateKey,
+            },
+            ...(identity.address.raw.toLowerCase() ===
+            mainAccount.address.toLowerCase()
+              ? []
+              : [
+                  {
+                    source: "identity" as const,
+                    address: identity.address.raw,
+                    privateKey: () => identity.toPrivateKeyHex(),
+                  },
+                ]),
+            ...spendableCoins(coinStore.all())
+              .filter(
+                (coin) =>
+                  nativeOperationOwners.get(wallet)?.holdsSource(coin.address) !==
+                  true
+              )
+              .sort((a, b) =>
+                BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
+              )
+              .map((coin) => ({
+                source: "coin" as const,
+                address: coin.address,
+                privateKey: () => coin.privateKey,
+                balanceWei: BigInt(coin.amountWei),
+              })),
+          ]);
           if (material.canonicalRoles !== undefined) typedWallets.add(wallet);
           return wallet;
         } catch (error) {

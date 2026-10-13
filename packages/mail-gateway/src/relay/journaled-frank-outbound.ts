@@ -126,6 +126,8 @@ export interface JournaledFrankOutboundOptions {
   readonly ledger: CreditLedger;
   readonly gatewayDomain: string;
   readonly mailboxSalt: Uint8Array;
+  readonly inboundStampValue?: bigint;
+  readonly defaultReplyAllowanceCount?: number;
   readonly maxNewThreadsPerDay?: number;
   readonly now?: () => number;
   readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
@@ -152,6 +154,8 @@ export class JournaledFrankOutbound {
   private readonly ledger: CreditLedger;
   private readonly domain: string;
   private readonly salt: Uint8Array;
+  private readonly inboundStampValue?: bigint;
+  private readonly defaultReplyAllowanceCount: number;
   private readonly maxNewThreadsPerDay: number;
   private readonly now: () => number;
   private readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
@@ -176,6 +180,15 @@ export class JournaledFrankOutbound {
     if (this.domain !== this.journal.gatewayDomain) throw new Error('Mail journal domain differs');
     if (options.mailboxSalt.byteLength !== 32) throw new Error('Reply-alias salt must be 32 bytes');
     this.salt = Uint8Array.from(options.mailboxSalt);
+    this.inboundStampValue = options.inboundStampValue;
+    this.defaultReplyAllowanceCount = options.defaultReplyAllowanceCount ?? 3;
+    if (
+      !Number.isSafeInteger(this.defaultReplyAllowanceCount) ||
+      this.defaultReplyAllowanceCount < 0 ||
+      this.defaultReplyAllowanceCount > 3
+    ) {
+      throw new Error('Invalid reply allowance count');
+    }
     this.maxNewThreadsPerDay = options.maxNewThreadsPerDay ?? 5;
     if (!Number.isSafeInteger(this.maxNewThreadsPerDay) || this.maxNewThreadsPerDay < 0)
       throw new Error('Invalid new-thread quota');
@@ -295,6 +308,15 @@ export class JournaledFrankOutbound {
         (this.secureLinkPolicy === 'subject-tag' && directive.triggered));
 
     const itemForKey: EmailItem = hasAttachments ? { ...item, attachments: undefined } : item;
+    const replyAllowance =
+      this.inboundStampValue !== undefined &&
+      this.inboundStampValue > 0n &&
+      this.defaultReplyAllowanceCount > 0
+        ? {
+            unit: this.inboundStampValue.toString(),
+            wanted: this.defaultReplyAllowanceCount,
+          }
+        : undefined;
     const input = {
       ...base,
       outcome: 'bridged' as const,
@@ -304,6 +326,7 @@ export class JournaledFrankOutbound {
       authoredMessageId: item.messageId,
       itemKey: emailItemKey(itemForKey),
       ...(item.inReplyTo ? { inReplyTo: item.inReplyTo } : {}),
+      ...(replyAllowance ? { replyAllowance } : {}),
     };
     const first = this.journal.recordFrankMessage(input);
     if (first.kind === 'duplicate' || first.kind === 'same_message') return;
@@ -380,6 +403,9 @@ export class JournaledFrankOutbound {
       });
       if (recorded.kind === 'duplicate' || recorded.kind === 'same_message') return;
       if (recorded.kind !== 'bridged') throw new Error('Frank mail did not bridge');
+      if (recorded.allowancesCovered > 0) {
+        this.ledger.grantReplyAllowance(recipient, scope, recorded.allowancesCovered);
+      }
       const job = this.journal.addOutboundJob({
         scopeAccount: scope,
         rfcMessageId: recorded.message.rfcMessageId,

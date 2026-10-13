@@ -247,6 +247,7 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       ledger,
       gatewayDomain: input.gatewayDomain,
       mailboxSalt: input.mailboxSalt,
+      inboundStampValue: input.inboundStampValue,
       secureMessagePortal: securePortal,
       ...(input.secureLinkPolicy ? { secureLinkPolicy: input.secureLinkPolicy } : {}),
       ...(input.secureLinkDefaultAuthMode

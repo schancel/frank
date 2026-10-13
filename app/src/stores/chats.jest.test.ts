@@ -1847,6 +1847,20 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
     })
 
+    it('opens and requests focus on the conversation when notification is clicked', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+
+      await chats.receiveMessages([makeWrapper({ index: 'digest-click' })])
+
+      expect(desktopNotify).toHaveBeenCalled()
+      const callback = jest.mocked(desktopNotify).mock.calls.at(-1)?.[3]
+      expect(callback).toBeDefined()
+      await callback!()
+      expect(chats.composeFocusRequest).toBeDefined()
+      expect(chats.composeFocusRequest?.nonce).toBeGreaterThan(0)
+    })
+
     it('stores a message once when two overlapping polls deliver it (#412)', async () => {
       const chats = useChatStore()
       jest.spyOn(document, 'hasFocus').mockReturnValue(false)
@@ -3890,6 +3904,30 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.activeConversationId).toBeNull()
       expect(chats.activeChatAddr).toBeNull()
       expect(chats.activeConversation).toBeNull()
+    })
+
+    it('requests compose focus and increments nonce on demand and when setActiveConversation has requestFocus', () => {
+      const chats = useChatStore()
+      const conv = chats.createConversation({
+        kind: 'direct',
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        name: 'Focus Thread',
+      })
+
+      expect(chats.composeFocusRequest).toBeNull()
+
+      chats.setActiveConversation(conv.id, { requestFocus: true })
+      expect(chats.composeFocusRequest?.conversationId).toBe(conv.id)
+      const nonce1 = chats.composeFocusRequest?.nonce
+      expect(nonce1).toBeGreaterThan(0)
+
+      // Even if conversation is already active, calling with requestFocus increments nonce
+      chats.setActiveConversation(conv.id, { requestFocus: true })
+      expect(chats.composeFocusRequest?.nonce).toBeGreaterThan(nonce1!)
+
+      // Direct requestComposeFocus works
+      chats.requestComposeFocus(conv.id)
+      expect(chats.composeFocusRequest?.nonce).toBeGreaterThan(nonce1! + 1)
     })
 
     it('activates conversation by contact address for backward compatibility (ticket #943)', () => {

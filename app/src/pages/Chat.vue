@@ -306,12 +306,17 @@ export default defineComponent({
   beforeUnmount() {
     this.cancelBlackjackPreparation()
     window.removeEventListener('resize', this.resizeHandler)
+    window.removeEventListener('focus', this.onWindowFocus)
+    this.clearComposeFocusTimers()
     if (this.stampQuoteTimer) clearInterval(this.stampQuoteTimer)
     this.stampQuoteSequence++
   },
   data() {
     return {
       address: this.$route.params.address as string,
+      lastHandledFocusNonce: 0,
+      composeFocusTimers: [] as ReturnType<typeof setTimeout>[],
+      expectingWindowFocusUntil: 0,
       bottom: true as boolean,
       // Overlay height plus the 16px q-py-md gap. Zero keeps the stylesheet pad
       // when no banner is showing.
@@ -409,7 +414,18 @@ export default defineComponent({
     this.resizeHandler()
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
-    this.focusComposeOnOpen()
+    window.addEventListener('focus', this.onWindowFocus)
+    const req = this.chatStore?.composeFocusRequest
+    if (
+      req &&
+      req.nonce > this.lastHandledFocusNonce &&
+      this.matchesConversation(req.conversationId)
+    ) {
+      this.lastHandledFocusNonce = req.nonce
+      this.focusComposeOnOpen(true)
+    } else {
+      this.focusComposeOnOpen()
+    }
     void this.runBlackjackDealer()
   },
   updated() {
@@ -425,23 +441,103 @@ export default defineComponent({
     // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
     // still-unfocused page as focus lost and moves focus to the opener (#277).
     // One later attempt covers an overlay that is still inert on this turn.
-    focusComposeOnOpen() {
-      if (this.focusComposeNow()) return
-      const root = this.$el as HTMLElement | undefined
-      if (!root?.isConnected || root.closest('[inert]')) {
-        void this.$nextTick(() => {
-          this.focusComposeNow()
-        })
+    onWindowFocus() {
+      if (Date.now() < this.expectingWindowFocusUntil) {
+        this.expectingWindowFocusUntil = 0
+        if (!this.hasComposeFocus()) {
+          this.scheduleComposeFocus(true)
+        }
       }
     },
-    focusComposeNow() {
-      if (!this.composeAutofocusAllowed()) return false
-      ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
-      const active = document.activeElement
-      return (
-        active instanceof HTMLTextAreaElement ||
-        active instanceof HTMLInputElement
+    matchesConversation(idOrAddress: string | null | undefined): boolean {
+      if (!idOrAddress) return true
+      if (this.address && this.address === idOrAddress) return true
+      if (this.conversation?.id && this.conversation.id === idOrAddress)
+        return true
+      if (
+        this.recipientAddress &&
+        this.recipientAddress === idOrAddress
       )
+        return true
+      const storeConv =
+        this.chatStore?.conversations?.[idOrAddress] ??
+        (isChainAddress(idOrAddress)
+          ? this.chatStore?.chats?.[toChainDisplayAddress(idOrAddress)]
+          : null)
+      if (storeConv) {
+        if (this.conversation?.id && storeConv.id === this.conversation.id)
+          return true
+        if (storeConv.address && this.matchesConversation(storeConv.address))
+          return true
+      }
+      if (
+        isChainAddress(idOrAddress) &&
+        ((this.address &&
+          isChainAddress(this.address) &&
+          sameCanonicalAddress(this.address, idOrAddress)) ||
+          (this.recipientAddress &&
+            isChainAddress(this.recipientAddress) &&
+            sameCanonicalAddress(this.recipientAddress, idOrAddress)) ||
+          (this.conversation?.address &&
+            isChainAddress(this.conversation.address) &&
+            sameCanonicalAddress(this.conversation.address, idOrAddress)))
+      ) {
+        return true
+      }
+      return false
+    },
+    clearComposeFocusTimers() {
+      for (const timer of this.composeFocusTimers) {
+        clearTimeout(timer)
+      }
+      this.composeFocusTimers = []
+    },
+    hasComposeFocus() {
+      const active = document.activeElement
+      const root = this.$el as HTMLElement | undefined
+      return (
+        (active instanceof HTMLTextAreaElement ||
+          active instanceof HTMLInputElement) &&
+        (root ? root.contains(active) : true)
+      )
+    },
+    // Opening a chat (mount or a reused route) places the caret (#411). On this
+    // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
+    // still-unfocused page as focus lost and moves focus to the opener (#277).
+    // One later attempt covers an overlay that is still inert on this turn.
+    focusComposeOnOpen(force = false) {
+      this.scheduleComposeFocus(force)
+    },
+    scheduleComposeFocus(force = false) {
+      this.clearComposeFocusTimers()
+      if (force) {
+        this.expectingWindowFocusUntil = Date.now() + 1000
+      }
+      const immediateFocused = this.focusComposeNow(force)
+      if (immediateFocused && !force) {
+        return
+      }
+      void this.$nextTick(() => {
+        if (!this.hasComposeFocus()) {
+          this.focusComposeNow(force)
+        }
+      })
+      const t1 = setTimeout(() => {
+        if (!this.hasComposeFocus()) {
+          this.focusComposeNow(force)
+        }
+      }, 50)
+      const t2 = setTimeout(() => {
+        if (!this.hasComposeFocus()) {
+          this.focusComposeNow(force)
+        }
+      }, 150)
+      this.composeFocusTimers.push(t1, t2)
+    },
+    focusComposeNow(force = false) {
+      if (!this.composeAutofocusAllowed(force)) return false
+      ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
+      return this.hasComposeFocus()
     },
     finePointer() {
       return (
@@ -449,11 +545,12 @@ export default defineComponent({
         window.matchMedia('(pointer: fine)').matches
       )
     },
-    composeAutofocusAllowed() {
+    composeAutofocusAllowed(force = false) {
       if (!this.finePointer()) return false
       if (document.querySelector('.q-dialog, .q-menu')) return false
       const root = this.$el as HTMLElement | undefined
       if (!root?.isConnected || root.closest('[inert]')) return false
+      if (force) return true
       const active = document.activeElement
       if (!(active instanceof HTMLElement)) return true
       if (
@@ -1524,6 +1621,23 @@ export default defineComponent({
     'oracle.current'() {
       void this.refreshMinimumStamp()
     },
+    'chatStore.composeFocusRequest': {
+      deep: true,
+      handler(
+        req: { conversationId: string | null; nonce: number } | null | undefined,
+      ) {
+        if (!req || req.nonce <= this.lastHandledFocusNonce) return
+        if (this.matchesConversation(req.conversationId)) {
+          this.lastHandledFocusNonce = req.nonce
+          this.scheduleComposeFocus(true)
+        }
+      },
+    },
+    'chatStore.activeConversationId'(newActiveId: string | null | undefined) {
+      if (newActiveId && this.matchesConversation(newActiveId)) {
+        this.scheduleComposeFocus(false)
+      }
+    },
     'address'(newAddr: string) {
       if (
         newAddr &&
@@ -1542,7 +1656,16 @@ export default defineComponent({
       // Another conversation opens on its newest message, wherever the last one was left.
       this.followBottom = true
       this.$nextTick(() => this.pinScrollToBottom())
-      this.focusComposeOnOpen()
+      const req = this.chatStore?.composeFocusRequest
+      const force = Boolean(
+        req &&
+          req.nonce > this.lastHandledFocusNonce &&
+          this.matchesConversation(req.conversationId),
+      )
+      if (force && req) {
+        this.lastHandledFocusNonce = req.nonce
+      }
+      this.focusComposeOnOpen(force)
       void this.runBlackjackDealer()
     },
     'messages.length'(newLen: number, oldLen: number) {

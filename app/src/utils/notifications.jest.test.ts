@@ -171,14 +171,17 @@ describe('sentTransactionNotify', () => {
 
 describe('desktopNotify', () => {
   const constructed: Array<{ title: string; options: NotificationOptions }> = []
+  const instances: Array<{ onclick: (() => void) | null }> = []
   const original = (global as { Notification?: unknown }).Notification
 
   beforeEach(() => {
     constructed.length = 0
+    instances.length = 0
     ;(global as { Notification?: unknown }).Notification = class {
       onclick: (() => void) | null = null
       constructor(title: string, options: NotificationOptions) {
         constructed.push({ title, options })
+        instances.push(this)
       }
     }
   })
@@ -212,6 +215,23 @@ describe('desktopNotify', () => {
     desktopNotify('Qwen', 'hi', 'icon.png', () => undefined)
 
     expect(constructed[0]?.options).not.toHaveProperty('tag')
+  })
+
+  it('focuses window and calls callback when notification is clicked', () => {
+    const callback = jest.fn()
+    const focusSpy = jest
+      .spyOn(window, 'focus')
+      .mockImplementation(() => undefined)
+    try {
+      desktopNotify('Qwen', 'hi', 'icon.png', callback)
+      const instance = instances[0]
+      expect(instance?.onclick).toBeDefined()
+      instance?.onclick?.()
+      expect(focusSpy).toHaveBeenCalledTimes(1)
+      expect(callback).toHaveBeenCalledTimes(1)
+    } finally {
+      focusSpy.mockRestore()
+    }
   })
 })
 

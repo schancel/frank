@@ -116,6 +116,9 @@ export function desktopNotify(
   })
 
   notify.onclick = () => {
+    try {
+      window.focus()
+    } catch {}
     callback()
   }
 }

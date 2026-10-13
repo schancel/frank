@@ -164,4 +164,21 @@ describe('journaled outbound worker', () => {
     expect(port.submit).not.toHaveBeenCalled();
     expect(journal.listUncertainOutboundJobs()[0].state).toBe('submitting');
   });
+
+  it('accepts outbound mail whose From uses an issued username or u.0x... fallback while Reply-To uses the thread alias', async () => {
+    journal.issueMailbox({ localPart: 'shammah', scopeAccount: ACCOUNT });
+    const jobId = makeJob(
+      journal,
+      `From: "Shammah" <shammah@${DOMAIN}>\r\nReply-To: ${SENDER_LOCAL_PART}@${DOMAIN}\r\nTo: ${RECIPIENT}\r\nSubject: Test\r\nMessage-ID: ${RFC_ID}\r\n\r\nHello`
+    );
+    const submit = jest.fn(async () => undefined);
+    const worker = new JournaledOutboundWorker({ journal, gatewayDomain: DOMAIN, port: { submit } });
+    expect(await worker.dispatch(jobId)).toBe('sent');
+    expect(submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fromAddress: `shammah@${DOMAIN}`,
+        recipientEmail: RECIPIENT,
+      })
+    );
+  });
 });

@@ -357,4 +357,19 @@ describe('journal-backed inbound Frank send', () => {
     expect(ledger.getBalance(SENDER)).toBe(1);
     expect(journal.countWaitingFrankSends()).toBe(0);
   });
+
+  it('queues inbound mail to operator/operational local-parts without requiring sender credits', () => {
+    expect(ledger.getBalance(SENDER)).toBe(0);
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const admitted = sender.admit(
+      { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:support-1', authenticatedSenderEmail: SENDER },
+      RECIPIENT,
+      1000n,
+      undefined,
+      'support',
+    );
+    expect(admitted.kind).toBe('queued');
+    expect(journal.countWaitingFrankSends()).toBe(1);
+  });
 });
+

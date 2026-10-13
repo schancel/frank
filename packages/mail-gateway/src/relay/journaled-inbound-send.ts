@@ -3,6 +3,7 @@ import type { ActiveChain, WalletHandle } from '@frank/wallet/chain/active-chain
 import type { MessageItem } from '@frank/cashweb/types/messages';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { MailJournal } from '../ledger/mail-journal';
+import { isOperatorMailboxLocalPart } from '../mailbox/operational-local-parts';
 import { mailKey } from '../rfc/mail-keys';
 import { readThreadHeaders } from '../rfc/message-headers';
 import { parseRawRfc822 } from '../smtp/smtp-listener';
@@ -78,8 +79,12 @@ export class JournaledInboundSend {
     if (!threadHeaders.ok) throw new Error(`Invalid mail thread headers: ${threadHeaders.reason}`);
 
     return this.ledger.atomic((): InboundAdmission => {
+      const isOperatorMailbox =
+        mailboxLocalPart !== undefined && isOperatorMailboxLocalPart(mailboxLocalPart);
       const principalHasCredit =
-        this.ledger.getBalance(sender) > 0 || this.ledger.getThreadAllowance(sender, scope) > 0;
+        isOperatorMailbox ||
+        this.ledger.getBalance(sender) > 0 ||
+        this.ledger.getThreadAllowance(sender, scope) > 0;
       const admitted = this.journal.admitInboundEmail({
         scopeAccount: scope,
         mailKey: key,
@@ -107,7 +112,7 @@ export class JournaledInboundSend {
         }
         return { kind: 'duplicate' };
       }
-      if (!this.ledger.consumeCredit(sender, scope)) return { kind: 'held' };
+      if (!this.ledger.consumeCredit(sender, scope) && !isOperatorMailbox) return { kind: 'held' };
       const relayed = this.journal.relayInboundEmail({
         scopeAccount: scope,
         mailKey: key,

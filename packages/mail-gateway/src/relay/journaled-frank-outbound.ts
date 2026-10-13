@@ -3,6 +3,7 @@ import type { EmailItem } from '@frank/cashweb/types/messages';
 import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { MailJournal } from '../ledger/mail-journal';
+import { isOperationalLocalPart } from '../mailbox/operational-local-parts';
 import { canonicalEmailAddress } from '../mta/outbound-delivery';
 import { emailItemKey, mailKey } from '../rfc/mail-keys';
 import { assertHeaderValue, parseMessageId } from '../rfc/message-headers';
@@ -10,6 +11,9 @@ import type { FrankInboundRejectReason } from '../types';
 
 const HEX_64 = /^[0-9a-f]{64}$/;
 const MAX_SUBJECT_BYTES = 600;
+const MAX_DISPLAY_NAME_BYTES = 256;
+const USERNAME_LOCAL_PART = /^[a-z0-9][a-z0-9_-]{2,31}$/;
+const REPLY_ALIAS_LOCAL_PART = /^m[0-9a-f]{30}$/;
 
 function encodedSubject(subject: string): string {
   if (/^[\x20-\x7e]*$/.test(subject)) return subject;
@@ -26,6 +30,40 @@ function encodedSubject(subject: string): string {
   return words.join('\r\n ');
 }
 
+function formatFromHeader(fromAddress: string, displayName?: string): string {
+  const trimmedName = displayName?.trim();
+  if (!trimmedName) return fromAddress;
+  assertHeaderValue(trimmedName);
+  if (Buffer.byteLength(trimmedName, 'utf8') > MAX_DISPLAY_NAME_BYTES) {
+    throw new Error('Sender display name is too long');
+  }
+  if (/^[\x20-\x7e]+$/.test(trimmedName)) {
+    const escaped = trimmedName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `"${escaped}" <${fromAddress}>`;
+  }
+  return `${encodedSubject(trimmedName)} <${fromAddress}>`;
+}
+
+function isSafe7BitBody(normalizedBody: string): boolean {
+  if (!/^[\x09\x20-\x7e\r\n]*$/.test(normalizedBody)) return false;
+  const lines = normalizedBody.split('\r\n');
+  return lines.every((line) => line.length <= 76 && !line.startsWith('.') && !/^from /i.test(line));
+}
+
+function isValidSenderUsername(localPart: string): boolean {
+  const canonical = localPart.trim().toLowerCase();
+  return (
+    USERNAME_LOCAL_PART.test(canonical) &&
+    !isOperationalLocalPart(canonical) &&
+    !REPLY_ALIAS_LOCAL_PART.test(canonical)
+  );
+}
+
+/** Deterministic local-part fallback encoding the sender's canonical 0x account address. */
+export function userIdFallbackLocalPart(scopeAccount: string): string {
+  return `u.${scopeAccount.trim().toLowerCase()}`;
+}
+
 /** A private, account-root-derived salt makes aliases stable across gateway replicas. */
 export function replyAlias(salt: Uint8Array, scopeAccount: string, conversationId: string): string {
   if (salt.byteLength !== 32) throw new Error('Reply-alias salt must be 32 bytes');
@@ -35,16 +73,27 @@ export function replyAlias(salt: Uint8Array, scopeAccount: string, conversationI
     .digest('hex').slice(0, 30);
 }
 
-function renderMail(item: EmailItem, rfcMessageId: string, sender: string, recipient: string, receivedTime: number): Uint8Array {
+function renderMail(
+  item: EmailItem,
+  rfcMessageId: string,
+  fromHeader: string,
+  replyToAddress: string,
+  recipient: string,
+  receivedTime: number,
+): Uint8Array {
   const subject = item.subject.trim();
   assertHeaderValue(subject);
   if (Buffer.byteLength(subject, 'utf8') > MAX_SUBJECT_BYTES) throw new Error('Email subject is too long');
   const mailSubject = encodedSubject(subject);
-  const body = Buffer.from(item.textBody.replace(/\r?\n/g, '\r\n'), 'utf8').toString('base64');
-  const foldedBody = body.match(/.{1,76}/g)?.join('\r\n') ?? '';
+  const normalizedBody = item.textBody.replace(/\r?\n/g, '\r\n');
+  const use7Bit = isSafe7BitBody(normalizedBody);
+  const transferEncoding = use7Bit ? '7bit' : 'base64';
+  const renderedBody = use7Bit
+    ? normalizedBody
+    : (Buffer.from(normalizedBody, 'utf8').toString('base64').match(/.{1,76}/g)?.join('\r\n') ?? '');
   const headers = [
-    `From: ${sender}`,
-    `Reply-To: ${sender}`,
+    `From: ${fromHeader}`,
+    `Reply-To: ${replyToAddress}`,
     `To: ${recipient}`,
     `Subject: ${mailSubject}`,
     `Date: ${new Date(receivedTime).toUTCString()}`,
@@ -53,9 +102,9 @@ function renderMail(item: EmailItem, rfcMessageId: string, sender: string, recip
     ...(item.references?.length ? [`References: ${item.references.join(' ')}`] : []),
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=utf-8',
-    'Content-Transfer-Encoding: base64',
+    `Content-Transfer-Encoding: ${transferEncoding}`,
   ];
-  return Buffer.from(`${headers.join('\r\n')}\r\n\r\n${foldedBody}\r\n`, 'utf8');
+  return Buffer.from(`${headers.join('\r\n')}\r\n\r\n${renderedBody}\r\n`, 'utf8');
 }
 
 export interface JournaledFrankOutboundOptions {
@@ -65,6 +114,8 @@ export interface JournaledFrankOutboundOptions {
   readonly mailboxSalt: Uint8Array;
   readonly maxNewThreadsPerDay?: number;
   readonly now?: () => number;
+  readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
+  readonly useUserIdFallback?: boolean;
 }
 
 /**
@@ -78,6 +129,8 @@ export class JournaledFrankOutbound {
   private readonly salt: Uint8Array;
   private readonly maxNewThreadsPerDay: number;
   private readonly now: () => number;
+  private readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
+  private readonly useUserIdFallback: boolean;
 
   constructor(options: JournaledFrankOutboundOptions) {
     this.journal = options.journal;
@@ -91,6 +144,40 @@ export class JournaledFrankOutbound {
     if (!Number.isSafeInteger(this.maxNewThreadsPerDay) || this.maxNewThreadsPerDay < 0)
       throw new Error('Invalid new-thread quota');
     this.now = options.now ?? Date.now;
+    this.resolveSenderUsername = options.resolveSenderUsername;
+    this.useUserIdFallback = options.useUserIdFallback ?? Boolean(options.resolveSenderUsername);
+  }
+
+  private async resolveFromLocalPart(item: EmailItem, scope: string, alias: string): Promise<string> {
+    if (this.resolveSenderUsername) {
+      try {
+        const resolved = await this.resolveSenderUsername(scope);
+        if (resolved && isValidSenderUsername(resolved)) {
+          return resolved.trim().toLowerCase();
+        }
+      } catch {
+        // Fall through to item.from or deterministic user ID fallback.
+      }
+    }
+
+    const rawFromAddress = typeof item.from?.address === 'string' ? item.from.address.trim().toLowerCase() : '';
+    if (rawFromAddress) {
+      const atIndex = rawFromAddress.indexOf('@');
+      if (atIndex !== -1) {
+        const localPart = rawFromAddress.slice(0, atIndex);
+        const domainPart = rawFromAddress.slice(atIndex + 1);
+        if (domainPart === this.domain) {
+          if (isValidSenderUsername(localPart)) return localPart;
+          if (localPart === scope || localPart === userIdFallbackLocalPart(scope)) {
+            return userIdFallbackLocalPart(scope);
+          }
+        }
+      } else if (isValidSenderUsername(rawFromAddress)) {
+        return rawFromAddress;
+      }
+    }
+
+    return this.useUserIdFallback ? userIdFallbackLocalPart(scope) : alias;
   }
 
   async handle(message: DirectMessageReceived): Promise<void> {
@@ -129,7 +216,9 @@ export class JournaledFrankOutbound {
     const recipient = canonicalEmailAddress(item.to[0]?.address);
     if (!recipient) return reject('bad_recipient');
     const alias = replyAlias(this.salt, scope, conversationId);
-    const sender = `${alias}@${this.domain}`;
+    const replyToAddress = `${alias}@${this.domain}`;
+    const fromLocalPart = await this.resolveFromLocalPart(item, scope, alias);
+    const fromAddress = `${fromLocalPart}@${this.domain}`;
     const input = {
       ...base,
       outcome: 'bridged' as const,
@@ -145,7 +234,8 @@ export class JournaledFrankOutbound {
     if (first.kind !== 'needs_render') throw new Error('Unexpected Frank mail disposition');
     let bytes: Uint8Array;
     try {
-      bytes = renderMail(item, first.rfcMessageId, sender, recipient, message.receivedTime);
+      const fromHeader = formatFromHeader(fromAddress, item.from?.name);
+      bytes = renderMail(item, first.rfcMessageId, fromHeader, replyToAddress, recipient, message.receivedTime);
     } catch {
       return reject('header_unsafe');
     }
@@ -156,6 +246,9 @@ export class JournaledFrankOutbound {
         return;
       }
       this.journal.issueMailbox({ localPart: alias, scopeAccount: scope, conversationId });
+      if (isValidSenderUsername(fromLocalPart) && !this.journal.issuedMailbox(fromLocalPart)) {
+        this.journal.issueMailbox({ localPart: fromLocalPart, scopeAccount: scope });
+      }
       const recorded = this.journal.recordFrankMessage({
         ...input,
         emitted: { rfcMessageId: first.rfcMessageId, mailKey: mailKey(bytes) },

@@ -26,6 +26,9 @@ export interface GatewayConfig {
   readonly paypalClientId?: string;
   readonly paypalWebhookId?: string;
 
+  readonly operatorAccountAddress?: string;
+  readonly operatorForwardEmail?: string;
+
   // Blob storage configuration
   readonly blobStorage?: BlobStorageConfig;
   readonly storageDir?: string;

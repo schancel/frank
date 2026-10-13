@@ -85,4 +85,14 @@ describe('mail executable configuration', () => {
     expect(config.chain.chainIdentifier).toBe('monad-testnet');
     expect(config.chain.chainId).toBe(10143n);
   });
+
+  it('loads optional FRANK_MAIL_OPERATOR_ACCOUNT and FRANK_MAIL_OPERATOR_EMAIL settings', () => {
+    const env = settings(dir);
+    const operator = `0x${'7'.repeat(40)}`;
+    env.FRANK_MAIL_OPERATOR_ACCOUNT = operator;
+    env.FRANK_MAIL_OPERATOR_EMAIL = 'Admin@Signet.mx';
+    const config = loadGatewayHostConfig(env);
+    expect(config.operatorAccountAddress).toBe(operator);
+    expect(config.operatorForwardEmail).toBe('admin@signet.mx');
+  });
 });

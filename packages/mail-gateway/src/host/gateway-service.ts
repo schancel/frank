@@ -42,6 +42,9 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
         inboundStampValue: config.inboundStampValue,
         webhookHost: config.webhookHost,
         webhookPort: config.webhookPort,
+        relayBaseUrl: config.relayBaseUrl,
+        ...(config.operatorAccountAddress ? { operatorAccountAddress: config.operatorAccountAddress } : {}),
+        ...(config.operatorForwardEmail ? { operatorForwardEmail: config.operatorForwardEmail } : {}),
         nativeSmtp: config.nativeSmtp,
       });
     } finally {

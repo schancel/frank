@@ -77,7 +77,7 @@ export class JournaledSmtpIngress {
     const parts = address.toLowerCase().split('@');
     if (parts.length !== 2 || parts[1] !== this.domain ||
       !/^[a-z0-9][a-z0-9._+-]*$/.test(parts[0]) ||
-      isOperationalLocalPart(parts[0]) || parts[0].startsWith('bounce+')) {
+      parts[0].startsWith('bounce+')) {
       throw new SmtpAdmissionRefusal(550, 'Recipient unavailable');
     }
     return parts[0];

@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="backup-container column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -25,8 +25,13 @@
         />
       </q-toolbar>
     </q-header>
-    <q-page-container class="backup-page-container">
-      <q-page class="backup-page q-ma-none" data-test="backup-account-page">
+    <q-page-container
+      class="backup-page-container col full-height overflow-hidden"
+    >
+      <q-page
+        class="backup-page q-ma-none col full-height"
+        data-test="backup-account-page"
+      >
         <q-card flat class="backup-card bg-transparent">
           <q-card-section class="backup-section">
             <div v-if="!backupUnavailable" class="backup-controls">
@@ -475,8 +480,7 @@ onBeforeUnmount(clearShares)
 
 <style lang="scss" scoped>
 .backup-page-container {
-  height: 100vh;
-  height: 100dvh;
+  height: 100%;
   min-height: 0;
   box-sizing: border-box;
   display: flex;

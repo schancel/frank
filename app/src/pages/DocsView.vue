@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="docs-view-container column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -24,8 +24,11 @@
       </q-toolbar>
     </q-header>
 
-    <q-page-container>
-      <q-page class="no-padding full-width docs-container">
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page
+        class="no-padding full-width docs-container col full-height overflow-hidden relative-position"
+        :style-fn="pageStyle"
+      >
         <iframe
           src="/docs/"
           class="docs-iframe"
@@ -39,6 +42,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
+import { viewportPageStyle } from 'src/utils/layout'
 
 export default defineComponent({
   name: 'DocsView',
@@ -46,6 +50,7 @@ export default defineComponent({
   setup(_, { emit }) {
     return {
       myDrawerOpen: useMyDrawerOpen(),
+      pageStyle: viewportPageStyle,
       toggleSettingsDrawerOpen() {
         emit('toggleMyDrawerOpen')
       },
@@ -56,7 +61,7 @@ export default defineComponent({
 
 <style scoped>
 .docs-container {
-  height: calc(100vh - 50px);
+  height: 100%;
   overflow: hidden;
 }
 

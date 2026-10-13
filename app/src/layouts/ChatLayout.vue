@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="chat-layout-root column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <template v-if="infoOpen">

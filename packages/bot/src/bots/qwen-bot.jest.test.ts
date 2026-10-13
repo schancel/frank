@@ -194,6 +194,19 @@ it("returns the model's answer and remembers the turn, keeping the latest ten pa
   expect(msg.reply).not.toHaveBeenCalled();
 });
 
+it("cleans fused greetings and malformed model outputs before returning and storing the reply", async () => {
+  (ctx.lookupPeer as jest.Mock).mockResolvedValueOnce({
+    displayName: "Metropolis",
+  });
+  generator.mockResolvedValueOnce({
+    content: "Hey MetropolisHey's up?",
+    reasoning: "",
+  });
+  const reply = await bot.onMessage(msg, ctx);
+  expect(reply).toEqual(text("Hey Metropolis! What's up?"));
+  expect(stored().messages[1].content).toBe("Hey Metropolis! What's up?");
+});
+
 it.each([
   ["thread", () => ({ message: { ...msg, conversationId: threadB } })],
   [

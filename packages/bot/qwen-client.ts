@@ -40,6 +40,10 @@ export interface QwenClientOptions {
   timeoutMs?: number
   /** Sent as `enable_thinking`. Default off. */
   thinking?: boolean
+  /** Sampling temperature. Defaults to 0.7. */
+  temperature?: number
+  /** Nucleus sampling top_p. Defaults to 0.9. */
+  topP?: number
 }
 
 interface QwenStreamChunk {
@@ -61,6 +65,8 @@ export class QwenClient {
   private readonly model: string
   private readonly timeoutMs: number
   private readonly thinking: boolean
+  private readonly temperature: number
+  private readonly topP: number
 
   constructor(options: QwenClientOptions) {
     this.apiKey = options.apiKey
@@ -68,6 +74,8 @@ export class QwenClient {
     this.model = options.model ?? 'qwen3.8-max'
     this.timeoutMs = options.timeoutMs ?? 0
     this.thinking = options.thinking ?? false
+    this.temperature = options.temperature ?? 0.7
+    this.topP = options.topP ?? 0.9
   }
 
   /** Sends `messages` as one chat-completions turn and resolves once the stream ends, having
@@ -138,6 +146,8 @@ export class QwenClient {
         messages,
         stream: true,
         enable_thinking: this.thinking,
+        temperature: this.temperature,
+        top_p: this.topP,
       },
       responseType: 'stream',
       signal,

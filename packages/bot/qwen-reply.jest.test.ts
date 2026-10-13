@@ -2,7 +2,9 @@ import { spawnSync } from 'child_process'
 import { join } from 'path'
 
 import {
+  cleanReplyContent,
   createQwenReplyGenerator,
+  DEFAULT_SYSTEM_PROMPT,
   qwenBotConfigFromEnv,
   STUB_REPLY_PREFIX,
   stubReply,
@@ -186,6 +188,125 @@ describe('model call settings', () => {
     expect(prompt).not.toMatch(/paid to send|every message carries/)
     expect(prompt).toMatch(/can carry a small payment/)
     expect(prompt).toMatch(/may be paying/)
+  })
+
+  it('instructs the model on natural greeting spacing, punctuation, and avoiding malformed concatenations', () => {
+    expect(DEFAULT_SYSTEM_PROMPT).toMatch(/natural spacing, proper capitalization, and punctuation/)
+    expect(DEFAULT_SYSTEM_PROMPT).toMatch(/Hey Metropolis! What's up\?/)
+    expect(DEFAULT_SYSTEM_PROMPT).toMatch(/Never concatenate words/)
+    expect(DEFAULT_SYSTEM_PROMPT).toMatch(/Hey NameHey's up/)
+  })
+})
+
+describe('cleanReplyContent post-processing', () => {
+  it.each([
+    [
+      'fused greeting with user display name and Hey\'s up typo',
+      "Hey MetropolisHey's up?",
+      'Metropolis',
+      "Hey Metropolis! What's up?",
+    ],
+    [
+      'fused display name without initial greeting and Hey\'s up typo',
+      "MetropolisHey's up?",
+      'Metropolis',
+      "Metropolis! What's up?",
+    ],
+    [
+      'fused display name and How question',
+      'Hey MetropolisHow are you today?',
+      'Metropolis',
+      'Hey Metropolis! How are you today?',
+    ],
+    [
+      'fused display name and Nice opening',
+      'Hello MetropolisNice to meet you!',
+      'Metropolis',
+      'Hello Metropolis! Nice to meet you!',
+    ],
+    [
+      'fused display name without initial greeting and What question',
+      "MetropolisWhat's going on?",
+      'Metropolis',
+      "Metropolis! What's going on?",
+    ],
+    [
+      'greeting and name with space but Hey\'s up typo',
+      "Hey Metropolis Hey's up?",
+      'Metropolis',
+      "Hey Metropolis! What's up?",
+    ],
+    [
+      'greeting and name with comma and Hey\'s up typo',
+      "Hey Metropolis, Hey's up?",
+      'Metropolis',
+      "Hey Metropolis, what's up?",
+    ],
+    [
+      'standalone Hey\'s up typo capitalized',
+      "Hey's up?",
+      undefined,
+      "What's up?",
+    ],
+    [
+      'standalone hey\'s up typo lowercase',
+      "hey's up with that?",
+      undefined,
+      "what's up with that?",
+    ],
+    [
+      'curly apostrophe in Hey’s up',
+      'Hey’s up everyone?',
+      undefined,
+      "What's up everyone?",
+    ],
+    [
+      'fused greeting pattern when userName was not known',
+      "Hey MetropolisHey's up?",
+      undefined,
+      "Hey Metropolis! What's up?",
+    ],
+    [
+      'fused name pattern without greeting when userName was not known',
+      "MetropolisHey's up?",
+      undefined,
+      "Metropolis! What's up?",
+    ],
+    [
+      'does not alter CamelCase or technical terms',
+      'We use TypeScript, JavaScript, and DeFi protocols on MonadTestnet.',
+      'Metropolis',
+      'We use TypeScript, JavaScript, and DeFi protocols on MonadTestnet.',
+    ],
+    [
+      'does not alter already properly formatted greetings',
+      "Hey Metropolis! What's up?",
+      'Metropolis',
+      "Hey Metropolis! What's up?",
+    ],
+    [
+      'multi-word display name with fused greeting',
+      "Hey Neo MetropolisHey's up?",
+      'Neo Metropolis',
+      "Hey Neo Metropolis! What's up?",
+    ],
+  ])('fixes %s', (_label, input, userName, expected) => {
+    expect(cleanReplyContent(input, userName)).toBe(expected)
+  })
+
+  it('is applied by createQwenReplyGenerator in live mode', async () => {
+    const chat = jest.fn(async () => ({
+      content: "Hey MetropolisHey's up?",
+      reasoning: '',
+    }))
+    const gen = createQwenReplyGenerator(
+      qwenBotConfigFromEnv(LIVE_ENV),
+      () => ({ chat }),
+    )
+    const result = await gen.reply([{ role: 'user', content: 'hello' }], {
+      userName: 'Metropolis',
+    })
+    expect(result.content).toBe("Hey Metropolis! What's up?")
   })
 })
 

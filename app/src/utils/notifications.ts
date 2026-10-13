@@ -116,6 +116,11 @@ export function desktopNotify(
   })
 
   notify.onclick = () => {
+    try {
+      window.focus()
+    } catch {
+      // Ignored: window.focus may be restricted in some browser contexts
+    }
     callback()
   }
 }

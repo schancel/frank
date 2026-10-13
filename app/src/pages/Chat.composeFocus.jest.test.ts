@@ -90,15 +90,35 @@ function storeFor() {
   return reactive({
     conversations: {},
     chats: {
-      [PEER]: { messages: [] },
-      [OTHER]: { messages: [] },
+      [PEER]: { id: PEER, address: PEER, messages: [] },
+      [OTHER]: { id: OTHER, address: OTHER, messages: [] },
     },
     messages: {},
+    activeConversationId: PEER,
+    composeFocusRequest: null as {
+      conversationId: string | null
+      nonce: number
+    } | null,
     getAcceptancePrice: () => 0,
     getStampWei: () => 1n,
     setStampWei: jest.fn(),
     getMessageByPayload: () => null,
     sendMessage: jest.fn(),
+    requestComposeFocus(id?: string | null) {
+      this.composeFocusRequest = {
+        conversationId: id ?? this.activeConversationId,
+        nonce: (this.composeFocusRequest?.nonce ?? 0) + 1,
+      }
+    },
+    setActiveConversation(
+      id: string | null,
+      options: { requestFocus?: boolean } = {},
+    ) {
+      this.activeConversationId = id
+      if (options.requestFocus) {
+        this.requestComposeFocus(id)
+      }
+    },
   })
 }
 
@@ -281,6 +301,78 @@ describe('opening a chat focuses the compose box (#411)', () => {
     await settle()
     expect(document.activeElement).toBe(composeBox())
     expect(document.activeElement).not.toBe(opener)
+    wrapper.unmount()
+  })
+
+  it('focuses the compose box when a notification requests focus on the already-active chat', async () => {
+    setPointer(true)
+    const wrapper = mountChat()
+    await settle()
+    expect(document.activeElement).toBe(composeBox())
+
+    // Focus is moved to another element (e.g. user clicked away before receiving notification)
+    const outside = document.createElement('button')
+    outside.type = 'button'
+    document.body.appendChild(outside)
+    outside.focus()
+    expect(document.activeElement).toBe(outside)
+
+    // Notification click sets focus request for the active conversation
+    mockChatStore.requestComposeFocus(PEER)
+    await settle()
+
+    expect(document.activeElement).toBe(composeBox())
+    wrapper.unmount()
+  })
+
+  it('re-focuses on delayed timer attempt if window activation blurs composer initially', async () => {
+    setPointer(true)
+    const wrapper = mountChat()
+    await settle()
+
+    // Simulate focus lost outside
+    const outside = document.createElement('button')
+    outside.type = 'button'
+    document.body.appendChild(outside)
+    outside.focus()
+    expect(document.activeElement).toBe(outside)
+
+    // Notification requests focus
+    mockChatStore.requestComposeFocus(PEER)
+    await nextTick()
+
+    // Simulate browser window blur event resetting focus during transition
+    outside.focus()
+    expect(document.activeElement).toBe(outside)
+
+    // Wait for the 50ms / 150ms retry timers to execute
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(document.activeElement).toBe(composeBox())
+
+    wrapper.unmount()
+  })
+
+  it('re-focuses composer when window receives focus event after notification click', async () => {
+    setPointer(true)
+    const wrapper = mountChat()
+    await settle()
+
+    const outside = document.createElement('button')
+    outside.type = 'button'
+    document.body.appendChild(outside)
+    outside.focus()
+    expect(document.activeElement).toBe(outside)
+
+    // Notification click requests focus
+    mockChatStore.requestComposeFocus(PEER)
+    await nextTick()
+
+    // Window gets OS focus
+    outside.focus()
+    window.dispatchEvent(new Event('focus'))
+    await nextTick()
+
+    expect(document.activeElement).toBe(composeBox())
     wrapper.unmount()
   })
 })

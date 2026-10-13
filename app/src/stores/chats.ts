@@ -562,12 +562,22 @@ const defaultContactObject = {
   lastRead: 0,
 }
 
+export interface ComposeFocusRequest {
+  conversationId: string | null
+  nonce: number
+}
+
+export interface SetActiveConversationOptions {
+  requestFocus?: boolean
+}
+
 export interface State {
   activeConversationId: string | null
   conversations: Record<string, Conversation>
   messages: Record<string, ChatMessage | undefined>
   logicalMessages: Record<string, LogicalMessageRecord | undefined>
   lastReceived: number | null
+  composeFocusRequest: ComposeFocusRequest | null
 }
 
 /**
@@ -590,6 +600,7 @@ function freshChatsState(): State {
     logicalMessages: {},
     lastReceived: null,
     activeConversationId: null,
+    composeFocusRequest: null,
   }
 }
 
@@ -1849,6 +1860,7 @@ export async function rehydateChat(
     logicalMessages,
     activeConversationId: chatState.activeConversationId ?? null,
     lastReceived,
+    composeFocusRequest: null,
   }
 }
 
@@ -4192,16 +4204,33 @@ export const useChatStore = defineStore('chats', {
       const chat = this.chats[address] || this.conversations[address]
       if (chat) chat.stampWei = stampWei?.toString()
     },
-    setActiveChat(address: string | null): void {
-      if (!address) return this.setActiveConversation(null)
-      if (this.conversations[address])
-        return this.setActiveConversation(address)
-      const conv = this.openDirectConversation(address)
-      this.setActiveConversation(conv.id)
+    requestComposeFocus(conversationId?: string | null): void {
+      const targetId =
+        conversationId !== undefined
+          ? conversationId
+          : this.activeConversationId
+      const currentNonce = this.composeFocusRequest?.nonce ?? 0
+      this.composeFocusRequest = {
+        conversationId: targetId,
+        nonce: currentNonce + 1,
+      }
     },
-    setActiveConversation(conversationId: string | null): void {
+    setActiveChat(
+      address: string | null,
+      options: SetActiveConversationOptions = {},
+    ): void {
+      if (!address) return this.setActiveConversation(null, options)
+      if (this.conversations[address])
+        return this.setActiveConversation(address, options)
+      const conv = this.openDirectConversation(address)
+      this.setActiveConversation(conv.id, options)
+    },
+    setActiveConversation(
+      conversationId: string | null,
+      options: SetActiveConversationOptions = {},
+    ): void {
       if (conversationId && isChainAddress(conversationId)) {
-        return this.setActiveChat(conversationId)
+        return this.setActiveChat(conversationId, options)
       }
       const conv = conversationId
         ? resolveConversation(this.conversations, conversationId)
@@ -4217,6 +4246,9 @@ export const useChatStore = defineStore('chats', {
         if (isChainAddress(conv.address))
           useContactStore().refresh(conv.address)
         this.readAll(conv.id)
+      }
+      if (options.requestFocus && (conv || conversationId)) {
+        this.requestComposeFocus(conv?.id ?? conversationId)
       }
     },
     async receiveMessages(
@@ -5003,7 +5035,10 @@ export const useChatStore = defineStore('chats', {
             senderName,
             body,
             contact.profile.avatar ?? '',
-            async () => this.setActiveConversation(stored.conversationId!),
+            async () =>
+              this.setActiveConversation(stored.conversationId!, {
+                requestFocus: true,
+              }),
             index,
           )
         }

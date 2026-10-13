@@ -389,7 +389,14 @@ export default defineComponent({
     },
     /** Public focus target for chat-level focus handoffs. */
     focus() {
-      ;(this.$refs.inputBox as { focus?: () => void } | undefined)?.focus?.()
+      const box = this.$refs.inputBox as
+        | { focus?: () => void; nativeEl?: HTMLElement; $el?: HTMLElement }
+        | undefined
+      box?.focus?.()
+      const el = box?.nativeEl ?? box?.$el?.querySelector?.('textarea, input')
+      if (el instanceof HTMLElement && document.activeElement !== el) {
+        el.focus()
+      }
     },
     // A pasted picture becomes an attachment; pasted text is left to the text box.
     pasted(e: ClipboardEvent) {

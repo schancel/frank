@@ -175,7 +175,7 @@ function secondaryChainIdentifier(chain: string): string | undefined {
   return entry &&
     (entry.family === 'bitcoin' ||
       (entry.family === 'evm' && entry.kind !== 'tempo') ||
-      entry.id === 'tempo-testnet') &&
+      entry.kind === 'tempo') &&
     !isPrimaryChain(chain)
     ? entry.id
     : undefined
@@ -277,8 +277,10 @@ export async function fetchChainBalance(
       }
       const entry = supportedEntry(chainIdentifier)
       if (!entry) throw new Error(`Wallet unavailable for ${chainIdentifier}`)
-      if (entry.id === 'tempo-testnet') {
-        const balance = await readTempoPathUsdBalance(entry.id)
+      if (entry.kind === 'tempo') {
+        const balance = await readTempoPathUsdBalance(
+          entry.id as 'tempo-testnet' | 'tempo-mainnet',
+        )
         if (!isCurrent()) return
         secondaryStates[chainIdentifier] = {
           revision,

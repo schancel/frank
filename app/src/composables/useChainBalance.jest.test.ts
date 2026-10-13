@@ -76,10 +76,22 @@ jest.mock('../accounts/utxo-wallets', () => ({
 const mockEvmBalances: Record<string, jest.Mock> = {
   'monad-mainnet': jest.fn().mockResolvedValue(7n),
   'monad-regtest': jest.fn().mockResolvedValue(9n),
+  'hyperliquid-testnet': jest.fn().mockResolvedValue(42_000_000_000_000_000_000n),
+  'hyperliquid-mainnet': jest.fn().mockResolvedValue(55_000_000_000_000_000_000n),
 }
 const mockOpenEvmWallet = jest.fn(async (chainIdentifier: string) => ({
-  chain: { unit: 'MON', toDisplayAmount: (value: bigint) => value.toString() },
-  wallet: { getBalance: mockEvmBalances[chainIdentifier] },
+  chain: {
+    unit: chainIdentifier.startsWith('hyperliquid')
+      ? chainIdentifier === 'hyperliquid-testnet'
+        ? 'tHYPE'
+        : 'HYPE'
+      : 'MON',
+    toDisplayAmount: (value: bigint) => (Number(value) / 1e18).toString(),
+  },
+  wallet: {
+    getBalance:
+      mockEvmBalances[chainIdentifier] ?? jest.fn().mockResolvedValue(0n),
+  },
 }))
 jest.mock('../accounts/evm-wallets', () => ({
   openEvmWallet: (chainIdentifier: string) =>
@@ -90,22 +102,6 @@ jest.mock('../accounts/tempo-wallets', () => ({
   readTempoPathUsdBalance: (...args: unknown[]) =>
     mockReadTempoPathUsdBalance(...args),
 }))
-let mockTempoEnabled = false
-jest.mock('../utils/wallet-support', () => {
-  const actual = jest.requireActual('../utils/wallet-support')
-  return {
-    ...actual,
-    walletSupport: (wallet: string, isTestnet: boolean, configured?: string) =>
-      mockTempoEnabled && (wallet === 'tempo' || wallet === 'tempo-testnet')
-        ? {
-            status: 'available',
-            entry: jest
-              .requireActual('@frank/wallet/chain/chains-registry')
-              .getChainRegistryEntry('tempo-testnet'),
-          }
-        : actual.walletSupport(wallet, isTestnet, configured),
-  }
-})
 
 const mockFetchSolanaBalance = jest.fn().mockResolvedValue({
   lamports: 2_500_000_000n,
@@ -185,23 +181,23 @@ describe('useChainBalance', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     mockAccountStatus.status = 'ready'
-    mockTempoEnabled = false
   })
 
   it('reads Tempo PathUSD through its verified token reader, not an EVM native wallet', async () => {
-    mockTempoEnabled = true
-    const configured = activeChain.chainIdentifier
-    try {
-      activeChain.chainIdentifier = 'tempo-testnet'
-      await fetchChainBalance('tempo', true)
-      expect(mockReadTempoPathUsdBalance).toHaveBeenCalledWith('tempo-testnet')
-      expect(mockOpenEvmWallet).not.toHaveBeenCalled()
-      expect(useChainBalance('tempo').formattedBalance.value).toBe(
-        '1.234567 PathUSD',
-      )
-    } finally {
-      activeChain.chainIdentifier = configured
-    }
+    await fetchChainBalance('tempo', true)
+    expect(mockReadTempoPathUsdBalance).toHaveBeenCalledWith('tempo-testnet')
+    expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+    expect(useChainBalance('tempo').formattedBalance.value).toBe(
+      '1.234567 PathUSD',
+    )
+  })
+
+  it('reads Hyperliquid through openEvmWallet and formats native balance', async () => {
+    await fetchChainBalance('hyperliquid', true)
+    expect(mockOpenEvmWallet).toHaveBeenCalledWith('hyperliquid-testnet')
+    expect(useChainBalance('hyperliquid').formattedBalance.value).toBe(
+      '42 tHYPE',
+    )
   })
 
   it('does not invent a native Solana row before a successful observation', async () => {
@@ -362,7 +358,7 @@ describe('useChainBalance', () => {
     expect(cash.presentation.value).toMatchObject({ status: 'available' })
   })
 
-  it.each(['dogecoin', 'ethereum', 'tempo', 'hyperliquid', 'nonsense'])(
+  it.each(['dogecoin', 'ethereum', 'nonsense'])(
     'says %s is unsupported and opens no wallet for it',
     async chain => {
       mockOpenUtxoWallet.mockClear()

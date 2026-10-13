@@ -941,7 +941,7 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it.each(['dogecoin', 'ethereum', 'tempo', 'hyperliquid'])(
+  it.each(['dogecoin', 'ethereum'])(
     'shows no address for %s, which the app cannot read, and says it is unsupported',
     async chain => {
       mockRoute.value = { query: { chain }, path: '/wallet' }
@@ -964,6 +964,38 @@ describe('Wallet detail page (#570)', () => {
       wrapper.unmount()
     },
   )
+
+  it('shows the Hyperliquid wallet address and offers Send when supported', async () => {
+    mockRoute.value = { query: { chain: 'hyperliquid' }, path: '/wallet' }
+    const wrapper = mountWallet()
+    await flush()
+
+    expect(wrapper.find('[data-testid="wallet-unsupported"]').exists()).toBe(
+      false,
+    )
+    expect(mockGetChainAddress).toHaveBeenCalledWith('hyperliquid')
+    expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
+      '0xabc',
+    )
+    expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
+      true,
+    )
+    wrapper.unmount()
+  })
+
+  it('renders Tempo PathUSD panel when Tempo wallet is selected', async () => {
+    mockRoute.value = { query: { chain: 'tempo' }, path: '/wallet' }
+    const wrapper = mountWallet()
+    await flush()
+
+    expect(wrapper.find('[data-testid="wallet-unsupported"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.findComponent({ name: 'TempoPathUsdPanel' }).exists()).toBe(
+      true,
+    )
+    wrapper.unmount()
+  })
 
   it('shows the Bitcoin testnet wallet address and offers Send', async () => {
     mockRoute.value = { query: { chain: 'bitcoin' }, path: '/wallet' }

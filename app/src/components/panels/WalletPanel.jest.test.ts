@@ -63,7 +63,15 @@ beforeEach(() => {
 
 test('renders only available wallets with icon, name and one native balance line', () => {
   const view = render()
-  for (const id of ['monad', 'bitcoin', 'bitcoincash', 'ecash', 'solana']) {
+  for (const id of [
+    'monad',
+    'bitcoin',
+    'bitcoincash',
+    'ecash',
+    'solana',
+    'tempo',
+    'hyperliquid',
+  ]) {
     const prefix = id === 'monad' ? '' : `${id}-`
     const row = view.get(`[data-test="${prefix}wallet-row"]`)
     expect(row.find('q-icon-stub').exists()).toBe(true)
@@ -79,7 +87,7 @@ test('renders only available wallets with icon, name and one native balance line
     )
     expect(row.findAll('button')).toHaveLength(0)
   }
-  for (const id of ['dogecoin', 'ethereum', 'tempo', 'hyperliquid'])
+  for (const id of ['dogecoin', 'ethereum'])
     expect(view.find(`[data-test="${id}-wallet-row"]`).exists()).toBe(false)
   expect(view.text()).not.toContain('Not supported')
   expect(view.find('[data-test="drawer-avu-explainer-link"]').exists()).toBe(
@@ -91,7 +99,15 @@ test('renders only available wallets with icon, name and one native balance line
 
 test('clicking wallet rows preserves their respective routes', async () => {
   const view = render()
-  for (const id of ['monad', 'bitcoin', 'bitcoincash', 'ecash', 'solana']) {
+  for (const id of [
+    'monad',
+    'bitcoin',
+    'bitcoincash',
+    'ecash',
+    'solana',
+    'tempo',
+    'hyperliquid',
+  ]) {
     const prefix = id === 'monad' ? '' : `${id}-`
     await view.get(`[data-test="${prefix}wallet-row"]`).trigger('click')
     expect(mockRouterPush).toHaveBeenLastCalledWith(
@@ -194,7 +210,7 @@ test('marks configured test networks and removes badges when the selected networ
   const original = getActiveChain()
   const view = render()
   try {
-    expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(5)
+    expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(7)
     setActiveChain({
       ...original,
       chainIdentifier: 'monad-mainnet',
@@ -204,8 +220,8 @@ test('marks configured test networks and removes badges when the selected networ
     expect(view.findAll('[data-test$="testnet-badge"]')).toHaveLength(0)
     expect(
       view.findAll('[data-test$="wallet-name-text"]').map(row => row.text()),
-    ).toEqual(['Main wallet', 'Solana'])
-    expect(view.findAll('[data-test$="wallet-balance"]')).toHaveLength(2)
+    ).toEqual(['Main wallet', 'Solana', 'Tempo', 'Hyperliquid'])
+    expect(view.findAll('[data-test$="wallet-balance"]')).toHaveLength(4)
   } finally {
     view.unmount()
     setActiveChain(original)

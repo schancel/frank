@@ -812,6 +812,10 @@ describe("wallet support", () => {
       "xec-regtest": { indexer: "chronik" },
       "btc-testnet": { indexer: "electrum" },
       "bch-testnet": { indexer: "electrum" },
+      "hyperliquid-mainnet": { indexer: "json-rpc" },
+      "hyperliquid-testnet": { indexer: "json-rpc" },
+      "tempo-mainnet": { indexer: "json-rpc" },
+      "tempo-testnet": { indexer: "json-rpc" },
     });
   });
 

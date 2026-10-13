@@ -27,7 +27,9 @@ export interface OpenTempoPathUsdWallet {
 }
 
 /** Both the wallet and read-only balance use the same authenticated canonical relay. */
-async function openVerifiedTempoRpc(chainIdentifier: 'tempo-testnet') {
+async function openVerifiedTempoRpc(
+  chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',
+) {
   const entry = getChainRegistryEntry(chainIdentifier)
   if (
     entry?.kind !== 'tempo' ||
@@ -103,7 +105,7 @@ async function openVerifiedTempoRpc(chainIdentifier: 'tempo-testnet') {
 
 /** Current token balance only: no journal opens or wallet-state mutation. */
 export async function readTempoPathUsdBalance(
-  chainIdentifier: 'tempo-testnet',
+  chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',
 ): Promise<bigint> {
   const { sessionWallet, signer, provider, rpc } = await openVerifiedTempoRpc(
     chainIdentifier,
@@ -118,9 +120,9 @@ export async function readTempoPathUsdBalance(
   }
 }
 
-/** Caller explicitly selects a canonical Tempo network; the current registry only has Moderato. */
+/** Caller explicitly selects a canonical Tempo network. */
 export async function openTempoPathUsdWallet(
-  chainIdentifier: 'tempo-testnet',
+  chainIdentifier: 'tempo-testnet' | 'tempo-mainnet',
 ): Promise<OpenTempoPathUsdWallet> {
   const host = loadMonadChainConfigFromEnv()
   if (host.walletStorageLocation === false)

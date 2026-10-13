@@ -297,6 +297,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       ...deployedContracts("ethereum-mainnet"),
     }),
     "hyperliquid-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "hyperliquid",
       curve: "secp256k1",
       keyType: 1,
@@ -307,6 +308,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       ...deployedContracts("hyperliquid-mainnet"),
     }),
     "hyperliquid-testnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "hyperliquid",
       curve: "secp256k1",
       keyType: 1,
@@ -317,6 +319,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       ...deployedContracts("hyperliquid-testnet"),
     }),
     "tempo-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "tempo",
       curve: "secp256k1",
       keyType: 1,
@@ -328,6 +331,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       ...deployedContracts("tempo-mainnet"),
     }),
     "tempo-testnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "tempo",
       curve: "secp256k1",
       keyType: 1,

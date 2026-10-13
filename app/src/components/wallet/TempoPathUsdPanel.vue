@@ -224,6 +224,7 @@ import type {
 import type { TempoReceiveItem } from '@frank/wallet/chain/tempo-pathusd-receive'
 import { accountStatus } from '../../accounts/session'
 import { translateMessage } from '../../i18n'
+import { activeChain } from '@frank/wallet/chain'
 import {
   openTempoPathUsdWallet,
   type OpenTempoPathUsdWallet,
@@ -320,7 +321,9 @@ async function open(current: number): Promise<void> {
     return
   }
   try {
-    const host = await openTempoPathUsdWallet('tempo-testnet')
+    const host = await openTempoPathUsdWallet(
+      activeChain.isTestnet ? 'tempo-testnet' : 'tempo-mainnet',
+    )
     if (current !== generation || accountStatus.status !== 'ready') {
       await host.close()
       return

@@ -562,6 +562,7 @@ export function createEvmStealthPayments(
                 asset.kind === 'native'
                   ? BigInt(source.recipientAmountAtomic)
                   : 0n,
+              ...(asset.kind === 'native' ? { gasLimit: 21_000n } : {}),
               ...(asset.kind === 'erc20'
                 ? {
                     data: erc20.encodeFunctionData('transfer', [

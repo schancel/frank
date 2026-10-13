@@ -3646,6 +3646,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             if (retryFailure !== undefined) throw retryFailure;
             return result;
           };
+          let cachedFeeRate: { maxFeePerGas: bigint; atMs: number } | undefined;
+          const getFeeRate = async (): Promise<bigint> => {
+            if (cachedFeeRate && Date.now() - cachedFeeRate.atMs < 6000) {
+              return cachedFeeRate.maxFeePerGas;
+            }
+            const fee = await provider.getFeeData();
+            const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice ?? 1n;
+            cachedFeeRate = { maxFeePerGas, atMs: Date.now() };
+            return maxFeePerGas;
+          };
           const financialPayments = createEvmStealthPayments({
             chainIdentifier,
             nativeChainId: BigInt(config.chainId),
@@ -3689,6 +3699,36 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 input.sourceAddress === undefined
                   ? undefined
                   : getAddress(input.sourceAddress).toLowerCase();
+              const mainAddress = mainAccount.address.toLowerCase();
+
+              // Fast-Path: In standard use, mainAccount holds the user's active MONT balance.
+              // If mainAccount is unreserved and covers amountAtomic + estimatedFee, return the quote immediately!
+              let mainBalance: bigint | undefined;
+              if (
+                input.asset.kind === "native" &&
+                (requested === undefined || requested === mainAddress) &&
+                !sourceIsHeld(wallet, mainAddress) &&
+                !nativeOwner.holdsSource(mainAddress)
+              ) {
+                const maxFeePerGas = await getFeeRate();
+                const estimatedFee = 21_000n * maxFeePerGas;
+                mainBalance = await provider.getBalance(mainAccount.address);
+                assertFinancialActive();
+                if (mainBalance >= input.amountAtomic + estimatedFee) {
+                  return {
+                    sources: [
+                      {
+                        sourceAddress: mainAddress,
+                        recipientAmountAtomic: input.amountAtomic,
+                        nativeBalanceAtomic: mainBalance,
+                        assetBalanceAtomic: mainBalance,
+                        estimatedNativeFeeAtomic: estimatedFee,
+                      },
+                    ],
+                  };
+                }
+              }
+
               const owned = [
                 ...new Map(
                   (await getSources()).map((source) => [source.address, source])
@@ -3699,28 +3739,74 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 !owned.some((source) => source.address === requested)
               )
                 throw new Error("Requested financial source is not owned");
-              const candidates: { source: EvmNativeSource; balance: bigint }[] = [];
-              let lacksGas = false;
-              for (const source of owned) {
-                if (
-                  (requested !== undefined && source.address !== requested) ||
-                  sourceIsHeld(wallet, source.address) ||
-                  nativeOwner.holdsSource(source.address)
-                )
-                  continue;
-                const native = await provider.getBalance(source.address);
-                const balance =
-                  input.asset.kind === "native"
-                    ? native
-                    : await tokenBalance(input.asset.contractAddress, source.address);
-                assertFinancialActive();
-                if (balance <= 0n) continue;
-                if (input.asset.kind === "erc20" && native === 0n) {
-                  lacksGas = true;
-                  continue;
-                }
-                candidates.push({ source, balance });
+
+              // Bounded candidate inspection: avoid scanning dozens of empty/unfunded accounts
+              let sourcesToInspect: EvmNativeSource[];
+              if (requested !== undefined) {
+                sourcesToInspect = owned.filter((s) => s.address === requested);
+              } else if (input.asset.kind === "erc20") {
+                // Sub-accounts in pool and changePool never hold ERC20.
+                // Inspect all other sources (main, identity, coinStore stealth coins).
+                sourcesToInspect = owned.filter(
+                  (s) => s.kind !== "spend" && s.kind !== "change"
+                );
+              } else {
+                // For native, filter pool records to only those with 'available' status (never scan unfunded sub-accounts)
+                const availablePoolAddresses = new Set(
+                  pool
+                    .records()
+                    .filter(
+                      (r) =>
+                        r.status === "available" &&
+                        pool.claimedBy(r.index) === undefined &&
+                        !pool.isSpendReserved(r.index)
+                    )
+                    .map((r) => r.address.toLowerCase())
+                );
+                sourcesToInspect = owned.filter(
+                  (s) =>
+                    s.kind !== "spend" ||
+                    availablePoolAddresses.has(s.address.toLowerCase())
+                );
               }
+
+              // Query balances concurrently (never 60+ sequential HTTP requests):
+              let lacksGas = false;
+              const inspected = await Promise.all(
+                sourcesToInspect.map(async (source) => {
+                  if (
+                    sourceIsHeld(wallet, source.address) ||
+                    nativeOwner.holdsSource(source.address)
+                  )
+                    return null;
+                  const native =
+                    source.address === mainAddress && mainBalance !== undefined
+                      ? mainBalance
+                      : await provider.getBalance(source.address);
+                  assertFinancialActive();
+                  const balance =
+                    input.asset.kind === "native"
+                      ? native
+                      : await tokenBalance(
+                          input.asset.contractAddress,
+                          source.address
+                        );
+                  assertFinancialActive();
+                  if (balance <= 0n) return null;
+                  if (input.asset.kind === "erc20" && native === 0n) {
+                    lacksGas = true;
+                    return null;
+                  }
+                  return { source, balance };
+                })
+              );
+
+              const candidates: { source: EvmNativeSource; balance: bigint }[] =
+                [];
+              for (const item of inspected) {
+                if (item !== null) candidates.push(item);
+              }
+
               candidates.sort((a, b) =>
                 a.source.kind === "main" && b.source.kind !== "main"
                   ? 1
@@ -3740,6 +3826,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 estimatedNativeFeeAtomic: bigint;
               }[] = [];
               let remaining = input.amountAtomic;
+              const maxFeePerGas = await getFeeRate();
+              const nativeFeePerSource = 21_000n * maxFeePerGas;
+
               const allocate = async (ordered: typeof candidates) => {
                 sources.length = 0;
                 remaining = input.amountAtomic;
@@ -3751,7 +3840,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       ? input.recipientAddress
                       : input.asset.contractAddress;
                   const tentative = native
-                    ? 1n
+                    ? candidate.balance > nativeFeePerSource
+                      ? candidate.balance - nativeFeePerSource < remaining
+                        ? candidate.balance - nativeFeePerSource
+                        : remaining
+                      : 1n
                     : candidate.balance < remaining
                     ? candidate.balance
                     : remaining;
@@ -3765,13 +3858,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                             {
                               sourceAddress: candidate.source.address,
                               value: native ? amount : 0n,
+                              ...(native ? { gasLimit: 21_000n } : {}),
                               ...(native
                                 ? {}
                                 : {
-                                    data: financialAbi.encodeFunctionData("transfer", [
-                                      input.recipientAddress,
-                                      amount,
-                                    ]),
+                                    data: financialAbi.encodeFunctionData(
+                                      "transfer",
+                                      [input.recipientAddress, amount]
+                                    ),
                                   }),
                             },
                           ],
@@ -3791,7 +3885,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     continue;
                   }
                   const amount = available < remaining ? available : remaining;
-                  if (native && amount !== tentative)
+                  if (!native && amount !== tentative)
                     fact = (await quoteOne(amount)).sources[0]!;
                   if (
                     fact.nativeBalanceAtomic <

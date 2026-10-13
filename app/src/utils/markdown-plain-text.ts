@@ -7,7 +7,7 @@ import * as marked from 'marked'
 export function decodeHtmlEntities(text: string): string {
   if (!text) return ''
   return text
-    .replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => {
+    .replace(/&#x([0-9a-fA-F]+);?/gi, (_, hex) => {
       try {
         const code = parseInt(hex, 16)
         return Number.isNaN(code) ? _ : String.fromCodePoint(code)
@@ -15,7 +15,7 @@ export function decodeHtmlEntities(text: string): string {
         return _
       }
     })
-    .replace(/&#([0-9]+);/g, (_, dec) => {
+    .replace(/&#([0-9]+);?/g, (_, dec) => {
       try {
         const code = parseInt(dec, 10)
         return Number.isNaN(code) ? _ : String.fromCodePoint(code)
@@ -100,7 +100,7 @@ function plainTextOf(tokens: readonly PlainToken[], imageLabel: string) {
     switch (token.type) {
       case 'html':
         // A tag is dropped; whatever a raw HTML block holds between its tags is kept as text.
-        parts.push((token.text ?? '').replace(/<[^>]*>/g, ''))
+        parts.push(unescapeHtml((token.text ?? '').replace(/<[^>]*>/g, '')))
         break
       case 'hr':
       case 'def':

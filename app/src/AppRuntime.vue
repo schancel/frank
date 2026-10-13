@@ -174,10 +174,13 @@ export default defineComponent({
         const relayBaseUrl =
           (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
           loadMonadChainConfigFromEnv().relayBaseUrl
-        void settings.refreshEmailGateway(
-          relayBaseUrl,
-          activeChain.chainIdentifier,
-        )
+        void settings
+          .refreshEmailGateway(relayBaseUrl, activeChain.chainIdentifier)
+          .then(() => {
+            if (settings.emailGatewayAddress) {
+              chatStore.reverifyEmailGateways(settings.emailGatewayAddress)
+            }
+          })
       },
       { immediate: true },
     )

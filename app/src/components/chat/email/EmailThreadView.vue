@@ -67,7 +67,7 @@
 
       <!-- Security Warning Banner for Unverified Peer Email Frames -->
       <q-banner
-        v-if="!isVerifiedGateway"
+        v-if="showUnverifiedPeerBanner"
         dense
         class="bg-amber-1 text-amber-10 q-px-md q-py-xs text-caption rounded-borders q-my-sm unverified-email-banner"
         data-testid="unverified-peer-warning-banner"
@@ -1030,6 +1030,7 @@ import {
 import { useSettingsStore } from 'src/stores/settings'
 import { isChainAddress } from 'src/utils/chain-address'
 import { cleanEmailSnippet } from 'src/utils/markdown-plain-text'
+import { sameCanonicalAddress } from 'src/utils/own-address'
 
 const DEFAULT_STAMP_MULTIPLIER_TENTHS = [
   1, 2, 3, 5, 8, 10, 15, 20, 30, 50, 80, 100, 150, 200, 300, 500, 800, 1000,
@@ -1149,12 +1150,29 @@ export default defineComponent({
   },
   computed: {
     isVerifiedGateway(): boolean {
-      return (
-        this.conversation?.verifiedGateway === true &&
-        !!this.emailGatewayAddress &&
-        this.peerFrankAddress.toLowerCase() ===
-          this.emailGatewayAddress.toLowerCase()
-      )
+      if (this.conversation?.verifiedGateway === true) return true
+      if (!this.emailGatewayAddress) return false
+      if (
+        this.peerFrankAddress &&
+        sameCanonicalAddress(this.peerFrankAddress, this.emailGatewayAddress)
+      ) {
+        return true
+      }
+      if (
+        this.conversation?.address &&
+        sameCanonicalAddress(
+          this.conversation.address,
+          this.emailGatewayAddress,
+        )
+      ) {
+        return true
+      }
+      return false
+    },
+    showUnverifiedPeerBanner(): boolean {
+      if (this.isVerifiedGateway) return false
+      // Only display unverified warning if an inbound email arrived from an unverified peer
+      return this.messages.some(m => !m.outbound)
     },
     peerFrankAddress(): string {
       if (this.recipientAddress) return this.recipientAddress
@@ -1506,8 +1524,14 @@ export default defineComponent({
         if (!this.emailGatewayAddress) return false
         if (
           this.isVerifiedGateway &&
-          this.peerFrankAddress.toLowerCase() !==
-            this.emailGatewayAddress.toLowerCase()
+          !sameCanonicalAddress(
+            this.peerFrankAddress,
+            this.emailGatewayAddress,
+          ) &&
+          !sameCanonicalAddress(
+            this.conversation?.address ?? '',
+            this.emailGatewayAddress,
+          )
         )
           return false
       }
@@ -1720,6 +1744,20 @@ export default defineComponent({
         }
         this.ccList = ccs
         if (ccs.length > 0) this.showCc = true
+      }
+
+      if (this.toList.length === 0) {
+        const fallbackTos = (card.to || [])
+          .map(t => t.address)
+          .filter(isValidRecipientAddress)
+        if (fallbackTos.length > 0) {
+          this.toList = fallbackTos
+        } else if (
+          this.conversation?.emailRecipient &&
+          isValidRecipientAddress(this.conversation.emailRecipient)
+        ) {
+          this.toList = [this.conversation.emailRecipient]
+        }
       }
     },
     onReplyModeChanged(newMode: 'reply' | 'reply_all') {

@@ -1,6 +1,6 @@
 <template>
-  <div>
-    <q-page-container>
+  <div class="chat-container column full-height overflow-hidden">
+    <q-page-container class="col full-height overflow-hidden">
       <email-thread-view
         v-if="isEmailThread"
         :key="conversation?.id"
@@ -1709,6 +1709,11 @@ export default defineComponent({
 :deep() .message-color-sent {
   background-color: var(--q-message-color-sent);
 }
+.chat-container {
+  height: 100%;
+  max-height: 100%;
+}
+
 .chat-banner-overlay {
   z-index: 1;
 }

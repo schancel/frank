@@ -10,7 +10,8 @@ export function displayToRawAmount(
   chain: ChainAmountAdapter,
   display: string,
 ): bigint {
-  return chain.fromDisplayAmount(display)
+  const normalized = display.trim().replace(',', '.')
+  return chain.fromDisplayAmount(normalized)
 }
 
 export function formatRawAmount(

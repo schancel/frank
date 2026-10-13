@@ -1,5 +1,6 @@
 import { BurnRefreshError } from './burn-refresh-error'
 import { TopicPostOutcomeUnknownError } from '@frank/wallet/chain/active-chain'
+import type { ErrorNotifyOptions } from './notifications'
 
 export type PostSubmissionOutcome =
   | 'submitted'
@@ -15,7 +16,7 @@ export type PostSubmissionOutcome =
  */
 export async function submitPost(params: {
   submit: () => Promise<unknown>
-  errorNotify: (err: unknown) => void
+  errorNotify: (err: unknown, options?: ErrorNotifyOptions) => void
   infoNotify: (message: string) => void
   navigateBack: () => void
   /** Observes the classified economic outcome before notification/navigation side effects. */
@@ -30,7 +31,10 @@ export async function submitPost(params: {
       // The paid request may have landed. Keep the draft visible, report the original failure,
       // and let the caller retain its process-lifetime duplicate-submission reservation.
       params.onOutcome?.('unknown-outcome')
-      params.errorNotify(err.cause)
+      const cause = err.cause
+      params.errorNotify(cause, {
+        safeMessage: cause instanceof Error ? cause.message : String(cause),
+      })
       return 'unknown-outcome'
     }
     if (err instanceof BurnRefreshError) {
@@ -42,7 +46,9 @@ export async function submitPost(params: {
       return 'submitted'
     }
     params.onOutcome?.('retryable-failure')
-    params.errorNotify(err)
+    params.errorNotify(err, {
+      safeMessage: err instanceof Error ? err.message : String(err),
+    })
     return 'retryable-failure'
   }
   params.onOutcome?.('submitted')

@@ -38,7 +38,9 @@ describe('submitPost', () => {
 
     expect(outcome).toBe('retryable-failure')
     expect(errorNotify).toHaveBeenCalledTimes(1)
-    expect(errorNotify).toHaveBeenCalledWith(error)
+    expect(errorNotify).toHaveBeenCalledWith(error, {
+      safeMessage: 'deterministic relay failure',
+    })
     // The actual bug (ticket #159): navigateBack used to run unconditionally in a `finally`,
     // discarding the draft (the component unmounts on navigation) even though submission failed.
     expect(navigateBack).not.toHaveBeenCalled()
@@ -56,7 +58,9 @@ describe('submitPost', () => {
 
     await submitPost({ submit, errorNotify, infoNotify, navigateBack })
 
-    expect(errorNotify).toHaveBeenCalledWith(error)
+    expect(errorNotify).toHaveBeenCalledWith(error, {
+      safeMessage: 'wallet unavailable',
+    })
     expect(navigateBack).not.toHaveBeenCalled()
   })
 
@@ -105,7 +109,9 @@ describe('submitPost with an unknown paid outcome', () => {
 
     expect(outcome).toBe('unknown-outcome')
     expect(onOutcome).toHaveBeenCalledWith('unknown-outcome')
-    expect(errorNotify).toHaveBeenCalledWith(abandoned)
+    expect(errorNotify).toHaveBeenCalledWith(abandoned, {
+      safeMessage: 'The paid post outcome is unknown',
+    })
     expect(infoNotify).not.toHaveBeenCalled()
     expect(navigateBack).not.toHaveBeenCalled()
   })

@@ -816,6 +816,24 @@ export interface UnsupportedItem {
   frame: string
 }
 
+export interface BlobManifest {
+  version: 1
+  rootPlaintextSha256: string
+  totalPlaintextBytes: number
+  chunkSize: number
+  symmetricKeyHex: string
+  baseNonceHex: string
+  chunkHashes: string[]
+  mimeType?: string
+  fileName?: string
+  targetItemIndex?: number
+  originRelayHint?: string
+}
+
+export interface BlobManifestItem extends BlobManifest {
+  type: 'blob-manifest'
+}
+
 export type MessageItem =
   | StealthItem
   | RecipientAssetPaymentItem
@@ -823,6 +841,7 @@ export type MessageItem =
   | TextItem
   | ReplyItem
   | ImageItem
+  | BlobManifestItem
   | BlackjackMoveItem
   | BlackjackHandItem
   | DigitalGoodsItem

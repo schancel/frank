@@ -51,6 +51,8 @@ pub struct Registry {
     forum: crate::forum::Owner,
     /// Lazy isolated exact canonical DM owner; shares the registry lifetime.
     canonical_dm: crate::store::monad_dm_cbor::Owner,
+    /// Content-addressed encrypted blob store (`PUT/GET/HEAD /blobs/:sha256`).
+    blobs: crate::http::blobs::BlobStore,
     /// Ecc for verifying secp256k1 signatures.
     ecc: EccSecp256k1,
     /// Chain boundary used for testing and broadcasting burn txs. Lotus-backed today (see
@@ -209,16 +211,23 @@ impl Registry {
     ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf());
+        let blobs = crate::http::blobs::BlobStore::new(db.owned_path().to_path_buf());
         Registry {
             db,
             forum,
             canonical_dm,
+            blobs,
             ecc: EccSecp256k1::default(),
             chain_adapter,
             net,
             event_bus,
             accepted_payment_networks: std::sync::RwLock::new(Vec::new()),
         }
+    }
+
+    /// Access the content-addressed blob store.
+    pub fn blobs(&self) -> &crate::http::blobs::BlobStore {
+        &self.blobs
     }
 
     /// Access the notification event bus.

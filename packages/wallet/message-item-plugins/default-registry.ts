@@ -9,6 +9,7 @@
  */
 import { initBlackjackHandPlugin } from './blackjack-hand/plugin'
 import { initBlackjackMovePlugin } from './blackjack-move/plugin'
+import { initBlobManifestPlugin } from './blob-manifest/plugin'
 import { initCalendarInvitePlugin } from './calendar-invite/plugin'
 import { initCalendarRsvpPlugin } from './calendar-rsvp/plugin'
 import { initChannelUpdatePlugin } from './channel-update/plugin'
@@ -50,6 +51,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
 > = [
   ['text', initTextPlugin],
   ['image', initImagePlugin],
+  ['blob-manifest', initBlobManifestPlugin],
   ['reply', initReplyPlugin],
   ['stealth', initStealthPlugin],
   ['stealth-asset', initRecipientAssetPaymentPlugin],

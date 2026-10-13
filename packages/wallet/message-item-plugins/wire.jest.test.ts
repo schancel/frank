@@ -98,6 +98,7 @@ describe('the dispatch rule', () => {
       'channel-update': 'dedicated:25',
       'email': 'dedicated:23',
       'image': 'generic:27',
+      'blob-manifest': 'generic:27',
       'reply': 'generic:27',
       'digital-goods': 'generic:27',
       'raffle': 'generic:27',

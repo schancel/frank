@@ -361,6 +361,7 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         }
         ["push", "vapid-public-key"] => Cow::Borrowed("/push/vapid-public-key"),
         ["message", "push", "vapid-public-key"] => Cow::Borrowed("/message/push/vapid-public-key"),
+        ["blobs", _] => Cow::Borrowed("/blobs/:sha256"),
         ["topics"] => Cow::Borrowed("/topics"),
         ["topics", "vote"] => Cow::Borrowed("/topics/vote"),
         ["topics", "discover"] => Cow::Borrowed("/topics/discover"),
@@ -694,6 +695,12 @@ impl RegistryServer {
                 "/mailbox/:address/notification-policy",
                 routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
                     .put(crate::http::monad_message_cbor::handle_put_notification_policy),
+            )
+            .route(
+                "/blobs/:sha256",
+                routing::put(crate::http::blobs::handle_put_blob)
+                    .get(crate::http::blobs::handle_get_blob)
+                    .head(crate::http::blobs::handle_head_blob),
             );
         if canonical_enabled {
             use crate::http::monad_message_cbor::{
@@ -771,6 +778,7 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-wakeup-token"),
                         header::HeaderName::from_static("x-cashweb-wakeup-token"),
                         header::HeaderName::from_static("x-frank-rpc-subject"),
+                        header::HeaderName::from_static(crate::http::blobs::BLOB_ORIGIN_HEADER),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[0]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[1]),
                         header::HeaderName::from_static(RPC_CORS_HEADERS[2]),

@@ -1,6 +1,7 @@
 //! Modules for an HTTP endpoint for the Cashweb Registry.
 
 pub mod bitcoin_proxy;
+pub mod blobs;
 pub mod curated_defaults;
 pub mod directory;
 pub(crate) mod electrum_proxy;

@@ -803,12 +803,48 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('conversations[0].subjectSetAt', [1, 0, 5], BAD_TIMESTAMPS),
     ],
   },
+  {
+    item: {
+      type: 'blob-manifest',
+      version: 1,
+      rootPlaintextSha256: H,
+      totalPlaintextBytes: 65_536,
+      chunkSize: 262_144,
+      symmetricKeyHex: H,
+      baseNonceHex: 'ab'.repeat(24),
+      chunkHashes: [H],
+      mimeType: 'image/png',
+      fileName: 'attachment.png',
+      targetItemIndex: 0,
+      originRelayHint: 'https://relay.example.org',
+    },
+    cases: [
+      ...each('version', [0], [0, 2, -1, '1']),
+      ...each('rootPlaintextSha256', [1], BAD_HASHES),
+      ...each('totalPlaintextBytes', [2], [0, -1, 104_857_601, '65536']),
+      ...each('chunkSize', [3], [0, -1, 1_048_577, '262144']),
+      ...each('symmetricKeyHex', [4], BAD_HASHES),
+      ...each('baseNonceHex', [5], [
+        '',
+        'ab'.repeat(23),
+        'ab'.repeat(25),
+        'zz'.repeat(24),
+      ]),
+      ['chunkHashes: empty', [6], []],
+      ['chunkHashes: bad hash', [6, 0], 'zz'.repeat(32)],
+      ...each('mimeType', [7], ['', 'x'.repeat(129)]),
+      ...each('fileName', [8], ['', 'x'.repeat(257)]),
+      ...each('targetItemIndex', [9], [-1, 256, '0']),
+      ...each('originRelayHint', [10], ['', 'x'.repeat(513)]),
+    ],
+  },
 ]
 
 describe('the CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
   it('covers every CBOR-map plugin', () => {
     expect(SUITES.map(s => s.item.type).sort()).toEqual(
       [
+        'blob-manifest',
         'calendar-invite',
         'calendar-rsvp',
         'contact-card',

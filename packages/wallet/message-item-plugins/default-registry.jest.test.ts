@@ -24,6 +24,7 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'text': true,
   'reply': true,
   'image': true,
+  'blob-manifest': true,
   'blackjack-move': true,
   'blackjack-hand': true,
   'digital-goods': true,

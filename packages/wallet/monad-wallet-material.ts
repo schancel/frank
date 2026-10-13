@@ -79,10 +79,11 @@ export interface MonadCanonicalRoles {
     recipientPublicKey: Uint8Array
     plaintext: Uint8Array
     context: Uint8Array
+    sealedSender?: boolean
   }): SuiteResult<Uint8Array>
   openMessage(input: {
     envelope: Uint8Array
-    senderPublicKey: Uint8Array
+    senderPublicKey?: Uint8Array
     context: Uint8Array
   }): SuiteResult<Uint8Array>
   openOwnMessage(input: {
@@ -564,6 +565,7 @@ function roleOwner(
                 context,
                 salt,
                 ephemeralSecret,
+                ...(input.sealedSender ? { sealedSender: true } : {}),
               }),
             )
           } finally {
@@ -574,7 +576,10 @@ function roleOwner(
         openMessage(input: Parameters<MonadCanonicalRoles['openMessage']>[0]) {
           if (closed) throw new Error('canonical-roles:disposed')
           const ownedEnvelope = new Uint8Array(input.envelope)
-          const senderPublicKey = new Uint8Array(input.senderPublicKey)
+          const senderPublicKey =
+            input.senderPublicKey === undefined
+              ? undefined
+              : new Uint8Array(input.senderPublicKey)
           const context = new Uint8Array(input.context)
           // This capability is suite1-only even though crypto-box has private legacy readers.
           try {
@@ -595,7 +600,7 @@ function roleOwner(
             open({
               envelope: ownedEnvelope,
               recipientPrivateKey: secret,
-              senderPublicKey,
+              ...(senderPublicKey === undefined ? {} : { senderPublicKey }),
               context,
             }),
           )

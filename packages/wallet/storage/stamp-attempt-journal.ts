@@ -734,6 +734,7 @@ function assertPrepared(
     parsed.typed?.type !== 11 ||
     parsed.typed.suite !== 1 ||
     parsed.typed.network !== prepared.network ||
+    !parsed.typed.sender ||
     parsed.typed.sender.keyType !== 1 ||
     parsed.typed.recipient.keyType !== 1 ||
     toHex(parsed.typed.sender.keyBytes) !== prepared.senderSubject ||

@@ -85,7 +85,7 @@ impl MailboxDirection {
 /// A delivered message as announced to open mailbox sockets.
 #[derive(Debug, Clone)]
 pub(crate) struct FinalizedEnvelope {
-    pub(crate) sender: Address,
+    pub(crate) sender: Option<Address>,
     pub(crate) recipient: Address,
     pub(crate) payload_hash: [u8; 32],
     pub(crate) submission_identity: [u8; 32],
@@ -273,19 +273,29 @@ impl Owner {
                     delivered_at,
                 };
                 batch.put(row_key(&hash), encode_row(&message)?);
-                let (sender, recipient) = (message.policy.sender()?, message.policy.recipient()?);
+                let recipient = message.policy.recipient()?;
+                let sender = if message.policy.sender_p.is_empty() {
+                    None
+                } else {
+                    Some(message.policy.sender()?)
+                };
                 batch.put(mailbox_key(b'I', recipient, delivered_at, &hash), hash);
-                if sender != recipient {
-                    batch.put(mailbox_key(b'O', sender, delivered_at, &hash), hash);
+                if let Some(sender) = sender {
+                    if sender != recipient {
+                        batch.put(mailbox_key(b'O', sender, delivered_at, &hash), hash);
+                    }
                 }
                 write(db, batch)?;
                 Ok((message, true))
             })?
             .ok_or(CanonicalError::Unavailable)?;
         if stored {
-            if let (Ok(sender), Ok(recipient)) =
-                (message.policy.sender(), message.policy.recipient())
-            {
+            if let Ok(recipient) = message.policy.recipient() {
+                let sender = if message.policy.sender_p.is_empty() {
+                    None
+                } else {
+                    message.policy.sender().ok()
+                };
                 let _ = self.broadcast.send(FinalizedEnvelope {
                     sender,
                     recipient,

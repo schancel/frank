@@ -704,6 +704,44 @@ pub(crate) fn check_semantics(
             }
             Ok(())
         }
+        TypedPayload::EncryptedContent {
+            sender,
+            sender_directory_hash,
+            sender_message_key,
+            ..
+        } => {
+            if sender.is_some() != sender_directory_hash.is_some()
+                || sender.is_some() != sender_message_key.is_some()
+            {
+                return Err(semantic(
+                    "sealed-sender fields 7 (sender), 8 (senderDirectoryHash), and 9 (senderMessageKey) must be all present or all absent",
+                    path,
+                ));
+            }
+            if let Some(s) = sender {
+                if s.key_type != 1
+                    || s.key_bytes.len() != 33
+                    || secp256k1_abc::PublicKey::from_slice(&s.key_bytes).is_err()
+                {
+                    return Err(semantic(
+                        "sealed sender must be a compressed secp256k1 point (key type 1)",
+                        &format!("{path}.7"),
+                    ));
+                }
+            }
+            if let Some(m) = sender_message_key {
+                if m.key_type != 1
+                    || m.key_bytes.len() != 33
+                    || secp256k1_abc::PublicKey::from_slice(&m.key_bytes).is_err()
+                {
+                    return Err(semantic(
+                        "sealed senderMessageKey must be a compressed secp256k1 point (key type 1)",
+                        &format!("{path}.9"),
+                    ));
+                }
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }

@@ -31,7 +31,13 @@ import {
   suiteById,
 } from './ids.js'
 import { fail, type SuiteFailure, type SuiteResult } from './result.js'
-import { associatedData, messageKeys, sharedSecret } from './schedule.js'
+import {
+  associatedData,
+  messageKeys,
+  sealedSenderMask,
+  sharedSecret,
+  xorSenderPoint,
+} from './schedule.js'
 import { selfOpenEphemeral } from './self-open.js'
 
 const GENERATOR = Uint8Array.from([
@@ -52,13 +58,21 @@ export interface SealArgs {
   readonly salt?: Uint8Array
   readonly paddingBytes?: Uint8Array
   readonly selfOpenKey?: Uint8Array
+  /** When true, masks `senderPublicKey` inside the envelope using the ephemeral-recipient ECDH. */
+  readonly sealedSender?: boolean
 }
 
 export interface OpenArgs {
   readonly envelope: Uint8Array
   readonly recipientPrivateKey: Uint8Array
-  readonly senderPublicKey: Uint8Array
+  /** Optional when opening a `sealedSender` envelope, which carries the masked sender point. */
+  readonly senderPublicKey?: Uint8Array
   readonly context: Uint8Array
+}
+
+export interface OpenedSealedEnvelope {
+  readonly plaintext: Uint8Array
+  readonly senderPublicKey: Uint8Array
 }
 
 export interface Loaded {
@@ -197,6 +211,7 @@ function finish(
   plaintext: Uint8Array,
   padding: Uint8Array,
   context: Uint8Array,
+  maskedSender?: Uint8Array,
 ): SuiteResult<Uint8Array> {
   const shared = sharedSecret(dhBytes, kemContext)
   const keys = messageKeys({
@@ -219,7 +234,14 @@ function finish(
     const ciphertext = aeadEncrypt(spec.aead, keys.key, keys.nonce, aad, inner)
     return {
       ok: true,
-      value: encodeEnvelope(spec.id, KEM_SECP256K1, salt, enc, ciphertext),
+      value: encodeEnvelope(
+        spec.id,
+        KEM_SECP256K1,
+        salt,
+        enc,
+        ciphertext,
+        maskedSender,
+      ),
     }
   } catch {
     return fail({ code: 'aead' })
@@ -291,6 +313,19 @@ export function seal(args: SealArgs): SuiteResult<Uint8Array> {
   }
   senderPoint.value.fill(0)
 
+  let maskedSender: Uint8Array | undefined
+  if (args.sealedSender) {
+    const mask = sealedSenderMask({
+      toRecipient: toRecipient.value,
+      salt: salt.value,
+      enc,
+      recipientPublicKey: recipient.value,
+      context: context.value,
+    })
+    maskedSender = xorSenderPoint(sender.value, mask)
+    mask.fill(0)
+  }
+
   let dhBytes: Uint8Array
   let kemContext: Uint8Array
   if (spec.value.mode === MODE_AUTH) {
@@ -338,6 +373,7 @@ export function seal(args: SealArgs): SuiteResult<Uint8Array> {
     plaintext.value,
     padding.value,
     context.value,
+    maskedSender,
   )
 }
 
@@ -417,12 +453,64 @@ export function sealAuthAsRecipient(args: {
   )
 }
 
-export function open(args: OpenArgs): SuiteResult<Uint8Array> {
+/**
+ * Unmasks the 33-byte sender public key from a sealed-sender envelope using the
+ * recipient's static secret key and the authenticated context.
+ */
+export function unmaskEnvelopeSender(args: {
+  readonly envelope: Uint8Array
+  readonly recipientPrivateKey: Uint8Array
+  readonly context: Uint8Array
+}): SuiteResult<Uint8Array> {
   if (!isPlainBytes(args.envelope)) return fail({ code: 'bytes' })
   const context = requireMessage(args.context)
   if (!context.ok) return context
-  const sender = requirePoint(args.senderPublicKey)
-  if (!sender.ok) return sender
+  const envelope = decodeEnvelope(args.envelope)
+  if (envelope === null || envelope.maskedSender === undefined) {
+    return fail({ code: 'envelope' })
+  }
+  if (envelope.kemId !== KEM_SECP256K1) return fail({ code: 'envelope' })
+  const recipientSecret = loadScalar(args.recipientPrivateKey)
+  if (!recipientSecret.ok) return recipientSecret
+  const toRecipient = dh(recipientSecret.value.key, envelope.enc)
+  if (!toRecipient.ok) {
+    wipe(recipientSecret.value.key)
+    return toRecipient
+  }
+  const mask = sealedSenderMask({
+    toRecipient: toRecipient.value,
+    salt: envelope.salt,
+    enc: envelope.enc,
+    recipientPublicKey: recipientSecret.value.publicKey,
+    context: context.value,
+  })
+  toRecipient.value.fill(0)
+  const unmasked = xorSenderPoint(envelope.maskedSender, mask)
+  mask.fill(0)
+  const valid = dh(recipientSecret.value.key, unmasked)
+  wipe(recipientSecret.value.key)
+  if (!valid.ok) {
+    unmasked.fill(0)
+    return valid
+  }
+  valid.value.fill(0)
+  return { ok: true, value: unmasked }
+}
+
+/**
+ * Opens an envelope (either standard or sealed-sender) and returns both the
+ * authenticated plaintext and the resolved 33-byte sender public key.
+ */
+export function openSealed(args: OpenArgs): SuiteResult<OpenedSealedEnvelope> {
+  if (!isPlainBytes(args.envelope)) return fail({ code: 'bytes' })
+  const context = requireMessage(args.context)
+  if (!context.ok) return context
+  let suppliedSender: Uint8Array | undefined
+  if (args.senderPublicKey !== undefined) {
+    const checked = requirePoint(args.senderPublicKey)
+    if (!checked.ok) return checked
+    suppliedSender = checked.value
+  }
   const envelope = decodeEnvelope(args.envelope)
   if (envelope === null) return fail({ code: 'envelope' })
   // Suite 1 has exactly one production wire encoding: deterministic-CBOR envelope v2.
@@ -434,7 +522,10 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   if (envelope.kemId !== KEM_SECP256K1) return fail({ code: 'envelope' })
   const spec = selectSuite(envelope.suiteId)
   if (!spec.ok) return spec
-  const { salt, enc, ciphertext } = envelope
+  const { salt, enc, ciphertext, maskedSender } = envelope
+  if (suppliedSender === undefined && maskedSender === undefined) {
+    return fail({ code: 'bytes' })
+  }
   const recipientSecret = loadScalar(args.recipientPrivateKey)
   if (!recipientSecret.ok) return recipientSecret
   const toRecipient = dh(recipientSecret.value.key, enc)
@@ -442,23 +533,61 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
     wipe(recipientSecret.value.key)
     return toRecipient
   }
+  let senderValue: Uint8Array
+  if (maskedSender !== undefined) {
+    const mask = sealedSenderMask({
+      toRecipient: toRecipient.value,
+      salt,
+      enc,
+      recipientPublicKey: recipientSecret.value.publicKey,
+      context: context.value,
+    })
+    const unmasked = xorSenderPoint(maskedSender, mask)
+    mask.fill(0)
+    const checked = requirePoint(unmasked)
+    if (!checked.ok) {
+      wipe(recipientSecret.value.key)
+      toRecipient.value.fill(0)
+      return fail({ code: 'open-failed' })
+    }
+    if (
+      suppliedSender !== undefined &&
+      !equalBytes(suppliedSender, checked.value)
+    ) {
+      wipe(recipientSecret.value.key)
+      toRecipient.value.fill(0)
+      return fail({ code: 'open-failed' })
+    }
+    senderValue = checked.value
+  } else {
+    senderValue = suppliedSender!
+  }
   let dhBytes: Uint8Array
   let kemContext: Uint8Array
   if (spec.value.mode === MODE_AUTH) {
-    const fromSender = dh(recipientSecret.value.key, sender.value)
+    const fromSender = dh(recipientSecret.value.key, senderValue)
     if (!fromSender.ok) {
       wipe(recipientSecret.value.key)
       toRecipient.value.fill(0)
-      return fromSender
+      return maskedSender !== undefined
+        ? fail({ code: 'open-failed' })
+        : fromSender
     }
     dhBytes = concatBytes([toRecipient.value, fromSender.value])
     fromSender.value.fill(0)
     kemContext = concatBytes([
       enc,
       recipientSecret.value.publicKey,
-      sender.value,
+      senderValue,
     ])
   } else {
+    const senderCheck = dh(recipientSecret.value.key, senderValue)
+    if (!senderCheck.ok) {
+      wipe(recipientSecret.value.key)
+      toRecipient.value.fill(0)
+      return senderCheck
+    }
+    senderCheck.value.fill(0)
     dhBytes = new Uint8Array(toRecipient.value)
     kemContext = concatBytes([enc, recipientSecret.value.publicKey])
   }
@@ -479,7 +608,7 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   const aad = associatedData(
     envelope.version,
     spec.value.id,
-    sender.value,
+    senderValue,
     recipientPublic,
     context.value,
   )
@@ -495,5 +624,19 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   if (inner === null) return fail({ code: 'open-failed' })
   const plain = unpad(inner)
   inner.fill(0)
-  return plain
+  if (!plain.ok) return plain
+  return {
+    ok: true,
+    value: {
+      plaintext: plain.value,
+      senderPublicKey: new Uint8Array(senderValue),
+    },
+  }
 }
+
+export function open(args: OpenArgs): SuiteResult<Uint8Array> {
+  const res = openSealed(args)
+  if (!res.ok) return res
+  return { ok: true, value: res.value.plaintext }
+}
+

@@ -22,8 +22,8 @@ export {
 } from './ids.js'
 export { isSuiteError } from './result.js'
 export { hmacSha256, randomBytes, sha256 } from './primitives.js'
-export { open, seal } from './seal.js'
-export type { OpenArgs, SealArgs } from './seal.js'
+export { open, openSealed, seal, unmaskEnvelopeSender } from './seal.js'
+export type { OpenArgs, OpenedSealedEnvelope, SealArgs } from './seal.js'
 export {
   openAsSender,
   selfOpenEphemeral,

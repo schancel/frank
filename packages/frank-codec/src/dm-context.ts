@@ -12,11 +12,11 @@ export const DM_CRYPTO_MIN_READER_VERSION = 2
 
 export interface DirectMessageCryptoContext {
   readonly network: string
-  readonly sender: AccountRef
+  readonly sender?: AccountRef
   readonly recipient: AccountRef
-  readonly senderDirectoryHash: Uint8Array
+  readonly senderDirectoryHash?: Uint8Array
   readonly recipientDirectoryHash: Uint8Array
-  readonly senderMessageKey: AccountRef
+  readonly senderMessageKey?: AccountRef
   readonly recipientMessageKey: AccountRef
   readonly stampKey: AccountRef
   readonly ephemeralPoint: Uint8Array
@@ -72,26 +72,47 @@ export function encodeDirectMessageCryptoContext(
   if (typeof input.network !== 'string' || input.network.length === 0) {
     throw new TypeError('network must be a non-empty string')
   }
-  return encodeCanonical(
-    new Map<number, Encodable>([
-      [0, DM_CRYPTO_CONTEXT_DOMAIN],
-      [1, input.network],
-      [2, account(input.sender, 'sender')],
-      [3, account(input.recipient, 'recipient')],
-      [4, exact(input.senderDirectoryHash, 32, 'senderDirectoryHash')],
-      [5, exact(input.recipientDirectoryHash, 32, 'recipientDirectoryHash')],
-      [6, account(input.senderMessageKey, 'senderMessageKey', true)],
-      [7, account(input.recipientMessageKey, 'recipientMessageKey', true)],
-      [8, account(input.stampKey, 'stampKey', true)],
-      [9, point(input.ephemeralPoint, 'ephemeralPoint')],
-      [10, point(input.sharedPoint, 'sharedPoint')],
-      [11, proof(input.dleqProof)],
-      [12, ENCRYPTION_SUITE_DM_AUTH_XCHACHA],
-      [13, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD],
-      [14, DM_CRYPTO_SCHEMA_VERSION],
-      [15, DM_CRYPTO_MIN_READER_VERSION],
-    ]),
+  const hasSender = input.sender !== undefined
+  const hasSenderDirHash = input.senderDirectoryHash !== undefined
+  const hasSenderMsgKey = input.senderMessageKey !== undefined
+  if (hasSender !== hasSenderDirHash || hasSender !== hasSenderMsgKey) {
+    throw new RangeError(
+      'sender, senderDirectoryHash, and senderMessageKey must either all be present or all be absent',
+    )
+  }
+  const entries: Array<[number, Encodable]> = [
+    [0, DM_CRYPTO_CONTEXT_DOMAIN],
+    [1, input.network],
+  ]
+  if (hasSender) {
+    entries.push([2, account(input.sender!, 'sender')])
+  }
+  entries.push([3, account(input.recipient, 'recipient')])
+  if (hasSenderDirHash) {
+    entries.push([
+      4,
+      exact(input.senderDirectoryHash!, 32, 'senderDirectoryHash'),
+    ])
+  }
+  entries.push([
+    5,
+    exact(input.recipientDirectoryHash, 32, 'recipientDirectoryHash'),
+  ])
+  if (hasSenderMsgKey) {
+    entries.push([6, account(input.senderMessageKey!, 'senderMessageKey', true)])
+  }
+  entries.push(
+    [7, account(input.recipientMessageKey, 'recipientMessageKey', true)],
+    [8, account(input.stampKey, 'stampKey', true)],
+    [9, point(input.ephemeralPoint, 'ephemeralPoint')],
+    [10, point(input.sharedPoint, 'sharedPoint')],
+    [11, proof(input.dleqProof)],
+    [12, ENCRYPTION_SUITE_DM_AUTH_XCHACHA],
+    [13, TYPE_RECIPIENT_ENCRYPTED_PAYLOAD],
+    [14, DM_CRYPTO_SCHEMA_VERSION],
+    [15, DM_CRYPTO_MIN_READER_VERSION],
   )
+  return encodeCanonical(new Map<number, Encodable>(entries))
 }
 
 /** Decodes a canonical CBOR suite-1 context. Strict. */
@@ -113,11 +134,19 @@ export function decodeDirectMessageCryptoContext(
   if (typeof network !== 'string' || network.length === 0) {
     throw new TypeError('network must be a non-empty string')
   }
-  const parseAccount = (v: unknown, name: string, secpOnly = false): AccountRef => {
-    if (!(v instanceof Map)) throw new TypeError(`${name} must be an account map`)
+  const parseAccount = (
+    v: unknown,
+    name: string,
+    secpOnly = false,
+  ): AccountRef => {
+    if (!(v instanceof Map))
+      throw new TypeError(`${name} must be an account map`)
     const rawKeyType = v.get(0n)
     const rawKeyBytes = v.get(1n)
-    if (typeof rawKeyType !== 'bigint' || !(rawKeyBytes instanceof Uint8Array)) {
+    if (
+      typeof rawKeyType !== 'bigint' ||
+      !(rawKeyBytes instanceof Uint8Array)
+    ) {
       throw new TypeError(`${name} account invalid`)
     }
     const keyType = Number(rawKeyType)
@@ -127,12 +156,36 @@ export function decodeDirectMessageCryptoContext(
     }
     return { keyType, keyBytes }
   }
-  const sender = parseAccount(value.get(2n), 'sender')
+  const hasSender = value.has(2n)
+  const hasSenderDirHash = value.has(4n)
+  const hasSenderMsgKey = value.has(6n)
+  if (hasSender !== hasSenderDirHash || hasSender !== hasSenderMsgKey) {
+    throw new RangeError(
+      'sender, senderDirectoryHash, and senderMessageKey must either all be present or all be absent',
+    )
+  }
+  const expectedSize = hasSender ? 16 : 13
+  if (value.size !== expectedSize) {
+    throw new RangeError('unexpected context map size')
+  }
+  const sender = hasSender ? parseAccount(value.get(2n), 'sender') : undefined
   const recipient = parseAccount(value.get(3n), 'recipient')
-  const senderDirectoryHash = exact(value.get(4n) as Uint8Array, 32, 'senderDirectoryHash')
-  const recipientDirectoryHash = exact(value.get(5n) as Uint8Array, 32, 'recipientDirectoryHash')
-  const senderMessageKey = parseAccount(value.get(6n), 'senderMessageKey', true)
-  const recipientMessageKey = parseAccount(value.get(7n), 'recipientMessageKey', true)
+  const senderDirectoryHash = hasSenderDirHash
+    ? exact(value.get(4n) as Uint8Array, 32, 'senderDirectoryHash')
+    : undefined
+  const recipientDirectoryHash = exact(
+    value.get(5n) as Uint8Array,
+    32,
+    'recipientDirectoryHash',
+  )
+  const senderMessageKey = hasSenderMsgKey
+    ? parseAccount(value.get(6n), 'senderMessageKey', true)
+    : undefined
+  const recipientMessageKey = parseAccount(
+    value.get(7n),
+    'recipientMessageKey',
+    true,
+  )
   const stampKey = parseAccount(value.get(8n), 'stampKey', true)
   const ephemeralPoint = point(value.get(9n) as Uint8Array, 'ephemeralPoint')
   const sharedPoint = point(value.get(10n) as Uint8Array, 'sharedPoint')
@@ -154,11 +207,11 @@ export function decodeDirectMessageCryptoContext(
 
   return {
     network,
-    sender,
+    ...(sender !== undefined ? { sender } : {}),
     recipient,
-    senderDirectoryHash,
+    ...(senderDirectoryHash !== undefined ? { senderDirectoryHash } : {}),
     recipientDirectoryHash,
-    senderMessageKey,
+    ...(senderMessageKey !== undefined ? { senderMessageKey } : {}),
     recipientMessageKey,
     stampKey,
     ephemeralPoint,

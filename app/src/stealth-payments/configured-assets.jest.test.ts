@@ -76,6 +76,20 @@ test('asset listing never opens custody and retains supported assets during RPC 
   )
   expect(mockContext).not.toHaveBeenCalled()
 })
+test('populates active balance when provided in context', async () => {
+  const result = await configuredStealthAssets({
+    activeBalance: 21699700000000000000n,
+  })
+  const mont = result.options.find(
+    o => o.chainIdentifier === 'monad-testnet' && o.asset.kind === 'native',
+  )
+  expect(mont?.balanceAtomic).toBe(21699700000000000000n)
+  const txec = result.options.find(
+    o => o.chainIdentifier === 'xec-testnet' && o.asset.kind === 'native',
+  )
+  expect(txec?.balanceAtomic).toBeUndefined()
+})
+
 test('invalid adapter denominations fail instead of being guessed from a ticker', () => {
   expect(nativeDecimals(() => 1n)).toBe(0)
   expect(nativeDecimals(() => 100n)).toBe(2)

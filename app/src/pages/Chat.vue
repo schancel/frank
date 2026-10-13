@@ -357,13 +357,15 @@ export default defineComponent({
     const chats = useChatStore()
     const contacts = useContactStore()
     const myProfile = useProfileStore()
-    const { refresh: refreshBalance } = useBalance()
+    const { refresh: refreshBalance, balance: activeWalletBalance } =
+      useBalance()
 
     return {
       oracle,
       accountStatus,
       messagingState,
       refreshBalance,
+      activeWalletBalance,
       getAcceptancePrice: contacts.getAcceptancePrice,
       getContactVuex: contacts.getContact,
       contactStore: contacts,
@@ -846,7 +848,9 @@ export default defineComponent({
       this.stealthQuote = { status: 'pending' }
       this.stealthDialog = true
       try {
-        const { options, unavailable } = await configuredStealthAssets()
+        const { options, unavailable } = await configuredStealthAssets({
+          activeBalance: this.activeWalletBalance ?? undefined,
+        })
         if (!this.stealthDialog || sequence !== this.stealthReviewSequence)
           return
         this.stealthAssets = options

@@ -32,7 +32,16 @@ import {
   LevelRecordStore,
   MemoryRecordStore,
   messagePaymentOf,
-  observeEvmCoin,
+  applyStoredNativeCoinObservation,
+  recordStoredEvmCoin,
+  markStoredEvmCoinNoted,
+  registerStoredEvmErc20Payment,
+  registerStoredEvmNativePaymentSet,
+  refreshStoredEvmNativePaymentSet,
+  refreshStoredEvmErc20Position,
+  receivedErc20Payments,
+  fundedErc20Coins,
+  type EvmErc20Reader,
   pendingCoinDue,
   receivedCoinNoteOf,
   receivedPaymentOf,
@@ -43,6 +52,17 @@ import {
   type EvmCoinTransfer,
   type RecordStore,
 } from "../storage/evm-coin-store";
+import {
+  createEvmStealthPayments,
+  configuredEvmStealthToken,
+  EVM_STEALTH_PREPARATION_NAMESPACE,
+  type EvmStealthPreparation,
+} from "./evm-stealth-payments";
+import type {
+  StealthPaymentReceiptClaim,
+  StealthPaymentReceiptCapability,
+} from "../stealth-payment";
+import { Interface } from "ethers";
 import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
@@ -1140,7 +1160,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     wallet: EvmChainWalletHandle,
     address: string
   ): boolean =>
-    nativeOperationOwners.get(wallet)?.holdsSource(address) === true ||
+    sourceIsHeld(wallet, address) || nativeOperationOwners.get(wallet)?.holdsSource(address) === true ||
     (unjournalledTransfers.get(wallet)?.get(address)?.length ?? 0) > 0;
   /**
    * Lets go of the main and identity accounts this wallet's native holder has, each as soon as
@@ -2261,6 +2281,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             stampAttemptJournal instanceof LevelStampAttemptJournal
               ? stampAttemptJournal.Close()
               : undefined,
+            preparations?.close(),
             coins?.close(),
             contactPayments?.close(),
             coinListState?.close(),
@@ -2305,6 +2326,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         const leaseManager = new SubAccountLeaseManager(pool);
         let topicOwner: MonadWalletPersistenceBundle | undefined;
         let canonicalLinks: OutgoingMessageStore | undefined;
+        let preparations: RecordStore<EvmStealthPreparation> | undefined;
         let coins: RecordStore<EvmCoin> | undefined;
         let contactPayments: RecordStore<ContactPayment> | undefined;
         let coinListState:
@@ -2503,6 +2525,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   storageLocation,
                   EVM_COIN_NAMESPACE
                 );
+          preparations = storageLocation === undefined ? new MemoryRecordStore<EvmStealthPreparation>() : await LevelRecordStore.open<EvmStealthPreparation>(storageLocation, EVM_STEALTH_PREPARATION_NAMESPACE);
           contactPayments =
             storageLocation === undefined
               ? new MemoryRecordStore<ContactPayment>()
@@ -2638,8 +2661,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // A claim the node still does not know long after its message is asked about less and
             // less often (`pendingCoinDue`), unless this read names it.
             const now = Date.now();
+            const nativeSet = (coin: EvmCoin) => coin.origin === "stealth" && coin.transactions.length > 1;
             const pending = all.filter(
               (coin) =>
+                (nativeSet(coin) && (options.only !== undefined || pendingCoinDue(coin, now))) ||
                 (coin.state === "pending" &&
                   (options.only !== undefined || pendingCoinDue(coin, now))) ||
                 (coin.state === "failed" && !options.pendingOnly)
@@ -2658,30 +2683,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
             const counted = options.pendingOnly
               ? []
-              : all.filter((coin) => coin.state === "unspent");
+              : all.filter((coin) => coin.state === "unspent" && !nativeSet(coin));
             for (const coin of [...probed, ...counted]) {
               if (closedWallets.has(wallet)) return;
               try {
+                if (nativeSet(coin)) { await refreshNativeSetCoin(coin, true); primaryBalanceCache = undefined; continue; }
                 const read =
                   coin.state === "unspent" ? undefined : await transferOf(coin);
                 const balanceWei = await provider.getBalance(coin.address);
                 const current = coinStore.get(coin.address);
                 if (current === undefined || closedWallets.has(wallet)) continue;
-                const next = observeEvmCoin(current, {
-                  balanceWei,
-                  transfer: read?.transfer,
-                  transferValueWei: read?.valueWei,
-                  atMs: Date.now(),
+                await applyStoredNativeCoinObservation(coinStore, coin.address, {
+                  balanceWei, transfer: read?.transfer, transferValueWei: read?.valueWei, atMs: Date.now(),
                 });
-                if (
-                  next.state !== current.state ||
-                  next.amountWei !== current.amountWei ||
-                  next.transferSeen !== current.transferSeen ||
-                  current.checkedAtMs === undefined
-                ) {
-                  await coinStore.put(next.address, next);
-                  primaryBalanceCache = undefined;
-                }
+                primaryBalanceCache = undefined;
               } catch (error) {
                 if (options.strict) throw error;
                 complete = false;
@@ -2699,9 +2714,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             return readingCoins;
           };
           const recordCoin = async (coin: EvmCoin): Promise<void> => {
-            // Known already (a message read again, on this device or after a restore): no-op.
-            if (coinStore.get(coin.address) !== undefined) return;
-            await coinStore.put(coin.address, coin);
+            await recordStoredEvmCoin(coinStore, coin);
             coinsReadAtMs = 0;
             primaryBalanceCache = undefined;
           };
@@ -2837,7 +2850,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 .all()
                 .filter(
                   (coin) =>
-                    coin.payloadDigest === digest && coin.state === "pending"
+                    coin.payloadDigest === digest && (coin.state === "pending" || (coin.origin === "stealth" && coin.transactions.length > 1))
                 );
               // Nothing pending: the answer is already known, and nothing is asked.
               if (pending.length > 0)
@@ -3300,10 +3313,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       ]
                     : []
                 ),
-              // Received stealth coins the chain shows funded: sources like any other.
-              // Received coins (stealth payments, stamps) the chain has verified: sources like
-              // any other. `spendableCoins` is the one rule; an unverified coin is never offered.
-              ...spendableCoins(coinStore.all()).map((coin) => coinSource(coin)),
+              // Received sources include verified native funds or verified ERC20 positions.
+              // Token custody stays discoverable even with no native gas; each planner checks
+              // its own native fee requirement before it reserves or signs.
+              ...coinStore.all().filter(coin => spendableCoins([coin]).length > 0 || (coin.erc20Positions ?? []).some(position => fundedErc20Coins([coin], position.contractAddress).length > 0)).map(coinSource),
               ...topicOwner!.nativeJournal!.sourceReferences()
             ];
             // Resolve public provenance before selection; attached coin secrets are not authority.
@@ -3492,6 +3505,706 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           // reached leaves nothing broadcast: every later mailbox read repeats 5 with the same
           // message ID and then 6, from the saved record. Nothing is ever signed again.
           const nativeOwner = nativeOperationOwners.get(wallet)!;
+          const financialAbi = new Interface([
+            "function transfer(address to,uint256 amount) returns (bool)",
+            "function balanceOf(address owner) view returns (uint256)",
+            "event Transfer(address indexed from,address indexed to,uint256 value)",
+          ]);
+          const assertFinancialActive = (): void => {
+            if (closedWallets.has(wallet))
+              throw new Error("Wallet financial session is closed");
+          };
+          const erc20Reader: EvmErc20Reader = {
+            call: ({ to, data, blockTag }) => provider.call({ to, data, blockTag }),
+            getBlock: (tag) => provider.getBlock(tag),
+            getTransactionReceipt: (hash) => provider.getTransactionReceipt(hash),
+          };
+          const tokenBalance = async (
+            contract: string,
+            address: string
+          ): Promise<bigint> => {
+            const encoded = await provider.call({
+              to: contract,
+              data: financialAbi.encodeFunctionData("balanceOf", [address]),
+            });
+            assertFinancialActive();
+            if (!/^0x[0-9a-fA-F]{64}$/.test(encoded))
+              throw new Error("Invalid ERC20 balance response");
+            return BigInt(encoded);
+          };
+          const verifiedFinancialReceipt = async (
+            raw: string,
+            recipientAddress: string,
+            maximumBlock?: number
+          ): Promise<bigint | undefined> => {
+            const tx = Transaction.from(raw);
+            const receipt = await provider.getTransactionReceipt(tx.hash!);
+            assertFinancialActive();
+            if (
+              receipt === null ||
+              (maximumBlock !== undefined && receipt.blockNumber > maximumBlock)
+            )
+              return undefined;
+            const block = await provider.getBlock(receipt.blockNumber);
+            assertFinancialActive();
+            if (
+              receipt.hash.toLowerCase() !== tx.hash ||
+              receipt.from.toLowerCase() !== tx.from!.toLowerCase() ||
+              receipt.to?.toLowerCase() !== tx.to!.toLowerCase()
+            )
+              throw new Error("Invalid ERC20 receipt inclusion");
+            if (!block?.hash)
+              throw new Error("Financial receipt canonical block unavailable");
+            if (block.hash.toLowerCase() !== receipt.blockHash.toLowerCase()) {
+              if (maximumBlock !== undefined) return undefined;
+              throw new Error("Invalid ERC20 receipt inclusion");
+            }
+            if (receipt.status === 0) return 0n;
+            if (receipt.status !== 1) throw new Error("Invalid ERC20 receipt status");
+            if (
+              tx.data === "0x" &&
+              tx.to?.toLowerCase() === recipientAddress.toLowerCase()
+            )
+              return tx.value;
+            let value = 0n;
+            const indexes = new Set<number>();
+            for (const log of receipt.logs) {
+              if (
+                log.address.toLowerCase() !== tx.to!.toLowerCase() ||
+                log.topics[0]?.toLowerCase() !==
+                  financialAbi.getEvent("Transfer")!.topicHash.toLowerCase()
+              )
+                continue;
+              if (
+                indexes.has(log.index) ||
+                !Number.isSafeInteger(log.index) ||
+                log.index < 0 ||
+                log.topics.length !== 3 ||
+                !/^0x[0-9a-fA-F]{64}$/.test(log.data)
+              )
+                throw new Error("Invalid ERC20 receipt membership");
+              indexes.add(log.index);
+              const event = financialAbi.decodeEventLog("Transfer", log.data, [
+                ...log.topics,
+              ]);
+              if (
+                getAddress(event.from).toLowerCase() === tx.from!.toLowerCase() &&
+                getAddress(event.to).toLowerCase() === recipientAddress.toLowerCase()
+              )
+                value += BigInt(event.value);
+            }
+            return value;
+          };
+          const refreshNativeSetCoin = async (coin: EvmCoin, replay = false) => {
+            const atMs = Date.now();
+            let retryFailure: unknown;
+            const result = await refreshStoredEvmNativePaymentSet(
+              coinStore,
+              coin.address,
+              {
+                chainIdentifier,
+                ephemeralPubKey: coin.ephemeralPubKey!,
+                rawTransactions: coin.transactions.map((raw) => "0x" + raw),
+                amountWei: BigInt(coin.claimedAmountWei),
+                payloadDigest: coin.payloadDigest!,
+              },
+              async (address, raws) => {
+                const head = await provider.getBlock("latest");
+                assertFinancialActive();
+                if (!head?.hash)
+                  throw new Error("Native receipt snapshot block unavailable");
+                const amounts = await Promise.all(
+                  raws.map((raw) => verifiedFinancialReceipt(raw, address, head.number))
+                );
+                if (replay)
+                  for (let index = 0; index < raws.length; index++) {
+                    if (amounts[index] !== undefined) continue;
+                    try {
+                      assertFinancialActive();
+                      const response = await provider.broadcastTransaction(raws[index]!);
+                      if (
+                        response.hash.toLowerCase() !==
+                        Transaction.from(raws[index]!).hash
+                      )
+                        throw new Error("Unexpected native receipt retry hash");
+                    } catch (error) {
+                      retryFailure ??= error;
+                    }
+                  }
+                const balanceWei = await provider.getBalance(address, head.number);
+                const checked = await provider.getBlock(head.number);
+                assertFinancialActive();
+                if (checked?.hash?.toLowerCase() !== head.hash.toLowerCase())
+                  throw new Error("Native receipt snapshot changed; retry original set");
+                return { balanceWei, receivedAmountsWei: amounts };
+              },
+              atMs
+            );
+            assertFinancialActive();
+            if (!result.applied)
+              throw new Error("Native receipt observation changed; retry original set");
+            if (retryFailure !== undefined) throw retryFailure;
+            return result;
+          };
+          const financialPayments = createEvmStealthPayments({
+            chainIdentifier,
+            nativeChainId: BigInt(config.chainId),
+            coordinationKey: JSON.stringify(topicOwner!.nativeJournal!.binding),
+            refreshJournal: async (id) => {
+              await topicOwner!.runLifetime((lifetime) =>
+                nativeAdmissionJournal(
+                  topicOwner!.inputAdmission,
+                  lifetime
+                ).refreshPreparation(id)
+              );
+            },
+            store: preparations!,
+            assertActive: assertFinancialActive,
+            derive: (recipientSpendPubKey) =>
+              deriveEvmStealthAddress({ recipientSpendPubKey }),
+            operations: () => topicOwner!.nativeJournal!.list(),
+            signIndependentPayment: (params) =>
+              topicOwner!.runLifetime((lifetime) =>
+                nativeOwner.signIndependentPayment(params, lifetime)
+              ),
+            submit: (id) =>
+              topicOwner!.runLifetime((lifetime) =>
+                nativeOwner.resumeIndependentPayment(id, lifetime)
+              ),
+            observe: (id) =>
+              topicOwner!.runLifetime(async (lifetime) => {
+                for (
+                  let index = 0;
+                  index < topicOwner!.nativeJournal!.get(id).members.length;
+                  index++
+                )
+                  await nativeOwner.observe(id, index, lifetime);
+              }),
+            release: (id) =>
+              topicOwner!.runLifetime((lifetime) =>
+                nativeOwner.releaseUnexposed(id, lifetime)
+              ),
+            async quote(input) {
+              const requested =
+                input.sourceAddress === undefined
+                  ? undefined
+                  : getAddress(input.sourceAddress).toLowerCase();
+              const owned = [
+                ...new Map(
+                  (await getSources()).map((source) => [source.address, source])
+                ).values(),
+              ];
+              if (
+                requested !== undefined &&
+                !owned.some((source) => source.address === requested)
+              )
+                throw new Error("Requested financial source is not owned");
+              const candidates: { source: EvmNativeSource; balance: bigint }[] = [];
+              let lacksGas = false;
+              for (const source of owned) {
+                if (
+                  (requested !== undefined && source.address !== requested) ||
+                  sourceIsHeld(wallet, source.address) ||
+                  nativeOwner.holdsSource(source.address)
+                )
+                  continue;
+                const native = await provider.getBalance(source.address);
+                const balance =
+                  input.asset.kind === "native"
+                    ? native
+                    : await tokenBalance(input.asset.contractAddress, source.address);
+                assertFinancialActive();
+                if (balance <= 0n) continue;
+                if (input.asset.kind === "erc20" && native === 0n) {
+                  lacksGas = true;
+                  continue;
+                }
+                candidates.push({ source, balance });
+              }
+              candidates.sort((a, b) =>
+                a.source.kind === "main" && b.source.kind !== "main"
+                  ? 1
+                  : b.source.kind === "main" && a.source.kind !== "main"
+                  ? -1
+                  : a.balance === b.balance
+                  ? a.source.address.localeCompare(b.source.address)
+                  : a.balance < b.balance
+                  ? -1
+                  : 1
+              );
+              const sources: {
+                sourceAddress: string;
+                recipientAmountAtomic: bigint;
+                nativeBalanceAtomic: bigint;
+                assetBalanceAtomic: bigint;
+                estimatedNativeFeeAtomic: bigint;
+              }[] = [];
+              let remaining = input.amountAtomic;
+              const allocate = async (ordered: typeof candidates) => {
+                sources.length = 0;
+                remaining = input.amountAtomic;
+                for (const candidate of ordered) {
+                  if (remaining === 0n || sources.length === 16) break;
+                  const native = input.asset.kind === "native";
+                  const target =
+                    input.asset.kind === "native"
+                      ? input.recipientAddress
+                      : input.asset.contractAddress;
+                  const tentative = native
+                    ? 1n
+                    : candidate.balance < remaining
+                    ? candidate.balance
+                    : remaining;
+                  const quoteOne = (amount: bigint) =>
+                    topicOwner!.runLifetime((lifetime) =>
+                      nativeOwner.quoteIndependentPayment(
+                        {
+                          kind: native ? "native" : "contract",
+                          recipient: { raw: target },
+                          members: [
+                            {
+                              sourceAddress: candidate.source.address,
+                              value: native ? amount : 0n,
+                              ...(native
+                                ? {}
+                                : {
+                                    data: financialAbi.encodeFunctionData("transfer", [
+                                      input.recipientAddress,
+                                      amount,
+                                    ]),
+                                  }),
+                            },
+                          ],
+                        },
+                        lifetime
+                      )
+                    );
+                  let fact = (await quoteOne(tentative)).sources[0]!;
+                  const available = native
+                    ? fact.nativeBalanceAtomic - fact.estimatedNativeFeeAtomic
+                    : candidate.balance;
+                  if (
+                    available <= 0n ||
+                    fact.nativeBalanceAtomic < fact.estimatedNativeFeeAtomic
+                  ) {
+                    lacksGas ||= !native;
+                    continue;
+                  }
+                  const amount = available < remaining ? available : remaining;
+                  if (native && amount !== tentative)
+                    fact = (await quoteOne(amount)).sources[0]!;
+                  if (
+                    fact.nativeBalanceAtomic <
+                    fact.estimatedNativeFeeAtomic + (native ? amount : 0n)
+                  )
+                    throw new Error(
+                      "Financial source fee changed during quote; retry unsigned quote"
+                    );
+                  sources.push({
+                    ...fact,
+                    recipientAmountAtomic: amount,
+                    assetBalanceAtomic: native
+                      ? fact.nativeBalanceAtomic
+                      : candidate.balance,
+                  });
+                  remaining -= amount;
+                }
+              };
+              await allocate(candidates);
+              if (remaining > 0n && sources.length === 16) {
+                // Small-first is a preference, not permission to reject a feasible bounded set.
+                // Requote larger sources first; the owner still revalidates and reserves the
+                // complete frozen allocation before signing, under one total fee ceiling.
+                const largerFirst = [...candidates].sort((a, b) =>
+                  a.balance === b.balance
+                    ? candidates.indexOf(a) - candidates.indexOf(b)
+                    : a.balance > b.balance
+                    ? -1
+                    : 1
+                );
+                await allocate(largerFirst);
+              }
+              assertFinancialActive();
+              if (remaining > 0n)
+                throw new RangeError(
+                  sources.length === 16
+                    ? "Payment cannot fit the 16-member limit"
+                    : lacksGas
+                    ? "ERC20 payment needs native gas at owned sources"
+                    : "Insufficient unreserved payment funds"
+                );
+              return { sources };
+            },
+            tokenBalance,
+            tokenReceipt: verifiedFinancialReceipt,
+          });
+          // Complete a local release interrupted after its durable tombstone, before publishing.
+          // This only cancels never-exposed journal bytes; it makes no network request.
+          await financialPayments.recoverReleases();
+          const snapshotReceiptClaim = (
+            claim: StealthPaymentReceiptClaim
+          ): StealthPaymentReceiptClaim => ({
+            ...claim,
+            asset: { ...claim.asset },
+            ephemeralPublicKey: new Uint8Array(claim.ephemeralPublicKey),
+            recipientDestination: new Uint8Array(claim.recipientDestination),
+            // Public claims carry canonical wire hex; ethers and EVM persistence use DataHexString.
+            rawTransactions: claim.rawTransactions.map((raw) => {
+              if (
+                typeof raw !== "string" ||
+                raw.length > 32768 ||
+                !/^(?:[0-9a-f]{2})+$/.test(raw)
+              )
+                throw new Error("Invalid financial receipt transaction bytes");
+              return `0x${raw}`;
+            }),
+          });
+          const verifyReceiptClaim = (claim: StealthPaymentReceiptClaim): EvmCoin => {
+            assertFinancialActive();
+            if (
+              claim.chainIdentifier !== chainIdentifier ||
+              claim.amountAtomic <= 0n ||
+              claim.rawTransactions.length < 1 ||
+              claim.rawTransactions.length > 16 ||
+              claim.amountAtomic >= 1n << 256n ||
+              !/^[0-9a-fA-F]{64}$/.test(claim.payloadDigest)
+            )
+              throw new Error("Invalid financial receipt claim");
+            const derived = deriveEvmStealthPrivateKey({
+              recipientSpendSecret: identity.toPrivateKeyHex(),
+              ephemeralPubKey: claim.ephemeralPublicKey,
+            });
+            if (claim.recipientDestination.length !== 20)
+              throw new Error("EVM receipt destination must be 20 bytes");
+            const address = getAddress(hexlify(claim.recipientDestination)).toLowerCase();
+            if (derived.stealthAddress.toLowerCase() !== address)
+              throw new Error("Receipt account is not owned by this wallet");
+            const hashes = new Set<string>(),
+              sourceNonces = new Set<string>();
+            let intended = 0n;
+            for (const raw of claim.rawTransactions) {
+              const tx = Transaction.from(raw);
+              if (
+                !tx.isSigned() ||
+                tx.chainId !== BigInt(config.chainId) ||
+                hashes.has(tx.hash!)
+              )
+                throw new Error("Receipt transaction chain/signature/duplicate mismatch");
+              const sourceNonce = `${tx.from!.toLowerCase()}:${tx.nonce}`;
+              if (sourceNonces.has(sourceNonce))
+                throw new Error("Duplicate receipt source nonce");
+              sourceNonces.add(sourceNonce);
+              hashes.add(tx.hash!);
+              if (claim.asset.kind === "native") {
+                if (
+                  tx.to?.toLowerCase() !== address ||
+                  tx.value <= 0n ||
+                  tx.data !== "0x"
+                )
+                  throw new Error("Native receipt differs from exact claim");
+                intended += tx.value;
+              } else {
+                const contract = configuredEvmStealthToken(
+                  chainIdentifier,
+                  claim.asset.contractAddress
+                );
+                const decoded = financialAbi.decodeFunctionData("transfer", tx.data);
+                const value = BigInt(decoded[1]);
+                if (
+                  tx.to?.toLowerCase() !== contract ||
+                  tx.value !== 0n ||
+                  value <= 0n ||
+                  getAddress(decoded[0]).toLowerCase() !== address ||
+                  financialAbi
+                    .encodeFunctionData("transfer", [address, value])
+                    .toLowerCase() !== tx.data.toLowerCase()
+                )
+                  throw new Error("ERC20 receipt differs from exact claim");
+                intended += value;
+              }
+            }
+            if (intended !== claim.amountAtomic)
+              throw new Error("Receipt transaction set differs from intended amount");
+            return {
+              address,
+              privateKey: derived.stealthPrivateKey,
+              origin: "stealth",
+              state: "pending",
+              amountWei: "0",
+              claimedAmountWei:
+                claim.asset.kind === "native" ? claim.amountAtomic.toString() : "0",
+              transactions:
+                claim.asset.kind === "native"
+                  ? claim.rawTransactions.map((raw) => raw.slice(2).toLowerCase())
+                  : [],
+              ephemeralPubKey: hexlify(claim.ephemeralPublicKey).slice(2),
+              payloadDigest: claim.payloadDigest.toLowerCase(),
+              discoveredAtMs: Date.now(),
+            };
+          };
+          const recordFinancialReceipt = async (
+            input: StealthPaymentReceiptClaim
+          ): Promise<void> => {
+            const claim = snapshotReceiptClaim(input);
+            const coin = verifyReceiptClaim(claim);
+            await recordStoredEvmCoin(coinStore, coin);
+            assertFinancialActive();
+            if (claim.asset.kind === "native")
+              await registerStoredEvmNativePaymentSet(coinStore, coin.address, {
+                chainIdentifier,
+                ephemeralPubKey: coin.ephemeralPubKey!,
+                rawTransactions: claim.rawTransactions,
+                amountWei: claim.amountAtomic,
+                payloadDigest: claim.payloadDigest,
+              });
+            else
+              for (const raw of claim.rawTransactions)
+                await registerStoredEvmErc20Payment(coinStore, coin.address, {
+                  chainIdentifier,
+                  contractAddress: claim.asset.contractAddress,
+                  rawTransaction: raw,
+                  amountBaseUnits: BigInt(
+                    financialAbi.decodeFunctionData(
+                      "transfer",
+                      Transaction.from(raw).data
+                    )[1]
+                  ),
+                  payloadDigest: claim.payloadDigest,
+                  discoveredAtMs: coin.discoveredAtMs,
+                });
+            coinsReadAtMs = 0;
+          };
+          const requireRecordedReceipt = (claim: StealthPaymentReceiptClaim): void => {
+            const account = verifyReceiptClaim(claim);
+            const known = coinStore.get(account.address);
+            if (
+              !known ||
+              known.privateKey !== account.privateKey ||
+              known.ephemeralPubKey !== account.ephemeralPubKey ||
+              known.origin !== "stealth"
+            )
+              throw new Error("Receipt account derivation was not durably recorded");
+            const persisted =
+              claim.asset.kind === "native"
+                ? JSON.stringify(known.transactions) ===
+                    JSON.stringify(claim.rawTransactions.map((raw) => raw.slice(2))) &&
+                  known.payloadDigest === claim.payloadDigest.toLowerCase() &&
+                  known.claimedAmountWei === claim.amountAtomic.toString()
+                : claim.rawTransactions.every((raw) =>
+                    known.erc20Positions
+                      ?.find(
+                        (position) =>
+                          position.contractAddress ===
+                          configuredEvmStealthToken(
+                            chainIdentifier,
+                            claim.asset.kind === "erc20"
+                              ? claim.asset.contractAddress
+                              : ""
+                          )
+                      )
+                      ?.claims.some(
+                        (entry) =>
+                          entry.txHash === Transaction.from(raw).hash &&
+                          entry.rawTransaction === raw &&
+                          entry.amountBaseUnits ===
+                            BigInt(
+                              financialAbi.decodeFunctionData(
+                                "transfer",
+                                Transaction.from(raw).data
+                              )[1]
+                            ).toString() &&
+                          entry.payloadDigests.includes(claim.payloadDigest.toLowerCase())
+                      )
+                  );
+            if (!persisted)
+              throw new Error("Receipt claim must be durably recorded before submission");
+          };
+          Object.assign(wallet, {
+            stealthPayments: financialPayments,
+            stealthReceipts: {
+              record: recordFinancialReceipt,
+              async submit(input: StealthPaymentReceiptClaim) {
+                const claim = snapshotReceiptClaim(input);
+                requireRecordedReceipt(claim);
+                let failure: unknown;
+                for (const raw of claim.rawTransactions) {
+                  try {
+                    assertFinancialActive();
+                    const sent = await provider.broadcastTransaction(raw);
+                    assertFinancialActive();
+                    if (sent.hash.toLowerCase() !== Transaction.from(raw).hash)
+                      throw new Error("Unexpected received transaction hash");
+                  } catch (error) {
+                    failure ??= error;
+                  }
+                }
+                if (failure !== undefined) throw failure;
+              },
+              async observe(input: StealthPaymentReceiptClaim) {
+                const claim = snapshotReceiptClaim(input);
+                requireRecordedReceipt(claim);
+                const address = getAddress(
+                  hexlify(claim.recipientDestination)
+                ).toLowerCase();
+                const balance = await provider.getBalance(address);
+                assertFinancialActive();
+                const reserved =
+                  sourceIsHeld(wallet, address) || nativeOwner.holdsSource(address);
+                if (claim.asset.kind === "native") {
+                  if (claim.rawTransactions.length > 1) {
+                    const result = await refreshNativeSetCoin(coinStore.get(address)!);
+                    return {
+                      status:
+                        result.complete &&
+                        result.verifiedReceivedAmountWei === claim.amountAtomic
+                          ? "succeeded"
+                          : result.verifiedReceivedAmountWei > 0n
+                          ? "partial"
+                          : result.allFailed
+                          ? "failed"
+                          : "pending",
+                      intendedAmountAtomic: claim.amountAtomic,
+                      verifiedReceivedAmountAtomic: result.verifiedReceivedAmountWei,
+                      spendability:
+                        BigInt(result.coin.amountWei) === 0n
+                          ? "empty"
+                          : reserved
+                          ? "reserved"
+                          : result.verifiedReceivedAmountWei === 0n
+                          ? "pending"
+                          : "spendable",
+                    };
+                  }
+
+                  const received = await verifiedFinancialReceipt(
+                    claim.rawTransactions[0]!,
+                    address
+                  );
+                  assertFinancialActive();
+                  await applyStoredNativeCoinObservation(coinStore, address, {
+                    balanceWei: balance,
+                    transfer:
+                      received === undefined
+                        ? "unseen"
+                        : received === 0n
+                        ? "failed"
+                        : "included",
+                    ...(received === undefined ? {} : { transferValueWei: received }),
+                    atMs: Date.now(),
+                  });
+                  return {
+                    status:
+                      received === undefined
+                        ? "pending"
+                        : received === 0n
+                        ? "failed"
+                        : received === claim.amountAtomic
+                        ? "succeeded"
+                        : "partial",
+                    intendedAmountAtomic: claim.amountAtomic,
+                    ...(received === undefined
+                      ? {}
+                      : { verifiedReceivedAmountAtomic: received }),
+                    spendability:
+                      balance === 0n
+                        ? "empty"
+                        : reserved
+                        ? "reserved"
+                        : received === undefined
+                        ? "pending"
+                        : "spendable",
+                  };
+                }
+                const refreshed = await refreshStoredEvmErc20Position(
+                  coinStore,
+                  address,
+                  {
+                    chainIdentifier,
+                    contractAddress: claim.asset.contractAddress,
+                    reader: erc20Reader,
+                    atMs: Date.now(),
+                  }
+                );
+                assertFinancialActive();
+                if (!refreshed.applied)
+                  throw new Error("ERC20 observation changed; retry current receipt");
+                const contractAddress = claim.asset.contractAddress.toLowerCase();
+                const positionBalance = BigInt(
+                  refreshed.coin.erc20Positions!.find(
+                    (position) => position.contractAddress === contractAddress
+                  )!.balanceBaseUnits
+                );
+                const fees = await provider.getFeeData();
+                const gas =
+                  balance === 0n || positionBalance === 0n
+                    ? 0n
+                    : await provider.estimateGas({
+                        from: address,
+                        to: claim.asset.contractAddress,
+                        value: 0n,
+                        data: financialAbi.encodeFunctionData("transfer", [
+                          material.mainAccount.address,
+                          positionBalance < claim.amountAtomic
+                            ? positionBalance
+                            : claim.amountAtomic,
+                        ]),
+                      });
+                assertFinancialActive();
+                const price = fees.maxFeePerGas ?? fees.gasPrice;
+                if (price === null) throw new Error("Native fee observation unavailable");
+                const allPayments = receivedErc20Payments(refreshed.coin, {
+                  nativeBalanceWei: balance,
+                  requiredNativeFeeWei: (gas * price * 115n) / 100n,
+                  reserved,
+                });
+                const payments = claim.rawTransactions.map((raw) =>
+                  allPayments.find(
+                    (item) =>
+                      item.txHash === Transaction.from(raw).hash &&
+                      item.contractAddress === contractAddress
+                  )
+                );
+                if (payments.some((payment) => payment === undefined))
+                  throw new Error("ERC20 receipt claim unavailable");
+                const received = payments.reduce(
+                  (sum, payment) => sum + payment!.receivedAmountBaseUnits,
+                  0n
+                );
+                const allKnown = payments.every(
+                  (payment) =>
+                    payment!.status === "received" ||
+                    payment!.status === "partial" ||
+                    payment!.status === "failed"
+                );
+                return {
+                  status:
+                    allKnown && received === claim.amountAtomic
+                      ? "succeeded"
+                      : received > 0n ||
+                        (allKnown &&
+                          !payments.every((payment) => payment!.status === "failed"))
+                      ? "partial"
+                      : payments.every((payment) => payment!.status === "failed")
+                      ? "failed"
+                      : "pending",
+                  intendedAmountAtomic: claim.amountAtomic,
+                  verifiedReceivedAmountAtomic: received,
+                  spendability:
+                    positionBalance === 0n
+                      ? "empty"
+                      : reserved
+                      ? "reserved"
+                      : payments.some(
+                          (payment) => payment!.spendability === "needs-native-gas"
+                        )
+                      ? "needs-native-gas"
+                      : payments.some((payment) => payment!.spendability === "spendable")
+                      ? "spendable"
+                      : "pending",
+                };
+              },
+            } satisfies StealthPaymentReceiptCapability,
+          });
           const signedTransferTo = (address: string) =>
             topicOwner!
               .nativeJournal!.list()
@@ -3529,7 +4242,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             (payment.state === "prepared" || payment.state === "failed") &&
             !transferIncluded(payment);
           heldTransferSources.set(wallet, () => {
-            const held = new Set<string>();
+            const held = financialPayments.heldSources();
             for (const payment of paymentStore.all()) {
               if (!holdsItsSource(payment)) continue;
               const source = transferMember(payment)?.source.address;
@@ -3539,7 +4252,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           });
           /** A transfer that must not be broadcast yet: its message is not with the relay. */
           const heldForItsMessage = (operationId: string): boolean =>
-            paymentStore
+            financialPayments.holdsForHost(operationId) || paymentStore
               .all()
               .some(
                 (payment) =>
@@ -4141,7 +4854,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             if (known === undefined)
               await recordCoin({ ...coin, notedAtMs: Date.now() });
             else if (known.notedAtMs === undefined)
-              await coinStore.put(address, { ...known, notedAtMs: Date.now() });
+              await markStoredEvmCoinNoted(coinStore, address, Date.now());
             return true;
           };
           // Every coin gets one note to self saying how its key is derived: a FREE message (no
@@ -4191,10 +4904,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 noteFailures.delete(address);
                 const current = coinStore.get(address);
                 if (current !== undefined && current.notedAtMs === undefined)
-                  await coinStore.put(address, {
-                    ...current,
-                    notedAtMs: Date.now(),
-                  });
+                  await markStoredEvmCoinNoted(coinStore, address, Date.now());
               }
             })()
               .catch(() => undefined)
@@ -4552,7 +5262,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             material.mainAccount.address.toLowerCase(),
             identity.address.raw.toLowerCase(),
           ]))
-            if (nativeOperationOwners.get(wallet)!.holdsSource(address))
+            if (sourceIsHeld(wallet, address) || nativeOperationOwners.get(wallet)!.holdsSource(address))
               try {
                 pool.restoreAccountClaim(mainAccountHolder(wallet), address);
               } catch (error) {

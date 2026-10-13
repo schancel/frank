@@ -40,7 +40,8 @@ export interface EvmCoin {
   /** The balance the chain last reported at `address` (decimal wei). "0" until it was read. */
   readonly amountWei: string
   /** What the chain showed the first time it showed any money here (decimal wei): the amount that
-   * arrived, which later spending does not change. Absent until then. */
+   * arrived, which later spending does not change. Absent until then. For a registered native
+   * set this is the current canonical verified member sum, which can fall after a reorg. */
   readonly receivedAmountWei?: string
   /** When the chain was last read for this coin. Absent: never read. */
   readonly checkedAtMs?: number
@@ -537,6 +538,8 @@ export interface ContactPayment {
 export interface RecordStore<T> {
   get(key: string): T | undefined
   all(): T[]
+  /** Refresh this wrapper's read cache from its one durable owner; no default writes. */
+  refresh(): Promise<void>
   put(key: string, row: T): Promise<void>
   /** Compare against durable state, not this wrapper's cache. A miss refreshes its cache. */
   compareAndPut(key: string, expected: T | undefined, row: T): Promise<boolean>
@@ -759,6 +762,224 @@ async function changeStoredCoin(
     if (await store.compareAndPut(key, captured, next)) return next
   }
   throw new Error('Received account changed during update; retry required')
+}
+
+/** Registers the first exact native payment after an account-only recovery note. This changes
+ * claim evidence only, never observed native balances or ERC20 positions. The store is already
+ * bound to the wallet/chain by composition; caller derivation must match its immutable account. */
+export async function registerStoredEvmNativePayment(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  payment: {
+    chainIdentifier: string
+    ephemeralPubKey: string
+    rawTransaction: string
+    amountWei: bigint
+    payloadDigest: string
+  },
+): Promise<EvmCoin> {
+  return registerStoredEvmNativePaymentSet(store, address, {
+    ...payment,
+    rawTransactions: [payment.rawTransaction],
+  })
+}
+
+export interface EvmNativePaymentSet {
+  readonly chainIdentifier: string
+  readonly ephemeralPubKey: string
+  readonly rawTransactions: readonly string[]
+  readonly amountWei: bigint
+  readonly payloadDigest: string
+}
+function validateNativePaymentSet(
+  address: string,
+  payment: EvmNativePaymentSet,
+) {
+  const chain = Object.prototype.hasOwnProperty.call(
+    PROTOCOL_CHAINS,
+    payment.chainIdentifier,
+  )
+    ? PROTOCOL_CHAINS[payment.chainIdentifier]
+    : undefined
+  if (!chain || chain.family !== 'evm')
+    throw new Error('Unsupported canonical EVM chain')
+  if (
+    !payment.rawTransactions.length ||
+    payment.rawTransactions.length > 16 ||
+    payment.amountWei <= 0n ||
+    payment.amountWei >= 1n << 256n
+  )
+    throw new Error('Invalid native payment set')
+  const key = getAddress(address).toLowerCase()
+  const hashes = new Set<string>(),
+    sources = new Set<string>()
+  let value = 0n
+  const raws = payment.rawTransactions.map(raw => {
+    const tx = Transaction.from(raw)
+    if (
+      !tx.isSigned() ||
+      tx.chainId !== BigInt(chain.nativeChainId!) ||
+      tx.to?.toLowerCase() !== key ||
+      tx.data !== '0x' ||
+      tx.value <= 0n
+    )
+      throw new Error('Native transaction does not match the claimed payment')
+    const source = `${tx.from!.toLowerCase()}:${tx.nonce}`
+    if (hashes.has(tx.hash!) || sources.has(source))
+      throw new Error('Duplicate native payment transaction or source nonce')
+    hashes.add(tx.hash!)
+    sources.add(source)
+    value += tx.value
+    return tx.serialized.slice(2).toLowerCase()
+  })
+  if (value !== payment.amountWei)
+    throw new Error('Native transaction set does not match the claimed amount')
+  if (!/^[0-9a-fA-F]{64}$/.test(payment.payloadDigest))
+    throw new Error('Invalid native payment digest')
+  const digest = payment.payloadDigest.toLowerCase()
+  return { key, raws, digest }
+}
+function nativePaymentDerivation(
+  coin: EvmCoin,
+  payment: EvmNativePaymentSet,
+  key: string,
+): void {
+  if (
+    coin.origin !== 'stealth' ||
+    coin.ephemeralPubKey !== payment.ephemeralPubKey ||
+    computeAddress(coin.privateKey).toLowerCase() !== key
+  )
+    throw new Error('Native payment derivation conflicts with its owner')
+}
+function nativePaymentRegistered(
+  coin: EvmCoin,
+  payment: EvmNativePaymentSet,
+  raws: readonly string[],
+  digest: string,
+): boolean {
+  return (
+    JSON.stringify(coin.transactions) === JSON.stringify(raws) &&
+    coin.claimedAmountWei === payment.amountWei.toString() &&
+    coin.payloadDigest === digest
+  )
+}
+/** One complete immutable claim, registered atomically; values are claim evidence, never funds. */
+export async function registerStoredEvmNativePaymentSet(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  input: EvmNativePaymentSet,
+): Promise<EvmCoin> {
+  const payment = { ...input, rawTransactions: [...input.rawTransactions] }
+  const { key, raws, digest } = validateNativePaymentSet(address, payment)
+  return changeStoredCoin(store, key, coin => {
+    nativePaymentDerivation(coin, payment, key)
+    if (nativePaymentRegistered(coin, payment, raws, digest)) return coin
+    if (coin.transactions.length !== 0 || coin.claimedAmountWei !== '0')
+      throw new Error('Conflicting native receipt account claim')
+    return {
+      ...coin,
+      transactions: raws,
+      claimedAmountWei: payment.amountWei.toString(),
+      payloadDigest: digest,
+    }
+  })
+}
+
+/** Canonical observation for a registered independent native set. RPC does not hold a write lock.
+ * Unknown members contribute no verified value; this lower bound never proves nonexecution. */
+export async function refreshStoredEvmNativePaymentSet(
+  store: RecordStore<EvmCoin>,
+  address: string,
+  input: EvmNativePaymentSet,
+  read: (
+    address: string,
+    rawTransactions: readonly string[],
+  ) => Promise<{
+    balanceWei: bigint
+    receivedAmountsWei: readonly (bigint | undefined)[]
+  }>,
+  atMs: number,
+): Promise<{
+  applied: boolean
+  coin: EvmCoin
+  verifiedReceivedAmountWei: bigint
+  complete: boolean
+  allFailed: boolean
+}> {
+  const payment = { ...input, rawTransactions: [...input.rawTransactions] }
+  const { key, raws, digest } = validateNativePaymentSet(address, payment)
+  if (raws.length < 2 || !Number.isFinite(atMs) || atMs < 0)
+    throw new Error('Invalid native payment set observation')
+  const captured = store.get(key)
+  if (!captured) throw new Error('Received account has not been discovered')
+  nativePaymentDerivation(captured, payment, key)
+  if (!nativePaymentRegistered(captured, payment, raws, digest))
+    throw new Error('Native payment set must be registered before observation')
+  const nativeBasis = (coin: EvmCoin) =>
+    JSON.stringify([
+      coin.state,
+      coin.amountWei,
+      coin.receivedAmountWei,
+      coin.checkedAtMs,
+      coin.transferSeen,
+    ])
+  const basis = nativeBasis(captured)
+  const observation = await read(
+    key,
+    raws.map(raw => '0x' + raw),
+  )
+  const balanceWei = observation.balanceWei
+  if (
+    observation.balanceWei < 0n ||
+    observation.balanceWei >= 1n << 256n ||
+    observation.receivedAmountsWei.length !== raws.length
+  )
+    throw new Error('Invalid native payment set evidence')
+  let received = 0n,
+    known = 0,
+    failures = 0
+  for (let i = 0; i < raws.length; i++) {
+    const value = observation.receivedAmountsWei[i]
+    if (value === undefined) continue
+    if (value !== 0n && value !== Transaction.from('0x' + raws[i]!).value)
+      throw new Error(
+        'Native payment member evidence differs from signed value',
+      )
+    known++
+    if (value === 0n) failures++
+    received += value
+  }
+  const complete = known === raws.length,
+    allFailed = failures === raws.length
+  let applied = false
+  const coin = await changeStoredCoin(store, key, current => {
+    applied = false
+    nativePaymentDerivation(current, payment, key)
+    if (!nativePaymentRegistered(current, payment, raws, digest))
+      throw new Error('Native payment set changed during observation')
+    if (
+      nativeBasis(current) !== basis ||
+      (current.checkedAtMs !== undefined && current.checkedAtMs > atMs)
+    )
+      return current
+    applied = true
+    return {
+      ...observeEvmCoin(current, {
+        balanceWei,
+        transfer: received > 0n ? 'included' : allFailed ? 'failed' : 'unseen',
+        transferValueWei: received,
+        atMs,
+      }),
+      receivedAmountWei: received.toString(),
+    }
+  })
+  return {
+    applied,
+    coin,
+    verifiedReceivedAmountWei: received,
+    complete,
+    allFailed,
+  }
 }
 
 /** Native observations merge against current durable state and preserve every token position.

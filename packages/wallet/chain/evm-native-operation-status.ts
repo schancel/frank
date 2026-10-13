@@ -49,13 +49,21 @@ export function summarizeEvmNativeOperation(
 ): EvmNativeOperationStatus {
   const final = row.members[row.members.length - 1];
   if (!final) throw new Error("Native operation has no recipient member");
-  const transaction = Transaction.from(final.unsignedTransaction);
-  if (
-    transaction.to?.toLowerCase() !== row.recipient.toLowerCase() ||
-    transaction.value.toString() !== row.intendedValueWei ||
-    transaction.chainId.toString() !== row.binding.nativeChainId ||
-    (transaction.data !== "0x") !== (row.kind === "contract")
-  )
+  const independent = row.kind !== "legacy" && row.members.length > 1;
+  const recipients = independent ? row.members : [final];
+  let value = 0n;
+  for (const member of recipients) {
+    const transaction = Transaction.from(member.unsignedTransaction);
+    if (
+      transaction.to?.toLowerCase() !== row.recipient.toLowerCase() ||
+      transaction.chainId.toString() !== row.binding.nativeChainId ||
+      (transaction.data !== "0x") !== (row.kind === "contract") ||
+      (independent && member.dependencies.length !== 0)
+    )
+      throw new Error("Native operation recipient evidence does not match");
+    value += transaction.value;
+  }
+  if (value.toString() !== row.intendedValueWei)
     throw new Error("Native operation recipient evidence does not match");
   const members = row.members.map((member) => {
     const observation = member.observation;
@@ -78,9 +86,17 @@ export function summarizeEvmNativeOperation(
   const observed = members.filter((member) => member.feeWei !== undefined);
   const payment = row.cancelled
     ? "cancelled"
-    : final.observation.state === "included-success"
+    : (
+        independent
+          ? members.every((member) => member.state === "included-success")
+          : final.observation.state === "included-success"
+      )
     ? "included"
-    : final.observation.state === "included-revert"
+    : (
+        independent
+          ? members.every((member) => member.state === "included-revert")
+          : final.observation.state === "included-revert"
+      )
     ? "reverted"
     : members.some((member) => member.state === "included-success")
     ? "partial"

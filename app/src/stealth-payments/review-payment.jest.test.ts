@@ -367,3 +367,38 @@ test('an aggregate balance cannot conceal a source without its own transaction f
   expect(mockStampQuote).not.toHaveBeenCalled()
   expect(mockPrepare).not.toHaveBeenCalled()
 })
+
+test('reviews native MONT on monad-testnet and provides a valid quote', async () => {
+  const montRequest = {
+    address: '0x1111111111111111111111111111111111111111',
+    chainIdentifier: 'monad-testnet',
+    assetKey: 'monad-testnet:native',
+    asset: { kind: 'native' as const },
+    amountAtomic: 1000000000000000000n,
+    memo: 'coffee',
+  }
+  mockQuote.mockImplementationOnce(async intent => ({
+    operationId: intent.operationId,
+    chainIdentifier: montRequest.chainIdentifier,
+    asset: { ...montRequest.asset },
+    amountAtomic: montRequest.amountAtomic,
+    recipientAddress: '0x' + '12'.repeat(20),
+    sourceAddress: '0x' + '56'.repeat(20),
+    recipientDestination: Uint8Array.from(Array<number>(20).fill(0x12)),
+    recipientSpendPublicKey: mockKey.slice(),
+    ephemeralPublicKey: mockKey.slice(),
+    nativeBalanceAtomic: 21699700000000000000n,
+    assetBalanceAtomic: 21699700000000000000n,
+    estimatedNativeFeeAtomic: 100000000000000n,
+  }))
+  const captured = await reviewStealthPayment({
+    request: montRequest,
+    stampValue: 7n,
+    isCurrent: () => true,
+  })
+  expect(captured.quote.chainIdentifier).toBe('monad-testnet')
+  expect(captured.quote.asset.kind).toBe('native')
+  expect(captured.quote.amountAtomic).toBe(1000000000000000000n)
+  expect(captured.quote.nativeBalanceAtomic).toBe(21699700000000000000n)
+  expect(captured.stampValue).toBe(7n)
+})

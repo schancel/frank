@@ -52,6 +52,8 @@
           :suffix="selectedOption?.unit"
           :hint="$t('sendStealthDialog.amountHint')"
           :placeholder="$t('sendStealthDialog.amountPlaceholder')"
+          :error="amountExceedsBalance"
+          :error-message="amountErrorMessage"
           data-testid="stealth-amount-input"
           ref="amountInput"
         />
@@ -188,6 +190,8 @@
 </template>
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
+import { activeChain } from '@frank/wallet/chain'
+import { useBalance } from '../../composables/useBalance'
 import {
   formatStealthAmount,
   parseStealthAmount,
@@ -219,6 +223,13 @@ export default defineComponent({
   emits: {
     review: (request: StealthDialogRequest) => request.amountAtomic > 0n,
     send: (intent: ReviewedStealthDialogIntent) => intent.amountAtomic > 0n,
+  },
+  setup() {
+    const { balance: activeBalance, loaded: balanceLoaded } = useBalance()
+    return {
+      activeBalance,
+      balanceLoaded,
+    }
   },
   data() {
     return {
@@ -264,7 +275,7 @@ export default defineComponent({
     },
     canReview(): boolean {
       const request = this.request,
-        balance = this.selectedOption?.balanceAtomic
+        balance = this.availableBalanceAtomic
       return (
         !!request && (balance === undefined || request.amountAtomic <= balance)
       )
@@ -316,14 +327,44 @@ export default defineComponent({
         ? quote
         : undefined
     },
+    availableBalanceAtomic(): bigint | undefined {
+      if (this.matchingQuote) {
+        return this.matchingQuote.payment.assetBalanceAtomic
+      }
+      const option = this.selectedOption
+      if (!option) return undefined
+      if (option.balanceAtomic !== undefined) {
+        return option.balanceAtomic
+      }
+      if (
+        option.chainIdentifier === activeChain.chainIdentifier &&
+        option.asset.kind === 'native' &&
+        this.balanceLoaded &&
+        this.activeBalance !== null
+      ) {
+        return this.activeBalance
+      }
+      return undefined
+    },
     currentWalletBalanceDisplay(): string {
       const option = this.selectedOption
       if (!option) return '…'
-      const balance =
-        this.matchingQuote?.payment.assetBalanceAtomic ?? option.balanceAtomic
+      const balance = this.availableBalanceAtomic
       return balance === undefined
         ? '…'
         : `${formatStealthAmount(balance, option.decimals)} ${option.unit}`
+    },
+    amountExceedsBalance(): boolean {
+      const value = this.value
+      const balance = this.availableBalanceAtomic
+      if (value === undefined || balance === undefined) return false
+      return value > balance
+    },
+    amountErrorMessage(): string {
+      if (this.amountExceedsBalance) {
+        return this.$t('sendStealthDialog.insufficientBalance')
+      }
+      return ''
     },
   },
   watch: {

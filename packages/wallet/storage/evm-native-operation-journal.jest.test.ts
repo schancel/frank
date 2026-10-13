@@ -138,6 +138,85 @@ describe('durable EVM native journal', () => {
       ).rejects.toThrow('invalid')
     expect(journal.list()).toEqual([])
   })
+  function independentPlan(): EvmNativePlan {
+    const first = plan(),
+      other = new Wallet('0x' + '42'.repeat(32)).address.toLowerCase()
+    return {
+      ...first,
+      intendedValueWei: '2000',
+      members: [
+        first.members[0]!,
+        {
+          ...first.members[0]!,
+          source: { kind: 'spend', index: 1, address: other },
+        },
+      ],
+    }
+  }
+  it('atomically claims every independent member and refuses malformed recipient sums or dependencies', async () => {
+    const valid = independentPlan()
+    await expect(
+      journal.prepare({ ...valid, intendedValueWei: '1000' }),
+    ).rejects.toThrow('invalid')
+    const dependent = independentPlan()
+    dependent.members[1]!.dependencies = [0]
+    await expect(journal.prepare(dependent)).rejects.toThrow('invalid')
+    const wrongTarget = independentPlan()
+    wrongTarget.members[1]!.unsignedTransaction = Transaction.from({
+      ...Transaction.from(wrongTarget.members[1]!.unsignedTransaction).toJSON(),
+      to: wrongTarget.members[1]!.source.address,
+    }).unsignedSerialized
+    await expect(journal.prepare(wrongTarget)).rejects.toThrow('invalid')
+    expect(journal.list()).toHaveLength(0)
+    const row = await journal.prepare(valid)
+    expect(row.maximumFeeWei).toBe('42000')
+    expect(
+      valid.members.every(
+        member => !journal.canSelect(member.source.address, 0),
+      ),
+    ).toBe(true)
+    await reopen()
+    expect(journal.get(row.operationId)).toEqual(row)
+  })
+  it('refuses overlapping whole-set journal claims without leaking a disjoint prefix', async () => {
+    const valid = independentPlan()
+    await journal.prepare({ ...plan(), members: [valid.members[1]!] })
+    await expect(journal.prepare(valid)).rejects.toThrow('conflict')
+    expect(journal.list()).toHaveLength(1)
+    expect(journal.canSelect(address, 0)).toBe(true)
+  })
+  it('permits only explicit zero-value contract batches with consistent targets', async () => {
+    const valid = independentPlan()
+    valid.kind = 'contract'
+    valid.submissionPolicy = 'explicit'
+    valid.intendedValueWei = '0'
+    valid.members = valid.members.map(member => ({
+      ...member,
+      unsignedTransaction: Transaction.from({
+        ...Transaction.from(member.unsignedTransaction).toJSON(),
+        data: '0xa9059cbb',
+        value: 0n,
+      }).unsignedSerialized,
+    }))
+    await expect(
+      journal.prepare({ ...valid, submissionPolicy: undefined }),
+    ).rejects.toThrow('invalid')
+    const nonzero = {
+      ...valid,
+      members: valid.members.map(member => ({
+        ...member,
+        unsignedTransaction: Transaction.from({
+          ...Transaction.from(member.unsignedTransaction).toJSON(),
+          value: 1n,
+        }).unsignedSerialized,
+      })),
+    }
+    await expect(journal.prepare(nonzero)).rejects.toThrow('invalid')
+    const row = await journal.prepare(valid)
+    expect(row.kind).toBe('contract')
+    await reopen()
+    expect(journal.get(row.operationId)).toEqual(row)
+  })
   it('persists explicit contract submission policy and rejects it on native transfers', async () => {
     await expect(
       journal.prepare({ ...plan(), submissionPolicy: 'explicit' }),

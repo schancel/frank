@@ -855,6 +855,7 @@ export default {
     nativeBalance: 'Solde natif',
     insufficientFunds:
       'Solde de l’actif ou solde natif insuffisant pour ce paiement et ses frais réseau.',
+    insufficientBalance: 'Le montant dépasse le solde disponible',
 
     assetLabel: 'Actif et réseau',
     reviewBtnLabel: 'Vérifier le paiement',

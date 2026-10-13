@@ -835,6 +835,7 @@ export default {
     nativeBalance: 'Native balance',
     insufficientFunds:
       'Insufficient asset or native balance for this payment and its network fee.',
+    insufficientBalance: 'Amount exceeds available balance',
 
     assetLabel: 'Asset and network',
     reviewBtnLabel: 'Review payment',

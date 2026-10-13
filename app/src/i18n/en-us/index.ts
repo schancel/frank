@@ -1348,6 +1348,8 @@ export default {
     languageSelectorCaption: 'Language',
     networkSettings: 'Network & Gateway Settings',
     emailGatewayAddress: 'Email Gateway Address',
+    emailGatewayFee:
+      'Inbound email stamp fee: 0.01 MONT. The gateway pays dispatch and anti-spam verification.',
     emailGatewayRelayLabel: 'Relay gateway:',
     emailGatewayChanged:
       'The relay or its email gateway identity changed. Review the new address before using it.',

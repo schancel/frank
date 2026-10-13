@@ -34,6 +34,31 @@
           <div class="text-caption text-grey-8" data-test="about-commit-hash">
             v{{ appVersion }} ({{ commitHash }})
           </div>
+          <div class="row q-gutter-xs q-mt-xs justify-center items-center">
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              icon="refresh"
+              :label="$t('about.checkForUpdates')"
+              :loading="checkingForUpdate"
+              @click="handleCheckForUpdate"
+              data-test="check-for-update-btn"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="grey-7"
+              icon="cleaning_services"
+              :label="$t('about.reloadAndClearCache')"
+              @click="handleReloadAndClearCache"
+              data-test="reload-clear-cache-btn"
+            />
+          </div>
           <div class="text-subtitle1 text-grey-8 q-mt-xs">
             {{ $t('about.tagline') }}
           </div>
@@ -162,11 +187,18 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { defineComponent, ref } from 'vue'
+import { Dialog, Notify } from 'quasar'
 import { version as appVersion } from '../../package.json'
 
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { viewportPageStyle } from 'src/utils/layout'
+import { translateMessage } from 'src/i18n'
+import {
+  checkForAppUpdate,
+  forceCacheRefresh,
+  isUpdateAvailable,
+} from 'src/utils/pwa'
 import {
   SILENCE_LABORATORIES_CHANGED_ON,
   SILENCE_LABORATORIES_LICENSE,
@@ -185,6 +217,70 @@ export default defineComponent({
   setup(_, { emit }) {
     const rawHash = import.meta.env.QCLI_GIT_COMMIT_HASH || 'unknown'
     const commitHash = rawHash !== 'unknown' ? rawHash.substring(0, 7) : rawHash
+    const checkingForUpdate = ref(false)
+
+    async function handleCheckForUpdate() {
+      if (checkingForUpdate.value) return
+      checkingForUpdate.value = true
+
+      try {
+        let updateFound = false
+        if (isUpdateAvailable()) {
+          updateFound = true
+          checkingForUpdate.value = false
+          return
+        }
+
+        const checkPromise = checkForAppUpdate()
+          .then(reg => {
+            if (reg?.waiting || isUpdateAvailable()) {
+              updateFound = true
+            }
+          })
+          .catch(() => undefined)
+
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        await checkPromise
+
+        if (isUpdateAvailable()) {
+          updateFound = true
+        }
+
+        if (!updateFound) {
+          Notify.create({
+            message: translateMessage('about.alreadyLatestVersion'),
+            color: 'positive',
+            icon: 'check_circle',
+            timeout: 2500,
+          })
+        }
+      } finally {
+        checkingForUpdate.value = false
+      }
+    }
+
+    function handleReloadAndClearCache() {
+      if (
+        typeof Dialog !== 'undefined' &&
+        typeof Dialog.create === 'function'
+      ) {
+        Dialog.create({
+          title: translateMessage('about.reloadAndClearCache'),
+          message: translateMessage('about.clearCacheConfirm'),
+          cancel: true,
+          persistent: true,
+          ok: {
+            label: translateMessage('agree'),
+            color: 'negative',
+          },
+        }).onOk(() => {
+          void forceCacheRefresh()
+        })
+      } else {
+        void forceCacheRefresh()
+      }
+    }
+
     return {
       pageStyle: viewportPageStyle,
       appVersion,
@@ -194,6 +290,9 @@ export default defineComponent({
       license: SILENCE_LABORATORIES_LICENSE,
       sourcePath: SILENCE_LABORATORIES_SOURCE_PATH,
       changedOn: SILENCE_LABORATORIES_CHANGED_ON,
+      checkingForUpdate,
+      handleCheckForUpdate,
+      handleReloadAndClearCache,
       toggleSettingsDrawerOpen() {
         emit('toggleMyDrawerOpen')
       },

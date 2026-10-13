@@ -1,8 +1,15 @@
 /** @jest-environment jsdom */
+import { ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import SendStealthDialog from './SendStealthDialog.vue'
+const mockActiveBalance = ref<bigint | null>(null)
+const mockBalanceLoaded = ref(false)
 jest.mock('../../composables/useBalance', () => ({
-  useBalance: () => ({ loaded: false, formattedSpendable: '' }),
+  useBalance: () => ({
+    balance: mockActiveBalance,
+    loaded: mockBalanceLoaded,
+    formattedSpendable: '',
+  }),
 }))
 import enUS from '../../i18n/en-us'
 import { stealthAssetKey } from '../../stealth-payments/options'
@@ -82,9 +89,9 @@ function mountDialog(props = {}) {
             '<select :disabled="disable" :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="o in options" :key="o.value" :value="o.value">{{ o.label }}</option></select>',
         },
         QInput: {
-          props: ['modelValue', 'disable', 'suffix'],
+          props: ['modelValue', 'disable', 'suffix', 'error', 'errorMessage'],
           template:
-            '<label><input :disabled="disable" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" /><span>{{ suffix }}</span></label>',
+            '<label><input :disabled="disable" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" /><span>{{ suffix }}</span><span v-if="error" class="error-msg">{{ errorMessage }}</span></label>',
         },
         QBtn: {
           props: ['disable', 'label'],
@@ -342,5 +349,51 @@ describe('multiasset stealth review dialog', () => {
       .setValue('21')
     await wrapper.find('[data-testid="stealth-review-btn"]').trigger('click')
     expect(wrapper.emitted('review')).toHaveLength(1)
+  })
+  it('displays inline validation error and disables review when amount exceeds available balance', async () => {
+    const wrapper = mountDialog()
+    await wrapper.find('select').setValue(options[0].key) // 50 MONT
+    await wrapper
+      .find('[data-testid="stealth-amount-input"] input')
+      .setValue('51')
+    expect(
+      wrapper.find('[data-testid="stealth-amount-input"] .error-msg').text(),
+    ).toBe('Amount exceeds available balance')
+    expect(
+      wrapper
+        .find('[data-testid="stealth-review-btn"]')
+        .attributes('disabled'),
+    ).toBeDefined()
+    await wrapper.find('[data-testid="stealth-review-btn"]').trigger('click')
+    expect(wrapper.emitted('review')).toBeUndefined()
+  })
+  it('displays active wallet balance immediately when option balance is undefined', async () => {
+    mockActiveBalance.value = 21699700000000000000n
+    mockBalanceLoaded.value = true
+    try {
+      const unpopulatedOptions = options.map(o => ({
+        ...o,
+        balanceAtomic: undefined,
+      }))
+      const wrapper = mountDialog({ options: unpopulatedOptions })
+      await wrapper.find('select').setValue(unpopulatedOptions[0].key) // MONT
+      expect(wrapper.find('[data-testid="wallet-balance-value"]').text()).toBe(
+        '21.6997 MONT',
+      )
+      await wrapper
+        .find('[data-testid="stealth-amount-input"] input')
+        .setValue('343214321')
+      expect(
+        wrapper.find('[data-testid="stealth-amount-input"] .error-msg').text(),
+      ).toBe('Amount exceeds available balance')
+      expect(
+        wrapper
+          .find('[data-testid="stealth-review-btn"]')
+          .attributes('disabled'),
+      ).toBeDefined()
+    } finally {
+      mockActiveBalance.value = null
+      mockBalanceLoaded.value = false
+    }
   })
 })

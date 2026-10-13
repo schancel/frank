@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="wallet-container column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -66,12 +66,15 @@
       </q-toolbar>
     </q-header>
 
-    <q-page-container>
-      <q-page class="q-ma-none q-pa-none">
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page
+        class="q-ma-none q-pa-none col full-height overflow-hidden relative-position"
+        :style-fn="pageStyle"
+      >
         <!-- The content is held to the viewport width: the tab bar scrolls inside it instead of
         widening the whole page past a phone's screen. -->
         <q-scroll-area
-          class="absolute full-width full-height"
+          class="absolute-full"
           :content-style="{ width: '100%', minWidth: '100%' }"
           :content-active-style="{ width: '100%', minWidth: '100%' }"
         >
@@ -667,6 +670,7 @@ import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
 import type { WalletHistoryRow } from 'src/components/wallet/wallet-history'
 import { walletSupport } from 'src/utils/wallet-support'
 import { openUtxoWallet } from 'src/accounts/utxo-wallets'
+import { viewportPageStyle } from 'src/utils/layout'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -1095,6 +1099,7 @@ export default defineComponent({
       recentSwaps,
       formatSwapTime,
       transactionExplorerLink,
+      pageStyle: viewportPageStyle,
     }
   },
 })

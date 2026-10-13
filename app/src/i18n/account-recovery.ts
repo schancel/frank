@@ -149,8 +149,7 @@ export const en = {
   import_bip39_seed: 'Import BIP39 seed',
   not_backed_up_tooltip:
     "You haven't backed up your wallet or identity yet. Tap to back up now.",
-  backup_account_codex32:
-    "Backup account (Shamir's Keysharding (Based on Codex32))",
+  backup_account_codex32: 'Backup account',
   codex32_threshold_explainer:
     'Write down each shard. Any {threshold} of these {count} shards restore the original account secret and its derivation.',
   codex32_backup_sets_do_not_mix:
@@ -352,8 +351,7 @@ export const fr = {
   import_bip39_seed: 'Importer la graine BIP39',
   not_backed_up_tooltip:
     "Vous n'avez pas encore sauvegardé votre portefeuille ou identité. Appuyez pour sauvegarder maintenant.",
-  backup_account_codex32:
-    'Sauvegarder le compte (Partage de clés de Shamir (basé sur Codex32))',
+  backup_account_codex32: 'Sauvegarder le compte',
   codex32_threshold_explainer:
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:

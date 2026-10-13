@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -15,12 +15,15 @@
       </q-toolbar>
     </q-header>
 
-    <q-page-container>
-      <q-page>
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page
+        class="col full-height overflow-hidden relative-position"
+        :style-fn="pageStyle"
+      >
         <q-scroll-area
           ref="chatScroll"
           @scroll="scrollHandler"
-          class="q-px-sm absolute full-width full-height"
+          class="q-px-sm absolute-full"
         >
           <div class="text-h6">v0.3.0 — 2026-10-12</div>
           <div class="text-body1">
@@ -359,6 +362,7 @@ import { defineComponent, nextTick, ref } from 'vue'
 
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { QScrollArea } from 'quasar'
+import { viewportPageStyle } from 'src/utils/layout'
 
 const scrollDuration = 0
 
@@ -374,6 +378,7 @@ export default defineComponent({
       myDrawerOpen: useMyDrawerOpen(),
       bottom,
       chatScroll,
+      pageStyle: viewportPageStyle,
       scrollBottom() {
         const scrollArea = chatScroll.value
         if (!scrollArea) {

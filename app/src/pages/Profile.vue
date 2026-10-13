@@ -1,5 +1,5 @@
 <template>
-  <div>
+  <div class="profile-container column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
         <q-btn
@@ -25,8 +25,11 @@
         />
       </q-toolbar>
     </q-header>
-    <q-page-container>
-      <q-page class="q-ma-none q-pa-none column no-wrap" :style-fn="pageStyle">
+    <q-page-container class="col full-height overflow-hidden">
+      <q-page
+        class="q-ma-none q-pa-none column no-wrap col full-height overflow-hidden"
+        :style-fn="pageStyle"
+      >
         <q-card flat class="col column full-width full-height bg-transparent">
           <profile
             v-model:name="name"

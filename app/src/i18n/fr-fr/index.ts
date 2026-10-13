@@ -1591,6 +1591,11 @@ export default {
     title: 'À propos',
     menu: 'À propos et licences',
     tagline: 'Messagerie privée et résistante au spam économique pour Monad.',
+    checkForUpdates: 'Vérifier les mises à jour',
+    checkingForUpdates: 'Vérification des mises à jour…',
+    alreadyLatestVersion: 'Vous utilisez la dernière version.',
+    reloadAndClearCache: 'Recharger et vider le cache',
+    clearCacheConfirm: 'Voulez-vous vraiment vider le cache et recharger ?',
     frankTitle: 'À propos de Frank',
     frankIntro:
       'Frank est une messagerie cryptographique décentralisée et souveraine conçue pour la blockchain Monad, prolongeant et faisant évoluer le protocole Stamp. Elle combine des identités cryptographiques sans permission avec une résistance économique réelle au spam.',

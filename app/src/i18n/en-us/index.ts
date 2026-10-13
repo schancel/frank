@@ -1550,6 +1550,11 @@ export default {
     title: 'About',
     menu: 'About and licences',
     tagline: 'Private, economically spam-resistant messaging for Monad.',
+    checkForUpdates: 'Check for update',
+    checkingForUpdates: 'Checking for updates…',
+    alreadyLatestVersion: 'You are on the latest version.',
+    reloadAndClearCache: 'Reload & clear cache',
+    clearCacheConfirm: 'Are you sure you want to clear cache and reload?',
     frankTitle: 'About Frank',
     frankIntro:
       'Frank is a decentralized, sovereign cryptomessenger designed for the Monad blockchain, continuing and evolving the Stamp protocol. It combines permissionless cryptographic identities with real economic spam resistance.',

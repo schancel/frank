@@ -4,7 +4,20 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { mount } from '@vue/test-utils'
 
+const mockNotifyCreate = jest.fn()
+const mockDialogCreate = jest.fn()
+
+jest.mock('quasar', () => ({
+  Notify: {
+    create: (...args: any[]) => mockNotifyCreate(...args),
+  },
+  Dialog: {
+    create: (...args: any[]) => mockDialogCreate(...args),
+  },
+}))
+
 import About from './About.vue'
+import * as pwaUtils from 'src/utils/pwa'
 import enUS from 'src/i18n/en-us'
 import frFR from 'src/i18n/fr-fr'
 import {
@@ -152,6 +165,58 @@ describe('About: Frank & Stamp protocol overview', () => {
     expect(text(fr, 'about-frank')).toContain('À propos de Frank')
     expect(text(fr, 'about-stamp')).toContain(
       'Le protocole Stamp : la liberté d’expression n’est pas gratuite',
+    )
+  })
+})
+
+describe('About: Update and cache actions', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  it('renders check for update and reload buttons in hero section', () => {
+    const en = mountAbout(enUS)
+    expect(en.find('[data-test="check-for-update-btn"]').exists()).toBe(true)
+    expect(en.find('[data-test="reload-clear-cache-btn"]').exists()).toBe(true)
+  })
+
+  it('notifies user if no update is found within 2 seconds', async () => {
+    mockNotifyCreate.mockClear()
+    const checkSpy = jest
+      .spyOn(pwaUtils, 'checkForAppUpdate')
+      .mockResolvedValue(null)
+    const en = mountAbout(enUS)
+
+    const updatePromise = (en.vm as any).handleCheckForUpdate()
+    jest.advanceTimersByTime(2000)
+    await updatePromise
+
+    expect(mockNotifyCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'You are on the latest version.',
+        color: 'positive',
+      }),
+    )
+    checkSpy.mockRestore()
+  })
+
+  it('triggers confirmation dialog on reload and clear cache', () => {
+    mockDialogCreate.mockClear()
+    mockDialogCreate.mockReturnValue({
+      onOk: jest.fn(),
+    })
+
+    const en = mountAbout(enUS)
+    ;(en.vm as any).handleReloadAndClearCache()
+
+    expect(mockDialogCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Reload & clear cache',
+      }),
     )
   })
 })

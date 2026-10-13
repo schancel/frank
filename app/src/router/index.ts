@@ -16,6 +16,7 @@ import {
 import { isChainAddress } from 'src/utils/chain-address'
 import { accountSession, accountStatus } from '../accounts/session'
 import { notePendingChatRoute, takeInterruptedChatRoute } from './pending-chat'
+import { checkDebouncedAppUpdate } from 'src/utils/pwa'
 
 async function ensureChatState(
   address: string | undefined,
@@ -131,6 +132,7 @@ export default () => {
     // The navigation the user asked for last has ended (committed, or refused): nothing is
     // pending. One that a later navigation replaced ends without touching the later one's note.
     if (to === latest) notePendingChatRoute(null)
+    checkDebouncedAppUpdate()
     // Only a committed route owns selection/read state. Publishing from beforeEach lets
     // selection observers replace in-flight query navigation or mark canceled targets read.
     if (failure || startupRestoration.value.phase !== 'restored') return

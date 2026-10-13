@@ -154,6 +154,7 @@ export default {
       'unsupported': 'messaging unsupported',
     },
     resetToDefault: 'Reset to default',
+    stampReset: 'Default',
     stampFree: 'Free',
     stampChipFree: 'No stamp: this message is free',
     stampChip: 'Stamp: {amount}',
@@ -1150,6 +1151,9 @@ export default {
     newDraftSubtitle:
       'Compose your message below. Frank will deliver it through the Frank Email Gateway to the recipient via standard Internet email.',
     newEmail: 'New Outbound Email',
+    followUp: 'Follow-up Draft',
+    stampExplanation:
+      'Delivered via Frank Email Gateway. Stamp pays gateway dispatch and anti-spam proof.',
     formatBold: 'Bold',
     formatItalic: 'Italic',
     formatHeading: 'Heading',

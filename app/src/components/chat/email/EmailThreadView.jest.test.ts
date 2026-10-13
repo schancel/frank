@@ -1,11 +1,26 @@
 /** @jest-environment jsdom */
 
+import { ref } from 'vue'
 import { shallowMount } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import EmailThreadView from './EmailThreadView.vue'
 import type { ChatMessage, Conversation } from 'src/stores/chats'
 import type { EmailItem } from '@frank/cashweb/types/messages'
 import { useSettingsStore } from 'src/stores/settings'
+import { useProfileStore } from 'src/stores/my-profile'
+import { encodeEmailMessageItem } from '@frank/codec'
+
+const mockOwnAddress = ref<string | null>(
+  '0x1111111111111111111111111111111111111111',
+)
+jest.mock('src/utils/own-address', () => {
+  const actual = jest.requireActual('src/utils/own-address')
+  return {
+    ...actual,
+    useReactiveOwnCanonicalAddress: () => mockOwnAddress,
+    getOwnCanonicalAddress: async () => mockOwnAddress.value,
+  }
+})
 
 describe('EmailThreadView', () => {
   beforeEach(() => {
@@ -13,6 +28,8 @@ describe('EmailThreadView', () => {
     useSettingsStore().setEmailGatewayAddress(
       '0x3333333333333333333333333333333333333333',
     )
+    useProfileStore().owner = '0x1111111111111111111111111111111111111111'
+    useProfileStore().profile = { name: 'Me' }
   })
   const sampleEmail1: EmailItem = {
     type: 'email',
@@ -200,7 +217,7 @@ describe('EmailThreadView', () => {
     vm.replyText = 'Thanks everyone, looks great!'
     expect(vm.canSend).toBe(true)
 
-    vm.handleSend()
+    await vm.handleSend()
 
     expect(wrapper.emitted('sendReply')).toBeTruthy()
     const emittedCalls = wrapper.emitted('sendReply')!
@@ -356,7 +373,7 @@ describe('EmailThreadView', () => {
       expect(wrapper.find('[data-testid="dkim-badge"]').exists()).toBe(false)
     })
 
-    it('guards composer replies: warns user and defaults to Frank P2P direct delivery', () => {
+    it('guards composer replies: warns user and defaults to Frank P2P direct delivery', async () => {
       const wrapper = mountView({
         conversation: unverifiedPeerConversation,
         messages: [peerMessage],
@@ -384,7 +401,7 @@ describe('EmailThreadView', () => {
 
       // Sending in P2P mode
       vm.replyText = 'Thanks for your direct message.'
-      vm.handleSend()
+      await vm.handleSend()
 
       expect(wrapper.emitted('sendReply')).toBeTruthy()
       const emitted = wrapper.emitted('sendReply')![0][0] as {
@@ -401,7 +418,7 @@ describe('EmailThreadView', () => {
       expect(emitted.targetAddress).toBeUndefined()
     })
 
-    it('allows routing through gateway if user chooses to bridge via gateway', () => {
+    it('allows routing through gateway if user chooses to bridge via gateway', async () => {
       const wrapper = mountView({
         conversation: unverifiedPeerConversation,
         messages: [peerMessage],
@@ -417,7 +434,7 @@ describe('EmailThreadView', () => {
       )
 
       vm.replyText = 'Sending via gateway instead.'
-      vm.handleSend()
+      await vm.handleSend()
 
       const emitted = wrapper.emitted('sendReply')![0][0] as {
         items: any[]
@@ -498,7 +515,7 @@ describe('EmailThreadView', () => {
       vm.replyText = 'Hi Charlie, let us meet tomorrow at 10am.'
       expect(vm.canSend).toBe(true)
 
-      vm.handleSend()
+      await vm.handleSend()
 
       expect(wrapper.emitted('sendReply')).toBeTruthy()
       const emittedCalls = wrapper.emitted('sendReply')!
@@ -733,14 +750,17 @@ describe('EmailThreadView', () => {
             {
               type: 'email',
               messageId: '<outbound-msg-1@frank.org>',
-              from: { address: 'me', name: 'Me' },
+              from: {
+                address: '0x1111111111111111111111111111111111111111',
+                name: 'Me',
+              },
               to: [{ address: 'shammah.chancellor@gmail.com' }],
               subject: 'Initial Outbound Email',
               textBody: 'Hello external world!',
             },
           ],
           outpoints: [],
-          senderAddress: 'me',
+          senderAddress: '0x1111111111111111111111111111111111111111',
           payloadDigest: 'digest-outbound-1',
         }
         const outboundConv: Conversation = {
@@ -985,6 +1005,133 @@ describe('EmailThreadView', () => {
           height: '100%',
           maxHeight: '100%',
         })
+      })
+    })
+
+    describe('Email Party Address & Encoding Validation', () => {
+      it('successfully encodes outbound emailItem with encodeEmailMessageItem without throwing', async () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+
+        vm.replyText = 'Testing CDDL stage 8.2 email party address compliance.'
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const payload = wrapper.emitted('sendReply')![0][0] as {
+          items: any[]
+          fallbackText: string
+        }
+        const emailItem = payload.items.find(i => i.type === 'email')
+        expect(emailItem).toBeDefined()
+
+        // From party address must be 3..320 chars, never 'me'
+        expect(emailItem.from.address).not.toBe('me')
+        expect(emailItem.from.address.length).toBeGreaterThanOrEqual(3)
+        expect(emailItem.from.address.length).toBeLessThanOrEqual(320)
+        expect(emailItem.from.address).toContain('@signet.mx')
+        expect(emailItem.from.name).toBe('Me')
+
+        // To party address must be valid
+        expect(emailItem.to[0].address).toBe('bob@example.com')
+
+        // Validated by @frank/codec encodeEmailMessageItem without throwing
+        expect(() => {
+          const frameBytes = encodeEmailMessageItem(emailItem)
+          expect(frameBytes).toBeInstanceOf(Uint8Array)
+          expect(frameBytes.length).toBeGreaterThan(0)
+        }).not.toThrow()
+      })
+
+      it('formats from party address for direct P2P routing and passes encodeEmailMessageItem', async () => {
+        const wrapper = mountView({
+          conversation: unverifiedPeerConversation,
+          messages: [peerMessage],
+          recipientAddress: peerAddress,
+        })
+        const vm = wrapper.vm as any
+
+        vm.replyRouting = 'peer'
+        vm.replyText = 'Direct peer email reply'
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const payload = wrapper.emitted('sendReply')![0][0] as { items: any[] }
+        const emailItem = payload.items.find(i => i.type === 'email')
+        expect(emailItem).toBeDefined()
+        expect(emailItem.from.address).toBe(
+          '0x1111111111111111111111111111111111111111',
+        )
+        expect(emailItem.from.name).toBe('Me')
+
+        expect(() => {
+          const frameBytes = encodeEmailMessageItem(emailItem)
+          expect(frameBytes).toBeInstanceOf(Uint8Array)
+          expect(frameBytes.length).toBeGreaterThan(0)
+        }).not.toThrow()
+      })
+
+      it('sanitizes me and invalid addresses out of toList, ccList, and bccList on send', async () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+
+        vm.toList = ['me', 'valid@example.com', 'x']
+        vm.ccList = ['me', 'valid.cc@example.com']
+        vm.bccList = ['me', 'valid.bcc@example.com']
+        vm.replyText = 'Hello with cleaned recipients'
+
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const payload = wrapper.emitted('sendReply')![0][0] as { items: any[] }
+        const emailItem = payload.items.find(i => i.type === 'email')
+        expect(emailItem).toBeDefined()
+        expect(emailItem.to).toEqual([{ address: 'valid@example.com' }])
+        expect(emailItem.cc).toEqual([{ address: 'valid.cc@example.com' }])
+        expect(emailItem.bcc).toEqual([{ address: 'valid.bcc@example.com' }])
+
+        expect(() => encodeEmailMessageItem(emailItem)).not.toThrow()
+      })
+
+      it('falls back to conversation.emailRecipient if toList only had me', async () => {
+        const wrapper = mountView({
+          conversation: {
+            ...conversation,
+            emailRecipient: 'fallback.recipient@example.com',
+          },
+        })
+        const vm = wrapper.vm as any
+
+        vm.toList = ['me']
+        vm.replyText = 'Testing fallback'
+
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const payload = wrapper.emitted('sendReply')![0][0] as { items: any[] }
+        const emailItem = payload.items.find(i => i.type === 'email')
+        expect(emailItem).toBeDefined()
+        expect(emailItem.to).toEqual([
+          { address: 'fallback.recipient@example.com' },
+        ])
+
+        expect(() => encodeEmailMessageItem(emailItem)).not.toThrow()
+      })
+
+      it('aborts send if toList has no valid recipients and fallback is empty', async () => {
+        const wrapper = mountView({
+          conversation: {
+            ...conversation,
+            emailRecipient: undefined,
+          },
+        })
+        const vm = wrapper.vm as any
+
+        vm.toList = ['me']
+        vm.replyText = 'Testing abort'
+
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeUndefined()
       })
     })
   })

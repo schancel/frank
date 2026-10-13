@@ -14,6 +14,13 @@ import { PublicKey } from '@solana/web3.js';
 import { ed25519 } from '@noble/curves/ed25519';
 import * as bip39 from 'bip39';
 import { Address } from 'ecash-lib/dist/address/address';
+import { fromHex, toHex, type PaymentTransfer, type StealthMetadata } from '@frank/codec';
+import type {
+  PaymentTransferItem,
+  RecipientPaymentTransfer,
+  WalletSyncDirection,
+} from '@frank/cashweb/types/messages';
+import { getBase58Decoder, getBase58Encoder } from '@solana/codecs-strings';
 
 import { formatBaseUnit, parseBaseUnit } from './base-unit';
 import {
@@ -25,6 +32,8 @@ import {
 import type { EvmDexEntry } from './dex-entries';
 import type { SolanaDexEntry } from './solana-dex-entries';
 import { deriveEd25519MasterNode, deriveEd25519PathNode } from '../ed25519-hd-keyring';
+
+export const PATHUSD = '0x20c0000000000000000000000000000000000000';
 
 export type ChainId =
   | 'monad-mainnet'
@@ -111,6 +120,124 @@ export interface TransactionIntentResult {
   readonly messageId?: string;
 }
 
+export interface CreateRecipientPaymentTransferParams {
+  readonly recipient: string;
+  readonly amount?: bigint | number | string;
+  readonly value?: bigint | number | string;
+  readonly txId: string | Uint8Array;
+  readonly token?: string | Uint8Array;
+  readonly vout?: number;
+  readonly stealthMetadata?: {
+    readonly keyType?: 1 | 2;
+    readonly ephemeralPubKey?: string | Uint8Array;
+    readonly viewTag?: number | string | Uint8Array;
+  };
+  readonly commitment?: string | Uint8Array;
+  readonly rawTx?: string | Uint8Array;
+}
+
+export interface ParsedRecipientPaymentTransfer {
+  readonly chainId: ChainId;
+  readonly recipient: string;
+  readonly amount: bigint;
+  readonly displayAmount: string;
+  readonly txId: string;
+  readonly asset: { kind: 'native' } | { kind: 'token'; identifier: string };
+  readonly token?: string;
+  readonly vout?: number;
+  readonly stealthMetadata: {
+    readonly keyType: 1 | 2;
+    readonly ephemeralPubKey: string;
+    readonly viewTag?: number | string;
+  };
+  readonly commitment?: string;
+  readonly rawTx?: string;
+}
+
+export interface CreateSyncPaymentTransferParams {
+  readonly recipient: string;
+  readonly amount?: bigint | number | string;
+  readonly value?: bigint | number | string;
+  readonly txHash: string;
+  readonly direction?: WalletSyncDirection | 'inbound' | 'outbound' | 'sent' | 'received';
+  readonly token?: string | Uint8Array;
+  readonly vout?: number;
+  readonly rawTx?: string;
+  readonly memo?: string;
+  readonly timestamp?: number;
+}
+
+export interface ParsedSyncPaymentTransfer {
+  readonly chainId: ChainId;
+  readonly recipient: string;
+  readonly amount: bigint;
+  readonly displayAmount: string;
+  readonly txHash: string;
+  readonly direction: WalletSyncDirection | 'inbound' | 'outbound' | 'sent' | 'received';
+  readonly token?: string;
+  readonly vout?: number;
+  readonly rawTx?: string;
+  readonly memo?: string;
+  readonly timestamp?: number;
+}
+
+function normalizeSyncDirection(dir?: string): WalletSyncDirection {
+  if (dir === 'in' || dir === 'inbound' || dir === 'received') return 'in';
+  return 'out';
+}
+
+export interface CreatePaymentTransferParams {
+  readonly recipient: string;
+  readonly value: bigint | number | string;
+  readonly txId: Uint8Array | string;
+  readonly token?: Uint8Array | string;
+  readonly vout?: number;
+  readonly stealthMetadata?: StealthMetadata | {
+    keyType: 1 | 2;
+    ephemeralPubKey: string | Uint8Array;
+    viewTag?: number | string | Uint8Array;
+  };
+  readonly commitment?: Uint8Array | string;
+  readonly rawTx?: Uint8Array | string;
+}
+
+export interface ParsedPaymentTransfer {
+  readonly chainId: ChainId;
+  readonly networkTag: string;
+  readonly recipient: string;
+  readonly value: bigint;
+  readonly displayAmount: string;
+  readonly txId: string;
+  readonly token?: string;
+  readonly vout?: number;
+  readonly stealthMetadata?: StealthMetadata | {
+    keyType: 1 | 2;
+    ephemeralPubKey: string | Uint8Array;
+    viewTag?: number | string | Uint8Array;
+  };
+  readonly commitment?: Uint8Array;
+  readonly rawTx?: Uint8Array;
+}
+
+export interface EstimateFeeParams {
+  readonly recipient: string;
+  readonly value: bigint;
+  readonly memo?: string;
+  readonly token?: string | Uint8Array;
+}
+
+export interface EstimateFeeResult {
+  readonly estimatedFee: bigint;
+  readonly gasLimit?: bigint;
+  readonly maxFeePerGas?: bigint;
+}
+
+export interface SimulateTransactionResult {
+  readonly success: boolean;
+  readonly estimatedFee: bigint;
+  readonly error?: string;
+}
+
 /**
  * Public wallet surface: strictly exposes high-level intents.
  * Ledger internals (SpendableInputs, nonces, EVM leader accounts, UTXO outpoints)
@@ -127,12 +254,16 @@ export interface ChainWallet {
   sendStealthTransaction(params: SendStealthTransactionParams): Promise<TransactionIntentResult>;
   sendStampTransaction(params: SendStampTransactionParams): Promise<TransactionIntentResult>;
   recover(): Promise<void>;
+  getLastRecoveryError(): unknown | undefined;
+  estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult>;
+  simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult>;
 }
 
 export interface ChainAdapter {
   readonly chainId: ChainId;
   readonly family: string;
   readonly rpcUrl: string;
+  readonly unit: string;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   formatAddress(raw: Uint8Array | string): string;
   parseAddress(display: string): Uint8Array;
@@ -141,6 +272,15 @@ export interface ChainAdapter {
   fromDisplayAmount(display: string): bigint;
   createWallet(context: WalletDerivationContext): Promise<ChainWallet>;
   recoverWallet(wallet: ChainWallet): Promise<void>;
+  getWallet(address?: string): ChainWallet;
+  createRecipientPaymentTransfer(params: CreateRecipientPaymentTransferParams): RecipientPaymentTransfer;
+  parseRecipientPaymentTransfer(transfer: RecipientPaymentTransfer): ParsedRecipientPaymentTransfer;
+  createSyncPaymentTransfer(params: CreateSyncPaymentTransferParams): PaymentTransferItem;
+  parseSyncPaymentTransfer(item: PaymentTransferItem): ParsedSyncPaymentTransfer;
+  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer;
+  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer;
+  estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult>;
+  simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult>;
 }
 
 const DEFAULT_CHAIN_RPC_URLS: Readonly<Record<ChainId, string>> = Object.freeze({
@@ -211,6 +351,18 @@ abstract class BaseChainWallet implements ChainWallet {
   setRecoveryError(error: unknown): void {
     this.lastRecoveryError = error;
   }
+
+  getLastRecoveryError(): unknown | undefined {
+    return this.lastRecoveryError;
+  }
+
+  async estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult> {
+    return this.adapter.estimateFee(params);
+  }
+
+  async simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult> {
+    return this.adapter.simulateTransaction(params);
+  }
 }
 
 /**
@@ -261,8 +413,8 @@ class EvmChainWalletImpl extends BaseChainWallet {
       }
       return this.cachedBalance;
     } catch (err) {
-      // Return cached balance on RPC failure to allow offline / degraded operation
-      return this.cachedBalance;
+      this.setRecoveryError(err);
+      throw err;
     }
   }
 
@@ -292,6 +444,46 @@ class EvmChainWalletImpl extends BaseChainWallet {
     }
     const simulatedHash = hexlify(sha256(toUtf8Bytes(`stamp:${this.address}:${this.#nonce++}:${Date.now()}`)));
     return { txHash: simulatedHash };
+  }
+}
+
+/**
+ * Tempo Chain Wallet implementation.
+ * Reads TIP-20 PathUSD balance via eth_call (balanceOf).
+ */
+class TempoChainWalletImpl extends EvmChainWalletImpl {
+  override async getBalance(): Promise<bigint> {
+    try {
+      const data =
+        '0x70a08231' +
+        this.address.replace(/^0x/, '').toLowerCase().padStart(64, '0');
+      const response = await fetch(this.adapter.rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'eth_call',
+          params: [{ to: PATHUSD, data }, 'latest'],
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status} from ${this.adapter.rpcUrl}`);
+      }
+      const res = (await response.json()) as { result?: string; error?: { message: string } };
+      if (res.error) {
+        throw new Error(res.error.message);
+      }
+      if (typeof res.result === 'string') {
+        const balance = BigInt(res.result);
+        this.setCachedBalance(balance);
+        return balance;
+      }
+      return this.cachedBalance;
+    } catch (err) {
+      this.setRecoveryError(err);
+      throw err;
+    }
   }
 }
 
@@ -345,8 +537,9 @@ class SolanaChainWalletImpl extends BaseChainWallet {
         return balance;
       }
       return this.cachedBalance;
-    } catch {
-      return this.cachedBalance;
+    } catch (err) {
+      this.setRecoveryError(err);
+      throw err;
     }
   }
 
@@ -416,8 +609,9 @@ class EcashChainWalletImpl extends BaseChainWallet {
         return total;
       }
       return this.cachedBalance;
-    } catch {
-      return this.cachedBalance;
+    } catch (err) {
+      this.setRecoveryError(err);
+      throw err;
     }
   }
 
@@ -462,12 +656,14 @@ class EvmChainAdapter implements ChainAdapter {
   readonly chainId: ChainId;
   readonly family = 'evm';
   readonly rpcUrl: string;
+  readonly unit: string;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   protected readonly decimals: number;
 
-  constructor(chainId: ChainId, config?: ChainRegistryEntry, decimals = 18) {
+  constructor(chainId: ChainId, config?: ChainRegistryEntry, decimals = 18, unit?: string) {
     this.chainId = chainId;
     this.decimals = config?.nativeDecimals ?? decimals;
+    this.unit = unit ?? config?.unit ?? (chainId.startsWith('hyperliquid') ? (chainId === 'hyperliquid-testnet' ? 'tHYPE' : 'HYPE') : 'MON');
     this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
     this.dex = config?.dex;
   }
@@ -536,6 +732,27 @@ class EvmChainAdapter implements ChainAdapter {
     });
   }
 
+  getWallet(address?: string): ChainWallet {
+    const primary = getPrimaryWallet(this.chainId);
+    if (!address && primary) return primary;
+    const addr = address && this.isValidAddress(address)
+      ? this.formatAddress(address)
+      : (primary ? primary.address : '0x0000000000000000000000000000000000000000');
+    const identifier: WalletIdentifier = {
+      walletName: 'Primary',
+      walletId: asWalletId(`${this.chainId}:primary`),
+      walletChainId: this.chainId,
+      accountIndex: 0,
+    };
+    return new EvmChainWalletImpl({
+      identifier,
+      address: addr,
+      adapter: this,
+      privateKey: '',
+      publicKey: '',
+    });
+  }
+
   async recoverWallet(wallet: ChainWallet): Promise<void> {
     try {
       await wallet.getBalance();
@@ -546,6 +763,221 @@ class EvmChainAdapter implements ChainAdapter {
       }
     }
   }
+
+  createRecipientPaymentTransfer(
+    params: CreateRecipientPaymentTransferParams
+  ): RecipientPaymentTransfer {
+    const destination = toHex(this.parseAddress(params.recipient));
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    const txIdHex = typeof params.txId === 'string'
+      ? params.txId.replace(/^0x/, '').toLowerCase()
+      : toHex(params.txId);
+    const tokenHex = params.token
+      ? (typeof params.token === 'string'
+          ? toHex(this.parseAddress(params.token))
+          : toHex(params.token))
+      : undefined;
+    const ephem = params.stealthMetadata?.ephemeralPubKey
+      ? (typeof params.stealthMetadata.ephemeralPubKey === 'string'
+          ? params.stealthMetadata.ephemeralPubKey.replace(/^0x/, '').toLowerCase()
+          : toHex(params.stealthMetadata.ephemeralPubKey))
+      : '00'.repeat(33);
+    const viewTag = params.stealthMetadata?.viewTag instanceof Uint8Array
+      ? toHex(params.stealthMetadata.viewTag)
+      : params.stealthMetadata?.viewTag;
+
+    return {
+      chainIdentifier: this.chainId,
+      txId: txIdHex,
+      destination,
+      amountAtomic: amountBig.toString(),
+      asset: tokenHex ? { kind: 'token', identifier: tokenHex } : { kind: 'native' },
+      ...(params.vout !== undefined ? { vout: params.vout } : {}),
+      stealthMetadata: {
+        keyType: params.stealthMetadata?.keyType ?? 1,
+        ephemeralPubKey: ephem,
+        ...(viewTag !== undefined ? { viewTag } : {}),
+      },
+      ...(params.commitment ? { commitment: typeof params.commitment === 'string' ? params.commitment.replace(/^0x/, '') : toHex(params.commitment) } : {}),
+      ...(params.rawTx ? { rawTx: typeof params.rawTx === 'string' ? params.rawTx.replace(/^0x/, '') : toHex(params.rawTx) } : {}),
+    };
+  }
+
+  parseRecipientPaymentTransfer(
+    transfer: RecipientPaymentTransfer
+  ): ParsedRecipientPaymentTransfer {
+    const amount = BigInt(transfer.amountAtomic);
+    const token = transfer.asset.kind === 'token' ? this.formatAddress(fromHex(transfer.asset.identifier)) : undefined;
+    return {
+      chainId: this.chainId,
+      recipient: this.formatAddress(fromHex(transfer.destination)),
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txId: transfer.txId,
+      asset: transfer.asset,
+      ...(token ? { token } : {}),
+      ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
+      stealthMetadata: transfer.stealthMetadata,
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  createSyncPaymentTransfer(
+    params: CreateSyncPaymentTransferParams
+  ): PaymentTransferItem {
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    const txId = params.txHash.replace(/^0x/, '').toLowerCase();
+    const destination = toHex(this.parseAddress(params.recipient));
+    const token = params.token
+      ? (typeof params.token === 'string'
+          ? toHex(this.parseAddress(params.token))
+          : toHex(params.token))
+      : undefined;
+
+    return {
+      type: 'payment-transfer',
+      direction: normalizeSyncDirection(params.direction),
+      chainIdentifier: this.chainId,
+      chainId: this.chainId,
+      txHash: params.txHash,
+      ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      ...(params.memo ? { memo: params.memo } : {}),
+      timestamp: params.timestamp ?? Date.now(),
+      transfer: {
+        networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+        txId,
+        destination,
+        value: amountBig.toString(),
+        ...(token ? { token } : {}),
+        ...(params.vout !== undefined ? { vout: params.vout } : {}),
+        ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      },
+    };
+  }
+
+  parseSyncPaymentTransfer(item: PaymentTransferItem): ParsedSyncPaymentTransfer {
+    const amount = item.transfer?.value ? BigInt(item.transfer.value) : 0n;
+    const recipient = item.transfer?.destination ? this.formatAddress(fromHex(item.transfer.destination)) : '';
+    const token = item.transfer?.token ? this.formatAddress(fromHex(item.transfer.token)) : undefined;
+
+    return {
+      chainId: this.chainId,
+      recipient,
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txHash: item.txHash,
+      direction: normalizeSyncDirection(item.direction),
+      ...(token ? { token } : {}),
+      ...(item.transfer?.vout !== undefined ? { vout: item.transfer.vout } : {}),
+      ...(item.rawTx ? { rawTx: item.rawTx } : {}),
+      ...(item.memo ? { memo: item.memo } : {}),
+      ...(item.timestamp !== undefined ? { timestamp: item.timestamp } : {}),
+    };
+  }
+
+  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
+    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
+    const destination = this.parseAddress(params.recipient);
+    const txIdBytes = typeof params.txId === 'string'
+      ? fromHex(params.txId.replace(/^0x/, ''))
+      : params.txId;
+    const tokenBytes = params.token
+      ? (typeof params.token === 'string' ? this.parseAddress(params.token) : params.token)
+      : undefined;
+    const commitment = params.commitment
+      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
+      : undefined;
+    const rawTx = params.rawTx
+      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
+      : undefined;
+
+    return {
+      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+      txId: txIdBytes,
+      destination,
+      value: valueBig,
+      ...(tokenBytes ? { token: tokenBytes } : {}),
+      ...(params.vout !== undefined ? { vout: params.vout } : {}),
+      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
+      ...(commitment ? { commitment } : {}),
+      ...(rawTx ? { rawTx } : {}),
+    };
+  }
+
+  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
+    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
+    const token = transfer.token ? this.formatAddress(transfer.token) : undefined;
+    return {
+      chainId: this.chainId,
+      networkTag: transfer.networkTag,
+      recipient: this.formatAddress(transfer.destination),
+      value: val,
+      displayAmount: this.toDisplayAmount(val),
+      txId: '0x' + toHex(transfer.txId),
+      ...(token ? { token } : {}),
+      ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
+      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  async estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult> {
+    try {
+      const response = await fetch(this.rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'eth_gasPrice',
+          params: [],
+        }),
+      });
+      const data = (await response.json()) as { result?: string };
+      const gasPrice = data.result ? BigInt(data.result) : 1000000000n;
+      const gasLimit = 21000n;
+      return {
+        estimatedFee: gasPrice * gasLimit,
+        gasLimit,
+        maxFeePerGas: gasPrice,
+      };
+    } catch {
+      const gasLimit = 21000n;
+      const gasPrice = 1000000000n;
+      return {
+        estimatedFee: gasPrice * gasLimit,
+        gasLimit,
+        maxFeePerGas: gasPrice,
+      };
+    }
+  }
+
+  async simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult> {
+    try {
+      if (!this.isValidAddress(params.recipient)) {
+        return {
+          success: false,
+          estimatedFee: 0n,
+          error: `Invalid recipient address: ${params.recipient}`,
+        };
+      }
+      const fee = await this.estimateFee(params);
+      return {
+        success: true,
+        estimatedFee: fee.estimatedFee,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        estimatedFee: 0n,
+        error: err?.message ?? String(err),
+      };
+    }
+  }
 }
 
 /**
@@ -554,7 +986,106 @@ class EvmChainAdapter implements ChainAdapter {
 class TempoChainAdapter extends EvmChainAdapter {
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
     // Tempo native coin is null in registry; TIP-20 pathUSD uses 6 decimals
-    super(chainId, config, 6);
+    const unit = (chainId === 'tempo-testnet' || config?.unit === 'tUSD') ? 'PathUSD' : (config?.unit ?? 'USD');
+    super(chainId, config, 6, unit);
+  }
+
+  override getWallet(address?: string): ChainWallet {
+    const primary = getPrimaryWallet(this.chainId);
+    if (!address && primary) return primary;
+    const addr = address && this.isValidAddress(address)
+      ? this.formatAddress(address)
+      : (primary ? primary.address : '0x0000000000000000000000000000000000000000');
+    const identifier: WalletIdentifier = {
+      walletName: 'Primary',
+      walletId: asWalletId(`${this.chainId}:primary`),
+      walletChainId: this.chainId,
+      accountIndex: 0,
+    };
+    return new TempoChainWalletImpl({
+      identifier,
+      address: addr,
+      adapter: this,
+      privateKey: '',
+      publicKey: '',
+    });
+  }
+
+  override async createWallet(context: WalletDerivationContext): Promise<ChainWallet> {
+    const seed = resolveRootSeed(context.root);
+    const accountIndex = context.accountIndex ?? context.identifier?.accountIndex ?? 0;
+    const walletName =
+      context.walletName ??
+      context.identifier?.walletName ??
+      (accountIndex === 0 ? 'Primary' : `Account ${accountIndex}`);
+    const walletId =
+      context.walletId ??
+      context.identifier?.walletId ??
+      asWalletId(`${this.chainId}:${accountIndex === 0 ? 'primary' : `account-${accountIndex}`}`);
+
+    const identifier: WalletIdentifier = {
+      walletName,
+      walletId,
+      walletChainId: this.chainId,
+      accountIndex,
+    };
+
+    const master = HDNodeWallet.fromSeed(seed);
+    const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
+    const address = this.formatAddress(derived.address);
+
+    return new TempoChainWalletImpl({
+      identifier,
+      address,
+      adapter: this,
+      privateKey: derived.privateKey,
+      publicKey: derived.publicKey,
+    });
+  }
+
+  override createRecipientPaymentTransfer(
+    params: CreateRecipientPaymentTransferParams
+  ): RecipientPaymentTransfer {
+    const token = params.token ?? PATHUSD;
+    return super.createRecipientPaymentTransfer({ ...params, token });
+  }
+
+  override parseRecipientPaymentTransfer(
+    transfer: RecipientPaymentTransfer
+  ): ParsedRecipientPaymentTransfer {
+    const parsed = super.parseRecipientPaymentTransfer(transfer);
+    return {
+      ...parsed,
+      token: parsed.token ?? this.formatAddress(PATHUSD),
+    };
+  }
+
+  override createSyncPaymentTransfer(
+    params: CreateSyncPaymentTransferParams
+  ): PaymentTransferItem {
+    const token = params.token ?? PATHUSD;
+    return super.createSyncPaymentTransfer({ ...params, token });
+  }
+
+  override parseSyncPaymentTransfer(item: PaymentTransferItem): ParsedSyncPaymentTransfer {
+    const parsed = super.parseSyncPaymentTransfer(item);
+    return {
+      ...parsed,
+      token: parsed.token ?? this.formatAddress(PATHUSD),
+    };
+  }
+
+  override createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
+    const token = params.token ?? PATHUSD;
+    return super.createPaymentTransfer({ ...params, token });
+  }
+
+  override parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
+    const parsed = super.parsePaymentTransfer(transfer);
+    return {
+      ...parsed,
+      token: parsed.token ?? this.formatAddress(PATHUSD),
+    };
   }
 }
 
@@ -565,11 +1096,13 @@ class SolanaChainAdapter implements ChainAdapter {
   readonly chainId: ChainId;
   readonly family = 'solana';
   readonly rpcUrl: string;
+  readonly unit: string;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   private readonly decimals = 9;
 
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
     this.chainId = chainId;
+    this.unit = config?.unit ?? (chainId === 'solana-devnet' ? 'dSOL' : 'SOL');
     this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
     this.dex = config?.dex;
   }
@@ -585,7 +1118,7 @@ class SolanaChainAdapter implements ChainAdapter {
   }
 
   parseAddress(display: string): Uint8Array {
-    return new PublicKey(display.trim()).toBytes();
+    return Uint8Array.from(new PublicKey(display.trim()).toBytes());
   }
 
   isValidAddress(candidate: string): boolean {
@@ -639,6 +1172,27 @@ class SolanaChainAdapter implements ChainAdapter {
     });
   }
 
+  getWallet(address?: string): ChainWallet {
+    const primary = getPrimaryWallet(this.chainId);
+    if (!address && primary) return primary;
+    const addr = address && this.isValidAddress(address)
+      ? this.formatAddress(address)
+      : (primary ? primary.address : '11111111111111111111111111111111');
+    const identifier: WalletIdentifier = {
+      walletName: 'Primary',
+      walletId: asWalletId(`${this.chainId}:primary`),
+      walletChainId: this.chainId,
+      accountIndex: 0,
+    };
+    return new SolanaChainWalletImpl({
+      identifier,
+      address: addr,
+      adapter: this,
+      privateKeyBytes: new Uint8Array(32),
+      publicKeyBytes: new Uint8Array(32),
+    });
+  }
+
   async recoverWallet(wallet: ChainWallet): Promise<void> {
     try {
       await wallet.getBalance();
@@ -646,6 +1200,215 @@ class SolanaChainAdapter implements ChainAdapter {
       if (wallet instanceof BaseChainWallet) {
         wallet.setRecoveryError(err);
       }
+    }
+  }
+
+  createRecipientPaymentTransfer(
+    params: CreateRecipientPaymentTransferParams
+  ): RecipientPaymentTransfer {
+    const destination = toHex(this.parseAddress(params.recipient));
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    let txIdHex: string;
+    if (typeof params.txId === 'string') {
+      if (/^[0-9a-fA-F]+$/.test(params.txId.replace(/^0x/, ''))) {
+        txIdHex = params.txId.replace(/^0x/, '').toLowerCase();
+      } else {
+        txIdHex = toHex(Uint8Array.from(getBase58Encoder().encode(params.txId)));
+      }
+    } else {
+      txIdHex = toHex(params.txId);
+    }
+    const tokenHex = params.token
+      ? (typeof params.token === 'string'
+          ? toHex(new PublicKey(params.token).toBytes())
+          : toHex(params.token))
+      : undefined;
+    const ephem = params.stealthMetadata?.ephemeralPubKey
+      ? (typeof params.stealthMetadata.ephemeralPubKey === 'string'
+          ? params.stealthMetadata.ephemeralPubKey.replace(/^0x/, '').toLowerCase()
+          : toHex(params.stealthMetadata.ephemeralPubKey))
+      : '00'.repeat(32);
+    const viewTag = params.stealthMetadata?.viewTag instanceof Uint8Array
+      ? toHex(params.stealthMetadata.viewTag)
+      : params.stealthMetadata?.viewTag;
+
+    return {
+      chainIdentifier: this.chainId,
+      txId: txIdHex,
+      destination,
+      amountAtomic: amountBig.toString(),
+      asset: tokenHex ? { kind: 'token', identifier: tokenHex } : { kind: 'native' },
+      ...(params.vout !== undefined ? { vout: params.vout } : {}),
+      stealthMetadata: {
+        keyType: params.stealthMetadata?.keyType ?? 2,
+        ephemeralPubKey: ephem,
+        ...(viewTag !== undefined ? { viewTag } : {}),
+      },
+      ...(params.commitment ? { commitment: typeof params.commitment === 'string' ? params.commitment.replace(/^0x/, '') : toHex(params.commitment) } : {}),
+      ...(params.rawTx ? { rawTx: typeof params.rawTx === 'string' ? params.rawTx.replace(/^0x/, '') : toHex(params.rawTx) } : {}),
+    };
+  }
+
+  parseRecipientPaymentTransfer(
+    transfer: RecipientPaymentTransfer
+  ): ParsedRecipientPaymentTransfer {
+    const amount = BigInt(transfer.amountAtomic);
+    const token = transfer.asset.kind === 'token' ? new PublicKey(fromHex(transfer.asset.identifier)).toBase58() : undefined;
+    return {
+      chainId: this.chainId,
+      recipient: this.formatAddress(fromHex(transfer.destination)),
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txId: transfer.txId,
+      asset: transfer.asset,
+      ...(token ? { token } : {}),
+      ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
+      stealthMetadata: transfer.stealthMetadata,
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  createSyncPaymentTransfer(
+    params: CreateSyncPaymentTransferParams
+  ): PaymentTransferItem {
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    const destination = toHex(this.parseAddress(params.recipient));
+    const token = params.token
+      ? (typeof params.token === 'string'
+          ? toHex(new PublicKey(params.token).toBytes())
+          : toHex(params.token))
+      : undefined;
+
+    return {
+      type: 'payment-transfer',
+      direction: normalizeSyncDirection(params.direction),
+      chainIdentifier: this.chainId,
+      chainId: this.chainId,
+      txHash: params.txHash,
+      ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      ...(params.memo ? { memo: params.memo } : {}),
+      timestamp: params.timestamp ?? Date.now(),
+      transfer: {
+        networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+        txId: params.txHash,
+        destination,
+        value: amountBig.toString(),
+        ...(token ? { token } : {}),
+        ...(params.vout !== undefined ? { vout: params.vout } : {}),
+        ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      },
+    };
+  }
+
+  parseSyncPaymentTransfer(item: PaymentTransferItem): ParsedSyncPaymentTransfer {
+    const amount = item.transfer?.value ? BigInt(item.transfer.value) : 0n;
+    const recipient = item.transfer?.destination ? this.formatAddress(fromHex(item.transfer.destination)) : '';
+    const token = item.transfer?.token ? new PublicKey(fromHex(item.transfer.token)).toBase58() : undefined;
+
+    return {
+      chainId: this.chainId,
+      recipient,
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txHash: item.txHash,
+      direction: normalizeSyncDirection(item.direction),
+      ...(token ? { token } : {}),
+      ...(item.transfer?.vout !== undefined ? { vout: item.transfer.vout } : {}),
+      ...(item.rawTx ? { rawTx: item.rawTx } : {}),
+      ...(item.memo ? { memo: item.memo } : {}),
+      ...(item.timestamp !== undefined ? { timestamp: item.timestamp } : {}),
+    };
+  }
+
+  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
+    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
+    const destination = this.parseAddress(params.recipient);
+    let txIdBytes: Uint8Array;
+    if (typeof params.txId === 'string') {
+      if (/^[0-9a-fA-F]+$/.test(params.txId.replace(/^0x/, ''))) {
+        txIdBytes = fromHex(params.txId.replace(/^0x/, ''));
+      } else {
+        txIdBytes = Uint8Array.from(getBase58Encoder().encode(params.txId));
+      }
+    } else {
+      txIdBytes = params.txId;
+    }
+    const tokenBytes = params.token
+      ? (typeof params.token === 'string' ? Uint8Array.from(new PublicKey(params.token).toBytes()) : params.token)
+      : undefined;
+    const commitment = params.commitment
+      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
+      : undefined;
+    const rawTx = params.rawTx
+      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
+      : undefined;
+
+    return {
+      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+      txId: txIdBytes,
+      destination,
+      value: valueBig,
+      ...(tokenBytes ? { token: tokenBytes } : {}),
+      ...(params.vout !== undefined ? { vout: params.vout } : {}),
+      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
+      ...(commitment ? { commitment } : {}),
+      ...(rawTx ? { rawTx } : {}),
+    };
+  }
+
+  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
+    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
+    const token = transfer.token ? new PublicKey(transfer.token).toBase58() : undefined;
+    let txIdStr: string;
+    try {
+      txIdStr = getBase58Decoder().decode(transfer.txId);
+    } catch {
+      txIdStr = toHex(transfer.txId);
+    }
+
+    return {
+      chainId: this.chainId,
+      networkTag: transfer.networkTag,
+      recipient: this.formatAddress(transfer.destination),
+      value: val,
+      displayAmount: this.toDisplayAmount(val),
+      txId: txIdStr,
+      ...(token ? { token } : {}),
+      ...(transfer.vout !== undefined ? { vout: transfer.vout } : {}),
+      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  async estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult> {
+    return {
+      estimatedFee: 5000n, // Standard Solana transaction fee (5,000 lamports)
+    };
+  }
+
+  async simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult> {
+    try {
+      if (!this.isValidAddress(params.recipient)) {
+        return {
+          success: false,
+          estimatedFee: 0n,
+          error: `Invalid recipient address: ${params.recipient}`,
+        };
+      }
+      return {
+        success: true,
+        estimatedFee: 5000n,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        estimatedFee: 0n,
+        error: err?.message ?? String(err),
+      };
     }
   }
 }
@@ -657,6 +1420,7 @@ class EcashChainAdapter implements ChainAdapter {
   readonly chainId: ChainId;
   readonly family = 'bitcoin';
   readonly rpcUrl: string;
+  readonly unit: string;
   readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   private readonly decimals = 2;
   private readonly prefix: 'ecash' | 'ectest';
@@ -664,6 +1428,7 @@ class EcashChainAdapter implements ChainAdapter {
   constructor(chainId: ChainId, config?: ChainRegistryEntry) {
     this.chainId = chainId;
     this.prefix = chainId === 'ecash-mainnet' ? 'ecash' : 'ectest';
+    this.unit = config?.unit ?? (chainId === 'ecash-testnet' ? 'tXEC' : 'XEC');
     this.rpcUrl = config?.rpcUrl ?? config?.rpcUrls?.[0] ?? DEFAULT_CHAIN_RPC_URLS[chainId];
     this.dex = config?.dex;
   }
@@ -736,6 +1501,28 @@ class EcashChainAdapter implements ChainAdapter {
     });
   }
 
+  getWallet(address?: string): ChainWallet {
+    const primary = getPrimaryWallet(this.chainId);
+    if (!address && primary) return primary;
+    const defaultAddr = Address.p2pkh(new Uint8Array(20), this.prefix).toString();
+    const addr = address && this.isValidAddress(address)
+      ? this.formatAddress(address)
+      : (primary ? primary.address : defaultAddr);
+    const identifier: WalletIdentifier = {
+      walletName: 'Primary',
+      walletId: asWalletId(`${this.chainId}:primary`),
+      walletChainId: this.chainId,
+      accountIndex: 0,
+    };
+    return new EcashChainWalletImpl({
+      identifier,
+      address: addr,
+      adapter: this,
+      spendKeyHex: '',
+      pkhBytes: new Uint8Array(20),
+    });
+  }
+
   async recoverWallet(wallet: ChainWallet): Promise<void> {
     try {
       await wallet.getBalance();
@@ -743,6 +1530,173 @@ class EcashChainAdapter implements ChainAdapter {
       if (wallet instanceof BaseChainWallet) {
         wallet.setRecoveryError(err);
       }
+    }
+  }
+
+  createRecipientPaymentTransfer(
+    params: CreateRecipientPaymentTransferParams
+  ): RecipientPaymentTransfer {
+    const destination = toHex(this.parseAddress(params.recipient));
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    const txIdHex = typeof params.txId === 'string'
+      ? params.txId.replace(/^0x/, '').toLowerCase()
+      : toHex(params.txId);
+    const ephem = params.stealthMetadata?.ephemeralPubKey
+      ? (typeof params.stealthMetadata.ephemeralPubKey === 'string'
+          ? params.stealthMetadata.ephemeralPubKey.replace(/^0x/, '').toLowerCase()
+          : toHex(params.stealthMetadata.ephemeralPubKey))
+      : '00'.repeat(33);
+    const viewTag = params.stealthMetadata?.viewTag instanceof Uint8Array
+      ? toHex(params.stealthMetadata.viewTag)
+      : params.stealthMetadata?.viewTag;
+
+    return {
+      chainIdentifier: this.chainId,
+      txId: txIdHex,
+      destination,
+      amountAtomic: amountBig.toString(),
+      asset: { kind: 'native' },
+      vout: params.vout ?? 0,
+      stealthMetadata: {
+        keyType: params.stealthMetadata?.keyType ?? 1,
+        ephemeralPubKey: ephem,
+        ...(viewTag !== undefined ? { viewTag } : {}),
+      },
+      ...(params.commitment ? { commitment: typeof params.commitment === 'string' ? params.commitment.replace(/^0x/, '') : toHex(params.commitment) } : {}),
+      ...(params.rawTx ? { rawTx: typeof params.rawTx === 'string' ? params.rawTx.replace(/^0x/, '') : toHex(params.rawTx) } : {}),
+    };
+  }
+
+  parseRecipientPaymentTransfer(
+    transfer: RecipientPaymentTransfer
+  ): ParsedRecipientPaymentTransfer {
+    const amount = BigInt(transfer.amountAtomic);
+    return {
+      chainId: this.chainId,
+      recipient: this.formatAddress(fromHex(transfer.destination)),
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txId: transfer.txId,
+      asset: { kind: 'native' },
+      vout: transfer.vout ?? 0,
+      stealthMetadata: transfer.stealthMetadata,
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  createSyncPaymentTransfer(
+    params: CreateSyncPaymentTransferParams
+  ): PaymentTransferItem {
+    const rawAmount = params.amount ?? params.value ?? 0n;
+    const amountBig = typeof rawAmount === 'bigint' ? rawAmount : BigInt(rawAmount);
+    const destination = toHex(this.parseAddress(params.recipient));
+
+    return {
+      type: 'payment-transfer',
+      direction: normalizeSyncDirection(params.direction),
+      chainIdentifier: this.chainId,
+      chainId: this.chainId,
+      txHash: params.txHash,
+      ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      ...(params.memo ? { memo: params.memo } : {}),
+      timestamp: params.timestamp ?? Date.now(),
+      transfer: {
+        networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+        txId: params.txHash.replace(/^0x/, '').toLowerCase(),
+        destination,
+        value: amountBig.toString(),
+        vout: params.vout ?? 0,
+        ...(params.rawTx ? { rawTx: params.rawTx } : {}),
+      },
+    };
+  }
+
+  parseSyncPaymentTransfer(item: PaymentTransferItem): ParsedSyncPaymentTransfer {
+    const amount = item.transfer?.value ? BigInt(item.transfer.value) : 0n;
+    const recipient = item.transfer?.destination ? this.formatAddress(fromHex(item.transfer.destination)) : '';
+
+    return {
+      chainId: this.chainId,
+      recipient,
+      amount,
+      displayAmount: this.toDisplayAmount(amount),
+      txHash: item.txHash,
+      direction: normalizeSyncDirection(item.direction),
+      vout: item.transfer?.vout ?? 0,
+      ...(item.rawTx ? { rawTx: item.rawTx } : {}),
+      ...(item.memo ? { memo: item.memo } : {}),
+      ...(item.timestamp !== undefined ? { timestamp: item.timestamp } : {}),
+    };
+  }
+
+  createPaymentTransfer(params: CreatePaymentTransferParams): PaymentTransfer {
+    const valueBig = typeof params.value === 'bigint' ? params.value : BigInt(params.value);
+    const destination = this.parseAddress(params.recipient);
+    const txIdBytes = typeof params.txId === 'string'
+      ? fromHex(params.txId.replace(/^0x/, ''))
+      : params.txId;
+    const commitment = params.commitment
+      ? (typeof params.commitment === 'string' ? fromHex(params.commitment.replace(/^0x/, '')) : params.commitment)
+      : undefined;
+    const rawTx = params.rawTx
+      ? (typeof params.rawTx === 'string' ? fromHex(params.rawTx.replace(/^0x/, '')) : params.rawTx)
+      : undefined;
+
+    return {
+      networkTag: getChainRegistryEntry(this.chainId)?.networkTag ?? this.chainId,
+      txId: txIdBytes,
+      destination,
+      value: valueBig,
+      vout: params.vout ?? 0,
+      ...(params.stealthMetadata as any ? { stealthMetadata: params.stealthMetadata as any } : {}),
+      ...(commitment ? { commitment } : {}),
+      ...(rawTx ? { rawTx } : {}),
+    };
+  }
+
+  parsePaymentTransfer(transfer: PaymentTransfer): ParsedPaymentTransfer {
+    const val = transfer.value instanceof Uint8Array ? BigInt('0x' + toHex(transfer.value)) : BigInt(transfer.value);
+    return {
+      chainId: this.chainId,
+      networkTag: transfer.networkTag,
+      recipient: this.formatAddress(transfer.destination),
+      value: val,
+      displayAmount: this.toDisplayAmount(val),
+      txId: toHex(transfer.txId),
+      vout: transfer.vout ?? 0,
+      ...(transfer.stealthMetadata ? { stealthMetadata: transfer.stealthMetadata } : {}),
+      ...(transfer.commitment ? { commitment: transfer.commitment } : {}),
+      ...(transfer.rawTx ? { rawTx: transfer.rawTx } : {}),
+    };
+  }
+
+  async estimateFee(params: EstimateFeeParams): Promise<EstimateFeeResult> {
+    return {
+      estimatedFee: 500n, // Standard eCash miner fee (500 satoshis)
+    };
+  }
+
+  async simulateTransaction(params: EstimateFeeParams): Promise<SimulateTransactionResult> {
+    try {
+      if (!this.isValidAddress(params.recipient)) {
+        return {
+          success: false,
+          estimatedFee: 0n,
+          error: `Invalid recipient address: ${params.recipient}`,
+        };
+      }
+      return {
+        success: true,
+        estimatedFee: 500n,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        estimatedFee: 0n,
+        error: err?.message ?? String(err),
+      };
     }
   }
 }
@@ -850,14 +1804,26 @@ export function createWalletArray(
     switch (alloc.walletChainId) {
       case 'monad-mainnet':
       case 'monad-testnet':
-      case 'tempo-mainnet':
-      case 'tempo-testnet':
       case 'hyperliquid-mainnet':
       case 'hyperliquid-testnet': {
         const master = HDNodeWallet.fromSeed(seed);
         const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
         const address = adapter.formatAddress(derived.address);
         wallet = new EvmChainWalletImpl({
+          identifier,
+          address,
+          adapter,
+          privateKey: derived.privateKey,
+          publicKey: derived.publicKey,
+        });
+        break;
+      }
+      case 'tempo-mainnet':
+      case 'tempo-testnet': {
+        const master = HDNodeWallet.fromSeed(seed);
+        const derived = master.derivePath(`m/44'/60'/${accountIndex}'/0/0`);
+        const address = adapter.formatAddress(derived.address);
+        wallet = new TempoChainWalletImpl({
           identifier,
           address,
           adapter,
@@ -947,6 +1913,28 @@ export function getPrimaryWallet(
 }
 
 /**
+ * Returns all active wallets that currently have a positive balance.
+ */
+export async function getFundedWallets(
+  chainId?: ChainId,
+  walletMap: Map<WalletId, ChainWallet> = activeWalletMap
+): Promise<ChainWallet[]> {
+  const wallets = getWallets(chainId, walletMap);
+  const funded: ChainWallet[] = [];
+  for (const wallet of wallets) {
+    try {
+      const balance = await wallet.getBalance();
+      if (balance > 0n) {
+        funded.push(wallet);
+      }
+    } catch {
+      // ignore offline/errored wallets
+    }
+  }
+  return funded;
+}
+
+/**
  * Resilient recovery loop over all wallets.
  * Handles individual chain RPC issues gracefully without failing session recovery.
  */
@@ -956,7 +1944,21 @@ export async function recoverAllWallets(
   succeeded: WalletId[];
   failed: Array<{ walletId: WalletId; error: unknown }>;
 }> {
-  const targetWallets = wallets ? Array.from(wallets) : getWallets();
+  let targetWallets = wallets ? Array.from(wallets) : getWallets();
+  if (targetWallets.length === 0) {
+    const fallback: ChainWallet[] = [];
+    for (const chainId of CANONICAL_CHAIN_IDS) {
+      if (isChainEnabled(chainId)) {
+        try {
+          const adapter = createChainAdapter(chainId);
+          fallback.push(adapter.getWallet());
+        } catch {
+          // ignore unsupported or unconfigured
+        }
+      }
+    }
+    targetWallets = fallback;
+  }
   const succeeded: WalletId[] = [];
   const failed: Array<{ walletId: WalletId; error: unknown }> = [];
 

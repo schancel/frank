@@ -1,9 +1,11 @@
 import {
   CANONICAL_CHAIN_IDS,
   ChainId,
+  PATHUSD,
   asWalletId,
   createChainAdapter,
   createWalletArray,
+  getFundedWallets,
   getPrimaryWallet,
   getWallet,
   getWallets,
@@ -403,6 +405,213 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       // Even if one wallet's recover has an issue, recoverAllWallets completes
       const result = await recoverAllWallets(walletMap.values());
       expect(result.succeeded.length + result.failed.length).toBe(2);
+    });
+  });
+
+  describe('Polymorphic Payment Transfers across Chain Adapters', () => {
+    it('creates and parses recipient, sync, and binary payment transfers on EVM (Monad)', () => {
+      const adapter = createChainAdapter('monad-testnet');
+      const recipient = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
+
+      const transfer = adapter.createRecipientPaymentTransfer({
+        recipient,
+        value: 1000000000000000000n, // 1 MON
+        txId: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+      });
+      expect(transfer.destination.length).toBe(40); // 20 bytes in hex
+
+      const parsed = adapter.parseRecipientPaymentTransfer(transfer);
+      expect(parsed.recipient).toBe(recipient);
+      expect(parsed.amount).toBe(1000000000000000000n);
+      expect(parsed.displayAmount).toBe('1');
+
+      const syncItem = adapter.createSyncPaymentTransfer({
+        recipient,
+        value: 500000000000000000n,
+        txHash: '0xabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdef',
+        direction: 'sent',
+      });
+      expect(syncItem.type).toBe('payment-transfer');
+      const parsedSync = adapter.parseSyncPaymentTransfer(syncItem);
+      expect(parsedSync.recipient).toBe(recipient);
+      expect(parsedSync.amount).toBe(500000000000000000n);
+      expect(parsedSync.displayAmount).toBe('0.5');
+
+      const poly = adapter.createPaymentTransfer({
+        recipient,
+        value: 1000000000000000000n,
+        txId: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+      });
+      expect(poly.destination instanceof Uint8Array).toBe(true);
+      expect(poly.destination.length).toBe(20);
+      const parsedPoly = adapter.parsePaymentTransfer(poly);
+      expect(parsedPoly.recipient).toBe(recipient);
+      expect(parsedPoly.value).toBe(1000000000000000000n);
+    });
+
+    it('defaults token to PATHUSD and formats 6 decimals on Tempo', () => {
+      const adapter = createChainAdapter('tempo-testnet');
+      const recipient = '0x9858EfFD232B4033E47d90003D41EC34EcaEda94';
+
+      const transfer = adapter.createRecipientPaymentTransfer({
+        recipient,
+        value: 5000000n, // 5 USD
+        txId: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+      });
+      const parsed = adapter.parseRecipientPaymentTransfer(transfer);
+      expect(parsed.token).toBe(adapter.formatAddress(PATHUSD));
+      expect(parsed.displayAmount).toBe('5');
+    });
+
+    it('creates and parses transfers on Solana with 32-byte destination and base58 txId', () => {
+      const adapter = createChainAdapter('solana-devnet');
+      const recipient = '4Nd1mBQtrMJVYVfKf2PJy9NZPdde5VU55j4MpTuqFs3C';
+
+      const transfer = adapter.createRecipientPaymentTransfer({
+        recipient,
+        value: 2000000000n, // 2 SOL
+        txId: '5H6QzLqUq9b1o9L3ZgM4N8mS4qL7k9X2Z1y7w6v5u4t3',
+      });
+      expect(transfer.destination.length).toBe(64); // 32 bytes in hex
+
+      const parsed = adapter.parseRecipientPaymentTransfer(transfer);
+      expect(parsed.recipient).toBe(recipient);
+      expect(parsed.amount).toBe(2000000000n);
+      expect(parsed.displayAmount).toBe('2');
+
+      const poly = adapter.createPaymentTransfer({
+        recipient,
+        value: 2000000000n,
+        txId: '5H6QzLqUq9b1o9L3ZgM4N8mS4qL7k9X2Z1y7w6v5u4t3',
+      });
+      expect(poly.destination instanceof Uint8Array).toBe(true);
+      expect(poly.destination.length).toBe(32);
+      const parsedPoly = adapter.parsePaymentTransfer(poly);
+      expect(parsedPoly.recipient).toBe(recipient);
+      expect(parsedPoly.value).toBe(2000000000n);
+    });
+
+    it('creates and parses transfers on eCash with 20-byte hash160 and vout', () => {
+      const adapter = createChainAdapter('ecash-mainnet');
+      const recipient = adapter.formatAddress(new Uint8Array(20).fill(1));
+
+      const transfer = adapter.createRecipientPaymentTransfer({
+        recipient,
+        value: 50000n, // 500.00 XEC
+        txId: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        vout: 1,
+      });
+      expect(transfer.destination.length).toBe(40); // 20 bytes in hex
+      expect(transfer.vout).toBe(1);
+
+      const parsed = adapter.parseRecipientPaymentTransfer(transfer);
+      expect(parsed.recipient).toBe(recipient);
+      expect(parsed.amount).toBe(50000n);
+      expect(parsed.displayAmount).toBe('500');
+      expect(parsed.vout).toBe(1);
+
+      const poly = adapter.createPaymentTransfer({
+        recipient,
+        value: 50000n,
+        txId: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        vout: 1,
+      });
+      expect(poly.destination instanceof Uint8Array).toBe(true);
+      expect(poly.destination.length).toBe(20);
+      expect(poly.vout).toBe(1);
+      const parsedPoly = adapter.parsePaymentTransfer(poly);
+      expect(parsedPoly.recipient).toBe(recipient);
+      expect(parsedPoly.value).toBe(50000n);
+      expect(parsedPoly.vout).toBe(1);
+    });
+  });
+
+  describe('Fee Estimation and Transaction Simulation', () => {
+    it('estimates fee and simulates transaction on EVM adapter', async () => {
+      const adapter = createChainAdapter('monad-testnet');
+      const fee = await adapter.estimateFee({
+        recipient: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94',
+        value: 1000n,
+      });
+      expect(fee.estimatedFee).toBeGreaterThan(0n);
+      expect(fee.gasLimit).toBe(21000n);
+
+      const simSuccess = await adapter.simulateTransaction({
+        recipient: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94',
+        value: 1000n,
+      });
+      expect(simSuccess.success).toBe(true);
+      expect(simSuccess.estimatedFee).toBe(fee.estimatedFee);
+
+      const simInvalid = await adapter.simulateTransaction({
+        recipient: 'invalid-address',
+        value: 1000n,
+      });
+      expect(simInvalid.success).toBe(false);
+      expect(simInvalid.error).toBeDefined();
+    });
+
+    it('delegates estimateFee and simulateTransaction on ChainWallet', async () => {
+      const adapter = createChainAdapter('monad-testnet');
+      const wallet = adapter.getWallet('0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
+      const fee = await wallet.estimateFee({
+        recipient: '0x9858EfFD232B4033E47d90003D41EC34EcaEda94',
+        value: 1000n,
+      });
+      expect(fee.estimatedFee).toBeGreaterThan(0n);
+    });
+  });
+
+  describe('Multi-Wallet Selection & getFundedWallets', () => {
+    it('filters wallets by balance > 0n', async () => {
+      const allocated: WalletIdentifier[] = [
+        {
+          walletName: 'Funded Account',
+          walletId: asWalletId('monad:funded'),
+          walletChainId: 'monad-testnet',
+          accountIndex: 0,
+        },
+        {
+          walletName: 'Empty Account',
+          walletId: asWalletId('monad:empty'),
+          walletChainId: 'monad-testnet',
+          accountIndex: 1,
+        },
+      ];
+      const walletMap = createWalletArray({ mnemonic: TEST_MNEMONIC }, allocated);
+      const fundedWallet = walletMap.get(asWalletId('monad:funded'))!;
+      const emptyWallet = walletMap.get(asWalletId('monad:empty'))!;
+
+      // Mock getBalance
+      jest.spyOn(fundedWallet, 'getBalance').mockResolvedValue(1000000n);
+      jest.spyOn(emptyWallet, 'getBalance').mockResolvedValue(0n);
+
+      const funded = await getFundedWallets('monad-testnet', walletMap);
+      expect(funded.length).toBe(1);
+      expect(funded[0].walletId).toBe(asWalletId('monad:funded'));
+    });
+  });
+
+  describe('Tempo TIP-20 Balance Resolution', () => {
+    it('uses eth_call to query PATHUSD balanceOf instead of eth_getBalance', async () => {
+      const adapter = createChainAdapter('tempo-testnet');
+      const wallet = adapter.getWallet('0x9858EfFD232B4033E47d90003D41EC34EcaEda94');
+
+      const mockFetch = jest.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+        const body = JSON.parse(init?.body as string);
+        expect(body.method).toBe('eth_call');
+        expect(body.params[0].to.toLowerCase()).toBe(PATHUSD.toLowerCase());
+        // Return 5000000 atomic units = 5 USD (6 decimals) encoded as 32-byte hex
+        return {
+          ok: true,
+          json: async () => ({ result: '0x00000000000000000000000000000000000000000000000000000000004c4b40' }),
+        } as Response;
+      });
+
+      const balance = await wallet.getBalance();
+      expect(balance).toBe(5000000n);
+      expect(adapter.toDisplayAmount(balance)).toBe('5');
+      mockFetch.mockRestore();
     });
   });
 });

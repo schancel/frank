@@ -293,6 +293,9 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       port: input.webhookPort,
       securePortal,
       checkoutServer,
+      mailGatewayDomain: input.gatewayDomain,
+      network: input.chain.chainIdentifier,
+      ...(input.relayBaseUrl ? { relayUrl: input.relayBaseUrl } : {}),
       wkd: {
         gatewayDomain: input.gatewayDomain,
         journal,

@@ -32,4 +32,39 @@ describe('journaled Resend HTTP host', () => {
       await server.stop();
     }
   });
+
+  it('serves GET /.well-known/cashweb.json with CORS and Cache-Control headers', async () => {
+    const handle = jest.fn(async () => ({ kind: 'admitted' as const, admissions: [] }));
+    const server = new ResendWebhookHttp({
+      importer: { handle } as unknown as ResendInboundWebhook,
+      port: 0,
+      host: '127.0.0.1',
+      relayUrl: 'https://relay.signet.mx',
+      mailGatewayDomain: 'signet.mx',
+      network: 'monad-testnet',
+    });
+    await server.start();
+    try {
+      const base = server.address();
+      const response = await fetch(`${base}/.well-known/cashweb.json`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('cache-control')).toBe('public, max-age=3600');
+      expect(await response.json()).toEqual({
+        version: 1,
+        relay: 'https://relay.signet.mx',
+        mail_gateway: 'signet.mx',
+        network: 'monad-testnet',
+      });
+
+      const optionsResp = await fetch(`${base}/.well-known/cashweb.json`, { method: 'OPTIONS' });
+      expect(optionsResp.status).toBe(204);
+      expect(optionsResp.headers.get('access-control-allow-origin')).toBe('*');
+
+      const postResp = await fetch(`${base}/.well-known/cashweb.json`, { method: 'POST' });
+      expect(postResp.status).toBe(405);
+    } finally {
+      await server.stop();
+    }
+  });
 });

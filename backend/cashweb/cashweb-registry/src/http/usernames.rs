@@ -259,6 +259,7 @@ async fn search(
 pub fn router(runtime: Arc<DirectoryRuntime>) -> Router {
     Router::new()
         .route("/directory/user/:username", routing::get(lookup).put(claim))
+        .route("/usernames/:username", routing::get(lookup).put(claim))
         .route("/directory/users", routing::get(search))
         .layer(Extension(runtime))
 }

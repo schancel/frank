@@ -113,6 +113,11 @@ impl Peers {
         }
     }
 
+    /// Return this relay's own configured origin URL string.
+    pub fn own_origin(&self) -> &str {
+        &self.own_origin
+    }
+
     /// Public relay origins a client may independently try for reads or transaction broadcast.
     pub fn public_origins(&self) -> Vec<String> {
         let mut origins = std::iter::once(self.own_origin.parse::<Url>().ok())

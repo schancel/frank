@@ -133,7 +133,6 @@
           "cddl": "docs/protocol/cbor/direct-message.cddl#recipient-encrypted-payload-v2",
           "required": [
             "network",
-            "sender",
             "recipient",
             "suite",
             "crypto-box-envelope",
@@ -141,7 +140,7 @@
             "shared-point",
             "dleq-proof"
           ],
-          "optional": [],
+          "optional": ["sender"],
           "open": true
         }
       ]
@@ -172,11 +171,8 @@
           "required": [
             "domain",
             "network",
-            "sender",
             "recipient",
-            "sender-statement-hash",
             "recipient-statement-hash",
-            "sender-message-key",
             "recipient-message-key",
             "recipient-stamp-key",
             "ephemeral-point",
@@ -187,7 +183,7 @@
             "schema-version",
             "min-reader-version"
           ],
-          "optional": [],
+          "optional": ["sender", "sender-statement-hash", "sender-message-key"],
           "open": false
         }
       ]

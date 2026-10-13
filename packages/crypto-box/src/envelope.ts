@@ -12,12 +12,13 @@ import {
 } from './ids.js'
 
 const MAP_SIZE = 6
+const SEALED_SENDER_MAP_SIZE = 7
 const AEAD_TAG_LENGTH = 16
 const INNER_LENGTH_PREFIX = 4
 const MIN_CIPHERTEXT = INNER_LENGTH_PREFIX + AEAD_TAG_LENGTH
 const MAX_CIPHERTEXT =
   INNER_LENGTH_PREFIX + MAX_MESSAGE + MAX_PADDING + AEAD_TAG_LENGTH
-const MAX_ENVELOPE = 88 + MAX_CIPHERTEXT
+const MAX_ENVELOPE = 124 + MAX_CIPHERTEXT
 const LEGACY_HEADER = 1 + 2 + 2 + SALT_LENGTH + ENC_LENGTH
 const MAX_LEGACY_ENVELOPE = LEGACY_HEADER + MAX_CIPHERTEXT
 
@@ -28,6 +29,7 @@ export interface DecodedEnvelope {
   readonly salt: Uint8Array
   readonly enc: Uint8Array
   readonly ciphertext: Uint8Array
+  readonly maskedSender?: Uint8Array
 }
 
 function head(major: number, value: number): Uint8Array {
@@ -63,9 +65,11 @@ export function encodeEnvelope(
   salt: Uint8Array,
   enc: Uint8Array,
   ciphertext: Uint8Array,
+  maskedSender?: Uint8Array,
 ): Uint8Array {
+  const hasMaskedSender = maskedSender !== undefined
   const fields = [
-    head(5, MAP_SIZE),
+    head(5, hasMaskedSender ? SEALED_SENDER_MAP_SIZE : MAP_SIZE),
     head(0, ENVELOPE_FIELDS.version),
     head(0, ENVELOPE_VERSION),
     head(0, ENVELOPE_FIELDS.suite),
@@ -78,6 +82,9 @@ export function encodeEnvelope(
     encodedLength(2, enc),
     head(0, ENVELOPE_FIELDS.ciphertext),
     encodedLength(2, ciphertext),
+    ...(hasMaskedSender
+      ? [head(0, ENVELOPE_FIELDS.maskedSender), encodedLength(2, maskedSender)]
+      : []),
   ]
   let length = 0
   for (const field of fields) length += field.length
@@ -168,7 +175,13 @@ class Reader {
 function decodeCborEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   if (bytes.length > MAX_ENVELOPE) return null
   const reader = new Reader(bytes)
-  if (!reader.readExact(0xa0 | MAP_SIZE)) return null
+  const hasMaskedSender = bytes[0] === (0xa0 | SEALED_SENDER_MAP_SIZE)
+  if (
+    !reader.readExact(
+      0xa0 | (hasMaskedSender ? SEALED_SENDER_MAP_SIZE : MAP_SIZE),
+    )
+  )
+    return null
   // Keys 0..23 encode as one CBOR head byte equal to the key.
   if (!reader.readExact(ENVELOPE_FIELDS.version)) return null
   const version = reader.readUint(0)
@@ -184,6 +197,13 @@ function decodeCborEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   if (!reader.readExact(ENVELOPE_FIELDS.ciphertext)) return null
 
   const ciphertext = reader.readBytes(null, MAX_CIPHERTEXT)
+  let maskedSender: Uint8Array | undefined
+  if (hasMaskedSender) {
+    if (!reader.readExact(ENVELOPE_FIELDS.maskedSender)) return null
+    const ms = reader.readBytes(ENC_LENGTH, ENC_LENGTH)
+    if (ms === null) return null
+    maskedSender = ms
+  }
   if (
     version !== ENVELOPE_VERSION ||
     suiteId === null ||
@@ -196,7 +216,15 @@ function decodeCborEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   ) {
     return null
   }
-  return { version, suiteId, kemId, salt, enc, ciphertext }
+  return {
+    version,
+    suiteId,
+    kemId,
+    salt,
+    enc,
+    ciphertext,
+    ...(maskedSender !== undefined ? { maskedSender } : {}),
+  }
 }
 
 function readU16(bytes: Uint8Array, offset: number): number {
@@ -225,6 +253,11 @@ function decodeLegacyEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
 
 export function decodeEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   if (bytes[0] === LEGACY_ENVELOPE_VERSION) return decodeLegacyEnvelope(bytes)
-  if (bytes[0] === (0xa0 | MAP_SIZE)) return decodeCborEnvelope(bytes)
+  if (
+    bytes[0] === (0xa0 | MAP_SIZE) ||
+    bytes[0] === (0xa0 | SEALED_SENDER_MAP_SIZE)
+  ) {
+    return decodeCborEnvelope(bytes)
+  }
   return null
 }

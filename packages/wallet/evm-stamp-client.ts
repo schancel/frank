@@ -762,6 +762,7 @@ export class MonadCanonicalStampClient {
       parsed.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
       parsed.schemaVersion !== 2 ||
       parsed.typed.suite !== ENCRYPTION_SUITE.dmAuthXchacha ||
+      !parsed.typed.sender ||
       !(fields instanceof Map)
     )
       throw new Error('canonical-wallet:prepared-required')

@@ -10,7 +10,10 @@
         "content-digest": 3,
         "conversation-id": 4,
         "conversation-name": 5,
-        "token-transfer": 6
+        "token-transfer": 6,
+        "sender": 7,
+        "sender-directory-hash": 8,
+        "sender-message-key": 9
       },
       "shapes": [
         {
@@ -24,7 +27,10 @@
           "optional": [
             "conversation-id",
             "conversation-name",
-            "token-transfer"
+            "token-transfer",
+            "sender",
+            "sender-directory-hash",
+            "sender-message-key"
           ],
           "open": true
         }

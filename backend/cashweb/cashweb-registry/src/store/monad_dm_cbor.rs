@@ -90,7 +90,7 @@ impl MailboxDirection {
 /// A delivered message as announced to open mailbox sockets.
 #[derive(Debug, Clone)]
 pub(crate) struct FinalizedEnvelope {
-    pub(crate) sender: Address,
+    pub(crate) sender: Option<Address>,
     pub(crate) recipient: Address,
     pub(crate) payload_hash: [u8; 32],
     pub(crate) submission_identity: [u8; 32],
@@ -259,10 +259,16 @@ impl Owner {
                 delivered_at,
             };
             let row = encode_row(&message)?;
-            let (sender, recipient) = (message.policy.sender()?, message.policy.recipient()?);
+            let recipient = message.policy.recipient()?;
+            let sender = if message.policy.sender_p.is_empty() {
+                None
+            } else {
+                Some(message.policy.sender()?)
+            };
             let recipient_key = mailbox_key(b'I', recipient, delivered_at, &hash);
-            let sender_key =
-                (sender != recipient).then(|| mailbox_key(b'O', sender, delivered_at, &hash));
+            let sender_key = sender
+                .filter(|&sender| sender != recipient)
+                .map(|sender| mailbox_key(b'O', sender, delivered_at, &hash));
             admission.commit_delivery(rocks::Delivery {
                 last_delivery_key: LAST_DELIVERY_KEY,
                 delivered_at: delivered_at.to_be_bytes(),
@@ -277,9 +283,12 @@ impl Owner {
         })?;
         if stored {
             self.messages_stored_total.fetch_add(1, Ordering::Relaxed);
-            if let (Ok(sender), Ok(recipient)) =
-                (message.policy.sender(), message.policy.recipient())
-            {
+            if let Ok(recipient) = message.policy.recipient() {
+                let sender = if message.policy.sender_p.is_empty() {
+                    None
+                } else {
+                    message.policy.sender().ok()
+                };
                 let _ = self.broadcast.send(FinalizedEnvelope {
                     sender,
                     recipient,
@@ -1034,7 +1043,11 @@ mod persistence_tests {
             network: network.clone(),
             chain_id: 10143,
             minimum: 1,
-            sender_p: sender.key_bytes.clone(),
+            sender_p: sender
+                .as_ref()
+                .expect("the captured message names its sender")
+                .key_bytes
+                .clone(),
             recipient_p: recipient.key_bytes.clone(),
             sender_m: message_key(6),
             recipient_m: message_key(7),

@@ -226,10 +226,13 @@ export function inspectCanonicalPreparedEnvelope(
   )
     throw new Error('canonical-stamp:payload')
   const fields = decodeCanonical(context)
-  if (
-    !(fields instanceof Map) ||
-    fields.size !== DM_CRYPTO_CONTEXT_V1_SHAPE.required.length
-  )
+  const frame = parsed.typed
+  // A sealed-sender context omits the three optional sender fields.
+  const sealedSender = frame.sender === undefined
+  const expectedContextSize =
+    DM_CRYPTO_CONTEXT_V1_SHAPE.required.length +
+    (sealedSender ? 0 : DM_CRYPTO_CONTEXT_V1_SHAPE.optional.length)
+  if (!(fields instanceof Map) || fields.size !== expectedContextSize)
     throw new Error('canonical-stamp:context')
   const account = (key: number): AccountRef => {
     const value = fields.get(BigInt(key))
@@ -251,20 +254,23 @@ export function inspectCanonicalPreparedEnvelope(
     return new Uint8Array(value)
   }
   const C = DM_CRYPTO_CONTEXT_V1
-  const frame = parsed.typed,
-    senderT1 = bytes(C.senderStatementHash),
+  const senderT1 = sealedSender ? undefined : bytes(C.senderStatementHash),
     recipientT1 = bytes(C.recipientStatementHash),
-    senderMessageKey = account(C.senderMessageKey),
+    senderMessageKey = sealedSender ? undefined : account(C.senderMessageKey),
     recipientMessageKey = account(C.recipientMessageKey),
     stampKey = account(C.recipientStampKey)
 
   const expected = encodeDirectMessageCryptoContext({
     network: frame.network,
-    sender: frame.sender,
+    ...(sealedSender
+      ? {}
+      : {
+          sender: frame.sender,
+          senderDirectoryHash: senderT1,
+          senderMessageKey,
+        }),
     recipient: frame.recipient,
-    senderDirectoryHash: senderT1,
     recipientDirectoryHash: recipientT1,
-    senderMessageKey,
     recipientMessageKey,
     stampKey,
     ephemeralPoint: frame.ephemeralPoint,

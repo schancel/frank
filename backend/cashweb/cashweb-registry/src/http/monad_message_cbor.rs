@@ -548,7 +548,12 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
     else {
         return Err(CanonicalError::Invalid);
     };
-    if actual != network || sender.key_type != 1 || recipient.key_type != 1 {
+    if actual != network
+        || sender
+            .as_ref()
+            .is_some_and(|s| s.key_type != frank_cbor::message_fields::key_type::SECP256K1)
+        || recipient.key_type != frank_cbor::message_fields::key_type::SECP256K1
+    {
         return Err(CanonicalError::Invalid);
     }
     let (sender_t1, recipient_t1) = if !request.context().is_empty() {
@@ -566,7 +571,20 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
                 })
                 .ok_or(CanonicalError::Invalid)
         };
-        (Some(hash(4)?), Some(hash(5)?))
+        use frank_cbor::message_fields::dm_crypto_context_v1 as C;
+        // A sealed-sender context has no sender statement hash; the relay records zeroes.
+        let sender_t1 = if sender.is_some() {
+            Some(hash(C::SENDER_STATEMENT_HASH)?)
+        } else {
+            if context
+                .iter()
+                .any(|(key, _)| *key == C::SENDER_STATEMENT_HASH)
+            {
+                return Err(CanonicalError::Invalid);
+            }
+            None
+        };
+        (sender_t1, Some(hash(C::RECIPIENT_STATEMENT_HASH)?))
     } else {
         (None, None)
     };
@@ -1869,7 +1887,7 @@ pub(crate) async fn handle_mailbox_ws(
                                 if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
                                     break;
                                 }
-                            } else if envelope.sender == address {
+                            } else if envelope.sender == Some(address) {
                                 let push = MailboxWsPush {
                                     direction: "out",
                                     submission_identity: hex::encode(envelope.submission_identity),

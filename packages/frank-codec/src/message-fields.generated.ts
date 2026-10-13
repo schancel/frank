@@ -647,11 +647,8 @@ export const DM_CRYPTO_CONTEXT_V1_SHAPE: MapShape = {
   required: [
     DM_CRYPTO_CONTEXT_V1.domain,
     DM_CRYPTO_CONTEXT_V1.network,
-    DM_CRYPTO_CONTEXT_V1.sender,
     DM_CRYPTO_CONTEXT_V1.recipient,
-    DM_CRYPTO_CONTEXT_V1.senderStatementHash,
     DM_CRYPTO_CONTEXT_V1.recipientStatementHash,
-    DM_CRYPTO_CONTEXT_V1.senderMessageKey,
     DM_CRYPTO_CONTEXT_V1.recipientMessageKey,
     DM_CRYPTO_CONTEXT_V1.recipientStampKey,
     DM_CRYPTO_CONTEXT_V1.ephemeralPoint,
@@ -662,7 +659,11 @@ export const DM_CRYPTO_CONTEXT_V1_SHAPE: MapShape = {
     DM_CRYPTO_CONTEXT_V1.schemaVersion,
     DM_CRYPTO_CONTEXT_V1.minReaderVersion,
   ],
-  optional: [],
+  optional: [
+    DM_CRYPTO_CONTEXT_V1.sender,
+    DM_CRYPTO_CONTEXT_V1.senderStatementHash,
+    DM_CRYPTO_CONTEXT_V1.senderMessageKey,
+  ],
   open: false,
   openFrom: 0,
 }
@@ -744,6 +745,9 @@ export const ENCRYPTED_MESSAGE_CONTENT = {
   conversationId: 4,
   conversationName: 5,
   tokenTransfer: 6,
+  sender: 7,
+  senderDirectoryHash: 8,
+  senderMessageKey: 9,
 } as const
 /** `encrypted-message-content` map shape (docs/protocol/cbor/direct-message.cddl#encrypted-message-content). */
 export const ENCRYPTED_MESSAGE_CONTENT_SHAPE: MapShape = {
@@ -757,6 +761,9 @@ export const ENCRYPTED_MESSAGE_CONTENT_SHAPE: MapShape = {
     ENCRYPTED_MESSAGE_CONTENT.conversationId,
     ENCRYPTED_MESSAGE_CONTENT.conversationName,
     ENCRYPTED_MESSAGE_CONTENT.tokenTransfer,
+    ENCRYPTED_MESSAGE_CONTENT.sender,
+    ENCRYPTED_MESSAGE_CONTENT.senderDirectoryHash,
+    ENCRYPTED_MESSAGE_CONTENT.senderMessageKey,
   ],
   open: true,
   openFrom: 0,
@@ -1549,7 +1556,6 @@ export const RECIPIENT_ENCRYPTED_PAYLOAD_V2 = {
 export const RECIPIENT_ENCRYPTED_PAYLOAD_V2_SHAPE: MapShape = {
   required: [
     RECIPIENT_ENCRYPTED_PAYLOAD_V2.network,
-    RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender,
     RECIPIENT_ENCRYPTED_PAYLOAD_V2.recipient,
     RECIPIENT_ENCRYPTED_PAYLOAD_V2.suite,
     RECIPIENT_ENCRYPTED_PAYLOAD_V2.cryptoBoxEnvelope,
@@ -1557,7 +1563,7 @@ export const RECIPIENT_ENCRYPTED_PAYLOAD_V2_SHAPE: MapShape = {
     RECIPIENT_ENCRYPTED_PAYLOAD_V2.sharedPoint,
     RECIPIENT_ENCRYPTED_PAYLOAD_V2.dleqProof,
   ],
-  optional: [],
+  optional: [RECIPIENT_ENCRYPTED_PAYLOAD_V2.sender],
   open: true,
   openFrom: 0,
 }

@@ -7,6 +7,7 @@ import { sha256 } from '@noble/hashes/sha256.js'
 
 import { ascii, concatBytes, i2osp } from './bytes.js'
 import {
+  ENC_LENGTH,
   ENVELOPE_VERSION,
   KDF_HKDF_SHA256,
   KEM_SECP256K1,
@@ -153,3 +154,47 @@ export function associatedData(
     context,
   ])
 }
+
+/**
+ * 33-byte keystream derived from the ephemeral-recipient ECDH shared point (`e * M_R`),
+ * per-message salt, ephemeral point `enc`, recipient point, and context.
+ * Only the sender (holding `e`) and the recipient (holding `m_R`) can compute `toRecipient`,
+ * hiding the 33-byte sender static public key `M_S` from the relay and passive observers.
+ */
+export function sealedSenderMask(input: {
+  readonly toRecipient: Uint8Array
+  readonly salt: Uint8Array
+  readonly enc: Uint8Array
+  readonly recipientPublicKey: Uint8Array
+  readonly context: Uint8Array
+}): Uint8Array {
+  const prk = labeledExtract(
+    KEM_SUITE,
+    input.salt,
+    'sealed_sender_mask',
+    input.toRecipient,
+  )
+  try {
+    return labeledExpand(
+      KEM_SUITE,
+      prk,
+      'sealed_sender_key',
+      concatBytes([input.enc, input.recipientPublicKey, input.context]),
+      ENC_LENGTH,
+    )
+  } finally {
+    prk.fill(0)
+  }
+}
+
+export function xorSenderPoint(
+  point: Uint8Array,
+  mask: Uint8Array,
+): Uint8Array {
+  const out = new Uint8Array(ENC_LENGTH)
+  for (let i = 0; i < ENC_LENGTH; i += 1) {
+    out[i] = point[i] ^ mask[i]
+  }
+  return out
+}
+

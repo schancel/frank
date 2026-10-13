@@ -64,6 +64,7 @@ import {
   DirectMessageError,
   openDirectMessage,
   openOwnDirectMessage,
+  peekSealedDirectMessageSender,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
@@ -524,6 +525,7 @@ function sealUnpaid(
     | 'conversationId'
     | 'conversationName'
     | 'items'
+    | 'sealedSender'
   >,
 ) {
   const roles = owner.roles.create(directory.network, message.senderCurrent)
@@ -991,7 +993,10 @@ async function finishSharedConstruction(
   const inspected = inspectCanonicalPreparedEnvelope(sealed.payload, sealed.context)
   const network = canonicalNetworkDescriptor(owner.installedNetworkTag).network
   if (intent.network !== network || owner.chainId !== canonicalNetworkDescriptor(owner.installedNetworkTag).chainId ||
-      toHex(inspected.payload.sender.keyBytes) !== owner.subject ||
+      // A sealed-sender payload names no sender outside its ciphertext, so only an unsealed
+      // one can be compared with the owner here.
+      (inspected.payload.sender !== undefined &&
+        toHex(inspected.payload.sender.keyBytes) !== owner.subject) ||
       toHex(inspected.payload.recipient.keyBytes) !== row.recipientSubject ||
       toHex(recipientPayloadDigest(intent.network, sealed.payload)) !== row.digest)
     throw new Error('Stored stamp construction identity mismatch')
@@ -1298,7 +1303,8 @@ async function validateOriginalEnvelope(
   if (
     payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
     payload.network !== directory.network ||
-    toHex(payload.sender.keyBytes) !== owner.subject ||
+    (payload.sender !== undefined &&
+      toHex(payload.sender.keyBytes) !== owner.subject) ||
     toHex(payload.recipient.keyBytes) !== envelope.recipientSubject ||
     toHex(delivery.typed.payloadDigest) !== envelope.digest ||
     toHex(
@@ -1761,6 +1767,8 @@ async function send(
           kept.boundary,
         )
       } else {
+        const sealedSender =
+          (params as { sealedSender?: boolean }).sealedSender === true
         const unpaid = sealUnpaid(owner, directory, {
           senderCurrent: await directory.selfCurrent(),
           recipientCurrent: peer.current,
@@ -1770,6 +1778,7 @@ async function send(
           conversationId,
           ...conversationName,
           items,
+          ...(sealedSender ? { sealedSender: true } : {}),
         })
         digest = unpaid.digest
         request = unpaid.request
@@ -1864,6 +1873,8 @@ async function send(
     if (!recipient)
       throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
     const roles = owner.roles.create(directory.network, senderCurrent)
+    const sealedSender =
+      (params as { sealedSender?: boolean }).sealedSender === true
     let sealed
     try {
       sealed = prepareDirectMessage({
@@ -1875,6 +1886,7 @@ async function send(
         ...conversationName,
         items,
         roles,
+        ...(sealedSender ? { sealedSender: true } : {}),
       })
     } finally {
       roles.dispose()
@@ -2037,6 +2049,7 @@ async function resolveHistoricalEvidence(
   self: Current,
   selfSubject: string,
   peer: { subject: string; current: Current },
+  sealedSenderT1?: Uint8Array,
 ): Promise<{
   senderEvidence?: HistoricalEvidence
   recipientEvidence?: HistoricalEvidence
@@ -2044,12 +2057,18 @@ async function resolveHistoricalEvidence(
   if (!directory.peerHistorical) return {}
   try {
     const ctx = decodeDirectMessageCryptoContext(context)
-    const ctxSenderHash = toHex(ctx.senderDirectoryHash).toLowerCase()
+    const senderHashBytes = ctx.senderDirectoryHash ?? sealedSenderT1
+    const ctxSenderHash = senderHashBytes
+      ? toHex(senderHashBytes).toLowerCase()
+      : undefined
     const ctxRecipientHash = toHex(ctx.recipientDirectoryHash).toLowerCase()
     let senderEvidence: HistoricalEvidence | undefined
     let recipientEvidence: HistoricalEvidence | undefined
     if (isOutbound) {
-      if (ctxSenderHash !== toHex(self.evidence.hash).toLowerCase()) {
+      if (
+        ctxSenderHash !== undefined &&
+        ctxSenderHash !== toHex(self.evidence.hash).toLowerCase()
+      ) {
         senderEvidence = await directory.peerHistorical({
           subject: selfSubject,
           statementHash: ctxSenderHash,
@@ -2064,7 +2083,10 @@ async function resolveHistoricalEvidence(
         })
       }
     } else {
-      if (ctxSenderHash !== toHex(peer.current.evidence.hash).toLowerCase()) {
+      if (
+        ctxSenderHash !== undefined &&
+        ctxSenderHash !== toHex(peer.current.evidence.hash).toLowerCase()
+      ) {
         senderEvidence = await directory.peerHistorical({
           subject: peer.subject,
           statementHash: ctxSenderHash,
@@ -2482,9 +2504,37 @@ async function readMailbox(
       if (payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) continue
       const digest = toHex(deliveryTyped.payloadDigest)
       const isOutbound = record.direction === 'out'
-      const peerSubjectKeyBytes = isOutbound
-        ? payload.recipient.keyBytes
-        : payload.sender.keyBytes
+      let peerSubjectKeyBytes: Uint8Array
+      let sealedSenderT1: Uint8Array | undefined
+      if (isOutbound) {
+        peerSubjectKeyBytes = payload.recipient.keyBytes
+      } else if (payload.sender !== undefined) {
+        peerSubjectKeyBytes = payload.sender.keyBytes
+      } else {
+        const peekRoles = owner.roles.create(directory.network, self)
+        try {
+          const peeked = peekSealedDirectMessageSender({
+            network: directory.network,
+            payload: deliveryTyped.payloadFrame.frame,
+            context: record.context,
+            roles: peekRoles,
+          })
+          peerSubjectKeyBytes = peeked.sender.keyBytes
+          sealedSenderT1 = peeked.senderT1
+        } catch (error) {
+          if (
+            error instanceof DirectMessageError &&
+            (error.code === 'crypto' ||
+              error.code === 'context' ||
+              error.code === 'network')
+          ) {
+            params.onQuarantinedTimestamp?.(record.timestampMs, digest)
+          }
+          continue
+        } finally {
+          peekRoles.dispose()
+        }
+      }
       const peerSubjectHex = toHex(peerSubjectKeyBytes)
 
       // Any peer with a published entry that verifies is shown; no peer list is consulted.
@@ -2517,6 +2567,7 @@ async function readMailbox(
           self,
           owner.subject,
           peer,
+          sealedSenderT1,
         )
       const roles = owner.roles.create(directory.network, self)
       let items: MessageItem[]
@@ -2928,9 +2979,27 @@ export function canonicalDirectMessages(
                 if (payload?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD) return
                 const digest = toHex(deliveryTyped.payloadDigest)
                 const isOutbound = record.direction === 'out'
-                const peerSubjectKeyBytes = isOutbound
-                ? payload.recipient.keyBytes
-                : payload.sender.keyBytes
+                let peerSubjectKeyBytes: Uint8Array
+                let sealedSenderT1: Uint8Array | undefined
+                if (isOutbound) {
+                  peerSubjectKeyBytes = payload.recipient.keyBytes
+                } else if (payload.sender !== undefined) {
+                  peerSubjectKeyBytes = payload.sender.keyBytes
+                } else {
+                  const peekRoles = owner.roles.create(directory.network, self)
+                  try {
+                    const peeked = peekSealedDirectMessageSender({
+                      network: directory.network,
+                      payload: deliveryTyped.payloadFrame.frame,
+                      context: record.context,
+                      roles: peekRoles,
+                    })
+                    peerSubjectKeyBytes = peeked.sender.keyBytes
+                    sealedSenderT1 = peeked.senderT1
+                  } finally {
+                    peekRoles.dispose()
+                  }
+                }
                 const peerSubjectHex = toHex(peerSubjectKeyBytes)
                 const peer = await directory.peerCurrent({
                   subject: peerSubjectHex,
@@ -2944,6 +3013,7 @@ export function canonicalDirectMessages(
                     self,
                     owner.subject,
                     peer,
+                    sealedSenderT1,
                   )
                 const roles = owner.roles.create(directory.network, self)
                 let items: MessageItem[]

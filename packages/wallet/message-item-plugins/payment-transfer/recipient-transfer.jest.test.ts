@@ -1,5 +1,5 @@
 import type { RecipientPaymentTransfer } from '@frank/cashweb/types/messages'
-import { encodePaymentTransfer } from '@frank/codec'
+import { encodePaymentMember } from '@frank/codec'
 import {
   decodeRecipientPaymentTransfer,
   encodeRecipientPaymentTransfer,
@@ -23,7 +23,7 @@ const sample: RecipientPaymentTransfer = {
 
 it('round trips a 64-digit DECIMAL amount, token, key and signed bytes exactly', () => {
   expect(
-    decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(sample))
+    decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(sample)),
   ).toEqual(sample)
 })
 
@@ -35,41 +35,41 @@ it.each([
   ((1n << 256n) - 1n).toString(),
 ])(
   'retains exact native atomic units %s across uint64/256-bit encodings',
-  (amountAtomic) => {
+  amountAtomic => {
     const transfer = {
       ...sample,
       amountAtomic,
       asset: { kind: 'native' as const },
     }
     expect(
-      decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(transfer))
+      decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(transfer)),
     ).toEqual(transfer)
-  }
+  },
 )
 
 it.each(['0', '-1', '1.5', '01', '1e18', (1n << 256n).toString()])(
   'rejects invalid or oversized amounts %s',
-  (amountAtomic) => {
+  amountAtomic => {
     expect(() =>
-      encodeRecipientPaymentTransfer({ ...sample, amountAtomic })
+      encodeRecipientPaymentTransfer({ ...sample, amountAtomic }),
     ).toThrow()
-  }
+  },
 )
 
 it.each(['monad', 'MONT', 'eip155:10143', 'ecash-testnet', 'unknown-chain'])(
   'rejects a noncanonical or unknown internal chain %s',
-  (chainIdentifier) => {
+  chainIdentifier => {
     expect(() =>
-      encodeRecipientPaymentTransfer({ ...sample, chainIdentifier })
+      encodeRecipientPaymentTransfer({ ...sample, chainIdentifier }),
     ).toThrow()
-  }
+  },
 )
 
 it.each([
   ['xec-testnet', 'XECT'],
   ['btc-testnet', 'BTCT'],
   ['bch-mainnet', 'BCH1'],
-])('preserves native UTXO output identity for %s', (chainIdentifier) => {
+])('preserves native UTXO output identity for %s', chainIdentifier => {
   const transfer = {
     ...sample,
     chainIdentifier,
@@ -77,7 +77,7 @@ it.each([
     asset: { kind: 'native' as const },
   }
   expect(
-    decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(transfer))
+    decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(transfer)),
   ).toEqual(transfer)
 })
 
@@ -95,7 +95,7 @@ it('preserves SPL mint bytes without claiming token-program identity', () => {
     },
   }
   expect(
-    decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(transfer))
+    decodeRecipientPaymentTransfer(encodeRecipientPaymentTransfer(transfer)),
   ).toEqual(transfer)
 })
 
@@ -104,48 +104,49 @@ it('rejects token bytes on Bitcoin-family chains and wrong EVM token lengths', (
     encodeRecipientPaymentTransfer({
       ...sample,
       chainIdentifier: 'xec-testnet',
-    })
+    }),
   ).toThrow('Unsupported Bitcoin-family token')
   expect(() =>
     encodeRecipientPaymentTransfer({
       ...sample,
       asset: { kind: 'token', identifier: 'aa' },
-    })
+    }),
   ).toThrow('token identifier length')
 })
 
 it('rejects unknown networks, missing metadata and incompatible keys on input', () => {
   const record = {
-    networkTag: 'MONT',
-    txId: sample.txId,
-    destination: sample.destination,
+    network: 'not-a-chain',
+    transactionId: sample.txId,
+    address: sample.destination,
     value: 1n,
     stealthMetadata: sample.stealthMetadata,
   }
   expect(() =>
     decodeRecipientPaymentTransfer(
-      encodePaymentTransfer({ ...record, networkTag: 'NOPE' })
-    )
+      encodePaymentMember({ ...record, network: 'not-a-chain' }),
+    ),
   ).toThrow('Unsupported payment network')
   expect(() =>
     decodeRecipientPaymentTransfer(
-      encodePaymentTransfer({ ...record, stealthMetadata: undefined })
-    )
-  ).toThrow('stealth key')
+      encodePaymentMember({ ...record, stealthMetadata: undefined }),
+    ),
+  ).toThrow()
   expect(() =>
     decodeRecipientPaymentTransfer(
-      encodePaymentTransfer({
+      encodePaymentMember({
         ...record,
+        network: 'monad-testnet',
         stealthMetadata: { keyType: 2, ephemeralPubKey: 'aa'.repeat(32) },
-      })
-    )
+      }),
+    ),
   ).toThrow('stealth key')
   expect(() => decodeRecipientPaymentTransfer(new Uint8Array([0]))).toThrow()
 })
 
 it('returns a recipient claim without outgoing wallet-sync mutation fields', () => {
   const recipient = decodeRecipientPaymentTransfer(
-    encodeRecipientPaymentTransfer(sample)
+    encodeRecipientPaymentTransfer(sample),
   )
   expect(Object.keys(recipient)).not.toEqual(
     expect.arrayContaining([
@@ -153,7 +154,7 @@ it('returns a recipient claim without outgoing wallet-sync mutation fields', () 
       'direction',
       'spentInputs',
       'createdOutputs',
-    ])
+    ]),
   )
   expect(recipient).not.toHaveProperty('type')
   expect(recipient).not.toHaveProperty('direction')
@@ -164,6 +165,6 @@ it('rejects unknown asset discriminants instead of defaulting to native', () => 
     encodeRecipientPaymentTransfer({
       ...sample,
       asset: { kind: 'unknown' },
-    } as unknown as RecipientPaymentTransfer)
+    } as unknown as RecipientPaymentTransfer),
   ).toThrow('Unsupported recipient payment asset')
 })

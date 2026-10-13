@@ -107,8 +107,6 @@ import {
   PARTICIPANT_BALANCE_SHAPE,
   PAYMENT_MEMBER,
   PAYMENT_MEMBER_SHAPE,
-  PAYMENT_TRANSFER,
-  PAYMENT_TRANSFER_SHAPE,
   PLUGIN_MESSAGE_ITEM,
   PLUGIN_MESSAGE_ITEM_SHAPE,
   PROFILE_ENTRY,
@@ -202,7 +200,6 @@ import type {
   KeyTransition,
   OpaqueSection,
   PaymentMember,
-  PaymentTransfer,
   TokenTransfer,
   StealthMetadata,
   StealthAssetTransfer,
@@ -554,7 +551,10 @@ export function checkTypeLimits(
 const framed = (v: FrankValue | undefined, path: string): Uint8Array =>
   bstr(v, path, 9, MAX_FRAME_BYTES)
 
-function paymentMember(v: FrankValue | undefined, path: string): PaymentMember {
+export function paymentMember(
+  v: FrankValue | undefined,
+  path: string,
+): PaymentMember {
   const K = PAYMENT_MEMBER
   const m = shaped(v, path, PAYMENT_MEMBER_SHAPE, false)
   const rawVal = m.get(K.value)
@@ -569,30 +569,56 @@ function paymentMember(v: FrankValue | undefined, path: string): PaymentMember {
       'expected a 32-byte string or an unsigned integer',
     )
   }
-  const txField = bstr(
-    m.get(K.transactionId),
-    at(path, K.transactionId),
-    1,
-    128,
-  )
+  const stamp = m.has(K.childIndex)
+  const stealth = m.has(K.stealthMetadata)
+  if (stamp === stealth) {
+    throw bad(
+      path,
+      `payment member requires exactly one of field ${K.childIndex} or field ${K.stealthMetadata}`,
+    )
+  }
+  if (stamp && !m.has(K.commitment)) {
+    throw bad(at(path, K.commitment), 'stamp payment requires a T4 commitment')
+  }
+  if (m.has(K.token) && !stealth) {
+    throw bad(
+      at(path, K.token),
+      'token identifier is allowed only on a stealth payment',
+    )
+  }
+  const commitment = m.has(K.commitment)
+    ? bstr(m.get(K.commitment), at(path, K.commitment), 32, 32)
+    : undefined
   const rawTx = m.has(K.rawTx)
     ? bstr(m.get(K.rawTx), at(path, K.rawTx), 1, 16384)
     : undefined
+  const token = m.has(K.token)
+    ? bstr(m.get(K.token), at(path, K.token), 1, 128)
+    : undefined
+  const childIndex = stamp
+    ? u32ish(m.get(K.childIndex), at(path, K.childIndex), 0, 2147483647)
+    : undefined
+  const meta = stealth
+    ? stealthMetadata(m.get(K.stealthMetadata), at(path, K.stealthMetadata))
+    : undefined
   return {
-    childIndex: u32ish(
-      m.get(K.childIndex),
-      at(path, K.childIndex),
-      0,
-      2147483647,
+    network: networkTag(m.get(K.network), at(path, K.network)),
+    transactionId: bstr(
+      m.get(K.transactionId),
+      at(path, K.transactionId),
+      1,
+      128,
     ),
-    transactionId: txField,
     value,
     address: bstr(m.get(K.address), at(path, K.address), 1, 128),
-    commitment: bstr(m.get(K.commitment), at(path, K.commitment), 32, 32),
+    ...(commitment !== undefined ? { commitment } : {}),
     vout: m.has(K.vout)
       ? u32ish(m.get(K.vout), at(path, K.vout), 0, 4294967295)
       : undefined,
     ...(rawTx !== undefined ? { rawTx } : {}),
+    ...(childIndex !== undefined ? { childIndex } : {}),
+    ...(meta !== undefined ? { stealthMetadata: meta } : {}),
+    ...(token !== undefined ? { token } : {}),
   }
 }
 
@@ -625,61 +651,16 @@ export function stealthMetadata(
   }
 }
 
-export function paymentTransfer(
-  v: FrankValue | undefined,
-  path = 'payment-transfer',
-): PaymentTransfer {
-  const K = PAYMENT_TRANSFER
-  const m = shaped(v, path, PAYMENT_TRANSFER_SHAPE, false)
-  const rawVal = m.get(K.value)
-  let value: Uint8Array | bigint
-  if (rawVal instanceof Uint8Array) {
-    value = bstr(rawVal, at(path, K.value), 32, 32)
-  } else if (typeof rawVal === 'bigint') {
-    value = uintRange(rawVal, at(path, K.value), 0n, U64_MAX)
-  } else {
-    throw bad(
-      at(path, K.value),
-      'expected a 32-byte string or an unsigned integer',
-    )
-  }
-
-  const txField = bstr(m.get(K.txId), at(path, K.txId), 1, 128)
-  const rawTx = m.has(K.rawTx)
-    ? bstr(m.get(K.rawTx), at(path, K.rawTx), 1, 16384)
-    : undefined
-
-  return {
-    networkTag: tstr(m.get(K.networkTag), at(path, K.networkTag), 1, 64),
-    txId: txField,
-    vout: m.has(K.vout)
-      ? u32ish(m.get(K.vout), at(path, K.vout), 0, 4294967295)
-      : undefined,
-    destination: bstr(m.get(K.destination), at(path, K.destination), 1, 128),
-    value,
-    token: m.has(K.token)
-      ? bstr(m.get(K.token), at(path, K.token), 1, 128)
-      : undefined,
-    stealthMetadata: m.has(K.stealthMetadata)
-      ? stealthMetadata(m.get(K.stealthMetadata), at(path, K.stealthMetadata))
-      : undefined,
-    commitment: m.has(K.commitment)
-      ? bstr(m.get(K.commitment), at(path, K.commitment), 32, 32)
-      : undefined,
-    ...(rawTx !== undefined ? { rawTx } : {}),
-  }
-}
-
 function stealthAssetTransfer(
   v: FrankValue | undefined,
   path: string,
 ): StealthAssetTransfer {
   const K = STEALTH_ASSET_TRANSFER
   const m = shaped(v, path, STEALTH_ASSET_TRANSFER_SHAPE, false)
-  const transfer = paymentTransfer(m.get(K.transfer), at(path, K.transfer))
+  const transfer = paymentMember(m.get(K.transfer), at(path, K.transfer))
   if (transfer.stealthMetadata === undefined)
     throw bad(
-      at(at(path, K.transfer), PAYMENT_TRANSFER.stealthMetadata),
+      at(at(path, K.transfer), PAYMENT_MEMBER.stealthMetadata),
       'a recipient payment requires stealth metadata',
     )
   if (
@@ -688,7 +669,7 @@ function stealthAssetTransfer(
       : transfer.value.every(byte => byte === 0)
   )
     throw bad(
-      at(at(path, K.transfer), PAYMENT_TRANSFER.value),
+      at(at(path, K.transfer), PAYMENT_MEMBER.value),
       'a recipient payment requires a positive amount',
     )
   const derivationScheme = u32ish(
@@ -1923,10 +1904,12 @@ export function parseDraft(
     }
     case TYPE_FORWARDING_DELIVERY_ENVELOPE: {
       const K = FORWARDING_DELIVERY_ENVELOPE
+      // raw-cbor-key: key 0 was the removed envelope network tag; C12 rejects it
+      if (isMap(payload) && payload.has(0n))
+        throw bad(P, 'undeclared key 0 (C12)')
       const m = shaped(payload, P, FORWARDING_DELIVERY_ENVELOPE_SHAPE, allow)
       const res: ForwardingDeliveryEnvelope<Uint8Array> = {
         type: TYPE_FORWARDING_DELIVERY_ENVELOPE,
-        network: networkTag(m.get(K.network), at(P, K.network)),
         destination: account(m.get(K.destination), at(P, K.destination)),
         payloadFrame: framed(m.get(K.payloadFrame), at(P, K.payloadFrame)),
         payloadDigest: bstr(
@@ -2180,7 +2163,7 @@ export function checkAllocated(
             at(
               at(
                 at(p, STEALTH_ASSET_TRANSFER.transfer),
-                PAYMENT_TRANSFER.stealthMetadata,
+                PAYMENT_MEMBER.stealthMetadata,
               ),
               STEALTH_METADATA.ephemeralPubKey,
             ),

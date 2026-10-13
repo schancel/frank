@@ -34,7 +34,6 @@ const {
   decodeCanonical,
   directorySignatureDigest,
   encodeCanonical,
-  forwardingPayloadDigest,
   fromHex,
   keyTransitionSignatureDigest,
   messageContentDigest,
@@ -416,23 +415,39 @@ export class Renumber {
       case 'recipient-encrypted-payload':
         if (schema >= 2) this.reseal(value, next)
         break
-      case 'direct-message-delivery':
-      case 'forwarding-delivery-envelope': {
-        const F =
-          key === 'direct-message-delivery'
-            ? DIRECT_MESSAGE_DELIVERY
-            : FORWARDING_DELIVERY_ENVELOPE
-        const digest =
-          key === 'direct-message-delivery'
-            ? recipientPayloadDigest
-            : forwardingPayloadDigest
+      case 'direct-message-delivery': {
+        const F = DIRECT_MESSAGE_DELIVERY
         const network = value.get(k(F.network))
         if (typeof network !== 'string') break
         this.rederive(value, next, F.payloadDigest, m => {
           const p = m.get(k(F.payloadFrame))
-          return isBytes(p) ? digest(network, p) : undefined
+          return isBytes(p) ? recipientPayloadDigest(network, p) : undefined
         })
-        if (key === 'direct-message-delivery') this.commitments(value, next)
+        this.commitments(value, next)
+        break
+      }
+      case 'forwarding-delivery-envelope': {
+        // T3f: the network is the inner direct-message delivery's own field. Read it here
+        // rather than through the codec, whose check of the inner type id follows the registry
+        // and so rejects the old frame.
+        const F = FORWARDING_DELIVERY_ENVELOPE
+        this.rederive(value, next, F.payloadDigest, m => {
+          const p = m.get(k(F.payloadFrame))
+          if (!isBytes(p)) return undefined
+          const env = decodeCanonical(p.subarray(9))
+          const inner =
+            env instanceof Map ? env.get(k(FRANK_ENVELOPE.payload)) : undefined
+          if (!isBytes(inner)) return undefined
+          const payload = decodeCanonical(inner)
+          const network =
+            payload instanceof Map
+              ? payload.get(k(DIRECT_MESSAGE_DELIVERY.network))
+              : undefined
+          if (typeof network !== 'string') return undefined
+          return sha(
+            commonTranscript('frank/forwarding-payload/v1', network, p),
+          )
+        })
         break
       }
       case 'directory-attestation':
@@ -711,6 +726,20 @@ function noteContentHash(
     else if (oldKey === 'directory-attestation') {
       const s = p.get(k(DIRECTORY_ATTESTATION.statementFrame))
       network = isBytes(s) ? statementNetwork(s) : undefined
+    } else if (oldKey === 'forwarding-delivery-envelope') {
+      // T1 of type 13 uses the inner type-10 frame's network.
+      const f = p.get(k(FORWARDING_DELIVERY_ENVELOPE.payloadFrame))
+      const inner = isBytes(f)
+        ? (decodeCanonical(f.subarray(9)) as CborMap).get(
+            k(FRANK_ENVELOPE.payload),
+          )
+        : undefined
+      const n = isBytes(inner)
+        ? (decodeCanonical(inner) as CborMap).get(
+            k(DIRECT_MESSAGE_DELIVERY.network),
+          )
+        : undefined
+      network = typeof n === 'string' ? n : undefined
     } else {
       const n = isMap(p) ? p.get(0n) : undefined
       network = typeof n === 'string' ? n : undefined

@@ -307,7 +307,8 @@ def cddl_rules(text: str) -> dict[str, dict]:
 def _parse_map(body: str) -> dict:
     required, optional, inner, open_ = set(), set(), {}, False
     for member in _members(body):
-        if re.match(r"^\*\s*uint\s*=>", member):
+        # `* uint =>` or a lower-bounded `* (uint .ge N) =>` (keys below N stay undeclared).
+        if re.match(r"^\*\s*(?:uint|\(\s*uint\s*\.ge\s*\d+\s*\))\s*=>", member):
             open_ = True
             continue
         fm = re.match(r"^(\?\s*)?(\d+)\s*:\s*(.*)$", member, re.S)

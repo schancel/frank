@@ -12,7 +12,7 @@ import {
 import type { Encodable, CanonicalStealthAssetMessageItem } from '../src'
 import {
   FRANK_ENVELOPE,
-  PAYMENT_TRANSFER,
+  PAYMENT_MEMBER,
   STEALTH_ASSET_MESSAGE_ITEM,
   STEALTH_ASSET_TRANSFER,
   TYPE_STEALTH_MESSAGE_ITEM,
@@ -28,9 +28,9 @@ const ephemeral = fromHex(
 function sample(): CanonicalStealthAssetMessageItem['transfers'][number] {
   return {
     transfer: {
-      networkTag: 'monad-testnet',
-      txId: 'ab'.repeat(32),
-      destination: 'cd'.repeat(20),
+      network: 'monad-testnet',
+      transactionId: 'ab'.repeat(32),
+      address: 'cd'.repeat(20),
       value: 2n ** 200n + 7n,
       token: 'ef'.repeat(20),
       stealthMetadata: { keyType: 1, ephemeralPubKey: ephemeral },
@@ -71,7 +71,7 @@ export function stealthAssetCorpus() {
   const token = sample()
   const native = sample()
   delete native.transfer.token
-  native.transfer.networkTag = 'btc-testnet'
+  native.transfer.network = 'btc-testnet'
   native.transfer.value = 18446744073709551615n
   native.transfer.vout = 4294967295
   const unknown = sample()
@@ -114,7 +114,7 @@ export function stealthAssetCorpus() {
             bigint,
             Encodable
           >
-        ).set(BigInt(PAYMENT_TRANSFER.value), 0n),
+        ).set(BigInt(PAYMENT_MEMBER.value), 0n),
       ),
     },
     {
@@ -123,7 +123,7 @@ export function stealthAssetCorpus() {
         const transfer = entry.get(
           BigInt(STEALTH_ASSET_TRANSFER.transfer),
         ) as Map<bigint, Encodable>
-        transfer.delete(BigInt(PAYMENT_TRANSFER.stealthMetadata))
+        transfer.delete(BigInt(PAYMENT_MEMBER.stealthMetadata))
       }),
     },
     {
@@ -132,7 +132,7 @@ export function stealthAssetCorpus() {
         const transfer = entry.get(
           BigInt(STEALTH_ASSET_TRANSFER.transfer),
         ) as Map<bigint, Encodable>
-        transfer.delete(BigInt(PAYMENT_TRANSFER.token))
+        transfer.delete(BigInt(PAYMENT_MEMBER.token))
         entry.set(BigInt(STEALTH_ASSET_TRANSFER.derivationScheme), 2n)
         entry.set(
           BigInt(STEALTH_ASSET_TRANSFER.tokenProgram),

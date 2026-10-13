@@ -423,7 +423,7 @@ describe('receiving', () => {
         minReaderVersion: 1,
       },
       new Map<number, Encodable>([
-        [FORWARDING_DELIVERY_ENVELOPE.network, 'frank-test'],
+        [FORWARDING_DELIVERY_ENVELOPE.endpoint, 'https://relay.example'],
       ]),
     )
     expect(receive([text, envelope, text])).toEqual([

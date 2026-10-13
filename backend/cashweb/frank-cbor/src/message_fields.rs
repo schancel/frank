@@ -1064,8 +1064,6 @@ pub mod forum_topic_page {
 pub mod forwarding_delivery_envelope {
     use super::MapShape;
 
-    /// Field `network`.
-    pub const NETWORK: u64 = 0;
     /// Field `destination`.
     pub const DESTINATION: u64 = 1;
     /// Field `payload-frame`.
@@ -1080,7 +1078,7 @@ pub mod forwarding_delivery_envelope {
     pub const EXPIRES_AT: u64 = 6;
     /// `forwarding-delivery-envelope` map shape (docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope).
     pub const SHAPE: MapShape = MapShape {
-        required: &[NETWORK, DESTINATION, PAYLOAD_FRAME, PAYLOAD_DIGEST, PAYMENTS],
+        required: &[DESTINATION, PAYLOAD_FRAME, PAYLOAD_DIGEST, PAYMENTS],
         optional: &[ENDPOINT, EXPIRES_AT],
         open: true,
     };
@@ -1298,8 +1296,8 @@ pub mod participant_balance {
 pub mod payment_member {
     use super::MapShape;
 
-    /// Field `child-index`.
-    pub const CHILD_INDEX: u64 = 0;
+    /// Field `network`.
+    pub const NETWORK: u64 = 0;
     /// Field `transaction-id`.
     pub const TRANSACTION_ID: u64 = 1;
     /// Field `value`.
@@ -1312,40 +1310,16 @@ pub mod payment_member {
     pub const VOUT: u64 = 5;
     /// Field `raw-tx`.
     pub const RAW_TX: u64 = 6;
+    /// Field `child-index`.
+    pub const CHILD_INDEX: u64 = 7;
+    /// Field `stealth-metadata`.
+    pub const STEALTH_METADATA: u64 = 8;
+    /// Field `token`.
+    pub const TOKEN: u64 = 9;
     /// `payment-member` map shape (docs/protocol/cbor/direct-message.cddl#payment-member).
     pub const SHAPE: MapShape = MapShape {
-        required: &[CHILD_INDEX, TRANSACTION_ID, VALUE, ADDRESS, COMMITMENT],
-        optional: &[VOUT, RAW_TX],
-        open: false,
-    };
-}
-
-/// `payment-transfer` field keys.
-pub mod payment_transfer {
-    use super::MapShape;
-
-    /// Field `network-tag`.
-    pub const NETWORK_TAG: u64 = 0;
-    /// Field `tx-id`.
-    pub const TX_ID: u64 = 1;
-    /// Field `vout`.
-    pub const VOUT: u64 = 2;
-    /// Field `destination`.
-    pub const DESTINATION: u64 = 3;
-    /// Field `value`.
-    pub const VALUE: u64 = 4;
-    /// Field `token`.
-    pub const TOKEN: u64 = 5;
-    /// Field `stealth-metadata`.
-    pub const STEALTH_METADATA: u64 = 6;
-    /// Field `commitment`.
-    pub const COMMITMENT: u64 = 7;
-    /// Field `raw-tx`.
-    pub const RAW_TX: u64 = 8;
-    /// `payment-transfer` map shape (docs/protocol/cbor/direct-message.cddl#payment-transfer).
-    pub const SHAPE: MapShape = MapShape {
-        required: &[NETWORK_TAG, TX_ID, DESTINATION, VALUE],
-        optional: &[VOUT, TOKEN, STEALTH_METADATA, COMMITMENT, RAW_TX],
+        required: &[NETWORK, TRANSACTION_ID, VALUE, ADDRESS],
+        optional: &[COMMITMENT, VOUT, RAW_TX, CHILD_INDEX, STEALTH_METADATA, TOKEN],
         open: false,
     };
 }

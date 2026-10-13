@@ -42,25 +42,29 @@
     {
       "key": "payment-member",
       "fields": {
-        "child-index": 0,
+        "network": 0,
         "transaction-id": 1,
         "value": 2,
         "address": 3,
         "commitment": 4,
         "vout": 5,
-        "raw-tx": 6
+        "raw-tx": 6,
+        "child-index": 7,
+        "stealth-metadata": 8,
+        "token": 9
       },
       "shapes": [
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#payment-member",
-          "required": [
+          "required": ["network", "transaction-id", "value", "address"],
+          "optional": [
+            "commitment",
+            "vout",
+            "raw-tx",
             "child-index",
-            "transaction-id",
-            "value",
-            "address",
-            "commitment"
+            "stealth-metadata",
+            "token"
           ],
-          "optional": ["vout", "raw-tx"],
           "open": false
         }
       ]
@@ -76,34 +80,6 @@
           "cddl": "docs/protocol/cbor/direct-message.cddl#stealth-metadata",
           "required": ["ephemeral-pub-key"],
           "optional": ["view-tag"],
-          "open": false
-        }
-      ]
-    },
-    {
-      "key": "payment-transfer",
-      "fields": {
-        "network-tag": 0,
-        "tx-id": 1,
-        "vout": 2,
-        "destination": 3,
-        "value": 4,
-        "token": 5,
-        "stealth-metadata": 6,
-        "commitment": 7,
-        "raw-tx": 8
-      },
-      "shapes": [
-        {
-          "cddl": "docs/protocol/cbor/direct-message.cddl#payment-transfer",
-          "required": ["network-tag", "tx-id", "destination", "value"],
-          "optional": [
-            "vout",
-            "token",
-            "stealth-metadata",
-            "commitment",
-            "raw-tx"
-          ],
           "open": false
         }
       ]
@@ -219,7 +195,6 @@
     {
       "key": "forwarding-delivery-envelope",
       "fields": {
-        "network": 0,
         "destination": 1,
         "payload-frame": 2,
         "payload-digest": 3,
@@ -231,7 +206,6 @@
         {
           "cddl": "docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope",
           "required": [
-            "network",
             "destination",
             "payload-frame",
             "payload-digest",

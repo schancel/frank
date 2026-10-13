@@ -1108,7 +1108,6 @@ export const FORUM_TOPIC_PAGE_SHAPE: MapShape = {
 
 /** `forwarding-delivery-envelope` field keys. */
 export const FORWARDING_DELIVERY_ENVELOPE = {
-  network: 0,
   destination: 1,
   payloadFrame: 2,
   payloadDigest: 3,
@@ -1119,7 +1118,6 @@ export const FORWARDING_DELIVERY_ENVELOPE = {
 /** `forwarding-delivery-envelope` map shape (docs/protocol/cbor/direct-message.cddl#forwarding-delivery-envelope). */
 export const FORWARDING_DELIVERY_ENVELOPE_SHAPE: MapShape = {
   required: [
-    FORWARDING_DELIVERY_ENVELOPE.network,
     FORWARDING_DELIVERY_ENVELOPE.destination,
     FORWARDING_DELIVERY_ENVELOPE.payloadFrame,
     FORWARDING_DELIVERY_ENVELOPE.payloadDigest,
@@ -1323,53 +1321,32 @@ export const PARTICIPANT_BALANCE_SHAPE: MapShape = {
 
 /** `payment-member` field keys. */
 export const PAYMENT_MEMBER = {
-  childIndex: 0,
+  network: 0,
   transactionId: 1,
   value: 2,
   address: 3,
   commitment: 4,
   vout: 5,
   rawTx: 6,
+  childIndex: 7,
+  stealthMetadata: 8,
+  token: 9,
 } as const
 /** `payment-member` map shape (docs/protocol/cbor/direct-message.cddl#payment-member). */
 export const PAYMENT_MEMBER_SHAPE: MapShape = {
   required: [
-    PAYMENT_MEMBER.childIndex,
+    PAYMENT_MEMBER.network,
     PAYMENT_MEMBER.transactionId,
     PAYMENT_MEMBER.value,
     PAYMENT_MEMBER.address,
-    PAYMENT_MEMBER.commitment,
-  ],
-  optional: [PAYMENT_MEMBER.vout, PAYMENT_MEMBER.rawTx],
-  open: false,
-}
-
-/** `payment-transfer` field keys. */
-export const PAYMENT_TRANSFER = {
-  networkTag: 0,
-  txId: 1,
-  vout: 2,
-  destination: 3,
-  value: 4,
-  token: 5,
-  stealthMetadata: 6,
-  commitment: 7,
-  rawTx: 8,
-} as const
-/** `payment-transfer` map shape (docs/protocol/cbor/direct-message.cddl#payment-transfer). */
-export const PAYMENT_TRANSFER_SHAPE: MapShape = {
-  required: [
-    PAYMENT_TRANSFER.networkTag,
-    PAYMENT_TRANSFER.txId,
-    PAYMENT_TRANSFER.destination,
-    PAYMENT_TRANSFER.value,
   ],
   optional: [
-    PAYMENT_TRANSFER.vout,
-    PAYMENT_TRANSFER.token,
-    PAYMENT_TRANSFER.stealthMetadata,
-    PAYMENT_TRANSFER.commitment,
-    PAYMENT_TRANSFER.rawTx,
+    PAYMENT_MEMBER.commitment,
+    PAYMENT_MEMBER.vout,
+    PAYMENT_MEMBER.rawTx,
+    PAYMENT_MEMBER.childIndex,
+    PAYMENT_MEMBER.stealthMetadata,
+    PAYMENT_MEMBER.token,
   ],
   open: false,
 }

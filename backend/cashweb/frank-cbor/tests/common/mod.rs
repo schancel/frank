@@ -236,7 +236,7 @@ fn payment(t3: &[u8], index: u32) -> CborValue {
     value[31] = 1 + (index % 200) as u8;
     value[30] = 0x0f;
     cbor_map(vec![
-        (pay::CHILD_INDEX, int(i128::from(index))),
+        (pay::NETWORK, CborValue::Text(NET.to_string())),
         (
             pay::TRANSACTION_ID,
             CborValue::Bytes(bytes_of(32, 100 + index)),
@@ -247,6 +247,7 @@ fn payment(t3: &[u8], index: u32) -> CborValue {
             pay::COMMITMENT,
             CborValue::Bytes(payment_commitment(t3, index).to_vec()),
         ),
+        (pay::CHILD_INDEX, int(i128::from(index))),
     ])
 }
 

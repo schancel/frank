@@ -8,7 +8,7 @@ use crate::hash::content_hash;
 use crate::message_fields as mf;
 use crate::message_fields::key_type;
 use crate::model::{
-    AccountRef, KeyTransition, ParsedFrame, SignatureEntry, Timestamp, TypedPayload,
+    AccountRef, KeyTransition, ParsedFrame, PaymentMember, SignatureEntry, Timestamp, TypedPayload,
 };
 use crate::model::{ForumCursor, ForumCursorPosition, ForumDiscoveryPage, ForumTopicPage};
 use crate::schema::{at, at_index};
@@ -200,6 +200,64 @@ fn require_ordered<T>(
     Ok(())
 }
 
+fn payment_tx_key(payment: &PaymentMember) -> Vec<u8> {
+    match payment.vout {
+        Some(vout) => {
+            let mut key = Vec::with_capacity(payment.transaction_id.len() + 4);
+            key.extend_from_slice(&payment.transaction_id);
+            key.extend_from_slice(&vout.to_be_bytes());
+            key
+        }
+        None => payment.transaction_id.clone(),
+    }
+}
+
+/// Stamps first (child index, then transaction id), then stealth members by transaction id.
+fn payment_ord(a: &PaymentMember, b: &PaymentMember) -> Ordering {
+    let rank = |member: &PaymentMember| u8::from(member.child_index.is_none());
+    rank(a)
+        .cmp(&rank(b))
+        .then_with(|| match (a.child_index, b.child_index) {
+            (Some(left), Some(right)) => left.cmp(&right),
+            _ => Ordering::Equal,
+        })
+        .then_with(|| a.transaction_id.cmp(&b.transaction_id))
+}
+
+fn check_payment_list(payments: &[PaymentMember], path: &str) -> Result<(), CodecError> {
+    require_ordered(payments, payment_ord, "payment members", path, false)?;
+    let mut seen_idx = HashSet::new();
+    for payment in payments {
+        if let Some(index) = payment.child_index {
+            if !seen_idx.insert(index) {
+                return Err(semantic("duplicate child index", path));
+            }
+        }
+    }
+    let tx_keys: Vec<Vec<u8>> = payments.iter().map(payment_tx_key).collect();
+    let tx_key_refs: Vec<&[u8]> = tx_keys.iter().map(Vec::as_slice).collect();
+    require_unique(&tx_key_refs, "transaction id", path)?;
+    let addresses: Vec<&[u8]> = payments
+        .iter()
+        .map(|payment| payment.address.as_slice())
+        .collect();
+    require_unique(&addresses, "payment address", path)?;
+    let mut stamp_at = 0u32;
+    for (i, payment) in payments.iter().enumerate() {
+        let Some(index) = payment.child_index else {
+            continue;
+        };
+        if index != stamp_at {
+            return Err(semantic(
+                "child indices must be exactly contiguous 0..n-1 (T3a.5)",
+                &format!("{path}[{i}]"),
+            ));
+        }
+        stamp_at += 1;
+    }
+    Ok(())
+}
+
 fn require_unique(keys: &[&[u8]], what: &str, location: &str) -> Result<(), CodecError> {
     let mut seen = HashSet::new();
     for key in keys {
@@ -340,80 +398,24 @@ pub(crate) fn check_semantics(
         TypedPayload::BlackjackHandItem(item) => check_blackjack_hand(item, path),
         TypedPayload::BlackjackHandV3Item(item) => check_blackjack_hand_v3(item, path),
         TypedPayload::ForwardingDelivery {
-            network,
             destination,
             payload_frame,
             payments,
             ..
         } => {
-            require_ordered(
-                payments,
-                |a, b| {
-                    a.child_index
-                        .cmp(&b.child_index)
-                        .then_with(|| a.transaction_id.cmp(&b.transaction_id))
-                },
-                "payment members",
-                &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
-                false,
-            )?;
-            let mut seen_idx = HashSet::new();
-            for payment in payments {
-                if !seen_idx.insert(payment.child_index) {
-                    return Err(semantic(
-                        "duplicate child index",
-                        &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
-                    ));
-                }
-            }
-            let tx_keys: Vec<Vec<u8>> = payments
-                .iter()
-                .map(|p| {
-                    if let Some(vout) = p.vout {
-                        let mut key = Vec::with_capacity(p.transaction_id.len() + 4);
-                        key.extend_from_slice(&p.transaction_id);
-                        key.extend_from_slice(&vout.to_be_bytes());
-                        key
-                    } else {
-                        p.transaction_id.clone()
-                    }
-                })
-                .collect();
-            let tx_key_refs: Vec<&[u8]> = tx_keys.iter().map(|k| k.as_slice()).collect();
-            require_unique(
-                &tx_key_refs,
-                "transaction id",
-                &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
-            )?;
-            let child_network = match opened(payload_frame) {
-                TypedPayload::DirectMessage { network, .. } => network,
+            match opened(payload_frame) {
+                TypedPayload::DirectMessage { .. } => {}
                 _ => panic!("internal: expected an opened type-10 frame"),
-            };
-            if network != child_network {
-                return Err(semantic(
-                    "forwarding network differs from the type-10 network",
-                    &at(path, mf::forwarding_delivery_envelope::NETWORK),
-                ));
             }
+            check_payment_list(
+                payments,
+                &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
+            )?;
             if destination.key_type != key_type::SECP256K1 {
                 return Err(semantic(
                     "destination account must be key type 1",
                     &at(path, mf::forwarding_delivery_envelope::DESTINATION),
                 ));
-            }
-            let addresses: Vec<&[u8]> = payments.iter().map(|p| p.address.as_slice()).collect();
-            require_unique(
-                &addresses,
-                "payment address",
-                &at(path, mf::forwarding_delivery_envelope::PAYMENTS),
-            )?;
-            for (i, payment) in payments.iter().enumerate() {
-                if payment.child_index != i as u32 {
-                    return Err(semantic(
-                        "child indices must be exactly contiguous 0..n-1 (T3a.5)",
-                        &at_index(path, mf::forwarding_delivery_envelope::PAYMENTS, i),
-                    ));
-                }
             }
             Ok(())
         }
@@ -426,45 +428,7 @@ pub(crate) fn check_semantics(
             dleq_proof,
             ..
         } => {
-            require_ordered(
-                payments,
-                |a, b| {
-                    a.child_index
-                        .cmp(&b.child_index)
-                        .then_with(|| a.transaction_id.cmp(&b.transaction_id))
-                },
-                "payment members",
-                &at(path, mf::direct_message_delivery::PAYMENTS),
-                false,
-            )?;
-            let mut seen_idx = HashSet::new();
-            for payment in payments {
-                if !seen_idx.insert(payment.child_index) {
-                    return Err(semantic(
-                        "duplicate child index",
-                        &at(path, mf::direct_message_delivery::PAYMENTS),
-                    ));
-                }
-            }
-            let tx_keys: Vec<Vec<u8>> = payments
-                .iter()
-                .map(|p| {
-                    if let Some(vout) = p.vout {
-                        let mut key = Vec::with_capacity(p.transaction_id.len() + 4);
-                        key.extend_from_slice(&p.transaction_id);
-                        key.extend_from_slice(&vout.to_be_bytes());
-                        key
-                    } else {
-                        p.transaction_id.clone()
-                    }
-                })
-                .collect();
-            let tx_key_refs: Vec<&[u8]> = tx_keys.iter().map(|k| k.as_slice()).collect();
-            require_unique(
-                &tx_key_refs,
-                "transaction id",
-                &at(path, mf::direct_message_delivery::PAYMENTS),
-            )?;
+            check_payment_list(payments, &at(path, mf::direct_message_delivery::PAYMENTS))?;
             let child_network = match opened(payload_frame) {
                 TypedPayload::RecipientPayload { network, .. } => network,
                 _ => panic!("internal: expected an opened type-11 frame"),
@@ -496,20 +460,6 @@ pub(crate) fn check_semantics(
                     return Err(semantic(
                         "recipient account must be key type 1",
                         &at(path, mf::direct_message_delivery::RECIPIENT),
-                    ));
-                }
-            }
-            let addresses: Vec<&[u8]> = payments.iter().map(|p| p.address.as_slice()).collect();
-            require_unique(
-                &addresses,
-                "payment address",
-                &at(path, mf::direct_message_delivery::PAYMENTS),
-            )?;
-            for (i, payment) in payments.iter().enumerate() {
-                if payment.child_index != i as u32 {
-                    return Err(semantic(
-                        "child indices must be exactly contiguous 0..n-1 (T3a.5)",
-                        &at_index(path, mf::direct_message_delivery::PAYMENTS, i),
                     ));
                 }
             }

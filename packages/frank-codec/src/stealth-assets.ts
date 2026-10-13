@@ -8,21 +8,16 @@ import {
 } from './constants'
 import { FrankCodecError } from './errors'
 import { encodeFrame } from './frame'
-import { paymentTransferToCborMap } from './stealth'
-import type { CanonicalPaymentTransfer } from './stealth'
-import type {
-  AccountRef,
-  ParsedFrame,
-  PaymentTransfer,
-  StealthAssetMessageItem,
-} from './types'
+import { paymentMemberToCborMap } from './stealth'
+import type { PaymentMemberInput } from './stealth'
+import type { AccountRef, ParsedFrame, StealthAssetMessageItem } from './types'
 import { parseFrame } from './validate'
 
 export const STEALTH_SCHEME_SECP256K1_ECDH_ADD_V1 = 1
 
 export interface CanonicalStealthAssetMessageItem {
   transfers: ReadonlyArray<{
-    transfer: PaymentTransfer | CanonicalPaymentTransfer
+    transfer: PaymentMemberInput
     derivationScheme: number
     recipientSpendKey: AccountRef
     tokenProgram?: Uint8Array
@@ -48,10 +43,7 @@ export function encodeStealthAssetMessageItem(
     )
   const transfers = item.transfers.map(entry => {
     const fields = cborMap([
-      [
-        STEALTH_ASSET_TRANSFER.transfer,
-        paymentTransferToCborMap(entry.transfer),
-      ],
+      [STEALTH_ASSET_TRANSFER.transfer, paymentMemberToCborMap(entry.transfer)],
       [STEALTH_ASSET_TRANSFER.derivationScheme, entry.derivationScheme],
       [
         STEALTH_ASSET_TRANSFER.recipientSpendKey,

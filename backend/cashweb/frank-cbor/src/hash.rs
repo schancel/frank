@@ -9,7 +9,10 @@ use crate::message_types::{
 };
 use sha2::{Digest, Sha256};
 
+use crate::cbor::{decode_canonical, CborValue};
 use crate::error::UsageError;
+use crate::limits::FRAME_HEADER_BYTES;
+use crate::message_fields as mf;
 use crate::model::{ParsedFrame, TypedPayload};
 
 fn usage(detail: impl Into<String>) -> UsageError {
@@ -69,8 +72,13 @@ fn network_field(typed: &TypedPayload) -> Option<&str> {
         | TypedPayload::TopicPostSubmission { network, .. }
         | TypedPayload::TopicVoteSubmission { network, .. }
         | TypedPayload::EncryptedContent { network, .. }
-        | TypedPayload::KeyTransitionStatement { network, .. }
-        | TypedPayload::ForwardingDelivery { network, .. } => Some(network),
+        | TypedPayload::KeyTransitionStatement { network, .. } => Some(network),
+        TypedPayload::ForwardingDelivery { payload_frame, .. } => {
+            match payload_frame.typed.as_deref() {
+                Some(TypedPayload::DirectMessage { network, .. }) => Some(network),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -110,8 +118,7 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
         | TYPE_KEY_TRANSITION_STATEMENT
         | TYPE_TOPIC_POST
         | TYPE_TOPIC_POST_SUBMISSION
-        | TYPE_TOPIC_VOTE_SUBMISSION
-        | TYPE_FORWARDING_DELIVERY_ENVELOPE => {
+        | TYPE_TOPIC_VOTE_SUBMISSION => {
             let typed = frame.typed.as_deref().ok_or_else(|| {
                 usage(format!(
                     "T1 for a type-{} frame needs the stage 8 typed projection",
@@ -124,6 +131,25 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
                     frame.type_id
                 ))
             })
+        }
+        TYPE_FORWARDING_DELIVERY_ENVELOPE => {
+            let typed = frame
+                .typed
+                .as_deref()
+                .ok_or_else(|| usage("T1 for a type-13 frame needs the opened type-10 network"))?;
+            match typed {
+                TypedPayload::ForwardingDelivery { payload_frame, .. } => {
+                    match payload_frame.typed.as_deref() {
+                        Some(TypedPayload::DirectMessage { network, .. }) => Ok(network.clone()),
+                        _ => Err(usage(
+                            "T1 for a type-13 frame needs the opened type-10 network",
+                        )),
+                    }
+                }
+                _ => Err(usage(
+                    "T1 for a type-13 frame needs the opened type-10 network",
+                )),
+            }
         }
         _ => Err(usage(
             "content hashes are undefined for an unknown type (T1)",
@@ -195,12 +221,52 @@ pub fn recipient_payload_digest(network: &str, type5_frame: &[u8]) -> Result<[u8
     Ok(sha256(&transcript))
 }
 
-/// T3f forwarding payload digest of a complete inner delivery frame.
-pub fn forwarding_payload_digest(
-    network: &str,
-    inner_frame: &[u8],
-) -> Result<[u8; 32], UsageError> {
-    let transcript = common_transcript("frank/forwarding-payload/v1", network, inner_frame, &[])?;
+fn is_network_tag(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 {
+        return false;
+    }
+    let first_ok = bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit();
+    first_ok
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn map_get(value: &CborValue, key: u64) -> Option<&CborValue> {
+    match value {
+        CborValue::Map(entries) => entries.iter().find(|(k, _)| *k == key).map(|(_, v)| v),
+        _ => None,
+    }
+}
+
+/// Network tag from a type-10 frame's own network field. The frame bytes are not re-encoded.
+fn delivery_network_tag(frame: &[u8]) -> Result<String, UsageError> {
+    if frame.len() < FRAME_HEADER_BYTES {
+        return Err(usage("inner frame is shorter than a FRNK header"));
+    }
+    let envelope = decode_canonical(&frame[FRAME_HEADER_BYTES..])
+        .map_err(|_| usage("forwarding digest requires a type-10 inner frame"))?;
+    match map_get(&envelope, mf::frank_envelope::TYPE_ID) {
+        Some(CborValue::Int(id)) if *id == i128::from(TYPE_DIRECT_MESSAGE_DELIVERY) => {}
+        _ => return Err(usage("forwarding digest requires a type-10 inner frame")),
+    }
+    let payload = match map_get(&envelope, mf::frank_envelope::PAYLOAD) {
+        Some(CborValue::Bytes(bytes)) => bytes,
+        _ => return Err(usage("type-10 payload is not a byte string")),
+    };
+    let payload_map =
+        decode_canonical(payload).map_err(|_| usage("type-10 network tag is missing"))?;
+    match map_get(&payload_map, mf::direct_message_delivery::NETWORK) {
+        Some(CborValue::Text(network)) if is_network_tag(network) => Ok(network.clone()),
+        _ => Err(usage("type-10 network tag is missing")),
+    }
+}
+
+/// T3f forwarding payload digest of the exact inner type-10 frame, using that frame's network.
+pub fn forwarding_payload_digest(inner_frame: &[u8]) -> Result<[u8; 32], UsageError> {
+    let network = delivery_network_tag(inner_frame)?;
+    let transcript = common_transcript("frank/forwarding-payload/v1", &network, inner_frame, &[])?;
     Ok(sha256(&transcript))
 }
 

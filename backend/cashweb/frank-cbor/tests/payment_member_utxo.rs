@@ -23,7 +23,7 @@ fn utxo_payment(
     vout: Option<u32>,
 ) -> CborValue {
     let mut entries = vec![
-        (pay::CHILD_INDEX, int(i128::from(index))),
+        (pay::NETWORK, CborValue::Text(NET.to_string())),
         (pay::TRANSACTION_ID, CborValue::Bytes(txid)),
         (pay::VALUE, value),
         (pay::ADDRESS, CborValue::Bytes(bytes_of(20, 50 + index))),
@@ -31,6 +31,7 @@ fn utxo_payment(
             pay::COMMITMENT,
             CborValue::Bytes(payment_commitment(t3, index).to_vec()),
         ),
+        (pay::CHILD_INDEX, int(i128::from(index))),
     ];
     if let Some(v) = vout {
         entries.push((pay::VOUT, int(i128::from(v))));

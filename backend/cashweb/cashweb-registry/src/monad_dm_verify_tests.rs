@@ -73,6 +73,41 @@ fn fixture_current_evidence(evidence: HistoricalEvidence, now: Timestamp) -> Cur
     }
 }
 
+#[test]
+fn stamp_verification_reads_the_payment_item_network() {
+    let v = &corpus()["runtime_case"];
+    let current = fixture_current(v);
+    let delivery = bytes(v, "delivery");
+    let context = bytes(v, "context");
+    let checks = check(&delivery, &context, &current).unwrap();
+    assert_eq!(checks.payments[0].network, "monad");
+    let marker = b"\x65monad";
+    let at = delivery
+        .windows(marker.len())
+        .rposition(|window| window == marker)
+        .expect("payment network");
+    let mut altered = delivery.clone();
+    altered[at..at + marker.len()].copy_from_slice(b"\x65lotus");
+    let ValidationResult::Parsed(parsed) =
+        validate_frame(&altered, &default_context()).expect("altered delivery still parses")
+    else {
+        panic!("parsed");
+    };
+    let Some(TypedPayload::DirectMessage {
+        network, payments, ..
+    }) = parsed.typed.as_deref()
+    else {
+        panic!("direct message");
+    };
+    assert_eq!(network, "monad");
+    assert_eq!(payments[0].network, "lotus");
+    assert!(payments[0].child_index.is_some());
+    assert_eq!(
+        check(&altered, &context, &current).unwrap_err(),
+        CanonicalStampError::Cryptographic
+    );
+}
+
 fn check(delivery: &[u8], context: &[u8], recipient: &Current) -> Result<CanonicalStampChecks> {
     verify_canonical_stamp(CanonicalStampCheckInput {
         delivery,
@@ -95,7 +130,7 @@ fn exact_ts_envelope_context_and_stamp_checks_do_not_claim_a_payment() {
     );
     assert_eq!(checks.payments.len(), 1);
     assert_eq!(
-        hex::encode(&checks.payments[0].commitment),
+        hex::encode(checks.payments[0].commitment.as_deref().unwrap()),
         v["t4"].as_str().unwrap()
     );
     let mut bad_context = context.clone();

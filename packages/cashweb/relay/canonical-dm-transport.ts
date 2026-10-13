@@ -528,15 +528,21 @@ export function inspectCanonicalPair(
   const recipient = delivery.recipient ?? payload.recipient
   const dleqProof = delivery.dleqProof ?? payload.dleqProof
   const decoded = decodeCanonical(parts.context)
-  if (!(decoded instanceof Map) || decoded.size !== 16)
+  const sealedSender = payload.sender === undefined
+  const expectedContextSize = sealedSender ? 13 : 16
+  if (!(decoded instanceof Map) || decoded.size !== expectedContextSize)
     invalid('Exact allocated context required')
   const context: DirectMessageCryptoContext = {
     network: delivery.network,
-    sender: payload.sender,
+    ...(sealedSender
+      ? {}
+      : {
+          sender: payload.sender,
+          senderDirectoryHash: field(decoded, 4, 32),
+          senderMessageKey: account(decoded, 6),
+        }),
     recipient,
-    senderDirectoryHash: field(decoded, 4, 32),
     recipientDirectoryHash: field(decoded, 5, 32),
-    senderMessageKey: account(decoded, 6),
     recipientMessageKey: account(decoded, 7),
     stampKey: delivery.destination,
     ephemeralPoint: payload.ephemeralPoint,
@@ -564,7 +570,9 @@ export function inspectCanonicalPair(
     payload_hash: toHex(delivery.payloadDigest),
     network: delivery.network,
     recipient: '0x' + toHex(addressFromCompressedPubkey(recipient.keyBytes)),
-    sender_t1: toHex(context.senderDirectoryHash),
+    sender_t1: context.senderDirectoryHash
+      ? toHex(context.senderDirectoryHash)
+      : '00'.repeat(32),
     recipient_t1: toHex(context.recipientDirectoryHash),
     delivery_sha256: toHex(sha256(parts.delivery)),
     context_sha256: toHex(sha256(parts.context)),

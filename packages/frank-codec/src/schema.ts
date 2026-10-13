@@ -1386,12 +1386,12 @@ export function parseDraft(
     }
     case TYPE_RECIPIENT_ENCRYPTED_PAYLOAD: {
       if (schema.effective >= 2) {
-        const m = fields(payload, P, [0, 1, 2, 3, 4, 5, 6, 7], [], true, allow)
+        const m = fields(payload, P, [0, 2, 3, 4, 5, 6, 7], [1], true, allow)
         return {
           type: 11,
           schemaVersion: 2,
           network: networkTag(m.get(0), `${P}.0`),
-          sender: account(m.get(1), `${P}.1`),
+          sender: m.has(1) ? account(m.get(1), `${P}.1`) : undefined,
           recipient: account(m.get(2), `${P}.2`),
           suite: u32ish(m.get(3), `${P}.3`, 0, 65535),
           cryptoBoxEnvelope: bstr(
@@ -1425,7 +1425,14 @@ export function parseDraft(
     case TYPE_ENCRYPTED_MESSAGE_CONTENT: {
       // Field 4 is optional on the wire: writers should always send it, and a reader files a
       // message without one under the conversation it would itself open with the sender.
-      const m = fields(payload, P, [0, 1, 2, 3], [4, 5, 6], true, allow)
+      const m = fields(
+        payload,
+        P,
+        [0, 1, 2, 3],
+        [4, 5, 6, 7, 8, 9],
+        true,
+        allow,
+      )
       const convName = m.has(5)
         ? conversationName(m.get(5), `${P}.5`)
         : undefined
@@ -1441,6 +1448,11 @@ export function parseDraft(
         conversationId: m.has(4) ? bstr(m.get(4), `${P}.4`, 16, 16) : undefined,
         conversationName: convName,
         tokenTransfer: transfer,
+        sender: m.has(7) ? account(m.get(7), `${P}.7`) : undefined,
+        senderDirectoryHash: m.has(8)
+          ? bstr(m.get(8), `${P}.8`, 32, 32)
+          : undefined,
+        senderMessageKey: m.has(9) ? account(m.get(9), `${P}.9`) : undefined,
         unknownFields: m.unknown,
       }
     }
@@ -1888,7 +1900,7 @@ export function checkAllocated(d: DraftPayload): void {
       d.recoveryAuthorities?.forEach((a, i) => checkKeyType(a, `${P}.7[${i}]`))
       break
     case 11:
-      checkKeyType(d.sender, `${P}.1`)
+      if (d.sender) checkKeyType(d.sender, `${P}.1`)
       checkKeyType(d.recipient, `${P}.2`)
       if (
         (d.schemaVersion === 1 && d.suite !== ENCRYPTION_SUITE_PROOF) ||
@@ -1899,6 +1911,10 @@ export function checkAllocated(d: DraftPayload): void {
           `encryption suite ${d.suite} is unallocated (S2c)`,
         )
       }
+      break
+    case 12:
+      if (d.sender) checkKeyType(d.sender, `${P}.7`)
+      if (d.senderMessageKey) checkKeyType(d.senderMessageKey, `${P}.9`)
       break
     case 3:
       checkKeyType(d.subject, `${P}.1`)

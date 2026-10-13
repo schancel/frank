@@ -6,6 +6,7 @@ import type { Current, DirectoryStore } from '@frank/directory-admission'
 import {
   parseFrame,
   messageContentDigest,
+  recipientPayloadDigest,
   fromHex,
   toHex,
   verifyPreviewDirectoryEvidence,
@@ -15,6 +16,7 @@ import {
 import {
   open,
   openAsSender,
+  openSealed,
   randomBytes,
   seal,
   selfOpenEphemeral,
@@ -27,10 +29,12 @@ import {
   prepareDirectMessage,
   openDirectMessage,
   openOwnDirectMessage,
+  peekSealedDirectMessageSender,
   directMessageText,
   DirectMessageRoles,
   PreparedDirectMessage,
 } from './canonical-dm'
+import { inspectCanonicalPair } from './canonical-dm-transport'
 let location: string
 let store: DirectoryStore
 let current: Current
@@ -99,11 +103,25 @@ function roles(
         senderPrivateKey: fromHex(v.message_secret_test_only),
         senderPublicKey: snapshot.messageKey.keyBytes,
       }),
-    openMessage: input =>
-      open({
-        ...input,
-        recipientPrivateKey: fromHex(v.message_secret_test_only),
-      }),
+    openMessage: input => {
+      const recipientPrivateKey = fromHex(v.message_secret_test_only)
+      if (!input.senderPublicKey) {
+        const res = openSealed({
+          envelope: input.envelope,
+          context: input.context,
+          recipientPrivateKey,
+        })
+        return res.ok
+          ? { ok: true as const, value: res.value.plaintext }
+          : { ok: false as const, error: res.error }
+      }
+      return open({
+        envelope: input.envelope,
+        context: input.context,
+        recipientPrivateKey,
+        senderPublicKey: input.senderPublicKey,
+      })
+    },
     dispose: jest.fn(),
   }
 }
@@ -1034,7 +1052,7 @@ test('a message whose caller names no conversation carries none, never the messa
   expect(prepared.conversationId).toBeUndefined()
   const content = parseFrame(prepared.content)
   if (content.kind !== 'parsed' || content.typed?.type !== 12)
-    throw new Error('expected type 6 content')
+    throw new Error('expected type 12 content')
   expect(content.typed.conversationId).toBeUndefined()
   expect(toHex(content.typed.messageId)).toBe(toHex(messageId))
   const opened = openDirectMessage({
@@ -1138,3 +1156,102 @@ test('ticket #970: explicit conversationId and conversationName are preserved ac
   expect(selfOpened.conversationName).toBe(conversationName)
   expect(selfOpened.mode).toBe('send')
 })
+
+test('sealed-sender omits sender from outer payload and context, folds sender into Type 12 + masked envelope, and opens cleanly', () => {
+  const messageId = new Uint8Array(16).fill(0x55)
+  const role = selfOpenRoles()
+  const prepared = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId,
+    items: [directMessageText('sealed sender hello')],
+    roles: role,
+    sealedSender: true,
+  })
+
+  // Outer Type 5 frame omits sender (key 1)
+  const outer = parseFrame(prepared.payload)
+  if (outer.kind !== 'parsed' || outer.typed?.type !== 11)
+    throw new Error('expected type 11 payload')
+  expect(outer.typed.sender).toBeUndefined()
+
+  // Inner Type 6 frame carries sender, senderDirectoryHash, and senderMessageKey
+  const inner = parseFrame(prepared.content)
+  if (inner.kind !== 'parsed' || inner.typed?.type !== 12)
+    throw new Error('expected type 12 content')
+  expect(toHex(inner.typed.sender?.keyBytes ?? new Uint8Array())).toBe(
+    toHex(
+      verifyPreviewDirectoryEvidence(
+        current.evidence.attestation,
+        corpus.network,
+      ).statement.subject.keyBytes,
+    ),
+  )
+  expect(toHex(inner.typed.senderDirectoryHash ?? new Uint8Array())).toBe(v.t1)
+  expect(
+    toHex(inner.typed.senderMessageKey?.keyBytes ?? new Uint8Array()),
+  ).toBe(toHex(current.messageKey.keyBytes))
+
+  // Transport inspection accepts the 13-entry context and reports zeroed sender_t1
+  const delivery = encodeFrame(
+    { typeId: 10, schemaVersion: 2, minReaderVersion: 1 },
+    cborMap([
+      [0, corpus.network],
+      [
+        1,
+        cborMap([
+          [0, 1],
+          [1, current.stampKey.keyBytes],
+        ]),
+      ],
+      [2, prepared.payload],
+      [3, recipientPayloadDigest(corpus.network, prepared.payload)],
+    ]),
+  )
+  const inspected = inspectCanonicalPair({
+    delivery,
+    context: prepared.context,
+  })
+  expect(inspected.sender_t1).toBe('00'.repeat(32))
+  expect(inspected.recipient_t1).toBe(v.t1)
+
+  // Recipient can peek sealed sender identity before resolving senderCurrent
+  const peeked = peekSealedDirectMessageSender({
+    network: corpus.network,
+    payload: prepared.payload,
+    context: prepared.context,
+    roles: role,
+  })
+  expect(toHex(peeked.senderT1)).toBe(v.t1)
+  expect(toHex(peeked.senderMessageKey.keyBytes)).toBe(
+    toHex(current.messageKey.keyBytes),
+  )
+
+  // Recipient opens and verifies full message against senderCurrent
+  const opened = openDirectMessage({
+    ...receive(role),
+    payload: prepared.payload,
+    context: prepared.context,
+  })
+  expect(opened.mode).toBe('receive')
+  expect(toHex(opened.senderT1)).toBe(v.t1)
+  expect(toHex(opened.items[0].frame)).toBe(
+    toHex(directMessageText('sealed sender hello')),
+  )
+
+  // Sender self-opens sealed-sender outbound message
+  const selfOpened = openOwnDirectMessage({
+    network: corpus.network,
+    payload: prepared.payload,
+    context: prepared.context,
+    roles: role,
+    senderCurrent: current,
+    recipientCurrent: current,
+  })
+  expect(selfOpened.mode).toBe('send')
+  expect(toHex(selfOpened.items[0].frame)).toBe(
+    toHex(directMessageText('sealed sender hello')),
+  )
+})
+

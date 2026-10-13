@@ -15,8 +15,10 @@ import {
   SUITES,
   isSuiteError,
   open,
+  openSealed,
   producedSuiteIds,
   seal,
+  unmaskEnvelopeSender,
 } from '../src'
 import { decodeEnvelope, encodeEnvelope } from '../src/envelope.js'
 import {
@@ -816,5 +818,61 @@ describe('encryption suites', () => {
     expect(opened.ok).toBe(true)
     if (opened.ok)
       expect(toHex(opened.value)).toBe(DM_CORPUS.cryptoBox.plaintextHex)
+  })
+
+  test('sealed-sender envelope masks sender public key and opens without cleartext senderPublicKey', () => {
+    const sealed = seal({
+      suiteId: SUITE_AUTH_XCHACHA,
+      recipientPublicKey: recipientPk,
+      senderPublicKey: senderPk,
+      senderPrivateKey: senderSk,
+      plaintext: text('sealed-sender-hello'),
+      context,
+      ephemeralSecret: ephemeral,
+      salt,
+      sealedSender: true,
+    })
+    expect(sealed.ok).toBe(true)
+    if (!sealed.ok) return
+
+    // 7-entry CBOR map (0xa7) with maskedSender at key 6
+    expect(sealed.value[0]).toBe(0xa7)
+    const decoded = decodeEnvelope(sealed.value)
+    expect(decoded).not.toBeNull()
+    expect(decoded?.maskedSender).toHaveLength(33)
+    expect(toHex(decoded!.maskedSender!)).not.toBe(toHex(senderPk))
+    // Ensure senderPk bytes do not appear anywhere in the raw envelope
+    expect(toHex(sealed.value)).not.toContain(toHex(senderPk))
+
+    const unmasked = unmaskEnvelopeSender({
+      envelope: sealed.value,
+      recipientPrivateKey: recipientSk,
+      context,
+    })
+    expect(unmasked.ok).toBe(true)
+    if (unmasked.ok) expect(toHex(unmasked.value)).toBe(toHex(senderPk))
+
+    const opened = openSealed({
+      envelope: sealed.value,
+      recipientPrivateKey: recipientSk,
+      context,
+    })
+    expect(opened.ok).toBe(true)
+    if (opened.ok) {
+      expect(Buffer.from(opened.value.plaintext).toString()).toBe(
+        'sealed-sender-hello',
+      )
+      expect(toHex(opened.value.senderPublicKey)).toBe(toHex(senderPk))
+    }
+
+    // Tampering with maskedSender causes openSealed to fail
+    const tampered = new Uint8Array(sealed.value)
+    tampered[tampered.length - 1] ^= 0x01
+    const tamperedOpen = openSealed({
+      envelope: tampered,
+      recipientPrivateKey: recipientSk,
+      context,
+    })
+    expect(tamperedOpen.ok).toBe(false)
   })
 })

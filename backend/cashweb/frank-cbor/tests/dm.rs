@@ -38,11 +38,11 @@ fn dm_context_matches_typescript_vector() {
     let encode_with = |message_key: &AccountRef, ephemeral_point: &[u8]| {
         encode_direct_message_crypto_context(&DirectMessageCryptoContext {
             network: context["network"].as_str().unwrap(),
-            sender: &sender,
+            sender: Some(&sender),
             recipient: &recipient,
-            sender_directory_hash: &sender_hash,
+            sender_directory_hash: Some(&sender_hash),
             recipient_directory_hash: &recipient_hash,
-            sender_message_key: message_key,
+            sender_message_key: Some(message_key),
             recipient_message_key: &recipient_message_key,
             stamp_key: &stamp_key,
             ephemeral_point,
@@ -59,6 +59,22 @@ fn dm_context_matches_typescript_vector() {
             .as_str()
             .expect("encodedHex")
     );
+
+    let sealed_encoded = encode_direct_message_crypto_context(&DirectMessageCryptoContext {
+        network: context["network"].as_str().unwrap(),
+        sender: None,
+        recipient: &recipient,
+        sender_directory_hash: None,
+        recipient_directory_hash: &recipient_hash,
+        sender_message_key: None,
+        recipient_message_key: &recipient_message_key,
+        stamp_key: &stamp_key,
+        ephemeral_point: &ephemeral,
+        shared_point: &shared,
+        dleq_proof: &proof,
+    })
+    .expect("sealed context");
+    assert_eq!(sealed_encoded[0], 0xad); // 13-entry map omitting keys 2, 4, 6
 
     let uncompressed = hex::decode(concat!(
         "04",

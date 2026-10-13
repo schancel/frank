@@ -284,6 +284,35 @@ export function checkSemantics(
       if (typed.tokenTransfer) {
         checkTokenTransferSemantics(typed.tokenTransfer, `${P}.6`)
       }
+      const hasSender = typed.sender !== undefined
+      const hasSenderDirHash = typed.senderDirectoryHash !== undefined
+      const hasSenderMsgKey = typed.senderMessageKey !== undefined
+      if (hasSender !== hasSenderDirHash || hasSender !== hasSenderMsgKey) {
+        throw semantic(
+          'sealed-sender fields (7, 8, 9) must either all be present or all be absent',
+          P,
+        )
+      }
+      if (
+        typed.sender !== undefined &&
+        (typed.sender.keyType !== 1 ||
+          !isCompressedPoint(typed.sender.keyBytes))
+      ) {
+        throw semantic(
+          'sealed-sender account must be a compressed secp256k1 point',
+          `${P}.7`,
+        )
+      }
+      if (
+        typed.senderMessageKey !== undefined &&
+        (typed.senderMessageKey.keyType !== 1 ||
+          !isCompressedPoint(typed.senderMessageKey.keyBytes))
+      ) {
+        throw semantic(
+          'sealed-sender message key must be a compressed secp256k1 point',
+          `${P}.9`,
+        )
+      }
       return
     }
     case 26: {

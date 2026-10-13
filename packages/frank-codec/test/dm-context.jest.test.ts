@@ -153,4 +153,32 @@ describe('DM crypto context v1', () => {
     const decoded = decodeDirectMessageCryptoContext(encoded)
     expect(decoded).toEqual(VECTOR)
   })
+
+  it('round-trips sealed-sender DirectMessageCryptoContext omitting sender fields (2, 4, 6)', () => {
+    const sealedCtx: DirectMessageCryptoContext = {
+      network: VECTOR.network,
+      recipient: VECTOR.recipient,
+      recipientDirectoryHash: VECTOR.recipientDirectoryHash,
+      recipientMessageKey: VECTOR.recipientMessageKey,
+      stampKey: VECTOR.stampKey,
+      ephemeralPoint: VECTOR.ephemeralPoint,
+      sharedPoint: VECTOR.sharedPoint,
+      dleqProof: VECTOR.dleqProof,
+    }
+    const encoded = encodeDirectMessageCryptoContext(sealedCtx)
+    // 13-entry CBOR map starts with 0xad
+    expect(encoded[0]).toBe(0xad)
+    const decoded = decodeDirectMessageCryptoContext(encoded)
+    expect(decoded).toEqual(sealedCtx)
+    expect(decoded.sender).toBeUndefined()
+    expect(decoded.senderDirectoryHash).toBeUndefined()
+    expect(decoded.senderMessageKey).toBeUndefined()
+
+    expect(() =>
+      encodeDirectMessageCryptoContext({
+        ...sealedCtx,
+        sender: VECTOR.sender,
+      }),
+    ).toThrow('must either all be present or all be absent')
+  })
 })

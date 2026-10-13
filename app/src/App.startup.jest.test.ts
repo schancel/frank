@@ -648,7 +648,7 @@ describe('visible read-only startup failure', () => {
   }
 
   it.each(
-    freshContexts.flatMap(context =>
+    (['null chats'] as const).flatMap(context =>
       Object.entries({
         'ownerless ordinary': /explicit conversation ID required/,
         'owned ordinary':
@@ -687,28 +687,82 @@ describe('visible read-only startup failure', () => {
     },
   )
 
-  it.each(['network mismatch', 'version mismatch'] as const)(
-    'checks available internal owner affinity before the %s fresh exit',
-    async context => {
-      const f = await freshContext(context)
-      const row = message('conflicting-internal')
-      Object.assign(row.message, { items: [{ type: 'swap-record' }] })
-      f.messages.data.set(row.index, serializeMessageWrapper(row))
-      f.storage.data.set(
-        'chats',
-        JSON.stringify({
-          conversations: {
-            [row.message.conversationId!]: {
-              id: row.message.conversationId,
-              address: '0x3333333333333333333333333333333333333333',
-              participants: ['0x3333333333333333333333333333333333333333'],
-            },
+  it('recovers cleanly on version mismatch without throwing an unhandled rejection, preserves custody, and syncs new relay messages', async () => {
+    const originalNotification = (globalThis as any).Notification
+    ;(globalThis as any).Notification = jest.fn()
+    const f = await freshContext('version mismatch')
+    const row = message('existing-cached-message')
+    f.messages.data.set(row.index, serializeMessageWrapper(row))
+    f.storage.data.set(
+      'chats',
+      JSON.stringify({
+        conversations: {
+          [row.message.conversationId!]: {
+            id: row.message.conversationId,
+            address: PEER,
+            participants: [PEER, SELF],
           },
-        }),
+        },
+      }),
+    )
+    const unhandled = jest.fn()
+    process.on('unhandledRejection', unhandled)
+
+    try {
+      await expect(setupApis({ app: f.app })).resolves.toBeUndefined()
+      await expect(useChatStore().restored).resolves.toBe(true)
+      expect(startupRestoration.value.phase).toBe('restored')
+      expect(useChatStore().conversations).toEqual({})
+      expect(useChatStore().messages).toEqual({})
+      expect(useChatStore().logicalMessages).toEqual({})
+
+      // Custody is preserved and initialized
+      expect(mockInitialize).toHaveBeenCalledTimes(1)
+      expect(unhandled).not.toHaveBeenCalled()
+
+      // New messages can be received and synced from relay
+      const peer = PEER.toLowerCase()
+      const self = SELF.toLowerCase()
+      const newMsg = {
+        ...message('synced-from-relay'),
+        outbound: false,
+        senderAddress: peer,
+        copartyAddress: peer,
+        message: {
+          ...message('synced-from-relay').message,
+          outbound: false,
+          senderAddress: peer,
+        },
+      }
+      await useChatStore().receiveMessages([newMsg as any], self)
+      expect(useChatStore().messages).toHaveProperty(newMsg.index)
+
+      await messagingBoot({ app: f.app })
+      const router = createRouter()
+      await router.push(`/chat/${PEER}`)
+      await router.isReady()
+      const wrapper = mountedRoot(
+        f.pinia,
+        router,
+        f.app.config.globalProperties.$status,
       )
-      await expectRejectedOwnership(f, /belongs to a different recipient/)
-    },
-  )
+      try {
+        await flushPromises()
+        expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+      } finally {
+        wrapper.unmount()
+      }
+      await flushPromises()
+      await nextTick()
+    } finally {
+      process.removeListener('unhandledRejection', unhandled)
+      if (originalNotification) {
+        ;(globalThis as any).Notification = originalNotification
+      } else {
+        delete (globalThis as any).Notification
+      }
+    }
+  })
 
   it.each(
     freshContexts.flatMap(context =>

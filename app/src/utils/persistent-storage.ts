@@ -99,3 +99,5 @@ export async function requestPersistentStorageWithin(
     clearTimeout(timer)
   }
 }
+
+export { resetMessageAndChatStorage } from '../accounts/session'

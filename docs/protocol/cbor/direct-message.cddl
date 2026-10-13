@@ -16,31 +16,23 @@ direct-message-delivery = {
   * uint => frank-value, ; additive fields retained only under README.md rules
 }
 
+; Exactly one of field 7 or field 8. Field 7 requires field 4. Field 9 only with field 8.
 payment-member = {
-  0: uint .le 2147483647, ; stamp child index i (README T3a, S3)
-  1: bstr .size (1..128), ; chain transaction identifier
-  2: evm-quantity-256 / uint, ; verified value, fixed-width big-endian or uint satoshis
-  3: bstr .size (1..128), ; derived destination/address bytes
-  4: digest-32, ; exact T4 commitment verified in the transaction
-  ? 5: uint .le 4294967295, ; UTXO output index (vout)
-  ? 6: bstr .size (1..16384), ; optional explicit raw signed transaction bytes
+  0: network-tag,                 ; chain this payment settles on
+  1: bstr .size (1..128),          ; transaction id
+  2: evm-quantity-256 / uint,     ; value
+  3: bstr .size (1..128),          ; destination address or key bytes
+  ? 4: digest-32,                ; T4 commitment; required when field 7 is present
+  ? 5: uint .le 4294967295,      ; vout
+  ? 6: bstr .size (1..16384),    ; raw signed transaction
+  ? 7: uint .le 2147483647,      ; stamp child index; present means stamp payment
+  ? 8: stealth-metadata,         ; present means stealth payment
+  ? 9: bstr .size (1..128),      ; token contract or mint; stealth only
 }
 
 stealth-metadata = {
   0: account-ref,                       ; ephemeral pubkey (key type 1 or 2)
   ? 1: uint .le 65535 / bstr .size (1..32), ; optional view tag
-}
-
-payment-transfer = {
-  0: network-tag,                       ; e.g. "monad-testnet", "lotus", "bch"
-  1: bstr .size (1..128),               ; txid / hash
-  ? 2: uint .le 4294967295,             ; vout (UTXO output index)
-  3: bstr .size (1..128),               ; destination address / pubkey
-  4: evm-quantity-256 / uint,           ; value in satoshis uint or 32-byte big-endian
-  ? 5: bstr .size (1..128),             ; optional token contract address or token ID
-  ? 6: stealth-metadata,                ; optional stealth commitment { 0: ephemeral-pubkey, 1: view-tag }
-  ? 7: digest-32,                       ; optional T4 commitment
-  ? 8: bstr .size (1..16384),           ; optional raw signed transaction bytes
 }
 
 ; 33-byte compressed SEC1 secp256k1 point; encoding rules are README T3b.
@@ -159,7 +151,7 @@ stealth-asset-message-item = {
 }
 
 stealth-asset-transfer = {
-  0: payment-transfer, ; positive value; stealth-metadata is required
+  0: payment-member, ; stealth arm: positive value; field 8 is required
   1: uint .ge 1 .le 4294967295, ; derivation scheme; currently only 1 is allocated
   2: account-ref, ; authenticated recipient spending key
   ? 3: bstr .size 32, ; SPL token program; requires transfer.token
@@ -232,15 +224,15 @@ raffle-payload = {
 }
 
 ; Active type 25 / schema 1 / min-reader 1: relay forwarding delivery envelope.
+; Key 0 is not a field. The forwarding digest uses the inner type-1 frame's own network tag.
 forwarding-delivery-envelope = {
-  0: network-tag,                       ; destination relay network, e.g. "monad-testnet"
   1: account-ref,                       ; destination relay routing identity (key type 1)
   2: framed-object,                     ; inner direct-message-delivery (Type 1) frame
   3: digest-32,                         ; forwarding payload digest of field 2
   4: [1*64 payment-member],             ; storage payment stamps compensating destination relay
   ? 5: tstr .size (1..256),             ; optional destination relay endpoint URI
   ? 6: uint .le 4294967295,             ; optional delivery TTL / expiration timestamp (seconds)
-  * uint => frank-value,                ; additive extensible fields
+  * (uint .ge 7) => frank-value,        ; additive extensible fields; key 0 is a schema error
 }
 
 ; Active type 26 / schema 1 / min-reader 1: email bridge message item.

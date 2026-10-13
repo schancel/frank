@@ -17,9 +17,9 @@ use crate::limits::{
     TYPE_KEY_TRANSITION_STATEMENT, TYPE_MESSAGE_REVISION, TYPE_RECIPIENT_PAYLOAD, TYPE_TOPIC_POST,
 };
 use crate::model::{
-    ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame, PaymentMember,
-    ProfileEntry, ProfileHeader, Projection, RelayBinding, RetainedFrame, RetentionReason,
-    SignatureEntry, TypedPayload, ValidationResult,
+    ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame, ProfileEntry,
+    ProfileHeader, Projection, RelayBinding, RetainedFrame, RetentionReason, SignatureEntry,
+    TypedPayload, ValidationResult,
 };
 use crate::model::{
     ForumCursor, ForumDiscoveryPage, ForumOperationStatus, ForumPostContent, ForumTopicPage,
@@ -865,7 +865,6 @@ fn open_children(
     let path = format!("{location}/payload");
     match draft {
         Draft::ForwardingDelivery {
-            network,
             destination,
             payload_frame,
             payload_digest,
@@ -874,7 +873,6 @@ fn open_children(
             expires_at,
             unknown,
         } => Ok(TypedPayload::ForwardingDelivery {
-            network,
             destination,
             payload_frame: open_required(
                 payload_frame,
@@ -884,18 +882,7 @@ fn open_children(
                 &format!("{path}.2"),
             )?,
             payload_digest,
-            payments: payments
-                .into_iter()
-                .map(|payment| PaymentMember {
-                    child_index: payment.child_index,
-                    transaction_id: payment.transaction_id,
-                    value: payment.value,
-                    address: payment.address,
-                    commitment: payment.commitment,
-                    vout: payment.vout,
-                    raw_tx: payment.raw_tx,
-                })
-                .collect(),
+            payments,
             endpoint,
             expires_at,
             unknown,
@@ -920,18 +907,7 @@ fn open_children(
                 &format!("{path}.2"),
             )?,
             payload_digest,
-            payments: payments
-                .into_iter()
-                .map(|payment| PaymentMember {
-                    child_index: payment.child_index,
-                    transaction_id: payment.transaction_id,
-                    value: payment.value,
-                    address: payment.address,
-                    commitment: payment.commitment,
-                    vout: payment.vout,
-                    raw_tx: payment.raw_tx,
-                })
-                .collect(),
+            payments,
             recipient,
             dleq_proof,
             unknown,

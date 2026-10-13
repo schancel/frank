@@ -21,9 +21,9 @@ const ephemeral = fromHex(
 function sample(): CanonicalStealthAssetMessageItem['transfers'][number] {
   return {
     transfer: {
-      networkTag: 'monad-testnet',
-      txId: 'ab'.repeat(32),
-      destination: 'cd'.repeat(20),
+      network: 'monad-testnet',
+      transactionId: 'ab'.repeat(32),
+      address: 'cd'.repeat(20),
       value: 2n ** 200n + 7n,
       token: 'ef'.repeat(20),
       stealthMetadata: { keyType: 1, ephemeralPubKey: ephemeral },
@@ -56,7 +56,7 @@ export function stealthAssetCorpus() {
   const token = sample()
   const native = sample()
   delete native.transfer.token
-  native.transfer.networkTag = 'btc-testnet'
+  native.transfer.network = 'btc-testnet'
   native.transfer.value = 18446744073709551615n
   native.transfer.vout = 4294967295
   const unknown = sample()
@@ -93,21 +93,21 @@ export function stealthAssetCorpus() {
     {
       id: 'reject-zero',
       bytes: malformed(entry =>
-        (entry.get(0n) as Map<bigint, Encodable>).set(4n, 0n),
+        (entry.get(0n) as Map<bigint, Encodable>).set(2n, 0n),
       ),
     },
     {
       id: 'reject-missing-metadata',
       bytes: malformed(entry => {
         const transfer = entry.get(0n) as Map<bigint, Encodable>
-        transfer.delete(6n)
+        transfer.delete(8n)
       }),
     },
     {
       id: 'reject-program-without-token',
       bytes: malformed(entry => {
         const transfer = entry.get(0n) as Map<bigint, Encodable>
-        transfer.delete(5n)
+        transfer.delete(9n)
         entry.set(1n, 2n)
         entry.set(3n, new Uint8Array(32))
       }),

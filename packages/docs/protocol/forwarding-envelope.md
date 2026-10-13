@@ -20,15 +20,15 @@ From `docs/protocol/cbor/direct-message.cddl`:
 
 ```cddl
 ; Active type 25 / schema 1 / min-reader 1: relay forwarding delivery envelope.
+; Key 0 is not a field. The forwarding digest uses the inner type-1 frame's own network tag.
 forwarding-delivery-envelope = {
-  0: network-tag,                       ; destination relay network, e.g. "monad-testnet"
   1: account-ref,                       ; destination relay routing identity (key type 1)
   2: framed-object,                     ; inner direct-message-delivery (Type 1) frame
   3: digest-32,                         ; forwarding payload digest of field 2
-  4: [1*64 payment-member],             ; storage payment stamps compensating destination relay
+  4: [1*64 payment-member],             ; payments compensating the destination relay
   ? 5: tstr .size (1..256),             ; optional destination relay endpoint URI
   ? 6: uint .le 4294967295,             ; optional delivery TTL / expiration timestamp (seconds)
-  * uint => frank-value,                ; additive extensible fields
+  * (uint .ge 7) => frank-value,        ; additive extensible fields; key 0 is a schema error
 }
 ```
 
@@ -41,10 +41,9 @@ Frank achieves defense-in-depth through concentric deterministic CBOR frames:
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ 1. TYPE 25: FORWARDING DELIVERY ENVELOPE (Hop-by-Hop Relay Envelope)                  │
-│    • Network Tag (Field 0)                                                             │
 │    • Destination Relay Identity P_relay (Field 1, Key Type 1, 33-byte secp256k1)       │
-│    • Forwarding Payload Digest T_fwd (Field 3, 32-byte SHA-256)                        │
-│    • Storage Payment Stamps (Field 4, [1*64 payment-member] with contiguous indices)   │
+│    • Forwarding Payload Digest T_fwd (Field 3, 32-byte SHA-256 of the inner type 1)    │
+│    • Payments (Field 4, [1*64 payment-member]; each item carries its own network)      │
 │    • Optional Endpoint URI & TTL Timestamp (Fields 5, 6)                              │
 │ ┌────────────────────────────────────────────────────────────────────────────────────┐ │
 │ │ 2. TYPE 1: DIRECT MESSAGE DELIVERY (Destination Relay Delivery Frame)              │ │
@@ -101,7 +100,7 @@ sequenceDiagram
 
     RelayA->>RelayB: HTTP PUT /mailbox/delivery (Type 25 Frame)
 
-    Note over RelayB: Relay B performs Stage 1–9 Verification:<br/>1. Verifies P_relay matches Relay B public key<br/>2. Computes forwardingPayloadDigest(network, Field 2) == Field 3<br/>3. Verifies contiguous storage payment stamps (Field 4)<br/>4. Extracts Field 2 as inner Type 1 DM Frame<br/>5. Verifies recipient stamp key P' and DLEQ proof<br/>6. Commits envelope digest to storage index
+    Note over RelayB: Relay B performs Stage 1–9 Verification:<br/>1. Verifies P_relay matches Relay B public key<br/>2. Computes forwardingPayloadDigest(Field 2) == Field 3<br/>3. Validates Field 4; stamp child indices are contiguous<br/>4. Extracts Field 2 as inner Type 1 DM Frame<br/>5. Verifies recipient stamp key P' and DLEQ proof<br/>6. Commits envelope digest to storage index
 
     RelayB-->>RelayA: 200 OK (Accepted & Committed)
     RelayA-->>Alice: 200 OK (Delivery Queued)
@@ -117,6 +116,6 @@ sequenceDiagram
 
 ## 5. Implementation Invariants
 
-1. **Storage Stamp Ordering**: Payment members in Field 4 MUST have strictly ascending, contiguous child indices $i \in [0, N-1]$ without gaps or duplicate UTXO vout values.
-2. **Deterministic Payload Digest**: Field 3 MUST equal `forwardingPayloadDigest(network, payloadFrame)`.
+1. **Payment list**: Field 4 may mix stamp payments and stealth payments, including distinct networks. Stamp child indices are contiguous $i \in [0, N-1]$ over the stamp members. A type 25 map that contains key 0 is a schema error.
+2. **Deterministic Payload Digest**: Field 3 MUST equal `forwardingPayloadDigest(payloadFrame)`, using the inner type-1 frame's own network tag.
 3. **Fail-Closed Relay Policy**: If destination relay connectivity or KV coordination is lost, the relay fails closed (returning `HTTP 503 Service Unavailable`), preventing dropped messages or lost storage stamps.

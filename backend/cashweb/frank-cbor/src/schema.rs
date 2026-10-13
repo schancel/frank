@@ -23,8 +23,8 @@ use crate::model::{
     AccountRef, BlackjackAction, BlackjackFields, BlackjackHandAction, BlackjackHandFields,
     BlackjackHandMessageItem, BlackjackHandV3Action, BlackjackHandV3Fields,
     BlackjackHandV3MessageItem, BlackjackHandV3Move, BlackjackMessageItem, BlackjackOutcome,
-    NativeStealthItem, PaymentValue, PreviewDirectoryRoles, StealthPaymentEntry,
-    StealthPaymentItem, StealthQuantity, StealthTransfer, Timestamp, TopicPostAuthor,
+    NativeStealthItem, PaymentMember, PaymentValue, PreviewDirectoryRoles, StealthMetadata,
+    StealthPaymentEntry, StealthPaymentItem, Timestamp, TopicPostAuthor, ViewTag,
 };
 use crate::model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
@@ -460,16 +460,6 @@ fn framed(v: Option<&CborValue>, path: &str) -> Result<Vec<u8>, CodecError> {
     bstr(v, path, 9, MAX_FRAME_BYTES)
 }
 
-pub(crate) struct PaymentDraft {
-    pub child_index: u32,
-    pub transaction_id: Vec<u8>,
-    pub value: PaymentValue,
-    pub address: Vec<u8>,
-    pub commitment: Vec<u8>,
-    pub vout: Option<u32>,
-    pub raw_tx: Option<Vec<u8>>,
-}
-
 pub(crate) struct SignatureDraft {
     pub algorithm: u32,
     pub signer: AccountRef,
@@ -521,11 +511,10 @@ pub(crate) struct ProfileEntryDraft {
 
 pub(crate) enum Draft {
     ForwardingDelivery {
-        network: String,
         destination: AccountRef,
         payload_frame: Vec<u8>,
         payload_digest: Vec<u8>,
-        payments: Vec<PaymentDraft>,
+        payments: Vec<PaymentMember>,
         endpoint: Option<String>,
         expires_at: Option<u64>,
         unknown: Vec<(u64, CborValue)>,
@@ -535,7 +524,7 @@ pub(crate) enum Draft {
         destination: AccountRef,
         payload_frame: Vec<u8>,
         payload_digest: Vec<u8>,
-        payments: Vec<PaymentDraft>,
+        payments: Vec<PaymentMember>,
         recipient: Option<AccountRef>,
         dleq_proof: Option<Vec<u8>>,
         unknown: Vec<(u64, CborValue)>,
@@ -648,8 +637,39 @@ pub(crate) enum Draft {
     },
 }
 
-fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[5, 6], false, false)?;
+fn view_tag(v: &CborValue, path: &str) -> Result<ViewTag, CodecError> {
+    match v {
+        CborValue::Int(n) if *n >= 0 && *n <= 65535 => Ok(ViewTag::Uint(*n as u16)),
+        CborValue::Bytes(b) if !b.is_empty() && b.len() <= 32 => Ok(ViewTag::Bytes(b.clone())),
+        _ => Err(bad(path, "expected an unsigned integer or a byte string")),
+    }
+}
+
+fn stealth_metadata(v: Option<&CborValue>, path: &str) -> Result<StealthMetadata, CodecError> {
+    let map = fields(v, path, &[0], &[1], false, false)?;
+    let view_tag = if map.has(1) {
+        Some(view_tag(
+            map.get(1).expect("checked"),
+            &format!("{path}.1"),
+        )?)
+    } else {
+        None
+    };
+    Ok(StealthMetadata {
+        ephemeral: account(map.get(0), &format!("{path}.0"))?,
+        view_tag,
+    })
+}
+
+fn payment_member(v: &CborValue, path: &str) -> Result<PaymentMember, CodecError> {
+    let map = fields(
+        Some(v),
+        path,
+        &[0, 1, 2, 3],
+        &[4, 5, 6, 7, 8, 9],
+        false,
+        false,
+    )?;
     let val_item = map
         .get(2)
         .ok_or_else(|| bad(&format!("{path}.2"), "missing value"))?;
@@ -676,24 +696,61 @@ fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError>
             ))
         }
     };
-    let vout = if map.has(5) {
-        Some(u32_in(map.get(5), &format!("{path}.5"), 0, u32::MAX)?)
-    } else {
-        None
-    };
-    let raw_tx = if map.has(6) {
-        Some(bstr(map.get(6), &format!("{path}.6"), 1, 16384)?)
-    } else {
-        None
-    };
-    Ok(PaymentDraft {
-        child_index: u32_in(map.get(0), &format!("{path}.0"), 0, 2_147_483_647)?,
+    let stamp = map.has(7);
+    let stealth = map.has(8);
+    if stamp == stealth {
+        return Err(bad(
+            path,
+            "payment member requires exactly one of field 7 or field 8",
+        ));
+    }
+    if stamp && !map.has(4) {
+        return Err(bad(
+            &format!("{path}.4"),
+            "stamp payment requires a T4 commitment",
+        ));
+    }
+    if map.has(9) && !stealth {
+        return Err(bad(
+            &format!("{path}.9"),
+            "token identifier is allowed only on a stealth payment",
+        ));
+    }
+    Ok(PaymentMember {
+        network: network_tag(map.get(0), &format!("{path}.0"))?,
         transaction_id: bstr(map.get(1), &format!("{path}.1"), 1, 128)?,
         value,
         address: bstr(map.get(3), &format!("{path}.3"), 1, 128)?,
-        commitment: bstr(map.get(4), &format!("{path}.4"), 32, 32)?,
-        vout,
-        raw_tx,
+        commitment: if map.has(4) {
+            Some(bstr(map.get(4), &format!("{path}.4"), 32, 32)?)
+        } else {
+            None
+        },
+        vout: if map.has(5) {
+            Some(u32_in(map.get(5), &format!("{path}.5"), 0, u32::MAX)?)
+        } else {
+            None
+        },
+        raw_tx: if map.has(6) {
+            Some(bstr(map.get(6), &format!("{path}.6"), 1, 16384)?)
+        } else {
+            None
+        },
+        child_index: if stamp {
+            Some(u32_in(map.get(7), &format!("{path}.7"), 0, 2_147_483_647)?)
+        } else {
+            None
+        },
+        stealth: if stealth {
+            Some(stealth_metadata(map.get(8), &format!("{path}.8"))?)
+        } else {
+            None
+        },
+        token: if map.has(9) {
+            Some(bstr(map.get(9), &format!("{path}.9"), 1, 128)?)
+        } else {
+            None
+        },
     })
 }
 
@@ -1031,7 +1088,13 @@ pub(crate) fn parse_draft(
     }
     match type_id {
         TYPE_FORWARDING_DELIVERY => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[5, 6], true, allow)?;
+            // Key 0 is retired. Reject it before `fields` can retain it under V6.3.
+            if let CborValue::Map(entries) = payload {
+                if entries.iter().any(|(key, _)| *key == 0) {
+                    return Err(bad(path, "undeclared key 0 (C12)"));
+                }
+            }
+            let map = fields(Some(payload), path, &[1, 2, 3, 4], &[5, 6], true, allow)?;
             let payments = as_list(map.get(4), &format!("{path}.4"), 1, MAX_PAYMENT_MEMBERS)?;
             let mut parsed = Vec::with_capacity(payments.len());
             for (i, item) in payments.iter().enumerate() {
@@ -1053,7 +1116,6 @@ pub(crate) fn parse_draft(
                 None
             };
             Ok(Draft::ForwardingDelivery {
-                network: network_tag(map.get(0), &format!("{path}.0"))?,
                 destination: account(map.get(1), &format!("{path}.1"))?,
                 payload_frame: framed(map.get(2), &format!("{path}.2"))?,
                 payload_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
@@ -1661,7 +1723,13 @@ pub(crate) fn check_allocated(draft: &Draft) -> Result<(), CodecError> {
         Draft::StealthPayment(item) => {
             for (i, entry) in item.entries.iter().enumerate() {
                 check_key_type(&entry.recipient, &format!("{path}.0[{i}].2"))?;
-                check_key_type(&entry.transfer.ephemeral, &format!("{path}.0[{i}].0.6.0"))?;
+                let ephemeral = &entry
+                    .transfer
+                    .stealth
+                    .as_ref()
+                    .expect("stealth arm requires field 8")
+                    .ephemeral;
+                check_key_type(ephemeral, &format!("{path}.0[{i}].0.8.0"))?;
             }
             Ok(())
         }
@@ -2010,94 +2078,60 @@ fn parse_stealth(
 
 fn stealth_entry(v: &CborValue, path: &str) -> Result<StealthPaymentEntry, CodecError> {
     let m = fields(Some(v), path, &[0, 1, 2], &[3, 4], false, false)?;
-    let t = fields(
-        m.get(0),
-        path,
-        &[0, 1, 3, 4, 6],
-        &[2, 5, 7, 8],
-        false,
-        false,
-    )?;
-    let metadata = fields(t.get(6), path, &[0], &[1], false, false)?;
-    let ephemeral = account(metadata.get(0), path)?;
-    let recipient = account(m.get(2), path)?;
-    if ephemeral.key_type != recipient.key_type {
-        return Err(bad(path, "recipient and ephemeral key types differ"));
-    }
-    let value = match t.get(4) {
-        Some(CborValue::Bytes(b)) if b.len() == 32 && b.iter().any(|v| *v != 0) => {
-            StealthQuantity::Quantity256(b.as_slice().try_into().expect("validated length"))
-        }
-        Some(CborValue::Int(n)) if *n > 0 && *n <= u64::MAX as i128 => {
-            StealthQuantity::Uint64(*n as u64)
-        }
-        _ => {
-            return Err(bad(
-                path,
-                "transfer value must be a positive uint64 or 32-byte quantity",
-            ))
-        }
+    let transfer = payment_member(m.get(0).expect("required"), &format!("{path}.0"))?;
+    let stealth = transfer.stealth.as_ref().ok_or_else(|| {
+        bad(
+            &format!("{path}.0.8"),
+            "a recipient payment requires stealth metadata",
+        )
+    })?;
+    let positive = match &transfer.value {
+        PaymentValue::Quantity(bytes) => bytes.iter().any(|byte| *byte != 0),
+        PaymentValue::Satoshis(amount) => *amount > 0,
     };
-    let view_tag = if metadata.has(1) {
-        match metadata.get(1) {
-            Some(CborValue::Int(n)) if *n >= 0 && *n <= 65535 => {}
-            Some(CborValue::Bytes(b)) if !b.is_empty() && b.len() <= 32 => {}
-            _ => return Err(bad(path, "invalid view tag")),
-        }
-        metadata.get(1).cloned()
+    if !positive {
+        return Err(bad(
+            &format!("{path}.0.2"),
+            "a recipient payment requires a positive amount",
+        ));
+    }
+    let recipient = account(m.get(2), &format!("{path}.2"))?;
+    if stealth.ephemeral.key_type != recipient.key_type {
+        return Err(bad(
+            &format!("{path}.2"),
+            "recipient and ephemeral key types differ",
+        ));
+    }
+    let scheme = u32_in(m.get(1), &format!("{path}.1"), 1, u32::MAX)?;
+    let token_program = if m.has(3) {
+        Some(bstr(m.get(3), &format!("{path}.3"), 32, 32)?)
     } else {
         None
     };
-    let scheme = u32_in(m.get(1), path, 1, u32::MAX)?;
-    if m.has(3) && !t.has(5) {
-        return Err(bad(path, "token program requires token"));
+    if token_program.is_some() && transfer.token.is_none() {
+        return Err(bad(
+            &format!("{path}.3"),
+            "a token program requires a token identifier",
+        ));
     }
-    if scheme == 1 && (recipient.key_type != 1 || m.has(3) || m.has(4)) {
+    let scheme_context = if m.has(4) {
+        Some(bstr(m.get(4), &format!("{path}.4"), 1, 1024)?)
+    } else {
+        None
+    };
+    if scheme == 1
+        && (recipient.key_type != 1 || token_program.is_some() || scheme_context.is_some())
+    {
         return Err(bad(
             path,
             "scheme 1 requires secp256k1 keys and no program/context",
         ));
     }
     Ok(StealthPaymentEntry {
-        transfer: StealthTransfer {
-            network: tstr(t.get(0), path, 1, 64)?,
-            tx_id: bstr(t.get(1), path, 1, 128)?,
-            vout: if t.has(2) {
-                Some(u32_in(t.get(2), path, 0, u32::MAX)?)
-            } else {
-                None
-            },
-            destination: bstr(t.get(3), path, 1, 128)?,
-            value,
-            token: if t.has(5) {
-                Some(bstr(t.get(5), path, 1, 128)?)
-            } else {
-                None
-            },
-            ephemeral,
-            view_tag,
-            commitment: if t.has(7) {
-                Some(bstr(t.get(7), path, 32, 32)?)
-            } else {
-                None
-            },
-            raw_tx: if t.has(8) {
-                Some(bstr(t.get(8), path, 1, 16384)?)
-            } else {
-                None
-            },
-        },
+        transfer,
         scheme,
         recipient,
-        token_program: if m.has(3) {
-            Some(bstr(m.get(3), path, 32, 32)?)
-        } else {
-            None
-        },
-        scheme_context: if m.has(4) {
-            Some(bstr(m.get(4), path, 1, 1024)?)
-        } else {
-            None
-        },
+        token_program,
+        scheme_context,
     })
 }

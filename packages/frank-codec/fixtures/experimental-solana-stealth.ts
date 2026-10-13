@@ -38,9 +38,9 @@ export function experimentalEntry(spl = false): StealthAssetTransfer {
         }
       : {}),
     transfer: {
-      networkTag: 'solana-devnet',
-      txId: new Uint8Array(64).fill(9),
-      destination: new Uint8Array(32).fill(10),
+      network: 'solana-devnet',
+      transactionId: new Uint8Array(64).fill(9),
+      address: new Uint8Array(32).fill(10),
       value: spl ? 18446744073709551615n : 1n,
       ...(spl ? { token: new Uint8Array(32).fill(17) } : {}),
       stealthMetadata: {

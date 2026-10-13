@@ -51,11 +51,12 @@ export function canonicalTransportFixture(): CanonicalExactParts {
   const payload = new Map(parsed.payload)
   payload.set(4n, [
     cborMap([
-      [0, 0],
+      [0, payload.get(0n)],
       [1, fromHex(HASH)],
       [2, value],
       [3, fromHex(wire.destination)],
       [4, fromHex(wire.t4)],
+      [7, 0],
     ]),
   ])
   return {

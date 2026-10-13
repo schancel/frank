@@ -7,7 +7,9 @@ use crate::hash::forwarding_payload_digest;
 use crate::limits::{
     MAX_FORWARDING_DELIVERY_FRAME_BYTES, MAX_PAYMENT_MEMBERS, TYPE_FORWARDING_DELIVERY,
 };
-use crate::model::{AccountRef, ParsedFrame, PaymentMember, PaymentValue, TypedPayload};
+use crate::model::{
+    AccountRef, ParsedFrame, PaymentMember, PaymentValue, StealthMetadata, TypedPayload, ViewTag,
+};
 
 fn bad(message: impl Into<String>) -> UsageError {
     UsageError(message.into())
@@ -16,8 +18,6 @@ fn bad(message: impl Into<String>) -> UsageError {
 /// Canonical input to encode a Type 25 forwarding delivery envelope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardingDeliveryEnvelope {
-    /// Field 0: Destination relay network.
-    pub network: String,
     /// Field 1: Destination relay routing identity / stamp key (key type 1).
     pub destination: AccountRef,
     /// Field 2: Serialized inner direct message delivery (Type 1) frame.
@@ -41,42 +41,136 @@ fn encode_account(acc: &AccountRef) -> Result<CborValue, UsageError> {
     if acc.key_bytes.len() != 33 {
         return Err(bad("key type 1 requires 33 key bytes"));
     }
+    encode_account_ref(acc)
+}
+
+fn encode_account_ref(acc: &AccountRef) -> Result<CborValue, UsageError> {
+    let expected = match acc.key_type {
+        1 => Some(33),
+        2 | 3 => Some(32),
+        _ => None,
+    };
+    if let Some(length) = expected {
+        if acc.key_bytes.len() != length {
+            return Err(bad(format!(
+                "key type {} requires {length} key bytes",
+                acc.key_type
+            )));
+        }
+    } else if acc.key_bytes.is_empty() || acc.key_bytes.len() > 128 {
+        return Err(bad("key bytes must be 1..128"));
+    }
     Ok(CborValue::Map(vec![
         (0, CborValue::Int(i128::from(acc.key_type))),
         (1, CborValue::Bytes(acc.key_bytes.clone())),
     ]))
 }
 
-fn encode_payment_member(p: &PaymentMember) -> CborValue {
+fn encode_stealth(meta: &StealthMetadata) -> Result<CborValue, UsageError> {
+    let mut entries = vec![(0, encode_account_ref(&meta.ephemeral)?)];
+    if let Some(tag) = &meta.view_tag {
+        let value = match tag {
+            ViewTag::Uint(n) => CborValue::Int(i128::from(*n)),
+            ViewTag::Bytes(bytes) => {
+                if bytes.is_empty() || bytes.len() > 32 {
+                    return Err(bad("view tag bytes must be 1..32"));
+                }
+                CborValue::Bytes(bytes.clone())
+            }
+        };
+        entries.push((1, value));
+    }
+    Ok(CborValue::Map(entries))
+}
+
+fn is_network_tag(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 {
+        return false;
+    }
+    let first_ok = bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit();
+    first_ok
+        && bytes[1..].iter().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn encode_payment_member(p: &PaymentMember) -> Result<CborValue, UsageError> {
+    let stamp = p.child_index.is_some();
+    if stamp == p.stealth.is_some() {
+        return Err(bad(
+            "payment member requires exactly one of field 7 or field 8",
+        ));
+    }
+    if stamp && p.commitment.is_none() {
+        return Err(bad("stamp payment requires a T4 commitment"));
+    }
+    if p.token.is_some() && p.stealth.is_none() {
+        return Err(bad("token identifier is allowed only on a stealth payment"));
+    }
+    if !is_network_tag(&p.network) {
+        return Err(bad("network tag does not match S1"));
+    }
+    if p.transaction_id.is_empty() || p.transaction_id.len() > 128 {
+        return Err(bad("transaction id must be 1..128 bytes"));
+    }
+    if p.address.is_empty() || p.address.len() > 128 {
+        return Err(bad("address must be 1..128 bytes"));
+    }
+    if let PaymentValue::Quantity(bytes) = &p.value {
+        if bytes.len() != 32 {
+            return Err(bad("quantity must be 32 bytes"));
+        }
+    }
     let mut entries = vec![
-        (0, CborValue::Int(i128::from(p.child_index))),
+        (0, CborValue::Text(p.network.clone())),
         (1, CborValue::Bytes(p.transaction_id.clone())),
         (
             2,
             match &p.value {
-                PaymentValue::Quantity(b) => CborValue::Bytes(b.clone()),
-                PaymentValue::Satoshis(s) => CborValue::Int(i128::from(*s)),
+                PaymentValue::Quantity(bytes) => CborValue::Bytes(bytes.clone()),
+                PaymentValue::Satoshis(amount) => CborValue::Int(i128::from(*amount)),
             },
         ),
         (3, CborValue::Bytes(p.address.clone())),
-        (4, CborValue::Bytes(p.commitment.clone())),
     ];
+    if let Some(commitment) = &p.commitment {
+        if commitment.len() != 32 {
+            return Err(bad("commitment must be 32 bytes"));
+        }
+        entries.push((4, CborValue::Bytes(commitment.clone())));
+    }
     if let Some(vout) = p.vout {
         entries.push((5, CborValue::Int(i128::from(vout))));
     }
-    if let Some(ref raw) = p.raw_tx {
+    if let Some(raw) = &p.raw_tx {
+        if raw.is_empty() || raw.len() > 16384 {
+            return Err(bad("raw transaction must be 1..16384 bytes"));
+        }
         entries.push((6, CborValue::Bytes(raw.clone())));
     }
-    CborValue::Map(entries)
+    if let Some(index) = p.child_index {
+        if index > 2_147_483_647 {
+            return Err(bad("child index must be in 0..2147483647"));
+        }
+        entries.push((7, CborValue::Int(i128::from(index))));
+    }
+    if let Some(meta) = &p.stealth {
+        entries.push((8, encode_stealth(meta)?));
+    }
+    if let Some(token) = &p.token {
+        if token.is_empty() || token.len() > 128 {
+            return Err(bad("token identifier must be 1..128 bytes"));
+        }
+        entries.push((9, CborValue::Bytes(token.clone())));
+    }
+    Ok(CborValue::Map(entries))
 }
 
 /// Encodes a canonical Type 25 forwarding delivery envelope frame.
 pub fn encode_forwarding_delivery(
     envelope: &ForwardingDeliveryEnvelope,
 ) -> Result<Vec<u8>, UsageError> {
-    if envelope.network.is_empty() || envelope.network.len() > 64 {
-        return Err(bad("network must be 1..64 characters"));
-    }
     if envelope.payload_frame.len() < 9 {
         return Err(bad("payload_frame must be at least 9 bytes"));
     }
@@ -91,27 +185,18 @@ pub fn encode_forwarding_delivery(
             }
             d.clone()
         }
-        None => {
-            let computed = forwarding_payload_digest(&envelope.network, &envelope.payload_frame)?;
-            computed.to_vec()
-        }
+        None => forwarding_payload_digest(&envelope.payload_frame)?.to_vec(),
     };
 
+    let mut payments = Vec::with_capacity(envelope.payments.len());
+    for payment in &envelope.payments {
+        payments.push(encode_payment_member(payment)?);
+    }
     let mut map_entries = vec![
-        (0, CborValue::Text(envelope.network.clone())),
         (1, encode_account(&envelope.destination)?),
         (2, CborValue::Bytes(envelope.payload_frame.clone())),
         (3, CborValue::Bytes(digest)),
-        (
-            4,
-            CborValue::Array(
-                envelope
-                    .payments
-                    .iter()
-                    .map(encode_payment_member)
-                    .collect(),
-            ),
-        ),
+        (4, CborValue::Array(payments)),
     ];
 
     if let Some(endpoint) = &envelope.endpoint {

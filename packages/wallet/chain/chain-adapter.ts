@@ -25,7 +25,19 @@ import { PublicKey } from '@solana/web3.js';
 import { ed25519 } from '@noble/curves/ed25519';
 import * as bip39 from 'bip39';
 import { Address } from 'ecash-lib/dist/address/address';
-import { fromHex, toHex, type PaymentTransfer, type StealthMetadata } from '@frank/codec';
+import { fromHex, toHex, type StealthMetadata } from '@frank/codec';
+
+export interface PaymentTransfer {
+  networkTag: string;
+  txId: Uint8Array;
+  vout?: number;
+  destination: Uint8Array;
+  value: Uint8Array | bigint;
+  token?: Uint8Array;
+  stealthMetadata?: StealthMetadata;
+  commitment?: Uint8Array;
+  rawTx?: Uint8Array;
+}
 import {
   decodeAddress,
   encodeAddress,

@@ -502,7 +502,10 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     const router = await openDirectly('#/settings')
     const wrapper = mountSettings(router)
     const relayAddr = '0x9999999999999999999999999999999999999999'
-    mockSettingsStore.advertisedEmailGateway = { address: relayAddr, domain: 'relay.example' } as any
+    mockSettingsStore.advertisedEmailGateway = {
+      address: relayAddr,
+      domain: 'relay.example',
+    } as any
     await wrapper.vm.$nextTick()
 
     const resetBtn = wrapper.find('[data-test="reset-email-gateway-btn"]')

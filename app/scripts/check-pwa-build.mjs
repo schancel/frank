@@ -49,7 +49,10 @@ vm.runInNewContext(readFileSync(new URL('sw.js', output), 'utf8'), {
     factory(workbox)
   },
 })
-assert(!forcedActivation, 'An update must wait for open wallet tabs')
+assert(
+  forcedActivation,
+  'The service worker must activate immediately on reload via skipWaiting',
+)
 assert.equal(routes.length, 1)
 assert(
   routes[0] instanceof NavigationRoute,

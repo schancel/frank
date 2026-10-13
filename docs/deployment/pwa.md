@@ -68,10 +68,10 @@ curl -I http://127.0.0.1:38770/manifest.json
 # Also inspect one content-hashed /assets/*.js URL from the built index.html.
 ```
 
-A new worker waits while any Frank windows still use the old worker. Reloading
-one window can therefore continue using the previous version. Close all Frank
-windows, then reopen to activate the waiting version. This preserves consistent
-code for an open wallet session; it does not reset application storage.
+A new worker activates immediately on reload (`skipWaiting: true`) so that
+users receive updates upon refreshing without needing to close all Frank windows.
+This preserves application updates across browser and PWA sessions while
+keeping wallet storage and transaction state durable.
 
 The upgrade rehearsal used two actual builds with different entry and lazy-module
 hashes. With B deployed, A's open tab stayed on A and imported its old lazy module

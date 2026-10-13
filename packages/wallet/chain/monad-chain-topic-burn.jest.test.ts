@@ -1250,3 +1250,158 @@ describe('a pool account a native send spends from is not burned from (#1235)', 
     },
   )
 })
+
+describe('topics.post and topics.vote with received coin when mainAccount balance is 0', () => {
+  const opened: EvmChainWalletHandle[] = []
+  afterEach(async () => {
+    await Promise.all(opened.splice(0).map(wallet => wallet.close()))
+    mockedAxios.mockReset()
+    observedBurns.clear()
+  })
+
+  it('successfully prepares and burns from a received coin when mainAccount has 0 balance', async () => {
+    const { deriveEvmStealthPrivateKey } = await import('../monad-stealth')
+    const chain = createEvmChain({
+      ...CONFIG,
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
+    const wallet = (await chain.createWallet({
+      mnemonic: TEST_MNEMONIC,
+    })) as EvmChainWalletHandle
+    opened.push(wallet)
+    const fake = makeFakeChain(0n, wallet)
+    const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
+    fake.balances.set(main, 0n)
+    const puts = fakeRelay()
+
+    // Generate and record a stealth payment (received coin in coinStore)
+    const ephemeralWallet = new Wallet('0x' + '77'.repeat(32))
+    const ephemeralPubKey = ephemeralWallet.signingKey.compressedPublicKey
+    const derived = deriveEvmStealthPrivateKey({
+      recipientSpendSecret: wallet.identity.toPrivateKeyHex(),
+      ephemeralPubKey: getBytes(ephemeralPubKey),
+    })
+    const coinAddress = derived.stealthAddress.toLowerCase()
+
+    await wallet.recordStealthPayment({
+      type: 'stealth',
+      networkTag: 'MONT',
+      keyType: 1,
+      ephemeralPubKey: ephemeralPubKey.slice(2),
+      transactions: [],
+      amount: 10_000_000_000_000_000,
+    })
+
+    // Fund the received coin, while main remains 0
+    fake.balances.set(coinAddress, 10n ** 18n)
+
+    // Refresh received payments so the recorded coin is marked unspent with its on-chain balance
+    await wallet.refreshReceivedPayments!()
+
+    // Verify main balance is 0 and coin has balance
+    expect(await wallet.provider.getBalance(main)).toBe(0n)
+    expect(await wallet.provider.getBalance(coinAddress)).toBe(10n ** 18n)
+
+    // 1. topics.post succeeds using the coin to fund the burn account
+    const postResult = await chain.topics.post({
+      wallet,
+      topic: 'memes',
+      entries: [ENTRY],
+      direction: 'up',
+      voteWeightWei: WEIGHT,
+    })
+
+    expect(postResult.payloadDigest).toBeDefined()
+    expect(fake.rpcSubmissions.length).toBeGreaterThanOrEqual(1)
+    // The funding transaction came from coinAddress, NOT main
+    const postFunding = fake.rpcSubmissions[0]
+    expect(postFunding.from!.toLowerCase()).toBe(coinAddress)
+    expect(puts.length).toBeGreaterThanOrEqual(1)
+
+    // 2. topics.vote also succeeds
+    await chain.topics.vote({
+      wallet,
+      payloadDigest: postResult.payloadDigest,
+      direction: 'up',
+      voteWeightWei: WEIGHT,
+    })
+  })
+
+  it('aggregates multiple funding transactions when no single account covers the total required amount', async () => {
+    const { deriveEvmStealthPrivateKey } = await import('../monad-stealth')
+    const chain = createEvmChain({
+      ...CONFIG,
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
+    const wallet = (await chain.createWallet({
+      mnemonic: TEST_MNEMONIC,
+    })) as EvmChainWalletHandle
+    opened.push(wallet)
+    const fake = makeFakeChain(0n, wallet)
+    const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
+    const puts = fakeRelay()
+
+    // Two stealth coins
+    const eph1 = new Wallet('0x' + '88'.repeat(32))
+    const eph1Pub = eph1.signingKey.compressedPublicKey
+    const derived1 = deriveEvmStealthPrivateKey({
+      recipientSpendSecret: wallet.identity.toPrivateKeyHex(),
+      ephemeralPubKey: getBytes(eph1Pub),
+    })
+    const coin1 = derived1.stealthAddress.toLowerCase()
+
+    const eph2 = new Wallet('0x' + '99'.repeat(32))
+    const eph2Pub = eph2.signingKey.compressedPublicKey
+    const derived2 = deriveEvmStealthPrivateKey({
+      recipientSpendSecret: wallet.identity.toPrivateKeyHex(),
+      ephemeralPubKey: getBytes(eph2Pub),
+    })
+    const coin2 = derived2.stealthAddress.toLowerCase()
+
+    await wallet.recordStealthPayment({
+      type: 'stealth',
+      networkTag: 'MONT',
+      keyType: 1,
+      ephemeralPubKey: eph1Pub.slice(2),
+      transactions: [],
+      amount: 10_000_000_000_000_000,
+    })
+    await wallet.recordStealthPayment({
+      type: 'stealth',
+      networkTag: 'MONT',
+      keyType: 1,
+      ephemeralPubKey: eph2Pub.slice(2),
+      transactions: [],
+      amount: 10_000_000_000_000_000,
+    })
+
+    // Gas reserve is ~150_000_000_000_000 wei, funding fee is 120_000_000_000_000 wei.
+    // Total needed for a single funder: ~271_000_000_000_000 wei.
+    // Set each account to have 200_000_000_000_000 wei (< 271_000_000_000_000 wei).
+    // Neither main, coin1, nor coin2 can cover it alone!
+    // But together they can aggregate to cover the required burn amount!
+    const partBalance = 200_000_000_000_000n
+    fake.balances.set(main, partBalance)
+    fake.balances.set(coin1, partBalance)
+    fake.balances.set(coin2, partBalance)
+
+    await wallet.refreshReceivedPayments!()
+
+    const postResult = await chain.topics.post({
+      wallet,
+      topic: 'memes',
+      entries: [ENTRY],
+      direction: 'up',
+      voteWeightWei: WEIGHT,
+    })
+
+    expect(postResult.payloadDigest).toBeDefined()
+    // Multiple funding transactions were sent to aggregate into the burn sub-account!
+    expect(fake.rpcSubmissions.length).toBeGreaterThanOrEqual(2)
+    const funders = fake.rpcSubmissions.map(tx => tx.from!.toLowerCase())
+    // More than one unique funder address contributed
+    const uniqueFunders = new Set(funders)
+    expect(uniqueFunders.size).toBeGreaterThanOrEqual(2)
+    expect(puts.length).toBeGreaterThanOrEqual(1)
+  })
+})

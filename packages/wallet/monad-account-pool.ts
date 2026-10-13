@@ -324,15 +324,23 @@ export class MonadSubAccountPool {
     }
   }
 
+  private mainAccountAddress?: string;
+
   constructor(params: {
     keyring: MonadHdKeyring;
     store?: SubAccountPoolStore;
     requireStampReconciliationPreflight?: boolean;
+    mainAccountAddress?: string;
   }) {
     this.keyring = params.keyring;
     this.store = params.store ?? new InMemorySubAccountPoolStore();
     this.requireStampReconciliationPreflight =
       params.requireStampReconciliationPreflight ?? false;
+    this.mainAccountAddress = params.mainAccountAddress;
+  }
+
+  setMainAccountAddress(address: string): void {
+    this.mainAccountAddress = address;
   }
 
   /** Bundle-owned lifecycle gate. Persistence factories attach this before exposing the pool. */
@@ -1665,6 +1673,12 @@ export class MonadSubAccountPool {
    */
   async prepareBurnAccount(params: {
     mainAccountSigner: MonadAccountTxSigner;
+    mainAccountAddress?: string;
+    funders?: Array<{
+      signer: MonadAccountTxSigner;
+      amountWei: bigint;
+      source?: "main" | "identity" | "coin";
+    }>;
     provider: Provider;
     burnValueWei: bigint;
     gasReserveWei: bigint;
@@ -1692,6 +1706,12 @@ export class MonadSubAccountPool {
 
   private async prepareBurnAccountExclusive(params: {
     mainAccountSigner: MonadAccountTxSigner;
+    mainAccountAddress?: string;
+    funders?: Array<{
+      signer: MonadAccountTxSigner;
+      amountWei: bigint;
+      source?: "main" | "identity" | "coin";
+    }>;
     provider: Provider;
     burnValueWei: bigint;
     gasReserveWei: bigint;
@@ -1773,22 +1793,109 @@ export class MonadSubAccountPool {
       await this.store.flush();
     }
 
+    if (params.funders && params.funders.length > 1) {
+      for (const funder of params.funders) {
+        const available = await params.provider.getBalance(
+          funder.signer.address,
+          "pending"
+        );
+        const required = await this.requiredFundingBalance({
+          capacities: [funder.amountWei],
+          targets: [target],
+          fromAddress: funder.signer.address,
+          gasReserveWei: 0n,
+          provider: params.provider,
+          overrides: params.fundingOverrides,
+        });
+        if (required > available) {
+          const isMain =
+            (params.mainAccountAddress ?? this.mainAccountAddress) === undefined ||
+            (params.mainAccountAddress ?? this.mainAccountAddress)!.toLowerCase() ===
+              funder.signer.address.toLowerCase();
+          const prefix = isMain
+            ? "Insufficient main account balance to prepare a burn account: "
+            : "Insufficient balance to prepare a burn account: ";
+          throw new InsufficientStampFundsError(
+            `${prefix}need up to ${required} wei, have ${available} wei`
+          );
+        }
+      }
+
+      for (const [offset, funder] of params.funders.entries()) {
+        if (offset > 0 && INTER_TX_FUNDING_DELAY_MS > 0) {
+          await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY_MS));
+        }
+        await this.funderSpacing?.(funder.signer.address);
+        const signedTx = await funder.signer.buildAndSignTransfer(
+          target.address,
+          funder.amountWei,
+          params.fundingOverrides
+        );
+        const currentTarget = this.store.getByIndex(target.index) as SubAccountRecord;
+        this.store.put({
+          ...currentTarget,
+          status: "funding",
+          fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
+        });
+        await this.store.flush();
+        params.onProgress?.({
+          stage: "funding",
+          completed: offset,
+          total: params.funders.length,
+          feeReserveWei: params.gasReserveWei,
+          txHash: signedTx.txHash,
+        });
+        await funder.signer.submit(signedTx);
+        const txHash = await this.finishFundingAttempt(
+          this.store.getByIndex(target.index) as SubAccountRecord,
+          funder.signer,
+          params.receipt,
+          false
+        );
+        fundingTxHashes.push(txHash);
+        params.onProgress?.({
+          stage: "funding",
+          completed: offset + 1,
+          total: params.funders.length,
+          feeReserveWei: params.gasReserveWei,
+          txHash,
+        });
+      }
+
+      const totalFunded = params.burnValueWei + params.gasReserveWei;
+      this.capacityCache.set(target.index, {
+        capacityWei: params.burnValueWei,
+        checkedAtMs: Date.now(),
+        balanceWei: totalFunded,
+      });
+      this.syncUtxo(target.index, "available", totalFunded);
+      params.onProgress?.({ stage: "ready", fundingTxHashes });
+      return { index: target.index, fundingTxHashes };
+    }
+
+    const funderSigner = params.funders?.[0]?.signer ?? params.mainAccountSigner;
     const availableMainBalance = await params.provider.getBalance(
-      params.mainAccountSigner.address,
+      funderSigner.address,
       "pending"
     );
     const requiredMainBalance = await this.requiredFundingBalance({
       capacities: [params.burnValueWei],
       targets: [target],
-      fromAddress: params.mainAccountSigner.address,
+      fromAddress: funderSigner.address,
       gasReserveWei: params.gasReserveWei,
       provider: params.provider,
       overrides: params.fundingOverrides,
     });
     if (requiredMainBalance > availableMainBalance) {
+      const isMain =
+        (params.mainAccountAddress ?? this.mainAccountAddress) === undefined ||
+        (params.mainAccountAddress ?? this.mainAccountAddress)!.toLowerCase() ===
+          funderSigner.address.toLowerCase();
+      const prefix = isMain
+        ? "Insufficient main account balance to prepare a burn account: "
+        : "Insufficient balance to prepare a burn account: ";
       throw new InsufficientStampFundsError(
-        "Insufficient main account balance to prepare a burn account: " +
-          `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`
+        `${prefix}need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`
       );
     }
 
@@ -1796,7 +1903,7 @@ export class MonadSubAccountPool {
       target,
       paymentCapacityWei: params.burnValueWei,
       gasReserveWei: params.gasReserveWei,
-      mainAccountSigner: params.mainAccountSigner,
+      mainAccountSigner: funderSigner,
       overrides: params.fundingOverrides,
       receipt: params.receipt,
       onSigned: (signedTx) =>

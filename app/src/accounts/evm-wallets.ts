@@ -7,6 +7,7 @@ import {
   isChainUnreachableError,
   loadMonadChainConfigFromEnv,
   PROTOCOL_CHAINS,
+  recoverAllWallets,
   type EvmChainConfig,
   type EvmChainWalletHandle,
   type NativeAssetChain,
@@ -378,6 +379,14 @@ export async function recoverSecondaryEvmWallets(
       }
     }),
   )
+  try {
+    const recovery = await recoverAllWallets()
+    for (const failure of recovery.failed) {
+      console.warn(`Wallet recovery skipped for ${failure.walletId}:`, failure.error)
+    }
+  } catch (err) {
+    console.warn('Wallet recovery loop warning:', err)
+  }
   const errors = results.flatMap((result, index) =>
     result.status === 'rejected'
       ? [`${peers[index]!.id}: ${String(result.reason)}`]

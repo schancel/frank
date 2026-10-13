@@ -20,10 +20,14 @@ import {
 } from 'vue'
 import {
   activeChain,
+  createChainAdapter,
   fetchSolanaBalance,
   fetchSolanaTokenAccounts,
+  getPrimaryWallet,
+  isCanonicalChainId,
   isChainUnreachableError,
   loadMonadChainConfigFromEnv,
+  type ChainId,
   type SolanaTokenAccount,
 } from '@frank/wallet/chain'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
@@ -278,6 +282,27 @@ export async function fetchChainBalance(
       }
       const entry = supportedEntry(chainIdentifier)
       if (!entry) throw new Error(`Wallet unavailable for ${chainIdentifier}`)
+      if (isCanonicalChainId(chainIdentifier)) {
+        const adapter = createChainAdapter(chainIdentifier)
+        let address =
+          accountSession.getCachedChainAddress?.(chain) ??
+          accountSession.getCachedChainAddress?.(chainIdentifier)
+        if (!address && accountSession.getChainAddress) {
+          address = await accountSession.getChainAddress(chain)
+        }
+        const wallet = adapter.getWallet(address)
+        if (!isCurrent()) return
+        const balance = await wallet.getBalance()
+        if (!isCurrent()) return
+        secondaryStates[chainIdentifier] = {
+          revision,
+          balance,
+          formattedBalance: `${adapter.toDisplayAmount(balance)} ${adapter.unit}`,
+          loaded: true,
+          hasError: false,
+        }
+        return
+      }
       if (entry.kind === 'tempo') {
         const balance = await readTempoPathUsdBalance(
           entry.id as 'tempo-testnet' | 'tempo-mainnet',
@@ -359,19 +384,22 @@ export async function fetchChainBalance(
       if (!address) address = await accountSession.getChainAddress?.('solana')
       if (!isCurrent()) return
       if (!address) throw new Error('Solana address unavailable')
+      const solanaAdapter = createChainAdapter(scope.networkId as ChainId)
+      const formattedAddress = solanaAdapter.formatAddress(address)
+      const solanaWallet = solanaAdapter.getWallet(formattedAddress)
       const options = {
-        address,
+        address: formattedAddress,
         networkId: scope.networkId,
         relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
       }
       // Each reader publishes independently; neither wait nor failure hides the other result.
       await Promise.all([
-        fetchSolanaBalance(options).then(
-          result => {
+        solanaWallet.getBalance().then(
+          balance => {
             if (!isCurrent()) return
             solanaState.value = {
-              balance: result.lamports,
-              formattedBalance: result.formatted,
+              balance,
+              formattedBalance: `${solanaAdapter.toDisplayAmount(balance)} ${solanaAdapter.unit}`,
               loaded: true,
               hasError: false,
             }

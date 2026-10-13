@@ -548,14 +548,20 @@ export default defineComponent({
         // Reconciliation does not prove which session reservation completed; retain unknown
         // ownership until an exact operation result can identify it.
       } catch (error) {
-        if (current()) errorNotify(error)
+        if (current()) {
+          errorNotify(error, {
+            safeMessage: error instanceof Error ? error.message : String(error),
+          })
+        }
       } finally {
         if (current()) this.refreshingStatus = false
       }
     },
-    validateOffering(value: string) {
+    validateOffering(value: string | number | null | undefined) {
       try {
-        const amount = displayToRawAmount(activeChain, String(value))
+        const str = String(value ?? '').trim()
+        if (!str) return 'Invalid amount'
+        const amount = displayToRawAmount(activeChain, str)
         return (
           (amount > 0n && amount <= 9223372036854775807n) || 'Invalid amount'
         )
@@ -656,8 +662,18 @@ export default defineComponent({
             this.parentDigest === requestedParent &&
             this.activeParentRequestId === requestId,
         })
-      } catch {
+      } catch (err) {
         // The visible terminal state supplies the retry path.
+        if (
+          this.componentMounted &&
+          this.parentRouteEpoch === requestedParentRouteEpoch &&
+          this.parentDigest === requestedParent &&
+          this.activeParentRequestId === requestId
+        ) {
+          errorNotify(err, {
+            safeMessage: err instanceof Error ? err.message : String(err),
+          })
+        }
       } finally {
         const ownsParentRequest = () =>
           this.componentMounted &&
@@ -770,7 +786,9 @@ export default defineComponent({
           this.offering.toString(),
         )
       } catch (err) {
-        errorNotify(err as Error)
+        errorNotify(err as Error, {
+          safeMessage: err instanceof Error ? err.message : String(err),
+        })
         return
       }
       const submittedDestination = this.submissionDestination(
@@ -790,7 +808,9 @@ export default defineComponent({
         walletPromise = useActiveWallet()
         wallet = await walletPromise
       } catch (err) {
-        errorNotify(err as Error)
+        errorNotify(err as Error, {
+          safeMessage: err instanceof Error ? err.message : String(err),
+        })
         return
       }
       const ownsCurrentUi = () => {

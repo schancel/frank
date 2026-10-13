@@ -21,6 +21,12 @@ it('preserves amounts beyond double precision through parsing and display', () =
     '0.010000000000000001 MON',
   )
 })
+it('handles decimal comma separators from Android and international keyboards', () => {
+  expect(displayToRawAmount(monad, '0,01')).toBe(10000000000000000n)
+  expect(displayToRawAmount(monad, '0,001')).toBe(1000000000000000n)
+  expect(displayToRawAmount(monad, '0,000001')).toBe(1000000000000n)
+  expect(displayToRawAmount(monad, '  1,5  ')).toBe(1500000000000000000n)
+})
 it('formats signed 256-bit weights and zero exactly', () => {
   const weight = -(2n ** 255n - 1n)
   expect(formatRawAmount(monad, weight.toString())).toBe(

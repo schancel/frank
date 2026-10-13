@@ -1507,12 +1507,65 @@ describe('CreatePost outcomes', () => {
     mockPutMessage.mockRejectedValueOnce(failure)
 
     await (wrapper.vm as unknown as { post(): Promise<void> }).post()
-    await flushPromises()
-
-    expect(errorNotify).toHaveBeenCalledWith(failure)
+    expect(errorNotify).toHaveBeenCalledWith(failure, {
+      safeMessage: 'Nothing was sent',
+    })
     expect(router.push).not.toHaveBeenCalled()
     expect(router.go).not.toHaveBeenCalled()
   }, 10000)
+
+  it('notifies error with safeMessage when offering parsing fails in post()', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+    mockDisplayToRawAmount.mockImplementationOnce(() => {
+      throw new Error('invalid FixedNumber string value')
+    })
+
+    await vm.post()
+    await flushPromises()
+
+    expect(errorNotify).toHaveBeenCalledWith(
+      expect.any(Error),
+      { safeMessage: 'invalid FixedNumber string value' },
+    )
+  })
+
+  it('notifies error with safeMessage when loadParent fails', async () => {
+    const { page } = await mountRoutedPage('/new-post/parent')
+    const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
+    const err = new Error('Network error loading parent')
+    forum.fetchMessage.mockRejectedValueOnce(err)
+
+    await page().get('[data-test="retry-parent"]').trigger('click')
+    await flushPromises()
+
+    expect(errorNotify).toHaveBeenCalledWith(err, {
+      safeMessage: 'Network error loading parent',
+    })
+  })
+})
+
+describe('CreatePost offering validation', () => {
+  it('validates decimal comma and standard offerings and rejects invalid', () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+    const realChainAmount = jest.requireActual('src/utils/chain-amount')
+    mockDisplayToRawAmount.mockImplementation((chain, val) =>
+      realChainAmount.displayToRawAmount(
+        { fromDisplayAmount: (s: string) => BigInt(Math.round(Number(s) * 1e18)) },
+        val,
+      ),
+    )
+
+    expect(vm.validateOffering('0.001')).toBe(true)
+    expect(vm.validateOffering('0,001')).toBe(true)
+    expect(vm.validateOffering('0,000001')).toBe(true)
+    expect(vm.validateOffering('  1,5  ')).toBe(true)
+    expect(vm.validateOffering('0')).toBe('Invalid amount')
+    expect(vm.validateOffering('0,0')).toBe('Invalid amount')
+    expect(vm.validateOffering('')).toBe('Invalid amount')
+    expect(vm.validateOffering('abc')).toBe('Invalid amount')
+  })
 })
 
 describe('CreatePost topic options (ticket #368)', () => {

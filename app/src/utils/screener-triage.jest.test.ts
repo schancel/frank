@@ -27,8 +27,7 @@ function makeMessage(
     timestamp: new Date('2026-03-10T10:00:00Z'),
     payloadDigest: overrides.payloadDigest ?? 'msg-1',
     senderAddress:
-      overrides.senderAddress ??
-      'lotus_16PSJ2eStranger11111111111111111111111',
+      overrides.senderAddress ?? 'lotus_16PSJ2eStranger11111111111111111111111',
     totalValue: overrides.totalValue ?? 0,
     ...overrides,
   }
@@ -157,9 +156,9 @@ describe('screener-triage ("The Tollbooth")', () => {
         ],
       })
 
-      expect(
-        isScreenerConversation(conv, addr => addr === contactAddr),
-      ).toBe(false)
+      expect(isScreenerConversation(conv, addr => addr === contactAddr)).toBe(
+        false,
+      )
       expect(
         isScreenerConversation(conv, {
           contacts: { [contactAddr]: { profile: { name: 'Friend' } } },

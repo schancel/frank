@@ -301,7 +301,9 @@
                     <div v-else>
                       <div
                         class="email-body-text text-body1"
-                        v-html="formatMessageBody(card.mainBody || card.textBody)"
+                        v-html="
+                          formatMessageBody(card.mainBody || card.textBody)
+                        "
                       />
                       <div v-if="card.quotedBody" class="q-mt-sm">
                         <q-btn
@@ -1714,7 +1716,11 @@ export default defineComponent({
       }
 
       const selfEntry = participants.get('__self__')
-      if (selfEntry && ownUsername && !THREAD_REPLY_ALIAS_LOCAL_RE.test(ownUsername)) {
+      if (
+        selfEntry &&
+        ownUsername &&
+        !THREAD_REPLY_ALIAS_LOCAL_RE.test(ownUsername)
+      ) {
         const currentRank = this.getSelfAddressRank(selfEntry.address)
         if (currentRank < 4) {
           selfEntry.address = `${ownUsername}@${gatewayDomain}`
@@ -2000,9 +2006,8 @@ export default defineComponent({
     },
     handleTriageKeydown(event: KeyboardEvent): boolean {
       if (event.metaKey || event.ctrlKey || event.altKey) return false
-      const target = (event.target || document.activeElement) as
-        | HTMLElement
-        | null
+      const target = (event.target ||
+        document.activeElement) as HTMLElement | null
       if (
         target &&
         (target.tagName === 'INPUT' ||
@@ -2135,9 +2140,7 @@ export default defineComponent({
         this.toList = isValidRecipientAddress(fromAddr) ? [fromAddr] : []
         const ccs: string[] = []
         const seenCcs = new Set<string>()
-        const fromLower = (
-          extractPartyFromRaw(fromAddr)?.address || fromAddr
-        )
+        const fromLower = (extractPartyFromRaw(fromAddr)?.address || fromAddr)
           .trim()
           .toLowerCase()
 

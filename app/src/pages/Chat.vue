@@ -1548,8 +1548,7 @@ export default defineComponent({
       const currentId = this.conversation?.id || this.address
       const currentIdx = list.findIndex(
         (item: { address: string }) =>
-          item.address === currentId ||
-          this.matchesConversation(item.address),
+          item.address === currentId || this.matchesConversation(item.address),
       )
       if (currentIdx === -1) {
         return list[0]?.address ?? null

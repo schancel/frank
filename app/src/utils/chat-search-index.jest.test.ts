@@ -25,11 +25,13 @@ function createMockMessage(
         text: overrides.body ?? 'Hello from decentralized chat',
       },
     ],
-     firstSeen: overrides.firstSeen ?? new Date('2026-03-01T12:00:00Z'),
+    firstSeen: overrides.firstSeen ?? new Date('2026-03-01T12:00:00Z'),
     serverTime: overrides.serverTime ?? new Date('2026-03-01T12:00:00Z'),
     timestamp: overrides.timestamp ?? new Date('2026-03-01T12:00:00Z'),
     payloadDigest: id,
-    senderAddress: overrides.senderAddress ?? 'lotus_16PSJ2estranger111111111111111111111111',
+    senderAddress:
+      overrides.senderAddress ??
+      'lotus_16PSJ2estranger111111111111111111111111',
     totalValue: overrides.totalValue ?? 0,
     ...overrides,
   }
@@ -239,7 +241,9 @@ describe('chat-search-index', () => {
 
       // Structured filter: subject:proposal
       const subjProposal = index.search('subject:proposal')
-      expect(subjProposal.map(r => r.conversationId)).toEqual(['email-thread-1'])
+      expect(subjProposal.map(r => r.conversationId)).toEqual([
+        'email-thread-1',
+      ])
 
       // Structured filter: min-stamp
       const highStamp = index.search('min-stamp:100000000')

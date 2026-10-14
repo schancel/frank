@@ -157,9 +157,7 @@
           </q-item-section>
         </q-item>
 
-        <q-item
-          v-else-if="getSortedChatOrder.length === 0 && $status.setup"
-        >
+        <q-item v-else-if="getSortedChatOrder.length === 0 && $status.setup">
           <q-item-section>
             <q-item-label>{{ $t('chatList.noContactMessage') }}</q-item-label>
           </q-item-section>
@@ -170,13 +168,7 @@
 </template>
 
 <script lang="ts">
-import {
-  computed,
-  defineComponent,
-  onMounted,
-  onUnmounted,
-  ref,
-} from 'vue'
+import { computed, defineComponent, onMounted, onUnmounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
@@ -315,10 +307,7 @@ export default defineComponent({
     })
 
     const handleGlobalKeydown = (event: KeyboardEvent) => {
-      if (
-        (event.metaKey || event.ctrlKey) &&
-        event.key.toLowerCase() === 'k'
-      ) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
         searchInputRef.value?.focus()
         searchInputRef.value?.select()

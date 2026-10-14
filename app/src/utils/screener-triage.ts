@@ -237,7 +237,10 @@ function checkIsContact(
     }
     const lower = address.toLowerCase()
     for (const [k, v] of Object.entries(options.contacts)) {
-      if (v && (k.toLowerCase() === lower || sameCanonicalAddress(k, address))) {
+      if (
+        v &&
+        (k.toLowerCase() === lower || sameCanonicalAddress(k, address))
+      ) {
         return true
       }
     }
@@ -346,9 +349,7 @@ export function rankScreenerConversations<T extends Partial<Conversation>>(
   ownAddressArg?: string | null,
 ): T[] {
   const options = normalizeTriageOptions(optionsOrFn, ownAddressArg)
-  const screened = conversations.filter(c =>
-    isScreenerConversation(c, options),
-  )
+  const screened = conversations.filter(c => isScreenerConversation(c, options))
 
   return screened.sort((a, b) => {
     const valA = getConversationStampValueWei(a)
@@ -403,7 +404,9 @@ export function formatScreenerStampValue(
     | number
     | undefined = {},
 ): FormattedScreenerStamp {
-  const options: Omit<FormatScreenerStampOptions, 'asset'> & { asset?: string } =
+  const options: Omit<FormatScreenerStampOptions, 'asset'> & {
+    asset?: string
+  } =
     typeof optionsOrRate === 'number'
       ? { avuRate: optionsOrRate }
       : optionsOrRate ?? {}
@@ -473,7 +476,9 @@ export function formatScreenerStampValue(
     }
   }
   const combinedDisplay =
-    valueWei > 0n ? `${nativeDisplay} (${avuDisplay})` : `${nativeDisplay} (0 AVU)`
+    valueWei > 0n
+      ? `${nativeDisplay} (${avuDisplay})`
+      : `${nativeDisplay} (0 AVU)`
 
   return {
     valueWei,
@@ -649,4 +654,3 @@ export async function dismissScreenerConversation(
     await chatStore.clearConversation(conversation.id)
   }
 }
-

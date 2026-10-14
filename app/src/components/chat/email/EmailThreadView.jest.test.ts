@@ -1148,8 +1148,7 @@ describe('EmailThreadView', () => {
               type: 'email',
               messageId: '<msg-out-1@signet.mx>',
               from: {
-                address:
-                  '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+                address: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
                 name: 'Shammah',
               },
               to: [{ address: 'shammah.chancellor@gmail.com' }],
@@ -1216,8 +1215,7 @@ describe('EmailThreadView', () => {
               type: 'email',
               messageId: '<msg-out-alias-1@signet.mx>',
               from: {
-                address:
-                  '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+                address: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
                 name: 'Shammah',
               },
               to: [{ address: 'shammah.chancellor@gmail.com' }],

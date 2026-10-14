@@ -402,7 +402,11 @@ export function extractSearchSnippet(
     }
     if (winEnd < cleanText.length) {
       const prevSpace = cleanText.lastIndexOf(' ', winEnd)
-      if (prevSpace !== -1 && winEnd - prevSpace <= 12 && prevSpace > winStart) {
+      if (
+        prevSpace !== -1 &&
+        winEnd - prevSpace <= 12 &&
+        prevSpace > winStart
+      ) {
         winEnd = prevSpace
       }
     }
@@ -585,7 +589,10 @@ function extractMessageFields(
         senderName = email.from.name
       }
       const rawBody =
-        email.textBody || (anyItem.bodyText as string) || (anyItem.body as string) || ''
+        email.textBody ||
+        (anyItem.bodyText as string) ||
+        (anyItem.body as string) ||
+        ''
       if (rawBody) {
         bodyParts.push(cleanEmailSnippet(rawBody))
       }
@@ -1133,7 +1140,11 @@ export class ChatSearchIndex {
    */
   restore(snapshot: SearchIndexSnapshot | null | undefined): void {
     this.clear()
-    if (!snapshot || snapshot.version !== 1 || !Array.isArray(snapshot.documents))
+    if (
+      !snapshot ||
+      snapshot.version !== 1 ||
+      !Array.isArray(snapshot.documents)
+    )
       return
     for (const doc of snapshot.documents) {
       this.addDocumentInternal(doc)
@@ -1259,8 +1270,9 @@ export class ChatSearchIndex {
       }
 
       if (parsed.phrases.length > 0) {
-        const fullHaystack =
-          `${doc.subject} ${doc.bodyText} ${doc.senderName} ${doc.attachmentNames.join(' ')}`.toLowerCase()
+        const fullHaystack = `${doc.subject} ${doc.bodyText} ${
+          doc.senderName
+        } ${doc.attachmentNames.join(' ')}`.toLowerCase()
         const phrasesMatched = parsed.phrases.every(p =>
           fullHaystack.includes(p),
         )
@@ -1338,11 +1350,7 @@ export class ChatSearchIndex {
         doc.attachmentNames.join(', ') ||
         doc.senderName ||
         doc.senderAddress
-      const snippetTerms = [
-        ...parsed.terms,
-        ...parsed.subject,
-        ...parsed.from,
-      ]
+      const snippetTerms = [...parsed.terms, ...parsed.subject, ...parsed.from]
       const snippet = extractSearchSnippet(snippetSource, snippetTerms)
 
       results.push({

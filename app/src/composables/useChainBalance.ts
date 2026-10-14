@@ -34,6 +34,10 @@ import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { accountSession, accountStatus } from '../accounts/session'
 import { openUtxoWallet } from '../accounts/utxo-wallets'
 import { openEvmWallet } from '../accounts/evm-wallets'
+import {
+  requireRelayWalletRoute,
+  RelayWalletRouteUnavailableError,
+} from '../accounts/relay-wallet-route'
 import { readTempoPathUsdBalance } from '../accounts/tempo-wallets'
 import { formatUnits } from 'ethers'
 import { useBalance, APP_STATE_EVENT, BALANCE_POLL_MS } from './useBalance'
@@ -58,6 +62,7 @@ export interface ChainBalanceState {
   formattedBalance: string
   loaded: boolean
   hasError: boolean
+  unavailableReason?: 'relay-unavailable'
 }
 
 export interface BalanceObservation {
@@ -73,7 +78,7 @@ export type BalancePresentation =
   | { status: 'available'; observation: BalanceObservation }
   | {
       status: 'unavailable'
-      reason: 'unsupported' | 'fetch-error'
+      reason: 'unsupported' | 'fetch-error' | 'relay-unavailable'
       lastKnown?: BalanceObservation
     }
 
@@ -129,7 +134,7 @@ function getBalancePresentation(
   if (state.hasError) {
     return {
       status: 'unavailable',
-      reason: 'fetch-error',
+      reason: state.unavailableReason ?? 'fetch-error',
       lastKnown: observation,
     }
   }
@@ -282,6 +287,11 @@ export async function fetchChainBalance(
       }
       const entry = supportedEntry(chainIdentifier)
       if (!entry) throw new Error(`Wallet unavailable for ${chainIdentifier}`)
+      await requireRelayWalletRoute(
+        loadMonadChainConfigFromEnv().relayBaseUrl,
+        chainIdentifier,
+      )
+      if (!isCurrent()) return
       const adapter = isCanonicalChainId(chainIdentifier)
         ? createChainAdapter(chainIdentifier)
         : undefined
@@ -335,6 +345,10 @@ export async function fetchChainBalance(
         ...secondaryState(chain),
         revision,
         hasError: true,
+        unavailableReason:
+          err instanceof RelayWalletRouteUnavailableError
+            ? 'relay-unavailable'
+            : undefined,
       }
     } finally {
       if (secondaryPending.get(chainIdentifier) === generation)
@@ -368,6 +382,11 @@ export async function fetchChainBalance(
         resetSolanaObservations()
         solanaScope = scope
       }
+      await requireRelayWalletRoute(
+        loadMonadChainConfigFromEnv().relayBaseUrl,
+        scope.networkId,
+      )
+      if (!isCurrent()) return
       const lastKnown = observedTokens(solanaTokenObservation.value)
       solanaTokenObservation.value = { status: 'loading', lastKnown }
       let address = accountSession.getCachedChainAddress?.('solana')
@@ -420,7 +439,14 @@ export async function fetchChainBalance(
     } catch (err) {
       if (!isCurrent()) return
       console.error('Failed to acquire Solana balance address', err)
-      solanaState.value = { ...solanaState.value, hasError: true }
+      solanaState.value = {
+        ...solanaState.value,
+        hasError: true,
+        unavailableReason:
+          err instanceof RelayWalletRouteUnavailableError
+            ? 'relay-unavailable'
+            : undefined,
+      }
       solanaTokenObservation.value = {
         status: 'unavailable',
         lastKnown: observedTokens(solanaTokenObservation.value),

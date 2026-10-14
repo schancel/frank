@@ -484,6 +484,7 @@ export default {
     showSeed: 'Show recovery phrase',
     confirmSeed: 'Confirm recovery phrase',
     balanceLoading: 'Loading balance…',
+    relayUnavailable: 'Not available through this relay.',
     balanceUnavailable: 'Balance unavailable.',
     balanceUnsupported: 'Balance not shown for this network yet.',
     walletUnsupported:

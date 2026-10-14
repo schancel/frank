@@ -158,7 +158,7 @@
                                 ? 'walletPanel.balanceLoading'
                                 : balanceUnsupported
                                 ? 'walletPanel.balanceUnsupported'
-                                : 'walletPanel.balanceUnavailable',
+                                : balanceUnavailableKey,
                             )
                       }}
                     </div>
@@ -227,7 +227,7 @@
                       class="text-negative text-caption text-center"
                       data-testid="wallet-balance-error"
                     >
-                      {{ $t('walletPanel.balanceUnavailable') }}
+                      {{ $t(balanceUnavailableKey) }}
                     </div>
                   </q-card-section>
                   <q-separator />
@@ -429,7 +429,7 @@
                                   : $t(
                                       balancePresentation.status === 'loading'
                                         ? 'walletPanel.balanceLoading'
-                                        : 'walletPanel.balanceUnavailable',
+                                        : balanceUnavailableKey,
                                     )
                               }}
                             </q-item-label>
@@ -834,6 +834,12 @@ export default defineComponent({
         !presentation.lastKnown
       )
     })
+    const balanceUnavailableKey = computed(() =>
+      balancePresentation.value.status === 'unavailable' &&
+      balancePresentation.value.reason === 'relay-unavailable'
+        ? 'walletPanel.relayUnavailable'
+        : 'walletPanel.balanceUnavailable',
+    )
     const currentWalletHasError = computed(
       () =>
         balancePresentation.value.status === 'unavailable' &&
@@ -1093,6 +1099,7 @@ export default defineComponent({
       showBreakdown,
       canBreakDownBalance,
       balanceUnsupported,
+      balanceUnavailableKey,
       currentWalletHasError,
       currentWalletAvu,
       currentUnitRateAvu,

@@ -360,9 +360,7 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
             Cow::Borrowed("/mailbox/:address/notification-policy")
         }
         ["push", "vapid-public-key"] => Cow::Borrowed("/push/vapid-public-key"),
-        ["message", "push", "vapid-public-key"] => {
-            Cow::Borrowed("/message/push/vapid-public-key")
-        }
+        ["message", "push", "vapid-public-key"] => Cow::Borrowed("/message/push/vapid-public-key"),
         ["topics"] => Cow::Borrowed("/topics"),
         ["topics", "vote"] => Cow::Borrowed("/topics/vote"),
         ["topics", "discover"] => Cow::Borrowed("/topics/discover"),

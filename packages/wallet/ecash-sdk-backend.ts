@@ -192,6 +192,17 @@ export class EcashSdkBackend implements EcashWalletBackend {
     this.sdk.changeIndex = Math.max(this.sdk.changeIndex, floor);
   }
 
+  /** Public display projection of the current SDK inventory; no signing material. */
+  getBalanceObservationCoins(): ReadonlyArray<
+    EcashInputReference & { satoshis: bigint }
+  > {
+    return this.sdk.spendableSatsOnlyUtxos().map((coin) => ({
+      txid: coin.outpoint.txid,
+      vout: coin.outpoint.outIdx,
+      satoshis: coin.sats,
+    }));
+  }
+
   getAvailableBalance(
     excludedInputs: ReadonlyArray<EcashInputReference>
   ): bigint {

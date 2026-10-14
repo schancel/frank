@@ -61,6 +61,69 @@ function run(body: string): void {
 }
 
 it(
+  "publishes immutable local observations during coalesced refresh and preserves them on failure",
+  () =>
+    run(`
+  const first = await make();
+  const initial = first.wallet.getBalanceObservation();
+  assert.equal(initial.balance, 80000n);
+  assert.equal(first.store.get(first.key), undefined);
+  let reads = 0;
+  const original = first.chronik.batchUtxos;
+  first.chronik.batchUtxos = async scripts => { reads++; return original(scripts); };
+  await first.wallet.getBalance();
+  const singleRefreshReads = reads;
+  assert(singleRefreshReads > 0);
+  let release, started;
+  const gate = new Promise(resolve => { release = resolve; });
+  const began = new Promise(resolve => { started = resolve; });
+  first.chronik.batchUtxos = async scripts => { reads++; started(); await gate; return original(scripts); };
+  const before = reads;
+  const left = first.wallet.getBalance(), right = first.wallet.getBalance();
+  assert.equal(left, right);
+  await began;
+  const observed = first.wallet.getBalanceObservation();
+  first.chronik.coins[0].sats = 20000n;
+  assert.deepEqual(first.wallet.getBalanceObservation(), observed);
+  release();
+  assert.equal(await left, 90000n);
+  assert.equal(reads - before, singleRefreshReads);
+  const complete = first.wallet.getBalanceObservation();
+  first.chronik.coins[0].sats = 30000n;
+  first.chronik.batchUtxos = async () => { throw new Error('offline'); };
+  first.chronik.script = () => ({ utxos: async () => { throw new Error('offline'); } });
+  await assert.rejects(first.wallet.getBalance(), /offline/);
+  assert.deepEqual(first.wallet.getBalanceObservation(), complete);
+  assert.equal(first.store.get(first.key), undefined);
+`),
+  35000
+);
+
+it(
+  "filters cross-instance reservations, ambiguous attempts and canonical chain isolation from cached observations",
+  () =>
+    run(`
+  const store = new InMemoryEcashOperationStore();
+  const first = await make({ store });
+  const other = await make({ store });
+  const test = await make({ store, chain: 'xec-testnet' });
+  assert.equal(first.wallet.getBalanceObservation().balance, 80000n);
+  const prepared = await other.wallet.prepareNativeOperation(params('observe-held'));
+  assert.equal(first.wallet.getBalanceObservation().balance, 70000n);
+  assert.equal(test.wallet.getBalanceObservation().balance, 80000n);
+  await other.wallet.releaseNativeOperation(prepared.operationId);
+  assert.equal(first.wallet.getBalanceObservation().balance, 80000n);
+  const exposed = await other.wallet.prepareNativeOperation(params('observe-exposed'));
+  await other.wallet.recordNativeOperationExposure({ operationId: exposed.operationId, binding: binding(other.wallet, exposed) });
+  assert.equal(first.wallet.getBalanceObservation().balance, 70000n);
+  const reopened = await make({ store, transport: async () => { throw new Error('ambiguous'); } });
+  assert.equal(reopened.wallet.getBalanceObservation().balance, 70000n);
+  assert.equal(test.wallet.getBalanceObservation().balance, 80000n);
+`),
+  35000
+);
+
+it(
   "claims disjoint inputs and change across shared-store instances while other broadcasts wait",
   () =>
     run(`

@@ -241,6 +241,10 @@ export interface EcashWalletBackend {
   inputReferencesFromTransactions?: EcashPreparationBackend["inputReferencesFromTransactions"];
   validateNativeOperation?: EcashPreparationBackend["validateNativeOperation"];
   validateLegacyTransaction?: EcashPreparationBackend["validateLegacyTransaction"];
+  /** Public display projection, captured only after a complete successful sync. */
+  getBalanceObservationCoins?(): ReadonlyArray<
+    EcashInputReference & { satoshis: bigint }
+  >;
   readonly balanceSats: bigint;
   readonly receiveIndex: number;
   sync(): Promise<void>;
@@ -292,6 +296,14 @@ export class EcashWallet implements NativeWalletHandle {
   readonly networkId: string;
   readonly chainUtxoPool?: ChainUtxoPool;
   private readonly nativeAttemptKey: string;
+  private balanceRefresh: Promise<bigint> | undefined;
+  /** Derived in-memory display projection; never used by selection or signing. */
+  private balanceObservation:
+    | {
+        observedAt: number;
+        coins: ReadonlyArray<EcashInputReference & { satoshis: bigint }>;
+      }
+    | undefined;
 
   private constructor(
     private readonly backend: EcashWalletBackend,
@@ -444,6 +456,7 @@ export class EcashWallet implements NativeWalletHandle {
       wallet.preparationBackend().restoreChangeIndex(ledger.nextChangeIndex);
     }
     await backend.syncAndDiscoverAddresses();
+    wallet.captureBalanceObservation();
     // Resume still-authorized RPC attempts independently of new sends. Prepared operations
     // never broadcast here; parse/affinity failures above remain activation failures.
     await wallet.finishInterruptedSend().catch(() => undefined);
@@ -1010,7 +1023,50 @@ export class EcashWallet implements NativeWalletHandle {
     };
   }
 
-  async getBalance(): Promise<bigint> {
+  /** Last complete SDK observation, excluding the authoritative journal's current claims. */
+  getBalanceObservation(): { balance: bigint; observedAt: number } | undefined {
+    const observation = this.balanceObservation;
+    if (!observation) return undefined;
+    const excluded = new Set(
+      this.exclusions(this.loadLedger()).map(
+        (input) => `${input.txid}:${input.vout}`
+      )
+    );
+    return {
+      observedAt: observation.observedAt,
+      balance: observation.coins.reduce(
+        (sum, coin) =>
+          excluded.has(`${coin.txid}:${coin.vout}`) ? sum : sum + coin.satoshis,
+        0n
+      ),
+    };
+  }
+
+  private captureBalanceObservation(): void {
+    const coins = this.backend.getBalanceObservationCoins?.();
+    if (coins)
+      this.balanceObservation = {
+        observedAt: Date.now(),
+        coins: coins.map(({ txid, vout, satoshis }) => ({
+          txid,
+          vout,
+          satoshis,
+        })),
+      };
+  }
+
+  getBalance(): Promise<bigint> {
+    if (this.balanceRefresh) return this.balanceRefresh;
+    const refresh = this.refreshBalance();
+    this.balanceRefresh = refresh;
+    const clear = () => {
+      if (this.balanceRefresh === refresh) this.balanceRefresh = undefined;
+    };
+    void refresh.then(clear, clear);
+    return refresh;
+  }
+
+  private async refreshBalance(): Promise<bigint> {
     const floor = this.loadLedger().nextChangeIndex;
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
     await this.restoreStealthReceipts();
@@ -1018,10 +1074,12 @@ export class EcashWallet implements NativeWalletHandle {
     return this.exclusive(() => {
       const ledger = this.loadLedger();
       const excluded = this.exclusions(ledger);
-      return excluded.length === 0 &&
-        this.backend.getAvailableBalance === undefined
-        ? this.backend.balanceSats
-        : this.preparationBackend().getAvailableBalance(excluded);
+      const balance =
+        excluded.length === 0 && this.backend.getAvailableBalance === undefined
+          ? this.backend.balanceSats
+          : this.preparationBackend().getAvailableBalance(excluded);
+      this.captureBalanceObservation();
+      return balance;
     });
   }
 

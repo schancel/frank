@@ -4,6 +4,11 @@ import { randomBytes } from '@frank/crypto-box'
 import { fromHex, toHex, type EmailAttachment } from '@frank/codec'
 
 import type {
+  CanonicalFetch,
+  CanonicalStreamResponse,
+} from '../relay/canonical-dm-transport'
+
+import type {
   BlobManifest,
   BlobManifestItem,
   EmailItem,
@@ -667,7 +672,7 @@ export function buildHomeRelayBlobUrl(
 export function createHomeRelayBlobClient(
   homeRelayUrl: string,
   options?: {
-    fetch?: typeof fetch
+    fetch?: typeof fetch | CanonicalFetch
     advertiseOriginHint?: boolean
   },
 ): {
@@ -675,48 +680,83 @@ export function createHomeRelayBlobClient(
   uploadChunk: BlobChunkUploadFn
   fetchChunk: BlobChunkFetchFn
 } {
-  const fetchImpl = options?.fetch ?? globalThis.fetch
+  const fetchImpl = (options?.fetch ?? globalThis.fetch) as CanonicalFetch
   const base = homeRelayUrl.replace(/\/+$/, '')
   const originRelayHint =
     options?.advertiseOriginHint === false ? undefined : base
 
+  // The relay accepts at most 512 KiB per ciphertext chunk. Bound the actual stream,
+  // including error answers, before allocation; Content-Length alone is untrusted.
+  const maxChunkBytes = 512 * 1024
+  async function request(
+    url: string,
+    method: 'GET' | 'PUT',
+    body?: Uint8Array,
+  ): Promise<Uint8Array> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 30_000)
+    let reader:
+      | ReturnType<NonNullable<CanonicalStreamResponse['body']>['getReader']>
+      | undefined
+    try {
+      const response = await fetchImpl(url, {
+        method,
+        headers: { 'content-type': 'application/octet-stream' },
+        ...(body ? { body } : {}),
+        redirect: 'error',
+        credentials: 'omit',
+        signal: controller.signal,
+      })
+      if (response.url && response.url !== url)
+        throw new Error(
+          'Blob response redirected away from the Home Relay request',
+        )
+      reader = response.body?.getReader()
+      if (response.status < 200 || response.status >= 300)
+        throw new Error(
+          `Blob ${method} via Home Relay failed (${response.status})`,
+        )
+      if (method === 'PUT') return new Uint8Array()
+      if (!reader) throw new Error('Blob response has no bounded stream')
+      const chunks: Uint8Array[] = []
+      let total = 0
+      for (;;) {
+        const next = await reader.read()
+        if (next.done) break
+        if (!(next.value instanceof Uint8Array))
+          throw new Error('Invalid blob response stream')
+        total += next.value.byteLength
+        if (total > maxChunkBytes)
+          throw new Error('Blob response exceeds chunk limit')
+        chunks.push(next.value)
+      }
+      const bytes = new Uint8Array(total)
+      let offset = 0
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      return bytes
+    } finally {
+      clearTimeout(timer)
+      controller.abort()
+      await reader?.cancel().catch(() => undefined)
+      reader?.releaseLock()
+    }
+  }
+
   return {
     originRelayHint,
-    async uploadChunk(
-      chunkHash: string,
-      ciphertext: Uint8Array,
-    ): Promise<void> {
+    async uploadChunk(chunkHash, ciphertext): Promise<void> {
       const normalizedHash = chunkHash.toLowerCase()
-      if (!HEX64_RE.test(normalizedHash)) {
+      if (!HEX64_RE.test(normalizedHash))
         throw new Error(`Invalid chunkHash: ${chunkHash}`)
-      }
-      const response = await fetchImpl(`${base}/blobs/${normalizedHash}`, {
-        method: 'PUT',
-        headers: {
-          'content-type': 'application/octet-stream',
-        },
-        body: ciphertext as unknown as BodyInit,
-      })
-      if (!response.ok) {
-        const text = await response.text().catch(() => '')
-        throw new Error(
-          `Failed to upload blob chunk ${normalizedHash} (${response.status}): ${text}`,
-        )
-      }
+      if (ciphertext.byteLength > maxChunkBytes)
+        throw new Error('Blob upload exceeds chunk limit')
+      await request(`${base}/blobs/${normalizedHash}`, 'PUT', ciphertext)
     },
-    async fetchChunk(chunkHash: string, hint?: string): Promise<Uint8Array> {
-      const url = buildHomeRelayBlobUrl(base, chunkHash, hint)
-      const response = await fetchImpl(url, {
-        method: 'GET',
-      })
-      if (!response.ok) {
-        const text = await response.text().catch(() => '')
-        throw new Error(
-          `Failed to fetch blob chunk ${chunkHash} via home relay (${response.status}): ${text}`,
-        )
-      }
-      const buffer = await response.arrayBuffer()
-      return new Uint8Array(buffer)
+    async fetchChunk(chunkHash, hint): Promise<Uint8Array> {
+      return request(buildHomeRelayBlobUrl(base, chunkHash, hint), 'GET')
     },
   }
 }

@@ -61,6 +61,11 @@ import {
   type CanonicalAcceptedBody,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
+import {
+  createHomeRelayBlobClient,
+  rehydrateSplitMessageItems,
+  splitMessageItemsForSend,
+} from '@frank/cashweb/blobs/payload-splitter'
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
 import { allocateOpeningConversationId } from '@frank/cashweb/relay/conversation-id'
 import {
@@ -528,6 +533,32 @@ function requireMessageItems(
   const registry = owner.messageItems()
   if (!registry) throw new CanonicalMessageItemsNotInstalledError()
   return registry
+}
+
+/** The sealed message remains unread until its authenticated payload can be restored.
+ * A mailbox poll must not advance past this record after a transient chunk failure. */
+export class CanonicalPayloadUnavailableError extends Error {
+  constructor(readonly cause: unknown) {
+    super(
+      `Message payload unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+    )
+    this.name = 'CanonicalPayloadUnavailableError'
+  }
+}
+
+async function hydratePayloadItems(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  items: MessageItem[],
+): Promise<MessageItem[]> {
+  try {
+    return await rehydrateSplitMessageItems(
+      items,
+      createHomeRelayBlobClient(owner.relayBaseUrl, { fetch: directory.fetch }),
+    )
+  } catch (error) {
+    throw new CanonicalPayloadUnavailableError(error)
+  }
 }
 
 const MAX_INBOX_PAGES = 8
@@ -1675,16 +1706,31 @@ async function send(
   let recorded = false
   try {
     const directory = requireDirectory(owner)
-    // Encoded before anything is claimed, funded or stored: an unregistered type, an item its
-    // plugin refuses, or a set of items a reader would refuse rejects here, labelled as not
-    // attempted. Nothing was paid or sent.
+    // Prepared and encoded before payment selection or journal writes: an unregistered
+    // type, an item its plugin refuses, or a set a reader would refuse rejects here,
+    // labelled as not attempted. Uploaded ciphertext grants no payment authority.
     // Whether this wallet is writing to itself is all the item rule is told; which items that
     // permits is the rule's own business.
     const selfAddressed =
       params.recipient.raw.toLowerCase() === owner.identityAddress.toLowerCase()
-    const items = encodeItemFrames(requireMessageItems(owner), params.items, {
-      selfAddressed,
-    })
+    const registry = requireMessageItems(owner)
+    // A retained free envelope, like a paid journal row above, already owns its
+    // encrypted manifest. Repeating it never uploads or encrypts fresh chunks.
+    const keptUnpaid =
+      params.messageId !== undefined
+        ? owner.messages.unpaid(toHex(messageId))
+        : undefined
+    const preparedItems = keptUnpaid?.boundary
+      ? []
+      : await splitMessageItemsForSend(
+          params.items,
+          createHomeRelayBlobClient(owner.relayBaseUrl, {
+            fetch: directory.fetch,
+          }),
+        )
+    const items = keptUnpaid?.boundary
+      ? []
+      : encodeItemFrames(registry, preparedItems, { selfAddressed })
     let stampValueWei = params.stampValue
     const peer = await directory.peerCurrent({ address: params.recipient.raw })
     if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
@@ -2579,7 +2625,9 @@ async function fetchSince(
           // its recipient are both this wallet.
           isOwnSubject(owner, peerSubjectHex, peer.subject),
         )
+        items = await hydratePayloadItems(owner, directory, items)
       } catch (error) {
+        if (error instanceof CanonicalPayloadUnavailableError) throw error
         // Tampered, stale-keyed or foreign ciphertext never reaches display or payment import.
         // A message whose items together exceed its limits is refused as a whole and for good.
         // So is one that fails at or after decryption: its sender, recipient, entries and keys
@@ -2863,6 +2911,11 @@ export function canonicalDirectMessages(
       let streamHandle: { close: () => void } | undefined
       let reconnectTimer: ReturnType<typeof setTimeout> | undefined
       let reconnectAttempts = 0
+      // A slow or missing blob cannot let later stream records advance the host's
+      // durable cursor past it. Polling remains the recovery owner; after failure
+      // this subscription yields to its atomic fetchSince pass until recreated.
+      let payloadBlocked = false
+      let streamRecordPending = false
 
       const scheduleReconnect = () => {
         if (!active || reconnectTimer !== undefined) return
@@ -2899,7 +2952,17 @@ export function canonicalDirectMessages(
               }
             },
             onRecord: async (record: CanonicalMailboxRecord) => {
-              if (!active) return
+              if (!active || payloadBlocked) return
+              if (streamRecordPending) {
+                // There is no unbounded event queue. Once a record is skipped,
+                // every later event yields to polling too, preserving its cursor.
+                payloadBlocked = true
+                params.onError?.(
+                  new Error('Mailbox stream yielded overlapping records to polling'),
+                )
+                return
+              }
+              streamRecordPending = true
               try {
                 const delivery = parseFrame(record.delivery)
                 if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
@@ -2989,6 +3052,9 @@ export function canonicalDirectMessages(
                     record.timestampMs,
                     isOwnSubject(owner, peerSubjectHex, peer.subject),
                   )
+                  if (items.some(item => item.type === 'blob-manifest')) {
+                    items = await hydratePayloadItems(owner, directory, items)
+                  }
                 } finally {
                   roles.dispose()
                 }
@@ -3021,6 +3087,7 @@ export function canonicalDirectMessages(
                 const peerAddress: ChainAddress = {
                   raw: getAddress(computeAddress('0x' + peer.subject)),
                 }
+                if (!active) return
                 params.onRecord(
                   projectOutboxMessageRecord(
                     {
@@ -3052,9 +3119,13 @@ export function canonicalDirectMessages(
                   ),
                 )
               } catch (err) {
+                if (err instanceof CanonicalPayloadUnavailableError)
+                  payloadBlocked = true
                 params.onError?.(
                   err instanceof Error ? err : new Error(String(err)),
                 )
+              } finally {
+                streamRecordPending = false
               }
             },
             onError: err => {

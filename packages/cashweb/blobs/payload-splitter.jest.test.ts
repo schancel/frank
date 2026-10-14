@@ -515,6 +515,65 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
     expect(fetchChunk).toHaveBeenCalledTimes(1)
   })
 
+  it('bounds streamed chunks and rejects redirects while cancelling every response', async () => {
+    const hash = 'ab'.repeat(32)
+    const cancel = jest.fn(async () => undefined)
+    const releaseLock = jest.fn()
+    const read = jest
+      .fn()
+      .mockResolvedValueOnce({ done: false, value: new Uint8Array(512 * 1024) })
+      .mockResolvedValueOnce({ done: false, value: new Uint8Array(1) })
+    const transport = jest.fn(async (url: string) => ({
+      status: 200,
+      url,
+      headers: { get: () => null },
+      body: { getReader: () => ({ read, cancel, releaseLock }) },
+    }))
+    const client = createHomeRelayBlobClient('https://home.example', {
+      fetch: transport,
+    })
+    await expect(
+      client.fetchChunk(hash, 'https://foreign.example'),
+    ).rejects.toThrow('exceeds chunk limit')
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(releaseLock).toHaveBeenCalledTimes(1)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(transport.mock.calls[0][0]).toBe(
+      `https://home.example/blobs/${hash}?origin=https%3A%2F%2Fforeign.example`,
+    )
+    expect(transport).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ redirect: 'error', credentials: 'omit' }),
+    )
+    const redirected = createHomeRelayBlobClient('https://home.example', {
+      fetch: async () => ({
+        status: 200,
+        url: 'https://foreign.example/blob',
+        headers: { get: () => null },
+        body: null,
+      }),
+    })
+    await expect(redirected.fetchChunk(hash)).rejects.toThrow('redirected')
+  })
+
+  it('rejects an unsupported manifest version before fetching any chunk', async () => {
+    const { manifest } = splitLargePayload(new Uint8Array(32769))
+    const fetchChunk = jest.fn()
+    await expect(
+      rehydrateSplitMessageItems(
+        [
+          {
+            type: 'blob-manifest',
+            ...manifest!,
+            version: 2,
+          } as unknown as MessageItem,
+        ],
+        fetchChunk,
+      ),
+    ).rejects.toThrow('Unsupported blob manifest version')
+    expect(fetchChunk).not.toHaveBeenCalled()
+  })
+
   it('builds Home-Relay blob URLs without leaking direct foreign origin connections', () => {
     const hash = 'ab'.repeat(32)
     expect(

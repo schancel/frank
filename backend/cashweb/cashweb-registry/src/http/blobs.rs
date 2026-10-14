@@ -1001,6 +1001,46 @@ mod tests {
         assert!(validate_origin_relay_url("http://192.168.1.1", true).is_err());
     }
 
+    /// Actual installed TS messaging runtime against two Rust blob routers. Chain RPC
+    /// and canonical mailbox HTTP remain the explicitly offline wallet fixture.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires Node, Yarn and installed workspace dependencies; run explicitly"]
+    async fn installed_payload_runtime_two_rust_routers() {
+        let (_dir_a, sender) = make_test_server();
+        let (_dir_b, receiver) = make_test_server();
+        receiver.registry.blobs().set_allow_loopback_origins(true);
+        let (sender_url, sender_task) = spawn_test_relay(sender).await;
+        let (receiver_url, receiver_task) = spawn_test_relay(receiver).await;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("yarn")
+                .current_dir(root)
+                .args([
+                    "--cwd",
+                    "packages/wallet",
+                    "test",
+                    "--runInBand",
+                    "chain/payload-runtime.jest.test.ts",
+                    "--testNamePattern",
+                    "restores a >1MiB attachment",
+                ])
+                .env("FRANK_PAYLOAD_SENDER_RELAY", sender_url)
+                .env("FRANK_PAYLOAD_RECEIVER_RELAY", receiver_url)
+                .output()
+        })
+        .await
+        .unwrap();
+        sender_task.abort();
+        receiver_task.abort();
+        let output = result.expect("run installed wallet payload test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[tokio::test]
     async fn home_relay_proxies_cross_relay_blobs_caches_locally_and_rejects_tampered_upstream() {
         let (_dir_a, server_a) = make_test_server();

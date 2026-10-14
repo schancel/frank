@@ -4,6 +4,7 @@ module.exports = {
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
+    '^@frank/cashweb/(.*)$': '<rootDir>/$1',
     '^@frank/directory-admission$':
       '<rootDir>/../directory-admission/src/index.ts',
     '^@frank/directory-admission/node$':

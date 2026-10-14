@@ -8,6 +8,7 @@ import { mailKey } from '../rfc/mail-keys';
 import { readThreadHeaders } from '../rfc/message-headers';
 import { parseRawRfc822 } from '../smtp/smtp-listener';
 import type { BlobStore } from '../storage/blob-store';
+import type { HeldEmailAutoResponder } from '../mta/held-email-auto-responder';
 import type { FrankSendRecord, InboundEmail, StoredMailBytes } from '../types';
 
 /**
@@ -27,6 +28,10 @@ export interface JournaledInboundSendOptions {
   readonly ledger: CreditLedger;
   readonly journal: MailJournal;
   readonly blobStore?: BlobStore;
+  readonly heldAutoResponder?: Pick<
+    HeldEmailAutoResponder,
+    'processHeldEmail' | 'processHeldEmails'
+  >;
 }
 
 export type InboundAdmission =
@@ -44,6 +49,10 @@ export class JournaledInboundSend {
   private readonly ledger: CreditLedger;
   private readonly journal: MailJournal;
   private readonly blobStore?: BlobStore;
+  private readonly heldAutoResponder?: Pick<
+    HeldEmailAutoResponder,
+    'processHeldEmail' | 'processHeldEmails'
+  >;
 
   constructor(options: JournaledInboundSendOptions) {
     this.chain = options.chain;
@@ -51,6 +60,7 @@ export class JournaledInboundSend {
     this.ledger = options.ledger;
     this.journal = options.journal;
     this.blobStore = options.blobStore;
+    this.heldAutoResponder = options.heldAutoResponder;
     this.journal.assertCreditLedger(this.ledger);
     if (this.chain.chainIdentifier !== this.journal.chainIdentifier) {
       throw new Error('Mail journal and wallet chain identifiers differ');
@@ -313,7 +323,11 @@ export class JournaledInboundSend {
           inReplyTo: headers.inReplyTo,
           references: headers.references,
         });
-        if (result?.created) released += 1;
+        if (result?.created) {
+          released += 1;
+        } else if (this.heldAutoResponder) {
+          await this.heldAutoResponder.processHeldEmail(email);
+        }
       } catch (error) {
         errors.push({
           scopeAccount: email.scopeAccount,
@@ -328,6 +342,13 @@ export class JournaledInboundSend {
       errors,
       nextAfter: last ? { scopeAccount: last.scopeAccount, mailKey: last.mailKey } : undefined,
     };
+  }
+
+  /** Dispatches RFC 3834 payment & onboarding auto-replies for newly held inbound emails. */
+  async sendPendingHeldAutoReplies(limit = 100): Promise<void> {
+    if (!this.heldAutoResponder) return;
+    const result = await this.heldAutoResponder.processHeldEmails(limit);
+    if (result.errors.length) throw new Error(`Held auto-reply failures: ${result.errors.length}`);
   }
 
   private mailIdFor(slot: FrankSendRecord): string {

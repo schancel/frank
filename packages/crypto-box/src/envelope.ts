@@ -173,7 +173,11 @@ function decodeCborEnvelope(bytes: Uint8Array): DecodedEnvelope | null {
   if (bytes.length > MAX_ENVELOPE) return null
   const reader = new Reader(bytes)
   const hasMaskedSender = bytes[0] === (0xa0 | SEALED_SENDER_MAP_SIZE)
-  if (!reader.readExact(0xa0 | (hasMaskedSender ? SEALED_SENDER_MAP_SIZE : MAP_SIZE))) {
+  if (
+    !reader.readExact(
+      0xa0 | (hasMaskedSender ? SEALED_SENDER_MAP_SIZE : MAP_SIZE),
+    )
+  ) {
     return null
   }
   if (!reader.readExact(0)) return null

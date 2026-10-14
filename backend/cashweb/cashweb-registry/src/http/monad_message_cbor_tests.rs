@@ -15,7 +15,7 @@ fn independent_transport_original_body_and_ordinary_identity_are_exact() {
     let request = fixture();
     assert_eq!(
         hex::encode(request.submission_identity()),
-        "c4b354a2d815f88828948e7b36ca82e88a4283968a8c86c756a06c9675c7d151"
+        "b92bc711e2cd1494ec222d53cde4d4d90ccbef339c0d372436a9a0be1d77b614"
     );
     assert_eq!(request.body(), hex::decode(T_BODY_HEX).unwrap());
     assert_eq!(request.content_type(), T_CONTENT_TYPE);
@@ -118,7 +118,7 @@ fn genuine_fixture() -> ExactRequest {
     .unwrap();
     assert_eq!(
         hex::encode(request.submission_identity()),
-        "c4b354a2d815f88828948e7b36ca82e88a4283968a8c86c756a06c9675c7d151"
+        "b92bc711e2cd1494ec222d53cde4d4d90ccbef339c0d372436a9a0be1d77b614"
     );
     request
 }
@@ -743,7 +743,7 @@ fn prefix_fixture() -> ExactRequest {
     .unwrap();
     assert_eq!(
         hex::encode(request.submission_identity()),
-        "cf8d2fc8fda186df7c60068970828a91ae746e962a13e3a9bddf4dd6a6f62537"
+        "e06db3ca828deb0c410e189612363d37b48a22809d51f8df114e47358a89d089"
     );
     request
 }

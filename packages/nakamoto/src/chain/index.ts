@@ -35,6 +35,8 @@ export type {
   ChainFamily,
   DisplayUnit,
   HeaderShape,
+  LotusNetChar,
+  MerkleOddRule,
   MessageMagic,
   NetworkKind,
   PolicyAmount,

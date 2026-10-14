@@ -1488,7 +1488,7 @@ function hashTypeAccepted(hashType: number, chain: ChainDescriptor): boolean {
   if (!Number.isInteger(hashType) || hashType < 0 || hashType > 0xff) {
     return false
   }
-  if (chain.family === 'xpi') {
+  if (chain.sighash.kind === 'lotus') {
     const mask = hashType & 0x60
     if (mask !== 0x40 && mask !== 0x60) return false
     if ((hashType & 0x03) === 0 || (hashType & 0x1c) !== 0) return false
@@ -1561,9 +1561,11 @@ function checkOne(
 ): SigMatch {
   const chain = machine.context.chain
   const rules = chain.script
-  const family = chain.family
   if (signature.length === 0) return false
-  if (looksSchnorr(signature) && family !== 'btc' && family !== 'ltc') {
+  if (
+    looksSchnorr(signature) &&
+    chain.sighash.kind !== 'btc-legacy-and-segwit'
+  ) {
     return failure('script-schnorr', opcode)
   }
   const parsed = parseDer(signature, !dataSig)
@@ -1616,7 +1618,7 @@ function digestFor(
     chain.sighash.kind === 'btc-legacy-and-segwit' ||
     chain.sighash.kind === 'legacy-only'
       ? 'legacy'
-      : chain.family === 'xpi'
+      : chain.sighash.kind === 'lotus'
       ? xpiMask === 0x40
         ? 'forkid'
         : 'lotus'
@@ -1645,7 +1647,7 @@ function digestFor(
       ? new Uint8Array(cryptoBackend.sha256d(machine.script))
       : undefined,
     codeSeparatorPosition: lotus ? machine.codeSepOpcode : undefined,
-    replayProtection: chain.family === 'xpi' && algorithm === 'forkid',
+    replayProtection: chain.sighash.kind === 'lotus' && algorithm === 'forkid',
   })
   if (!hashed.ok) return failure('script-signature', opcode)
   return hashed.value

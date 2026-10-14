@@ -14,5 +14,6 @@
     "rootDir": "./",
     "types": ["node", "jest"]
   },
-  "include": ["contracts/**/*", "scripts/**/*", "test/**/*", "deployments/**/*", "index.ts", "solana-escrow.ts", "artifacts/**/*"]
+  "include": ["contracts/**/*", "scripts/**/*", "test/**/*", "deployments/**/*", "index.ts", "solana-escrow.ts", "artifacts/**/*"],
+  "exclude": ["test/adaptor-swap-composition.jest.test.ts"]
 }

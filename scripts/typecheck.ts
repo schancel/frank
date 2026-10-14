@@ -20,6 +20,10 @@ if (existsSync(packagesDir)) {
   }
 }
 
+// Strict test-only gate: signer source uses bundler resolution; production stays NodeNext.
+const adaptorCompositionConfig = join(rootDir, 'packages/contracts/tsconfig.adaptor-tests.json')
+if (existsSync(adaptorCompositionConfig)) targetConfigs.push(adaptorCompositionConfig)
+
 const custodyConfig = join(rootDir, 'app/src/accounts/custody/tsconfig.json')
 if (existsSync(custodyConfig)) {
   targetConfigs.push(custodyConfig)

@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "include": [
+    "test/adaptor-swap-composition.jest.test.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

@@ -157,6 +157,8 @@ export interface EvmLegacyConsolidatorConfig {
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
   now?: () => number
+  /** Wall-clock budget for one background chain-evidence lookup, not financial finality. */
+  reobservationLookupTimeoutMs?: number
   /** Resolves at the wallet's next look at the chain (its one block watcher). With it, a
    * transfer that was just broadcast is watched until the chain shows it in a block, for at most
    * `inclusionWaitMs`. Without it (an executor on its own) the transfer is looked at once. */
@@ -277,7 +279,27 @@ export const REOBSERVE_MAX_PROBES = 8
 export const REOBSERVE_MIN_INTERVAL_MS = 15_000
 /** Re-observation: the longest wait between two probes of one member. */
 export const REOBSERVE_MAX_BACKOFF_MS = 600_000
+/** One background lookup I/O budget; expiry says nothing about transaction settlement. */
+export const REOBSERVE_LOOKUP_TIMEOUT_MS = 30_000
 const REOBSERVE_STOPPED = Symbol('re-observation stopped')
+/** Convert synchronous provider throws into settled siblings for guarded background reads. */
+function evidenceRead<T>(
+  read: () => Promise<T>,
+  wanted?: () => boolean,
+): Promise<T> {
+  if (!wanted) return read()
+  return Promise.resolve().then(() => {
+    if (!wanted()) throw REOBSERVE_STOPPED
+    return read()
+  })
+}
+/** Preserve physical single-flight even when one parallel read rejects before its siblings. */
+async function settledEvidence<T extends readonly unknown[]>(reads: {
+  [K in keyof T]: Promise<T[K]>
+}) {
+  await Promise.allSettled(reads)
+  return Promise.all(reads)
+}
 interface ReobserveCandidate {
   readonly operationId: string
   readonly index: number
@@ -351,7 +373,21 @@ export class EvmLegacyConsolidator {
   private applyingRecorded = false
   private reobserveStopped = false
   private readonly reobserveStops = new Set<() => void>()
-  constructor(private readonly config: EvmLegacyConsolidatorConfig) {}
+  private readonly reobserveLookups = new Map<string, Promise<void>>()
+  private readonly reobservationLookupTimeoutMs: number
+  constructor(private readonly config: EvmLegacyConsolidatorConfig) {
+    const timeout =
+      config.reobservationLookupTimeoutMs === undefined
+        ? REOBSERVE_LOOKUP_TIMEOUT_MS
+        : config.reobservationLookupTimeoutMs
+    if (
+      !Number.isSafeInteger(timeout) ||
+      timeout <= 0 ||
+      timeout > 2_147_483_647
+    )
+      throw new Error('Invalid re-observation lookup timeout')
+    this.reobservationLookupTimeoutMs = timeout
+  }
   private run<T>(task: () => Promise<T>): Promise<T> {
     this.queued++
     const run = this.tail.then(task).finally(() => {
@@ -394,20 +430,31 @@ export class EvmLegacyConsolidator {
           'included-success',
     )
   }
-  private async account(address: string): Promise<EvmNativeAccountObservation> {
+  private async account(
+    address: string,
+    wanted?: () => boolean,
+  ): Promise<EvmNativeAccountObservation> {
     const { provider } = this.config
     // The balance and the nonce are read at one block, and that block is read again to see it
     // is still the block at its height. On a chain whose newest block is only proposed (Monad:
     // seen on a local chain, a send that needed two accounts failed here on its first read)
     // the newest block is often replaced a moment later: then the read is simply made again.
     for (let attempt = 0; ; attempt++) {
+      if (wanted && !wanted()) throw REOBSERVE_STOPPED
       const block = await provider.getBlock('latest')
+      if (wanted && !wanted()) throw REOBSERVE_STOPPED
       if (!block?.hash) throw new Error('Native account block unavailable')
-      const [balance, nonce, checked] = await Promise.all([
-        provider.getBalance(address, block.number),
-        provider.getTransactionCount(address, block.number),
-        provider.getBlock(block.number),
-      ])
+      const reads = [
+        evidenceRead(() => provider.getBalance(address, block.number), wanted),
+        evidenceRead(
+          () => provider.getTransactionCount(address, block.number),
+          wanted,
+        ),
+        evidenceRead(() => provider.getBlock(block.number), wanted),
+      ] as const
+      const [balance, nonce, checked] = await (wanted
+        ? settledEvidence(reads)
+        : Promise.all(reads))
       if (checked?.hash === block.hash)
         return {
           blockHash: block.hash.toLowerCase(),
@@ -455,21 +502,29 @@ export class EvmLegacyConsolidator {
             canonicalBlockHash: canonicalHash,
           }
       }
+      if (wanted && !wanted()) return
       const expected = Transaction.from(member.signed.rawTransaction)
       const hash = member.signed.transactionHash
-      let [transaction, receipt] = await Promise.all([
-        provider.getTransaction(hash),
-        provider.getTransactionReceipt(hash),
-      ])
+      const reads = [
+        evidenceRead(() => provider.getTransaction(hash), wanted),
+        evidenceRead(() => provider.getTransactionReceipt(hash), wanted),
+      ] as const
+      let [transaction, receipt] = await (wanted
+        ? settledEvidence(reads)
+        : Promise.all(reads))
+      if (wanted && !wanted()) return
       // Blocks come faster than these reads: a transaction mined between two of them was read
       // unmined by one and mined by the other. That is not an inconsistency of the chain, so
       // the transaction is read again, and the account is read AFTER the receipt (its block is
       // then never behind the receipt's). Without this a mined transfer was recorded `unknown`.
       if (receipt !== null && (transaction === null || !transaction.blockHash))
         transaction = await provider.getTransaction(hash)
+      if (wanted && !wanted()) return
       if (receipt === null && transaction?.blockHash)
         receipt = await provider.getTransactionReceipt(hash)
-      account = await this.account(member.source.address)
+      if (wanted && !wanted()) return
+      account = await this.account(member.source.address, wanted)
+      if (wanted && !wanted()) return
       if (transaction === null && receipt === null)
         observation = { state: 'missing' }
       else if (
@@ -1391,6 +1446,7 @@ export class EvmLegacyConsolidator {
     const eligible = candidates
       .filter(candidate => {
         const waited = this.reobserveBackoff.get(candidate.key)
+        if (this.reobserveLookups.has(candidate.key)) return false
         return (
           !waited ||
           now < waited.probedAt ||
@@ -1409,27 +1465,6 @@ export class EvmLegacyConsolidator {
       0,
       REOBSERVE_MAX_PROBES,
     )
-  }
-  /** `work`, or `REOBSERVE_STOPPED` as soon as re-observation is stopped. `work` is left to
-   * settle on its own; its rejection is always handled here. */
-  private untilStopped<T>(
-    work: Promise<T>,
-  ): Promise<T | typeof REOBSERVE_STOPPED> {
-    return new Promise((resolve, reject) => {
-      const stop = () => resolve(REOBSERVE_STOPPED)
-      if (this.reobserveStopped) stop()
-      else this.reobserveStops.add(stop)
-      work.then(
-        value => {
-          this.reobserveStops.delete(stop)
-          resolve(value)
-        },
-        error => {
-          this.reobserveStops.delete(stop)
-          reject(error)
-        },
-      )
-    })
   }
   /** The member, read from the journal now, if it is still one to look up: its operation not
    * cancelled, signed and exposed, recorded `unknown`, `missing` or `pending`. */
@@ -1458,46 +1493,71 @@ export class EvmLegacyConsolidator {
       const member = this.reobservable(candidate)
       if (!member?.signed) continue
       this.reobserveCursor = candidate
-      let receipt: unknown = null
+      let active = true
+      let observationStarted = false
+      let skippedForQueue = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let stop!: () => void
+      const expired = new Promise<void>(resolve => {
+        stop = () => {
+          active = false
+          resolve()
+        }
+        this.reobserveStops.add(stop)
+        timer = setTimeout(stop, this.reobservationLookupTimeoutMs)
+      })
+      const wanted = () => active && !this.reobserveStopped
+      // Retain physical work until the provider settles. A timeout frees this pass, but never
+      // starts another unresolved provider chain for the same member.
+      const work = (async () => {
+        try {
+          const receipt = await provider.getTransactionReceipt(
+            member.signed!.transactionHash,
+          )
+          // A send or estimate may have finalized this member during the probe. Leave its
+          // evidence intact; queued sends own their captures and must not be superseded here.
+          if (!wanted() || receipt == null || !this.reobservable(candidate))
+            return
+          if (this.queued > 0) {
+            skippedForQueue = true
+            return
+          }
+          observationStarted = true
+          await this.observe(
+            candidate.operationId,
+            candidate.index,
+            lifetime,
+            wanted,
+          )
+          // A durable write admitted before expiry is allowed to finish. Its authoritative
+          // result still owes local application even when the timed pass has already returned.
+          if (
+            !this.reobserveStopped &&
+            journal.get(candidate.operationId).members[candidate.index]
+              ?.observation.state === 'included-success'
+          )
+            this.localPassOwed = true
+        } catch {
+          /* Unavailable evidence leaves the original operation and its claims intact. */
+        }
+      })()
+      this.reobserveLookups.set(candidate.key, work)
+      void work.finally(() => {
+        this.reobserveLookups.delete(candidate.key)
+      })
       try {
-        receipt = await this.untilStopped(
-          provider.getTransactionReceipt(member.signed.transactionHash),
-        )
-      } catch {
-        /* A probe that failed learned nothing: nothing is written, and it waits like an empty one. */
+        await Promise.race([work, expired])
+      } finally {
+        active = false
+        clearTimeout(timer)
+        this.reobserveStops.delete(stop)
       }
-      if (receipt === REOBSERVE_STOPPED) return
-      // The probe took time. If a send, a resume or a fee estimate recorded this member included
-      // or reverted meanwhile (or it is otherwise no longer one to look up), that record stands:
-      // an observation begun now could, on one failed read, write `unknown` over it. Read again
-      // here, in the same step as the queue check below and the start of `observe`, and leave
-      // it. It carries no wait: it is not a candidate any more.
-      if (!this.reobservable(candidate)) {
+      if (this.reobserveStopped) return
+      if (skippedForQueue) continue
+      if (!observationStarted && !this.reobservable(candidate)) {
         this.reobserveBackoff.delete(candidate.key)
         continue
       }
-      // The journal keeps the observation that began last. A send or resume in the executor
-      // queue observes for itself and decides on what it recorded, so no observation is begun
-      // here while one is queued: this pass never discards theirs, and the member is looked up
-      // again by the next pass. One that starts afterwards discards this one instead.
-      if (receipt != null && this.queued > 0) continue
-      if (receipt != null)
-        try {
-          if (
-            (await this.untilStopped(
-              this.observe(
-                candidate.operationId,
-                candidate.index,
-                lifetime,
-                () => !this.reobserveStopped,
-              ),
-            )) === REOBSERVE_STOPPED
-          )
-            return
-        } catch {
-          /* Nothing recorded: the member stays as it was. */
-        }
-      if (this.reobserveStopped) return
       const state = journal.get(candidate.operationId).members[candidate.index]!
         .observation.state
       if (state === 'included-success') this.localPassOwed = true
@@ -1550,7 +1610,9 @@ export class EvmLegacyConsolidator {
    * observation stays recorded for the next send or the next open as well.
    *
    * It never signs, broadcasts, resubmits, replaces or cancels, never marks a member dropped and
-   * has no timeout: a member that never lands stays pending and reserved. It never rejects.
+   * has no settlement timeout: a member that never lands stays pending and reserved. Each
+   * background evidence lookup has a finite I/O budget; an unanswered physical lookup suppresses
+   * further probes of that member until it settles. It never rejects.
    */
   async reobservePending(applyRecorded?: () => Promise<void>): Promise<void> {
     try {

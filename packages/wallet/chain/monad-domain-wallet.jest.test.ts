@@ -4263,6 +4263,51 @@ describe('recorded native spend evidence is applied once at wallet open, with no
       }
     })
 
+    test('a lookup deadline preserves the exact operation and reservation across composed close and reopen, then applies valid inclusion once', async () => {
+      const f = await composedWithProductionFundedPoolRow(dir)
+      const { wallet } = f
+      const { operations } = await poolSendThenObserved(f, 'pending')
+      const hash = pendingMember(wallet).signed!.transactionHash
+      const landed = f.rpc.receipts.get(hash)!
+      let answer!: (receipt: typeof landed) => void
+      jest.mocked(wallet.provider.getTransactionReceipt).mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            answer = resolve
+          }),
+      )
+      jest.useFakeTimers({ doNotFake: ['Date', 'setImmediate', 'nextTick'] })
+      try {
+        const tick = wallet.reobserveNativeOperations!()
+        await settle()
+        await jest.advanceTimersByTimeAsync(30_000)
+        await tick
+        expect(jest.getTimerCount()).toBe(0)
+        expect(wallet.getNativeOperations!()).toEqual(operations)
+        expect(wallet.pool.isSpendReserved(0)).toBe(true)
+      } finally {
+        jest.useRealTimers()
+      }
+      await wallet.close()
+      const second = await f.open()
+      answer(landed)
+      await settle()
+      expect(second.wallet.getNativeOperations!()).toEqual(operations)
+      expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
+      expect(second.wallet.pool.isSpendReserved(0)).toBe(true)
+      f.withholdReceipts(false)
+      await second.wallet.reobserveNativeOperations!()
+      expect(
+        second.wallet.getNativeOperations!()[0]!.members[0]!.observation.state,
+      ).toBe('included-success')
+      expect(second.wallet.pool.getRecord(0)).toEqual(
+        spentByMember(second.wallet.getNativeOperations!()[0]!),
+      )
+      const writes = watchWrites()
+      await second.wallet.reobserveNativeOperations!()
+      expect(writes.counts()).toEqual({ pass: 0, commit: 0, putMany: 0 })
+    })
+
     test('hand-built: while a retained canonical pre-sign intent holds an available row the wallet queue refuses the local pass; the tick does not throw, the observation stays recorded, and a later tick applies it without a request once the intent is gone', async () => {
       const f = await composedWithProductionFundedPoolRow(dir)
       const { wallet } = f

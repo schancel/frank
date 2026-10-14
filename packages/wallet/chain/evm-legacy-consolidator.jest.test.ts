@@ -38,6 +38,7 @@ import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-stor
 import { InMemoryChangePoolStore } from '../storage/change-pool-storage'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import { validateMonadWalletState } from '../storage/monad-wallet-state-validator'
+import * as durability from '../storage/level-durability'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
 
 const recipient = new Wallet('0x' + '11'.repeat(32)).address.toLowerCase()
@@ -2649,6 +2650,401 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(probed(state).slice(seen)).toEqual([hashOf(second), hashOf(first)])
   })
 
+  it.each([
+    0,
+    -1,
+    NaN,
+    Infinity,
+    1.5,
+    2_147_483_648,
+    null as unknown as number,
+  ])(
+    'rejects an invalid lookup budget %s before provider effects',
+    async timeout => {
+      const state = chain([])
+      const c = await composed(state, [121000n])
+      const before = providerCalls(state)
+      expect(() =>
+        reobserver(c, { reobservationLookupTimeoutMs: timeout }),
+      ).toThrow('Invalid re-observation lookup timeout')
+      expect(providerCalls(state)).toBe(before)
+    },
+  )
+
+  it.each([
+    'probe',
+    'transaction',
+    'receipt',
+    'account',
+    'balance',
+    'nonce',
+    'inclusion',
+  ] as const)(
+    'expires a hung %s within the whole lookup budget, preserves claims, and permits other members and later valid inclusion',
+    async during => {
+      const state = chain([])
+      const c = await composed(state, [121000n, 121000n])
+      const r = reobserver(c, { reobservationLookupTimeoutMs: 100 })
+      const first = await broadcastNative(c, state, r.executor)
+      const second = await broadcastNative(c, state, r.executor)
+      state.mine(first.members[0]!.signed!.rawTransaction)
+      let answer!: () => void
+      const held = new Promise<void>(resolve => {
+        answer = resolve
+      })
+      const holdNext = <A extends unknown[], T>(
+        mock: jest.Mock<Promise<T>, A>,
+      ) => {
+        const original = mock.getMockImplementation()!
+        mock.mockImplementationOnce(async (...args: A) => {
+          await held
+          return original(...args)
+        })
+      }
+      if (during === 'probe') holdNext(state.provider.getTransactionReceipt)
+      if (during === 'transaction') holdNext(state.provider.getTransaction)
+      if (during === 'receipt') {
+        const original =
+          state.provider.getTransactionReceipt.getMockImplementation()!
+        state.provider.getTransactionReceipt.mockImplementationOnce(original)
+        holdNext(state.provider.getTransactionReceipt)
+      }
+      if (during === 'account') holdNext(state.provider.getBlock)
+      if (during === 'balance') holdNext(state.provider.getBalance)
+      if (during === 'nonce') holdNext(state.provider.getTransactionCount)
+      if (during === 'inclusion') {
+        const original = state.provider.getBlock.getMockImplementation()!
+        state.provider.getBlock
+          .mockImplementationOnce(original)
+          .mockImplementationOnce(original)
+        holdNext(state.provider.getBlock)
+      }
+      const recorded = journal.list()
+      const record = jest.spyOn(journal, 'recordObservation')
+      const signatures = c.sign.mock.calls.length
+      const broadcasts = state.provider.broadcastTransaction.mock.calls.length
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+      try {
+        let returned = false
+        const tick = r.tick().then(() => {
+          returned = true
+        })
+        await settle()
+        await jest.advanceTimersByTimeAsync(99)
+        expect(returned).toBe(false)
+        await Promise.all(Array.from({ length: 10 }, () => r.tick()))
+        await jest.advanceTimersByTimeAsync(1)
+        await tick
+        expect(returned).toBe(true)
+        expect(probed(state)).toContain(hashOf(second))
+        expect(journal.list()).toEqual(recorded)
+        expect(record).not.toHaveBeenCalled()
+        expect(journal.canSelect(first.members[0]!.source.address, 0)).toBe(
+          false,
+        )
+        const before = probed(state).filter(
+          hash => hash === hashOf(first),
+        ).length
+        r.advance(600_000)
+        await r.tick()
+        expect(
+          probed(state).filter(hash => hash === hashOf(first)),
+        ).toHaveLength(before)
+        const calls = providerCalls(state)
+        answer()
+        await settle()
+        await settle()
+        expect(providerCalls(state)).toBe(calls)
+        expect(record).not.toHaveBeenCalled()
+        expect(journal.list()).toEqual(recorded)
+        r.advance(600_000)
+        await r.tick()
+        expect(
+          journal.get(first.operationId).members[0]!.observation.state,
+        ).toBe('included-success')
+        expect(
+          c.pool.getRecord(
+            (first.members[0]!.source as { index: number }).index,
+          )!.status,
+        ).toBe('spent')
+        const applied = r.applied.mock.calls.length
+        r.advance(600_000)
+        await r.tick()
+        expect(r.applied).toHaveBeenCalledTimes(applied)
+        expect(c.sign).toHaveBeenCalledTimes(signatures)
+        expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(
+          broadcasts,
+        )
+        expect(jest.getTimerCount()).toBe(0)
+      } finally {
+        jest.useRealTimers()
+      }
+    },
+  )
+
+  it.each(['transaction rejects', 'receipt throws', 'balance throws'] as const)(
+    'retains physical single-flight when a sibling %s while another read hangs',
+    async failure => {
+      const state = chain([])
+      const c = await composed(state, [121000n])
+      const r = reobserver(c, { reobservationLookupTimeoutMs: 100 })
+      const row = await broadcastLegacy(c, state, 100000n)
+      state.mine(row.members[0]!.signed!.rawTransaction)
+      const recorded = journal.list()
+      let release!: () => void
+      const held = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const receipt =
+        state.provider.getTransactionReceipt.getMockImplementation()!
+      const transaction = state.provider.getTransaction.getMockImplementation()!
+      if (failure === 'transaction rejects') {
+        state.provider.getTransaction.mockRejectedValueOnce(
+          new Error('unavailable transaction'),
+        )
+        state.provider.getTransactionReceipt
+          .mockImplementationOnce(receipt)
+          .mockImplementationOnce(async hash => {
+            await held
+            return receipt(hash)
+          })
+      } else if (failure === 'receipt throws') {
+        state.provider.getTransaction.mockImplementationOnce(async hash => {
+          await held
+          return transaction(hash)
+        })
+        state.provider.getTransactionReceipt
+          .mockImplementationOnce(receipt)
+          .mockImplementationOnce(() => {
+            throw new Error('provider destroyed')
+          })
+      } else {
+        state.provider.getBalance.mockImplementationOnce(() => {
+          throw new Error('balance unavailable')
+        })
+        state.provider.getTransactionCount.mockImplementationOnce(async () => {
+          await held
+          return 1
+        })
+      }
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+      try {
+        const tick = r.tick()
+        await settle()
+        await jest.advanceTimersByTimeAsync(100)
+        await tick
+        const before = providerCalls(state)
+        r.advance(600_000)
+        await r.tick()
+        expect(providerCalls(state)).toBe(before)
+        release()
+        await settle()
+        await settle()
+        expect(journal.list()).toEqual(recorded)
+        expect(providerCalls(state)).toBe(before)
+        r.advance(600_000)
+        await r.tick()
+        expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+          'included-success',
+        )
+        expect(jest.getTimerCount()).toBe(0)
+      } finally {
+        release()
+        jest.useRealTimers()
+      }
+    },
+  )
+
+  it('shares one lookup budget across probe and observation instead of resetting it for each RPC', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c, { reobservationLookupTimeoutMs: 100 })
+    const row = await broadcastLegacy(c, state, 100000n)
+    state.mine(row.members[0]!.signed!.rawTransaction)
+    const recorded = journal.list()
+    const receipt =
+      state.provider.getTransactionReceipt.getMockImplementation()!
+    const transaction = state.provider.getTransaction.getMockImplementation()!
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    try {
+      state.provider.getTransactionReceipt.mockImplementationOnce(
+        async hash => {
+          await new Promise(resolve => setTimeout(resolve, 60))
+          return receipt(hash)
+        },
+      )
+      state.provider.getTransaction.mockImplementationOnce(async hash => {
+        await new Promise(resolve => setTimeout(resolve, 60))
+        return transaction(hash)
+      })
+      let returned = false
+      const tick = r.tick().then(() => {
+        returned = true
+      })
+      await jest.advanceTimersByTimeAsync(60)
+      expect(state.provider.getTransaction).toHaveBeenCalled()
+      await jest.advanceTimersByTimeAsync(39)
+      expect(returned).toBe(false)
+      await jest.advanceTimersByTimeAsync(1)
+      await tick
+      expect(returned).toBe(true)
+      const before = providerCalls(state)
+      await jest.advanceTimersByTimeAsync(20)
+      expect(providerCalls(state)).toBe(before)
+      expect(journal.list()).toEqual(recorded)
+      expect(jest.getTimerCount()).toBe(0)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  it.each(['deadline', 'close'] as const)(
+    'uses the default 30 s operational budget and cleans the timer on %s',
+    async end => {
+      const state = chain([])
+      const c = await composed(state, [121000n])
+      const r = reobserver(c)
+      await broadcastLegacy(c, state, 100000n)
+      let answer!: (receipt: null) => void
+      state.provider.getTransactionReceipt.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            answer = resolve
+          }),
+      )
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+      try {
+        let returned = false
+        const tick = r.tick().then(() => {
+          returned = true
+        })
+        await jest.advanceTimersByTimeAsync(29_999)
+        expect(returned).toBe(false)
+        if (end === 'close') await r.executor.stopReobservation()
+        else await jest.advanceTimersByTimeAsync(1)
+        await tick
+        expect(jest.getTimerCount()).toBe(0)
+        const recorded = journal.list()
+        answer(null)
+        await settle()
+        expect(journal.list()).toEqual(recorded)
+      } finally {
+        jest.useRealTimers()
+      }
+    },
+  )
+
+  it.each(['complete', 'superseded', 'closed'] as const)(
+    'an admitted durable inclusion completing after timeout preserves capture ordering and local application (%s)',
+    async mode => {
+      const close = mode === 'closed'
+      const state = chain([])
+      const c = await composed(state, [121000n])
+      const r = reobserver(c, { reobservationLookupTimeoutMs: 100 })
+      const row = await broadcastLegacy(c, state, 100000n)
+      state.mine(row.members[0]!.signed!.rawTransaction)
+      const observed = jest.spyOn(journal, 'recordObservation')
+      const put = durability.durablePut
+      let release!: () => void
+      let entered!: () => void
+      const admitted = new Promise<void>(resolve => {
+        entered = resolve
+      })
+      const held = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const write = jest
+        .spyOn(durability, 'durablePut')
+        .mockImplementationOnce(async (...args) => {
+          entered()
+          await held
+          return put(...args)
+        })
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+      try {
+        const tick = r.tick()
+        await admitted
+        await jest.advanceTimersByTimeAsync(100)
+        await tick
+        expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+          'pending',
+        )
+        expect(r.applied).not.toHaveBeenCalled()
+        // A newer capture does not cancel already admitted durability. Its own queued write
+        // wins afterwards, and the old completion must not invent a different final result.
+        const newer =
+          mode === 'superseded'
+            ? journal.recordObservation(
+                journal.beginCapture(row.operationId, 0),
+                { state: 'pending' },
+                null,
+              )
+            : Promise.resolve()
+        if (close) await r.executor.stopReobservation()
+        release()
+        await observed.mock.results[0]!.value
+        await newer
+        await settle()
+        await settle()
+        expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+          mode === 'superseded' ? 'pending' : 'included-success',
+        )
+        const before = providerCalls(state)
+        r.advance(600_000)
+        await r.tick()
+        if (close) {
+          expect(r.applied).not.toHaveBeenCalled()
+          expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+        } else {
+          expect(
+            journal.get(row.operationId).members[0]!.observation.state,
+          ).toBe('included-success')
+          expect(c.pool.getRecord(0)!.status).toBe('spent')
+          expect(r.applied).toHaveBeenCalledTimes(1)
+          if (mode === 'complete') expect(providerCalls(state)).toBe(before)
+        }
+        expect(jest.getTimerCount()).toBe(0)
+      } finally {
+        release()
+        write.mockRestore()
+        jest.useRealTimers()
+      }
+    },
+  )
+
+  it('timeout and late rejection survive Level reopen without losing the exact signed original or its reservation', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c, { reobservationLookupTimeoutMs: 100 })
+    const row = await broadcastLegacy(c, state, 100000n)
+    const recorded = journal.list()
+    let reject!: (error: Error) => void
+    state.provider.getTransactionReceipt.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, failure) => {
+          reject = failure
+        }),
+    )
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    try {
+      const tick = r.tick()
+      await settle()
+      await jest.advanceTimersByTimeAsync(100)
+      await tick
+      await r.executor.stopReobservation()
+      expect(jest.getTimerCount()).toBe(0)
+      await reopen()
+      reject(new Error('late provider rejection'))
+      await settle()
+      expect(journal.list()).toEqual(recorded)
+      expect(journal.canSelect(row.members[0]!.source.address, 0)).toBe(false)
+      expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(1)
+      expect(c.sign).toHaveBeenCalledTimes(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   it('stopped mid-pass, as wallet close does: the pass returns without the node answering, an answer that arrives afterwards records nothing (during the probe and during the observation), later ticks do nothing, and nothing rejects unhandled', async () => {
     const unhandled: unknown[] = []
     const onUnhandled = (reason: unknown) => void unhandled.push(reason)
@@ -2800,6 +3196,12 @@ describe('wallet-lifetime EVM native operations', () => {
     const r = reobserver(c)
     const row = await broadcastLegacy(c, state, 100000n, r.executor)
     const raw = row.members[0]!.signed!.rawTransaction
+    // An unanswered member already has a 60 s backoff. Skipping a landed member for a queued
+    // send must not increase that wait or move its starting time.
+    for (const wait of [15, 30, 60]) {
+      await r.tick()
+      r.advance(wait * SECOND)
+    }
     // A send that has finished observing its sources and now waits for a fee quote.
     let quote!: () => void
     const held = new Promise<void>(resolve => {

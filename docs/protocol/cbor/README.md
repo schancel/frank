@@ -1934,7 +1934,8 @@ beside a corrupt outer signature.
 ### Offline Option A signed vector regeneration
 
 The signed registration and provisional directory corpora retain their synthetic
-case definitions from revision `ff76bc65`. The offline converter
+case definitions from revision `ff76bc65`, stored as offline source in
+`packages/frank-codec/fixtures/option-a-signed-inputs.json`. The offline converter
 `packages/frank-codec/scripts/renumber-signed-vectors.cjs` derives only public
 fixture signing keys, renumbers frames, and recomputes transcripts and signatures.
 The Rust example `backend/cashweb/frank-cbor/examples/sign-fixture.rs` independently
@@ -1949,9 +1950,12 @@ yarn --cwd packages/frank-codec crosscheck
 cargo test --manifest-path backend/cashweb/frank-cbor/Cargo.toml
 ```
 
-Outputs are `docs/protocol/cbor/vectors/{account-registration,account-registration-values,directory-preview}.json`
+Outputs are `docs/protocol/cbor/vectors/{account-registration,account-registration-values,directory-preview,directory-admission,dm-runtime}.json`
 and the corresponding reviewed proposal snapshot
-`docs/protocol/proposals/suite1-directory/vectors.json`. Historical field names
+`docs/protocol/proposals/suite1-directory/vectors.json`. It also updates `backend/cashweb/frank-cbor/proposals/suite1-directory/rust-origin.json`
+and the multipart regression request constants in
+`backend/cashweb/cashweb-registry/src/http/monad_message_cbor_tests.rs`.
+Historical field names
 `type4_hex` remain fixture labels; all contained statement frames now use type 1.
 Unknown historical registration signer keys are replaced deterministically with
 public synthetic keys so no unavailable signing material is needed. Pure address

@@ -735,7 +735,7 @@ mod tests {
     #[test]
     fn a_bare_post_has_no_burn_and_is_not_an_event() {
         let error = parse_topic_event(&post_frame(NET, "t", None), NET).unwrap_err();
-        assert_eq!(error, TopicEventError::UnexpectedRoot(9));
+        assert_eq!(error, TopicEventError::UnexpectedRoot(40));
     }
 
     #[test]
@@ -903,7 +903,7 @@ mod tests {
                 "accept" if case["type_id"] == 40 => {
                     assert_eq!(
                         result,
-                        Err(TopicEventError::UnexpectedRoot(9)),
+                        Err(TopicEventError::UnexpectedRoot(40)),
                         "{id}: a bare post carries no burn"
                     );
                 }

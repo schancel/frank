@@ -2000,6 +2000,9 @@ export default {
     continueWithPasskey: 'Continue with Passkey (Mera)',
   },
   groupChat: {
+    syncFailed: 'Group updates could not be synchronized. Retry to resume.',
+    epochPending: 'Group setup is pending. Retry to finish publishing.',
+    retryUpdates: 'Retry group updates',
     newGroup: 'New Group',
     createGroupTitle: 'Create Encrypted Group',
     groupNameLabel: 'Group Name',
@@ -2027,7 +2030,7 @@ export default {
     inviteMemberPlaceholder: '0x...',
     inviteMemberBtn: 'Invite',
     removeMemberBtn: 'Remove',
-    leaveGroupBtn: 'Leave Group',
+    leaveGroupBtn: 'Stop Following Group',
     syncGroupBtn: 'Sync Group',
   },
   close: 'Close',

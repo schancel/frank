@@ -1,5 +1,5 @@
-import type { GroupEpochCertificate, GroupWelcomeMember } from '@frank/cashweb/types/messages'
-import { chainAddress, hash32, hex, int, oneOf, opt, req, struct } from './cbor-fields'
+import type { GroupEpochCertificate } from '@frank/cashweb/types/messages'
+import { hash32, hex, int, req, struct } from './cbor-fields'
 
 export const groupEpochCertificate = struct<GroupEpochCertificate>({
   epoch: req(0, int(0, 1_000_000_000)),
@@ -10,12 +10,4 @@ export const groupEpochCertificate = struct<GroupEpochCertificate>({
   encrypted_roster: req(5, hex(40, 262144)),
   authority_sig: req(6, hex(64)),
   epoch_hash: req(7, hash32),
-})
-
-export const groupRosterMember = struct<GroupWelcomeMember>({
-  index: req(0, int(0, 255)),
-  address: req(1, chainAddress),
-  epochSigningPubKeyHex: req(2, hex(33)),
-  role: opt(3, oneOf('admin', 'member')),
-  identityPubKeyHex: req(4, hex(33)),
 })

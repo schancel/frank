@@ -2063,6 +2063,11 @@ export default {
     continueWithPasskey: 'Continuer avec une clé d’accès (Mera)',
   },
   groupChat: {
+    syncFailed:
+      'Impossible de synchroniser les mises à jour du groupe. Réessayez pour reprendre.',
+    epochPending:
+      'La préparation du groupe est en attente. Réessayez pour terminer la publication.',
+    retryUpdates: 'Réessayer les mises à jour du groupe',
     newGroup: 'Nouveau groupe',
     createGroupTitle: 'Créer un groupe chiffré',
     groupNameLabel: 'Nom du groupe',
@@ -2091,7 +2096,7 @@ export default {
     inviteMemberPlaceholder: 'Adresse du membre',
     inviteMemberBtn: 'Inviter',
     removeMemberBtn: 'Retirer',
-    leaveGroupBtn: 'Quitter le groupe',
+    leaveGroupBtn: 'Ne plus suivre le groupe',
     syncGroupBtn: 'Synchroniser le groupe',
   },
   close: 'Fermer',

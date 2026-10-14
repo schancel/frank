@@ -104,6 +104,7 @@
             <q-item
               clickable
               v-close-popup
+              v-if="!groupMode"
               data-testid="blackjack-menu-item"
               @click="blackjackClicked"
             >
@@ -131,6 +132,7 @@
             <q-item
               clickable
               v-close-popup
+              v-if="!groupMode"
               data-testid="send-stealth-menu-item"
               @click="sendStealthClicked"
             >
@@ -166,6 +168,7 @@
           flat
           rounded
           no-caps
+          v-if="!groupMode"
           icon="local_post_office"
           class="chat-stamp-btn q-mr-xs"
           :aria-label="$t('a11y.stampPayment')"
@@ -356,6 +359,7 @@ export const STAMP_MULTIPLIER_TENTHS = [
 
 export default defineComponent({
   props: {
+    groupMode: { type: Boolean, default: false },
     message: {
       type: String,
       default: () => '',

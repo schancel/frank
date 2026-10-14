@@ -1,7 +1,7 @@
+import { GROUP_TEST_ACCOUNTS, groupTestSigningKey } from './group-test.testutil'
 import type { AxiosInstance } from 'axios'
 import {
   decryptGroupRoster,
-  deriveIndexedMemberEpochSigningKey,
   openGroupMessage,
   sealGroupMessage,
   verifyEpochFrame,
@@ -15,7 +15,7 @@ import {
 
 /**
  * In-memory simulation of the cashweb-registry `/groups/:group_id/*` HTTP endpoints
- * verifying CAS (`If-Match`), `X-Frank-Group-Read-Token`, and outer write signatures.
+ * verifying CAS (`If-Match`), `X-Group-Read-Token`, and outer write signatures.
  */
 function createMockGroupRelayAxios() {
   const epochs = new Map<string, Record<string, unknown>>()
@@ -41,7 +41,7 @@ function createMockGroupRelayAxios() {
           body,
           headers: config?.headers,
         })
-        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epoch$/)
+        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epochs$/)
         if (epochMatch) {
           const groupId = epochMatch[1]
           const current = epochs.get(groupId)
@@ -71,8 +71,7 @@ function createMockGroupRelayAxios() {
           epochs.set(groupId, stored)
           return {
             data: {
-              status: 'ok',
-              group_id: groupId,
+              ...body,
               epoch: epochNum,
               epoch_hash: String(body.epoch_hash ?? ''),
             },
@@ -91,16 +90,14 @@ function createMockGroupRelayAxios() {
             nonce: String(body.nonce),
             ciphertext: String(body.ciphertext),
             write_sig: String(body.write_sig),
-            received_at_ms: 1700000000000 + serverSeq,
+            versionstamp: serverSeq.toString(16).padStart(20, '0'),
+            server_time_ms: 1700000000000 + serverSeq,
           }
           list.push(row)
           messages.set(groupId, list)
           return {
             data: {
-              status: 'ok',
-              group_id: groupId,
-              server_seq: serverSeq,
-              received_at_ms: row.received_at_ms,
+              ...row,
             },
           }
         }
@@ -121,7 +118,7 @@ function createMockGroupRelayAxios() {
           headers: config?.headers,
           params: config?.params,
         })
-        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epoch$/)
+        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epochs$/)
         if (epochMatch) {
           const groupId = epochMatch[1]
           const stored = epochs.get(groupId)
@@ -165,9 +162,12 @@ function createMockGroupRelayAxios() {
 }
 
 describe('GroupRelayClient', () => {
-  const aliceAddress = '0x1111111111111111111111111111111111111111'
-  const bobAddress = '0x2222222222222222222222222222222222222222'
-  const charlieAddress = '0x3333333333333333333333333333333333333333'
+  const [alice, bob, charlie] = GROUP_TEST_ACCOUNTS
+  const [aliceAddress, bobAddress, charlieAddress] = [
+    alice.address,
+    bob.address,
+    charlie.address,
+  ]
 
   it('creates epoch 0 on the relay, fetches and decrypts the roster, and verifies signatures', async () => {
     const mock = createMockGroupRelayAxios()
@@ -179,7 +179,8 @@ describe('GroupRelayClient', () => {
       client,
       groupName: 'Protocol Architects',
       creatorAddress: aliceAddress,
-      members: [bobAddress, charlieAddress],
+      creatorIdentityPubKeyHex: alice.publicKeyHex,
+      members: [bob, charlie],
     })
 
     expect(created.epochKeys.epoch).toBe(0)
@@ -191,7 +192,6 @@ describe('GroupRelayClient', () => {
 
     const fetchedFrame = await client.getLatestEpoch(
       created.identity.groupIdHex,
-      created.epochKeys.readTokenHex,
     )
     expect(
       verifyEpochFrame(
@@ -218,16 +218,14 @@ describe('GroupRelayClient', () => {
       client,
       groupName: 'Core Dev Group',
       creatorAddress: aliceAddress,
-      members: [bobAddress],
+      creatorIdentityPubKeyHex: alice.publicKeyHex,
+      members: [bob],
     })
 
-    // Bob (index 1) derives his epoch signing keypair deterministically from the shared epoch secret
-    const bobSigningKey = deriveIndexedMemberEpochSigningKey(
-      created.epochKeys.epochSecret,
+    const bobSigningKey = groupTestSigningKey(
+      bobAddress,
       created.identity.groupIdHex,
       0,
-      1,
-      bobAddress,
     )
     const sealed = sealGroupMessage({
       epochKeys: created.epochKeys,
@@ -272,7 +270,8 @@ describe('GroupRelayClient', () => {
       client,
       groupName: 'Epoch Rotation Test',
       creatorAddress: aliceAddress,
-      members: [bobAddress, charlieAddress],
+      creatorIdentityPubKeyHex: alice.publicKeyHex,
+      members: [bob, charlie],
     })
 
     // Rotate to epoch 1 removing charlieAddress
@@ -284,19 +283,20 @@ describe('GroupRelayClient', () => {
       prevEpochHashHex: created.epochHash,
       prevEpochSecret: created.epochKeys.epochSecret,
       groupName: 'Epoch Rotation Test',
-      members: [aliceAddress, bobAddress],
-      authorityPrivateKey: created.epochKeys.writeKeyPair.privateKey,
+      members: [{ ...alice, role: 'admin' }, bob],
+      authorityPrivateKey: created.identity.groupSecretKey,
     })
 
     expect(rotated.epoch).toBe(1)
     expect(rotated.roster.members).toHaveLength(2)
-    expect(
-      rotated.roster.members.map(m => m.address),
-    ).toEqual([aliceAddress, bobAddress])
+    expect(rotated.roster.members.map(m => m.address)).toEqual([
+      aliceAddress,
+      bobAddress,
+    ])
 
-    // Verify If-Match header was sent on the second PUT /epoch call
+    // Verify If-Match header was sent on the second PUT /epochs call
     const putEpochCalls = mock.calls.filter(
-      c => c.method === 'PUT' && c.url.endsWith('/epoch'),
+      c => c.method === 'PUT' && c.url.endsWith('/epochs'),
     )
     expect(putEpochCalls).toHaveLength(2)
     expect(putEpochCalls[1]?.headers?.['If-Match']).toBe(created.epochHash)
@@ -310,8 +310,8 @@ describe('GroupRelayClient', () => {
         prevEpochHashHex: created.epochHash,
         prevEpochSecret: created.epochKeys.epochSecret,
         groupName: 'Stale Rotation',
-        members: [aliceAddress],
-        authorityPrivateKey: created.epochKeys.writeKeyPair.privateKey,
+        members: [{ ...alice, role: 'admin' }],
+        authorityPrivateKey: created.identity.groupSecretKey,
       }),
     ).rejects.toThrow('CAS mismatch')
   })

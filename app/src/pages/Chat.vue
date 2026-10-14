@@ -33,6 +33,30 @@
         />
       </template>
     </q-banner>
+    <q-banner
+      v-if="
+        conversation?.kind === 'group' &&
+        conversation.membershipStatus === 'joined' &&
+        (conversation.groupState?.syncFailed ||
+          conversation.groupState?.pendingEpoch)
+      "
+      class="q-pa-sm"
+      data-testid="group-sync-failure"
+      role="status"
+    >
+      {{
+        conversation.groupState?.pendingEpoch
+          ? $t('groupChat.epochPending')
+          : $t('groupChat.syncFailed')
+      }}
+      <template #action
+        ><q-btn
+          flat
+          :label="$t('groupChat.retryUpdates')"
+          data-testid="retry-group-updates"
+          @click="retryGroupUpdates"
+      /></template>
+    </q-banner>
     <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
     <div
       v-if="isScreenerThread"
@@ -214,7 +238,7 @@
       <!-- Others have posted into this conversation, but what is sent from here still goes to
       its one peer. Say so, so a reply is not taken for a message to everyone. -->
       <div
-        v-if="isGroup"
+        v-if="isGroup && conversation?.kind !== 'group'"
         class="q-px-md q-pt-xs text-caption chat-group-recipient"
         data-testid="chat-group-recipient"
         role="note"
@@ -227,6 +251,7 @@
       </div>
       <!-- Message box -->
       <chat-input
+        :group-mode="conversation?.kind === 'group'"
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @sendStealthClicked="openStealthDialog"
@@ -918,7 +943,10 @@ export default defineComponent({
       }
       const wallet = useMonadWallet()
       const recipient = this.recipientAddress || this.address
-      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      const stampValue =
+        this.conversation?.kind === 'group'
+          ? 0n
+          : activeChain.fromDisplayAmount(this.stampAmount)
       const rawPrice = this.getAcceptancePrice(recipient)
       const acceptancePrice =
         typeof rawPrice === 'number' && Number.isFinite(rawPrice)
@@ -1022,7 +1050,10 @@ export default defineComponent({
       try {
         if (this.stampUnavailable) throw new Error(this.stampUnavailable)
         const wallet = useMonadWallet()
-        const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+        const stampValue =
+          this.conversation?.kind === 'group'
+            ? 0n
+            : activeChain.fromDisplayAmount(this.stampAmount)
         await this.sendDirectMessage({
           wallet,
           address: recipient,
@@ -1528,6 +1559,14 @@ export default defineComponent({
         this.$nextTick(this.buttonScrollBottom)
       }
     },
+    async retryGroupUpdates() {
+      if (!this.conversation) return
+      try {
+        await this.chatStore.syncGroupConversation(this.conversation.id)
+      } catch (error) {
+        errorNotify(error, { fallbackKey: 'groupChat.syncFailed' })
+      }
+    },
     approveScreenerThread() {
       if (!this.conversation) return
       approveScreenerConversation(
@@ -1652,6 +1691,7 @@ export default defineComponent({
       return !target || this.chatStore.getStampWei(target) === undefined
     },
     stampUnavailable(): string {
+      if (this.conversation?.kind === 'group') return ''
       const target = this.conversation?.id || this.recipientAddress
       const explicit = target ? this.chatStore.getStampWei(target) : undefined
       if (

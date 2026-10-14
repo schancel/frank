@@ -717,7 +717,10 @@ export interface RecipientAssetPaymentTransfer
     viewTag?: number | string
   }
   derivationScheme: number
-  recipientSpendKey: { keyType: RecipientPaymentClaimKeyType; publicKey: string }
+  recipientSpendKey: {
+    keyType: RecipientPaymentClaimKeyType
+    publicKey: string
+  }
   /** SPL token-program bytes, stored once alongside the mint in asset.identifier. An absent
    * program on an unknown scheme remains incomplete metadata, never a runtime asset default. */
   tokenProgram?: string
@@ -837,14 +840,6 @@ export interface GroupEpochCertificate {
   epoch_hash: string
 }
 
-export interface GroupWelcomeMember {
-  identityPubKeyHex: string
-  index: number
-  address: string
-  epochSigningPubKeyHex: string
-  role?: 'admin' | 'member'
-}
-
 /**
  * Group invitation item delivered via an end-to-end encrypted 1:1 DM (Issues #70 & #1365).
  * Carries the group's public identity (`groupId`, `groupPubKey`), primary relay URL, and
@@ -853,6 +848,8 @@ export interface GroupWelcomeMember {
  */
 export interface GroupWelcomeItem {
   type: 'group-welcome'
+  /** Sent only in the administrator's authenticated encrypted self-mailbox. */
+  adminSecretKeyHex?: string
   epochFrame: GroupEpochCertificate
   groupId: string
   groupPubKey: string
@@ -862,7 +859,6 @@ export interface GroupWelcomeItem {
   epochSecretHex: string
   memberIndex: number
   inviterAddress?: string
-  rosterMembers?: GroupWelcomeMember[]
 }
 
 /**
@@ -880,8 +876,6 @@ export interface GroupControlItem {
   targetMemberIndex?: number
   targetEpochSigningPubKeyHex?: string
   authoritySigHex: string
-  groupName?: string
-  rosterMembers?: GroupWelcomeMember[]
 }
 
 export type MessageItem =

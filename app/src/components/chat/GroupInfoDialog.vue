@@ -33,7 +33,9 @@
       </q-card-section>
 
       <q-separator />
-
+      <q-banner v-if="conversation.groupState?.pendingEpoch || conversation.groupState?.syncFailed" class="q-pa-sm" role="status">
+        {{ conversation.groupState?.pendingEpoch ? $t('groupChat.epochPending') : $t('groupChat.syncFailed') }}
+      </q-banner>
       <q-card-section class="q-gutter-xs">
         <div class="text-caption text-grey-6">
           {{ $t('groupChat.groupIdLabel') }}
@@ -252,7 +254,12 @@ export default defineComponent({
     })
 
     const isSelfAdmin = computed<boolean>(() => {
-      if (!ownAddress.value || !creatorAddress.value) return false
+      if (
+        !ownAddress.value ||
+        !creatorAddress.value ||
+        !conversation.value?.groupState?.groupSecretKeyHex
+      )
+        return false
       return sameCanonicalAddress(ownAddress.value, creatorAddress.value)
     })
 

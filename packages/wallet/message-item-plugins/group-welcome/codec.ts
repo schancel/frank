@@ -6,12 +6,11 @@ import {
   hash32,
   hex,
   int,
-  listOf,
   opt,
   req,
   str,
 } from '../shared/cbor-fields'
-import { groupEpochCertificate, groupRosterMember } from '../shared/group-epoch-certificate'
+import { groupEpochCertificate } from '../shared/group-epoch-certificate'
 
 /**
  * Group invitation item delivered in a 1:1 DM (Issues #70 & #1365).
@@ -27,7 +26,7 @@ export const groupWelcomeCodec = cborItemCodec<GroupWelcomeItem>(
     epochSecretHex: req(5, hash32),
     memberIndex: req(6, int(0, 10_000)),
     inviterAddress: opt(7, chainAddress),
-    rosterMembers: opt(8, listOf(groupRosterMember, 256, 1)),
     epochFrame: req(9, groupEpochCertificate),
+    adminSecretKeyHex: opt(10, hash32),
   },
 )

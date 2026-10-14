@@ -87,6 +87,7 @@
               <q-checkbox
                 :model-value="isSelected(entry.address)"
                 dense
+                @click.stop
                 @update:model-value="toggleMember(entry.address)"
               />
             </q-item-section>
@@ -151,7 +152,6 @@ import { sameCanonicalAddress } from '../../utils/own-address'
 import { openChat } from '../../utils/routes'
 import { errorNotify } from '../../utils/notifications'
 import { shortAddress } from '../../utils/short-address'
-import { defaultRelayUrl } from '../../utils/constants'
 
 export default defineComponent({
   name: 'NewGroupDialog',
@@ -180,7 +180,7 @@ export default defineComponent({
     const groupName = ref('')
     const memberFilter = ref('')
     const selectedAddresses = ref<string[]>([])
-    const relayBaseUrl = ref(defaultRelayUrl || '')
+    const relayBaseUrl = ref('')
     const creating = ref(false)
 
     watch(
@@ -190,7 +190,7 @@ export default defineComponent({
           groupName.value = ''
           memberFilter.value = ''
           selectedAddresses.value = []
-          relayBaseUrl.value = defaultRelayUrl || ''
+          relayBaseUrl.value = chatStore.getGroupHomeRelay()
           creating.value = false
         }
       },

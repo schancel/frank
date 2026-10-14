@@ -1,4 +1,10 @@
 /** @jest-environment jsdom */
+import {
+  GROUP_TEST_ACCOUNTS,
+  groupTestSigner,
+} from '@frank/cashweb/groups/group-test.testutil'
+import { accountSession } from '../accounts/session'
+import { fetchContactProfile } from '../utils/directory-peer'
 import { createPinia, setActivePinia } from 'pinia'
 import type { AxiosInstance } from 'axios'
 import {
@@ -15,11 +21,10 @@ jest.mock('../adapters/level-message-store', () => ({
     saveMessage: jest.fn(async () => undefined),
     deleteMessage: jest.fn(async () => undefined),
     mostRecentMessageTime: jest.fn(async () => 0),
-    getIterator: async function* () {
-      /* empty */
-    },
+    getIterator: jest.fn(async () => []),
   }),
 }))
+jest.mock('../utils/directory-peer', () => ({ fetchContactProfile: jest.fn() }))
 jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
 jest.mock('../utils/notifications', () => ({
   errorNotify: jest.fn(),
@@ -27,10 +32,9 @@ jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))
 
-const ALICE = '0x1111111111111111111111111111111111111111'
-const BOB = '0x2222222222222222222222222222222222222222'
-const CHARLIE = '0x3333333333333333333333333333333333333333'
-const DAVE = '0x4444444444444444444444444444444444444444'
+const [ALICE, BOB, CHARLIE, DAVE] = GROUP_TEST_ACCOUNTS.map(
+  account => account.address,
+)
 
 let currentOwnAddress = ALICE
 jest.mock('../utils/own-address', () => ({
@@ -43,7 +47,8 @@ jest.mock('../utils/own-address', () => ({
 import { TextDecoder, TextEncoder } from 'util'
 Object.assign(globalThis, { TextEncoder, TextDecoder })
 /* eslint-disable @typescript-eslint/no-var-requires */
-const { useChatStore } = require('./chats')
+const { useChatStore, rehydrateChat } = require('./chats')
+const messageStorePromise = require('../adapters/level-message-store').store
 const { useContactStore } = require('./contacts')
 
 function createSharedMockGroupRelay() {
@@ -57,7 +62,7 @@ function createSharedMockGroupRelay() {
         body: Record<string, unknown>,
         config?: { headers?: Record<string, string> },
       ) => {
-        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epoch$/)
+        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epochs$/)
         if (epochMatch) {
           const groupId = epochMatch[1]
           const current = epochs.get(groupId)
@@ -74,8 +79,7 @@ function createSharedMockGroupRelay() {
           epochs.set(groupId, { ...body, group_id: groupId })
           return {
             data: {
-              status: 'ok',
-              group_id: groupId,
+              ...body,
               epoch: epochNum,
               epoch_hash: String(body.epoch_hash ?? ''),
             },
@@ -93,16 +97,14 @@ function createSharedMockGroupRelay() {
             nonce: String(body.nonce),
             ciphertext: String(body.ciphertext),
             write_sig: String(body.write_sig),
-            received_at_ms: 1700000000000 + serverSeq * 1000,
+            versionstamp: serverSeq.toString(16).padStart(20, '0'),
+            server_time_ms: 1700000000000 + serverSeq * 1000,
           }
           list.push(row)
           messages.set(groupId, list)
           return {
             data: {
-              status: 'ok',
-              group_id: groupId,
-              server_seq: serverSeq,
-              received_at_ms: row.received_at_ms,
+              ...row,
             },
           }
         }
@@ -117,7 +119,7 @@ function createSharedMockGroupRelay() {
           params?: Record<string, unknown>
         },
       ) => {
-        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epoch$/)
+        const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epochs$/)
         if (epochMatch) {
           const stored = epochs.get(epochMatch[1])
           if (!stored) throw new Error('Group not found')
@@ -152,6 +154,25 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
   beforeEach(() => {
     currentOwnAddress = ALICE
     setActivePinia(createPinia())
+    jest
+      .spyOn(accountSession, 'getCurvePublicKey')
+      .mockImplementation(
+        async () =>
+          GROUP_TEST_ACCOUNTS.find(
+            account => account.address === currentOwnAddress,
+          )!.publicKey,
+      )
+    jest
+      .spyOn(accountSession, 'getGroupSigner')
+      .mockImplementation(async (groupIdHex, epoch) =>
+        groupTestSigner(currentOwnAddress, groupIdHex, epoch),
+      )
+    jest.mocked(fetchContactProfile).mockImplementation(async address => {
+      const account = GROUP_TEST_ACCOUNTS.find(
+        account => account.address === address.raw.toLowerCase(),
+      )!
+      return { address, pubKey: account.publicKey }
+    })
     const contacts = useContactStore()
     jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined)
   })
@@ -202,6 +223,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
 
     const welcomeItem: GroupWelcomeItem = {
       type: 'group-welcome',
+      epochFrame: aliceGroup.groupState!.epochFrame,
       groupId: aliceGroup.groupId!,
       groupPubKey: aliceGroup.groupPubKey!,
       groupName: aliceGroup.name!,
@@ -210,7 +232,6 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       epochSecretHex: aliceGroup.groupEpochSecretHex!,
       memberIndex: 1,
       inviterAddress: ALICE,
-      rosterMembers: aliceGroup.groupState!.roster.map(m => ({ ...m })),
     }
 
     await bobChats.receiveMessages(
@@ -355,5 +376,271 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     chats.leaveGroupConversation(groupConv.id)
     expect(groupConv.membershipStatus).toBe('left')
     expect(chats.shouldPollGroupMailbox(groupConv.id)).toBe(false)
+  })
+  async function makeGroup(client = createSharedMockGroupRelay()) {
+    currentOwnAddress = ALICE
+    const chats = useChatStore()
+    chats.setGroupRelayClient('https://relay.frank.test', client)
+    const group = await chats.createGroupConversation({
+      groupName: 'Boundary Test',
+      memberAddresses: [BOB],
+      relayUrl: 'https://relay.frank.test',
+      relayClient: client,
+      creatorAddress: ALICE,
+    })
+    return { chats, group, client }
+  }
+  async function inviteBob(
+    group: ReturnType<typeof useChatStore>['conversations'][string],
+    client: GroupRelayClient,
+  ) {
+    currentOwnAddress = BOB
+    setActivePinia(createPinia())
+    const chats = useChatStore()
+    chats.setGroupRelayClient('https://relay.frank.test', client)
+    jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+    const item: GroupWelcomeItem = {
+      type: 'group-welcome',
+      groupId: group.groupId!,
+      groupPubKey: group.groupPubKey!,
+      groupName: group.name!,
+      homeRelay: group.groupRelayUrl!,
+      epoch: group.groupState!.epoch,
+      epochSecretHex: group.groupState!.epochSecretHex,
+      epochFrame: group.groupState!.epochFrame,
+      memberIndex: group.groupState!.roster.find(
+        member => member.address === BOB,
+      )!.index,
+      inviterAddress: ALICE,
+    }
+    await chats.receiveMessages(
+      [
+        {
+          index: 'signed-invite',
+          conversationId: '11111111-1111-4111-8111-111111111111',
+          outbound: false,
+          senderAddress: ALICE,
+          copartyAddress: ALICE,
+          copartyPubKey: { toBuffer: () => GROUP_TEST_ACCOUNTS[0].publicKey },
+          stampValue: 0,
+          message: {
+            outbound: false,
+            status: 'confirmed',
+            senderAddress: ALICE,
+            destinationAddress: BOB,
+            items: [item],
+            conversationId: '11111111-1111-4111-8111-111111111111',
+            serverTime: 1000,
+            receivedTime: 1000,
+            outpoints: [],
+          },
+        },
+      ],
+      BOB,
+    )
+    return { chats, group: chats.conversations[group.id] }
+  }
+
+  it('persists the original prepared epoch before PUT and reconciles acceptance after restart', async () => {
+    const client = createSharedMockGroupRelay()
+    const chats = useChatStore()
+    let snapshot: Record<string, unknown> | undefined
+    chats.flushPersistence = jest.fn(async () => {
+      snapshot = JSON.parse(
+        JSON.stringify({
+          conversations: chats.conversations,
+          lastReceived: chats.lastReceived ?? 0,
+        }),
+      )
+    })
+    const publish = client.publishEpoch.bind(client)
+    jest
+      .spyOn(client, 'publishEpoch')
+      .mockImplementationOnce(async (...args) => {
+        const saved = Object.values(
+          snapshot!.conversations as Record<
+            string,
+            {
+              groupState: {
+                pendingEpoch: { certificate: { epoch_hash: string } }
+              }
+            }
+          >,
+        )[0]
+        expect(saved.groupState.pendingEpoch.certificate.epoch_hash).toBe(
+          args[1].epoch_hash,
+        )
+        await publish(...args)
+        throw new Error('response interrupted after acceptance')
+      })
+    jest
+      .spyOn(client, 'getLatestEpoch')
+      .mockRejectedValueOnce(new Error('temporarily offline'))
+    const { group } = await makeGroup(client)
+    expect(group.groupState?.pendingEpoch).toBeDefined()
+    const originalHash = group.groupState!.epochFrame.epoch_hash
+    const originalSecret = group.groupState!.epochSecretHex
+    const messageStore = await messageStorePromise
+    messageStore.getIterator.mockResolvedValueOnce([])
+    const restored = await rehydrateChat(snapshot)
+    setActivePinia(createPinia())
+    const reopened = useChatStore()
+    reopened.$patch(restored)
+    await reopened.retryGroupEpochPublication(group.id, client)
+    expect(
+      reopened.conversations[group.id].groupState.pendingEpoch,
+    ).toBeUndefined()
+    expect(
+      reopened.conversations[group.id].groupState.epochFrame.epoch_hash,
+    ).toBe(originalHash)
+    expect(reopened.conversations[group.id].groupState.epochSecretHex).toBe(
+      originalSecret,
+    )
+    expect(client.publishEpoch).toHaveBeenCalledTimes(2)
+    expect(client.publishEpoch.mock.calls[1][1].epoch_hash).toBe(originalHash)
+  })
+
+  it('keeps failed membership deliveries in epoch order and removes the excluded recipient queue', async () => {
+    const { chats, group, client } = await makeGroup()
+    await chats.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: CHARLIE,
+      relayClient: client,
+    })
+    await chats.removeMemberFromGroup({
+      conversationId: group.id,
+      memberAddress: CHARLIE,
+      relayClient: client,
+    })
+    expect(
+      group.groupState.pendingMemberDeliveries[BOB].map(
+        delivery => delivery.items[0].epoch,
+      ),
+    ).toEqual([0, 1, 2])
+    expect(group.groupState.pendingMemberDeliveries[CHARLIE]).toBeUndefined()
+    const ids = group.groupState.pendingMemberDeliveries[BOB].map(
+      delivery => delivery.operationId,
+    )
+    expect(new Set(ids).size).toBe(3)
+  })
+
+  it('does not advance the cursor when durable incoming receipt fails, then safely retries and reopens', async () => {
+    const { chats: alice, group, client } = await makeGroup()
+    await alice.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Durable content' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    const { chats: bob, group: bobGroup } = await inviteBob(group, client)
+    const messageStore = await messageStorePromise
+    messageStore.saveMessage.mockRejectedValueOnce(
+      new Error('disk interrupted'),
+    )
+    bob.approveGroupInvite(group.id)
+    await expect(
+      bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).rejects.toThrow('disk interrupted')
+    expect(bobGroup.groupState.lastSyncedSeq).toBe(0)
+    expect(bobGroup.messages).toHaveLength(0)
+    expect(
+      await bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).toBe(1)
+    expect(
+      await bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).toBe(0)
+    const rows = messageStore.saveMessage.mock.calls
+      .filter(([row]) => row.message.conversationId === group.id)
+      .map(([row]) => row)
+    messageStore.getIterator.mockResolvedValueOnce([rows[rows.length - 1]])
+    const metadata = JSON.parse(
+      JSON.stringify({
+        conversations: { [group.id]: { ...bobGroup, messages: [] } },
+        lastReceived: bob.lastReceived,
+      }),
+    )
+    jest.mocked(accountSession.getGroupSigner).mockClear()
+    const restored = await rehydrateChat(metadata)
+    expect(restored.conversations[group.id].messages[0].items).toEqual([
+      { type: 'text', text: 'Durable content' },
+    ])
+    expect(restored.conversations[group.id].groupState.lastSyncedSeq).toBe(1)
+    expect(accountSession.getGroupSigner).not.toHaveBeenCalled()
+  })
+
+  it('retains the exact signed envelope after an uncertain send and retries it without new encryption', async () => {
+    const { chats, group, client } = await makeGroup()
+    const send = client.sendGroupMessage.bind(client)
+    jest
+      .spyOn(client, 'sendGroupMessage')
+      .mockImplementationOnce(async (...args) => {
+        await send(...args)
+        throw new Error('response lost')
+      })
+    const outcome = await chats.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Once' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    expect(outcome.state).toBe('failed')
+    const digest = Object.keys(group.groupState.pendingMessages)[0]
+    const originalEnvelope = JSON.stringify(
+      group.groupState.pendingMessages[digest],
+    )
+    const retried = await chats.retryGroupMessage(group.id, digest, client)
+    expect(retried.state).toBe('sent')
+    expect(JSON.stringify(client.sendGroupMessage.mock.calls[1][1])).toBe(
+      originalEnvelope,
+    )
+    expect(group.messages).toHaveLength(1)
+    expect(group.groupState.pendingMessages[digest]).toBeUndefined()
+  })
+
+  it('rejects payment intent at the headless group boundary before submission', async () => {
+    const { chats, group, client } = await makeGroup()
+    const send = jest.spyOn(client, 'sendGroupMessage')
+    await expect(
+      chats.sendMessage({
+        wallet: {},
+        address: group.address,
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Must not pretend to pay' }],
+        stampValue: 1n,
+      }),
+    ).rejects.toThrow('Group payments are unsupported')
+    await expect(
+      chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'stealth', amount: 1 }],
+        relayClient: client,
+        senderAddress: ALICE,
+      }),
+    ).rejects.toThrow()
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('rejects obsolete unsigned saved group metadata without custody access or deletion', async () => {
+    const { group } = await makeGroup()
+    const saved = JSON.parse(JSON.stringify(group))
+    delete saved.groupState.epochFrame
+    jest.mocked(accountSession.getGroupSigner).mockClear()
+    const messageStore = await messageStorePromise
+    messageStore.getIterator.mockResolvedValueOnce([])
+    const deletes = messageStore.deleteMessage.mock.calls.length
+    await expect(
+      rehydrateChat({ conversations: { [group.id]: saved }, lastReceived: 0 }),
+    ).rejects.toThrow('Unsupported stored group format')
+    expect(accountSession.getGroupSigner).not.toHaveBeenCalled()
+    expect(messageStore.deleteMessage.mock.calls.length).toBe(deletes)
   })
 })

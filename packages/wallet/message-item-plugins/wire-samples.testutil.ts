@@ -9,6 +9,16 @@ import type { MessageItem } from '@frank/cashweb/types/messages'
 
 import { BLACKJACK_HAND_V3_ITEMS } from '../../frank-codec/fixtures/blackjack-hand-v3'
 
+const GROUP_CERTIFICATE = {
+  epoch: 0,
+  group_pubkey: '02' + '11'.repeat(32),
+  prev_epoch_hash: '00'.repeat(32),
+  write_pubkey: '02' + '22'.repeat(32),
+  read_token_hash: '33'.repeat(32),
+  encrypted_roster: '44'.repeat(40),
+  authority_sig: '55'.repeat(64),
+  epoch_hash: '66'.repeat(32),
+}
 const alicePub = toHex(secp256k1.getPublicKey(fromHex('01'.repeat(32)), true))
 const bobPub = toHex(secp256k1.getPublicKey(fromHex('02'.repeat(32)), true))
 const ALICE = '0x' + 'a1'.repeat(20)
@@ -233,6 +243,7 @@ export const GENERIC_SAMPLES: MessageItem[] = [
   },
   {
     type: 'group-welcome',
+    epochFrame: GROUP_CERTIFICATE,
     groupId: HASH,
     groupPubKey: alicePub,
     groupName: 'Shared Mailbox Team',
@@ -241,23 +252,10 @@ export const GENERIC_SAMPLES: MessageItem[] = [
     epochSecretHex: '11'.repeat(32),
     memberIndex: 1,
     inviterAddress: ALICE,
-    rosterMembers: [
-      {
-        index: 0,
-        address: ALICE,
-        epochSigningPubKeyHex: alicePub,
-        role: 'admin',
-      },
-      {
-        index: 1,
-        address: BOB,
-        epochSigningPubKeyHex: bobPub,
-        role: 'member',
-      },
-    ],
   },
   {
     type: 'group-control',
+    epochFrame: { ...GROUP_CERTIFICATE, epoch: 1 },
     groupId: HASH,
     action: 'rotate-epoch',
     epoch: 1,

@@ -1,4 +1,8 @@
-import { encodeGroupItems, decodeGroupItems } from '../utils/group-message-items'
+import { encodeItemFrames } from '@frank/wallet/message-item-plugins/wire'
+import {
+  encodeGroupItems,
+  decodeGroupItems,
+} from '../utils/group-message-items'
 import { fetchContactProfile } from '../utils/directory-peer'
 import { directoryAddress } from '@frank/cashweb/relay/open-directory'
 import assert from 'assert'
@@ -84,13 +88,15 @@ import {
   parseGroupIdentifier,
   sealGroupMessage,
   type GroupRosterMember,
+  type SealedGroupMessageEnvelope,
 } from '@frank/cashweb/groups/group-crypto'
 import {
   GroupRelayClient,
-  createGroupOnRelay,
-  rotateGroupEpochOnRelay,
+  prepareGroupCreation,
+  prepareGroupEpochRotation,
   groupEpochCertificate,
   openGroupEpochCertificate,
+  groupAdminSecretMatches,
 } from '@frank/cashweb/groups/group-relay-client'
 import { sha256 } from '@noble/hashes/sha256.js'
 import {
@@ -226,8 +232,29 @@ export interface GroupConversationState {
   epochSecretHex: string
   prevEpochHashHex: string
   memberIndex: number
+  pendingControls?: Record<
+    number,
+    { item: GroupControlItem; senderAddress: string; serverTime: number }
+  >
+  pendingEpoch?: {
+    certificate: GroupEpochCertificate
+    expectedPreviousHash?: string
+  }
+  pendingMessages?: Record<string, SealedGroupMessageEnvelope>
+  pendingMemberDeliveries?: Record<
+    string,
+    { items: MessageItem[]; operationId: string }[]
+  >
+  syncFailed?: boolean
   epochFrame: GroupEpochCertificate
-  epochHistory: Record<number, { epochSecretHex: string; roster: GroupRosterMember[]; epochFrame: GroupEpochCertificate }>
+  epochHistory: Record<
+    number,
+    {
+      epochSecretHex: string
+      roster: GroupRosterMember[]
+      epochFrame: GroupEpochCertificate
+    }
+  >
   lastSyncedSeq: number
   roster: GroupRosterMember[]
 }
@@ -1066,6 +1093,62 @@ function redirectThirdPartyDirectMessage(
   return referencedConv
 }
 
+/** Read-only validation of the new group baseline; never reset or rewrite saved key material. */
+function validateStoredGroupConversation(conv: Conversation): void {
+  const state = conv.groupState
+  if (
+    !state ||
+    !state.epochFrame ||
+    !state.epochHistory ||
+    conv.id !== groupConversationUuid(state.groupIdHex) ||
+    conv.address !== formatGroupIdentifier(state.groupIdHex) ||
+    conv.groupPubKey !== state.groupPubKeyHex ||
+    state.prevEpochHashHex !== state.epochFrame.epoch_hash ||
+    !Number.isSafeInteger(state.lastSyncedSeq) ||
+    state.lastSyncedSeq < 0 ||
+    !['invited', 'joined', 'declined', 'left'].includes(
+      conv.membershipStatus ?? '',
+    )
+  )
+    throw new Error(
+      'Unsupported stored group format: signed epoch metadata required',
+    )
+  const epochs = { ...state.epochHistory, [state.epoch]: state }
+  for (const [epoch, record] of Object.entries(epochs)) {
+    const { roster } = openGroupEpochCertificate({
+      groupIdHex: state.groupIdHex,
+      groupPubKeyHex: state.groupPubKeyHex,
+      epochSecretHex: record.epochSecretHex,
+      certificate: record.epochFrame,
+      expectedEpoch: Number(epoch),
+    })
+    if (JSON.stringify(record.roster) !== JSON.stringify(roster.members))
+      throw new Error('Stored group roster differs from signed certificate')
+  }
+  const ordered = Object.entries(epochs).sort(
+    ([a], [b]) => Number(a) - Number(b),
+  )
+  for (let index = 1; index < ordered.length; index += 1) {
+    const [previousEpoch, previous] = ordered[index - 1]
+    const [epoch, record] = ordered[index]
+    if (
+      Number(epoch) !== Number(previousEpoch) + 1 ||
+      record.epochFrame.prev_epoch_hash !== previous.epochFrame.epoch_hash
+    )
+      throw new Error('Stored group epoch lineage is incomplete')
+  }
+  if (
+    state.groupSecretKeyHex &&
+    !groupAdminSecretMatches(state.groupSecretKeyHex, state.groupPubKeyHex)
+  )
+    throw new Error('Invalid stored group administrative secret')
+  if (
+    state.pendingEpoch &&
+    state.pendingEpoch.certificate.epoch_hash !== state.epochFrame.epoch_hash
+  )
+    throw new Error('Stored pending group epoch mismatch')
+}
+
 /** Rebuild presentation from the signed roster; the certificate is the authority. */
 function applyAuthenticatedGroupEpoch(
   conv: Conversation,
@@ -1076,82 +1159,285 @@ function applyAuthenticatedGroupEpoch(
 ): void {
   const previous = conv.groupState
   const { roster } = openGroupEpochCertificate({
-    groupIdHex: conv.groupId!, groupPubKeyHex: conv.groupPubKey!,
-    epochSecretHex, certificate,
-    ...(previous ? { expectedPreviousHash: previous.prevEpochHashHex, expectedEpoch: previous.epoch + 1 } : {}),
+    groupIdHex: conv.groupId!,
+    groupPubKeyHex: conv.groupPubKey!,
+    epochSecretHex,
+    certificate,
+    ...(previous
+      ? {
+          expectedPreviousHash: previous.prevEpochHashHex,
+          expectedEpoch: previous.epoch + 1,
+        }
+      : {}),
   })
-  const own = roster.members.find(member => ownAddress && sameCanonicalAddress(member.address, ownAddress))
+  if (
+    previous &&
+    previous.roster.find(member => member.role === 'admin')?.address !==
+      roster.members.find(member => member.role === 'admin')?.address
+  )
+    throw new Error('Group founding administrator cannot change')
+  const own = roster.members.find(
+    member => ownAddress && sameCanonicalAddress(member.address, ownAddress),
+  )
   const history = { ...previous?.epochHistory }
-  if (previous) history[previous.epoch] = { epochSecretHex: previous.epochSecretHex, roster: previous.roster, epochFrame: previous.epochFrame }
+  if (previous)
+    history[previous.epoch] = {
+      epochSecretHex: previous.epochSecretHex,
+      roster: previous.roster,
+      epochFrame: previous.epochFrame,
+    }
   conv.groupState = {
-    groupIdHex: conv.groupId!, groupPubKeyHex: conv.groupPubKey!,
+    groupIdHex: conv.groupId!,
+    groupPubKeyHex: conv.groupPubKey!,
     groupSecretKeyHex: previous?.groupSecretKeyHex,
-    homeRelay: roster.homeRelay, epoch: certificate.epoch, epochSecretHex,
-    prevEpochHashHex: certificate.epoch_hash, memberIndex: own?.index ?? -1,
-    lastSyncedSeq: previous?.lastSyncedSeq ?? 0, roster: [...roster.members],
-    epochFrame: certificate, epochHistory: history,
+    homeRelay: roster.homeRelay,
+    epoch: certificate.epoch,
+    epochSecretHex,
+    prevEpochHashHex: certificate.epoch_hash,
+    memberIndex: own?.index ?? -1,
+    lastSyncedSeq: previous?.lastSyncedSeq ?? 0,
+    roster: [...roster.members],
+    epochFrame: certificate,
+    epochHistory: history,
+    pendingMessages: previous?.pendingMessages,
+    pendingEpoch: previous?.pendingEpoch,
+    pendingControls: previous?.pendingControls,
+    pendingMemberDeliveries: previous?.pendingMemberDeliveries,
   }
   conv.groupEpochSecretHex = epochSecretHex
   conv.groupMemberIndex = own?.index
   conv.groupRelayUrl = roster.homeRelay
   conv.name = roster.groupName
   conv.participants = roster.members.map(member => member.address).sort()
-  conv.members = Object.fromEntries(roster.members.map(member => [member.address, {
-    address: member.address, role: member.role ?? 'member', pubKeyHex: member.epochSigningPubKeyHex,
-  }]))
-  conv.epoch = { epochId: certificate.epoch_hash, generation: certificate.epoch, updatedAt: serverTime }
+  conv.members = Object.fromEntries(
+    roster.members.map(member => [
+      member.address,
+      {
+        address: member.address,
+        role: member.role ?? 'member',
+        pubKeyHex: member.epochSigningPubKeyHex,
+      },
+    ]),
+  )
+  conv.epoch = {
+    epochId: certificate.epoch_hash,
+    generation: certificate.epoch,
+    updatedAt: serverTime,
+  }
   if (!own) conv.membershipStatus = 'left'
 }
 
 /** Invitations are authenticated DMs carrying a root-signed epoch certificate. */
 function applyGroupWelcomeItem(
-  conversations: Record<string, Conversation>, welcome: GroupWelcomeItem,
-  message: { outbound: boolean; senderAddress: string; destinationAddress?: string; serverTime: number },
+  conversations: Record<string, Conversation>,
+  welcome: GroupWelcomeItem,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    destinationAddress?: string
+    serverTime: number
+  },
   ownAddress: string | null,
 ): Conversation {
   const groupId = parseGroupIdentifier(formatGroupIdentifier(welcome.groupId))!
   const id = groupConversationUuid(groupId)
   const existing = conversations[id]
-  const { roster } = openGroupEpochCertificate({ groupIdHex: groupId, groupPubKeyHex: welcome.groupPubKey,
-    epochSecretHex: welcome.epochSecretHex, certificate: welcome.epochFrame, expectedEpoch: welcome.epoch })
-  const inviter = roster.members.find(member => sameCanonicalAddress(member.address, message.senderAddress))
-  const own = roster.members.find(member => ownAddress && sameCanonicalAddress(member.address, ownAddress))
-  if (!inviter || inviter.role !== 'admin' || !own || own.index !== welcome.memberIndex ||
-      (welcome.inviterAddress && !sameCanonicalAddress(welcome.inviterAddress, message.senderAddress)) ||
-      roster.groupName !== welcome.groupName || roster.homeRelay !== welcome.homeRelay) throw new Error('Invalid group invitation')
+  if (
+    welcome.adminSecretKeyHex &&
+    (!ownAddress ||
+      !isOwnMessage(message) ||
+      !sameCanonicalAddress(message.senderAddress, ownAddress) ||
+      !groupAdminSecretMatches(welcome.adminSecretKeyHex, welcome.groupPubKey))
+  )
+    throw new Error(
+      'Group administrative secret requires authenticated self delivery',
+    )
+  const { roster } = openGroupEpochCertificate({
+    groupIdHex: groupId,
+    groupPubKeyHex: welcome.groupPubKey,
+    epochSecretHex: welcome.epochSecretHex,
+    certificate: welcome.epochFrame,
+    expectedEpoch: welcome.epoch,
+  })
+  const inviter = roster.members.find(member =>
+    sameCanonicalAddress(member.address, message.senderAddress),
+  )
+  const own = roster.members.find(
+    member => ownAddress && sameCanonicalAddress(member.address, ownAddress),
+  )
+  if (
+    !inviter ||
+    inviter.role !== 'admin' ||
+    !own ||
+    own.index !== welcome.memberIndex ||
+    (welcome.inviterAddress &&
+      !sameCanonicalAddress(welcome.inviterAddress, message.senderAddress)) ||
+    roster.groupName !== welcome.groupName ||
+    roster.homeRelay !== welcome.homeRelay
+  )
+    throw new Error('Invalid group invitation')
   if (existing) {
-    if (existing.groupPubKey !== welcome.groupPubKey) throw new Error('Group authority mismatch')
-    const admin = existing.groupState?.roster.find(member => member.role === 'admin')
-    if (!admin || !sameCanonicalAddress(admin.address, message.senderAddress)) throw new Error('Unauthorized group invitation update')
+    if (existing.groupPubKey !== welcome.groupPubKey)
+      throw new Error('Group authority mismatch')
+    const admin = existing.groupState?.roster.find(
+      member => member.role === 'admin',
+    )
+    if (!admin || !sameCanonicalAddress(admin.address, message.senderAddress))
+      throw new Error('Unauthorized group invitation update')
     if (welcome.epoch <= (existing.groupState?.epoch ?? -1)) {
-      if (welcome.epoch === existing.groupState?.epoch && welcome.epochFrame.epoch_hash !== existing.groupState.epochFrame.epoch_hash) throw new Error('Conflicting group epoch')
+      if (
+        welcome.epoch === existing.groupState?.epoch &&
+        welcome.epochFrame.epoch_hash !==
+          existing.groupState.epochFrame.epoch_hash
+      )
+        throw new Error('Conflicting group epoch')
+      if (welcome.adminSecretKeyHex)
+        existing.groupState!.groupSecretKeyHex = welcome.adminSecretKeyHex
       return existing
     }
-    applyAuthenticatedGroupEpoch(existing, welcome.epochFrame, welcome.epochSecretHex, ownAddress, message.serverTime)
+    applyAuthenticatedGroupEpoch(
+      existing,
+      welcome.epochFrame,
+      welcome.epochSecretHex,
+      ownAddress,
+      message.serverTime,
+    )
+    if (welcome.adminSecretKeyHex)
+      existing.groupState!.groupSecretKeyHex = welcome.adminSecretKeyHex
     return existing
   }
-  const conv = newConversation({ id, kind: 'group', address: formatGroupIdentifier(groupId), groupId,
-    groupPubKey: welcome.groupPubKey, invitedBy: message.senderAddress,
-    membershipStatus: isOwnMessage(message) ? 'joined' : 'invited', participants: [], members: {} })
-  applyAuthenticatedGroupEpoch(conv, welcome.epochFrame, welcome.epochSecretHex, ownAddress, message.serverTime)
+  const conv = newConversation({
+    id,
+    kind: 'group',
+    address: formatGroupIdentifier(groupId),
+    groupId,
+    groupPubKey: welcome.groupPubKey,
+    invitedBy: message.senderAddress,
+    membershipStatus: isOwnMessage(message) ? 'joined' : 'invited',
+    participants: [],
+    members: {},
+  })
+  applyAuthenticatedGroupEpoch(
+    conv,
+    welcome.epochFrame,
+    welcome.epochSecretHex,
+    ownAddress,
+    message.serverTime,
+  )
+  if (welcome.adminSecretKeyHex)
+    conv.groupState!.groupSecretKeyHex = welcome.adminSecretKeyHex
   conversations[id] = conv
   return conv
 }
 
 /** Only the prior administrator may deliver a root-signed consecutive epoch. */
 function applyGroupControlItem(
-  conversations: Record<string, Conversation>, control: GroupControlItem,
-  message: { outbound: boolean; senderAddress: string; destinationAddress?: string; serverTime: number },
+  conversations: Record<string, Conversation>,
+  control: GroupControlItem,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    destinationAddress?: string
+    serverTime: number
+  },
   ownAddress: string | null,
 ): void {
   const conv = conversations[groupConversationUuid(control.groupId)]
   if (!conv || conv.kind !== 'group' || !conv.groupState) return
-  if (control.epoch <= conv.groupState.epoch) return
+  if (control.epoch <= conv.groupState.epoch) {
+    const known =
+      control.epoch === conv.groupState.epoch
+        ? conv.groupState.epochFrame
+        : conv.groupState.epochHistory[control.epoch]?.epochFrame
+    if (known && known.epoch_hash !== control.epochFrame.epoch_hash)
+      throw new Error('Conflicting group epoch')
+    return
+  }
   const admin = conv.groupState.roster.find(member => member.role === 'admin')
-  if (!admin || !sameCanonicalAddress(admin.address, message.senderAddress)) throw new Error('Unauthorized group control')
-  if (!control.epochSecretHex || control.prevEpochHash !== conv.groupState.prevEpochHashHex ||
-      control.epochFrame.epoch !== control.epoch || control.authoritySigHex !== control.epochFrame.authority_sig) throw new Error('Invalid group control certificate')
-  applyAuthenticatedGroupEpoch(conv, control.epochFrame, control.epochSecretHex, ownAddress, message.serverTime)
+  if (!admin || !sameCanonicalAddress(admin.address, message.senderAddress))
+    throw new Error('Unauthorized group control')
+  if (
+    !control.epochSecretHex ||
+    control.epochFrame.epoch !== control.epoch ||
+    control.authoritySigHex !== control.epochFrame.authority_sig
+  )
+    throw new Error('Invalid group control certificate')
+  openGroupEpochCertificate({
+    groupIdHex: conv.groupState.groupIdHex,
+    groupPubKeyHex: conv.groupState.groupPubKeyHex,
+    epochSecretHex: control.epochSecretHex,
+    certificate: control.epochFrame,
+    expectedEpoch: control.epoch,
+  })
+  if (control.epoch > conv.groupState.epoch + 1) {
+    conv.groupState.pendingControls ??= {}
+    if (Object.keys(conv.groupState.pendingControls).length >= 256)
+      throw new Error('Too many pending group epochs')
+    conv.groupState.pendingControls[control.epoch] = {
+      item: control,
+      senderAddress: message.senderAddress,
+      serverTime: message.serverTime,
+    }
+    conv.groupState.syncFailed = true
+    return
+  }
+  if (control.prevEpochHash !== conv.groupState.prevEpochHashHex)
+    throw new Error('Group epoch predecessor mismatch')
+  applyAuthenticatedGroupEpoch(
+    conv,
+    control.epochFrame,
+    control.epochSecretHex,
+    ownAddress,
+    message.serverTime,
+  )
+  const pending = conv.groupState!.pendingControls?.[conv.groupState!.epoch + 1]
+  if (pending) {
+    delete conv.groupState!.pendingControls![pending.item.epoch]
+    try {
+      applyGroupControlItem(
+        conversations,
+        pending.item,
+        {
+          outbound: false,
+          senderAddress: pending.senderAddress,
+          serverTime: pending.serverTime,
+        },
+        ownAddress,
+      )
+    } catch {
+      conv.groupState!.syncFailed = true
+    }
+  }
+}
+
+function applyGroupFeatureItem(
+  conversations: Record<string, Conversation>,
+  item: MessageItem,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    destinationAddress?: string
+    serverTime: number
+    items: MessageItem[]
+  },
+  ownAddress: string | null,
+): void {
+  if (item.type !== 'group-welcome' && item.type !== 'group-control') return
+  try {
+    if (item.type === 'group-welcome')
+      applyGroupWelcomeItem(conversations, item, message, ownAddress)
+    else applyGroupControlItem(conversations, item, message, ownAddress)
+  } catch {
+    const frame = encodeItemFrames(messageItems, [item])[0]
+    const index = message.items.indexOf(item)
+    if (index >= 0)
+      message.items[index] = {
+        type: 'unsupported',
+        reason: 'malformed',
+        itemType: item.type,
+        frame: bytesToHex(frame),
+      }
+  }
 }
 
 function newConversation({
@@ -1349,6 +1635,7 @@ export async function rehydrateChat(
     hasChatMetadata ? chatState.conversations ?? {} : {},
   )) {
     if (!raw) continue
+    if (raw.kind === 'group') validateStoredGroupConversation(raw)
     const conversation = newConversation({
       ...raw,
       id,
@@ -1582,11 +1869,7 @@ export async function rehydrateChat(
     if (!message.outbound) addParticipant(conv, message.senderAddress)
     const ownAddr = messageDestinationAddress(message) ?? null
     for (const item of message.items ?? []) {
-      if (item?.type === 'group-welcome') {
-        applyGroupWelcomeItem(conversations, item, message, ownAddr)
-      } else if (item?.type === 'group-control') {
-        applyGroupControlItem(conversations, item, message, ownAddr)
-      }
+      applyGroupFeatureItem(conversations, item, message, ownAddr)
     }
     if (emailItem && speaksForConversation(conv, message)) {
       conv.kind = 'email'
@@ -1654,7 +1937,63 @@ export const rehydateChat = rehydrateChat
 export const rehydrateState = rehydrateChat
 export const freshChatState = freshChatsState
 
-const groupRelayClientRegistry = new Map<string, GroupRelayClient>()
+const groupRuns = new WeakMap<object, Map<string, Promise<unknown>>>()
+function groupRun<T>(
+  owner: object,
+  key: string,
+  operation: () => Promise<T>,
+  join = true,
+): Promise<T> {
+  let running = groupRuns.get(owner)
+  if (!running) {
+    running = new Map()
+    groupRuns.set(owner, running)
+  }
+  const existing = running.get(key)
+  if (existing)
+    return join
+      ? (existing as Promise<T>)
+      : Promise.reject(new Error('Group operation already in progress'))
+  const promise = Promise.resolve().then(operation)
+  running.set(key, promise)
+  void promise
+    .finally(() => {
+      if (running!.get(key) === promise) running!.delete(key)
+    })
+    .catch(() => undefined)
+  return promise
+}
+function captureGroupContext(
+  owner: { conversations: Record<string, Conversation> },
+  conversation?: Conversation,
+): () => void {
+  const revision = accountSession.state.revision
+  const account = accountSession.state.account
+  const chainIdentifier = activeChain.chainIdentifier
+  return () => {
+    if (
+      accountSession.state.revision !== revision ||
+      accountSession.state.account !== account ||
+      activeChain.chainIdentifier !== chainIdentifier ||
+      (conversation && owner.conversations[conversation.id] !== conversation)
+    )
+      throw new Error('Group operation account or conversation changed')
+  }
+}
+
+const groupHomeRelays = new WeakMap<object, string>()
+const groupRelayClientRegistries = new WeakMap<
+  object,
+  Map<string, GroupRelayClient>
+>()
+function groupRelayClients(owner: object): Map<string, GroupRelayClient> {
+  let clients = groupRelayClientRegistries.get(owner)
+  if (!clients) {
+    clients = new Map()
+    groupRelayClientRegistries.set(owner, clients)
+  }
+  return clients
+}
 
 export const useChatStore = defineStore('chats', {
   state: (): State => freshChatsState(),
@@ -2449,12 +2788,14 @@ export const useChatStore = defineStore('chats', {
       stampValue,
       onPreparationProgress,
       financialOperations,
+      operationId,
     }: {
       wallet: WalletHandle
       address: string
       conversationId?: string
       items: MessageItem[]
       financialOperations?: OutgoingFinancialOperation[]
+      operationId?: string
       stampValue?: bigint
       onPreparationProgress?: (
         progress: DirectMessagePreparationProgress,
@@ -2464,6 +2805,8 @@ export const useChatStore = defineStore('chats', {
         ? this.conversations[canonicalConversationId(conversationId)]
         : undefined
       if (maybeGroupConv?.kind === 'group' || isGroupIdentifier(address)) {
+        if ((stampValue ?? 0n) !== 0n || financialOperations?.length)
+          throw new Error('Group payments are unsupported')
         return this.sendGroupMessage({
           wallet,
           conversationId: maybeGroupConv?.id ?? conversationId,
@@ -2497,7 +2840,34 @@ export const useChatStore = defineStore('chats', {
       if (conv.address === conv.id) conv.address = displayAddress
 
       const timestamp = Date.now()
-      const pendingMessageId = nextPendingMessageId(timestamp)
+      const pendingMessageId = operationId ?? nextPendingMessageId(timestamp)
+      if (operationId) {
+        const existing = Object.values(this.messages).find(
+          message => message?.logicalMessageId === operationId,
+        )
+        if (existing) {
+          if (
+            !walletOwnsMessage(wallet, existing) ||
+            !sameCanonicalAddress(
+              existing.destinationAddress,
+              displayAddress,
+            ) ||
+            JSON.stringify(existing.items) !== JSON.stringify(items) ||
+            existing.stampValueWei !== (stampValue ?? 0n)
+          )
+            throw new Error('Outgoing operation intent mismatch')
+          if (existing.status === 'confirmed')
+            return { state: 'sent', payloadDigest: existing.payloadDigest }
+          if (existing.status === 'error')
+            return this.retryOutgoing({
+              wallet,
+              address: displayAddress,
+              payloadDigest: existing.payloadDigest,
+              automatic: true,
+            })
+          return { state: 'payment-pending' }
+        }
+      }
       this.sendMessageLocal({
         address: displayAddress,
         conversationId: conv.id,
@@ -2677,6 +3047,11 @@ export const useChatStore = defineStore('chats', {
       ) => void
     }): Promise<OutgoingOutcome> {
       const message = this.messages[payloadDigest]
+      const group = message?.conversationId
+        ? this.conversations[message.conversationId]
+        : undefined
+      if (group?.kind === 'group')
+        return this.retryGroupMessage(group.id, payloadDigest)
       if (
         !message ||
         !message.outbound ||
@@ -5158,11 +5533,7 @@ export const useChatStore = defineStore('chats', {
           })
 
         for (const item of message.items ?? []) {
-          if (item?.type === 'group-welcome') {
-            applyGroupWelcomeItem(this.conversations, item, message, ownAddress)
-          } else if (item?.type === 'group-control') {
-            applyGroupControlItem(this.conversations, item, message, ownAddress)
-          }
+          applyGroupFeatureItem(this.conversations, item, message, ownAddress)
         }
 
         if (index in this.messages) {
@@ -5360,7 +5731,8 @@ export const useChatStore = defineStore('chats', {
      * can begin polling the shared group mailbox. */
     approveGroupInvite(conversationId: string): Conversation | undefined {
       const conv = this.conversations[conversationId]
-      if (!conv || conv.kind !== 'group') return undefined
+      if (!conv || conv.kind !== 'group' || conv.membershipStatus !== 'invited')
+        return undefined
       conv.membershipStatus = 'joined'
       conv.deletedAt = undefined
       conv.updatedAt = Date.now()
@@ -5370,7 +5742,8 @@ export const useChatStore = defineStore('chats', {
     /** Issue #70 & #1365: Declines an invited group conversation and hides it from active chat lists. */
     declineGroupInvite(conversationId: string): Conversation | undefined {
       const conv = this.conversations[conversationId]
-      if (!conv || conv.kind !== 'group') return undefined
+      if (!conv || conv.kind !== 'group' || conv.membershipStatus !== 'invited')
+        return undefined
       conv.membershipStatus = 'declined'
       conv.deletedAt = Math.max(
         newestRelayTime(conv.messages),
@@ -5416,37 +5789,73 @@ export const useChatStore = defineStore('chats', {
     },
     setGroupRelayClient(relayUrl: string, client: GroupRelayClient): void {
       const key = relayUrl.trim().replace(/\/+$/, '')
-      groupRelayClientRegistry.set(key, client)
+      groupRelayClients(this).set(key, client)
+    },
+    configureGroupHomeRelay(homeRelayUrl: string): () => void {
+      const parsed = new URL(homeRelayUrl)
+      if (!['http:', 'https:'].includes(parsed.protocol))
+        throw new Error('Invalid group home relay URL')
+      const url = homeRelayUrl.trim().replace(/\/+$/, '')
+      groupHomeRelays.set(this, url)
+      return () => {
+        if (groupHomeRelays.get(this) === url) {
+          groupHomeRelays.delete(this)
+          groupRelayClientRegistries.delete(this)
+        }
+      }
+    },
+    getGroupHomeRelay(): string {
+      const url = groupHomeRelays.get(this)
+      if (!url) throw new Error('Group messaging is not configured')
+      return url
     },
     getGroupRelayClient(relayUrl?: string): GroupRelayClient {
-      const settingsRelay = (() => {
-        try {
-          return (useSettingsStore() as any).relayUrl as string | undefined
-        } catch {
-          return undefined
-        }
-      })()
-      const resolvedUrl = (
-        relayUrl ||
-        settingsRelay ||
-        'https://relay.frank.cash'
-      )
-        .trim()
-        .replace(/\/+$/, '')
-      const existing =
-        groupRelayClientRegistry.get(resolvedUrl) ??
-        groupRelayClientRegistry.get('*')
+      const injected = relayUrl
+        ? groupRelayClients(this).get(relayUrl.trim().replace(/\/+$/, ''))
+        : undefined
+      if (injected) return injected
+      const homeRelayUrl = this.getGroupHomeRelay()
+      const resolvedUrl = (relayUrl || homeRelayUrl).trim().replace(/\/+$/, '')
+      const key = `${homeRelayUrl}|${resolvedUrl}|${accountSession.state.revision}`
+      const existing = groupRelayClients(this).get(key)
       if (existing) return existing
-      const created = new GroupRelayClient(resolvedUrl)
-      groupRelayClientRegistry.set(resolvedUrl, created)
+      const created = new GroupRelayClient(resolvedUrl, {
+        homeRelayUrl,
+        subscriberTag: async groupIdHex => {
+          const signer = await accountSession.getGroupSigner(groupIdHex, 0)
+          const digest = sha256(
+            new TextEncoder().encode(
+              `frank-group-subscriber-v1:${homeRelayUrl}:${groupIdHex}`,
+            ),
+          )
+          return bytesToHex(sha256(await signer.signDigest(digest)))
+        },
+      })
+      groupRelayClients(this).set(key, created)
       return created
     },
+
     /**
      * Issue #70 & #1365: Creates a new group on the relay (`epoch: 0`), persists the
      * `kind: 'group'` conversation in `'joined'` status for the creator, and sends
      * 1:1 `GroupWelcomeItem` DMs to each invited member.
      */
-    async createGroupConversation({
+    async createGroupConversation(input: {
+      wallet?: WalletHandle
+      groupName: string
+      memberAddresses: string[]
+      relayUrl?: string
+      relayClient?: GroupRelayClient
+      creatorAddress?: string
+    }): Promise<Conversation> {
+      return groupRun(
+        this,
+        'create-group',
+        () => this.createGroupConversationOnce(input),
+        false,
+      )
+    },
+    async createGroupConversationOnce({
       wallet,
       groupName,
       memberAddresses,
@@ -5461,6 +5870,7 @@ export const useChatStore = defineStore('chats', {
       relayClient?: GroupRelayClient
       creatorAddress?: string
     }): Promise<Conversation> {
+      const checkGroup = captureGroupContext(this)
       const trimmedName = groupName.trim()
       if (!trimmedName) {
         throw new Error('Group name is required')
@@ -5473,9 +5883,13 @@ export const useChatStore = defineStore('chats', {
       if (!ownRaw) {
         throw new Error('Active account address is required to create a group')
       }
-      const identityPubKeyHex = bytesToHex(await accountSession.getCurvePublicKey('secp256k1'))
+      const identityPubKeyHex = bytesToHex(
+        await accountSession.getCurvePublicKey('secp256k1'),
+      )
       const ownAddress = directoryAddress(identityPubKeyHex)
-      if (!sameCanonicalAddress(ownRaw, ownAddress)) throw new Error('Group creation requires the active messaging identity')
+      if (!ownAddress) throw new Error('Invalid active group identity')
+      if (!sameCanonicalAddress(ownRaw, ownAddress))
+        throw new Error('Group creation requires the active messaging identity')
       const normalizedMembers = Array.from(
         new Set(
           memberAddresses
@@ -5486,22 +5900,35 @@ export const useChatStore = defineStore('chats', {
         ),
       )
       const client = relayClient ?? this.getGroupRelayClient(relayUrl)
-      const created = await createGroupOnRelay({
+      const created = prepareGroupCreation({
         client,
         groupName: trimmedName,
         creatorAddress: ownAddress,
         creatorIdentityPubKeyHex: identityPubKeyHex,
-        members: await Promise.all(normalizedMembers.map(async address => {
-          const parsed = activeChain.parseAddress(address)
-          if (!parsed) throw new Error('Invalid group member address')
-          const profile = await fetchContactProfile(parsed)
-          if (!profile?.pubKey) throw new Error('Group member has no authenticated identity')
-          const identityPubKeyHex = bytesToHex(profile.pubKey)
-          if (!sameCanonicalAddress(directoryAddress(identityPubKeyHex), address)) throw new Error('Group member identity mismatch')
-          return { address: directoryAddress(identityPubKeyHex), identityPubKeyHex }
-        })),
+        members: await Promise.all(
+          normalizedMembers.map(async address => {
+            const parsed = activeChain.parseAddress(address)
+            if (!parsed) throw new Error('Invalid group member address')
+            const profile = await fetchContactProfile(parsed)
+            if (!profile?.pubKey)
+              throw new Error('Group member has no authenticated identity')
+            const identityPubKeyHex = bytesToHex(profile.pubKey)
+            if (
+              !sameCanonicalAddress(
+                directoryAddress(identityPubKeyHex),
+                address,
+              )
+            )
+              throw new Error('Group member identity mismatch')
+            return {
+              address: directoryAddress(identityPubKeyHex)!,
+              identityPubKeyHex,
+            }
+          }),
+        ),
       })
 
+      checkGroup()
       const participants = Array.from(
         new Set([ownAddress, ...normalizedMembers]),
       ).sort()
@@ -5530,6 +5957,9 @@ export const useChatStore = defineStore('chats', {
         roster: [...created.roster.members],
         epochFrame: groupEpochCertificate(created.epochFrame),
         epochHistory: {},
+        pendingEpoch: {
+          certificate: groupEpochCertificate(created.epochFrame),
+        },
       }
 
       const conv = newConversation({
@@ -5555,12 +5985,15 @@ export const useChatStore = defineStore('chats', {
       })
       this.conversations[conv.id] = conv
 
-      // Send 1:1 GroupWelcomeItem DMs to each invited member when a wallet handle is available
+      conv.groupState!.pendingMemberDeliveries = {}
+      // Persist membership deliveries before handing any invitation to transport.
       for (const rMember of created.roster.members) {
-        if (rMember.index === 0) continue
         const welcomeItem: GroupWelcomeItem = {
           type: 'group-welcome',
           epochFrame: groupEpochCertificate(created.epochFrame),
+          ...(rMember.index === 0
+            ? { adminSecretKeyHex: created.identity.groupSecretKeyHex }
+            : {}),
           groupId: created.identity.groupIdHex,
           groupPubKey: created.identity.groupPubKeyHex,
           groupName: trimmedName,
@@ -5569,29 +6002,22 @@ export const useChatStore = defineStore('chats', {
           epochSecretHex: created.epochKeys.epochSecretHex,
           memberIndex: rMember.index,
           inviterAddress: ownAddress,
-          rosterMembers: created.roster.members.map(m => ({
-            index: m.index,
-            address: m.address,
-            epochSigningPubKeyHex: m.epochSigningPubKeyHex,
-          identityPubKeyHex: m.identityPubKeyHex,
-            identityPubKeyHex: m.identityPubKeyHex,
-            role: m.role,
-          })),
         }
-        if (resolvedWallet) {
-          try {
-            await this.sendMessage({
-              wallet: resolvedWallet,
-              address: rMember.address,
-              items: [welcomeItem],
-            })
-          } catch (err) {
-            console.warn(
-              `[chats] Failed to send group-welcome DM to ${rMember.address}:`,
-              err,
-            )
-          }
-        }
+        conv.groupState!.pendingMemberDeliveries![rMember.address] = [
+          {
+            items: [welcomeItem],
+            operationId: nextPendingMessageId(Date.now()),
+          },
+        ]
+      }
+      await this.flushPersistence?.()
+      try {
+        await this.retryGroupEpochPublication(conv.id, client)
+        await this.retryGroupMemberDeliveries(conv.id, resolvedWallet)
+      } catch {
+        checkGroup()
+        conv.groupState!.syncFailed = true
+        await this.flushPersistence?.()
       }
 
       return this.conversations[conv.id]
@@ -5629,6 +6055,7 @@ export const useChatStore = defineStore('chats', {
       if (!conv || conv.kind !== 'group') {
         throw new Error('Group conversation not found')
       }
+      const checkGroup = captureGroupContext(this, conv)
       if (conv.membershipStatus !== 'joined') {
         throw new Error(
           `Cannot send message to group in '${
@@ -5636,6 +6063,8 @@ export const useChatStore = defineStore('chats', {
           }' state`,
         )
       }
+      if (conv.groupState?.pendingEpoch)
+        throw new Error('Group epoch publication is pending')
       const groupIdHex = conv.groupState?.groupIdHex ?? conv.groupId
       const epochSecretHex =
         conv.groupState?.epochSecretHex ?? conv.groupEpochSecretHex
@@ -5660,17 +6089,35 @@ export const useChatStore = defineStore('chats', {
       const rosterMember = conv.groupState?.roster?.find(m =>
         sameCanonicalAddress(m.address, senderAddress),
       )
-      if (!rosterMember) throw new Error('Sender is not in the authenticated group roster')
+      if (!rosterMember)
+        throw new Error('Sender is not in the authenticated group roster')
       const senderIndex = rosterMember.index
       const signer = await accountSession.getGroupSigner(groupIdHex, epoch)
-      if (bytesToHex(signer.publicKey) !== rosterMember.epochSigningPubKeyHex) throw new Error('Group sender does not match active account')
+      if (bytesToHex(signer.publicKey) !== rosterMember.epochSigningPubKeyHex)
+        throw new Error('Group sender does not match active account')
+      checkGroup()
       const timestampMs = Date.now()
       const payload = encodeGroupItems(items)
-      const signature = await signer.signDigest(computeInnerMessageSigningHash({
-        groupIdHex, epoch, senderIndex, senderEpochPubKey: signer.publicKey, timestampMs, payload,
-      }))
-      const sealed = sealGroupMessage({ epochKeys, senderIndex, senderEpochPublicKey: signer.publicKey,
-        senderSignature: signature, senderAddress, payload, timestampMs })
+      const signature = await signer.signDigest(
+        computeInnerMessageSigningHash({
+          groupIdHex,
+          epoch,
+          senderIndex,
+          senderEpochPubKey: signer.publicKey,
+          timestampMs,
+          payload,
+        }),
+      )
+      checkGroup()
+      const sealed = sealGroupMessage({
+        epochKeys,
+        senderIndex,
+        senderEpochPublicKey: signer.publicKey,
+        senderSignature: signature,
+        senderAddress,
+        payload,
+        timestampMs,
+      })
       const payloadDigest = bytesToHex(
         sha256(new TextEncoder().encode(sealed.ciphertext)),
       )
@@ -5687,40 +6134,205 @@ export const useChatStore = defineStore('chats', {
         timestamp: timestampMs,
       })
 
-      const homeRelay =
-        conv.groupState?.homeRelay ??
-        conv.groupRelayUrl ??
-        'https://relay.frank.cash'
-      const client = relayClient ?? this.getGroupRelayClient(homeRelay)
+      conv.groupState!.pendingMessages ??= {}
+      conv.groupState!.pendingMessages[payloadDigest] = sealed
+      await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
+      checkGroup()
+      await this.flushPersistence?.()
+      return this.retryGroupMessage(conv.id, payloadDigest, relayClient)
+    },
+    /** Retries the exact signed envelope; never constructs new content for an uncertain send. */
+    async retryGroupMessage(
+      conversationId: string,
+      payloadDigest: string,
+      relayClient?: GroupRelayClient,
+    ): Promise<OutgoingOutcome> {
+      return groupRun(this, `message:${payloadDigest}`, () =>
+        this.retryGroupMessageOnce(conversationId, payloadDigest, relayClient),
+      )
+    },
+    async retryGroupMessageOnce(
+      conversationId: string,
+      payloadDigest: string,
+      relayClient?: GroupRelayClient,
+    ): Promise<OutgoingOutcome> {
+      const conv = this.conversations[conversationId]
+      const envelope = conv?.groupState?.pendingMessages?.[payloadDigest]
+      const message = this.messages[payloadDigest]
+      if (
+        !conv?.groupState ||
+        !envelope ||
+        !message ||
+        conv.membershipStatus !== 'joined'
+      )
+        return { state: 'failed', reason: 'unreachable' }
+      const checkGroup = captureGroupContext(this, conv)
+      const state = conv.groupState
+      const signer = await accountSession.getGroupSigner(
+        state.groupIdHex,
+        envelope.epoch,
+      )
+      const epoch =
+        envelope.epoch === state.epoch
+          ? state
+          : state.epochHistory[envelope.epoch]
+      if (!epoch) throw new Error('Missing group send authority')
+      const owner = epoch.roster.find(
+        member => member.epochSigningPubKeyHex === bytesToHex(signer.publicKey),
+      )
+      if (!owner || !sameCanonicalAddress(owner.address, message.senderAddress))
+        throw new Error('Group send belongs to another account')
+      const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
       try {
-        const res = await client.sendGroupMessage(groupIdHex, sealed)
-        const msg = this.messages[payloadDigest]
-        if (msg) {
-          msg.status = 'confirmed'
-          if (res.received_at_ms) {
-            msg.serverTime = res.received_at_ms
-            msg.receivedTime = res.received_at_ms
-            msg.localTime = false
-          }
-        }
-        conv.lastReceived = Math.max(
-          conv.lastReceived ?? 0,
-          res.received_at_ms || timestampMs,
-        )
+        const res = await client.sendGroupMessage(state.groupIdHex, envelope)
+        checkGroup()
+        message.status = 'confirmed'
+        message.serverTime = res.server_time_ms
+        message.receivedTime = res.server_time_ms
+        message.localTime = false
+        await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
+        delete state.pendingMessages![payloadDigest]
+        conv.lastReceived = Math.max(conv.lastReceived ?? 0, res.server_time_ms)
         recomputeChatAccounting(conv, this.activeConversationId)
+        checkGroup()
+        await this.flushPersistence?.()
         return { state: 'sent', payloadDigest }
-      } catch (err) {
-        const msg = this.messages[payloadDigest]
-        if (msg) {
-          msg.status = 'error'
-          msg.delivery = {
-            failureReason: 'unreachable',
-            detail: err instanceof Error ? err.message : String(err),
-          }
+      } catch (error) {
+        message.status = 'error'
+        message.delivery = {
+          failureReason: 'unreachable',
+          detail: error instanceof Error ? error.message : String(error),
         }
+        await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
         return { state: 'failed', reason: 'unreachable' }
       }
     },
+    /** Reconcile the original signed epoch after timeout/restart before delivering its secret. */
+    async retryGroupEpochPublication(
+      conversationId: string,
+      relayClient?: GroupRelayClient,
+    ): Promise<void> {
+      return groupRun(this, `publish:${conversationId}`, () =>
+        this.retryGroupEpochPublicationOnce(conversationId, relayClient),
+      )
+    },
+    async retryGroupEpochPublicationOnce(
+      conversationId: string,
+      relayClient?: GroupRelayClient,
+    ): Promise<void> {
+      const conv = this.conversations[conversationId]
+      const state = conv?.groupState
+      const pending = state?.pendingEpoch
+      if (!state || !pending) return
+      const checkGroup = captureGroupContext(this, conv)
+      const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
+      const certificate = pending.certificate
+      const identity = directoryAddress(
+        bytesToHex(await accountSession.getCurvePublicKey('secp256k1')),
+      )
+      checkGroup()
+      if (
+        !state.roster.some(
+          member => member.role === 'admin' && member.address === identity,
+        )
+      )
+        throw new Error('Pending group epoch belongs to another account')
+      try {
+        await client.publishEpoch(
+          state.groupIdHex,
+          certificate,
+          pending.expectedPreviousHash,
+        )
+      } catch (error) {
+        const keys = deriveEpochKeys(
+          hexToBytes(state.epochSecretHex),
+          state.groupIdHex,
+          state.epoch,
+        )
+        const observed = groupEpochCertificate(
+          await client.getLatestEpoch(state.groupIdHex),
+        )
+        if (observed.epoch_hash !== certificate.epoch_hash) throw error
+        openGroupEpochCertificate({
+          groupIdHex: state.groupIdHex,
+          groupPubKeyHex: state.groupPubKeyHex,
+          epochSecretHex: state.epochSecretHex,
+          certificate: observed,
+          expectedEpoch: state.epoch,
+        })
+      }
+      checkGroup()
+      state.pendingEpoch = undefined
+      checkGroup()
+      await this.flushPersistence?.()
+    },
+    /** Queued certificate deliveries retain recipients and content across restart. */
+    async retryGroupMemberDeliveries(
+      conversationId: string,
+      wallet: WalletHandle | undefined = messagingWallet(),
+    ): Promise<void> {
+      return groupRun(this, `deliveries:${conversationId}`, () =>
+        this.retryGroupMemberDeliveriesOnce(conversationId, wallet),
+      )
+    },
+    async retryGroupMemberDeliveriesOnce(
+      conversationId: string,
+      wallet: WalletHandle | undefined = messagingWallet(),
+    ): Promise<void> {
+      const conv = this.conversations[conversationId]
+      const pending = conv?.groupState?.pendingMemberDeliveries
+      if (!conv?.groupState || !pending || conv.groupState.pendingEpoch) return
+      const checkGroup = captureGroupContext(this, conv)
+      if (
+        wallet &&
+        !conv.groupState.roster.some(
+          member =>
+            member.role === 'admin' &&
+            sameCanonicalAddress(
+              member.address,
+              wallet.identity.displayAddress,
+            ),
+        )
+      )
+        throw new Error(
+          'Pending group membership deliveries belong to another account',
+        )
+      for (const [address, deliveries] of Object.entries(pending)) {
+        if (!wallet) break
+        while (deliveries.length) {
+          if (
+            deliveries[0].items.some(
+              item => item.type === 'group-welcome' && item.adminSecretKeyHex,
+            ) &&
+            !sameCanonicalAddress(address, wallet.identity.displayAddress)
+          )
+            throw new Error(
+              'Administrative group secret cannot be delivered to a peer',
+            )
+          try {
+            const outcome = await this.sendMessage({
+              wallet,
+              address,
+              items: deliveries[0].items,
+              operationId: deliveries[0].operationId,
+              stampValue: 0n,
+            })
+            checkGroup()
+            if (outcome.state !== 'sent') break
+            deliveries.shift()
+            checkGroup()
+            await this.flushPersistence?.()
+          } catch {
+            break /* Retained for account-bound recovery. */
+          }
+        }
+        if (!deliveries.length) delete pending[address]
+      }
+      conv.groupState.syncFailed = Object.keys(pending).length > 0
+      checkGroup()
+      await this.flushPersistence?.()
+    },
+
     /**
      * Issue #70: Polls the shared group mailbox (`GET /groups/:group_id/epoch` and
      * `GET /groups/:group_id/messages?after_seq=`) for a joined group conversation,
@@ -5730,10 +6342,37 @@ export const useChatStore = defineStore('chats', {
       conversationId: string,
       options: { relayClient?: GroupRelayClient; ownAddress?: string } = {},
     ): Promise<number> {
+      return groupRun(this, `sync:${conversationId}`, async () => {
+        const conv = this.conversations[conversationId]
+        try {
+          const count = await this.syncGroupConversationOnce(
+            conversationId,
+            options,
+          )
+          if (conv?.groupState)
+            conv.groupState.syncFailed = Boolean(
+              Object.keys(conv.groupState.pendingMemberDeliveries ?? {})
+                .length ||
+                Object.keys(conv.groupState.pendingControls ?? {}).length,
+            )
+          return count
+        } catch (error) {
+          if (conv?.groupState) conv.groupState.syncFailed = true
+          throw error
+        }
+      })
+    },
+    async syncGroupConversationOnce(
+      conversationId: string,
+      options: { relayClient?: GroupRelayClient; ownAddress?: string } = {},
+    ): Promise<number> {
       if (!this.shouldPollGroupMailbox(conversationId)) return 0
+      await this.retryGroupEpochPublication(conversationId, options.relayClient)
+      await this.retryGroupMemberDeliveries(conversationId)
       const conv = this.conversations[conversationId]
       if (!conv || conv.kind !== 'group') return 0
 
+      const checkGroup = captureGroupContext(this, conv)
       const groupIdHex = conv.groupState?.groupIdHex ?? conv.groupId!
       const epochSecretHex =
         conv.groupState?.epochSecretHex ?? conv.groupEpochSecretHex!
@@ -5741,7 +6380,7 @@ export const useChatStore = defineStore('chats', {
       const homeRelay =
         conv.groupState?.homeRelay ??
         conv.groupRelayUrl ??
-        'https://relay.frank.cash'
+        this.getGroupHomeRelay()
       const client = options.relayClient ?? this.getGroupRelayClient(homeRelay)
       const ownRaw =
         options.ownAddress ||
@@ -5757,56 +6396,21 @@ export const useChatStore = defineStore('chats', {
         epoch,
       )
 
-      // 1. Refresh encrypted roster from latest epoch frame if available
-      try {
-        const latestEpochFrame = await client.getLatestEpoch(
-          groupIdHex,
-          epochKeys.readTokenHex,
-        )
-        if (
-          latestEpochFrame.epoch === epoch &&
-          latestEpochFrame.encrypted_roster
-        ) {
-          const decryptedRoster = decryptGroupRoster(
-            latestEpochFrame.encrypted_roster,
-            epochKeys,
-          )
-          conv.groupState ??= {
-            groupIdHex,
-            groupPubKeyHex: conv.groupPubKey ?? '',
-            homeRelay,
-            epoch,
-            epochSecretHex,
-            prevEpochHashHex: latestEpochFrame.epoch_hash ?? '00'.repeat(32),
-            memberIndex: conv.groupMemberIndex ?? 0,
-            lastSyncedSeq: 0,
-            roster: [],
-          }
-          conv.groupState.roster = [...decryptedRoster.members]
-          if (latestEpochFrame.epoch_hash) {
-            conv.groupState.prevEpochHashHex = latestEpochFrame.epoch_hash
-          }
-          if (decryptedRoster.groupName) {
-            conv.name =
-              usableSubject(decryptedRoster.groupName) ??
-              decryptedRoster.groupName
-          }
-          for (const rMember of decryptedRoster.members) {
-            const addr =
-              safeChainDisplayAddress(rMember.address) || rMember.address
-            addParticipant(conv, addr, rMember.epochSigningPubKeyHex)
-            if (conv.members?.[addr] && rMember.role) {
-              conv.members[addr].role = rMember.role
-            }
-            if (ownAddress && sameCanonicalAddress(addr, ownAddress)) {
-              conv.groupMemberIndex = rMember.index
-              conv.groupState.memberIndex = rMember.index
-            }
-          }
-        }
-      } catch {
-        // Epoch metadata fetch is best-effort if roster is already known locally
-      }
+      if (!conv.groupState) throw new Error('Missing authenticated group state')
+      const currentCertificate = groupEpochCertificate(
+        await client.getLatestEpoch(groupIdHex),
+      )
+      if (
+        currentCertificate.epoch_hash !== conv.groupState.epochFrame.epoch_hash
+      )
+        throw new Error('Group epoch changed; membership update required')
+      openGroupEpochCertificate({
+        groupIdHex,
+        groupPubKeyHex: conv.groupPubKey!,
+        epochSecretHex,
+        certificate: currentCertificate,
+        expectedEpoch: epoch,
+      })
 
       // 2. Fetch ordered messages after lastSyncedSeq
       const afterSeq = conv.groupState?.lastSyncedSeq ?? 0
@@ -5817,62 +6421,43 @@ export const useChatStore = defineStore('chats', {
       )
       let addedCount = 0
 
+      checkGroup()
       for (const row of fetched.messages) {
-        conv.groupState ??= {
-          groupIdHex,
-          groupPubKeyHex: conv.groupPubKey ?? '',
-          homeRelay,
-          epoch,
-          epochSecretHex,
-          prevEpochHashHex: '00'.repeat(32),
-          memberIndex: conv.groupMemberIndex ?? 0,
-          lastSyncedSeq: 0,
-          roster: [],
-        }
-        conv.groupState.lastSyncedSeq = Math.max(
-          conv.groupState.lastSyncedSeq,
-          row.server_seq,
+        if (
+          row.group_id !== groupIdHex ||
+          !Number.isSafeInteger(row.server_seq) ||
+          row.server_seq <= conv.groupState.lastSyncedSeq
         )
-
-        const currentEpoch =
-          conv.groupState.epoch ?? conv.epoch?.generation ?? epoch
-        const currentSecretHex =
-          conv.groupState.epochSecretHex ??
-          conv.groupEpochSecretHex ??
-          epochSecretHex
-        if (row.epoch !== currentEpoch) {
-          continue
+          throw new Error('Invalid group mailbox sequence')
+        const rowState =
+          row.epoch === conv.groupState.epoch
+            ? conv.groupState
+            : conv.groupState.epochHistory[row.epoch]
+        if (!rowState) {
+          // An invitation grants the current epoch, never the history before joining.
+          const earliestKnown = Math.min(
+            conv.groupState.epoch,
+            ...Object.keys(conv.groupState.epochHistory).map(Number),
+          )
+          if (row.epoch < earliestKnown) {
+            conv.groupState.lastSyncedSeq = row.server_seq
+            continue
+          }
+          throw new Error('Unknown group message epoch')
         }
-        const rowEpochKeys =
-          row.epoch === epoch && currentSecretHex === epochSecretHex
-            ? epochKeys
-            : deriveEpochKeys(
-                hexToBytes(currentSecretHex),
-                groupIdHex,
-                row.epoch,
-              )
-
+        const { epochKeys: rowEpochKeys } = openGroupEpochCertificate({
+          groupIdHex,
+          groupPubKeyHex: conv.groupPubKey!,
+          epochSecretHex: rowState.epochSecretHex,
+          certificate: rowState.epochFrame,
+          expectedEpoch: row.epoch,
+        })
         const opened = openGroupMessage({
           envelope: row,
           epochKeys: rowEpochKeys,
-          roster: conv.groupState.roster.length
-            ? conv.groupState.roster
-            : undefined,
+          roster: rowState.roster,
         })
-
-        let items: MessageItem[]
-        try {
-          const parsed = JSON.parse(opened.payloadText) as {
-            items?: MessageItem[]
-          }
-          if (parsed && Array.isArray(parsed.items)) {
-            items = parsed.items
-          } else {
-            items = [{ type: 'text', text: opened.payloadText }]
-          }
-        } catch {
-          items = [{ type: 'text', text: opened.payloadText }]
-        }
+        const items = decodeGroupItems(opened.payload)
 
         const payloadDigest = bytesToHex(
           sha256(new TextEncoder().encode(row.ciphertext)),
@@ -5882,22 +6467,7 @@ export const useChatStore = defineStore('chats', {
         const isOutbound = Boolean(
           ownAddress && sameCanonicalAddress(senderAddress, ownAddress),
         )
-        const serverTime = row.received_at_ms || opened.timestampMs
-
-        for (const item of items) {
-          if (item?.type === 'group-control') {
-            applyGroupControlItem(
-              this.conversations,
-              item,
-              {
-                outbound: isOutbound,
-                senderAddress,
-                serverTime,
-              },
-              ownAddress,
-            )
-          }
-        }
+        const serverTime = row.server_time_ms || opened.timestampMs
 
         const existingMsg = this.messages[payloadDigest]
         if (existingMsg) {
@@ -5905,6 +6475,21 @@ export const useChatStore = defineStore('chats', {
           existingMsg.serverTime = serverTime
           existingMsg.receivedTime = serverTime
           existingMsg.localTime = false
+          await (
+            await store
+          ).saveMessage(
+            {
+              message: existingMsg,
+              index: payloadDigest,
+              outbound: existingMsg.outbound,
+              senderAddress: existingMsg.senderAddress,
+              copartyAddress: conv.address,
+            },
+            { advanceCursor: false },
+          )
+          if (conv.groupState.pendingMessages)
+            delete conv.groupState.pendingMessages[payloadDigest]
+          conv.groupState.lastSyncedSeq = row.server_seq
           continue
         }
 
@@ -5925,6 +6510,19 @@ export const useChatStore = defineStore('chats', {
           revisionDigest: payloadDigest,
           deliveryDigest: payloadDigest,
         }
+        await (
+          await store
+        ).saveMessage(
+          {
+            message: chatMsg,
+            index: payloadDigest,
+            outbound: isOutbound,
+            senderAddress,
+            copartyAddress: conv.address,
+          },
+          { advanceCursor: false },
+        )
+        checkGroup()
         this.messages[payloadDigest] = chatMsg
         if (!conv.messages.some(m => m.payloadDigest === payloadDigest)) {
           conv.messages.push(chatMsg)
@@ -5940,9 +6538,12 @@ export const useChatStore = defineStore('chats', {
         recordLogicalMessage(this.logicalMessages, chatMsg, conv.id)
         recomputeChatAccounting(conv, this.activeConversationId)
         this.lastReceived = Math.max(this.lastReceived ?? 0, serverTime)
+        conv.groupState.lastSyncedSeq = row.server_seq
         addedCount += 1
       }
 
+      checkGroup()
+      await this.flushPersistence?.()
       return addedCount
     },
     /**
@@ -5971,7 +6572,20 @@ export const useChatStore = defineStore('chats', {
      * group epoch on the relay (`rotateGroupEpochOnRelay`), broadcasting an in-band
      * `GroupControlItem`, and sending a 1:1 `GroupWelcomeItem` DM to the new member.
      */
-    async inviteMemberToGroup({
+    async inviteMemberToGroup(input: {
+      conversationId: string
+      memberAddress: string
+      wallet?: WalletHandle
+      relayClient?: GroupRelayClient
+    }): Promise<Conversation> {
+      return groupRun(
+        this,
+        `membership:${input.conversationId}`,
+        () => this.inviteMemberToGroupOnce(input),
+        false,
+      )
+    },
+    async inviteMemberToGroupOnce({
       conversationId,
       memberAddress,
       wallet,
@@ -5986,6 +6600,9 @@ export const useChatStore = defineStore('chats', {
       if (!conv || conv.kind !== 'group') {
         throw new Error('Group conversation not found')
       }
+      const checkGroup = captureGroupContext(this, conv)
+      if (conv.groupState?.pendingEpoch)
+        throw new Error('Group epoch publication is pending')
       const groupIdHex = conv.groupState?.groupIdHex ?? conv.groupId!
       const prevEpoch = conv.groupState?.epoch ?? conv.epoch?.generation ?? 0
       const prevEpochSecretHex =
@@ -5997,7 +6614,7 @@ export const useChatStore = defineStore('chats', {
       const homeRelay =
         conv.groupState?.homeRelay ??
         conv.groupRelayUrl ??
-        'https://relay.frank.cash'
+        this.getGroupHomeRelay()
       const client = relayClient ?? this.getGroupRelayClient(homeRelay)
 
       const prevEpochKeys = deriveEpochKeys(
@@ -6005,7 +6622,13 @@ export const useChatStore = defineStore('chats', {
         groupIdHex,
         prevEpoch,
       )
-      if (conv.membershipStatus !== 'joined' || !conv.groupState?.groupSecretKeyHex) throw new Error('Only the founding administrator can change group membership')
+      if (
+        conv.membershipStatus !== 'joined' ||
+        !conv.groupState?.groupSecretKeyHex
+      )
+        throw new Error(
+          'Only the founding administrator can change group membership',
+        )
       const authorityPrivateKey = hexToBytes(conv.groupState.groupSecretKeyHex)
 
       const canonicalNewMember =
@@ -6021,7 +6644,7 @@ export const useChatStore = defineStore('chats', {
         new Set([...currentAddresses, canonicalNewMember]),
       )
 
-      const rotated = await rotateGroupEpochOnRelay({
+      const rotated = prepareGroupEpochRotation({
         client,
         groupIdHex,
         groupPubKeyHex: conv.groupPubKey,
@@ -6029,22 +6652,43 @@ export const useChatStore = defineStore('chats', {
         prevEpochHashHex,
         prevEpochSecret: prevEpochKeys.epochSecret,
         groupName: conv.name || 'Group',
-        members: await Promise.all(updatedAddresses.map(async address => {
-          const existingMember = conv.groupState!.roster.find(member => sameCanonicalAddress(member.address, address))
-          if (existingMember) return existingMember
-          const parsed = activeChain.parseAddress(address)
-          if (!parsed) throw new Error('Invalid group member address')
-          const profile = await fetchContactProfile(parsed)
-          if (!profile?.pubKey) throw new Error('Group member has no authenticated identity')
-          const identityPubKeyHex = bytesToHex(profile.pubKey)
-          if (!sameCanonicalAddress(directoryAddress(identityPubKeyHex), address)) throw new Error('Group member identity mismatch')
-          return { address: directoryAddress(identityPubKeyHex), identityPubKeyHex, role: 'member' as const }
-        })),
+        members: await Promise.all(
+          updatedAddresses.map(async address => {
+            const existingMember = conv.groupState!.roster.find(member =>
+              sameCanonicalAddress(member.address, address),
+            )
+            if (existingMember) return existingMember
+            const parsed = activeChain.parseAddress(address)
+            if (!parsed) throw new Error('Invalid group member address')
+            const profile = await fetchContactProfile(parsed)
+            if (!profile?.pubKey)
+              throw new Error('Group member has no authenticated identity')
+            const identityPubKeyHex = bytesToHex(profile.pubKey)
+            if (
+              !sameCanonicalAddress(
+                directoryAddress(identityPubKeyHex),
+                address,
+              )
+            )
+              throw new Error('Group member identity mismatch')
+            return {
+              address: directoryAddress(identityPubKeyHex)!,
+              identityPubKeyHex,
+              role: 'member' as const,
+            }
+          }),
+        ),
         authorityPrivateKey,
       })
 
-      applyAuthenticatedGroupEpoch(conv, groupEpochCertificate(rotated.epochFrame), rotated.epochSecretHex,
-        await getOwnCanonicalAddress(), Date.now())
+      checkGroup()
+      applyAuthenticatedGroupEpoch(
+        conv,
+        groupEpochCertificate(rotated.epochFrame),
+        rotated.epochSecretHex,
+        await getOwnCanonicalAddress(),
+        Date.now(),
+      )
 
       const newRosterEntry = rotated.roster.members.find(m =>
         sameCanonicalAddress(m.address, canonicalNewMember),
@@ -6067,24 +6711,44 @@ export const useChatStore = defineStore('chats', {
         epochSecretHex: rotated.epochSecretHex,
         memberIndex: newRosterEntry?.index ?? rotated.roster.members.length - 1,
         inviterAddress: ownAddress,
-        rosterMembers: rotated.roster.members.map(m => ({
-          index: m.index,
-          address: m.address,
-          epochSigningPubKeyHex: m.epochSigningPubKeyHex,
-          identityPubKeyHex: m.identityPubKeyHex,
-          role: m.role,
-        })),
       }
-      if (resolvedWallet) {
-        try {
-          await this.sendMessage({
-            wallet: resolvedWallet,
-            address: canonicalNewMember,
-            items: [welcomeItem],
-          })
-        } catch (err) {
-          console.warn('[chats] Failed to send welcome DM to invitee:', err)
-        }
+      const control: GroupControlItem = {
+        type: 'group-control',
+        groupId: groupIdHex,
+        epochFrame: groupEpochCertificate(rotated.epochFrame),
+        action: 'add-member',
+        epoch: rotated.epoch,
+        prevEpochHash: prevEpochHashHex,
+        epochSecretHex: rotated.epochSecretHex,
+        targetAddress: canonicalNewMember,
+        authoritySigHex: rotated.epochFrame.authority_sig,
+      }
+      conv.groupState!.pendingEpoch = {
+        certificate: groupEpochCertificate(rotated.epochFrame),
+        expectedPreviousHash: prevEpochHashHex,
+      }
+      conv.groupState!.pendingMemberDeliveries ??= {}
+      for (const member of rotated.roster.members) {
+        ;(conv.groupState!.pendingMemberDeliveries[member.address] ??= []).push(
+          {
+            items: [
+              sameCanonicalAddress(member.address, canonicalNewMember)
+                ? welcomeItem
+                : control,
+            ],
+            operationId: nextPendingMessageId(Date.now()),
+          },
+        )
+      }
+      checkGroup()
+      await this.flushPersistence?.()
+      try {
+        await this.retryGroupEpochPublication(conv.id, client)
+        await this.retryGroupMemberDeliveries(conv.id, resolvedWallet)
+      } catch {
+        checkGroup()
+        conv.groupState!.syncFailed = true
+        await this.flushPersistence?.()
       }
       return conv
     },
@@ -6093,7 +6757,20 @@ export const useChatStore = defineStore('chats', {
      * (generating a fresh 32-byte epoch secret mixed with random entropy so the removed member
      * cannot derive the new epoch keys or read/write subsequent messages).
      */
-    async removeMemberFromGroup({
+    async removeMemberFromGroup(input: {
+      conversationId: string
+      memberAddress: string
+      wallet?: WalletHandle
+      relayClient?: GroupRelayClient
+    }): Promise<Conversation> {
+      return groupRun(
+        this,
+        `membership:${input.conversationId}`,
+        () => this.removeMemberFromGroupOnce(input),
+        false,
+      )
+    },
+    async removeMemberFromGroupOnce({
       conversationId,
       memberAddress,
       wallet,
@@ -6108,6 +6785,9 @@ export const useChatStore = defineStore('chats', {
       if (!conv || conv.kind !== 'group') {
         throw new Error('Group conversation not found')
       }
+      const checkGroup = captureGroupContext(this, conv)
+      if (conv.groupState?.pendingEpoch)
+        throw new Error('Group epoch publication is pending')
       const groupIdHex = conv.groupState?.groupIdHex ?? conv.groupId!
       const prevEpoch = conv.groupState?.epoch ?? conv.epoch?.generation ?? 0
       const prevEpochSecretHex =
@@ -6119,7 +6799,7 @@ export const useChatStore = defineStore('chats', {
       const homeRelay =
         conv.groupState?.homeRelay ??
         conv.groupRelayUrl ??
-        'https://relay.frank.cash'
+        this.getGroupHomeRelay()
       const client = relayClient ?? this.getGroupRelayClient(homeRelay)
 
       const prevEpochKeys = deriveEpochKeys(
@@ -6127,7 +6807,13 @@ export const useChatStore = defineStore('chats', {
         groupIdHex,
         prevEpoch,
       )
-      if (conv.membershipStatus !== 'joined' || !conv.groupState?.groupSecretKeyHex) throw new Error('Only the founding administrator can change group membership')
+      if (
+        conv.membershipStatus !== 'joined' ||
+        !conv.groupState?.groupSecretKeyHex
+      )
+        throw new Error(
+          'Only the founding administrator can change group membership',
+        )
       const authorityPrivateKey = hexToBytes(conv.groupState.groupSecretKeyHex)
 
       const remainingAddresses = (
@@ -6138,8 +6824,15 @@ export const useChatStore = defineStore('chats', {
           : conv.participants
       ).filter(addr => !sameCanonicalAddress(addr, memberAddress))
 
+      if (conv.groupState!.pendingMemberDeliveries) {
+        for (const address of Object.keys(
+          conv.groupState!.pendingMemberDeliveries,
+        ))
+          if (sameCanonicalAddress(address, memberAddress))
+            delete conv.groupState!.pendingMemberDeliveries[address]
+      }
       const freshEntropy = randomBytes(32)
-      const rotated = await rotateGroupEpochOnRelay({
+      const rotated = prepareGroupEpochRotation({
         client,
         groupIdHex,
         groupPubKeyHex: conv.groupPubKey,
@@ -6148,13 +6841,23 @@ export const useChatStore = defineStore('chats', {
         prevEpochSecret: prevEpochKeys.epochSecret,
         freshEntropy,
         groupName: conv.name || 'Group',
-        members: conv.groupState!.roster.filter(member => remainingAddresses.some(address => sameCanonicalAddress(address, member.address))),
+        members: conv.groupState!.roster.filter(member =>
+          remainingAddresses.some(address =>
+            sameCanonicalAddress(address, member.address),
+          ),
+        ),
         authorityPrivateKey,
       })
 
       const ownAddress = await getOwnCanonicalAddress()
-      applyAuthenticatedGroupEpoch(conv, groupEpochCertificate(rotated.epochFrame), rotated.epochSecretHex,
-        ownAddress, Date.now())
+      checkGroup()
+      applyAuthenticatedGroupEpoch(
+        conv,
+        groupEpochCertificate(rotated.epochFrame),
+        rotated.epochSecretHex,
+        ownAddress,
+        Date.now(),
+      )
       const resolvedWallet = wallet || messagingWallet()
 
       // Notify remaining peers of the new epoch secret via 1:1 GroupControlItem DM when wallet is present
@@ -6168,34 +6871,30 @@ export const useChatStore = defineStore('chats', {
         epochSecretHex: rotated.epochSecretHex,
         targetAddress: safeChainDisplayAddress(memberAddress) || memberAddress,
         authoritySigHex: rotated.epochFrame.authority_sig,
-        rosterMembers: rotated.roster.members.map(m => ({
-          index: m.index,
-          address: m.address,
-          epochSigningPubKeyHex: m.epochSigningPubKeyHex,
-          identityPubKeyHex: m.identityPubKeyHex,
-          role: m.role,
-        })),
       }
-      if (resolvedWallet) {
-        for (const rMember of rotated.roster.members) {
-          if (ownAddress && sameCanonicalAddress(rMember.address, ownAddress)) {
-            continue
-          }
-          try {
-            await this.sendMessage({
-              wallet: resolvedWallet,
-              address: rMember.address,
-              items: [controlItem],
-            })
-          } catch (err) {
-            console.warn(
-              `[chats] Failed to send group-control DM to ${rMember.address}:`,
-              err,
-            )
-          }
-        }
+      conv.groupState!.pendingEpoch = {
+        certificate: groupEpochCertificate(rotated.epochFrame),
+        expectedPreviousHash: prevEpochHashHex,
       }
-
+      conv.groupState!.pendingMemberDeliveries ??= {}
+      for (const member of rotated.roster.members) {
+        ;(conv.groupState!.pendingMemberDeliveries[member.address] ??= []).push(
+          {
+            items: [controlItem],
+            operationId: nextPendingMessageId(Date.now()),
+          },
+        )
+      }
+      checkGroup()
+      await this.flushPersistence?.()
+      try {
+        await this.retryGroupEpochPublication(conv.id, client)
+        await this.retryGroupMemberDeliveries(conv.id, resolvedWallet)
+      } catch {
+        checkGroup()
+        conv.groupState!.syncFailed = true
+        await this.flushPersistence?.()
+      }
       return conv
     },
     /**

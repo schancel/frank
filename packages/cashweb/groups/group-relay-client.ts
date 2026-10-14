@@ -1,3 +1,4 @@
+import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { directoryAddress } from '../relay/open-directory'
 import type { GroupEpochCertificate } from '../types/messages'
 import axios, { type AxiosInstance } from 'axios'
@@ -22,24 +23,18 @@ import {
 } from './group-crypto'
 
 export interface PublishEpochResponse {
-  status: string
-  group_id: string
   epoch: number
   epoch_hash: string
-}
-
-export interface SendGroupMessageResponse {
-  status: string
-  group_id: string
-  server_seq: number
-  received_at_ms: number
+  group_pubkey: string
 }
 
 export interface StoredGroupMessageWire extends SealedGroupMessageEnvelope {
   group_id: string
   server_seq: number
-  received_at_ms: number
+  server_time_ms: number
+  versionstamp: string
 }
+export type SendGroupMessageResponse = StoredGroupMessageWire
 
 export interface FetchGroupMessagesResponse {
   group_id: string
@@ -50,35 +45,65 @@ export interface FetchGroupMessagesResponse {
 export interface GroupRelayClientOptions {
   axiosInstance?: AxiosInstance
   timeoutMs?: number
+  homeRelayUrl?: string
+  subscriberTag?: (groupIdHex: string) => Promise<string>
 }
 
 function normalizeGroupId(groupIdHex: string): string {
-  return groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const id = groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
+  if (!/^[0-9a-f]{64}$/.test(id)) throw new Error('Invalid group identifier')
+  return id
 }
 
 function normalizeRelayBaseUrl(relayUrl: string): string {
-  return relayUrl.trim().replace(/\/+$/, '')
+  const parsed = new URL(relayUrl)
+  if (
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.protocol !== 'https:' &&
+      !(
+        parsed.protocol === 'http:' &&
+        ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
+      ))
+  )
+    throw new Error('Invalid group relay URL')
+  return parsed.href.replace(/\/+$/, '')
 }
 
 /**
  * HTTP client for the shared group mailbox endpoints on `cashweb-registry` (Issues #70 & #1365):
- * - `PUT /groups/:group_id/epoch` (with optional `If-Match` CAS header)
- * - `GET /groups/:group_id/epoch` (authenticated via `X-Frank-Group-Read-Token`)
+ * - `PUT /groups/:group_id/epochs` (with optional `If-Match` CAS header)
+ * - `GET /groups/:group_id/epochs` (authenticated via `X-Group-Read-Token`)
  * - `PUT /groups/:group_id/messages` (authenticated via outer shared write signature `write_sig`)
- * - `GET /groups/:group_id/messages?after_seq=&limit=` (authenticated via `X-Frank-Group-Read-Token`)
+ * - `GET /groups/:group_id/messages?after_seq=&limit=` (authenticated via `X-Group-Read-Token`)
  */
 export class GroupRelayClient {
   readonly relayUrl: string
   private readonly http: AxiosInstance
+  private readonly transportUrl: string
+  private readonly subscriberTag?: (groupIdHex: string) => Promise<string>
 
   constructor(relayUrl: string, options: GroupRelayClientOptions = {}) {
     this.relayUrl = normalizeRelayBaseUrl(relayUrl)
+    this.transportUrl = normalizeRelayBaseUrl(options.homeRelayUrl ?? relayUrl)
+    this.subscriberTag = options.subscriberTag
     this.http =
       options.axiosInstance ??
       axios.create({
-        baseURL: this.relayUrl,
+        baseURL: this.transportUrl,
         timeout: options.timeoutMs ?? 15_000,
       })
+  }
+
+  private routingHeaders(): Record<string, string> {
+    return this.transportUrl === this.relayUrl
+      ? {}
+      : { 'X-Group-Upstream-Relay': this.relayUrl }
   }
 
   /**
@@ -105,40 +130,49 @@ export class GroupRelayClient {
       admin_sig: adminSig,
       ...(frame.epoch_hash ? { epoch_hash: frame.epoch_hash } : {}),
     }
-    const headers: Record<string, string> = {}
+    const headers: Record<string, string> = this.routingHeaders()
     if (expectedPrevEpochHash) {
       headers['If-Match'] = expectedPrevEpochHash.trim().toLowerCase()
     }
     const response = await this.http.put<PublishEpochResponse>(
-      `${this.relayUrl}/groups/${cleanGroupId}/epoch`,
+      `${this.transportUrl}/groups/${cleanGroupId}/epochs`,
       wireBody,
       { headers },
     )
+    if (
+      response.data.epoch !== frame.epoch ||
+      response.data.epoch_hash !== frame.epoch_hash ||
+      response.data.group_pubkey !== frame.group_pubkey
+    )
+      throw new Error('Invalid group epoch acknowledgement')
     return response.data
   }
 
   /**
    * Fetches the latest `GroupEpochFrame` (`G_meta`) for `groupIdHex`, authenticating with
-   * the current epoch's `readTokenHex` in `X-Frank-Group-Read-Token`.
+   * the current epoch's `readTokenHex` in `X-Group-Read-Token`.
    */
-  async getLatestEpoch(
-    groupIdHex: string,
-    readTokenHex: string,
-  ): Promise<GroupEpochFrameWire> {
+  async getLatestEpoch(groupIdHex: string): Promise<GroupEpochFrameWire> {
     const cleanGroupId = normalizeGroupId(groupIdHex)
     const response = await this.http.get<Record<string, unknown>>(
-      `${this.relayUrl}/groups/${cleanGroupId}/epoch`,
-      {
-        headers: {
-          'X-Frank-Group-Read-Token': readTokenHex.trim().toLowerCase(),
-        },
-      },
+      `${this.transportUrl}/groups/${cleanGroupId}/epochs`,
+      { headers: this.routingHeaders() },
     )
     const raw = response.data
-    const encryptedRoster = String(
-      raw.encrypted_roster ?? raw.encrypted_epoch_descriptor ?? '',
+    if (
+      !Number.isSafeInteger(raw.epoch) ||
+      Number(raw.epoch) < 0 ||
+      typeof raw.group_pubkey !== 'string' ||
+      typeof raw.prev_epoch_hash !== 'string' ||
+      typeof raw.write_pubkey !== 'string' ||
+      typeof raw.read_token_hash !== 'string' ||
+      typeof raw.encrypted_epoch_descriptor !== 'string' ||
+      typeof raw.admin_sig !== 'string' ||
+      typeof raw.epoch_hash !== 'string'
     )
-    const authoritySig = String(raw.authority_sig ?? raw.admin_sig ?? '')
+      throw new Error('Invalid group epoch response')
+    const encryptedRoster = String(raw.encrypted_epoch_descriptor ?? '')
+    const authoritySig = String(raw.admin_sig ?? '')
     return {
       group_id: String(raw.group_id ?? cleanGroupId),
       epoch: Number(raw.epoch ?? 0),
@@ -167,7 +201,7 @@ export class GroupRelayClient {
   ): Promise<SendGroupMessageResponse> {
     const cleanGroupId = normalizeGroupId(groupIdHex)
     const response = await this.http.put<SendGroupMessageResponse>(
-      `${this.relayUrl}/groups/${cleanGroupId}/messages`,
+      `${this.transportUrl}/groups/${cleanGroupId}/messages`,
       {
         group_id: cleanGroupId,
         epoch: envelope.epoch,
@@ -175,13 +209,27 @@ export class GroupRelayClient {
         ciphertext: envelope.ciphertext,
         write_sig: envelope.write_sig,
       },
+      { headers: this.routingHeaders() },
     )
-    return response.data
+    const row = response.data
+    if (
+      row.group_id !== cleanGroupId ||
+      row.epoch !== envelope.epoch ||
+      row.nonce !== envelope.nonce ||
+      row.ciphertext !== envelope.ciphertext ||
+      row.write_sig !== envelope.write_sig ||
+      !Number.isSafeInteger(row.server_seq) ||
+      row.server_seq <= 0 ||
+      !Number.isSafeInteger(row.server_time_ms) ||
+      row.server_time_ms < 0
+    )
+      throw new Error('Invalid group message acknowledgement')
+    return row
   }
 
   /**
    * Fetches ordered group messages with `server_seq > afterSeq` from the relay, authenticating
-   * with `X-Frank-Group-Read-Token`.
+   * with `X-Group-Read-Token`.
    */
   async fetchGroupMessages(
     groupIdHex: string,
@@ -191,14 +239,22 @@ export class GroupRelayClient {
   ): Promise<FetchGroupMessagesResponse> {
     const cleanGroupId = normalizeGroupId(groupIdHex)
     const response = await this.http.get<FetchGroupMessagesResponse>(
-      `${this.relayUrl}/groups/${cleanGroupId}/messages`,
+      `${this.transportUrl}/groups/${cleanGroupId}/messages`,
       {
         params: {
           after_seq: afterSeq,
           limit,
         },
         headers: {
-          'X-Frank-Group-Read-Token': readTokenHex.trim().toLowerCase(),
+          ...this.routingHeaders(),
+          ...(this.subscriberTag
+            ? {
+                'X-Group-Subscriber-Tag': await this.subscriberTag(
+                  cleanGroupId,
+                ),
+              }
+            : {}),
+          'X-Group-Read-Token': readTokenHex.trim().toLowerCase(),
         },
       },
     )
@@ -234,9 +290,9 @@ export interface CreateGroupOnRelayResult {
  * High-level helper that derives a new group root identity, computes epoch 0 keys,
  * builds & encrypts the initial member roster, signs epoch 0, and publishes it to the relay.
  */
-export async function createGroupOnRelay(
+export function prepareGroupCreation(
   params: CreateGroupOnRelayParams,
-): Promise<CreateGroupOnRelayResult> {
+): CreateGroupOnRelayResult {
   const identity = deriveGroupIdentity(params.groupSeed ?? randomBytes(32))
   const epochSecret = params.initialEpochSecret ?? randomBytes(32)
   const epochKeys = deriveEpochKeys(epochSecret, identity.groupIdHex, 0)
@@ -250,12 +306,18 @@ export async function createGroupOnRelay(
     identityPubKeyHex: string,
   ) => {
     const address = addressRaw.trim().toLowerCase()
-    if (!address || seenAddresses.has(address)) return
+    if (!address || directoryAddress(identityPubKeyHex) !== address)
+      throw new Error('Group member identity mismatch')
+    if (seenAddresses.has(address)) return
     seenAddresses.add(address)
     const index = rosterMembers.length
-    const epochSigningPubKeyHex = bytesToHex(deriveIdentityMemberEpochPublicKey(
-      hexToBytes(identityPubKeyHex), identity.groupIdHex, 0,
-    ))
+    const epochSigningPubKeyHex = bytesToHex(
+      deriveIdentityMemberEpochPublicKey(
+        hexToBytes(identityPubKeyHex),
+        identity.groupIdHex,
+        0,
+      ),
+    )
     rosterMembers.push({
       index,
       address,
@@ -265,11 +327,26 @@ export async function createGroupOnRelay(
     })
   }
 
-  addRosterMember(params.creatorAddress, 'admin', params.creatorIdentityPubKeyHex)
+  addRosterMember(
+    params.creatorAddress,
+    'admin',
+    params.creatorIdentityPubKeyHex,
+  )
   for (const entry of params.members ?? []) {
-    addRosterMember(entry.address, entry.role ?? 'member', entry.identityPubKeyHex)
+    addRosterMember(
+      entry.address,
+      entry.role ?? 'member',
+      entry.identityPubKeyHex,
+    )
   }
 
+  if (
+    !params.groupName.trim() ||
+    new TextEncoder().encode(params.groupName.trim()).length > 128 ||
+    rosterMembers.length > 256 ||
+    rosterMembers.filter(member => member.role === 'admin').length !== 1
+  )
+    throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
     epoch: 0,
     groupName: params.groupName.trim(),
@@ -288,12 +365,7 @@ export async function createGroupOnRelay(
     authorityPrivateKey: identity.groupSecretKey,
   })
 
-  const published = await params.client.publishEpoch(
-    identity.groupIdHex,
-    epochFrame,
-  )
-  const epochHash =
-    published.epoch_hash || epochFrame.epoch_hash || '00'.repeat(32)
+  const epochHash = epochFrame.epoch_hash!
 
   return {
     identity,
@@ -336,9 +408,9 @@ export interface RotateGroupEpochOnRelayResult {
  * encrypting the updated `GroupRoster`, signing the new `GroupEpochFrame`, and publishing it
  * to the relay with `If-Match: prevEpochHashHex` Compare-And-Swap protection.
  */
-export async function rotateGroupEpochOnRelay(
+export function prepareGroupEpochRotation(
   params: RotateGroupEpochOnRelayParams,
-): Promise<RotateGroupEpochOnRelayResult> {
+): RotateGroupEpochOnRelayResult {
   const cleanGroupId = normalizeGroupId(params.groupIdHex)
   const nextEpoch = params.prevEpoch + 1
   const nextEpochSecret =
@@ -355,14 +427,20 @@ export async function rotateGroupEpochOnRelay(
   const rosterMembers: GroupRosterMember[] = []
   for (const entry of params.members) {
     const address = entry.address.trim().toLowerCase()
-    if (!address || seenAddresses.has(address)) continue
+    if (!address || directoryAddress(entry.identityPubKeyHex) !== address)
+      throw new Error('Group member identity mismatch')
+    if (seenAddresses.has(address)) continue
     seenAddresses.add(address)
     const index = rosterMembers.length
     const role = entry.role ?? 'member'
     const identityPubKeyHex = entry.identityPubKeyHex
-    const epochSigningPubKeyHex = bytesToHex(deriveIdentityMemberEpochPublicKey(
-      hexToBytes(identityPubKeyHex), cleanGroupId, nextEpoch,
-    ))
+    const epochSigningPubKeyHex = bytesToHex(
+      deriveIdentityMemberEpochPublicKey(
+        hexToBytes(identityPubKeyHex),
+        cleanGroupId,
+        nextEpoch,
+      ),
+    )
     rosterMembers.push({
       index,
       address,
@@ -372,6 +450,13 @@ export async function rotateGroupEpochOnRelay(
     })
   }
 
+  if (
+    !params.groupName.trim() ||
+    new TextEncoder().encode(params.groupName.trim()).length > 128 ||
+    rosterMembers.length > 256 ||
+    rosterMembers.filter(member => member.role === 'admin').length !== 1
+  )
+    throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
     epoch: nextEpoch,
     groupName: params.groupName.trim(),
@@ -390,13 +475,7 @@ export async function rotateGroupEpochOnRelay(
     authorityPrivateKey: params.authorityPrivateKey,
   })
 
-  const published = await params.client.publishEpoch(
-    cleanGroupId,
-    epochFrame,
-    params.prevEpochHashHex,
-  )
-  const epochHash =
-    published.epoch_hash || epochFrame.epoch_hash || '00'.repeat(32)
+  const epochHash = epochFrame.epoch_hash!
 
   return {
     epoch: nextEpoch,
@@ -413,39 +492,119 @@ export async function rotateGroupEpochOnRelay(
 }
 
 /** Normalize the signed certificate carried by invitations and membership controls. */
-export function groupEpochCertificate(frame: GroupEpochFrameWire): GroupEpochCertificate {
-  if (!frame.group_pubkey || !frame.epoch_hash) throw new Error('Missing signed group epoch certificate')
+export function groupEpochCertificate(
+  frame: GroupEpochFrameWire,
+): GroupEpochCertificate {
+  if (!frame.group_pubkey || !frame.epoch_hash)
+    throw new Error('Missing signed group epoch certificate')
   return {
-    epoch: frame.epoch, group_pubkey: frame.group_pubkey,
-    prev_epoch_hash: frame.prev_epoch_hash, write_pubkey: frame.write_pubkey,
-    read_token_hash: frame.read_token_hash, encrypted_roster: frame.encrypted_roster,
-    authority_sig: frame.authority_sig, epoch_hash: frame.epoch_hash,
+    epoch: frame.epoch,
+    group_pubkey: frame.group_pubkey,
+    prev_epoch_hash: frame.prev_epoch_hash,
+    write_pubkey: frame.write_pubkey,
+    read_token_hash: frame.read_token_hash,
+    encrypted_roster: frame.encrypted_roster,
+    authority_sig: frame.authority_sig,
+    epoch_hash: frame.epoch_hash,
   }
 }
 
 /** Only authenticated group metadata can become a local roster. */
 export function openGroupEpochCertificate(params: {
-  groupIdHex: string; groupPubKeyHex: string; epochSecretHex: string;
-  certificate: GroupEpochCertificate; expectedPreviousHash?: string; expectedEpoch?: number;
+  groupIdHex: string
+  groupPubKeyHex: string
+  epochSecretHex: string
+  certificate: GroupEpochCertificate
+  expectedPreviousHash?: string
+  expectedEpoch?: number
 }): { roster: GroupRoster; epochKeys: GroupEpochKeys } {
   const cert = params.certificate
-  if (!verifyEpochFrame(cert, params.groupIdHex, params.groupPubKeyHex)) throw new Error('Invalid group epoch certificate')
-  if (params.expectedPreviousHash !== undefined && cert.prev_epoch_hash !== params.expectedPreviousHash) throw new Error('Group epoch predecessor mismatch')
-  if (params.expectedEpoch !== undefined && cert.epoch !== params.expectedEpoch) throw new Error('Group epoch sequence mismatch')
-  const epochKeys = deriveEpochKeys(hexToBytes(params.epochSecretHex), params.groupIdHex, cert.epoch)
-  if (cert.write_pubkey !== epochKeys.writeKeyPair.publicKeyHex || cert.read_token_hash !== epochKeys.readTokenHashHex) throw new Error('Group epoch secret does not match certificate')
+  if (!verifyEpochFrame(cert, params.groupIdHex, params.groupPubKeyHex))
+    throw new Error('Invalid group epoch certificate')
+  if (
+    params.expectedPreviousHash !== undefined &&
+    cert.prev_epoch_hash !== params.expectedPreviousHash
+  )
+    throw new Error('Group epoch predecessor mismatch')
+  if (params.expectedEpoch !== undefined && cert.epoch !== params.expectedEpoch)
+    throw new Error('Group epoch sequence mismatch')
+  const epochKeys = deriveEpochKeys(
+    hexToBytes(params.epochSecretHex),
+    params.groupIdHex,
+    cert.epoch,
+  )
+  if (
+    cert.write_pubkey !== epochKeys.writeKeyPair.publicKeyHex ||
+    cert.read_token_hash !== epochKeys.readTokenHashHex
+  )
+    throw new Error('Group epoch secret does not match certificate')
   const roster = decryptGroupRoster(cert.encrypted_roster, epochKeys)
-  if (!roster.members.length || roster.members.length > 256) throw new Error('Invalid group roster size')
-  const addresses = new Set<string>(), indices = new Set<number>()
+  if (!roster.members.length || roster.members.length > 256)
+    throw new Error('Invalid group roster size')
+  const addresses = new Set<string>(),
+    indices = new Set<number>()
   for (const member of roster.members) {
-    if (!Number.isInteger(member.index) || member.index < 0 || member.index > 255 || indices.has(member.index)) throw new Error('Invalid group member index')
+    if (
+      !Number.isInteger(member.index) ||
+      member.index < 0 ||
+      member.index > 255 ||
+      indices.has(member.index)
+    )
+      throw new Error('Invalid group member index')
     indices.add(member.index)
     const address = directoryAddress(member.identityPubKeyHex)
-    if (member.address !== address || addresses.has(address)) throw new Error('Group member identity mismatch')
+    if (member.address !== address || addresses.has(address))
+      throw new Error('Group member identity mismatch')
     addresses.add(address)
-    const expected = bytesToHex(deriveIdentityMemberEpochPublicKey(hexToBytes(member.identityPubKeyHex), params.groupIdHex, cert.epoch))
-    if (expected !== member.epochSigningPubKeyHex) throw new Error('Group member signing key mismatch')
+    const expected = bytesToHex(
+      deriveIdentityMemberEpochPublicKey(
+        hexToBytes(member.identityPubKeyHex),
+        params.groupIdHex,
+        cert.epoch,
+      ),
+    )
+    if (expected !== member.epochSigningPubKeyHex)
+      throw new Error('Group member signing key mismatch')
   }
-  if (roster.members.filter(member => member.role === 'admin').length !== 1) throw new Error('Group must have one founding administrator')
+  if (roster.members.filter(member => member.role === 'admin').length !== 1)
+    throw new Error('Group must have one founding administrator')
   return { roster, epochKeys }
+}
+
+/** Convenience publication for hosts that already own their durability boundary. */
+export async function createGroupOnRelay(
+  params: CreateGroupOnRelayParams,
+): Promise<CreateGroupOnRelayResult> {
+  const prepared = prepareGroupCreation(params)
+  await params.client.publishEpoch(
+    prepared.identity.groupIdHex,
+    prepared.epochFrame,
+  )
+  return prepared
+}
+export async function rotateGroupEpochOnRelay(
+  params: RotateGroupEpochOnRelayParams,
+): Promise<RotateGroupEpochOnRelayResult> {
+  const prepared = prepareGroupEpochRotation(params)
+  await params.client.publishEpoch(
+    params.groupIdHex,
+    prepared.epochFrame,
+    params.prevEpochHashHex,
+  )
+  return prepared
+}
+
+/** Only the founding administrator's self-mailbox carries this scoped group capability. */
+export function groupAdminSecretMatches(
+  secretHex: string,
+  publicKeyHex: string,
+): boolean {
+  try {
+    return (
+      bytesToHex(secp256k1.getPublicKey(hexToBytes(secretHex), true)) ===
+      publicKeyHex
+    )
+  } catch {
+    return false
+  }
 }

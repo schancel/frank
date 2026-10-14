@@ -1,4 +1,4 @@
-import type { GroupControlItem } from "@frank/cashweb/types/messages";
+import type { GroupControlItem } from '@frank/cashweb/types/messages'
 
 import {
   cborItemCodec,
@@ -6,24 +6,22 @@ import {
   hash32,
   hex,
   int,
-  listOf,
-  str,
   oneOf,
   opt,
   req,
-} from "../shared/cbor-fields";
-import { groupEpochCertificate, groupRosterMember } from "../shared/group-epoch-certificate";
+} from '../shared/cbor-fields'
+import { groupEpochCertificate } from '../shared/group-epoch-certificate'
 
 /**
  * Group epoch transition & membership control item (Issue #70).
  */
 export const groupControlCodec = cborItemCodec<GroupControlItem>(
-  "group-control",
+  'group-control',
   {
     groupId: req(0, hash32),
     action: req(
       1,
-      oneOf("rotate-epoch", "add-member", "remove-member", "leave")
+      oneOf('rotate-epoch', 'add-member', 'remove-member', 'leave'),
     ),
     epoch: req(2, int(0, 1_000_000_000)),
     prevEpochHash: req(3, hash32),
@@ -32,8 +30,6 @@ export const groupControlCodec = cborItemCodec<GroupControlItem>(
     targetMemberIndex: opt(6, int(0, 10_000)),
     targetEpochSigningPubKeyHex: opt(7, hex(33)),
     authoritySigHex: req(8, hex(64)),
-    groupName: opt(9, str(128, 1)),
-    rosterMembers: opt(10, listOf(groupRosterMember, 256, 1)),
     epochFrame: req(11, groupEpochCertificate),
-  }
-);
+  },
+)

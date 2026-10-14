@@ -309,3 +309,44 @@ it('retains the known theft counterexample when unsafe horizon admission is bypa
   )
   expect(exploited.secretKnown).toBe(true)
 })
+
+it('rejects the joint key as XEC refund authority even when the preparation flag claims independence', () => {
+  const joint = `0x02${'ab'.repeat(32)}`
+  const forbidden = {
+    ...terms,
+    jointPublicKey: joint,
+    aRefundPublicKey: `0x${joint.slice(2).toUpperCase()}`,
+  }
+  expect(validateStateChannelPairTerms(forbidden, identity)).toContain(
+    'custody-topology'
+  )
+  expect(
+    canReleaseXecClaim(
+      forbidden,
+      funded(),
+      { ...prepared, jointPublicKey: joint, independentRefundKeys: true },
+      now,
+      identity
+    )
+  ).toBe(false)
+})
+it.each(['digest', 'session'] as const)(
+  'compares %s identity by hex bytes, independent of letter case',
+  (kind) => {
+    const lower = h(0xabcdef)
+    const upper = `0x${lower.slice(2).toUpperCase()}`
+    const patch =
+      kind === 'digest'
+        ? { evmDigest: lower, xecDigest: upper }
+        : { evmSessionId: lower, xecSessionId: upper }
+    expect(
+      canReleaseXecClaim(
+        terms,
+        funded(),
+        { ...prepared, ...patch },
+        now,
+        identity
+      )
+    ).toBe(false)
+  }
+)

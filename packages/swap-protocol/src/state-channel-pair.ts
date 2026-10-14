@@ -91,6 +91,7 @@ export function validateStateChannelPairTerms(
     terms.initiator !== 'A' ||
     !same(terms.participants[1], terms.jointAddress) ||
     same(terms.participants[0], terms.jointAddress) ||
+    same(terms.aRefundPublicKey, terms.jointPublicKey) ||
     same(terms.aPayout, terms.jointAddress) ||
     terms.balances[0] <= 0n ||
     terms.xecPrincipal <= 0n ||
@@ -233,8 +234,8 @@ export function canReleaseXecClaim(
       prepared.evmSessionId,
       prepared.xecSessionId,
     ].every(hex32) ||
-    prepared.evmDigest === prepared.xecDigest ||
-    prepared.evmSessionId === prepared.xecSessionId ||
+    same(prepared.evmDigest, prepared.xecDigest) ||
+    same(prepared.evmSessionId, prepared.xecSessionId) ||
     !prepared.bSignatureStored ||
     !prepared.evmPresignatureStored ||
     !prepared.xecPresignatureStored ||

@@ -30,17 +30,7 @@ export function applyLocale(params: {
   }
 
   try {
-    if (i18n?.global) {
-      if (
-        typeof (i18n.global.locale as unknown) === 'object' &&
-        i18n.global.locale !== null &&
-        'value' in i18n.global.locale
-      ) {
-        ;(i18n.global.locale as { value: string }).value = params.locale
-      } else {
-        ;(i18n.global as unknown as { locale: string }).locale = params.locale
-      }
-    }
+    i18n.global.locale = params.locale
   } catch (error) {
     console.warn('[applyLocale] i18n.global.locale sync failed:', error)
   }

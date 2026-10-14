@@ -3,7 +3,8 @@ import { defineBoot as boot } from '@quasar/app-vite'
 import { createI18n } from 'vue-i18n'
 // you'll need to create the src/i18n/index.js file too
 
-const i18n = createI18n({
+// Active locale strings may fall back; the default catalog owns the message schema.
+const i18n = createI18n<[(typeof messages)[typeof defaultLocale]], string>({
   locale: defaultLocale,
   fallbackLocale: defaultLocale,
   globalInjection: true,

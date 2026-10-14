@@ -58,6 +58,21 @@ function normalizeGroupId(groupIdHex: string): string {
   return id
 }
 
+/** The one canonical name rule for writers and signed-roster admission. */
+function canonicalGroupName(value: string): string {
+  if (typeof value !== 'string') throw new Error('Invalid group name')
+  const name = value.trim()
+  // Direction overrides/isolates and control characters cannot safely name a conversation.
+  // eslint-disable-next-line no-control-regex
+  if (
+    !name ||
+    new TextEncoder().encode(name).length > 128 ||
+    /[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/u.test(name)
+  )
+    throw new Error('Invalid group name')
+  return name
+}
+
 export function normalizeGroupRelayOrigin(relayUrl: string): string {
   const parsed = new URL(relayUrl)
   if (
@@ -313,6 +328,7 @@ export interface CreateGroupOnRelayResult {
 export function prepareGroupCreation(
   params: CreateGroupOnRelayParams,
 ): CreateGroupOnRelayResult {
+  const groupName = canonicalGroupName(params.groupName)
   const identity = deriveGroupIdentity(params.groupSeed ?? randomBytes(32))
   const epochSecret = params.initialEpochSecret ?? randomBytes(32)
   const epochKeys = deriveEpochKeys(epochSecret, identity.groupIdHex, 0)
@@ -361,15 +377,13 @@ export function prepareGroupCreation(
   }
 
   if (
-    !params.groupName.trim() ||
-    new TextEncoder().encode(params.groupName.trim()).length > 128 ||
     rosterMembers.length > 256 ||
     rosterMembers.filter(member => member.role === 'admin').length !== 1
   )
     throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
     epoch: 0,
-    groupName: params.groupName.trim(),
+    groupName,
     homeRelay: params.client.relayUrl,
     members: rosterMembers,
   }
@@ -431,6 +445,7 @@ export interface RotateGroupEpochOnRelayResult {
 export function prepareGroupEpochRotation(
   params: RotateGroupEpochOnRelayParams,
 ): RotateGroupEpochOnRelayResult {
+  const groupName = canonicalGroupName(params.groupName)
   const cleanGroupId = normalizeGroupId(params.groupIdHex)
   const nextEpoch = params.prevEpoch + 1
   const nextEpochSecret =
@@ -471,15 +486,13 @@ export function prepareGroupEpochRotation(
   }
 
   if (
-    !params.groupName.trim() ||
-    new TextEncoder().encode(params.groupName.trim()).length > 128 ||
     rosterMembers.length > 256 ||
     rosterMembers.filter(member => member.role === 'admin').length !== 1
   )
     throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
     epoch: nextEpoch,
-    groupName: params.groupName.trim(),
+    groupName,
     homeRelay: params.client.relayUrl,
     members: rosterMembers,
   }
@@ -559,12 +572,8 @@ export function openGroupEpochCertificate(params: {
   )
     throw new Error('Group epoch secret does not match certificate')
   const roster = decryptGroupRoster(cert.encrypted_roster, epochKeys)
-  if (
-    typeof roster.groupName !== 'string' ||
-    !roster.groupName.trim() ||
-    new TextEncoder().encode(roster.groupName).length > 128
-  )
-    throw new Error('Invalid group roster name')
+  if (canonicalGroupName(roster.groupName) !== roster.groupName)
+    throw new Error('Invalid group name')
   if (
     typeof roster.homeRelay !== 'string' ||
     normalizeGroupRelayOrigin(roster.homeRelay) !== roster.homeRelay

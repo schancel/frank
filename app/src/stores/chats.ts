@@ -6035,7 +6035,7 @@ export const useChatStore = defineStore('chats', {
       const conv = newConversation({
         id: created.identity.conversationId,
         kind: 'group',
-        name: usableSubject(trimmedName) ?? trimmedName,
+        name: created.roster.groupName,
         address: created.identity.groupIdentifier,
         participants,
         members,
@@ -6066,7 +6066,7 @@ export const useChatStore = defineStore('chats', {
             : {}),
           groupId: created.identity.groupIdHex,
           groupPubKey: created.identity.groupPubKeyHex,
-          groupName: trimmedName,
+          groupName: created.roster.groupName,
           homeRelay: client.relayUrl,
           epoch: 0,
           epochSecretHex: created.epochKeys.epochSecretHex,

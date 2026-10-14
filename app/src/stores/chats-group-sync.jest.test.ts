@@ -553,6 +553,37 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(client.publishEpoch.mock.calls[1][1].epoch_hash).toBe(originalHash)
   })
 
+  it('rejects direction-control names before persistence and restores valid Unicode names exactly', async () => {
+    const client = createSharedMockGroupRelay()
+    const chats = useChatStore()
+    const publish = jest.spyOn(client, 'publishEpoch')
+    for (const groupName of ['A\u202eB', 'A\u2066B']) {
+      await expect(
+        chats.createGroupConversation({
+          groupName,
+          memberAddresses: [BOB],
+          relayUrl: client.relayUrl,
+          relayClient: client,
+          creatorAddress: ALICE,
+        }),
+      ).rejects.toThrow(/group.*name/i)
+    }
+    expect(Object.keys(chats.conversations)).toHaveLength(0)
+    expect(publish).not.toHaveBeenCalled()
+    const group = await chats.createGroupConversation({
+      groupName: '  Équipe العربية  ',
+      memberAddresses: [BOB],
+      relayUrl: client.relayUrl,
+      relayClient: client,
+      creatorAddress: ALICE,
+    })
+    expect(group.name).toBe('Équipe العربية')
+    const store = await messageStorePromise
+    store.getIterator.mockResolvedValueOnce([])
+    const restored = await rehydrateChat(chats.$state)
+    expect(restored.conversations[group.id].name).toBe(group.name)
+  })
+
   it('rejects unsupported relay origins before signing or persisting a group', async () => {
     const chats = useChatStore()
     expect(() =>

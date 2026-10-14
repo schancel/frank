@@ -41,6 +41,9 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'wallet-sync': true,
   'payment-transfer': true,
   'email': true,
+  'calendar-invite': true,
+  'calendar-rsvp': true,
+  'contact-card': true,
   // Not a plugin: what a reader keeps in place of an item it cannot interpret.
   'unsupported': true,
 }

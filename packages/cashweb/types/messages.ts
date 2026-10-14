@@ -645,6 +645,77 @@ export interface RecipientAssetPaymentTransfer
   derivationContext?: string
 }
 
+export interface CalendarOrganizer {
+  address: string
+  name?: string
+  email?: string
+}
+
+export type CalendarAttendeeRole =
+  | 'req-participant'
+  | 'opt-participant'
+  | 'chair'
+
+export interface CalendarAttendee {
+  address?: string
+  email?: string
+  name?: string
+  role?: CalendarAttendeeRole
+  rsvp?: boolean
+}
+
+export type CalendarInviteStatus = 'confirmed' | 'tentative' | 'cancelled'
+
+/** Actionable calendar invite item (RFC 5545 VEVENT projection, Issue #1573). */
+export interface CalendarInviteItem {
+  type: 'calendar-invite'
+  uid: string
+  sequence: number
+  title: string
+  startMs: number
+  endMs: number
+  timezone?: string
+  allDay?: boolean
+  location?: string
+  description?: string
+  url?: string
+  organizer: CalendarOrganizer
+  attendees?: CalendarAttendee[]
+  recurrenceRule?: string
+  status?: CalendarInviteStatus
+  rawIcs?: string
+}
+
+export type CalendarRsvpStatus = 'accepted' | 'tentative' | 'declined'
+
+/** Actionable calendar RSVP response item (Issue #1573). */
+export interface CalendarRsvpItem {
+  type: 'calendar-rsvp'
+  uid: string
+  sequence: number
+  status: CalendarRsvpStatus
+  comment?: string
+  respondedAtMs: number
+  attendee: CalendarOrganizer
+}
+
+/** Actionable vCard contact card item (RFC 6350 projection, Issue #1573). */
+export interface ContactCardItem {
+  type: 'contact-card'
+  uid: string
+  fullName: string
+  frankAddress?: string
+  username?: string
+  emails?: string[]
+  phones?: string[]
+  organization?: string
+  title?: string
+  url?: string
+  note?: string
+  avatarDataUrl?: string
+  rawVcard?: string
+}
+
 /**
  * A received item this reader could not interpret, kept exactly as it arrived. It is shown as an
  * unsupported message and is never executed, and no plugin is registered for it. `unknown-type`:
@@ -687,6 +758,9 @@ export type MessageItem =
   | ChannelUpdateItem
   | WalletSyncItem
   | EmailItem
+  | CalendarInviteItem
+  | CalendarRsvpItem
+  | ContactCardItem
   | UnsupportedItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the

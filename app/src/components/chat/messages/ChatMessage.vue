@@ -189,6 +189,17 @@
               :payload-digest="payloadDigest"
               @sendFollowUp="handleSendFollowUp"
             />
+            <chat-message-calendar-invite
+              v-else-if="item.type == 'calendar-invite'"
+              :item="item"
+              :address="address"
+              @sendFollowUp="handleSendFollowUp"
+            />
+            <chat-message-contact-card
+              v-else-if="item.type == 'contact-card'"
+              :item="item"
+              :address="address"
+            />
             <!-- Previously silently unrendered (no branch existed at all for this or any other
             unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
             uses for the sidebar/notifications, so this can never silently go blank again as new
@@ -260,6 +271,8 @@ import ChatMessageSwap from './ChatMessageSwap.vue'
 import ChatMessageRps from './ChatMessageRps.vue'
 import ChatMessageDice from './ChatMessageDice.vue'
 import ChatMessageChannel from './ChatMessageChannel.vue'
+import ChatMessageCalendarInvite from '../ChatMessageCalendarInvite.vue'
+import ChatMessageContactCard from '../ChatMessageContactCard.vue'
 import ChatMessageMenu from '../../context_menus/ChatMessageMenu.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
@@ -300,6 +313,8 @@ export default defineComponent({
     ChatMessageRps,
     ChatMessageDice,
     ChatMessageChannel,
+    ChatMessageCalendarInvite,
+    ChatMessageContactCard,
     ChatMessageImage,
     ChatMessageStealth,
     ChatMessageSuffix,

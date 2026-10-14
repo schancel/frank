@@ -638,12 +638,105 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ['message: 1,025 bytes', [3], 'x'.repeat(1025)],
     ],
   },
+  {
+    item: {
+      type: 'calendar-invite',
+      uid: 'evt-1573@frank.local',
+      sequence: 1,
+      title: 'Protocol Sync',
+      startMs: 1760400000000,
+      endMs: 1760403600000,
+      timezone: 'America/Los_Angeles',
+      allDay: false,
+      location: 'Room 1',
+      description: 'Notes',
+      url: 'https://meet.frank.local/sync',
+      organizer: {
+        address: A,
+        name: 'Alice',
+        email: 'alice@frank.local',
+      },
+      attendees: [
+        {
+          address: B,
+          name: 'Bob',
+          email: 'bob@frank.local',
+          role: 'req-participant',
+          rsvp: true,
+        },
+      ],
+      recurrenceRule: 'FREQ=WEEKLY',
+      status: 'confirmed',
+      rawIcs: 'BEGIN:VCALENDAR\r\nEND:VCALENDAR',
+    },
+    cases: [
+      ...each('uid', [0], ['', 'x'.repeat(257)]),
+      ...each('sequence', [1], [-1, 1_000_000_001, '1']),
+      ...each('title', [2], ['', 'x'.repeat(513)]),
+      ...each('startMs', [3], BAD_TIMESTAMPS),
+      ...each('endMs', [4], BAD_TIMESTAMPS),
+      ...each('organizer.address', [10, 0], BAD_CHAIN_ADDRESSES),
+      ['attendees: 101 entries', [11], many(101, 0)],
+      ...each('status', [13], ['unknown', 'accepted', '']),
+    ],
+  },
+  {
+    item: {
+      type: 'calendar-rsvp',
+      uid: 'evt-1573@frank.local',
+      sequence: 1,
+      status: 'accepted',
+      comment: 'In!',
+      respondedAtMs: 1760400100000,
+      attendee: {
+        address: B,
+        name: 'Bob',
+        email: 'bob@frank.local',
+      },
+    },
+    cases: [
+      ...each('uid', [0], ['', 'x'.repeat(257)]),
+      ...each('sequence', [1], [-1, 1_000_000_001, '1']),
+      ...each('status', [2], ['confirmed', 'maybe', '']),
+      ['comment: 1,025 bytes', [3], 'x'.repeat(1025)],
+      ...each('respondedAtMs', [4], BAD_TIMESTAMPS),
+      ...each('attendee.address', [5, 0], BAD_CHAIN_ADDRESSES),
+    ],
+  },
+  {
+    item: {
+      type: 'contact-card',
+      uid: 'vcard-1573',
+      fullName: 'Alice Nakamoto',
+      frankAddress: A,
+      username: 'alice',
+      emails: ['alice@frank.local'],
+      phones: ['+1-555-0100'],
+      organization: 'Frank Labs',
+      title: 'Engineer',
+      url: 'https://frank.local',
+      note: 'Verified',
+      avatarDataUrl: 'data:image/png;base64,AAAA',
+      rawVcard: 'BEGIN:VCARD\r\nEND:VCARD',
+    },
+    cases: [
+      ...each('uid', [0], ['', 'x'.repeat(257)]),
+      ...each('fullName', [1], ['', 'x'.repeat(257)]),
+      ...each('frankAddress', [2], BAD_CHAIN_ADDRESSES),
+      ['emails: 33 entries', [4], many(33, 'a@b.c')],
+      ['phones: 33 entries', [5], many(33, '123')],
+      ['note: 4,097 bytes', [9], 'x'.repeat(4097)],
+    ],
+  },
 ]
 
-describe('the sixteen CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
-  it('covers exactly the sixteen CBOR-map plugins', () => {
+describe('the CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
+  it('covers every CBOR-map plugin', () => {
     expect(SUITES.map(s => s.item.type).sort()).toEqual(
       [
+        'calendar-invite',
+        'calendar-rsvp',
+        'contact-card',
         'conversation-state',
         'device-claim',
         'dice',

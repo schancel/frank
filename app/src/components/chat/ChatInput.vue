@@ -86,6 +86,20 @@
               </q-item-section>
             </q-item>
 
+            <q-item
+              clickable
+              v-close-popup
+              data-testid="attach-calendar-vcard-menu-item"
+              @click="pickImages"
+            >
+              <q-item-section avatar side>
+                <q-icon name="event" />
+              </q-item-section>
+              <q-item-section>
+                {{ $t('calendarInvite.attachCalendarOrContact') }}
+              </q-item-section>
+            </q-item>
+
             <!-- A blackjack challenge is one more message type, offered in every chat. -->
             <q-item
               clickable
@@ -274,7 +288,7 @@
     <input
       ref="filePicker"
       type="file"
-      accept="image/png,image/jpeg,image/gif,image/webp"
+      accept="image/png,image/jpeg,image/gif,image/webp,.ics,text/calendar,.vcf,text/vcard,text/x-vcard"
       multiple
       style="display: none"
       data-testid="chat-attachment-picker"
@@ -288,6 +302,10 @@ import { defineComponent, type PropType } from 'vue'
 import emoji from 'node-emoji'
 import { fitsOneMessage, prepareChatImage } from '../../utils/chat-attachments'
 import {
+  parseIcsToCalendarInvite,
+  parseVcfToContactCard,
+} from '../../utils/calendar-vcard'
+import {
   formatAttachmentSize,
   insertImageMarkdown,
   removeAttachmentReferences,
@@ -300,9 +318,22 @@ import {
   formatDisplayAmount,
 } from '../../utils/chain-amount'
 
-/** The pictures among pasted or dropped data. */
-function imageFiles(data: DataTransfer | null | undefined): File[] {
-  return Array.from(data?.files ?? []).filter(f => f.type.startsWith('image/'))
+function isCalendarOrVcardFile(f: File): boolean {
+  const lower = f.name.toLowerCase()
+  return (
+    lower.endsWith('.ics') ||
+    lower.endsWith('.vcf') ||
+    f.type === 'text/calendar' ||
+    f.type === 'text/vcard' ||
+    f.type === 'text/x-vcard'
+  )
+}
+
+/** The pictures or calendar/contact files among pasted or dropped data. */
+function supportedTransferFiles(data: DataTransfer | null | undefined): File[] {
+  return Array.from(data?.files ?? []).filter(
+    f => f.type.startsWith('image/') || isCalendarOrVcardFile(f),
+  )
 }
 
 // Tenths keep fractional presets exact even when the quote exceeds Number's safe range.
@@ -364,6 +395,7 @@ export default defineComponent({
     'update:stampAmount',
     'resetStampDefault',
     'sendMessage',
+    'sendFollowUp',
     'blackjackClicked',
     'sendStealthClicked',
   ],
@@ -400,14 +432,14 @@ export default defineComponent({
     },
     // A pasted picture becomes an attachment; pasted text is left to the text box.
     pasted(e: ClipboardEvent) {
-      const files = imageFiles(e.clipboardData)
+      const files = supportedTransferFiles(e.clipboardData)
       if (files.length === 0) return
       e.preventDefault()
       return this.attachImages(files)
     },
     // The template's `.prevent` already keeps the browser from navigating to a dropped file.
     dropped(e: DragEvent) {
-      return this.attachImages(imageFiles(e.dataTransfer))
+      return this.attachImages(supportedTransferFiles(e.dataTransfer))
     },
     pickImages() {
       ;(this.$refs.filePicker as HTMLInputElement | undefined)?.click()
@@ -422,7 +454,7 @@ export default defineComponent({
     /**
      * Downscales each picture, holds it for the next message and writes its reference into the
      * text at the cursor. A picture that cannot be sent is refused here, with the reason,
-     * before anything is paid.
+     * before anything is paid. Also parses `.ics` and `.vcf` attachments into typed items.
      */
     async attachImages(files: File[]) {
       // The text box stays editable during a send (#396); nothing is attached to a message
@@ -435,6 +467,25 @@ export default defineComponent({
       let attachments = this.attachments
       this.attachError = ''
       for (const file of files) {
+        if (isCalendarOrVcardFile(file)) {
+          try {
+            const rawText = await file.text()
+            const lower = file.name.toLowerCase()
+            const item =
+              lower.endsWith('.vcf') ||
+              file.type === 'text/vcard' ||
+              file.type === 'text/x-vcard'
+                ? parseVcfToContactCard(rawText)
+                : parseIcsToCalendarInvite(rawText)
+            this.$emit('sendFollowUp', { items: [item] })
+          } catch (err) {
+            this.attachError = this.$t('calendarInvite.invalidFile', {
+              name: file.name,
+              reason: err instanceof Error ? err.message : String(err),
+            })
+          }
+          continue
+        }
         const prepared = await prepareChatImage(file)
         if (!prepared.ok) {
           this.attachError = this.$t('chatInput.imageRefused', {

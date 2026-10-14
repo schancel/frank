@@ -39,6 +39,7 @@ jest.mock("../../../bot-framework/src/directory-manager", () => ({
 
 const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
+const mockReconcileAttempts = jest.fn();
 const mockCheckMessagePayment = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
@@ -56,7 +57,11 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
       unit: testnet.unit,
       toDisplayAmount: testnet.toDisplayAmount,
       fromDisplayAmount: testnet.fromDisplayAmount,
-      directMessages: { fetchSince: mockFetchSince, send: mockSend },
+      directMessages: {
+        fetchSince: mockFetchSince,
+        send: mockSend,
+        reconcileAttempts: mockReconcileAttempts,
+      },
       topics: { post: jest.fn() },
       createWallet: jest.fn(async (roots: MonadRootBundle) => {
         const { MonadIdentity } = jest.requireActual<
@@ -183,6 +188,7 @@ describe("blackjack dealer behind the bot host", () => {
     jest.clearAllMocks();
     sequence = 0;
     mockFetchSince.mockResolvedValue([]);
+    mockReconcileAttempts.mockResolvedValue({});
     mockSend.mockImplementation(
       async (params: {
         stampValue?: bigint;
@@ -261,6 +267,10 @@ describe("blackjack dealer behind the bot host", () => {
 
     await deliver(inbound([bet], BET, BET));
 
+    expect(mockReconcileAttempts).toHaveBeenCalledWith({
+      wallet: expect.objectContaining({ identity: expect.anything() }),
+      payloadDigests: [],
+    });
     expect(onMessage).toHaveBeenCalledTimes(2);
     expect(onMessage.mock.calls[1][0].stampValueWei).toBe(BET);
     expect(onMessage.mock.calls[1][0].stampPayments).toHaveLength(1);

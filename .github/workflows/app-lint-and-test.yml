@@ -77,7 +77,7 @@ jobs:
       # RPC URL and funded testnet wallets, which this job does not have; they are not run here,
       # and nothing here stands in for them.
       - name: Bot launcher and host unit suites
-        run: yarn workspace @frank/bot test --ci --runInBand demo/ qwen-host-safety.jest.test.ts qwen-bot-common.jest.test.ts bot-entry-import.jest.test.ts faucet-bot.jest.test.ts
+        run: yarn workspace @frank/bot test --ci --runInBand demo/ qwen-host-safety.jest.test.ts qwen-reply.jest.test.ts bot-state-dir.jest.test.ts src/bots/qwen-bot.jest.test.ts src/bots/blackjack-host.jest.test.ts qwen-bot-common.jest.test.ts bot-entry-import.jest.test.ts src/bots/faucet-bot.jest.test.ts ci-bot-suites.jest.test.ts
 
       - name: Bot host and durable faucet recovery regression
         run: yarn workspace @frank/bot-framework test --ci --runInBand

@@ -207,6 +207,18 @@ impl GroupEpochFrame {
         Ok(())
     }
 
+    /// Verify possession of the read capability committed by this signed epoch.
+    pub fn verify_read_token(&self, token: &str) -> Result<(), GroupError> {
+        let bytes = parse_fixed_hex::<32>(token, "X-Group-Read-Token")
+            .map_err(|_| GroupError::Forbidden("malformed X-Group-Read-Token".into()))?;
+        if hex::encode(Sha256::digest(bytes)) != self.read_token_hash {
+            return Err(GroupError::Forbidden(
+                "invalid or stale X-Group-Read-Token".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Normalize the frame and populate `epoch_hash`.
     pub fn normalized(mut self) -> Result<Self, GroupError> {
         if self.epoch == 0 && self.prev_epoch_hash.is_empty() {
@@ -606,6 +618,11 @@ impl GroupStore {
         }
 
         frame.verify_authority(path_group_id)?;
+        if self.get_mirror_state(path_group_id)?.is_some() {
+            return Err(GroupError::Forbidden(
+                "foreign groups cannot accept local epoch writes".into(),
+            ));
+        }
         let m_key = meta_key(&group_id);
         let current_raw = self.kv.get(&m_key)?;
         let encoded_new = frame.to_cbor_bytes()?;
@@ -630,20 +647,44 @@ impl GroupStore {
                 ))
             }
         };
-        match self.kv.compare_and_swap(&m_key, expected, &encoded_new) {
-            Ok(()) => {}
-            Err(KvError::CasConflict {
-                current: Some(winner),
-            }) => {
+        let ownership_key = mirror_key(&group_id);
+        // CAS followed by delete expresses a read-only absence guard in the existing
+        // transaction vocabulary: no ownership row is visible before or after commit.
+        let operations = vec![
+            KvTransactionOp::CheckAndSet {
+                key: ownership_key.clone(),
+                expected: None,
+                new_value: Vec::new(),
+            },
+            KvTransactionOp::Delete { key: ownership_key },
+            KvTransactionOp::CheckAndSet {
+                key: m_key,
+                expected: expected.map(<[u8]>::to_vec),
+                new_value: encoded_new.clone(),
+            },
+            KvTransactionOp::Put {
+                key: epoch_history_key(&group_id, frame.epoch),
+                value: encoded_new,
+            },
+        ];
+        match self.kv.execute_transaction(operations) {
+            Ok(_) => {}
+            Err(KvError::CasConflict { .. }) => {
+                if self.get_mirror_state(path_group_id)?.is_some() {
+                    return Err(GroupError::Forbidden(
+                        "foreign groups cannot accept local epoch writes".into(),
+                    ));
+                }
+                let current = self.get_current_epoch(path_group_id)?.ok_or_else(|| {
+                    GroupError::Storage("epoch transaction conflicted without current epoch".into())
+                })?;
                 return Err(GroupError::EpochConflict {
-                    current: Box::new(GroupEpochFrame::from_cbor_bytes(&winner)?),
+                    current: Box::new(current),
                 });
             }
             Err(error) => return Err(error.into()),
         }
 
-        self.kv
-            .put(&epoch_history_key(&group_id, frame.epoch), &encoded_new)?;
         Ok(frame)
     }
 
@@ -656,15 +697,8 @@ impl GroupStore {
         let current = self
             .get_current_epoch(group_id_hex)?
             .ok_or_else(|| GroupError::NotFound(group_id_hex.to_string()))?;
-        let token_bytes = parse_fixed_hex::<32>(read_token_hex, "X-Group-Read-Token")
-            .map_err(|_| GroupError::Forbidden("malformed X-Group-Read-Token".into()))?;
-        let token_hash_hex = hex::encode(Sha256::digest(token_bytes));
-        if token_hash_hex == current.read_token_hash {
-            return Ok(current);
-        }
-        Err(GroupError::Forbidden(
-            "invalid or stale X-Group-Read-Token".into(),
-        ))
+        current.verify_read_token(read_token_hex)?;
+        Ok(current)
     }
 
     /// Authenticate an inbound [`GroupMessageEnvelope`] against the group's current epoch
@@ -682,6 +716,12 @@ impl GroupStore {
             ));
         }
 
+        if self.get_mirror_state(path_group_id)?.is_some() {
+            return Err(GroupError::Forbidden(
+                "foreign groups cannot accept local message writes".into(),
+            ));
+        }
+        let ownership_key = mirror_key(&group_id);
         let authority_key = meta_key(&group_id);
         let authority_snapshot = self
             .kv
@@ -758,6 +798,14 @@ impl GroupStore {
             // the same storage transaction boundary, including across relay instances.
             let operations = vec![
                 KvTransactionOp::CheckAndSet {
+                    key: ownership_key.clone(),
+                    expected: None,
+                    new_value: Vec::new(),
+                },
+                KvTransactionOp::Delete {
+                    key: ownership_key.clone(),
+                },
+                KvTransactionOp::CheckAndSet {
                     key: authority_key.clone(),
                     expected: Some(authority_snapshot.clone()),
                     new_value: authority_snapshot.clone(),
@@ -775,6 +823,11 @@ impl GroupStore {
             match self.kv.execute_transaction(operations) {
                 Ok(_) => return Ok(stored),
                 Err(KvError::CasConflict { .. }) => {
+                    if self.get_mirror_state(path_group_id)?.is_some() {
+                        return Err(GroupError::Forbidden(
+                            "group ownership changed before message commit".into(),
+                        ));
+                    }
                     if self.kv.get(&authority_key)?.as_deref() != Some(&authority_snapshot) {
                         return Err(GroupError::Forbidden(
                             "group epoch changed before message commit".into(),
@@ -814,19 +867,45 @@ impl GroupStore {
         Ok(messages)
     }
 
-    /// Record a local subscriber's interest in a foreign group hosted on `upstream_relay`,
-    /// returning the updated [`GroupMirrorState`] (and automatically promoting `mirrored = true`
+    /// Admit a foreign subscriber using a root-signed epoch and its matching read capability.
+    /// The HTTP boundary first requires a successful read from the selected upstream;
+    /// this store also enforces capability, epoch freshness, and immutable upstream ownership.
+    /// Returns the updated [`GroupMirrorState`] (automatically promoting `mirrored = true`
     /// once `subscribers.len() >= self.mirror_threshold`).
     pub fn record_foreign_subscriber(
         &self,
         group_id_hex: &str,
         upstream_relay: &str,
         subscriber_tag: &str,
+        authenticated_epoch: &GroupEpochFrame,
+        read_token: &str,
     ) -> Result<GroupMirrorState, GroupError> {
+        authenticated_epoch.verify_authority(group_id_hex)?;
+        authenticated_epoch.verify_read_token(read_token)?;
         let group_id = parse_group_id_hex(group_id_hex)?;
         let m_key = mirror_key(&group_id);
         loop {
             let current_raw = self.kv.get(&m_key)?;
+            let authority_key = meta_key(&group_id);
+            let authority_raw = self.kv.get(&authority_key)?;
+            if let Some(raw) = &authority_raw {
+                if current_raw.is_none() {
+                    return Err(GroupError::Forbidden(
+                        "local group cannot become a foreign mirror".into(),
+                    ));
+                }
+                let current = GroupEpochFrame::from_cbor_bytes(raw)?;
+                if current.epoch > authenticated_epoch.epoch
+                    || (current.epoch == authenticated_epoch.epoch
+                        && current.epoch_hash
+                            != hex::encode(authenticated_epoch.compute_epoch_hash()?))
+                {
+                    return Err(GroupError::Forbidden(
+                        "read capability targets a stale or conflicting group epoch".into(),
+                    ));
+                }
+            }
+
             let mut state = match &current_raw {
                 Some(bytes) => serde_json::from_slice::<GroupMirrorState>(bytes)
                     .map_err(|e| GroupError::Storage(e.to_string()))?,
@@ -838,6 +917,11 @@ impl GroupStore {
                     last_synced_seq: 0,
                 },
             };
+            if state.upstream_relay != upstream_relay.trim_end_matches('/') {
+                return Err(GroupError::Forbidden(
+                    "group upstream does not match established ownership".into(),
+                ));
+            }
             if !subscriber_tag.trim().is_empty() {
                 state.subscribers.insert(subscriber_tag.trim().to_string());
             }
@@ -846,13 +930,32 @@ impl GroupStore {
             }
             let encoded =
                 serde_json::to_vec(&state).map_err(|e| GroupError::Storage(e.to_string()))?;
-            match self
-                .kv
-                .compare_and_swap(&m_key, current_raw.as_deref(), &encoded)
-            {
-                Ok(()) => return Ok(state),
-                Err(KvError::CasConflict { .. }) => continue,
-                Err(e) => return Err(GroupError::from(e)),
+            let mut operations = vec![KvTransactionOp::CheckAndSet {
+                key: m_key.clone(),
+                expected: current_raw.clone(),
+                new_value: encoded,
+            }];
+            operations.push(KvTransactionOp::CheckAndSet {
+                key: authority_key.clone(),
+                expected: authority_raw.clone(),
+                new_value: authority_raw.clone().unwrap_or_default(),
+            });
+            if authority_raw.is_none() {
+                operations.push(KvTransactionOp::Delete { key: authority_key });
+            }
+            match self.kv.execute_transaction(operations) {
+                Ok(_) => return Ok(state),
+                Err(KvError::CasConflict { .. }) => {
+                    if self.get_mirror_state(group_id_hex)?.is_none()
+                        && self.get_current_epoch(group_id_hex)?.is_some()
+                    {
+                        return Err(GroupError::Forbidden(
+                            "local group cannot become a foreign mirror".into(),
+                        ));
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
             }
         }
     }
@@ -1070,20 +1173,28 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct FailingCasKv(Arc<MemoryKvStore>);
+    struct FailingCommitKv(Arc<dyn RelayKvStore>);
 
-    impl RelayKvStore for FailingCasKv {
+    impl RelayKvStore for FailingCommitKv {
         fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
             self.0.get(key)
         }
         fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
+            if key.starts_with(b"G_epoch:") {
+                return Err(KvError::Backend("injected epoch history outage".into()));
+            }
             self.0.put(key, value)
         }
         fn delete(&self, key: &[u8]) -> Result<(), KvError> {
             self.0.delete(key)
         }
-        fn compare_and_swap(&self, _: &[u8], _: Option<&[u8]>, _: &[u8]) -> Result<(), KvError> {
-            Err(KvError::Backend("injected CAS outage".into()))
+        fn compare_and_swap(
+            &self,
+            key: &[u8],
+            expected: Option<&[u8]>,
+            value: &[u8],
+        ) -> Result<(), KvError> {
+            self.0.compare_and_swap(key, expected, value)
         }
         fn execute_transaction(
             &self,
@@ -1113,7 +1224,7 @@ mod tests {
     fn epoch_cas_backend_failures_are_not_reported_as_successful_creation_or_rotation() {
         let kv = Arc::new(MemoryKvStore::new());
         let healthy = GroupStore::new(kv.clone());
-        let failing = GroupStore::new(Arc::new(FailingCasKv(kv)));
+        let failing = GroupStore::new(Arc::new(FailingCommitKv(kv)));
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         assert!(matches!(
@@ -1279,7 +1390,7 @@ mod tests {
     fn failed_atomic_append_does_not_publish_message_or_consume_sequence() {
         let kv = Arc::new(MemoryKvStore::new());
         let healthy = GroupStore::new(kv.clone());
-        let failing = GroupStore::new(Arc::new(FailingCasKv(kv.clone())));
+        let failing = GroupStore::new(Arc::new(FailingCommitKv(kv.clone())));
         let initial = root_frame(3, 0, &"00".repeat(32));
         let id = initial.group_id.clone();
         healthy.put_epoch(&id, initial).unwrap();
@@ -1300,6 +1411,156 @@ mod tests {
                 .server_seq,
             1
         );
+    }
+
+    #[test]
+    fn epoch_commit_failure_preserves_complete_previous_state_across_reopen() {
+        let directory = tempdir::TempDir::new("group-epoch-durability").unwrap();
+        let path = directory.path().join("groups.rocksdb");
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        {
+            let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
+            let failing = GroupStore::new(Arc::new(FailingCommitKv(backend)));
+            assert!(failing.put_epoch(&id, initial.clone()).is_err());
+        }
+        {
+            let backend = Arc::new(RocksDbKvStore::open(&path).unwrap());
+            let healthy = GroupStore::new(backend.clone());
+            assert!(healthy.get_current_epoch(&id).unwrap().is_none());
+            assert!(healthy.get_epoch(&id, 0).unwrap().is_none());
+            let committed = healthy.put_epoch(&id, initial).unwrap();
+            let failing = GroupStore::new(Arc::new(FailingCommitKv(backend)));
+            assert!(failing
+                .put_epoch(&id, root_frame(3, 1, &committed.epoch_hash))
+                .is_err());
+        }
+        let reopened = GroupStore::new(Arc::new(RocksDbKvStore::open(&path).unwrap()));
+        let current = reopened.get_current_epoch(&id).unwrap().unwrap();
+        assert_eq!(current.epoch, 0);
+        assert_eq!(reopened.get_epoch(&id, 0).unwrap().unwrap(), current);
+        assert!(reopened.get_epoch(&id, 1).unwrap().is_none());
+        let next = reopened
+            .put_epoch(&id, root_frame(3, 1, &current.epoch_hash))
+            .unwrap();
+        assert_eq!(reopened.get_epoch(&id, 1).unwrap().unwrap(), next);
+    }
+
+    #[test]
+    fn mirrors_reject_authoritative_local_message_and_epoch_writes() {
+        let store = GroupStore::new_in_memory();
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store
+            .record_foreign_subscriber(
+                &id,
+                "https://relay.example",
+                "member",
+                &initial,
+                &"00".repeat(32),
+            )
+            .unwrap();
+        store
+            .ingest_mirrored_upstream(&id, Some(initial), &[])
+            .unwrap();
+        let (write_sk, _) = keypair(42);
+        assert!(matches!(
+            store.put_message(&id, message_for(&id, 0, 1, &write_sk)),
+            Err(GroupError::Forbidden(_))
+        ));
+        let current = store.get_current_epoch(&id).unwrap().unwrap();
+        assert!(matches!(
+            store.put_epoch(&id, root_frame(3, 1, &current.epoch_hash)),
+            Err(GroupError::Forbidden(_))
+        ));
+        assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
+        assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), current);
+    }
+
+    #[test]
+    fn foreign_admission_requires_capability_and_preserves_authoritative_ownership() {
+        let store = GroupStore::new_in_memory();
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        assert!(store
+            .record_foreign_subscriber(
+                &id,
+                "https://relay.example",
+                "attacker",
+                &initial,
+                &"01".repeat(32)
+            )
+            .is_err());
+        assert!(store.get_mirror_state(&id).unwrap().is_none());
+        store
+            .record_foreign_subscriber(
+                &id,
+                "https://relay.example",
+                "member",
+                &initial,
+                &"00".repeat(32),
+            )
+            .unwrap();
+        assert!(store
+            .record_foreign_subscriber(
+                &id,
+                "https://attacker.example",
+                "attacker",
+                &initial,
+                &"00".repeat(32)
+            )
+            .is_err());
+        store
+            .ingest_mirrored_upstream(&id, Some(initial.clone()), &[])
+            .unwrap();
+        let old = store.get_current_epoch(&id).unwrap().unwrap();
+        let next = root_frame(3, 1, &old.epoch_hash);
+        store
+            .ingest_mirrored_upstream(&id, Some(next), &[])
+            .unwrap();
+        assert!(store
+            .record_foreign_subscriber(
+                &id,
+                "https://relay.example",
+                "stale",
+                &initial,
+                &"00".repeat(32)
+            )
+            .is_err());
+        assert_eq!(
+            store
+                .get_mirror_state(&id)
+                .unwrap()
+                .unwrap()
+                .subscribers
+                .len(),
+            1
+        );
+
+        let (write_sk, _) = keypair(42);
+        assert!(matches!(
+            store.put_message(&id, message_for(&id, 0, 1, &write_sk)),
+            Err(GroupError::Forbidden(_))
+        ));
+        let current = store.get_current_epoch(&id).unwrap().unwrap();
+        assert!(matches!(
+            store.put_epoch(&id, root_frame(3, 1, &current.epoch_hash)),
+            Err(GroupError::Forbidden(_))
+        ));
+        assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
+        assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), current);
+        let local = GroupStore::new_in_memory();
+        local.put_epoch(&id, initial.clone()).unwrap();
+        assert!(local
+            .record_foreign_subscriber(
+                &id,
+                "https://relay.example",
+                "member",
+                &initial,
+                &"00".repeat(32)
+            )
+            .is_err());
+        assert!(local.get_mirror_state(&id).unwrap().is_none());
     }
 
     #[test]

@@ -156,15 +156,163 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 fn validate_upstream_url(raw: &str) -> Result<String, GroupError> {
-    let parsed = url::Url::parse(raw).map_err(|e| {
-        GroupError::InvalidInput(format!("invalid X-Group-Upstream-Relay URL: {e}"))
-    })?;
-    match parsed.scheme() {
-        "http" | "https" => Ok(raw.trim_end_matches('/').to_string()),
-        _ => Err(GroupError::InvalidInput(
-            "X-Group-Upstream-Relay must use http or https".into(),
-        )),
+    let parsed = url::Url::parse(raw)
+        .map_err(|error| GroupError::InvalidInput(format!("invalid upstream URL: {error}")))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || parsed.path() != "/"
+    {
+        return Err(GroupError::InvalidInput(
+            "upstream must be an http(s) origin without credentials, path, query or fragment"
+                .into(),
+        ));
     }
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
+fn public_upstream_ip(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
+            !(a == 0
+                || a == 10
+                || a == 127
+                || a >= 224
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 169 && b == 254)
+                || (a == 172 && (16..=31).contains(&b))
+                || (a == 192 && b == 168)
+                || (a == 192 && b == 0 && (c == 0 || c == 2))
+                || (a == 192 && b == 88 && c == 99)
+                || (a == 198 && (b == 18 || b == 19 || (b == 51 && c == 100)))
+                || (a == 203 && b == 0 && c == 113))
+        }
+        std::net::IpAddr::V6(ip) => {
+            let parts = ip.segments();
+            // Native global unicast only: excludes mapped IPv4, NAT64, ULA and link-local.
+            (parts[0] & 0xe000) == 0x2000
+                && parts[0] != 0x2002
+                && !(parts[0] == 0x2001 && (parts[1] < 0x0200 || parts[1] == 0x0db8))
+                && !(parts[0] == 0x3fff && parts[1] < 0x1000)
+        }
+    }
+}
+
+async fn upstream_transport(
+    store: &GroupStore,
+    group_id: &str,
+    raw: &str,
+) -> Result<(String, reqwest::Client), GroupError> {
+    let upstream = validate_upstream_url(raw)?;
+    match store.get_mirror_state(group_id)? {
+        Some(state) if state.upstream_relay != upstream => {
+            return Err(GroupError::Forbidden(
+                "upstream conflicts with established group ownership".into(),
+            ))
+        }
+        None if store.get_current_epoch(group_id)?.is_some() => {
+            return Err(GroupError::Forbidden(
+                "local group does not accept foreign routing".into(),
+            ))
+        }
+        _ => {}
+    }
+    let parsed =
+        url::Url::parse(&upstream).map_err(|error| GroupError::InvalidInput(error.to_string()))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| GroupError::InvalidInput("missing upstream host".into()))?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = parsed
+        .port_or_known_default()
+        .ok_or_else(|| GroupError::InvalidInput("missing upstream port".into()))?;
+    let addresses: Vec<_> = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| GroupError::InvalidInput("upstream DNS lookup timed out".into()))?
+    .map_err(|error| GroupError::InvalidInput(format!("upstream DNS lookup failed: {error}")))?
+    .collect();
+    if addresses.is_empty()
+        || addresses.iter().any(|address| {
+            // Rust router tests explicitly use loopback fixtures; production binaries have no exception.
+            #[cfg(test)]
+            if address.ip().is_loopback() {
+                return false;
+            }
+            !public_upstream_ip(address.ip())
+        })
+    {
+        return Err(GroupError::Forbidden(
+            "upstream must resolve exclusively to public addresses".into(),
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .resolve(host, addresses[0])
+        .build()
+        .map_err(|error| GroupError::Storage(format!("upstream client failed: {error}")))?;
+    Ok((upstream, client))
+}
+
+// Eight maximum-size ciphertexts fit the 20 MiB decoded JSON budget. Returning a
+// smaller page preserves cursor progress even for a backlog of maximum-size messages.
+const UPSTREAM_PAGE_LIMIT: u16 = 8;
+const UPSTREAM_BATCH_BUDGET: usize = 20 * 1024 * 1024;
+const UPSTREAM_EPOCH_BUDGET: usize = 1024 * 1024;
+const UPSTREAM_MESSAGE_BUDGET: usize = 3 * 1024 * 1024;
+
+async fn read_upstream_body(
+    response: reqwest::Response,
+    budget: usize,
+) -> Result<Vec<u8>, GroupError> {
+    read_upstream_body_before(response, budget, std::time::Duration::from_secs(15)).await
+}
+
+async fn read_upstream_body_before(
+    mut response: reqwest::Response,
+    budget: usize,
+    deadline: std::time::Duration,
+) -> Result<Vec<u8>, GroupError> {
+    let budget = if response.status().is_success() {
+        budget
+    } else {
+        budget.min(64 * 1024)
+    };
+    tokio::time::timeout(deadline, async move {
+        if response
+            .content_length()
+            .is_some_and(|length| length > budget as u64)
+        {
+            return Err(GroupError::Storage(
+                "upstream response exceeds body budget".into(),
+            ));
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| GroupError::Storage(format!("upstream body failed: {error}")))?
+        {
+            if chunk.len() > budget.saturating_sub(body.len()) {
+                return Err(GroupError::Storage(
+                    "upstream response exceeds body budget".into(),
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
+    })
+    .await
+    .map_err(|_| GroupError::Storage("upstream body deadline exceeded".into()))?
 }
 
 /// Build the `/groups/:group_id/*` router using the server's `Registry` group store.
@@ -232,11 +380,10 @@ async fn put_group_epoch_impl(
     };
 
     if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
-        let upstream = match validate_upstream_url(upstream_raw) {
-            Ok(u) => u,
-            Err(e) => return group_error_response(e),
+        let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
+            Ok(transport) => transport,
+            Err(error) => return group_error_response(error),
         };
-        let client = reqwest::Client::new();
         let url = format!("{upstream}/groups/{group_id}/epochs");
         let payload = serde_json::to_vec(&frame).unwrap_or_default();
         let resp = match client
@@ -255,7 +402,10 @@ async fn put_group_epoch_impl(
         };
         let status =
             StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-        let resp_bytes = resp.bytes().await.unwrap_or_default();
+        let resp_bytes = match read_upstream_body(resp, UPSTREAM_EPOCH_BUDGET).await {
+            Ok(body) => body,
+            Err(error) => return group_error_response(error),
+        };
         if status.is_success() {
             if let Ok(committed) = serde_json::from_slice::<GroupEpochFrame>(&resp_bytes) {
                 if let Ok(Some(mirror)) = store.get_mirror_state(&group_id) {
@@ -320,10 +470,7 @@ async fn fetch_verified_epoch(
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|error| GroupError::Storage(format!("upstream epoch fetch failed: {error}")))?;
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| GroupError::Storage(format!("upstream epoch body failed: {error}")))?;
+    let bytes = read_upstream_body(response, UPSTREAM_EPOCH_BUDGET).await?;
     let frame: GroupEpochFrame = serde_json::from_slice(&bytes)
         .map_err(|error| GroupError::Storage(format!("invalid upstream epoch JSON: {error}")))?;
     let frame = frame.normalized()?;
@@ -358,11 +505,10 @@ async fn get_group_epoch_impl(
     }
 
     if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
-        let upstream = match validate_upstream_url(upstream_raw) {
-            Ok(u) => u,
-            Err(e) => return group_error_response(e),
+        let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
+            Ok(transport) => transport,
+            Err(error) => return group_error_response(error),
         };
-        let client = reqwest::Client::new();
         let mut url = format!("{upstream}/groups/{group_id}/epochs");
         if let Some(e) = query.epoch {
             url.push_str(&format!("?epoch={e}"));
@@ -377,7 +523,10 @@ async fn get_group_epoch_impl(
         };
         let status =
             StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-        let resp_bytes = resp.bytes().await.unwrap_or_default();
+        let resp_bytes = match read_upstream_body(resp, UPSTREAM_EPOCH_BUDGET).await {
+            Ok(body) => body,
+            Err(error) => return group_error_response(error),
+        };
         return (
             status,
             [(
@@ -432,11 +581,10 @@ async fn put_group_message_impl(
     // If this group is hosted on a foreign upstream relay, proxy the write server-to-server
     // so the foreign relay only ever sees the Home Relay's IP.
     if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
-        let upstream = match validate_upstream_url(upstream_raw) {
-            Ok(u) => u,
-            Err(e) => return group_error_response(e),
+        let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
+            Ok(transport) => transport,
+            Err(error) => return group_error_response(error),
         };
-        let client = reqwest::Client::new();
         let url = format!("{upstream}/groups/{group_id}/messages");
         let payload = serde_json::to_vec(&envelope).unwrap_or_default();
         let resp = match client
@@ -455,7 +603,10 @@ async fn put_group_message_impl(
         };
         let status =
             StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-        let resp_bytes = resp.bytes().await.unwrap_or_default();
+        let resp_bytes = match read_upstream_body(resp, UPSTREAM_MESSAGE_BUDGET).await {
+            Ok(body) => body,
+            Err(error) => return group_error_response(error),
+        };
         if status.is_success() {
             if let Ok(stored_msg) = serde_json::from_slice::<StoredGroupMessage>(&resp_bytes) {
                 if let Ok(Some(mirror)) = store.get_mirror_state(&group_id) {
@@ -540,62 +691,84 @@ async fn get_group_messages_impl(
 
     // Check if the caller specified an upstream relay for a foreign group
     if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
-        let upstream = match validate_upstream_url(upstream_raw) {
-            Ok(u) => u,
-            Err(e) => return group_error_response(e),
+        let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
+            Ok(transport) => transport,
+            Err(error) => return group_error_response(error),
         };
+        // A successful response alone cannot authenticate a caller-chosen server: verify
+        // the read capability against its root-signed certificate before forwarding it.
+        let upstream_epoch = match fetch_verified_epoch(&client, &upstream, &group_id, None).await {
+            Ok(frame) => frame,
+            Err(error) => return group_error_response(error),
+        };
+        if let Err(error) = upstream_epoch.verify_read_token(read_token) {
+            return group_error_response(error);
+        }
+        match store.get_current_epoch(&group_id) {
+            Ok(Some(current))
+                if current.epoch > upstream_epoch.epoch
+                    || (current.epoch == upstream_epoch.epoch
+                        && current.epoch_hash != upstream_epoch.epoch_hash) =>
+            {
+                return group_error_response(GroupError::Forbidden(
+                    "upstream epoch is older than trusted local state".into(),
+                ))
+            }
+            Err(error) => return group_error_response(error),
+            _ => {}
+        }
+        let upstream_limit = limit.min(UPSTREAM_PAGE_LIMIT);
+        let url = format!(
+            "{upstream}/groups/{group_id}/messages?after_seq={after_seq}&limit={upstream_limit}"
+        );
+        let response = match client
+            .get(&url)
+            .header(HEADER_GROUP_READ_TOKEN, read_token)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                return group_error_response(GroupError::Storage(format!(
+                    "upstream read failed: {error}"
+                )))
+            }
+        };
+        let status =
+            StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let bytes = match read_upstream_body(response, UPSTREAM_BATCH_BUDGET).await {
+            Ok(bytes) => bytes,
+            Err(error) => return group_error_response(error),
+        };
+        if !status.is_success() {
+            return (status, bytes).into_response();
+        }
+        let mut upstream_body: GroupMessagesResponse = match serde_json::from_slice(&bytes) {
+            Ok(body) => body,
+            Err(error) => {
+                return group_error_response(GroupError::Storage(format!(
+                    "invalid upstream read JSON: {error}"
+                )))
+            }
+        };
+        if upstream_body.group_id != group_id || upstream_body.epoch != upstream_epoch.epoch {
+            return group_error_response(GroupError::Forbidden(
+                "upstream response does not match authenticated group epoch".into(),
+            ));
+        }
         let subscriber_tag =
             header_str(&headers, HEADER_GROUP_SUBSCRIBER_TAG).unwrap_or(read_token);
-        let mirror_state =
-            match store.record_foreign_subscriber(&group_id, &upstream, subscriber_tag) {
-                Ok(state) => state,
-                Err(e) => return group_error_response(e),
-            };
-
-        let client = reqwest::Client::new();
+        let mirror_state = match store.record_foreign_subscriber(
+            &group_id,
+            &upstream,
+            subscriber_tag,
+            &upstream_epoch,
+            read_token,
+        ) {
+            Ok(state) => state,
+            Err(error) => return group_error_response(error),
+        };
         if !mirror_state.mirrored {
-            // `< mirror_threshold` local subscribers: Stateless Oblivious Proxy mode!
-            let url = format!(
-                "{}/groups/{}/messages?after_seq={}&limit={}",
-                mirror_state.upstream_relay, group_id, after_seq, limit
-            );
-            let resp = match client
-                .get(&url)
-                .header(HEADER_GROUP_READ_TOKEN, read_token)
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    return group_error_response(GroupError::Storage(format!(
-                        "upstream proxy error: {e}"
-                    )))
-                }
-            };
-            if !resp.status().is_success() {
-                let status =
-                    StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-                let body = resp.bytes().await.unwrap_or_default();
-                return (
-                    status,
-                    [(
-                        header::CONTENT_TYPE,
-                        HeaderValue::from_static("application/json"),
-                    )],
-                    body,
-                )
-                    .into_response();
-            }
-            let resp_bytes = resp.bytes().await.unwrap_or_default();
-            let mut upstream_body: GroupMessagesResponse = match serde_json::from_slice(&resp_bytes)
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    return group_error_response(GroupError::Storage(format!(
-                        "invalid upstream response JSON: {e}"
-                    )))
-                }
-            };
             upstream_body.mode = "proxy".to_string();
             upstream_body.subscriber_count = mirror_state.subscribers.len();
             return (
@@ -611,20 +784,12 @@ async fn get_group_messages_impl(
 
         // `>= mirror_threshold` local subscribers: Auto-Mirror Promotion!
         // Sync latest epoch & incremental messages from upstream into local `GroupStore`.
-        let upstream_epoch = match fetch_verified_epoch(
-            &client,
-            &mirror_state.upstream_relay,
-            &group_id,
-            None,
-        )
-        .await
-        {
-            Ok(frame) => frame,
-            Err(error) => return group_error_response(error),
-        };
         let sync_url = format!(
-            "{}/groups/{}/messages?after_seq={}&limit=500",
-            mirror_state.upstream_relay, group_id, mirror_state.last_synced_seq
+            "{}/groups/{}/messages?after_seq={}&limit={}",
+            mirror_state.upstream_relay,
+            group_id,
+            mirror_state.last_synced_seq,
+            UPSTREAM_PAGE_LIMIT
         );
         let upstream_msgs_resp = match client
             .get(&sync_url)
@@ -642,7 +807,10 @@ async fn get_group_messages_impl(
         if !upstream_msgs_resp.status().is_success() {
             let status = StatusCode::from_u16(upstream_msgs_resp.status().as_u16())
                 .unwrap_or(StatusCode::BAD_GATEWAY);
-            let body = upstream_msgs_resp.bytes().await.unwrap_or_default();
+            let body = match read_upstream_body(upstream_msgs_resp, UPSTREAM_BATCH_BUDGET).await {
+                Ok(body) => body,
+                Err(error) => return group_error_response(error),
+            };
             return (
                 status,
                 [(
@@ -653,7 +821,11 @@ async fn get_group_messages_impl(
             )
                 .into_response();
         }
-        let synced_bytes = upstream_msgs_resp.bytes().await.unwrap_or_default();
+        let synced_bytes = match read_upstream_body(upstream_msgs_resp, UPSTREAM_BATCH_BUDGET).await
+        {
+            Ok(body) => body,
+            Err(error) => return group_error_response(error),
+        };
         let synced_batch: GroupMessagesResponse = match serde_json::from_slice(&synced_bytes) {
             Ok(b) => b,
             Err(e) => {
@@ -780,6 +952,140 @@ mod tests {
     fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
         frame.admin_sig = sign_digest(sk, &frame.compute_epoch_hash().unwrap());
         frame
+    }
+
+    #[tokio::test]
+    async fn upstream_body_limits_cover_chunked_errors_and_stalled_streams() {
+        use futures::StreamExt;
+        let fixture = Router::new()
+            .route(
+                "/chunked",
+                routing::get(|| async {
+                    axum::body::StreamBody::new(futures::stream::iter(vec![
+                        Ok::<_, std::io::Error>(Bytes::from_static(b"0123456789012345")),
+                        Ok(Bytes::from_static(b"01234567890123456")),
+                    ]))
+                }),
+            )
+            .route(
+                "/error",
+                routing::get(|| async {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        axum::body::StreamBody::new(futures::stream::iter(vec![
+                            Ok::<_, std::io::Error>(Bytes::from_static(b"0123456789012345")),
+                            Ok(Bytes::from_static(b"01234567890123456")),
+                        ])),
+                    )
+                }),
+            )
+            .route(
+                "/stall",
+                routing::get(|| async {
+                    axum::body::StreamBody::new(
+                        futures::stream::once(async {
+                            Ok::<_, std::io::Error>(Bytes::from_static(b"ready"))
+                        })
+                        .chain(futures::stream::pending()),
+                    )
+                }),
+            )
+            .route(
+                "/declared",
+                routing::get(|| async { "012345678901234567890123456789012" }),
+            )
+            .route(
+                "/redirect",
+                routing::get(|| async {
+                    (
+                        StatusCode::FOUND,
+                        [(header::LOCATION, "http://169.254.169.254/admin")],
+                    )
+                }),
+            );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(fixture.into_make_service())
+                .await
+                .unwrap();
+        });
+        let (_, client) =
+            upstream_transport(&GroupStore::new_in_memory(), &"00".repeat(32), &origin)
+                .await
+                .unwrap();
+        for path in ["/chunked", "/error", "/declared"] {
+            let response = client.get(format!("{origin}{path}")).send().await.unwrap();
+            assert!(read_upstream_body(response, 32).await.is_err(), "{path}");
+        }
+        let response = client.get(format!("{origin}/stall")).send().await.unwrap();
+        assert!(
+            read_upstream_body_before(response, 32, std::time::Duration::from_millis(30))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            client
+                .get(format!("{origin}/redirect"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FOUND
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn upstream_policy_blocks_internal_addresses_and_url_reinterpretation() {
+        for origin in [
+            "http://127.0.0.1/admin#",
+            "http://user:secret@example.com/",
+            "https://example.com/?q=x",
+            "https://example.com/#x",
+            "file:///etc/passwd",
+        ] {
+            assert!(validate_upstream_url(origin).is_err());
+        }
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "192.168.0.1",
+            "::1",
+            "::ffff:127.0.0.1",
+            "fc00::1",
+            "fe80::1",
+            "64:ff9b::a00:1",
+        ] {
+            assert!(!public_upstream_ip(ip.parse().unwrap()), "{ip}");
+        }
+        assert!(public_upstream_ip("8.8.8.8".parse().unwrap()));
+        assert!(public_upstream_ip("2606:4700:4700::1111".parse().unwrap()));
+        let app = router_with_store(GroupStore::new_in_memory());
+        for origin in [
+            "http://169.254.169.254",
+            "http://10.0.0.1",
+            "http://127.0.0.1/admin#",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/groups/{}/epochs", "00".repeat(32)))
+                        .header(HEADER_GROUP_UPSTREAM_RELAY, origin)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(!response.status().is_success());
+        }
     }
 
     #[tokio::test]
@@ -936,6 +1242,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mirror_pages_maximum_size_messages_without_exhausting_body_budget_or_losing_cursor_progress(
+    ) {
+        let upstream = GroupStore::new_in_memory();
+        let (root_sk, root_pk) = keypair(7);
+        let (write_sk, write_pk) = keypair(70);
+        let group_id = hex::encode(derive_group_id(&root_pk));
+        let read_token = "00".repeat(32);
+        upstream
+            .put_epoch(
+                &group_id,
+                signed_epoch(
+                    &root_sk,
+                    GroupEpochFrame {
+                        group_id: group_id.clone(),
+                        group_pubkey: hex::encode(root_pk),
+                        epoch: 0,
+                        prev_epoch_hash: "00".repeat(32),
+                        write_pubkey: hex::encode(write_pk),
+                        read_token_hash: hex::encode(Sha256::digest([0u8; 32])),
+                        encrypted_epoch_descriptor: hex::encode(b"descriptor"),
+                        admin_sig: String::new(),
+                        epoch_hash: String::new(),
+                    },
+                ),
+            )
+            .unwrap();
+        for nonce in 1..=10 {
+            let mut message = GroupMessageEnvelope {
+                group_id: group_id.clone(),
+                epoch: 0,
+                nonce: hex::encode([nonce; 24]),
+                ciphertext: hex::encode(vec![nonce; 1024 * 1024]),
+                write_sig: String::new(),
+            };
+            message.write_sig = sign_digest(&write_sk, &message.signing_digest().unwrap());
+            upstream.put_message(&group_id, message).unwrap();
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(router_with_store(upstream).into_make_service())
+                .await
+                .unwrap();
+        });
+        let home = GroupStore::with_mirror_threshold(Arc::new(MemoryKvStore::new()), 1);
+        let router = router_with_store(home.clone());
+        for (cursor, count, next) in [(0, 8, 8), (8, 2, 10)] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/groups/{group_id}/messages?after_seq={cursor}&limit=500"
+                        ))
+                        .header(HEADER_GROUP_UPSTREAM_RELAY, &origin)
+                        .header(HEADER_GROUP_READ_TOKEN, &read_token)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            let batch: GroupMessagesResponse = serde_json::from_slice(&body).unwrap();
+            assert_eq!(batch.messages.len(), count);
+            assert_eq!(batch.next_after_seq, next);
+        }
+        assert_eq!(
+            home.get_mirror_state(&group_id)
+                .unwrap()
+                .unwrap()
+                .last_synced_seq,
+            10
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn home_relay_proxies_below_threshold_and_auto_promotes_to_local_mirror_at_threshold() {
         // Spawn an authoritative Upstream Foreign Relay (`Relay_G`)
         let upstream_store = GroupStore::new_in_memory();
@@ -1027,6 +1414,43 @@ mod tests {
         let home_store = GroupStore::with_mirror_threshold(Arc::new(MemoryKvStore::new()), 2);
         let home_app = router_with_store(home_store.clone());
 
+        let attacker_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = attacker_calls.clone();
+        let attacker_router = Router::new().fallback(routing::any(move || {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { StatusCode::FORBIDDEN }
+        }));
+        let attacker_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        attacker_listener.set_nonblocking(true).unwrap();
+        let attacker_url = format!("http://{}", attacker_listener.local_addr().unwrap());
+        let attacker_task = tokio::spawn(async move {
+            axum::Server::from_tcp(attacker_listener)
+                .unwrap()
+                .serve(attacker_router.into_make_service())
+                .await
+                .unwrap();
+        });
+        for (origin, token) in [
+            (&attacker_url, "01".repeat(32)),
+            (&upstream_url, "01".repeat(32)),
+        ] {
+            let response = home_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/groups/{group_id}/messages"))
+                        .header(HEADER_GROUP_UPSTREAM_RELAY, origin)
+                        .header(HEADER_GROUP_READ_TOKEN, token)
+                        .header(HEADER_GROUP_SUBSCRIBER_TAG, "attacker")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(!response.status().is_success());
+            assert!(home_store.get_mirror_state(&group_id).unwrap().is_none());
+        }
+
         // Subscriber 1 (`sub-alice`) queries `Relay_Home` (< 2 subscribers) -> Stateless Oblivious Proxy!
         let res_sub1 = home_app
             .clone()
@@ -1061,8 +1485,37 @@ mod tests {
         // Verify `Relay_Home` has NOT mirrored the group into local storage yet
         assert!(home_store.get_current_epoch(&group_id).unwrap().is_none());
 
+        let calls_before = attacker_calls.load(std::sync::atomic::Ordering::SeqCst);
+        for (origin, token) in [
+            (&attacker_url, read_token_hex.clone()),
+            (&upstream_url, "01".repeat(32)),
+        ] {
+            let response = home_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/groups/{group_id}/messages"))
+                        .header(HEADER_GROUP_UPSTREAM_RELAY, origin)
+                        .header(HEADER_GROUP_READ_TOKEN, token)
+                        .header(HEADER_GROUP_SUBSCRIBER_TAG, "untrusted")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            let state = home_store.get_mirror_state(&group_id).unwrap().unwrap();
+            assert_eq!(state.upstream_relay, upstream_url);
+            assert_eq!(state.subscribers.len(), 1);
+        }
+        assert_eq!(
+            attacker_calls.load(std::sync::atomic::Ordering::SeqCst),
+            calls_before
+        );
+
         // Subscriber 2 (`sub-bob`) queries `Relay_Home` (>= 2 subscribers) -> Auto-Mirror Promotion!
         let res_sub2 = home_app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -1096,6 +1549,28 @@ mod tests {
         assert!(home_store.get_current_epoch(&group_id).unwrap().is_some());
         let mirrored_msgs = home_store.list_messages(&group_id, 0, 10).unwrap();
         assert_eq!(mirrored_msgs.len(), 2);
+        let mut local_message = GroupMessageEnvelope {
+            group_id: group_id.clone(),
+            epoch: 1,
+            nonce: "31".repeat(24),
+            ciphertext: hex::encode(b"must not append to mirror"),
+            write_sig: String::new(),
+        };
+        local_message.write_sig = sign_digest(&write_sk, &local_message.signing_digest().unwrap());
+        let rejected = home_app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/groups/{group_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&local_message).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+        assert_eq!(home_store.list_messages(&group_id, 0, 10).unwrap().len(), 2);
+        attacker_task.abort();
         assert_eq!(mirrored_msgs[0].server_seq, 1);
         assert!(home_store.get_epoch(&group_id, 0).unwrap().is_some());
         assert_eq!(

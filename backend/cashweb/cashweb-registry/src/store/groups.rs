@@ -810,6 +810,14 @@ impl GroupStore {
 
         // Reject messages targeting a stale or future epoch (e.g. kicked member from prior epoch)
         if envelope.epoch != current_epoch.epoch {
+            // The first empty lookup may predate an acceptance followed by this rotation.
+            // Recheck after observing authority: an old-epoch acceptance cannot commit later.
+            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+                return Ok(GroupAppendOutcome {
+                    message,
+                    appended: false,
+                });
+            }
             return Err(GroupError::Forbidden(format!(
                 "message epoch {} does not match active group epoch {}",
                 envelope.epoch, current_epoch.epoch
@@ -1422,11 +1430,21 @@ mod tests {
         ready: std::sync::Barrier,
         resume: std::sync::Barrier,
         pause: std::sync::atomic::AtomicBool,
+        pause_at_lookup: bool,
     }
 
     impl RelayKvStore for PausingCommitKv {
         fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
-            self.backend.get(key)
+            let result = self.backend.get(key);
+            if self.pause_at_lookup
+                && key.starts_with(b"G_accept:")
+                && matches!(&result, Ok(None))
+                && self.pause.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.ready.wait();
+                self.resume.wait();
+            }
+            result
         }
         fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
             self.backend.put(key, value)
@@ -1454,7 +1472,8 @@ mod tests {
             suffix: &[u8],
             value: &[u8],
         ) -> Result<(Vec<u8>, crate::store::kv_store::Versionstamp), KvError> {
-            if self.pause.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            if !self.pause_at_lookup && self.pause.swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
                 self.ready.wait();
                 self.resume.wait();
             }
@@ -1492,6 +1511,7 @@ mod tests {
             ready: std::sync::Barrier::new(2),
             resume: std::sync::Barrier::new(2),
             pause: std::sync::atomic::AtomicBool::new(true),
+            pause_at_lookup: false,
         });
         let in_flight = GroupStore::new(paused_kv.clone());
         let (old_write_sk, _) = keypair(42);
@@ -2217,6 +2237,7 @@ mod tests {
             ready: std::sync::Barrier::new(2),
             resume: std::sync::Barrier::new(2),
             pause: std::sync::atomic::AtomicBool::new(true),
+            pause_at_lookup: false,
         });
         let (key, _) = keypair(42);
         let envelope = message_for(&id, 0, 1, &key);
@@ -2286,5 +2307,47 @@ mod tests {
         let kv = RocksDbKvStore::open(&path).unwrap();
         assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
         assert_eq!(kv.get(&key).unwrap().unwrap(), raw);
+    }
+    #[test]
+    fn stale_empty_acceptance_lookup_rechecks_receipt_before_rejecting_rotated_epoch() {
+        let backend = Arc::new(MemoryKvStore::new());
+        let store = GroupStore::new(backend.clone());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        let initial = store.put_epoch(&id, initial).unwrap();
+        let paused = Arc::new(PausingCommitKv {
+            backend,
+            ready: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+            pause: std::sync::atomic::AtomicBool::new(true),
+            pause_at_lookup: true,
+        });
+        let (key, _) = keypair(42);
+        let envelope = message_for(&id, 0, 1, &key);
+        let replica = GroupStore::new(paused.clone());
+        let replica_id = id.clone();
+        let pending = envelope.clone();
+        let thread = std::thread::spawn(move || replica.put_message(&replica_id, pending));
+        // The first receipt lookup has captured None, before reading the current authority.
+        paused.ready.wait();
+        let accepted = store.put_message(&id, envelope).unwrap();
+        let (root, _) = keypair(3);
+        let (_, next_write_key) = keypair(43);
+        let mut next = root_frame(3, 1, &initial.epoch_hash);
+        next.write_pubkey = hex::encode(next_write_key);
+        store.put_epoch(&id, signed_epoch(&root, next)).unwrap();
+        paused.resume.wait();
+        let retry = thread.join().unwrap().unwrap();
+        assert!(!retry.appended);
+        assert_eq!(retry.message, accepted.message);
+        assert_eq!(
+            store.list_messages(&id, 0, 10).unwrap(),
+            vec![accepted.message]
+        );
+        // This does not authorize genuinely new content under a retired write key.
+        assert!(matches!(
+            store.put_message(&id, message_for(&id, 0, 2, &key)),
+            Err(GroupError::Forbidden(_))
+        ));
     }
 }

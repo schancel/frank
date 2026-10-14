@@ -428,12 +428,23 @@ pub(crate) fn check_type_limits(
         }
         TYPE_FORUM_TOPIC_PAGE | TYPE_FORUM_DISCOVERY_PAGE => {
             if too_many(
-                map_field(payload, if type_id == TYPE_FORUM_TOPIC_PAGE { 4 } else { 2 }),
+                map_field(
+                    payload,
+                    if type_id == TYPE_FORUM_TOPIC_PAGE {
+                        4
+                    } else {
+                        2
+                    },
+                ),
                 MAX_FORUM_ROWS,
             ) {
                 return Err(over("Forum rows"));
             }
-            for key in if type_id == TYPE_FORUM_TOPIC_PAGE { [5, 7] } else { [3, 5] } {
+            for key in if type_id == TYPE_FORUM_TOPIC_PAGE {
+                [5, 7]
+            } else {
+                [3, 5]
+            } {
                 if let Some(CborValue::Bytes(bytes)) = map_field(payload, key) {
                     if bytes.len() > MAX_FORUM_CURSOR_BYTES {
                         return Err(over("Forum cursor"));

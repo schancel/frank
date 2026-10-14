@@ -41,7 +41,7 @@ function roundTrip(item: ReturnType<typeof recipientAssetPaymentFromPrepared>) {
   const children = frames.map(bytes => {
     const parsed = validateFrame(bytes)
     if (parsed.kind !== 'parsed') throw new Error('Expected parsed child')
-    expect([parsed.typeId, parsed.schemaVersion]).toEqual([19, 2])
+    expect([parsed.typeId, parsed.schemaVersion]).toEqual([24, 2])
     return parsed
   })
   expect(decodeItemFrames(registry, children, standaloneItemBudget())).toEqual([

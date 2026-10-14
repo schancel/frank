@@ -62,7 +62,7 @@ it('round trips exact recipient amounts through composed dedicated-frame messagi
   const parsed = validateFrame(frames[0])
   expect(
     parsed.kind === 'parsed' && [parsed.typeId, parsed.schemaVersion]
-  ).toEqual([19, 2])
+  ).toEqual([24, 2])
   expect(
     decodeItemFrames(registry, children(frames), standaloneItemBudget())
   ).toEqual([sample])

@@ -9,6 +9,7 @@ import {
 } from './constants'
 import { FrankCodecError } from './errors'
 import { encodeFrame } from './frame'
+import { utf8Encode } from './utf8'
 import type {
   AccountRef,
   EmailAttachment,
@@ -26,6 +27,18 @@ import {
 
 const bad = (msg: string, location = 'email-message-item') =>
   new FrankCodecError('schema', '8.2', msg, location)
+
+function requireTextBytes(
+  value: string,
+  field: string,
+  min: number,
+  max: number,
+): void {
+  const length = value === undefined ? -1 : utf8Encode(value).length
+  if (length < min || length > max) {
+    throw bad(`${field} must be ${min}..${max} UTF-8 bytes`)
+  }
+}
 
 function decodeBase64ToBytes(b64: string): Uint8Array {
   const g = typeof globalThis !== 'undefined' ? (globalThis as any) : undefined
@@ -78,14 +91,10 @@ export interface CanonicalEmailMessageItem {
 }
 
 export function encodeEmailParty(party: EmailParty): Map<number | bigint, any> {
-  if (!party.address || party.address.length < 3 || party.address.length > 320) {
-    throw bad('party address must be 3..320 characters')
-  }
+  requireTextBytes(party.address, 'party address', 3, 320)
   const entries: Array<[number, any]> = [[0, party.address]]
   if (party.name !== undefined) {
-    if (party.name.length < 1 || party.name.length > 256) {
-      throw bad('party name must be 1..256 characters')
-    }
+    requireTextBytes(party.name, 'party name', 1, 256)
     entries.push([1, party.name])
   }
   if (party.frankAccount !== undefined) {
@@ -111,16 +120,8 @@ export function encodeEmailParty(party: EmailParty): Map<number | bigint, any> {
 export function encodeEmailAttachment(
   att: EmailAttachment,
 ): Map<number | bigint, any> {
-  if (!att.filename || att.filename.length < 1 || att.filename.length > 256) {
-    throw bad('attachment filename must be 1..256 characters')
-  }
-  if (
-    !att.contentType ||
-    att.contentType.length < 1 ||
-    att.contentType.length > 128
-  ) {
-    throw bad('attachment contentType must be 1..128 characters')
-  }
+  requireTextBytes(att.filename, 'attachment filename', 1, 256)
+  requireTextBytes(att.contentType, 'attachment contentType', 1, 128)
   let content = att.content
   if (!content && att.dataBase64) {
     const clean = att.dataBase64
@@ -140,9 +141,7 @@ export function encodeEmailAttachment(
     [2, content],
   ]
   if (att.contentId !== undefined) {
-    if (att.contentId.length < 1 || att.contentId.length > 128) {
-      throw bad('attachment contentId must be 1..128 characters')
-    }
+    requireTextBytes(att.contentId, 'attachment contentId', 1, 128)
     entries.push([3, att.contentId])
   }
   if (att.unknownFields) {
@@ -159,13 +158,7 @@ export function encodeEmailAttachment(
 export function encodeEmailMessageItem(
   email: CanonicalEmailMessageItem,
 ): Uint8Array {
-  if (
-    !email.messageId ||
-    email.messageId.length < 1 ||
-    email.messageId.length > 256
-  ) {
-    throw bad('messageId must be 1..256 characters')
-  }
+  requireTextBytes(email.messageId, 'messageId', 1, 256)
   if (
     !email.to ||
     email.to.length === 0 ||
@@ -176,23 +169,19 @@ export function encodeEmailMessageItem(
   if (email.cc && email.cc.length > MAX_EMAIL_RECIPIENTS) {
     throw bad(`cc must not exceed ${MAX_EMAIL_RECIPIENTS} recipients`)
   }
-  if (email.subject === undefined || email.subject.length > 1024) {
-    throw bad('subject must be 0..1024 characters')
+  requireTextBytes(email.subject, 'subject', 0, 1024)
+  requireTextBytes(email.textBody, 'textBody', 0, 262144)
+  if (email.htmlBody !== undefined) {
+    requireTextBytes(email.htmlBody, 'htmlBody', 0, 524288)
   }
-  if (email.textBody === undefined || email.textBody.length > 262144) {
-    throw bad('textBody must be 0..262144 characters')
-  }
-  if (email.htmlBody !== undefined && email.htmlBody.length > 524288) {
-    throw bad('htmlBody must be 0..524288 characters')
-  }
-  if (
-    email.inReplyTo !== undefined &&
-    (email.inReplyTo.length < 1 || email.inReplyTo.length > 256)
-  ) {
-    throw bad('inReplyTo must be 1..256 characters')
+  if (email.inReplyTo !== undefined) {
+    requireTextBytes(email.inReplyTo, 'inReplyTo', 1, 256)
   }
   if (email.references && email.references.length > 64) {
     throw bad('references must not exceed 64 items')
+  }
+  for (const reference of email.references ?? []) {
+    requireTextBytes(reference, 'reference', 1, 256)
   }
   if (email.attachments && email.attachments.length > MAX_EMAIL_ATTACHMENTS) {
     throw bad(`attachments must not exceed ${MAX_EMAIL_ATTACHMENTS} items`)

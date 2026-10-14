@@ -76,8 +76,12 @@ jest.mock('../accounts/utxo-wallets', () => ({
 const mockEvmBalances: Record<string, jest.Mock> = {
   'monad-mainnet': jest.fn().mockResolvedValue(7n),
   'monad-regtest': jest.fn().mockResolvedValue(9n),
-  'hyperliquid-testnet': jest.fn().mockResolvedValue(42_000_000_000_000_000_000n),
-  'hyperliquid-mainnet': jest.fn().mockResolvedValue(55_000_000_000_000_000_000n),
+  'hyperliquid-testnet': jest
+    .fn()
+    .mockResolvedValue(42_000_000_000_000_000_000n),
+  'hyperliquid-mainnet': jest
+    .fn()
+    .mockResolvedValue(55_000_000_000_000_000_000n),
 }
 const mockOpenEvmWallet = jest.fn(async (chainIdentifier: string) => ({
   chain: {

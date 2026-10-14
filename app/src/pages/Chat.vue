@@ -1,8 +1,64 @@
 <template>
   <div class="chat-container column full-height overflow-hidden">
+    <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
+    <div
+      v-if="isScreenerThread"
+      class="screener-triage-banner q-px-md q-py-sm row items-center justify-between q-gutter-xs"
+      data-test="screener-triage-banner"
+      data-testid="screener-triage-banner"
+    >
+      <div class="row items-center no-wrap col">
+        <span
+          class="text-caption text-weight-medium"
+          data-test="screener-stamp-summary"
+        >
+          {{
+            $t('chatList.screenerBannerTitle', {
+              value: screenerStampSummary.combinedDisplay,
+            })
+          }}
+        </span>
+      </div>
+      <div class="row items-center q-gutter-xs col-auto">
+        <q-btn
+          dense
+          unelevated
+          no-caps
+          size="sm"
+          color="positive"
+          :label="$t('chatList.screenerApprove')"
+          data-test="screener-approve"
+          data-testid="screener-approve"
+          @click="approveScreenerThread"
+        />
+        <q-btn
+          dense
+          outline
+          no-caps
+          size="sm"
+          color="primary"
+          :label="$t('chatList.screenerReplyOnce')"
+          data-test="screener-reply"
+          data-testid="screener-reply"
+          @click="replyOnceScreenerThread"
+        />
+        <q-btn
+          dense
+          flat
+          no-caps
+          size="sm"
+          color="negative"
+          :label="$t('chatList.screenerDismissKeepStamp')"
+          data-test="screener-dismiss"
+          data-testid="screener-dismiss"
+          @click="dismissScreenerThread"
+        />
+      </div>
+    </div>
     <q-page-container class="col full-height overflow-hidden">
       <email-thread-view
         v-if="isEmailThread"
+        ref="emailThreadView"
         :key="conversation?.id"
         :conversation="conversation"
         :messages="messages"
@@ -17,6 +73,8 @@
         :stamp-unavailable="stampUnavailable"
         @resetStampDefault="resetStampDefault"
         @sendReply="sendEmailReply"
+        @navigateThread="navigateThread"
+        @archiveThread="archiveCurrentThread"
       />
       <q-page v-else class="chat-page-background column no-wrap">
         <div class="col relative-position">
@@ -281,6 +339,14 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { ChatMessage, type Conversation, useChatStore } from 'src/stores/chats'
 import type { OutgoingOutcome } from 'src/stores/chats'
 import { useBalance } from 'src/composables/useBalance'
+import {
+  approveScreenerConversation,
+  dismissScreenerConversation,
+  formatScreenerStampValue,
+  getConversationStampValueWei,
+  isScreenerConversation,
+  type FormattedScreenerStamp,
+} from '../utils/screener-triage'
 
 const scrollDuration = 0
 
@@ -307,6 +373,7 @@ export default defineComponent({
     this.cancelBlackjackPreparation()
     window.removeEventListener('resize', this.resizeHandler)
     window.removeEventListener('focus', this.onWindowFocus)
+    window.removeEventListener('keydown', this.handleTriageKeydown)
     this.clearComposeFocusTimers()
     if (this.stampQuoteTimer) clearInterval(this.stampQuoteTimer)
     this.stampQuoteSequence++
@@ -360,6 +427,7 @@ export default defineComponent({
       blackjackAttempted: new Set<string>(),
       // An own undelivered hand message is being resumed; no automatic step meanwhile.
       resumingHand: false,
+      screenerReplyOnceIds: new Set<string>(),
     }
   },
   setup() {
@@ -415,6 +483,7 @@ export default defineComponent({
     // Adjust the chat width when window resizes
     window.addEventListener('resize', debounce(this.resizeHandler, 50))
     window.addEventListener('focus', this.onWindowFocus)
+    window.addEventListener('keydown', this.handleTriageKeydown)
     const req = this.chatStore?.composeFocusRequest
     if (
       req &&
@@ -1435,8 +1504,122 @@ export default defineComponent({
         this.$nextTick(this.buttonScrollBottom)
       }
     },
+    approveScreenerThread() {
+      if (!this.conversation) return
+      approveScreenerConversation(
+        this.conversation,
+        this.chatStore,
+        this.contactStore,
+      )
+    },
+    replyOnceScreenerThread() {
+      if (!this.conversation) return
+      this.screenerReplyOnceIds.add(this.conversation.id)
+      this.focusReplyComposer()
+    },
+    dismissScreenerThread() {
+      if (!this.conversation) return
+      const nextTargetId = this.findAdjacentThreadId(1)
+      dismissScreenerConversation(this.conversation, this.chatStore)
+      if (nextTargetId) {
+        void openChat(this.$router, nextTargetId)
+      }
+    },
+    focusReplyComposer() {
+      if (this.isEmailThread) {
+        const emailView = this.$refs.emailThreadView as
+          | { focusReply?: () => void }
+          | undefined
+        emailView?.focusReply?.()
+        return
+      }
+      ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
+    },
+    findAdjacentThreadId(direction: -1 | 1): string | null {
+      const list = (this.chatStore?.getLatestChats ?? []).filter(
+        (item: { address: string }) => {
+          const conv =
+            this.chatStore?.conversations?.[item.address] ??
+            this.chatStore?.chats?.[item.address]
+          return conv?.screenerStatus !== 'dismissed'
+        },
+      )
+      if (list.length === 0) return null
+      const currentId = this.conversation?.id || this.address
+      const currentIdx = list.findIndex(
+        (item: { address: string }) =>
+          item.address === currentId || this.matchesConversation(item.address),
+      )
+      if (currentIdx === -1) {
+        return list[0]?.address ?? null
+      }
+      const nextIdx = currentIdx + direction
+      if (nextIdx < 0 || nextIdx >= list.length) return null
+      return list[nextIdx]?.address ?? null
+    },
+    navigateThread(direction: -1 | 1) {
+      const nextId = this.findAdjacentThreadId(direction)
+      if (nextId) {
+        void openChat(this.$router, nextId)
+      }
+    },
+    archiveCurrentThread() {
+      if (this.isScreenerThread) {
+        this.dismissScreenerThread()
+        return
+      }
+      this.navigateThread(1)
+    },
+    handleTriageKeydown(event: KeyboardEvent) {
+      if (this.isEmailThread) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      const target = event.target as HTMLElement | null
+      if (target) {
+        const tag = target.tagName
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable
+        ) {
+          return
+        }
+      }
+      const key = event.key.toLowerCase()
+      if (key === 'j') {
+        event.preventDefault()
+        this.navigateThread(1)
+      } else if (key === 'k') {
+        event.preventDefault()
+        this.navigateThread(-1)
+      } else if (key === 'r') {
+        event.preventDefault()
+        this.focusReplyComposer()
+      } else if (key === 'e') {
+        event.preventDefault()
+        this.archiveCurrentThread()
+      }
+    },
   },
   computed: {
+    isScreenerThread(): boolean {
+      if (!this.conversation) return false
+      if (this.screenerReplyOnceIds.has(this.conversation.id)) return false
+      return isScreenerConversation(
+        this.conversation,
+        addr => Boolean(this.contactStore?.isContact?.(addr)),
+        this.ownAddress,
+      )
+    },
+    screenerStampSummary(): FormattedScreenerStamp {
+      const totalWei = this.conversation
+        ? getConversationStampValueWei(this.conversation)
+        : 0n
+      return formatScreenerStampValue(
+        totalWei,
+        this.oracle?.current?.avuPerNative,
+      )
+    },
     isDefaultStampMode(): boolean {
       const target = this.conversation?.id || this.recipientAddress
       return !target || this.chatStore.getStampWei(target) === undefined
@@ -1758,5 +1941,11 @@ export default defineComponent({
 
 :deep() .q-message-text--received {
   border-radius: 18px 18px 18px 4px !important;
+}
+
+.screener-triage-banner {
+  background: rgba(245, 158, 11, 0.12);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.35);
+  z-index: 2;
 }
 </style>

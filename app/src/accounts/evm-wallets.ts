@@ -349,7 +349,9 @@ export async function recoverSecondaryEvmWallets(
       entry.kind !== 'tempo' &&
       entry.nativeDecimals !== null &&
       entry.wallet &&
-      (home ? entry.isTestnet === home.isTestnet : entry.isTestnet === isTestnet),
+      (home
+        ? entry.isTestnet === home.isTestnet
+        : entry.isTestnet === isTestnet),
   )
   if (peers.length === 0) return
   if (accountSession.peekWallet() !== primary)
@@ -367,10 +369,15 @@ export async function recoverSecondaryEvmWallets(
         const remaining = await opened.wallet.flushNativeSync?.()
         if (remaining?.length)
           throw new Error(
-            `Wallet sync remains pending for ${peer.id}: ${remaining.join(', ')}`,
+            `Wallet sync remains pending for ${peer.id}: ${remaining.join(
+              ', ',
+            )}`,
           )
       } catch (error) {
-        if (isChainUnreachableError(error) || isSecondaryRecoveryNonFatal(error)) {
+        if (
+          isChainUnreachableError(error) ||
+          isSecondaryRecoveryNonFatal(error)
+        ) {
           console.warn(`Secondary EVM recovery skipped for ${peer.id}:`, error)
           return
         }

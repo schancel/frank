@@ -84,11 +84,11 @@
 
       <!-- Participants summary -->
       <div
-        class="email-thread-subbar row items-center justify-between no-wrap q-mt-xs text-caption"
+        class="email-thread-subbar row items-start justify-between no-wrap q-mt-xs text-caption"
         v-if="allParticipants.length > 0 || parsedEmails.length > 0"
       >
         <div
-          class="row items-center no-wrap ellipsis col q-mr-md"
+          class="row items-baseline col q-mr-md participant-row"
           v-if="allParticipants.length > 0"
         >
           <q-icon
@@ -101,14 +101,14 @@
             >{{ $t('emailThread.participants') }}:</span
           >
           <span
-            class="ellipsis text-grey-8 participant-list"
+            class="text-grey-8 participant-list"
             :title="allParticipants.join(', ')"
           >
             {{ allParticipants.join(', ') }}
           </span>
         </div>
         <div
-          class="col-auto row items-center q-gutter-x-xs q-ml-auto"
+          class="col-auto row items-center q-gutter-x-xs q-ml-auto flex-shrink-0"
           v-if="parsedEmails.length > 0"
         >
           <q-badge
@@ -226,8 +226,10 @@
 
                   <!-- Collapsed summary preview -->
                   <div
-                    class="row items-center justify-between text-caption text-grey-7 no-wrap"
+                    class="row items-center justify-between text-caption text-grey-7 no-wrap collapsed-email-summary"
                     v-if="!isExpanded(card.id)"
+                    data-test="collapsed-email-summary"
+                    data-testid="collapsed-email-summary"
                   >
                     <span class="ellipsis col text-grey-8">
                       {{ card.snippet }}
@@ -296,11 +298,39 @@
                       sandbox="allow-same-origin"
                       class="email-html-frame"
                     />
-                    <div
-                      v-else
-                      class="email-body-text text-body1"
-                      v-html="formatMessageBody(card.textBody)"
-                    />
+                    <div v-else>
+                      <div
+                        class="email-body-text text-body1"
+                        v-html="
+                          formatMessageBody(card.mainBody || card.textBody)
+                        "
+                      />
+                      <div v-if="card.quotedBody" class="q-mt-sm">
+                        <q-btn
+                          flat
+                          dense
+                          no-caps
+                          size="xs"
+                          color="grey-7"
+                          icon="more_horiz"
+                          :label="
+                            isQuoteExpanded(card.id)
+                              ? $t('emailThread.hideQuotedText')
+                              : $t('emailThread.showQuotedText')
+                          "
+                          data-test="toggle-quoted-text"
+                          data-testid="toggle-quoted-text"
+                          @click.stop="toggleQuoteExpanded(card.id)"
+                        />
+                        <div
+                          v-if="isQuoteExpanded(card.id)"
+                          class="email-quoted-block q-mt-xs q-pl-sm text-body2 text-grey-7"
+                          data-test="email-quoted-block"
+                          data-testid="email-quoted-block"
+                          v-html="formatMessageBody(card.quotedBody)"
+                        />
+                      </div>
+                    </div>
 
                     <!-- Attachments -->
                     <div
@@ -1053,6 +1083,127 @@ function isValidRecipientAddress(addr: string | undefined | null): boolean {
   return false
 }
 
+const THREAD_REPLY_ALIAS_LOCAL_RE = /^m[0-9a-f]{30}$/i
+
+export function extractPartyFromRaw(
+  input: string | EmailParty | undefined | null,
+): { address: string; name?: string } | null {
+  if (!input) return null
+  if (typeof input === 'string') {
+    const trimmed = input.trim()
+    if (!trimmed) return null
+    const angleMatch = trimmed.match(/^(.*?)\s*<([^<>]+)>\s*$/)
+    if (angleMatch) {
+      const rawName = angleMatch[1]
+        .trim()
+        .replace(/^["']|["']$/g, '')
+        .trim()
+      const address = angleMatch[2].trim()
+      if (!isValidRecipientAddress(address)) return null
+      return {
+        address,
+        ...(rawName ? { name: rawName } : {}),
+      }
+    }
+    if (!isValidRecipientAddress(trimmed)) return null
+    return { address: trimmed }
+  }
+  const parsedFromAddr = extractPartyFromRaw(input.address)
+  if (!parsedFromAddr) return null
+  const explicitName = input.name?.trim()
+  return {
+    address: parsedFromAddr.address,
+    ...(explicitName
+      ? { name: explicitName }
+      : parsedFromAddr.name
+      ? { name: parsedFromAddr.name }
+      : {}),
+  }
+}
+
+export function decodeQuotedPrintableIfNeeded(text: string): string {
+  if (!text) return ''
+  const hasSoftLineBreak = /=\r?\n/.test(text)
+  const hasUtf8QpSequence =
+    /=[C-Fc-f][0-9A-Fa-f](?:=[89ABab][0-9A-Fa-f])+/.test(text)
+  const hasCommonQpEscape = /=(?:3D|20(?=\r?\n|$)|09)/i.test(text)
+  if (!hasSoftLineBreak && !hasUtf8QpSequence && !hasCommonQpEscape) {
+    return text
+  }
+
+  const withoutSoftBreaks = text.replace(/=\r?\n/g, '')
+
+  return withoutSoftBreaks.replace(/(?:=[0-9A-Fa-f]{2})+/g, match => {
+    try {
+      const hexParts = match.slice(1).split('=')
+      const bytes = new Uint8Array(hexParts.map(h => parseInt(h, 16)))
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      return match
+    }
+  })
+}
+
+export function splitQuotedEmailBody(text: string): {
+  mainBody: string
+  visibleBody: string
+  quotedBody: string
+} {
+  if (!text) return { mainBody: '', visibleBody: '', quotedBody: '' }
+  const decoded = decodeQuotedPrintableIfNeeded(text)
+  const lines = decoded.split(/\r?\n/)
+  let quoteStartIdx = -1
+
+  // Look for a trailing block of `>` quoted lines (optionally preceded by `On ... wrote:`)
+  let idx = lines.length - 1
+  while (idx >= 0 && lines[idx].trim() === '') {
+    idx--
+  }
+
+  let hasTrailingQuoteLines = false
+  while (idx >= 0 && /^\s*>/.test(lines[idx])) {
+    hasTrailingQuoteLines = true
+    quoteStartIdx = idx
+    idx--
+  }
+
+  if (hasTrailingQuoteLines) {
+    // Check if the line(s) immediately preceding the `>` block (skipping blank lines) are an attribution header like `On ..., ... wrote:`
+    let attrIdx = quoteStartIdx - 1
+    while (attrIdx >= 0 && lines[attrIdx].trim() === '') {
+      attrIdx--
+    }
+    if (attrIdx >= 0) {
+      if (/^on\s+.+wrote:\s*$/i.test(lines[attrIdx].trim())) {
+        quoteStartIdx = attrIdx
+      } else if (/wrote:\s*$/i.test(lines[attrIdx].trim())) {
+        for (
+          let startIdx = attrIdx - 1;
+          startIdx >= Math.max(0, attrIdx - 3);
+          startIdx--
+        ) {
+          const joined = lines
+            .slice(startIdx, attrIdx + 1)
+            .map(l => l.trim())
+            .join(' ')
+          if (/^on\s+.+wrote:\s*$/i.test(joined)) {
+            quoteStartIdx = startIdx
+            break
+          }
+        }
+      }
+    }
+
+    const mainBody = lines.slice(0, quoteStartIdx).join('\n').trim()
+    const quotedBody = lines.slice(quoteStartIdx).join('\n').trim()
+    if (mainBody.length > 0 && quotedBody.length > 0) {
+      return { mainBody, visibleBody: mainBody, quotedBody }
+    }
+  }
+
+  return { mainBody: decoded, visibleBody: decoded, quotedBody: '' }
+}
+
 interface ParsedEmailCard {
   id: string
   fromAddress: string
@@ -1062,10 +1213,13 @@ interface ParsedEmailCard {
   bcc?: EmailParty[]
   subject: string
   textBody: string
+  mainBody: string
+  quotedBody: string
   snippet: string
   formattedDate: string
   timestamp: number
   isOutbound: boolean
+  isUnread: boolean
   attachments?: EmailAttachment[]
   rawEmail?: EmailItem
   isDkimVerified?: boolean
@@ -1121,6 +1275,8 @@ export default defineComponent({
     'sendReply': (_payload: EmailReply) => true,
     'update:stampAmount': (_amount: string) => true,
     'resetStampDefault': () => true,
+    'navigateThread': (_direction: 'next' | 'prev') => true,
+    'archiveThread': () => true,
   },
   data() {
     return {
@@ -1135,6 +1291,8 @@ export default defineComponent({
           STAMP_MULTIPLIER_TENTHS) ||
         DEFAULT_STAMP_MULTIPLIER_TENTHS,
       expandedMap: {} as Record<string, boolean>,
+      quoteExpandedMap: {} as Record<string, boolean>,
+      focusedCardIndex: 0,
       allExpanded: false,
       replyMode: 'reply_all' as 'reply' | 'reply_all',
       showCc: false,
@@ -1388,6 +1546,12 @@ export default defineComponent({
     },
     parsedEmails(): ParsedEmailCard[] {
       const cards: ParsedEmailCard[] = []
+      const lastRead = this.conversation?.lastRead ?? 0
+      const hasLastRead =
+        this.conversation !== null &&
+        this.conversation !== undefined &&
+        this.conversation.lastRead !== undefined
+
       for (const msg of this.messages) {
         const emailItem = msg.items?.find(it => it.type === 'email') as
           | EmailItem
@@ -1395,12 +1559,18 @@ export default defineComponent({
         const timestamp =
           msg.serverTime || msg.receivedTime || (msg as any).localTime || 0
         const formattedDate = formatConversationTimestamp(timestamp)
+        const isUnread =
+          !msg.outbound &&
+          ((hasLastRead && timestamp > lastRead) ||
+            (!hasLastRead && (this.conversation?.totalUnreadMessages ?? 0) > 0))
 
         if (emailItem) {
           const fromAddr = emailItem.from?.address || msg.senderAddress
           const fromName = emailItem.from?.name
-          const text = emailItem.textBody || ''
-          const snippet = text.replace(/\s+/g, ' ').slice(0, 100)
+          const text = decodeQuotedPrintableIfNeeded(emailItem.textBody || '')
+          const { mainBody, quotedBody } = splitQuotedEmailBody(text)
+          const snippetSource = mainBody || text
+          const snippet = snippetSource.replace(/\s+/g, ' ').slice(0, 100)
 
           cards.push({
             id: emailItem.messageId || msg.payloadDigest,
@@ -1410,10 +1580,13 @@ export default defineComponent({
             cc: emailItem.cc || [],
             subject: emailItem.subject || 'No Subject',
             textBody: text,
+            mainBody,
+            quotedBody,
             snippet,
             formattedDate,
             timestamp,
             isOutbound: msg.outbound,
+            isUnread,
             attachments: emailItem.attachments,
             rawEmail: emailItem,
             isDkimVerified: Boolean(
@@ -1426,8 +1599,12 @@ export default defineComponent({
             | { text?: string }
             | undefined
           const text = textItem?.text || ''
-          const cleanText = cleanEmailSnippet(text)
-          const snippet = cleanText.replace(/\s+/g, ' ').slice(0, 100)
+          const cleanText = decodeQuotedPrintableIfNeeded(
+            cleanEmailSnippet(text),
+          )
+          const { mainBody, quotedBody } = splitQuotedEmailBody(cleanText)
+          const snippetSource = mainBody || cleanText
+          const snippet = snippetSource.replace(/\s+/g, ' ').slice(0, 100)
 
           cards.push({
             id: msg.payloadDigest,
@@ -1435,10 +1612,13 @@ export default defineComponent({
             to: [{ address: msg.destinationAddress || this.recipientAddress }],
             subject: this.threadSubject,
             textBody: cleanText,
+            mainBody,
+            quotedBody,
             snippet,
             formattedDate,
             timestamp,
             isOutbound: msg.outbound,
+            isUnread,
           })
         }
       }
@@ -1480,37 +1660,76 @@ export default defineComponent({
       return this.$t('emailThread.newDraftTitle', 'New Email Thread')
     },
     allParticipants(): string[] {
-      const set = new Set<string>()
-      for (const email of this.parsedEmails) {
-        if (email.fromName && isValidRecipientAddress(email.fromAddress)) {
-          set.add(`${email.fromName} <${email.fromAddress}>`)
-        } else if (isValidRecipientAddress(email.fromAddress)) {
-          set.add(email.fromAddress)
+      const participants = new Map<string, { address: string; name?: string }>()
+      const gatewayDomain = this.getGatewayDomain()
+      let ownUsername = ''
+      try {
+        const profileStore = useProfileStore()
+        ownUsername = (profileStore.profile?.username || '').trim()
+      } catch {
+        /* ignore */
+      }
+
+      const addParticipant = (
+        input: string | EmailParty | undefined | null,
+      ) => {
+        const party = extractPartyFromRaw(input)
+        if (!party) return
+        const isSelf = this.isSelfOrThreadAliasAddress(party.address)
+        const key = isSelf ? '__self__' : party.address.trim().toLowerCase()
+        const existing = participants.get(key)
+        if (!existing) {
+          participants.set(key, {
+            address: party.address.trim(),
+            ...(party.name ? { name: party.name } : {}),
+          })
+          return
         }
-        for (const party of email.to || []) {
-          if (isValidRecipientAddress(party.address)) {
-            if (party.name) set.add(`${party.name} <${party.address}>`)
-            else set.add(party.address)
+        if (isSelf) {
+          const existingRank = this.getSelfAddressRank(existing.address)
+          const incomingRank = this.getSelfAddressRank(party.address)
+          if (incomingRank > existingRank) {
+            existing.address = party.address.trim()
           }
+        }
+        if (!existing.name && party.name) {
+          existing.name = party.name
+        }
+      }
+
+      for (const email of this.parsedEmails) {
+        addParticipant({ address: email.fromAddress, name: email.fromName })
+        for (const party of email.to || []) {
+          addParticipant(party)
         }
         for (const party of email.cc || []) {
-          if (isValidRecipientAddress(party.address)) {
-            if (party.name) set.add(`${party.name} <${party.address}>`)
-            else set.add(party.address)
-          }
+          addParticipant(party)
         }
       }
       if (this.toList.length > 0) {
         for (const t of this.toList) {
-          if (isValidRecipientAddress(t)) set.add(t)
+          addParticipant(t)
         }
       }
-      if (set.size === 0 && this.conversation?.emailRecipient) {
-        if (isValidRecipientAddress(this.conversation.emailRecipient)) {
-          set.add(this.conversation.emailRecipient)
+      if (participants.size === 0 && this.conversation?.emailRecipient) {
+        addParticipant(this.conversation.emailRecipient)
+      }
+
+      const selfEntry = participants.get('__self__')
+      if (
+        selfEntry &&
+        ownUsername &&
+        !THREAD_REPLY_ALIAS_LOCAL_RE.test(ownUsername)
+      ) {
+        const currentRank = this.getSelfAddressRank(selfEntry.address)
+        if (currentRank < 4) {
+          selfEntry.address = `${ownUsername}@${gatewayDomain}`
         }
       }
-      return Array.from(set)
+
+      return Array.from(participants.values()).map(p =>
+        p.name ? `${p.name} <${p.address}>` : p.address,
+      )
     },
     isOutboundFollowUp(): boolean {
       if (this.isDraft) return false
@@ -1573,11 +1792,17 @@ export default defineComponent({
       immediate: true,
       handler(cards: ParsedEmailCard[]) {
         if (cards.length > 0) {
-          // Default latest message to expanded, earlier ones collapsed
+          // Default latest message and any unread messages to expanded, earlier read ones collapsed
           const latestId = cards[cards.length - 1].id
           if (!(latestId in this.expandedMap)) {
             this.expandedMap[latestId] = true
           }
+          for (const card of cards) {
+            if (card.isUnread && !(card.id in this.expandedMap)) {
+              this.expandedMap[card.id] = true
+            }
+          }
+          this.focusedCardIndex = cards.length - 1
         }
         // This component is keyed by conversation ID. Initialize once; empty fields do not
         // imply an untouched draft or permission to replace an explicitly selected parent.
@@ -1593,6 +1818,119 @@ export default defineComponent({
     this.composerActive = false
   },
   methods: {
+    getGatewayDomain(): string {
+      try {
+        const settings = useSettingsStore()
+        return (
+          settings.acceptedEmailGateway?.domain ||
+          settings.advertisedEmailGateway?.domain ||
+          'signet.mx'
+        ).trim()
+      } catch {
+        return 'signet.mx'
+      }
+    },
+    getOwnCanonicalAddresses(): string[] {
+      const candidates = new Set<string>()
+      const rawOwn =
+        typeof this.ownAddress === 'string'
+          ? this.ownAddress
+          : (this.ownAddress as any)?.value
+      if (rawOwn && typeof rawOwn === 'string' && rawOwn.trim().length >= 3) {
+        candidates.add(rawOwn.trim().toLowerCase())
+      }
+      try {
+        const profileStore = useProfileStore()
+        if (profileStore.owner && profileStore.owner.trim().length >= 3) {
+          candidates.add(profileStore.owner.trim().toLowerCase())
+        }
+      } catch {
+        /* ignore */
+      }
+      for (const msg of this.messages || []) {
+        if (!msg.outbound) continue
+        if (msg.senderAddress && isChainAddress(msg.senderAddress.trim())) {
+          candidates.add(msg.senderAddress.trim().toLowerCase())
+        }
+        const emailItem = msg.items?.find(it => it.type === 'email') as
+          | EmailItem
+          | undefined
+        const fromParsed = extractPartyFromRaw(emailItem?.from)
+        if (fromParsed) {
+          const addr = fromParsed.address.trim()
+          const atIdx = addr.lastIndexOf('@')
+          const local = (atIdx >= 0 ? addr.slice(0, atIdx) : addr).replace(
+            /^u\./i,
+            '',
+          )
+          if (isChainAddress(local)) {
+            candidates.add(local.toLowerCase())
+          }
+        }
+      }
+      return Array.from(candidates)
+    },
+    isSelfOrThreadAliasAddress(rawAddr: string | undefined | null): boolean {
+      if (!rawAddr) return false
+      const parsed = extractPartyFromRaw(rawAddr)
+      const addr = (parsed ? parsed.address : rawAddr).trim().toLowerCase()
+      if (!addr) return false
+
+      const gatewayDomain = this.getGatewayDomain().toLowerCase()
+      const ownAddrs = this.getOwnCanonicalAddresses()
+
+      let ownUsername = ''
+      try {
+        const profileStore = useProfileStore()
+        ownUsername = (profileStore.profile?.username || '')
+          .trim()
+          .toLowerCase()
+      } catch {
+        /* ignore */
+      }
+
+      const atIdx = addr.lastIndexOf('@')
+      const localPart = atIdx >= 0 ? addr.slice(0, atIdx) : addr
+      const domainPart = atIdx >= 0 ? addr.slice(atIdx + 1) : ''
+
+      for (const own of ownAddrs) {
+        if (
+          addr === own ||
+          localPart === own ||
+          localPart === `u.${own}` ||
+          sameCanonicalAddress(localPart.replace(/^u\./i, ''), own)
+        ) {
+          return true
+        }
+      }
+
+      if (domainPart === gatewayDomain) {
+        if (ownUsername && localPart === ownUsername) {
+          return true
+        }
+        if (THREAD_REPLY_ALIAS_LOCAL_RE.test(localPart)) {
+          return true
+        }
+      }
+
+      return false
+    },
+    getSelfAddressRank(rawAddr: string): number {
+      const addr = rawAddr.trim().toLowerCase()
+      const gatewayDomain = this.getGatewayDomain().toLowerCase()
+      const atIdx = addr.lastIndexOf('@')
+      if (atIdx < 0) return 2
+      const local = addr.slice(0, atIdx)
+      const domain = addr.slice(atIdx + 1)
+      if (domain === gatewayDomain && THREAD_REPLY_ALIAS_LOCAL_RE.test(local)) {
+        return 1
+      }
+      const stripped = local.replace(/^u\./i, '')
+      if (isChainAddress(stripped)) {
+        return 3
+      }
+      return 4
+    },
     setupNewDraftDefaults() {
       const recipient =
         this.conversation?.emailRecipient ||
@@ -1634,6 +1972,11 @@ export default defineComponent({
         this.focusInput(this.$refs.bodyInputRef)
       }
     },
+    focusReplyComposer() {
+      this.focusInput(this.$refs.bodyInputRef)
+      const textarea = this.getTextareaElement()
+      textarea?.focus?.()
+    },
     focusInput(inputComp: any) {
       if (!inputComp) return
       if (typeof inputComp.focus === 'function') {
@@ -1649,11 +1992,73 @@ export default defineComponent({
     toggleExpand(id: string) {
       this.expandedMap[id] = !this.expandedMap[id]
     },
+    isQuoteExpanded(id: string): boolean {
+      return !!this.quoteExpandedMap[id]
+    },
+    toggleQuoteExpanded(id: string) {
+      this.quoteExpandedMap[id] = !this.quoteExpandedMap[id]
+    },
     toggleAllExpanded() {
       this.allExpanded = !this.allExpanded
       for (const card of this.parsedEmails) {
         this.expandedMap[card.id] = this.allExpanded
       }
+    },
+    handleTriageKeydown(event: KeyboardEvent): boolean {
+      if (event.metaKey || event.ctrlKey || event.altKey) return false
+      const target = (event.target ||
+        document.activeElement) as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return false
+      }
+      const key = event.key.toLowerCase()
+      const cards = this.parsedEmails
+      if (key === 'j') {
+        event.preventDefault()
+        if (this.focusedCardIndex < cards.length - 1) {
+          this.focusedCardIndex += 1
+          const nextCard = cards[this.focusedCardIndex]
+          if (nextCard) this.expandedMap[nextCard.id] = true
+        } else {
+          this.$emit('navigateThread', 'next')
+        }
+        return true
+      }
+      if (key === 'k') {
+        event.preventDefault()
+        if (this.focusedCardIndex > 0) {
+          this.focusedCardIndex -= 1
+          const prevCard = cards[this.focusedCardIndex]
+          if (prevCard) this.expandedMap[prevCard.id] = true
+        } else {
+          this.$emit('navigateThread', 'prev')
+        }
+        return true
+      }
+      if (key === 'r') {
+        event.preventDefault()
+        const targetCard =
+          cards[this.focusedCardIndex] || cards[cards.length - 1]
+        if (targetCard) {
+          this.prepareReply(
+            targetCard,
+            this.canReplyAll(targetCard) ? 'reply_all' : 'reply',
+          )
+        }
+        this.focusReplyComposer()
+        return true
+      }
+      if (key === 'e') {
+        event.preventDefault()
+        this.$emit('archiveThread')
+        return true
+      }
+      return false
     },
     getInitials(nameOrAddress: string): string {
       if (!nameOrAddress) return '?'
@@ -1734,27 +2139,35 @@ export default defineComponent({
         // Reply All
         this.toList = isValidRecipientAddress(fromAddr) ? [fromAddr] : []
         const ccs: string[] = []
+        const seenCcs = new Set<string>()
+        const fromLower = (extractPartyFromRaw(fromAddr)?.address || fromAddr)
+          .trim()
+          .toLowerCase()
 
-        // Add remaining 'To' recipients (excluding sender)
-        if (card.to) {
-          for (const t of card.to) {
-            if (
-              isValidRecipientAddress(t.address) &&
-              t.address.toLowerCase() !== fromAddr.toLowerCase()
-            ) {
-              if (!ccs.includes(t.address)) ccs.push(t.address)
-            }
+        const addCcIfExternal = (rawAddr: string | undefined) => {
+          if (!rawAddr) return
+          const parsed = extractPartyFromRaw(rawAddr)
+          const cleanAddr = parsed ? parsed.address : rawAddr.trim()
+          if (!isValidRecipientAddress(cleanAddr)) return
+          const lower = cleanAddr.trim().toLowerCase()
+          if (lower === fromLower) return
+          if (this.isSelfOrThreadAliasAddress(cleanAddr)) return
+          if (!seenCcs.has(lower)) {
+            seenCcs.add(lower)
+            ccs.push(cleanAddr)
           }
         }
-        // Add 'Cc' recipients
+
+        // Add remaining 'To' recipients (excluding sender and self/thread-alias)
+        if (card.to) {
+          for (const t of card.to) {
+            addCcIfExternal(t.address)
+          }
+        }
+        // Add 'Cc' recipients (excluding sender and self/thread-alias)
         if (card.cc) {
           for (const c of card.cc) {
-            if (
-              isValidRecipientAddress(c.address) &&
-              c.address.toLowerCase() !== fromAddr.toLowerCase()
-            ) {
-              if (!ccs.includes(c.address)) ccs.push(c.address)
-            }
+            addCcIfExternal(c.address)
           }
         }
         this.ccList = ccs
@@ -1764,7 +2177,11 @@ export default defineComponent({
       if (this.toList.length === 0) {
         const fallbackTos = (card.to || [])
           .map(t => t.address)
-          .filter(isValidRecipientAddress)
+          .filter(
+            addr =>
+              isValidRecipientAddress(addr) &&
+              !this.isSelfOrThreadAliasAddress(addr),
+          )
         if (fallbackTos.length > 0) {
           this.toList = fallbackTos
         } else if (
@@ -2156,7 +2573,12 @@ export default defineComponent({
   background-color: var(--q-page-background, #f5f6f8);
   height: 100%;
   max-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   overflow: hidden;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
@@ -2167,6 +2589,11 @@ export default defineComponent({
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   z-index: 10;
   flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
 }
 
 .body--dark .email-thread-header {
@@ -2176,10 +2603,23 @@ export default defineComponent({
 
 .email-thread-subbar {
   min-height: 24px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.participant-row {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .participant-list {
   color: #3c4043;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
 }
 
 .body--dark .participant-list {
@@ -2271,6 +2711,11 @@ export default defineComponent({
   box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.05);
   z-index: 20;
   flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
 }
 
 .body--dark .email-composer-dock {

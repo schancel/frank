@@ -67,7 +67,9 @@ it('keeps peer families canonical and fails unknown configuration without guessi
 it('restricts wallet support to the matching network environment tier for secondary chains', () => {
   // Testnet environment
   expect(walletSupport('hyperliquid', true).status).toBe('available')
-  expect(walletSupport('hyperliquid', true).entry?.id).toBe('hyperliquid-testnet')
+  expect(walletSupport('hyperliquid', true).entry?.id).toBe(
+    'hyperliquid-testnet',
+  )
   expect(walletSupport('hyperliquid-testnet', true).status).toBe('available')
   expect(walletSupport('hyperliquid-mainnet', true).status).toBe('unsupported')
 
@@ -78,7 +80,9 @@ it('restricts wallet support to the matching network environment tier for second
 
   // Mainnet environment
   expect(walletSupport('hyperliquid', false).status).toBe('available')
-  expect(walletSupport('hyperliquid', false).entry?.id).toBe('hyperliquid-mainnet')
+  expect(walletSupport('hyperliquid', false).entry?.id).toBe(
+    'hyperliquid-mainnet',
+  )
   expect(walletSupport('hyperliquid-mainnet', false).status).toBe('available')
   expect(walletSupport('hyperliquid-testnet', false).status).toBe('unsupported')
 
@@ -87,4 +91,3 @@ it('restricts wallet support to the matching network environment tier for second
   expect(walletSupport('tempo-mainnet', false).status).toBe('available')
   expect(walletSupport('tempo-testnet', false).status).toBe('unsupported')
 })
-

@@ -1524,10 +1524,9 @@ describe('CreatePost outcomes', () => {
     await vm.post()
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith(
-      expect.any(Error),
-      { safeMessage: 'invalid FixedNumber string value' },
-    )
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'invalid FixedNumber string value',
+    })
   })
 
   it('notifies error with safeMessage when loadParent fails', async () => {
@@ -1552,7 +1551,10 @@ describe('CreatePost offering validation', () => {
     const realChainAmount = jest.requireActual('src/utils/chain-amount')
     mockDisplayToRawAmount.mockImplementation((chain, val) =>
       realChainAmount.displayToRawAmount(
-        { fromDisplayAmount: (s: string) => BigInt(Math.round(Number(s) * 1e18)) },
+        {
+          fromDisplayAmount: (s: string) =>
+            BigInt(Math.round(Number(s) * 1e18)),
+        },
         val,
       ),
     )

@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Wallet, getBytes } from "ethers";
+import { MAX_TEXT_STRING_BYTES } from "@frank/codec";
 import { LevelBotStateStore } from "../src/state-store";
 import {
   InboundOperationStore,
@@ -186,7 +187,7 @@ it("keeps the staged reply, its wallet attempt and a handler's own reply across 
   await retainThenStart(input);
   await retainThenStart(numbered(7, { conversationId: undefined }));
   await store.markReplied(numbered(7).digest);
-  for (const refused of ["", "\ud800", "x".repeat(262_145), 5])
+  for (const refused of ["", "\ud800", "x".repeat(MAX_TEXT_STRING_BYTES + 1), 5])
     await expect(
       store.stageReply(input.digest, refused, "5", 1_000)
     ).rejects.toThrow(/held/);
@@ -209,6 +210,55 @@ it("keeps the staged reply, its wallet attempt and a handler's own reply across 
   await reopen();
   expect(store.get(input.digest)?.reply?.digest).toBe(outbound);
   expect(store.get(numbered(7).digest)).toMatchObject({ replied: true });
+});
+
+it.each(["x", "é"])(
+  "stages %s text at the codec byte limit across reopen, refusing one byte more without staging it",
+  async (character) => {
+    await retainThenStart(input);
+    const text = character.repeat(
+      Math.floor(MAX_TEXT_STRING_BYTES / Buffer.byteLength(character, "utf8"))
+    );
+    expect(Buffer.byteLength(text, "utf8")).toBe(MAX_TEXT_STRING_BYTES);
+    await expect(
+      store.stageReply(input.digest, text + "x", "5", 1_000)
+    ).rejects.toThrow(/held/);
+    expect(store.get(input.digest)?.reply).toBeUndefined();
+    expect(await state.get(`host-prepared:v1:${input.digest}:text`)).toBeUndefined();
+    await store.stageReply(input.digest, text, "5", 1_000);
+    await reopen();
+    expect(await store.replyText(input.digest)).toBe(text);
+  }
+);
+
+it("follows a raised codec text limit instead of a local copy", async () => {
+  // Simulate a codec revision: today's equal numeric values alone cannot detect drift.
+  const raisedLimit = MAX_TEXT_STRING_BYTES + 2;
+  let Store = InboundOperationStore;
+  try {
+    jest.isolateModules(() => {
+      jest.doMock("@frank/codec", () => ({
+        ...jest.requireActual("@frank/codec"),
+        MAX_TEXT_STRING_BYTES: raisedLimit,
+      }));
+      Store = require("../src/inbound-operation-store").InboundOperationStore;
+    });
+  } finally {
+    jest.dontMock("@frank/codec");
+  }
+  await store.close();
+  store = await Store.open(state, owner, false);
+  await retainThenStart(input);
+  const text = "é".repeat(raisedLimit / 2);
+  await expect(
+    store.stageReply(input.digest, text + "x", "5", 1_000)
+  ).rejects.toThrow(/held/);
+  await store.stageReply(input.digest, text, "5", 1_000);
+  await store.close();
+  await state.close();
+  state = await LevelBotStateStore.open(location);
+  store = await Store.open(state, owner, false);
+  expect(await store.replyText(input.digest)).toBe(text);
 });
 
 it("gives a message's reply one message identity, the same in every process", () => {

@@ -70,6 +70,8 @@ export default () => {
     // Release notes, documentation, and legal notices are readable without an account.
     if (
       to.path === '/setup' ||
+      to.path === '/onboard' ||
+      to.path.startsWith('/onboard/') ||
       to.path === '/changelog' ||
       to.path === '/about' ||
       to.path === '/welcome' ||

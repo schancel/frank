@@ -371,3 +371,29 @@ describe('Profile.vue component avatar handling', () => {
     })
   })
 })
+
+test('avatar user click uses QFile public picker without touching its root element', async () => {
+  const pickFiles = jest.fn(),
+    click = jest.fn()
+  const wrapper = mount(ProfileComponent, {
+    props: { avatar: 'data:image/webp;base64,EXISTING' },
+    global: {
+      mocks: { $t: (key: string) => key },
+      stubs: {
+        ...defaultStubs,
+        'q-file': {
+          setup: () => ({ pickFiles }),
+          template: '<input type="file" />',
+        },
+      },
+    },
+  })
+  wrapper.get('input[type="file"]').element.addEventListener('click', click)
+  expect(pickFiles).not.toHaveBeenCalled()
+  await wrapper.get('button[icon="add_a_photo"]').trigger('click')
+  expect(pickFiles).toHaveBeenCalledTimes(1)
+  expect(click).not.toHaveBeenCalled()
+  wrapper.unmount()
+  wrapper.vm.chooseAvatar(new Event('click'))
+  expect(pickFiles).toHaveBeenCalledTimes(1)
+})

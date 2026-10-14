@@ -812,3 +812,166 @@ describe('Profile.vue', () => {
     )
   })
 })
+
+describe('profile protocol field admission', () => {
+  const real = jest.requireActual<
+    typeof import('@frank/wallet/monad-identity')
+  >('@frank/wallet/monad-identity')
+  const identity = real.MonadIdentity.fromPrivateKeyHex('0x' + '02'.repeat(32))
+  function editor(restoredProfile: object = {}) {
+    const stored = {
+      owner: identity.address.raw.toLowerCase(),
+      profile: Object.assign({ name: 'Alice', avatar: '' }, restoredProfile),
+      inbox: {},
+      setRelayData: mockSetRelayData,
+    }
+    const store = Object.assign(
+      jest.createMockFromModule<ReturnType<typeof useProfileStore>>(
+        'src/stores/my-profile',
+      ),
+      stored,
+    )
+    jest.mocked(useProfileStore).mockReturnValue(store)
+    return mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+  }
+  beforeEach(() => {
+    jest.clearAllMocks()
+    accountStatus.revision = 1
+    HTMLCanvasElement.prototype.getContext = jest.fn(() => null)
+    clearOwnUsername()
+    jest
+      .mocked(useActiveWallet)
+      .mockResolvedValue(
+        Object.assign(
+          jest.createMockFromModule<
+            Awaited<ReturnType<typeof useActiveWallet>>
+          >('src/composables/useActiveWallet'),
+          { identity, relayBaseUrl: 'https://relay.example.test' },
+        ),
+      )
+    jest
+      .mocked(registerMonadIdentityCbor)
+      .mockImplementation(async ({ identity, profile, network }) => {
+        const wire = real.buildSignedDirectoryStatement(identity, {
+          profile,
+          network,
+        })
+        const decoded = real.decodeProfileBytes(wire, {
+          expectedAddress: identity.address.raw,
+          expectedNetwork: network,
+        })
+        expect(decoded.accountType).toBe(profile?.accountType)
+        expect(decoded.botRole).toBe(profile?.botRole)
+      })
+  })
+  afterEach(() => {
+    jest.mocked(registerMonadIdentityCbor).mockReset()
+  })
+  test.each([
+    [0, undefined],
+    [3, undefined],
+    [undefined, undefined],
+    ...Array.from({ length: 8 }, (_, role) => [1, role]),
+    ...Array.from({ length: 8 }, (_, role) => [2, role]),
+  ])(
+    'roundtrips admitted type %s and role %s through the real signer/reader',
+    async (accountType, botRole) => {
+      const wrapper = editor(),
+        child = wrapper.findComponent({ name: 'Profile' })
+      child.vm.$emit('update:accountType', accountType)
+      child.vm.$emit('update:botRole', botRole)
+      await wrapper.vm.$nextTick()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      await wrapper.get('[data-test="profile-update"]').trigger('click')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(registerMonadIdentityCbor).toHaveBeenCalledTimes(1)
+      expect(errorNotify).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+  test.each([
+    [-1, undefined],
+    [4, undefined],
+    [1.5, undefined],
+    [NaN, undefined],
+    [Infinity, undefined],
+    ['1', undefined],
+    [1, -1],
+    [1, 8],
+    [1, 0.5],
+    [1, NaN],
+    [1, Infinity],
+    [1, '2'],
+    [0, 2],
+    [3, 2],
+  ])(
+    'rejects invalid type %s/role %s before every publication effect',
+    async (accountType, botRole) => {
+      const wrapper = editor(),
+        child = wrapper.findComponent({ name: 'Profile' })
+      child.vm.$emit('update:username', 'alice')
+      child.vm.$emit('update:accountType', accountType)
+      child.vm.$emit('update:botRole', botRole)
+      await wrapper.vm.$nextTick()
+      await wrapper.get('[data-test="profile-update"]').trigger('click')
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(errorNotify).toHaveBeenCalled()
+      expect(claimUsername).not.toHaveBeenCalled()
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(useActiveWallet).not.toHaveBeenCalled()
+      expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+  test('preserves a restored null account type for rejection rather than silently saving person', async () => {
+    const wrapper = editor({ accountType: null })
+    expect(wrapper.vm.accountType).toBeNull()
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    const child = wrapper.findComponent({ name: 'Profile' })
+    child.vm.$emit('update:username', 'alice')
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-test="profile-update"]').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(errorNotify).toHaveBeenCalled()
+    expect(claimUsername).not.toHaveBeenCalled()
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    expect(useActiveWallet).not.toHaveBeenCalled()
+    expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+    expect(wrapper.vm.accountType).toBeNull()
+    wrapper.unmount()
+  })
+  test('account replacement during wallet acquisition prevents signing the admitted profile', async () => {
+    const wrapper = editor()
+    let release: (() => void) | undefined
+    const ready = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const wallet = Object.assign(
+      jest.createMockFromModule<Awaited<ReturnType<typeof useActiveWallet>>>(
+        'src/composables/useActiveWallet',
+      ),
+      { identity },
+    )
+    jest.mocked(useActiveWallet).mockImplementationOnce(async () => {
+      await ready
+      return wallet
+    })
+    await wrapper.get('[data-test="profile-update"]').trigger('click')
+    expect(useActiveWallet).toHaveBeenCalledTimes(1)
+    accountStatus.revision += 1
+    release?.()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})

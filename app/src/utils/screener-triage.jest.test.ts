@@ -402,3 +402,53 @@ describe('screener-triage ("The Tollbooth")', () => {
     })
   })
 })
+
+test('typed UTXO display reads satoshis and preserves defensive alias precedence without key access', () => {
+  const keyAccess = jest.fn(() => {
+    throw new Error('Display must not access signing material')
+  })
+  const utxo = {
+    address: 'owned',
+    satoshis: 25,
+    txId: 'tx',
+    outputIndex: 0,
+    type: 'stamp',
+    privKey: { toBuffer: keyAccess, toPublicKey: keyAccess },
+  }
+  expect(getMessageStampValueWei(makeMessage({ outpoints: [utxo] }))).toBe(25n)
+  expect(keyAccess).not.toHaveBeenCalled()
+  expect(
+    getMessageStampValueWei(
+      makeMessage({
+        outpoints: [Object.assign({}, utxo, { amount: 10, value: 20 })],
+      }),
+    ),
+  ).toBe(10n)
+  expect(
+    getMessageStampValueWei(
+      makeMessage({
+        outpoints: [Object.assign({}, utxo, { amount: null, value: 20 })],
+      }),
+    ),
+  ).toBe(20n)
+  expect(
+    getMessageStampValueWei(
+      makeMessage({
+        outpoints: [Object.assign({}, utxo, { amount: 0, value: 20 })],
+      }),
+    ),
+  ).toBe(0n)
+  expect(
+    getMessageStampValueWei(
+      makeMessage({
+        outpoints: [Object.assign({}, utxo, { amount: -1, value: 20 })],
+      }),
+    ),
+  ).toBe(0n)
+  expect(
+    getMessageStampValueWei(
+      makeMessage({ stampValueWei: 99n, outpoints: [utxo] }),
+    ),
+  ).toBe(99n)
+  expect(keyAccess).not.toHaveBeenCalled()
+})

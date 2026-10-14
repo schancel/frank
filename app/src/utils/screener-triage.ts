@@ -110,8 +110,11 @@ export function getMessageStampValueWei(
 
   if (Array.isArray(message.outpoints) && message.outpoints.length > 0) {
     let utxoSum = 0n
-    for (const u of message.outpoints as Array<Record<string, unknown>>) {
-      utxoSum += safeBigInt(u?.amount ?? u?.value ?? u?.satoshis)
+    for (const u of message.outpoints) {
+      if (!u || typeof u !== 'object') continue
+      const amount = 'amount' in u ? u.amount : undefined
+      const value = 'value' in u ? u.value : undefined
+      utxoSum += safeBigInt(amount ?? value ?? u.satoshis)
     }
     if (utxoSum > 0n) return utxoSum
   }

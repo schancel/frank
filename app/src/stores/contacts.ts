@@ -765,6 +765,7 @@ export const useContactStore = defineStore('contacts', {
             })
             return
           }
+          const oldName = oldContactInfo.profile.name
           this.updateContact({
             address,
             profile: {
@@ -773,11 +774,11 @@ export const useContactStore = defineStore('contacts', {
               // placeholder (#317); a name the user already has for this contact is kept.
               name: !isBlankName(profileInfo.name)
                 ? (profileInfo.name as string)
-                : !isBlankName(oldContactInfo.profile.name) &&
-                  oldContactInfo.profile.name !==
-                    pendingRelayData.profile.name &&
-                  !oldContactInfo.profile.name.endsWith('(Unregistered)')
-                ? oldContactInfo.profile.name
+                : typeof oldName === 'string' &&
+                  !isBlankName(oldName) &&
+                  oldName !== pendingRelayData.profile.name &&
+                  !oldName.endsWith('(Unregistered)')
+                ? oldName
                 : shortAddressLabel(
                     safeToChainDisplayAddress(address) ?? address,
                   ),

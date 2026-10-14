@@ -21,8 +21,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::store::kv_store::{
-    KvCondition, KvError, KvWrite, MemoryKvStore, RelayKvStore, RocksDbKvStore,
-    SUBSPACE_GROUP_MESSAGES, SUBSPACE_GROUP_META,
+    KvError, KvTransactionOp, MemoryKvStore, RelayKvStore, RocksDbKvStore, SUBSPACE_GROUP_MESSAGES,
+    SUBSPACE_GROUP_META,
 };
 
 /// Sibling directory extension for durable RocksDB group mailbox storage.
@@ -756,28 +756,24 @@ impl GroupStore {
             let next_sequence = server_seq.to_be_bytes();
             // This is the authorization linearization point: epoch rotation and append use
             // the same storage transaction boundary, including across relay instances.
-            let conditions = [
-                KvCondition {
-                    key: &authority_key,
-                    expected: Some(&authority_snapshot),
+            let operations = vec![
+                KvTransactionOp::CheckAndSet {
+                    key: authority_key.clone(),
+                    expected: Some(authority_snapshot.clone()),
+                    new_value: authority_snapshot.clone(),
                 },
-                KvCondition {
-                    key: &sequence_key,
-                    expected: sequence_snapshot.as_deref(),
+                KvTransactionOp::CheckAndSet {
+                    key: sequence_key.clone(),
+                    expected: sequence_snapshot,
+                    new_value: next_sequence.to_vec(),
                 },
-            ];
-            let writes = [
-                KvWrite {
-                    key: &row_key,
-                    value: &serialized,
-                },
-                KvWrite {
-                    key: &sequence_key,
-                    value: &next_sequence,
+                KvTransactionOp::Put {
+                    key: row_key,
+                    value: serialized,
                 },
             ];
-            match self.kv.compare_and_write(&conditions, &writes) {
-                Ok(()) => return Ok(stored),
+            match self.kv.execute_transaction(operations) {
+                Ok(_) => return Ok(stored),
                 Err(KvError::CasConflict { .. }) => {
                     if self.kv.get(&authority_key)?.as_deref() != Some(&authority_snapshot) {
                         return Err(GroupError::Forbidden(
@@ -1089,12 +1085,11 @@ mod tests {
         fn compare_and_swap(&self, _: &[u8], _: Option<&[u8]>, _: &[u8]) -> Result<(), KvError> {
             Err(KvError::Backend("injected CAS outage".into()))
         }
-        fn compare_and_write(
+        fn execute_transaction(
             &self,
-            _: &[KvCondition<'_>],
-            _: &[KvWrite<'_>],
-        ) -> Result<(), KvError> {
-            Err(KvError::Backend("injected CAS outage".into()))
+            _: Vec<KvTransactionOp>,
+        ) -> Result<Option<crate::store::kv_store::Versionstamp>, KvError> {
+            Err(KvError::Backend("injected transaction outage".into()))
         }
         fn put_versionstamped(
             &self,
@@ -1163,12 +1158,11 @@ mod tests {
         ) -> Result<(), KvError> {
             self.backend.compare_and_swap(key, expected, value)
         }
-        fn compare_and_write(
+        fn execute_transaction(
             &self,
-            conditions: &[KvCondition<'_>],
-            writes: &[KvWrite<'_>],
-        ) -> Result<(), KvError> {
-            self.backend.compare_and_write(conditions, writes)
+            ops: Vec<KvTransactionOp>,
+        ) -> Result<Option<crate::store::kv_store::Versionstamp>, KvError> {
+            self.backend.execute_transaction(ops)
         }
         fn put_versionstamped(
             &self,

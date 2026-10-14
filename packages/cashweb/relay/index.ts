@@ -34,6 +34,27 @@ export {
   type ProbeDirectoryOptions,
   type ProbeTarget,
 } from './restore-relay-discovery'
+export {
+  AVU_MICROS_PER_UNIT,
+  DEFAULT_WEI_PER_AVU,
+  WAKEUP_TOKEN_DOMAIN,
+  avuToMicros,
+  microsToAvu,
+  avuThresholdToMinWei,
+  blindWakeupToken,
+  blindWakeupTokenDomainSeparated,
+  createWakeupCapability,
+  verifyWakeupCapability,
+  shouldTriggerBlindWakeup,
+  buildMailboxNotificationPolicy,
+  buildNotificationPolicyAuthHeaders,
+  getMailboxNotificationPolicy,
+  putMailboxNotificationPolicy,
+  type BlindPushSubscription,
+  type MailboxNotificationPolicy,
+  type WakeupCapability,
+  type NotificationPolicyAuthContext,
+} from './notification-policy'
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'

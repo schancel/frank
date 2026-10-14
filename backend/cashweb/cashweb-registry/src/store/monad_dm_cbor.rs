@@ -133,6 +133,10 @@ pub(crate) struct Owner {
     /// When every recipient's expired login challenges were last deleted. In memory only: the
     /// first use after a restart sweeps.
     auth_nonces_swept_at_ms: Mutex<Option<i64>>,
+    /// Recorded blind wakeup events for inspection and push dispatch (#384, #1574).
+    wakeups: Mutex<Vec<crate::store::notification_policy::BlindWakeupEvent>>,
+    /// Per-recipient timestamp (ms) of the last emitted blind wakeup for coalescing.
+    last_wakeup_at_ms: Mutex<std::collections::HashMap<Address, i64>>,
 }
 impl Owner {
     /// The store that belongs beside the registry database at `registry_db`.
@@ -145,6 +149,8 @@ impl Owner {
             broadcast,
             payment_broadcasts: Default::default(),
             auth_nonces_swept_at_ms: Mutex::new(None),
+            wakeups: Default::default(),
+            last_wakeup_at_ms: Default::default(),
         }
     }
     /// Whether this message's payments may be handed to the node now: at most once per
@@ -447,6 +453,89 @@ impl Owner {
         })
         .map(|rows| rows.unwrap_or_default())
     }
+
+    /// Read a mailbox's notification policy, returning [`MailboxNotificationPolicy::default`]
+    /// when none has been configured yet.
+    pub(crate) fn get_notification_policy(
+        &self,
+        address: Address,
+    ) -> Result<crate::store::notification_policy::MailboxNotificationPolicy> {
+        let Some(Some(raw)) = self.with(false, |db| {
+            db.get(policy_key(address))
+                .map_err(|_| CanonicalError::Unavailable)
+        })?
+        else {
+            return Ok(crate::store::notification_policy::MailboxNotificationPolicy::default());
+        };
+        serde_json::from_slice(&raw).map_err(|_| CanonicalError::Unavailable)
+    }
+
+    /// Persist a mailbox's notification policy in a synced write.
+    pub(crate) fn put_notification_policy(
+        &self,
+        address: Address,
+        policy: &crate::store::notification_policy::MailboxNotificationPolicy,
+    ) -> Result<()> {
+        let encoded = serde_json::to_vec(policy).map_err(|_| CanonicalError::Invalid)?;
+        self.with(true, |db| {
+            let mut batch = WriteBatch::default();
+            batch.put(policy_key(address), encoded);
+            write(db, batch)
+        })?
+        .ok_or(CanonicalError::Unavailable)
+    }
+
+    /// Emit a content-free blind wakeup event (`{"type":"sync"}`) for `recipient`, coalescing
+    /// repeated wakeups within `policy.coalesce_window_seconds`.
+    pub(crate) fn record_wakeup(
+        &self,
+        recipient: Address,
+        policy: &crate::store::notification_policy::MailboxNotificationPolicy,
+        now_ms: i64,
+    ) -> Option<crate::store::notification_policy::BlindWakeupEvent> {
+        let window_ms = i64::from(policy.coalesce_window_seconds) * 1000;
+        if window_ms > 0 {
+            if let Ok(mut last_map) = self.last_wakeup_at_ms.lock() {
+                if let Some(&last_ms) = last_map.get(&recipient) {
+                    if now_ms >= last_ms && now_ms - last_ms < window_ms {
+                        return None;
+                    }
+                }
+                last_map.insert(recipient, now_ms);
+            }
+        }
+        let event = crate::store::notification_policy::BlindWakeupEvent {
+            recipient,
+            payload: crate::store::notification_policy::BlindWakeupPayload::default(),
+            subscriptions: policy.push_subscriptions.clone(),
+            triggered_at_ms: now_ms,
+        };
+        if let Ok(mut wakeups) = self.wakeups.lock() {
+            wakeups.push(event.clone());
+        }
+        Some(event)
+    }
+
+    /// Drain recorded blind wakeup events for `recipient` (used by tests and push dispatchers).
+    #[allow(dead_code)]
+    pub(crate) fn drain_wakeups(
+        &self,
+        recipient: Address,
+    ) -> Vec<crate::store::notification_policy::BlindWakeupEvent> {
+        let Ok(mut wakeups) = self.wakeups.lock() else {
+            return Vec::new();
+        };
+        let mut drained = Vec::new();
+        wakeups.retain(|event| {
+            if event.recipient == recipient {
+                drained.push(event.clone());
+                false
+            } else {
+                true
+            }
+        });
+        drained
+    }
 }
 
 /// One address's `I` or `O` entries from a starting position onward, in delivery order.
@@ -531,6 +620,12 @@ fn mailbox_key(kind: u8, address: Address, time: i64, hash: &[u8; 32]) -> Vec<u8
     key.extend_from_slice(&address.0);
     key.extend_from_slice(&time.to_be_bytes());
     key.extend_from_slice(hash);
+    key
+}
+/// Per-mailbox notification policy key (`P` + 20-byte recipient address).
+fn policy_key(address: Address) -> Vec<u8> {
+    let mut key = b"P".to_vec();
+    key.extend_from_slice(&address.0);
     key
 }
 /// Bound an iterator to the keys starting with `prefix`.

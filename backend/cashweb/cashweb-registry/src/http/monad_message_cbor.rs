@@ -121,15 +121,39 @@ pub(crate) async fn handle_put(
     };
     // The message is in the recipient's inbox from here on. Nothing below can undo that.
     if let Ok(recipient) = claim.policy.recipient() {
-        // The notification is a courtesy to connected readers. A slow event bus must not
-        // hold up the payments or the answer.
-        let _ = tokio::time::timeout(
-            EVENT_BUS_TIMEOUT,
-            server
-                .event_bus
-                .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash),
-        )
-        .await;
+        let policy = owner.get_notification_policy(recipient).unwrap_or_default();
+        let stamp_value_wei: u128 = claim
+            .request
+            .raw_transactions()
+            .filter_map(|raw| crate::monad_evm_tx::decode_signed_transaction(raw).ok())
+            .fold(0u128, |acc, tx| acc.saturating_add(tx.value_wei));
+        let stamp_value_avu_micros = headers
+            .get("x-cashweb-stamp-avu-micros")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or_else(|| (stamp_value_wei / 1_000_000_000_000).min(u64::MAX as u128) as u64);
+        let wakeup_token_preimage = headers
+            .get("x-wakeup-token")
+            .or_else(|| headers.get("x-cashweb-wakeup-token"))
+            .and_then(|v| v.to_str().ok())
+            .map(str::as_bytes);
+        if crate::store::notification_policy::should_trigger_wakeup(
+            &policy,
+            stamp_value_wei,
+            stamp_value_avu_micros,
+            wakeup_token_preimage,
+        ) {
+            let _ = owner.record_wakeup(recipient, &policy, claim.delivered_at);
+            // The notification is a courtesy to connected readers. A slow event bus must not
+            // hold up the payments or the answer.
+            let _ = tokio::time::timeout(
+                EVENT_BUS_TIMEOUT,
+                server
+                    .event_bus
+                    .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash),
+            )
+            .await;
+        }
     }
     if owner.may_broadcast_payments(&claim.policy.payload_hash, REBROADCAST_INTERVAL) {
         broadcast_payments(runtime, &claim).await;
@@ -1218,6 +1242,138 @@ pub(crate) async fn handle_mailbox(
         crate::monad_mailbox::MailboxResource::Mailbox,
     )
     .await
+}
+
+const MAX_NOTIFICATION_POLICY_BYTES: usize = 64 * 1024;
+
+fn decode_hex_header(headers: &HeaderMap, primary: &str, fallback: &str) -> Result<Vec<u8>> {
+    let raw = single_header(headers, primary)
+        .or_else(|_| single_header(headers, fallback))
+        .map_err(|_| CanonicalError::Unauthorized)?;
+    let trimmed = raw.trim();
+    let clean = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    hex::decode(clean).map_err(|_| CanonicalError::Unauthorized)
+}
+
+fn authenticate_notification_policy(
+    headers: &HeaderMap,
+    address: Address,
+    method: &str,
+) -> Result<()> {
+    let pubkey_bytes =
+        decode_hex_header(headers, "x-cashweb-auth-pubkey", "x-frank-mailbox-subject")?;
+    let derived = if pubkey_bytes.len() == 33 {
+        crate::monad_stamp_stealth::recipient_address_from_public_key(&pubkey_bytes)
+            .map_err(|_| CanonicalError::Unauthorized)?
+    } else if pubkey_bytes.len() == 65 {
+        let arr: [u8; 65] = pubkey_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| CanonicalError::Unauthorized)?;
+        crate::monad_evm_tx::address_from_uncompressed_pubkey(&arr)
+    } else {
+        return Err(CanonicalError::Unauthorized);
+    };
+    if derived != address {
+        return Err(CanonicalError::Unauthorized);
+    }
+
+    let timestamp_str = single_header(headers, "x-cashweb-auth-timestamp")
+        .or_else(|_| single_header(headers, "x-frank-mailbox-expires-at-ms"))
+        .map_err(|_| CanonicalError::Unauthorized)?
+        .trim();
+    if timestamp_str.is_empty() || timestamp_str.parse::<u64>().is_err() {
+        return Err(CanonicalError::Unauthorized);
+    }
+
+    let sig_bytes = decode_hex_header(
+        headers,
+        "x-cashweb-auth-signature",
+        "x-frank-mailbox-signature",
+    )?;
+    let pk = secp256k1_abc::PublicKey::from_slice(&pubkey_bytes)
+        .map_err(|_| CanonicalError::Unauthorized)?;
+    let mut sig = if sig_bytes.len() == 64 {
+        secp256k1_abc::Signature::from_compact(&sig_bytes)
+            .map_err(|_| CanonicalError::Unauthorized)?
+    } else {
+        secp256k1_abc::Signature::from_der(&sig_bytes).map_err(|_| CanonicalError::Unauthorized)?
+    };
+    sig.normalize_s();
+
+    let addr_hex = address.to_hex();
+    let candidates = [
+        format!("frank-notification-policy-auth-v1:{method}:{addr_hex}:{timestamp_str}"),
+        format!("frank-notification-policy-auth-v1:{addr_hex}:{timestamp_str}"),
+        format!("{method}:{addr_hex}:{timestamp_str}"),
+        format!("{addr_hex}:{timestamp_str}"),
+        timestamp_str.to_string(),
+    ];
+    let secp = secp256k1_abc::Secp256k1::verification_only();
+    let verified = candidates.iter().any(|preimage| {
+        let digest = Sha256::digest(preimage.as_bytes().to_vec().into());
+        secp256k1_abc::Message::from_slice(digest.as_slice())
+            .map(|msg| secp.verify(&msg, &sig, &pk).is_ok())
+            .unwrap_or(false)
+    });
+    if !verified {
+        return Err(CanonicalError::Unauthorized);
+    }
+    Ok(())
+}
+
+pub(crate) async fn handle_get_notification_policy(
+    axum::extract::Path(address): axum::extract::Path<String>,
+    Extension(server): Extension<super::server::RegistryServer>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
+    authenticate_notification_policy(&headers, address, "GET")?;
+    let policy = server
+        .registry
+        .canonical_dm()
+        .get_notification_policy(address)?;
+    Ok((StatusCode::OK, Json(policy)).into_response())
+}
+
+pub(crate) async fn handle_put_notification_policy(
+    axum::extract::Path(address): axum::extract::Path<String>,
+    Extension(server): Extension<super::server::RegistryServer>,
+    headers: HeaderMap,
+    RawBody(mut body): RawBody,
+) -> Result<Response> {
+    use hyper::body::HttpBody;
+    let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
+    authenticate_notification_policy(&headers, address, "PUT")?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = body.data().await {
+        let chunk = chunk.map_err(|_| CanonicalError::Invalid)?;
+        if chunk.len() > MAX_NOTIFICATION_POLICY_BYTES.saturating_sub(bytes.len()) {
+            return Err(CanonicalError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let mut policy: crate::store::notification_policy::MailboxNotificationPolicy =
+        serde_json::from_slice(&bytes).map_err(|_| CanonicalError::Invalid)?;
+    if policy
+        .min_notification_value_wei
+        .trim()
+        .parse::<u128>()
+        .is_err()
+    {
+        return Err(CanonicalError::Invalid);
+    }
+    if policy.updated_at_ms == 0 {
+        policy.updated_at_ms = now_ms().max(0) as u64;
+    }
+    server
+        .registry
+        .canonical_dm()
+        .put_notification_policy(address, &policy)?;
+    Ok((StatusCode::OK, Json(policy)).into_response())
 }
 
 #[derive(Debug, serde::Deserialize)]

@@ -231,6 +231,43 @@
               </q-tab-panel>
               <q-tab-panel name="notifications">
                 <notification-permission-panel />
+                <q-separator class="q-my-md" />
+                <div class="row q-mb-sm">
+                  <q-input
+                    outlined
+                    v-model.number="notificationFeeThresholdAvu"
+                    :label="
+                      $t(
+                        'settings.notificationFeeThresholdAvu',
+                        'Notification Fee Threshold (AVU)',
+                      )
+                    "
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    :hint="
+                      $t(
+                        'settings.notificationFeeThresholdAvuHint',
+                        'Minimum stamp value in AVU required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',
+                      )
+                    "
+                    data-test="notification-fee-threshold-input"
+                    data-testid="notification-fee-threshold-input"
+                    style="width: 100%"
+                  />
+                </div>
+                <div class="row items-center q-mt-sm">
+                  <q-toggle
+                    v-model="allowContactNotificationBypass"
+                    :label="
+                      $t(
+                        'settings.allowContactNotificationBypass',
+                        'Allow contacts with wakeup tokens to notify without a stamp',
+                      )
+                    "
+                    data-test="notification-contact-bypass-toggle"
+                  />
+                </div>
               </q-tab-panel>
               <q-tab-panel name="storage">
                 <persistent-storage-panel />
@@ -404,11 +441,29 @@ export default defineComponent({
       settingsStore.emailGatewayOverride?.address ?? '',
     )
     const emailGatewayError = ref('')
+    const notificationFeeThresholdAvu = ref<number>(
+      settingsStore.notificationFeeThresholdAvu ?? 0,
+    )
+    const allowContactNotificationBypass = ref<boolean>(
+      settingsStore.allowContactNotificationBypass ?? true,
+    )
 
     watch(
       () => settingsStore.emailGatewayOverride,
       newVal => {
         emailGatewayInput.value = newVal?.address ?? ''
+      },
+    )
+    watch(
+      () => settingsStore.notificationFeeThresholdAvu,
+      newVal => {
+        notificationFeeThresholdAvu.value = newVal ?? 0
+      },
+    )
+    watch(
+      () => settingsStore.allowContactNotificationBypass,
+      newVal => {
+        allowContactNotificationBypass.value = newVal ?? true
       },
     )
 
@@ -455,6 +510,7 @@ export default defineComponent({
 
     return {
       appearanceStore,
+      settingsStore,
       isSaved,
       isTestnetMode,
       darkMode: ref(storeDarkMode.value),
@@ -472,6 +528,8 @@ export default defineComponent({
       localeOptions,
       emailGatewayInput,
       emailGatewayError,
+      notificationFeeThresholdAvu,
+      allowContactNotificationBypass,
       emailGatewayStatus: computed(() => settingsStore.emailGatewayStatus),
       emailGatewayDomain: computed(
         () => settingsStore.advertisedEmailGateway?.domain ?? '',
@@ -525,6 +583,21 @@ export default defineComponent({
         this.isSaved = false
         return
       }
+      if (
+        typeof this.settingsStore?.setNotificationFeeThresholdAvu === 'function'
+      ) {
+        this.settingsStore.setNotificationFeeThresholdAvu(
+          this.notificationFeeThresholdAvu,
+        )
+      }
+      if (
+        typeof this.settingsStore?.setAllowContactNotificationBypass ===
+        'function'
+      ) {
+        this.settingsStore.setAllowContactNotificationBypass(
+          this.allowContactNotificationBypass,
+        )
+      }
       this.isSaved = true
       if (typeof this.appearanceStore?.setDarkMode === 'function') {
         this.appearanceStore.setDarkMode(this.darkMode)
@@ -560,6 +633,10 @@ export default defineComponent({
     cancel() {
       // Discard the draft -- reset theme back to store values
       this.locale = this.storeLocale
+      this.notificationFeeThresholdAvu =
+        this.settingsStore?.notificationFeeThresholdAvu ?? 0
+      this.allowContactNotificationBypass =
+        this.settingsStore?.allowContactNotificationBypass ?? true
       if (this.storeTheme !== undefined) {
         this.theme = this.storeTheme
       }

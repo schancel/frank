@@ -2951,13 +2951,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             ReturnType<NonNullable<EvmChainWalletHandle["getBalanceParts"]>>
           >;
           let balancePartsRefresh: Promise<BalanceParts> | undefined;
+          let balanceReadGeneration = 0;
           // Existing financial invalidations detach older display reads as well as cached totals.
           const invalidateBalanceRead = (): void => {
+            balanceReadGeneration++;
             primaryBalanceCache = undefined;
             balancePartsRefresh = undefined;
           };
           const readBalanceParts = async (): Promise<BalanceParts> => {
             requireOpenWallet(wallet);
+            const generation = balanceReadGeneration;
             try {
               const now = Date.now();
               let mainBalance: bigint;
@@ -2993,13 +2996,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     ? Promise.resolve(0n)
                     : readAddress(identity.address.raw),
                 ]);
-                noteMainBalanceForFundAhead(wallet, mainBalance);
-
-                primaryBalanceCache = {
-                  mainBalance,
-                  identityBalance,
-                  cachedAtMs: now,
-                };
+                if (generation === balanceReadGeneration) {
+                  noteMainBalanceForFundAhead(wallet, mainBalance);
+                  primaryBalanceCache = {
+                    mainBalance,
+                    identityBalance,
+                    cachedAtMs: now,
+                  };
+                }
               }
 
               // Plus every received coin the chain shows funded. A pending coin (nothing seen on
@@ -3150,26 +3154,33 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 .map((row) => row.operationId);
             },
             async resumeNativeOperation(operationId) {
-              // A payment to a contact is broadcast only once the relay has its message.
-              if (heldForItsMessage(operationId))
-                throw new Error(
-                  "This transfer pays a contact and is broadcast once its message is delivered"
+              invalidateBalanceRead();
+              try {
+                // A payment to a contact is broadcast only once the relay has its message.
+                if (heldForItsMessage(operationId))
+                  throw new Error(
+                    "This transfer pays a contact and is broadcast once its message is delivered"
+                  );
+                const owner = nativeOperationOwner(wallet);
+                const result = await runWalletExclusive(wallet, (admission) =>
+                  runMainAccountExclusive(wallet, () =>
+                    owner.resumeOperation(operationId, admission)
+                  )
                 );
-              const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, (admission) =>
-                runMainAccountExclusive(wallet, () =>
-                  owner.resumeOperation(operationId, admission)
-                )
-              );
-              // The note to this account's other devices is started, not waited for: a native
-              // send or resume never waits on the relay or on a message being sent.
-              if (!closedWallets.has(wallet)) {
-                {
-                  const noteOf = operationId;
-                  retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
+                // The note to this account's other devices is started, not waited for: a native
+                // send or resume never waits on the relay or on a message being sent.
+                if (!closedWallets.has(wallet)) {
+                  {
+                    const noteOf = operationId;
+                    retryEarlierNotes(owner, noteOf, await owner.startSync(noteOf));
+                  }
                 }
+                return result;
+              } finally {
+                // A rejected or pending resume may still have changed chain balances.
+                // Reads begun before or during it cannot republish those earlier totals.
+                invalidateBalanceRead();
               }
-              return result;
             },
             async cancelUnsignedNativeOperation(operationId) {
               await runWalletExclusive(wallet, (admission) => {

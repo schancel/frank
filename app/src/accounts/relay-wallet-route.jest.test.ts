@@ -90,7 +90,13 @@ it('rejects malformed discovery', async () => {
   )
 })
 
-it.each([null, {}, { id: 'future-testnet', capabilities: [] }])(
+it.each([
+  null,
+  {},
+  { id: 'future-testnet', capabilities: [] },
+  { ...route('monad-testnet'), family: ['evm'] },
+  { ...route('monad-testnet'), network: ['testnet'] },
+])(
   'rejects malformed route members instead of treating them as absent',
   async member => {
     const { relay } = fixture([member])

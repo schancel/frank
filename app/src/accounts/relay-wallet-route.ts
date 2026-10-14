@@ -20,8 +20,10 @@ function isDiscoveryRoute(value: unknown): value is Record<string, unknown> {
   return (
     typeof route.id === 'string' &&
     route.id.length > 0 &&
-    ['evm', 'bitcoin', 'solana'].includes(String(route.family)) &&
-    ['mainnet', 'testnet', 'regtest'].includes(String(route.network)) &&
+    typeof route.family === 'string' &&
+    ['evm', 'bitcoin', 'solana'].includes(route.family) &&
+    typeof route.network === 'string' &&
+    ['mainnet', 'testnet', 'regtest'].includes(route.network) &&
     (route.caip2 === null || typeof route.caip2 === 'string') &&
     (route.native_chain_id === null ||
       typeof route.native_chain_id === 'string') &&

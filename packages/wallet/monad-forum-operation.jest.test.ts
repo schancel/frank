@@ -115,7 +115,7 @@ async function fixture() {
     for (const [k, v] of changes)
       v === undefined ? fields.delete(k) : fields.set(k, v)
     return encodeFrame(
-      { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 46, schemaVersion: 1, minReaderVersion: 1 },
       fields,
     )
   }

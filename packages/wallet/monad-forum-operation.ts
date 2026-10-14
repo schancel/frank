@@ -74,16 +74,16 @@ export function bindForumAuthority(
   const typed = parsed.typed
   let target: Uint8Array
   let burn: Uint8Array
-  if (operation.kind === 'post' && typed?.type === 10) {
+  if (operation.kind === 'post' && typed?.type === 41) {
     if (
-      typed.postFrame.typed?.type !== 9 ||
+      typed.postFrame.typed?.type !== 40 ||
       typed.postFrame.schemaVersion !== 2 ||
       operation.direction !== 'up'
     )
       throw new Error('Invalid canonical Forum post')
     target = topicBurnCommitment(typed.postFrame.frame).hash
     burn = typed.burnTx
-  } else if (operation.kind === 'vote' && typed?.type === 11) {
+  } else if (operation.kind === 'vote' && typed?.type === 42) {
     target = typed.targetHash
     burn = typed.burnTx
   } else throw new Error('Forum journal family mismatch')

@@ -1,18 +1,18 @@
-; Type 2 wraps and signs the complete type-4 statement frame. This avoids a
+; Type 2 wraps and signs the complete type-1 statement frame. This avoids a
 ; signature-containing-itself cycle while binding exact framing and versions.
 
 directory-attestation = {
-  0: framed-object, ; type-4 directory-statement frame
+  0: framed-object, ; type-1 directory-statement frame
   1: [1*16 signature-entry],
   * uint => frank-value,
 }
 
-; Type 4, schema_version 2, min_reader_version 2: field 8 is required. An
+; Type 1, schema_version 2, min_reader_version 2: field 8 is required. An
 ; account whose only statement is schema 1 has no stamp key and cannot receive
 ; stamped direct messages (README S10a).
 directory-statement = {
   0: network-tag,
-  1: account-ref, ; directory subject: the currently registered key; changes only through one linked type-7 transition (README S10)
+  1: account-ref, ; directory subject: the currently registered key; changes only through one linked type-3 transition (README S10)
   2: uint .le 18446744073709551615, ; monotonic revision
   3: timestamp,
   4: [1*32 relay-binding],
@@ -26,7 +26,7 @@ directory-statement = {
   * uint => frank-value,
 }
 
-; Type 4, schema_version 1: the layout before the stamp key existed. It has no
+; Type 1, schema_version 1: the layout before the stamp key existed. It has no
 ; field 8 (C12: a field 8 in a schema 1 statement is a `schema` error, which
 ; CDDL cannot express beside the wildcard). Same fields 0 through 7 as above.
 directory-statement-v1 = {
@@ -50,7 +50,7 @@ relay-binding = {
 }
 
 key-transition = {
-  0: framed-object, ; type-7 key-transition-statement frame
+  0: framed-object, ; type-3 key-transition-statement frame
   1: uint .le 65535, ; authorization/signature algorithm
   2: account-ref, ; signer; must equal statement prior_authority
   3: bstr .size (1..512), ; signature of the T2a transcript
@@ -66,7 +66,7 @@ key-transition-statement = {
   * uint => frank-value,
 }
 
-; Type 4, schema_version 3, min_reader_version 2: the registration profile of
+; Type 1, schema_version 3, min_reader_version 2: the registration profile of
 ; README section 11 (#106). V1 adds the optional field 9 without raising
 ; min_reader_version, because a schema-2 reader projects the statement through
 ; V6.3 and retains field 9. A schema-1 or schema-2 statement carrying field 9
@@ -108,7 +108,7 @@ profile-header = {
 }
 
 ; Provisional preview allocation (#742 accepting reviewed #719 C1–C14).
-; Type 4 schema 4 / min_reader 4; separate from schemas 1–3 above.
+; Type 1 schema 4 / min_reader 4; separate from schemas 1–3 above.
 ; Exact schema 4 rejects undeclared fields (C12); future compatible schemas
 ; retain optional bytes under V6.3. Fields 5, 7 and 9 remain unsupported.
 ; README "Provisional directory preview" owns semantics and admission boundary.
@@ -123,7 +123,7 @@ directory-statement-v4 = {
   10: directory-preview-key, ; distinct message-DH M, never profile field 9
   11: uint .le 18446744073709551615, ; mailbox_key_generation
   12: uint .le 18446744073709551615, ; stamp_key_generation
-  13: null / bstr .size 32, ; exact predecessor type-4 T1; null at rev0
+  13: null / bstr .size 32, ; exact predecessor type-1 T1; null at rev0
   ? 14: canonical-username, ; optional canonical username handle (ticket #972)
   ? 15: account-type, ; optional account type (ticket #1120)
   ? 16: bot-role, ; optional bot/service role (ticket #1120)

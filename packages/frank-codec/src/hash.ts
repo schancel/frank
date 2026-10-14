@@ -67,13 +67,13 @@ export function commonTranscript(
 /** T1's network source for each type; undefined for an unknown type. */
 export function contentHashNetwork(p: ParsedFrame): string {
   switch (p.typeId) {
-    case 8:
-    case 16:
-    case 17:
+    case 20:
+    case 21:
+    case 22:
       return 'frank'
     case 2: {
       const t = p.typed
-      if (t?.type === 2 && t.statementFrame.typed?.type === 4)
+      if (t?.type === 2 && t.statementFrame.typed?.type === 1)
         return t.statementFrame.typed.network
       throw new Error(
         'T1 for a type-2 frame needs the stage 8 typed projection',
@@ -81,24 +81,24 @@ export function contentHashNetwork(p: ParsedFrame): string {
     }
     case 1:
     case 3:
-    case 4:
-    case 5:
-    case 6:
-    case 7:
-    case 9:
     case 10:
-    case 11: {
+    case 11:
+    case 12:
+    case 14:
+    case 40:
+    case 41:
+    case 42: {
       const t = p.typed
       if (t && 'network' in t) return t.network
       throw new Error(
         `T1 for a type-${p.typeId} frame needs the stage 8 typed projection`,
       )
     }
-    case 25: {
+    case 13: {
       const t = p.typed
-      if (t?.type === 25 && t.payloadFrame.typed?.type === 1)
+      if (t?.type === 13 && t.payloadFrame.typed?.type === 10)
         return t.payloadFrame.typed.network
-      throw new Error('T1 for a type-25 frame needs the opened type-1 network')
+      throw new Error('T1 for a type-13 frame needs the opened type-10 network')
     }
     default:
       throw new Error('content hashes are undefined for an unknown type (T1)')
@@ -112,7 +112,7 @@ export function contentHash(p: ParsedFrame): Uint8Array {
   )
 }
 
-/** T1a: `content_digest` of a complete type-8 frame (network is the literal `frank`). */
+/** T1a: `content_digest` of a complete type-20 frame (network is the literal `frank`). */
 export function messageContentDigest(type8Frame: Uint8Array): Uint8Array {
   return sha256(
     commonTranscript('frank/message-content/v1', 'frank', type8Frame),
@@ -120,7 +120,7 @@ export function messageContentDigest(type8Frame: Uint8Array): Uint8Array {
 }
 
 /**
- * T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-4 statement frame.
+ * T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-1 statement frame.
  * The network argument is the statement's own field 0 (T5), never ambient state; the context
  * is empty.
  */
@@ -158,7 +158,7 @@ export function topicPostSignatureDigest(
   )
 }
 
-/** T2a: the digest of a key-transition authorization over the complete type-7 frame. */
+/** T2a: the digest of a key-transition authorization over the complete type-3 frame. */
 export function keyTransitionSignatureDigest(
   network: string,
   type7Frame: Uint8Array,
@@ -168,7 +168,7 @@ export function keyTransitionSignatureDigest(
   )
 }
 
-/** T3: recipient payload digest of a complete type-5 frame with its field-0 network. */
+/** T3: recipient payload digest of a complete type-11 frame with its field-0 network. */
 export function recipientPayloadDigest(
   network: string,
   type5Frame: Uint8Array,
@@ -182,23 +182,23 @@ function mapGet(value: unknown, key: bigint): unknown {
   return value instanceof Map ? value.get(key) : undefined
 }
 
-/** Network tag from a type-1 frame's own field 0. The frame bytes are not re-encoded. */
+/** Network tag from a type-10 frame's own field 0. The frame bytes are not re-encoded. */
 function type1NetworkTag(frame: Uint8Array): string {
   if (frame.length < FRAME_HEADER_BYTES)
     throw new RangeError('inner frame is shorter than a FRNK header')
   const envelope = decodeCanonical(frame.subarray(FRAME_HEADER_BYTES))
-  if (mapGet(envelope, 0n) !== 1n)
-    throw new RangeError('forwarding digest requires a type-1 inner frame')
+  if (mapGet(envelope, 0n) !== 10n)
+    throw new RangeError('forwarding digest requires a type-10 inner frame')
   const payload = mapGet(envelope, 3n)
   if (!(payload instanceof Uint8Array))
-    throw new RangeError('type-1 payload is not a byte string')
+    throw new RangeError('type-10 payload is not a byte string')
   const network = mapGet(decodeCanonical(payload), 0n)
   if (typeof network !== 'string' || !NETWORK_TAG.test(network))
-    throw new RangeError('type-1 network tag is missing')
+    throw new RangeError('type-10 network tag is missing')
   return network
 }
 
-/** T3f: forwarding payload digest of the exact inner type-1 frame, using that frame's network. */
+/** T3f: forwarding payload digest of the exact inner type-10 frame, using that frame's network. */
 export function forwardingPayloadDigest(innerFrame: Uint8Array): Uint8Array {
   return sha256(
     commonTranscript(

@@ -185,7 +185,7 @@ function roleOwner(
         ])
       const tuple = owned.relay
       const statement = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        { typeId: 1, schemaVersion: 4, minReaderVersion: 4 },
         cborMap([
           [0, owned.network],
           [1, account(auth.compressedPoint)],

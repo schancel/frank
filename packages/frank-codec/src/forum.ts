@@ -162,7 +162,7 @@ export function encodeForumPost(fields: ForumPostFields): Uint8Array {
   }
   if (fields.signature !== undefined) payload.set(5, fields.signature)
   const frame = encodeFrame(
-    { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+    { typeId: 40, schemaVersion: 2, minReaderVersion: 2 },
     payload,
   )
   checked(frame)
@@ -220,7 +220,7 @@ export function verifyTopicPostAuthor(
 
 /** Validates complete encoded sizes and required children; does not assert the observations are true. */
 export function encodeForumReadFrame(
-  typeId: 12 | 13 | 14 | 15,
+  typeId: 43 | 44 | 45 | 46,
   payload: Encodable,
 ): Uint8Array {
   const frame = encodeFrame(
@@ -255,7 +255,7 @@ export function encodeForumCursor(cursor: ForumCursorFields): Uint8Array {
     [3, cursor.epoch],
     [7, cursor.incarnation],
   ])
-  if (cursor.family === 13) {
+  if (cursor.family === 44) {
     m.set(
       4,
       new Map<number, Encodable>([
@@ -332,7 +332,7 @@ export function matchForumOperation(
 ): ForumOperationStatus<ParsedFrame> {
   const status = checked(frame).typed
   if (
-    status?.type !== 15 ||
+    status?.type !== 46 ||
     status.network !== expected.network ||
     compareBytes(status.submittedFrame.frame, expected.submittedFrame) ||
     compareBytes(status.targetHash, expected.targetHash) ||
@@ -361,7 +361,7 @@ export function matchForumView(
   expected: ForumViewExpectation,
 ): ForumView<ParsedFrame> {
   const view = checked(frame).typed
-  if (view?.type !== 12 || view.postFrame.typed?.type !== 9)
+  if (view?.type !== 43 || view.postFrame.typed?.type !== 40)
     throw fail('expected Forum view')
   const hash = contentHash(view.postFrame)
   if (
@@ -383,7 +383,7 @@ export function matchForumPage(
   frame: Uint8Array,
   expected: {
     network: string
-    family: 13 | 14
+    family: 44 | 45
     topic?: string
     since?: Timestamp
     requestCursor?: Uint8Array
@@ -393,13 +393,13 @@ export function matchForumPage(
     page = parsed.typed
   if (
     !page ||
-    (page.type !== 13 && page.type !== 14) ||
+    (page.type !== 44 && page.type !== 45) ||
     page.type !== expected.family ||
     page.network !== expected.network
   )
     throw fail('page network/family binding')
   if (
-    page.type === 13 &&
+    page.type === 44 &&
     (page.topic !== expected.topic ||
       page.since.seconds !== expected.since?.seconds ||
       page.since.nanoseconds !== expected.since.nanoseconds)

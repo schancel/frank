@@ -245,12 +245,12 @@ export function isEmailMessageItemFrame(
   return (
     frame.kind === 'parsed' &&
     frame.typeId === TYPE_EMAIL_MESSAGE_ITEM &&
-    frame.typed?.type === 26
+    frame.typed?.type === 23
   )
 }
 
 /**
- * Projects a validated parsed Type 26 frame into its typed payload.
+ * Projects a validated parsed Type 23 frame into its typed payload.
  */
 export function projectEmailMessageItem(frame: ParsedFrame): EmailMessageItem {
   if (!isEmailMessageItemFrame(frame)) {
@@ -260,7 +260,7 @@ export function projectEmailMessageItem(frame: ParsedFrame): EmailMessageItem {
 }
 
 /**
- * Validates raw frame bytes as a Type 26 email message item through stages 1-9.
+ * Validates raw frame bytes as a Type 23 email message item through stages 1-9.
  */
 export function validateEmailMessageItem(
   frameBytes: Uint8Array,
@@ -272,7 +272,7 @@ export function validateEmailMessageItem(
     throw bad(`expected parsed frame, got ${result.kind}`)
   }
   if (!isEmailMessageItemFrame(result)) {
-    throw bad(`expected Type 26 frame, got type ${result.typeId}`)
+    throw bad(`expected Type 23 frame, got type ${result.typeId}`)
   }
   return result
 }

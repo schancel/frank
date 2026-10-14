@@ -65,42 +65,54 @@ pub(crate) const U64_MAX: i128 = u64::MAX as i128;
 /// Inclusive CBOR nint minimum (`-2^64`).
 pub(crate) const NINT_MIN: i128 = -1 - U64_MAX;
 
-pub(crate) const TYPE_DIRECT_MESSAGE: u32 = 1;
+pub(crate) const TYPE_DIRECTORY_STATEMENT: u32 = 1;
 pub(crate) const TYPE_DIRECTORY_ATTESTATION: u32 = 2;
-pub(crate) const TYPE_MAILBOX_CHECKPOINT: u32 = 3;
-pub(crate) const TYPE_DIRECTORY_STATEMENT: u32 = 4;
-pub(crate) const TYPE_RECIPIENT_PAYLOAD: u32 = 5;
-pub(crate) const TYPE_ENCRYPTED_CONTENT: u32 = 6;
-pub(crate) const TYPE_KEY_TRANSITION_STATEMENT: u32 = 7;
-pub(crate) const TYPE_MESSAGE_REVISION: u32 = 8;
-pub(crate) const TYPE_TOPIC_POST: u32 = 9;
-pub(crate) const TYPE_TOPIC_POST_SUBMISSION: u32 = 10;
-pub(crate) const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 11;
-pub(crate) const TYPE_FORUM_VIEW: u32 = 12;
-pub(crate) const TYPE_FORUM_TOPIC_PAGE: u32 = 13;
-pub(crate) const TYPE_FORUM_DISCOVERY_PAGE: u32 = 14;
-pub(crate) const TYPE_FORUM_OPERATION_STATUS: u32 = 15;
-pub(crate) const TYPE_CONTAINER_ITEM: u32 = 16;
-pub(crate) const TYPE_TEXT_ITEM: u32 = 17;
-/// Type18 frame limit at both root and nested positions.
-pub(crate) const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
-pub(crate) const TYPE_BLACKJACK_ITEM: u32 = 18;
-pub(crate) const TYPE_STEALTH_ITEM: u32 = 19;
-/// Type 25 forwarding envelope frame limit (32 MiB).
+pub(crate) const TYPE_KEY_TRANSITION_STATEMENT: u32 = 3;
+
+pub(crate) const TYPE_DIRECT_MESSAGE: u32 = 10;
+pub(crate) const TYPE_RECIPIENT_PAYLOAD: u32 = 11;
+pub(crate) const TYPE_ENCRYPTED_CONTENT: u32 = 12;
+/// Type 13 forwarding envelope frame limit (32 MiB).
 pub const MAX_FORWARDING_DELIVERY_FRAME_BYTES: usize = 33_554_432;
-/// Type 25: outer relay forwarding delivery envelope.
-pub const TYPE_FORWARDING_DELIVERY: u32 = 25;
+/// Type 13: outer relay forwarding delivery envelope.
+pub const TYPE_FORWARDING_DELIVERY: u32 = 13;
+pub(crate) const TYPE_MAILBOX_CHECKPOINT: u32 = 14;
+
+pub(crate) const TYPE_MESSAGE_REVISION: u32 = 20;
+pub(crate) const TYPE_CONTAINER_ITEM: u32 = 21;
+pub(crate) const TYPE_TEXT_ITEM: u32 = 22;
+pub(crate) const TYPE_STEALTH_ITEM: u32 = 24;
+/// Type26 frame limit at both root and nested positions.
+pub(crate) const MAX_BLACKJACK_FRAME_BYTES: usize = 4096;
+pub(crate) const TYPE_BLACKJACK_ITEM: u32 = 26;
+
+pub(crate) const TYPE_TOPIC_POST: u32 = 40;
+pub(crate) const TYPE_TOPIC_POST_SUBMISSION: u32 = 41;
+pub(crate) const TYPE_TOPIC_VOTE_SUBMISSION: u32 = 42;
+pub(crate) const TYPE_FORUM_VIEW: u32 = 43;
+pub(crate) const TYPE_FORUM_TOPIC_PAGE: u32 = 44;
+pub(crate) const TYPE_FORUM_DISCOVERY_PAGE: u32 = 45;
+pub(crate) const TYPE_FORUM_OPERATION_STATUS: u32 = 46;
+
+pub(crate) fn is_assigned_non_item_type(type_id: u32) -> bool {
+    matches!(type_id, 1..=3 | 10..=14 | 20 | 40..=46)
+}
 
 /// Types with a version-1 schema in this codec (E5). `0xffff0001` is not included.
 pub const KNOWN_TYPES: [u32; 20] = [
-    TYPE_DIRECT_MESSAGE,
-    TYPE_DIRECTORY_ATTESTATION,
-    TYPE_MAILBOX_CHECKPOINT,
     TYPE_DIRECTORY_STATEMENT,
+    TYPE_DIRECTORY_ATTESTATION,
+    TYPE_KEY_TRANSITION_STATEMENT,
+    TYPE_DIRECT_MESSAGE,
     TYPE_RECIPIENT_PAYLOAD,
     TYPE_ENCRYPTED_CONTENT,
-    TYPE_KEY_TRANSITION_STATEMENT,
+    TYPE_FORWARDING_DELIVERY,
+    TYPE_MAILBOX_CHECKPOINT,
     TYPE_MESSAGE_REVISION,
+    TYPE_CONTAINER_ITEM,
+    TYPE_TEXT_ITEM,
+    TYPE_STEALTH_ITEM,
+    TYPE_BLACKJACK_ITEM,
     TYPE_TOPIC_POST,
     TYPE_TOPIC_POST_SUBMISSION,
     TYPE_TOPIC_VOTE_SUBMISSION,
@@ -108,11 +120,6 @@ pub const KNOWN_TYPES: [u32; 20] = [
     TYPE_FORUM_TOPIC_PAGE,
     TYPE_FORUM_DISCOVERY_PAGE,
     TYPE_FORUM_OPERATION_STATUS,
-    TYPE_CONTAINER_ITEM,
-    TYPE_TEXT_ITEM,
-    TYPE_BLACKJACK_ITEM,
-    TYPE_STEALTH_ITEM,
-    TYPE_FORWARDING_DELIVERY,
 ];
 
 /// Frank-CBOR production DM suite (S2c): authenticated XChaCha20-Poly1305.

@@ -71,8 +71,8 @@ export function buildForumCorpus() {
     payload: Encodable,
     valid: boolean,
     error?: string,
-    schema = type === 9 ? 2 : 1,
-    min = type === 9 ? 2 : 1,
+    schema = type === 40 ? 2 : 1,
+    min = type === 40 ? 2 : 1,
     context?: ForumFixture['context'],
     retained?: boolean,
   ) => {
@@ -103,11 +103,11 @@ export function buildForumCorpus() {
     ['long', 'm'.repeat(65)],
   ]) {
     for (const [type, id] of [
-      [9, 'typescript-origin'],
-      [12, 'view-large-aggregate'],
-      [13, 'equal-time-page'],
-      [14, 'discovery-u64'],
-      [15, 'confirmed-a'],
+      [40, 'typescript-origin'],
+      [43, 'view-large-aggregate'],
+      [44, 'equal-time-page'],
+      [45, 'discovery-u64'],
+      [46, 'confirmed-a'],
     ] as const) {
       const p = payloadOf(id)
       p.set(0, network)
@@ -117,7 +117,7 @@ export function buildForumCorpus() {
   for (const schema of [2, 3])
     add(
       `min-reader-${schema}-one`,
-      9,
+      40,
       payloadOf('typescript-origin'),
       false,
       'unsupported@7',
@@ -126,7 +126,7 @@ export function buildForumCorpus() {
     )
   add(
     'per-type-schema-one-reject',
-    9,
+    40,
     payloadOf('typescript-origin'),
     false,
     'unsupported@7',
@@ -136,7 +136,7 @@ export function buildForumCorpus() {
   )
   add(
     'per-type-schema-one-retain',
-    9,
+    40,
     payloadOf('typescript-origin'),
     true,
     undefined,
@@ -147,7 +147,7 @@ export function buildForumCorpus() {
   )
   add(
     'reader-one-reject',
-    9,
+    40,
     payloadOf('typescript-origin'),
     false,
     'unsupported@7',
@@ -157,7 +157,7 @@ export function buildForumCorpus() {
   )
   add(
     'reader-one-retain',
-    9,
+    40,
     payloadOf('typescript-origin'),
     true,
     undefined,
@@ -168,7 +168,7 @@ export function buildForumCorpus() {
   )
   add(
     'required-child-per-type-one',
-    12,
+    43,
     payloadOf('view-large-aggregate'),
     false,
     'unsupported@7',
@@ -178,7 +178,7 @@ export function buildForumCorpus() {
   )
   add(
     'opaque-schema-one-cbor',
-    9,
+    40,
     payloadOf('typescript-origin'),
     true,
     undefined,
@@ -192,7 +192,7 @@ export function buildForumCorpus() {
     p.set(8, agg)
     add(
       `closed-aggregate-schema-${schema}`,
-      12,
+      43,
       p,
       false,
       'schema@8.2',
@@ -209,7 +209,7 @@ export function buildForumCorpus() {
         [1, new Uint8Array(length)],
       ]),
     )
-    add(`aggregate-size-${length}`, 12, p, false, 'schema@8.2')
+    add(`aggregate-size-${length}`, 43, p, false, 'schema@8.2')
   }
   const max = payloadOf('view-large-aggregate')
   max.set(
@@ -219,7 +219,7 @@ export function buildForumCorpus() {
       [1, new Uint8Array(32).fill(255)],
     ]),
   )
-  add('aggregate-negative-max', 12, max, true)
+  add('aggregate-negative-max', 43, max, true)
   const sign = payloadOf('view-large-aggregate')
   sign.set(
     8,
@@ -228,11 +228,11 @@ export function buildForumCorpus() {
       [1, new Uint8Array(32).fill(1)],
     ]),
   )
-  add('aggregate-nonboolean', 12, sign, false, 'schema@8.2')
-  for (const type of [13, 14]) {
-    const p = payloadOf(type === 13 ? 'equal-time-page' : 'discovery-u64')
-    p.set(type === 13 ? 4 : 2, [])
-    p.set(type === 13 ? 5 : 3, fromHex(proposal.cursors[type - 13].expected))
+  add('aggregate-nonboolean', 43, sign, false, 'schema@8.2')
+  for (const type of [44, 45]) {
+    const p = payloadOf(type === 44 ? 'equal-time-page' : 'discovery-u64')
+    p.set(type === 44 ? 4 : 2, [])
+    p.set(type === 44 ? 5 : 3, fromHex(proposal.cursors[type - 44].expected))
     add(`empty-next-${type}`, type, p, false, 'semantic@9')
   }
   // Field-0 grammar must apply inside a required child even when the parent is valid.
@@ -241,9 +241,9 @@ export function buildForumCorpus() {
   const view = payloadOf('view-large-aggregate')
   view.set(
     1,
-    encodeFrame({ typeId: 9, schemaVersion: 2, minReaderVersion: 2 }, child),
+    encodeFrame({ typeId: 40, schemaVersion: 2, minReaderVersion: 2 }, child),
   )
-  add('nested-network-grammar', 12, view, false, 'schema@8.2')
+  add('nested-network-grammar', 43, view, false, 'schema@8.2')
   return {
     format: 'active-forum-content-read-v1',
     chainFacts: proposal.chainFacts,

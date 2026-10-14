@@ -202,7 +202,7 @@ fn build_cbor_attestation(
 
     let statement_frame = encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: 1,
             schema_version: 3,
             min_reader_version: 2,
         },

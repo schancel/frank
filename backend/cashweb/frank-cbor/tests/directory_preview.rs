@@ -41,7 +41,7 @@ fn payload() -> CborValue {
 fn statement(p: &CborValue, schema: u32, floor: u32) -> Vec<u8> {
     encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: 1,
             schema_version: schema,
             min_reader_version: floor,
         },
@@ -109,7 +109,7 @@ fn old_readers_and_full_admission_fail_closed() {
         default_context()
             .supported_schemas
             .iter()
-            .find(|s| s.type_id == 4)
+            .find(|s| s.type_id == 1)
             .unwrap()
             .schema_version,
         3
@@ -225,7 +225,7 @@ fn required_fields_old_schema_smuggling_and_future_unsupported_semantics_reject(
         let raw = hex::decode(hex).unwrap();
         let f = encode_frame(
             EnvelopeFields {
-                type_id: 4,
+                type_id: 1,
                 schema_version: 4,
                 min_reader_version: 4,
             },

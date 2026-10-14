@@ -65,7 +65,7 @@ pub fn stamp_account(key_hex: &str) -> CborValue {
 /// because its stamp key (field 8) is required from schema 2 (README S10a.1); every other type is
 /// version 1.
 pub fn fr(type_id: u32, payload: &CborValue) -> Vec<u8> {
-    let version = if type_id == 4 { 2 } else { 1 };
+    let version = if type_id == 1 { 2 } else { 1 };
     encode_frame(
         EnvelopeFields {
             type_id,
@@ -91,12 +91,12 @@ fn fr_additive(type_id: u32, payload: &CborValue) -> Vec<u8> {
 }
 
 fn text_item(text: &str) -> Vec<u8> {
-    fr(17, &cbor_map(vec![(0, CborValue::Text(text.to_string()))]))
+    fr(22, &cbor_map(vec![(0, CborValue::Text(text.to_string()))]))
 }
 
 fn container_item(children: Vec<Vec<u8>>) -> Vec<u8> {
     let items = children.into_iter().map(CborValue::Bytes).collect();
-    fr(16, &cbor_map(vec![(0, CborValue::Array(items))]))
+    fr(21, &cbor_map(vec![(0, CborValue::Array(items))]))
 }
 
 pub fn unknown_item(n: u32) -> Vec<u8> {
@@ -120,7 +120,7 @@ fn nested_items() -> Vec<Vec<u8>> {
 pub fn revision_frame() -> Vec<u8> {
     let items = nested_items().into_iter().map(CborValue::Bytes).collect();
     fr(
-        8,
+        20,
         &cbor_map(vec![
             (0, CborValue::Text("frank".to_string())),
             (1, CborValue::Array(items)),
@@ -131,7 +131,7 @@ pub fn revision_frame() -> Vec<u8> {
 fn type6_frame(revision: &[u8]) -> Vec<u8> {
     let digest = message_content_digest(revision).expect("t1a");
     fr(
-        6,
+        12,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, CborValue::Bytes(bytes_of(16, 7))),
@@ -160,7 +160,7 @@ pub fn type5_fields() -> Vec<(u64, CborValue)> {
 }
 
 pub fn type5_frame() -> Vec<u8> {
-    fr(5, &cbor_map(type5_fields()))
+    fr(11, &cbor_map(type5_fields()))
 }
 
 /// A second canonical encoding of the type-5 fixture whose source map was assembled in reverse
@@ -168,7 +168,7 @@ pub fn type5_frame() -> Vec<u8> {
 pub fn type5_frame_reverse_order() -> Vec<u8> {
     let mut fields = type5_fields();
     fields.reverse();
-    fr(5, &CborValue::Map(fields))
+    fr(11, &CborValue::Map(fields))
 }
 
 /// A valid canonical one-byte mutation of [`type5_frame`]. Only the final nonce byte changes.
@@ -182,7 +182,7 @@ pub fn mutated_type5_frame() -> Vec<u8> {
         panic!("nonce is not bytes")
     };
     *nonce.last_mut().expect("non-empty nonce") ^= 1;
-    fr(5, &CborValue::Map(fields))
+    fr(11, &CborValue::Map(fields))
 }
 
 fn payment(t3: &[u8], index: u32) -> CborValue {
@@ -199,12 +199,12 @@ fn payment(t3: &[u8], index: u32) -> CborValue {
     ])
 }
 
-/// Fixture 1: type-1 direct message with two stamp payments.
+/// Fixture 1: type-10 direct message with two stamp payments.
 pub fn direct_message_frame() -> Vec<u8> {
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
     fr(
-        1,
+        10,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, stamp_account(T3C_STAMP_KEY)),
@@ -221,7 +221,7 @@ pub fn rust_origin_direct_message_frame() -> Vec<u8> {
     let payload_frame = type5_frame();
     let t3 = recipient_payload_digest(NET, &payload_frame).expect("t3");
     fr_additive(
-        1,
+        10,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, stamp_account(T3C_STAMP_KEY)),
@@ -233,10 +233,10 @@ pub fn rust_origin_direct_message_frame() -> Vec<u8> {
     )
 }
 
-/// Fixture 4: a top-level type-9 topic post.
+/// Fixture 4: a top-level type-40 topic post.
 pub fn topic_post_frame() -> Vec<u8> {
     fr(
-        9,
+        40,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, CborValue::Text("frank.demo".to_string())),
@@ -245,10 +245,10 @@ pub fn topic_post_frame() -> Vec<u8> {
     )
 }
 
-/// Fixture 5: a type-10 submission wrapping [`topic_post_frame`].
+/// Fixture 5: a type-41 submission wrapping [`topic_post_frame`].
 pub fn topic_post_submission_frame() -> Vec<u8> {
     fr(
-        10,
+        41,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, CborValue::Bytes(topic_post_frame())),
@@ -265,10 +265,10 @@ pub fn topic_post_hash() -> Vec<u8> {
     }
 }
 
-/// Fixture 6: a type-11 vote naming [`topic_post_hash`].
+/// Fixture 6: a type-42 vote naming [`topic_post_hash`].
 pub fn topic_vote_frame() -> Vec<u8> {
     fr(
-        11,
+        42,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, CborValue::Bytes(topic_post_hash())),
@@ -293,7 +293,7 @@ fn relay(i: u32) -> CborValue {
 
 fn directory_statement_frame() -> Vec<u8> {
     fr(
-        4,
+        1,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, acct2(1)),
@@ -356,10 +356,10 @@ fn section(section_type: u32, schema: u32, value: Vec<u8>) -> CborValue {
     ])
 }
 
-/// Fixture 3: type-3 checkpoint with an unknown nested item and an unknown section.
+/// Fixture 3: type-14 checkpoint with an unknown nested item and an unknown section.
 pub fn checkpoint_frame() -> Vec<u8> {
     fr(
-        3,
+        14,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, acct1(5)),
@@ -387,7 +387,7 @@ pub fn checkpoint_frame() -> Vec<u8> {
 /// opaque future frames without opening them.
 pub fn rust_origin_checkpoint_frame() -> Vec<u8> {
     fr_additive(
-        3,
+        14,
         &cbor_map(vec![
             (0, CborValue::Text(NET.to_string())),
             (1, acct1(5)),
@@ -412,21 +412,22 @@ pub fn rust_origin_checkpoint_frame() -> Vec<u8> {
     )
 }
 
-/// Topic-event types (README E5, types 9 through 11), assigned by #136.
-pub const TOPIC_TYPES: [u32; 3] = [9, 10, 11];
+/// Topic-event types (README E5, types 40 through 42), assigned by #136.
+pub const TOPIC_TYPES: [u32; 3] = [40, 41, 42];
+const HISTORICAL_TYPES: [u32; 13] = [1, 2, 3, 10, 11, 12, 14, 20, 21, 22, 40, 41, 42];
 
 fn context_for(types: impl Iterator<Item = u32>) -> ValidationContext {
     ValidationContext {
         operation: Operation::Typed,
         route_byte_limit: MAX_FRAME_BYTES as u64,
-        // Reader version 2 reads type 4 and production type 5 at schema 2.
+        // Reader version 2 reads type 1 and production type 11 at schema 2.
         reader_version: 2,
         supported_schemas: types
-            // Freeze historical readers at type17, preserving the Forum read-type omission.
-            .filter(|type_id| *type_id <= 17 && !(12..=15).contains(type_id))
+            // Freeze historical readers at the pre-forum-read set.
+            .filter(|type_id| HISTORICAL_TYPES.contains(type_id))
             .map(|type_id| SupportedSchema {
                 type_id,
-                schema_version: if type_id == 4 || type_id == 5 { 2 } else { 1 },
+                schema_version: if type_id == 1 || type_id == 11 { 2 } else { 1 },
             })
             .collect(),
         opaque_retention_allowed: false,

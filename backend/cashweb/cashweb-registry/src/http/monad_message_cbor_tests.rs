@@ -613,7 +613,7 @@ async fn zero_stamp_message_is_admitted_and_delivered_immediately() {
     let mut ctx = frank_cbor::default_context();
     ctx.reader_version = 2;
     ctx.supported_schemas.push(frank_cbor::SupportedSchema {
-        type_id: 1,
+        type_id: 10,
         schema_version: 2,
     });
     let frank_cbor::ValidationResult::Parsed(parsed) =
@@ -631,7 +631,7 @@ async fn zero_stamp_message_is_admitted_and_delivered_immediately() {
     }
     let zero_delivery = frank_cbor::encode_frame(
         frank_cbor::EnvelopeFields {
-            type_id: 1,
+            type_id: 10,
             schema_version: 2,
             min_reader_version: 1,
         },

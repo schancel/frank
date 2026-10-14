@@ -111,7 +111,7 @@ describe('stage precedence', () => {
   })
 
   it('stage 7 ends a generic operation; stage 8 problems are invisible to it', () => {
-    const f = fr(17, M([[0, 5]])) // wrong type for field 0: a stage 8.2 schema error
+    const f = fr(22, M([[0, 5]])) // wrong type for field 0: a stage 8.2 schema error
     expect(outcome(f, { operation: 'generic' })).toBe('parsed')
     expect(outcome(f, { operation: 'typed' })).toBe('schema@8.2')
     expect(outcome(WORKED_TEXT_HI, { operation: 'frame' })).toBe('frame')
@@ -120,10 +120,10 @@ describe('stage precedence', () => {
   it('8.1 precedes 8.2, 8.2 precedes 8.3, and 8.3 precedes 8.4', () => {
     // 65 members of the wrong shape: resource (8.1), not schema.
     expect(
-      outcome(fr(1, M([[4, Array.from({ length: 65 }, () => M([]))]]))),
+      outcome(fr(10, M([[4, Array.from({ length: 65 }, () => M([]))]]))),
     ).toBe('resource@8.1')
     // Unallocated suite plus a bad network tag: schema (8.2) wins over unsupported (8.3).
-    expect(outcome(fr(5, type5Payload({ net: 'BAD', suite: 1 })))).toBe(
+    expect(outcome(fr(11, type5Payload({ net: 'BAD', suite: 1 })))).toBe(
       'schema@8.2',
     )
     // Unallocated suite plus a wrong-typed child field would surface at 8.4 only after 8.3.
@@ -141,9 +141,9 @@ describe('stage precedence', () => {
   })
 
   it('children open depth-first in array order and the first failure wins', () => {
-    const items = [textItem('ok'), fr(17, M([[0, 1]])), body('780561')]
+    const items = [textItem('ok'), fr(22, M([[0, 1]])), body('780561')]
     const f = fr(
-      8,
+      20,
       M([
         [0, 'frank'],
         [1, items],
@@ -162,7 +162,7 @@ describe('stage precedence', () => {
   it('a child failure precedes the parent stage 9 checks', () => {
     // Parent violations: network mismatch and unsorted payments (semantic at 9), but the child is
     // malformed at its stage 7, which is reported first.
-    const child = framePayload(hex('a1 00 1805'), 5)
+    const child = framePayload(hex('a1 00 1805'), 11)
     expect(
       outcome(deliveryFrame({ payloadFrame: child, net: 'other-net' })),
     ).toBe('noncanonical@7')
@@ -174,16 +174,16 @@ describe('stage precedence', () => {
     expect(outcome(deliveryFrame({ payloadFrame: wrong }))).toBe('frame@2')
     // ...and a wrong type beats the child payload it would otherwise fail at stage 7.
     expect(
-      outcome(deliveryFrame({ payloadFrame: framePayload(hex('780561'), 17) })),
+      outcome(deliveryFrame({ payloadFrame: framePayload(hex('780561'), 22) })),
     ).toBe('semantic@8.4')
   })
 
   it('an open-field child of an assigned type is a semantic error after its stage 6, before its payload', () => {
-    const c = framePayload(hex('780561'), 5)
+    const c = framePayload(hex('780561'), 11)
     expect(
       outcome(
         fr(
-          8,
+          20,
           M([
             [0, 'frank'],
             [1, [c]],
@@ -196,7 +196,7 @@ describe('stage precedence', () => {
     expect(
       outcome(
         fr(
-          8,
+          20,
           M([
             [0, 'frank'],
             [1, [framePayload(hex('780561'), 65535)]],
@@ -208,7 +208,7 @@ describe('stage precedence', () => {
 
   it('root retention flag governs only the root: children retain regardless', () => {
     const f = fr(
-      8,
+      20,
       M([
         [0, 'frank'],
         [1, [unknownItem()]],
@@ -231,7 +231,7 @@ describe('stage precedence', () => {
         0xffff0001,
       )
     const alone = fr(
-      8,
+      20,
       M([
         [0, 'frank'],
         [1, [heavy()]],
@@ -239,7 +239,7 @@ describe('stage precedence', () => {
     )
     expect(outcome(alone)).toBe('parsed')
     const three = fr(
-      8,
+      20,
       M([
         [0, 'frank'],
         [1, [heavy(), heavy(), heavy()]],
@@ -256,7 +256,7 @@ describe('stage precedence', () => {
         0xffff0001,
       )
     const ok = fr(
-      8,
+      20,
       M([
         [0, 'frank'],
         [1, Array.from({ length: 15 }, child)],
@@ -264,7 +264,7 @@ describe('stage precedence', () => {
     )
     expect(outcome(ok)).toBe('parsed')
     const over = fr(
-      8,
+      20,
       M([
         [0, 'frank'],
         [1, Array.from({ length: 16 }, child)],
@@ -326,7 +326,7 @@ describe('frame encoder', () => {
       ) =>
       () =>
         encodeFrame(
-          { typeId: 1, schemaVersion: 1, minReaderVersion: 1, ...o },
+          { typeId: 10, schemaVersion: 1, minReaderVersion: 1, ...o },
           0,
         )
     expect(e({ typeId: -1 })).toThrow(RangeError)
@@ -341,17 +341,17 @@ describe('frame encoder', () => {
 
   it('encodes the envelope canonically regardless of how fields are supplied', () => {
     const a = encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 22, schemaVersion: 1, minReaderVersion: 1 },
       M([[0, 'hi']]),
     )
     const b = encodeFrame(
-      { minReaderVersion: 1, schemaVersion: 1, typeId: 17 },
+      { minReaderVersion: 1, schemaVersion: 1, typeId: 22 },
       new Map([[0, 'hi']]),
     )
     expect(a).toEqual(b)
     // An already-encoded payload (for exact retention) is embedded verbatim.
     const c = encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 22, schemaVersion: 1, minReaderVersion: 1 },
       { bytes: hex('a100626869') },
     )
     expect(c).toEqual(a)
@@ -386,7 +386,7 @@ describe('input aliasing', () => {
 
     const child = Buffer.from(
       fr(
-        8,
+        20,
         M([
           [0, 'frank'],
           [1, [unknown]],
@@ -395,8 +395,8 @@ describe('input aliasing', () => {
     )
     const parent = validateFrame(child, defaultContext())
     child.fill(0)
-    if (parent.kind !== 'parsed' || parent.typed?.type !== 8)
-      throw new Error('type 8 expected')
+    if (parent.kind !== 'parsed' || parent.typed?.type !== 20)
+      throw new Error('type 20 expected')
     const c0 = parent.typed.items[0]
     if (c0.kind !== 'retained') throw new Error('retained child expected')
     expect(Array.from(c0.frame)).toEqual(Array.from(unknown))

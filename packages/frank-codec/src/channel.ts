@@ -313,7 +313,7 @@ export function encodeChannelUpdateItem(
 export function isChannelUpdateItemFrame(
   frame: ParsedFrame,
 ): frame is ParsedFrame & { typed: ChannelUpdateItem } {
-  return frame.typeId === TYPE_CHANNEL_UPDATE && frame.typed?.type === 24
+  return frame.typeId === TYPE_CHANNEL_UPDATE && frame.typed?.type === 25
 }
 
 export function projectChannelUpdateItem(
@@ -448,11 +448,11 @@ export function validateChannelSequence(
 
   if (typeof prior === 'object' && typeof next === 'object') {
     const priorId =
-      'type' in prior && prior.type === 24
+      'type' in prior && prior.type === 25
         ? toHex(prior.channelId)
         : (prior as CanonicalChannelUpdateItem).channelId.toLowerCase()
     const nextId =
-      'type' in next && next.type === 24
+      'type' in next && next.type === 25
         ? toHex(next.channelId)
         : (next as CanonicalChannelUpdateItem).channelId.toLowerCase()
     if (priorId !== nextId) {

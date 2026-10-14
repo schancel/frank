@@ -180,7 +180,7 @@ const g = { op: 'generic' as const }
 const fo = { op: 'frame' as const }
 
 // Envelope bodies (no header) for the hand-written frame and envelope vectors.
-const ENV_HI = 'a4 0011 0101 0201 0345 a100626869'
+const ENV_HI = 'a4 0016 0101 0201 0345 a100626869'
 const withHeader = (h: string) => body(h)
 
 // ---------------------------------------------------------------------------------------------
@@ -275,7 +275,7 @@ const t7 = (o?: Parameters<typeof transitionStatement>[0]) =>
   transitionStatement(o)
 const updStmt = (o: Parameters<typeof statementPayload>[0] = {}) =>
   fr(
-    4,
+    1,
     statementPayload({
       subject: acct2(2),
       revision: 6n,
@@ -311,7 +311,7 @@ acc(
 )
 
 // Insertion-order equivalence: the same statement built from two different Map insertion orders.
-const forward = fr(4, statementPayload({ revision: 42n }))
+const forward = fr(1, statementPayload({ revision: 42n }))
 const reversedPayload = statementPayload({ revision: 42n })
 const reversed = new Map([...reversedPayload.entries()].reverse()) as Map<
   number,
@@ -331,7 +331,7 @@ acc(
 acc(
   'insertion-order-reversed',
   'The same statement encoded from a Map filled in descending key order: byte-identical.',
-  fr(4, reversed),
+  fr(1, reversed),
   ['C1', 'C11'],
   {
     prior: null,
@@ -669,7 +669,7 @@ rej(
 // Stage 7: payload CBOR (pass A then pass B) and resource limits
 // ---------------------------------------------------------------------------------------------
 
-const P = (payloadHex: string, typeId = 17) =>
+const P = (payloadHex: string, typeId = 22) =>
   framePayload(hex(payloadHex), typeId)
 
 rej(
@@ -1137,7 +1137,7 @@ rej(
 rej(
   'v6-min-reader-above-reader-unsupported',
   'Type 17 with schema 2 / min_reader 2 read by reader version 1, no retention permitted.',
-  fr(17, M([[0, 'x']]), 2, 2),
+  fr(22, M([[0, 'x']]), 2, 2),
   'unsupported',
   '7',
   ['E2', 'V6.1'],
@@ -1146,7 +1146,7 @@ rej(
 ret(
   'v6-min-reader-above-reader-retained',
   'The same frame where the root may retain it opaquely.',
-  fr(17, M([[0, 'x']]), 2, 2),
+  fr(22, M([[0, 'x']]), 2, 2),
   ['E3', 'V6.1'],
   { source: 'typescript', readerVersion: 1 },
 )
@@ -1154,7 +1154,7 @@ acc(
   'v6-newer-schema-extra-field',
   'Type 17 at schema 2 (min_reader 1) with an undeclared field 1: read through the schema-1 projection, unknown field retained (V6.3).',
   fr(
-    17,
+    22,
     M([
       [0, 'x'],
       [1, 7],
@@ -1168,7 +1168,7 @@ rej(
   'v6-exact-schema-extra-field',
   'The same extra field at schema 1 is a C12 schema error.',
   fr(
-    17,
+    22,
     M([
       [0, 'x'],
       [1, 7],
@@ -1201,7 +1201,7 @@ rej(
 rej(
   'v6-newer-schema-missing-required',
   'Schema 2 still needs the fields the reader knows.',
-  fr(17, M([[1, 7]]), 2, 1),
+  fr(22, M([[1, 7]]), 2, 1),
   'schema',
   '8.2',
   ['V6.3'],
@@ -1214,7 +1214,7 @@ rej(
   'unsupported',
   '7',
   ['V6.1', 'E3'],
-  { supported: [{ typeId: 1, schemaVersion: 1 }], source: 'handcrafted' },
+  { supported: [{ typeId: 10, schemaVersion: 1 }], source: 'handcrafted' },
 )
 rej(
   'v6-required-child-unlisted-type',
@@ -1225,10 +1225,10 @@ rej(
   ['V6.1', 'S8'],
   {
     supported: [
-      { typeId: 5, schemaVersion: 1 },
-      { typeId: 6, schemaVersion: 1 },
-      { typeId: 16, schemaVersion: 1 },
-      { typeId: 17, schemaVersion: 1 },
+      { typeId: 11, schemaVersion: 1 },
+      { typeId: 12, schemaVersion: 1 },
+      { typeId: 21, schemaVersion: 1 },
+      { typeId: 22, schemaVersion: 1 },
     ],
     source: 'typescript',
   },
@@ -1251,7 +1251,7 @@ acc(
 rej(
   'limit-type1-65-payments',
   'Type 1 declaring 65 payment members: resource at 8.1, before any structural check (the members are empty maps).',
-  fr(1, M([[4, dummyList(65)]])),
+  fr(10, M([[4, dummyList(65)]])),
   'resource',
   '8.1',
   ['R2'],
@@ -1262,13 +1262,13 @@ const items = (n: number, text = 'x') =>
 acc(
   'limit-type8-256-items',
   'Type 8 with 256 message items: at the per-array and total limit.',
-  fr(8, revision8(items(256))),
+  fr(20, revision8(items(256))),
   ['R2'],
 )
 rej(
   'limit-type8-257-items',
   'Type 8 declaring 257 message-item frames: resource at 8.1.',
-  fr(8, revision8(items(257))),
+  fr(20, revision8(items(257))),
   'resource',
   '8.1',
   ['R2'],
@@ -1277,13 +1277,13 @@ rej(
 acc(
   'limit-type8-total-256',
   'Type 8 with one container of 255 texts: 256 opened items in all.',
-  fr(8, revision8([containerItem(items(255))])),
+  fr(20, revision8([containerItem(items(255))])),
   ['R2'],
 )
 rej(
   'limit-type8-total-257',
   'Type 8 with one container of 256 texts: the 257th opened item exceeds the total (charged at 8.4).',
-  fr(8, revision8([containerItem(items(256))])),
+  fr(20, revision8([containerItem(items(256))])),
   'resource',
   '8.4',
   ['R2'],
@@ -1292,7 +1292,7 @@ rej(
 rej(
   'limit-type16-257-items',
   'Type-16 container declaring 257 items.',
-  fr(16, M([[0, items(257)]])),
+  fr(21, M([[0, items(257)]])),
   'resource',
   '8.1',
   ['R2'],
@@ -1322,7 +1322,7 @@ acc(
   'limit-type4-32-relays',
   'Type-4 statement with 32 relay bindings: at the R3 limit.',
   fr(
-    4,
+    1,
     statementPayload({
       relays: Array.from({ length: 32 }, (_, i) => relay(i + 1)),
     }),
@@ -1333,7 +1333,7 @@ acc(
 rej(
   'limit-type4-33-relays',
   'Type 4 declaring 33 relay bindings.',
-  fr(4, M([[4, dummyList(33)]])),
+  fr(1, M([[4, dummyList(33)]])),
   'resource',
   '8.1',
   ['R3'],
@@ -1365,7 +1365,7 @@ rej(
 rej(
   'limit-type3-4097-facts',
   'Type 3 declaring 4,097 journal facts.',
-  fr(3, M([[4, dummyList(4097)]])),
+  fr(14, M([[4, dummyList(4097)]])),
   'resource',
   '8.1',
   ['R4'],
@@ -1375,7 +1375,7 @@ rej(
   'limit-type3-4097-sections',
   'Type 3 declaring 4,097 opaque sections.',
   fr(
-    3,
+    14,
     M([
       [4, []],
       [5, dummyList(4097)],
@@ -1390,7 +1390,7 @@ rej(
 rej(
   't17-text-wrong-type',
   'Type 17 with an integer where text is required.',
-  fr(17, M([[0, 5]])),
+  fr(22, M([[0, 5]])),
   'schema',
   '8.2',
   ['E3'],
@@ -1399,7 +1399,7 @@ rej(
 rej(
   't17-missing-field',
   'Type 17 without field 0.',
-  fr(17, M([])),
+  fr(22, M([])),
   'schema',
   '8.2',
   ['E3'],
@@ -1408,7 +1408,7 @@ rej(
 rej(
   't17-payload-not-a-map',
   'Type 17 whose payload is an array.',
-  fr(17, []),
+  fr(22, []),
   'schema',
   '8.2',
   ['E3'],
@@ -1418,7 +1418,7 @@ rej(
   't17-undeclared-key-exact-schema',
   'An undeclared key at an exactly supported schema is a schema error (C12).',
   fr(
-    17,
+    22,
     M([
       [0, 'x'],
       [1, 1],
@@ -1432,7 +1432,7 @@ rej(
 rej(
   't5-network-uppercase',
   'Network tag with an uppercase letter.',
-  fr(5, type5Payload({ net: 'Frank' })),
+  fr(11, type5Payload({ net: 'Frank' })),
   'schema',
   '8.2',
   ['S1'],
@@ -1441,7 +1441,7 @@ rej(
 rej(
   't5-network-empty',
   'Empty network tag.',
-  fr(5, type5Payload({ net: '' })),
+  fr(11, type5Payload({ net: '' })),
   'schema',
   '8.2',
   ['S1'],
@@ -1450,7 +1450,7 @@ rej(
 rej(
   't5-network-leading-hyphen',
   'Network tag starting with a hyphen.',
-  fr(5, type5Payload({ net: '-frank' })),
+  fr(11, type5Payload({ net: '-frank' })),
   'schema',
   '8.2',
   ['S1'],
@@ -1473,7 +1473,7 @@ rej(
 rej(
   't1-payments-empty',
   'Type 1 at schema 1 with an empty payment list: the [1*64] lower bound is a schema error, not resource.',
-  fr(1, deliveryPayload({ payments: [] })),
+  fr(10, deliveryPayload({ payments: [] })),
   'schema',
   '8.2',
   ['R2', 'S3'],
@@ -1492,7 +1492,7 @@ rej(
   't1-child-index-hardened',
   'Child index 2^31 (hardened).',
   fr(
-    1,
+    10,
     deliveryPayload({
       payments: [payment(new Uint8Array(32), { index: 2147483648 })],
     }),
@@ -1505,7 +1505,7 @@ rej(
 rej(
   't4-endpoint-space',
   'Endpoint containing a space.',
-  fr(4, statementPayload({ relays: [relay(1, 'https://a b/')] })),
+  fr(1, statementPayload({ relays: [relay(1, 'https://a b/')] })),
   'schema',
   '8.2',
   ['S4'],
@@ -1514,7 +1514,7 @@ rej(
 rej(
   't4-endpoint-no-scheme',
   'Endpoint without a scheme.',
-  fr(4, statementPayload({ relays: [relay(1, '//relay.example')] })),
+  fr(1, statementPayload({ relays: [relay(1, '//relay.example')] })),
   'schema',
   '8.2',
   ['S4'],
@@ -1523,7 +1523,7 @@ rej(
 rej(
   't4-endpoint-backslash',
   'Endpoint containing a backslash.',
-  fr(4, statementPayload({ relays: [relay(1, 'https://a\\b')] })),
+  fr(1, statementPayload({ relays: [relay(1, 'https://a\\b')] })),
   'schema',
   '8.2',
   ['S4'],
@@ -1533,7 +1533,7 @@ rej(
   't4-authorities-9',
   'Nine offline recovery authorities: the [1*8] upper bound is a schema error, not resource.',
   fr(
-    4,
+    1,
     statementPayload({
       authorities: Array.from({ length: 9 }, (_, i) => acct2(i + 1)),
     }),
@@ -1547,7 +1547,7 @@ rej(
   't4-nanoseconds-out-of-range',
   'Timestamp nanoseconds 1,000,000,000.',
   fr(
-    4,
+    1,
     withField(
       statementPayload(),
       3,
@@ -1565,7 +1565,7 @@ rej(
 rej(
   't4-revision-negative',
   'A negative revision: only an unsigned u64 is allowed.',
-  fr(4, withField(statementPayload(), 2, -1n)),
+  fr(1, withField(statementPayload(), 2, -1n)),
   'schema',
   '8.2',
   ['C7'],
@@ -1580,7 +1580,7 @@ rej(
       hex('1adeadbeef'),
       hex('c249010000000000000000'),
     ),
-    4,
+    1,
   ),
   'schema',
   '7',
@@ -1591,7 +1591,7 @@ rej(
   't8-domain-not-frank',
   'Type 8 whose field 0 is not the text "frank".',
   fr(
-    8,
+    20,
     M([
       [0, 'other'],
       [1, [textItem()]],
@@ -1626,7 +1626,7 @@ rej(
 rej(
   't5-suite-unallocated',
   'Encryption suite 1 is unallocated in version 1.',
-  fr(5, type5Payload({ suite: 1 })),
+  fr(11, type5Payload({ suite: 1 })),
   'unsupported',
   '8.3',
   ['S2c'],
@@ -1710,7 +1710,7 @@ rej(
 rej(
   't1-payload-frame-min-reader-above',
   'Required type-5 child with min_reader_version 2 for a version-1 reader.',
-  deliveryFrame({ payloadFrame: fr(5, type5Payload(), 2, 2) }),
+  deliveryFrame({ payloadFrame: fr(11, type5Payload(), 2, 2) }),
   'unsupported',
   '7',
   ['V6.1', 'S8'],
@@ -1757,7 +1757,7 @@ rej(
 rej(
   't1-payload-frame-noncanonical-payload',
   'Required child whose payload has a non-minimal integer.',
-  deliveryFrame({ payloadFrame: framePayload(hex('a1 00 1805'), 5) }),
+  deliveryFrame({ payloadFrame: framePayload(hex('a1 00 1805'), 11) }),
   'noncanonical',
   '7',
   ['C2', 'S8'],
@@ -1776,7 +1776,7 @@ rej(
   't6-revision-frame-wrong-type',
   'Type-6 field 2 carries a type-17 frame instead of type 8.',
   fr(
-    6,
+    12,
     M([
       [0, NET],
       [1, bytesOf(16, 7)],
@@ -1793,7 +1793,7 @@ rej(
 rej(
   't4-transition-frame-wrong-type',
   'A key-transition entry whose field 0 is a type-17 frame instead of type 7.',
-  fr(4, statementPayload({ transitions: [transition(textItem())] })),
+  fr(1, statementPayload({ transitions: [transition(textItem())] })),
   'semantic',
   '8.4',
   ['S8'],
@@ -1802,7 +1802,7 @@ rej(
 rej(
   't8-item-assigned-type',
   'A message item carrying assigned type 5: not an open-field type.',
-  fr(8, revision8([type5Frame()])),
+  fr(20, revision8([type5Frame()])),
   'semantic',
   '8.4',
   ['S8'],
@@ -1811,7 +1811,7 @@ rej(
 rej(
   't16-item-assigned-type',
   'A container holding a type-8 frame.',
-  fr(16, M([[0, [rev8Frame()]]])),
+  fr(21, M([[0, [rev8Frame()]]])),
   'semantic',
   '8.4',
   ['S8'],
@@ -1820,7 +1820,7 @@ rej(
 rej(
   't8-item-bad-magic',
   'An open-field child with bad magic is a frame error, not retained.',
-  fr(8, revision8([Uint8Array.of(0x58, 0x52, 0x4e, 0x4b, 1, 0, 0, 0, 0)])),
+  fr(20, revision8([Uint8Array.of(0x58, 0x52, 0x4e, 0x4b, 1, 0, 0, 0, 0)])),
   'frame',
   '2',
   ['F1'],
@@ -1829,7 +1829,7 @@ rej(
 rej(
   't8-item-noncanonical-payload',
   'An unknown-type child with a non-minimal payload integer is noncanonical, not retained.',
-  fr(8, revision8([framePayload(hex('a1 00 1805'), UNKNOWN_TYPE)])),
+  fr(20, revision8([framePayload(hex('a1 00 1805'), UNKNOWN_TYPE)])),
   'noncanonical',
   '7',
   ['C2', 'V6.1'],
@@ -1838,7 +1838,7 @@ rej(
 rej(
   't8-item-text-key-in-unknown',
   'An unknown-type child with a text map key is a schema error, not retained.',
-  fr(8, revision8([framePayload(hex('a1 6161 01'), UNKNOWN_TYPE)])),
+  fr(20, revision8([framePayload(hex('a1 6161 01'), UNKNOWN_TYPE)])),
   'schema',
   '7',
   ['C1a', 'V6.1'],
@@ -1847,21 +1847,21 @@ rej(
 acc(
   't8-unknown-item-retained',
   'An unknown item type is retained exactly whatever opaque_retention_allowed says.',
-  fr(8, revision8([textItem(), unknownItem(5)])),
+  fr(20, revision8([textItem(), unknownItem(5)])),
   ['V6.1', 'V4'],
   { retention: false },
 )
 acc(
   't8-unknown-frame-version-item-retained',
   'A version-2 child frame with an uninterpreted length field is retained exactly.',
-  fr(8, revision8([textItem(), body('ffffffffffff', 2)])),
+  fr(20, revision8([textItem(), body('ffffffffffff', 2)])),
   ['F2', 'V6.1'],
   { retention: false },
 )
 acc(
   't8-min-reader-above-item-retained',
   'A known-type child whose min_reader_version exceeds the reader is retained in an open field.',
-  fr(8, revision8([fr(17, M([[0, 'x']]), 2, 2)])),
+  fr(20, revision8([fr(22, M([[0, 'x']]), 2, 2)])),
   ['V6.1'],
   { retention: false },
 )
@@ -1869,13 +1869,13 @@ acc(
   't16-newer-schema-item',
   'A type-17 item at schema 2 (min_reader 1) is read through the schema-1 projection.',
   fr(
-    16,
+    21,
     M([
       [
         0,
         [
           fr(
-            17,
+            22,
             M([
               [0, 'x'],
               [1, 3],
@@ -1994,7 +1994,7 @@ const NOP = { ...S, prior: null as Uint8Array | null }
 rej(
   'sem-t4-relays-unsorted',
   'Relay bindings ordered by descending relay_id.',
-  fr(4, statementPayload({ relays: [relay(2), relay(1)] })),
+  fr(1, statementPayload({ relays: [relay(2), relay(1)] })),
   'semantic',
   '9',
   ['S4'],
@@ -2004,7 +2004,7 @@ rej(
   'sem-t4-relay-id-duplicate',
   'Two relay bindings sharing a relay_id.',
   fr(
-    4,
+    1,
     statementPayload({
       relays: [relay(1, 'https://a.example/'), relay(1, 'https://b.example/')],
     }),
@@ -2017,7 +2017,7 @@ rej(
 rej(
   'sem-t4-recovery-authorities-unsorted',
   'Offline recovery authorities out of order.',
-  fr(4, statementPayload({ authorities: [acct2(2), acct2(1)] })),
+  fr(1, statementPayload({ authorities: [acct2(2), acct2(1)] })),
   'semantic',
   '9',
   ['S4a'],
@@ -2026,7 +2026,7 @@ rej(
 rej(
   'sem-t4-recovery-authorities-duplicate',
   'Duplicate offline recovery authority.',
-  fr(4, statementPayload({ authorities: [acct2(1), acct2(1)] })),
+  fr(1, statementPayload({ authorities: [acct2(1), acct2(1)] })),
   'semantic',
   '9',
   ['S4a'],
@@ -2036,7 +2036,7 @@ rej(
   'sem-t4-transitions-descending-revision',
   'Two key transitions with descending revisions.',
   fr(
-    4,
+    1,
     statementPayload({
       transitions: [
         transition(t7({ revision: 7n })),
@@ -2053,7 +2053,7 @@ rej(
   'sem-t4-transitions-same-revision',
   'Two key transitions with the same revision are invalid, not tie-broken.',
   fr(
-    4,
+    1,
     statementPayload({
       transitions: [
         transition(t7({ revision: 6n, newKey: acct2(2) })),
@@ -2106,7 +2106,7 @@ rej(
 )
 
 const upd = (o: Parameters<typeof statementPayload>[0], signer = acct2(2)) =>
-  attestationFrame(fr(4, statementPayload(o)), [sig(signer)])
+  attestationFrame(fr(1, statementPayload(o)), [sig(signer)])
 const P1 = { ...S, prior: priorStmt }
 rej(
   'sem-s10-revision-equal',
@@ -2579,7 +2579,7 @@ rej(
 
 // Endpoint syntax (S4), one character class at a time.
 const withEndpoint = (e: string) =>
-  fr(4, statementPayload({ relays: [relay(1, e)] }))
+  fr(1, statementPayload({ relays: [relay(1, e)] }))
 const ENDP = { ...TS, prior: null as Uint8Array | null }
 for (const [name, e] of [
   ['double-quote', 'https://a"b/'],
@@ -2631,14 +2631,14 @@ rej(
 acc(
   'r2-relay-id-16-bytes',
   'relay_id of 16 bytes.',
-  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(16, 1))] })),
+  fr(1, statementPayload({ relays: [withField(relay(1), 0, bytesOf(16, 1))] })),
   ['S4'],
   { prior: null },
 )
 rej(
   'r2-relay-id-15-bytes',
   'relay_id of 15 bytes.',
-  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(15, 1))] })),
+  fr(1, statementPayload({ relays: [withField(relay(1), 0, bytesOf(15, 1))] })),
   'schema',
   '8.2',
   ['S4'],
@@ -2647,14 +2647,14 @@ rej(
 acc(
   'r2-relay-id-64-bytes',
   'relay_id of 64 bytes.',
-  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(64, 1))] })),
+  fr(1, statementPayload({ relays: [withField(relay(1), 0, bytesOf(64, 1))] })),
   ['S4'],
   { prior: null },
 )
 rej(
   'r2-relay-id-65-bytes',
   'relay_id of 65 bytes.',
-  fr(4, statementPayload({ relays: [withField(relay(1), 0, bytesOf(65, 1))] })),
+  fr(1, statementPayload({ relays: [withField(relay(1), 0, bytesOf(65, 1))] })),
   'schema',
   '8.2',
   ['S4'],
@@ -2664,7 +2664,7 @@ rej(
   'r2-transitions-17-entries',
   'Seventeen key-transition entries: the [1*16] bound is a schema error, not resource.',
   fr(
-    4,
+    1,
     statementPayload({
       transitions: Array.from({ length: 17 }, () => transition(t7())),
     }),
@@ -2676,7 +2676,7 @@ rej(
 )
 
 // Network tag (S1).
-const net5 = (n: string) => fr(5, type5Payload({ net: n }))
+const net5 = (n: string) => fr(11, type5Payload({ net: n }))
 acc(
   'r2-network-64-chars',
   'A 64-character network tag.',
@@ -2726,13 +2726,13 @@ const acctK = (type: number, n: number) =>
 acc(
   'r2-key-type-3-32-bytes',
   'Key type 3 with a 32-byte key (allocated, correct length).',
-  fr(5, new Map([...type5Payload(), [1, acctK(3, 32)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(3, 32)]])),
   ['S2'],
 )
 rej(
   'r2-key-type-3-33-bytes',
   'Key type 3 with a 33-byte key.',
-  fr(5, new Map([...type5Payload(), [1, acctK(3, 33)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(3, 33)]])),
   'schema',
   '8.2',
   ['S2'],
@@ -2741,7 +2741,7 @@ rej(
 rej(
   'r2-key-type-2-33-bytes',
   'Key type 2 with a 33-byte key.',
-  fr(5, new Map([...type5Payload(), [1, acctK(2, 33)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(2, 33)]])),
   'schema',
   '8.2',
   ['S2'],
@@ -2750,7 +2750,7 @@ rej(
 rej(
   'r2-key-type-1-32-bytes',
   'Key type 1 with a 32-byte key.',
-  fr(5, new Map([...type5Payload(), [1, acctK(1, 32)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(1, 32)]])),
   'schema',
   '8.2',
   ['S2'],
@@ -2759,7 +2759,7 @@ rej(
 rej(
   'r2-key-bytes-128-unallocated-type',
   '128 key bytes pass the CDDL bound; the unallocated type is then unsupported.',
-  fr(5, new Map([...type5Payload(), [1, acctK(9, 128)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(9, 128)]])),
   'unsupported',
   '8.3',
   ['S2'],
@@ -2768,7 +2768,7 @@ rej(
 rej(
   'r2-key-bytes-129',
   '129 key bytes exceed the account-ref bound.',
-  fr(5, new Map([...type5Payload(), [1, acctK(9, 129)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(9, 129)]])),
   'schema',
   '8.2',
   ['S2'],
@@ -2777,7 +2777,7 @@ rej(
 rej(
   'r2-key-bytes-empty',
   'An empty key.',
-  fr(5, new Map([...type5Payload(), [1, acctK(9, 0)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(9, 0)]])),
   'schema',
   '8.2',
   ['S2'],
@@ -2786,7 +2786,7 @@ rej(
 rej(
   'r2-key-type-65536',
   'key_type 65536 exceeds uint .le 65535.',
-  fr(5, new Map([...type5Payload(), [1, acctK(65536, 33)]])),
+  fr(11, new Map([...type5Payload(), [1, acctK(65536, 33)]])),
   'schema',
   '8.2',
   ['S2'],
@@ -2795,7 +2795,7 @@ rej(
 
 // Fixed-size byte fields.
 const t5 = (k: number, v: Encodable) =>
-  fr(5, new Map([...type5Payload(), [k, v]]))
+  fr(11, new Map([...type5Payload(), [k, v]]))
 acc('r2-nonce-64-bytes', 'A 64-byte nonce.', t5(4, bytesOf(64, 1)), ['S2c'])
 rej(
   'r2-nonce-65-bytes',
@@ -2825,7 +2825,7 @@ rej(
   TS,
 )
 const dlv = (k: number, v: Encodable) =>
-  fr(1, withField(deliveryPayload(), k, v))
+  fr(10, withField(deliveryPayload(), k, v))
 rej(
   'r2-digest-31-bytes',
   'type-1 payload digest of 31 bytes.',
@@ -2861,7 +2861,7 @@ const t6 = (
   if (convName !== undefined) {
     entries.push([5, convName])
   }
-  return fr(6, M(entries))
+  return fr(12, M(entries))
 }
 acc(
   'r2-uuid-16-bytes',
@@ -3073,7 +3073,7 @@ const deep = (payload: Fields, levels: number) =>
   new Map([...payload, [9, nestedArrays(levels)]])
 type Fields = Map<number, Encodable>
 const child2 = (type: number, payload: Fields, levels: number) =>
-  fr(type, deep(payload, levels), type === 4 ? 3 : 2, 1)
+  fr(type, deep(payload, levels), type === 1 ? 3 : 2, 1)
 const pair = (
   id: string,
   what: string,
@@ -3103,7 +3103,7 @@ const pair = (
 rej(
   'r2-depth-t1-child-t5-at-limit',
   'type-1 to type-5 child: 28 nested levels reach depth 32, then the future DM schema fails closed.',
-  deliveryFrame({ payloadFrame: child2(5, type5Payload(), 28) }),
+  deliveryFrame({ payloadFrame: child2(11, type5Payload(), 28) }),
   'unsupported',
   '7',
   ['R1', 'S2d'],
@@ -3112,7 +3112,7 @@ rej(
 rej(
   'r2-depth-t1-child-t5-one-over',
   'type-1 to type-5 child: 29 nested levels reach depth 33 before the schema guard.',
-  deliveryFrame({ payloadFrame: child2(5, type5Payload(), 29) }),
+  deliveryFrame({ payloadFrame: child2(11, type5Payload(), 29) }),
   'resource',
   '7',
   ['R1'],
@@ -3122,7 +3122,7 @@ pair(
   't2-child-t4',
   'type-2 to type-4 child',
   28,
-  n => attestationFrame(child2(4, statementPayload(), n), [sig(acct2(1))]),
+  n => attestationFrame(child2(1, statementPayload(), n), [sig(acct2(1))]),
   { prior: null },
 )
 pair(
@@ -3131,11 +3131,11 @@ pair(
   28,
   n =>
     fr(
-      6,
+      12,
       M([
         [0, NET],
         [1, bytesOf(16, 7)],
-        [2, child2(8, revision8([textItem()]), n)],
+        [2, child2(20, revision8([textItem()]), n)],
         [3, bytesOf(32, 1)],
         [4, bytesOf(16, 8)],
       ]),
@@ -3150,12 +3150,12 @@ pair(
   26,
   n =>
     fr(
-      4,
+      1,
       statementPayload({
         transitions: [
           transition(
             child2(
-              7,
+              3,
               M([
                 [0, NET],
                 [1, acct2(1)],
@@ -3177,14 +3177,14 @@ pair(
   't8-item-t17',
   'type-8 message item',
   27,
-  n => fr(8, revision8([child2(17, M([[0, 'x']]), n)])),
+  n => fr(20, revision8([child2(22, M([[0, 'x']]), n)])),
   {},
 )
 pair(
   't16-item-t17',
   'type-16 message item',
   27,
-  n => fr(16, M([[0, [child2(17, M([[0, 'x']]), n)]]])),
+  n => fr(21, M([[0, [child2(22, M([[0, 'x']]), n)]]])),
   {},
 )
 
@@ -3227,7 +3227,7 @@ const seconds = (n: bigint) => ts(n, 0)
 acc(
   't4-timestamp-seconds-i64-min',
   'Timestamp seconds -2^63, the i64 minimum: accepted (C7).',
-  fr(4, withField(statementPayload(), 3, seconds(-9223372036854775808n))),
+  fr(1, withField(statementPayload(), 3, seconds(-9223372036854775808n))),
   ['C7'],
   { prior: null },
 )
@@ -3242,7 +3242,7 @@ rej(
       hex('3b7fffffffffffffff'),
       hex('3b8000000000000000'),
     ),
-    4,
+    1,
   ),
   'schema',
   '8.2',
@@ -3273,7 +3273,7 @@ rej(
 // S2b for key-transition entries (type 4 fields 1-3), at stage 8.3.
 const transitionWith = (field: number, value: Encodable) =>
   fr(
-    4,
+    1,
     statementPayload({
       transitions: [withField(transition(transitionStatement()), field, value)],
     }),
@@ -3311,13 +3311,13 @@ const factExtra = withField(fact(1_700_000_100, 0, 1, bytesOf(10, 1)), 9, 7)
 acc(
   'v6-nested-wildcard-journal-fact-schema2-accept',
   'Type 3 at schema 2 (min_reader 1): a journal fact, a map nested in the payload, carries an undeclared key 9; the frame is read as a newer compatible schema, so the wildcard is open (C12, V6.3).',
-  fr(3, checkpointPayload({ facts: [factExtra] }), 2, 1),
+  fr(14, checkpointPayload({ facts: [factExtra] }), 2, 1),
   ['C12', 'V6.3'],
 )
 rej(
   'v6-nested-wildcard-journal-fact-schema1-reject',
   'The same nested key at exact schema 1 is a schema error at 8.2 (C12).',
-  fr(3, checkpointPayload({ facts: [factExtra] }), 1, 1),
+  fr(14, checkpointPayload({ facts: [factExtra] }), 1, 1),
   'schema',
   '8.2',
   ['C12'],
@@ -3327,7 +3327,7 @@ rej(
   'v6-nested-closed-map-schema2-reject',
   'Type 3 at schema 2: an opaque-section map (no wildcard) with an undeclared key stays closed at every schema version (C12).',
   fr(
-    3,
+    14,
     checkpointPayload({
       sections: [withField(section(1, 1, bytesOf(12, 3)), 9, 1)],
     }),
@@ -3348,7 +3348,7 @@ rej(
       [
         0,
         fr(
-          4,
+          1,
           statementPayload({
             relays: [withField(relay(1), 9, 1), relay(2)],
           }),
@@ -3369,7 +3369,7 @@ rej(
 acc(
   'sem-t4-root-with-transition-alone-accepted',
   "A type-4 root validated by itself is not checked against S10: it may carry a transition (field 5) that a type-2 bootstrap would reject. The transition (revision 6 against statement revision 5) is accepted only because the link check lives in S10, which runs only in a type-2 parent's stage 9.",
-  fr(4, statementPayload({ transitions: [transition(transitionStatement())] })),
+  fr(1, statementPayload({ transitions: [transition(transitionStatement())] })),
   ['S10'],
   { prior: null },
 )
@@ -3378,13 +3378,13 @@ acc(
 acc(
   'limit-type16-root-total-256',
   'Type-16 root holding one container of 255 texts: 256 opened items in all.',
-  fr(16, M([[0, [containerItem(items(255))]]])),
+  fr(21, M([[0, [containerItem(items(255))]]])),
   ['R2'],
 )
 rej(
   'limit-type16-root-total-257',
   'Type-16 root holding one container of 256 texts: the 257th opened item exceeds the total (charged at 8.4).',
-  fr(16, M([[0, [containerItem(items(256))]]])),
+  fr(21, M([[0, [containerItem(items(256))]]])),
   'resource',
   '8.4',
   ['R2'],
@@ -3407,14 +3407,14 @@ acc(
 // before #136 is unchanged byte for byte. The cases below run against a reader that lists them.
 // ---------------------------------------------------------------------------------------------
 
-const TOPIC_TYPES = new Set([9, 10, 11])
+const TOPIC_TYPES = new Set([40, 41, 42])
 // Preserve the original historical reader context when later types are allocated.
-const WITH_TOPICS: SupportedSchema[] = KNOWN_TYPES.filter(
-  typeId => typeId <= 17 && (typeId < 12 || typeId > 15),
-).map(typeId => ({
+const WITH_TOPICS: SupportedSchema[] = [
+  1, 2, 3, 10, 11, 12, 14, 20, 21, 22, 40, 41, 42,
+].map(typeId => ({
   typeId,
-  // Type 4 is read at schema 2 (the stamp key, #198); every other type is at schema 1.
-  schemaVersion: typeId === 4 ? 2 : 1,
+  // Type 1 (DirectoryStatement) is read at schema 2 (the stamp key, #198); every other type is at schema 1.
+  schemaVersion: typeId === 1 ? 2 : 1,
 }))
 /** The reader of every case above: the version-1 types allocated before #136. */
 export const PRE_TOPIC_SCHEMAS: SupportedSchema[] = WITH_TOPICS.filter(
@@ -3489,7 +3489,7 @@ acc(
 rej(
   'topic-post-newer-schema-extra-field',
   'Historical schema-2/min-reader-1 future-field probe. Now rejected because structured Forum schema 2 requires min-reader at least 2; no legacy exception. Historical accepted T1: 5a32b7b47a8d27d1ce7e8856f924d15785492e19ea0333a06bc3685c56cd5641.',
-  fr(9, new Map([...topicPostPayload(), [9, 'future']]), 2, 1),
+  fr(40, new Map([...topicPostPayload(), [9, 'future']]), 2, 1),
   'unsupported',
   '7',
   ['V6.3', 'C12'],
@@ -3527,7 +3527,7 @@ acc(
 acc(
   'topic-vote-newer-schema-extra-field',
   'A type-11 vote at schema 2 with an undeclared field 9: retained through the schema-1 projection (V6.3).',
-  fr(11, new Map([...topicVotePayload(), [9, 1]]), 2, 1),
+  fr(42, new Map([...topicVotePayload(), [9, 1]]), 2, 1),
   ['V6.3', 'C12'],
   TP,
 )
@@ -3545,7 +3545,7 @@ const tpRej = (
 const p9 = (mutate: (m: Map<number, Encodable>) => void): Uint8Array => {
   const m = topicPostPayload()
   mutate(m)
-  return fr(9, m)
+  return fr(40, m)
 }
 tpRej(
   'topic-post-missing-topic',
@@ -3598,7 +3598,7 @@ tpRej(
 rej(
   'topic-post-topic-invalid-utf8',
   'A type-9 payload whose topic holds the invalid UTF-8 bytes c3 28.',
-  framePayload('a3 00 6a 6672616e6b2d74657374 01 62 c328 03 41 aa', 9),
+  framePayload('a3 00 6a 6672616e6b2d74657374 01 62 c328 03 41 aa', 40),
   'malformed',
   '7',
   ['C6'],
@@ -3745,7 +3745,7 @@ tpRej(
 tpRej(
   'topic-submission-missing-burn',
   'A type-10 submission without a burn transaction.',
-  fr(10, new Map([...topicSubmissionPayload()].filter(([k]) => k !== 2))),
+  fr(41, new Map([...topicSubmissionPayload()].filter(([k]) => k !== 2))),
   'schema',
   '8.2',
   ['T8'],
@@ -3776,7 +3776,7 @@ acc(
 tpRej(
   'topic-submission-carries-direction',
   'A type-10 submission that adds a vote direction at field 3: the direction is read from the transaction, so the schema has none (T8, C12).',
-  fr(10, new Map([...topicSubmissionPayload(), [3, 1]])),
+  fr(41, new Map([...topicSubmissionPayload(), [3, 1]])),
   'schema',
   '8.2',
   ['T8', 'C12'],
@@ -3784,7 +3784,7 @@ tpRej(
 tpRej(
   'topic-submission-burn-not-bytes',
   'A type-10 submission whose burn transaction is text.',
-  fr(10, new Map([...topicSubmissionPayload(), [2, 'tx']])),
+  fr(41, new Map([...topicSubmissionPayload(), [2, 'tx']])),
   'schema',
   '8.2',
   ['T8'],
@@ -3810,7 +3810,7 @@ tpRej(
 tpRej(
   'topic-vote-target-not-bytes',
   'A type-11 vote whose target is text.',
-  fr(11, new Map([...topicVotePayload(), [1, 'abc']])),
+  fr(42, new Map([...topicVotePayload(), [1, 'abc']])),
   'schema',
   '8.2',
   ['S12'],
@@ -3818,7 +3818,7 @@ tpRej(
 tpRej(
   'topic-vote-missing-burn',
   'A type-11 vote without a burn transaction.',
-  fr(11, new Map([...topicVotePayload()].filter(([k]) => k !== 2))),
+  fr(42, new Map([...topicVotePayload()].filter(([k]) => k !== 2))),
   'schema',
   '8.2',
   ['T8'],
@@ -3834,7 +3834,7 @@ tpRej(
 tpRej(
   'topic-vote-carries-direction',
   "A type-11 vote that adds a direction at field 3: the direction and the weight are the transaction's (T8, C12).",
-  fr(11, new Map([...topicVotePayload(), [3, 1]])),
+  fr(42, new Map([...topicVotePayload(), [3, 1]])),
   'schema',
   '8.2',
   ['T8', 'C12'],
@@ -3852,7 +3852,7 @@ tpRej(
 tpRej(
   'topic-post-as-message-item',
   'A type-8 revision whose item is a type-9 topic post: an assigned type is not an open-field type.',
-  fr(8, revision8([post])),
+  fr(20, revision8([post])),
   'semantic',
   '8.4',
   ['S8'],
@@ -3860,7 +3860,7 @@ tpRej(
 tpRej(
   'topic-submission-as-message-item',
   'A type-16 container holding a type-10 submission.',
-  fr(16, M([[0, [topicSubmissionFrame()]]])),
+  fr(21, M([[0, [topicSubmissionFrame()]]])),
   'semantic',
   '8.4',
   ['S8'],
@@ -3868,7 +3868,7 @@ tpRej(
 tpRej(
   'topic-vote-as-message-item',
   'A type-8 revision whose item is a type-11 vote.',
-  fr(8, revision8([topicVoteFrame()])),
+  fr(20, revision8([topicVoteFrame()])),
   'semantic',
   '8.4',
   ['S8'],
@@ -3876,7 +3876,7 @@ tpRej(
 tpRej(
   'unassigned-type-12-remains-an-open-item',
   'Historical type-12 open-item bytes, now rejected because type 12 is assigned and is not a message item. Historical accepted T1: 27fd927eba7aeff1c0958a2c8cf761e85ea98e78870fa0acf83fc74d640cbf80.',
-  fr(8, revision8([fr(12, M([[0, 1]]))])),
+  fr(20, revision8([fr(43, M([[0, 1]]))])),
   'semantic',
   '8.4',
   ['V6.1', 'S8'],
@@ -3904,7 +3904,7 @@ tpRej(
   'topic-submission-frame-over-1mib',
   'A type-10 submission of a maximal post with an unknown padding field, making the frame exceed 1 MiB: resource at stage 8.1 (R6).',
   fr(
-    10,
+    41,
     new Map([
       ...topicSubmissionPayload({ post: bigPost }),
       [9, new Uint8Array(1_048_576 - bigPost.length)],
@@ -3915,7 +3915,7 @@ tpRej(
   ['R6'],
 )
 const votePadded = (pad: number, schema = 1): Uint8Array =>
-  fr(11, new Map([...topicVotePayload(), [9, new Uint8Array(pad)]]), schema, 1)
+  fr(42, new Map([...topicVotePayload(), [9, new Uint8Array(pad)]]), schema, 1)
 let votePad = 65_536 - votePadded(0, 2).length
 votePad -= votePadded(votePad, 2).length - 65_536
 acc(
@@ -3971,11 +3971,11 @@ const withPrefix = (b: Uint8Array, prefix: number): Uint8Array => {
 const cHalf = T3C.proof.slice(0, 32)
 const sHalf = T3C.proof.slice(32)
 const stampT5 = (o: Parameters<typeof type5Payload>[0]) =>
-  fr(5, type5Payload(o))
+  fr(11, type5Payload(o))
 const stampT5Without = (k: number) => {
   const m = type5Payload()
   m.delete(k)
-  return fr(5, m)
+  return fr(11, m)
 }
 
 // The x coordinates below are all fixed by arithmetic: 1 has y^2 = 8, a square, so `p + 1` is a
@@ -4153,11 +4153,11 @@ acc(
 
 // Type 4: field 8 is required from schema 2 and undefined in schema 1 (S10a.1).
 const stmtSchema1 = (o: Parameters<typeof statementPayload>[0] = {}) =>
-  fr(4, statementPayload({ ...o, stampKey: null }), 1, 1)
+  fr(1, statementPayload({ ...o, stampKey: null }), 1, 1)
 rej(
   'stamp-t4-schema2-without-field-8',
   'Type-4 statement at schema_version 2 without field 8: a required key is missing.',
-  fr(4, statementPayload({ stampKey: null })),
+  fr(1, statementPayload({ stampKey: null })),
   'schema',
   '8.2',
   ['S10a', 'V2'],
@@ -4166,7 +4166,7 @@ rej(
 rej(
   'stamp-t4-schema1-with-field-8',
   'Type-4 statement at schema_version 1 that carries field 8: undeclared in schema 1 (C12).',
-  fr(4, statementPayload(), 1, 1),
+  fr(1, statementPayload(), 1, 1),
   'schema',
   '8.2',
   ['S10a', 'C12'],
@@ -4187,7 +4187,7 @@ for (const [type, seed] of [
     `stamp-t4-field-8-key-type-${type}`,
     `Type-4 field 8 of the allocated key type ${type} with a 32-byte value: the stamp key must be key type 1.`,
     fr(
-      4,
+      1,
       statementPayload({
         stampKey: M([
           [0, type],
@@ -4205,7 +4205,7 @@ rej(
   'stamp-t4-field-8-unallocated-key-type',
   'Type-4 field 8 of the unallocated key type 9.',
   fr(
-    4,
+    1,
     statementPayload({
       stampKey: M([
         [0, 9],
@@ -4221,26 +4221,26 @@ rej(
 acc(
   'stamp-t4-field-8-equals-subject-accepted',
   'Type-4 field 8 equal to the subject key: not rejected (S10a.1 forbids nothing here; the identity key as stamp key only forfeits the blast-radius protection).',
-  fr(4, statementPayload({ subject: acct1(3), stampKey: acct1(3) })),
+  fr(1, statementPayload({ subject: acct1(3), stampKey: acct1(3) })),
   ['S10a'],
   NOP,
 )
 // A reader whose highest type-4 schema is 1 reads a schema-2 statement through the schema-1
 // projection (V6.3): field 8 is neither required nor declared there.
 const TYPE4_AT_SCHEMA_1 = PRE_TOPIC_SCHEMAS.map(x =>
-  x.typeId === 4 ? { ...x, schemaVersion: 1 } : x,
+  x.typeId === 1 ? { ...x, schemaVersion: 1 } : x,
 )
 acc(
   'stamp-t4-schema2-projected-without-field-8',
   'A schema-2 statement without field 8 read by a reader whose highest type-4 schema is 1: accepted through the schema-1 projection (V6.3), since field 8 is not part of that schema.',
-  fr(4, statementPayload({ stampKey: null }), 2, 2),
+  fr(1, statementPayload({ stampKey: null }), 2, 2),
   ['V6.3', 'S10a'],
   { ...NOP, supported: TYPE4_AT_SCHEMA_1 },
 )
 acc(
   'stamp-t4-schema2-projected-with-field-8',
   'A schema-2 statement with field 8 read by a reader whose highest type-4 schema is 1: accepted, and field 8 is kept as an unknown field (V6.3).',
-  fr(4, statementPayload(), 2, 2),
+  fr(1, statementPayload(), 2, 2),
   ['V6.3', 'S10a'],
   { ...NOP, supported: TYPE4_AT_SCHEMA_1 },
 )
@@ -4331,7 +4331,7 @@ acc(
 const UNPAID_READER = {
   ...TS,
   supported: PRE_TOPIC_SCHEMAS.map(s =>
-    s.typeId === 1 ? { ...s, schemaVersion: 2 } : s,
+    s.typeId === 10 ? { ...s, schemaVersion: 2 } : s,
   ),
 }
 const withoutPayments = (): ReturnType<typeof deliveryPayload> => {
@@ -4342,28 +4342,28 @@ const withoutPayments = (): ReturnType<typeof deliveryPayload> => {
 acc(
   't1-schema2-payments-empty',
   'Type 1 at schema 2 (min_reader 1) with an empty payment list: an unpaid message, read by a reader that supports type 1 at schema 2.',
-  fr(1, deliveryPayload({ payments: [] }), 2, 1),
+  fr(10, deliveryPayload({ payments: [] }), 2, 1),
   ['V1', 'S3'],
   UNPAID_READER,
 )
 acc(
   't1-schema2-payments-absent',
   'Type 1 at schema 2 with no payment list at all: field 4 is optional at schema 2 and reads as no payments.',
-  fr(1, withoutPayments(), 2, 1),
+  fr(10, withoutPayments(), 2, 1),
   ['V1', 'S3'],
   UNPAID_READER,
 )
 acc(
   't1-schema2-payments-present',
   'Type 1 at schema 2 with two payments: a paid delivery is also valid at schema 2.',
-  fr(1, deliveryPayload(), 2, 1),
+  fr(10, deliveryPayload(), 2, 1),
   ['V1', 'S3'],
   UNPAID_READER,
 )
 rej(
   't1-schema2-payments-65',
   'Type 1 at schema 2 with 65 payments: the upper bound is unchanged.',
-  fr(1, deliveryPayload({ payments: 65 }), 2, 1),
+  fr(10, deliveryPayload({ payments: 65 }), 2, 1),
   'resource',
   '8.1',
   ['R2'],
@@ -4372,7 +4372,7 @@ rej(
 rej(
   't1-schema1-payments-absent',
   'Type 1 at schema 1 with no payment list: field 4 is required at schema 1, also for a reader that supports schema 2.',
-  fr(1, withoutPayments()),
+  fr(10, withoutPayments()),
   'schema',
   '8.2',
   ['S3'],
@@ -4381,7 +4381,7 @@ rej(
 rej(
   't1-schema2-payments-empty-schema1-reader',
   'The unpaid schema-2 delivery read by a reader that supports type 1 only at schema 1: its schema-1 projection (V6.3) still requires a payment.',
-  fr(1, deliveryPayload({ payments: [] }), 2, 1),
+  fr(10, deliveryPayload({ payments: [] }), 2, 1),
   'schema',
   '8.2',
   ['V6.3', 'S3'],

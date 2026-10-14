@@ -270,7 +270,7 @@ fn root_and_nested_frame_limit_precedes_closed_shape() {
         let raw = (size - 100..size)
             .map(|n| {
                 common::fr(
-                    18,
+                    26,
                     &cbor_map(vec![
                         (0, CborValue::Text("x".into())),
                         (1, CborValue::Int(3)),
@@ -287,7 +287,7 @@ fn root_and_nested_frame_limit_precedes_closed_shape() {
         };
         assert_eq!(outcome(parse_frame(&raw, &default_context())), expected);
         let nested = common::fr(
-            16,
+            21,
             &cbor_map(vec![(0, CborValue::Array(vec![CborValue::Bytes(raw)]))]),
         );
         assert_eq!(outcome(parse_frame(&nested, &default_context())), expected);
@@ -350,7 +350,7 @@ fn frame(kind: u32, payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
 }
 fn container(items: Vec<Vec<u8>>) -> Vec<u8> {
     common::fr(
-        16,
+        21,
         &cbor_map(vec![(
             0,
             CborValue::Array(items.into_iter().map(CborValue::Bytes).collect()),
@@ -359,7 +359,7 @@ fn container(items: Vec<Vec<u8>>) -> Vec<u8> {
 }
 fn content(items: Vec<Vec<u8>>, extra: Option<CborValue>) -> Vec<u8> {
     let revision = common::fr(
-        8,
+        20,
         &cbor_map(vec![
             (0, CborValue::Text("frank".into())),
             (
@@ -379,11 +379,11 @@ fn content(items: Vec<Vec<u8>>, extra: Option<CborValue>) -> Vec<u8> {
     if let Some(extra) = extra {
         fields.push((99, extra));
     }
-    frame(6, &cbor_map(fields), schema, 1)
+    frame(12, &cbor_map(fields), schema, 1)
 }
 fn dm_root(extra: Option<CborValue>) -> Vec<u8> {
     let payload = frame(
-        5,
+        11,
         &cbor_map(vec![
             (0, CborValue::Text(common::NET.into())),
             (1, common::acct1(9)),
@@ -411,7 +411,7 @@ fn dm_root(extra: Option<CborValue>) -> Vec<u8> {
     if let Some(extra) = extra {
         fields.push((99, extra));
     }
-    frame(1, &cbor_map(fields), schema, 1)
+    frame(10, &cbor_map(fields), schema, 1)
 }
 #[test]
 fn public_session_shares_blackjack_item_depth_aggregate_and_slots() {
@@ -511,7 +511,7 @@ fn closed_maps_cover_each_required_forbidden_kind_and_future_shape() {
             }
             let missing = CborValue::Map(m.iter().filter(|(key, _)| key != k).cloned().collect());
             assert_eq!(
-                outcome(parse_frame(&common::fr(18, &missing), &default_context())),
+                outcome(parse_frame(&common::fr(26, &missing), &default_context())),
                 "schema@8.2"
             );
         }
@@ -523,14 +523,14 @@ fn closed_maps_cover_each_required_forbidden_kind_and_future_shape() {
             extra.push((key, CborValue::Int(0)));
             assert_eq!(
                 outcome(parse_frame(
-                    &common::fr(18, &cbor_map(extra.clone())),
+                    &common::fr(26, &cbor_map(extra.clone())),
                     &default_context()
                 )),
                 "schema@8.2"
             );
             assert_eq!(
                 outcome(parse_frame(
-                    &frame(18, &cbor_map(extra), 2, 1),
+                    &frame(26, &cbor_map(extra), 2, 1),
                     &default_context()
                 )),
                 "schema@8.2"
@@ -542,7 +542,7 @@ fn closed_maps_cover_each_required_forbidden_kind_and_future_shape() {
                 changed.iter_mut().find(|(k, _)| k == key).unwrap().1 = bad;
                 assert_eq!(
                     outcome(parse_frame(
-                        &common::fr(18, &cbor_map(changed)),
+                        &common::fr(26, &cbor_map(changed)),
                         &default_context()
                     )),
                     "schema@8.2"
@@ -554,16 +554,16 @@ fn closed_maps_cover_each_required_forbidden_kind_and_future_shape() {
 #[test]
 fn retained_order_high_reader_and_required_family_remain_distinct() {
     let welcome = bytes("welcome");
-    let text = common::fr(17, &cbor_map(vec![(0, CborValue::Text("last".into()))]));
+    let text = common::fr(22, &cbor_map(vec![(0, CborValue::Text("last".into()))]));
     let mut old = default_context();
     old.reader_version = 99;
     old.supported_schemas = vec![
         SupportedSchema {
-            type_id: 16,
+            type_id: 21,
             schema_version: 1,
         },
         SupportedSchema {
-            type_id: 17,
+            type_id: 22,
             schema_version: 1,
         },
     ];
@@ -581,7 +581,7 @@ fn retained_order_high_reader_and_required_family_remain_distinct() {
     assert!(
         matches!(parse_frame(&welcome,&old).unwrap(),ValidationResult::Retained(r)if r.frame==welcome)
     );
-    for kind in 1..=15 {
+    for kind in [1, 2, 3, 10, 11, 12, 13, 14, 20, 40, 41, 42, 43, 44, 45, 46] {
         let raw = container(vec![common::fr(kind, &cbor_map(vec![]))]);
         assert_eq!(
             outcome(parse_frame(&raw, &default_context())),
@@ -589,7 +589,7 @@ fn retained_order_high_reader_and_required_family_remain_distinct() {
         );
     }
     let required = common::fr(
-        6,
+        12,
         &cbor_map(vec![
             (0, CborValue::Text(common::NET.into())),
             (1, CborValue::Bytes(vec![1; 16])),

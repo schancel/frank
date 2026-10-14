@@ -314,7 +314,7 @@ fn schema2_hand_frames_and_v3_frames_are_distinct() {
     let schema3 = |payload: &CborValue| {
         encode_frame(
             EnvelopeFields {
-                type_id: 18,
+                type_id: 26,
                 schema_version: 3,
                 min_reader_version: 2,
             },
@@ -340,7 +340,7 @@ fn schema2_hand_frames_and_v3_frames_are_distinct() {
 
     // Nested in a container, a schema-3 item is typed and keeps its exact bytes.
     let nested = common::fr(
-        16,
+        21,
         &cbor_map(vec![(
             0,
             CborValue::Array(vec![CborValue::Bytes(frame.clone())]),

@@ -58,7 +58,7 @@ export function isUpdateAvailable() {
   return Boolean(updateNotice || activeRegistration?.waiting)
 }
 
-export async function checkForAppUpdate() {
+export async function checkForAppUpdate({ resetDeferral = true } = {}) {
   if (
     refreshing ||
     typeof navigator === 'undefined' ||
@@ -66,6 +66,7 @@ export async function checkForAppUpdate() {
   ) {
     return null
   }
+  if (resetDeferral) deferredWorker = undefined
   if (updateCheck) return updateCheck
   updateCheck = (async () => {
     try {
@@ -75,7 +76,6 @@ export async function checkForAppUpdate() {
       if (refreshing) return null
       activeRegistration = registration || null
       if (!registration) return null
-      deferredWorker = undefined
       await registration.update()
       if (refreshing) return null
       if (registration.waiting) offerUpdate(registration)
@@ -129,7 +129,7 @@ function checkForUpdate() {
   const now = Date.now()
   if (now - lastUpdateCheck < 30_000) return
   lastUpdateCheck = now
-  void checkForAppUpdate()
+  void checkForAppUpdate({ resetDeferral: false })
 }
 
 if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {

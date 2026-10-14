@@ -18,7 +18,10 @@ function registrationHarness() {
   const getRegistrations = jest.fn().mockResolvedValue([])
   const warning = jest.fn()
   const reload = jest.fn()
-  const notice = jest.fn(() => jest.fn())
+  const notice = jest.fn(
+    (_options: { actions: { handler: () => void }[]; onDismiss: () => void }) =>
+      jest.fn(),
+  )
   const window: Record<string, unknown> = { location: { reload } }
   let now = 60_000
   const context = vm.createContext({
@@ -122,4 +125,28 @@ it('suspends visibility checks and pending update notices before explicit unregi
   expect(harness.reload).toHaveBeenCalledTimes(1)
   expect(harness.warning).not.toHaveBeenCalled()
   expect(harness.notice).not.toHaveBeenCalled()
+})
+
+it('preserves Later for the same waiting worker on background checks but offers a replacement', async () => {
+  const harness = registrationHarness()
+  const waiting = { postMessage: jest.fn() }
+  const registration = {
+    waiting,
+    update: jest.fn().mockResolvedValue(undefined),
+  }
+  harness.getRegistration.mockResolvedValue(registration)
+  harness.registered(registration)
+  await harness.check()
+  const options = harness.notice.mock.calls[0][0]
+  options.actions[1].handler()
+  options.onDismiss()
+  harness.visible()
+  // Flush the background getRegistration/update/offer chain without issuing a
+  // manual check, which intentionally resets the user's deferral.
+  await new Promise(resolve => setImmediate(resolve))
+  expect(harness.notice).toHaveBeenCalledTimes(1)
+  registration.waiting = { postMessage: jest.fn() }
+  harness.visible()
+  await new Promise(resolve => setImmediate(resolve))
+  expect(harness.notice).toHaveBeenCalledTimes(2)
 })

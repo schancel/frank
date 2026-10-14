@@ -7,6 +7,10 @@ import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { picturePreview, picturePreviewText } from '../utils/chat-attachments'
 import { desktopNotify } from '../utils/notifications'
+import {
+  acknowledgeServiceWorkerWakeupHandled,
+  deriveLocalPeerWakeupCapabilitySync,
+} from '../utils/webpush-sync'
 import { store } from '../adapters/level-message-store'
 import {
   isChainAddress,
@@ -3611,6 +3615,49 @@ export const useChatStore = defineStore('chats', {
               ? undefined
               : this.conversations[message.conversationId],
           )
+          let wireItems = message.items
+          try {
+            const contactsStore = useContactStore()
+            const hasContactCard = message.items.some(
+              it => it && it.type === 'contact-card',
+            )
+            const needsSidecar =
+              contactsStore.isContact(address) &&
+              contactsStore.getNotify(address) &&
+              !contactsStore.getInboundWakeupToken(address)
+            if (hasContactCard || needsSidecar) {
+              const capability = deriveLocalPeerWakeupCapabilitySync(
+                address,
+                (wallet as unknown as { identity?: any })?.identity ?? null,
+              )
+              if (capability) {
+                contactsStore.setInboundWakeupToken({
+                  address,
+                  token: capability.preimageHex,
+                })
+                if (hasContactCard) {
+                  wireItems = message.items.map(it =>
+                    it && it.type === 'contact-card' && !it.wakeupTokenHex
+                      ? { ...it, wakeupTokenHex: capability.preimageHex }
+                      : it,
+                  )
+                } else {
+                  wireItems = [
+                    ...message.items,
+                    {
+                      type: 'contact-card',
+                      uid: 'frank-wakeup-capability',
+                      fullName: 'Wakeup Capability',
+                      frankAddress: wallet.identity.displayAddress,
+                      wakeupTokenHex: capability.preimageHex,
+                    },
+                  ]
+                }
+              }
+            }
+          } catch {
+            // Best-effort wakeup token exchange
+          }
           result = await messagingChain.directMessages.send({
             wallet,
             recipient,
@@ -3620,7 +3667,7 @@ export const useChatStore = defineStore('chats', {
             ...(onEnvelopeDurable ? { onEnvelopeDurable } : {}),
             conversationId: message.conversationId,
             ...(subject === undefined ? {} : { conversationName: subject }),
-            items: message.items,
+            items: wireItems,
             ...(message.stampValueWei === undefined
               ? {}
               : { stampValue: message.stampValueWei }),
@@ -5395,6 +5442,45 @@ export const useChatStore = defineStore('chats', {
           continue
         }
 
+        if (!message.outbound && Array.isArray(message.items)) {
+          for (const item of message.items) {
+            if (
+              item &&
+              item.type === 'contact-card' &&
+              typeof item.wakeupTokenHex === 'string' &&
+              item.wakeupTokenHex.length > 0 &&
+              message.senderAddress
+            ) {
+              try {
+                useContactStore().setOutboundWakeupToken({
+                  address: message.senderAddress,
+                  token: item.wakeupTokenHex,
+                })
+              } catch {
+                // ignore
+              }
+            }
+          }
+          if (
+            message.items.length > 1 &&
+            message.items.some(
+              it =>
+                it &&
+                it.type === 'contact-card' &&
+                it.uid === 'frank-wakeup-capability',
+            )
+          ) {
+            message.items = message.items.filter(
+              it =>
+                !(
+                  it &&
+                  it.type === 'contact-card' &&
+                  it.uid === 'frank-wakeup-capability'
+                ),
+            )
+          }
+        }
+
         this.messages[index] = message
         if (!conv.messages.some(m => m.payloadDigest === index)) {
           conv.messages.push(message)
@@ -5520,8 +5606,11 @@ export const useChatStore = defineStore('chats', {
         }
 
         const acceptancePrice = useProfileStore().inbox.acceptancePrice ?? 0
+        if (document.hasFocus()) {
+          acknowledgeServiceWorkerWakeupHandled()
+          continue
+        }
         if (
-          document.hasFocus() ||
           stampValue < acceptancePrice ||
           this.lastRead(stored.conversationId!) > newMsg.serverTime ||
           messageWrappers.length !== 1
@@ -5555,6 +5644,7 @@ export const useChatStore = defineStore('chats', {
             )
           : textItem.text
         if (contact?.notify) {
+          acknowledgeServiceWorkerWakeupHandled()
           desktopNotify(
             senderName,
             body,

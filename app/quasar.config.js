@@ -398,6 +398,40 @@ export default configure(ctx => {
           // resolution to the one workspace copy at the Vite/bundle level, regardless of what
           // yarn's own node_modules layout does underneath.
           'bn.js': path.resolve(__dirname, '../packages/bn.js/lib/bn.js'),
+          '@frank/account-recovery': path.resolve(
+            __dirname,
+            '../packages/account-recovery/src/index.ts',
+          ),
+          '@frank/account-vault': path.resolve(
+            __dirname,
+            '../packages/account-vault/src/index.ts',
+          ),
+          '@frank/domain-roots': path.resolve(
+            __dirname,
+            '../packages/domain-roots/src/index.ts',
+          ),
+          '@frank/codex32': path.resolve(
+            __dirname,
+            '../packages/codex32/src/index.ts',
+          ),
+          '@frank/cashweb': path.resolve(__dirname, '../packages/cashweb'),
+          '@frank/wallet': path.resolve(__dirname, '../packages/wallet'),
+          '@frank/price-feeds': path.resolve(
+            __dirname,
+            '../packages/price-feeds/src',
+          ),
+          '@frank/crypto-box': path.resolve(
+            __dirname,
+            '../packages/crypto-box/dist/index.js',
+          ),
+          '@frank/codec': path.resolve(
+            __dirname,
+            '../packages/frank-codec/src',
+          ),
+          '@frank/nakamoto': path.resolve(
+            __dirname,
+            '../packages/nakamoto/dist',
+          ),
           // Mirrors tsconfig.json's `paths` (see that file's own comment): Vite doesn't read
           // tsconfig `paths` for its own module resolution the way @quasar/app-webpack's internal
           // chain did, so these need restating here or every `import ... from 'src/...'` (130
@@ -528,6 +562,8 @@ export default configure(ctx => {
           clientsClaim: true,
           cleanupOutdatedCaches: true,
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+          // Import the content-free blind WebPush wakeup & deduplication worker (#384).
+          importScripts: ['push-sw.js'],
         }
       },
     },

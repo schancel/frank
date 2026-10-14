@@ -1408,7 +1408,7 @@ export default {
     chainUnsupported: 'Not supported',
     notificationFeeThresholdAvu: 'Notification Fee Threshold (AVU)',
     notificationFeeThresholdAvuHint:
-      'Minimum stamp value in AVU required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',
+      'Minimum stamp value in AVU (1 AVU = 1 kWh, e.g. 0.01 AVU) required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',
     allowContactNotificationBypass:
       'Allow contacts with wakeup tokens to notify without a stamp',
     coldVaultTitle: 'Cold-Wallet Auto-Sweep Vault',

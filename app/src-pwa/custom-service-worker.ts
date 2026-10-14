@@ -5,10 +5,12 @@
  */
 
 export const BLIND_WAKEUP_MESSAGE_TYPE = 'FRANK_BLIND_WAKEUP_SYNC'
+export const BLIND_WAKEUP_HANDLED_TYPE = 'FRANK_BLIND_WAKEUP_HANDLED'
 export const BLIND_WAKEUP_NOTIFICATION_TITLE = 'Frank'
 export const BLIND_WAKEUP_NOTIFICATION_BODY =
   'New encrypted activity — open Frank to sync your inbox.'
 export const BLIND_WAKEUP_NOTIFICATION_TAG = 'frank-blind-wakeup-sync'
+export const DEFAULT_BACKGROUND_DEDUP_GRACE_MS = 650
 
 export interface BlindPushPayload {
   type: 'sync'
@@ -43,6 +45,13 @@ export interface SwScopeLike {
   addEventListener?: (type: string, listener: (event: any) => void) => void
 }
 
+export interface BlindWakeupHandleOptions {
+  /** Optional grace period (in ms) to wait when backgrounded clients exist so they can display a rich decrypted notification first. */
+  dedupGraceMs?: number
+  /** Predicate returning true if a woken client already handled and displayed a decrypted notification. */
+  wasHandledByClient?: () => boolean | Promise<boolean>
+}
+
 /**
  * Parse a raw push payload while strictly enforcing the #384 content-free invariant:
  * only `{ "type": "sync" }` (or empty payload, which defaults to `{ "type": "sync" }`)
@@ -70,13 +79,16 @@ export function parseBlindPushPayload(
  *
  * - Wakes all open client windows with `postMessage({ type: 'FRANK_BLIND_WAKEUP_SYNC' })`
  *   so active sessions immediately pull and decrypt new inbox items from the relay.
- * - If no client window is currently focused/visible, displays a generic privacy-preserving
- *   notification without leaking any metadata to the OS push provider.
+ * - If any client is focused/visible, or if a backgrounded client handles the wakeup within
+ *   `dedupGraceMs` and acknowledges with `FRANK_BLIND_WAKEUP_HANDLED`, suppresses the
+ *   generic fallback notification.
+ * - Otherwise displays a generic privacy-preserving notification without leaking metadata.
  */
 export async function handleBlindPushWakeup(
   sw: SwScopeLike,
   rawPayloadText?: string | null,
   nowMs: number = Date.now(),
+  options?: BlindWakeupHandleOptions,
 ): Promise<{ syncedClients: number; showedNotification: boolean }> {
   const payload = parseBlindPushPayload(rawPayloadText)
   if (!payload) {
@@ -101,7 +113,21 @@ export async function handleBlindPushWakeup(
     })
   }
 
-  if (!anyVisibleOrFocused && sw.registration?.showNotification) {
+  if (anyVisibleOrFocused) {
+    return { syncedClients: clients.length, showedNotification: false }
+  }
+
+  if (clients.length > 0 && options) {
+    const graceMs = Math.max(0, options.dedupGraceMs ?? 0)
+    if (graceMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, graceMs))
+    }
+    if (options.wasHandledByClient && (await options.wasHandledByClient())) {
+      return { syncedClients: clients.length, showedNotification: false }
+    }
+  }
+
+  if (sw.registration?.showNotification) {
     await sw.registration.showNotification(BLIND_WAKEUP_NOTIFICATION_TITLE, {
       body: BLIND_WAKEUP_NOTIFICATION_BODY,
       tag: BLIND_WAKEUP_NOTIFICATION_TAG,
@@ -115,7 +141,7 @@ export async function handleBlindPushWakeup(
 }
 
 /**
- * Install `push` and `notificationclick` listeners on a ServiceWorkerGlobalScope.
+ * Install `push`, `message`, and `notificationclick` listeners on a ServiceWorkerGlobalScope.
  */
 export function registerBlindWakeupServiceWorkerListeners(
   sw: SwScopeLike = globalThis as unknown as SwScopeLike,
@@ -124,6 +150,15 @@ export function registerBlindWakeupServiceWorkerListeners(
     return
   }
 
+  let lastClientHandledAtMs = 0
+
+  sw.addEventListener('message', (event: any) => {
+    const data = event?.data
+    if (data && data.type === BLIND_WAKEUP_HANDLED_TYPE) {
+      lastClientHandledAtMs = Date.now()
+    }
+  })
+
   sw.addEventListener('push', (event: any) => {
     let rawText: string | null = null
     try {
@@ -131,7 +166,11 @@ export function registerBlindWakeupServiceWorkerListeners(
     } catch {
       rawText = null
     }
-    const task = handleBlindPushWakeup(sw, rawText)
+    const pushStartedAtMs = Date.now()
+    const task = handleBlindPushWakeup(sw, rawText, pushStartedAtMs, {
+      dedupGraceMs: DEFAULT_BACKGROUND_DEDUP_GRACE_MS,
+      wasHandledByClient: () => lastClientHandledAtMs >= pushStartedAtMs,
+    })
     if (typeof event?.waitUntil === 'function') {
       event.waitUntil(task)
     }
@@ -170,3 +209,4 @@ export function registerBlindWakeupServiceWorkerListeners(
 }
 
 registerBlindWakeupServiceWorkerListeners()
+

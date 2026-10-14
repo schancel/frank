@@ -536,7 +536,56 @@ impl Owner {
         });
         drained
     }
+
+    /// Return the relay's cluster-safe or persisted VAPID P-256 keypair.
+    ///
+    /// Priority:
+    /// 1. `FRANK_VAPID_PRIVATE_KEY` environment variable (hex or base64url 32-byte P-256 scalar),
+    ///    enabling stateless horizontal scaling across multi-pod relay clusters.
+    /// 2. Persisted 32-byte key under `b"M_vapid_privkey"` in the canonical DM RocksDB store,
+    ///    so single-node relays retain their VAPID identity across restarts without breaking
+    ///    existing browser WebPush subscriptions.
+    /// 3. Freshly generated P-256 keypair persisted atomically to `b"M_vapid_privkey"`.
+    pub(crate) fn get_or_init_vapid_keypair(
+        &self,
+    ) -> Result<crate::store::notification_policy::VapidKeyPair> {
+        if let Ok(raw_env) = std::env::var("FRANK_VAPID_PRIVATE_KEY") {
+            let trimmed = raw_env.trim();
+            if !trimmed.is_empty() {
+                if let Ok(kp) =
+                    crate::store::notification_policy::VapidKeyPair::from_private_key_str(trimmed)
+                {
+                    return Ok(kp);
+                }
+            }
+        }
+        self.with(true, |db| {
+            if let Some(existing) = db
+                .get(VAPID_PRIVATE_KEY_STORAGE_KEY)
+                .map_err(|_| CanonicalError::Unavailable)?
+            {
+                if let Ok(bytes) = <[u8; 32]>::try_from(existing.as_slice()) {
+                    return Ok(
+                        crate::store::notification_policy::VapidKeyPair::from_private_key_bytes(
+                            &bytes,
+                        ),
+                    );
+                }
+            }
+            let generated = crate::store::notification_policy::VapidKeyPair::generate();
+            let mut batch = WriteBatch::default();
+            batch.put(
+                VAPID_PRIVATE_KEY_STORAGE_KEY,
+                generated.private_key_bytes(),
+            );
+            write(db, batch)?;
+            Ok(generated)
+        })?
+        .ok_or(CanonicalError::Unavailable)
+    }
 }
+
+const VAPID_PRIVATE_KEY_STORAGE_KEY: &[u8] = b"M_vapid_privkey";
 
 /// One address's `I` or `O` entries from a starting position onward, in delivery order.
 struct Entries<'a> {

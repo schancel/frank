@@ -359,6 +359,10 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["mailbox", _, "notification-policy"] => {
             Cow::Borrowed("/mailbox/:address/notification-policy")
         }
+        ["push", "vapid-public-key"] => Cow::Borrowed("/push/vapid-public-key"),
+        ["message", "push", "vapid-public-key"] => {
+            Cow::Borrowed("/message/push/vapid-public-key")
+        }
         ["topics"] => Cow::Borrowed("/topics"),
         ["topics", "vote"] => Cow::Borrowed("/topics/vote"),
         ["topics", "discover"] => Cow::Borrowed("/topics/discover"),
@@ -671,6 +675,14 @@ impl RegistryServer {
                 routing::get(handle_get_monad_topic_post),
             )
             .route(
+                "/push/vapid-public-key",
+                routing::get(crate::http::monad_message_cbor::handle_get_vapid_public_key),
+            )
+            .route(
+                "/message/push/vapid-public-key",
+                routing::get(crate::http::monad_message_cbor::handle_get_vapid_public_key),
+            )
+            .route(
                 "/message/monad/mailbox/:address/notification-policy",
                 routing::get(crate::http::monad_message_cbor::handle_get_notification_policy)
                     .put(crate::http::monad_message_cbor::handle_put_notification_policy),
@@ -780,6 +792,7 @@ impl RegistryServer {
                         header::HeaderName::from_static("x-frank-directory-evidence"),
                         header::HeaderName::from_static("x-frank-directory-disposition"),
                         header::HeaderName::from_static("x-frank-directory-subject"),
+                        header::HeaderName::from_static("x-cashweb-vapid-public-key"),
                     ])
                     // Topic list/discovery responses negotiate on Accept. tower-http replaces a
                     // handler's Vary values with this CORS list, so retain its three defaults and

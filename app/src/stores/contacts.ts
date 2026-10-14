@@ -30,6 +30,11 @@ import assert from 'assert'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import { markRaw } from 'vue'
 import { inferCuratedBotAttributes } from '../utils/curated-bots'
+import { setOutboundWakeupTokenProvider } from '@frank/cashweb/relay/canonical-dm-transport'
+import { syncRelayNotificationPolicy } from '../utils/webpush-sync'
+
+const pendingOutboundWakeupTokens = new Map<string, string>()
+
 
 export const defaultRelayData: {
   profile: {
@@ -123,6 +128,10 @@ export type ContactState = {
   inbox: {
     acceptancePrice?: number
   }
+  /** 32-byte hex wakeup token preimage we issued to this contact so they can wake us. */
+  inboundWakeupToken?: string
+  /** 32-byte hex wakeup token preimage this contact issued to us so we can wake them via X-Cashweb-Wakeup-Token. */
+  outboundWakeupToken?: string
 }
 
 export interface CuratedDefaultProvenance {
@@ -187,6 +196,8 @@ type RestorableContactState = {
   inbox: {
     acceptancePrice?: number
   }
+  inboundWakeupToken?: string
+  outboundWakeupToken?: string
 }
 
 export type RestorableState = {
@@ -252,6 +263,19 @@ export const useContactStore = defineStore('contacts', {
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.notify
         : false
+    },
+    getInboundWakeupToken: state => (address: string) => {
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
+      if (!apiAddress) return undefined
+      return state.contacts[apiAddress]?.inboundWakeupToken
+    },
+    getOutboundWakeupToken: state => (address: string) => {
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
+      if (!apiAddress) return undefined
+      return (
+        state.contacts[apiAddress]?.outboundWakeupToken ??
+        pendingOutboundWakeupTokens.get(apiAddress)
+      )
     },
     getRelayURL: state => (address: string) => {
       const apiAddress = safeToChainDisplayAddress(address) ?? address
@@ -344,7 +368,18 @@ export const useContactStore = defineStore('contacts', {
       address: string
       contact: Partial<ContactState>
     }) {
-      const fixedContact = {
+      const apiAddress = toChainDisplayAddress(address)
+      const existing = this.contacts[apiAddress]
+      const derivedInbound =
+        contact.inboundWakeupToken ?? existing?.inboundWakeupToken
+      const resolvedOutbound =
+        contact.outboundWakeupToken ??
+        existing?.outboundWakeupToken ??
+        pendingOutboundWakeupTokens.get(apiAddress)
+      if (resolvedOutbound) {
+        pendingOutboundWakeupTokens.delete(apiAddress)
+      }
+      const fixedContact: ContactState = {
         ...contact,
         profile: {
           name: contact.profile?.name ?? null,
@@ -363,13 +398,15 @@ export const useContactStore = defineStore('contacts', {
             : null,
         },
         lastUpdateTime: contact.lastUpdateTime ?? 0,
-        notify: true,
+        notify: contact.notify ?? true,
         relayURL: null,
         inbox: contact.inbox ?? { acceptancePrice: defaultAcceptancePrice },
+        ...(derivedInbound ? { inboundWakeupToken: derivedInbound } : {}),
+        ...(resolvedOutbound ? { outboundWakeupToken: resolvedOutbound } : {}),
       }
-      const apiAddress = toChainDisplayAddress(address)
 
       this.contacts[apiAddress] = fixedContact
+      void syncRelayNotificationPolicy()
     },
     setUpdateInterval(interval: number) {
       this.updateInterval = interval
@@ -378,6 +415,8 @@ export const useContactStore = defineStore('contacts', {
       address,
       profile,
       inbox,
+      inboundWakeupToken,
+      outboundWakeupToken,
     }: Partial<ContactState> & { address: string }) {
       const apiAddress = toChainDisplayAddress(address)
       const contact = this.contacts[apiAddress]
@@ -387,6 +426,8 @@ export const useContactStore = defineStore('contacts', {
           contact: {
             profile,
             inbox,
+            inboundWakeupToken,
+            outboundWakeupToken,
           },
         })
         return
@@ -394,6 +435,12 @@ export const useContactStore = defineStore('contacts', {
       contact.lastUpdateTime = moment().valueOf()
       contact.profile = profile || contact.profile
       contact.inbox = inbox || contact.inbox
+      if (inboundWakeupToken !== undefined) {
+        contact.inboundWakeupToken = inboundWakeupToken
+      }
+      if (outboundWakeupToken !== undefined) {
+        contact.outboundWakeupToken = outboundWakeupToken
+      }
     },
     setNotify({ address, value }: { address: string; value: boolean }) {
       const apiAddress = safeChainDisplayAddress(address)
@@ -403,6 +450,40 @@ export const useContactStore = defineStore('contacts', {
         return
       }
       contact.notify = value
+      // Muting or unmuting a contact immediately updates the relay's blinded wakeup token allowlist.
+      void syncRelayNotificationPolicy()
+    },
+    setInboundWakeupToken({
+      address,
+      token,
+    }: {
+      address: string
+      token: string | undefined
+    }) {
+      const apiAddress = safeChainDisplayAddress(address)
+      if (!apiAddress) return
+      const contact = this.contacts[apiAddress]
+      if (!contact) return
+      contact.inboundWakeupToken = token
+      void syncRelayNotificationPolicy()
+    },
+    setOutboundWakeupToken({
+      address,
+      token,
+    }: {
+      address: string
+      token: string | undefined
+    }) {
+      const apiAddress = safeChainDisplayAddress(address)
+      if (!apiAddress) return
+      const contact = this.contacts[apiAddress]
+      if (contact) {
+        contact.outboundWakeupToken = token
+      } else if (token) {
+        pendingOutboundWakeupTokens.set(apiAddress, token)
+      } else {
+        pendingOutboundWakeupTokens.delete(apiAddress)
+      }
     },
     addLoadingContact({
       address,
@@ -457,9 +538,14 @@ export const useContactStore = defineStore('contacts', {
       if (apiAddress && apiAddress in this.contacts) {
         delete this.contacts[apiAddress]
       }
+      if (apiAddress) {
+        pendingOutboundWakeupTokens.delete(apiAddress)
+      }
       if (apiAddress && !this.dismissedDefaults.includes(apiAddress)) {
         this.dismissedDefaults.push(apiAddress)
       }
+      // Deleting a contact immediately revokes its wakeup capability token hash on the relay.
+      void syncRelayNotificationPolicy()
     },
     /** Resolve a signed Monad profile through the active-chain seam. */
     async fetchAndAddContact({
@@ -808,3 +894,21 @@ export const useContactStore = defineStore('contacts', {
     },
   },
 })
+
+setOutboundWakeupTokenProvider((recipientAddress: string) => {
+  try {
+    const apiAddress =
+      safeToChainDisplayAddress(recipientAddress) ?? recipientAddress
+    if (!apiAddress) return undefined
+    const store = useContactStore()
+    return (
+      store.contacts[apiAddress]?.outboundWakeupToken ??
+      pendingOutboundWakeupTokens.get(apiAddress)
+    )
+  } catch {
+    return pendingOutboundWakeupTokens.get(
+      safeToChainDisplayAddress(recipientAddress) ?? recipientAddress,
+    )
+  }
+})
+

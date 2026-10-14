@@ -7,6 +7,7 @@ import type { ContactCardItem } from '@frank/cashweb/types/messages'
 import {
   cborItemCodec,
   chainAddress,
+  hash32,
   listOf,
   opt,
   req,
@@ -29,4 +30,6 @@ export const contactCardCodec = cborItemCodec<ContactCardItem>('contact-card', {
   note: opt(9, str(4096)),
   avatarDataUrl: opt(10, str(MAX_RAW_VCARD_BYTES, 1)),
   rawVcard: opt(11, str(MAX_RAW_VCARD_BYTES, 1)),
+  wakeupTokenHex: opt(12, hash32),
 })
+

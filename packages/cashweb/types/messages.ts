@@ -922,6 +922,9 @@ export interface Message {
   delivery?: OutgoingDelivery
   conversationId?: string
   logicalMessageId?: string
+  /** Authenticated canonical type-8 content digest (bare lowercase 64-hex), when available.
+   * Preserved from the receive boundary; absence means content identity is unavailable. */
+  contentDigest?: string
 }
 
 export interface MessageWrapper {

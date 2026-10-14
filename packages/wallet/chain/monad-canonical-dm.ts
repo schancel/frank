@@ -2261,8 +2261,12 @@ export function projectOutboxMessageRecord(
     decodedItems = [{ type: 'text', text: outboxItem.text }]
   }
 
+  // The note's authenticated digest describes its own frame, not this reconstructed message.
+  // No original content digest is carried by the note, so that capability is unavailable here.
+  const noteRecord = { ...record }
+  delete noteRecord.contentDigest
   return {
-    ...record,
+    ...noteRecord,
     outbound: true,
     senderAddress: record.senderAddress,
     senderPublicKey: record.senderPublicKey,
@@ -2441,6 +2445,7 @@ async function fetchSince(
       let conversationIdStr: string | undefined
       let conversationNameStr: string | undefined
       let messageIdStr: string | undefined
+      let contentDigest: string
       try {
         const opened = isOutbound
           ? openOwnDirectMessage({
@@ -2472,6 +2477,7 @@ async function fetchSince(
         if (opened.messageId) {
           messageIdStr = formatUuid(opened.messageId)
         }
+        contentDigest = toHex(opened.contentDigest)
         items = receivedItems(
           registry,
           opened,
@@ -2544,6 +2550,7 @@ async function fetchSince(
               ? {}
               : { conversationName: conversationNameStr }),
             messageId: messageIdStr,
+            contentDigest,
             payloadDigest: digest,
             stampValueWei: stampPayments.reduce(
               (sum, p) => sum + p.valueWei,
@@ -2831,6 +2838,7 @@ export function canonicalDirectMessages(
                 let conversationIdStr: string | undefined
                 let conversationNameStr: string | undefined
                 let messageIdStr: string | undefined
+                let contentDigest: string
                 try {
                   const opened = isOutbound
                     ? openOwnDirectMessage({
@@ -2862,6 +2870,7 @@ export function canonicalDirectMessages(
                   if (opened.messageId) {
                     messageIdStr = formatUuid(opened.messageId)
                   }
+                  contentDigest = toHex(opened.contentDigest)
                   items = receivedItems(
                     registry,
                     opened,
@@ -2919,6 +2928,7 @@ export function canonicalDirectMessages(
                         ? {}
                         : { conversationName: conversationNameStr }),
                       messageId: messageIdStr,
+                      contentDigest,
                       payloadDigest: digest,
                       stampValueWei: stampPayments.reduce(
                         (sum, p) => sum + p.valueWei,

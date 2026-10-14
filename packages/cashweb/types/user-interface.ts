@@ -44,6 +44,9 @@ export type ReceivedMessage = {
   /** The conversation subject this message carries (a first message or a rename), if any. */
   conversationName?: string
   logicalMessageId?: string
+  /** Authenticated canonical type-8 content digest (bare lowercase 64-hex), when available.
+   * Describes the original content frame, not an edit or a delivery/payment identity. */
+  contentDigest?: string
 }
 
 export type ReceivedMessageWrapper = {

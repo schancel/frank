@@ -75,6 +75,69 @@ describe('durable EVM native journal', () => {
       ),
     )
   }
+  it('answers repeated reservation queries without materializing journal snapshots', async () => {
+    for (let nonce = 0; nonce < 16; nonce++) {
+      const row = await journal.prepare(plan(nonce))
+      await journal.cancelUnsigned(row.operationId)
+    }
+    const input = plan(16)
+    input.members[0]!.source = { kind: 'spend', address, index: 7 }
+    await journal.prepare(input)
+    const list = jest.spyOn(journal, 'list')
+    const parse = jest.spyOn(JSON, 'parse')
+    for (let query = 0; query < 20; query++) {
+      expect(journal.referencesSpendIndex(7)).toBe(true)
+      expect(journal.referencesSpendIndex(8)).toBe(false)
+    }
+    expect(list).not.toHaveBeenCalled()
+    expect(parse).not.toHaveBeenCalled()
+  })
+
+  it('preserves spend-index reservation results through cancellation, exposure, settlement and reopen', async () => {
+    expect(journal.referencesSpendIndex(7)).toBe(false)
+    const input = plan()
+    input.members[0]!.source = { kind: 'change', address, index: 7 }
+    const change = await journal.prepare(input)
+    expect(journal.referencesSpendIndex(7)).toBe(false)
+    await journal.cancelUnsigned(change.operationId)
+    input.members[0]!.source = { kind: 'spend', address, index: 7 }
+    const cancelled = await journal.prepare(input)
+    expect(journal.referencesSpendIndex(7)).toBe(true)
+    await journal.cancelUnsigned(cancelled.operationId)
+    await reopen()
+    expect(journal.referencesSpendIndex(7)).toBe(false)
+    expect(journal.sourceReferences()).toContainEqual(input.members[0]!.source)
+    const row = await journal.prepare(input)
+    expect(journal.referencesSpendIndex(7)).toBe(true)
+    const signed = await journal.checkpointSigned(
+      row.operationId,
+      0,
+      await wallet.signTransaction(
+        Transaction.from(row.members[0]!.unsignedTransaction),
+      ),
+    )
+    expect(journal.referencesSpendIndex(7)).toBe(true)
+    await journal.markExposed(row.operationId, 0)
+    expect(journal.referencesSpendIndex(7)).toBe(true)
+    await journal.recordObservation(
+      journal.beginCapture(row.operationId, 0),
+      {
+        state: 'included-success',
+        transactionHash: signed.members[0]!.signed!.transactionHash,
+        blockHash: hash,
+        blockNumber: 1,
+        transactionIndex: 0,
+        feeWei: '21000',
+      },
+      account,
+    )
+    await reopen()
+    expect(journal.referencesSpendIndex(7)).toBe(true)
+    expect(journal.referencesSpendIndex(8)).toBe(false)
+    await journal.Close()
+    expect(() => journal.referencesSpendIndex(7)).toThrow('closed')
+  })
+
   it('retains one immutable caller preparation through concurrent creation, signed exposure and reopen', async () => {
     const original = {
       ...plan(),
@@ -354,6 +417,7 @@ describe('durable EVM native journal', () => {
       journal.checkpointSigned(row.operationId, 0, raw),
     ).rejects.toThrow('commit response lost')
     expect(() => journal.list()).toThrow('uncertain')
+    expect(() => journal.referencesSpendIndex(7)).toThrow('uncertain')
     await reopen()
     expect(
       journal.get(row.operationId).members[0]!.signed!.rawTransaction,
@@ -509,6 +573,7 @@ describe('durable EVM native journal', () => {
   })
   it('uses canonical chain binding and exact native chain signatures for peer EVM networks', async () => {
     const wrong = plan(0, 11155111n)
+    wrong.members[0]!.source = { kind: 'spend', address, index: 9 }
     await expect(journal.prepare(wrong)).rejects.toThrow()
     const sepolia = new EvmNativeOperationJournal({
       location: join(root, 'peer'),
@@ -524,6 +589,8 @@ describe('durable EVM native journal', () => {
       expect((await sepolia.prepare(wrong)).binding.chainIdentifier).toBe(
         'ethereum-sepolia',
       )
+      expect(sepolia.referencesSpendIndex(9)).toBe(true)
+      expect(journal.referencesSpendIndex(9)).toBe(false)
     } finally {
       await sepolia.Close()
     }

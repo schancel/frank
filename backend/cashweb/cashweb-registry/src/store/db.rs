@@ -84,8 +84,7 @@ pub struct Db {
     directory_preview_owner: super::directory_preview_owner::Owner,
     /// Lazy separate store of self-published subjects. Kept out of the registry's own column
     /// families so an earlier relay version can still open the registry.
-    directory_subjects: std::sync::OnceLock<rocksdb::DB>,
-    directory_subjects_lock: Mutex<()>,
+    directory_subjects: super::directory_subjects::Owner,
 }
 
 /// Errors indicating something went wrong with the database itself.
@@ -215,23 +214,7 @@ impl Db {
     pub(crate) fn directory_subjects(
         &self,
     ) -> Result<super::directory_subjects::DbDirectorySubjects<'_>> {
-        if self.directory_subjects.get().is_none() {
-            let _guard = self
-                .directory_subjects_lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if self.directory_subjects.get().is_none() {
-                let path = std::fs::canonicalize(self.db.path())
-                    .wrap_err(RocksDb)?
-                    .join(super::directory_subjects::STORE);
-                let _ = self
-                    .directory_subjects
-                    .set(super::directory_subjects::open(&path)?);
-            }
-        }
-        super::directory_subjects::DbDirectorySubjects::new(
-            self.directory_subjects.get().ok_or(RocksDb)?,
-        )
+        self.directory_subjects.rows(self.db.path())
     }
 
     /// Returns `DbTopics`, allowing access to registry metadata.
@@ -276,8 +259,7 @@ impl Db {
             monad_topic_lock: Mutex::new(()),
             username_lock: Mutex::new(()),
             directory_preview_owner: super::directory_preview_owner::Owner::new(registry_path),
-            directory_subjects: std::sync::OnceLock::new(),
-            directory_subjects_lock: Mutex::new(()),
+            directory_subjects: super::directory_subjects::Owner::new(),
         })
     }
 

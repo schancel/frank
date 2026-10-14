@@ -5,9 +5,10 @@
 //! checkpoint, so a restart reopens exactly the history it served before. The address index maps
 //! the 20-byte account address to the key that hashes to it. A third table lists addresses in
 //! the order their first entry was accepted here, for the public "new accounts" listing.
-use bitcoinsuite_error::Result;
+use bitcoinsuite_error::{Result, WrapErr};
 use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode, WriteBatch, WriteOptions};
 use serde::{Deserialize, Serialize};
+use std::sync::{Mutex, OnceLock};
 
 use super::db::CF;
 use crate::directory_admission::Checkpoint;
@@ -60,8 +61,41 @@ fn local_by_default() -> bool {
     true
 }
 
+/// Owns lazy sidecar opening; typed rows borrow the same database handle and lifetime.
+pub(super) struct Owner {
+    opened: OnceLock<rocksdb::DB>,
+    opening: Mutex<()>,
+}
+
+impl Owner {
+    pub(super) fn new() -> Self {
+        Self {
+            opened: OnceLock::new(),
+            opening: Mutex::new(()),
+        }
+    }
+
+    pub(super) fn rows(&self, registry_path: &std::path::Path) -> Result<DbDirectorySubjects<'_>> {
+        if self.opened.get().is_none() {
+            let _guard = self
+                .opening
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if self.opened.get().is_none() {
+                // Resolve the original registry path on first access, exactly as the legacy
+                // accessor did. Failed opens leave the cell empty so a later access retries.
+                let path = std::fs::canonicalize(registry_path)
+                    .wrap_err(super::db::DbError::RocksDb)?
+                    .join(STORE);
+                let _ = self.opened.set(open(&path)?);
+            }
+        }
+        DbDirectorySubjects::new(self.opened.get().ok_or(super::db::DbError::RocksDb)?)
+    }
+}
+
 /// Open the store, creating it on first use.
-pub(crate) fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
+fn open(path: &std::path::Path) -> Result<rocksdb::DB> {
     let mut options = rocksdb::Options::default();
     options.create_if_missing(true);
     options.create_missing_column_families(true);
@@ -107,7 +141,7 @@ fn key(network: &str, tail: &[u8]) -> Vec<u8> {
 }
 
 impl<'a> DbDirectorySubjects<'a> {
-    pub(crate) fn new(db: &'a rocksdb::DB) -> Result<Self> {
+    fn new(db: &'a rocksdb::DB) -> Result<Self> {
         let cf = |name: &str| {
             db.cf_handle(name)
                 .ok_or_else(|| super::db::DbError::NoSuchColumnFamily(name.to_string()))
@@ -331,5 +365,197 @@ impl<'a> DbDirectorySubjects<'a> {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::db::Db;
+    use super::*;
+    use crate::directory_admission::CheckpointKind;
+
+    fn subject_row() -> SubjectRow {
+        SubjectRow {
+            version: 1,
+            anchor: [1; 32],
+            checkpoint: Checkpoint {
+                kind: CheckpointKind::CommittedPrefix,
+                identity: [2; 32],
+                anchor: [1; 32],
+                head: Some([3; 32]),
+                accepted: 1,
+                retained: 1,
+                evidence_digest: [4; 32],
+                checked_time: (1700000000, 0),
+                forked: false,
+            },
+            local: true,
+        }
+    }
+
+    #[test]
+    fn subjects_owner_is_lazy_and_concurrent_first_access_shares_one_handle() -> Result<()> {
+        let dir = tempdir::TempDir::new("subjects-owner-concurrent")?;
+        let path = dir.path().join("registry");
+        let db = Db::open(&path)?;
+        assert!(!path.join(STORE).exists());
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|i| {
+                    let db = &db;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let rows = db.directory_subjects().unwrap();
+                        rows.put(
+                            "monad-testnet",
+                            &[i; 33],
+                            Some((&[i; 20], i as u64)),
+                            &subject_row(),
+                        )
+                        .unwrap();
+                        rows.db as *const rocksdb::DB as usize
+                    })
+                })
+                .collect();
+            let handles: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+            assert!(handles.iter().all(|h| *h == handles[0]));
+        });
+        assert_eq!(db.directory_subjects()?.count()?, (8, 0));
+        drop(db);
+        assert_eq!(Db::open(&path)?.directory_subjects()?.count()?, (8, 0));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subjects_owner_resolves_registry_path_on_first_access_and_retries() -> Result<()> {
+        let dir = tempdir::TempDir::new("subjects-owner-path")?;
+        let actual = dir.path().join("actual-registry");
+        std::fs::create_dir(&actual)?;
+        let link = dir.path().join("registry-link");
+        std::os::unix::fs::symlink(&actual, &link)?;
+        let db = Db::open(&link)?;
+        std::fs::remove_file(&link)?;
+        assert!(db.directory_subjects().is_err());
+        assert!(!actual.join(STORE).exists());
+        std::os::unix::fs::symlink(&actual, &link)?;
+        assert_eq!(db.directory_subjects()?.count()?, (0, 0));
+        assert!(actual.join(STORE).is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn subjects_owner_failed_open_retries_without_resetting_existing_data() -> Result<()> {
+        let dir = tempdir::TempDir::new("subjects-owner-retry")?;
+        let path = dir.path().join("registry");
+        let db = Db::open(&path)?;
+        let sidecar = path.join(STORE);
+        // Obstruct the path with a file while retaining a populated sidecar elsewhere.
+        let held = open(&sidecar)?;
+        DbDirectorySubjects::new(&held)?.put(
+            "monad-testnet",
+            &[5; 33],
+            Some((&[6; 20], 9)),
+            &subject_row(),
+        )?;
+        drop(held);
+        let retained = path.join("retained-sidecar");
+        std::fs::rename(&sidecar, &retained)?;
+        std::fs::write(&sidecar, b"obstruction")?;
+        assert!(db.directory_subjects().is_err());
+        assert!(db.directory_subjects().is_err());
+        assert_eq!(std::fs::read(&sidecar)?, b"obstruction");
+        std::fs::remove_file(&sidecar)?;
+        std::fs::rename(&retained, &sidecar)?;
+        let rows = db.directory_subjects()?;
+        assert_eq!(rows.get("monad-testnet", &[5; 33])?, Some(subject_row()));
+        assert_eq!(
+            rows.subject_for_address("monad-testnet", &[6; 20])?,
+            Some(vec![5; 33])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn subjects_owner_preserves_exact_rows_indexes_and_forward_completion_on_reopen() -> Result<()>
+    {
+        let dir = tempdir::TempDir::new("subjects-owner-records")?;
+        let path = dir.path().join("registry");
+        let identity = [7; 32];
+        let mut forward = ForwardRow {
+            endpoint: "https://example.test/".into(),
+            content_type: "application/cbor".into(),
+            sender: "subject".into(),
+            network: "monad-testnet".into(),
+            created_ms: 1,
+            attempts: 0,
+            next_ms: 2,
+            done: false,
+            status: 0,
+            response: String::new(),
+            echo: serde_json::json!({"identity": "retained"}),
+        };
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            rows.put(
+                "monad-testnet",
+                &[5; 33],
+                Some((&[6; 20], 9)),
+                &subject_row(),
+            )?;
+            assert_eq!(
+                rows.db
+                    .get_cf(rows.subjects, key("monad-testnet", &[5; 33]))?,
+                Some(serde_json::to_vec(&subject_row())?)
+            );
+            assert_eq!(
+                rows.first_accepted("monad-testnet", &[0; FIRST_ACCEPTED_POSITION_BYTES], 10)?,
+                vec![(position(9, &[6; 20]), 9, [6; 20])]
+            );
+            assert!(rows.get("ethereum-sepolia", &[5; 33])?.is_none());
+            rows.put_forward(&identity, &forward, Some(b"exact request"))?;
+        }
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            assert_eq!(rows.forward(&identity)?, Some(forward.clone()));
+            assert_eq!(
+                rows.forward_body(&identity)?,
+                Some(b"exact request".to_vec())
+            );
+            assert_eq!(
+                rows.list("monad-testnet", None, 10)?,
+                vec![(vec![5; 33], subject_row())]
+            );
+            forward.done = true;
+            forward.status = 202;
+            rows.put_forward(&identity, &forward, Some(b"must be deleted"))?;
+        }
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            assert_eq!(rows.forward(&identity)?, Some(forward));
+            assert_eq!(rows.forward_body(&identity)?, None);
+            rows.delete_forward(&identity)?;
+            assert!(rows.forwards()?.is_empty());
+            rows.delete("monad-testnet", &[5; 33], &[6; 20], Some(9))?;
+            assert_eq!(rows.count()?, (0, 0));
+            assert!(rows
+                .first_accepted("monad-testnet", &[0; FIRST_ACCEPTED_POSITION_BYTES], 10)?
+                .is_empty());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn subjects_owner_boundary_keeps_raw_lifecycle_out_of_general_db() {
+        let source = include_str!("db.rs");
+        assert!(!source.contains("directory_subjects_lock"));
+        assert!(!source.contains("super::directory_subjects::open("));
+        assert!(!source.contains("directory_subjects: std::sync::OnceLock"));
+        assert!(source.contains("directory_subjects: super::directory_subjects::Owner"));
     }
 }

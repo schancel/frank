@@ -190,7 +190,14 @@ mod tests {
 
         let tempdir = tempdir::TempDir::new("cashweb-registry--curated-defaults").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
+        let registry = Registry::new(
+            db,
+            Arc::new(UnusedChainAdapter),
+            Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         (tempdir, registry)
     }
 

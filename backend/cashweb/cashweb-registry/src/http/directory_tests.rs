@@ -53,6 +53,9 @@ fn registry(root: &std::path::Path) -> Arc<Registry> {
         Db::open(root.join("db")).unwrap(),
         Arc::new(DisabledChainAdapter),
         Net::Regtest,
+        cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        },
     ))
 }
 /// The vectors are signed for 2023, so tests run the relay on a clock set to their time.
@@ -1139,6 +1142,9 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
             Db::open(root.path().join("db")).unwrap(),
             Arc::new(DisabledChainAdapter),
             Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         ));
         let (runtime, ready) =
             DirectoryRuntime::start_with_clock(registry, config.clone(), clock.clock()).unwrap();

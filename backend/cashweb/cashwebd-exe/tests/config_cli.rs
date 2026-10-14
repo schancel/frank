@@ -256,3 +256,52 @@ fn unsupported_storage_fails_before_creating_database_or_session_state() {
         }
     }
 }
+
+#[test]
+fn group_price_configuration_is_explicit_and_checked_before_database_effects() {
+    let base = include_str!("../../cashwebd.local.toml");
+    let path =
+        std::env::temp_dir().join(format!("frank-missing-group-policy-{}", std::process::id()));
+    assert!(!path.exists());
+    for price in ["-1", "0.5", "18446744073709551616", "\"free\""] {
+        let invalid = base.replace(
+            "per_message_price_credits = 0",
+            &format!("per_message_price_credits = {price}"),
+        );
+        assert!(!check_stdin(invalid.as_bytes()).status.success(), "{price}");
+    }
+    for removed in [
+        "[registry.groups]\nper_message_price_credits = 0\n",
+        "per_message_price_credits = 0\n",
+    ] {
+        let invalid = base.replace(removed, "").replace(
+            "data/registry.rocksdb",
+            &format!("{}/registry.rocksdb", path.display()),
+        );
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cashwebd-exe"))
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(invalid.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("missing field"));
+        assert!(
+            !path.exists(),
+            "invalid config created database/session directory"
+        );
+    }
+    let positive = base.replace(
+        "per_message_price_credits = 0",
+        "per_message_price_credits = 7",
+    );
+    assert!(check_stdin(positive.as_bytes()).status.success());
+}

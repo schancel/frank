@@ -116,6 +116,13 @@ fn group_error_response(err: GroupError) -> Response {
             }),
         )
             .into_response(),
+        GroupError::CreditFundingUnavailable => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorBody {
+                error: "group_credit_funding_unavailable".into(),
+            }),
+        )
+            .into_response(),
         GroupError::Storage(msg) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorBody { error: msg }),
@@ -1133,10 +1140,15 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let (_, client) =
-            upstream_transport(&GroupStore::new_in_memory(), &"00".repeat(32), &origin)
-                .await
-                .unwrap();
+        let (_, client) = upstream_transport(
+            &GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            }),
+            &"00".repeat(32),
+            &origin,
+        )
+        .await
+        .unwrap();
         for path in ["/chunked", "/error", "/declared"] {
             let response = client.get(format!("{origin}{path}")).send().await.unwrap();
             assert!(read_upstream_body(response, 32).await.is_err(), "{path}");
@@ -1187,7 +1199,11 @@ mod tests {
         }
         assert!(public_upstream_ip("8.8.8.8".parse().unwrap()));
         assert!(public_upstream_ip("2606:4700:4700::1111".parse().unwrap()));
-        let app = router_with_store(GroupStore::new_in_memory());
+        let app = router_with_store(GroupStore::new_in_memory(
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        ));
         for origin in [
             "http://169.254.169.254",
             "http://10.0.0.1",
@@ -1210,7 +1226,9 @@ mod tests {
 
     #[tokio::test]
     async fn http_epochs_cas_and_sealed_sender_messages_enforce_w_g_e() {
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let app = router_with_store(store);
 
         let (group_sk, group_pk) = keypair(5);
@@ -1364,7 +1382,9 @@ mod tests {
     #[tokio::test]
     async fn mirror_pages_maximum_size_messages_without_exhausting_body_budget_or_losing_cursor_progress(
     ) {
-        let upstream = GroupStore::new_in_memory();
+        let upstream = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let (root_sk, root_pk) = keypair(7);
         let (write_sk, write_pk) = keypair(70);
         let group_id = hex::encode(derive_group_id(&root_pk));
@@ -1409,7 +1429,13 @@ mod tests {
                 .await
                 .unwrap();
         });
-        let home = GroupStore::with_mirror_threshold(Arc::new(MemoryKvStore::new()), 1);
+        let home = GroupStore::with_mirror_threshold(
+            Arc::new(MemoryKvStore::new()),
+            1,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let router = router_with_store(home.clone());
         for (cursor, count, next) in [(0, 8, 8), (8, 2, 10)] {
             let response = router
@@ -1457,8 +1483,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn group_credit_admission_is_owned_by_host_not_home_policy() {
+        for (host_price, home_price) in [(0, 7), (7, 0)] {
+            let host = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: host_price,
+            });
+            let (root_sk, root_pk) = keypair(7);
+            let (write_sk, write_pk) = keypair(70);
+            let id = hex::encode(derive_group_id(&root_pk));
+            host.put_epoch(
+                &id,
+                signed_epoch(
+                    &root_sk,
+                    GroupEpochFrame {
+                        group_id: id.clone(),
+                        group_pubkey: hex::encode(root_pk),
+                        epoch: 0,
+                        prev_epoch_hash: "00".repeat(32),
+                        write_pubkey: hex::encode(write_pk),
+                        read_token_hash: hex::encode(Sha256::digest([0u8; 32])),
+                        encrypted_epoch_descriptor: hex::encode(b"roster"),
+                        admin_sig: String::new(),
+                        epoch_hash: String::new(),
+                    },
+                ),
+            )
+            .unwrap();
+            let mut message = GroupMessageEnvelope {
+                group_id: id.clone(),
+                epoch: 0,
+                nonce: hex::encode([1u8; 24]),
+                ciphertext: hex::encode(b"content"),
+                write_sig: String::new(),
+            };
+            message.write_sig = sign_digest(&write_sk, &message.signing_digest().unwrap());
+            let (origin, origin_task) = spawn_group_router(host.clone()).await;
+            let home = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: home_price,
+            });
+            let (home_url, home_task) = spawn_group_router(home.clone()).await;
+            let client = reqwest::Client::new();
+            let mut receipt = None;
+            for attempt in 0..2 {
+                let response = client
+                    .put(format!("{home_url}/groups/{id}/messages"))
+                    .header(HEADER_GROUP_UPSTREAM_RELAY, &origin)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(serde_json::to_vec(&message).unwrap())
+                    .send()
+                    .await
+                    .unwrap();
+                if host_price == 0 {
+                    assert_eq!(response.status(), StatusCode::OK);
+                    assert_eq!(
+                        response.headers().get(HEADER_GROUP_APPEND).unwrap(),
+                        if attempt == 0 { "appended" } else { "existing" }
+                    );
+                    let row: StoredGroupMessage =
+                        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+                    if let Some(original) = &receipt {
+                        assert_eq!(&row, original);
+                    }
+                    receipt = Some(row);
+                } else {
+                    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                    let error: serde_json::Value =
+                        serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+                    assert_eq!(
+                        error,
+                        serde_json::json!({"error":"group_credit_funding_unavailable"})
+                    );
+                }
+            }
+            assert_eq!(
+                host.list_messages(&id, 0, 10).unwrap().len(),
+                if host_price == 0 { 1 } else { 0 }
+            );
+            assert!(home.get_current_epoch(&id).unwrap().is_none());
+            origin_task.abort();
+            home_task.abort();
+        }
+    }
+
+    #[tokio::test]
     async fn foreign_latest_refresh_and_write_ack_preserve_contiguous_backlog() {
-        let upstream = GroupStore::new_in_memory();
+        let upstream = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let (root_sk, root_pk) = keypair(7);
         let (write_sk, write_pk) = keypair(70);
         let id = hex::encode(derive_group_id(&root_pk));
@@ -1495,7 +1606,13 @@ mod tests {
         };
         upstream.put_message(&id, message(1)).unwrap();
         let (origin, origin_task) = spawn_group_router(upstream.clone()).await;
-        let home = GroupStore::with_mirror_threshold(Arc::new(MemoryKvStore::new()), 1);
+        let home = GroupStore::with_mirror_threshold(
+            Arc::new(MemoryKvStore::new()),
+            1,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let router = router_with_store(home.clone());
         let read = |after| {
             Request::builder()
@@ -1589,8 +1706,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "Requires Node dependencies; runs the real TypeScript client against two Rust relay routers"]
     async fn typescript_foreign_client_against_real_rust_relays() {
-        let (origin, origin_task) = spawn_group_router(GroupStore::new_in_memory()).await;
-        let (home, home_task) = spawn_group_router(GroupStore::new_in_memory()).await;
+        let (origin, origin_task) = spawn_group_router(GroupStore::new_in_memory(
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        ))
+        .await;
+        let (home, home_task) = spawn_group_router(GroupStore::new_in_memory(
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        ))
+        .await;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(3)
@@ -1629,7 +1756,9 @@ mod tests {
     #[tokio::test]
     async fn home_relay_proxies_below_threshold_and_auto_promotes_to_local_mirror_at_threshold() {
         // Spawn an authoritative Upstream Foreign Relay (`Relay_G`)
-        let upstream_store = GroupStore::new_in_memory();
+        let upstream_store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let upstream_app = router_with_store(upstream_store.clone());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let upstream_addr: SocketAddr = listener.local_addr().unwrap();
@@ -1715,7 +1844,13 @@ mod tests {
         upstream_store.put_message(&group_id, env2).unwrap();
 
         // Create a Home Relay (`Relay_Home`) with `mirror_threshold = 2`
-        let home_store = GroupStore::with_mirror_threshold(Arc::new(MemoryKvStore::new()), 2);
+        let home_store = GroupStore::with_mirror_threshold(
+            Arc::new(MemoryKvStore::new()),
+            2,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let home_app = router_with_store(home_store.clone());
 
         let attacker_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1890,7 +2025,9 @@ mod tests {
     async fn json_cbor_retries_return_original_receipt_without_second_wakeup() {
         use crate::events::{RelayEventBus, StandaloneEventBus};
         use frank_cbor::{cbor_map, encode_canonical, CborValue};
-        let store = GroupStore::new_in_memory();
+        let store = GroupStore::new_in_memory(cashweb_config::GroupAppendPolicy {
+            per_message_price_credits: 0,
+        });
         let (root, public) = keypair(7);
         let (write, write_public) = keypair(42);
         let id = hex::encode(derive_group_id(&public));

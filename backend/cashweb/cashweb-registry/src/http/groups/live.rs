@@ -213,7 +213,14 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::Server::from_tcp(listener)
                 .unwrap()
-                .serve(router_with_store(GroupStore::new_in_memory()).into_make_service())
+                .serve(
+                    router_with_store(GroupStore::new_in_memory(
+                        cashweb_config::GroupAppendPolicy {
+                            per_message_price_credits: 0,
+                        },
+                    ))
+                    .into_make_service(),
+                )
                 .await
                 .unwrap();
         });

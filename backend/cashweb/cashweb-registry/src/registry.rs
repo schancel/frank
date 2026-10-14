@@ -193,12 +193,18 @@ use self::RegistryError::*;
 
 impl Registry {
     /// Construct new [`Registry`] with the default in-process event bus.
-    pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
+    pub fn new(
+        db: Db,
+        chain_adapter: Arc<dyn ChainAdapter>,
+        net: Net,
+        group_policy: cashweb_config::GroupAppendPolicy,
+    ) -> Self {
         Self::new_with_event_bus(
             db,
             chain_adapter,
             net,
             Arc::new(crate::events::StandaloneEventBus::new()),
+            group_policy,
         )
     }
 
@@ -208,10 +214,11 @@ impl Registry {
         chain_adapter: Arc<dyn ChainAdapter>,
         net: Net,
         event_bus: Arc<dyn crate::events::RelayEventBus>,
+        group_policy: cashweb_config::GroupAppendPolicy,
     ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf());
-        let groups = crate::store::groups::Owner::new(db.owned_path().to_path_buf());
+        let groups = crate::store::groups::Owner::new(db.owned_path().to_path_buf(), group_policy);
         Registry {
             db,
             forum,
@@ -978,6 +985,9 @@ mod tests {
             db,
             Arc::new(LotusAdapter::new(bitcoind.clone())),
             Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         );
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1372,6 +1382,9 @@ mod tests {
             db,
             Arc::new(LotusAdapter::new(bitcoind.clone())),
             Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         );
 
         // Generate a few anyone can spend coins
@@ -1526,6 +1539,9 @@ mod tests {
             db,
             Arc::new(LotusAdapter::new(bitcoind.clone())),
             Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         );
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1845,7 +1861,14 @@ mod tests {
     fn test_monad_profile_registry(name: &str) -> (tempdir::TempDir, Registry) {
         let tempdir = tempdir::TempDir::new(name).unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(db, Arc::new(NeverCalledChainAdapter), Net::Regtest);
+        let registry = Registry::new(
+            db,
+            Arc::new(NeverCalledChainAdapter),
+            Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         (tempdir, registry)
     }
 

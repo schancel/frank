@@ -36,6 +36,14 @@ jest.mock('src/utils/own-address', () => ({
     Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
 
+jest.mock('src/stores/chats', () => ({
+  useChatStore: () => ({
+    conversations: {},
+    chats: {},
+    getSortedChatOrder: [],
+  }),
+}))
+
 const OWN_ADDRESS = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 
 const passthrough = defineComponent({

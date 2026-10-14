@@ -252,14 +252,20 @@
       :address="effectiveAddress || address"
       :conversation-id="activeConversation?.id"
       :contact="getContact(effectiveAddress || address)"
-      @deleted="onChatDeleted"
       @chat="onStartChatFromInfo"
     />
   </div>
 </template>
 
 <script lang="ts">
-import { computed, defineComponent } from 'vue'
+import {
+  computed,
+  defineComponent,
+  getCurrentInstance,
+  onMounted,
+  ref,
+} from 'vue'
+import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
 import { RouteLocationNormalized } from 'vue-router'
 
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
@@ -306,8 +312,21 @@ export default defineComponent({
   setup() {
     const contactStore = useContactStore()
     const myProfile = useProfileStore()
+    const instance = getCurrentInstance()
+    const mounted = ref(false)
+    onMounted(() => {
+      mounted.value = true
+    })
+    const navigateAfterDeletion = useChatDeletionNavigation(
+      useChatStore(),
+      () =>
+        mounted.value
+          ? String(instance?.proxy?.$route?.params.address ?? '')
+          : '',
+    )
 
     return {
+      navigateAfterDeletion,
       myDrawerOpen: useMyDrawerOpen(),
       getContact: contactStore.getContact,
       contactStore,
@@ -413,12 +432,14 @@ export default defineComponent({
         }
       }
     },
-    // DeleteChatDialog (opened either from the overflow menu or from within the full-pane Info
-    // view) emits this once the chat is actually gone -- neither the chat route nor an Info view
-    // for it is a valid place to keep sitting.
-    onChatDeleted() {
-      this.infoOpen = false
-      this.$router.push('/forum')
+    // Deletion succeeds before selecting a neighbour. Contact removal in Info keeps the thread.
+    onChatDeleted(conversationId: string) {
+      if (
+        this.navigateAfterDeletion(this.$router, this.address, conversationId)
+      ) {
+        this.infoOpen = false
+        this.confirmDeleteOpen = false
+      }
     },
   },
   computed: {
@@ -464,7 +485,15 @@ export default defineComponent({
         ? this.getContact(addr)?.profile
         : undefined
     },
-    targetProfile() {
+    targetProfile():
+      | {
+          name?: string | null
+          avatar?: string | null
+          accountType?: number
+          botRole?: number
+          isBot?: boolean
+        }
+      | undefined {
       if (
         this.effectiveAddress &&
         sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
@@ -541,8 +570,10 @@ export default defineComponent({
         return undefined
       }
       return sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
-        ? this.myProfile.profile.avatar || this.contactProfile?.avatar
-        : this.contactProfile?.avatar
+        ? this.myProfile.profile.avatar ||
+            this.contactProfile?.avatar ||
+            undefined
+        : this.contactProfile?.avatar || undefined
     },
     notifications: {
       get(): boolean {

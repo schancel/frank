@@ -20,9 +20,15 @@ export function openPage(router: Router, route: string) {
   return router.push(route)
 }
 
-export function openChat(router: Router, address: string) {
+export function openChat(
+  router: Router,
+  address: string,
+  options?: { replace?: boolean },
+) {
   const chatRoute = `/chat/${address}`
-  return openPage(router, chatRoute)
+  return options?.replace
+    ? router.replace(chatRoute)
+    : openPage(router, chatRoute)
 }
 
 export function openContactProfile(router: Router, address: string) {

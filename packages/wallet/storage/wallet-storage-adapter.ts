@@ -53,7 +53,11 @@ const memoryRegistry = new Set<string>();
  * Returns true if native IndexedDB is available in the current runtime.
  */
 function isIndexedDbAvailable(): boolean {
-  return typeof globalThis !== 'undefined' && typeof globalThis.indexedDB !== 'undefined';
+  return (
+    typeof globalThis !== 'undefined' &&
+    typeof globalThis.indexedDB !== 'undefined' &&
+    typeof globalThis.indexedDB.open === 'function'
+  );
 }
 
 /**

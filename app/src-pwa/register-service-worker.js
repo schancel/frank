@@ -6,6 +6,8 @@ let deferredWorker
 let reloadAfterActivation = false
 let lastUpdateCheck = 0
 let activeRegistration = null
+let updateCheck = null
+let refreshing = false
 let hadPriorController =
   typeof navigator !== 'undefined' &&
   Boolean(navigator.serviceWorker?.controller)
@@ -13,6 +15,7 @@ let hadPriorController =
 export function offerUpdate(registration) {
   const reg = registration || activeRegistration
   if (
+    refreshing ||
     updateNotice ||
     (reg?.waiting && reg.waiting === deferredWorker) ||
     (!reg?.waiting && deferredWorker === true)
@@ -56,28 +59,45 @@ export function isUpdateAvailable() {
 }
 
 export async function checkForAppUpdate() {
-  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+  if (
+    refreshing ||
+    typeof navigator === 'undefined' ||
+    !('serviceWorker' in navigator)
+  ) {
     return null
   }
-  try {
-    if (!activeRegistration) {
-      activeRegistration = await navigator.serviceWorker.getRegistration()
-    }
-    if (activeRegistration) {
+  if (updateCheck) return updateCheck
+  updateCheck = (async () => {
+    try {
+      // A registration captured by a visibility listener can have been unregistered
+      // in this or another tab. Resolve the current browser-owned registration.
+      const registration = await navigator.serviceWorker.getRegistration()
+      if (refreshing) return null
+      activeRegistration = registration || null
+      if (!registration) return null
       deferredWorker = undefined
-      await activeRegistration.update()
-      if (activeRegistration.waiting) {
-        offerUpdate(activeRegistration)
+      await registration.update()
+      if (refreshing) return null
+      if (registration.waiting) offerUpdate(registration)
+      return registration
+    } catch (error) {
+      if (!refreshing) {
+        console.warn('Could not check for an app update:', error)
       }
-      return activeRegistration
+      return null
+    } finally {
+      updateCheck = null
     }
-  } catch (error) {
-    console.warn('Could not check for an app update:', error)
-  }
-  return null
+  })()
+  return updateCheck
 }
 
 export async function forceCacheRefresh() {
+  refreshing = true
+  activeRegistration = null
+  reloadAfterActivation = false
+  updateNotice?.()
+  updateNotice = undefined
   try {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       const registrations = await navigator.serviceWorker.getRegistrations()
@@ -99,25 +119,17 @@ export async function forceCacheRefresh() {
   }
 }
 
-function checkForUpdate(registration) {
+function checkForUpdate() {
   if (
-    typeof document !== 'undefined' &&
-    document.visibilityState !== 'visible'
+    refreshing ||
+    (typeof document !== 'undefined' && document.visibilityState !== 'visible')
   ) {
     return
   }
   const now = Date.now()
   if (now - lastUpdateCheck < 30_000) return
   lastUpdateCheck = now
-  const reg = registration || activeRegistration
-  if (reg) {
-    void reg.update().catch(error => {
-      console.warn('Could not check for an app update:', error)
-    })
-    if (reg.waiting) {
-      offerUpdate(reg)
-    }
-  }
+  void checkForAppUpdate()
 }
 
 if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
@@ -157,7 +169,7 @@ if (typeof window !== 'undefined') {
 register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
   ready(registration) {
     activeRegistration = registration
-    checkForUpdate(registration)
+    checkForUpdate()
     import('src/utils/webpush-sync')
       .then(({ ensureBrowserPushSubscription, syncRelayNotificationPolicy }) =>
         ensureBrowserPushSubscription({
@@ -177,10 +189,8 @@ register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
     if (registration.waiting) {
       offerUpdate(registration)
     }
-    checkForUpdate(registration)
-    document.addEventListener('visibilitychange', () =>
-      checkForUpdate(registration),
-    )
+    checkForUpdate()
+    document.addEventListener('visibilitychange', checkForUpdate)
   },
 
   updated(registration) {

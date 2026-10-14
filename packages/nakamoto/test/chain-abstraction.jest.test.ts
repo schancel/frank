@@ -125,7 +125,9 @@ describe('cross-chain abstraction across all 12 mainnet/testnet descriptors', ()
     }
 
     // Distinct version bytes (e.g. DOGE_MAINNET vs BTC_MAINNET vs LTC_MAINNET) reject each other's base58check addresses
-    const dogeP2pkh = must(encodeAddress(p2pkhDest, DOGE_MAINNET, 'base58check'))
+    const dogeP2pkh = must(
+      encodeAddress(p2pkhDest, DOGE_MAINNET, 'base58check'),
+    )
     const ltcP2pkh = must(encodeAddress(p2pkhDest, LTC_MAINNET, 'base58check'))
     const btcP2pkh = must(encodeAddress(p2pkhDest, BTC_MAINNET, 'base58check'))
     expect(dogeP2pkh.startsWith('D')).toBe(true)
@@ -387,9 +389,9 @@ describe('cross-chain abstraction across all 12 mainnet/testnet descriptors', ()
       expect(
         resolveScriptSighashAlgorithm(chain, SIGHASH_ALL | SIGHASH_FORKID),
       ).toBe('forkid')
-      expect(
-        encodeChainSigHashType(chain, SIGHASH_ALL | SIGHASH_FORKID),
-      ).toBe(SIGHASH_ALL | SIGHASH_FORKID)
+      expect(encodeChainSigHashType(chain, SIGHASH_ALL | SIGHASH_FORKID)).toBe(
+        SIGHASH_ALL | SIGHASH_FORKID,
+      )
     }
 
     for (const chain of [XPI_MAINNET, XPI_TESTNET]) {
@@ -578,7 +580,12 @@ describe('cross-chain abstraction across all 12 mainnet/testnet descriptors', ()
       ).toEqual({ ok: true, value: true })
 
       // Rejects forkid, lotus, and bip143 on DOGE
-      for (const badAlgorithm of ['forkid', 'lotus', 'bip143', 'bip341'] as const) {
+      for (const badAlgorithm of [
+        'forkid',
+        'lotus',
+        'bip143',
+        'bip341',
+      ] as const) {
         expect(
           signInput(baseTx, 0, signer, {
             chain,

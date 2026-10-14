@@ -1191,4 +1191,3 @@ export function sighash(
     return sighashTaproot(tx, inputIndex, hashType, options)
   return sighashLotus(tx, inputIndex, hashType, options)
 }
-

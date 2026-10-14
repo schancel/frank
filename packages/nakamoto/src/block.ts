@@ -160,7 +160,9 @@ function headerLength(chain: ChainDescriptor): 80 | 160 | null {
 
 /** Lotus odd levels hash against zero. The other chains duplicate the last. */
 function oddPartner(last: Uint8Array, chain: ChainDescriptor): Uint8Array {
-  return chain.merkleOddRule === 'pad-zero' ? copyBytes(ZERO32) : copyBytes(last)
+  return chain.merkleOddRule === 'pad-zero'
+    ? copyBytes(ZERO32)
+    : copyBytes(last)
 }
 
 export function merkleRoot(

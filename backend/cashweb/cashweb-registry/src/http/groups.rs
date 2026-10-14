@@ -494,18 +494,31 @@ async fn get_group_epoch_impl(
         return group_error_response(e);
     }
 
-    let local_epoch = match query.epoch {
-        Some(e) => store.get_epoch(&group_id, e),
-        None => store.get_current_epoch(&group_id),
+    let requested_upstream = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY).map(str::to_owned);
+    let upstream = if query.epoch.is_none() && requested_upstream.is_none() {
+        match store.get_mirror_state(&group_id) {
+            Ok(state) => state.map(|state| state.upstream_relay),
+            Err(error) => return group_error_response(error),
+        }
+    } else {
+        requested_upstream
     };
-    match local_epoch {
-        Ok(Some(frame)) => return (StatusCode::OK, Json(frame)).into_response(),
-        Err(e) => return group_error_response(e),
-        Ok(None) => {}
+    // Historical certificates are immutable, but a foreign "latest" read must reach
+    // its trusted authority. Serving the mirror's stale head can prevent clients from
+    // accepting a valid successor epoch and ever reaching message synchronization.
+    if query.epoch.is_some() || upstream.is_none() {
+        let local_epoch = match query.epoch {
+            Some(epoch) => store.get_epoch(&group_id, epoch),
+            None => store.get_current_epoch(&group_id),
+        };
+        match local_epoch {
+            Ok(Some(frame)) => return (StatusCode::OK, Json(frame)).into_response(),
+            Err(error) => return group_error_response(error),
+            Ok(None) => {}
+        }
     }
-
-    if let Some(upstream_raw) = header_str(&headers, HEADER_GROUP_UPSTREAM_RELAY) {
-        let (upstream, client) = match upstream_transport(&store, &group_id, upstream_raw).await {
+    if let Some(upstream_raw) = upstream {
+        let (upstream, client) = match upstream_transport(&store, &group_id, &upstream_raw).await {
             Ok(transport) => transport,
             Err(error) => return group_error_response(error),
         };
@@ -527,6 +540,28 @@ async fn get_group_epoch_impl(
             Ok(body) => body,
             Err(error) => return group_error_response(error),
         };
+        if status.is_success() {
+            let frame = match serde_json::from_slice::<GroupEpochFrame>(&resp_bytes) {
+                Ok(frame) => match frame.normalized() {
+                    Ok(frame) => frame,
+                    Err(error) => return group_error_response(error),
+                },
+                Err(error) => {
+                    return group_error_response(GroupError::Storage(format!(
+                        "invalid upstream epoch JSON: {error}"
+                    )))
+                }
+            };
+            if let Err(error) = frame.verify_authority(&group_id) {
+                return group_error_response(error);
+            }
+            if query.epoch.is_some_and(|epoch| epoch != frame.epoch) {
+                return group_error_response(GroupError::Forbidden(
+                    "upstream returned a different historical epoch".into(),
+                ));
+            }
+            return (status, Json(frame)).into_response();
+        }
         return (
             status,
             [(
@@ -607,15 +642,9 @@ async fn put_group_message_impl(
             Ok(body) => body,
             Err(error) => return group_error_response(error),
         };
-        if status.is_success() {
-            if let Ok(stored_msg) = serde_json::from_slice::<StoredGroupMessage>(&resp_bytes) {
-                if let Ok(Some(mirror)) = store.get_mirror_state(&group_id) {
-                    if mirror.mirrored {
-                        let _ = store.ingest_mirrored_upstream(&group_id, None, &[stored_msg]);
-                    }
-                }
-            }
-        }
+        // A write acknowledgement is not a contiguous mailbox sync. Caching its row
+        // or advancing the mirror watermark could expose N+10 before unseen N+1..N+9.
+        // Let the next ordered upstream read import this message with the intervening rows.
         return (
             status,
             [
@@ -1320,6 +1349,189 @@ mod tests {
             10
         );
         server.abort();
+    }
+
+    async fn spawn_group_router(store: GroupStore) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(router_with_store(store).into_make_service())
+                .await
+                .unwrap();
+        });
+        (origin, task)
+    }
+
+    #[tokio::test]
+    async fn foreign_latest_refresh_and_write_ack_preserve_contiguous_backlog() {
+        let upstream = GroupStore::new_in_memory();
+        let (root_sk, root_pk) = keypair(7);
+        let (write_sk, write_pk) = keypair(70);
+        let id = hex::encode(derive_group_id(&root_pk));
+        let read_token = "00".repeat(32);
+        let initial = upstream
+            .put_epoch(
+                &id,
+                signed_epoch(
+                    &root_sk,
+                    GroupEpochFrame {
+                        group_id: id.clone(),
+                        group_pubkey: hex::encode(root_pk),
+                        epoch: 0,
+                        prev_epoch_hash: "00".repeat(32),
+                        write_pubkey: hex::encode(write_pk),
+                        read_token_hash: hex::encode(Sha256::digest([0u8; 32])),
+                        encrypted_epoch_descriptor: hex::encode(b"initial"),
+                        admin_sig: String::new(),
+                        epoch_hash: String::new(),
+                    },
+                ),
+            )
+            .unwrap();
+        let message = |nonce: u8| {
+            let mut envelope = GroupMessageEnvelope {
+                group_id: id.clone(),
+                epoch: 0,
+                nonce: hex::encode([nonce; 24]),
+                ciphertext: hex::encode([nonce; 32]),
+                write_sig: String::new(),
+            };
+            envelope.write_sig = sign_digest(&write_sk, &envelope.signing_digest().unwrap());
+            envelope
+        };
+        upstream.put_message(&id, message(1)).unwrap();
+        let (origin, origin_task) = spawn_group_router(upstream.clone()).await;
+        let home = GroupStore::with_mirror_threshold(Arc::new(MemoryKvStore::new()), 1);
+        let router = router_with_store(home.clone());
+        let read = |after| {
+            Request::builder()
+                .uri(format!("/groups/{id}/messages?after_seq={after}"))
+                .header(HEADER_GROUP_UPSTREAM_RELAY, &origin)
+                .header(HEADER_GROUP_READ_TOKEN, &read_token)
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            router.clone().oneshot(read(0)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            home.get_mirror_state(&id).unwrap().unwrap().last_synced_seq,
+            1
+        );
+        upstream.put_message(&id, message(2)).unwrap();
+        upstream.put_message(&id, message(3)).unwrap();
+        let acknowledgement = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/groups/{id}/messages"))
+                    .header(HEADER_GROUP_UPSTREAM_RELAY, &origin)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&message(4)).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(acknowledgement.status(), StatusCode::OK);
+        assert_eq!(
+            home.get_mirror_state(&id).unwrap().unwrap().last_synced_seq,
+            1
+        );
+        assert_eq!(home.list_messages(&id, 0, 10).unwrap().len(), 1);
+        let backlog = router.clone().oneshot(read(1)).await.unwrap();
+        assert_eq!(backlog.status(), StatusCode::OK);
+        let backlog: GroupMessagesResponse =
+            serde_json::from_slice(&hyper::body::to_bytes(backlog.into_body()).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            backlog
+                .messages
+                .iter()
+                .map(|message| message.server_seq)
+                .collect::<Vec<_>>(),
+            vec![2, 3, 4]
+        );
+        let rotated = upstream
+            .put_epoch(
+                &id,
+                signed_epoch(
+                    &root_sk,
+                    GroupEpochFrame {
+                        group_id: id.clone(),
+                        group_pubkey: hex::encode(root_pk),
+                        epoch: 1,
+                        prev_epoch_hash: initial.epoch_hash,
+                        write_pubkey: hex::encode(write_pk),
+                        read_token_hash: hex::encode(Sha256::digest([1u8; 32])),
+                        encrypted_epoch_descriptor: hex::encode(b"successor"),
+                        admin_sig: String::new(),
+                        epoch_hash: String::new(),
+                    },
+                ),
+            )
+            .unwrap();
+        assert_eq!(home.get_current_epoch(&id).unwrap().unwrap().epoch, 0);
+        for route in [true, false] {
+            let mut request = Request::builder().uri(format!("/groups/{id}/epochs"));
+            if route {
+                request = request.header(HEADER_GROUP_UPSTREAM_RELAY, &origin);
+            }
+            let response = router
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let frame: GroupEpochFrame =
+                serde_json::from_slice(&hyper::body::to_bytes(response.into_body()).await.unwrap())
+                    .unwrap();
+            assert_eq!(frame, rotated);
+        }
+        origin_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "Requires Node dependencies; runs the real TypeScript client against two Rust relay routers"]
+    async fn typescript_foreign_client_against_real_rust_relays() {
+        let (origin, origin_task) = spawn_group_router(GroupStore::new_in_memory()).await;
+        let (home, home_task) = spawn_group_router(GroupStore::new_in_memory()).await;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .unwrap()
+            .to_path_buf();
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("node")
+                .current_dir(&root)
+                .arg(root.join("node_modules/jest/bin/jest.js"))
+                .args([
+                    "--config",
+                    "packages/cashweb/jest.config.js",
+                    "--runInBand",
+                    "--runTestsByPath",
+                    "packages/cashweb/groups/group-http-foreign.jest.test.ts",
+                ])
+                .env("FRANK_GROUP_HTTP_ORIGIN_URL", origin)
+                .env("FRANK_GROUP_HTTP_HOME_URL", home)
+                .output()
+        })
+        .await
+        .unwrap();
+        origin_task.abort();
+        home_task.abort();
+        let output =
+            result.expect("failed to launch the TypeScript foreign relay integration gate");
+        assert!(
+            output.status.success(),
+            "TypeScript foreign integration failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[tokio::test]

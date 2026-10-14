@@ -55,6 +55,10 @@ export async function readPendingProfilePreview(options: {
         ? (input, init) =>
             fetch(input, {
               ...init,
+              body:
+                init?.body === undefined
+                  ? undefined
+                  : Uint8Array.from(init.body).buffer,
               signal,
             })
         : undefined,

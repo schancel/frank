@@ -81,6 +81,7 @@ export interface MessagingDeps {
     | 'fetch'
     | 'openStore'
     | 'discardUnenrolled'
+    | 'discardStore'
     | 'checkpoints'
     | 'pins'
   >

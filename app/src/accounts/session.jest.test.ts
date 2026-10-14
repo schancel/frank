@@ -1504,6 +1504,27 @@ describe('session-owned UTXO stealth custody', () => {
     expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
     await f.session.close()
   })
+  test.each([
+    ['missing', undefined],
+    ['invalid length', new Uint8Array(32).fill(2)],
+    ['invalid prefix', new Uint8Array(33).fill(4)],
+  ])(
+    'rejects %s runtime public-key capability before UTXO construction and wipes custody material',
+    async (_label, compressedPubKey) => {
+      const f = realIdentityFixture()
+      const r = relayFixture('btc-testnet')
+      Object.assign(f.wallet.identity, { compressedPubKey })
+      const construct = jest.spyOn(r.relay, 'createWallet')
+      await expect(f.session.createUtxoWallet(r.relay)).rejects.toMatchObject({
+        code: 'conflict',
+      })
+      expect(construct).not.toHaveBeenCalled()
+      expect(r.signed).toEqual([])
+      expect(f.copies.every(copy => copy.every(byte => byte === 0))).toBe(true)
+      expect(f.capability.close).toHaveBeenCalled()
+      await f.session.close()
+    },
+  )
   test('account invalidation during construction revokes the captured capability and wipes material', async () => {
     const f = realIdentityFixture(),
       r = relayFixture('btc-testnet')
@@ -2342,4 +2363,68 @@ test('checks the explicit operator anchor for a configured regtest EVM wallet', 
   expect(owner.chainIdentifier).toBe('monad-regtest')
   expect(getBlock).toHaveBeenCalledWith(37)
   await f.session.close()
+})
+
+describe('session identity public-key capability boundary', () => {
+  test.each(['evm', 'bitcoin', 'solana'])(
+    'does not infer a secp256k1 key from a %s family identity',
+    async family => {
+      const f = fixture()
+      Object.assign(f.wallet, {
+        family,
+        identity: { address: { raw: 'identity' }, displayAddress: 'identity' },
+      })
+      await f.session.initialize()
+      const opens = f.custody.openActive.mock.calls.length
+      expect(f.session.getCachedCurvePublicKey('secp256k1')).toBeUndefined()
+      await expect(f.session.getCurvePublicKey('secp256k1')).rejects.toThrow(
+        'No identity compressedPubKey',
+      )
+      expect(f.custody.openActive).toHaveBeenCalledTimes(opens)
+      await f.session.close()
+    },
+  )
+
+  test.each([
+    ['short', new Uint8Array(32).fill(2)],
+    ['long', new Uint8Array(34).fill(2)],
+    ['uncompressed prefix', new Uint8Array(33).fill(4)],
+    ['array instead of bytes', Array(33).fill(2)],
+    ['string instead of bytes', '02'.repeat(33)],
+  ])(
+    'rejects %s public-key capability without caching it',
+    async (_label, compressedPubKey) => {
+      const f = fixture()
+      Object.assign(f.wallet.identity, { compressedPubKey })
+      await f.session.initialize()
+      expect(f.session.getCachedCurvePublicKey('secp256k1')).toBeUndefined()
+      await expect(f.session.getCurvePublicKey('secp256k1')).rejects.toThrow(
+        'No identity compressedPubKey',
+      )
+      await f.session.close()
+    },
+  )
+
+  test.each([2, 3])(
+    'owns public-key bytes for compressed prefix %s across cache reads',
+    async prefix => {
+      const f = fixture()
+      const backing = new Uint8Array(35).fill(7)
+      const source = backing.subarray(1, 34)
+      source[0] = prefix
+      Object.assign(f.wallet.identity, { compressedPubKey: source })
+      await f.session.initialize()
+      const expected = Uint8Array.from(source)
+      const first = await f.session.getCurvePublicKey('secp256k1')
+      expect(first).toEqual(expected)
+      source.fill(0)
+      first.fill(0)
+      const second = f.session.getCachedCurvePublicKey('secp256k1')
+      expect(second).toEqual(expected)
+      second?.fill(0)
+      expect(await f.session.getCurvePublicKey('secp256k1')).toEqual(expected)
+      await f.session.close()
+      expect(f.session.getCachedCurvePublicKey('secp256k1')).toBeUndefined()
+    },
+  )
 })

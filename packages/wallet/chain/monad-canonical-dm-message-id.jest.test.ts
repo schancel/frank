@@ -487,6 +487,14 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
   it('checks and seals the same bytes, whatever the caller does to its buffers during the send', async () => {
     const id = bytesOf(ID_A)
     const conversation = bytesOf(CONVERSATION)
+    const copies = [0, 0]
+    for (const [index, buffer] of [id, conversation].entries())
+      Object.defineProperty(buffer, Symbol.iterator, {
+        value: function* () {
+          copies[index]++
+          yield* Uint8Array.prototype.values.call(buffer)
+        },
+      })
     uninstall()
     uninstall = installCanonicalDirectory(alice, {
       ...directory,
@@ -503,6 +511,7 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       (await received()).map(m => [m.conversationId, m.messageId]),
     ).toEqual([[CONVERSATION, ID_A]])
     expect((await rows()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
+    expect(copies).toEqual([1, 1])
     expectAlreadyAttempted(
       await attempt({ messageId: ID_A }),
       ID_A,
@@ -694,6 +703,37 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect((await rows()).map(row => row.consumerId)).toEqual([consumerOf(ID_A)])
     expect(sign).toHaveBeenCalledTimes(1)
   })
+
+  it.each(['messageId', 'conversationId'] as const)(
+    'rejects malformed copied %s bytes before lookup or payment effects',
+    async argument => {
+      const get = jest.spyOn(LevelOutgoingMessageStore.prototype, 'get')
+      const unpaid = jest.spyOn(LevelOutgoingMessageStore.prototype, 'unpaid')
+      const put = jest.spyOn(LevelOutgoingMessageStore.prototype, 'put')
+      const peer = jest.spyOn(directory, 'peerCurrent')
+      const self = jest.spyOn(directory, 'selfCurrent')
+      for (const copiedLength of [15, 17, 'throws'] as const) {
+        const value = new Uint8Array(16)
+        const copy = jest.fn(function* () {
+          if (copiedLength === 'throws') throw new Error('invalid ID iterator')
+          yield* new Uint8Array(copiedLength)
+        })
+        Object.defineProperty(value, Symbol.iterator, { value: copy })
+        const refused = await attempt({ [argument]: value })
+        expect(refused.error).toBeInstanceOf(DirectMessageArgumentError)
+        expect(refused.error).toMatchObject({ argument })
+        expect(refused.labelled).toBe(false)
+        expect(copy).toHaveBeenCalledTimes(1)
+        expect(refused.signed).toBe(0)
+        expect(refused.funded).toBe(0)
+        expect(refused.requests).toBe(0)
+      }
+      for (const effect of [get, unpaid, put, peer, self])
+        expect(effect).not.toHaveBeenCalled()
+      expect(await rows()).toHaveLength(0)
+      expect(claimed()).toEqual([])
+    },
+  )
 
   // On main (A4): the second call draws a new random ID and pays for the message a second time.
   it('A4: answers a repeat of a delivered ID with the original attempt, before the directory is consulted', async () => {

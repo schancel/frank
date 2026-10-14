@@ -246,6 +246,11 @@
     amount of room a chat gets, and on a narrow/mobile viewport there's no room for both panes at
     once anyway, so a single view stack (never two panes fighting for space) is the one layout
     that already works at every width. -->
+    <group-info-dialog
+      v-if="isGroup"
+      v-model="groupInfoOpen"
+      :conversation-id="activeConversation?.id"
+    />
     <router-view v-if="!infoOpen" />
     <chat-info-view
       v-else
@@ -268,6 +273,7 @@ import {
 import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
 import { RouteLocationNormalized } from 'vue-router'
 
+import GroupInfoDialog from '../components/chat/GroupInfoDialog.vue'
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import { openChat } from '../utils/routes'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
@@ -295,6 +301,7 @@ export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   components: {
     ChatInfoView,
+    GroupInfoDialog,
     ClearHistoryDialog,
     DeleteChatDialog,
     AccountBadge,
@@ -344,6 +351,7 @@ export default defineComponent({
       // `router-view`/`chat-info-view` for why. Can be directly opened via ?info=true query param.
       infoOpen: this.$route.query?.info === 'true',
       chatMenuOpen: false,
+      groupInfoOpen: false,
       subjectEditorOpen: false,
       subjectEditorId: null as string | null,
       subjectDraft: '',
@@ -398,6 +406,10 @@ export default defineComponent({
       }
     },
     openInfo() {
+      if (this.isGroup) {
+        this.groupInfoOpen = true
+        return
+      }
       this.infoOpen = true
       if (this.$route.query?.info !== 'true') {
         void this.$router.replace({

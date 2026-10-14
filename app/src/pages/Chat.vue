@@ -1,5 +1,38 @@
 <template>
   <div class="chat-container column full-height overflow-hidden">
+    <q-banner
+      v-if="
+        conversation?.kind === 'group' &&
+        conversation.membershipStatus === 'invited'
+      "
+      class="q-pa-md"
+      data-testid="group-invite-banner"
+    >
+      {{ $t('groupChat.inviteBannerTitle', { name: conversation.name }) }}
+      <div class="text-caption">
+        {{
+          $t('groupChat.inviteBannerSubtitle', {
+            epoch: conversation.groupState?.epoch ?? 0,
+            relay:
+              conversation.groupState?.homeRelay ?? conversation.groupRelayUrl,
+          })
+        }}
+      </div>
+      <template #action>
+        <q-btn
+          color="primary"
+          :label="$t('groupChat.acceptInviteBtn')"
+          data-testid="accept-group-invite"
+          @click="chatStore.approveGroupInvite(conversation.id)"
+        />
+        <q-btn
+          flat
+          :label="$t('groupChat.declineInviteBtn')"
+          data-testid="decline-group-invite"
+          @click="chatStore.declineGroupInvite(conversation.id)"
+        />
+      </template>
+    </q-banner>
     <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
     <div
       v-if="isScreenerThread"
@@ -149,7 +182,11 @@
       </q-page>
     </q-page-container>
     <q-footer
-      v-if="!isEmailThread"
+      v-if="
+        !isEmailThread &&
+        (conversation?.kind !== 'group' ||
+          conversation.membershipStatus === 'joined')
+      "
       bordered
       :height-hint="64"
       class="chat-footer chat-input-bar"

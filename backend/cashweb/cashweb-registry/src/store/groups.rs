@@ -136,8 +136,10 @@ pub struct GroupEpochFrame {
     /// 64-character hex SHA-256 hash of the epoch's Group Read Token ($\text{SHA256}(R_{G,e})$).
     pub read_token_hash: String,
     /// Hex-encoded encrypted epoch descriptor (roster + wrapped epoch key material).
+    #[serde(alias = "encrypted_roster")]
     pub encrypted_epoch_descriptor: String,
     /// Hex-encoded secp256k1 signature authorizing the epoch transition.
+    #[serde(alias = "authority_sig")]
     pub admin_sig: String,
     /// Deterministic 64-character hex digest of this epoch frame.
     #[serde(default)]

@@ -2780,14 +2780,14 @@ describe('stores/chats.ts (ticket #42)', () => {
             m.senderAddress,
             m.logicalMessageId,
           ]),
-        ).toEqual([['holder', RECIPIENT_ADDRESS, 'shared-id']])
-        const intruderMsg = chats.messages['intruder']
-        expect(intruderMsg).toMatchObject({
-          payloadDigest: 'intruder',
-          senderAddress: THIRD_ADDRESS,
-          logicalMessageId: collidedMessageId('shared-id', 'intruder'),
-        })
-        expect(intruderMsg?.conversationId).not.toBe(firstId)
+        ).toEqual([
+          ['holder', RECIPIENT_ADDRESS, 'shared-id'],
+          [
+            'intruder',
+            THIRD_ADDRESS,
+            collidedMessageId('shared-id', 'intruder'),
+          ],
+        ])
         expect(chats.logicalMessages['shared-id']).toMatchObject({
           senderAddress: RECIPIENT_ADDRESS,
           activeRevisionDigest: 'holder',
@@ -2935,43 +2935,39 @@ describe('stores/chats.ts (ticket #42)', () => {
         )
       })
 
-      it('a third person who sends with a direct conversation ID is routed to their own 1:1 chat and recorded as a pending participant request (#1365)', async () => {
+      it('a third person who sends with the conversation ID lands in it as themselves, becomes a participant, and is recorded as a pending participant request (#1380, #1365)', async () => {
         const { chats, conversation } = withPeer()
         await chats.receiveMessages([
           incoming(firstId, 'from-peer', 100),
           fromThird('from-third', 200),
         ])
-        // The 1:1 direct conversation keeps its closed 2-participant set and only its peer's message.
         expect(conversation.messages.map(m => m.payloadDigest)).toEqual([
           'from-peer',
+          'from-third',
         ])
+        expect(conversation.messages.map(m => m.senderAddress)).toEqual([
+          RECIPIENT_ADDRESS,
+          THIRD_ADDRESS,
+        ])
+        // Still the conversation it was: same ID, same peer for what we send.
         expect(conversation.id).toBe(firstId)
         expect(conversation.address).toBe(RECIPIENT_ADDRESS)
         expect(conversation.participants).toEqual(
-          [SENDER_ADDRESS, RECIPIENT_ADDRESS].sort(),
+          [SENDER_ADDRESS, RECIPIENT_ADDRESS, THIRD_ADDRESS].sort(),
         )
-        expect(conversation.members?.[THIRD_ADDRESS]).toBeUndefined()
+        expect(conversation.members?.[THIRD_ADDRESS]).toMatchObject({
+          address: THIRD_ADDRESS,
+          pubKeyHex: '07'.repeat(33),
+        })
         expect(chats.getLatestMessage(firstId)?.senderAddress).toBe(
-          RECIPIENT_ADDRESS,
+          THIRD_ADDRESS,
         )
-        // A pending participant request is recorded on the referenced 1:1 conversation,
-        // and the message itself lands in THIRD_ADDRESS's own 1:1 conversation.
         const req = conversation.pendingParticipantRequests?.[THIRD_ADDRESS]
         expect(req).toMatchObject({
           senderAddress: THIRD_ADDRESS,
           referencedConversationId: firstId,
           payloadDigest: 'from-third',
           receivedAt: 200,
-          pubKeyHex: '07'.repeat(33),
-        })
-        const thirdConv = chats.conversations[req!.senderConversationId]
-        expect(thirdConv).toBeDefined()
-        expect(thirdConv.address).toBe(THIRD_ADDRESS)
-        expect(thirdConv.messages.map(m => m.payloadDigest)).toEqual([
-          'from-third',
-        ])
-        expect(thirdConv.members?.[THIRD_ADDRESS]).toMatchObject({
-          address: THIRD_ADDRESS,
           pubKeyHex: '07'.repeat(33),
         })
         // Posting into someone else's conversation does not make them a contact.
@@ -2984,23 +2980,18 @@ describe('stores/chats.ts (ticket #42)', () => {
         const reopened = await rehydrateState(chats.$state)
         expect(
           reopened.conversations[firstId].messages.map(m => m.senderAddress),
-        ).toEqual([RECIPIENT_ADDRESS])
+        ).toEqual([RECIPIENT_ADDRESS, THIRD_ADDRESS])
         expect(reopened.conversations[firstId].participants).toEqual(
-          [SENDER_ADDRESS, RECIPIENT_ADDRESS].sort(),
+          [SENDER_ADDRESS, RECIPIENT_ADDRESS, THIRD_ADDRESS].sort(),
         )
         expect(reopened.conversations[firstId].address).toBe(RECIPIENT_ADDRESS)
-        expect(
-          reopened.conversations[req!.senderConversationId].messages.map(
-            m => m.senderAddress,
-          ),
-        ).toEqual([THIRD_ADDRESS])
 
         // Dismissing the pending participant request clears it cleanly.
         chats.dismissPendingParticipantRequest(firstId, THIRD_ADDRESS)
         expect(conversation.pendingParticipantRequests).toBeUndefined()
       })
 
-      it('a reload routes a legacy saved third-person row out of a direct conversation (#1365)', async () => {
+      it('a reload files a saved third-person message even when the participant list was not saved', async () => {
         const { chats } = withPeer()
         const before = {
           ...chats.$state,
@@ -3013,37 +3004,14 @@ describe('stores/chats.ts (ticket #42)', () => {
             },
           },
         }
-        const legacyRow = {
-          index: 'from-third',
-          outbound: false,
-          senderAddress: THIRD_ADDRESS,
-          copartyAddress: THIRD_ADDRESS,
-          message: {
-            outbound: false,
-            status: 'confirmed',
-            senderAddress: THIRD_ADDRESS,
-            destinationAddress: SENDER_ADDRESS,
-            conversationId: firstId,
-            items: [{ type: 'text', text: 'from-third' }],
-            serverTime: 200,
-            receivedTime: 200,
-            outpoints: [],
-          },
-        }
-        mockMessageStore.getIterator.mockResolvedValueOnce([legacyRow])
+        await chats.receiveMessages([fromThird('from-third', 200)])
+        const rows = mockMessageStore.saveMessage.mock.calls.map(([row]) => row)
+        mockMessageStore.getIterator.mockResolvedValueOnce(rows)
         const reopened = await rehydrateState(before)
-        expect(reopened.conversations[firstId].messages).toHaveLength(0)
-        expect(reopened.conversations[firstId].participants).not.toContain(
+        expect(reopened.conversations[firstId].messages).toHaveLength(1)
+        expect(reopened.conversations[firstId].participants).toContain(
           THIRD_ADDRESS,
         )
-        const req =
-          reopened.conversations[firstId].pendingParticipantRequests?.[
-            THIRD_ADDRESS
-          ]
-        expect(req).toBeDefined()
-        expect(
-          reopened.conversations[req!.senderConversationId].messages,
-        ).toHaveLength(1)
       })
 
       it('quarantines inbound GroupWelcomeItem invites until approved and processes GroupControlItem epoch updates (#70, #1365)', async () => {
@@ -3216,7 +3184,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           return { chats, conversation }
         }
 
-        it('an email item does not turn the chat into an email thread or rename it; the message is routed to the third party thread (#1365)', async () => {
+        it('an email item does not turn the chat into an email thread or rename it; the message is stored as theirs', async () => {
           const { chats, conversation } = namedWithPeer()
           await chats.receiveMessages([
             incoming(firstId, 'peer-says', 100),
@@ -3225,13 +3193,10 @@ describe('stores/chats.ts (ticket #42)', () => {
           expectUntouched(conversation)
           expect(
             conversation.messages.map(m => [m.payloadDigest, m.senderAddress]),
-          ).toEqual([['peer-says', RECIPIENT_ADDRESS]])
-          expect(chats.messages['third-email']?.senderAddress).toBe(
-            THIRD_ADDRESS,
-          )
-          expect(chats.messages['third-email']?.conversationId).not.toBe(
-            firstId,
-          )
+          ).toEqual([
+            ['peer-says', RECIPIENT_ADDRESS],
+            ['third-email', THIRD_ADDRESS],
+          ])
           // The same when the relay hands the row back.
           await chats.receiveMessages([emailFromThird('third-email', 200)])
           expectUntouched(conversation)
@@ -3249,10 +3214,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           mockMessageStore.getIterator.mockResolvedValueOnce(rows)
           const reopened = await rehydrateState(chats.$state)
           expectUntouched(reopened.conversations[firstId])
-          expect(reopened.conversations[firstId].messages).toHaveLength(1)
-          expect(reopened.messages['third-email']?.senderAddress).toBe(
-            THIRD_ADDRESS,
-          )
+          expect(reopened.conversations[firstId].messages).toHaveLength(2)
         })
 
         it("the peer's own email item still does", async () => {

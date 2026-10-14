@@ -826,7 +826,19 @@ export interface ApplicationMessageItem {
   value: unknown
 }
 
+export interface GroupEpochCertificate {
+  epoch: number
+  group_pubkey: string
+  prev_epoch_hash: string
+  write_pubkey: string
+  read_token_hash: string
+  encrypted_roster: string
+  authority_sig: string
+  epoch_hash: string
+}
+
 export interface GroupWelcomeMember {
+  identityPubKeyHex: string
   index: number
   address: string
   epochSigningPubKeyHex: string
@@ -841,6 +853,7 @@ export interface GroupWelcomeMember {
  */
 export interface GroupWelcomeItem {
   type: 'group-welcome'
+  epochFrame: GroupEpochCertificate
   groupId: string
   groupPubKey: string
   groupName: string
@@ -857,6 +870,7 @@ export interface GroupWelcomeItem {
  */
 export interface GroupControlItem {
   type: 'group-control'
+  epochFrame: GroupEpochCertificate
   groupId: string
   action: 'rotate-epoch' | 'add-member' | 'remove-member' | 'leave'
   epoch: number
@@ -866,6 +880,8 @@ export interface GroupControlItem {
   targetMemberIndex?: number
   targetEpochSigningPubKeyHex?: string
   authoritySigHex: string
+  groupName?: string
+  rosterMembers?: GroupWelcomeMember[]
 }
 
 export type MessageItem =

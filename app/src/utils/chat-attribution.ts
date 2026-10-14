@@ -6,6 +6,7 @@
  * not ours is shown with its own sender: name, avatar and the sender's key colour. A
  * conversation between two people is shown without any of that.
  */
+import { isGroupIdentifier } from '@frank/cashweb/groups/group-crypto'
 import { isChainAddress } from './chain-address'
 import { pubKeyToColor } from './formatting'
 import { sameCanonicalAddress } from './own-address'
@@ -60,13 +61,15 @@ export function otherParticipants(
  * Whether each message must say who sent it: someone in the conversation is neither this user
  * nor the peer the conversation is with. That is a third person in a chat with a peer, and
  * anyone at all in this user's own notes. A conversation with no single peer (its `address` is
- * not a person) needs it once there are two other people.
+ * not a person) needs it once there are two other people, or immediately when it is a shared
+ * group mailbox (`group:<64hex>`).
  */
 export function isGroupConversation(
   participants: readonly string[] | undefined,
   ownAddress: string | null | undefined,
   peerAddress?: string | null,
 ): boolean {
+  if (peerAddress && isGroupIdentifier(peerAddress)) return true
   const others = otherParticipants(participants, ownAddress)
   return peerAddress && isChainAddress(peerAddress)
     ? others.some(other => !sameCanonicalAddress(other, peerAddress))

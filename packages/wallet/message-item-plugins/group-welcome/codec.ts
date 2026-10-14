@@ -1,7 +1,4 @@
-import type {
-  GroupWelcomeItem,
-  GroupWelcomeMember,
-} from '@frank/cashweb/types/messages'
+import type { GroupWelcomeItem } from '@frank/cashweb/types/messages'
 
 import {
   cborItemCodec,
@@ -10,19 +7,11 @@ import {
   hex,
   int,
   listOf,
-  oneOf,
   opt,
   req,
   str,
-  struct,
 } from '../shared/cbor-fields'
-
-const rosterMember = struct<GroupWelcomeMember>({
-  index: req(0, int(0, 10_000)),
-  address: req(1, chainAddress),
-  epochSigningPubKeyHex: req(2, hex(33)),
-  role: opt(3, oneOf('admin', 'member')),
-})
+import { groupEpochCertificate, groupRosterMember } from '../shared/group-epoch-certificate'
 
 /**
  * Group invitation item delivered in a 1:1 DM (Issues #70 & #1365).
@@ -38,6 +27,7 @@ export const groupWelcomeCodec = cborItemCodec<GroupWelcomeItem>(
     epochSecretHex: req(5, hash32),
     memberIndex: req(6, int(0, 10_000)),
     inviterAddress: opt(7, chainAddress),
-    rosterMembers: opt(8, listOf(rosterMember, 256, 1)),
+    rosterMembers: opt(8, listOf(groupRosterMember, 256, 1)),
+    epochFrame: req(9, groupEpochCertificate),
   },
 )

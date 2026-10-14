@@ -22,6 +22,15 @@
           />
         </q-item>
         <q-separator />
+        <q-item
+          v-if="$status.setup"
+          clickable
+          data-testid="new-group-btn"
+          @click="newGroupOpen = true"
+        >
+          <q-item-section avatar><q-icon name="group_add" /></q-item-section>
+          <q-item-section>{{ $t('groupChat.newGroup') }}</q-item-section>
+        </q-item>
 
         <!-- Full-Text E2EE Search Input & Paid-Stranger Screener Filter Chip -->
         <div
@@ -164,6 +173,7 @@
         </q-item>
       </q-list>
     </q-scroll-area>
+    <new-group-dialog v-model="newGroupOpen" @created="selectConversation" />
   </div>
 </template>
 
@@ -172,6 +182,7 @@ import { computed, defineComponent, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
+import NewGroupDialog from '../dialogs/NewGroupDialog.vue'
 import { Conversation, useChatStore } from '../../stores/chats'
 import { useContactStore } from '../../stores/contacts'
 
@@ -281,6 +292,7 @@ export default defineComponent({
     const router = useRouter()
     const $q = useQuasar()
     return {
+      newGroupOpen: ref(false),
       getSortedChatOrder,
       displayedConversations,
       searchQuery,
@@ -347,6 +359,7 @@ export default defineComponent({
   },
   components: {
     ChatListItem,
+    NewGroupDialog,
   },
 })
 </script>

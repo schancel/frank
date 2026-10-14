@@ -10,7 +10,7 @@ const SECP256K1_N =
 export const GROUP_ID_DOMAIN = 'frank-group-v1'
 export const GROUP_IDENTIFIER_PREFIX = 'group:'
 export const GROUP_EPOCH_SIGN_DOMAIN = 'frank-group-epoch-v1'
-export const GROUP_MSG_WRITE_SIGN_DOMAIN = 'frank-group-msg-write-v1'
+export const GROUP_MSG_WRITE_SIGN_DOMAIN = 'frank-group-msg-v1'
 export const GROUP_INNER_MSG_SIGN_DOMAIN = 'frank-group-inner-msg-v1'
 export const GROUP_MSG_AEAD_DOMAIN = 'frank-group-aead-v1'
 export const GROUP_ROSTER_AEAD_DOMAIN = 'frank-group-roster-v1'
@@ -294,6 +294,51 @@ export function deriveEpochKeys(
 }
 
 /**
+ * Ratchets the previous epoch secret $S_{e-1}$ forward to $S_e$ using HKDF-SHA256
+ * (or mixes fresh entropy when rotating after a member removal).
+ */
+export function deriveNextEpochSecret(
+  prevEpochSecret: Uint8Array,
+  groupIdHex: string,
+  nextEpoch: number,
+  freshEntropy?: Uint8Array,
+): Uint8Array {
+  if (prevEpochSecret.length !== 32) {
+    throw new Error(
+      `prevEpochSecret must be 32 bytes, got ${prevEpochSecret.length}`,
+    )
+  }
+  if (!Number.isSafeInteger(nextEpoch) || nextEpoch <= 0) {
+    throw new Error(`nextEpoch must be a positive integer, got ${nextEpoch}`)
+  }
+  const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const groupIdBytes = hexToBytes(cleanGroupId)
+  if (groupIdBytes.length !== 32) {
+    throw new Error('groupIdHex must decode to 32 bytes')
+  }
+  const ikm = freshEntropy
+    ? concatBytes(prevEpochSecret, freshEntropy)
+    : prevEpochSecret
+  return hkdf(
+    sha256,
+    ikm,
+    groupIdBytes,
+    utf8Encoder.encode(`frank-group-epoch-ratchet:${nextEpoch}`),
+    32,
+  )
+}
+
+export function deriveNextEpochSecretHex(
+  prevEpochSecretHex: string,
+  groupIdHex: string,
+  nextEpoch: number,
+): string {
+  return bytesToHex(
+    deriveNextEpochSecret(hexToBytes(prevEpochSecretHex), groupIdHex, nextEpoch),
+  )
+}
+
+/**
  * Derives a member's per-epoch ephemeral signing keypair $(s_{i,e}, S_{i,e})$:
  * $s_{i,e} = \text{HKDF-SHA256}(\text{memberSecretSeed}, \text{group\_id}, \text{"frank-group-member-sig:"} \parallel e)$.
  *
@@ -330,6 +375,32 @@ export function deriveMemberEpochSigningKey(
     publicKey,
     publicKeyHex: bytesToHex(publicKey),
   }
+}
+
+/**
+ * Deterministically derives a member's per-epoch signing keypair $(s_{i,e}, S_{i,e})$ from
+ * the epoch secret, group ID, epoch, member index, and canonical member address when no
+ * out-of-band member secret seed is supplied.
+ */
+export function deriveIndexedMemberEpochSigningKey(
+  epochSecret: Uint8Array,
+  groupIdHex: string,
+  epoch: number,
+  memberIndex: number,
+  address: string,
+): GroupKeyPair {
+  const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const groupIdBytes = hexToBytes(cleanGroupId)
+  const memberSeed = hkdf(
+    sha256,
+    epochSecret,
+    groupIdBytes,
+    utf8Encoder.encode(
+      `frank-group-member-seed:${epoch}:${memberIndex}:${address.trim().toLowerCase()}`,
+    ),
+    32,
+  )
+  return deriveMemberEpochSigningKey(memberSeed, cleanGroupId, epoch)
 }
 
 export interface GroupRosterMember {
@@ -413,13 +484,16 @@ export function decryptGroupRoster(
 }
 
 export interface GroupEpochFrameWire {
+  readonly group_id?: string
   readonly epoch: number
-  readonly group_pubkey: string
+  readonly group_pubkey?: string
   readonly prev_epoch_hash: string
   readonly write_pubkey: string
   readonly read_token_hash: string
   readonly encrypted_roster: string
+  readonly encrypted_epoch_descriptor?: string
   readonly authority_sig: string
+  readonly admin_sig?: string
   readonly epoch_hash?: string
 }
 
@@ -431,7 +505,8 @@ export function computeEpochSigningHash(params: {
   readTokenHashHex: string
   encryptedRoster: Uint8Array | string
 }): Uint8Array {
-  const groupIdBytes = hexToBytes(params.groupIdHex)
+  const cleanGroupId = params.groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const groupIdBytes = hexToBytes(cleanGroupId)
   const prevHashBytes = hexToBytes(params.prevEpochHashHex)
   const writePubKeyBytes = hexToBytes(params.writePubKeyHex)
   const readTokenHashBytes = hexToBytes(params.readTokenHashHex)
@@ -456,13 +531,14 @@ export function computeEpochSigningHash(params: {
 
 export function signEpochFrame(params: {
   groupIdHex: string
-  groupPubKeyHex: string
+  groupPubKeyHex?: string
   epoch: number
   prevEpochHashHex?: string
   epochKeys: GroupEpochKeys
   encryptedRoster: Uint8Array | string
   authorityPrivateKey: Uint8Array
 }): GroupEpochFrameWire {
+  const cleanGroupId = params.groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
   const prevEpochHashHex = (
     params.prevEpochHashHex ?? '00'.repeat(32)
   ).toLowerCase()
@@ -471,7 +547,7 @@ export function signEpochFrame(params: {
       ? params.encryptedRoster.toLowerCase()
       : bytesToHex(params.encryptedRoster)
   const digest = computeEpochSigningHash({
-    groupIdHex: params.groupIdHex,
+    groupIdHex: cleanGroupId,
     epoch: params.epoch,
     prevEpochHashHex,
     writePubKeyHex: params.epochKeys.writeKeyPair.publicKeyHex,
@@ -482,17 +558,22 @@ export function signEpochFrame(params: {
     lowS: true,
   })
   const authoritySigHex = bytesToHex(sig.toCompactRawBytes())
-  const epochHashHex = bytesToHex(
-    sha256(concatBytes(digest, sig.toCompactRawBytes())),
-  )
+  const epochHashHex = bytesToHex(digest)
+  const groupPubKeyHex = (
+    params.groupPubKeyHex ??
+    bytesToHex(secp256k1.getPublicKey(params.authorityPrivateKey, true))
+  ).toLowerCase()
   return {
+    group_id: cleanGroupId,
     epoch: params.epoch,
-    group_pubkey: params.groupPubKeyHex.toLowerCase(),
+    group_pubkey: groupPubKeyHex,
     prev_epoch_hash: prevEpochHashHex,
     write_pubkey: params.epochKeys.writeKeyPair.publicKeyHex,
     read_token_hash: params.epochKeys.readTokenHashHex,
     encrypted_roster: encryptedRosterHex,
+    encrypted_epoch_descriptor: encryptedRosterHex,
     authority_sig: authoritySigHex,
+    admin_sig: authoritySigHex,
     epoch_hash: epochHashHex,
   }
 }
@@ -500,20 +581,27 @@ export function signEpochFrame(params: {
 export function verifyEpochFrame(
   frame: GroupEpochFrameWire,
   groupIdHex: string,
-  authorityPubKeyHex: string,
+  authorityPubKeyHex?: string,
 ): boolean {
   try {
+    const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+    const encryptedRoster =
+      frame.encrypted_roster || frame.encrypted_epoch_descriptor || ''
+    const authoritySig = frame.authority_sig || frame.admin_sig || ''
+    const pubKeyHex =
+      authorityPubKeyHex || frame.group_pubkey || frame.write_pubkey
+    if (!encryptedRoster || !authoritySig || !pubKeyHex) return false
     const digest = computeEpochSigningHash({
-      groupIdHex,
+      groupIdHex: cleanGroupId,
       epoch: frame.epoch,
       prevEpochHashHex: frame.prev_epoch_hash,
       writePubKeyHex: frame.write_pubkey,
       readTokenHashHex: frame.read_token_hash,
-      encryptedRoster: frame.encrypted_roster,
+      encryptedRoster,
     })
-    const sig = secp256k1.Signature.fromCompact(hexToBytes(frame.authority_sig))
+    const sig = secp256k1.Signature.fromCompact(hexToBytes(authoritySig))
     if (sig.hasHighS()) return false
-    return secp256k1.verify(sig, digest, hexToBytes(authorityPubKeyHex), {
+    return secp256k1.verify(sig, digest, hexToBytes(pubKeyHex), {
       lowS: true,
     })
   } catch {

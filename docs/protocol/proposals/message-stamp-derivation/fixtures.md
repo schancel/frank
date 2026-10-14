@@ -99,3 +99,10 @@ key, address, path, transcript, policy case, unsigned proposed frame, and T1
 remains byte-identical. This metadata refresh records the current non-derivation
 wire baseline. It preserves the historical proposal/capture provenance and
 makes no claim of a fresh runtime, network, or browser proof.
+
+The subsequent sealed-sender change refreshes only the
+`monad-wallet-material.ts` source hash for optional sealed-envelope plumbing.
+Its reviewed regeneration again preserves every non-metadata corpus value
+exactly, including all derivation inputs, keys, addresses, paths and frames.
+This remains historical proposal evidence, with no new derivation or runtime
+activation claim.

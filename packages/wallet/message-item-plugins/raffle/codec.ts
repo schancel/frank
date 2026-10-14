@@ -15,7 +15,10 @@ import { MAX_RAFFLE_ENTRIES, id, note, secret } from '../shared/limits'
 
 export const raffleCodec = cborItemCodec<RaffleItem>('raffle', {
   raffleId: req(0, id),
-  action: req(1, oneOf('announce', 'enter', 'joined', 'draw', 'error')),
+  action: req(
+    1,
+    oneOf('announce', 'enter', 'joined', 'leave', 'left', 'draw', 'error'),
+  ),
   entryPriceWei: opt(2, amount),
   maxEntries: opt(3, int(1, MAX_RAFFLE_ENTRIES)),
   entryCount: opt(4, int(0, MAX_RAFFLE_ENTRIES)),

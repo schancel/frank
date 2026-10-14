@@ -10,7 +10,7 @@ import {
 } from '@frank/wallet/message-item-plugins/raffle/draw'
 import enUS from '../../../i18n/en-us'
 import frFR from '../../../i18n/fr-fr'
-import ChatMessageRaffle from './ChatMessageRaffle.vue'
+import ChatMessageRaffle, { LEAVE_GUARD_MS } from './ChatMessageRaffle.vue'
 
 const BOT = '0xRaffleBot'
 const store: { activeConversation: { messages: any[] } } = reactive({
@@ -381,5 +381,60 @@ describe('ChatMessageRaffle entering pays the sender, so it is confirmed first',
     await find(w, 'raffle-enter').trigger('click')
     expect(find(w, 'raffle-confirm').exists()).toBe(false)
     expect(w.emitted('sendFollowUp')).toBeUndefined()
+  })
+})
+
+describe('ChatMessageRaffle leave button', () => {
+  beforeEach(() =>
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+    }),
+  )
+  afterEach(() => jest.useRealTimers())
+
+  it('emits one leave, stays disabled across ticks, and re-enables only after the guard', async () => {
+    const w = await mountAt([fromBot(joined())])
+    const btn = () => w.find('[data-testid="raffle-leave"]')
+    expect(btn().attributes('disable')).toBe('false')
+    await btn().trigger('click')
+    await w.vm.$nextTick()
+    expect(w.emitted('sendFollowUp')).toEqual([
+      [
+        {
+          items: [{ type: 'raffle', raffleId: 'r1', action: 'leave' }],
+        },
+      ],
+    ])
+    expect(btn().attributes('disable')).toBe('true')
+    await btn().trigger('click')
+    expect(w.emitted('sendFollowUp')).toHaveLength(1)
+    jest.advanceTimersByTime(LEAVE_GUARD_MS)
+    await w.vm.$nextTick()
+    expect(btn().attributes('disable')).toBe('false')
+  })
+
+  it('has an accessible name naming the round and announces joined, left, and error states in live/alert regions', async () => {
+    const w = await mountAt([fromBot(joined())])
+    expect(
+      w.find('[data-testid="raffle-leave"]').attributes('aria-label'),
+    ).toBe('Leave raffle round r1')
+    expect(w.find('[aria-live="polite"]').exists()).toBe(true)
+
+    const leaveBubble = await mountAt([
+      fromBot({ type: 'raffle', raffleId: 'r1', action: 'leave' }),
+    ])
+    expect(leaveBubble.text()).toContain('Left the raffle')
+
+    const left = await mountAt([
+      fromBot({ ...joined(), action: 'left', entryCount: 0 }),
+    ])
+    expect(left.find('[aria-live="polite"]').text()).toContain(
+      'Left the raffle: 0/5 entered. Your entry was refunded.',
+    )
+
+    const err = await mountAt([
+      fromBot({ ...joined(), action: 'error', message: 'nope' }),
+    ])
+    expect(err.find('[role="alert"]').text()).toBe('nope')
   })
 })

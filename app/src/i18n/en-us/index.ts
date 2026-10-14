@@ -196,6 +196,10 @@ export default {
     cancel: 'Cancel',
     insufficient: 'That is more than you can spend now ({balance}).',
     balanceUnknown: 'Your balance is not known yet.',
+    leave: 'Leave',
+    leaveAriaLabel: 'Leave raffle round {raffleId}',
+    leftStatus:
+      'Left the raffle: {count}/{max} entered. Your entry was refunded.',
   },
   gameFairness: {
     diceRejected: 'No roll was made.',

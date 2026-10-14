@@ -42,6 +42,9 @@ export interface RaffleRoundState {
   /** The conversation each entrant entered in (null: the default thread): where they are told
    * the draw. */
   conversations: (string | null)[];
+  /** Addresses that have already entered and left this round (at most one leave per address per
+   * round; prevents enter -> leave -> re-enter churn from draining bot gas). */
+  leftAddresses?: string[];
   status: "open" | "drawing";
 }
 
@@ -113,6 +116,7 @@ export class RaffleBot implements FrankBotDefinition {
       entrants: [],
       entryTxHashes: [],
       conversations: [],
+      leftAddresses: [],
       status: "open",
     };
     await ctx.state.put(ROUND, JSON.stringify(round));
@@ -121,7 +125,7 @@ export class RaffleBot implements FrankBotDefinition {
 
   private status(
     round: RaffleRoundState,
-    action: "announce" | "joined"
+    action: "announce" | "joined" | "left"
   ): RaffleItem {
     return {
       type: "raffle",
@@ -171,6 +175,20 @@ export class RaffleBot implements FrankBotDefinition {
   }
 
   async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
+    const leave = msgCtx.items.find(
+      (item): item is RaffleItem =>
+        item.type === "raffle" && item.action === "leave"
+    );
+    const typedLeave = msgCtx.items.some(
+      (item) => item.type === "text" && item.text.trim().toLowerCase() === "leave"
+    );
+    if (leave || typedLeave) {
+      await this.outbox.handle(msgCtx, ctx, (received) =>
+        this.serial(() => this.leave(leave, msgCtx, ctx, received))
+      );
+      return;
+    }
+
     const entry = msgCtx.items.find(
       (item): item is RaffleItem =>
         item.type === "raffle" && item.action === "enter"
@@ -209,6 +227,10 @@ export class RaffleBot implements FrankBotDefinition {
       return refused("That round is over. You are not entered in the current one.");
     if (round.entrants.includes(peer))
       return refused("You have already entered this round.");
+    if ((round.leftAddresses ?? []).includes(peer))
+      return refused(
+        "You already left this round and cannot re-enter until the next round."
+      );
     const price = BigInt(round.entryPriceWei);
     // An entry is a confirmed payment of the entry price. Nothing else is.
     if (received.unconfirmed.length > 0 || received.confirmedWei < price)
@@ -252,6 +274,66 @@ export class RaffleBot implements FrankBotDefinition {
     );
     await this.outbox.settle(ctx);
     if (round.status === "drawing") await this.finish(ctx);
+  }
+
+  private async leave(
+    leave: RaffleItem | undefined,
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
+    received: Received
+  ): Promise<void> {
+    const round = await this.round(ctx);
+    const peer = msgCtx.peerAddress.toLowerCase();
+    const refused = (why: string) =>
+      refuse(this.outbox, msgCtx, ctx, received, why, [
+        { type: "raffle", raffleId: round.raffleId, action: "error", message: why },
+      ]);
+    if (round.status !== "open")
+      return refused(
+        "This round is full and its winner is being paid; you cannot leave now."
+      );
+    if (leave && leave.raffleId && leave.raffleId !== round.raffleId)
+      return refused("That round is over.");
+    const idx = round.entrants.indexOf(peer);
+    if (idx === -1)
+      return refused(
+        (round.leftAddresses ?? []).includes(peer)
+          ? "You have already left this round."
+          : "You are not entered in this round."
+      );
+
+    round.entrants.splice(idx, 1);
+    round.entryTxHashes.splice(idx, 1);
+    round.conversations.splice(idx, 1);
+    round.leftAddresses = [...(round.leftAddresses ?? []), peer];
+
+    const price = BigInt(round.entryPriceWei);
+    const refundWei = price + received.confirmedWei;
+    await this.outbox.owe(
+      ctx,
+      `left:${round.raffleId}:${peer}`,
+      {
+        to: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+        items: [
+          this.status(round, "left"),
+          {
+            type: "text",
+            text: `You left round ${round.raffleId.slice(0, 8)} (${
+              round.entrants.length
+            } of ${round.maxEntries} entered). Your ${ctx.formatAmount(
+              price
+            )} entry is refunded with this message.`,
+          },
+        ],
+        valueWei: refundWei,
+      },
+      {
+        digest: msgCtx.payloadDigest,
+        writes: [{ type: "put", key: ROUND, value: JSON.stringify(round) }],
+      }
+    );
+    await this.outbox.settle(ctx);
   }
 
   /** Rounds whose winner's payment the relay ended: drawn, not announced, waiting for an operator

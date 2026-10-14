@@ -250,4 +250,120 @@ describe("RaffleBot", () => {
     expect(h.paidOut()).toBe(9n);
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([ALICE]);
   });
+
+  test("leaving an open round removes the entrant, refunds the entry price, and frees the slot for the draw", async () => {
+    const h = harness();
+    const bot = new RaffleBot({ maxEntries: 2 });
+    const announce = await open(h, bot);
+    await enter(h, bot, announce.raffleId, ALICE);
+    h.sent.length = 0;
+
+    await bot.onMessage(
+      h.message(
+        [{ type: "raffle", raffleId: announce.raffleId, action: "leave" }],
+        [],
+        ALICE
+      ),
+      h.ctx
+    );
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].to).toBe(ALICE);
+    expect(h.sent[0].valueWei).toBe(PRICE);
+    expect(h.item("raffle", h.sent[0])).toMatchObject({
+      action: "left",
+      raffleId: announce.raffleId,
+      entryCount: 0,
+      maxEntries: 2,
+    });
+    expect(JSON.parse(h.data.get("current_round")!)).toMatchObject({
+      entrants: [],
+      leftAddresses: [ALICE],
+    });
+
+    // Alice cannot leave again or re-enter the same round (even if she pays again).
+    h.sent.length = 0;
+    await bot.onMessage(
+      h.message([{ type: "text", text: "leave" }], [], ALICE),
+      h.ctx
+    );
+    expect(h.item("raffle", h.sent[0])).toMatchObject({
+      action: "error",
+      message: "You have already left this round.",
+    });
+    expect(h.sent[0].valueWei).toBe(0n);
+
+    h.sent.length = 0;
+    await enter(h, bot, announce.raffleId, ALICE);
+    expect(h.item("raffle", h.sent[0])).toMatchObject({
+      action: "error",
+      message:
+        "You already left this round and cannot re-enter until the next round.",
+    });
+    expect(h.sent[0].valueWei).toBe(PRICE);
+
+    // Bob and Carol fill the round and draw cleanly without Alice.
+    const CAROL = "0x" + "c3".repeat(20);
+    h.sent.length = 0;
+    await enter(h, bot, announce.raffleId, BOB);
+    await enter(h, bot, announce.raffleId, CAROL);
+    const drawMsg = h.sent.find((m) => m.valueWei === PRICE * 2n)!;
+    const draw = h.item("raffle", drawMsg);
+    expect(draw.entrants).toEqual([BOB, CAROL]);
+    expect(verifyRaffleDrawAgainstThread(draw, [announce])).toMatchObject({
+      valid: true,
+      countVerified: true,
+    });
+  });
+
+  test("refuses leave when not entered, for a past round, or once the round is drawing, and retries failed leave refunds once", async () => {
+    const h = harness();
+    const bot = new RaffleBot({ maxEntries: 2 });
+    const { raffleId } = await open(h, bot);
+
+    // Non-entrant leave refused.
+    await bot.onMessage(
+      h.message([{ type: "raffle", raffleId, action: "leave" }], [], BOB),
+      h.ctx
+    );
+    expect(h.item("raffle", h.sent[0])).toMatchObject({
+      action: "error",
+      message: "You are not entered in this round.",
+    });
+
+    // Wrong roundId refused.
+    await enter(h, bot, raffleId, ALICE);
+    h.sent.length = 0;
+    await bot.onMessage(
+      h.message(
+        [{ type: "raffle", raffleId: "00".repeat(16), action: "leave" }],
+        [],
+        ALICE
+      ),
+      h.ctx
+    );
+    expect(h.item("raffle", h.sent[0])).toMatchObject({
+      action: "error",
+      message: "That round is over.",
+    });
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([ALICE]);
+
+    // Leave refund fails on first send, then succeeds on Outbox retry without double-paying.
+    h.sent.length = 0;
+    h.failSends(new Error("RPC timeout"));
+    await bot.onMessage(
+      h.message([{ type: "raffle", raffleId, action: "leave" }], [], ALICE),
+      h.ctx
+    );
+    expect(h.sent).toHaveLength(0);
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([]);
+
+    h.failSends();
+    const restarted = new RaffleBot({ maxEntries: 2 });
+    for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].to).toBe(ALICE);
+    expect(h.sent[0].valueWei).toBe(PRICE);
+    expect(h.item("raffle", h.sent[0]).action).toBe("left");
+  });
 });

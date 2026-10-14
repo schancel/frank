@@ -42,6 +42,10 @@ export function initRafflePlugin(
           return 'Entered the raffle'
         case 'joined':
           return `Joined the raffle (${raw.entryCount ?? 0}/${raw.maxEntries ?? '?'})`
+        case 'leave':
+          return 'Left the raffle'
+        case 'left':
+          return `Left the raffle (${raw.entryCount ?? 0}/${raw.maxEntries ?? '?'})`
         case 'draw':
           return 'Raffle drawn'
         case 'error':

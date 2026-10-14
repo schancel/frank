@@ -555,7 +555,7 @@ export default configure(ctx => {
       workboxMode: 'GenerateSW', // 'GenerateSW' or 'InjectManifest'
       // Do not inject `<meta name="theme-color">`, which triggers Safari 26 (macOS Tahoe)
       // floating toolbar tint/overlay mode and shifts fixed headers behind browser chrome.
-      injectPwaMetaTags: false,
+      injectPWAMetaTags: false,
       extendPWAGenerateSWOptions(options) {
         return {
           // Activate the new bundle immediately so a reload gets the updated application.

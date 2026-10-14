@@ -3694,7 +3694,7 @@ describe('two typed wallets on the open directory', () => {
     expect(recovered).toHaveLength(1)
     expect(recovered[0].items).toEqual(text('recover original'))
     const parsed = parseFrame(original.delivery)
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1) throw new Error('fixture')
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 10) throw new Error('fixture')
     expect(recovered[0].payloadDigest).toBe(toHex(parsed.typed.payloadDigest))
     expect(recovered[0].stampPayments?.map(payment => payment.txHash)).toEqual(
       parsed.typed.payments.map(payment => '0x' + toHex(payment.transactionId)),

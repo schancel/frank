@@ -325,23 +325,10 @@ function representable(
 const LOTUS_TOKEN = 'lotus'
 const LOTUS_TOKEN_BYTES = Uint8Array.of(0x6c, 0x6f, 0x74, 0x75, 0x73)
 
-function lotusNetChar(network: NetworkKind): string {
-  if (network === 'mainnet') return '_'
-  if (network === 'testnet') return 'T'
-  return 'R'
-}
-
 function chainByLotus(net: string): ChainDescriptor | undefined {
-  const network =
-    net === '_'
-      ? 'mainnet'
-      : net === 'T'
-      ? 'testnet'
-      : net === 'R'
-      ? 'regtest'
-      : undefined
-  if (network === undefined) return undefined
-  return CHAINS.find(item => item.family === 'xpi' && item.network === network)
+  const matches = CHAINS.filter(item => item.lotusNetChar === net)
+  if (matches.length !== 1) return undefined
+  return matches[0]
 }
 
 function lotusChecksum(net: string, payload: Uint8Array): Uint8Array {
@@ -357,7 +344,8 @@ function encodeLotus(
   chain: ChainDescriptor,
   script: Uint8Array,
 ): AddressResult<string> {
-  const net = lotusNetChar(chain.network)
+  const net = chain.lotusNetChar
+  if (net === null) return fail({ code: 'address-format-not-pinned' })
   const payload = concatBytes([Uint8Array.of(0), script])
   const body = concatBytes([payload, lotusChecksum(net, payload)])
   return { ok: true, value: `${LOTUS_TOKEN}${net}${encodeBase58(body)}` }
@@ -450,7 +438,7 @@ function encodingsFor(
   chain: ChainDescriptor,
   kind: Destination['kind'],
 ): AddressEncoding[] {
-  if (chain.family === 'xpi') {
+  if (chain.lotusNetChar !== null) {
     if (kind === 'p2pkh' || kind === 'p2sh') return ['lotus']
     return []
   }
@@ -483,7 +471,9 @@ function encodeCash(
   type: 0 | 1,
   hash: Uint8Array,
 ): AddressResult<string> {
-  if (chain.family === 'xpi') return fail({ code: 'address-format-not-pinned' })
+  if (chain.lotusNetChar !== null) {
+    return fail({ code: 'address-format-not-pinned' })
+  }
   const prefix = chain.cashaddrPrefix
   if (prefix === null) {
     return fail({
@@ -507,7 +497,9 @@ function encodeLegacy(
   version: number,
   hash: Uint8Array,
 ): AddressResult<string> {
-  if (chain.family === 'xpi') return fail({ code: 'address-format-not-pinned' })
+  if (chain.lotusNetChar !== null) {
+    return fail({ code: 'address-format-not-pinned' })
+  }
   const payload = new Uint8Array(hash.length + 1)
   payload[0] = version
   payload.set(hash, 1)
@@ -989,7 +981,9 @@ function decodeLegacy(
   chain: ChainDescriptor | undefined,
 ): AddressResult<DecodedAddress> {
   if (chain === undefined) return fail({ code: 'chain-required' })
-  if (chain.family === 'xpi') return fail({ code: 'wrong-prefix', prefix: '' })
+  if (chain.lotusNetChar !== null) {
+    return fail({ code: 'wrong-prefix', prefix: '' })
+  }
   const decoded = decodeBase58Check(text)
   if (!decoded.ok) return decoded
   if (decoded.value.length !== HASH160_LENGTH + 1) {
@@ -1031,7 +1025,7 @@ function decodePrefixless(
 ): AddressResult<DecodedAddress> {
   if (
     chain === undefined ||
-    chain.family === 'xpi' ||
+    chain.lotusNetChar !== null ||
     chain.cashaddrPrefix === null
   ) {
     return decodeLegacy(text, chain)

@@ -270,4 +270,43 @@ describe('chain descriptors', () => {
       expect(Object.keys(item.relayFeePerKb)).toEqual(['status', 'reason'])
     }
   })
+
+  test('descriptors declare explicit capability fields for lotusNetChar, merkleOddRule, and commitUtxos', () => {
+    expect(XPI_MAINNET.lotusNetChar).toBe('_')
+    expect(XPI_TESTNET.lotusNetChar).toBe('T')
+    expect(XPI_REGTEST.lotusNetChar).toBe('R')
+    for (const item of [XPI_MAINNET, XPI_TESTNET, XPI_REGTEST]) {
+      expect(item.merkleOddRule).toBe('pad-zero')
+    }
+    for (const item of CHAINS.filter(c => c.family !== 'xpi')) {
+      expect(item.lotusNetChar).toBeNull()
+      expect(item.merkleOddRule).toBe('duplicate-last')
+    }
+    for (const item of [
+      BCH_MAINNET,
+      getChain('bch', 'testnet'),
+      getChain('bch', 'regtest'),
+    ]) {
+      expect(item).toMatchObject({
+        sighash: {
+          kind: 'forkid',
+          commitUtxos: true,
+        },
+      })
+    }
+    for (const item of [
+      XEC_MAINNET,
+      getChain('xec', 'testnet'),
+      getChain('xec', 'regtest'),
+    ]) {
+      expect(item).toMatchObject({
+        sighash: {
+          kind: 'forkid',
+          commitUtxos: false,
+        },
+      })
+    }
+  })
 })
+
+

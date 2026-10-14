@@ -33,6 +33,7 @@ export type SighashFamily =
   | {
       readonly kind: 'forkid'
       readonly forkId: 0
+      readonly commitUtxos: boolean
       readonly source: string
     }
   | { readonly kind: 'lotus'; readonly source: string }
@@ -46,6 +47,9 @@ export type HeaderShape =
       readonly genesisSizeBytes: number
       readonly source: string
     }
+
+export type LotusNetChar = '_' | 'T' | 'R'
+export type MerkleOddRule = 'duplicate-last' | 'pad-zero'
 
 /**
  * Opcode set and limits for one named upgrade. Flags are explicit: nothing
@@ -131,6 +135,10 @@ export interface ChainDescriptor {
    * the prefix with a flag and this library will not pick one.
    */
   readonly cashaddrPrefix: string | null
+  /** Lotus network character following the `lotus` token (`_`, `T`, `R`), or null. */
+  readonly lotusNetChar: LotusNetChar | null
+  /** Odd-level merkle partner rule (`duplicate-last` on Bitcoin-like chains, `pad-zero` on Lotus). */
+  readonly merkleOddRule: MerkleOddRule
   readonly p2pMagic: number
   readonly p2pPort: number
   /** SLIP-0044 registered coin type. Derivation must still pass a coin type. */

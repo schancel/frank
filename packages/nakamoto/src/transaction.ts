@@ -498,7 +498,7 @@ export function transactionId(
   tx: Transaction,
   chain: ChainDescriptor,
 ): TxResult<InternalHash> {
-  if (chain.family === 'xpi') return lotusTransactionId(tx)
+  if (chain.sighash.kind === 'lotus') return lotusTransactionId(tx)
   if (!supportsSegwit(chain) && hasWitness(tx)) {
     return fail('tx-witness-rejected')
   }
@@ -520,7 +520,7 @@ export function blockMerkleLeaf(
 ): TxResult<InternalHash> {
   const id = transactionId(tx, chain)
   if (!id.ok) return id
-  if (chain.family !== 'xpi') return id
+  if (chain.sighash.kind !== 'lotus') return id
   const hash = transactionHash(tx, chain)
   if (!hash.ok) return hash
   return brandHash(hash256(concatBytes([hash.value, id.value])))
@@ -1022,7 +1022,7 @@ function allowed(chain: ChainDescriptor, algorithm: SighashAlgorithm): boolean {
     return (
       chain.sighash.kind === 'btc-legacy-and-segwit' ||
       chain.sighash.kind === 'legacy-only' ||
-      chain.family === 'xpi'
+      chain.sighash.kind === 'lotus'
     )
   }
   if (algorithm === 'bip143' || algorithm === 'bip341') {
@@ -1031,7 +1031,7 @@ function allowed(chain: ChainDescriptor, algorithm: SighashAlgorithm): boolean {
   if (algorithm === 'forkid') {
     // XPI kind stays lotus for the pre-Numbers algorithm. Post-Numbers
     // spends use BIP143 fork id; Ruth replay is opt-in via replayProtection.
-    return chain.sighash.kind === 'forkid' || chain.family === 'xpi'
+    return chain.sighash.kind === 'forkid' || chain.sighash.kind === 'lotus'
   }
   return chain.sighash.kind === 'lotus'
 }
@@ -1062,7 +1062,10 @@ export function sighash(
     return sighashLegacy(tx, inputIndex, hashType, script.value)
   }
   if (options.algorithm === 'bip143' || options.algorithm === 'forkid') {
-    if (options.commitUtxos === true && chain.family !== 'bch') {
+    if (
+      options.commitUtxos === true &&
+      !(chain.sighash.kind === 'forkid' && chain.sighash.commitUtxos)
+    ) {
       return fail('sighash-utxos')
     }
     const script = requireScript(options.scriptCode)

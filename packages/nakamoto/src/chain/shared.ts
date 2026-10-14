@@ -22,10 +22,14 @@ export const COIN_100_000_000: DisplayUnit = Object.freeze({
     'Bitcoin Core and Bitcoin Cash Node genesis construction uses 50 * COIN, and the chainparams comment prints that output as 50.00000000. Display scale is 1e8 satoshis.',
 })
 
-export const FORKID_ZERO = (source: string): SighashFamily =>
+export const FORKID_ZERO = (
+  source: string,
+  commitUtxos = false,
+): SighashFamily =>
   Object.freeze({
     kind: 'forkid',
     forkId: 0 as const,
+    commitUtxos,
     source,
   })
 
@@ -122,12 +126,23 @@ const HD_TEST_PRIV = 0x04358394
 export function chain(
   fields: Omit<
     ChainDescriptor,
-    'protocolId' | 'proxyFamily' | 'allowedProxyCapabilities' | 'identityProbes'
-  > & { readonly protocolId?: string },
+    | 'protocolId'
+    | 'proxyFamily'
+    | 'allowedProxyCapabilities'
+    | 'identityProbes'
+    | 'lotusNetChar'
+    | 'merkleOddRule'
+  > & {
+    readonly protocolId?: string
+    readonly lotusNetChar?: ChainDescriptor['lotusNetChar']
+    readonly merkleOddRule?: ChainDescriptor['merkleOddRule']
+  },
 ): ChainDescriptor {
   const protocolId = fields.protocolId ?? `${fields.family}-${fields.network}`
   return Object.freeze({
     ...fields,
+    lotusNetChar: fields.lotusNetChar ?? null,
+    merkleOddRule: fields.merkleOddRule ?? 'duplicate-last',
     protocolId,
     proxyFamily: 'bitcoin' as const,
     allowedProxyCapabilities: Object.freeze([

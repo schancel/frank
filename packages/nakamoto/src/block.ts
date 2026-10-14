@@ -151,16 +151,15 @@ function le(value: bigint, width: number): Uint8Array | null {
   return encoded.value
 }
 
-function headerLength(chain: ChainDescriptor): 80 | 160 {
-  return chain.header.kind === 'bitcoin-80' ||
-    chain.header.kind === 'auxpow-variable'
-    ? BITCOIN_HEADER_BYTES
-    : LOTUS_HEADER_BYTES
+function headerLength(chain: ChainDescriptor): 80 | 160 | null {
+  if (chain.header.kind === 'bitcoin-80') return BITCOIN_HEADER_BYTES
+  if (chain.header.kind === 'not-bitcoin-80') return LOTUS_HEADER_BYTES
+  return null
 }
 
 /** Lotus odd levels hash against zero. The other chains duplicate the last. */
 function oddPartner(last: Uint8Array, chain: ChainDescriptor): Uint8Array {
-  return chain.family === 'xpi' ? copyBytes(ZERO32) : copyBytes(last)
+  return chain.merkleOddRule === 'pad-zero' ? copyBytes(ZERO32) : copyBytes(last)
 }
 
 export function merkleRoot(
@@ -424,13 +423,13 @@ export function parseHeader(
   bytes: Uint8Array,
   chain: ChainDescriptor,
 ): BlockResult<BlockHeader> {
+  const expected = headerLength(chain)
   // A Dogecoin AuxPoW header carries variable bytes after the 80-byte hash preimage.
   // Until parsed explicitly, never accept a truncated prefix as a complete header.
-  if (chain.header.kind === 'auxpow-variable') return fail('block-header-shape')
+  if (expected === null) return fail('block-header-shape')
   const body = copyBytes(bytes)
-  const expected = headerLength(chain)
   if (
-    chain.header.kind !== 'bitcoin-80' &&
+    chain.header.kind === 'not-bitcoin-80' &&
     body.length === BITCOIN_HEADER_BYTES
   ) {
     return fail('block-header-shape', {
@@ -570,11 +569,11 @@ export function parseMerkleBlock(
   bytes: Uint8Array,
   chain: ChainDescriptor,
 ): BlockResult<MerkleBlock> {
-  if (chain.header.kind === 'auxpow-variable') return fail('block-header-shape')
-  const body = copyBytes(bytes)
   const expected = headerLength(chain)
+  if (expected === null) return fail('block-header-shape')
+  const body = copyBytes(bytes)
   if (
-    chain.header.kind !== 'bitcoin-80' &&
+    chain.header.kind === 'not-bitcoin-80' &&
     body.length === BITCOIN_HEADER_BYTES
   ) {
     return fail('block-header-shape', {

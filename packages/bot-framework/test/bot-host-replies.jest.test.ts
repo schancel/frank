@@ -792,6 +792,28 @@ describe("FrankBotHost replies", () => {
       );
     });
 
+    it("does not retry a labelled rejection that already reported the original attempt", async () => {
+      const effects: string[] = [];
+      const { host, instance } = await start(paying(effects));
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      const digest = "ee".repeat(32);
+      mockSend.mockReset().mockImplementation(async (params) => {
+        await params.onAttemptCreated?.(digest);
+        throw notAttempted("reported attempt despite label");
+      });
+      const message = inbound("roll");
+      for (let pass = 0; pass < 5; pass++) await poll(host, [message]);
+      await drain(instance);
+      expect(textsSent()).toEqual(["you won"]);
+      expect(effects).toEqual(["paid 01"]);
+      expect(await instance.state.get("paid:" + message.payloadDigest)).toBe("1");
+      expect(
+        await instance.state.get("recorded:" + message.payloadDigest)
+      ).toBeUndefined();
+      expect(await finished(instance, message)).toBe(true);
+      expect(mockReconcile).toHaveBeenCalled();
+    });
+
     it("retries only the refused reply of a handler that sends several", async () => {
       const { host, instance } = await start(
         bot("several-bot", async (message) => {
@@ -1080,6 +1102,261 @@ describe("FrankBotHost replies", () => {
       expect(seen.filter((said) => said.startsWith("stuck"))).toHaveLength(20);
       for (const message of fine)
         expect(await finished(instance, message)).toBe(true);
+    });
+
+    it("rotates refusing staged replies in inbound order and stops each retry pass at the first refusal", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen));
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      let release!: () => void;
+      const initial = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      mockSend.mockReset().mockImplementation(async () => {
+        await initial;
+        throw new Error("initial refusal");
+      });
+      const messages = ["a", "b", "c", "d"].map((text, index) =>
+        inbound(text, {
+          conversationId: `${(index + 16)
+            .toString(16)
+            .repeat(4)}-0101-0101-0101-010101010101`
+        })
+      );
+      try {
+        await poll(host, messages);
+      } finally {
+        release();
+      }
+      await drain(instance);
+      const identities = messages.map((message) =>
+        replyMessageId(owner(instance), message.payloadDigest)
+      );
+      expect(seen).toEqual(["a", "b", "c", "d"]);
+      for (const message of messages)
+        expect(await instance.operations.replyText(message.payloadDigest)).toBe(
+          "re:" + message.items[0].text
+        );
+      mockSend.mockClear().mockRejectedValue(new Error("still refused"));
+      for (const text of ["re:a", "re:b", "re:c", "re:d", "re:a"]) {
+        mockSend.mockClear();
+        await poll(host);
+        await drain(instance);
+        expect(textsSent()).toEqual([text]);
+        const index = ["re:a", "re:b", "re:c", "re:d"].indexOf(text);
+        expect(mockSend.mock.calls[0][0].messageId).toBe(identities[index]);
+      }
+      mockSend.mockClear().mockImplementation(async (params) => {
+        if (params.items[0].text === "re:d") throw new Error("d still refused");
+        return accept(params);
+      });
+      await poll(host);
+      await drain(instance);
+      expect(textsSent()).toEqual(["re:b", "re:c", "re:d"]);
+      expect(await finished(instance, messages[0])).toBe(false);
+      expect(await finished(instance, messages[2])).toBe(true);
+      expect(await finished(instance, messages[1])).toBe(true);
+      expect(await finished(instance, messages[3])).toBe(false);
+      mockSend.mockClear();
+      await poll(host);
+      await drain(instance);
+      expect(textsSent()).toEqual(["re:a", "re:d"]);
+      expect(mockSend.mock.calls[1][0].messageId).toBe(identities[3]);
+      expect(await instance.operations.replyText(messages[3].payloadDigest)).toBe(
+        "re:d"
+      );
+      const unrelated = inbound("elsewhere", { from: otherPeer });
+      await poll(host, [unrelated]);
+      await drain(instance);
+      expect(await finished(instance, unrelated)).toBe(true);
+      expect(seen).toEqual(["a", "b", "c", "d", "elsewhere"]);
+    });
+
+    it("drains a blocked atomic staging write on stop and sends the preserved answer once after reopen", async () => {
+      const { LevelBotStateStore } =
+        jest.requireActual<typeof import("../src/state-store")>(
+          "../src/state-store"
+        );
+      const seen: string[] = [];
+      const first = await start(answering(seen));
+      const message = inbound("hello");
+      let entered!: () => void;
+      const staging = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const original = LevelBotStateStore.prototype.durableBatch;
+      let gated = false;
+      jest
+        .spyOn(LevelBotStateStore.prototype, "durableBatch")
+        .mockImplementation(async function (this: unknown, ops) {
+          if (
+            !gated &&
+            ops.some(
+              (op) =>
+                op.type === "put" &&
+                op.key === "host-prepared:v1:" + message.payloadDigest + ":text"
+            ) &&
+            ops.some(
+              (op) =>
+                op.type === "put" &&
+                op.key === "host-inbound:v1:dispatch:" + message.payloadDigest &&
+                JSON.parse(op.value).reply
+            )
+          ) {
+            gated = true;
+            entered();
+            await blocked;
+          }
+          return original.call(this, ops);
+        });
+      try {
+        const polling = poll(first.host, [message]);
+        await staging;
+        let stopped = false;
+        const stopping = first.host.stop().then(() => {
+          stopped = true;
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(stopped).toBe(false);
+        release();
+        await Promise.all([polling, stopping]);
+        expect(mockSend).not.toHaveBeenCalled();
+        const second = await start(answering(seen));
+        expect(
+          second.instance.operations.get(message.payloadDigest)?.reply
+        ).toBeDefined();
+        expect(
+          await second.instance.operations.replyText(message.payloadDigest)
+        ).toBe("re:hello");
+        const id = replyMessageId(owner(second.instance), message.payloadDigest);
+        await poll(second.host);
+        await drain(second.instance);
+        expect(seen).toEqual(["hello"]);
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        expect(mockSend.mock.calls[0][0]).toMatchObject({
+          messageId: id,
+          items: [{ type: "text", text: "re:hello" }]
+        });
+        expect(await finished(second.instance, message)).toBe(true);
+        expect(
+          await second.instance.state.get(
+            "host-prepared:v1:" + message.payloadDigest + ":text"
+          )
+        ).toBeUndefined();
+        await poll(second.host);
+        await drain(second.instance);
+        expect(mockSend).toHaveBeenCalledTimes(1);
+      } finally {
+        release();
+      }
+    });
+
+    it("retries a one-shot staged-text read failure with the same answer and identity without rerunning its handler", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen));
+      const message = inbound("hello");
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const original = instance.state.get.bind(instance.state);
+      let interrupted = false;
+      const read = jest
+        .spyOn(instance.state, "get")
+        .mockImplementation(async (key: string) => {
+          if (
+            !interrupted &&
+            key === "host-prepared:v1:" + message.payloadDigest + ":text"
+          ) {
+            interrupted = true;
+            throw new Error("one-shot staged-text read");
+          }
+          return original(key);
+        });
+      await poll(host, [message]);
+      await drain(instance);
+      expect(interrupted).toBe(true);
+      expect(mockSend).not.toHaveBeenCalled();
+      read.mockRestore();
+      expect(await instance.operations.replyText(message.payloadDigest)).toBe(
+        "re:hello"
+      );
+      expect(instance.operations.get(message.payloadDigest)?.reply).toBeDefined();
+      const unrelated = inbound("elsewhere", { from: otherPeer });
+      await poll(host, [unrelated]);
+      await drain(instance);
+      expect(seen).toEqual(["hello", "elsewhere"]);
+      expect(
+        mockSend.mock.calls.filter(
+          ([params]) => params.items[0].text === "re:hello"
+        )
+      ).toEqual([
+        [
+          expect.objectContaining({
+            messageId: replyMessageId(owner(instance), message.payloadDigest),
+            items: [{ type: "text", text: "re:hello" }]
+          })
+        ]
+      ]);
+      expect(await finished(instance, message)).toBe(true);
+      expect(await finished(instance, unrelated)).toBe(true);
+      expect(
+        error.mock.calls.some((call) =>
+          call.join(" ").includes("one-shot staged-text read")
+        )
+      ).toBe(true);
+    });
+
+    it("reconciles an accepted reply after a one-shot completion cursor read failure without another payment", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen));
+      const message = inbound("hello");
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const original = instance.state.get.bind(instance.state);
+      let accepted: string | undefined;
+      let interrupted = false;
+      jest.spyOn(instance.state, "get").mockImplementation(async (key: string) => {
+        if (accepted && !interrupted && key === "cursor:lastPollTimestamp") {
+          interrupted = true;
+          throw new Error("one-shot completion cursor read");
+        }
+        return original(key);
+      });
+      mockSend.mockReset().mockImplementation(async (params) => {
+        const result = await accept(params);
+        accepted = result.payloadDigest;
+        return result;
+      });
+      await poll(host, [message]);
+      await drain(instance);
+      expect(interrupted).toBe(true);
+      expect(instance.operations.get(message.payloadDigest)?.reply?.digest).toBe(
+        accepted
+      );
+      expect(await instance.operations.replyText(message.payloadDigest)).toBe(
+        "re:hello"
+      );
+      expect(await finished(instance, message)).toBe(false);
+      mockReconcile.mockResolvedValue({ [accepted!]: "delivered" });
+      await poll(host);
+      await drain(instance);
+      expect(mockReconcile).toHaveBeenCalledWith(
+        expect.objectContaining({ payloadDigests: [accepted] })
+      );
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual(["hello"]);
+      expect(await finished(instance, message)).toBe(true);
+      expect(
+        await instance.state.get(
+          "host-prepared:v1:" + message.payloadDigest + ":text"
+        )
+      ).toBeUndefined();
+      expect(
+        error.mock.calls.some((call) =>
+          call.join(" ").includes("one-shot completion cursor read")
+        )
+      ).toBe(true);
     });
 
     it("keeps one conversation's replies in order: its next message waits for the reply before it, and another conversation does not", async () => {

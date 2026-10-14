@@ -1292,7 +1292,6 @@ describe("Qwen answers every message", () => {
 // stand-ins, as in the wallet's own canonical suite. Payments are counted where they exist:
 // payment sets handed to the relay, and intents in the wallet's journal.
 describe("with the real canonical wallet", () => {
-  jest.setTimeout(60_000);
   const RELAY = "https://relay-a.example";
   const NOW = { seconds: 100n, nanoseconds: 0 };
   const actual = jest.requireActual<
@@ -1594,7 +1593,7 @@ describe("with the real canonical wallet", () => {
     expect(mockSend).toHaveBeenCalledTimes(1);
     await pass();
     expect(new Set(submitted)).toEqual(new Set([first]));
-  });
+  }, 60_000);
 
   // The dry wallet. On 05c93db0 this throw came after the wallet withdrew its not-attempted
   // label, so the host held the generated answer for good, also after the wallet was funded.
@@ -1626,7 +1625,7 @@ describe("with the real canonical wallet", () => {
     expect(await intents()).toEqual([submitted[0]]);
     await pass();
     expect(new Set(submitted).size).toBe(1);
-  });
+  }, 60_000);
 
   // The fee floor, on the real wallet: money a bot OWES is paid whatever its size; anything
   // else below the floor is not.
@@ -1654,7 +1653,7 @@ describe("with the real canonical wallet", () => {
     const named = await say(10n, false);
     expect(named.stampValueWei).toBe(0n);
     expect(named.stampPayments).toEqual([]);
-  });
+  }, 60_000);
 
   // Restart recovery of a PAID reply on the real wallet (stubbed RPC and relay HTTP; no real
   // chain or relay harness exists in the tree yet). The process dies after the wallet has
@@ -1700,5 +1699,5 @@ describe("with the real canonical wallet", () => {
     ).toHaveLength(1);
     await pass();
     expect(new Set(submitted)).toEqual(new Set([first]));
-  });
+  }, 60_000);
 });

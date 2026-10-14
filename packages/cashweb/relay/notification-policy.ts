@@ -172,18 +172,19 @@ export function createWakeupCapability(
     const raw = normalizePreimageBytes(seedOrPreimage)
     preimageBytes = raw.length === 32 ? raw : cryptoBackend.sha256(raw)
   } else {
-    preimageBytes = new Uint8Array(32)
+    const randomBuf = new Uint8Array(32)
     if (
       typeof globalThis.crypto !== 'undefined' &&
       typeof globalThis.crypto.getRandomValues === 'function'
     ) {
-      globalThis.crypto.getRandomValues(preimageBytes)
+      globalThis.crypto.getRandomValues(randomBuf)
     } else {
       const fallback = cryptoBackend.sha256(
         utf8ToBytes(`frank-wakeup-seed:${nowMs}:${Math.random()}`),
       )
-      preimageBytes.set(fallback)
+      randomBuf.set(fallback)
     }
+    preimageBytes = randomBuf
   }
   const preimageHex = bytesToHex(preimageBytes)
   const tokenHashHex = bytesToHex(cryptoBackend.sha256(preimageBytes))

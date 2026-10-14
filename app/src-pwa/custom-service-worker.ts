@@ -18,7 +18,7 @@ export interface SwClientLike {
   focused?: boolean
   visibilityState?: string
   postMessage: (message: unknown) => void
-  focus?: () => Promise< unknown >
+  focus?: () => Promise<unknown>
 }
 
 export interface SwScopeLike {
@@ -40,10 +40,7 @@ export interface SwScopeLike {
       },
     ) => Promise<void>
   }
-  addEventListener?: (
-    type: string,
-    listener: (event: any) => void,
-  ) => void
+  addEventListener?: (type: string, listener: (event: any) => void) => void
 }
 
 /**
@@ -51,7 +48,9 @@ export interface SwScopeLike {
  * only `{ "type": "sync" }` (or empty payload, which defaults to `{ "type": "sync" }`)
  * is recognized, and no sender/subject/amount fields are ever propagated.
  */
-export function parseBlindPushPayload(rawText?: string | null): BlindPushPayload | null {
+export function parseBlindPushPayload(
+  rawText?: string | null,
+): BlindPushPayload | null {
   if (!rawText || !rawText.trim()) {
     return { type: 'sync' }
   }

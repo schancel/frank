@@ -131,9 +131,7 @@ pub(crate) async fn handle_put(
             .get("x-cashweb-stamp-avu-micros")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or_else(|| {
-                (stamp_value_wei / 1_000_000_000_000).min(u64::MAX as u128) as u64
-            });
+            .unwrap_or_else(|| (stamp_value_wei / 1_000_000_000_000).min(u64::MAX as u128) as u64);
         let wakeup_token_preimage = headers
             .get("x-wakeup-token")
             .or_else(|| headers.get("x-cashweb-wakeup-token"))

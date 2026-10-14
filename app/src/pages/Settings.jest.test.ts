@@ -588,9 +588,9 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
         bitcoin: 'settings.chainSendReceive',
         bitcoincash: 'settings.chainSendReceive',
         dogecoin: 'settings.chainUnsupported',
-        tempo: 'settings.chainUnsupported',
+        tempo: 'settings.chainSendReceive',
         ethereum: 'settings.chainUnsupported',
-        hyperliquid: 'settings.chainUnsupported',
+        hyperliquid: 'settings.chainSendReceive',
       })
       wrapper.unmount()
     })
@@ -606,9 +606,10 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
       const router = await openDirectly('#/settings')
       const wrapper = mountSettings(router, {}, true)
 
-      const input = wrapper.find('[data-test="notification-fee-threshold-input"]')
+      const input = wrapper.find(
+        '[data-test="notification-fee-threshold-input"]',
+      )
       expect(input.exists()).toBe(true)
-
       ;(wrapper.vm as any).notificationFeeThresholdAvu = 0.25
       ;(wrapper.vm as any).allowContactNotificationBypass = false
       ;(wrapper.vm as unknown as SettingsVm).save()

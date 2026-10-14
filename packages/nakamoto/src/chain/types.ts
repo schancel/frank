@@ -2,7 +2,7 @@
 // Bytes below are copied from the cited node sources. Fields that were not
 // pinned stay `unpinned` instead of inheriting another chain's value.
 
-export type ChainFamily = 'btc' | 'bch' | 'xec' | 'xpi' | 'doge'
+export type ChainFamily = 'btc' | 'bch' | 'xec' | 'xpi' | 'doge' | 'ltc'
 export type NetworkKind = 'mainnet' | 'testnet' | 'regtest'
 
 export type MessageMagic =

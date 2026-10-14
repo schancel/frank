@@ -25,7 +25,10 @@ import {
   BTC_MAINNET,
   BTC_REGTEST,
   BTC_TESTNET,
+  DOGE_MAINNET,
   DOGE_TESTNET,
+  LTC_MAINNET,
+  LTC_TESTNET,
   XEC_MAINNET,
   XEC_TESTNET,
   XPI_MAINNET,
@@ -141,10 +144,23 @@ function lotusAddressWithType(type: number): string {
 }
 
 describe('address codecs', () => {
-  test('Doge testnet P2PKH is Base58Check with its own version', () => {
+  test('Doge mainnet and testnet P2PKH are Base58Check with their own versions', () => {
     const hash = pubkeyHashFromBytes(fromHex(LOTUS_PKH))
     if (!hash.ok) throw new Error('hash')
     const destination: Destination = { kind: 'p2pkh', hash: hash.value }
+    const mainnetAddr = must(
+      encodeAddress(destination, DOGE_MAINNET, 'base58check'),
+    )
+    expect(mainnetAddr.startsWith('D')).toBe(true)
+    expect(must(decodeAddress(mainnetAddr, DOGE_MAINNET)).destination).toEqual(
+      destination,
+    )
+    expect(decodeAddress(mainnetAddr, BTC_MAINNET)).toMatchObject({
+      ok: false,
+      error: { code: 'wrong-prefix' },
+    })
+    expect(encodeAddress(destination, DOGE_MAINNET, 'bech32').ok).toBe(false)
+
     const address = must(
       encodeAddress(destination, DOGE_TESTNET, 'base58check'),
     )
@@ -157,6 +173,43 @@ describe('address codecs', () => {
       error: { code: 'wrong-prefix' },
     })
     expect(encodeAddress(destination, DOGE_TESTNET, 'bech32').ok).toBe(false)
+  })
+
+  test('Litecoin mainnet and testnet support Bech32 and Base58Check addresses', () => {
+    const hash = pubkeyHashFromBytes(fromHex(LOTUS_PKH))
+    if (!hash.ok) throw new Error('hash')
+    const p2wpkh: Destination = { kind: 'p2wpkh', hash: hash.value }
+    const p2pkh: Destination = { kind: 'p2pkh', hash: hash.value }
+
+    const ltcMainSegwit = must(encodeAddress(p2wpkh, LTC_MAINNET, 'bech32'))
+    expect(ltcMainSegwit.startsWith('ltc1q')).toBe(true)
+    expect(must(decodeAddress(ltcMainSegwit, LTC_MAINNET)).destination).toEqual(
+      p2wpkh,
+    )
+    expect(must(decodeAddress(ltcMainSegwit)).chain).toBe(LTC_MAINNET)
+
+    const ltcMainLegacy = must(
+      encodeAddress(p2pkh, LTC_MAINNET, 'base58check'),
+    )
+    expect(ltcMainLegacy.startsWith('L')).toBe(true)
+    expect(must(decodeAddress(ltcMainLegacy, LTC_MAINNET)).destination).toEqual(
+      p2pkh,
+    )
+
+    const ltcTestSegwit = must(encodeAddress(p2wpkh, LTC_TESTNET, 'bech32'))
+    expect(ltcTestSegwit.startsWith('tltc1q')).toBe(true)
+    expect(must(decodeAddress(ltcTestSegwit, LTC_TESTNET)).destination).toEqual(
+      p2wpkh,
+    )
+    expect(must(decodeAddress(ltcTestSegwit)).chain).toBe(LTC_TESTNET)
+
+    const ltcTestLegacy = must(
+      encodeAddress(p2pkh, LTC_TESTNET, 'base58check'),
+    )
+    expect(/^[mn]/.test(ltcTestLegacy)).toBe(true)
+    expect(must(decodeAddress(ltcTestLegacy, LTC_TESTNET)).destination).toEqual(
+      p2pkh,
+    )
   })
 
   test('Lotus address vectors for a pubkey hash', () => {

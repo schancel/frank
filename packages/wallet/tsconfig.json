@@ -17,6 +17,8 @@
     "types": ["node", "jest"],
     "paths": {
       "@frank/codec": ["../frank-codec/src/index.ts"],
+      "@frank/nakamoto": ["../nakamoto/src/index.ts"],
+      "@frank/nakamoto/*": ["../nakamoto/src/*"],
       "@frank/price-feeds": ["../price-feeds/src/index.ts"],
       "@frank/cashweb/*": ["../cashweb/*"],
       "@frank/wallet/*": ["./*"]

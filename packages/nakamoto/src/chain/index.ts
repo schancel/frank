@@ -1,6 +1,7 @@
 import { BCH_MAINNET, BCH_REGTEST, BCH_TESTNET } from './bch.js'
 import { BTC_MAINNET, BTC_REGTEST, BTC_TESTNET } from './btc.js'
-import { DOGE_TESTNET } from './doge.js'
+import { DOGE_MAINNET, DOGE_TESTNET } from './doge.js'
+import { LTC_MAINNET, LTC_TESTNET } from './ltc.js'
 import { XEC_MAINNET, XEC_REGTEST, XEC_TESTNET } from './xec.js'
 import { XPI_MAINNET, XPI_REGTEST, XPI_TESTNET } from './xpi.js'
 import type {
@@ -17,7 +18,10 @@ export {
   BTC_MAINNET,
   BTC_REGTEST,
   BTC_TESTNET,
+  DOGE_MAINNET,
   DOGE_TESTNET,
+  LTC_MAINNET,
+  LTC_TESTNET,
   XEC_MAINNET,
   XEC_REGTEST,
   XEC_TESTNET,
@@ -44,7 +48,10 @@ export const CHAINS: readonly ChainDescriptor[] = Object.freeze([
   BTC_MAINNET,
   BTC_TESTNET,
   BTC_REGTEST,
+  DOGE_MAINNET,
   DOGE_TESTNET,
+  LTC_MAINNET,
+  LTC_TESTNET,
   BCH_MAINNET,
   BCH_TESTNET,
   BCH_REGTEST,

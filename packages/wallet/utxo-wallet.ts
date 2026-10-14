@@ -23,9 +23,7 @@
  * once it has been paid.
  */
 import {
-  convertBits,
   decodeAddress,
-  decodeBech32,
   deriveHdPath,
   deriveHdPrivate,
   encodeAddress,
@@ -46,7 +44,10 @@ import {
   BTC_TESTNET,
   BCH_MAINNET,
   BCH_TESTNET,
+  DOGE_MAINNET,
   DOGE_TESTNET,
+  LTC_MAINNET,
+  LTC_TESTNET,
 } from "@frank/nakamoto";
 import type {
   ChainDescriptor,
@@ -116,33 +117,6 @@ export interface UtxoNetwork {
   /** Outputs below this are not relayed. */
   readonly dust: bigint;
 }
-
-const DOGE_MAINNET: ChainDescriptor = Object.freeze({
-  ...BTC_MAINNET,
-  pubkeyHashVersion: 0x1e,
-  scriptHashVersion: 0x16,
-  bech32Hrp: null,
-  cashaddrPrefix: null,
-  registeredSlip44: 3,
-});
-
-const LTC_MAINNET: ChainDescriptor = Object.freeze({
-  ...BTC_MAINNET,
-  pubkeyHashVersion: 0x30,
-  scriptHashVersion: 0x32,
-  bech32Hrp: "ltc",
-  cashaddrPrefix: null,
-  registeredSlip44: 2,
-});
-
-const LTC_TESTNET: ChainDescriptor = Object.freeze({
-  ...BTC_TESTNET,
-  pubkeyHashVersion: 0x6f,
-  scriptHashVersion: 0x3a,
-  bech32Hrp: "tltc",
-  cashaddrPrefix: null,
-  registeredSlip44: 1,
-});
 
 export const UTXO_NETWORKS: Readonly<Record<string, UtxoNetwork>> =
   Object.freeze({
@@ -2204,24 +2178,6 @@ export function parseUtxoAddress(
         return decoded.value.destination;
       }
     }
-    if (network.descriptor.bech32Hrp !== null) {
-      const bech = decodeBech32(candidate);
-      if (
-        bech.ok &&
-        bech.value.hrp === network.descriptor.bech32Hrp &&
-        bech.value.data.length > 0 &&
-        bech.value.data[0] === 0 &&
-        bech.value.spec === "bech32"
-      ) {
-        const prog = convertBits(bech.value.data.slice(1), 5, 8, false);
-        if (prog.ok && prog.value.length === 20) {
-          const pkh = pubkeyHashFromBytes(Uint8Array.from(prog.value));
-          if (pkh.ok) {
-            return { kind: "p2wpkh", hash: pkh.value };
-          }
-        }
-      }
-    }
   }
   return undefined;
 }
@@ -2239,12 +2195,6 @@ export function canonicalUtxoAddress(
     const decoded = decodeAddress(candidate, network.descriptor);
     if (decoded.ok && parseUtxoAddress(network, candidate)) {
       return decoded.value.text;
-    }
-    if (
-      network.descriptor.bech32Hrp !== null &&
-      parseUtxoAddress(network, candidate)
-    ) {
-      return candidate.toLowerCase();
     }
   }
   return undefined;

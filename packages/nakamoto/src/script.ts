@@ -8,7 +8,7 @@ import { sha1 } from '@noble/hashes/sha1.js'
 
 import { cryptoBackend } from './backend.js'
 import { isPlainBytes } from './bytes.js'
-import type { ChainDescriptor, ChainFamily } from './chain/types.js'
+import type { ChainDescriptor } from './chain/types.js'
 import { bytesToBigint } from './integer.js'
 import { decodeScriptNum, encodeScriptNum } from './script-num.js'
 import {
@@ -1484,11 +1484,11 @@ function looksSchnorr(sig: Uint8Array): boolean {
   return (sig.length === 64 || sig.length === 65) && first !== 0x30
 }
 
-function hashTypeAccepted(hashType: number, family: ChainFamily): boolean {
+function hashTypeAccepted(hashType: number, chain: ChainDescriptor): boolean {
   if (!Number.isInteger(hashType) || hashType < 0 || hashType > 0xff) {
     return false
   }
-  if (family === 'xpi') {
+  if (chain.family === 'xpi') {
     const mask = hashType & 0x60
     if (mask !== 0x40 && mask !== 0x60) return false
     if ((hashType & 0x03) === 0 || (hashType & 0x1c) !== 0) return false
@@ -1497,7 +1497,10 @@ function hashTypeAccepted(hashType: number, family: ChainFamily): boolean {
   const base = hashType & 0x1f
   if (base < 1 || base > 3) return false
   const extra = hashType & ~0x1f
-  if (family === 'btc' || family === 'doge')
+  if (
+    chain.sighash.kind === 'btc-legacy-and-segwit' ||
+    chain.sighash.kind === 'legacy-only'
+  )
     return extra === 0 || extra === 0x80
   const withoutFork = extra & ~0x40
   return (extra & 0x40) === 0x40 && (withoutFork === 0 || withoutFork === 0x80)
@@ -1556,10 +1559,11 @@ function checkOne(
   dataSig: boolean,
   message?: Uint8Array,
 ): SigMatch {
-  const rules = machine.context.chain.script
-  const family = machine.context.chain.family
+  const chain = machine.context.chain
+  const rules = chain.script
+  const family = chain.family
   if (signature.length === 0) return false
-  if (looksSchnorr(signature) && family !== 'btc') {
+  if (looksSchnorr(signature) && family !== 'btc' && family !== 'ltc') {
     return failure('script-schnorr', opcode)
   }
   const parsed = parseDer(signature, !dataSig)
@@ -1584,7 +1588,7 @@ function checkOne(
   } else {
     if (
       parsed.hashType === null ||
-      !hashTypeAccepted(parsed.hashType, family)
+      !hashTypeAccepted(parsed.hashType, chain)
     ) {
       return failure('script-signature', opcode)
     }
@@ -1609,7 +1613,8 @@ function digestFor(
   if (tx === undefined || inputIndex === undefined) return null
   const xpiMask = hashType & 0x60
   const algorithm: SighashAlgorithm =
-    chain.family === 'btc' || chain.family === 'doge'
+    chain.sighash.kind === 'btc-legacy-and-segwit' ||
+    chain.sighash.kind === 'legacy-only'
       ? 'legacy'
       : chain.family === 'xpi'
       ? xpiMask === 0x40

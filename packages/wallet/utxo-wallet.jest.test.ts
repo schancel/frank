@@ -442,6 +442,36 @@ describe("Dogecoin testnet (P2PKH, legacy SIGHASH_ALL)", () => {
     await reopened.sendNative({ recipient: external, value: 100_000_000n });
     expectValidSignatures(backend.broadcasts[1], DOGE, spent);
   });
+
+  it("derives and sends on Dogecoin mainnet and Litecoin SegWit networks", async () => {
+    const dogeMain = UTXO_NETWORKS["doge-mainnet"];
+    const dogeMainWallet = (await open(dogeMain, makeIndexer(dogeMain))).wallet;
+    const dogeMainAddress = (await dogeMainWallet.getReceiveAddress()).raw;
+    expect(dogeMainAddress.startsWith("D")).toBe(true);
+    expect(parseUtxoAddress(dogeMain, dogeMainAddress)).toBeDefined();
+    expect(parseUtxoAddress(DOGE, dogeMainAddress)).toBeUndefined();
+
+    const ltc = UTXO_NETWORKS["litecoin-testnet"];
+    const backend = makeIndexer(ltc);
+    const sender = (await open(ltc, backend)).wallet;
+    const receiver = (
+      await open(ltc, backend, memoryUtxoWalletStore(), new Uint8Array(32).fill(8))
+    ).wallet;
+    const senderAddress = (await sender.getReceiveAddress()).raw;
+    const recipient = (await receiver.getReceiveAddress()).raw;
+    expect(senderAddress.startsWith("tltc1q")).toBe(true);
+    expect(recipient.startsWith("tltc1q")).toBe(true);
+    expect(parseUtxoAddress(ltc, BTC_RECIPIENT)).toBeUndefined();
+    fund(backend, ltc, senderAddress, 100_000n, "d");
+    expect(await sender.getBalance()).toBe(100_000n);
+    const spent = sender.coins();
+    await sender.sendNative({
+      recipient: { raw: recipient },
+      value: 50_000n,
+    });
+    expectValidSignatures(backend.broadcasts[0], ltc, spent);
+    expect(await receiver.getBalance()).toBe(50_000n);
+  });
 });
 
 describe("derivation", () => {

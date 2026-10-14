@@ -244,12 +244,16 @@ function fitsCount(count: bigint, byteLength: number): boolean {
   return count >= 0n && count <= BigInt(byteLength)
 }
 
+function supportsSegwit(chain: ChainDescriptor): boolean {
+  return chain.sighash.kind === 'btc-legacy-and-segwit'
+}
+
 export function serializeTransaction(
   tx: Transaction,
   chain: ChainDescriptor,
 ): TxResult<Uint8Array> {
   const witness = hasWitness(tx)
-  if (witness && chain.family !== 'btc') return fail('tx-witness-rejected')
+  if (witness && !supportsSegwit(chain)) return fail('tx-witness-rejected')
   if (i32Bits(tx.version) === null || u32Bits(tx.locktime) === null) {
     return fail('tx-range')
   }
@@ -373,7 +377,7 @@ export function parseTransaction(
   let witness = false
   let inputCount = vin.value
   let legacyEmpty = false
-  if (chain.family === 'btc' && vin.value === 0) {
+  if (supportsSegwit(chain) && vin.value === 0) {
     const flag = reader.readUInt8()
     if (!flag.ok) return fail('tx-truncated')
     if (flag.value === 1) {
@@ -495,11 +499,11 @@ export function transactionId(
   chain: ChainDescriptor,
 ): TxResult<InternalHash> {
   if (chain.family === 'xpi') return lotusTransactionId(tx)
-  if (chain.family !== 'btc' && hasWitness(tx)) {
+  if (!supportsSegwit(chain) && hasWitness(tx)) {
     return fail('tx-witness-rejected')
   }
   const bytes = serializeTransaction(
-    chain.family === 'btc' ? withoutWitness(tx) : tx,
+    supportsSegwit(chain) ? withoutWitness(tx) : tx,
     chain,
   )
   if (!bytes.ok) return bytes
@@ -1016,8 +1020,8 @@ function sighashLotus(
 function allowed(chain: ChainDescriptor, algorithm: SighashAlgorithm): boolean {
   if (algorithm === 'legacy') {
     return (
-      chain.family === 'btc' ||
-      chain.family === 'doge' ||
+      chain.sighash.kind === 'btc-legacy-and-segwit' ||
+      chain.sighash.kind === 'legacy-only' ||
       chain.family === 'xpi'
     )
   }

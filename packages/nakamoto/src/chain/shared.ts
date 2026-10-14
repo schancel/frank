@@ -64,6 +64,14 @@ const PUBLIC_CHECKPOINTS = Object.freeze({
     0,
     '00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1',
   ],
+  'doge-mainnet': [
+    0,
+    '1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691',
+  ],
+  'litecoin-mainnet': [
+    0,
+    '12a765e31ffd4059bada1e25190f6e98c99d9714d334efa41a195a7e7e04bfe2',
+  ],
 } as const)
 
 function bitcoinIdentityProbes(
@@ -115,9 +123,9 @@ export function chain(
   fields: Omit<
     ChainDescriptor,
     'protocolId' | 'proxyFamily' | 'allowedProxyCapabilities' | 'identityProbes'
-  >,
+  > & { readonly protocolId?: string },
 ): ChainDescriptor {
-  const protocolId = `${fields.family}-${fields.network}`
+  const protocolId = fields.protocolId ?? `${fields.family}-${fields.network}`
   return Object.freeze({
     ...fields,
     protocolId,

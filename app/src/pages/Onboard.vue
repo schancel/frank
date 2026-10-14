@@ -10,7 +10,7 @@
           :aria-label="$t('accountRecovery.open_navigation')"
           @click="$emit('toggleMyDrawerOpen')"
         />
-        <q-toolbar-title>Frank Onboarding</q-toolbar-title>
+        <q-toolbar-title>{{ $t('onboard.toolbarTitle') }}</q-toolbar-title>
       </q-toolbar>
     </q-header>
 
@@ -29,21 +29,21 @@
               class="q-py-xs q-px-sm q-mb-md text-weight-medium"
               data-test="onboard-header-badge"
             >
-              End-to-End Encrypted Self-Custodial Onboarding
+              {{ $t('onboard.headerBadge') }}
             </q-badge>
             <h1 class="text-h5 text-weight-bold q-my-none">
-              Continue your conversation on Frank
+              {{ $t('onboard.heading') }}
             </h1>
             <p class="text-body2 text-grey-8 q-mt-sm q-mb-none">
-              Your private keys are generated
-              <strong>100% locally in your browser</strong> and are never shared
-              with the email gateway.
+              {{ $t('onboard.keysGeneratedPrefix') }}
+              <strong>{{ $t('onboard.keysGeneratedHighlight') }}</strong>
+              {{ $t('onboard.keysGeneratedSuffix') }}
               <template v-if="peerDisplayLabel">
-                Your email thread with
+                {{ $t('onboard.threadImportPrefix') }}
                 <strong data-test="onboard-peer-label">{{
                   peerDisplayLabel
                 }}</strong>
-                will be imported automatically.
+                {{ $t('onboard.threadImportSuffix') }}
               </template>
             </p>
           </q-card-section>
@@ -56,10 +56,12 @@
               data-test="onboard-thread-summary"
             >
               <div v-if="subjectParam" class="text-caption">
-                <strong>Subject:</strong> {{ subjectParam }}
+                <strong>{{ $t('onboard.subjectLabel') }}</strong>
+                {{ subjectParam }}
               </div>
               <div v-if="emailParam" class="text-caption">
-                <strong>Bridged Email:</strong> {{ emailParam }}
+                <strong>{{ $t('onboard.bridgedEmailLabel') }}</strong>
+                {{ emailParam }}
               </div>
             </q-banner>
           </q-card-section>
@@ -81,11 +83,11 @@
                 class="text-body2 q-mb-md"
                 data-test="onboard-existing-account"
               >
-                Signed in as
+                {{ $t('onboard.signedInAs') }}
                 <strong>{{
                   account.account?.displayName ||
                   account.account?.descriptor ||
-                  'Local Frank Account'
+                  $t('onboard.localFrankAccount')
                 }}</strong>
               </p>
               <q-btn
@@ -93,7 +95,7 @@
                 no-caps
                 unelevated
                 class="full-width q-py-sm text-weight-bold"
-                label="Import Thread & Open Chat with Peer"
+                :label="$t('onboard.importThreadAndOpenChat')"
                 data-test="onboard-import-existing"
                 :loading="busy"
                 :disable="busy"
@@ -108,8 +110,8 @@
               <q-input
                 v-model="displayName"
                 outlined
-                label="Display Name"
-                hint="Shown to contacts when you message them on Frank"
+                :label="$t('onboard.displayNameLabel')"
+                :hint="$t('onboard.displayNameHint')"
                 :maxlength="80"
                 autocomplete="off"
                 data-test="onboard-display-name"
@@ -123,7 +125,7 @@
                 no-caps
                 unelevated
                 class="full-width q-py-sm text-weight-bold"
-                label="Create Self-Custodial Account & Open Chat"
+                :label="$t('onboard.createAccountAndOpenChat')"
                 data-test="onboard-create-direct"
                 :loading="busy"
                 :disable="busy || !displayName.trim()"
@@ -135,7 +137,7 @@
                 color="primary"
                 no-caps
                 class="full-width q-py-sm text-weight-medium"
-                label="Continue with Passkey (Mera)"
+                :label="$t('onboard.continueWithPasskey')"
                 data-test="onboard-create-passkey"
                 :loading="busy"
                 :disable="busy"

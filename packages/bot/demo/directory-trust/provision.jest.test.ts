@@ -20,8 +20,10 @@ import { decimal, endpoint } from './provision'
 
 const subject =
   '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
+// Independently pinned T1 of the reviewed bootstrap's complete type-1 statement frame.
+// Keep this caller input independent of the witness loaded below.
 const anchor =
-  '21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e'
+  '49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410'
 const corpus = JSON.parse(
   readFileSync(
     resolve(
@@ -120,6 +122,10 @@ test.each([
 test.each([
   { subject: '02' + 'ff'.repeat(32) },
   { rev0T1: '00'.repeat(32) },
+  // The former type-4 anchor cannot authorize the renumbered signed statement.
+  {
+    rev0T1: '21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e',
+  },
   { network: 'MONT' },
   { relayId: '00' },
   { relayIdentity: { keyType: 2, point: subject } },

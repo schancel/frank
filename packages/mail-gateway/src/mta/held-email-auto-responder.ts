@@ -5,6 +5,7 @@ import {
   parseMessageId,
   parseMessageIdList,
   readHeaderSection,
+  renderThreadHeaders,
   singleLineHeaderText,
 } from '../rfc/message-headers';
 import { buildOnboardingDeepLink } from '../secure-link/secure-message-portal';
@@ -366,9 +367,11 @@ export function renderHeldChallengeEmail(input: RenderHeldChallengeEmailInput): 
     `To: ${input.senderEmail}`,
     `Subject: ${encodeHeaderSubject(subject)}`,
     `Date: ${new Date(input.nowMs).toUTCString()}`,
-    `Message-ID: ${input.replyMessageId}`,
-    ...(validOrigMsgId ? [`In-Reply-To: ${validOrigMsgId}`] : []),
-    ...(refs.length > 0 ? [`References: ${refs.join(' ')}`] : []),
+    ...renderThreadHeaders({
+      messageId: input.replyMessageId,
+      inReplyTo: validOrigMsgId,
+      references: refs,
+    }).trimEnd().split('\r\n'),
     'Auto-Submitted: auto-replied',
     'Precedence: bulk',
     'X-Auto-Response-Suppress: All',

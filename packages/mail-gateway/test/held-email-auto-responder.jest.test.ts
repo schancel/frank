@@ -134,6 +134,22 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
   });
 
   describe('renderHeldChallengeEmail', () => {
+    it('preserves long reference chains while folding outgoing physical header lines', () => {
+      const references = Array.from({ length: 60 }, (_, i) => `<message-${i}-long-thread@example.com>`);
+      const rendered = renderHeldChallengeEmail({
+        gatewayDomain: 'signet.mx', senderEmail: 'alice@example.com',
+        recipientDisplay: 'digdeep', recipientEmail: 'digdeep@signet.mx',
+        scopeAccount: DIGDEEP_ACCOUNT, originalSubject: 'Long thread',
+        originalMessageId: '<parent@example.com>', originalReferences: references,
+        replyMessageId: '<challenge@signet.mx>', onboardingUrl: 'https://signet.mx/#/onboard',
+        payUrl: 'https://signet.mx/pay/key', nowMs: Date.now(), expiresAtMs: Date.now() + 86400_000,
+      });
+      const headers = Buffer.from(rendered.rawRfc822).toString('utf8').split('\r\n\r\n')[0]!;
+      expect(headers.split('\r\n').every((line) => Buffer.byteLength(line) <= 998)).toBe(true);
+      const unfolded = headers.replace(/\r\n[ \t]+/g, ' ');
+      expect(unfolded).toContain(`References: ${[...references, '<parent@example.com>'].join(' ')}`);
+    });
+
     it('renders threaded RFC 3834 multipart/alternative email with Option 1 (onboard) and Option 2 (/pay/:mailKey)', () => {
       const nowMs = 1791957540225;
       const rendered = renderHeldChallengeEmail({
@@ -209,6 +225,11 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
         await submitted;
         expect(responder.getRecord(row.scopeAccount, row.mailKey)?.status).toBe('submitting');
         await expect(responder.processHeldEmail(row)).rejects.toThrow('uncertain');
+        const competing = new HeldEmailAutoResponder(options);
+        try {
+          await expect(competing.processHeldEmail({ ...row, mailKey: 'd'.repeat(64) }))
+            .resolves.toEqual({ status: 'suppressed', reason: 'rate_limited' });
+        } finally { competing.close(); }
         rejectSubmission(new Error('SMTP timeout after DATA'));
         await expect(first).rejects.toThrow('SMTP timeout');
         responder.close();

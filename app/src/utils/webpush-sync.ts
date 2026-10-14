@@ -154,7 +154,7 @@ export async function ensureBrowserPushSubscription(options?: {
       getSubscription?: () => Promise<unknown>
       subscribe?: (opts: {
         userVisibleOnly: boolean
-        applicationServerKey: Uint8Array
+        applicationServerKey: Uint8Array<ArrayBuffer>
       }) => Promise<unknown>
     }
   } | null
@@ -212,7 +212,10 @@ export async function ensureBrowserPushSubscription(options?: {
       return getCachedBlindPushSubscription()
     }
 
-    const applicationServerKey = urlBase64ToUint8Array(vapidPublicKey)
+    // Browser BufferSource excludes shared backing buffers. Own the decoded bytes.
+    const applicationServerKey = new Uint8Array(
+      urlBase64ToUint8Array(vapidPublicKey),
+    )
     const created = await pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey,

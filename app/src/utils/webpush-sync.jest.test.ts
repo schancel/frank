@@ -119,7 +119,63 @@ describe('webpush-sync end-to-end subscription, capability exchange & revocation
     expect(subscribeCalls).toHaveLength(1)
     expect(subscribeCalls[0].userVisibleOnly).toBe(true)
     expect(subscribeCalls[0].applicationServerKey).toHaveLength(65)
-    expect(subscribeCalls[0].applicationServerKey[0]).toBe(0x04)
+    expect(subscribeCalls[0].applicationServerKey.buffer).toBeInstanceOf(
+      ArrayBuffer,
+    )
+    expect(Array.from(subscribeCalls[0].applicationServerKey)).toEqual(
+      Array.from(Buffer.from(SAMPLE_VAPID_PUBKEY, 'base64url')),
+    )
+  })
+
+  it('reuses the existing browser subscription without fetching or subscribing', async () => {
+    const existing = {
+      endpoint: 'https://push.example/existing',
+      keys: { p256dh: 'existing-p256dh', auth: 'existing-auth' },
+    }
+    const subscribe = jest.fn()
+    const fetchImpl = jest.fn()
+    const subscription = await ensureBrowserPushSubscription({
+      fetchImpl,
+      serviceWorkerRegistration: {
+        pushManager: {
+          getSubscription: async () => existing,
+          subscribe,
+        },
+      },
+    })
+    expect(subscription).toEqual({
+      endpoint: existing.endpoint,
+      ...existing.keys,
+    })
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(subscribe).not.toHaveBeenCalled()
+  })
+
+  it('discovers the browser registration through navigator', async () => {
+    const existing = {
+      endpoint: 'https://push.example/discovered',
+      keys: { p256dh: 'discovered-p256dh', auth: 'discovered-auth' },
+    }
+    const getRegistration = jest.fn(async () => ({
+      pushManager: { getSubscription: async () => existing },
+    }))
+    const originalNavigator = globalThis.navigator
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { serviceWorker: { getRegistration } },
+    })
+    try {
+      expect(await ensureBrowserPushSubscription()).toEqual({
+        endpoint: existing.endpoint,
+        ...existing.keys,
+      })
+      expect(getRegistration).toHaveBeenCalledTimes(1)
+    } finally {
+      Object.defineProperty(globalThis, 'navigator', {
+        configurable: true,
+        value: originalNavigator,
+      })
+    }
   })
 
   it('syncs contact wakeup token hashes to relay and revokes them on mute or delete', async () => {

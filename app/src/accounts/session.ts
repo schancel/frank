@@ -1481,13 +1481,23 @@ export function createAccountSession(deps: {
   return session
 }
 
+import {
+  clearAllWalletDatabases,
+  listAllocatedWalletDatabases,
+} from '@frank/wallet/storage/wallet-storage-adapter'
+
 export async function resetAccountStorage(
   namespace = 'local-account-v1',
 ): Promise<void> {
+  const allocatedWalletDbs = await listAllocatedWalletDatabases().catch(
+    () => [],
+  )
+  await clearAllWalletDatabases().catch(() => undefined)
   if (typeof indexedDB === 'undefined') return
   const names = new Set<string>([
     `frank-account-custody-${namespace}`,
     `frank-preview-vault-${namespace}`,
+    ...allocatedWalletDbs,
   ])
   try {
     if (typeof indexedDB.databases === 'function') {
@@ -1507,6 +1517,62 @@ export async function resetAccountStorage(
     // indexedDB.databases may fail in some environments
   }
   for (const name of names) {
+    await new Promise<void>(resolve => {
+      try {
+        const req = indexedDB.deleteDatabase(name)
+        req.onsuccess = () => resolve()
+        req.onerror = () => resolve()
+        req.onblocked = () => {
+          setTimeout(resolve, 300)
+        }
+      } catch {
+        resolve()
+      }
+    })
+  }
+}
+
+export async function resetMessageAndChatStorage(
+  _namespace = 'local-account-v1',
+): Promise<void> {
+  const allocatedWalletDbs = await listAllocatedWalletDatabases().catch(
+    () => [],
+  )
+  await clearAllWalletDatabases().catch(() => undefined)
+  if (typeof indexedDB === 'undefined') return
+  const names = new Set<string>(allocatedWalletDbs)
+  try {
+    if (typeof indexedDB.databases === 'function') {
+      const dbs = await indexedDB.databases()
+      for (const db of dbs) {
+        if (
+          db.name &&
+          (db.name.includes('level-js') ||
+            db.name.includes('MessageStore') ||
+            db.name.includes('vuex-store') ||
+            db.name.includes('monad-wallet-state') ||
+            db.name.startsWith('frank-wallet-'))
+        ) {
+          names.add(db.name)
+        }
+      }
+    } else {
+      names.add('vuex-store')
+      names.add('MessageStore')
+      names.add('monad-wallet-state')
+    }
+  } catch {
+    names.add('vuex-store')
+    names.add('MessageStore')
+    names.add('monad-wallet-state')
+  }
+  for (const name of names) {
+    if (
+      name.startsWith('frank-account-custody-') ||
+      name.startsWith('frank-preview-vault-')
+    ) {
+      continue
+    }
     await new Promise<void>(resolve => {
       try {
         const req = indexedDB.deleteDatabase(name)

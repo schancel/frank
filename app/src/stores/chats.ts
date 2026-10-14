@@ -1533,11 +1533,23 @@ function isInternalMessage(items: unknown): boolean {
   )
 }
 
-export async function rehydateChat(
+export async function rehydrateChat(
   chatState: RestorableState,
   metadataCompatible = true,
 ): Promise<State> {
   const localStore = await store
+  if (!metadataCompatible) {
+    console.warn(
+      '[chats] Schema version mismatch or incompatible metadata; resetting local conversation state for clean relay re-sync',
+    )
+    return {
+      ...freshChatsState(),
+      conversations: {},
+      messages: {},
+      logicalMessages: {},
+    }
+  }
+
   const messageIterator = await localStore.getIterator()
   const wrappers: MessageWrapper[] = []
   for await (const wrapper of messageIterator) {
@@ -1867,7 +1879,9 @@ export async function rehydateChat(
   }
 }
 
-export const rehydrateState = rehydateChat
+export const rehydateChat = rehydrateChat
+export const rehydrateState = rehydrateChat
+export const freshChatState = freshChatsState
 
 export const useChatStore = defineStore('chats', {
   state: (): State => freshChatsState(),
@@ -5096,12 +5110,21 @@ export const useChatStore = defineStore('chats', {
       } catch (err) {
         //
       }
-      const deserializedChats = JSON.parse(chats) as RestorableState
+      let deserializedChats: RestorableState = {}
+      try {
+        deserializedChats = JSON.parse(chats) as RestorableState
+      } catch {
+        //
+      }
 
       const invalidStore =
         metadata.networkName !== displayNetwork ||
         metadata.version !== STORE_SCHEMA_VERSION
-      return rehydateChat(deserializedChats, !invalidStore)
+      if (invalidStore) {
+        await rehydrateChat(deserializedChats, false)
+        return freshChatState()
+      }
+      return rehydrateChat(deserializedChats, true)
     },
   },
 })

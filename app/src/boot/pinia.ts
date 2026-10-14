@@ -137,29 +137,43 @@ export function createStoragePlugin(
   }
 }
 
+export async function resolveStoreMetadata(
+  storage: LevelDB,
+): Promise<StoreMetadata> {
+  try {
+    const data = await storage.get('storeMetadata')
+    const state = JSON.parse(data)
+    const metadata: StoreMetadata = {
+      networkName: pathOr(displayNetwork, ['networkName'], state),
+      version: pathOr(STORE_SCHEMA_VERSION, ['version'], state),
+    }
+    if (metadata.version !== STORE_SCHEMA_VERSION) {
+      await storage
+        .put(
+          'storeMetadata',
+          JSON.stringify({
+            networkName: displayNetwork,
+            version: STORE_SCHEMA_VERSION,
+          }),
+        )
+        .catch(() => undefined)
+    }
+    return metadata
+  } catch {
+    return {
+      networkName: displayNetwork,
+      version: STORE_SCHEMA_VERSION,
+    }
+  }
+}
+
 export default boot(({ app }) => {
   // const walletStore = useWalletStore()
   const pinia = createPinia()
 
   app.use(pinia)
   const storage = level('vuex-store')
-  const metadataPromise = new Promise<StoreMetadata>(resolve => {
-    storage
-      .get('storeMetadata')
-      .then(data => {
-        const state = JSON.parse(data)
-        resolve({
-          networkName: pathOr(displayNetwork, ['networkName'], state),
-          version: pathOr(STORE_SCHEMA_VERSION, ['version'], state),
-        })
-      })
-      .catch(() => {
-        resolve({
-          networkName: displayNetwork,
-          version: STORE_SCHEMA_VERSION,
-        })
-      })
-  })
+  const metadataPromise = resolveStoreMetadata(storage)
 
   pinia.use(createStoragePlugin(storage, metadataPromise))
 })

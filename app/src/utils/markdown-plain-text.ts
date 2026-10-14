@@ -1,4 +1,4 @@
-import * as marked from 'marked'
+import { marked } from 'marked'
 
 /**
  * Decodes all HTML entities including hexadecimal (&#x...), decimal (&#...),

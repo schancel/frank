@@ -1,4 +1,4 @@
-import * as marked from 'marked'
+import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { addressMentionTokens } from './address-mentions'
 
@@ -152,7 +152,7 @@ export function renderMarkdown(
   }
   const result = sanitize(
     mentionNames === undefined
-      ? marked.marked(input, { renderer: renderer, breaks: lineBreaks })
+      ? marked(input, { renderer: renderer, breaks: lineBreaks })
       : marked.parser(
           addressMentionTokens(input, mentionNames, lineBreaks).tokens,
           { renderer: renderer, breaks: lineBreaks },

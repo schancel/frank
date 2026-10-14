@@ -1,6 +1,14 @@
 import type { StealthPaymentAsset } from '@frank/wallet/stealth-payment'
 import { activeChain } from '@frank/wallet/chain'
-import { listEvmSwapVenues } from '@frank/wallet/chain/dex-deployments'
+import {
+  resolveChainAdapter,
+  type ChainSupportedAssetDescriptor,
+} from '@frank/wallet/chain/chain-adapter'
+import {
+  PROTOCOL_CHAINS,
+  getChainRegistryEntry,
+  type ChainRegistryEntry,
+} from '@frank/wallet/chain/chains-registry'
 import { WALLET_CONFIGS } from '../utils/wallet-configs'
 import { walletNetworkMetadata } from '../utils/wallet-support'
 import { stealthAssetKey, type StealthAssetOption } from './options'
@@ -35,62 +43,65 @@ export async function configuredStealthAssets(
   const options: StealthAssetOption[] = []
   const unavailable: { chainIdentifier: string; error: unknown }[] = []
   const seen = new Set<string>()
+
+  const configuredEntry = getChainRegistryEntry(configured)
+  const chainEntries: ChainRegistryEntry[] = []
   for (const wallet of WALLET_CONFIGS) {
     if (!wallet.enabled) continue
     const entry = walletNetworkMetadata(wallet.id, isTestnet, configured)
-    if (!entry?.wallet || seen.has(entry.id)) continue
+    if (entry?.wallet && !seen.has(entry.id)) {
+      seen.add(entry.id)
+      chainEntries.push(entry)
+    }
+  }
+  for (const entry of Object.values(PROTOCOL_CHAINS)) {
+    if (!entry.wallet || seen.has(entry.id)) continue
+    if (configuredEntry && entry.kind === configuredEntry.kind) {
+      if (entry.id !== configured) continue
+    } else if (entry.isTestnet !== isTestnet) {
+      continue
+    }
     seen.add(entry.id)
+    chainEntries.push(entry)
+  }
+
+  for (const entry of chainEntries) {
     try {
-      const decimals = entry.nativeDecimals
-      // Networks without a native asset require their own configured fee-asset capability.
-      if (decimals === null) continue
-      const native = { kind: 'native' } as const
-      const nativeBalance =
-        context?.getBalance?.(entry.id, native) ??
-        (entry.id === configured &&
-        context?.activeBalance !== undefined &&
-        context.activeBalance !== null
-          ? context.activeBalance
-          : undefined)
-      options.push({
-        key: stealthAssetKey(entry.id, native),
-        chainIdentifier: entry.id,
-        asset: native,
-        label: `${entry.name} · ${entry.unit}`,
-        unit: entry.unit,
-        decimals,
-        nativeUnit: entry.unit,
-        nativeDecimals: decimals,
-        ...(nativeBalance !== undefined
-          ? { balanceAtomic: nativeBalance }
-          : {}),
-      })
-      if (entry.family !== 'evm') continue
-      const contracts = new Set<string>()
-      for (const venue of listEvmSwapVenues(entry.id)) {
-        for (const token of venue.tokens) {
-          if (!token.address || contracts.has(token.address.toLowerCase()))
-            continue
-          contracts.add(token.address.toLowerCase())
-          const asset = {
-            kind: 'erc20',
-            contractAddress: token.address.toLowerCase(),
-          } as const
-          const tokenBalance = context?.getBalance?.(entry.id, asset)
-          options.push({
-            key: stealthAssetKey(entry.id, asset),
-            chainIdentifier: entry.id,
-            asset,
-            label: `${entry.name} · ${token.symbol}`,
-            unit: token.symbol,
-            decimals: token.decimals,
-            nativeUnit: entry.unit,
-            nativeDecimals: decimals,
-            ...(tokenBalance !== undefined
-              ? { balanceAtomic: tokenBalance }
-              : {}),
-          })
-        }
+      const adapter = resolveChainAdapter(entry.id, entry)
+      const descriptors: readonly ChainSupportedAssetDescriptor[] = adapter
+        ? adapter.getSupportedAssets()
+        : entry.nativeDecimals !== null
+        ? [
+            {
+              asset: { kind: 'native' },
+              label: `${entry.unit} (${entry.name})`,
+              unit: entry.unit,
+              decimals: entry.nativeDecimals,
+              nativeUnit: entry.unit,
+              nativeDecimals: entry.nativeDecimals,
+            },
+          ]
+        : []
+      for (const desc of descriptors) {
+        const balance =
+          context?.getBalance?.(entry.id, desc.asset) ??
+          (desc.asset.kind === 'native' &&
+          entry.id === configured &&
+          context?.activeBalance !== undefined &&
+          context.activeBalance !== null
+            ? context.activeBalance
+            : undefined)
+        options.push({
+          key: stealthAssetKey(entry.id, desc.asset),
+          chainIdentifier: entry.id,
+          asset: desc.asset,
+          label: desc.label,
+          unit: desc.unit,
+          decimals: desc.decimals,
+          nativeUnit: desc.nativeUnit,
+          nativeDecimals: desc.nativeDecimals,
+          ...(balance !== undefined ? { balanceAtomic: balance } : {}),
+        })
       }
     } catch (error) {
       unavailable.push({ chainIdentifier: entry.id, error })

@@ -89,15 +89,15 @@ describe("createChain", () => {
     await expect(
       createChain({
         family: "evm",
-        chainIdentifier: "base-mainnet",
+        chainIdentifier: "nonexistent-mainnet",
         config: {
-          name: "Base",
+          name: "Nonexistent",
           unit: "ETH",
-          networkId: "base-mainnet",
-          chainId: 8453,
-          rpcChain: "base-mainnet",
+          networkId: "nonexistent-mainnet",
+          chainId: 99999,
+          rpcChain: "nonexistent-mainnet",
           relayBaseUrl: "http://127.0.0.1:8098",
-          networkTag: "BASE",
+          networkTag: "NONE",
           stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
           resolveDefaultStamp: fixedStampDefault(1n),
           defaultTopicVoteValueWei: 1n,
@@ -105,7 +105,7 @@ describe("createChain", () => {
           walletStorageLocation: false,
         },
       })
-    ).rejects.toThrow('Unsupported EVM chain identifier "base-mainnet"');
+    ).rejects.toThrow('Unsupported EVM chain identifier "nonexistent-mainnet"');
   });
 
   it.each([
@@ -336,23 +336,35 @@ describe("createChain", () => {
 
   it("creates an eCash chain without exposing UTXO machinery", async () => {
     let ecashAttemptRecorded = false;
+    const ecashTxHash = "a".repeat(64);
     const getTransaction = jest
       .fn()
       .mockResolvedValueOnce({ block: { height: 1 } })
       .mockResolvedValueOnce({ block: undefined });
     const broadcast = jest.fn(async () => {
       expect(ecashAttemptRecorded).toBe(true);
-      return { success: true, broadcasted: ["xec-tx"] };
+      return { success: true, broadcasted: [ecashTxHash] };
     });
-    const backend: EcashWalletBackend = {
+    const backend: any = {
       balanceSats: 500n,
       receiveIndex: 0,
       sync: jest.fn().mockResolvedValue(undefined),
       syncAndDiscoverAddresses: jest.fn().mockResolvedValue(undefined),
       getReceiveAddress: () => ECASH_ADDRESS,
       action: () => ({
-        build: () => ({ builtTxs: [{ txid: "xec-tx" }], broadcast }),
+        build: () => ({ builtTxs: [{ txid: ecashTxHash }], broadcast }),
       }),
+      buildNativeConstruction: () => ({
+        transactions: [{ txid: ecashTxHash, rawTransaction: "00" }],
+        selectedInputs: [{ txid: "00".repeat(32), vout: 0, satoshis: 500n }],
+        fee: 50n,
+        nextChangeIndex: 1,
+      }),
+      restoreChangeIndex: jest.fn(),
+      getAvailableBalance: () => 500n,
+      inputReferencesFromTransactions: () => [],
+      validateNativeOperation: jest.fn(),
+      validateLegacyTransaction: jest.fn(),
     };
     const chain = await createChain({
       family: "bitcoin",
@@ -362,6 +374,7 @@ describe("createChain", () => {
         chronik: {
           block: async () => ({ blockInfo: { hash: ECASH_CHECKPOINT } }),
           tx: getTransaction,
+          broadcastTxs: broadcast,
         },
         walletFactory: () => backend,
       },
@@ -384,17 +397,16 @@ describe("createChain", () => {
     await expect(chain.nativeTransfers.getBalance({ wallet })).resolves.toBe(
       500n
     );
-    await expect(
-      chain.nativeTransfers.send({
-        wallet,
-        recipient: { raw: ECASH_ADDRESS },
-        value: 100n,
-        onSigned: async (transaction) => {
-          expect(transaction).toEqual({ txHash: "xec-tx" });
-          ecashAttemptRecorded = true;
-        },
-      })
-    ).resolves.toEqual({ txHash: "xec-tx" });
+    const sendResult = await chain.nativeTransfers.send({
+      wallet,
+      recipient: { raw: ECASH_ADDRESS },
+      value: 100n,
+      onSigned: async (transaction) => {
+        expect(transaction).toMatchObject({ txHash: ecashTxHash });
+        ecashAttemptRecorded = true;
+      },
+    });
+    expect(sendResult).toMatchObject({ txHash: ecashTxHash });
     await expect(
       chain.nativeTransfers.getTransactionStatus({
         wallet,

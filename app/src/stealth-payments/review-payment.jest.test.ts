@@ -255,7 +255,7 @@ test('a Solana recipient must publish its own Ed25519 spend key; encryption keys
   expect(mockPrepare).not.toHaveBeenCalled()
 })
 test('unknown or registry-only networks cannot acquire a financial owner', async () => {
-  for (const chainIdentifier of ['unknown', 'ethereum-sepolia']) {
+  for (const chainIdentifier of ['unknown', 'solana-testnet']) {
     await expect(
       reviewStealthPayment({
         request: { ...request, chainIdentifier },

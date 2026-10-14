@@ -290,8 +290,7 @@ describe('useChainBalance', () => {
     },
   )
 
-  // Bitcoin and Bitcoin Cash now have wallets (tested below); these rows still have none.
-  it.each(['dogecoin', 'ethereum', 'unknown'])(
+  it.each(['unknown', 'nonexistent'])(
     'reports unsupported %s without Monad funds in either view',
     chain => {
       const expected = { status: 'unavailable', reason: 'unsupported' }
@@ -358,8 +357,8 @@ describe('useChainBalance', () => {
   it('routes Bitcoin and Bitcoin Cash by the registry, with no list of names', async () => {
     await fetchChainBalance('bitcoin', true)
     await fetchChainBalance('bitcoincash', true)
-    expect(mockOpenUtxoWallet).toHaveBeenCalledWith('btc-testnet')
-    expect(mockOpenUtxoWallet).toHaveBeenCalledWith('bch-testnet')
+    expect(createChainAdapter).toHaveBeenCalledWith('btc-testnet')
+    expect(createChainAdapter).toHaveBeenCalledWith('bch-testnet')
     expect(useChainBalance('bitcoin').formattedBalance.value).toBe(
       '0.0015 tBTC',
     )
@@ -368,7 +367,7 @@ describe('useChainBalance', () => {
     expect(cash.presentation.value).toMatchObject({ status: 'available' })
   })
 
-  it.each(['dogecoin', 'ethereum', 'nonsense'])(
+  it.each(['nonsense', 'unknown'])(
     'says %s is unsupported and opens no wallet for it',
     async chain => {
       mockOpenUtxoWallet.mockClear()

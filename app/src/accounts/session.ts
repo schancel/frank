@@ -24,6 +24,9 @@ import {
   type RelayUtxoChain,
   type SupportedCurve,
   type WalletHandle,
+  createChainAdapter,
+  isCanonicalChainId,
+  resolveChainAdapter,
 } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import type { HistoricalBip39Seed } from '@frank/wallet/monad-wallet-material'
@@ -1046,7 +1049,8 @@ export function createAccountSession(deps: {
         chain === 'monad'
           ? activeChain.chainIdentifier
           : resolveNetworkId(chain, isTestnet)
-      if (getChainRegistryEntry(netId)?.kind === 'monad') {
+      const entry = getChainRegistryEntry(netId)
+      if (entry?.kind === 'monad' || entry?.family !== 'evm') {
         // Only a completed receive-address read can seed this cache. The profile
         // identity is a different account, and another network's entry is not usable.
         return chainAddressCache.get(netId)
@@ -1054,17 +1058,7 @@ export function createAccountSession(deps: {
       return (
         chainAddressCache.get(netId) ??
         chainAddressCache.get(chain) ??
-        (chain !== 'ecash' &&
-        chain !== 'solana' &&
-        chain !== 'bitcoin' &&
-        chain !== 'bitcoincash' &&
-        chain !== 'dogecoin' &&
-        !netId.startsWith('xec-') &&
-        !netId.startsWith('solana-') &&
-        !netId.startsWith('btc-') &&
-        !netId.startsWith('bch-') &&
-        !netId.startsWith('doge-') &&
-        wallet?.identity?.displayAddress
+        (wallet?.identity?.displayAddress
           ? wallet.identity.displayAddress
           : undefined)
       )
@@ -1124,128 +1118,28 @@ export function createAccountSession(deps: {
         if (entry?.family === 'solana')
           return (await session.getSolanaSigner()).publicKey.toBase58()
         const purpose =
-          chain === 'ecash' ||
-          chain === 'bitcoin' ||
-          chain === 'bitcoincash' ||
-          chain === 'dogecoin' ||
-          netId.startsWith('xec-') ||
-          netId.startsWith('btc-') ||
-          netId.startsWith('bch-') ||
-          netId.startsWith('doge-')
+          entry?.family === 'bitcoin'
             ? 'ecash-bch-wallet'
-            : chain === 'solana' || netId.startsWith('solana-')
+            : entry?.family === 'solana'
             ? 'solana-wallet'
             : 'evm-wallet'
         const material = await session.getActiveFamilyMaterial(purpose)
         const root = 'seed' in material ? material.seed : material.bytes
         try {
-          if (chain === 'ecash' || netId.startsWith('xec-')) {
-            const { HDNodeWallet } = await import('ethers')
-            const { encodeCashAddress } = await import('ecashaddrjs')
-            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
-            const { sha256 } = await import('@noble/hashes/sha256.js')
-            const hdNode =
-              HDNodeWallet.fromSeed(root).derivePath("m/44'/1899'/0'/0/0")
-            const pubKeyHex = hdNode.publicKey.startsWith('0x')
-              ? hdNode.publicKey.slice(2)
-              : hdNode.publicKey
-            const pubKeyBytes = Uint8Array.from(
-              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
-            )
-            const hash160 = ripemd160(sha256(pubKeyBytes))
-            const prefix = isTestnet ? 'ectest' : 'ecash'
-            const addr = encodeCashAddress(prefix, 'p2pkh', hash160)
-            return addr
-          } else if (chain === 'bitcoin' || netId.startsWith('btc-')) {
-            const { HDNodeWallet } = await import('ethers')
-            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
-            const { sha256 } = await import('@noble/hashes/sha256.js')
-            const {
-              encodeAddress,
-              pubkeyHashFromBytes,
-              BTC_MAINNET,
-              BTC_TESTNET,
-            } = await import('@frank/nakamoto')
-            const path = isTestnet ? "m/84'/1'/0'/0/0" : "m/84'/0'/0'/0/0"
-            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
-            const pubKeyHex = hdNode.publicKey.startsWith('0x')
-              ? hdNode.publicKey.slice(2)
-              : hdNode.publicKey
-            const pubKeyBytes = Uint8Array.from(
-              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
-            )
-            const hash160 = ripemd160(sha256(pubKeyBytes))
-            const pkh = pubkeyHashFromBytes(hash160)
-            if (pkh.ok) {
-              const res = encodeAddress(
-                { kind: 'p2wpkh', hash: pkh.value },
-                isTestnet ? BTC_TESTNET : BTC_MAINNET,
-                'bech32',
-              )
-              if (res.ok) {
-                return res.value
-              }
-            }
-            throw new Error('Failed to derive Bitcoin address')
-          } else if (chain === 'bitcoincash' || netId.startsWith('bch-')) {
-            const { HDNodeWallet } = await import('ethers')
-            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
-            const { sha256 } = await import('@noble/hashes/sha256.js')
-            const {
-              encodeAddress,
-              pubkeyHashFromBytes,
-              BCH_MAINNET,
-              BCH_TESTNET,
-            } = await import('@frank/nakamoto')
-            const path = "m/44'/145'/0'/0/0"
-            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
-            const pubKeyHex = hdNode.publicKey.startsWith('0x')
-              ? hdNode.publicKey.slice(2)
-              : hdNode.publicKey
-            const pubKeyBytes = Uint8Array.from(
-              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
-            )
-            const hash160 = ripemd160(sha256(pubKeyBytes))
-            const pkh = pubkeyHashFromBytes(hash160)
-            if (pkh.ok) {
-              const res = encodeAddress(
-                { kind: 'p2pkh', hash: pkh.value },
-                isTestnet ? BCH_TESTNET : BCH_MAINNET,
-                'cashaddr',
-              )
-              if (res.ok) {
-                return res.value
-              }
-            }
-            throw new Error('Failed to derive Bitcoin Cash address')
-          } else if (chain === 'dogecoin' || netId.startsWith('doge-')) {
-            const { HDNodeWallet } = await import('ethers')
-            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
-            const { sha256 } = await import('@noble/hashes/sha256.js')
-            const { encodeBase58Check } = await import('@frank/nakamoto')
-            const path = "m/44'/3'/0'/0/0"
-            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
-            const pubKeyHex = hdNode.publicKey.startsWith('0x')
-              ? hdNode.publicKey.slice(2)
-              : hdNode.publicKey
-            const pubKeyBytes = Uint8Array.from(
-              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
-            )
-            const hash160 = ripemd160(sha256(pubKeyBytes))
-            const version = isTestnet ? 0x71 : 0x1e
-            const payload = new Uint8Array(21)
-            payload[0] = version
-            payload.set(hash160, 1)
-            const addr = encodeBase58Check(payload)
-            return addr
-          } else {
-            const { HDNodeWallet } = await import('ethers')
-            // The wallet's receive address; m/44'/60'/0'/0/0 is stamp-pool account 0.
-            const hdNode =
-              HDNodeWallet.fromSeed(root).derivePath("m/44'/60'/1'/0/0")
-            const addr = hdNode.address
-            return addr
+          const adapter = resolveChainAdapter(netId)
+          if (adapter) {
+            const accountIndex = entry?.family === 'evm' ? 1 : 0
+            const chainWallet = await adapter.createWallet({
+              root: { seed: root },
+              accountIndex,
+            })
+            return chainWallet.address
           }
+          const { HDNodeWallet } = await import('ethers')
+          // The wallet's receive address; m/44'/60'/0'/0/0 is stamp-pool account 0.
+          const hdNode =
+            HDNodeWallet.fromSeed(root).derivePath("m/44'/60'/1'/0/0")
+          return hdNode.address
         } finally {
           root.fill(0)
         }

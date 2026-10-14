@@ -23,7 +23,9 @@
  * once it has been paid.
  */
 import {
+  convertBits,
   decodeAddress,
+  decodeBech32,
   deriveHdPath,
   deriveHdPrivate,
   encodeAddress,
@@ -40,7 +42,9 @@ import {
   cryptoBackend,
   SIGHASH_ALL,
   SIGHASH_FORKID,
+  BTC_MAINNET,
   BTC_TESTNET,
+  BCH_MAINNET,
   BCH_TESTNET,
 } from "@frank/nakamoto";
 import type {
@@ -95,10 +99,10 @@ export interface UtxoNetwork {
   readonly descriptor: ChainDescriptor;
   /** The kind of output the wallet's own addresses are. */
   readonly ownOutput: "p2wpkh" | "p2pkh";
-  readonly addressEncoding: "bech32" | "cashaddr";
+  readonly addressEncoding: "bech32" | "cashaddr" | "base58check";
   /** BIP32 account; receive addresses are `<account>/0/i`, change `<account>/1/i`. */
   readonly accountPath: string;
-  readonly sighashAlgorithm: "bip143" | "forkid";
+  readonly sighashAlgorithm: "bip143" | "forkid" | "legacy";
   readonly sighashType: number;
   /** Virtual size of one signed input of the wallet's own kind. */
   readonly inputVbytes: number;
@@ -112,8 +116,59 @@ export interface UtxoNetwork {
   readonly dust: bigint;
 }
 
+const DOGE_MAINNET: ChainDescriptor = Object.freeze({
+  ...BTC_MAINNET,
+  pubkeyHashVersion: 0x1e,
+  scriptHashVersion: 0x16,
+  bech32Hrp: null,
+  cashaddrPrefix: null,
+  registeredSlip44: 3,
+});
+
+const DOGE_TESTNET: ChainDescriptor = Object.freeze({
+  ...BTC_TESTNET,
+  pubkeyHashVersion: 0x71,
+  scriptHashVersion: 0xc4,
+  bech32Hrp: null,
+  cashaddrPrefix: null,
+  registeredSlip44: 1,
+});
+
+const LTC_MAINNET: ChainDescriptor = Object.freeze({
+  ...BTC_MAINNET,
+  pubkeyHashVersion: 0x30,
+  scriptHashVersion: 0x32,
+  bech32Hrp: "ltc",
+  cashaddrPrefix: null,
+  registeredSlip44: 2,
+});
+
+const LTC_TESTNET: ChainDescriptor = Object.freeze({
+  ...BTC_TESTNET,
+  pubkeyHashVersion: 0x6f,
+  scriptHashVersion: 0x3a,
+  bech32Hrp: "tltc",
+  cashaddrPrefix: null,
+  registeredSlip44: 1,
+});
+
 export const UTXO_NETWORKS: Readonly<Record<string, UtxoNetwork>> =
   Object.freeze({
+    // Bitcoin mainnet: native segwit (BIP84), BIP143 signatures.
+    "btc-mainnet": Object.freeze({
+      chainIdentifier: "btc-mainnet",
+      descriptor: BTC_MAINNET,
+      ownOutput: "p2wpkh",
+      addressEncoding: "bech32",
+      accountPath: "m/84'/0'/0'",
+      sighashAlgorithm: "bip143",
+      sighashType: SIGHASH_ALL,
+      inputVbytes: 68,
+      overheadVbytes: 11,
+      minFeeRate: 1n,
+      estimateFee: true,
+      dust: 546n,
+    }),
     // Bitcoin testnet3: native segwit (BIP84), BIP143 signatures.
     "btc-testnet": Object.freeze({
       chainIdentifier: "btc-testnet",
@@ -127,6 +182,21 @@ export const UTXO_NETWORKS: Readonly<Record<string, UtxoNetwork>> =
       overheadVbytes: 11,
       minFeeRate: 1n,
       estimateFee: true,
+      dust: 546n,
+    }),
+    // Bitcoin Cash mainnet: P2PKH cashaddr (BIP44 coin 145), signatures commit to the fork id.
+    "bch-mainnet": Object.freeze({
+      chainIdentifier: "bch-mainnet",
+      descriptor: BCH_MAINNET,
+      ownOutput: "p2pkh",
+      addressEncoding: "cashaddr",
+      accountPath: "m/44'/145'/0'",
+      sighashAlgorithm: "forkid",
+      sighashType: SIGHASH_ALL | SIGHASH_FORKID,
+      inputVbytes: 149,
+      overheadVbytes: 10,
+      minFeeRate: 1n,
+      estimateFee: false,
       dust: 546n,
     }),
     // Bitcoin Cash testnet3: P2PKH cashaddr (BIP44 coin 145), signatures commit to the fork id.
@@ -143,6 +213,66 @@ export const UTXO_NETWORKS: Readonly<Record<string, UtxoNetwork>> =
       minFeeRate: 1n,
       estimateFee: false,
       dust: 546n,
+    }),
+    // Dogecoin mainnet: P2PKH base58check (BIP44 coin 3), legacy sighash.
+    "doge-mainnet": Object.freeze({
+      chainIdentifier: "doge-mainnet",
+      descriptor: DOGE_MAINNET,
+      ownOutput: "p2pkh",
+      addressEncoding: "base58check",
+      accountPath: "m/44'/3'/0'",
+      sighashAlgorithm: "legacy",
+      sighashType: SIGHASH_ALL,
+      inputVbytes: 148,
+      overheadVbytes: 10,
+      minFeeRate: 1000n,
+      estimateFee: true,
+      dust: 1_000_000n,
+    }),
+    // Dogecoin testnet: P2PKH base58check (BIP44 coin 3), legacy sighash.
+    "doge-testnet": Object.freeze({
+      chainIdentifier: "doge-testnet",
+      descriptor: DOGE_TESTNET,
+      ownOutput: "p2pkh",
+      addressEncoding: "base58check",
+      accountPath: "m/44'/3'/0'",
+      sighashAlgorithm: "legacy",
+      sighashType: SIGHASH_ALL,
+      inputVbytes: 148,
+      overheadVbytes: 10,
+      minFeeRate: 1000n,
+      estimateFee: true,
+      dust: 1_000_000n,
+    }),
+    // Litecoin mainnet: native segwit (BIP84 coin 2), BIP143 signatures.
+    "litecoin-mainnet": Object.freeze({
+      chainIdentifier: "litecoin-mainnet",
+      descriptor: LTC_MAINNET,
+      ownOutput: "p2wpkh",
+      addressEncoding: "bech32",
+      accountPath: "m/84'/2'/0'",
+      sighashAlgorithm: "bip143",
+      sighashType: SIGHASH_ALL,
+      inputVbytes: 68,
+      overheadVbytes: 11,
+      minFeeRate: 1n,
+      estimateFee: true,
+      dust: 5460n,
+    }),
+    // Litecoin testnet: native segwit (BIP84 coin 1), BIP143 signatures.
+    "litecoin-testnet": Object.freeze({
+      chainIdentifier: "litecoin-testnet",
+      descriptor: LTC_TESTNET,
+      ownOutput: "p2wpkh",
+      addressEncoding: "bech32",
+      accountPath: "m/84'/1'/0'",
+      sighashAlgorithm: "bip143",
+      sighashType: SIGHASH_ALL,
+      inputVbytes: 68,
+      overheadVbytes: 11,
+      minFeeRate: 1n,
+      estimateFee: true,
+      dust: 5460n,
     }),
   });
 
@@ -2068,17 +2198,36 @@ export function parseUtxoAddress(
     prefix && !text.includes(":") ? [text, `${prefix}:${text}`] : [text];
   for (const candidate of candidates) {
     const decoded = decodeAddress(candidate, network.descriptor);
-    if (!decoded.ok) continue;
-    const { kind } = decoded.value.destination;
-    // Outputs this wallet can pay with a standard script and size its fee for.
-    if (
-      kind === "p2pkh" ||
-      kind === "p2sh" ||
-      kind === "p2wpkh" ||
-      kind === "p2wsh" ||
-      kind === "p2tr"
-    ) {
-      return decoded.value.destination;
+    if (decoded.ok) {
+      const { kind } = decoded.value.destination;
+      // Outputs this wallet can pay with a standard script and size its fee for.
+      if (
+        kind === "p2pkh" ||
+        kind === "p2sh" ||
+        kind === "p2wpkh" ||
+        kind === "p2wsh" ||
+        kind === "p2tr"
+      ) {
+        return decoded.value.destination;
+      }
+    }
+    if (network.descriptor.bech32Hrp !== null) {
+      const bech = decodeBech32(candidate);
+      if (
+        bech.ok &&
+        bech.value.hrp === network.descriptor.bech32Hrp &&
+        bech.value.data.length > 0 &&
+        bech.value.data[0] === 0 &&
+        bech.value.spec === "bech32"
+      ) {
+        const prog = convertBits(bech.value.data.slice(1), 5, 8, false);
+        if (prog.ok && prog.value.length === 20) {
+          const pkh = pubkeyHashFromBytes(Uint8Array.from(prog.value));
+          if (pkh.ok) {
+            return { kind: "p2wpkh", hash: pkh.value };
+          }
+        }
+      }
     }
   }
   return undefined;
@@ -2097,6 +2246,12 @@ export function canonicalUtxoAddress(
     const decoded = decodeAddress(candidate, network.descriptor);
     if (decoded.ok && parseUtxoAddress(network, candidate)) {
       return decoded.value.text;
+    }
+    if (
+      network.descriptor.bech32Hrp !== null &&
+      parseUtxoAddress(network, candidate)
+    ) {
+      return candidate.toLowerCase();
     }
   }
   return undefined;

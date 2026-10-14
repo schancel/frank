@@ -42,7 +42,7 @@
           </div>
         </q-toolbar-title>
         <q-btn
-          v-if="selectedWallet !== 'tempo'"
+          v-if="selectedHasNativeCoin"
           flat
           dense
           icon="help_outline"
@@ -85,9 +85,7 @@
               style="max-width: 680px; width: 100%; margin: 0 auto"
             >
               <tempo-path-usd-panel
-                v-if="
-                  selectedWallet === 'tempo' && walletStatus === 'available'
-                "
+                v-if="!selectedHasNativeCoin && walletStatus === 'available'"
               />
               <q-tabs
                 v-else
@@ -128,15 +126,11 @@
                 />
               </q-tabs>
               <q-separator
-                v-if="
-                  selectedWallet !== 'tempo' || walletStatus !== 'available'
-                "
+                v-if="selectedHasNativeCoin || walletStatus !== 'available'"
               />
 
               <q-tab-panels
-                v-if="
-                  selectedWallet !== 'tempo' || walletStatus !== 'available'
-                "
+                v-if="selectedHasNativeCoin || walletStatus !== 'available'"
                 v-model="activeTab"
                 animated
                 class="bg-transparent col column"
@@ -171,7 +165,7 @@
                     <!-- This chain cannot be reached: said here as well as on the messages
                          that are queued because of it. -->
                     <q-banner
-                      v-if="chainUnreachable && selectedChain === 'monad'"
+                      v-if="chainUnreachable && isPrimaryStampChain"
                       dense
                       rounded
                       class="bg-orange-1 text-orange-10 q-my-xs"
@@ -326,7 +320,7 @@
                         outline
                         color="primary"
                         :label="$t('walletPanel.sendToContact')"
-                        :disable="selectedWallet !== 'monad'"
+                        :disable="!supportsHeldContactPayments"
                         data-testid="wallet-contact-send-action"
                         @click="openSendContact"
                       />
@@ -340,7 +334,7 @@
                         @click="openSend"
                       />
                     </q-card-actions>
-                    <held-contact-payments v-if="selectedWallet === 'monad'" />
+                    <held-contact-payments v-if="supportsHeldContactPayments" />
                   </q-card-section>
 
                   <!-- Assets & Tokens Card -->
@@ -659,11 +653,15 @@ import {
   findEvmNativeOperationStatus,
   getChainRegistryEntry,
 } from '@frank/wallet/chain'
+import {
+  resolveChainAdapter,
+  type ChainAdapter,
+} from '@frank/wallet/chain/chain-adapter'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapActivity } from 'src/swap/useSwapActivity'
 import { useEvmTokenBalances } from 'src/composables/useEvmTokenBalances'
 import { getExplorerUrl } from 'src/utils/explorer'
-import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
+import { MAIN_WALLET_ID, WALLET_CONFIGS } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import WalletHistory from 'src/components/wallet/WalletHistory.vue'
 import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
@@ -703,7 +701,7 @@ export default defineComponent({
     const isTestnet = computed(() => network.value.isTestnet ?? false)
     const { getCustomName, setCustomName, resetCustomName } = useWalletNames()
     const showRenameDialog = ref(false)
-    const renameChain = ref('monad')
+    const renameChain = ref(MAIN_WALLET_ID)
     const renameWalletConfig = computed(() =>
       WALLET_CONFIGS.find(wallet => wallet.id === renameChain.value),
     )
@@ -730,7 +728,7 @@ export default defineComponent({
         (route?.query?.chain || route?.query?.wallet) as string
       )?.toLowerCase()
       if (query) return query
-      return 'monad'
+      return MAIN_WALLET_ID
     })
 
     const currentWalletConfig = computed(() =>
@@ -753,6 +751,32 @@ export default defineComponent({
       ),
     )
     const walletStatus = computed(() => support.value.status)
+    const selectedChainAdapter = computed<ChainAdapter | undefined>(() => {
+      const entry = support.value.entry
+      if (!entry) return undefined
+      try {
+        return resolveChainAdapter(entry.id, entry)
+      } catch {
+        return undefined
+      }
+    })
+    const selectedHasNativeCoin = computed(
+      () =>
+        selectedChainAdapter.value?.hasNativeCoin ??
+        support.value.entry?.nativeDecimals !== null,
+    )
+    const isPrimaryStampChain = computed(
+      () =>
+        selectedChainAdapter.value?.isPrimaryStampChain ??
+        currentWalletConfig.value?.isMain ??
+        false,
+    )
+    const supportsHeldContactPayments = computed(
+      () =>
+        selectedChainAdapter.value?.supportsHeldContactPayments ??
+        currentWalletConfig.value?.isMain ??
+        false,
+    )
     const sendLabel = computed(() => ({
       key: 'walletPanel.sendAsset',
       params: { unit: support.value.entry?.unit ?? '' },
@@ -769,10 +793,14 @@ export default defineComponent({
     onMounted(() => void refreshCordoned?.())
     // Whether the active wallet's chain answers, as the shared balance loop last found.
     const { chainUnreachable } = useBalance()
-    // The breakdown reads the active (Monad) wallet's accounts; it is opened from the balance.
+    // The breakdown reads the primary wallet's sub-accounts; it is opened from the balance.
     const showBreakdown = ref(false)
     const canBreakDownBalance = computed(
-      () => selectedWallet.value === 'monad' && !!balanceObservation.value,
+      () =>
+        (selectedChainAdapter.value?.supportsSubAccountBreakdown ??
+          currentWalletConfig.value?.isMain ??
+          false) &&
+        !!balanceObservation.value,
     )
     watch(selectedWallet, () => (showBreakdown.value = false))
     const tokenStatusKey = computed(() => {
@@ -950,9 +978,10 @@ export default defineComponent({
         addressRetry.value,
       ],
       async ([status, , chain], _previous, onCleanup) => {
+        const isMainChain = chain === MAIN_WALLET_ID
         addressAvailability.value = 'loading'
         nativeOperations.value = {
-          status: chain === 'monad' ? 'unavailable' : 'unsupported',
+          status: isMainChain ? 'unavailable' : 'unsupported',
         }
         const capturedChain = network.value
         if (status !== 'ready') {
@@ -968,12 +997,14 @@ export default defineComponent({
           displayAddress.value = ''
           return
         }
-        const utxoChain =
-          capability.entry.family === 'bitcoin'
-            ? capability.entry.id
-            : undefined
-        // A Bitcoin-family address rotates, so a cached one may already have been paid.
-        displayAddress.value = utxoChain
+        const adapter = resolveChainAdapter(
+          capability.entry.id,
+          capability.entry,
+        )
+        const rotatesAddress = adapter?.rotatesReceiveAddress ?? false
+        const isPrimaryChain = adapter?.isPrimaryStampChain ?? isMainChain
+        // A rotating-address wallet (e.g. UTXO) derives its next unused receive address, so a cached one may already have been paid.
+        displayAddress.value = rotatesAddress
           ? ''
           : accountSession.getCachedChainAddress?.(chain) ?? ''
         let current = true
@@ -981,7 +1012,7 @@ export default defineComponent({
           current = false
         })
         try {
-          if (chain === 'monad') {
+          if (isPrimaryChain) {
             const address = await accountSession.getChainAddress(
               capturedChain.chainIdentifier,
             )
@@ -999,9 +1030,9 @@ export default defineComponent({
                   )
               })
               .catch(() => undefined)
-          } else if (utxoChain) {
+          } else if (rotatesAddress) {
             // The wallet's next unused receive address, never one that was already paid.
-            const { wallet } = await openUtxoWallet(utxoChain)
+            const { wallet } = await openUtxoWallet(capability.entry.id)
             const address = await wallet.getReceiveAddress()
             if (current) displayAddress.value = address.raw
           } else {
@@ -1012,7 +1043,7 @@ export default defineComponent({
         } catch {
           if (current) {
             displayAddress.value = ''
-            addressAvailability.value = utxoChain
+            addressAvailability.value = rotatesAddress
               ? 'discovery-unavailable'
               : 'unavailable'
             console.error('wallet-receive-address-unavailable', {
@@ -1037,13 +1068,16 @@ export default defineComponent({
       selectedWallet,
       sendChainIdentifier,
       walletStatus,
+      selectedHasNativeCoin,
+      isPrimaryStampChain,
+      supportsHeldContactPayments,
       sendLabel,
       selectedWalletIsTestnet: computed(
         () => support.value.entry?.isTestnet ?? false,
       ),
       walletUnit: computed(() =>
-        selectedWallet.value === 'tempo'
-          ? 'PathUSD'
+        !selectedHasNativeCoin.value
+          ? selectedChainAdapter.value?.unit ?? ''
           : support.value.entry?.unit ?? '',
       ),
       selectedChain: selectedWallet,

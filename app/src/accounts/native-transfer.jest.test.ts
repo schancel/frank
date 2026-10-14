@@ -300,7 +300,7 @@ it('invalidates the captured presentation synchronously when the account changes
 })
 
 describe('Bitcoin-family chains', () => {
-  it.each(['doge-testnet', 'xec-mainnet', 'btc-mainnet'])(
+  it.each(['xec-mainnet'])(
     'refuses Send on %s, which has no wallet, without opening one',
     async chainIdentifier => {
       await expect(
@@ -311,7 +311,13 @@ describe('Bitcoin-family chains', () => {
     },
   )
 
-  it.each(['xec-testnet', 'btc-testnet', 'bch-testnet'])(
+  it.each([
+    'xec-testnet',
+    'btc-testnet',
+    'btc-mainnet',
+    'bch-testnet',
+    'doge-testnet',
+  ])(
     'sends on %s through the session wallet of that chain',
     async chainIdentifier => {
       const wallet = { chainIdentifier, family: 'bitcoin' }

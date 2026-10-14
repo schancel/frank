@@ -519,7 +519,10 @@ const historyNote = computed(() => {
     .join(' ')
 })
 const equivalencyRows = computed(() => [
-  ...SUPPORTED_ASSETS.filter(asset => asset !== 'tempo').map(asset => ({
+  ...SUPPORTED_ASSETS.filter(
+    (asset): asset is keyof typeof UNIT_RATE_ASSET_METRICS =>
+      asset !== 'tempo' && asset in UNIT_RATE_ASSET_METRICS,
+  ).map(asset => ({
     asset,
     label: UNIT_RATE_ASSET_METRICS[asset].symbol,
     rateFormatted:

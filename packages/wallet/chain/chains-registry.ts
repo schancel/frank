@@ -23,7 +23,12 @@ export type SupportedChainKind =
   | "tempo"
   | "bitcoin"
   | "bitcoincash"
-  | "dogecoin";
+  | "dogecoin"
+  | "litecoin"
+  | "bnb"
+  | "polygon"
+  | "base"
+  | "arbitrum";
 export type SupportedCurve = "secp256k1" | "ed25519";
 
 export interface ChainContracts {
@@ -273,6 +278,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       dex: SOLANA_MAINNET_DEX,
     }),
     "ethereum-sepolia": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "ethereum",
       curve: "secp256k1",
       keyType: 1,
@@ -287,6 +293,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       ...deployedContracts("ethereum-sepolia"),
     }),
     "ethereum-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
       kind: "ethereum",
       curve: "secp256k1",
       keyType: 1,
@@ -343,6 +350,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       ...deployedContracts("tempo-testnet"),
     }),
     "btc-mainnet": Object.freeze({
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "bitcoin",
       curve: "secp256k1",
       keyType: 1,
@@ -372,6 +380,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       networkTag: "BTC4",
     }),
     "bch-mainnet": Object.freeze({
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "bitcoincash",
       curve: "secp256k1",
       keyType: 1,
@@ -394,6 +403,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       networkTag: "BCHT",
     }),
     "doge-mainnet": Object.freeze({
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "dogecoin",
       curve: "secp256k1",
       keyType: 1,
@@ -403,6 +413,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       networkTag: "DOGE",
     }),
     "doge-testnet": Object.freeze({
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "dogecoin",
       curve: "secp256k1",
       keyType: 1,
@@ -410,6 +421,106 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "tDOGE",
       nativeDecimals: 8,
       networkTag: "DOGT",
+    }),
+    "litecoin-mainnet": Object.freeze({
+      wallet: Object.freeze({ indexer: "electrum" }),
+      kind: "litecoin",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Litecoin",
+      unit: "LTC",
+      nativeDecimals: 8,
+      networkTag: "LTC1",
+    }),
+    "litecoin-testnet": Object.freeze({
+      wallet: Object.freeze({ indexer: "electrum" }),
+      kind: "litecoin",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Litecoin Testnet",
+      unit: "tLTC",
+      nativeDecimals: 8,
+      networkTag: "LTCT",
+    }),
+    "bnb-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "bnb",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "BNB Smart Chain",
+      unit: "BNB",
+      nativeDecimals: 18,
+      networkTag: "BSC1",
+    }),
+    "bnb-testnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "bnb",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "BNB Smart Chain Testnet",
+      unit: "tBNB",
+      nativeDecimals: 18,
+      networkTag: "BSCT",
+    }),
+    "polygon-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "polygon",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Polygon",
+      unit: "POL",
+      nativeDecimals: 18,
+      networkTag: "POL1",
+    }),
+    "polygon-amoy": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "polygon",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Polygon Amoy",
+      unit: "POL",
+      nativeDecimals: 18,
+      networkTag: "AMOY",
+    }),
+    "base-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "base",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Base",
+      unit: "ETH",
+      nativeDecimals: 18,
+      networkTag: "BASE",
+    }),
+    "base-sepolia": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "base",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Base Sepolia",
+      unit: "ETH",
+      nativeDecimals: 18,
+      networkTag: "BSES",
+    }),
+    "arbitrum-mainnet": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "arbitrum",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Arbitrum One",
+      unit: "ETH",
+      nativeDecimals: 18,
+      networkTag: "ARB1",
+    }),
+    "arbitrum-sepolia": Object.freeze({
+      wallet: JSON_RPC_WALLET,
+      kind: "arbitrum",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Arbitrum Sepolia",
+      unit: "ETH",
+      nativeDecimals: 18,
+      networkTag: "ARBS",
     }),
   });
 
@@ -622,11 +733,19 @@ export function validateChainAddress(
   const entry = getChainRegistryEntry(chainKindOrId);
   const kind = entry ? entry.kind : (chainKindOrId as SupportedChainKind);
 
+  if (entry?.family === "evm") {
+    return /^0x[0-9a-fA-F]{40}$/.test(trimmed);
+  }
+
   switch (kind) {
     case "monad":
     case "ethereum":
     case "tempo":
-    case "hyperliquid": {
+    case "hyperliquid":
+    case "bnb":
+    case "polygon":
+    case "base":
+    case "arbitrum": {
       return /^0x[0-9a-fA-F]{40}$/.test(trimmed);
     }
     case "solana": {
@@ -647,10 +766,23 @@ export function validateChainAddress(
       );
     }
     case "bitcoin": {
+      const lower = trimmed.toLowerCase();
+      const isBech32 =
+        (lower.startsWith("bc1") || lower.startsWith("tb1")) &&
+        (trimmed === lower || trimmed === trimmed.toUpperCase());
       return (
-        trimmed.startsWith("bc1") ||
-        trimmed.startsWith("tb1") ||
+        isBech32 ||
         /^[13mn2][1-9A-HJ-NP-Za-km-z]{25,34}$/.test(trimmed)
+      );
+    }
+    case "litecoin": {
+      const lower = trimmed.toLowerCase();
+      const isBech32 =
+        (lower.startsWith("ltc1") || lower.startsWith("tltc1")) &&
+        (trimmed === lower || trimmed === trimmed.toUpperCase());
+      return (
+        isBech32 ||
+        /^[LM23Q][1-9A-HJ-NP-Za-km-z]{26,34}$/.test(trimmed)
       );
     }
     case "dogecoin": {

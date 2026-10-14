@@ -587,11 +587,19 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
         ecash: 'settings.chainSendReceive',
         bitcoin: 'settings.chainSendReceive',
         bitcoincash: 'settings.chainSendReceive',
-        dogecoin: 'settings.chainUnsupported',
+        dogecoin: 'settings.chainSendReceive',
+        litecoin: 'settings.chainSendReceive',
         tempo: 'settings.chainSendReceive',
-        ethereum: 'settings.chainUnsupported',
+        ethereum: 'settings.chainSendReceive',
+        bnb: 'settings.chainSendReceive',
+        polygon: 'settings.chainSendReceive',
+        base: 'settings.chainSendReceive',
+        arbitrum: 'settings.chainSendReceive',
         hyperliquid: 'settings.chainSendReceive',
       })
+      expect(vm.chainStatusKey({ id: 'unsupported-chain' })).toBe(
+        'settings.chainUnsupported',
+      )
       wrapper.unmount()
     })
   })

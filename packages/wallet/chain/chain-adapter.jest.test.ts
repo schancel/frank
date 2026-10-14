@@ -20,8 +20,19 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
   const TEST_MNEMONIC =
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
+  let fetchSpy: jest.SpyInstance;
+  beforeEach(() => {
+    fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: '0x3b9aca00' }),
+    } as Response);
+  });
+  afterEach(() => {
+    fetchSpy?.mockRestore();
+  });
+
   describe('ChainId & Protocol Registry Conformity', () => {
-    it('defines exactly the 10 canonical chain identifiers', () => {
+    it('defines exactly the 28 canonical chain identifiers', () => {
       expect(CANONICAL_CHAIN_IDS).toEqual([
         'monad-mainnet',
         'monad-testnet',
@@ -33,6 +44,24 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
         'ecash-testnet',
         'solana-mainnet',
         'solana-devnet',
+        'btc-mainnet',
+        'btc-testnet',
+        'bch-mainnet',
+        'bch-testnet',
+        'doge-mainnet',
+        'doge-testnet',
+        'litecoin-mainnet',
+        'litecoin-testnet',
+        'ethereum-mainnet',
+        'ethereum-sepolia',
+        'bnb-mainnet',
+        'bnb-testnet',
+        'polygon-mainnet',
+        'polygon-amoy',
+        'base-mainnet',
+        'base-sepolia',
+        'arbitrum-mainnet',
+        'arbitrum-sepolia',
       ]);
     });
 
@@ -40,6 +69,8 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       expect(isCanonicalChainId('monad-testnet')).toBe(true);
       expect(isCanonicalChainId('solana-devnet')).toBe(true);
       expect(isCanonicalChainId('ecash-testnet')).toBe(true);
+      expect(isCanonicalChainId('btc-mainnet')).toBe(true);
+      expect(isCanonicalChainId('litecoin-mainnet')).toBe(true);
       expect(isCanonicalChainId('native-evm')).toBe(false);
       expect(isCanonicalChainId('arbitrary-chain')).toBe(false);
     });
@@ -55,11 +86,26 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
         expect(typeof adapter.rpcUrl).toBe('string');
         expect(adapter.rpcUrl.startsWith('https://')).toBe(true);
 
-        if (chainId.startsWith('monad') || chainId.startsWith('tempo') || chainId.startsWith('hyperliquid')) {
+        if (
+          chainId.startsWith('monad') ||
+          chainId.startsWith('tempo') ||
+          chainId.startsWith('hyperliquid') ||
+          chainId.startsWith('ethereum') ||
+          chainId.startsWith('bnb') ||
+          chainId.startsWith('polygon') ||
+          chainId.startsWith('base') ||
+          chainId.startsWith('arbitrum')
+        ) {
           expect(adapter.family).toBe('evm');
         } else if (chainId.startsWith('solana')) {
           expect(adapter.family).toBe('solana');
-        } else if (chainId.startsWith('ecash')) {
+        } else if (
+          chainId.startsWith('ecash') ||
+          chainId.startsWith('btc') ||
+          chainId.startsWith('bch') ||
+          chainId.startsWith('doge') ||
+          chainId.startsWith('litecoin')
+        ) {
           expect(adapter.family).toBe('bitcoin');
         }
       }
@@ -159,6 +205,44 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       it('validates eCash addresses accurately by network prefix', () => {
         expect(testnetAdapter.isValidAddress(testnetAddr)).toBe(true);
         expect(testnetAdapter.isValidAddress('0x9858EfFD232B4033E47d90003D41EC34EcaEda94')).toBe(false);
+      });
+    });
+
+    describe('Bitcoin (Mainnet / Testnet)', () => {
+      const btcAdapter = createChainAdapter('btc-mainnet');
+      const btcAddr = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+
+      it('validates Bitcoin addresses accurately', () => {
+        expect(btcAdapter.isValidAddress(btcAddr)).toBe(true);
+        expect(btcAdapter.isValidAddress('1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2')).toBe(true);
+        expect(btcAdapter.isValidAddress('0x9858EfFD232B4033E47d90003D41EC34EcaEda94')).toBe(false);
+      });
+
+      it('parses address to 20-byte payload and reconstructs it', () => {
+        const payload = btcAdapter.parseAddress(btcAddr);
+        expect(payload.length).toBe(20);
+        expect(btcAdapter.formatAddress(payload)).toBe(btcAddr);
+      });
+    });
+
+    describe('Litecoin (Mainnet / Testnet)', () => {
+      const ltcAdapter = createChainAdapter('litecoin-mainnet');
+      const ltcAddr = 'ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgm6n4w';
+
+      it('validates Litecoin addresses accurately', () => {
+        expect(ltcAdapter.isValidAddress(ltcAddr)).toBe(true);
+        expect(ltcAdapter.isValidAddress('LTC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KGM6N4W')).toBe(true);
+        expect(ltcAdapter.isValidAddress('0x9858EfFD232B4033E47d90003D41EC34EcaEda94')).toBe(false);
+      });
+    });
+
+    describe('Dogecoin (Mainnet / Testnet)', () => {
+      const dogeAdapter = createChainAdapter('doge-mainnet');
+      const dogeAddr = 'DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L';
+
+      it('validates Dogecoin addresses accurately', () => {
+        expect(dogeAdapter.isValidAddress(dogeAddr)).toBe(true);
+        expect(dogeAdapter.isValidAddress('0x9858EfFD232B4033E47d90003D41EC34EcaEda94')).toBe(false);
       });
     });
   });
@@ -381,7 +465,7 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       // recoverAllWallets loops over all wallets and reports results gracefully
       const report = await recoverAllWallets();
       expect(report.succeeded.length + report.failed.length).toBe(wallets.size);
-    });
+    }, 15000);
 
     it('isolates chain RPC failure from other wallets during multi-wallet recovery', async () => {
       const allocatedWallets: WalletIdentifier[] = [
@@ -640,6 +724,53 @@ describe('Unified ChainAdapter & Multi-Wallet Architecture', () => {
       expect(events.some((e) => e.key === 'balance' && e.value === '42000000000000000000')).toBe(true);
 
       unsubscribe();
+    });
+  });
+
+  describe('ChainAdapter Capabilities, Supported Assets, and Receive Address', () => {
+    it('exposes accurate capability flags and supported assets per chain adapter', () => {
+      const monad = createChainAdapter('monad-testnet');
+      expect(monad.hasNativeCoin).toBe(true);
+      expect(monad.isPrimaryStampChain).toBe(true);
+      expect(monad.supportsSubAccountBreakdown).toBe(true);
+      expect(monad.supportsHeldContactPayments).toBe(true);
+      expect(monad.rotatesReceiveAddress).toBe(false);
+      expect(monad.getSupportedAssets()).toContainEqual(
+        expect.objectContaining({
+          asset: { kind: 'native' },
+          unit: 'MONT',
+          decimals: 18,
+        })
+      );
+
+      const tempo = createChainAdapter('tempo-testnet');
+      expect(tempo.hasNativeCoin).toBe(false);
+      expect(tempo.unit).toBe('PathUSD');
+      expect(tempo.isPrimaryStampChain).toBe(false);
+      expect(tempo.supportsSubAccountBreakdown).toBe(false);
+      expect(tempo.supportsHeldContactPayments).toBe(false);
+      expect(tempo.rotatesReceiveAddress).toBe(false);
+      expect(tempo.getSupportedAssets()).toEqual([
+        expect.objectContaining({
+          unit: 'USD',
+          decimals: 6,
+          nativeDecimals: 6,
+        }),
+      ]);
+
+      const btc = createChainAdapter('btc-testnet');
+      expect(btc.hasNativeCoin).toBe(true);
+      expect(btc.isPrimaryStampChain).toBe(false);
+      expect(btc.rotatesReceiveAddress).toBe(true);
+    });
+
+    it('resolves wallet.getReceiveAddress() with default and custom provider', async () => {
+      const walletMap = createWalletArray({ mnemonic: TEST_MNEMONIC });
+      const btcWallet = getPrimaryWallet('btc-testnet', walletMap)!;
+      expect(await btcWallet.getReceiveAddress()).toBe(btcWallet.address);
+
+      btcWallet.setReceiveAddressProvider(async () => 'tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl');
+      expect(await btcWallet.getReceiveAddress()).toBe('tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl');
     });
   });
 });

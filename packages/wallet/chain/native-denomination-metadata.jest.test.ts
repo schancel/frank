@@ -26,6 +26,16 @@ it("offers native denomination facts for every configured canonical network with
     "bch-testnet": 8,
     "doge-mainnet": 8,
     "doge-testnet": 8,
+    "litecoin-mainnet": 8,
+    "litecoin-testnet": 8,
+    "bnb-mainnet": 18,
+    "bnb-testnet": 18,
+    "polygon-mainnet": 18,
+    "polygon-amoy": 18,
+    "base-mainnet": 18,
+    "base-sepolia": 18,
+    "arbitrum-mainnet": 18,
+    "arbitrum-sepolia": 18,
   };
   expect(
     Object.fromEntries(

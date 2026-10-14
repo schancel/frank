@@ -10,6 +10,11 @@ const manifest = JSON.parse(
 )
 assert.equal(manifest.name, 'Frank')
 assert.equal(manifest.display, 'standalone')
+assert.equal(
+  manifest.orientation,
+  'any',
+  'Installed Frank must allow both portrait and landscape rotation',
+)
 for (const size of ['192x192', '512x512']) {
   const icon = manifest.icons.find(icon => icon.sizes === size)
   assert(icon && existsSync(new URL(icon.src, output)), `Missing ${size} icon`)

@@ -536,10 +536,6 @@ function requireMessageItems(
 }
 
 const MAX_INBOX_PAGES = 8
-/** Messages whose sender could not be checked yet: digest -> when that was first seen. */
-const unreadable = new WeakMap<object, Map<string, number>>()
-const UNREADABLE_RETRY_MS = 24 * 60 * 60_000
-const MAX_UNREADABLE = 1024
 
 
 function requireDirectory(owner: CanonicalMessagingOwner): CanonicalDirectory {
@@ -2459,26 +2455,14 @@ async function fetchSince(
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
           continue
         }
-        // Anything else is about this one peer right now: its entry expired or was rolled
-        // back, its history could not be read, the lookup failed. The message is left for a
-        // later read and every other peer's mail is still delivered. It is retried for a
-        // bounded time, after which it is given up on so it cannot pin the inbox scan forever.
-        const waiting = unreadable.get(owner.messages) ?? new Map<string, number>()
-        unreadable.set(owner.messages, waiting)
-        const since = waiting.get(digest) ?? Date.now()
-        if (waiting.size >= MAX_UNREADABLE && !waiting.has(digest))
-          waiting.delete(waiting.keys().next().value as string)
-        waiting.set(digest, since)
-        if (Date.now() - since >= UNREADABLE_RETRY_MS) {
-          waiting.delete(digest)
-          params.onQuarantinedTimestamp?.(record.timestampMs, digest)
-        } else params.onIncompleteTimestamp?.(record.timestampMs)
+        // A lookup failure is not proof that the original message can never be opened.
+        // Keep its timestamp in the host's replay window, while delivering other peers' mail.
+        params.onIncompleteTimestamp?.(record.timestampMs)
         continue
       }
-      unreadable.get(owner.messages)?.delete(digest)
       if (!peer) {
-        // No published entry for the key: nothing can authenticate this message.
-        params.onQuarantinedTimestamp?.(record.timestampMs, digest)
+        // A relay 404 cannot establish that the sender or its signed history never existed.
+        params.onIncompleteTimestamp?.(record.timestampMs)
         continue
       }
       const { senderEvidence, recipientEvidence } =
@@ -2551,6 +2535,7 @@ async function fetchSince(
               error.code === 'digest'))
         )
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
+        else params.onIncompleteTimestamp?.(record.timestampMs)
         continue
       } finally {
         roles.dispose()

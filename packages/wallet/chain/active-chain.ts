@@ -607,15 +607,12 @@ export interface DirectMessageClient {
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the
    * rest arrives on the next poll. If no complete group exists, the call rejects instead.
    * `onIncompleteTimestamp` reports a relay row that could not yet be translated because its
-   * sender profile was temporarily unavailable (transport failure). Callers must keep that
-   * inclusive timestamp in their replay window even though the incomplete row is absent from the
-   * returned array.
-   * `onQuarantinedTimestamp` reports a relay row that is terminally undeliverable because the
-   * registry authoritatively has no profile for its sender (HTTP 404 -- registered absence, not a
-   * transport failure). The row is absent from the returned array and will stay so, so callers
-   * durably quarantine the reported receipt and let their cursor pass it; keeping it in the
-   * replay window would let one paid envelope from an unregistered sender pin the bounded inbox
-   * scan forever. A row this client cannot decode or validate at all is reported the same way;
+   * directory evidence or opening keys are unavailable. Callers must keep that inclusive
+   * timestamp in their replay window even though the incomplete row is absent from the array.
+   * A relay HTTP 404 and elapsed retry time do not establish terminal absence.
+   * `onQuarantinedTimestamp` reports a relay row that is terminally invalid or unsupported.
+   * Callers durably quarantine the reported receipt and let their cursor pass it.
+   * A row this client cannot decode or validate at all is reported the same way;
    * having no readable payload digest, it is identified by the relay's submission identity. */
   fetchSince(params: {
     wallet: WalletHandle;

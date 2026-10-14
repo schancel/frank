@@ -1,3 +1,4 @@
+import { checkpoint, eventQueue } from "./lifecycle-checkpoints.testutil";
 import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 /**
  * Several bots on one host in one process, the way the demo runs them: one shared funding
@@ -184,26 +185,38 @@ describe("several bots on one host", () => {
     newHost();
     await host!.registerAll([bot("slow"), bot("quick")]);
     const slowWallet = instanceOf("slow").wallet;
+    const sends = eventQueue();
+    const send = mockSend.getMockImplementation();
+    if (!send) throw new Error("expected the fixture's wallet send implementation");
+    mockSend.mockImplementation(async (params) => {
+      const result = await send(params);
+      sends.publish();
+      return result;
+    });
+    const thirdQuickRead = checkpoint();
+    let quickReads = 0;
     let mail = [inboundFor("quick", "one", 1)];
-    mockFetchSince.mockImplementation(({ wallet }) =>
-      wallet === slowWallet
-        ? new Promise((resolve) => hung.push(() => resolve([])))
-        : Promise.resolve(mail)
-    );
+    mockFetchSince.mockImplementation(({ wallet }) => {
+      if (wallet === slowWallet)
+        return new Promise((resolve) => hung.push(() => resolve([])));
+      if (++quickReads === 3) thirdQuickRead.resolve();
+      return Promise.resolve(mail);
+    });
 
     const first = pollAllBots();
-    await until(() => textsSent().length === 1);
+    await sends.next();
     expect(textsSent()).toEqual(["answer from quick"]);
 
     // The next ticks: the slow bot's pass is still the same one, the quick bot polls again.
     mail = [inboundFor("quick", "two", 2)];
     void pollAllBots();
-    await until(() => textsSent().length === 2);
+    await sends.next();
     void pollAllBots();
     const reads = (wallet: unknown) =>
       mockFetchSince.mock.calls.filter(([params]) => params.wallet === wallet)
         .length;
-    await until(() => reads(instanceOf("quick").wallet) === 3);
+    await thirdQuickRead.promise;
+    expect(reads(instanceOf("quick").wallet)).toBe(3);
     expect(reads(slowWallet)).toBe(1);
     expect(textsSent()).toEqual(["answer from quick", "answer from quick"]);
 
@@ -214,7 +227,7 @@ describe("several bots on one host", () => {
       wallet === slowWallet ? [inboundFor("slow", "at last", 3)] : []
     );
     await pollAllBots();
-    await until(() => textsSent().length === 3);
+    await sends.next();
     expect(textsSent()[2]).toBe("answer from slow");
   });
 

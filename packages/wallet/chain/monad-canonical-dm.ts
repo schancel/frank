@@ -74,7 +74,7 @@ import type {
   MessageItem,
   OutboxMessageItem,
 } from '@frank/cashweb/types/messages'
-import type { MessageItemRegistry } from '../message-item-plugins/registry'
+import type { MessageItemRegistry } from '@frank/cashweb/message-items/registry'
 import {
   MessageItemBudgetExceededError,
   decodeItemFrames,

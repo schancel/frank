@@ -16,7 +16,7 @@ import {
   MessageItemDecodeError,
   MessageItemEncodeError,
   type MessageItemDecodeContext,
-} from '../message-item-plugins/registry'
+} from '@frank/cashweb/message-items/registry'
 import {
   amount,
   cborItemCodec,
@@ -32,7 +32,7 @@ import {
   struct,
   timestampMs,
   type Field,
-} from '../message-item-plugins/shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 
 export const MAX_JOURNAL_SUBJECT_BYTES = 160
 export const MAX_OUTBOX_ITEM_FRAMES = 32

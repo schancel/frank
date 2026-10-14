@@ -60,6 +60,7 @@ module.exports = {
     // jsdom's browser/require conditions omit this package's node/import exports.
     // Resolve its public Node entry while loading the actual wrapper implementation.
     '^@quasar/app-vite$': require.resolve('@quasar/app-vite'),
+    '^@frank/group-messaging/(.*)$': '<rootDir>/../packages/group-messaging/$1',
     // Resolve workspace packages from this checkout. Worktrees intentionally share the root
     // node_modules directory, whose workspace symlinks otherwise point at another checkout.
     '^@frank/account-recovery$':

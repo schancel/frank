@@ -3,6 +3,7 @@
  * codecs, as the send path encodes them, and decoded again. Tests that judge what a bot said use
  * this instead of hand-written items, so they cannot drift from what the bot really sends.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import {
   encodeFrame,
   standaloneItemBudget,
@@ -11,14 +12,15 @@ import {
 } from "@frank/codec";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
-import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
+import { pluginCapabilitiesNotYetAvailable } from "@frank/cashweb/message-items/registry";
 import {
   decodeItemFrames,
   encodeItemFrames,
 } from "@frank/wallet/message-item-plugins/wire";
 
-const registry = createDefaultMessageItemRegistry(
-  pluginCapabilitiesNotYetAvailable
+const registry = installGroupMessageItemPlugins(
+  createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+  pluginCapabilitiesNotYetAvailable,
 );
 
 /** Encodes as the send path does and reads back as a recipient does. */

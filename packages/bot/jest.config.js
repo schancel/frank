@@ -11,6 +11,7 @@ module.exports = {
     '^@frank/threshold-ecdsa$': '<rootDir>/../threshold-ecdsa/src/index.ts',
     '^@frank/adaptor-signatures$':
       '<rootDir>/../adaptor-signatures/src/index.ts',
+    '^@frank/group-messaging/(.*)$': '<rootDir>/../group-messaging/$1',
     '^@frank/bot-framework/(.*)$': '<rootDir>/../bot-framework/src/$1',
     '^@frank/bot-framework$': '<rootDir>/../bot-framework/src/index.ts',
     '^@frank/directory-admission$':

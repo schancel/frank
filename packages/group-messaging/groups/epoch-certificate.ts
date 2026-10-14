@@ -1,5 +1,11 @@
-import type { GroupEpochCertificate } from '@frank/cashweb/types/messages'
-import { hash32, hex, int, req, struct } from './cbor-fields'
+import type { GroupEpochCertificate } from '@frank/cashweb/groups/types'
+import {
+  hash32,
+  hex,
+  int,
+  req,
+  struct,
+} from '@frank/cashweb/message-items/cbor-fields'
 
 export const groupEpochCertificate = struct<GroupEpochCertificate>({
   epoch: req(0, int(0, 1_000_000_000)),

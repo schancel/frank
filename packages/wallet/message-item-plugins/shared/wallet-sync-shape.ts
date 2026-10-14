@@ -27,7 +27,7 @@ import {
   transactionId,
   type ItemCodec,
   type Spec,
-} from './cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { nonce, outputIndex } from './limits'
 
 type Shaped<T extends WalletSyncItem['type']> = WalletSyncItem & { type: T }

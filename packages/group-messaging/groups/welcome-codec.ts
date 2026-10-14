@@ -1,4 +1,4 @@
-import type { GroupWelcomeItem } from '@frank/cashweb/types/messages'
+import type { GroupWelcomeItem } from '../types'
 
 import {
   cborItemCodec,
@@ -9,8 +9,8 @@ import {
   opt,
   req,
   str,
-} from '../shared/cbor-fields'
-import { groupEpochCertificate } from '../shared/group-epoch-certificate'
+} from '@frank/cashweb/message-items/cbor-fields'
+import { groupEpochCertificate } from './epoch-certificate'
 
 /**
  * Group invitation item delivered in a 1:1 DM (Issues #70 & #1365).

@@ -4,7 +4,7 @@ import {
   requirePluginCapabilities,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { messageTombstoneCodec } from './codec'
 
 export function initMessageTombstonePlugin(

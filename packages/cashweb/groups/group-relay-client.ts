@@ -1,6 +1,6 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { directoryAddress } from '../relay/open-directory'
-import type { GroupEpochCertificate } from '../types/messages'
+import type { GroupEpochCertificate } from './types'
 import axios, { type AxiosInstance } from 'axios'
 import { randomBytes } from '@frank/crypto-box'
 import {

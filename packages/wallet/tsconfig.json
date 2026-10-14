@@ -16,6 +16,7 @@
     // hoisted @types stubs from unrelated devDependencies elsewhere in the workspace).
     "types": ["node", "jest"],
     "paths": {
+      "@frank/group-messaging/*": ["../group-messaging/*"],
       "@frank/codec": ["../frank-codec/src/index.ts"],
       "@frank/nakamoto": ["../nakamoto/src/index.ts"],
       "@frank/nakamoto/*": ["../nakamoto/src/*"],

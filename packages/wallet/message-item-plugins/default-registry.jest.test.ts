@@ -7,14 +7,14 @@ import type { MessageItem } from '@frank/cashweb/types/messages'
 import {
   DEFAULT_MESSAGE_ITEM_PLUGINS,
   createDefaultMessageItemRegistry,
-  installMessageItemPlugin,
 } from './default-registry'
 import {
   MessageItemPluginAlreadyRegisteredError,
+  installMessageItemPlugin,
   createMessageItemRegistry,
   pluginCapabilitiesNotYetAvailable,
   type MessageItemCapabilityProvider,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 
 // Adding a member to `MessageItem` without listing it here does not compile.
 const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
@@ -47,8 +47,6 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'calendar-invite': true,
   'calendar-rsvp': true,
   'contact-card': true,
-  'group-welcome': true,
-  'group-control': true,
   // Not a plugin: what a reader keeps in place of an item it cannot interpret.
   'unsupported': true,
   // Neutral carrier: features register their own itemType, not this discriminator.
@@ -217,17 +215,18 @@ describe('default message item registry', () => {
         path.includes('message-item-plugins'),
       ),
     ).toEqual([
-      '../message-item-plugins/registry',
       '../message-item-plugins/wire',
     ])
     // The contract and the wire rule themselves name no plugin and no composition.
     expect(importsOf('message-item-plugins/application-item.ts')).toEqual([])
-    expect(importsOf('message-item-plugins/registry.ts')).toEqual([
-      './application-item',
-    ])
+    expect(
+      readFileSync(
+        join(__dirname, '../../cashweb/message-items/registry.ts'),
+        'utf8',
+      ),
+    ).not.toMatch(/from ['"][^'"]*(?:wallet|group-messaging)/)
     expect(importsOf('message-item-plugins/wire.ts')).toEqual([
       './application-item',
-      './registry',
     ])
     // The old hard-coded chain is gone: the path encodes and projects no item type itself.
     const source = readFileSync(

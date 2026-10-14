@@ -1,4 +1,4 @@
-import type { GroupControlItem } from '@frank/cashweb/types/messages'
+import type { GroupControlItem } from '../types'
 
 import {
   cborItemCodec,
@@ -9,8 +9,8 @@ import {
   oneOf,
   opt,
   req,
-} from '../shared/cbor-fields'
-import { groupEpochCertificate } from '../shared/group-epoch-certificate'
+} from '@frank/cashweb/message-items/cbor-fields'
+import { groupEpochCertificate } from './epoch-certificate'
 
 /**
  * Group epoch transition & membership control item (Issue #70).

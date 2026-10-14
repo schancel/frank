@@ -4,7 +4,7 @@ import {
   requirePluginCapabilities,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { outboxMessageCodec } from './codec'
 
 export function initOutboxMessagePlugin(

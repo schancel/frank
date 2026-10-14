@@ -73,7 +73,8 @@
     "worker-loader": "^3.0.8",
     "@zxing/browser": "0.2.1",
     "@zxing/library": "0.23.0",
-    "@frank/swap-protocol": "*"
+    "@frank/swap-protocol": "*",
+    "@frank/group-messaging": "*"
   },
   "devDependencies": {
     "bitcore-lib-xpi": "*",

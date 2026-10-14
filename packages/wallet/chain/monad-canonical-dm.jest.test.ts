@@ -53,7 +53,7 @@ import {
 } from '@frank/cashweb/relay/canonical-dm'
 import type { ChannelUpdateItem, MessageItem } from '@frank/cashweb/types/messages'
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
-import { pluginCapabilitiesNotYetAvailable } from '../message-item-plugins/registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/cashweb/message-items/registry'
 import { decodeItemFrames } from '../message-item-plugins/wire'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 

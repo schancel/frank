@@ -12,7 +12,7 @@ import {
   pluginCapabilitiesNotYetAvailable,
   requirePluginCapabilities,
   type MessageItemPlugin,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 
 const textPlugin = (
   over: Partial<MessageItemPlugin<TextItem>> = {},

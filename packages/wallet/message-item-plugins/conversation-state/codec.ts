@@ -1,6 +1,6 @@
 import type { ConversationStateItem } from '@frank/cashweb/types/messages'
 
-import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
+import { MessageItemDecodeError, MessageItemEncodeError } from '@frank/cashweb/message-items/registry'
 import {
   cborItemCodec,
   chainAddress,
@@ -10,7 +10,7 @@ import {
   str,
   timestampMs,
   type ItemCodec,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 
 /** A conversation ID as the chat store keys it: 16 bytes as lowercase `8-4-4-4-12` text. */
 const conversationId = matching(

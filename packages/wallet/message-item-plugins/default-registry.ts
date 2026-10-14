@@ -1,11 +1,10 @@
 /**
- * Composition: the one place that names every message-item plugin. A consumer that supports all
- * of them (the app, the bot host, tests) builds its registry here. Nothing is registered by
+ * Wallet-local composition: names the plugins still owned here. Hosts build this base registry and explicitly install external feature plugins. Nothing is registered by
  * importing this file; a registry exists only once `createDefaultMessageItemRegistry` is called,
  * and each call builds a separate one.
  *
  * Only this file imports the plugins. Wallet send, receive and custody code takes a
- * `MessageItemRegistry` (`./registry.ts`) and never imports from here or from a plugin directory.
+ * `MessageItemRegistry` (`@frank/cashweb/message-items/registry`) and never imports from here or from a plugin directory.
  */
 import { initBlackjackHandPlugin } from './blackjack-hand/plugin'
 import { initBlackjackMovePlugin } from './blackjack-move/plugin'
@@ -18,8 +17,6 @@ import { initDeviceClaimPlugin } from './device-claim/plugin'
 import { initDicePlugin } from './dice/plugin'
 import { initDigitalGoodsPlugin } from './digital-goods/plugin'
 import { initEmailPlugin } from './email/plugin'
-import { initGroupControlPlugin } from './group-control/plugin'
-import { initGroupWelcomePlugin } from './group-welcome/plugin'
 import { initImagePlugin } from './image/plugin'
 import { initJournalCheckpointPlugin } from './journal-checkpoint/plugin'
 import { initLiarsDicePlugin } from './liars-dice/plugin'
@@ -40,10 +37,11 @@ import { initTextPlugin } from './text/plugin'
 import { initWalletSyncPlugin } from './wallet-sync/plugin'
 import {
   createMessageItemRegistry,
+  installMessageItemPlugin,
   type MessageItemCapabilityProvider,
   type MessageItemPluginInit,
   type MessageItemRegistry,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 
 /** Every plugin, as `[item type, init]`. The type is what the plugin's capabilities are bound to
  * and the only type its `init` may register. */
@@ -79,28 +77,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['calendar-invite', initCalendarInvitePlugin],
   ['calendar-rsvp', initCalendarRsvpPlugin],
   ['contact-card', initContactCardPlugin],
-  ['group-welcome', initGroupWelcomePlugin],
-  ['group-control', initGroupControlPlugin],
 ]
-
-/** Installs one plugin and checks it registered its own type and nothing else. */
-export function installMessageItemPlugin(
-  registry: MessageItemRegistry,
-  capabilities: MessageItemCapabilityProvider,
-  type: string,
-  init: MessageItemPluginInit,
-): void {
-  const before = registry.types()
-  init(registry, capabilities.forPlugin(type))
-  const added = registry.types().slice(before.length)
-  if (added.length !== 1 || added[0] !== type) {
-    throw new Error(
-      `Message item plugin '${type}' must register exactly its own type, but registered: ${
-        added.join(', ') || 'nothing'
-      }`,
-    )
-  }
-}
 
 /** A new registry holding every plugin. `capabilities` is required: no plugin is installed
  * without the capabilities bound to its type. */

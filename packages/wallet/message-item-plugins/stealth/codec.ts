@@ -14,7 +14,7 @@ import type { StealthItem } from '@frank/cashweb/types/messages'
 import {
   MessageItemDecodeError,
   type MessageItemDecodeContext,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
 export function encodeStealthItem(item: StealthItem): Uint8Array {

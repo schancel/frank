@@ -28,7 +28,7 @@ import {
   type MessageItemContext,
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 import { decodeBlackjackMove, encodeBlackjackMove } from './codec'
 
 /** Looks up `wagerTxHash` on-chain and reports what it actually shows -- confirmed or not, real

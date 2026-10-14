@@ -1,3 +1,8 @@
+import type { GroupEpochCertificate } from '@frank/cashweb/groups/types'
+import type {
+  GroupWelcomeItem,
+  GroupControlItem,
+} from '@frank/group-messaging/types'
 import { encodeItemFrames } from '@frank/wallet/message-item-plugins/wire'
 import {
   encodeGroupItems,
@@ -71,9 +76,6 @@ import type {
   OutboxMessageItem,
   MessageTombstoneItem,
   JournalCheckpointItem,
-  GroupWelcomeItem,
-  GroupControlItem,
-  GroupEpochCertificate,
 } from '@frank/cashweb/types/messages'
 import {
   bytesToHex,

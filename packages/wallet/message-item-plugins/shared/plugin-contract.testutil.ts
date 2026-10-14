@@ -15,7 +15,7 @@ import {
   type MessageItemPluginCapabilities,
   type MessageItemPluginInit,
   type MessageItemRegistry,
-} from '../registry'
+} from '@frank/cashweb/message-items/registry'
 
 export interface PluginSample {
   item: MessageItem

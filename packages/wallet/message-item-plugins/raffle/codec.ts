@@ -10,7 +10,7 @@ import {
   oneOf,
   opt,
   req,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 import { MAX_RAFFLE_ENTRIES, id, note, secret } from '../shared/limits'
 
 export const raffleCodec = cborItemCodec<RaffleItem>('raffle', {

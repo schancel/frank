@@ -32,6 +32,7 @@
     // internal chain -- does not automatically derive its module resolution from tsconfig
     // `paths`; these are two independent mechanisms that both need to agree).
     "paths": {
+      "@frank/group-messaging/*": ["../packages/group-messaging/*"],
       // Mera's compiler alias names the same declaration as its package exports.
       // Vite resolves the runtime entry through those exports.
       "@category-labs/mera": [

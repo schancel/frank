@@ -3,6 +3,7 @@
  * travels in, that the dedicated frames keep their bytes, and what a reader does with an item it
  * cannot interpret.
  */
+import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { directMessageText } from '@frank/cashweb/relay/canonical-dm'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import {
@@ -31,7 +32,7 @@ import {
   MessageItemUnsupportedError,
   createMessageItemRegistry,
   pluginCapabilitiesNotYetAvailable,
-} from './registry'
+} from '@frank/cashweb/message-items/registry'
 import {
   DEDICATED_ITEM_FRAMES,
   MessageItemBudgetExceededError,
@@ -52,7 +53,8 @@ import {
   NOT_CARRIED_PROPOSAL_SAMPLES,
 } from './wire-samples.testutil'
 
-const registry = createDefaultMessageItemRegistry(
+const registry = installGroupMessageItemPlugins(
+  createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
   pluginCapabilitiesNotYetAvailable,
 )
 
@@ -82,7 +84,7 @@ const frameType = (frame: Uint8Array) => {
 describe('the dispatch rule', () => {
   it('is stated for every registered type: dedicated frame, generic frame, or not carried', () => {
     const rules = Object.fromEntries(
-      DEFAULT_MESSAGE_ITEM_PLUGINS.map(([type]) => {
+      registry.types().map(type => {
         const rule = itemFrameRule(type)
         return [
           type,

@@ -1,7 +1,7 @@
 {
   "name": "@frank/mail-gateway",
   "version": "0.0.1",
-  "description": "Standalone Email ↔ Frank Gateway: dual-direction SMTP MTA, hosted checkout page, and Cashweb bridge",
+  "description": "Standalone Email \u2194 Frank Gateway: dual-direction SMTP MTA, hosted checkout page, and Cashweb bridge",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -22,7 +22,8 @@
     "mailauth": "7.3.0",
     "nodemailer": "^10.1.0",
     "resend": "^6.32.1",
-    "smtp-server": "3.19.21"
+    "smtp-server": "3.19.21",
+    "@frank/group-messaging": "*"
   },
   "devDependencies": {
     "@types/jest": "^29",

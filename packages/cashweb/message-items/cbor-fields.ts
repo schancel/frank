@@ -16,7 +16,7 @@ import {
   MessageItemDecodeError,
   MessageItemEncodeError,
   type MessageItemDecodeContext,
-} from '../registry'
+} from './registry'
 import { isCanonicalChainIdentifier } from './chain-identifiers'
 
 export interface Field<T> {

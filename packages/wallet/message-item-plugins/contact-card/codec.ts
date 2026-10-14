@@ -12,7 +12,7 @@ import {
   opt,
   req,
   str,
-} from '../shared/cbor-fields'
+} from '@frank/cashweb/message-items/cbor-fields'
 
 export const MAX_CONTACT_LIST_ENTRIES = 32
 export const MAX_RAW_VCARD_BYTES = 65_536

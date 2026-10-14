@@ -152,7 +152,8 @@ function le(value: bigint, width: number): Uint8Array | null {
 }
 
 function headerLength(chain: ChainDescriptor): 80 | 160 {
-  return chain.header.kind === 'bitcoin-80'
+  return chain.header.kind === 'bitcoin-80' ||
+    chain.header.kind === 'auxpow-variable'
     ? BITCOIN_HEADER_BYTES
     : LOTUS_HEADER_BYTES
 }
@@ -423,6 +424,9 @@ export function parseHeader(
   bytes: Uint8Array,
   chain: ChainDescriptor,
 ): BlockResult<BlockHeader> {
+  // A Dogecoin AuxPoW header carries variable bytes after the 80-byte hash preimage.
+  // Until parsed explicitly, never accept a truncated prefix as a complete header.
+  if (chain.header.kind === 'auxpow-variable') return fail('block-header-shape')
   const body = copyBytes(bytes)
   const expected = headerLength(chain)
   if (
@@ -566,6 +570,7 @@ export function parseMerkleBlock(
   bytes: Uint8Array,
   chain: ChainDescriptor,
 ): BlockResult<MerkleBlock> {
+  if (chain.header.kind === 'auxpow-variable') return fail('block-header-shape')
   const body = copyBytes(bytes)
   const expected = headerLength(chain)
   if (

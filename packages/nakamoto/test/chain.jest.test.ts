@@ -5,6 +5,10 @@ import {
   BCH_MAINNET,
   BTC_MAINNET,
   BTC_TESTNET,
+  DOGE_MAINNET,
+  DOGE_TESTNET,
+  LTC_MAINNET,
+  LTC_TESTNET,
   CHAINS,
   XEC_MAINNET,
   XPI_MAINNET,
@@ -15,12 +19,88 @@ import {
 } from '../src'
 
 describe('chain descriptors', () => {
-  test('there are twelve chains and no default', () => {
-    expect(CHAINS).toHaveLength(12)
+  test('there are sixteen chains and no default', () => {
+    expect(CHAINS).toHaveLength(16)
     expect(Object.isFrozen(CHAINS)).toBe(true)
     const keys = CHAINS.map(chain => `${chain.family}:${chain.network}`)
-    expect(new Set(keys).size).toBe(12)
+    expect(new Set(keys).size).toBe(16)
     expect(getChain('btc', 'mainnet')).toBe(BTC_MAINNET)
+    expect(getChain('doge', 'mainnet')).toBe(DOGE_MAINNET)
+    expect(getChain('doge', 'testnet')).toBe(DOGE_TESTNET)
+    expect(getChain('ltc', 'mainnet')).toBe(LTC_MAINNET)
+    expect(getChain('ltc', 'testnet')).toBe(LTC_TESTNET)
+  })
+
+  test('Doge mainnet and testnet use Dogecoin Core versions and legacy signatures only', () => {
+    expect(DOGE_MAINNET).toMatchObject({
+      protocolId: 'doge-mainnet',
+      family: 'doge',
+      network: 'mainnet',
+      pubkeyHashVersion: 30,
+      scriptHashVersion: 22,
+      wifVersion: 158,
+      hdPublicVersion: 0x02facafd,
+      hdPrivateVersion: 0x02fac398,
+      p2pMagic: 0xc0c0c0c0,
+      p2pPort: 22556,
+      registeredSlip44: 3,
+      sighash: { kind: 'legacy-only' },
+    })
+    expect(DOGE_MAINNET.bech32Hrp).toBeNull()
+    expect(DOGE_MAINNET.cashaddrPrefix).toBeNull()
+
+    expect(DOGE_TESTNET).toMatchObject({
+      protocolId: 'doge-testnet',
+      family: 'doge',
+      network: 'testnet',
+      pubkeyHashVersion: 113,
+      scriptHashVersion: 196,
+      wifVersion: 241,
+      p2pMagic: 0xfcc1b7dc,
+      p2pPort: 44556,
+      registeredSlip44: 3,
+      sighash: { kind: 'legacy-only' },
+    })
+    expect(DOGE_TESTNET.bech32Hrp).toBeNull()
+    expect(DOGE_TESTNET.cashaddrPrefix).toBeNull()
+  })
+
+  test('Litecoin mainnet and testnet use Litecoin Core versions and SegWit signatures', () => {
+    expect(LTC_MAINNET).toMatchObject({
+      protocolId: 'litecoin-mainnet',
+      family: 'ltc',
+      network: 'mainnet',
+      pubkeyHashVersion: 48,
+      scriptHashVersion: 50,
+      wifVersion: 176,
+      hdPublicVersion: 0x0488b21e,
+      hdPrivateVersion: 0x0488ade4,
+      bech32Hrp: 'ltc',
+      cashaddrPrefix: null,
+      p2pMagic: 0xfbc0b6db,
+      p2pPort: 9333,
+      registeredSlip44: 2,
+      sighash: { kind: 'btc-legacy-and-segwit' },
+      header: { kind: 'bitcoin-80' },
+    })
+
+    expect(LTC_TESTNET).toMatchObject({
+      protocolId: 'litecoin-testnet',
+      family: 'ltc',
+      network: 'testnet',
+      pubkeyHashVersion: 111,
+      scriptHashVersion: 58,
+      wifVersion: 239,
+      hdPublicVersion: 0x043587cf,
+      hdPrivateVersion: 0x04358394,
+      bech32Hrp: 'tltc',
+      cashaddrPrefix: null,
+      p2pMagic: 0xfdd2c8f1,
+      p2pPort: 19335,
+      registeredSlip44: 1,
+      sighash: { kind: 'btc-legacy-and-segwit' },
+      header: { kind: 'bitcoin-80' },
+    })
   })
 
   test('Nakamoto descriptors conform to the shared protocol registry', () => {

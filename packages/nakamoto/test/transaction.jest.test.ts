@@ -8,6 +8,10 @@ import { concatBytes, reverseBytes } from '../src/bytes.js'
 import {
   BCH_MAINNET,
   BTC_MAINNET,
+  DOGE_MAINNET,
+  DOGE_TESTNET,
+  LTC_MAINNET,
+  LTC_TESTNET,
   XEC_MAINNET,
   XPI_MAINNET,
 } from '../src/chain/index.js'
@@ -121,6 +125,54 @@ const BIP143_SIGNED =
   '0100000000010169c12106097dc2e0526493ef67f21269fe888ef05c7a3a5dacab38e1ac8387f14c1d000000ffffffff01010000000000000000034830450220487fb382c4974de3f7d834c1b617fe15860828c7f96454490edd6d891556dcc9022100baf95feb48f845d5bfc9882eb6aeefa1bc3790e39f59eaa46ff7f15ae626c53e012102a9781d66b61fb5a7ef00ac5ad5bc6ffc78be7b44a566e3c87870e1079368df4c4aad4830450220487fb382c4974de3f7d834c1b617fe15860828c7f96454490edd6d891556dcc9022100baf95feb48f845d5bfc9882eb6aeefa1bc3790e39f59eaa46ff7f15ae626c53e0100000000'
 
 describe('transaction bytes', () => {
+  test('Doge accepts legacy sighash and rejects SegWit and fork-id', () => {
+    for (const doge of [DOGE_MAINNET, DOGE_TESTNET]) {
+      const tx = mustTx(fromHex(BIP143_UNSIGNED), doge)
+      const scriptCode = fromHex('76a914' + '11'.repeat(20) + '88ac')
+      expect(
+        sighash(tx, 0, doge, SIGHASH_ALL, {
+          algorithm: 'legacy',
+          scriptCode,
+        }).ok,
+      ).toBe(true)
+      expect(
+        sighash(tx, 0, doge, SIGHASH_ALL, {
+          algorithm: 'bip143',
+          scriptCode,
+          amount: 1000n,
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'sighash-algorithm' } })
+      expect(
+        sighash(tx, 0, doge, SIGHASH_ALL | SIGHASH_FORKID, {
+          algorithm: 'forkid',
+          scriptCode,
+          amount: 1000n,
+        }),
+      ).toMatchObject({ ok: false, error: { code: 'sighash-algorithm' } })
+    }
+  })
+
+  test('Litecoin accepts legacy and BIP143 sighash and serializes witness transactions', () => {
+    for (const ltc of [LTC_MAINNET, LTC_TESTNET]) {
+      const signed = mustTx(fromHex(BIP143_SIGNED), ltc)
+      expect(signed.inputs[0]?.witness?.length).toBe(3)
+      const serialized = serializeTransaction(signed, ltc)
+      if (!serialized.ok) throw new Error(serialized.error.code)
+      expect(toHex(serialized.value)).toBe(BIP143_SIGNED)
+      expect(transactionId(signed, ltc)).toEqual(
+        transactionId(signed, BTC_MAINNET),
+      )
+      const scriptCode = fromHex('76a914' + '11'.repeat(20) + '88ac')
+      expect(
+        sighash(signed, 0, ltc, SIGHASH_ALL, {
+          algorithm: 'bip143',
+          scriptCode,
+          amount: 1000n,
+        }).ok,
+      ).toBe(true)
+    }
+  })
+
   test('a BTC witness transaction keeps the marker and BCH does not', () => {
     const signed = mustTx(fromHex(BIP143_SIGNED))
     expect(signed.inputs[0]?.witness?.length).toBe(3)

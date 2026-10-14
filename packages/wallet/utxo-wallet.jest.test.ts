@@ -38,6 +38,7 @@ import {
 
 const BTC = UTXO_NETWORKS["btc-testnet"];
 const BCH = UTXO_NETWORKS["bch-testnet"];
+const DOGE = UTXO_NETWORKS["doge-testnet"];
 // BIP39 seed of "abandon ... about" with no passphrase: the seed of the published BIP84 vectors.
 const unhex = (text: string) => Uint8Array.from(Buffer.from(text, "hex"));
 const ABANDON_SEED = unhex(
@@ -48,7 +49,7 @@ const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 const sha256d = (bytes: Uint8Array) => sha256(sha256(bytes));
 
 /** An in-memory unspent set: the narrow seam where an Electrum server would answer. */
-function makeIndexer() {
+function makeIndexer(networkOverride?: UtxoNetwork) {
   const unspent = new Map<string, IndexedOutput[]>();
   const known = new Set<string>();
   const confirmationHeights = new Map<string, number>();
@@ -76,7 +77,7 @@ function makeIndexer() {
   };
   /** Apply a transaction the way a node would: remove its inputs, add its outputs. */
   function spend(raw: string) {
-    const network = raw.startsWith("0200000000010") ? BTC : BCH;
+    const network = networkOverride ?? (raw.startsWith("0200000000010") ? BTC : BCH);
     const parsed = parseTransaction(unhex(raw), network.descriptor);
     if (!parsed.ok) throw new Error("test indexer could not parse");
     const tx = parsed.value;
@@ -183,6 +184,18 @@ function bip143Digest(
   );
 }
 
+/** Dogecoin Core's legacy SIGHASH_ALL preimage, independently serialized in the test. */
+function legacyDigest(tx: Parsed, index: number, scriptCode: Uint8Array): Uint8Array {
+  const signingView: Parsed = {
+    ...tx,
+    inputs: tx.inputs.map((input, inputIndex) => ({
+      ...input,
+      scriptSig: inputIndex === index ? scriptCode : new Uint8Array(),
+    })),
+  };
+  return sha256d(cat(serializeLegacy(signingView), u32(1)));
+}
+
 const p2pkhScript = (pubkey: Uint8Array) =>
   cat(
     Uint8Array.of(0x76, 0xa9, 0x14),
@@ -221,14 +234,10 @@ function expectValidSignatures(
       expect(hex(coin.scriptPubKey)).toBe(hex(p2pkhScript(pubkey)));
     }
     const hashType = signature[signature.length - 1];
-    expect(hashType).toBe(network.ownOutput === "p2wpkh" ? 0x01 : 0x41);
-    const digest = bip143Digest(
-      tx,
-      index,
-      p2pkhScript(pubkey),
-      coin.amount,
-      hashType
-    );
+    expect(hashType).toBe(network.sighashAlgorithm === "forkid" ? 0x41 : 0x01);
+    const digest = network.sighashAlgorithm === "legacy"
+      ? legacyDigest(tx, index, p2pkhScript(pubkey))
+      : bip143Digest(tx, index, p2pkhScript(pubkey), coin.amount, hashType);
     const der = signature.slice(0, -1);
     const parsedSignature = secp256k1.Signature.fromDER(der);
     expect(parsedSignature.hasHighS()).toBe(false);
@@ -238,7 +247,7 @@ function expectValidSignatures(
 
 async function open(
   network: UtxoNetwork,
-  backend = makeIndexer(),
+  backend = makeIndexer(network === DOGE ? DOGE : undefined),
   store: UtxoWalletStore = memoryUtxoWalletStore(),
   seed: Uint8Array = ROOT,
   stealthCustody?: UtxoStealthCustody
@@ -335,6 +344,136 @@ function fund(
 const BTC_RECIPIENT = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
 const BCH_RECIPIENT = "bchtest:qpm2qsznhks23z7629mms6s4cwef74vcwvqcw003ap";
 
+describe("Dogecoin testnet (P2PKH, legacy SIGHASH_ALL)", () => {
+  it("receives, signs an independently verified payment, and replays its saved bytes after restart", async () => {
+    const backend = makeIndexer(DOGE);
+    const store = memoryUtxoWalletStore();
+    const sender = await open(DOGE, backend, store);
+    const receiver = await open(
+      DOGE,
+      backend,
+      memoryUtxoWalletStore(),
+      new Uint8Array(32).fill(8)
+    );
+    const senderAddress = (await sender.wallet.getReceiveAddress()).raw;
+    const recipient = (await receiver.wallet.getReceiveAddress()).raw;
+    expect(senderAddress.startsWith("n")).toBe(true);
+    expect(recipient.startsWith("n")).toBe(true);
+    expect(parseUtxoAddress(DOGE, BTC_RECIPIENT)).toBeUndefined();
+    fund(backend, DOGE, senderAddress, 1_000_000_000n, "a");
+    expect(await sender.wallet.getBalance()).toBe(1_000_000_000n);
+    const spent = sender.wallet.coins();
+    backend.setOutcome("lost");
+    await expect(
+      sender.wallet.sendNative({
+        recipient: { raw: recipient },
+        value: 200_000_000n,
+      })
+    ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+    const raw = backend.broadcasts[0];
+    expect(raw).toBeDefined();
+    expectValidSignatures(raw, DOGE, spent);
+    const parsed = parseTransaction(unhex(raw), DOGE.descriptor);
+    if (!parsed.ok) throw new Error("unparseable Doge payment");
+    expect(parsed.value.outputs[0]).toMatchObject({
+      value: 200_000_000n,
+      scriptPubKey: unhex(scriptOf(DOGE, recipient)),
+    });
+    const fee = 1_000_000_000n - parsed.value.outputs.reduce(
+      (total, output) => total + output.value, 0n
+    );
+    expect(fee).toBeGreaterThanOrEqual(BigInt(raw.length / 2) * 1000n);
+    backend.setOutcome("accept");
+    const restarted = await open(DOGE, backend, store);
+    expect(backend.broadcasts).toEqual([raw, raw]);
+    expect(restarted.wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    expect(await receiver.wallet.getBalance()).toBe(200_000_000n);
+    expect(await restarted.wallet.getBalance()).toBe(800_000_000n - fee);
+  });
+
+  it("receives a stealth payment, restores its signing capability, and respends", async () => {
+    const backend = makeIndexer(DOGE);
+    const sender = (await open(DOGE, backend)).wallet;
+    const receiverRoot = new Uint8Array(32).fill(11);
+    const receiverStore = memoryUtxoWalletStore();
+    const custody = syntheticStealthCustody(DOGE);
+    const receiver = await UtxoWallet.create({
+      network: DOGE,
+      seed: receiverRoot,
+      indexer: backend.indexer,
+      storeFor: () => receiverStore,
+      stealthCustody: custody.custody,
+    });
+    const external = (await open(
+      DOGE, backend, memoryUtxoWalletStore(), new Uint8Array(32).fill(9)
+    )).wallet.identity.address;
+    fund(backend, DOGE, sender.identity.address.raw, 1_000_000_000n, "c");
+    const destination = deriveUtxoStealthDestination({
+      network: DOGE,
+      identityPublicKey: custody.custody.identityPublicKey,
+      ephemeralSecret: new Uint8Array(32).fill(17),
+    });
+    const prepared = await sender.prepareNativePayment({
+      operationId: "doge-stealth",
+      recipient: { raw: destination.address },
+      value: 200_000_000n,
+    });
+    await receiver.recordStealthPayment({
+      chainIdentifier: DOGE.chainIdentifier,
+      ephemeralPubKey: hex(destination.derivation.ephemeralPubKey),
+      transactions: prepared.transaction.rawTransactions,
+      claimedAmount: 200_000_000n,
+      payloadDigest: "7".repeat(64),
+      timestampMs: 100,
+    });
+    expect(await receiver.getBalance()).toBe(0n);
+    await sender.recordPaymentExposure({
+      operationId: "doge-stealth",
+      payloadDigest: "7".repeat(64),
+    });
+    await sender.submitPreparedPayment("doge-stealth");
+    expect(await receiver.getBalance()).toBe(200_000_000n);
+    expect(JSON.parse(receiverStore.load()!).stealthScripts[0]).not.toHaveProperty("privateKey");
+    const reopened = (await open(
+      DOGE, backend, receiverStore, receiverRoot, custody.custody
+    )).wallet;
+    expect(await reopened.getBalance()).toBe(200_000_000n);
+    const spent = reopened.coins();
+    await reopened.sendNative({ recipient: external, value: 100_000_000n });
+    expectValidSignatures(backend.broadcasts[1], DOGE, spent);
+  });
+
+  it("derives and sends on Dogecoin mainnet and Litecoin SegWit networks", async () => {
+    const dogeMain = UTXO_NETWORKS["doge-mainnet"];
+    const dogeMainWallet = (await open(dogeMain, makeIndexer(dogeMain))).wallet;
+    const dogeMainAddress = (await dogeMainWallet.getReceiveAddress()).raw;
+    expect(dogeMainAddress.startsWith("D")).toBe(true);
+    expect(parseUtxoAddress(dogeMain, dogeMainAddress)).toBeDefined();
+    expect(parseUtxoAddress(DOGE, dogeMainAddress)).toBeUndefined();
+
+    const ltc = UTXO_NETWORKS["litecoin-testnet"];
+    const backend = makeIndexer(ltc);
+    const sender = (await open(ltc, backend)).wallet;
+    const receiver = (
+      await open(ltc, backend, memoryUtxoWalletStore(), new Uint8Array(32).fill(8))
+    ).wallet;
+    const senderAddress = (await sender.getReceiveAddress()).raw;
+    const recipient = (await receiver.getReceiveAddress()).raw;
+    expect(senderAddress.startsWith("tltc1q")).toBe(true);
+    expect(recipient.startsWith("tltc1q")).toBe(true);
+    expect(parseUtxoAddress(ltc, BTC_RECIPIENT)).toBeUndefined();
+    fund(backend, ltc, senderAddress, 100_000n, "d");
+    expect(await sender.getBalance()).toBe(100_000n);
+    const spent = sender.coins();
+    await sender.sendNative({
+      recipient: { raw: recipient },
+      value: 50_000n,
+    });
+    expectValidSignatures(backend.broadcasts[0], ltc, spent);
+    expect(await receiver.getBalance()).toBe(50_000n);
+  });
+});
+
 describe("derivation", () => {
   it("derives the published BIP84 testnet address for the well-known seed", async () => {
     const { wallet } = await open(
@@ -367,6 +506,7 @@ describe("derivation", () => {
   it.each([
     [BTC, "m/84'/1'/0'/0/0"],
     [BCH, "m/44'/145'/0'/0/0"],
+    [DOGE, "m/44'/3'/0'/0/0"],
   ])(
     "uses the 32-byte root directly as the BIP32 seed (%#)",
     async (network, path) => {

@@ -47,7 +47,11 @@ import ChatMessageImage from './ChatMessageImage.vue'
 import ChatMessageStealth from './ChatMessageStealth.vue'
 import { useChatStore } from 'src/stores/chats'
 import { useContactStore } from 'src/stores/contacts'
-import { MessageItem } from '@frank/cashweb/types/messages'
+import type {
+  TextItem,
+  ImageItem,
+  StealthItem,
+} from '@frank/cashweb/types/messages'
 
 export default defineComponent({
   name: 'ChatMessageReply',
@@ -92,13 +96,23 @@ export default defineComponent({
     },
     items() {
       const sorted: {
-        text?: MessageItem
-        image?: MessageItem
-        reply?: MessageItem
-        stealth?: MessageItem
-        p2pkh?: MessageItem
+        text?: TextItem
+        image?: ImageItem
+        stealth?: StealthItem
       } = {}
-      this.message.items.map(item => (sorted[item.type] = item))
+      for (const item of this.message.items) {
+        switch (item.type) {
+          case 'text':
+            sorted.text = item
+            break
+          case 'image':
+            sorted.image = item
+            break
+          case 'stealth':
+            sorted.stealth = item
+            break
+        }
+      }
       return sorted
     },
     name() {

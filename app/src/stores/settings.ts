@@ -206,6 +206,7 @@ export const useSettingsStore = defineStore('settings', {
     emailGatewayAddress(state): string {
       if (state.emailGatewayOverride) return state.emailGatewayOverride.address
       if (
+        !state.advertisedEmailGateway ||
         state.emailGatewayStatus !== 'ready' ||
         state.emailGatewayVerifiedNetwork !== activeChain.chainIdentifier
       )

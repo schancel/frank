@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 
+import { watch } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { activeChain } from '@frank/wallet/chain'
 import { useSettingsStore, saveSettings, restoreSettings } from './settings'
@@ -60,6 +61,61 @@ describe('email gateway settings', () => {
     })
     expect(store.emailGatewayAddress).toBe(advertised.address)
     expect(store.emailGatewayStatus).toBe('ready')
+  })
+
+  it.each(['clear', 'refresh'])(
+    'projects absent gateway authority safely during public %s transitions',
+    async transition => {
+      const store = useSettingsStore()
+      const relay = 'https://relay.example.test'
+      discover.mockResolvedValue(advertised)
+      await store.refreshEmailGateway(relay, activeChain.chainIdentifier)
+      expect(store.emailGatewayAddress).toBe(advertised.address)
+      const observed: string[] = []
+      const stop = watch(
+        () => store.emailGatewayAddress,
+        address => observed.push(address),
+        { flush: 'sync' },
+      )
+      try {
+        if (transition === 'clear') {
+          expect(() => store.clearEmailGatewayDiscovery()).not.toThrow()
+          expect(store.emailGatewayAddress).toBe('')
+        }
+        const refresh = store.refreshEmailGateway(
+          relay,
+          activeChain.chainIdentifier,
+        )
+        await expect(refresh).resolves.toBeUndefined()
+        expect(store.emailGatewayAddress).toBe(advertised.address)
+        expect(observed).toEqual(['', advertised.address])
+      } finally {
+        stop()
+      }
+    },
+  )
+
+  it('does not restore gateway authority from a discovery completed after clearing', async () => {
+    const store = useSettingsStore()
+    let completeDiscovery: (gateway: typeof advertised) => void = () => {
+      throw new Error('Discovery completion was not initialized')
+    }
+    discover.mockReturnValueOnce(
+      new Promise(resolve => {
+        completeDiscovery = resolve
+      }),
+    )
+    const pending = store.refreshEmailGateway(
+      'https://relay.example.test',
+      activeChain.chainIdentifier,
+    )
+    store.clearEmailGatewayDiscovery()
+    completeDiscovery(advertised)
+    await pending
+    expect(store.advertisedEmailGateway).toBeNull()
+    expect(store.emailGatewayVerifiedNetwork).toBeNull()
+    expect(store.emailGatewayStatus).toBe('unavailable')
+    expect(store.emailGatewayAddress).toBe('')
   })
 
   it('leaves sending unavailable when the relay has no service or cannot be checked', async () => {

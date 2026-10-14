@@ -74,11 +74,11 @@
           })
         : []
 
-    var anyVisibleOrFocused = false
+    var anyFocused = false
     for (var i = 0; i < clients.length; i++) {
       var client = clients[i]
-      if (client.focused || client.visibilityState === 'visible') {
-        anyVisibleOrFocused = true
+      if (client.focused) {
+        anyFocused = true
       }
       try {
         client.postMessage({
@@ -91,7 +91,7 @@
       }
     }
 
-    if (anyVisibleOrFocused) {
+    if (anyFocused) {
       return
     }
 
@@ -102,7 +102,10 @@
       }
     }
 
-    if (sw.registration && typeof sw.registration.showNotification === 'function') {
+    if (
+      sw.registration &&
+      typeof sw.registration.showNotification === 'function'
+    ) {
       await sw.registration.showNotification(BLIND_WAKEUP_NOTIFICATION_TITLE, {
         body: BLIND_WAKEUP_NOTIFICATION_BODY,
         tag: BLIND_WAKEUP_NOTIFICATION_TAG,

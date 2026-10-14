@@ -114,5 +114,44 @@ describe('custom-service-worker blind WebPush wakeup (#384, #1574)', () => {
     expect(result).toEqual({ syncedClients: 1, showedNotification: false })
     expect(showNotification).not.toHaveBeenCalled()
   })
-})
 
+  it('shows the notification when the browser window is unfocused in the background (focused: false, visibilityState: visible) and does not acknowledge within the grace window', async () => {
+    const posted: unknown[] = []
+    const showNotification = jest.fn(async () => undefined)
+    const sw: SwScopeLike = {
+      clients: {
+        matchAll: async () => [
+          {
+            focused: false,
+            visibilityState: 'visible',
+            postMessage: msg => posted.push(msg),
+          },
+        ],
+      },
+      registration: {
+        showNotification,
+      },
+    }
+
+    const result = await handleBlindPushWakeup(
+      sw,
+      '{"type":"sync"}',
+      1700000000000,
+      {
+        dedupGraceMs: 10,
+        wasHandledByClient: () => false,
+      },
+    )
+    expect(result).toEqual({ syncedClients: 1, showedNotification: true })
+    expect(posted).toHaveLength(1)
+    expect(showNotification).toHaveBeenCalledWith(
+      BLIND_WAKEUP_NOTIFICATION_TITLE,
+      {
+        body: BLIND_WAKEUP_NOTIFICATION_BODY,
+        tag: BLIND_WAKEUP_NOTIFICATION_TAG,
+        renotify: false,
+        data: { type: 'sync', timestampMs: 1700000000000 },
+      },
+    )
+  })
+})

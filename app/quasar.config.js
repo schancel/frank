@@ -553,6 +553,9 @@ export default configure(ctx => {
     // https://quasar.dev/quasar-cli/developing-pwa/configuring-pwa
     pwa: {
       workboxMode: 'GenerateSW', // 'GenerateSW' or 'InjectManifest'
+      // Do not inject `<meta name="theme-color">`, which triggers Safari 26 (macOS Tahoe)
+      // floating toolbar tint/overlay mode and shifts fixed headers behind browser chrome.
+      injectPwaMetaTags: false,
       extendPWAGenerateSWOptions(options) {
         return {
           // Activate the new bundle immediately so a reload gets the updated application.

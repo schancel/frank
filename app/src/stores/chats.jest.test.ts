@@ -1928,6 +1928,31 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(desktopNotify).toHaveBeenCalledTimes(1)
       expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(1)
     })
+
+    it('still notifies when a single incoming message arrives alongside an outbound message in the same poll batch', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      const inbound = makeWrapper({ index: 'inbound-in-mixed-batch' })
+      const outboundSelf = makeWrapper({
+        index: 'outbound-in-mixed-batch',
+        outbound: true,
+        copartyAddress: SENDER_ADDRESS,
+        message: {
+          outbound: true,
+          status: 'confirmed',
+          items: [{ type: 'text', text: 'my own note' }],
+          serverTime: 1000,
+          receivedTime: 1000,
+          outpoints: [],
+          senderAddress: SENDER_ADDRESS,
+          destinationAddress: SENDER_ADDRESS,
+        },
+      })
+
+      await chats.receiveMessages([outboundSelf, inbound], SENDER_ADDRESS)
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+    })
   })
 
   // The relay keeps a sender's own messages in the sender's mailbox and hands them back on a

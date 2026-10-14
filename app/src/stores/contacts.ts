@@ -35,7 +35,6 @@ import { syncRelayNotificationPolicy } from '../utils/webpush-sync'
 
 const pendingOutboundWakeupTokens = new Map<string, string>()
 
-
 export const defaultRelayData: {
   profile: {
     name: string
@@ -911,4 +910,3 @@ setOutboundWakeupTokenProvider((recipientAddress: string) => {
     )
   }
 })
-

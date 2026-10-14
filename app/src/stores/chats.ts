@@ -5574,6 +5574,12 @@ export const useChatStore = defineStore('chats', {
       toNotify: Set<string>,
       lease?: DeliveryLease,
     ): Promise<void> {
+      const notifiableInboundCount = messageWrappers.filter(wrapper => {
+        const stored = this.messages[wrapper.index]
+        return (
+          toNotify.has(wrapper.index) && Boolean(stored) && !stored.outbound
+        )
+      }).length
       for (const messageWrapper of messageWrappers) {
         const {
           copartyAddress,
@@ -5613,7 +5619,7 @@ export const useChatStore = defineStore('chats', {
         if (
           stampValue < acceptancePrice ||
           this.lastRead(stored.conversationId!) > newMsg.serverTime ||
-          messageWrappers.length !== 1
+          notifiableInboundCount !== 1
         ) {
           continue
         }

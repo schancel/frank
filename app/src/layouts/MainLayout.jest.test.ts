@@ -722,3 +722,42 @@ describe('MainLayout focus restoration guards', () => {
     expect(focus).not.toHaveBeenCalled()
   })
 })
+
+describe('MainLayout root window scroll lock (Safari floating toolbar defense)', () => {
+  it('resets window scroll on mount and on window scroll events, and removes the listener on unmount', async () => {
+    const scrollToSpy = jest
+      .spyOn(window, 'scrollTo')
+      .mockImplementation(() => undefined)
+    const removeListenerSpy = jest.spyOn(window, 'removeEventListener')
+    Object.defineProperty(window, 'scrollY', {
+      configurable: true,
+      value: 15,
+    })
+    Object.defineProperty(window, 'scrollX', {
+      configurable: true,
+      value: 0,
+    })
+
+    try {
+      const { wrapper } = await mountLayout(1024)
+      expect(scrollToSpy).toHaveBeenCalledWith(0, 0)
+
+      scrollToSpy.mockClear()
+      window.dispatchEvent(new Event('scroll'))
+      expect(scrollToSpy).toHaveBeenCalledWith(0, 0)
+
+      const onWindowScroll = (
+        wrapper.vm as unknown as { onWindowScroll: () => void }
+      ).onWindowScroll
+      wrapper.unmount()
+      expect(removeListenerSpy).toHaveBeenCalledWith('scroll', onWindowScroll)
+    } finally {
+      Object.defineProperty(window, 'scrollY', {
+        configurable: true,
+        value: 0,
+      })
+      removeListenerSpy.mockRestore()
+      scrollToSpy.mockRestore()
+    }
+  })
+})

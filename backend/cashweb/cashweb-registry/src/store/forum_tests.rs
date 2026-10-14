@@ -61,8 +61,8 @@ fn observation_fields(
     .unwrap();
     let make = |raw: Vec<u8>| {
         let (kind, item) = match target {
-            Some(hash) => (11, CborValue::Bytes(hash.to_vec())),
-            None => (10, CborValue::Bytes(post.clone())),
+            Some(hash) => (42, CborValue::Bytes(hash.to_vec())),
+            None => (41, CborValue::Bytes(post.clone())),
         };
         encode_frame(
             EnvelopeFields {

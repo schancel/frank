@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const { EcashWallet, ECASH_MAINNET_CHECKPOINT_HASH, ECASH_TESTNET_CHECKPOINT_HASH } = require('./ecash-wallet.ts');
 const { createEcashSeedBackend } = require('./ecash-seed-boundary.ts');
 const { InMemoryEcashOperationStore } = require('./ecash-operation-store.ts');
-const { InMemoryNativeTransactionAttemptStore, nativeTransactionAttemptKey } = require('./chain/chain-wallet.ts');
+const { InMemoryNativeTransactionAttemptStore, nativeTransactionAttemptKey, runNativeTransactionExclusive } = require('./chain/chain-wallet.ts');
 const { HdNode, Address, shaRmd160, Tx, mnemonicToSeed } = require('ecash-lib');
 const root = { registry: 'frank-domain-roots-v1', purpose: 'ecash-bch-wallet', bytes: new Uint8Array(32).fill(9) };
 const recipient = { raw: Address.p2pkh(new Uint8Array(20).fill(31), 'ecash').toString() };
@@ -40,7 +40,7 @@ async function make(options = {}) {
   };
   const wallet = options.legacyMnemonic
     ? await EcashWallet.fromLegacyMnemonic({ ...common, mnemonic: options.legacyMnemonic })
-    : await EcashWallet.fromDomainRoot({ ...common, domainRoot: root, walletFactory: createEcashSeedBackend });
+    : await EcashWallet.fromDomainRoot({ ...common, domainRoot: root, walletFactory: options.walletFactory ?? createEcashSeedBackend });
   return { wallet, store, old, chronik, sent, key: nativeTransactionAttemptKey({ family: 'bitcoin', chainIdentifier: chain, address: wallet.identity.address.raw }) };
 }
 const binding = (wallet, operation) => ({ chainIdentifier: wallet.chainIdentifier, walletAddress: wallet.identity.address.raw, transactionHashes: operation.transactions.map(tx => tx.txid), externalPayloadDigest: 'ab'.repeat(32) });
@@ -119,6 +119,41 @@ it(
   const reopened = await make({ store, transport: async () => { throw new Error('ambiguous'); } });
   assert.equal(reopened.wallet.getBalanceObservation().balance, 70000n);
   assert.equal(test.wallet.getBalanceObservation().balance, 80000n);
+`),
+  35000
+);
+
+it(
+  "does not publish a competing SDK refresh's partial inventory when its final tip read fails",
+  () =>
+    run(`
+  let backend;
+  const first = await make({ walletFactory: async params => { backend = await createEcashSeedBackend(params); return backend; } });
+  let unlock, locked, complete, tipStarted, rejectTip;
+  const lockGate = new Promise(resolve => { unlock = resolve; });
+  const lockBegan = new Promise(resolve => { locked = resolve; });
+  const synced = new Promise(resolve => { complete = resolve; });
+  const tipBegan = new Promise(resolve => { tipStarted = resolve; });
+  const tipGate = new Promise((_, reject) => { rejectTip = reject; });
+  const holding = runNativeTransactionExclusive(first.key, 'single-realm', async () => { locked(); await lockGate; });
+  await lockBegan;
+  const sync = backend.sync.bind(backend);
+  backend.sync = async () => { await sync(); complete(); };
+  first.chronik.coins.forEach(coin => { coin.sats = 20000n; });
+  const balance = first.wallet.getBalance();
+  await synced;
+  first.chronik.coins.forEach(coin => { coin.sats = 30000n; });
+  first.chronik.blockchainInfo = async () => { tipStarted(); return tipGate; };
+  const estimate = first.wallet.estimateFee({ recipient, value: 1000n });
+  const failedEstimate = assert.rejects(estimate, /tip offline/);
+  await tipBegan;
+  // The SDK has already replaced its live inventory, but this refresh has not completed.
+  assert.equal(backend.balanceSats, 240000n);
+  unlock(); await holding;
+  assert.equal(await balance, 160000n);
+  assert.equal(first.wallet.getBalanceObservation().balance, 160000n);
+  rejectTip(new Error('tip offline')); await failedEstimate;
+  assert.equal(first.wallet.getBalanceObservation().balance, 160000n);
 `),
   35000
 );

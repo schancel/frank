@@ -46,7 +46,7 @@ const chronik = {
   secret.fill(0);
   await backend.syncAndDiscoverAddresses();
   assert.equal(backend.balanceSats, 20000n);
-  assert.deepEqual(backend.getBalanceObservationCoins(), [1, 2].map(n => ({
+  assert.deepEqual(backend.getCompleteBalanceObservation().coins, [1, 2].map(n => ({
     txid: n.toString().repeat(64), vout: n, satoshis: 10000n,
   })));
   assert.equal(sdk.utxos.length, 2);

@@ -11,6 +11,7 @@ import type {
 import type {
   EcashInputReference,
   EcashNativeConstruction,
+  EcashBalanceObservation,
 } from "./ecash-sdk-backend";
 import type { ReceivedCoinItem } from "@frank/cashweb/types/messages";
 import { validateEcashStealthReceipt } from "./ecash-stealth";
@@ -241,10 +242,8 @@ export interface EcashWalletBackend {
   inputReferencesFromTransactions?: EcashPreparationBackend["inputReferencesFromTransactions"];
   validateNativeOperation?: EcashPreparationBackend["validateNativeOperation"];
   validateLegacyTransaction?: EcashPreparationBackend["validateLegacyTransaction"];
-  /** Public display projection, captured only after a complete successful sync. */
-  getBalanceObservationCoins?(): ReadonlyArray<
-    EcashInputReference & { satoshis: bigint }
-  >;
+  /** Last complete public display projection; never the SDK's in-progress mutable inventory. */
+  getCompleteBalanceObservation?(): EcashBalanceObservation | undefined;
   readonly balanceSats: bigint;
   readonly receiveIndex: number;
   sync(): Promise<void>;
@@ -298,12 +297,7 @@ export class EcashWallet implements NativeWalletHandle {
   private readonly nativeAttemptKey: string;
   private balanceRefresh: Promise<bigint> | undefined;
   /** Derived in-memory display projection; never used by selection or signing. */
-  private balanceObservation:
-    | {
-        observedAt: number;
-        coins: ReadonlyArray<EcashInputReference & { satoshis: bigint }>;
-      }
-    | undefined;
+  private balanceObservation: EcashBalanceObservation | undefined;
 
   private constructor(
     private readonly backend: EcashWalletBackend,
@@ -1043,11 +1037,11 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   private captureBalanceObservation(): void {
-    const coins = this.backend.getBalanceObservationCoins?.();
-    if (coins)
+    const observation = this.backend.getCompleteBalanceObservation?.();
+    if (observation)
       this.balanceObservation = {
-        observedAt: Date.now(),
-        coins: coins.map(({ txid, vout, satoshis }) => ({
+        observedAt: observation.observedAt,
+        coins: observation.coins.map(({ txid, vout, satoshis }) => ({
           txid,
           vout,
           satoshis,
@@ -1074,12 +1068,13 @@ export class EcashWallet implements NativeWalletHandle {
     return this.exclusive(() => {
       const ledger = this.loadLedger();
       const excluded = this.exclusions(ledger);
-      const balance =
-        excluded.length === 0 && this.backend.getAvailableBalance === undefined
-          ? this.backend.balanceSats
-          : this.preparationBackend().getAvailableBalance(excluded);
       this.captureBalanceObservation();
-      return balance;
+      const observation = this.getBalanceObservation();
+      if (observation) return observation.balance;
+      return excluded.length === 0 &&
+        this.backend.getAvailableBalance === undefined
+        ? this.backend.balanceSats
+        : this.preparationBackend().getAvailableBalance(excluded);
     });
   }
 

@@ -11,6 +11,7 @@ import {
 import { createJournaledMailHost } from '../src/host/journaled-mail-host';
 import type { OutboundMailPort } from '../src/mta/journaled-outbound-worker';
 import { parseRawRfc822 } from '../src/smtp/smtp-listener';
+import { verifyOnboardingClaimToken } from '../src/secure-link/secure-message-portal';
 import type { InboundEmailRecord } from '../src/types';
 
 interface SubmittedOutboundMail {
@@ -276,6 +277,7 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
           {
             scopeAccount: DIGDEEP_ACCOUNT,
             mailKey: 'a'.repeat(64),
+            conversationId: '00112233-4455-6677-8899-aabbccddeeff',
             stampValue: '1000',
             dataSha256: crypto.createHash('sha256').update(raw1).digest('hex'),
             rfcMessageId: '<msg-1@gmail.com>',
@@ -329,6 +331,13 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
           errors: [],
         });
         expect(sentMessages).toHaveLength(1);
+        const mime = Buffer.from(sentMessages[0]!.signedRfc822).toString('utf8');
+        const textPart = mime.split(/--frank-autoreply-[0-9a-f]+/)[1]!.split('\r\n\r\n')[1]!;
+        const text = Buffer.from(textPart.replace(/\s+/g, ''), 'base64').toString('utf8');
+        const onboardingLine = text.split('\r\n').find((line) => line.startsWith('https://signet.mx/#/onboard'))!;
+        const claim = new URLSearchParams(onboardingLine.split('?')[1]).get('claim')!;
+        expect(verifyOnboardingClaimToken(claim, Buffer.from('0123456789abcdef0123456789abcdef'))?.conversationId)
+          .toBe('00112233-4455-6677-8899-aabbccddeeff');
         expect(responder.getRecord(DIGDEEP_ACCOUNT, 'a'.repeat(64))?.status).toBe('sent');
         expect(responder.getRecord(DIGDEEP_ACCOUNT, 'b'.repeat(64))?.status).toBe('suppressed');
         expect(responder.getRecord(DIGDEEP_ACCOUNT, 'b'.repeat(64))?.reason).toBe('rate_limited');
@@ -479,6 +488,12 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
             'base64',
           ).toString('utf8');
           expect(decodedTextPart).toContain(`https://signet.mx/pay/${mailKey}`);
+          const onboardingLine = decodedTextPart.split('\r\n').find((line) => line.startsWith('https://signet.mx/#/onboard'))!;
+          const onboardingParams = new URLSearchParams(onboardingLine.split('?')[1]);
+          expect(onboardingParams.get('email')).toBe('preciouseffiang@gmail.com');
+          expect(onboardingParams.has('claim')).toBe(false);
+          expect(onboardingParams.has('conversationId')).toBe(false);
+          expect(onboardingParams.has('peer')).toBe(false);
 
           // 3. Fetch GET /pay/:mailKey and verify 200 HTML page + extract onboarding claim token
           const payPageRes = await fetch(`${baseUrl}/pay/${mailKey}`);

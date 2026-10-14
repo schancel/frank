@@ -204,13 +204,6 @@ function encodeHeaderSubject(subject: string): string {
   return words.join('\r\n ');
 }
 
-function deriveHeldConversationId(scopeAccount: string, mailKey: string): string {
-  const hash = crypto.createHash('sha256')
-    .update(`held-email:${scopeAccount.toLowerCase()}:${mailKey.toLowerCase()}`)
-    .digest('hex').slice(0, 32);
-  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
-}
-
 export interface RenderHeldChallengeEmailInput {
   readonly gatewayDomain: string;
   readonly senderEmail: string;
@@ -667,9 +660,6 @@ export class HeldEmailAutoResponder {
       .filter(([name]) => name === 'references')
       .flatMap(([, val]) => parseMessageIdList(val));
     const { recipientDisplay, recipientEmail } = await this.resolveRecipientLabel(email);
-    const conversationId =
-      email.conversationId ??
-      deriveHeldConversationId(email.scopeAccount, email.mailKey);
     const expiresAtMs = email.expiresAtMs ?? email.createdAtMs + 72 * 60 * 60 * 1000;
     const heldId = email.heldMessageId ?? email.mailKey;
 
@@ -678,7 +668,9 @@ export class HeldEmailAutoResponder {
         ? singleLineHeaderText(parsed.subject)
         : 'Held Email';
 
-    const { url: onboardingUrl } = buildOnboardingDeepLink({
+    // Only the journal may assign a conversation. A root held email has no
+    // assignment yet; generic account setup must not invent a routing identity.
+    const onboardingUrl = email.conversationId ? buildOnboardingDeepLink({
       frankAppUrl: this.frankAppUrl,
       secret: this.onboardingSecret,
       payload: {
@@ -686,11 +678,11 @@ export class HeldEmailAutoResponder {
         id: heldId,
         peerAddress: email.scopeAccount,
         email: email.senderEmail,
-        conversationId,
+        conversationId: email.conversationId,
         subject: cleanSubject,
         exp: expiresAtMs,
       },
-    });
+    }).url : `${this.frankAppUrl}/#/onboard?email=${encodeURIComponent(email.senderEmail)}`;
     const payUrl = `${this.publicGatewayUrl}/pay/${encodeURIComponent(heldId)}`;
 
     const rendered = renderHeldChallengeEmail({

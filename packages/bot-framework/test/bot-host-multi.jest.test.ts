@@ -5,6 +5,7 @@ import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
  * and nonce sequencer are real; the chain's direct-message client, the directory, the relay
  * profile call and the RPC provider are replaced.
  */
+import { until } from "./helpers/until";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -110,11 +111,7 @@ describe("several bots on one host", () => {
       receivedTime: 1_700_000_000_000 + n,
     };
   };
-  const until = async (condition: () => boolean) => {
-    for (let i = 0; i < 2000 && !condition(); i++)
-      await new Promise((r) => setImmediate(r));
-    if (!condition()) throw new Error("condition was never met");
-  };
+
   const textsSent = (): string[] =>
     mockSend.mock.calls.map(([params]) => params.items[0].text);
 

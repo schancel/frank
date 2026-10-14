@@ -4,6 +4,7 @@ import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
  * the real host: poll, retention, dispatch and the journal are the host's own. Only the chain's
  * direct-message client, the directory and the relay profile call are replaced.
  */
+import { until } from "./helpers/until";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -245,13 +246,6 @@ describe("FrankBotHost replies", () => {
   /** Every handler task the host has started has finished. */
   const drain = async (instance: { tasks: Set<Promise<unknown>> }) => {
     while (instance.tasks.size) await Promise.allSettled([...instance.tasks]);
-  };
-
-  /** Waits for something a still-running handler is about to do. */
-  const until = async (condition: () => boolean) => {
-    for (let i = 0; i < 2000 && !condition(); i++)
-      await new Promise((r) => setImmediate(r));
-    if (!condition()) throw new Error("condition was never met");
   };
 
   /** The wallet's refusal of one send call that created nothing: the label is on the error. */

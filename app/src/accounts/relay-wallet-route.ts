@@ -14,6 +14,22 @@ const discoveries = new Map<
 const DISCOVERY_TTL_MS = 15000
 const DISCOVERY_TIMEOUT_MS = 10000
 
+function isDiscoveryRoute(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null) return false
+  const route = value as Record<string, unknown>
+  return (
+    typeof route.id === 'string' &&
+    route.id.length > 0 &&
+    ['evm', 'bitcoin', 'solana'].includes(String(route.family)) &&
+    ['mainnet', 'testnet', 'regtest'].includes(String(route.network)) &&
+    (route.caip2 === null || typeof route.caip2 === 'string') &&
+    (route.native_chain_id === null ||
+      typeof route.native_chain_id === 'string') &&
+    Array.isArray(route.capabilities) &&
+    route.capabilities.every(capability => typeof capability === 'string')
+  )
+}
+
 async function routes(relay: string): Promise<unknown[]> {
   const cached = discoveries.get(relay)
   if (cached && cached.expires > Date.now()) return cached.document
@@ -32,7 +48,8 @@ async function routes(relay: string): Promise<unknown[]> {
       !('schema_version' in value) ||
       value.schema_version !== 1 ||
       !('chains' in value) ||
-      !Array.isArray(value.chains)
+      !Array.isArray(value.chains) ||
+      !value.chains.every(isDiscoveryRoute)
     )
       throw new Error('Invalid relay wallet discovery')
     return value.chains
@@ -69,8 +86,11 @@ export async function requireRelayWalletRoute(
     matches.length !== 1 ||
     route.family !== entry.family ||
     route.network !== entry.network ||
-    route.caip2 !== entry.caip2 ||
-    route.native_chain_id !== (entry.nativeChainId ?? null) ||
+    route.caip2 !== (entry.caip2 ?? null) ||
+    route.native_chain_id !==
+      (entry.nativeChainId === undefined
+        ? null
+        : String(entry.nativeChainId)) ||
     !Array.isArray(route.capabilities) ||
     route.capabilities.some(
       capability => !entry.allowedProxyCapabilities.includes(capability),

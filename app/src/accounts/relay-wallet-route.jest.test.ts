@@ -2,6 +2,7 @@ import {
   requireRelayWalletRoute,
   RelayWalletRouteUnavailableError,
 } from './relay-wallet-route'
+import wireRegistry from '../../../docs/protocol/chains/v1.json'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 
 let sequence = 0
@@ -16,12 +17,14 @@ function fixture(chains: unknown[], schema_version = 1) {
 function route(id: string, capabilities?: string[]) {
   const entry = getChainRegistryEntry(id)
   if (!entry?.wallet) throw new Error(`Missing wallet fixture ${id}`)
+  const facts = wireRegistry.chains.find(chain => chain.id === id)
+  if (!facts) throw new Error(`Missing protocol fixture ${id}`)
   return {
     id,
-    family: entry.family,
-    network: entry.network,
-    caip2: entry.caip2,
-    native_chain_id: entry.nativeChainId ?? null,
+    family: facts.family,
+    network: facts.network,
+    caip2: facts.caip2,
+    native_chain_id: facts.native_chain_id,
     capabilities: capabilities ?? [entry.wallet.indexer],
   }
 }
@@ -85,4 +88,77 @@ it('rejects malformed discovery', async () => {
   await expect(requireRelayWalletRoute(relay, 'btc-testnet')).rejects.toThrow(
     'Invalid relay wallet discovery',
   )
+})
+
+it.each([null, {}, { id: 'future-testnet', capabilities: [] }])(
+  'rejects malformed route members instead of treating them as absent',
+  async member => {
+    const { relay } = fixture([member])
+    await expect(requireRelayWalletRoute(relay, 'btc-testnet')).rejects.toThrow(
+      'Invalid relay wallet discovery',
+    )
+  },
+)
+it('ignores structurally valid future networks when checking the requested route', async () => {
+  const { relay } = fixture([
+    { ...route('base-sepolia'), id: 'future-testnet' },
+    route('btc-testnet'),
+  ])
+  await expect(
+    requireRelayWalletRoute(relay, 'btc-testnet'),
+  ).resolves.toBeUndefined()
+})
+
+it('rediscovers operator routes after the short cache lifetime', async () => {
+  jest.useFakeTimers({
+    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+  })
+  try {
+    const { request, relay } = fixture([])
+    await expect(
+      requireRelayWalletRoute(relay, 'base-sepolia'),
+    ).rejects.toBeInstanceOf(RelayWalletRouteUnavailableError)
+    request.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        schema_version: 1,
+        chains: [route('base-sepolia')],
+      }),
+    })
+    await expect(
+      requireRelayWalletRoute(relay, 'base-sepolia'),
+    ).rejects.toBeInstanceOf(RelayWalletRouteUnavailableError)
+    jest.advanceTimersByTime(15000)
+    await expect(
+      requireRelayWalletRoute(relay, 'base-sepolia'),
+    ).resolves.toBeUndefined()
+    expect(request).toHaveBeenCalledTimes(2)
+  } finally {
+    jest.useRealTimers()
+  }
+})
+it('bounds a stalled discovery and permits a later retry', async () => {
+  jest.useFakeTimers({
+    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+  })
+  try {
+    const { request, relay } = fixture([route('base-sepolia')])
+    request.mockImplementationOnce(
+      (_url: string, options: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          options.signal?.addEventListener('abort', () =>
+            reject(new Error('aborted')),
+          )
+        }),
+    )
+    const stalled = requireRelayWalletRoute(relay, 'base-sepolia')
+    const rejected = expect(stalled).rejects.toThrow('aborted')
+    jest.advanceTimersByTime(10000)
+    await rejected
+    await expect(
+      requireRelayWalletRoute(relay, 'base-sepolia'),
+    ).resolves.toBeUndefined()
+  } finally {
+    jest.useRealTimers()
+  }
 })

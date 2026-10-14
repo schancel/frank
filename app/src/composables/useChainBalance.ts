@@ -421,7 +421,11 @@ export async function fetchChainBalance(
           err => {
             if (!isCurrent()) return
             console.error('Failed to fetch Solana balance', err)
-            solanaState.value = { ...solanaState.value, hasError: true }
+            solanaState.value = {
+              ...solanaState.value,
+              hasError: true,
+              unavailableReason: undefined,
+            }
           },
         ),
         fetchSolanaTokenAccounts(options).then(

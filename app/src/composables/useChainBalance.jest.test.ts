@@ -218,6 +218,24 @@ describe('useChainBalance', () => {
     mockAccountStatus.status = 'ready'
   })
 
+  it('clears an absent Solana route reason when discovery recovers but balance read fails', async () => {
+    const { RelayWalletRouteUnavailableError } = await import(
+      '../accounts/relay-wallet-route'
+    )
+    mockRequireRelayWalletRoute.mockRejectedValueOnce(
+      new RelayWalletRouteUnavailableError('solana-devnet'),
+    )
+    await fetchChainBalance('solana', true)
+    expect(useChainBalance('solana').presentation.value).toMatchObject({
+      reason: 'relay-unavailable',
+    })
+    mockFetchSolanaBalance.mockRejectedValueOnce(new Error('RPC unavailable'))
+    await fetchChainBalance('solana', true)
+    expect(useChainBalance('solana').presentation.value).toMatchObject({
+      reason: 'fetch-error',
+    })
+  })
+
   it('reads Tempo PathUSD through its verified token reader, not an EVM native wallet', async () => {
     await fetchChainBalance('tempo', true)
     expect(mockReadTempoPathUsdBalance).toHaveBeenCalledWith('tempo-testnet')

@@ -1007,6 +1007,41 @@ describe('EmailThreadView', () => {
           maxHeight: '100%',
         })
       })
+
+      it('places attachment button, stamp price pill, and send button in the top composer header bar', () => {
+        const wrapper = mountView()
+        const headerBar = wrapper.find('.composer-header-bar')
+        expect(headerBar.exists()).toBe(true)
+        expect(headerBar.find('[data-testid="attach-file-btn"]').exists()).toBe(
+          true,
+        )
+        expect(headerBar.find('[data-testid="email-stamp-btn"]').exists()).toBe(
+          true,
+        )
+        expect(headerBar.find('[data-testid="send-email-btn"]').exists()).toBe(
+          true,
+        )
+      })
+
+      it('renders multi-line reply textarea without autogrow to prevent Enter key ResizeObserver bounce', () => {
+        const replyWrapper = mountView()
+        const replyTextarea = replyWrapper.find('.email-textarea')
+        expect(replyTextarea.exists()).toBe(true)
+        expect(replyTextarea.attributes('autogrow')).toBeUndefined()
+        expect(replyTextarea.attributes('rows')).toBe('4')
+
+        const draftWrapper = mountView({
+          conversation: {
+            ...conversation,
+            messages: [],
+          },
+          messages: [],
+        })
+        const draftTextarea = draftWrapper.find('.email-textarea')
+        expect(draftTextarea.exists()).toBe(true)
+        expect(draftTextarea.attributes('autogrow')).toBeUndefined()
+        expect(draftTextarea.attributes('rows')).toBe('6')
+      })
     })
 
     describe('Email Party Address & Encoding Validation', () => {

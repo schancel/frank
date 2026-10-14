@@ -189,7 +189,7 @@ export const en = {
     'Discovered existing home relay: {url}. Automatically configured.',
   frank_is_open_in_another_tab: 'Frank is open in another tab',
   multi_tab_notice:
-    'To protect your wallet and prevent conflicting transactions, only one tab can access your account at a time.',
+    'Your account is still saved on this device. Frank is active in another tab or window. To protect your wallet, only one can use the account at a time. Choose “Use Frank here” to continue here and pause the other tab.',
   use_frank_here: 'Use Frank here',
   switch_to_open_tab: 'Find open Frank tab',
   manual_tab_switch_hint:
@@ -392,7 +392,7 @@ export const fr = {
     'Serveur relais principal existant découvert : {url}. Configuré automatiquement.',
   frank_is_open_in_another_tab: 'Frank est ouvert dans un autre onglet',
   multi_tab_notice:
-    'Pour protéger votre portefeuille et éviter les transactions contradictoires, un seul onglet peut accéder à votre compte à la fois.',
+    'Votre compte est toujours enregistré sur cet appareil. Frank est actif dans un autre onglet ou une autre fenêtre. Pour protéger votre portefeuille, un seul peut utiliser le compte à la fois. Choisissez « Utiliser Frank ici » pour continuer ici et mettre l’autre onglet en pause.',
   use_frank_here: 'Utiliser Frank ici',
   switch_to_open_tab: 'Retrouver l’onglet Frank ouvert',
   manual_tab_switch_hint:

@@ -67,6 +67,18 @@ export default () => {
   async function redirectIfNoProfile(to: RouteLocationNormalized) {
     if (startupRestoration.value.phase !== 'restored') return
     await accountSession.initialize()
+    // Standby is an existing account active elsewhere, not a signed-out session.
+    // Show the takeover screen before public routes can present signup controls.
+    if (
+      accountStatus.status === 'standby' &&
+      to.path !== '/setup' &&
+      to.path !== '/changelog' &&
+      to.path !== '/about' &&
+      to.path !== '/docs' &&
+      !to.path.startsWith('/docs/')
+    ) {
+      return '/setup'
+    }
     // Release notes, documentation, and legal notices are readable without an account.
     if (
       to.path === '/setup' ||

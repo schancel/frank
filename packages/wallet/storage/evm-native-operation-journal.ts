@@ -783,13 +783,16 @@ export class EvmNativeOperationJournal {
     return this.list().flatMap(row => row.members.map(m => m.source))
   }
   referencesSpendIndex(index: number): boolean {
-    return this.list().some(
-      row =>
+    this.assertOpen()
+    for (const row of this.rows.values())
+      if (
         !row.cancelled &&
         row.members.some(
           m => m.source.kind === 'spend' && m.source.index === index,
-        ),
-    )
+        )
+      )
+        return true
+    return false
   }
   canSelect(address: string, nonce: number): boolean {
     this.assertOpen()

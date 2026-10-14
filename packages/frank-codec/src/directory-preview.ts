@@ -18,7 +18,7 @@ export function previewDirectoryContext(): ValidationContext {
     ...ctx,
     readerVersion: 4,
     supportedSchemas: ctx.supportedSchemas.map(s =>
-      s.typeId === 4 ? { ...s, schemaVersion: 4 } : s,
+      s.typeId === 1 ? { ...s, schemaVersion: 4 } : s,
     ),
   }
 }
@@ -37,7 +37,7 @@ export interface PreviewDirectoryEvidence {
   attestationFrame: ParsedFrame
   statementFrame: ParsedFrame
   statement: PreviewDirectoryStatement
-  /** T1 of the exact complete type-4 frame, never the type-2 wrapper. */
+  /** T1 of the exact complete type-1 frame, never the type-2 wrapper. */
   statementHash: Uint8Array
   signatureDigest: Uint8Array
 }
@@ -61,7 +61,7 @@ export function verifyPreviewDirectoryEvidence(
   if (
     result.kind !== 'parsed' ||
     result.typed?.type !== 2 ||
-    result.typed.statementFrame.typed?.type !== 4 ||
+    result.typed.statementFrame.typed?.type !== 1 ||
     !result.typed.statementFrame.typed.preview
   )
     throw new FrankCodecError(

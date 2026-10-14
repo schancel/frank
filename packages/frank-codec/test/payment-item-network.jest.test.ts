@@ -58,7 +58,7 @@ function stealth(
 
 function type1(network: string): Uint8Array {
   return encodeFrame(
-    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
     M([[0, network]]),
   )
 }
@@ -75,7 +75,7 @@ function encodeType25(
 }
 
 describe('payment item network', () => {
-  it('rejects a type 25 frame that still carries key 0', () => {
+  it('rejects a type 13 frame that still carries key 0', () => {
     const good = encodeType25(deliveryFrame(), [stamp(NET, 1, 1)])
     const validated = validateFrame(good, ctx)
     expect(validated.kind).toBe('parsed')
@@ -87,7 +87,7 @@ describe('payment item network', () => {
     expect(payload.has(0n)).toBe(false)
     payload.set(0n, NET)
     const rejected = encodeFrame(
-      { typeId: 25, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 13, schemaVersion: 1, minReaderVersion: 1 },
       payload,
     )
     expect(() => validateFrame(rejected, ctx)).toThrow(FrankCodecError)
@@ -109,7 +109,7 @@ describe('payment item network', () => {
     ])
     const validated = validateFrame(frame, ctx)
     expect(validated.kind).toBe('parsed')
-    if (validated.typed?.type !== 25) throw new Error('type 25')
+    if (validated.typed?.type !== 13) throw new Error('type 13')
     const [first, second] = validated.typed.payments
     expect(first.network).toBe('frank-test')
     expect(first.childIndex).toBe(0)
@@ -119,7 +119,7 @@ describe('payment item network', () => {
     expect(second.stealthMetadata?.ephemeralPubKey.keyType).toBe(1)
   })
 
-  it('computes the forwarding digest from the inner type-1 network', () => {
+  it('computes the forwarding digest from the inner type-10 network', () => {
     const frank = type1('frank-test')
     const lotus = type1('lotus-test')
     const frankDigest = forwardingPayloadDigest(frank)

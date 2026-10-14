@@ -99,11 +99,11 @@ async function fixture() {
     const parsed = validateFrame(params.data, defaultContext())
     if (parsed.kind !== 'parsed') throw new Error('Bad fixture request')
     const typed = parsed.typed!
-    if (typed.type !== 10 && typed.type !== 11)
+    if (typed.type !== 41 && typed.type !== 42)
       throw new Error('Bad fixture family')
     const tx = Transaction.from(hexlify(typed.burnTx))
     const target =
-      typed.type === 10
+      typed.type === 41
         ? topicBurnCommitment(typed.postFrame.frame).hash
         : typed.targetHash
     const payload = new Map<number, any>([
@@ -122,7 +122,7 @@ async function fixture() {
     ])
     return {
       data: encodeFrame(
-        { typeId: 15, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: 46, schemaVersion: 1, minReaderVersion: 1 },
         payload,
       ),
       headers: { 'content-type': 'application/cbor' },
@@ -153,7 +153,7 @@ test('public post writes schema2 type10, preserves parent and exact authored tim
   const parsed = validateFrame(result.postFrame, defaultContext())
   if (
     parsed.kind !== 'parsed' ||
-    parsed.typed?.type !== 9 ||
+    parsed.typed?.type !== 40 ||
     parsed.typed.schemaVersion !== 2
   )
     throw new Error('Expected canonical post')

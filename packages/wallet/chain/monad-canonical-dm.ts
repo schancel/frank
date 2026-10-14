@@ -779,7 +779,7 @@ function sealUnpaid(
     roles.dispose()
   }
   const payload = parseFrame(sealed.payload)
-  if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+  if (payload.kind !== 'parsed' || payload.typed?.type !== 11)
     throw new Error('canonical-wallet:payload-required')
   const digest = recipientPayloadDigest(directory.network, sealed.payload)
   const account = (ref: { keyType: number; keyBytes: Uint8Array }) =>
@@ -789,7 +789,7 @@ function sealUnpaid(
     ])
   // The paid delivery's fields in the same order, without payment members.
   const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+    { typeId: 10, schemaVersion: 2, minReaderVersion: 1 },
     cborMap([
       [0, directory.network],
       [1, account(decodeDirectMessageCryptoContext(sealed.context).stampKey)],
@@ -839,7 +839,7 @@ function freezePaidMessage(
     return cborMap(entries)
   })
   const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, network],
       [
@@ -1326,11 +1326,11 @@ async function validateOriginalEnvelope(
   > & { messageId: string },
 ): Promise<void> {
   const delivery = parseFrame(fromHex(envelope.delivery))
-  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
     throw new Error('Invalid original delivery')
   const payload = delivery.typed.payloadFrame.typed
   if (
-    payload?.type !== 5 ||
+    payload?.type !== 11 ||
     payload.network !== directory.network ||
     toHex(payload.sender.keyBytes) !== owner.subject ||
     toHex(payload.recipient.keyBytes) !== envelope.recipientSubject ||
@@ -1886,7 +1886,7 @@ async function send(
     const digestBytes = recipientPayloadDigest(directory.network, sealed.payload)
     const digest = toHex(digestBytes)
     const payload = parseFrame(sealed.payload)
-    if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+    if (payload.kind !== 'parsed' || payload.typed?.type !== 11)
       throw new Error('canonical-wallet:payload-required')
     const sharedPoint = payload.typed.sharedPoint
     const stampKey = {
@@ -2258,7 +2258,7 @@ export function projectOutboxMessageRecord(
       const rawFrames = outboxItem.itemFrames.map(fromHex)
       const revisionFrame = validateFrame(
         encodeFrame(
-          { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+          { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
           new Map<number, Encodable>([
             [0, 'frank'],
             [1, rawFrames],
@@ -2267,7 +2267,7 @@ export function projectOutboxMessageRecord(
       )
       if (
         revisionFrame.kind === 'parsed' &&
-        revisionFrame.typed?.type === 8
+        revisionFrame.typed?.type === 20
       ) {
         decodedItems = decodeItemFrames(
           registry,
@@ -2413,10 +2413,10 @@ async function fetchSince(
       )
     for (const record of page.records) {
       const delivery = parseFrame(record.delivery)
-      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue
+      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10) continue
       const deliveryTyped = delivery.typed
       const payload = deliveryTyped.payloadFrame.typed
-      if (payload?.type !== 5) continue
+      if (payload?.type !== 11) continue
       const digest = toHex(deliveryTyped.payloadDigest)
       const isOutbound = record.direction === 'out'
       const peerSubjectKeyBytes = isOutbound
@@ -2838,11 +2838,11 @@ export function canonicalDirectMessages(
               if (!active) return
               try {
                 const delivery = parseFrame(record.delivery)
-                if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+                if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
                   return
                 const deliveryTyped = delivery.typed
                 const payload = deliveryTyped.payloadFrame.typed
-                if (payload?.type !== 5) return
+                if (payload?.type !== 11) return
                 const digest = toHex(deliveryTyped.payloadDigest)
                 const isOutbound = record.direction === 'out'
                 const peerSubjectKeyBytes = isOutbound

@@ -122,7 +122,7 @@ const frankBrowserCheckInstall = function () {
       })
       if (f.context?.topicSchema)
         context.supportedSchemas = context.supportedSchemas.map(s =>
-          s.typeId === 9 ? { ...s, schemaVersion: f.context.topicSchema } : s,
+          s.typeId === 40 ? { ...s, schemaVersion: f.context.topicSchema } : s,
         )
       try {
         const r = codec.validateFrame(codec.fromHex(f.hex), context)
@@ -176,9 +176,9 @@ const frankBrowserCheckInstall = function () {
         fail(id, 'nested opaque future frame missing')
     }
     const rustExpected = [
-      [1, 'rust-additive-direct'],
+      [10, 'rust-additive-direct'],
       [2, 'rust-additive-directory'],
-      [3, 'rust-additive-checkpoint'],
+      [14, 'rust-additive-checkpoint'],
     ]
     for (const [index, id] of interoperability.rust_origin_ids.entries()) {
       const c = byId(rustOrigin, id)
@@ -200,24 +200,24 @@ const frankBrowserCheckInstall = function () {
       }
       if (r.typed.unknownFields.get(100n) !== expectedUnknown)
         fail(id, 'typed unknown field 100 differs')
-      if (r.typed.type === 1) {
+      if (r.typed.type === 10) {
         const recipient = r.typed.payloadFrame.typed
         const encrypted =
-          recipient && recipient.type === 5
+          recipient && recipient.type === 11
             ? codec.validateFrame(recipient.ciphertext, codec.defaultContext())
             : undefined
         const revision =
           encrypted &&
           encrypted.kind === 'parsed' &&
-          encrypted.typed?.type === 6
+          encrypted.typed?.type === 12
             ? encrypted.typed.revisionFrame.typed
             : undefined
         const container =
-          revision && revision.type === 8 ? revision.items[1] : undefined
+          revision && revision.type === 20 ? revision.items[1] : undefined
         const opaque =
           container &&
           container.kind === 'parsed' &&
-          container.typed?.type === 16
+          container.typed?.type === 21
             ? container.typed.items[1]
             : undefined
         if (
@@ -227,7 +227,7 @@ const frankBrowserCheckInstall = function () {
         )
           fail(id, 'typed nested opaque child bytes differ')
       }
-      if (r.typed.type === 3) {
+      if (r.typed.type === 14) {
         if (
           codec.toHex(r.typed.facts[1].payload) !== codec.toHex(unknownItem(2))
         )
@@ -322,10 +322,10 @@ const frankBrowserCheckInstall = function () {
 
     // Encoder: the README worked example, insertion order, and bigint.
     const hi = codec.encodeFrame(
-      { typeId: 17, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 22, schemaVersion: 1, minReaderVersion: 1 },
       new Map([[0, 'hi']]),
     )
-    if (codec.toHex(hi) !== '46524e4b010000000ea40011010102010345a100626869') {
+    if (codec.toHex(hi) !== '46524e4b010000000ea40016010102010345a100626869') {
       fail('encode', 'worked example bytes differ')
     }
     const a = codec.encodeCanonical(

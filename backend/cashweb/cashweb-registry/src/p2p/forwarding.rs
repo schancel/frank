@@ -413,7 +413,7 @@ mod tests {
         };
         let payload_frame = encode_frame(
             EnvelopeFields {
-                type_id: 1,
+                type_id: 10,
                 schema_version: 1,
                 min_reader_version: 1,
             },

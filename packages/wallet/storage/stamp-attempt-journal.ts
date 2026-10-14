@@ -346,7 +346,7 @@ function publicRecovery(
     contentType: row.contentType,
   })
   const delivery = parseFrame(request.parts.delivery)
-  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
     canonicalFail('invalid')
   const envelope = inspectCanonicalPreparedEnvelope(
     delivery.typed.payloadFrame.frame,
@@ -397,7 +397,7 @@ function publicRecovery(
       toHex(payment.commitment) !==
         toHex(
           paymentCommitment(
-            delivery.typed!.type === 1
+            delivery.typed!.type === 10
               ? delivery.typed.payloadDigest
               : new Uint8Array(),
             childIndex,
@@ -670,7 +670,7 @@ function attemptKey(sequence: number): string {
 
 function payloadFromRequest(request: CanonicalExactRequest): Uint8Array {
   const parsed = parseFrame(request.parts.delivery)
-  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1)
+  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 10)
     canonicalFail('invalid')
   return new Uint8Array(parsed.typed.payloadFrame.frame)
 }
@@ -731,7 +731,7 @@ function assertPrepared(
   if (
     parsed.kind !== 'parsed' ||
     parsed.schemaVersion !== 2 ||
-    parsed.typed?.type !== 5 ||
+    parsed.typed?.type !== 11 ||
     parsed.typed.suite !== 1 ||
     parsed.typed.network !== prepared.network ||
     parsed.typed.sender.keyType !== 1 ||
@@ -747,7 +747,7 @@ function assertPrepared(
     context.get(0n) !== 'frank/dm-crypto-context/v1' ||
     context.get(1n) !== prepared.network ||
     context.get(12n) !== 1n ||
-    context.get(13n) !== 5n ||
+    context.get(13n) !== 11n ||
     context.get(14n) !== 2n ||
     context.get(15n) !== 2n
   )
@@ -1506,14 +1506,14 @@ export class LevelCanonicalStampAttemptJournal {
     const bound = JSON.parse(tuple),
       view = publicRecovery(row)
     const delivery = parseFrame(view.request.parts.delivery)
-    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
       canonicalFail('conflict')
     const payload = parseFrame(delivery.typed.payloadFrame.frame)
     if (
       row.walletBindingId !== sha256(toUtf8Bytes(tuple)).slice(2) ||
       view.request.identity.network !== bound.network ||
       payload.kind !== 'parsed' ||
-      payload.typed?.type !== 5 ||
+      payload.typed?.type !== 11 ||
       '0x' + toHex(payload.typed.recipient.keyBytes) !== bound.auth
     )
       canonicalFail('conflict')
@@ -1575,7 +1575,7 @@ export class LevelCanonicalStampAttemptJournal {
     if (!equalCanonicalRequests(request, input.request))
       canonicalFail('conflict')
     const delivery = parseFrame(request.parts.delivery)
-    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
       canonicalFail('invalid')
     // Compute public accounts from the complete raw set, then strictly compare on every reopen.
     if (

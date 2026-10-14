@@ -78,7 +78,7 @@ fn network_field(typed: &TypedPayload) -> Option<&str> {
 /// T1's network source. Unknown types have no content hash.
 pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
     match frame.type_id {
-        8 | 16 | 17 => Ok("frank".to_string()),
+        20 | 21 | 22 => Ok("frank".to_string()),
         2 => {
             let typed = frame
                 .typed
@@ -100,7 +100,7 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
                 )),
             }
         }
-        1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11 => {
+        1 | 3 | 10 | 11 | 12 | 14 | 40 | 41 | 42 => {
             let typed = frame.typed.as_deref().ok_or_else(|| {
                 usage(format!(
                     "T1 for a type-{} frame needs the stage 8 typed projection",
@@ -114,22 +114,22 @@ pub fn content_hash_network(frame: &ParsedFrame) -> Result<String, UsageError> {
                 ))
             })
         }
-        25 => {
+        13 => {
             let typed = frame
                 .typed
                 .as_deref()
-                .ok_or_else(|| usage("T1 for a type-25 frame needs the opened type-1 network"))?;
+                .ok_or_else(|| usage("T1 for a type-13 frame needs the opened type-10 network"))?;
             match typed {
                 TypedPayload::ForwardingDelivery { payload_frame, .. } => {
                     match payload_frame.typed.as_deref() {
                         Some(TypedPayload::DirectMessage { network, .. }) => Ok(network.clone()),
                         _ => Err(usage(
-                            "T1 for a type-25 frame needs the opened type-1 network",
+                            "T1 for a type-13 frame needs the opened type-10 network",
                         )),
                     }
                 }
                 _ => Err(usage(
-                    "T1 for a type-25 frame needs the opened type-1 network",
+                    "T1 for a type-13 frame needs the opened type-10 network",
                 )),
             }
         }
@@ -146,13 +146,13 @@ pub fn content_hash(frame: &ParsedFrame) -> Result<[u8; 32], UsageError> {
     Ok(sha256(&transcript))
 }
 
-/// T1a digest of a complete type-8 frame. The network tag is the literal `frank`.
+/// T1a digest of a complete type-20 frame. The network tag is the literal `frank`.
 pub fn message_content_digest(type8_frame: &[u8]) -> Result<[u8; 32], UsageError> {
     let transcript = common_transcript("frank/message-content/v1", "frank", type8_frame, &[])?;
     Ok(sha256(&transcript))
 }
 
-/// T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-4 statement frame.
+/// T2: the 32-byte SHA-256 digest algorithm 1 signs, over the complete type-1 statement frame.
 /// The network argument is the statement's own field 0 (T5), never ambient state; the context
 /// is empty.
 pub fn directory_signature_digest(
@@ -183,7 +183,7 @@ pub fn topic_post_signature_digest(
     Ok(sha256(&transcript))
 }
 
-/// T2a: the digest of a key-transition authorization over the complete type-7 frame.
+/// T2a: the digest of a key-transition authorization over the complete type-3 frame.
 pub fn key_transition_signature_digest(
     network: &str,
     type7_frame: &[u8],
@@ -197,7 +197,7 @@ pub fn key_transition_signature_digest(
     Ok(sha256(&transcript))
 }
 
-/// T3 recipient-payload digest of a complete type-5 frame.
+/// T3 recipient-payload digest of a complete type-11 frame.
 pub fn recipient_payload_digest(network: &str, type5_frame: &[u8]) -> Result<[u8; 32], UsageError> {
     let transcript = common_transcript("frank/recipient-payload/v1", network, type5_frame, &[])?;
     Ok(sha256(&transcript))
@@ -222,26 +222,26 @@ fn map_get(value: &CborValue, key: u64) -> Option<&CborValue> {
     }
 }
 
-/// Network tag from a type-1 frame's own field 0. The frame bytes are not re-encoded.
+/// Network tag from a type-10 frame's own field 0. The frame bytes are not re-encoded.
 fn type1_network_tag(frame: &[u8]) -> Result<String, UsageError> {
     if frame.len() < FRAME_HEADER_BYTES {
         return Err(usage("inner frame is shorter than a FRNK header"));
     }
     let envelope = decode_canonical(&frame[FRAME_HEADER_BYTES..])
-        .map_err(|_| usage("forwarding digest requires a type-1 inner frame"))?;
+        .map_err(|_| usage("forwarding digest requires a type-10 inner frame"))?;
     match map_get(&envelope, 0) {
-        Some(CborValue::Int(1)) => {}
-        _ => return Err(usage("forwarding digest requires a type-1 inner frame")),
+        Some(CborValue::Int(10)) => {}
+        _ => return Err(usage("forwarding digest requires a type-10 inner frame")),
     }
     let payload = match map_get(&envelope, 3) {
         Some(CborValue::Bytes(bytes)) => bytes,
-        _ => return Err(usage("type-1 payload is not a byte string")),
+        _ => return Err(usage("type-10 payload is not a byte string")),
     };
     let payload_map =
-        decode_canonical(payload).map_err(|_| usage("type-1 network tag is missing"))?;
+        decode_canonical(payload).map_err(|_| usage("type-10 network tag is missing"))?;
     match map_get(&payload_map, 0) {
         Some(CborValue::Text(network)) if is_network_tag(network) => Ok(network.clone()),
-        _ => Err(usage("type-1 network tag is missing")),
+        _ => Err(usage("type-10 network tag is missing")),
     }
 }
 

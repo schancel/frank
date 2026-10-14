@@ -1001,7 +1001,7 @@ function canonicalDelivery(): Uint8Array {
     ]),
   ]);
   return encodeFrame(
-    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
     payload
   );
 }
@@ -1013,7 +1013,7 @@ function canonicalUnpaidDelivery(): Uint8Array {
   const payload = new Map(parsed.payload);
   payload.set(4n, []);
   return encodeFrame(
-    { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+    { typeId: 10, schemaVersion: 2, minReaderVersion: 1 },
     payload
   );
 }
@@ -1334,7 +1334,7 @@ describe("canonical private mailbox", () => {
       {
         ...unpaid,
         delivery: encodeFrame(
-          { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+          { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
           { bytes: canonicalPayloadBytes(unpaid.delivery) }
         ),
       },

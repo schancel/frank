@@ -168,13 +168,13 @@ function open(raw: Uint8Array): Opened {
 function validate(raw: Uint8Array): Opened {
   const f = open(raw),
     p = f.payload,
-    future = f.schema > (f.type === 9 ? 2 : 1)
+    future = f.schema > (f.type === 40 ? 2 : 1)
   requireThat(
-    f.min <= (f.type === 9 ? 2 : 1) && f.schema >= (f.type === 9 ? 2 : 1),
+    f.min <= (f.type === 40 ? 2 : 1) && f.schema >= (f.type === 40 ? 2 : 1),
     'required version',
   )
   text(get(p, 0), 1, 64)
-  if (f.type === 9) {
+  if (f.type === 40) {
     requireThat(raw.length <= 1048576, 'post limit')
     keys(p, [0, 1, 2, 3], future)
     text(get(p, 1), 1, 512)
@@ -196,26 +196,26 @@ function validate(raw: Uint8Array): Opened {
           if (has(entry, k)) text(get(entry, k), 0, 262144)
       }
     }
-  } else if (f.type === 10 || f.type === 11) {
+  } else if (f.type === 41 || f.type === 42) {
     keys(p, [0, 1, 2], future)
     requireThat(
-      raw.length <= (f.type === 10 ? 1048576 : 65536),
+      raw.length <= (f.type === 41 ? 1048576 : 65536),
       'submission limit',
     )
     bytes(get(p, 2), 1, 16384)
-    if (f.type === 10) {
+    if (f.type === 41) {
       const post = validate(bytes(get(p, 1), 9, 1048576))
       requireThat(
-        post.type === 9 && equal(get(post.payload, 0), get(p, 0)),
+        post.type === 40 && equal(get(post.payload, 0), get(p, 0)),
         'post network',
       )
     } else bytes(get(p, 1), 32)
-  } else if (f.type === 12) {
+  } else if (f.type === 43) {
     requireThat(raw.length <= 2097152, 'view limit')
     keys(p, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], future)
     const post = validate(bytes(get(p, 1), 9, 1048576))
     requireThat(
-      post.type === 9 && equal(get(post.payload, 0), get(p, 0)),
+      post.type === 40 && equal(get(post.payload, 0), get(p, 0)),
       'view network',
     )
     bytes(get(p, 2), 20)
@@ -229,14 +229,14 @@ function validate(raw: Uint8Array): Opened {
     requireThat(typeof get(a, 0) === 'boolean', 'sign')
     const mag = bytes(get(a, 1), 32)
     requireThat(get(a, 0) === false || mag.some(x => x !== 0), 'negative zero')
-  } else if (f.type === 13 || f.type === 14) {
+  } else if (f.type === 44 || f.type === 45) {
     requireThat(raw.length <= 4194304, 'page limit')
     keys(
       p,
-      f.type === 13 ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1, 2, 3, 4, 5],
+      f.type === 44 ? [0, 1, 2, 3, 4, 5, 6, 7] : [0, 1, 2, 3, 4, 5],
       future,
     )
-    const topic = f.type === 13
+    const topic = f.type === 44
     if (topic) {
       text(get(p, 1), 1, 512)
       timestamp(get(p, 2))
@@ -253,7 +253,7 @@ function validate(raw: Uint8Array): Opened {
     for (const row of rows) {
       if (topic) {
         const v = validate(bytes(row, 9, 2097152))
-        requireThat(v.type === 12, 'row type')
+        requireThat(v.type === 43, 'row type')
         const post = validate(get(v.payload, 1) as Uint8Array)
         requireThat(
           equal(get(v.payload, 0), get(p, 0)) &&
@@ -288,17 +288,17 @@ function validate(raw: Uint8Array): Opened {
         previous = name
       }
     }
-  } else if (f.type === 15) {
+  } else if (f.type === 46) {
     requireThat(raw.length <= 2097152, 'status limit')
     keys(p, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], future)
     const sub = validate(bytes(get(p, 1), 9, 1048576))
     requireThat(
-      (sub.type === 10 || sub.type === 11) &&
+      (sub.type === 41 || sub.type === 42) &&
         equal(get(sub.payload, 0), get(p, 0)),
       'status network',
     )
     const target =
-      sub.type === 10
+      sub.type === 41
         ? t1(get(sub.payload, 1) as Uint8Array)
         : get(sub.payload, 1)
     requireThat(equal(bytes(get(p, 2), 32), target), 'status target')
@@ -333,8 +333,8 @@ function fixtures(): Fixture[] {
     type: number,
     payload: Encodable,
     valid = true,
-    schema = type === 9 ? 2 : 1,
-    min = type === 9 ? 2 : 1,
+    schema = type === 40 ? 2 : 1,
+    min = type === 40 ? 2 : 1,
     origin = 'typescript',
   ) {
     const raw = encodeFrame(
@@ -350,7 +350,7 @@ function fixtures(): Fixture[] {
       payload: recipe(payload),
       hex: toHex(raw),
       valid,
-      ...(type === 9
+      ...(type === 40
         ? { t1: toHex(t1(raw)), t7: toHex(topicVoteCommitment(NET, t1(raw))) }
         : {}),
     })
@@ -378,10 +378,10 @@ function fixtures(): Fixture[] {
       ...(parent ? [[2, parent] as [number, Encodable]] : []),
       [3, body],
     ])
-  const top = add('typescript-origin', 9, post(content()))
+  const top = add('typescript-origin', 40, post(content()))
   const rust = add(
     'rust-origin',
-    9,
+    40,
     post(
       content(
         M([
@@ -398,7 +398,7 @@ function fixtures(): Fixture[] {
   )
   add(
     'reply',
-    9,
+    40,
     post(
       content(
         M([
@@ -411,12 +411,12 @@ function fixtures(): Fixture[] {
   )
   add(
     'different-authored-time',
-    9,
+    40,
     post(content(undefined, stamp(1700000001n))),
   )
   add(
     'multiple-entries',
-    9,
+    40,
     post(
       encodeCanonical(
         M([
@@ -440,7 +440,7 @@ function fixtures(): Fixture[] {
   )
   add(
     'empty-optionals',
-    9,
+    40,
     post(
       content(
         M([
@@ -452,10 +452,10 @@ function fixtures(): Fixture[] {
       ),
     ),
   )
-  add('absent-optionals', 9, post(content(M([[0, 1]]))))
+  add('absent-optionals', 40, post(content(M([[0, 1]]))))
   add(
     'future-retention',
-    9,
+    40,
     post(
       encodeCanonical(
         M([
@@ -482,11 +482,11 @@ function fixtures(): Fixture[] {
     3,
     2,
   )
-  add('required-version', 9, post(content()), false, 3, 3)
-  add('unknown-kind', 9, post(content(M([[0, 27]]))), false)
+  add('required-version', 40, post(content()), false, 3, 3)
+  add('unknown-kind', 40, post(content(M([[0, 27]]))), false)
   add(
     'unknown-key-current',
-    9,
+    40,
     post(
       content(
         M([
@@ -504,10 +504,10 @@ function fixtures(): Fixture[] {
     ['trailing-content', 'a200a2000001000181a1000100'],
     ['malformed-content', 'a2'],
   ] as const)
-    add(id, 9, post(fromHex(raw)), false)
+    add(id, 40, post(fromHex(raw)), false)
   add(
     'empty-entries',
-    9,
+    40,
     post(
       encodeCanonical(
         M([
@@ -520,7 +520,7 @@ function fixtures(): Fixture[] {
   )
   add(
     'too-many-entries',
-    9,
+    40,
     post(
       encodeCanonical(
         M([
@@ -536,7 +536,7 @@ function fixtures(): Fixture[] {
     sender = new Uint8Array(20).fill(3)
   const subA = add(
       'submission-a',
-      10,
+      41,
       M([
         [0, NET],
         [1, top],
@@ -545,7 +545,7 @@ function fixtures(): Fixture[] {
     ),
     subB = add(
       'submission-b',
-      10,
+      41,
       M([
         [0, NET],
         [1, top],
@@ -554,7 +554,7 @@ function fixtures(): Fixture[] {
     )
   add(
     'vote',
-    11,
+    42,
     M([
       [0, NET],
       [1, t1(top)],
@@ -586,8 +586,8 @@ function fixtures(): Fixture[] {
       [10, epoch],
     ])
   }
-  const viewA = add('view-large-aggregate', 12, view(top)),
-    viewB = add('view-rust', 12, view(rust))
+  const viewA = add('view-large-aggregate', 43, view(top)),
+    viewB = add('view-rust', 43, view(rust))
   const negative = view(top)
   negative.set(
     8,
@@ -596,7 +596,7 @@ function fixtures(): Fixture[] {
       [1, new Uint8Array(32)],
     ]),
   )
-  add('negative-zero', 12, negative, false)
+  add('negative-zero', 43, negative, false)
   const pageRows = [viewA, viewB].sort((a, b) =>
     Buffer.compare(
       Buffer.from(t1(get(open(a).payload, 1) as Uint8Array)),
@@ -605,7 +605,7 @@ function fixtures(): Fixture[] {
   )
   add(
     'equal-time-page',
-    13,
+    44,
     M([
       [0, NET],
       [1, TOPIC],
@@ -617,7 +617,7 @@ function fixtures(): Fixture[] {
   )
   add(
     'wrong-topic-page',
-    13,
+    44,
     M([
       [0, NET],
       [1, 'other'],
@@ -630,7 +630,7 @@ function fixtures(): Fixture[] {
   )
   add(
     'wrong-epoch-page',
-    13,
+    44,
     M([
       [0, NET],
       [1, TOPIC],
@@ -643,7 +643,7 @@ function fixtures(): Fixture[] {
   )
   add(
     'discovery-u64',
-    14,
+    45,
     M([
       [0, NET],
       [1, U64],
@@ -684,10 +684,10 @@ function fixtures(): Fixture[] {
       [10, U64],
       [11, EPOCH],
     ])
-  add('confirmed-a', 15, status(subA, 2))
-  add('unknown-b-same-post', 15, status(subB, 0))
-  add('pending-a', 15, status(subA, 1))
-  add('rejected-b', 15, status(subB, 3))
+  add('confirmed-a', 46, status(subA, 2))
+  add('unknown-b-same-post', 46, status(subB, 0))
+  add('pending-a', 46, status(subA, 1))
+  add('rejected-b', 46, status(subB, 3))
   for (const [label, key, v] of [
     ['tx', 3, new Uint8Array(32)],
     ['sender', 4, new Uint8Array(20)],
@@ -696,20 +696,20 @@ function fixtures(): Fixture[] {
   ] as [string, number, Encodable][]) {
     const changed = status(subA, 2)
     changed.set(key, v)
-    add(`mismatched-response-${label}`, 15, changed)
+    add(`mismatched-response-${label}`, 46, changed)
   }
   const wrongTarget = status(subA, 2)
   wrongTarget.set(2, new Uint8Array(32))
-  add('wrong-target', 15, wrongTarget, false)
+  add('wrong-target', 46, wrongTarget, false)
   const wrongNet = status(subA, 2)
   wrongNet.set(0, 'other')
-  add('wrong-network', 15, wrongNet, false)
+  add('wrong-network', 46, wrongNet, false)
   const highBurn = status(subA, 2)
   highBurn.set(6, U64)
-  add('u64-burn-not-admitted', 15, highBurn, false)
+  add('u64-burn-not-admitted', 46, highBurn, false)
   const unknownPosition = status(subB, 0)
   unknownPosition.set(8, 1)
-  add('unknown-cannot-have-position', 15, unknownPosition, false)
+  add('unknown-cannot-have-position', 46, unknownPosition, false)
   return out
 }
 
@@ -805,11 +805,11 @@ function checkObserved(all: Fixture[], facts: ReturnType<typeof observations>) {
     )
   }
 }
-function cursorFixtures(all: Fixture[], family = 13) {
+function cursorFixtures(all: Fixture[], family = 44) {
   const top = fromHex(all.find(f => f.id === 'typescript-origin')!.hex)
   const cursor = M([
     [0, NET],
-    [1, 13],
+    [1, 44],
     [2, U64],
     [3, EPOCH],
     [
@@ -823,8 +823,8 @@ function cursorFixtures(all: Fixture[], family = 13) {
     [6, stamp()],
     [7, 1n],
   ])
-  if (family === 14) {
-    cursor.set(1, 14)
+  if (family === 45) {
+    cursor.set(1, 45)
     cursor.set(4, TOPIC)
     cursor.delete(5)
     cursor.delete(6)
@@ -858,7 +858,7 @@ function cursorFixtures(all: Fixture[], family = 13) {
       retainedIncarnation,
     })
   const raw = fromHex(expected)
-  add(family === 13 ? 'topic-cursor' : 'discovery-cursor', raw, true)
+  add(family === 44 ? 'topic-cursor' : 'discovery-cursor', raw, true)
   for (const k of cursor.keys()) {
     const changed = new Map(cursor)
     changed.set(k, k === 3 ? new Uint8Array(16) : 'forged')
@@ -1034,7 +1034,7 @@ if (process.argv.includes('--emit')) {
         chainFacts:
           'synthetic exact-byte observations; not signed transaction evidence',
         frames,
-        cursors: [cursorFixtures(frames), cursorFixtures(frames, 14)],
+        cursors: [cursorFixtures(frames), cursorFixtures(frames, 45)],
         observations: observations(frames),
       },
       null,
@@ -1066,7 +1066,7 @@ if (process.argv.includes('--emit')) {
     } else rejects(() => validate(encoded))
   }
   policies(all)
-  assert.deepEqual(doc.cursors, [cursorFixtures(all), cursorFixtures(all, 14)])
+  assert.deepEqual(doc.cursors, [cursorFixtures(all), cursorFixtures(all, 45)])
   doc.cursors.forEach(checkCursors)
   assert.deepEqual(doc.observations, observations(all))
   checkObserved(all, doc.observations)

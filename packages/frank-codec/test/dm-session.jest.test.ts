@@ -30,7 +30,7 @@ import {
 
 function encrypted(suite = 1, schema = 2, min = 2): Uint8Array {
   return fr(
-    5,
+    11,
     M([
       [0, NET],
       [1, acct1(9)],
@@ -48,8 +48,8 @@ function encrypted(suite = 1, schema = 2, min = 2): Uint8Array {
 function root(extra?: Encodable): Uint8Array {
   const payload = deliveryPayload({ payloadFrame: encrypted() })
   if (extra !== undefined) payload.set(99, extra)
-  // Newer than the reader's type-1 schema (2), so the extra field is retained (V6.3).
-  return fr(1, payload, extra === undefined ? 1 : 3, 1)
+  // Newer than the reader's type-10 schema (2), so the extra field is retained (V6.3).
+  return fr(10, payload, extra === undefined ? 1 : 3, 1)
 }
 function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
   const payload = M([
@@ -60,7 +60,7 @@ function content(extra?: Encodable, items = [unknownItem()]): Uint8Array {
     [4, bytesOf(16, 8)],
   ])
   if (extra !== undefined) payload.set(99, extra)
-  return fr(6, payload, extra === undefined ? 1 : 2, 1)
+  return fr(12, payload, extra === undefined ? 1 : 2, 1)
 }
 function grouped(n: number, containers: boolean): Encodable[] {
   const groups: Encodable[] = []
@@ -95,7 +95,7 @@ const finish = (r: Uint8Array, c: Uint8Array) =>
   ).completeAuthenticatedContent(c)
 
 describe('opaque DM structural continuation', () => {
-  it('owns the unchanged production suite1 vector; arbitrary authenticated bytes are not type6', () => {
+  it('owns the unchanged production suite1 vector; arbitrary authenticated bytes are not type12', () => {
     const vector = JSON.parse(
       readFileSync(
         join(__dirname, '../../../docs/protocol/cbor/vectors/dm-suite-1.json'),
@@ -118,7 +118,7 @@ describe('opaque DM structural continuation', () => {
     ).toBe('frame@2')
   })
 
-  it('matches ordinary typed results for actual type1 and standalone type5; retains opaque items', () => {
+  it('matches ordinary typed results for actual type10 and standalone type11; retains opaque items', () => {
     for (const r of [root(), encrypted()]) {
       const c = content()
       const finished = finish(r, c)
@@ -134,8 +134,8 @@ describe('opaque DM structural continuation', () => {
       ])
       const parsed = finish(r, c).content
       if (
-        parsed.typed?.type !== 6 ||
-        parsed.typed.revisionFrame.typed?.type !== 8
+        parsed.typed?.type !== 12 ||
+        parsed.typed.revisionFrame.typed?.type !== 20
       )
         throw new Error('not typed content')
       expect(parsed.typed.revisionFrame.typed.items[0].kind).toBe('retained')
@@ -162,7 +162,7 @@ describe('opaque DM structural continuation', () => {
     ).toBe('context')
     expect(
       outcome(() =>
-        beginDirectMessageValidation(fr(5, type5Payload()), defaultContext()),
+        beginDirectMessageValidation(fr(11, type5Payload()), defaultContext()),
       ),
     ).toBe('context')
     for (const bad of [
@@ -177,13 +177,13 @@ describe('opaque DM structural continuation', () => {
     }
   })
 
-  it('requires type6, never retains an unsupported required child, and preserves first errors', () => {
+  it('requires type12, never retains an unsupported required child, and preserves first errors', () => {
     for (const [bad, expected] of [
       [unknownItem(), 'semantic@8.4'],
-      [frRaw(17, Uint8Array.of(0xff)), 'semantic@8.4'],
-      [frRaw(6, Uint8Array.of(0xff)), 'malformed@7'],
-      [fr(6, M([]), 3, 3), 'unsupported@7'],
-      [fr(6, M([])), 'schema@8.2'],
+      [frRaw(22, Uint8Array.of(0xff)), 'semantic@8.4'],
+      [frRaw(12, Uint8Array.of(0xff)), 'malformed@7'],
+      [fr(12, M([]), 3, 3), 'unsupported@7'],
+      [fr(12, M([])), 'schema@8.2'],
       [Uint8Array.of(0), 'frame@2'],
     ] as const)
       expect(outcome(() => finish(root(), bad))).toBe(expected)
@@ -209,7 +209,7 @@ describe('opaque DM structural continuation', () => {
     copy.frame.fill(0)
     copy.payloadBytes.fill(0)
     ;(copy.payload as Map<bigint, Encodable>).clear()
-    if (copy.typed?.type !== 5) throw new Error('not payload')
+    if (copy.typed?.type !== 11) throw new Error('not payload')
     copy.typed.ephemeralPoint.fill(0)
     expect(session.payload).toEqual(parseFrame(encrypted()))
     expect(session.completeAuthenticatedContent(content()).root.frame).toEqual(
@@ -243,7 +243,7 @@ describe('opaque DM structural continuation', () => {
       defaultContext({ routeByteLimit: r.length }),
     )
     expect(c.length).toBeGreaterThan(r.length)
-    expect(session.completeAuthenticatedContent(c).content.typeId).toBe(6)
+    expect(session.completeAuthenticatedContent(c).content.typeId).toBe(12)
     expect(outcome(() => finish(r, new Uint8Array(MAX_FRAME_BYTES + 1)))).toBe(
       'resource@1',
     )

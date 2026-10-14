@@ -72,7 +72,7 @@ const quantity = (n: bigint) => bytes32(n.toString(16).padStart(64, '0'))
 type Fields = [number, Encodable][]
 const raw = (fields: Fields, schemaVersion = 3, minReaderVersion = 2) =>
   encodeFrame(
-    { typeId: 18, schemaVersion, minReaderVersion },
+    { typeId: 26, schemaVersion, minReaderVersion },
     new Map<number, Encodable>(fields),
   )
 const g: [number, Encodable] = [0, GAME]
@@ -152,7 +152,7 @@ const MALFORMED: readonly { id: string; frame: Uint8Array; context?: 'schema2' }
 
 const SCHEMA2_READER = {
   readerVersion: 2,
-  supportedSchemas: [{ typeId: 18, schemaVersion: 2 }],
+  supportedSchemas: [{ typeId: 26, schemaVersion: 2 }],
   opaqueRetentionAllowed: false,
 }
 
@@ -160,7 +160,7 @@ export function blackjackHandV3Corpus() {
   return {
     format: 'blackjack-hand-v3',
     allocation: {
-      typeId: 18,
+      typeId: 26,
       schemaVersion: 3,
       minReaderVersion: 2,
       maximumFrameBytes: 4096,

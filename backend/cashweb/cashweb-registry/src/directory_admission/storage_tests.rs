@@ -899,7 +899,7 @@ fn chain(count: usize, padding: usize) -> (Anchor, Vec<ExactFrames>) {
         );
         let statement = encode_frame(
             EnvelopeFields {
-                type_id: 4,
+                type_id: 1,
                 schema_version: if padding > 0 { 5 } else { 4 },
                 min_reader_version: 4,
             },

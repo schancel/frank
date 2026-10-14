@@ -136,7 +136,7 @@ function generate(): Corpus {
     corrupt = false,
   ): RecordVector {
     const frame = encodeFrame(
-      { typeId: 4, schemaVersion: schema, minReaderVersion: floor },
+      { typeId: 1, schemaVersion: schema, minReaderVersion: floor },
       payload,
     )
     const network = payload.get(0) as string

@@ -212,7 +212,7 @@ fn exact_retry_at_capacity_and_conflicting_wrapper_preserve_authority() {
     };
     let changed = frank_cbor::encode_frame(
         frank_cbor::EnvelopeFields {
-            type_id: 10,
+            type_id: 41,
             schema_version: 2,
             min_reader_version: 1,
         },
@@ -620,7 +620,7 @@ pub(crate) fn optional_observation(nonce: u64) -> Observation {
     fields.push((99, CborValue::Bytes(vec![0, 0xff, 0x81, 0x42])));
     let post = encode_frame(
         EnvelopeFields {
-            type_id: 9,
+            type_id: 40,
             schema_version: 3,
             min_reader_version: 2,
         },
@@ -630,7 +630,7 @@ pub(crate) fn optional_observation(nonce: u64) -> Observation {
     let make = |raw| {
         encode_frame(
             EnvelopeFields {
-                type_id: 10,
+                type_id: 41,
                 schema_version: 2,
                 min_reader_version: 1,
             },

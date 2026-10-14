@@ -90,7 +90,7 @@ function candidate(bytes: Uint8Array): Candidate {
   if (!(statement instanceof Uint8Array))
     throw new Error('Exact embedded statement required')
   const child = frame(statement)
-  if (child.typeId !== 4 || child.schemaVersion !== 4)
+  if (child.typeId !== 1 || child.schemaVersion !== 4)
     throw new Error('Directory schema 4 required')
   return { statement: statement.slice(), attestation: bytes.slice() }
 }

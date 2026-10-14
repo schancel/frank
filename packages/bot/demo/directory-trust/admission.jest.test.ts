@@ -118,7 +118,7 @@ function signed(
   payload.set(12n, BigInt(generation))
   payload.set(13n, predecessor)
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+    { typeId: 1, schemaVersion: 4, minReaderVersion: 4 },
     payload,
   )
   const signer = new SigningKey('0x' + '1'.padStart(64, '0'))

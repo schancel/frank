@@ -9,7 +9,7 @@ pub fn preview_directory_context() -> ValidationContext {
     let mut ctx = default_context();
     ctx.reader_version = 4;
     for schema in &mut ctx.supported_schemas {
-        if schema.type_id == 4 {
+        if schema.type_id == 1 {
             schema.schema_version = 4;
         }
     }

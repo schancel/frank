@@ -756,7 +756,7 @@ export class MonadCanonicalStampClient {
       fields = decodeCanonical(context)
     if (
       parsed.kind !== 'parsed' ||
-      parsed.typed?.type !== 5 ||
+      parsed.typed?.type !== 11 ||
       parsed.schemaVersion !== 2 ||
       parsed.typed.suite !== 1 ||
       !(fields instanceof Map)
@@ -931,7 +931,7 @@ export class MonadCanonicalStampClient {
       const context = decodeCanonical(input.prepared.context)
       if (
         parsed.kind !== 'parsed' ||
-        parsed.typed?.type !== 5 ||
+        parsed.typed?.type !== 11 ||
         parsed.schemaVersion !== 2 ||
         !(context instanceof Map)
       )
@@ -988,7 +988,7 @@ export class MonadCanonicalStampClient {
           network: input.prepared.network,
           stampKey: ownedStampKey,
           sharedPoint:
-            parsed.typed!.type === 5
+            parsed.typed!.type === 11
               ? parsed.typed!.sharedPoint
               : new Uint8Array(),
           childIndex: i,
@@ -1269,7 +1269,7 @@ export class MonadCanonicalStampClient {
         )
       }
       const payload = parseFrame(intent.prepared.payload)
-      if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+      if (payload.kind !== 'parsed' || payload.typed?.type !== 11)
         throw new Error('canonical-wallet:payload-required')
       const digest = recipientPayloadDigest(
         intent.prepared.network,
@@ -1297,7 +1297,7 @@ export class MonadCanonicalStampClient {
         intent.prepared.context,
       )
       const delivery = encodeFrame(
-        { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
         cborMap([
           [0, intent.prepared.network],
           [

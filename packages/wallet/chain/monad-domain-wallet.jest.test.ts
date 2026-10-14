@@ -1031,7 +1031,7 @@ async function retainedCanonicalAttempt() {
     .get(8n)!
     .get(1n)!
   const parsed = parseFrame(payload)
-  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 5)
+  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 11)
     throw new Error('fixture payload')
   const material = materialModule.createMonadWalletMaterial(roots())
   let raw: string
@@ -1053,7 +1053,7 @@ async function retainedCanonicalAttempt() {
     material.dispose()
   }
   const delivery = encodeFrame(
-    { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+    { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
       [0, wire.network],
       [

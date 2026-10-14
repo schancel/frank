@@ -60,14 +60,14 @@ const registry = createDefaultMessageItemRegistry(
 function children(frames: Uint8Array[]): ChildFrame[] {
   const revision = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([
         [0, 'frank'],
         [1, frames],
       ]),
     ),
   )
-  if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+  if (revision.kind !== 'parsed' || revision.typed?.type !== 20)
     throw new Error('expected a revision')
   return revision.typed.items
 }
@@ -91,12 +91,12 @@ describe('the dispatch rule', () => {
       }),
     )
     expect(rules).toEqual({
-      'text': 'dedicated:17',
-      'blackjack-hand': 'dedicated:18',
-      'stealth': 'dedicated:19',
-      'stealth-asset': 'dedicated:19',
-      'channel-update': 'dedicated:24',
-      'email': 'dedicated:26',
+      'text': 'dedicated:22',
+      'blackjack-hand': 'dedicated:26',
+      'stealth': 'dedicated:24',
+      'stealth-asset': 'dedicated:24',
+      'channel-update': 'dedicated:25',
+      'email': 'dedicated:23',
       'image': 'generic:27',
       'reply': 'generic:27',
       'digital-goods': 'generic:27',
@@ -265,7 +265,7 @@ describe('sending', () => {
   it('a digital-goods item is no longer text on the wire or on receipt', () => {
     const item = GENERIC_SAMPLES.find(i => i.type === 'digital-goods')!
     const [frame] = encodeItemFrames(registry, [item])
-    expect(frameType(frame)).not.toBe(17)
+    expect(frameType(frame)).not.toBe(22)
     expect(receive([frame])[0].type).toBe('digital-goods')
     // The old form, JSON in a text frame, is read as what it is: text.
     expect(receive([directMessageText(JSON.stringify(item))])).toEqual([
@@ -388,14 +388,14 @@ describe('receiving', () => {
 
   it('keeps a known frame type that has no item (a container) as unsupported', () => {
     const container = encodeFrame(
-      { typeId: 16, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 21, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([[0, [text]]]),
     )
     expect(receive([container])).toEqual([
       {
         type: 'unsupported',
         reason: 'unknown-type',
-        frameType: 16,
+        frameType: 21,
         frame: toHex(container),
       },
     ])
@@ -730,7 +730,7 @@ describe('items read from the legacy JSON mailbox', () => {
       'text',
       [],
       {},
-      { type: 5 },
+      { type: 11 },
       { type: 'hologram', power: 9000 },
       { type: 'unsupported', reason: 'unknown-type', frame: '00' },
     ]

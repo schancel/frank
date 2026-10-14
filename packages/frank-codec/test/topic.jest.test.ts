@@ -1,4 +1,4 @@
-// Topic events (types 9, 10, 11): typed projections, R6 limits, T1/T7 hashes, and the guarantee
+// Topic events (types 40, 41, 42): typed projections, R6 limits, T1/T7 hashes, and the guarantee
 // that the corpus written before #136 behaves identically once the new types are listed.
 import * as fs from 'fs'
 import * as path from 'path'
@@ -52,33 +52,33 @@ function parsed(f: Uint8Array): ParsedFrame {
 }
 
 describe('topic event projections', () => {
-  it('projects a type-9 post, with and without a parent', () => {
+  it('projects a type-40 post, with and without a parent', () => {
     const parent = bytesOf(32, 9)
     const top = parsed(topicPostFrame()).typed
     const reply = parsed(topicPostFrame({ parent })).typed
-    expect(top).toMatchObject({ type: 9, topic: 'frank.demo' })
+    expect(top).toMatchObject({ type: 40, topic: 'frank.demo' })
     expect(top && 'parentHash' in top).toBe(false)
-    expect(reply && reply.type === 9 && reply.parentHash).toEqual(parent)
+    expect(reply && reply.type === 40 && reply.parentHash).toEqual(parent)
   })
 
-  it('opens the type-9 post inside a type-10 submission and keeps the burn bytes exact', () => {
+  it('opens the type-40 post inside a type-41 submission and keeps the burn bytes exact', () => {
     const post = topicPostFrame()
     const sub = parsed(topicSubmissionFrame({ post, burnTx: burnTx(7) })).typed
-    if (sub?.type !== 10) throw new Error('not a submission')
+    if (sub?.type !== 41) throw new Error('not a submission')
     expect(sub.postFrame.frame).toEqual(post)
-    expect(sub.postFrame.typed?.type).toBe(9)
+    expect(sub.postFrame.typed?.type).toBe(40)
     expect(sub.burnTx).toEqual(burnTx(7))
   })
 
-  it('projects a type-11 vote with no direction, weight, or sender field', () => {
+  it('projects a type-42 vote with no direction, weight, or sender field', () => {
     const t = parsed(topicVoteFrame({ target: bytesOf(32, 3) })).typed
-    if (t?.type !== 11) throw new Error('not a vote')
+    if (t?.type !== 42) throw new Error('not a vote')
     expect(Object.keys(t).sort()).toEqual(
       ['burnTx', 'network', 'targetHash', 'type', 'unknownFields'].sort(),
     )
   })
 
-  it('takes the T1 network from field 0 of types 9, 10, and 11', () => {
+  it('takes the T1 network from field 0 of types 40, 41, and 42', () => {
     for (const f of [
       topicPostFrame({ net: 'net-a' }),
       topicSubmissionFrame({
@@ -108,7 +108,7 @@ describe('R6 limits', () => {
     ).toBe('resource@8.1')
   })
 
-  it('accepts a type-10 submission of a maximal post and rejects the frame over 1 MiB', () => {
+  it('accepts a type-41 submission of a maximal post and rejects the frame over 1 MiB', () => {
     const big = topicPostFrame({ body: new Uint8Array(MAX_BODY) })
     expect(outcome(topicSubmissionFrame({ post: big }))).toBe('parsed')
     // A 1 MiB + 1 frame: the body is within R6 but the wrapper frame is not.
@@ -118,7 +118,7 @@ describe('R6 limits', () => {
     })
     expect(wrapper.length).toBeLessThanOrEqual(1_048_576)
     const padded = fr(
-      10,
+      41,
       new Map([
         ...(M([
           [0, 'frank-test'],
@@ -132,9 +132,9 @@ describe('R6 limits', () => {
     expect(outcome(padded)).toBe('resource@8.1')
   })
 
-  it('caps a type-11 vote frame at 64 KiB while a type-9 or type-10 frame may be larger', () => {
+  it('caps a type-42 vote frame at 64 KiB while a type-40 or type-41 frame may be larger', () => {
     const over = fr(
-      11,
+      42,
       new Map([
         ...(M([
           [0, 'frank-test'],
@@ -223,17 +223,17 @@ describe('committed topic-commitments.json', () => {
       const frame = fromHex(c.frame_hex)
       const p = parsed(frame)
       expect(contentHashNetwork(p)).toBe(c.network)
-      if (p.typeId === 9) {
+      if (p.typeId === 40) {
         expect(toHex(contentHash(p))).toBe(c.t1_hex)
-      } else if (p.typeId === 10) {
+      } else if (p.typeId === 41) {
         const typed = p.typed
-        if (typed?.type !== 10) throw new Error(c.id)
+        if (typed?.type !== 41) throw new Error(c.id)
         const target = contentHash(typed.postFrame)
         expect(toHex(target)).toBe(c.target_hash_hex)
         expect(toHex(topicVoteCommitment(c.network, target))).toBe(c.t7_hex)
       } else {
         const typed = p.typed
-        if (typed?.type !== 11) throw new Error(c.id)
+        if (typed?.type !== 42) throw new Error(c.id)
         expect(toHex(typed.targetHash)).toBe(c.target_hash_hex)
         expect(toHex(topicVoteCommitment(c.network, typed.targetHash))).toBe(
           c.t7_hex,
@@ -244,7 +244,7 @@ describe('committed topic-commitments.json', () => {
 })
 
 describe('the corpus written before #136', () => {
-  it('behaves identically once types 9 through 11 are listed as supported', () => {
+  it('behaves identically once types 40 through 42 are listed as supported', () => {
     const legacy = CASES.filter(c => c.supported === undefined)
     expect(legacy.length).toBeGreaterThan(300)
     for (const c of legacy) {
@@ -254,7 +254,7 @@ describe('the corpus written before #136', () => {
         ...before,
         supportedSchemas: [
           ...PRE_TOPIC_SCHEMAS,
-          ...[9, 10, 11].map(typeId => ({ typeId, schemaVersion: 1 })),
+          ...[40, 41, 42].map(typeId => ({ typeId, schemaVersion: 1 })),
         ],
       }
       const run = (ctx: typeof before): string => {
@@ -268,5 +268,20 @@ describe('the corpus written before #136', () => {
       }
       expect([c.id, run(after)]).toEqual([c.id, run(before)])
     }
+  })
+})
+
+// Option A leaves intentional allocation gaps. They remain opaque message items.
+describe('reserved allocation gaps in message items', () => {
+  it.each([4, 9, 15, 19, 28, 39, 47])('retains unassigned type %i', typeId => {
+    const child = fr(typeId, M([]))
+    const revision = fr(
+      20,
+      M([
+        [0, 'frank'],
+        [1, [child]],
+      ]),
+    )
+    expect(outcome(revision)).toBe('parsed')
   })
 })

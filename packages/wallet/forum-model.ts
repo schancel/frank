@@ -68,9 +68,9 @@ export function projectForumView(
   policy: ForumReadPolicy,
 ): ForumMessage {
   const view = frame.typed
-  if (view?.type !== 12) throw new Error('Expected Forum view')
+  if (view?.type !== 43) throw new Error('Expected Forum view')
   const post = view.postFrame.typed
-  if (post?.type !== 9 || post.schemaVersion !== 2) {
+  if (post?.type !== 40 || post.schemaVersion !== 2) {
     throw new Error('Expected canonical Forum content')
   }
   const tx = Transaction.from('0x' + toHex(view.authorBurnTx))

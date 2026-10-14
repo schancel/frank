@@ -279,7 +279,7 @@ impl State {
             return Err(ForumError::Unavailable);
         }
         encode_forum_read_frame(
-            12,
+            43,
             &cbor_map(vec![
                 (0, CborValue::Text(self.store.network.clone())),
                 (1, CborValue::Bytes(post.frame.clone())),
@@ -349,7 +349,7 @@ impl State {
                 ]);
             }
         }
-        encode_forum_read_frame(15, &cbor_map(fields)).map_err(|_| ForumError::Unavailable)
+        encode_forum_read_frame(46, &cbor_map(fields)).map_err(|_| ForumError::Unavailable)
     }
 
     fn page(&mut self, query: Query, raw: Option<&[u8]>) -> Result<Vec<u8>> {
@@ -488,7 +488,7 @@ impl State {
                 if let Some(request) = raw {
                     fields.push((7, CborValue::Bytes(request.to_vec())));
                 }
-                encode_forum_read_frame(13, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
+                encode_forum_read_frame(44, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
             }
             Query::Discovery => {
                 let mut after_topic: Option<String> = None;
@@ -585,7 +585,7 @@ impl State {
                 if let Some(request) = raw {
                     fields.push((5, CborValue::Bytes(request.to_vec())));
                 }
-                encode_forum_read_frame(14, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
+                encode_forum_read_frame(45, &cbor_map(fields)).map_err(|_| ForumError::RowTooLarge)
             }
         }
     }
@@ -1095,7 +1095,7 @@ mod tests {
         fields.iter_mut().find(|(k, _)| *k == 99).unwrap().1 = CborValue::Bytes(vec![1, 2, 3]);
         let conflict = frank_cbor::encode_frame(
             frank_cbor::EnvelopeFields {
-                type_id: 10,
+                type_id: 41,
                 schema_version: 2,
                 min_reader_version: 1,
             },

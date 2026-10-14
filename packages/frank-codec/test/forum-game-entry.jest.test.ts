@@ -37,7 +37,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
     if (parsed.kind !== 'parsed') return
 
     const post = parsed.typed as any
-    expect(post.type).toBe(9)
+    expect(post.type).toBe(40)
     expect(post.schemaVersion).toBe(2)
     expect(post.content.entries).toHaveLength(1)
 
@@ -75,7 +75,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
       [3, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: 40, schemaVersion: 2, minReaderVersion: 2 },
       rawPayload,
     )
 
@@ -156,7 +156,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
       [3, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: 40, schemaVersion: 2, minReaderVersion: 2 },
       payload,
     )
 
@@ -189,7 +189,7 @@ describe('Kind 2: Forum Game Entry CBOR encoding and validation', () => {
       [3, body],
     ])
     const frame = encodeFrame(
-      { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
+      { typeId: 40, schemaVersion: 2, minReaderVersion: 2 },
       payload,
     )
 

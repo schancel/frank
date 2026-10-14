@@ -73,13 +73,13 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       })
 
       const decoded = decodeEncryptedMessageContent(frameBytes)
-      expect(decoded.type).toBe(6)
+      expect(decoded.type).toBe(12)
       expect(decoded.network).toBe('frank-test')
       expect(decoded.conversationName).toBe('General Chat')
       expect(decoded.tokenTransfer).toBeUndefined()
     })
 
-    it('round-trips Type 6 message-content with tokenTransfer', () => {
+    it('round-trips Type 12 message-content with tokenTransfer', () => {
       const frameBytes = encodeEncryptedMessageContent({
         network: 'frank-test',
         messageId: msgId,
@@ -90,14 +90,14 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       })
 
       const decoded = decodeEncryptedMessageContent(frameBytes)
-      expect(decoded.type).toBe(6)
+      expect(decoded.type).toBe(12)
       expect(decoded.network).toBe('frank-test')
       expect(decoded.conversationName).toBe('Token Transfer Chat')
       expect(decoded.tokenTransfer).toBeDefined()
       expect(decoded.tokenTransfer).toEqual(sampleTransfer)
     })
 
-    it('round-trips Type 6 message-content built via type6Frame fixture builder', () => {
+    it('round-trips Type 12 message-content built via type6Frame fixture builder', () => {
       const frameBytes = type6Frame(
         rev8,
         convId,
@@ -109,8 +109,8 @@ describe('Type 6 CBOR token transfer (tickets #1152, #1153)', () => {
       expect(parsed.kind).toBe('parsed')
       if (parsed.kind !== 'parsed') throw new Error('expected parsed')
 
-      expect(parsed.typed?.type).toBe(6)
-      if (parsed.typed?.type !== 6) throw new Error('expected type 6')
+      expect(parsed.typed?.type).toBe(12)
+      if (parsed.typed?.type !== 12) throw new Error('expected type 12')
 
       expect(parsed.typed.conversationName).toBe('Direct Payment')
       expect(parsed.typed.tokenTransfer).toBeDefined()

@@ -503,12 +503,12 @@ export function inspectCanonicalPair(
   )
     invalid('Canonical pair limits')
   const parsed = validateFrame(parts.delivery, defaultContext())
-  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1)
+  if (parsed.kind !== 'parsed' || parsed.typed?.type !== 10)
     invalid('Canonical type1 delivery required')
   const delivery = parsed.typed,
     payload = delivery.payloadFrame.typed
   if (
-    payload?.type !== 5 ||
+    payload?.type !== 11 ||
     payload.schemaVersion !== 2 ||
     payload.suite !== 1 ||
     payload.network !== delivery.network ||

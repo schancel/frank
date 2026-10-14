@@ -1,7 +1,4 @@
-/**
- * @jest-environment jsdom
- * @jest-environment-options {"customExportConditions": ["node", "node-addons"]}
- */
+/** @jest-environment jsdom */
 
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'

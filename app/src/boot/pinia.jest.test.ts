@@ -1,7 +1,4 @@
-/**
- * @jest-environment jsdom
- * @jest-environment-options {"customExportConditions": ["node", "node-addons"]}
- */
+/** @jest-environment jsdom */
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {

@@ -6,6 +6,7 @@ import {
   compareBytes,
   defaultContext,
   encodeDirectMessageCryptoContext,
+  decodeDirectMessageCryptoContext,
   encodeFrame,
   messageContentDigest,
   parseFrame,
@@ -401,6 +402,8 @@ export interface SealedDirectMessageSenderIdentity {
  * from a sealed-sender Type 11 payload without disposing the supplied role session on success.
  */
 export function peekSealedDirectMessageSender(input: {
+  /** Sender mode authenticates the retained original with its self-open capability. */
+  mode?: 'recipient' | 'sender'
   network: string
   payload: Uint8Array
   context: Uint8Array
@@ -425,10 +428,24 @@ export function peekSealedDirectMessageSender(input: {
     ) {
       throw new DirectMessageError('context')
     }
-    const opened = input.roles.openMessage({
-      envelope: copy(encrypted.cryptoBoxEnvelope),
-      context: suppliedContext,
-    })
+    const openOwn =
+      input.roles.openOwnMessage ?? input.roles.openOwnDirectMessage
+    if (input.mode === 'sender' && !openOwn)
+      throw new DirectMessageError('roles')
+    const opened =
+      input.mode === 'sender'
+        ? openOwn!.call(input.roles, {
+            envelope: copy(encrypted.cryptoBoxEnvelope),
+            recipientPublicKey: copy(
+              decodeDirectMessageCryptoContext(suppliedContext)
+                .recipientMessageKey.keyBytes,
+            ),
+            context: suppliedContext,
+          })
+        : input.roles.openMessage({
+            envelope: copy(encrypted.cryptoBoxEnvelope),
+            context: suppliedContext,
+          })
     if (!opened.ok) throw new DirectMessageError('crypto')
     plaintext = copy(opened.value)
     opened.value.fill(0)

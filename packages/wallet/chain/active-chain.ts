@@ -482,6 +482,8 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     recipient: ChainAddress;
     items: MessageItem[];
+    /** Hide sender routing identity inside authenticated ciphertext. */
+    sealedSender?: boolean;
     /** 16 bytes or their lowercase `8-4-4-4-12` form; anything else supplied rejects with
      * {@link DirectMessageArgumentError}. Only `undefined` means omitted. */
     conversationId?: string | Uint8Array;

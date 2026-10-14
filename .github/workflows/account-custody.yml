@@ -16,7 +16,6 @@ on:
       - "yarn.lock"
       - ".github/workflows/account-custody.yml"
   pull_request:
-    branches: [main]
     paths:
       - "app/src/accounts/custody/**"
       - "app/package.json"

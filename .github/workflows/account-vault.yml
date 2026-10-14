@@ -11,7 +11,6 @@ on:
       - 'yarn.lock'
       - '.github/workflows/account-vault.yml'
   pull_request:
-    branches: [main]
     paths:
       - 'packages/account-vault/**'
       - 'packages/domain-roots/**'

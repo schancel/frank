@@ -12,11 +12,20 @@ fn nats_startup_diagnostics_do_not_expose_endpoint_credentials() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    for url in [
-        format!("nats://synthetic-user:synthetic-password@127.0.0.1:{port}"),
-        format!("nats://synthetic-token@127.0.0.1:{port}"),
-        format!("nats://synthetic-user:synthetic%2Dpassword@127.0.0.1:{port}"),
-        "nats://synthetic-user:synthetic-password@[invalid".to_owned(),
+    for (url, invalid_endpoint) in [
+        (
+            format!("nats://synthetic-user:synthetic-password@127.0.0.1:{port}"),
+            false,
+        ),
+        (format!("nats://synthetic-token@127.0.0.1:{port}"), false),
+        (
+            format!("nats://synthetic-user:synthetic%2Dpassword@127.0.0.1:{port}"),
+            false,
+        ),
+        (
+            "nats://synthetic-user:synthetic-password@[invalid".to_owned(),
+            true,
+        ),
     ] {
         let dir = tempdir::TempDir::new("nats-diagnostics").unwrap();
         let config = format!(
@@ -72,11 +81,18 @@ url = "{url}"
         };
         assert!(!status.success());
         let diagnostic = std::fs::read_to_string(log_path).unwrap();
-        assert!(
-            diagnostic.contains("Connecting to Clustered Core NATS notification bus"),
-            "{diagnostic}"
-        );
-        assert!(diagnostic.contains("Failed to connect to Ephemeral Core NATS"));
+        if !invalid_endpoint {
+            assert!(
+                diagnostic.contains("Connecting to Clustered Core NATS notification bus"),
+                "{diagnostic}"
+            );
+            assert!(diagnostic.contains("Failed to connect to Ephemeral Core NATS"));
+        } else {
+            assert!(diagnostic.contains("Invalid registry.cluster configuration"));
+            assert!(diagnostic.contains("requires a valid nats:// or tls:// URL"));
+            assert!(!dir.path().join("registry.rocksdb").exists());
+            assert!(!dir.path().join("registry.session-secret").exists());
+        }
         assert!(!diagnostic.contains("synthetic"), "NATS credential leaked");
         assert!(!diagnostic.contains(&url), "NATS endpoint leaked");
     }

@@ -29,7 +29,14 @@
             />
           </div>
         </div>
-        <q-btn flat round dense icon="close" @click="closeDialog" />
+        <q-btn
+          flat
+          round
+          dense
+          icon="close"
+          :aria-label="$t('groupChat.close')"
+          @click="closeDialog"
+        />
       </q-card-section>
 
       <q-separator />

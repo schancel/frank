@@ -151,7 +151,9 @@
                   }}</q-item-section>
                 </q-item>
                 <q-item
-                  v-if="activeConversation"
+                  v-if="
+                    activeConversation && activeConversation.kind !== 'group'
+                  "
                   clickable
                   v-close-popup
                   data-testid="edit-conversation-subject"
@@ -383,7 +385,7 @@ export default defineComponent({
   methods: {
     openSubjectEditor() {
       const conversation = this.activeConversation
-      if (!conversation) return
+      if (!conversation || conversation.kind === 'group') return
       this.subjectEditorId = conversation.id
       this.subjectDraft = conversation.name ?? ''
       this.subjectEditorOpen = true
@@ -519,6 +521,7 @@ export default defineComponent({
         return ''
       }
       const conv = this.activeConversation
+      if (conv?.kind === 'group') return conv.name || conv.address
       // An email thread is titled by its subject. Any other conversation is titled by its peer,
       // and its subject is shown under the name (see `subject`).
       if (conv?.kind === 'email') {

@@ -9,7 +9,14 @@
     >
       <q-card-section class="row items-center justify-between q-pb-sm">
         <div class="text-h6">{{ $t('groupChat.createGroupTitle') }}</div>
-        <q-btn flat round dense icon="close" @click="closeDialog" />
+        <q-btn
+          flat
+          round
+          dense
+          icon="close"
+          :aria-label="$t('groupChat.close')"
+          @click="closeDialog"
+        />
       </q-card-section>
 
       <q-card-section class="q-pt-none q-gutter-sm">

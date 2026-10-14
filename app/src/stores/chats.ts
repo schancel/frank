@@ -1136,6 +1136,13 @@ function validateStoredGroupConversation(conv: Conversation): void {
     })
     if (JSON.stringify(record.roster) !== JSON.stringify(roster.members))
       throw new Error('Stored group roster differs from signed certificate')
+    if (
+      Number(epoch) === state.epoch &&
+      (conv.name !== roster.groupName || state.homeRelay !== roster.homeRelay)
+    )
+      throw new Error(
+        'Stored group presentation differs from signed certificate',
+      )
   }
   const ordered = Object.entries(epochs).sort(
     ([a], [b]) => Number(a) - Number(b),
@@ -1653,6 +1660,9 @@ export async function rehydrateChat(
       id,
       address: raw.address,
       participants: raw.participants,
+      ...(raw.kind === 'group'
+        ? { groupState: { ...raw.groupState!, pendingMessages: {} } }
+        : {}),
     })
     conversations[conversation.id] = conversation
   }
@@ -1786,8 +1796,14 @@ export async function rehydrateChat(
         receivedAt: row.wrapper.message.serverTime,
       })
     }
-    if (conv?.kind === 'group' && !row.internal)
+    if (conv?.kind === 'group' && !row.internal) {
       verifyStoredGroupMessage(conv, row.wrapper.message, row.wrapper.index)
+      if (
+        row.wrapper.message.outbound &&
+        row.wrapper.message.status !== 'confirmed'
+      )
+        conv.groupState!.pendingMessages![row.wrapper.index] = true
+    }
   }
 
   // Two different stored messages that name one message ID never stop the store from loading.
@@ -4355,6 +4371,8 @@ export const useChatStore = defineStore('chats', {
       // A thread dropped while its subject was being edited: the one that replaced it.
       const conversation = resolveConversation(this.conversations, id)
       if (!conversation) throw new Error(`Unknown conversation ${id}`)
+      if (conversation.kind === 'group')
+        throw new Error('Group names require an authenticated epoch update')
       // Reject invalid nonempty subjects before mutating: every device keeps the same previous
       // subject. A blank one intentionally removes it.
       const normalized = usableSubject(subject)
@@ -6233,6 +6251,11 @@ export const useChatStore = defineStore('chats', {
       if (!owner || !sameCanonicalAddress(owner.address, message.senderAddress))
         throw new Error('Group send belongs to another account')
       const client = relayClient ?? this.getGroupRelayClient(state.homeRelay)
+      // Retry may follow a rejected initial receipt write. Re-establish durability before transport.
+      await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
+      checkGroup()
+      await this.flushPersistence?.()
+      checkGroup()
       try {
         const res = await client.sendGroupMessage(state.groupIdHex, envelope)
         checkGroup()
@@ -6291,6 +6314,8 @@ export const useChatStore = defineStore('chats', {
         )
       )
         throw new Error('Pending group epoch belongs to another account')
+      await this.flushPersistence?.()
+      checkGroup()
       try {
         await client.publishEpoch(
           state.groupIdHex,
@@ -6407,7 +6432,8 @@ export const useChatStore = defineStore('chats', {
             conv.groupState.syncFailed = Boolean(
               Object.keys(conv.groupState.pendingMemberDeliveries ?? {})
                 .length ||
-                Object.keys(conv.groupState.pendingControls ?? {}).length,
+                Object.keys(conv.groupState.pendingControls ?? {}).length ||
+                Object.keys(conv.groupState.pendingMessages ?? {}).length,
             )
           return count
         } catch (error) {
@@ -6465,6 +6491,13 @@ export const useChatStore = defineStore('chats', {
         certificate: currentCertificate,
         expectedEpoch: epoch,
       })
+
+      // Pending indexes are rebuilt from original durable receipts on restore. Recover those
+      // exact authorizations independently of the direct-message wallet attempt journal.
+      for (const digest of Object.keys(conv.groupState.pendingMessages ?? {})) {
+        await this.retryGroupMessage(conv.id, digest, client)
+        checkGroup()
+      }
 
       // 2. Fetch ordered messages after lastSyncedSeq
       const afterSeq = conv.groupState?.lastSyncedSeq ?? 0

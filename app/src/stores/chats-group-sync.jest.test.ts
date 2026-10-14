@@ -545,6 +545,72 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(client.publishEpoch.mock.calls[1][1].epoch_hash).toBe(originalHash)
   })
 
+  it('never publishes an epoch while its durable persistence barrier is rejected', async () => {
+    const client = createSharedMockGroupRelay()
+    const chats = useChatStore()
+    const publish = jest.spyOn(client, 'publishEpoch')
+    chats.flushPersistence = jest.fn(async () => {
+      throw new Error('disk unavailable')
+    })
+    await expect(
+      chats.createGroupConversation({
+        groupName: 'Durability',
+        memberAddresses: [BOB],
+        relayUrl: client.relayUrl,
+        relayClient: client,
+        creatorAddress: ALICE,
+      }),
+    ).rejects.toThrow('disk unavailable')
+    const group = Object.values(chats.conversations).find(
+      (conv: any) => conv.kind === 'group',
+    ) as any
+    expect(group.groupState.pendingEpoch).toBeDefined()
+    await expect(
+      chats.retryGroupEpochPublication(group.id, client),
+    ).rejects.toThrow('disk unavailable')
+    expect(publish).not.toHaveBeenCalled()
+    chats.flushPersistence = jest.fn(async () => undefined)
+    await chats.retryGroupEpochPublication(group.id, client)
+    expect(publish).toHaveBeenCalledTimes(1)
+  })
+
+  it('requires the original message receipt to be durable before every retry', async () => {
+    const { chats, group, client } = await makeGroup()
+    const store = await messageStorePromise
+    const send = jest.spyOn(client, 'sendGroupMessage')
+    store.saveMessage.mockRejectedValueOnce(
+      new Error('receipt disk unavailable'),
+    )
+    await expect(
+      chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Original' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      }),
+    ).rejects.toThrow('receipt disk unavailable')
+    const digest = Object.keys(group.groupState.pendingMessages)[0]
+    const original = JSON.stringify(chats.messages[digest].groupEnvelope)
+    store.saveMessage.mockRejectedValueOnce(
+      new Error('receipt still unavailable'),
+    )
+    await expect(
+      chats.retryGroupMessage(group.id, digest, client),
+    ).rejects.toThrow('receipt still unavailable')
+    expect(send).not.toHaveBeenCalled()
+    await chats.retryGroupMessage(group.id, digest, client)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(send.mock.calls[0][1])).toBe(original)
+  })
+
+  it('rejects unsigned generic subject edits for certificate-owned group names', async () => {
+    const { chats, group } = await makeGroup()
+    expect(() =>
+      chats.renameConversation(group.id, 'Unsigned replacement'),
+    ).toThrow(/group/i)
+    expect(group.name).toBe('Boundary Test')
+  })
+
   it('keeps failed membership deliveries in epoch order and removes the excluded recipient queue', async () => {
     const { chats, group, client } = await makeGroup()
     await chats.inviteMemberToGroup({
@@ -649,6 +715,58 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     )
     expect(group.messages).toHaveLength(1)
     expect(group.groupState.pendingMessages[digest]).toBeUndefined()
+  })
+
+  it('rebuilds pending retry references from durable signed receipts after interrupted metadata persistence', async () => {
+    const { chats, group, client } = await makeGroup()
+    const metadata = JSON.parse(JSON.stringify(chats.$state))
+    const store = await messageStorePromise
+    const rows: any[] = []
+    store.saveMessage.mockImplementation(async (row: any) => {
+      rows.push(
+        JSON.parse(
+          JSON.stringify(row, (_key, value) =>
+            typeof value === 'bigint' ? value.toString() : value,
+          ),
+        ),
+      )
+    })
+    chats.flushPersistence = jest.fn(async () => {
+      throw new Error('metadata unavailable')
+    })
+    await expect(
+      chats.sendGroupMessage({
+        conversationId: group.id,
+        items: [{ type: 'text', text: 'Recover original' }],
+        relayClient: client,
+        senderAddress: ALICE,
+      }),
+    ).rejects.toThrow('metadata unavailable')
+    const digest = Object.keys(group.groupState.pendingMessages)[0]
+    const original = JSON.stringify(chats.messages[digest].groupEnvelope)
+    const send = jest.spyOn(client, 'sendGroupMessage')
+    expect(send).not.toHaveBeenCalled()
+    store.getIterator.mockResolvedValueOnce(rows)
+    const restored = await rehydrateChat(metadata)
+    expect(
+      restored.conversations[group.id].groupState.pendingMessages[digest],
+    ).toBe(true)
+    setActivePinia(createPinia())
+    const reopened = useChatStore()
+    reopened.$patch(restored)
+    await reopened.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: ALICE,
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(send.mock.calls[0][1])).toBe(original)
+    expect(reopened.messages[digest].status).toBe('confirmed')
+    await reopened.syncGroupConversation(group.id, {
+      relayClient: client,
+      ownAddress: ALICE,
+    })
+    expect(send).toHaveBeenCalledTimes(1)
+    store.saveMessage.mockImplementation(async () => undefined)
   })
 
   it('rejects payment intent at the headless group boundary before submission', async () => {

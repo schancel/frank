@@ -2063,6 +2063,7 @@ export default {
     continueWithPasskey: 'Continuer avec une clé d’accès (Mera)',
   },
   groupChat: {
+    close: 'Fermer',
     participantRequest:
       '{address} a référencé cette conversation directe. Son message reste dans une conversation individuelle distincte.',
     viewDirect: 'Voir la conversation',

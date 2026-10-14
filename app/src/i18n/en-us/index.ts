@@ -2000,6 +2000,7 @@ export default {
     continueWithPasskey: 'Continue with Passkey (Mera)',
   },
   groupChat: {
+    close: 'Close',
     participantRequest:
       '{address} referenced this direct conversation. Their message is in a separate 1:1 conversation.',
     viewDirect: 'View 1:1',

@@ -308,5 +308,3 @@ describe('chain descriptors', () => {
     }
   })
 })
-
-

@@ -1571,10 +1571,7 @@ function checkOne(
   if (dataSig) {
     digest = new Uint8Array(cryptoBackend.sha256(message ?? new Uint8Array(0)))
   } else {
-    if (
-      parsed.hashType === null ||
-      !hashTypeAccepted(parsed.hashType, chain)
-    ) {
+    if (parsed.hashType === null || !hashTypeAccepted(parsed.hashType, chain)) {
       return failure('script-signature', opcode)
     }
     const hashed = digestFor(machine, scriptCode, parsed.hashType, opcode)

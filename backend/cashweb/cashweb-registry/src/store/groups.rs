@@ -21,8 +21,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::store::kv_store::{
-    KvError, MemoryKvStore, RelayKvStore, RocksDbKvStore, SUBSPACE_GROUP_MESSAGES,
-    SUBSPACE_GROUP_META,
+    KvCondition, KvError, KvWrite, MemoryKvStore, RelayKvStore, RocksDbKvStore,
+    SUBSPACE_GROUP_MESSAGES, SUBSPACE_GROUP_META,
 };
 
 /// Sibling directory extension for durable RocksDB group mailbox storage.
@@ -682,9 +682,12 @@ impl GroupStore {
             ));
         }
 
-        let current_epoch = self
-            .get_current_epoch(path_group_id)?
+        let authority_key = meta_key(&group_id);
+        let authority_snapshot = self
+            .kv
+            .get(&authority_key)?
             .ok_or_else(|| GroupError::NotFound(path_group_id.to_string()))?;
+        let current_epoch = GroupEpochFrame::from_cbor_bytes(&authority_snapshot)?;
 
         // Reject messages targeting a stale or future epoch (e.g. kicked member from prior epoch)
         if envelope.epoch != current_epoch.epoch {
@@ -705,63 +708,85 @@ impl GroupStore {
             ));
         }
 
-        let server_seq = self.allocate_next_seq(&group_id)?;
-        let (_, vs) = self
-            .kv
-            .put_versionstamped(b"G_vs:", &group_id, &server_seq.to_be_bytes())?;
-        let server_time_ms = vs.commit_version().max(now_ms());
-
-        let stored = StoredGroupMessage {
-            group_id: path_group_id.to_string(),
-            server_seq,
-            server_time_ms,
-            versionstamp: vs.to_hex(),
-            epoch: envelope.epoch,
-            nonce: envelope
-                .nonce
-                .strip_prefix("0x")
-                .unwrap_or(&envelope.nonce)
-                .to_lowercase(),
-            ciphertext: envelope
-                .ciphertext
-                .strip_prefix("0x")
-                .unwrap_or(&envelope.ciphertext)
-                .to_lowercase(),
-            write_sig: envelope
-                .write_sig
-                .strip_prefix("0x")
-                .unwrap_or(&envelope.write_sig)
-                .to_lowercase(),
-        };
-
-        let serialized = serde_json::to_vec(&stored)
-            .map_err(|e| GroupError::Storage(format!("serialize group message: {e}")))?;
-        self.kv.put(&msg_key(&group_id, server_seq), &serialized)?;
-
-        Ok(stored)
-    }
-
-    fn allocate_next_seq(&self, group_id: &[u8; 32]) -> Result<u64, GroupError> {
-        let s_key = seq_key(group_id);
+        let sequence_key = seq_key(&group_id);
         loop {
-            let current_raw = self.kv.get(&s_key)?;
-            let next_seq = match &current_raw {
-                Some(bytes) => {
-                    let arr: [u8; 8] = bytes
+            let sequence_snapshot = self.kv.get(&sequence_key)?;
+            let server_seq = match &sequence_snapshot {
+                Some(bytes) => u64::from_be_bytes(
+                    bytes
                         .as_slice()
                         .try_into()
-                        .map_err(|_| GroupError::Storage("corrupt G_seq value".into()))?;
-                    u64::from_be_bytes(arr).saturating_add(1)
-                }
+                        .map_err(|_| GroupError::Storage("corrupt G_seq value".into()))?,
+                )
+                .checked_add(1)
+                .ok_or_else(|| GroupError::Storage("group sequence exhausted".into()))?,
                 None => 1,
             };
-            match self
-                .kv
-                .compare_and_swap(&s_key, current_raw.as_deref(), &next_seq.to_be_bytes())
-            {
-                Ok(()) => return Ok(next_seq),
-                Err(KvError::CasConflict { .. }) => continue,
-                Err(e) => return Err(GroupError::from(e)),
+            // Versionstamp allocation is metadata only. An unused stamp after contention does
+            // not append a message or advance the authoritative group sequence.
+            let (_, vs) =
+                self.kv
+                    .put_versionstamped(b"G_vs:", &group_id, &server_seq.to_be_bytes())?;
+            let stored = StoredGroupMessage {
+                group_id: path_group_id.to_string(),
+                server_seq,
+                server_time_ms: vs.commit_version().max(now_ms()),
+                versionstamp: vs.to_hex(),
+                epoch: envelope.epoch,
+                nonce: envelope
+                    .nonce
+                    .strip_prefix("0x")
+                    .unwrap_or(&envelope.nonce)
+                    .to_lowercase(),
+                ciphertext: envelope
+                    .ciphertext
+                    .strip_prefix("0x")
+                    .unwrap_or(&envelope.ciphertext)
+                    .to_lowercase(),
+                write_sig: envelope
+                    .write_sig
+                    .strip_prefix("0x")
+                    .unwrap_or(&envelope.write_sig)
+                    .to_lowercase(),
+            };
+            let serialized = serde_json::to_vec(&stored).map_err(|error| {
+                GroupError::Storage(format!("serialize group message: {error}"))
+            })?;
+            let row_key = msg_key(&group_id, server_seq);
+            let next_sequence = server_seq.to_be_bytes();
+            // This is the authorization linearization point: epoch rotation and append use
+            // the same storage transaction boundary, including across relay instances.
+            let conditions = [
+                KvCondition {
+                    key: &authority_key,
+                    expected: Some(&authority_snapshot),
+                },
+                KvCondition {
+                    key: &sequence_key,
+                    expected: sequence_snapshot.as_deref(),
+                },
+            ];
+            let writes = [
+                KvWrite {
+                    key: &row_key,
+                    value: &serialized,
+                },
+                KvWrite {
+                    key: &sequence_key,
+                    value: &next_sequence,
+                },
+            ];
+            match self.kv.compare_and_write(&conditions, &writes) {
+                Ok(()) => return Ok(stored),
+                Err(KvError::CasConflict { .. }) => {
+                    if self.kv.get(&authority_key)?.as_deref() != Some(&authority_snapshot) {
+                        return Err(GroupError::Forbidden(
+                            "group epoch changed before message commit".into(),
+                        ));
+                    }
+                    // Another authorized append won this sequence; retry without reusing it.
+                }
+                Err(error) => return Err(error.into()),
             }
         }
     }
@@ -1064,6 +1089,13 @@ mod tests {
         fn compare_and_swap(&self, _: &[u8], _: Option<&[u8]>, _: &[u8]) -> Result<(), KvError> {
             Err(KvError::Backend("injected CAS outage".into()))
         }
+        fn compare_and_write(
+            &self,
+            _: &[KvCondition<'_>],
+            _: &[KvWrite<'_>],
+        ) -> Result<(), KvError> {
+            Err(KvError::Backend("injected CAS outage".into()))
+        }
         fn put_versionstamped(
             &self,
             prefix: &[u8],
@@ -1103,6 +1135,177 @@ mod tests {
         ));
         assert_eq!(healthy.get_current_epoch(&id).unwrap().unwrap(), committed);
         assert!(healthy.get_epoch(&id, 1).unwrap().is_none());
+    }
+
+    #[derive(Debug)]
+    struct PausingCommitKv {
+        backend: Arc<dyn RelayKvStore>,
+        ready: std::sync::Barrier,
+        resume: std::sync::Barrier,
+        pause: std::sync::atomic::AtomicBool,
+    }
+
+    impl RelayKvStore for PausingCommitKv {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+            self.backend.get(key)
+        }
+        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
+            self.backend.put(key, value)
+        }
+        fn delete(&self, key: &[u8]) -> Result<(), KvError> {
+            self.backend.delete(key)
+        }
+        fn compare_and_swap(
+            &self,
+            key: &[u8],
+            expected: Option<&[u8]>,
+            value: &[u8],
+        ) -> Result<(), KvError> {
+            self.backend.compare_and_swap(key, expected, value)
+        }
+        fn compare_and_write(
+            &self,
+            conditions: &[KvCondition<'_>],
+            writes: &[KvWrite<'_>],
+        ) -> Result<(), KvError> {
+            self.backend.compare_and_write(conditions, writes)
+        }
+        fn put_versionstamped(
+            &self,
+            prefix: &[u8],
+            suffix: &[u8],
+            value: &[u8],
+        ) -> Result<(Vec<u8>, crate::store::kv_store::Versionstamp), KvError> {
+            if self.pause.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.ready.wait();
+                self.resume.wait();
+            }
+            self.backend.put_versionstamped(prefix, suffix, value)
+        }
+        fn scan_prefix_range(
+            &self,
+            prefix: &[u8],
+            cursor: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+            self.backend.scan_prefix_range(prefix, cursor, limit)
+        }
+    }
+
+    fn message_for(id: &str, epoch: u64, nonce: u8, write_sk: &SecretKey) -> GroupMessageEnvelope {
+        let mut message = GroupMessageEnvelope {
+            group_id: id.to_string(),
+            epoch,
+            nonce: hex::encode([nonce; 24]),
+            ciphertext: hex::encode(b"encrypted payload"),
+            write_sig: String::new(),
+        };
+        message.write_sig = sign_digest(write_sk, &message.signing_digest().unwrap());
+        message
+    }
+
+    fn verify_rotation_serializes_with_in_flight_appends(backend: Arc<dyn RelayKvStore>) {
+        let store = GroupStore::new(backend.clone());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        let committed = store.put_epoch(&id, initial).unwrap();
+        let paused_kv = Arc::new(PausingCommitKv {
+            backend: backend.clone(),
+            ready: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+            pause: std::sync::atomic::AtomicBool::new(true),
+        });
+        let in_flight = GroupStore::new(paused_kv.clone());
+        let (old_write_sk, _) = keypair(42);
+        let pending = message_for(&id, 0, 1, &old_write_sk);
+        let pending_id = id.clone();
+        let thread = std::thread::spawn(move || in_flight.put_message(&pending_id, pending));
+        // The old writer has already read epoch 0 and passed cryptographic validation.
+        paused_kv.ready.wait();
+        let (root_sk, _) = keypair(3);
+        let (new_write_sk, new_write_pk) = keypair(43);
+        let mut next = root_frame(3, 1, &committed.epoch_hash);
+        next.write_pubkey = hex::encode(new_write_pk);
+        next = signed_epoch(&root_sk, next);
+        store.put_epoch(&id, next).unwrap();
+        paused_kv.resume.wait();
+        assert!(matches!(
+            thread.join().unwrap(),
+            Err(GroupError::Forbidden(_))
+        ));
+        assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
+        assert!(backend
+            .get(&seq_key(&parse_group_id_hex(&id).unwrap()))
+            .unwrap()
+            .is_none());
+        // Independent relay instances can still append concurrently under the new authority.
+        let start = Arc::new(std::sync::Barrier::new(9));
+        let mut writers = Vec::new();
+        for nonce in 2..10 {
+            let replica = GroupStore::new(backend.clone());
+            let writer_id = id.clone();
+            let message = message_for(&id, 1, nonce, &new_write_sk);
+            let writer_start = start.clone();
+            writers.push(std::thread::spawn(move || {
+                writer_start.wait();
+                replica.put_message(&writer_id, message).unwrap().server_seq
+            }));
+        }
+        start.wait();
+        let mut sequences: Vec<_> = writers
+            .into_iter()
+            .map(|writer| writer.join().unwrap())
+            .collect();
+        sequences.sort_unstable();
+        assert_eq!(sequences, (1..=8).collect::<Vec<_>>());
+        let messages = store.list_messages(&id, 0, 10).unwrap();
+        assert_eq!(messages.len(), 8);
+        assert!(messages.iter().all(|message| message.epoch == 1));
+    }
+
+    #[test]
+    fn memory_rotation_prevents_stale_commit_and_allows_concurrent_authorized_appends() {
+        verify_rotation_serializes_with_in_flight_appends(Arc::new(MemoryKvStore::new()));
+    }
+
+    #[test]
+    fn rocksdb_rotation_prevents_stale_commit_and_persists_atomic_appends() {
+        let directory = tempdir::TempDir::new("group-rotation-atomicity").unwrap();
+        let path = directory.path().join("groups.rocksdb");
+        verify_rotation_serializes_with_in_flight_appends(Arc::new(
+            RocksDbKvStore::open(&path).unwrap(),
+        ));
+        let reopened = GroupStore::new(Arc::new(RocksDbKvStore::open(&path).unwrap()));
+        let id = root_frame(3, 0, &"00".repeat(32)).group_id;
+        assert_eq!(reopened.get_current_epoch(&id).unwrap().unwrap().epoch, 1);
+        assert_eq!(reopened.list_messages(&id, 0, 10).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn failed_atomic_append_does_not_publish_message_or_consume_sequence() {
+        let kv = Arc::new(MemoryKvStore::new());
+        let healthy = GroupStore::new(kv.clone());
+        let failing = GroupStore::new(Arc::new(FailingCasKv(kv.clone())));
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        healthy.put_epoch(&id, initial).unwrap();
+        let (write_sk, _) = keypair(42);
+        assert!(matches!(
+            failing.put_message(&id, message_for(&id, 0, 1, &write_sk)),
+            Err(GroupError::Storage(_))
+        ));
+        assert!(healthy.list_messages(&id, 0, 10).unwrap().is_empty());
+        assert!(kv
+            .get(&seq_key(&parse_group_id_hex(&id).unwrap()))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            healthy
+                .put_message(&id, message_for(&id, 0, 2, &write_sk))
+                .unwrap()
+                .server_seq,
+            1
+        );
     }
 
     #[test]

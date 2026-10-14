@@ -550,6 +550,291 @@ mod tests {
         Ok(())
     }
 
+    // Deliberately spell the persisted layout independently of the production key/open helpers.
+    // These fixtures protect an extraction from changing bytes or dropping a sibling table.
+    fn persisted_key(network: &str, tail: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![u8::try_from(network.len()).unwrap()];
+        bytes.extend_from_slice(network.as_bytes());
+        bytes.extend_from_slice(tail);
+        bytes
+    }
+
+    fn persisted_position(ms: u64, address: &[u8; 20]) -> [u8; 28] {
+        let mut bytes = [0; 28];
+        bytes[..8].copy_from_slice(&ms.to_be_bytes());
+        bytes[8..].copy_from_slice(address);
+        bytes
+    }
+
+    fn raw_store(path: &std::path::Path) -> Result<rocksdb::DB> {
+        let names = rocksdb::DB::list_cf(&rocksdb::Options::default(), path)?;
+        let mut expected = vec![
+            "default",
+            "directory_subjects_v1",
+            "directory_addresses_v1",
+            "directory_first_accepted_v1",
+            "forwards_v1",
+            "forward_bodies_v1",
+        ];
+        expected.sort_unstable();
+        let mut actual: Vec<_> = names.iter().map(String::as_str).collect();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+        Ok(rocksdb::DB::open_cf_for_read_only(
+            &rocksdb::Options::default(),
+            path,
+            names,
+            false,
+        )?)
+    }
+
+    fn raw_rows(db: &rocksdb::DB, name: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        db.iterator_cf(db.cf_handle(name).unwrap(), IteratorMode::Start)
+            .map(|row| Ok(row.map(|(key, value)| (key.to_vec(), value.to_vec()))?))
+            .collect()
+    }
+
+    #[test]
+    fn subjects_network_isolation_exclusive_pagination_and_first_acceptance_deletion() -> Result<()>
+    {
+        let dir = tempdir::TempDir::new("subjects-network-pages")?;
+        let path = dir.path().join("registry");
+        let networks = ["monad-testnet", "solana-devnet", "btc-testnet"];
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            for (i, network) in networks.iter().enumerate() {
+                let mut row = subject_row();
+                row.anchor = [i as u8; 32];
+                row.local = i == 0;
+                rows.put(network, &[2; 33], Some((&[2; 20], 256)), &row)?;
+                assert_eq!(rows.get(network, &[2; 33])?, Some(row));
+                assert_eq!(
+                    rows.subject_for_address(network, &[2; 20])?,
+                    Some(vec![2; 33])
+                );
+            }
+            rows.put(networks[0], &[3; 33], Some((&[1; 20], 256)), &subject_row())?;
+            rows.put(networks[0], &[1; 33], Some((&[3; 20], 255)), &subject_row())?;
+            // An ordinary continuity update changes neither index nor first-accepted position.
+            let mut updated = subject_row();
+            updated.checkpoint.accepted = 2;
+            rows.put(networks[0], &[2; 33], None, &updated)?;
+            assert_eq!(rows.count()?, (3, 2));
+            assert_eq!(
+                rows.list(networks[0], None, 1)?,
+                vec![(vec![1; 33], subject_row())]
+            );
+            assert_eq!(
+                rows.list(networks[0], Some(&[1; 33]), 1)?,
+                vec![(vec![2; 33], updated)]
+            );
+            assert_eq!(
+                rows.list(networks[0], Some(&[2; 33]), 10)?,
+                vec![(vec![3; 33], subject_row())]
+            );
+            assert!(rows.list(networks[0], Some(&[3; 33]), 10)?.is_empty());
+            let first = persisted_position(255, &[3; 20]);
+            let second = persisted_position(256, &[1; 20]);
+            let third = persisted_position(256, &[2; 20]);
+            assert_eq!(
+                rows.first_accepted(networks[0], &[0; 28], 2)?,
+                vec![(first, 255, [3; 20]), (second, 256, [1; 20])]
+            );
+            assert_eq!(
+                rows.first_accepted(networks[0], &second, 1)?,
+                vec![(third, 256, [2; 20])]
+            );
+            assert!(rows.first_accepted(networks[0], &third, 10)?.is_empty());
+            assert!(rows.first_accepted(networks[0], &[0; 28], 0)?.is_empty());
+            // Known acceptance removes all three siblings; an unknown time leaves the position.
+            rows.delete(networks[0], &[2; 33], &[2; 20], Some(256))?;
+            rows.delete(networks[0], &[3; 33], &[1; 20], None)?;
+            assert_eq!(
+                rows.first_accepted(networks[0], &[0; 28], 10)?,
+                vec![(first, 255, [3; 20]), (second, 256, [1; 20])]
+            );
+            assert!(rows.subject_for_address(networks[0], &[1; 20])?.is_none());
+            assert!(rows.get(networks[0], &[3; 33])?.is_none());
+        }
+        let db = Db::open(&path)?;
+        let rows = db.directory_subjects()?;
+        assert_eq!(rows.count()?, (1, 2));
+        assert_eq!(
+            rows.list(networks[0], None, 10)?,
+            vec![(vec![1; 33], subject_row())]
+        );
+        for network in &networks[1..] {
+            assert_eq!(
+                rows.subject_for_address(network, &[2; 20])?,
+                Some(vec![2; 33])
+            );
+            assert_eq!(rows.list(network, None, 10)?.len(), 1);
+            assert_eq!(
+                rows.first_accepted(network, &[0; 28], 10)?,
+                vec![(persisted_position(256, &[2; 20]), 256, [2; 20])]
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn subjects_raw_five_table_bytes_survive_restart_and_forward_finalization() -> Result<()> {
+        let dir = tempdir::TempDir::new("subjects-frozen-layout")?;
+        let path = dir.path().join("registry");
+        let sidecar = path.join("directory-subjects-v1.rocksdb");
+        let network = "monad-testnet";
+        let identity = [9; 32];
+        let mut forward = ForwardRow {
+            endpoint: "https://example.test/".into(),
+            content_type: "application/cbor".into(),
+            sender: "subject".into(),
+            network: network.into(),
+            created_ms: 1,
+            attempts: 0,
+            next_ms: 2,
+            done: false,
+            status: 0,
+            response: String::new(),
+            echo: serde_json::json!({"identity": "retained"}),
+        };
+        // A literal field-order fixture also pins the existing serde row shape.
+        let array = |n: u8| vec![n.to_string(); 32].join(",");
+        let subject_bytes = format!(
+            "{{\"version\":1,\"anchor\":[{a}],\"checkpoint\":{{\"kind\":\"CommittedPrefix\",\"identity\":[{i}],\"anchor\":[{a}],\"head\":[{h}],\"accepted\":1,\"retained\":1,\"evidence_digest\":[{e}],\"checked_time\":[1700000000,0],\"forked\":false}},\"local\":true}}",
+            a = array(1), i = array(2), h = array(3), e = array(4),
+        ).into_bytes();
+        let forward_bytes = br#"{"endpoint":"https://example.test/","content_type":"application/cbor","sender":"subject","network":"monad-testnet","created_ms":1,"attempts":0,"next_ms":2,"done":false,"status":0,"response":"","echo":{"identity":"retained"}}"#.to_vec();
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            rows.put(network, &[5; 33], Some((&[6; 20], 0x0102)), &subject_row())?;
+            rows.put_forward(&identity, &forward, Some(b"\x00exact\xffrequest"))?;
+            forward.attempts = 1;
+            forward.next_ms = 123;
+            rows.put_forward(&identity, &forward, None)?;
+        }
+        {
+            let raw = raw_store(&sidecar)?;
+            assert_eq!(
+                raw_rows(&raw, "directory_subjects_v1")?,
+                vec![(persisted_key(network, &[5; 33]), subject_bytes.clone())]
+            );
+            assert_eq!(
+                raw_rows(&raw, "directory_addresses_v1")?,
+                vec![(persisted_key(network, &[6; 20]), vec![5; 33])]
+            );
+            assert_eq!(
+                raw_rows(&raw, "directory_first_accepted_v1")?,
+                vec![(
+                    persisted_key(network, &persisted_position(0x0102, &[6; 20])),
+                    vec![]
+                )]
+            );
+            // The initial literal is independent of the serializer; only the updated fields vary.
+            let expected = String::from_utf8(forward_bytes)
+                .unwrap()
+                .replace("\"attempts\":0", "\"attempts\":1")
+                .replace("\"next_ms\":2", "\"next_ms\":123")
+                .into_bytes();
+            assert_eq!(
+                raw_rows(&raw, "forwards_v1")?,
+                vec![(identity.to_vec(), expected)]
+            );
+            assert_eq!(
+                raw_rows(&raw, "forward_bodies_v1")?,
+                vec![(identity.to_vec(), b"\x00exact\xffrequest".to_vec())]
+            );
+        }
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            assert_eq!(rows.get(network, &[5; 33])?, Some(subject_row()));
+            assert_eq!(rows.forward(&identity)?, Some(forward.clone()));
+            assert_eq!(
+                rows.forward_body(&identity)?,
+                Some(b"\x00exact\xffrequest".to_vec())
+            );
+            forward.done = true;
+            forward.status = 202;
+            forward.response = "accepted".into();
+            rows.put_forward(&identity, &forward, Some(b"must not survive completion"))?;
+            rows.delete(network, &[5; 33], &[6; 20], Some(0x0102))?;
+        }
+        {
+            let raw = raw_store(&sidecar)?;
+            for name in [
+                "directory_subjects_v1",
+                "directory_addresses_v1",
+                "directory_first_accepted_v1",
+                "forward_bodies_v1",
+            ] {
+                assert!(raw_rows(&raw, name)?.is_empty(), "{name}");
+            }
+            assert_eq!(
+                raw_rows(&raw, "forwards_v1")?,
+                vec![(identity.to_vec(), serde_json::to_vec(&forward)?)]
+            );
+        }
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            assert_eq!(rows.forwards()?, vec![(identity, forward)]);
+            assert_eq!(rows.forward_body(&identity)?, None);
+            rows.delete_forward(&identity)?;
+        }
+        let raw = raw_store(&sidecar)?;
+        assert!(raw_rows(&raw, "forwards_v1")?.is_empty());
+        assert!(raw_rows(&raw, "forward_bodies_v1")?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn subjects_invalid_rows_keep_existing_filter_stop_and_error_behavior() -> Result<()> {
+        let dir = tempdir::TempDir::new("subjects-invalid-rows")?;
+        let path = dir.path().join("registry");
+        {
+            let db = Db::open(&path)?;
+            db.directory_subjects()?
+                .put("monad-testnet", &[2; 33], None, &subject_row())?;
+        }
+        {
+            let raw = open(&path.join(STORE))?;
+            raw.put_cf(
+                raw.cf_handle("directory_addresses_v1").unwrap(),
+                persisted_key("monad-testnet", &[1; 20]),
+                [1; 32],
+            )?;
+            // A malformed subject key sorts before the valid row and stops this network scan.
+            raw.put_cf(
+                raw.cf_handle("directory_subjects_v1").unwrap(),
+                persisted_key("monad-testnet", &[1; 32]),
+                b"not json",
+            )?;
+            // Forward iteration skips invalid identity lengths without decoding their value.
+            raw.put_cf(raw.cf_handle("forwards_v1").unwrap(), [1; 31], b"not json")?;
+        }
+        {
+            let db = Db::open(&path)?;
+            let rows = db.directory_subjects()?;
+            assert_eq!(rows.subject_for_address("monad-testnet", &[1; 20])?, None);
+            assert!(rows.list("monad-testnet", None, 10)?.is_empty());
+            assert!(rows.count().is_err());
+            assert!(rows.forwards()?.is_empty());
+            // Direct reads do attempt row decoding even for that malformed subject length.
+            assert!(rows.get("monad-testnet", &[1; 32]).is_err());
+        }
+        {
+            let raw = open(&path.join(STORE))?;
+            raw.put_cf(raw.cf_handle("forwards_v1").unwrap(), [2; 32], b"not json")?;
+        }
+        let db = Db::open(&path)?;
+        let rows = db.directory_subjects()?;
+        assert!(rows.forward(&[2; 32]).is_err());
+        assert!(rows.forwards().is_err());
+        Ok(())
+    }
+
     #[test]
     fn subjects_owner_boundary_keeps_raw_lifecycle_out_of_general_db() {
         let source = include_str!("db.rs");

@@ -12,7 +12,8 @@ import { createIssuedMailboxLookup } from '../smtp/issued-mailbox-lookup';
 import { createResendInboundPort, ResendInboundWebhook } from '../smtp/resend-inbound-webhook';
 import { createResendSmtpPort } from '../mta/resend-smtp-port';
 import { createResendSentMailEvidencePort, ResendOutboundReconciler } from '../mta/resend-outbound-reconciler';
-import { JournaledOutboundWorker } from '../mta/journaled-outbound-worker';
+import { JournaledOutboundWorker, type OutboundMailPort } from '../mta/journaled-outbound-worker';
+import { HeldEmailAutoResponder } from '../mta/held-email-auto-responder';
 import { JournaledMailRuntime } from './journaled-runtime';
 import { ResendWebhookHttp } from './resend-webhook-http';
 import { JournaledSmtpIngress, JournaledSmtpServer } from '../smtp/journaled-smtp-ingress';
@@ -55,6 +56,7 @@ export interface JournaledMailHostOptions {
   readonly secureLinkPolicy?: SecureLinkPolicy;
   readonly secureLinkDefaultAuthMode?: SecureMessageAuthMode;
   readonly secureMessagePortal?: SecureMessagePortal;
+  readonly outboundPort?: OutboundMailPort;
   readonly nativeSmtp?: {
     readonly hostname: string;
     readonly tlsKey: Buffer;
@@ -64,10 +66,12 @@ export interface JournaledMailHostOptions {
 
 export interface JournaledMailHost {
   readonly journal: MailJournal;
+  readonly inbound: JournaledInboundSend;
   readonly runtime: JournaledMailRuntime;
   readonly webhook: ResendWebhookHttp;
   readonly securePortal: SecureMessagePortal;
   readonly checkoutServer: CheckoutServer;
+  readonly heldAutoResponder: HeldEmailAutoResponder;
   readonly smtp?: JournaledSmtpServer;
   close(): Promise<void>;
 }
@@ -137,9 +141,11 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
   if (!input.resendApiKey || !input.resendWebhookSecret) throw new Error('Resend credentials are required');
   requireJournalMode(input);
 
+  const mailboxSalt = Uint8Array.from(input.mailboxSalt);
   const blobStore = new LocalFsBlobStore({ storageDir: input.blobDirectory });
   const ledger = new CreditLedger(input.journalFile, blobStore);
   let createdPortal: SecureMessagePortal | undefined;
+  let createdAutoResponder: HeldEmailAutoResponder | undefined;
   try {
     const journal = new MailJournal(ledger, {
       chainIdentifier: input.chain.chainIdentifier,
@@ -147,11 +153,33 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       gatewayDomain: input.gatewayDomain,
     });
     mkdirSync(input.blobDirectory, { recursive: true });
+    const resolveSenderUsername =
+      input.resolveSenderUsername ??
+      (input.relayBaseUrl ? createRelaySenderUsernameLookup(input.relayBaseUrl) : undefined);
+    const smtpPort = input.outboundPort ?? createResendSmtpPort(input.resendApiKey);
+    const heldAutoResponder = (createdAutoResponder = new HeldEmailAutoResponder({
+      journal,
+      port: smtpPort,
+      gatewayDomain: input.gatewayDomain,
+      onboardingSecret: mailboxSalt,
+      ...(input.frankAppUrl ? { frankAppUrl: input.frankAppUrl } : {}),
+      blobStore,
+      dbPath: join(input.blobDirectory, 'held-auto-reply.db'),
+      ...(resolveSenderUsername ? { resolveRecipientUsername: resolveSenderUsername } : {}),
+    }));
+    const inbound = new JournaledInboundSend({
+      chain: input.chain,
+      wallet: input.wallet,
+      ledger,
+      journal,
+      blobStore,
+      heldAutoResponder,
+    });
     const securePortal =
       input.secureMessagePortal ??
       (createdPortal = new SecureMessagePortal({
         gatewayDomain: input.gatewayDomain,
-        masterSecret: input.mailboxSalt,
+        masterSecret: mailboxSalt,
         ...(input.frankAppUrl ? { frankAppUrl: input.frankAppUrl } : {}),
         dbPath: join(input.blobDirectory, 'secure-portal.db'),
         resolveClaimedPayThread: async (payload) => {
@@ -192,9 +220,6 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
           };
         },
       }));
-    const inbound = new JournaledInboundSend({
-      chain: input.chain, wallet: input.wallet, ledger, journal, blobStore,
-    });
     const checkoutServer = new CheckoutServer({
       port: 0,
       ledger,
@@ -203,7 +228,7 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       stripePaymentLinkTier2: input.stripePaymentLinkTier2,
       stripePaymentLinkTier3: input.stripePaymentLinkTier3,
       frankAppUrl: input.frankAppUrl ?? `https://${input.gatewayDomain}`,
-      onboardingSecret: input.mailboxSalt,
+      onboardingSecret: mailboxSalt,
       findHeldMail: (tokenOrId) => {
         const found = journal.findInboundEmailByKey(tokenOrId);
         if (!found) return undefined;
@@ -239,14 +264,11 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
         await inbound.releaseHeld(100);
       },
     });
-    const resolveSenderUsername =
-      input.resolveSenderUsername ??
-      (input.relayBaseUrl ? createRelaySenderUsernameLookup(input.relayBaseUrl) : undefined);
     const outboundHandler = new JournaledFrankOutbound({
       journal,
       ledger,
       gatewayDomain: input.gatewayDomain,
-      mailboxSalt: input.mailboxSalt,
+      mailboxSalt,
       inboundStampValue: input.inboundStampValue,
       secureMessagePortal: securePortal,
       ...(input.secureLinkPolicy ? { secureLinkPolicy: input.secureLinkPolicy } : {}),
@@ -261,7 +283,7 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
     });
     const outbound = new JournaledOutboundWorker({
       journal, gatewayDomain: input.gatewayDomain, blobStore,
-      port: createResendSmtpPort(input.resendApiKey),
+      port: smtpPort,
     });
     const outboundReconciler = new ResendOutboundReconciler(
       journal, createResendSentMailEvidencePort(input.resendApiKey)
@@ -320,23 +342,29 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
     });
     return {
       journal,
+      inbound,
       runtime: new JournaledMailRuntime({ inbound, frankMailbox: mailbox, outbound, outboundReconciler }),
       webhook,
       securePortal,
       checkoutServer,
+      heldAutoResponder,
       smtp,
       close: async () => {
         try { if (smtp) await smtp.stop(); }
         finally {
           try { await webhook.stop(); }
           finally {
-            try { if (createdPortal) createdPortal.close(); }
-            finally { ledger.closeSqlite(); }
+            try { if (createdAutoResponder) createdAutoResponder.close(); }
+            finally {
+              try { if (createdPortal) createdPortal.close(); }
+              finally { ledger.closeSqlite(); }
+            }
           }
         }
       },
     };
   } catch (error) {
+    if (createdAutoResponder) createdAutoResponder.close();
     if (createdPortal) createdPortal.close();
     ledger.closeSqlite();
     throw error;

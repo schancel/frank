@@ -132,7 +132,9 @@ export class CheckoutServer {
     this.stripePaymentLinkTier3 = options.stripePaymentLinkTier3;
     this.frankAppUrl = (options.frankAppUrl?.trim() || 'https://frank.org').replace(/\/+$/, '');
     this.onboardingSecret =
-      options.onboardingSecret ?? options.stripeWebhookSecret ?? 'frank-default-onboarding-secret-32b';
+      options.onboardingSecret instanceof Uint8Array
+        ? Buffer.from(options.onboardingSecret)
+        : (options.onboardingSecret ?? options.stripeWebhookSecret ?? 'frank-default-onboarding-secret-32b');
     this.findHeldMail = options.findHeldMail;
     this.onPaymentVerified = options.onPaymentVerified;
   }

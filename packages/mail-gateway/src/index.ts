@@ -19,6 +19,7 @@ export * from './mta/mx-transport';
 export * from './mta/dkim-signer';
 export * from './mta/outbound-worker';
 export * from './mta/journaled-outbound-worker';
+export * from './mta/held-email-auto-responder';
 export * from './mta/resend-smtp-port';
 export * from './mta/resend-outbound-reconciler';
 export * from './relay/mailbox-listener';

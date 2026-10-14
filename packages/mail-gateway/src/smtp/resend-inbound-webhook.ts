@@ -195,6 +195,13 @@ export class ResendInboundWebhook {
       if (admission.kind === 'refused') throw new Error('Mail journal refused inbound email admission');
       admissions.push(admission);
     }
+    if (
+      admissions.some((admission) => admission.kind === 'held') &&
+      typeof (this.sender as { sendPendingHeldAutoReplies?: () => Promise<void> })
+        .sendPendingHeldAutoReplies === 'function'
+    ) {
+      await this.sender.sendPendingHeldAutoReplies().catch(() => undefined);
+    }
     return { kind: 'admitted', admissions };
   }
 }

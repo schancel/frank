@@ -47,7 +47,8 @@ export class SmtpAdmissionRefusal extends Error {
 export interface JournaledSmtpIngressOptions {
   readonly gatewayDomain: string;
   readonly issuedMailboxLookup: (localPart: string) => Promise<InboundRecipientResolution | undefined>;
-  readonly sender: Pick<JournaledInboundSend, 'admit'>;
+  readonly sender: Pick<JournaledInboundSend, 'admit'> &
+    Partial<Pick<JournaledInboundSend, 'sendPendingHeldAutoReplies'>>;
   readonly stampValue: bigint;
   readonly authentication?: DirectSmtpAuthentication;
   /** Runtime recovery health. A transient failure asks the sender to retry later. */
@@ -58,7 +59,8 @@ export interface JournaledSmtpIngressOptions {
 export class JournaledSmtpIngress {
   private readonly domain: string;
   private readonly lookup: JournaledSmtpIngressOptions['issuedMailboxLookup'];
-  private readonly sender: Pick<JournaledInboundSend, 'admit'>;
+  private readonly sender: Pick<JournaledInboundSend, 'admit'> &
+    Partial<Pick<JournaledInboundSend, 'sendPendingHeldAutoReplies'>>;
   private readonly stampValue: bigint;
   private readonly authentication: DirectSmtpAuthentication;
   private readonly isReady: () => boolean;
@@ -108,6 +110,7 @@ export class JournaledSmtpIngress {
     const from = email.fromAddress.toLowerCase();
     if (from !== author) throw new SmtpAdmissionRefusal(550, 'Mail From projection differs');
     const transportId = `smtp:${createHash('sha256').update(raw).digest('hex')}`;
+    let anyHeld = false;
     for (let index = 0; index < recipients.length; index += 1) {
       const scope = scopes[index]!;
       const admission = this.sender.admit({
@@ -117,6 +120,10 @@ export class JournaledSmtpIngress {
       }, scope.accountAddress, this.stampValue, scope.conversationId, recipients[index]);
       if (admission.kind === 'refused')
         throw new SmtpAdmissionRefusal(451, 'Mail admission unavailable');
+      if (admission.kind === 'held') anyHeld = true;
+    }
+    if (anyHeld && typeof this.sender.sendPendingHeldAutoReplies === 'function') {
+      await this.sender.sendPendingHeldAutoReplies().catch(() => undefined);
     }
   }
 }

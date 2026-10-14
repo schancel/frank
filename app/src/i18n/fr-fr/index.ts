@@ -201,6 +201,10 @@ export default {
     insufficient:
       'C’est plus que ce que vous pouvez dépenser maintenant ({balance}).',
     balanceUnknown: 'Votre solde n’est pas encore connu.',
+    leave: 'Quitter',
+    leaveAriaLabel: 'Quitter la manche de tombola {raffleId}',
+    leftStatus:
+      'Tombola quittée : {count}/{max} inscrits. Votre participation a été remboursée.',
   },
   gameFairness: {
     diceRejected: 'Aucun lancer n’a été effectué.',

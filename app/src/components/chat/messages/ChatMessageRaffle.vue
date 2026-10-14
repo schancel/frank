@@ -71,9 +71,44 @@
     <div v-else-if="item.action === 'enter'" class="text-caption">
       Entered the raffle
     </div>
-    <div v-else-if="item.action === 'joined'" class="text-caption">
+    <div v-else-if="item.action === 'leave'" class="text-caption">
+      Left the raffle
+    </div>
+    <div
+      v-else-if="item.action === 'joined'"
+      class="text-caption"
+      role="status"
+      aria-live="polite"
+    >
       Joined the raffle: {{ item.entryCount ?? 0 }}/{{ item.maxEntries ?? '?' }}
       entered. Waiting for the round to fill...
+      <div class="q-mt-xs">
+        <q-btn
+          no-caps
+          :label="$t('raffle.leave')"
+          :aria-label="$t('raffle.leaveAriaLabel', { raffleId: item.raffleId })"
+          dense
+          flat
+          color="negative"
+          data-testid="raffle-leave"
+          :loading="leaving"
+          :disable="leaving"
+          @click="onLeave"
+        />
+      </div>
+    </div>
+    <div
+      v-else-if="item.action === 'left'"
+      class="text-caption"
+      role="status"
+      aria-live="polite"
+    >
+      {{
+        $t('raffle.leftStatus', {
+          count: item.entryCount ?? 0,
+          max: item.maxEntries ?? '?',
+        })
+      }}
     </div>
     <template v-else-if="item.action === 'draw'">
       <div class="text-caption text-weight-bold" :class="outcomeClass">
@@ -104,7 +139,11 @@
         </details>
       </div>
     </template>
-    <div v-else-if="item.action === 'error'" class="text-caption text-negative">
+    <div
+      v-else-if="item.action === 'error'"
+      class="text-caption text-negative"
+      role="alert"
+    >
       {{ item.message }}
     </div>
   </div>
@@ -125,6 +164,9 @@ import { useChatStore } from '../../../stores/chats'
 import { useActiveWallet } from '../../../composables/useActiveWallet'
 import { useBalance } from '../../../composables/useBalance'
 import { errorNotify } from '../../../utils/notifications'
+
+// How long the Leave button stays disabled after a click (see `onLeave`).
+export const LEAVE_GUARD_MS = 30_000
 
 export default defineComponent({
   name: 'ChatMessageRaffle',
@@ -148,8 +190,13 @@ export default defineComponent({
     return {
       entering: false,
       confirming: false,
+      leaving: false,
+      leaveGuardTimer: null as ReturnType<typeof setTimeout> | null,
       myAddress: null as string | null,
     }
+  },
+  beforeUnmount() {
+    if (this.leaveGuardTimer) clearTimeout(this.leaveGuardTimer)
   },
   async mounted() {
     if (this.item.action !== 'draw') return
@@ -283,6 +330,22 @@ export default defineComponent({
       } finally {
         this.entering = false
       }
+    },
+    onLeave() {
+      if (this.leaving) return
+      // Stays disabled after the (synchronous) emit -- the bot's `left`/`error` answer arrives as
+      // a new bubble, so a fixed guard window stops repeated clicks from sending repeated stamped
+      // `leave` messages; the bot also enforces at most one leave per address per round.
+      this.leaving = true
+      this.leaveGuardTimer = setTimeout(() => {
+        this.leaving = false
+        this.leaveGuardTimer = null
+      }, LEAVE_GUARD_MS)
+      this.$emit('sendFollowUp', {
+        items: [
+          { type: 'raffle', raffleId: this.item.raffleId, action: 'leave' },
+        ],
+      })
     },
   },
 })

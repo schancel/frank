@@ -39,6 +39,20 @@ describePluginContract({
       preview: 'Joined the raffle (2/3)',
     },
     {
+      item: { type: 'raffle', raffleId: 'r1', action: 'leave' },
+      preview: 'Left the raffle',
+    },
+    {
+      item: {
+        type: 'raffle',
+        raffleId: 'r1',
+        action: 'left',
+        maxEntries: 3,
+        entryCount: 1,
+      },
+      preview: 'Left the raffle (1/3)',
+    },
+    {
       item: {
         type: 'raffle',
         raffleId: 'r1',

@@ -8,6 +8,14 @@ Custody derives and signs an account-bound additive member key through `accountS
 
 The signed epoch certificate owns membership and presentation. Frontend roster indexes are derived views. The durable message receipt owns each exact signed group envelope; pending indexes only reference it. Persist certificates, recipient queues and original authorized content before publishing. Persist authenticated incoming receipts before advancing a mailbox cursor. Retries reconcile the original certificate/envelope and recipient queue rather than preparing fresh operations.
 
+## Home-relay boundary
+
+Relay addresses are canonical root origins; client configuration, creation and signed-roster admission reject path prefixes, credentials, queries and fragments before creating durable group state. Browser clients require HTTPS except local HTTP development endpoints. Production upstream transport validates public IP/DNS destinations, pins the validated resolution, disables redirects and environment proxies, and applies DNS/connect/total deadlines plus streamed response budgets. Loopback upstream allowance is compiled only into Rust tests.
+
+Only a successfully authorized read may establish a foreign upstream/subscriber record. Its upstream affinity cannot be replaced by a different caller. Mirrored groups reject authoritative local writes. Latest foreign epoch reads consult the upstream even after promotion; immutable historical certificates may be cached. A routed write acknowledgement never advances the contiguous mirror cursor over unseen messages. Ordered fetched prefixes alone advance that watermark.
+
+Foreign fetches use pages of at most eight envelopes so the existing 1 MiB ciphertext limit fits the 20 MiB response budget. Epoch, acknowledgement and error bodies have separate smaller budgets. Success and error streams are bounded, including chunked bodies; deadlines cover stalled streams. Smaller pages preserve sequence-based progress across repeated polling.
+
 ## Conversation namespaces and admission
 
 The previous development proposal used a UUIDv5-shaped group conversation identifier. This baseline deliberately changes only group conversation IDs to UUIDv8: take the first 16 bytes of SHA256(`frank-group-conversation-uuid-v1:` || groupId32), set version bits to 8 and RFC variant bits to 10, and format as a UUID. All group writers/readers use `groupConversationUuid`; `isGroupConversationId` reserves that namespace. Account/key/payment derivations, default direct UUIDv5 and explicitly created direct UUIDv4 IDs are unchanged. There are no aliases or migrations for old group IDs.

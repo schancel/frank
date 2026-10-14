@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { computeAddress, getAddress } from "ethers";
+import { MAX_TEXT_STRING_BYTES } from "@frank/codec";
 import type { DirectMessageReceived } from "@frank/wallet/chain/active-chain";
 import { LevelBotStateStore } from "./state-store";
 
@@ -8,8 +9,6 @@ const OWNER = PREFIX + "owner";
 const ROW = PREFIX + "dispatch:";
 // The text of a staged reply: outside the `host-inbound:` open scan and the in-memory row map.
 const STAGED = "host-prepared:v1:";
-// The codec's text-string limit (frank-codec constants.ts).
-const MAX_REPLY_TEXT_BYTES = 262_144;
 
 export interface InboundOwner {
   chainIdentifier: string;
@@ -541,12 +540,12 @@ export class InboundOperationStore {
         row.reply ||
         typeof text !== "string" ||
         !text ||
-        text.length > MAX_REPLY_TEXT_BYTES ||
+        text.length > MAX_TEXT_STRING_BYTES ||
         // Well-formed Unicode only, so the stored bytes are the text that is sent.
         /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
           text
         ) ||
-        Buffer.byteLength(text, "utf8") > MAX_REPLY_TEXT_BYTES
+        Buffer.byteLength(text, "utf8") > MAX_TEXT_STRING_BYTES
       )
         return hold();
       row.reply = { stampValue, since };

@@ -262,10 +262,8 @@ async fn main() -> Result<()> {
     let event_bus: Arc<dyn cashweb_registry::events::RelayEventBus> =
         if conf.registry.is_nats_enabled() {
             let nats_url = conf.registry.nats_url().unwrap_or("nats://127.0.0.1:4222");
-            tracing::info!(
-                nats_url = %nats_url,
-                "Connecting to Clustered Core NATS notification bus"
-            );
+            // The connection URL may contain a password or token; keep it out of diagnostics.
+            tracing::info!("Connecting to Clustered Core NATS notification bus");
             Arc::new(
                 cashweb_registry::events::CoreNatsEventBus::connect(nats_url)
                     .await

@@ -58,14 +58,7 @@
           @new-value="createValue"
           new-value-mode="add-unique"
           input-debounce="0"
-          :rules="[
-            val =>
-              (val && val.length > 0 && /^[a-z0-9.-]+$/.test(val)) ||
-              'Only numbers, lowercase, periods and dashes allowed',
-            val =>
-              !val.split('.').some(val => val.length === 0) ||
-              'Topic segments not allowed to be empty',
-          ]"
+          :rules="[validateTopic]"
           lazy-rules
         >
           <template #no-option>
@@ -312,6 +305,7 @@
 import { navigateBack } from 'src/utils/navigate-back'
 import { defineComponent, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import type { QSelectProps } from 'quasar'
 
 import { renderMarkdown } from '../utils/markdown'
 import {
@@ -339,6 +333,16 @@ import AMessage from '../components/forum/ForumMessage.vue'
 import { errorNotify, infoNotify } from 'src/utils/notifications'
 import { submitPost } from 'src/utils/submit-post'
 import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
+
+function validateTopic(value: unknown): true | string {
+  if (typeof value !== 'string' || !/^[a-z0-9.-]+$/.test(value)) {
+    return 'Only numbers, lowercase, periods and dashes allowed'
+  }
+  return (
+    !value.split('.').some(segment => segment.length === 0) ||
+    'Topic segments not allowed to be empty'
+  )
+}
 
 export default defineComponent({
   setup() {
@@ -759,15 +763,16 @@ export default defineComponent({
         this.topics = topicOptions(inputTopic, this.knownTopics)
       })
     },
+    validateTopic,
     createValue(
       val: string,
-      done: (val: string, newValueMode: string) => void,
+      done: Parameters<NonNullable<QSelectProps['onNewValue']>>[1],
     ) {
       // Calling done(var) when newValueMode is "add-unique", or done(var, "add-unique")
       // adds "var" content to the model only if is not already set
       // and it resets the input textbox to empty string
       // https://quasar.dev/vue-components/select#example--filtering-and-adding-to-menu
-      if (val.length > 0) {
+      if (validateTopic(val) === true) {
         if (!this.availableTopics.includes(val)) {
           this.pushNewTopic(val)
         }

@@ -15,7 +15,6 @@ on:
       - "packages/price-feeds/scripts/build-oracle-seed.py"
       - ".github/workflows/backend-ci.yml"
   pull_request:
-    branches: [main]
     paths:
       - "backend/**"
       - "**/*.proto"

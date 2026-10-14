@@ -372,13 +372,16 @@ test("authority invalidation starts a fresh balance read while the previous one 
     wallet.invalidateBalanceCache();
     const current = wallet.getBalance();
     expect(read).toHaveBeenCalledTimes(4);
-    releases.splice(0, 2).forEach((resolve) => resolve(123n));
-    expect(await previous).toBe(246n);
     const joining = wallet.getBalance();
     expect(read).toHaveBeenCalledTimes(4);
-    releases.splice(0).forEach((resolve) => resolve(234n));
+    releases.splice(2).forEach((resolve) => resolve(234n));
     expect(await current).toBe(468n);
     expect(await joining).toBe(468n);
+    releases.splice(0).forEach((resolve) => resolve(123n));
+    expect(await previous).toBe(246n);
+    // An older read completing last must not replace the current cached observation.
+    expect(await wallet.getBalance()).toBe(468n);
+    expect(read).toHaveBeenCalledTimes(4);
   } finally {
     releases.forEach((resolve) => resolve(0n));
     await wallet.close();
@@ -632,6 +635,87 @@ function mockNativeRpc(
     })
   return { broadcast, balances, nonces, transactions, receipts }
 }
+
+test.each(["included", "pending", "uncertain"] as const)(
+  "native resume refreshes the balance after an %s outcome without replacing the payment",
+  async (outcome) => {
+    const chain = createEvmChain(config);
+    const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle;
+    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n });
+    jest
+      .spyOn(chain.directMessages, "send")
+      .mockResolvedValue({ payloadDigest: "aa" } as never);
+    const broadcast = rpc.broadcast.getMockImplementation()!;
+    try {
+      rpc.broadcast.mockRejectedValueOnce(new Error("node unavailable"));
+      await expect(
+        wallet.sendNative({
+          recipient: { raw: expected[1].main },
+          value: 1000n,
+        })
+      ).rejects.toThrow();
+      const operation = wallet.getNativeOperations!()[0]!;
+      const original = operation.members[0].signed!.rawTransaction;
+      expect(await wallet.getBalance()).toBe(100000n);
+
+      if (outcome === "pending") {
+        rpc.broadcast.mockImplementation(
+          async () => ({ hash: keccak256(original) } as TransactionResponse)
+        );
+      } else if (outcome === "uncertain") {
+        rpc.broadcast.mockImplementation(async (raw) => {
+          await broadcast(raw);
+          // The original landed, but submission and receipt observations fail for this call.
+          jest
+            .mocked(wallet.provider.getTransaction)
+            .mockRejectedValue(new Error("offline"));
+          jest
+            .mocked(wallet.provider.getTransactionReceipt)
+            .mockRejectedValue(new Error("offline"));
+          throw new Error("connection reset after broadcast");
+        });
+      }
+
+      if (outcome === "uncertain")
+        await expect(
+          wallet.resumeNativeOperation!(operation.operationId)
+        ).rejects.toThrow();
+      else await wallet.resumeNativeOperation!(operation.operationId);
+
+      const balanceReads = jest.mocked(wallet.provider.getBalance).mock.calls
+        .length;
+      expect(await wallet.getBalance()).toBe(
+        outcome === "pending" ? 100000n : 78000n
+      );
+      expect(
+        jest.mocked(wallet.provider.getBalance).mock.calls.length
+      ).toBeGreaterThan(balanceReads);
+      expect(wallet.getNativeOperations!()).toHaveLength(1);
+      expect(
+        wallet.getNativeOperations!()[0].members[0].signed!.rawTransaction
+      ).toBe(original);
+      expect(rpc.broadcast.mock.calls.every(([raw]) => raw === original)).toBe(
+        true
+      );
+      if (outcome !== "included")
+        expect(wallet.getNativeOperations!()[0].cancelled).toBeFalsy();
+      // A later retry finishes this same operation, including when the earlier answer was lost.
+      rpc.broadcast.mockImplementation(broadcast);
+      jest
+        .mocked(wallet.provider.getTransaction)
+        .mockImplementation(async (hash) => rpc.transactions.get(hash) ?? null);
+      jest
+        .mocked(wallet.provider.getTransactionReceipt)
+        .mockImplementation(async (hash) => rpc.receipts.get(hash) ?? null);
+      await wallet.resumeNativeOperation!(operation.operationId);
+      expect(await wallet.getBalance()).toBe(78000n);
+      expect(wallet.getNativeOperations!()).toHaveLength(1);
+      expect(rpc.transactions.size).toBe(1);
+    } finally {
+      await wallet.close();
+    }
+  }
+);
 
 test('native signed bytes survive restart and authentication changes without an EVM hash-only writer', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-native-composition-'))

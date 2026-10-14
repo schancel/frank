@@ -15,6 +15,7 @@ import {
   createGroupOnRelay,
   rotateGroupEpochOnRelay,
   openGroupEpochCertificate,
+  groupEpochCertificate,
   type StoredGroupMessageWire,
 } from './group-relay-client'
 
@@ -211,7 +212,7 @@ describe('GroupRelayClient', () => {
         groupIdHex: created.identity.groupIdHex,
         groupPubKeyHex: created.identity.groupPubKeyHex,
         epochSecretHex: created.epochKeys.epochSecretHex,
-        certificate: certificate as never,
+        certificate: groupEpochCertificate(certificate),
       }),
     ).toThrow(/relay URL/)
   })

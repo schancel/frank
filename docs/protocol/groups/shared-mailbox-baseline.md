@@ -48,3 +48,12 @@ FRANK_GROUP_HTTP_FIXTURE=/tmp/frank-group-backend-cargo-target/debug/examples/gr
 ```
 
 The gate spawns and terminates the ephemeral in-memory router. It validates actual routes, headers, serialization, signatures, acknowledgements, read-token authorization, client reconnect/repeated reads, removal and stale epoch CAS. It uses synthetic identities and no public service. Rust store tests separately cover RocksDB reopen, concurrent append, rotation races and fault injection. This is not live browser or distributed deployment evidence.
+
+The foreign-home gate explicitly starts two Rust test routers and invokes the actual TypeScript client:
+
+```sh
+cd backend/cashweb
+CARGO_TARGET_DIR=/tmp/frank-group-security-final-target cargo test -p cashweb-registry typescript_foreign_client_against_real_rust_relays --lib -- --ignored --nocapture
+```
+
+This test is ignored by default because Rust-only CI need not install Node dependencies. Run it explicitly from a worktree with the JavaScript dependencies available. It proves post-promotion rotation and preservation of unread backlog when a later send is routed through the home relay. Each original mirror defect independently fails this same real-network gate. The loopback policy exception exists only in the Rust test build.

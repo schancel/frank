@@ -10,6 +10,8 @@
 //!   subscribers) and local mirror promotion (`>= n` local subscribers) when
 //!   `X-Group-Upstream-Relay` is specified.
 
+mod live;
+
 use axum::{
     body::Bytes,
     extract::{Path, Query},
@@ -318,6 +320,7 @@ async fn read_upstream_body_before(
 /// Build the `/groups/:group_id/*` router using the server's `Registry` group store.
 pub fn router() -> Router {
     Router::new()
+        .route("/groups/:group_id/live", routing::get(live::handle_live))
         .route(
             "/groups/:group_id/epochs",
             routing::put(handle_put_group_epoch).get(handle_get_group_epoch),
@@ -332,6 +335,10 @@ pub fn router() -> Router {
 pub fn router_with_store(store: GroupStore) -> Router {
     Router::new()
         .route(
+            "/groups/:group_id/live",
+            routing::get(live::handle_live_store),
+        )
+        .route(
             "/groups/:group_id/epochs",
             routing::put(handle_put_group_epoch_store).get(handle_get_group_epoch_store),
         )
@@ -340,6 +347,10 @@ pub fn router_with_store(store: GroupStore) -> Router {
             routing::put(handle_put_group_message_store).get(handle_get_group_messages_store),
         )
         .layer(Extension(store))
+        .layer(Extension(
+            std::sync::Arc::new(crate::events::StandaloneEventBus::new())
+                as std::sync::Arc<dyn crate::events::RelayEventBus>,
+        ))
 }
 
 async fn handle_put_group_epoch(
@@ -348,20 +359,38 @@ async fn handle_put_group_epoch(
     Extension(server): Extension<RegistryServer>,
     body: Bytes,
 ) -> Response {
+    let bus = server.event_bus().clone();
     let store = match server.registry.groups() {
         Ok(s) => s.clone(),
         Err(e) => return group_error_response(e),
     };
-    put_group_epoch_impl(store, group_id, headers, body).await
+    let response = put_group_epoch_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn handle_put_group_epoch_store(
     Path(group_id): Path<String>,
     headers: HeaderMap,
     Extension(store): Extension<GroupStore>,
+    Extension(bus): Extension<std::sync::Arc<dyn crate::events::RelayEventBus>>,
     body: Bytes,
 ) -> Response {
-    put_group_epoch_impl(store, group_id, headers, body).await
+    let response = put_group_epoch_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn put_group_epoch_impl(
@@ -582,20 +611,38 @@ async fn handle_put_group_message(
     Extension(server): Extension<RegistryServer>,
     body: Bytes,
 ) -> Response {
+    let bus = server.event_bus().clone();
     let store = match server.registry.groups() {
         Ok(s) => s.clone(),
         Err(e) => return group_error_response(e),
     };
-    put_group_message_impl(store, group_id, headers, body).await
+    let response = put_group_message_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn handle_put_group_message_store(
     Path(group_id): Path<String>,
     headers: HeaderMap,
     Extension(store): Extension<GroupStore>,
+    Extension(bus): Extension<std::sync::Arc<dyn crate::events::RelayEventBus>>,
     body: Bytes,
 ) -> Response {
-    put_group_message_impl(store, group_id, headers, body).await
+    let response = put_group_message_impl(store, group_id.clone(), headers, body).await;
+    if response.status().is_success() {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            bus.publish_group_wakeup(&group_id.to_lowercase()),
+        )
+        .await;
+    }
+    response
 }
 
 async fn put_group_message_impl(
@@ -1515,6 +1562,7 @@ mod tests {
                     "--runInBand",
                     "--runTestsByPath",
                     "packages/cashweb/groups/group-http-foreign.jest.test.ts",
+                    "packages/cashweb/groups/group-live-http.jest.test.ts",
                 ])
                 .env("FRANK_GROUP_HTTP_ORIGIN_URL", origin)
                 .env("FRANK_GROUP_HTTP_HOME_URL", home)

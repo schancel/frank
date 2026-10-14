@@ -12,7 +12,7 @@ import { fetchContactProfile } from '../utils/directory-peer'
 import { directoryAddress } from '@frank/cashweb/relay/open-directory'
 import assert from 'assert'
 import { defineStore } from 'pinia'
-import { shallowRef } from 'vue'
+import { shallowRef, watch } from 'vue'
 
 import { displayNetwork } from '../utils/constants'
 import { randomBytes } from '@noble/hashes/utils'
@@ -2020,6 +2020,7 @@ function captureGroupContext(
   }
 }
 
+const groupLiveStops = new WeakMap<object, () => void>()
 const groupHomeRelays = new WeakMap<object, string>()
 const groupRelayClientRegistries = new WeakMap<
   object,
@@ -5854,11 +5855,117 @@ export const useChatStore = defineStore('chats', {
       const key = relayUrl.trim().replace(/\/+$/, '')
       groupRelayClients(this).set(key, client)
     },
+    /** Session-scoped bounded subscriptions. Reconnect/startup always replay the durable range. */
+    startGroupLiveDelivery(): () => void {
+      groupLiveStops.get(this)?.()
+      const revision = accountSession.state.revision
+      const account = accountSession.state.account
+      const chainIdentifier = activeChain.chainIdentifier
+      const sameSession = () =>
+        accountSession.state.revision === revision &&
+        accountSession.state.account === account &&
+        activeChain.chainIdentifier === chainIdentifier
+      const subscriptions = new Map<string, { key: string; close(): void }>()
+      let stopped = false
+      const stopWatch = watch(
+        () => [
+          accountSession.state.revision,
+          accountSession.state.account,
+          activeChain.chainIdentifier,
+          ...Object.values(this.conversations).map(conv => [
+            conv.id,
+            conv.membershipStatus,
+            conv.deletedAt,
+            conv.groupState?.epoch,
+            conv.groupState?.epochSecretHex,
+            conv.groupState?.homeRelay,
+          ]),
+        ],
+        () => {
+          const desired = new Set<string>()
+          for (const conv of Object.values(this.conversations)) {
+            if (
+              !sameSession() ||
+              !this.shouldPollGroupMailbox(conv.id) ||
+              !conv.groupState ||
+              desired.size >= 32
+            )
+              continue
+            desired.add(conv.id)
+            const state = conv.groupState
+            const key = `${accountSession.state.revision}:${activeChain.chainIdentifier}:${state.homeRelay}:${state.epoch}:${state.epochSecretHex}`
+            if (subscriptions.get(conv.id)?.key === key) continue
+            subscriptions.get(conv.id)?.close()
+            let cancelled = false
+            const lease = {
+              isCancelled: () =>
+                stopped ||
+                !sameSession() ||
+                cancelled ||
+                subscriptions.get(conv.id)?.key !== key,
+            }
+            const client = this.getGroupRelayClient(state.homeRelay)
+            const keys = deriveEpochKeys(
+              hexToBytes(state.epochSecretHex),
+              state.groupIdHex,
+              state.epoch,
+            )
+            const handle = client.subscribeGroupMessages(
+              state.groupIdHex,
+              state.epoch,
+              keys.readTokenHex,
+              async () => {
+                if (lease.isCancelled()) return
+                // Foreign relay pages are deliberately small; drain until the durable range is empty.
+                while (
+                  !lease.isCancelled() &&
+                  (await this.syncGroupConversation(conv.id, { lease })) > 0
+                ) {
+                  /* drain */
+                }
+              },
+              () => {
+                if (!lease.isCancelled() && conv.groupState)
+                  conv.groupState.syncFailed = true
+              },
+            )
+            subscriptions.set(conv.id, {
+              key,
+              close() {
+                cancelled = true
+                handle.close()
+              },
+            })
+          }
+          for (const [id, subscription] of subscriptions) {
+            if (!desired.has(id)) {
+              subscription.close()
+              subscriptions.delete(id)
+            }
+          }
+        },
+        { immediate: true, flush: 'sync' },
+      )
+      const stop = () => {
+        stopped = true
+        stopWatch()
+        for (const subscription of subscriptions.values()) subscription.close()
+        subscriptions.clear()
+      }
+      groupLiveStops.set(this, stop)
+      return stop
+    },
     configureGroupHomeRelay(homeRelayUrl: string): () => void {
       const url = normalizeGroupRelayOrigin(homeRelayUrl)
+      groupLiveStops.get(this)?.()
+      groupRelayClientRegistries.delete(this)
       groupHomeRelays.set(this, url)
+      const stopLive = this.startGroupLiveDelivery()
+      groupLiveStops.set(this, stopLive)
       return () => {
-        if (groupHomeRelays.get(this) === url) {
+        stopLive()
+        if (groupLiveStops.get(this) === stopLive) {
+          groupLiveStops.delete(this)
           groupHomeRelays.delete(this)
           groupRelayClientRegistries.delete(this)
         }
@@ -6428,7 +6535,11 @@ export const useChatStore = defineStore('chats', {
      */
     async syncGroupConversation(
       conversationId: string,
-      options: { relayClient?: GroupRelayClient; ownAddress?: string } = {},
+      options: {
+        relayClient?: GroupRelayClient
+        ownAddress?: string
+        lease?: DeliveryLease
+      } = {},
     ): Promise<number> {
       return groupRun(this, `sync:${conversationId}`, async () => {
         const conv = this.conversations[conversationId]
@@ -6437,7 +6548,7 @@ export const useChatStore = defineStore('chats', {
             conversationId,
             options,
           )
-          if (conv?.groupState)
+          if (conv?.groupState && !options.lease?.isCancelled())
             conv.groupState.syncFailed = Boolean(
               Object.keys(conv.groupState.pendingMemberDeliveries ?? {})
                 .length ||
@@ -6446,22 +6557,46 @@ export const useChatStore = defineStore('chats', {
             )
           return count
         } catch (error) {
-          if (conv?.groupState) conv.groupState.syncFailed = true
+          if (conv?.groupState && !options.lease?.isCancelled())
+            conv.groupState.syncFailed = true
           throw error
         }
       })
     },
     async syncGroupConversationOnce(
       conversationId: string,
-      options: { relayClient?: GroupRelayClient; ownAddress?: string } = {},
+      options: {
+        relayClient?: GroupRelayClient
+        ownAddress?: string
+        lease?: DeliveryLease
+      } = {},
     ): Promise<number> {
-      if (!this.shouldPollGroupMailbox(conversationId)) return 0
+      if (
+        options.lease?.isCancelled() ||
+        !this.shouldPollGroupMailbox(conversationId)
+      )
+        return 0
       await this.retryGroupEpochPublication(conversationId, options.relayClient)
+      if (options.lease?.isCancelled()) return 0
       await this.retryGroupMemberDeliveries(conversationId)
       const conv = this.conversations[conversationId]
-      if (!conv || conv.kind !== 'group') return 0
+      if (options.lease?.isCancelled() || !conv || conv.kind !== 'group')
+        return 0
 
-      const checkGroup = captureGroupContext(this, conv)
+      const checkContext = captureGroupContext(this, conv)
+      const expectedHome = groupHomeRelays.get(this)
+      const expectedEpoch = conv.groupState?.epoch
+      const checkGroup = () => {
+        checkContext()
+        if (
+          options.lease?.isCancelled() ||
+          groupHomeRelays.get(this) !== expectedHome ||
+          !this.shouldPollGroupMailbox(conversationId) ||
+          conv.groupState?.epoch !== expectedEpoch
+        )
+          throw new Error('Group subscription changed')
+      }
+      checkGroup()
       const groupIdHex = conv.groupState?.groupIdHex ?? conv.groupId!
       const epochSecretHex =
         conv.groupState?.epochSecretHex ?? conv.groupEpochSecretHex!
@@ -6596,7 +6731,13 @@ export const useChatStore = defineStore('chats', {
               senderAddress: existingMsg.senderAddress,
               copartyAddress: conv.address,
             },
-            { advanceCursor: false },
+            {
+              advanceCursor: false,
+              isCancelled: () => {
+                checkGroup()
+                return false
+              },
+            },
           )
           if (conv.groupState.pendingMessages)
             delete conv.groupState.pendingMessages[payloadDigest]
@@ -6627,9 +6768,9 @@ export const useChatStore = defineStore('chats', {
           revisionDigest: payloadDigest,
           deliveryDigest: payloadDigest,
         }
-        await (
-          await store
-        ).saveMessage(
+        const messageStore = await store
+        checkGroup()
+        await messageStore.saveMessage(
           {
             message: chatMsg,
             index: payloadDigest,
@@ -6637,7 +6778,13 @@ export const useChatStore = defineStore('chats', {
             senderAddress,
             copartyAddress: conv.address,
           },
-          { advanceCursor: false },
+          {
+            advanceCursor: false,
+            isCancelled: () => {
+              checkGroup()
+              return false
+            },
+          },
         )
         checkGroup()
         this.messages[payloadDigest] = chatMsg

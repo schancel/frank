@@ -47,6 +47,7 @@ export interface GroupRelayClientOptions {
   timeoutMs?: number
   homeRelayUrl?: string
   subscriberTag?: (groupIdHex: string) => Promise<string>
+  webSocketFactory?: (url: string) => WebSocket
 }
 
 function normalizeGroupId(groupIdHex: string): string {
@@ -103,6 +104,7 @@ export class GroupRelayClient {
   private readonly http: AxiosInstance
   private readonly transportUrl: string
   private readonly subscriberTag?: (groupIdHex: string) => Promise<string>
+  private readonly webSocketFactory: (url: string) => WebSocket
 
   constructor(relayUrl: string, options: GroupRelayClientOptions = {}) {
     this.relayUrl = normalizeGroupRelayOrigin(relayUrl)
@@ -110,12 +112,119 @@ export class GroupRelayClient {
       options.homeRelayUrl ?? relayUrl,
     )
     this.subscriberTag = options.subscriberTag
+    this.webSocketFactory =
+      options.webSocketFactory ?? ((url) => new WebSocket(url))
     this.http =
       options.axiosInstance ??
       axios.create({
         baseURL: this.transportUrl,
         timeout: options.timeoutMs ?? 15_000,
       })
+  }
+
+  /** Wakeups contain no authoritative state. Fetch the durable range on every wake/reconnect. */
+  subscribeGroupMessages(
+    groupIdHex: string,
+    epoch: number,
+    readTokenHex: string,
+    onWake: () => Promise<void>,
+    onError: () => void = () => undefined,
+  ): { close(): void } {
+    const groupId = normalizeGroupId(groupIdHex)
+    if (
+      !Number.isSafeInteger(epoch) ||
+      epoch < 0 ||
+      !/^[0-9a-f]{64}$/.test(readTokenHex)
+    )
+      throw new Error('Invalid group subscription capability')
+    const url = new URL(`/groups/${groupId}/live`, this.transportUrl)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    let closed = false,
+      running = false,
+      dirty = false
+    let socket: WebSocket | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let delay = 1000
+    const wake = async () => {
+      dirty = true
+      if (running || closed) return
+      running = true
+      try {
+        while (dirty && !closed) {
+          dirty = false
+          try {
+            await onWake()
+          } catch {
+            if (!closed) onError()
+          }
+        }
+      } finally {
+        running = false
+      }
+    }
+    const connect = async () => {
+      try {
+        const tag = this.subscriberTag
+          ? await this.subscriberTag(groupId)
+          : undefined
+        if (closed) return
+        const current = this.webSocketFactory(url.href)
+        socket = current
+        current.onopen = () => {
+          if (closed || socket !== current) return
+          // Browser WebSockets cannot set headers. Secrets belong in the first bounded TLS frame.
+          current.send(
+            JSON.stringify({
+              epoch,
+              read_token: readTokenHex,
+              ...(this.transportUrl === this.relayUrl
+                ? {}
+                : { upstream_relay: this.relayUrl }),
+              ...(tag ? { subscriber_tag: tag } : {}),
+            }),
+          )
+        }
+        current.onmessage = (event) => {
+          if (
+            closed ||
+            socket !== current ||
+            typeof event.data !== 'string' ||
+            event.data.length > 128
+          )
+            return
+          if (event.data === '{"type":"group-wakeup"}') {
+            delay = 1000
+            void wake()
+          }
+        }
+        current.onerror = () => {
+          if (!closed && socket === current) onError()
+        }
+        current.onclose = () => {
+          if (closed || socket !== current) return
+          socket = undefined
+          timer = setTimeout(() => void connect(), delay)
+          delay = Math.min(delay * 2, 30_000)
+        }
+      } catch {
+        if (!closed) {
+          onError()
+          timer = setTimeout(() => void connect(), delay)
+          delay = Math.min(delay * 2, 30_000)
+        }
+      }
+    }
+    void connect()
+    return {
+      close() {
+        closed = true
+        dirty = false
+        if (timer) clearTimeout(timer)
+        const current = socket
+        socket = undefined
+        current?.close()
+      },
+    }
   }
 
   private routingHeaders(): Record<string, string> {
@@ -378,7 +487,7 @@ export function prepareGroupCreation(
 
   if (
     rosterMembers.length > 256 ||
-    rosterMembers.filter(member => member.role === 'admin').length !== 1
+    rosterMembers.filter((member) => member.role === 'admin').length !== 1
   )
     throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
@@ -487,7 +596,7 @@ export function prepareGroupEpochRotation(
 
   if (
     rosterMembers.length > 256 ||
-    rosterMembers.filter(member => member.role === 'admin').length !== 1
+    rosterMembers.filter((member) => member.role === 'admin').length !== 1
   )
     throw new Error('Invalid group roster or name')
   const roster: GroupRoster = {
@@ -606,7 +715,7 @@ export function openGroupEpochCertificate(params: {
     if (expected !== member.epochSigningPubKeyHex)
       throw new Error('Group member signing key mismatch')
   }
-  if (roster.members.filter(member => member.role === 'admin').length !== 1)
+  if (roster.members.filter((member) => member.role === 'admin').length !== 1)
     throw new Error('Group must have one founding administrator')
   return { roster, epochKeys }
 }

@@ -344,6 +344,135 @@ function fund(
 const BTC_RECIPIENT = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
 const BCH_RECIPIENT = "bchtest:qpm2qsznhks23z7629mms6s4cwef74vcwvqcw003ap";
 
+describe("display-only local balance observations", () => {
+  it.each([BTC, BCH, DOGE, UTXO_NETWORKS["litecoin-testnet"]])(
+    "retains the last observation across failed refresh and reopen for $chainIdentifier",
+    async (network) => {
+      const { wallet, backend, store } = await open(network);
+      expect(wallet.getBalanceObservation()).toBeUndefined();
+      fund(backend, network, wallet.identity.address.raw, 100_000_000n, "a");
+      expect(await wallet.getBalance()).toBe(100_000_000n);
+      const observed = wallet.getBalanceObservation();
+      expect(observed).toEqual({
+        balance: 100_000_000n,
+        observedAt: expect.any(Number),
+      });
+      const restarted = (await open(network, backend, store)).wallet;
+      expect(restarted.coins()).toEqual([]);
+      expect(restarted.getBalanceObservation()).toEqual(observed);
+      backend.indexer.listUnspent = async () => {
+        throw new Error("offline");
+      };
+      await expect(restarted.getBalance()).rejects.toThrow("offline");
+      expect(restarted.getBalanceObservation()).toEqual(observed);
+      // A display observation can never supply inputs when a live read is unavailable.
+      await expect(
+        restarted.estimateFee({
+          recipient: restarted.identity.address,
+          value: 10_000_000n,
+        })
+      ).rejects.toThrow("offline");
+    }
+  );
+
+  it("coalesces concurrent refreshes and exposes the old observation while pending", async () => {
+    const { wallet, backend } = await open(BTC);
+    fund(backend, BTC, wallet.identity.address.raw, 50_000n, "a");
+    await wallet.getBalance();
+    const observed = wallet.getBalanceObservation();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const original = backend.indexer.listUnspent;
+    const read = jest.fn(async (script: Uint8Array) => {
+      await gate;
+      return original(script);
+    });
+    backend.indexer.listUnspent = read;
+    const first = wallet.getBalance();
+    const second = wallet.getBalance();
+    expect(first).toBe(second);
+    expect(wallet.getBalanceObservation()).toEqual(observed);
+    release();
+    expect(await first).toBe(50_000n);
+    expect(read).toHaveBeenCalledTimes(2); // Paid receive 0 and the next receive address.
+  });
+
+  it("filters another instance's reservations immediately and never restores signing coins", async () => {
+    const { wallet, backend, store } = await open(BTC);
+    fund(backend, BTC, wallet.identity.address.raw, 50_000n, "a");
+    await wallet.getBalance();
+    const other = (await open(BTC, backend, store)).wallet;
+    const payment = await other.prepareNativePayment({
+      operationId: "display-reserved",
+      recipient: { raw: BTC_RECIPIENT },
+      value: 10_000n,
+    });
+    expect(wallet.getBalanceObservation()?.balance).toBe(0n);
+    expect(await other.releaseUnexposedPayment(payment.operationId)).toBe(true);
+    expect(wallet.getBalanceObservation()?.balance).toBe(50_000n);
+    const exposed = await other.prepareNativePayment({
+      operationId: "display-exposed",
+      recipient: { raw: BTC_RECIPIENT },
+      value: 10_000n,
+    });
+    await other.recordPaymentExposure({
+      operationId: exposed.operationId,
+      payloadDigest: "1".repeat(64),
+    });
+    backend.setOutcome("lost");
+    await expect(
+      other.submitPreparedPayment(exposed.operationId)
+    ).rejects.toThrow();
+    const restarted = (await open(BTC, backend, store)).wallet;
+    expect(restarted.getBalanceObservation()?.balance).toBe(0n);
+    expect(restarted.coins()).toEqual([]);
+    expect(
+      (await restarted.getNativePayments()).find(
+        (p) => p.operationId === exposed.operationId
+      )?.phase
+    ).toBe("submitted");
+  });
+
+  it("ignores wrong-chain or malformed observations without modifying journal records", async () => {
+    const { wallet, backend, store } = await open(BTC);
+    await wallet.getBalance();
+    const saved = JSON.parse(store.load()!);
+    for (const balanceObservation of [
+      { ...saved.balanceObservation, chainIdentifier: BCH.chainIdentifier },
+      {
+        ...saved.balanceObservation,
+        coins: [{ txid: "bad", vout: 0, amount: "3" }],
+      },
+    ]) {
+      const record = JSON.stringify({ ...saved, balanceObservation });
+      store.save(record);
+      expect(wallet.getBalanceObservation()).toBeUndefined();
+      expect(store.load()).toBe(record);
+    }
+    expect(backend.broadcasts).toEqual([]);
+  });
+
+  it("bounds concurrent discovery requests while preserving the address gap", async () => {
+    const backend = makeIndexer();
+    let active = 0;
+    let peak = 0;
+    let reads = 0;
+    backend.indexer.hasHistory = async () => {
+      reads += 1;
+      active += 1;
+      peak = Math.max(peak, active);
+      await Promise.resolve();
+      active -= 1;
+      return false;
+    };
+    await open(BTC, backend);
+    expect(reads).toBe(40);
+    expect(peak).toBe(5);
+  });
+});
+
 describe("Dogecoin testnet (P2PKH, legacy SIGHASH_ALL)", () => {
   it("receives, signs an independently verified payment, and replays its saved bytes after restart", async () => {
     const backend = makeIndexer(DOGE);

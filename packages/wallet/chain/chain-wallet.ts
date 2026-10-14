@@ -245,6 +245,9 @@ export interface NativeWalletHandle {
   /** Address to show for a new inbound payment; may rotate independently of wallet identity. */
   getReceiveAddress(): Promise<ChainAddress>;
   getBalance(): Promise<bigint>;
+  /** Display-only last complete observation, with current reservations excluded. Undefined
+   * until observed; age and refresh failures must remain visible. Never authorizes spending. */
+  getBalanceObservation?(): { balance: bigint; observedAt: number } | undefined;
   /** Optional financial adapter. Message construction and transport remain with the host. */
   readonly stealthPayments?: import("../stealth-payment").StealthPaymentCapability;
   /** Recipient derivation/chain verification, distinct from outgoing wallet synchronization. */

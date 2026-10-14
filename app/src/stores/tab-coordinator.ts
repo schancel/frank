@@ -15,6 +15,9 @@ import { defineStore } from 'pinia'
 import { watch } from 'vue'
 import { accountSession, accountStatus } from '../accounts/session'
 import { useLeaderStore } from './leader'
+import { translateMessage } from '../i18n'
+
+type TabFocusResult = 'focused' | 'notified' | 'manual'
 
 export interface TabCoordinatorState {
   tabId: string
@@ -23,6 +26,7 @@ export interface TabCoordinatorState {
   isYielded: boolean
   isTakingOver: boolean
   wasAutoReleased: boolean
+  focusRequestStatus: TabFocusResult | 'idle' | 'waiting' | 'unavailable'
 }
 
 export function generateTabId(): string {
@@ -62,6 +66,7 @@ export interface TabSyncMessage {
     | 'TAKEOVER_GRANTED'
     | 'TAB_CLOSING'
     | 'FOCUS_REQUEST'
+    | 'FOCUS_RESULT'
   tabId?: string
   senderTabId?: string
   targetTabId?: string | null
@@ -70,11 +75,15 @@ export interface TabSyncMessage {
   toTabId?: string
   hasCustody?: boolean
   hadCustody?: boolean
+  requestId?: string
+  focusResult?: TabFocusResult
   status?: string
 }
 
 let syncChannel: BroadcastChannel | null = null
 let unloadListenerAttached = false
+let focusRequestId: string | null = null
+let focusRequestTimer: ReturnType<typeof setTimeout> | null = null
 let takeoverResolver: (() => void) | null = null
 
 export const useTabCoordinatorStore = defineStore('tabCoordinator', {
@@ -85,6 +94,7 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
     isYielded: false,
     isTakingOver: false,
     wasAutoReleased: false,
+    focusRequestStatus: 'idle',
   }),
 
   actions: {
@@ -256,14 +266,78 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
         }
 
         case 'FOCUS_REQUEST': {
-          if (msg.targetTabId === this.tabId) {
-            if (typeof window !== 'undefined') {
+          if (
+            (msg.targetTabId === this.tabId ||
+              (!msg.targetTabId && msg.requesterTabId)) &&
+            msg.requesterTabId !== this.tabId &&
+            accountStatus.status === 'ready' &&
+            !this.isYielded
+          ) {
+            let result: TabFocusResult = 'manual'
+            try {
+              window.focus()
+            } catch {
+              // Browsers may refuse focus without a direct user gesture in this tab.
+            }
+            // Already-open windows may send the original targeted focus-only request.
+            // Correlated requests additionally receive a notification/result.
+            if (!msg.requesterTabId || !msg.requestId) break
+            if (typeof document !== 'undefined' && document.hasFocus()) {
+              result = 'focused'
+            } else if (
+              typeof Notification !== 'undefined' &&
+              Notification.permission === 'granted'
+            ) {
               try {
-                window.focus?.()
+                const notification = new Notification(
+                  translateMessage(
+                    'accountRecovery.find_tab_notification_title',
+                  ),
+                  {
+                    body: translateMessage(
+                      'accountRecovery.find_tab_notification_body',
+                    ),
+                    tag: 'frank-find-active-tab',
+                  },
+                )
+                notification.onclick = () => {
+                  try {
+                    window.focus()
+                  } catch {
+                    // The browser may still require manual window selection.
+                  } finally {
+                    notification.close()
+                  }
+                }
+                result = 'notified'
               } catch {
-                // ignore
+                // Some platforms require service-worker notifications; retain manual fallback.
               }
             }
+            this.broadcast({
+              type: 'FOCUS_RESULT',
+              tabId: this.tabId,
+              targetTabId: msg.requesterTabId,
+              requestId: msg.requestId,
+              focusResult: result,
+            })
+          }
+          break
+        }
+        case 'FOCUS_RESULT': {
+          if (
+            msg.targetTabId === this.tabId &&
+            msg.tabId &&
+            msg.requestId === focusRequestId &&
+            (!this.activeTabId || msg.tabId === this.activeTabId) &&
+            (msg.focusResult === 'focused' ||
+              msg.focusResult === 'notified' ||
+              msg.focusResult === 'manual')
+          ) {
+            if (focusRequestTimer) clearTimeout(focusRequestTimer)
+            focusRequestTimer = null
+            focusRequestId = null
+            this.focusRequestStatus = msg.focusResult
           }
           break
         }
@@ -316,9 +390,19 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
     },
 
     requestTabFocus() {
+      if (focusRequestTimer) clearTimeout(focusRequestTimer)
+      focusRequestId = generateTabId()
+      this.focusRequestStatus = 'waiting'
+      focusRequestTimer = setTimeout(() => {
+        focusRequestTimer = null
+        focusRequestId = null
+        this.focusRequestStatus = 'unavailable'
+      }, 1800)
       this.broadcast({
         type: 'FOCUS_REQUEST',
         targetTabId: this.activeTabId,
+        requesterTabId: this.tabId,
+        requestId: focusRequestId,
       })
     },
 
@@ -329,6 +413,10 @@ export const useTabCoordinatorStore = defineStore('tabCoordinator', {
       this.isTakingOver = false
       this.wasAutoReleased = false
       takeoverResolver = null
+      if (focusRequestTimer) clearTimeout(focusRequestTimer)
+      focusRequestTimer = null
+      focusRequestId = null
+      this.focusRequestStatus = 'idle'
       if (syncChannel) {
         syncChannel.close()
         syncChannel = null

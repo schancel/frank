@@ -149,7 +149,14 @@
                   aria-live="polite"
                   data-test="switch-tab-help"
                 >
-                  {{ $t('accountRecovery.manual_tab_switch_hint') }}
+                  <p>
+                    {{
+                      $t(
+                        `accountRecovery.find_tab_${tabCoordinator.focusRequestStatus}`,
+                      )
+                    }}
+                  </p>
+                  <p>{{ $t('accountRecovery.manual_tab_switch_hint') }}</p>
                 </q-card-section>
               </q-card>
             </div>

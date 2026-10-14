@@ -192,6 +192,19 @@ export const en = {
     'Your account is still saved on this device. Frank is active in another tab or window. To protect your wallet, only one can use the account at a time. Choose “Use Frank here” to continue here and pause the other tab.',
   use_frank_here: 'Use Frank here',
   switch_to_open_tab: 'Find open Frank tab',
+  find_tab_waiting: 'Contacting your open Frank tab…',
+  find_tab_focused:
+    'Your open Frank tab responded. If it did not appear, select it in your browser.',
+  find_tab_notified:
+    'A notification was sent from your open Frank tab. Click it to return there. If it does not appear, select the tab in your browser.',
+  find_tab_manual:
+    'Your open Frank tab responded, but the browser could not switch to it automatically.',
+  find_tab_unavailable:
+    'Your open Frank tab did not respond. It may be suspended by your browser.',
+  find_tab_idle: 'Find your open Frank tab or choose “Use Frank here”.',
+  find_tab_notification_title: 'Your open Frank tab',
+  find_tab_notification_body:
+    'Click this notification to return to the Frank tab using your account.',
   manual_tab_switch_hint:
     'Select the Frank tab in your browser’s tab bar or tab overview. If you cannot find it, choose “Use Frank here” to move your account to this tab.',
   tab_yielded_notice: 'Frank is active in another tab or window.',
@@ -395,6 +408,20 @@ export const fr = {
     'Votre compte est toujours enregistré sur cet appareil. Frank est actif dans un autre onglet ou une autre fenêtre. Pour protéger votre portefeuille, un seul peut utiliser le compte à la fois. Choisissez « Utiliser Frank ici » pour continuer ici et mettre l’autre onglet en pause.',
   use_frank_here: 'Utiliser Frank ici',
   switch_to_open_tab: 'Retrouver l’onglet Frank ouvert',
+  find_tab_waiting: 'Recherche de votre onglet Frank ouvert…',
+  find_tab_focused:
+    'Votre onglet Frank ouvert a répondu. S’il ne s’affiche pas, sélectionnez-le dans votre navigateur.',
+  find_tab_notified:
+    'Une notification a été envoyée depuis votre onglet Frank ouvert. Cliquez dessus pour y revenir. Si elle ne s’affiche pas, sélectionnez l’onglet dans votre navigateur.',
+  find_tab_manual:
+    'Votre onglet Frank ouvert a répondu, mais le navigateur n’a pas pu l’afficher automatiquement.',
+  find_tab_unavailable:
+    'Votre onglet Frank ouvert n’a pas répondu. Il est peut-être suspendu par votre navigateur.',
+  find_tab_idle:
+    'Retrouvez votre onglet Frank ouvert ou choisissez « Utiliser Frank ici ».',
+  find_tab_notification_title: 'Votre onglet Frank ouvert',
+  find_tab_notification_body:
+    'Cliquez sur cette notification pour revenir à l’onglet Frank qui utilise votre compte.',
   manual_tab_switch_hint:
     'Sélectionnez l’onglet Frank dans la barre d’onglets ou la vue d’ensemble du navigateur. Si vous ne le trouvez pas, choisissez « Utiliser Frank ici » pour déplacer votre compte vers cet onglet.',
   tab_yielded_notice:

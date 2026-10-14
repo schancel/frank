@@ -190,3 +190,191 @@ describe('TabCoordinatorStore', () => {
     expect(accountSession.yieldCustody).toHaveBeenCalled()
   })
 })
+
+describe('Find open tab', () => {
+  const originalNotification = Object.getOwnPropertyDescriptor(
+    globalThis,
+    'Notification',
+  )
+  let focus: jest.SpyInstance
+  let hasFocus: jest.SpyInstance
+  let notification: { onclick: null | (() => void); close: jest.Mock }
+  let notify: jest.Mock
+
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    jest.useFakeTimers()
+    jest.clearAllMocks()
+    accountStatus.status = 'ready'
+    focus = jest.spyOn(window, 'focus').mockImplementation(() => undefined)
+    hasFocus = jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+    notification = { onclick: null, close: jest.fn() }
+    notify = jest.fn(() => notification)
+    Object.defineProperty(notify, 'permission', {
+      value: 'granted',
+      configurable: true,
+    })
+    Object.defineProperty(globalThis, 'Notification', {
+      value: notify,
+      configurable: true,
+    })
+  })
+
+  afterEach(() => {
+    useTabCoordinatorStore().resetForTesting()
+    focus.mockRestore()
+    hasFocus.mockRestore()
+    if (originalNotification)
+      Object.defineProperty(globalThis, 'Notification', originalNotification)
+    else Reflect.deleteProperty(globalThis, 'Notification')
+    jest.useRealTimers()
+  })
+
+  async function find() {
+    const store = useTabCoordinatorStore()
+    const broadcast = jest.spyOn(store, 'broadcast')
+    await store.handleMessage({
+      type: 'FOCUS_REQUEST',
+      requesterTabId: 'requester',
+      targetTabId: store.tabId,
+      requestId: 'find-1',
+    })
+    return { store, broadcast }
+  }
+
+  it('sends a clickable generic notification when focus is silently blocked', async () => {
+    const { store, broadcast } = await find()
+    expect(focus).toHaveBeenCalledTimes(1)
+    expect(notify).toHaveBeenCalledWith('Your open Frank tab', {
+      body: 'Click this notification to return to the Frank tab using your account.',
+      tag: 'frank-find-active-tab',
+    })
+    expect(broadcast).toHaveBeenCalledWith({
+      type: 'FOCUS_RESULT',
+      tabId: store.tabId,
+      targetTabId: 'requester',
+      requestId: 'find-1',
+      focusResult: 'notified',
+    })
+    notification.onclick?.()
+    expect(focus).toHaveBeenCalledTimes(2)
+    expect(notification.close).toHaveBeenCalled()
+    expect(accountSession.yieldCustody).not.toHaveBeenCalled()
+    expect(accountSession.retry).not.toHaveBeenCalled()
+  })
+
+  it.each(['default', 'denied'])(
+    'never prompts for notification permission when %s',
+    async permission => {
+      Object.defineProperty(notify, 'permission', { value: permission })
+      const { broadcast } = await find()
+      expect(notify).not.toHaveBeenCalled()
+      expect(broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({ focusResult: 'manual' }),
+      )
+    },
+  )
+
+  it('falls back honestly when notification creation throws', async () => {
+    notify.mockImplementation(() => {
+      throw new Error('unsupported')
+    })
+    const { broadcast } = await find()
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ focusResult: 'manual' }),
+    )
+  })
+
+  it('does not notify once focus succeeds', async () => {
+    hasFocus.mockReturnValue(true)
+    const { broadcast } = await find()
+    expect(notify).not.toHaveBeenCalled()
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ focusResult: 'focused' }),
+    )
+  })
+
+  it.each(['standby', 'fresh'])(
+    'ignores requests on a %s tab',
+    async status => {
+      Object.assign(accountStatus, { status })
+      const { broadcast } = await find()
+      expect(focus).not.toHaveBeenCalled()
+      expect(notify).not.toHaveBeenCalled()
+      expect(broadcast).not.toHaveBeenCalled()
+    },
+  )
+
+  it('ignores requests addressed to a different tab', async () => {
+    const store = useTabCoordinatorStore()
+    await store.handleMessage({
+      type: 'FOCUS_REQUEST',
+      requesterTabId: 'requester',
+      targetTabId: 'different',
+      requestId: 'find-1',
+    })
+    expect(notify).not.toHaveBeenCalled()
+    expect(focus).not.toHaveBeenCalled()
+  })
+
+  it('preserves the targeted focus attempt for an already-open window without request IDs', async () => {
+    const store = useTabCoordinatorStore()
+    const broadcast = jest.spyOn(store, 'broadcast')
+    await store.handleMessage({
+      type: 'FOCUS_REQUEST',
+      targetTabId: store.tabId,
+    })
+    expect(focus).toHaveBeenCalledTimes(1)
+    expect(notify).not.toHaveBeenCalled()
+    expect(broadcast).not.toHaveBeenCalled()
+  })
+
+  it('correlates the active-tab acknowledgement and ignores stale responses', async () => {
+    const store = useTabCoordinatorStore()
+    store.activeTabId = 'active-tab'
+    const broadcast = jest.spyOn(store, 'broadcast')
+    store.requestTabFocus()
+    const first = broadcast.mock.calls[0][0]
+    expect(first).toMatchObject({
+      type: 'FOCUS_REQUEST',
+      targetTabId: 'active-tab',
+      requesterTabId: store.tabId,
+    })
+    expect(store.focusRequestStatus).toBe('waiting')
+    store.requestTabFocus()
+    const second = broadcast.mock.calls[1][0]
+    await store.handleMessage({
+      type: 'FOCUS_RESULT',
+      tabId: 'active-tab',
+      targetTabId: store.tabId,
+      requestId: first.requestId,
+      focusResult: 'notified',
+    })
+    expect(store.focusRequestStatus).toBe('waiting')
+    await store.handleMessage({
+      type: 'FOCUS_RESULT',
+      tabId: 'wrong-tab',
+      targetTabId: store.tabId,
+      requestId: second.requestId,
+      focusResult: 'notified',
+    })
+    expect(store.focusRequestStatus).toBe('waiting')
+    await store.handleMessage({
+      type: 'FOCUS_RESULT',
+      tabId: 'active-tab',
+      targetTabId: store.tabId,
+      requestId: second.requestId,
+      focusResult: 'notified',
+    })
+    expect(store.focusRequestStatus).toBe('notified')
+    jest.advanceTimersByTime(2000)
+    expect(store.focusRequestStatus).toBe('notified')
+  })
+
+  it('reports a suspended or unavailable tab after a bounded wait', () => {
+    const store = useTabCoordinatorStore()
+    store.requestTabFocus()
+    jest.advanceTimersByTime(1800)
+    expect(store.focusRequestStatus).toBe('unavailable')
+  })
+})

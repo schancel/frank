@@ -13,7 +13,9 @@
     "build:browser": "node browsercheck/build.js",
     "check:browser": "node --test browsercheck/check-chrome.test.cjs && node browsercheck/build.js && node browsercheck/check-vm.js && node browsercheck/check-chrome.js",
     "lint": "eslint . --ext .ts,.js",
-    "crosscheck": "python3 scripts/crosscheck.py"
+    "crosscheck": "python3 scripts/crosscheck.py",
+    "check:option-a-vectors": "node scripts/renumber-signed-vectors.cjs --check",
+    "update:option-a-vectors": "node scripts/renumber-signed-vectors.cjs"
   },
   "dependencies": {
     "@noble/curves": "1.9.1",

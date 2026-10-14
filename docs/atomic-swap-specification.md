@@ -670,12 +670,13 @@ Omitting it creates a simpler but strictly weaker no-refund experiment in which 
 lock both principals forever. It does not make the protocol more atomic. V1 therefore retains CLTV
 and treats its absence as a separately labelled test mode, never the default.
 
-**Two-party threshold ECDSA adaptor research.** A protocol that keeps the EVM private key shared even
-after settlement is desirable but is not supplied by ordinary threshold ECDSA or by the current
-single-key `@frank/adaptor-signatures` API. MuSig2 is not applicable because it is Schnorr. This mode
-remains an unimplemented research gate pending a named, malicious-secure two-party ECDSA adaptor
-protocol with dealerless key generation, distributed adaptor presigning/proofs, authenticated rounds,
-durable one-use preprocessing, abort security, and Ethereum low-`s`/recovery-parity vectors.
+**Two-party threshold ECDSA adaptor research.** `@frank/threshold-ecdsa` now implements experimental
+MIT Lindell dealerless two-party key generation, ordinary/adaptor signing, proof/session binding,
+completion and extraction. Packet A demonstrated exact native XEC ForkID and Monad type-2 acceptance
+on actual Bitcoin ABC and Monad solonet nodes. No full joint private key was reconstructed. The
+single-key `@frank/adaptor-signatures` API remains distinct. MuSig2 is Schnorr and is not substituted
+for native ECDSA. The repository primitives and their cross-chain composition are not externally
+reviewed; durable signing/recovery and malicious-secure financial composition remain separate gates.
 
 **Smart-account or escrow, recoverable mode.** A minimal contract enforces claim and refund branches
 and permits recovery-time fee policy. This requires contract support that the present wallet does
@@ -1228,11 +1229,12 @@ research demonstration.
 - Frank will specify the full chain-pair matrix but implement eCash testnet to Monad testnet first.
 - Native assets and one lane come before tokens, routing, bundles, or multiple users.
 - A plain pre-signed transaction from a counterparty-controlled EVM EOA is not atomic custody.
-- The initial joint EVM EOA uses conditional one-use key-share transfer: B's eCash claim reveals its
-  EVM share to A. It can demonstrate theft-safety but not B's unilateral timed refund and is
-  explicitly griefable.
+- Conditional one-use key-share transfer is the earlier griefable experiment, not the requested
+  recoverable threshold swap. The bounded StateChannel composition experiment below preserves
+  threshold/adaptor normal settlement and uses independent-key contract/script refunds.
 - Two-party signing that emits one ordinary EVM signature is 2-of-2 threshold ECDSA, not an on-chain
-  2-of-2 contract and not MuSig2; the current adaptor package is not a threshold-adaptor protocol.
+  2-of-2 contract and not MuSig2. The implemented threshold primitive does not itself supply an
+  atomic exchange, durable recovery or a security proof for the composition.
 - FROST-Ed25519 is the preferred joint-signing direction for ordinary Solana accounts.
 - BLS aggregation is not a native settlement mechanism for these chains.
 - Same-curve pairs avoid cross-curve proofs but still require chain-specific transaction adapters.
@@ -1255,3 +1257,70 @@ research demonstration.
 - [Solana partial signing and transaction lifetime](https://solana.com/docs/core/transactions/partial-signing)
 - [RFC 9591: FROST, including Ed25519](https://www.rfc-editor.org/rfc/rfc9591.html)
 - [Solana SIMD-0388 BLS12-381 proposal](https://github.com/solana-foundation/solana-improvement-documents/blob/main/proposals/0388-bls12-381-syscalls.md)
+
+
+## B0: experimental native XEC / StateChannel composition
+
+This owner-accepted packet is a bounded nonproduction construction proof, not a funded application
+runtime or a proved-secure swap. The general prohibition on shared adaptor secrets across multiple
+signatures above remains in force for production. **Only this experiment** evaluates the hypothesis
+of one fresh dealerless J and one responder-owned T used for exactly two predeclared sequential
+sessions, with different digests, session IDs and fresh ECDSA nonces. No cross-swap/key reuse or
+message-independent nonce preprocessing is permitted. Functional success is not cryptographic
+assurance; independent analysis and external cryptographic review remain required.
+
+A offers XEC and receives MON; B offers MON and receives XEC. A is J's Lindell initiator and B its
+responder/point-lock owner. The unmodified `StateChannel` holds native balances `[M,0]` for
+`[B_individual,J_address]`. J is always the zero-balance participant and never a refund recipient.
+The exact success close is sequence 1, balances `[M,0]`, payout0=A's independently owned address,
+payout1=zero. No intermediate checkpoint or join is authorized. The digest is
+`hashMessage(keccak256(abi.encode(channelId,1,[M,0],A_payout,zero,true,contract,nativeChainId)))`.
+The final 32-byte EIP-191 digest is passed directly to threshold signing without a second prefix.
+B's ordinary participant signature and J's adaptor presignature form the MON success package;
+a separate ordinary relayer signs the native calldata transaction and pays its gas.
+
+The XEC custody script is exactly
+`OP_IF <J_compressed> OP_CHECKSIG OP_ELSE <T_X> OP_CHECKLOCKTIMEVERIFY OP_DROP <A_refund_pubkey> OP_CHECKSIG OP_ENDIF`.
+Its P2SH success digest uses the complete redeemScript and spent amount under ForkID `0x41`.
+Success pays B's fixed independently owned destination. A's independent refund transaction uses
+`nLockTime=T_X`, sequence `0xfffffffe`, and the false selector. Neither refund depends on J.
+The construction fixture interprets both scripts; actual Bitcoin ABC MTP/off-by-one inclusion,
+funding malleability, fee envelope/CPFP and reorg proof are explicit B1 requirements.
+
+The MON package must be stored before XEC's completion capability can leave A. In the existing
+signer, A receives its adaptor result together with the final outgoing frame; persist the XEC
+presignature before delivering that frame to B. B0 withholds this exact frame, fsyncs public
+packages, reloads them, then releases it. After both sequential sessions finish, destroying both
+J handles does not revoke either already prepared package: an observed completed XEC signature
+reveals the committed scalar, which completes the stored MON authorization without future signing.
+This is a bounded file-fixture demonstration, not production share persistence, durable leases,
+crash recovery or financial journaling (Packet C).
+
+B independently starts a challenge and public `closeAfterChallenge` refunds `[M,0]` to B/J. The
+fallback can settle at opening timestamp plus challenge duration D if B challenges immediately.
+Cooperative close remains valid after expiry until fallback settles; CLTV likewise enables refund
+without expiring XEC success. The pure policy therefore requires strictly
+`openingTimestamp + D > XEC_refund_final_bound + EVM_claim_response_margin + cross_clock_margin`.
+The XEC bound includes MTP lag, watcher downtime, inclusion and accepted reorg/finality depth.
+B's honest reveal cutoff precedes XEC refund maturity by its claim inclusion/finality margin.
+Validate these margins again before release; a UI cutoff does not constrain a malicious B.
+
+The negative control deliberately violates that inequality: B first refunds MON, then completes a
+still-valid XEC signature while A's refund is not final. The reducer reports loss; actual Anvil
+execution proves refund blocks later cooperative close while XEC script interpretation still
+accepts the success signature. A secret observed in mempool remains known after replacement or a
+reorg; observed settlement finality can roll back within the declared depth and exceeding it is
+an envelope violation. Secret knowledge, final claim and wallet spend application are distinct.
+
+`packages/swap-protocol/src/state-channel-pair.ts` owns this pure experimental admission/reducer;
+it imports no provider, wallet, transport, application or feature implementation. The registry
+boundary supplies verified canonical chain/checkpoint/runtime identity. Local observer facts, not
+peer assertions, feed chain state. Exact signed packages are bound to terms/J/T and distinct
+sessions/digests; absent signatures/presignatures, interrupted or burned preparation, stale
+observations, inadequate fees or missing independent refund authority deny release.
+
+`packages/contracts/test/adaptor-swap-composition.jest.test.ts` executes real checked-in StateChannel
+bytecode on its own disposable Anvil process (native test chain ID 31337). Anvil is a generic EVM
+contract fixture, not evidence of Monad consensus. Actual Monad native acceptance is Packet A.
+No shared solonet/public deployment, custody inventory, wallet journal, plugin runtime, wire ID or
+UI is changed. Public testnet timing/fee policies, B1 two-chain recovery and Packets C–E remain gated.

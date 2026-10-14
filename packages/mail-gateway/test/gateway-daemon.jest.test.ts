@@ -66,6 +66,33 @@ describe('mail gateway executable lifecycle', () => {
     ]);
   });
 
+  it('reports optional challenge failure without gating ingress or later financial recovery', async () => {
+    jest.useFakeTimers();
+    const diagnostic = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const sendPendingHeldAutoReplies = jest.fn(async () => { throw new Error('Held auto-reply failures: 1'); });
+    hostCreate.mockReturnValue({
+      inbound: { sendPendingHeldAutoReplies },
+      runtime: { runOnce: poll }, webhook: { start: webhookStart, setReady: webhookSetReady }, close: hostClose,
+    } as unknown as ReturnType<typeof createJournaledMailHost>);
+    let service: Awaited<ReturnType<typeof startMailGateway>> | undefined;
+    try {
+      service = await startMailGateway(config);
+      expect(webhookStart).toHaveBeenCalledTimes(1);
+      expect(sendPendingHeldAutoReplies).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(config.pollIntervalMs);
+      expect(sendPendingHeldAutoReplies).toHaveBeenCalledTimes(1);
+      expect(poll).toHaveBeenCalledTimes(2);
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('Held auto-reply dispatch has unresolved failures'));
+      expect(webhookSetReady).not.toHaveBeenCalledWith(false);
+      await jest.advanceTimersByTimeAsync(config.pollIntervalMs);
+      expect(poll).toHaveBeenCalledTimes(3);
+    } finally {
+      await service?.close();
+      diagnostic.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it('refuses a failed recovery pass and closes every opened owner without listening', async () => {
     poll.mockRejectedValueOnce(new Error('recovery failed'));
     await expect(startMailGateway(config)).rejects.toThrow('recovery failed');

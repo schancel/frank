@@ -9,6 +9,7 @@ import { JournaledInboundSend } from '../src/relay/journaled-inbound-send';
 import { LocalFsBlobStore } from '../src/storage/local-fs-blob-store';
 import { parseRawRfc822 } from '../src/smtp/smtp-listener';
 import { mailKey } from '../src/rfc/mail-keys';
+import { HeldEmailAutoResponder } from '../src/mta/held-email-auto-responder';
 
 const GATEWAY = `0x${'9'.repeat(40)}`;
 const RECIPIENT = `0x${'a'.repeat(40)}`;
@@ -102,6 +103,28 @@ describe('journal-backed inbound Frank send', () => {
       1000n
     );
   }
+
+  it('keeps an uncertain optional challenge separate from held financial release after restart', async () => {
+    const submit = jest.fn(async () => { throw new Error('SMTP acceptance unknown'); });
+    const options = {
+      journal, port: { submit }, gatewayDomain: 'gw.example',
+      onboardingSecret: Buffer.alloc(32, 3), dbPath: path.join(dir, 'challenges.sqlite3'),
+    };
+    const responder = new HeldEmailAutoResponder(options);
+    let sender = new JournaledInboundSend({ chain, wallet, ledger, journal, heldAutoResponder: responder });
+    expect(admit(sender)).toEqual({ kind: 'held' });
+    await expect(sender.sendPendingHeldAutoReplies()).rejects.toThrow('Held auto-reply failures: 1');
+    responder.close();
+    const reopened = new HeldEmailAutoResponder(options);
+    try {
+      sender = new JournaledInboundSend({ chain, wallet, ledger, journal, heldAutoResponder: reopened });
+      await expect(sender.releaseHeld()).resolves.toMatchObject({ released: 0, errors: [] });
+      await expect(sender.sendPendingHeldAutoReplies()).rejects.toThrow('Held auto-reply failures: 1');
+      expect(submit).toHaveBeenCalledTimes(1);
+      expect(journal.listHeldInboundEmails()).toHaveLength(1);
+      expect(sendCalls).toHaveLength(0);
+    } finally { reopened.close(); }
+  });
 
   it('carries an issued mailbox conversation through the durable send slot', () => {
     const conversationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';

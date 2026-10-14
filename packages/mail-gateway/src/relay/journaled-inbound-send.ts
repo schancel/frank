@@ -30,7 +30,7 @@ export interface JournaledInboundSendOptions {
   readonly blobStore?: BlobStore;
   readonly heldAutoResponder?: Pick<
     HeldEmailAutoResponder,
-    'processHeldEmail' | 'processHeldEmails'
+    'processHeldEmails'
   >;
 }
 
@@ -51,7 +51,7 @@ export class JournaledInboundSend {
   private readonly blobStore?: BlobStore;
   private readonly heldAutoResponder?: Pick<
     HeldEmailAutoResponder,
-    'processHeldEmail' | 'processHeldEmails'
+    'processHeldEmails'
   >;
 
   constructor(options: JournaledInboundSendOptions) {
@@ -325,8 +325,7 @@ export class JournaledInboundSend {
         });
         if (result?.created) {
           released += 1;
-        } else if (this.heldAutoResponder) {
-          await this.heldAutoResponder.processHeldEmail(email);
+
         }
       } catch (error) {
         errors.push({

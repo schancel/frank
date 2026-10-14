@@ -475,7 +475,7 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
           // 2. Verify auto-reply was dispatched via outboundPort
           expect(sentAutoReplies).toHaveLength(1);
           const autoReply = sentAutoReplies[0]!;
-          expect(autoReply.fromAddress).toBe('');
+          expect(autoReply.fromAddress).toBe('postmaster@signet.mx');
           expect(autoReply.recipientEmail).toBe('preciouseffiang@gmail.com');
           const rawAutoReply = Buffer.from(autoReply.signedRfc822).toString('utf8');
           expect(rawAutoReply).toContain(

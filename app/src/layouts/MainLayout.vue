@@ -145,6 +145,10 @@ export default defineComponent({
     })
   },
   mounted() {
+    if (typeof window !== 'undefined') {
+      this.onWindowScroll()
+      window.addEventListener('scroll', this.onWindowScroll, { passive: true })
+    }
     try {
       const saved = localStorage.getItem('frank:sidebar-width')
       if (saved) {
@@ -160,6 +164,9 @@ export default defineComponent({
   },
   beforeUnmount() {
     this.disposed = true
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('scroll', this.onWindowScroll)
+    }
     this.setBackgroundInert(false)
     this.removeAfterEach?.()
     this.removeOnError?.()
@@ -344,6 +351,14 @@ export default defineComponent({
     onDrawerResizing(val: boolean) {
       this.isDragging = val
     },
+    onWindowScroll() {
+      if (
+        typeof window !== 'undefined' &&
+        (window.scrollY !== 0 || window.scrollX !== 0)
+      ) {
+        window.scrollTo(0, 0)
+      }
+    },
   },
   computed: {
     screenWidth(): number {
@@ -392,6 +407,7 @@ export default defineComponent({
 .q-layout {
   height: 100vh;
   height: 100dvh;
+  min-height: 0 !important;
   max-height: 100vh;
   max-height: 100dvh;
   overflow: hidden;

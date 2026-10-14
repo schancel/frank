@@ -101,10 +101,10 @@ export async function handleBlindPushWakeup(
       includeUncontrolled: true,
     })) ?? []
 
-  let anyVisibleOrFocused = false
+  let anyFocused = false
   for (const client of clients) {
-    if (client.focused || client.visibilityState === 'visible') {
-      anyVisibleOrFocused = true
+    if (client.focused) {
+      anyFocused = true
     }
     client.postMessage({
       type: BLIND_WAKEUP_MESSAGE_TYPE,
@@ -113,7 +113,7 @@ export async function handleBlindPushWakeup(
     })
   }
 
-  if (anyVisibleOrFocused) {
+  if (anyFocused) {
     return { syncedClients: clients.length, showedNotification: false }
   }
 
@@ -209,4 +209,3 @@ export function registerBlindWakeupServiceWorkerListeners(
 }
 
 registerBlindWakeupServiceWorkerListeners()
-

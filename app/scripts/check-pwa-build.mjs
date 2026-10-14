@@ -14,6 +14,15 @@ for (const size of ['192x192', '512x512']) {
   const icon = manifest.icons.find(icon => icon.sizes === size)
   assert(icon && existsSync(new URL(icon.src, output)), `Missing ${size} icon`)
 }
+const indexHtml = readFileSync(new URL('index.html', output), 'utf8')
+assert(
+  indexHtml.includes('rel="manifest"') && indexHtml.includes('manifest.json'),
+  'Built index.html must link manifest.json',
+)
+assert(
+  !indexHtml.includes('name="theme-color"'),
+  'Built index.html must not include <meta name="theme-color"> (prevents Safari 26 floating toolbar overlay shift)',
+)
 let precache = []
 const routes = []
 const importedScripts = []

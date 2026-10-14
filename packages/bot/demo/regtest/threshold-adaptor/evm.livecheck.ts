@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { JsonRpcProvider, Wallet, Signature, Transaction } from 'ethers'
@@ -16,6 +16,9 @@ async function main() {
     !/^0x[0-9a-fA-F]{64}$/.test(hash ?? '')
   )
     throw new Error('operator checkpoint required')
+  const lockPath = join(tmpdir(), 'frank-adaptor-monad-20143-faucet.lock')
+  // Existing locks are never removed: only this run's successful acquisition is released.
+  mkdirSync(lockPath, { mode: 0o700 })
   const provider = new JsonRpcProvider(url)
   try {
     if (
@@ -30,24 +33,82 @@ async function main() {
       '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
       provider
     )
+    if (
+      faucet.address !== '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266' ||
+      (await provider.getCode(faucet.address)) !== '0x'
+    )
+      throw new Error('unexpected local genesis faucet')
+    const faucetBalance = await provider.getBalance(faucet.address)
+    const fee = await provider.getFeeData()
+    if (
+      fee.maxFeePerGas === null ||
+      fee.maxPriorityFeePerGas === null ||
+      fee.maxFeePerGas > 1000000000000n
+    )
+      throw new Error('missing or excessive local fee quote')
+    const value = 1n
+    const fundingValue = value + 21000n * fee.maxFeePerGas
+    if (fundingValue > 3n * 10n ** 16n || faucetBalance < 1000n * fundingValue)
+      throw new Error('local faucet funding bound exceeded')
     const joint = freshJointKey(),
       recipient = Wallet.createRandom().address
+    if (
+      (await provider.getBalance(joint.address)) !== 0n ||
+      (await provider.getTransactionCount(joint.address)) !== 0 ||
+      (await provider.getCode(joint.address)) !== '0x' ||
+      (await provider.getBalance(recipient)) !== 0n
+    )
+      throw new Error('proof accounts are not fresh')
+    const faucetNonce = await provider.getTransactionCount(
+      faucet.address,
+      'pending'
+    )
+    for (let i = 0; i < 3; i++) {
+      if (
+        Number(
+          await provider.send('eth_getTransactionCount', [
+            faucet.address,
+            'latest',
+          ])
+        ) !== faucetNonce ||
+        Number(
+          await provider.send('eth_getTransactionCount', [
+            faucet.address,
+            'pending',
+          ])
+        ) !== faucetNonce
+      )
+        throw new Error('faucet nonce is busy')
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    if ((await provider.getBlock(height))?.hash !== hash)
+      throw new Error('checkpoint changed before funding')
     const funding = await faucet.sendTransaction({
       to: joint.address,
-      value: 10n ** 19n,
+      value: fundingValue,
+      nonce: faucetNonce,
+      gasLimit: 21000n,
+      maxFeePerGas: fee.maxFeePerGas,
+      maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
     })
-    if (!(await funding.wait())?.status) throw new Error('funding failed')
+    // Monad admits newly funded balances after several blocks; never offer signed bytes early.
+    const fundingReceipt = await funding.wait(6, 120000)
+    if (
+      !fundingReceipt?.status ||
+      (await provider.getBalance(joint.address, fundingReceipt.blockNumber)) !==
+        fundingValue
+    )
+      throw new Error('funding failed')
     const before = await provider.getBalance(recipient)
-    const fee = await provider.getFeeData()
     const built = buildEvmAdaptorTransfer({
       chainIdentifier: 'monad-regtest',
       chainId: 20143n,
       nonce: 0,
       to: recipient,
-      value: 10n ** 15n,
+      value,
       gasLimit: 21000n,
-      maxFeePerGas: fee.maxFeePerGas ?? 100000000000n,
-      maxPriorityFeePerGas: fee.maxPriorityFeePerGas ?? 0n,
+      maxFeePerGas: fee.maxFeePerGas,
+      maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
     })
     const signed = joint.sign(
       built.digest,
@@ -79,7 +140,7 @@ async function main() {
     }
     if (!duplicateRpcFailed && duplicate !== submitted.hash)
       throw new Error('duplicate transaction identity changed')
-    const receipt = await submitted.wait(2)
+    const receipt = await submitted.wait(2, 120000)
     if (
       !receipt ||
       receipt.status !== 1 ||
@@ -141,6 +202,14 @@ async function main() {
       JSON.stringify(
         {
           chainIdentifier: 'monad-regtest',
+          faucet: {
+            address: faucet.address,
+            nonce: faucetNonce,
+            balanceBeforeWei: faucetBalance.toString(),
+            fundingWei: fundingValue.toString(),
+            fundingTxid: funding.hash,
+            fundingReceipt: fundingReceipt.toJSON(),
+          },
           version,
           checkpoint: { height, hash },
           digest: hex(built.digest),
@@ -160,6 +229,7 @@ async function main() {
     console.log(`PASS MON native acceptance: ${stateDir}/evidence.json`)
   } finally {
     provider.destroy()
+    rmdirSync(lockPath)
   }
 }
 void main().catch((error) => {

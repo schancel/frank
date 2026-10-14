@@ -1,4 +1,8 @@
-const esModules = ['quasar/lang', 'lodash-es'].join('|')
+const esModules = [
+  'quasar/lang',
+  'lodash-es',
+  '@quasar/app-vite/exports/wrappers\\.js$',
+].join('|')
 
 /* eslint-env node */
 module.exports = {

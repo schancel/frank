@@ -1,4 +1,4 @@
-import { boot } from 'quasar/wrappers'
+import { defineBoot as boot } from '@quasar/app-vite'
 import { createPinia } from 'pinia'
 import { nextTick } from 'vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars

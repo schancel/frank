@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { boot } from 'quasar/wrappers'
+import { defineBoot as boot } from '@quasar/app-vite'
 
 axios.defaults.headers.common['ngrok-skip-browser-warning'] = '1'
 

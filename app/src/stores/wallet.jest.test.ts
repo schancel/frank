@@ -3,7 +3,6 @@ import { createPinia } from 'pinia'
 import { createStoragePlugin } from '../boot/pinia'
 import { useWalletStore } from './wallet'
 import { legacyStatus, assertLegacyUnchanged } from '../accounts/legacy'
-jest.mock('quasar/wrappers', () => ({ boot: (value: unknown) => value }))
 const PHRASE = 'test test test test test test test test test test test junk'
 test('real persistence plugin quarantines the exact legacy blob without hydrating or rewriting it', async () => {
   let raw = JSON.stringify({

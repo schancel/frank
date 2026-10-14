@@ -1,5 +1,5 @@
 import { messages, defaultLocale } from 'src/i18n'
-import { boot } from 'quasar/wrappers'
+import { defineBoot as boot } from '@quasar/app-vite'
 import { createI18n } from 'vue-i18n'
 // you'll need to create the src/i18n/index.js file too
 

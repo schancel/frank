@@ -106,7 +106,6 @@ jest.mock(
       return db
     },
 )
-jest.mock('quasar/wrappers', () => ({ boot: (callback: unknown) => callback }))
 const mockInitialize = jest.fn(async () => undefined)
 jest.mock('./accounts/session', () => ({
   accountStatus: { status: 'fresh' },

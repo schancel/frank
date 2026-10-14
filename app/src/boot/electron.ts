@@ -1,4 +1,4 @@
-import { boot } from 'quasar/wrappers'
+import { defineBoot as boot } from '@quasar/app-vite'
 
 export default boot(({ app }) => {
   app.config.globalProperties.updateBadge = (unread: number) => {

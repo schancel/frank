@@ -86,3 +86,16 @@ repository target rule.
 Requested lane: strong, tier 3. Actual execution: inherited session model
 (no strong-lane TOML present); no claim of a named model override. Protocol and
 security review and owner choice disposition remain outstanding at handoff.
+
+### Reviewed Option A source-hash refresh
+
+The Option A CBOR stack refreshes only the frozen SHA-256 metadata for
+`packages/wallet/monad-identity.ts` and
+`packages/wallet/monad-wallet-material.ts`. The reviewed source changes use
+directory statement type 1 in place of type 4 (including the identity reader's
+type comparison); they do not alter key derivation. The emitted corpus excluding
+`frozen_sha256` is exactly equal to the historical corpus: every account root,
+key, address, path, transcript, policy case, unsigned proposed frame, and T1
+remains byte-identical. This metadata refresh records the current non-derivation
+wire baseline. It preserves the historical proposal/capture provenance and
+makes no claim of a fresh runtime, network, or browser proof.

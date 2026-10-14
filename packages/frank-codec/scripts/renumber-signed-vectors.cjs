@@ -18,15 +18,16 @@ mod._compile(bundled.outputFiles[0].text, __filename)
 const c = mod.exports
 const { secp256k1 } = require('@noble/curves/secp256k1.js')
 const { createHash } = require('node:crypto')
-const source = 'ff76bc65'
-const read = name =>
-  JSON.parse(
-    execFileSync(
-      'git',
-      ['show', `${source}:docs/protocol/cbor/vectors/${name}.json`],
-      { cwd: root, maxBuffer: 10 * 1024 * 1024 },
-    ).toString(),
-  )
+const inputs = JSON.parse(
+  fs.readFileSync(
+    path.join(
+      root,
+      'packages/frank-codec/fixtures/option-a-signed-inputs.json',
+    ),
+    'utf8',
+  ),
+)
+const read = name => structuredClone(inputs.corpora[name])
 const write = (name, value) => {
   const file = path.join(root, `docs/protocol/cbor/vectors/${name}.json`)
   const text = JSON.stringify(value, null, 2) + '\n'
@@ -554,3 +555,138 @@ delete final.aead_tamper_sha256
 browser.source =
   'Option A offline synthetic regeneration of the captured distinct-party fixture; no fresh Chrome claim'
 write('dm-runtime', runtime)
+// Admission expectations describe retained exact bytes, including conflict evidence charges.
+const admission = read('directory-admission'),
+  oldProposal = read('suite1-directory')
+const hashChanges = new Map(
+  oldProposal.records.map(old => [
+    old.t1,
+    proposal.records.find(row => row.id === old.id).t1,
+  ]),
+)
+function replaceHashes(value) {
+  if (typeof value === 'string') return hashChanges.get(value) || value
+  if (Array.isArray(value)) return value.map(replaceHashes)
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, replaceHashes(v)]),
+    )
+  return value
+}
+const convertedAdmission = replaceHashes(admission)
+convertedAdmission.source.sha256 = c.toHex(
+  sha(Buffer.from(JSON.stringify(proposal, null, 2) + '\n')),
+)
+for (const row of convertedAdmission.cases) {
+  const expected = row.expected
+  if (expected.charged_bytes !== undefined)
+    expected.charged_bytes = [
+      ...new Set([...(expected.history || []), ...(expected.proof || [])]),
+    ].reduce((sum, id) => {
+      const r = proposal.records.find(x => x.id === id)
+      return sum + (r.type4_hex.length + r.type2_hex.length) / 2
+    }, 0)
+}
+write('directory-admission', convertedAdmission)
+// Native HTTP regression requests carry the same captured payload inside multipart framing.
+const nativePath = path.join(
+  root,
+  'backend/cashweb/cashweb-registry/src/http/monad_message_cbor_tests.rs',
+)
+
+const originalFinal = read('dm-runtime').canonical_facade_final_http_case.wire
+function nativeFrame(bytes) {
+  if (c.toHex(bytes) === originalFinal.payload) return c.fromHex(fw.payload)
+  const env = envelope(bytes),
+    oldType = Number(env.get(0n)),
+    p = payload(bytes)
+  if (oldType === 5) {
+    const oldBox = payload(c.fromHex(originalFinal.payload)).get(4n),
+      thisBox = p.get(4n)
+    if (
+      thisBox.length === oldBox.length &&
+      Buffer.from(thisBox.slice(0, -1)).equals(Buffer.from(oldBox.slice(0, -1)))
+    ) {
+      const fresh = payload(c.fromHex(fw.payload)),
+        box = fresh.get(4n)
+      box[box.length - 1] ^=
+        thisBox[thisBox.length - 1] ^ oldBox[oldBox.length - 1]
+      fresh.set(4n, box)
+      return c.encodeFrame(
+        { typeId: 11, schemaVersion: 2, minReaderVersion: 2 },
+        fresh,
+      )
+    }
+  }
+  const walk = v =>
+    v instanceof Uint8Array && Buffer.from(v.slice(0, 4)).toString() === 'FRNK'
+      ? nativeFrame(v)
+      : Array.isArray(v)
+      ? v.map(walk)
+      : v instanceof Map
+      ? new Map([...v].map(([k, x]) => [k, walk(x)]))
+      : v
+  const converted = walk(p)
+  if (oldType === 1) {
+    const digest = c.recipientPayloadDigest(
+      converted.get(0n),
+      converted.get(2n),
+    )
+    converted.set(3n, digest)
+    converted
+      .get(4n)
+      .forEach((payment, i) => payment.set(4n, c.paymentCommitment(digest, i)))
+  }
+  return c.encodeFrame(
+    {
+      typeId: typeMap[oldType] || oldType,
+      schemaVersion: Number(env.get(1n)),
+      minReaderVersion: Number(env.get(2n)),
+    },
+    converted,
+  )
+}
+let native = fs.readFileSync(nativePath, 'utf8')
+for (const [name, originalBody] of Object.entries(inputs.native_http_bodies)) {
+  const body = Buffer.from(originalBody, 'hex'),
+    boundary = body.subarray(0, body.indexOf('\r\n')),
+    parts = []
+  let offset = 0
+  while (offset < body.length) {
+    const headerEnd = body.indexOf('\r\n\r\n', offset)
+    if (headerEnd < 0) {
+      parts.push(body.subarray(offset))
+      break
+    }
+    const end = body.indexOf(
+      Buffer.concat([Buffer.from('\r\n'), boundary]),
+      headerEnd + 4,
+    )
+    if (end < 0) throw Error('native fixture multipart delimiter')
+    const headers = body.subarray(offset, headerEnd + 4),
+      data = body.subarray(headerEnd + 4, end)
+    let converted = data
+    if (headers.includes('name="delivery"'))
+      converted = Buffer.from(nativeFrame(data))
+    else if (headers.includes('name="context"')) {
+      if (data.toString('hex') === originalFinal.context)
+        converted = Buffer.from(c.fromHex(fw.context))
+      else {
+        const context = c.decodeCanonical(data)
+        context.set(13n, 11n)
+        converted = Buffer.from(c.encodeCanonical(context))
+      }
+    }
+    parts.push(headers, converted)
+    offset = end
+  }
+  const hex = Buffer.concat(parts).toString('hex')
+  native = native.replace(
+    new RegExp(`const ${name}: &str = "[0-9a-f]+";`),
+    `const ${name}: &str = "${hex}";`,
+  )
+}
+if (process.argv.includes('--check')) {
+  if (fs.readFileSync(nativePath, 'utf8') !== native)
+    throw Error('native HTTP fixtures: regenerate')
+} else fs.writeFileSync(nativePath, native)

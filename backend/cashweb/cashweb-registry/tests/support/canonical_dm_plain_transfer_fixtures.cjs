@@ -46,7 +46,7 @@ const deliveryFields = delivery => {
   return new Map(frame.payload)
 }
 const encodeDelivery = fields =>
-  codec.encodeFrame({ typeId: 1, schemaVersion: 1, minReaderVersion: 1 }, fields)
+  codec.encodeFrame({ typeId: 10, schemaVersion: 1, minReaderVersion: 1 }, fields)
 
 async function plainTransfers(bodyHex, contentType) {
   const request = transport.restoreCanonicalRequest({ body: codec.fromHex(bodyHex), contentType })
@@ -89,7 +89,7 @@ function replayOf(request) {
   const box = Uint8Array.from(inner.get(4n))
   box[box.length - 1] ^= 1
   inner.set(4n, box)
-  const payload = codec.encodeFrame({ typeId: 5, schemaVersion: 2, minReaderVersion: 2 }, inner)
+  const payload = codec.encodeFrame({ typeId: 11, schemaVersion: 2, minReaderVersion: 2 }, inner)
   const digest = codec.recipientPayloadDigest(fields.get(0n), payload)
   fields.set(2n, payload)
   fields.set(3n, digest)

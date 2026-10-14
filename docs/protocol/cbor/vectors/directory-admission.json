@@ -2,7 +2,7 @@
   "format": "directory-admission-v1",
   "source": {
     "path": "docs/protocol/proposals/suite1-directory/vectors.json",
-    "sha256": "9f56fecba54132aea5ae119512a4fa45911a3efb92258ed101f59254daa97280"
+    "sha256": "229d8c0f31552195f8735a3f51324b4fa093f61a2a642a6ed759b3813d0f182d"
   },
   "network": "monad-testnet",
   "subject": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -17,7 +17,7 @@
       "candidates": [
         "bootstrap"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -29,7 +29,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -57,7 +57,7 @@
       "candidates": [
         "renew"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -70,7 +70,7 @@
         ],
         "proof": [],
         "head": "renew",
-        "head_hash": "17ecacd5fa78ca637b7e6e2fe7bf217c2707a2469c8a94468eab18045c15de4b",
+        "head_hash": "d47c9feea73036935d878b36b8a935b0f2588ce8bf4095c5ea9a8e5ff4d44dbd",
         "revision": "1",
         "generations": [
           "0",
@@ -99,7 +99,7 @@
       "candidates": [
         "rotate-stamp"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -113,7 +113,7 @@
         ],
         "proof": [],
         "head": "rotate-stamp",
-        "head_hash": "ef5fc370ba7f7a47063e185e7c00ba1658c2b1da5971ccbb94d23c7bb97e46b7",
+        "head_hash": "3e292df99ff5bdbab3a5cebb8e7143c7d2c22680a9994011a58b40270fc97dc0",
         "revision": "2",
         "generations": [
           "0",
@@ -124,7 +124,7 @@
         "previous_stamp": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
         "accepted": 3,
         "retained": 3,
-        "charged_bytes": 2284,
+        "charged_bytes": 2285,
         "forked": false,
         "checked_time": [
           "1700000100",
@@ -143,7 +143,7 @@
       "candidates": [
         "renew-after-rotation"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -158,7 +158,7 @@
         ],
         "proof": [],
         "head": "renew-after-rotation",
-        "head_hash": "2c8a2121a75c57ec30b70d9410c73f36929c6f0c4de8b52bac4b7c9e80e49b71",
+        "head_hash": "920eb55cc139d8cfd3e014c0fdf55130a68ad066e255b4e600a0edebbc17dae2",
         "revision": "3",
         "generations": [
           "0",
@@ -169,7 +169,7 @@
         "previous_stamp": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
         "accepted": 4,
         "retained": 4,
-        "charged_bytes": 3068,
+        "charged_bytes": 3069,
         "forked": false,
         "checked_time": [
           "1700000100",
@@ -189,7 +189,7 @@
       "candidates": [
         "rotate-stamp-again"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -205,7 +205,7 @@
         ],
         "proof": [],
         "head": "rotate-stamp-again",
-        "head_hash": "0c8114f815dc70f35153c7bd12e0bcd8d7f6353a44770522bd1e88c905c8c486",
+        "head_hash": "ca92bf9f0767804a74b1eab10b3ff8a1d2e60128ff2559e44047cdb71b943b84",
         "revision": "4",
         "generations": [
           "0",
@@ -216,7 +216,7 @@
         "previous_stamp": "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
         "accepted": 5,
         "retained": 5,
-        "charged_bytes": 3851,
+        "charged_bytes": 3852,
         "forked": false,
         "checked_time": [
           "1700000100",
@@ -237,7 +237,7 @@
       "candidates": [
         "rotate-message"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -254,7 +254,7 @@
         ],
         "proof": [],
         "head": "rotate-message",
-        "head_hash": "8bb5c60d1029bab3275a596e01d129a2df453112bcf438bcc98b7aa42b3d0ee0",
+        "head_hash": "61e82446234ff899d6335bd13afdad8dc319e6b56e7ef4e7c240d0995966ef0c",
         "revision": "5",
         "generations": [
           "1",
@@ -284,7 +284,7 @@
       "candidates": [
         "rotate-stamp"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -298,7 +298,7 @@
         ],
         "proof": [],
         "head": "rotate-stamp",
-        "head_hash": "ef5fc370ba7f7a47063e185e7c00ba1658c2b1da5971ccbb94d23c7bb97e46b7",
+        "head_hash": "3e292df99ff5bdbab3a5cebb8e7143c7d2c22680a9994011a58b40270fc97dc0",
         "revision": "2",
         "generations": [
           "0",
@@ -309,7 +309,7 @@
         "previous_stamp": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
         "accepted": 3,
         "retained": 3,
-        "charged_bytes": 2284,
+        "charged_bytes": 2285,
         "forked": false,
         "checked_time": [
           "1700000100",
@@ -324,7 +324,7 @@
       "candidates": [
         "missing-message"
       ],
-      "anchor": "d0edc639141046d192427435779ca624daebd43df80754549c8dc5a133cbaeb0",
+      "anchor": "a6178eeb6424c5cc77195f46a624e8cc723598a684d1e7c63f966655320951f6",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -354,7 +354,7 @@
       "candidates": [
         "missing-stamp"
       ],
-      "anchor": "046a019e49e74f037f4ed3ed03c844001631bc88bd08c8ced06323916ea771e6",
+      "anchor": "811ac3873b10272d66f999ee9cfd024cd9920724db51143f0f47b4454e528285",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -384,7 +384,7 @@
       "candidates": [
         "missing-auth"
       ],
-      "anchor": "aa1a7baf325bb0b4033747b2933f58bf1838f31692031dd40a5a62c6bbfbaf81",
+      "anchor": "56f588b43ac293b25760483b27480b22044703d79b5696093d7472f9a70729e0",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -414,7 +414,7 @@
       "candidates": [
         "auth-as-message"
       ],
-      "anchor": "5feea47ba1af2be7d7ab4664b5a7d44cfe29c2810c922517d4acf514a5782947",
+      "anchor": "6ac630292ae8a6f6fb5a4b1a4ef7f4fbb33c235d25e0bef2e16f8b523a4f63fc",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -444,7 +444,7 @@
       "candidates": [
         "auth-as-stamp"
       ],
-      "anchor": "7c01712230d24e09c861a696c87bcc6cdb138e4ec66ba0223bf9479c9811ba21",
+      "anchor": "1e636c3cedda55db18f78c95acf8cbb53472f893546fe438fc763969d01f964f",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -474,7 +474,7 @@
       "candidates": [
         "stamp-as-message"
       ],
-      "anchor": "ef2cf878ad6cf26c36705fb17e5a7fd537bb55cb7f17c8ece6c081d2cc49cf44",
+      "anchor": "b935bb5072c403f1e8e744fe473527383c9aa09d4ef147d8e239849064b6de04",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -504,7 +504,7 @@
       "candidates": [
         "negated-auth-as-message"
       ],
-      "anchor": "17298bd45b0a3c233306e3d574fb6670025ab50925614cff3453702d94ef3ac8",
+      "anchor": "85a9be8a2ea56a619e9e7a6c96509c19f08c4b639d4c0ccf928bc3a702e7144f",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -534,7 +534,7 @@
       "candidates": [
         "wrong-key-type"
       ],
-      "anchor": "cf0209bc5895b0905f17c99f6f1ff027cd44f62bc9ece1634ef3743700b4738a",
+      "anchor": "86b47201d631f733ddd59bff6f3e1c0bf962b259fbeed79ea079665aa1436ffe",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -564,7 +564,7 @@
       "candidates": [
         "invalid-point"
       ],
-      "anchor": "aaa90637f3d4d471e6217c1125bb4ce798c364aaddd0e20a6838368fc94773c4",
+      "anchor": "5ea170b37b572ac123ae5fd38767677c75e7ccb7851330ba6a36cb4c6c0e7d15",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -594,7 +594,7 @@
       "candidates": [
         "wrong-network"
       ],
-      "anchor": "06184b7894b2e283b42c1bf841a7962ec558388a8808eb77ecdfadc9a7064dfa",
+      "anchor": "ffca8d5713c3ab0649cbee1cd87cae57f0d82386741c9fe24868d6f50cc98536",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -624,7 +624,7 @@
       "candidates": [
         "bootstrap-generation"
       ],
-      "anchor": "d56e79b44f180f423e095849d2d4909c40913af7362242b469395d804ed34d96",
+      "anchor": "ec3788bcb6e3109fb2ae126b73d54ef8a3c5688040a101c96944404c49c900ea",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -654,7 +654,7 @@
       "candidates": [
         "bootstrap-revision"
       ],
-      "anchor": "4f4c174e46e59999ea586bb13b6c99f38cfa6b546766329c27312a77ceb3eeec",
+      "anchor": "48ad97717f6792bed8b331e65044438417cd711ee6f69c06319ad2baa990f63e",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -684,7 +684,7 @@
       "candidates": [
         "bootstrap-predecessor"
       ],
-      "anchor": "9252d96fd82d32206e31ced6d5e3c8af28f10e62189c84f6fa6f6e45bbbdd97e",
+      "anchor": "2758b103156b183154bb48beb7b98988b7fa2fbd1d31d322f99d517c0383fb87",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -714,7 +714,7 @@
       "candidates": [
         "future-issue"
       ],
-      "anchor": "99e7e3d771f52961dbdd1717e8e0d1757a7be11105d55d0ac6c003746184d7d0",
+      "anchor": "557e28a94a4909e127fc02dd2e6040afff2651eb48b6c05a0d285e95fe3da2bb",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -744,7 +744,7 @@
       "candidates": [
         "expired"
       ],
-      "anchor": "8773ef1ffaf71a984f2ec1573ec5464ba22005a8b14acc6c8de5a8e43daeb63d",
+      "anchor": "89246f2f824e1c8c0ddb7c7314935c43804e4187c41b4a7af1e452e37f8ea1cc",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -774,7 +774,7 @@
       "candidates": [
         "long-validity"
       ],
-      "anchor": "cfcd7ca8d0743b21fb23ff1c047eb67bf186efcf4c34b2c2f14a23a8813984ac",
+      "anchor": "a53e768e8a50dd7b631975923e11517747336251df1dca1c8566def5179e106b",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -804,7 +804,7 @@
       "candidates": [
         "short-binding"
       ],
-      "anchor": "da13de833202165e8f19569566959943d7ca3786623e0731f4bdb3f35ae90678",
+      "anchor": "4e5ee2ba00e8ee46a0186b50a218266d4655994e2bd1425368a3846ea162879f",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -834,7 +834,7 @@
       "candidates": [
         "wrong-relay"
       ],
-      "anchor": "563b5e2ec78ec400c67a254c34769b3be532c10ce647efe272ab741980696120",
+      "anchor": "24d518a9d0d8616d3aca68544518d383bb9a65f704cf6bcfc54700624cded3ca",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -864,7 +864,7 @@
       "candidates": [
         "profile-field"
       ],
-      "anchor": "c095e2751c98503522714001793f4e2d2da2d136cdc50d9ce13d3db258c714f1",
+      "anchor": "598bcfd40c55e5fe5533b5844359dbc6937d7051095a465c838ac0cd0d0a49d3",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -894,7 +894,7 @@
       "candidates": [
         "transition-field"
       ],
-      "anchor": "98758156fa4a95e2c7a74f3ecec5d35c4345fde4bfe40259832f41f0374eb8da",
+      "anchor": "183d264142bca5e95c7f599b096cdc81848afde51770171d361a6c41c0764d12",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -924,7 +924,7 @@
       "candidates": [
         "recovery-field"
       ],
-      "anchor": "43a16014c442a2008e412f93e0abf669cd1faef8ace91007efcbc27366639e95",
+      "anchor": "1f07953fc710d58a4e79c7d1ddb8eea8ea82c8bb29a5e358b6997d2235c390f4",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -954,7 +954,7 @@
       "candidates": [
         "unknown-exact-field"
       ],
-      "anchor": "7101a21543a0dfebcb26b3ab29722cf39284ae605f908d3bc75ff0345b283f95",
+      "anchor": "6d960215f7fbd62881a2532c30492fa8120549ce0c69a8b56a6f13cce9c3e5ce",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -986,7 +986,7 @@
       "candidates": [
         "unchanged-key-bumped-generation"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -998,7 +998,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1026,7 +1026,7 @@
       "candidates": [
         "changed-key-same-generation"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1038,7 +1038,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1066,7 +1066,7 @@
       "candidates": [
         "skipped-generation"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1078,7 +1078,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1106,7 +1106,7 @@
       "candidates": [
         "skipped-revision"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1118,7 +1118,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1146,7 +1146,7 @@
       "candidates": [
         "wrong-predecessor"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1158,7 +1158,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1186,7 +1186,7 @@
       "candidates": [
         "wrapper-predecessor"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1198,7 +1198,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1226,7 +1226,7 @@
       "candidates": [
         "backward-issue"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1238,7 +1238,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1267,7 +1267,7 @@
       "candidates": [
         "fork-of-renew"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1282,7 +1282,7 @@
           "fork-of-renew"
         ],
         "head": "renew",
-        "head_hash": "17ecacd5fa78ca637b7e6e2fe7bf217c2707a2469c8a94468eab18045c15de4b",
+        "head_hash": "d47c9feea73036935d878b36b8a935b0f2588ce8bf4095c5ea9a8e5ff4d44dbd",
         "revision": "1",
         "generations": [
           "0",
@@ -1293,7 +1293,7 @@
         "previous_stamp": null,
         "accepted": 2,
         "retained": 3,
-        "charged_bytes": 2285,
+        "charged_bytes": 2284,
         "forked": true,
         "checked_time": [
           "1700000100",
@@ -1315,7 +1315,7 @@
       "candidates": [
         "swapped-retired-roles"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1332,7 +1332,7 @@
         ],
         "proof": [],
         "head": "rotate-message",
-        "head_hash": "8bb5c60d1029bab3275a596e01d129a2df453112bcf438bcc98b7aa42b3d0ee0",
+        "head_hash": "61e82446234ff899d6335bd13afdad8dc319e6b56e7ef4e7c240d0995966ef0c",
         "revision": "5",
         "generations": [
           "1",
@@ -1364,7 +1364,7 @@
       "candidates": [
         "reused-stamp"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1380,7 +1380,7 @@
         ],
         "proof": [],
         "head": "rotate-stamp-again",
-        "head_hash": "0c8114f815dc70f35153c7bd12e0bcd8d7f6353a44770522bd1e88c905c8c486",
+        "head_hash": "ca92bf9f0767804a74b1eab10b3ff8a1d2e60128ff2559e44047cdb71b943b84",
         "revision": "4",
         "generations": [
           "0",
@@ -1391,7 +1391,7 @@
         "previous_stamp": "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
         "accepted": 5,
         "retained": 5,
-        "charged_bytes": 3851,
+        "charged_bytes": 3852,
         "forked": false,
         "checked_time": [
           "1700000100",
@@ -1408,7 +1408,7 @@
       "candidates": [
         "changed-subject"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1420,7 +1420,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1446,7 +1446,7 @@
       "candidates": [
         "bad-signature"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1476,7 +1476,7 @@
       "candidates": [
         "wrong-signer"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1506,7 +1506,7 @@
       "candidates": [
         "wrong-reader-floor"
       ],
-      "anchor": "beeb7e7d1cb0205889580b388046babb8a1de71546db0944d2bef4607bd9afb4",
+      "anchor": "a746893710a572945fa75d4a834647632f810ca95a7582f9b63ba17aa8453545",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1536,7 +1536,7 @@
       "candidates": [
         "unknown-required-version"
       ],
-      "anchor": "953803e134c00ffc47bca8cc1701b0be35c239141466ee63331479d223138482",
+      "anchor": "90fdf0100e2cd82fb9144e56f4693f402961c86d36983b8cef288cbbf791d5fe",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1566,7 +1566,7 @@
       "candidates": [
         "old-schema2"
       ],
-      "anchor": "16c2e2f03f34d48a6f13ae07adbc40dc2253788bbd290613b643ef43c5ea005b",
+      "anchor": "ce518b44b17388a265eef61a5669bcd8c109c8439ae1e6bc82176deea828b546",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1596,7 +1596,7 @@
       "candidates": [
         "old-schema3"
       ],
-      "anchor": "a38ebe9bc0fadb440cccbade45ea4e55acaef101a79e9668117c16f8471190ff",
+      "anchor": "cc08769f037645e402bcd54d76714a83ca822e985db97b3e50a765fab37936f6",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1628,7 +1628,7 @@
       "candidates": [
         "revision-max"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1640,7 +1640,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1668,7 +1668,7 @@
       "candidates": [
         "generation-max"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1680,7 +1680,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1706,7 +1706,7 @@
       "candidates": [
         "optional-future"
       ],
-      "anchor": "4cc94df76d9f880732a9405d5c1488ddafa71b8e0cb5b526c37a1311a9ad10f7",
+      "anchor": "165bc7cffa3418b8e080cd3431f0e9d139d2025362d9847f4f0be8b020971237",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1718,7 +1718,7 @@
         ],
         "proof": [],
         "head": "optional-future",
-        "head_hash": "4cc94df76d9f880732a9405d5c1488ddafa71b8e0cb5b526c37a1311a9ad10f7",
+        "head_hash": "165bc7cffa3418b8e080cd3431f0e9d139d2025362d9847f4f0be8b020971237",
         "revision": "0",
         "generations": [
           "0",
@@ -1744,7 +1744,7 @@
       "candidates": [
         "optional-tamper"
       ],
-      "anchor": "2408c3d8190a36ed910c20682d3906530854384b9ed861ef5f9d3f39d59dda22",
+      "anchor": "eb4a7600a019e8076de751e7dd4475a179f955adceb973785e52249bde37f1a2",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1776,7 +1776,7 @@
       "candidates": [
         "compatible-schema-downgrade"
       ],
-      "anchor": "4cc94df76d9f880732a9405d5c1488ddafa71b8e0cb5b526c37a1311a9ad10f7",
+      "anchor": "165bc7cffa3418b8e080cd3431f0e9d139d2025362d9847f4f0be8b020971237",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1788,7 +1788,7 @@
         ],
         "proof": [],
         "head": "optional-future",
-        "head_hash": "4cc94df76d9f880732a9405d5c1488ddafa71b8e0cb5b526c37a1311a9ad10f7",
+        "head_hash": "165bc7cffa3418b8e080cd3431f0e9d139d2025362d9847f4f0be8b020971237",
         "revision": "0",
         "generations": [
           "0",
@@ -1821,7 +1821,7 @@
       "candidates": [
         "fork-of-renew"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1840,7 +1840,7 @@
           "fork-of-renew"
         ],
         "head": "rotate-message",
-        "head_hash": "8bb5c60d1029bab3275a596e01d129a2df453112bcf438bcc98b7aa42b3d0ee0",
+        "head_hash": "61e82446234ff899d6335bd13afdad8dc319e6b56e7ef4e7c240d0995966ef0c",
         "revision": "5",
         "generations": [
           "1",
@@ -1851,7 +1851,7 @@
         "previous_stamp": "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
         "accepted": 6,
         "retained": 7,
-        "charged_bytes": 5419,
+        "charged_bytes": 5418,
         "forked": true,
         "checked_time": [
           "1700000100",
@@ -1926,7 +1926,7 @@
       "candidates": [
         "bootstrap"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": null,
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1958,7 +1958,7 @@
       "candidates": [
         "renew"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000101",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -1970,7 +1970,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -1996,7 +1996,7 @@
       "candidates": [
         "bootstrap"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": null,
@@ -2030,7 +2030,7 @@
       "candidates": [
         "bootstrap"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -2044,7 +2044,7 @@
         ],
         "proof": [],
         "head": "rotate-stamp",
-        "head_hash": "ef5fc370ba7f7a47063e185e7c00ba1658c2b1da5971ccbb94d23c7bb97e46b7",
+        "head_hash": "3e292df99ff5bdbab3a5cebb8e7143c7d2c22680a9994011a58b40270fc97dc0",
         "revision": "2",
         "generations": [
           "0",
@@ -2055,7 +2055,7 @@
         "previous_stamp": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
         "accepted": 3,
         "retained": 3,
-        "charged_bytes": 2284,
+        "charged_bytes": 2285,
         "forked": false,
         "checked_time": [
           "1700000100",
@@ -2072,7 +2072,7 @@
       "candidates": [
         "old-schema3"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -2084,7 +2084,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2113,7 +2113,7 @@
         "expired-middle",
         "fresh-head"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2127,7 +2127,7 @@
         ],
         "proof": [],
         "head": "fresh-head",
-        "head_hash": "49c07ef007a6eb69916a5247fd68454cf9838ce125ededdb78f8a646394e826a",
+        "head_hash": "327042fe7711b8fbf71e0d49bf01f4dbabda5bbd4e374a2b37d34cd7dda1262a",
         "revision": "2",
         "generations": [
           "0",
@@ -2138,7 +2138,7 @@
         "previous_stamp": "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
         "accepted": 3,
         "retained": 3,
-        "charged_bytes": 2283,
+        "charged_bytes": 2284,
         "forked": false,
         "checked_time": [
           "1700007500",
@@ -2155,7 +2155,7 @@
         "expired-middle",
         "fresh-head"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2169,7 +2169,7 @@
         ],
         "proof": [],
         "head": "fresh-head",
-        "head_hash": "49c07ef007a6eb69916a5247fd68454cf9838ce125ededdb78f8a646394e826a",
+        "head_hash": "327042fe7711b8fbf71e0d49bf01f4dbabda5bbd4e374a2b37d34cd7dda1262a",
         "revision": "2",
         "generations": [
           "0",
@@ -2180,7 +2180,7 @@
         "previous_stamp": "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556",
         "accepted": 3,
         "retained": 3,
-        "charged_bytes": 2283,
+        "charged_bytes": 2284,
         "forked": false,
         "checked_time": [
           "1700007500",
@@ -2197,7 +2197,7 @@
       "candidates": [
         "fresh-head"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2209,7 +2209,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2238,7 +2238,7 @@
         "expired-middle-bad-signature",
         "fresh-head"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2250,7 +2250,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2279,7 +2279,7 @@
         "expired-middle-bad-generation",
         "fresh-head"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2291,7 +2291,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2319,7 +2319,7 @@
       "candidates": [
         "expired-middle"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2331,7 +2331,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2357,7 +2357,7 @@
         "bootstrap"
       ],
       "candidates": [],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2369,7 +2369,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2430,7 +2430,7 @@
         "expired-middle",
         "fresh-head"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": null,
@@ -2442,7 +2442,7 @@
         ],
         "proof": [],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2472,7 +2472,7 @@
       "candidates": [
         "renew-after-rotation"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700007500",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65543f200100",
@@ -2486,7 +2486,7 @@
         ],
         "proof": [],
         "head": "rotate-stamp",
-        "head_hash": "ef5fc370ba7f7a47063e185e7c00ba1658c2b1da5971ccbb94d23c7bb97e46b7",
+        "head_hash": "3e292df99ff5bdbab3a5cebb8e7143c7d2c22680a9994011a58b40270fc97dc0",
         "revision": "2",
         "generations": [
           "0",
@@ -2497,7 +2497,7 @@
         "previous_stamp": "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
         "accepted": 3,
         "retained": 3,
-        "charged_bytes": 2284,
+        "charged_bytes": 2285,
         "forked": false,
         "checked_time": [
           "1700000100",
@@ -2516,7 +2516,7 @@
           "renew",
           "fork-of-renew"
         ],
-        "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "expected": "fork"
       },
       "proposal_expected": "fork",
@@ -2526,7 +2526,7 @@
         "renew",
         "fork-of-renew"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -2548,7 +2548,7 @@
         "previous_stamp": null,
         "accepted": 0,
         "retained": 3,
-        "charged_bytes": 2285,
+        "charged_bytes": 2284,
         "forked": true,
         "checked_time": [
           "1700000100",
@@ -2568,7 +2568,7 @@
           "renew",
           "fork-of-renew"
         ],
-        "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "expected": "fork"
       },
       "proposal_expected": "fork",
@@ -2579,7 +2579,7 @@
         "renew",
         "fork-of-renew"
       ],
-      "anchor": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+      "anchor": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
       "clock": "1700000100",
       "initial_clock": "1700000100",
       "relay": "a40050000102030405060708090a0b0c0d0e0f01781d68747470733a2f2f72656c61792e6578616d706c652e696e76616c696402a2000101582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd1303a2001a65540d200100",
@@ -2594,7 +2594,7 @@
           "fork-of-renew"
         ],
         "head": "bootstrap",
-        "head_hash": "21729c888b5da6caeaf90dde5eb2c37e9c2da392e609908d75afba75b72f3a3e",
+        "head_hash": "49e9cc39479061911e5ba530783d6fa77366ef1bf645e34be9de87e5edad0410",
         "revision": "0",
         "generations": [
           "0",
@@ -2605,7 +2605,7 @@
         "previous_stamp": null,
         "accepted": 1,
         "retained": 3,
-        "charged_bytes": 2285,
+        "charged_bytes": 2284,
         "forked": true,
         "checked_time": [
           "1700000100",

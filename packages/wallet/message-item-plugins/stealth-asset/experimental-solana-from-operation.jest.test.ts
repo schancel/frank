@@ -290,7 +290,7 @@ it.each(['signed', 'exposed', 'settled'] as const)(
         parsed.typeId,
         parsed.schemaVersion,
         parsed.minReaderVersion,
-      ]).toEqual([19, 2, 2])
+      ]).toEqual([24, 2, 2])
       for (const [index, entry] of parsed.typed.transfers.entries()) {
         const row = rows[index]
         const expectedAsset =

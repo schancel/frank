@@ -161,6 +161,50 @@ describe('sentTransactionNotify', () => {
     )
   })
 
+  it('does not navigate when the local chain has no explorer URL', () => {
+    const rpcChain = process.env.QCLI_MONAD_RPC_CHAIN
+    const explorer = process.env.QCLI_MONAD_EXPLORER_URL
+    const fallbackExplorer = process.env.MONAD_EXPLORER_URL
+    process.env.QCLI_MONAD_RPC_CHAIN = 'anvil'
+    delete process.env.QCLI_MONAD_EXPLORER_URL
+    delete process.env.MONAD_EXPLORER_URL
+    try {
+      sentTransactionNotify('0xabc')
+      const notification = createNotification.mock.calls[0]?.[0]
+      expect(notification.actions).toHaveLength(1)
+      notification.actions[0].handler()
+      expect(openURL).not.toHaveBeenCalled()
+    } finally {
+      if (rpcChain === undefined) delete process.env.QCLI_MONAD_RPC_CHAIN
+      else process.env.QCLI_MONAD_RPC_CHAIN = rpcChain
+      if (explorer === undefined) delete process.env.QCLI_MONAD_EXPLORER_URL
+      else process.env.QCLI_MONAD_EXPLORER_URL = explorer
+      if (fallbackExplorer === undefined) delete process.env.MONAD_EXPLORER_URL
+      else process.env.MONAD_EXPLORER_URL = fallbackExplorer
+    }
+  })
+
+  it('resolves the configured local explorer when the action is invoked', () => {
+    const rpcChain = process.env.QCLI_MONAD_RPC_CHAIN
+    const explorer = process.env.QCLI_MONAD_EXPLORER_URL
+    process.env.QCLI_MONAD_RPC_CHAIN = 'anvil'
+    process.env.QCLI_MONAD_EXPLORER_URL = 'http://localhost:3000/original'
+    try {
+      sentTransactionNotify('0xabc/def')
+      process.env.QCLI_MONAD_EXPLORER_URL = 'http://localhost:3000/tx'
+      const notification = createNotification.mock.calls[0]?.[0]
+      notification.actions[0].handler()
+      expect(openURL).toHaveBeenCalledWith(
+        'http://localhost:3000/tx/0xabc%2Fdef',
+      )
+    } finally {
+      if (rpcChain === undefined) delete process.env.QCLI_MONAD_RPC_CHAIN
+      else process.env.QCLI_MONAD_RPC_CHAIN = rpcChain
+      if (explorer === undefined) delete process.env.QCLI_MONAD_EXPLORER_URL
+      else process.env.QCLI_MONAD_EXPLORER_URL = explorer
+    }
+  })
+
   it('does not offer an explorer action without a transaction hash', () => {
     sentTransactionNotify()
 

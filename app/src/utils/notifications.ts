@@ -85,7 +85,10 @@ export function sentTransactionNotify(txId?: string, customMessage?: string) {
     color: 'secondary',
     handler: () => {
       if (txId) {
-        openURL(transactionExplorerUrl(txId))
+        const url = transactionExplorerUrl(txId)
+        if (url) {
+          openURL(url)
+        }
       }
     },
   }

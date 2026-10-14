@@ -901,6 +901,18 @@ export class MailJournal {
           ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
         };
       }
+      if (wkdHashLocalPart(row.scope_account) === normalizedHu) {
+        return {
+          localPart: row.scope_account,
+          scopeAccount: row.scope_account,
+        };
+      }
+      if (wkdHashLocalPart(`u.${row.scope_account}`) === normalizedHu) {
+        return {
+          localPart: `u.${row.scope_account}`,
+          scopeAccount: row.scope_account,
+        };
+      }
     }
     return undefined;
   }
@@ -939,6 +951,26 @@ export class MailJournal {
       conversationId
     );
     return row && toThread(row);
+  }
+
+  /**
+   * Resolves the conversation ID for an inbound reply within `scopeAccount` by matching
+   * `In-Reply-To` first, then `References` from last to first against `mail_message`
+   * (`rfc_message_id`, `frank_message_id`, or `frank.<conversationId>.<frankMessageId>`).
+   */
+  findConversationByThreadHeaders(input: {
+    readonly scopeAccount: string;
+    readonly inReplyTo?: string;
+    readonly references?: readonly string[];
+  }): string | undefined {
+    const scope = requireMatch('scopeAccount', input.scopeAccount, SCOPE_ACCOUNT);
+    const inReplyTo =
+      input.inReplyTo === undefined ? undefined : parseMessageId(input.inReplyTo.trim());
+    const references = (input.references ?? [])
+      .map((id) => (typeof id === 'string' ? parseMessageId(id.trim()) : undefined))
+      .filter((id): id is string => id !== undefined);
+    const parent = this.resolveParent(scope, inReplyTo, references);
+    return parent?.conversation_id;
   }
 
   /**
@@ -1958,13 +1990,65 @@ export class MailJournal {
     references: readonly string[]
   ): MailMessageRow | undefined {
     if (inReplyTo !== undefined) {
-      const row = this.messageRow(scope, inReplyTo);
+      const row = this.findParentMessage(scope, inReplyTo);
       if (row) return row;
     }
     for (let i = references.length - 1; i >= 0; i--) {
-      const row = this.messageRow(scope, references[i]);
+      const row = this.findParentMessage(scope, references[i]);
       if (row) return row;
     }
+    return undefined;
+  }
+
+  private findParentMessage(scope: string, candidateId: string): MailMessageRow | undefined {
+    const exact = this.messageRow(scope, candidateId);
+    if (exact) return exact;
+
+    const inner =
+      candidateId.startsWith('<') && candidateId.endsWith('>')
+        ? candidateId.slice(1, -1)
+        : candidateId;
+    const atIndex = inner.lastIndexOf('@');
+    if (atIndex <= 0) return undefined;
+    const localPart = inner.slice(0, atIndex).toLowerCase();
+
+    if (FRANK_ID.test(localPart)) {
+      const byFrankId = this.get<MailMessageRow>(
+        'SELECT * FROM mail_message WHERE scope_account = ? AND frank_message_id = ? ORDER BY created_at ASC LIMIT 1',
+        scope,
+        localPart,
+      );
+      if (byFrankId) return byFrankId;
+      const byConvId = this.get<MailMessageRow>(
+        'SELECT * FROM mail_message WHERE scope_account = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT 1',
+        scope,
+        localPart,
+      );
+      if (byConvId) return byConvId;
+    }
+
+    const compositeMatch = localPart.match(
+      /^frank\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}))?$/,
+    );
+    if (compositeMatch) {
+      const convId = compositeMatch[1];
+      const msgId = compositeMatch[2];
+      if (msgId) {
+        const byFrankId = this.get<MailMessageRow>(
+          'SELECT * FROM mail_message WHERE scope_account = ? AND frank_message_id = ? ORDER BY created_at ASC LIMIT 1',
+          scope,
+          msgId,
+        );
+        if (byFrankId) return byFrankId;
+      }
+      const byConvId = this.get<MailMessageRow>(
+        'SELECT * FROM mail_message WHERE scope_account = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT 1',
+        scope,
+        convId,
+      );
+      if (byConvId) return byConvId;
+    }
+
     return undefined;
   }
 

@@ -70,7 +70,7 @@ function isValidSenderUsername(localPart: string): boolean {
 
 /** Deterministic local-part fallback encoding the sender's canonical 0x account address. */
 export function userIdFallbackLocalPart(scopeAccount: string): string {
-  return `u.${scopeAccount.trim().toLowerCase()}`;
+  return scopeAccount.trim().toLowerCase();
 }
 
 /** A private, account-root-derived salt makes aliases stable across gateway replicas. */
@@ -203,16 +203,29 @@ export class JournaledFrankOutbound {
     this.secureLinkPassphrase = options.secureLinkPassphrase;
   }
 
+  private isAvailableForScope(localPart: string, scope: string): boolean {
+    try {
+      const existing = this.journal.issuedMailbox(localPart);
+      return !existing || existing.scopeAccount === scope;
+    } catch {
+      return false;
+    }
+  }
+
   private async resolveFromLocalPart(item: EmailItem, scope: string, alias: string): Promise<string> {
     if (this.resolveSenderUsername) {
       try {
         const resolved = await this.resolveSenderUsername(scope);
         if (resolved && isValidSenderUsername(resolved)) {
-          return resolved.trim().toLowerCase();
+          const canonical = resolved.trim().toLowerCase();
+          if (this.isAvailableForScope(canonical, scope)) {
+            return canonical;
+          }
         }
       } catch {
-        // Fall through to item.from or deterministic user ID fallback.
+        // Fall through to canonical 0x account address fallback.
       }
+      return userIdFallbackLocalPart(scope);
     }
 
     const rawFromAddress = typeof item.from?.address === 'string' ? item.from.address.trim().toLowerCase() : '';
@@ -222,12 +235,14 @@ export class JournaledFrankOutbound {
         const localPart = rawFromAddress.slice(0, atIndex);
         const domainPart = rawFromAddress.slice(atIndex + 1);
         if (domainPart === this.domain) {
-          if (isValidSenderUsername(localPart)) return localPart;
-          if (localPart === scope || localPart === userIdFallbackLocalPart(scope)) {
+          if (isValidSenderUsername(localPart) && this.isAvailableForScope(localPart, scope)) {
+            return localPart;
+          }
+          if (localPart === scope || localPart === `u.${scope}` || localPart === userIdFallbackLocalPart(scope)) {
             return userIdFallbackLocalPart(scope);
           }
         }
-      } else if (isValidSenderUsername(rawFromAddress)) {
+      } else if (isValidSenderUsername(rawFromAddress) && this.isAvailableForScope(rawFromAddress, scope)) {
         return rawFromAddress;
       }
     }
@@ -281,9 +296,9 @@ export class JournaledFrankOutbound {
     const recipient = canonicalEmailAddress(item.to[0]?.address);
     if (!recipient) return reject('bad_recipient');
     const alias = replyAlias(this.salt, scope, conversationId);
-    const replyToAddress = `${alias}@${this.domain}`;
     const fromLocalPart = await this.resolveFromLocalPart(item, scope, alias);
     const fromAddress = `${fromLocalPart}@${this.domain}`;
+    const replyToAddress = fromAddress;
     const openPgpUrl = `https://${this.domain}/.well-known/openpgpkey/hu/${wkdHashLocalPart(fromLocalPart)}?l=${encodeURIComponent(fromLocalPart)}`;
     let effectiveBody: string | undefined;
     let effectiveSubject: string | undefined;

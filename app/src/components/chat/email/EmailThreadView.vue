@@ -1084,6 +1084,7 @@ function isValidRecipientAddress(addr: string | undefined | null): boolean {
 }
 
 const THREAD_REPLY_ALIAS_LOCAL_RE = /^m[0-9a-f]{30}$/i
+const GATEWAY_USERNAME_LOCAL_RE = /^[a-z0-9][a-z0-9_-]{2,31}$/i
 
 export function extractPartyFromRaw(
   input: string | EmailParty | undefined | null,
@@ -1662,13 +1663,9 @@ export default defineComponent({
     allParticipants(): string[] {
       const participants = new Map<string, { address: string; name?: string }>()
       const gatewayDomain = this.getGatewayDomain()
-      let ownUsername = ''
-      try {
-        const profileStore = useProfileStore()
-        ownUsername = (profileStore.profile?.username || '').trim()
-      } catch {
-        /* ignore */
-      }
+      const ownAddrs = this.getOwnCanonicalAddresses()
+      const ownUsername =
+        this.getPreferredGatewayUsername(ownAddrs[0], gatewayDomain) || ''
 
       const addParticipant = (
         input: string | EmailParty | undefined | null,
@@ -1716,14 +1713,16 @@ export default defineComponent({
       }
 
       const selfEntry = participants.get('__self__')
-      if (
-        selfEntry &&
-        ownUsername &&
-        !THREAD_REPLY_ALIAS_LOCAL_RE.test(ownUsername)
-      ) {
+      if (selfEntry) {
         const currentRank = this.getSelfAddressRank(selfEntry.address)
-        if (currentRank < 4) {
+        if (
+          ownUsername &&
+          !THREAD_REPLY_ALIAS_LOCAL_RE.test(ownUsername) &&
+          currentRank < 4
+        ) {
           selfEntry.address = `${ownUsername}@${gatewayDomain}`
+        } else if (currentRank === 1 && ownAddrs.length > 0) {
+          selfEntry.address = `${ownAddrs[0]}@${gatewayDomain}`
         }
       }
 
@@ -1828,6 +1827,92 @@ export default defineComponent({
         ).trim()
       } catch {
         return 'signet.mx'
+      }
+    },
+    getPreferredGatewayUsername(
+      canonicalAddress?: string,
+      gatewayDomain?: string,
+    ): string | undefined {
+      const domain = (gatewayDomain || this.getGatewayDomain())
+        .trim()
+        .toLowerCase()
+      try {
+        const settings = useSettingsStore()
+        if (
+          settings.emailGatewayStatus === 'changed' ||
+          settings.emailGatewayStatus === 'error'
+        ) {
+          return undefined
+        }
+        if (settings.emailGatewayRelayOrigin) {
+          if (!settings.advertisedEmailGateway) {
+            return undefined
+          }
+          if (
+            settings.advertisedEmailGateway.domain.trim().toLowerCase() !==
+            domain
+          ) {
+            return undefined
+          }
+          if (
+            settings.acceptedEmailGateway?.relayOrigin &&
+            settings.acceptedEmailGateway.relayOrigin !==
+              settings.emailGatewayRelayOrigin
+          ) {
+            return undefined
+          }
+        } else if (
+          settings.advertisedEmailGateway &&
+          settings.advertisedEmailGateway.domain.trim().toLowerCase() !== domain
+        ) {
+          return undefined
+        }
+        if (
+          settings.emailGatewayOverride &&
+          settings.advertisedEmailGateway &&
+          !sameCanonicalAddress(
+            settings.emailGatewayOverride.address,
+            settings.advertisedEmailGateway.address,
+          )
+        ) {
+          return undefined
+        }
+
+        const profileStore = useProfileStore()
+        if (profileStore.unpublished === true) {
+          return undefined
+        }
+        if (
+          canonicalAddress &&
+          profileStore.owner &&
+          !sameCanonicalAddress(profileStore.owner, canonicalAddress)
+        ) {
+          return undefined
+        }
+        if (
+          profileStore.emailBridgeGatewayAddress &&
+          this.emailGatewayAddress &&
+          !sameCanonicalAddress(
+            profileStore.emailBridgeGatewayAddress,
+            this.emailGatewayAddress,
+          )
+        ) {
+          return undefined
+        }
+
+        const rawUsername = (profileStore.profile?.username || '')
+          .trim()
+          .toLowerCase()
+        if (
+          !rawUsername ||
+          !GATEWAY_USERNAME_LOCAL_RE.test(rawUsername) ||
+          THREAD_REPLY_ALIAS_LOCAL_RE.test(rawUsername)
+        ) {
+          return undefined
+        }
+        return rawUsername
+      } catch {
+        return undefined
       }
     },
     getOwnCanonicalAddresses(): string[] {
@@ -2410,19 +2495,15 @@ export default defineComponent({
         senderAddress = 'frank-user'
       }
 
-      let gatewayDomain = ''
-      try {
-        const settings = useSettingsStore()
-        gatewayDomain =
-          settings.acceptedEmailGateway?.domain ||
-          settings.advertisedEmailGateway?.domain ||
-          'signet.mx'
-      } catch {
-        gatewayDomain = 'signet.mx'
-      }
+      const gatewayDomain = this.getGatewayDomain()
 
       if (isGatewayRoute && gatewayDomain && !senderAddress.includes('@')) {
-        senderAddress = `${senderAddress}@${gatewayDomain}`
+        const preferredUsername = this.getPreferredGatewayUsername(
+          senderAddress,
+          gatewayDomain,
+        )
+        const senderLocalPart = preferredUsername || senderAddress
+        senderAddress = `${senderLocalPart}@${gatewayDomain}`
       }
 
       let senderName: string | undefined

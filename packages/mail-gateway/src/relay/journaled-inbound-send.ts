@@ -79,6 +79,13 @@ export class JournaledInboundSend {
     if (!threadHeaders.ok) throw new Error(`Invalid mail thread headers: ${threadHeaders.reason}`);
 
     return this.ledger.atomic((): InboundAdmission => {
+      const resolvedConversationId =
+        conversationId ??
+        this.journal.findConversationByThreadHeaders({
+          scopeAccount: scope,
+          inReplyTo: threadHeaders.inReplyTo,
+          references: threadHeaders.references,
+        });
       const isOperatorMailbox =
         mailboxLocalPart !== undefined && isOperatorMailboxLocalPart(mailboxLocalPart);
       const principalHasCredit =
@@ -90,7 +97,7 @@ export class JournaledInboundSend {
         mailKey: key,
         stampValue: stampValue.toString(),
         mailboxLocalPart,
-        conversationId,
+        conversationId: resolvedConversationId,
         echoMailKey: contentKey,
         messageIdHeader: threadHeaders.messageId,
         senderEmail: sender,
@@ -105,7 +112,7 @@ export class JournaledInboundSend {
           const existing = this.journal.relayInboundEmail({
             scopeAccount: scope,
             mailKey: key,
-            conversationId,
+            conversationId: resolvedConversationId,
             stampValue: admitted.email.stampValue,
           });
           return { kind: 'queued', slot: existing.slot, duplicate: true };
@@ -116,7 +123,7 @@ export class JournaledInboundSend {
       const relayed = this.journal.relayInboundEmail({
         scopeAccount: scope,
         mailKey: key,
-        conversationId,
+        conversationId: resolvedConversationId,
         stampValue: admitted.email.stampValue,
         inReplyTo: threadHeaders.inReplyTo,
         references: threadHeaders.references,

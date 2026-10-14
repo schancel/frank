@@ -180,6 +180,69 @@
                     </q-item-section>
                   </q-item>
                 </q-list>
+                <q-separator class="q-my-md" />
+                <div data-test="cold-vault-sweep-section">
+                  <div class="row items-center justify-between q-mb-xs">
+                    <div class="col">
+                      <div
+                        class="text-subtitle2"
+                        data-test="cold-vault-sweep-title"
+                      >
+                        {{ $t('settings.coldVaultTitle') }}
+                      </div>
+                      <div class="text-caption text-grey">
+                        {{ $t('settings.coldVaultSubtitle') }}
+                      </div>
+                    </div>
+                    <q-toggle
+                      v-model="coldVaultEnabled"
+                      :aria-label="$t('settings.coldVaultEnabled')"
+                      color="primary"
+                      data-test="cold-vault-enabled-toggle"
+                    />
+                  </div>
+                  <q-input
+                    v-model="coldVaultAddressInput"
+                    :label="$t('settings.coldVaultAddressLabel')"
+                    :hint="$t('settings.coldVaultAddressHint')"
+                    dense
+                    outlined
+                    :error="!!coldVaultError"
+                    data-test="cold-vault-address-input"
+                    class="full-width q-mb-sm"
+                  />
+                  <q-input
+                    v-model="coldVaultMaxHotBalanceInput"
+                    :label="$t('settings.coldVaultMaxHotBalanceLabel')"
+                    :hint="$t('settings.coldVaultMaxHotBalanceHint')"
+                    type="number"
+                    dense
+                    outlined
+                    data-test="cold-vault-max-hot-balance-input"
+                    class="full-width q-mb-xs"
+                  />
+                  <div
+                    v-if="coldVaultError"
+                    class="text-negative text-caption q-mb-xs error-msg"
+                    data-test="cold-vault-error"
+                  >
+                    {{ coldVaultError }}
+                  </div>
+                  <div
+                    class="row items-center justify-end q-gutter-x-sm q-mt-xs"
+                  >
+                    <q-btn
+                      flat
+                      dense
+                      no-caps
+                      size="sm"
+                      color="grey-7"
+                      :label="$t('settings.resetDefault')"
+                      data-test="reset-cold-vault-btn"
+                      @click="resetColdVaultSweep"
+                    />
+                  </div>
+                </div>
               </q-tab-panel>
               <q-tab-panel name="appearance">
                 <div class="row items-center q-mb-md">
@@ -448,6 +511,15 @@ export default defineComponent({
       settingsStore.allowContactNotificationBypass ?? true,
     )
 
+    const coldVaultEnabled = ref(settingsStore.coldVaultSweep?.enabled ?? false)
+    const coldVaultAddressInput = ref(
+      settingsStore.coldVaultSweep?.externalVaultAddress ?? '',
+    )
+    const coldVaultMaxHotBalanceInput = ref(
+      settingsStore.coldVaultSweep?.maxHotBalanceDisplay ?? '1500',
+    )
+    const coldVaultError = ref('')
+
     watch(
       () => settingsStore.emailGatewayOverride,
       newVal => {
@@ -465,6 +537,17 @@ export default defineComponent({
       newVal => {
         allowContactNotificationBypass.value = newVal ?? true
       },
+    )
+
+    watch(
+      () => settingsStore.coldVaultSweep,
+      newVal => {
+        if (!newVal) return
+        coldVaultEnabled.value = newVal.enabled
+        coldVaultAddressInput.value = newVal.externalVaultAddress
+        coldVaultMaxHotBalanceInput.value = newVal.maxHotBalanceDisplay
+      },
+      { deep: true },
     )
 
     const emailGatewayAddress = computed(
@@ -499,6 +582,35 @@ export default defineComponent({
       } catch (err: any) {
         emailGatewayError.value =
           err?.message || 'Invalid Ethereum address format'
+      }
+    }
+
+    function resetColdVaultSweep() {
+      coldVaultError.value = ''
+      if (typeof settingsStore.resetColdVaultSweep === 'function') {
+        settingsStore.resetColdVaultSweep()
+      }
+      coldVaultEnabled.value = false
+      coldVaultAddressInput.value = ''
+      coldVaultMaxHotBalanceInput.value = '1500'
+    }
+
+    function saveColdVaultSweep() {
+      coldVaultError.value = ''
+      if (typeof settingsStore.setColdVaultSweep !== 'function') {
+        return
+      }
+      try {
+        settingsStore.setColdVaultSweep({
+          enabled: coldVaultEnabled.value,
+          externalVaultAddress: String(coldVaultAddressInput.value ?? ''),
+          maxHotBalanceDisplay: String(
+            coldVaultMaxHotBalanceInput.value ?? '1500',
+          ),
+        })
+      } catch (err: any) {
+        coldVaultError.value =
+          err?.message || 'Invalid Cold-Wallet Auto-Sweep configuration'
       }
     }
 
@@ -539,6 +651,12 @@ export default defineComponent({
       ),
       saveEmailGateway,
       resetEmailGateway,
+      coldVaultEnabled,
+      coldVaultAddressInput,
+      coldVaultMaxHotBalanceInput,
+      coldVaultError,
+      saveColdVaultSweep,
+      resetColdVaultSweep,
       getWalletNetworkLabel,
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
       chainStatus,
@@ -579,7 +697,8 @@ export default defineComponent({
     },
     save() {
       this.saveEmailGateway()
-      if (this.emailGatewayError) {
+      this.saveColdVaultSweep()
+      if (this.emailGatewayError || this.coldVaultError) {
         this.isSaved = false
         return
       }

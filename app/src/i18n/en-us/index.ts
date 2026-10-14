@@ -1407,6 +1407,16 @@ export default {
       'Minimum stamp value in AVU required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',
     allowContactNotificationBypass:
       'Allow contacts with wakeup tokens to notify without a stamp',
+    coldVaultTitle: 'Cold-Wallet Auto-Sweep Vault',
+    coldVaultSubtitle:
+      'Automatically sweep incoming stamps and payments above your hot-wallet ceiling directly (1-hop) to an external MetaMask, Phantom, or Ledger vault address.',
+    coldVaultEnabled: 'Enable Cold-Wallet Auto-Sweep',
+    coldVaultAddressLabel: 'External Vault Address (EVM / Solana)',
+    coldVaultAddressHint:
+      'Hardware or browser wallet address (0x... or Solana base58) receiving swept excess funds',
+    coldVaultMaxHotBalanceLabel: 'Max Hot-Wallet Float Ceiling (MON)',
+    coldVaultMaxHotBalanceHint:
+      'Default: 1,500 MON (~150 AVU, +20% hysteresis trigger at 1,800 MON)',
   },
   profile: {
     name: 'Display Name',

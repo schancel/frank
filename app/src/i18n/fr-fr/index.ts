@@ -1436,6 +1436,21 @@ export default {
     supportedChainsTitle: 'Réseaux de règlement pris en charge',
     chainSendReceive: 'Envoi et réception',
     chainUnsupported: 'Non pris en charge',
+    notificationFeeThresholdAvu: 'Seuil de frais de notification (AVU)',
+    notificationFeeThresholdAvuHint:
+      'Valeur minimale de timbre en AVU requise pour déclencher une notification push (les messages inférieurs à ce seuil sont quand même livrés silencieusement dans votre boîte de réception)',
+    allowContactNotificationBypass:
+      'Autoriser les contacts disposant de jetons de réveil à notifier sans timbre',
+    coldVaultTitle: 'Coffre de balayage automatique (Cold-Wallet)',
+    coldVaultSubtitle:
+      'Transférez automatiquement les timbres et paiements entrants dépassant votre plafond chaud directement (en 1 saut) vers une adresse externe MetaMask, Phantom ou Ledger.',
+    coldVaultEnabled: 'Activer le balayage automatique vers coffre froid',
+    coldVaultAddressLabel: 'Adresse du coffre externe (EVM / Solana)',
+    coldVaultAddressHint:
+      'Adresse de portefeuille matériel ou navigateur (0x... ou Solana base58) recevant les fonds excédentaires',
+    coldVaultMaxHotBalanceLabel: 'Plafond maximal du portefeuille chaud (MON)',
+    coldVaultMaxHotBalanceHint:
+      'Par défaut : 1 500 MON (~150 AVU, déclenchement avec hystérésis +20 % à 1 800 MON)',
   },
   profile: {
     name: 'Nom affiché',

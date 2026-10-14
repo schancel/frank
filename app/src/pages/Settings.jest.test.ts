@@ -93,6 +93,49 @@ const mockSetNotificationFeeThresholdAvu = jest.fn((val: number | string) => {
 const mockSetAllowContactNotificationBypass = jest.fn((allow: boolean) => {
   mockSettingsStore.allowContactNotificationBypass = Boolean(allow)
 })
+const mockSetColdVaultSweep = jest.fn(
+  (input: {
+    enabled?: boolean
+    externalVaultAddress?: string
+    maxHotBalanceDisplay?: string
+  }) => {
+    const enabled = input.enabled ?? mockSettingsStore.coldVaultSweep.enabled
+    const externalVaultAddress = (
+      input.externalVaultAddress ??
+      mockSettingsStore.coldVaultSweep.externalVaultAddress
+    ).trim()
+    const maxHotBalanceDisplay = (
+      input.maxHotBalanceDisplay ??
+      mockSettingsStore.coldVaultSweep.maxHotBalanceDisplay
+    ).trim()
+    if (enabled && !externalVaultAddress) {
+      throw new Error(
+        'External vault address is required when Cold-Wallet Auto-Sweep is enabled.',
+      )
+    }
+    if (
+      externalVaultAddress &&
+      !/^0x[a-fA-F0-9]{40}$/.test(externalVaultAddress) &&
+      !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(externalVaultAddress)
+    ) {
+      throw new Error(
+        `Invalid external vault address: "${externalVaultAddress}"`,
+      )
+    }
+    mockSettingsStore.coldVaultSweep = {
+      enabled,
+      externalVaultAddress,
+      maxHotBalanceDisplay,
+    }
+  },
+)
+const mockResetColdVaultSweep = jest.fn(() => {
+  mockSettingsStore.coldVaultSweep = {
+    enabled: false,
+    externalVaultAddress: '',
+    maxHotBalanceDisplay: '1500',
+  }
+})
 const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayAddress: '',
   emailGatewayOverride: null as {
@@ -102,11 +145,18 @@ const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayStatus: 'unavailable',
   notificationFeeThresholdAvu: 0,
   allowContactNotificationBypass: true,
+  coldVaultSweep: {
+    enabled: false,
+    externalVaultAddress: '',
+    maxHotBalanceDisplay: '1500',
+  },
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
   acceptAdvertisedEmailGateway: mockAcceptAdvertisedEmailGateway,
   setNotificationFeeThresholdAvu: mockSetNotificationFeeThresholdAvu,
   setAllowContactNotificationBypass: mockSetAllowContactNotificationBypass,
+  setColdVaultSweep: mockSetColdVaultSweep,
+  resetColdVaultSweep: mockResetColdVaultSweep,
 })
 jest.mock('src/stores/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
@@ -626,6 +676,99 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
       expect(mockSetAllowContactNotificationBypass).toHaveBeenCalledWith(false)
       expect(mockSettingsStore.notificationFeeThresholdAvu).toBe(0.25)
       expect(mockSettingsStore.allowContactNotificationBypass).toBe(false)
+      wrapper.unmount()
+    })
+  })
+
+  describe('Cold-Wallet Auto-Sweep Vault Section (#1572)', () => {
+    beforeEach(() => {
+      mockSetColdVaultSweep.mockClear()
+      mockResetColdVaultSweep.mockClear()
+      mockSettingsStore.coldVaultSweep = {
+        enabled: false,
+        externalVaultAddress: '',
+        maxHotBalanceDisplay: '1500',
+      }
+    })
+
+    it('renders the Cold-Wallet Auto-Sweep Vault section with default 1500 MON hot-float ceiling', async () => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+
+      expect(
+        wrapper.find('[data-test="cold-vault-sweep-section"]').exists(),
+      ).toBe(true)
+      expect(wrapper.find('[data-test="cold-vault-sweep-title"]').text()).toBe(
+        'settings.coldVaultTitle',
+      )
+      expect((wrapper.vm as any).coldVaultEnabled).toBe(false)
+      expect((wrapper.vm as any).coldVaultAddressInput).toBe('')
+      expect((wrapper.vm as any).coldVaultMaxHotBalanceInput).toBe('1500')
+      wrapper.unmount()
+    })
+
+    it('saves a valid external vault address and hot-float ceiling to settingsStore', async () => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+      const vaultAddr = '0x8888888888888888888888888888888888888888'
+
+      ;(wrapper.vm as any).coldVaultEnabled = true
+      await wrapper
+        .find('[data-test="cold-vault-address-input"]')
+        .setValue(vaultAddr)
+      await wrapper
+        .find('[data-test="cold-vault-max-hot-balance-input"]')
+        .setValue('1500')
+
+      await wrapper
+        .find('[data-test="save-email-gateway-btn"]')
+        .trigger('click')
+
+      expect(mockSetColdVaultSweep).toHaveBeenCalledWith({
+        enabled: true,
+        externalVaultAddress: vaultAddr,
+        maxHotBalanceDisplay: '1500',
+      })
+      expect((wrapper.vm as any).coldVaultError).toBe('')
+      wrapper.unmount()
+    })
+
+    it('displays error message when enabling without a valid external vault address', async () => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+
+      ;(wrapper.vm as any).coldVaultEnabled = true
+      await wrapper
+        .find('[data-test="cold-vault-address-input"]')
+        .setValue('not-an-address')
+      await wrapper
+        .find('[data-test="save-email-gateway-btn"]')
+        .trigger('click')
+
+      expect((wrapper.vm as any).coldVaultError).toContain(
+        'Invalid external vault address',
+      )
+      expect(wrapper.find('[data-test="cold-vault-error"]').text()).toContain(
+        'Invalid external vault address',
+      )
+      wrapper.unmount()
+    })
+
+    it('resets cold-vault sweep settings to defaults when reset button is clicked', async () => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+
+      ;(wrapper.vm as any).coldVaultEnabled = true
+      ;(wrapper.vm as any).coldVaultAddressInput =
+        '0x8888888888888888888888888888888888888888'
+      ;(wrapper.vm as any).coldVaultMaxHotBalanceInput = '2500'
+
+      await wrapper.find('[data-test="reset-cold-vault-btn"]').trigger('click')
+
+      expect(mockResetColdVaultSweep).toHaveBeenCalled()
+      expect((wrapper.vm as any).coldVaultEnabled).toBe(false)
+      expect((wrapper.vm as any).coldVaultAddressInput).toBe('')
+      expect((wrapper.vm as any).coldVaultMaxHotBalanceInput).toBe('1500')
       wrapper.unmount()
     })
   })

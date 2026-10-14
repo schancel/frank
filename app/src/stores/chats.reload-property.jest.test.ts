@@ -1,5 +1,6 @@
 /**
- * A reload shows what the session showed, and never fails, whatever other people send.
+ * A reload shows the session's current-format state, whatever other people send.
+ * Unsupported unprojected development rows fail read-only restoration without mutation.
  *
  * Seeded random sequences of the events that matter are applied to the real chat store over an
  * in-memory message store: messages from this user, two peers and a stranger; into live, deleted
@@ -34,7 +35,11 @@ import {
   type RestorableState,
 } from './chats'
 import { useContactStore } from './contacts'
-import { conversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+import {
+  allocateOpeningConversationId,
+  conversationIdSalt,
+  formatConversationId,
+} from '@frank/cashweb/relay/conversation-id'
 import { displayNetwork } from '../utils/constants'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
@@ -45,14 +50,44 @@ import type { MessageWrapper } from '@frank/cashweb/types/messages'
 const mockDisk = {
   rows: new Map<string, MessageWrapper>(),
   suppressed: new Set<string>(),
+  writes: 0,
 }
+const mockHydration = { active: false, custodyCalls: 0 }
+jest.mock('../utils/own-address', () => {
+  const actual = jest.requireActual('../utils/own-address')
+  return {
+    ...actual,
+    getOwnCanonicalAddress: (...args: unknown[]) => {
+      if (mockHydration.active) {
+        mockHydration.custodyCalls++
+        throw new Error('Hydration must not acquire the account identity')
+      }
+      return actual.getOwnCanonicalAddress(...args)
+    },
+  }
+})
+jest.mock('../utils/monad-identity-session', () => {
+  const actual = jest.requireActual('../utils/monad-identity-session')
+  return {
+    ...actual,
+    messagingWallet: (...args: unknown[]) => {
+      if (mockHydration.active) {
+        mockHydration.custodyCalls++
+        throw new Error('Hydration must not acquire custody')
+      }
+      return actual.messagingWallet(...args)
+    },
+  }
+})
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
     saveMessage: async (row: MessageWrapper) => {
       // As JSON, the way a row reaches the disk.
+      mockDisk.writes++
       mockDisk.rows.set(row.index, JSON.parse(JSON.stringify(row)))
     },
     deleteMessage: async (index: string) => {
+      mockDisk.writes++
       mockDisk.rows.delete(index)
     },
     suppressAndDelete: async (
@@ -60,6 +95,7 @@ jest.mock('../adapters/level-message-store', () => ({
       digests: string[],
       suppressions: Array<{ payloadDigest: string }>,
     ) => {
+      mockDisk.writes++
       for (const digest of digests) mockDisk.rows.delete(digest)
       for (const entry of suppressions)
         mockDisk.suppressed.add(entry.payloadDigest)
@@ -73,7 +109,9 @@ jest.mock('../adapters/level-message-store', () => ({
           .map(receipt => receipt.payloadDigest)
           .filter(digest => mockDisk.suppressed.has(digest)),
       ),
-    quarantineRelayReceipts: async () => undefined,
+    quarantineRelayReceipts: async () => {
+      mockDisk.writes++
+    },
     mostRecentMessageTime: async () => 0,
     relayCursor: async () => 0,
     getIterator: async function* () {
@@ -107,6 +145,16 @@ const PEER_OF: Record<string, string> = {
   [UNOPENED]: PEER_1,
   [UNKNOWN]: PEER_2,
 }
+
+const FIXTURE_ROOT = new Uint8Array(32).fill(0x11)
+const FIXTURE_SALT = conversationIdSalt(FIXTURE_ROOT)
+// Independently derived with Node crypto: HMAC-SHA256(root, salt label), then
+// SHA1(first16(HMAC) || lowercase stranger), with RFC UUIDv5/variant bits.
+const STRANGER_THREAD = '5d4b0c54-d10f-5733-a7ef-0e1136333940'
+const fixtureThreadId = (peer: string) =>
+  formatConversationId(
+    allocateOpeningConversationId(FIXTURE_SALT, peer.toLowerCase()),
+  )
 
 /** mulberry32: small, seeded, repeatable. */
 function generator(seed: number) {
@@ -320,7 +368,7 @@ async function openStore() {
   setActivePinia(pinia)
   // The account's salt: a message with no conversation ID is filed under the ID allocated from
   // it for the sender.
-  setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x11)))
+  setConversationIdSalt(FIXTURE_SALT)
   const chats = useChatStore()
   const contacts = useContactStore()
   // Replaced outright rather than spied on: the runner keeps every spy's target until the file
@@ -345,18 +393,52 @@ async function openStore() {
 
   // Saved and restored the way the app does it.
   const saved = new Map<string, string>()
-  const reload = async (state: unknown) => {
-    await persistence!.save(
-      { put: async (key, value) => void saved.set(key, value) },
+  let metadataWrites = 0
+  const save = async (state: unknown) =>
+    persistence!.save(
+      {
+        put: async (key, value) => {
+          metadataWrites++
+          saved.set(key, value)
+        },
+      },
       undefined,
       state,
     )
-    return persistence!.restore(
-      { get: async key => saved.get(key) ?? '{}' },
-      { networkName: displayNetwork, version: STORE_SCHEMA_VERSION },
-    )
+  const restore = async () => {
+    const before = {
+      liveOwners: visible(chats),
+      rows: JSON.stringify([...mockDisk.rows]),
+      suppressed: JSON.stringify([...mockDisk.suppressed]),
+      metadata: JSON.stringify([...saved]),
+      writes: mockDisk.writes,
+      metadataWrites,
+      custodyCalls: mockHydration.custodyCalls,
+    }
+    mockHydration.active = true
+    try {
+      return await persistence!.restore(
+        { get: async key => saved.get(key) ?? '{}' },
+        { networkName: displayNetwork, version: STORE_SCHEMA_VERSION },
+      )
+    } finally {
+      mockHydration.active = false
+      expect({
+        liveOwners: visible(chats),
+        rows: JSON.stringify([...mockDisk.rows]),
+        suppressed: JSON.stringify([...mockDisk.suppressed]),
+        metadata: JSON.stringify([...saved]),
+        writes: mockDisk.writes,
+        metadataWrites,
+        custodyCalls: mockHydration.custodyCalls,
+      }).toEqual(before)
+    }
   }
-  return { chats, reload }
+  const reload = async (state: unknown) => {
+    await save(state)
+    return restore()
+  }
+  return { chats, reload, save, restore }
 }
 
 let deletionNotes = 0
@@ -457,6 +539,36 @@ function row(wrapper: ReceivedMessageWrapper): MessageWrapper {
       message: wrapper.message,
     }),
   )
+}
+
+/** Build a current-format persisted projection from declared fixture ownership.
+ * Only owner fields change; authenticated payload/payment facts are copied intact. */
+function projectedRow(
+  wrapper: ReceivedMessageWrapper,
+  ownerPeer: string,
+): MessageWrapper {
+  const kept = row(wrapper)
+  if (
+    !wrapper.outbound &&
+    wrapper.senderAddress.toLowerCase() !== ME.toLowerCase() &&
+    wrapper.senderAddress.toLowerCase() !== ownerPeer.toLowerCase()
+  ) {
+    kept.message.requestedConversationId = wrapper.message.conversationId
+    kept.message.conversationId = fixtureThreadId(wrapper.senderAddress)
+  }
+  return kept
+}
+function declareOwner(
+  chats: ReturnType<typeof useChatStore>,
+  id: string,
+  peer: string,
+) {
+  if (!chats.conversations[id])
+    chats.createConversation({
+      conversationId: id,
+      address: peer,
+      participants: [ME, peer],
+    })
 }
 
 function message(
@@ -652,11 +764,10 @@ describe('a reload shows what the session showed, whatever was received', () => 
     })
   }, 240_000)
 
-  // Rows no receive of this version would have saved together: an older version's store, or a
-  // stop between two writes. Whatever other people's rows are on disk and however they relate
-  // to each other, the store loads, and what it loaded loads again. (Only loading is claimed
-  // here: such a store has no session to compare with.)
-  it(`loads ${seeds.length} seeded stores of arbitrary received rows, twice over`, async () => {
+  // Current-format rows with explicitly declared local owners may contain independent
+  // logical-ID collisions or interrupted writes. Old unprojected claims are tested
+  // separately below; restoring them is not a compatibility promise.
+  it(`loads ${seeds.length} seeded stores of current-format projected rows, twice over`, async () => {
     await quietly(async () => {
       for (const seed of seeds) {
         const steps = sequence(seed)
@@ -682,7 +793,21 @@ describe('a reload shows what the session showed, whatever was received', () => 
             // A row is saved under the conversation it was filed in, so no saved row lacks one:
             // a message that carried no ID reaches the disk only through `receiveMessages`.
             if (wrapper.conversationId === undefined) continue
-            const kept = row(wrapper)
+            const target = wrapper.conversationId
+            const ownerPeer = PEER_OF[target]
+            declareOwner(chats, target, ownerPeer)
+            const kept = projectedRow(wrapper, ownerPeer)
+            if (kept.message.requestedConversationId) {
+              if (!kept.message.conversationId)
+                throw new Error(
+                  'Projected fixture requires its explicit local owner',
+                )
+              declareOwner(
+                chats,
+                kept.message.conversationId,
+                wrapper.senderAddress,
+              )
+            }
             // Sometimes already re-filed, under an ID something else may also hold.
             if (random.chance(0.2))
               kept.message.logicalMessageId = collidedMessageId(
@@ -703,6 +828,46 @@ describe('a reload shows what the session showed, whatever was received', () => 
             )}\n${(error as Error).message}`,
           )
         }
+      }
+    })
+  }, 120_000)
+  it(`rejects ${seeds.length} seeded obsolete paid claims without writes or custody effects`, async () => {
+    await quietly(async () => {
+      for (const seed of seeds) {
+        const { chats, save, restore } = await openStore()
+        const random = generator(seed)
+        const target = random.pick([WITH_PEER_1, WITH_PEER_2])
+        const stranger = random.pick([
+          STRANGER,
+          target === WITH_PEER_1 ? PEER_2 : PEER_1,
+        ])
+        const wrapper = message(
+          `obsolete-${seed}`,
+          stranger,
+          target,
+          random.int(1000),
+          `id-${seed}`,
+        )
+        wrapper.message.stampPayments = [
+          {
+            txHash: '0x' + 'ef'.repeat(32),
+            destinationAddress: '0x' + 'c1'.repeat(20),
+            valueWei: String(random.int(1000) + 1),
+          },
+        ] as never
+        wrapper.message.outpoints = [
+          {
+            txId: 'ab'.repeat(32),
+            outputIndex: random.int(5),
+            satoshis: random.int(1000) + 1,
+          },
+        ] as never
+        mockDisk.rows.set(wrapper.index, row(wrapper))
+        await save(chats.$state)
+        await expect(restore()).rejects.toThrow(
+          'Unsupported stored direct admission format: original third-party claim requires a persisted local owner',
+        )
+        expect(chats.conversations[target].address).toBe(PEER_OF[target])
       }
     })
   }, 120_000)
@@ -740,37 +905,40 @@ describe('the sequences this was written for', () => {
       // The old message did not come back, so it holds nothing; the other two are kept.
       expect([...mockDisk.rows.keys()].sort()).toEqual(['triple-m', 'triple-r'])
       expect(chats.conversations[WITH_PEER_1].deletedAt).toBe(500)
+      expect(fixtureThreadId(STRANGER)).toBe(STRANGER_THREAD)
+      expect(chats.conversations[CONVERSATION_D].address).toBe(PEER_2)
+      expect(chats.messages[digestOfM].requestedConversationId).toBe(
+        CONVERSATION_D,
+      )
       expect(session.messageIds).toEqual({
-        L: CONVERSATION_D,
+        L: STRANGER_THREAD,
         [collidedMessageId('L', digestOfM)]: UNOPENED,
       })
     })
   })
 
-  it('the same three rows already on disk load: the last is re-filed until its ID is free', async () => {
+  it('rejects the same three old unprojected rows without changing any stored owner or receipt', async () => {
     await quietly(async () => {
-      const { chats, reload } = await openStore()
+      const { chats, save, restore } = await openStore()
       chats.conversations[WITH_PEER_1].deletedAt = 500
-      const once = collidedMessageId('L', digestOfM)
       for (const wrapper of [
         message('triple-p', PEER_1, WITH_PEER_1, 400, 'L'),
-        message('triple-r', STRANGER, UNOPENED, 600, once),
+        message(
+          'triple-r',
+          STRANGER,
+          UNOPENED,
+          600,
+          collidedMessageId('L', digestOfM),
+        ),
         message(digestOfM, STRANGER, CONVERSATION_D, 700, 'L'),
       ])
         mockDisk.rows.set(wrapper.index, row(wrapper))
+      await save(chats.$state)
       for (let attempt = 0; attempt < 2; attempt++) {
-        const reloaded = visible((await reload(chats.$state)) as never)
-        expect(reloaded.messageIds).toEqual({
-          L: WITH_PEER_1,
-          [once]: UNOPENED,
-          [collidedMessageId(once, digestOfM)]: CONVERSATION_D,
-        })
-        const deleted = reloaded.conversations.find(c => c.id === WITH_PEER_1)
-        expect(deleted).toMatchObject({
-          deletedAt: 500,
-          messages: [],
-          unread: 0,
-        })
+        await expect(restore()).rejects.toThrow(
+          'Unsupported stored direct admission format: original third-party claim requires a persisted local owner',
+        )
+        expect(chats.conversations[CONVERSATION_D].address).toBe(PEER_2)
       }
     })
   })
@@ -979,25 +1147,69 @@ describe('a note to self that carries only records', () => {
 })
 
 describe('a conversation the saved metadata does not know', () => {
-  it("is rebuilt as ours with the peer we wrote to, though a stranger's row in it is older", async () => {
+  it('reconstructs our peer thread and the explicitly projected stranger thread from rows without metadata', async () => {
     await quietly(async () => {
       const { chats, reload } = await openStore()
       const FRESH = '44444444-4444-4444-8444-444444444444'
       PEER_OF[FRESH] = PEER_1
-      // Saved rows of a conversation whose metadata was not yet written when the app stopped.
+      const stranger = message('lost-stranger', STRANGER, FRESH, 10)
+      stranger.message.stampPayments = [
+        {
+          txHash: '0x' + 'ef'.repeat(32),
+          destinationAddress: '0x' + 'c1'.repeat(20),
+          valueWei: '1000',
+        },
+      ] as never
+      stranger.message.outpoints = [
+        { txId: 'ab'.repeat(32), outputIndex: 2, satoshis: 42 },
+      ] as never
+      const projected = projectedRow(stranger, PEER_1)
+      const mine = row(message('lost-mine', ME, FRESH, 20))
+      mockDisk.rows.set(projected.index, projected)
+      mockDisk.rows.set(mine.index, mine)
+      const state = await reload(chats.$state)
+      const reloaded = visible(state as never)
+      expect(reloaded.conversations.find(c => c.id === FRESH)).toMatchObject({
+        peer: PEER_1,
+        messages: [{ digest: 'lost-mine', sender: ME, mine: true }],
+      })
+      expect(
+        reloaded.conversations.find(c => c.id === STRANGER_THREAD),
+      ).toMatchObject({
+        peer: STRANGER,
+        messages: [{ digest: 'lost-stranger', sender: STRANGER, mine: false }],
+      })
+      expect(state.messages['lost-stranger']).toMatchObject({
+        ...stranger.message,
+        conversationId: STRANGER_THREAD,
+        requestedConversationId: FRESH,
+      })
+      expect(
+        state.conversations[FRESH].pendingParticipantRequests?.[STRANGER],
+      ).toMatchObject({
+        senderConversationId: STRANGER_THREAD,
+        referencedConversationId: FRESH,
+        payloadDigest: 'lost-stranger',
+      })
+      expect(chats.conversations[FRESH]).toBeUndefined()
+    })
+  })
+
+  it('rejects an unprojected stranger row even when an own row establishes the missing peer owner', async () => {
+    await quietly(async () => {
+      const { chats, save, restore } = await openStore()
+      const FRESH = '44444444-4444-4444-8444-444444444444'
+      PEER_OF[FRESH] = PEER_1
       for (const wrapper of [
         message('lost-stranger', STRANGER, FRESH, 10),
         message('lost-mine', ME, FRESH, 20),
       ])
         mockDisk.rows.set(wrapper.index, row(wrapper))
-      const reloaded = visible((await reload(chats.$state)) as never)
-      expect(reloaded.conversations.find(c => c.id === FRESH)).toMatchObject({
-        peer: PEER_1,
-        messages: [
-          { digest: 'lost-stranger', sender: STRANGER, mine: false },
-          { digest: 'lost-mine', sender: ME, mine: true },
-        ],
-      })
+      await save(chats.$state)
+      await expect(restore()).rejects.toThrow(
+        'Unsupported stored direct admission format: original third-party claim requires a persisted local owner',
+      )
+      expect(chats.conversations[FRESH]).toBeUndefined()
     })
   })
 })

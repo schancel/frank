@@ -25,6 +25,7 @@ jest.mock('src/utils/own-address', () => {
 describe('EmailThreadView', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    mockOwnAddress.value = '0x1111111111111111111111111111111111111111'
     useSettingsStore().setEmailGatewayAddress(
       '0x3333333333333333333333333333333333333333',
     )
@@ -1132,6 +1133,244 @@ describe('EmailThreadView', () => {
         await vm.handleSend()
 
         expect(wrapper.emitted('sendReply')).toBeUndefined()
+      })
+    })
+
+    describe('Participant Deduplication & Gateway Reply-Alias Canonicalization', () => {
+      it('deduplicates bare email and display-name email into a single named participant entry', () => {
+        const msg1: ChatMessage = {
+          outbound: true,
+          status: 'confirmed',
+          receivedTime: 1000,
+          serverTime: 1000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<msg-out-1@signet.mx>',
+              from: {
+                address:
+                  '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+                name: 'Shammah',
+              },
+              to: [{ address: 'shammah.chancellor@gmail.com' }],
+              subject: 'Hello',
+              textBody: 'Initial outbound email',
+            },
+          ],
+          outpoints: [],
+          senderAddress: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+          payloadDigest: 'digest-dedup-1',
+        }
+        const msg2: ChatMessage = {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 2000,
+          serverTime: 2000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<msg-in-2@gmail.com>',
+              from: {
+                address: 'shammah.chancellor@gmail.com',
+                name: 'Shammah Chancellor',
+              },
+              to: [
+                {
+                  address:
+                    '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+                  name: 'Shammah',
+                },
+              ],
+              subject: 'Re: Hello',
+              textBody: 'Reply with display name',
+            },
+          ],
+          outpoints: [],
+          senderAddress: '0x3333333333333333333333333333333333333333',
+          payloadDigest: 'digest-dedup-2',
+        }
+
+        const wrapper = mountView({
+          messages: [msg1, msg2],
+        })
+        const vm = wrapper.vm as any
+
+        expect(vm.allParticipants).toEqual([
+          'Shammah <0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx>',
+          'Shammah Chancellor <shammah.chancellor@gmail.com>',
+        ])
+      })
+
+      it('folds gateway reply alias m<30-hex>@signet.mx and own 0x...@signet.mx address into a single self participant entry', () => {
+        mockOwnAddress.value = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        useProfileStore().owner = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        useProfileStore().profile = { name: 'Shammah' }
+
+        const msg1: ChatMessage = {
+          outbound: true,
+          status: 'confirmed',
+          receivedTime: 1000,
+          serverTime: 1000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<msg-out-alias-1@signet.mx>',
+              from: {
+                address:
+                  '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+                name: 'Shammah',
+              },
+              to: [{ address: 'shammah.chancellor@gmail.com' }],
+              subject: 'Alias test',
+              textBody: 'Outbound message',
+            },
+          ],
+          outpoints: [],
+          senderAddress: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
+          payloadDigest: 'digest-alias-1',
+        }
+        const msg2: ChatMessage = {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 2000,
+          serverTime: 2000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<msg-in-alias-2@gmail.com>',
+              from: {
+                address: 'shammah.chancellor@gmail.com',
+                name: 'Shammah Chancellor',
+              },
+              to: [{ address: 'm51131cde71c27c8384626d7aa72898@signet.mx' }],
+              subject: 'Re: Alias test',
+              textBody: 'Inbound reply to gateway alias',
+            },
+          ],
+          outpoints: [],
+          senderAddress: '0x3333333333333333333333333333333333333333',
+          payloadDigest: 'digest-alias-2',
+        }
+
+        const wrapper = mountView({
+          messages: [msg1, msg2],
+        })
+        const vm = wrapper.vm as any
+
+        expect(vm.allParticipants).toEqual([
+          'Shammah <0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx>',
+          'Shammah Chancellor <shammah.chancellor@gmail.com>',
+        ])
+        expect(vm.allParticipants).not.toContain(
+          'm51131cde71c27c8384626d7aa72898@signet.mx',
+        )
+      })
+
+      it('excludes own m<30-hex>@signet.mx reply alias and own address from ccList in reply_all', () => {
+        mockOwnAddress.value = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        useProfileStore().owner = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        useProfileStore().profile = { name: 'Shammah' }
+
+        const inboundMultiParty: ChatMessage = {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 3000,
+          serverTime: 3000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<msg-in-replyall@gmail.com>',
+              from: {
+                address: 'shammah.chancellor@gmail.com',
+                name: 'Shammah Chancellor',
+              },
+              to: [
+                { address: 'm51131cde71c27c8384626d7aa72898@signet.mx' },
+                {
+                  address:
+                    '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+                  name: 'Shammah',
+                },
+                { address: 'colleague@example.com', name: 'Colleague' },
+              ],
+              cc: [
+                { address: 'Colleague@example.com' },
+                { address: 'team@example.com' },
+              ],
+              subject: 'Re: Thread with Alias',
+              textBody: 'Replying to everyone',
+            },
+          ],
+          outpoints: [],
+          senderAddress: '0x3333333333333333333333333333333333333333',
+          payloadDigest: 'digest-replyall-alias',
+        }
+
+        const wrapper = mountView({
+          messages: [inboundMultiParty],
+        })
+        const vm = wrapper.vm as any
+
+        expect(vm.replyMode).toBe('reply_all')
+        expect(vm.toList).toEqual(['shammah.chancellor@gmail.com'])
+        expect(vm.ccList).toEqual(['colleague@example.com', 'team@example.com'])
+        expect(vm.ccList).not.toContain(
+          'm51131cde71c27c8384626d7aa72898@signet.mx',
+        )
+        expect(vm.ccList).not.toContain(
+          '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+        )
+      })
+
+      it('allows participant list to wrap cleanly without ellipsis or no-wrap blowout', () => {
+        const wrapper = mountView()
+        const participantList = wrapper.find('.participant-list')
+        expect(participantList.exists()).toBe(true)
+        expect(participantList.classes()).not.toContain('ellipsis')
+
+        const participantRow = wrapper.find('.participant-row')
+        expect(participantRow.exists()).toBe(true)
+        expect(participantRow.classes()).not.toContain('ellipsis')
+        expect(participantRow.classes()).not.toContain('no-wrap')
+      })
+
+      it('decodes quoted-printable UTF-8 sequences like =E2=80=AF and soft line breaks in email bodies', () => {
+        const qpMessage: ChatMessage = {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 4000,
+          serverTime: 4000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<msg-qp-1@gmail.com>',
+              from: {
+                address: 'shammah.chancellor@gmail.com',
+                name: 'Shammah Chancellor',
+              },
+              to: [{ address: 'm51131cde71c27c8384626d7aa72898@signet.mx' }],
+              subject: 'Re: Test Email',
+              textBody:
+                'Sounds good!\r\n\r\nOn Tue, Oct 13, 2026 at 10:00=E2=80=AFAM Shammah <=\r\n0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx> wrote:\r\n> Test body',
+            },
+          ],
+          outpoints: [],
+          senderAddress: '0x3333333333333333333333333333333333333333',
+          payloadDigest: 'digest-qp-1',
+        }
+
+        const wrapper = mountView({
+          messages: [qpMessage],
+        })
+        const vm = wrapper.vm as any
+        const card = vm.parsedEmails[0]
+
+        expect(card.textBody).not.toContain('=E2=80=AF')
+        expect(card.textBody).toContain('10:00\u202FAM')
+        expect(card.mainBody).toBe('Sounds good!')
+        expect(card.quotedBody).toContain(
+          'On Tue, Oct 13, 2026 at 10:00\u202FAM Shammah <0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx> wrote:',
+        )
       })
     })
   })

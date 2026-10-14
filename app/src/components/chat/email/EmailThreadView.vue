@@ -519,8 +519,204 @@
             @click="showBcc = !showBcc"
           />
         </div>
-        <div class="text-caption text-grey-6" v-if="stampStatus">
-          {{ stampStatus }}
+        <div
+          class="col-auto row items-center q-gutter-x-xs"
+          data-testid="composer-top-actions"
+        >
+          <div class="text-caption text-grey-6 q-mr-xs" v-if="stampStatus">
+            {{ stampStatus }}
+          </div>
+          <!-- Hidden file input -->
+          <input
+            type="file"
+            ref="fileInput"
+            multiple
+            @change="handleFilesSelected"
+            class="hidden"
+            style="display: none"
+          />
+          <!-- Attachment button -->
+          <q-btn
+            flat
+            round
+            dense
+            color="grey-7"
+            icon="attach_file"
+            :disable="sending"
+            class="attach-btn"
+            @click="triggerFileInput"
+            data-testid="attach-file-btn"
+          >
+            <q-tooltip>{{
+              $t('emailThread.attachFiles', 'Attach files')
+            }}</q-tooltip>
+          </q-btn>
+          <!-- Email Stamp Price / Multiplier Pill -->
+          <q-btn
+            flat
+            rounded
+            no-caps
+            icon="local_post_office"
+            class="chat-stamp-btn q-mr-xs"
+            :aria-label="$t('a11y.stampPayment')"
+            aria-haspopup="menu"
+            :disable="sending"
+            data-testid="email-stamp-btn"
+          >
+            <span class="chat-stamp-pill-text q-ml-xs">{{
+              stampPillText
+            }}</span>
+            <span
+              v-if="stampMultiplier && stampMultiplier !== '1'"
+              class="chat-stamp-pill-multiple q-ml-xs"
+              data-testid="stamp-pill-multiple"
+              >{{ stampMultiplier }}×</span
+            >
+            <q-tooltip max-width="280px">
+              <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
+              <div>
+                {{
+                  $t(
+                    'chatInput.stampWhat',
+                    'A stamp fee is burned to prioritize and deliver email via the gateway.',
+                  )
+                }}
+              </div>
+              <div
+                v-if="defaultStampMode && stampBasisNote"
+                data-testid="stamp-basis-note"
+              >
+                {{ stampBasisNote }}
+              </div>
+            </q-tooltip>
+            <q-menu anchor="top middle" self="bottom middle">
+              <div class="q-pa-md" style="min-width: 320px">
+                <div class="row items-center justify-between q-mb-xs">
+                  <div class="text-subtitle2 text-weight-medium">
+                    {{
+                      $t('chatInput.stampPayment', 'Email Stamp / Delivery Fee')
+                    }}
+                  </div>
+                </div>
+
+                <div
+                  class="text-caption chat-stamp-explanation q-mb-sm"
+                  data-testid="stamp-explanation"
+                >
+                  <div>
+                    {{
+                      $t(
+                        'emailThread.stampExplanation',
+                        'The email gateway requires a stamp (default 0.01 MONT) to bridge and dispatch email.',
+                      )
+                    }}
+                  </div>
+                  <div
+                    v-if="defaultStampMode && stampBasisNote"
+                    data-testid="stamp-basis-note"
+                  >
+                    {{ stampBasisNote }}
+                  </div>
+                </div>
+
+                <q-input
+                  v-model="innerStampAmount"
+                  dense
+                  autofocus
+                  type="number"
+                  min="0"
+                  step="any"
+                  data-testid="email-input-stamp-amount"
+                  :suffix="chainUnit"
+                  :label="$t('chatInput.stampPayment', 'Stamp Amount')"
+                />
+                <q-btn
+                  flat
+                  dense
+                  color="primary"
+                  data-testid="email-input-stamp-free"
+                  :label="$t('chatInput.stampFree', 'Free')"
+                  :disable="sending"
+                  @click="chooseFreeStamp"
+                />
+
+                <div class="q-mt-sm q-px-md">
+                  <q-slider
+                    v-model="decadeIndex"
+                    class="q-mt-md"
+                    :min="0"
+                    :max="(multiplierSteps?.length || 1) - 1"
+                    :disable="sending"
+                    :step="1"
+                    label
+                    label-always
+                    :label-value="stampMultiplier ? `${stampMultiplier}×` : ''"
+                    markers
+                    :marker-labels="decadeMarkerLabels"
+                    data-testid="email-input-stamp-slider"
+                  />
+                </div>
+
+                <div
+                  class="text-caption q-mt-sm"
+                  style="overflow-wrap: anywhere"
+                  data-testid="email-input-stamp-selection"
+                >
+                  {{ sliderLabelValue }}
+                </div>
+                <div class="text-caption text-grey-7 q-mt-sm">
+                  {{
+                    $t(
+                      'chatInput.stampQuickSelection',
+                      'Quick multiplier selection',
+                    )
+                  }}
+                </div>
+
+                <div
+                  v-if="!isDefaultStamp"
+                  class="row items-center justify-between q-mt-sm"
+                >
+                  <div class="text-caption text-grey-7">
+                    {{
+                      $t('chatInput.defaultStamp', {
+                        amount: defaultStampText,
+                      })
+                    }}
+                  </div>
+                  <q-btn
+                    flat
+                    dense
+                    size="sm"
+                    color="primary"
+                    :label="$t('chatInput.stampReset', 'Default')"
+                    @click="resetToDefaultStamp"
+                    data-testid="email-input-stamp-reset"
+                  />
+                </div>
+              </div>
+            </q-menu>
+          </q-btn>
+          <q-btn
+            unelevated
+            no-caps
+            :color="
+              isVerifiedGateway
+                ? 'primary'
+                : replyRouting === 'gateway'
+                ? 'secondary'
+                : 'warning'
+            "
+            icon="send"
+            :label="sendButtonLabel"
+            :loading="sending"
+            :disable="sending || !canSend"
+            @click="handleSend"
+            class="send-btn q-px-md"
+            data-testid="send-email-btn"
+          >
+            <q-tooltip>{{ sendButtonTooltip }}</q-tooltip>
+          </q-btn>
         </div>
       </div>
 
@@ -809,227 +1005,32 @@
         />
       </div>
 
-      <!-- Message Textarea & Send Bar -->
-      <div class="row items-end q-col-gutter-sm">
-        <div class="col">
-          <div
-            v-if="isPreviewMode"
-            class="email-body-preview q-pa-sm rounded-borders"
-            :class="{
-              'bg-grey-2': !$q.dark.isActive,
-              'bg-grey-9': $q.dark.isActive,
-            }"
-            v-html="renderedPreviewText"
-          />
-          <q-input
-            v-else
-            ref="bodyInputRef"
-            v-model="replyText"
-            type="textarea"
-            autogrow
-            :rows="isDraft ? 5 : 3"
-            outlined
-            dense
-            :placeholder="composerPlaceholder"
-            class="email-textarea"
-            :disable="sending"
-            @keydown.ctrl.enter="handleSend"
-            @keydown.meta.enter="handleSend"
-          />
-        </div>
-        <div class="col-auto row items-center q-gutter-x-xs">
-          <!-- Hidden file input -->
-          <input
-            type="file"
-            ref="fileInput"
-            multiple
-            @change="handleFilesSelected"
-            class="hidden"
-            style="display: none"
-          />
-          <!-- Attachment button -->
-          <q-btn
-            flat
-            round
-            dense
-            color="grey-7"
-            icon="attach_file"
-            :disable="sending"
-            class="attach-btn"
-            @click="triggerFileInput"
-            data-testid="attach-file-btn"
-          >
-            <q-tooltip>{{
-              $t('emailThread.attachFiles', 'Attach files')
-            }}</q-tooltip>
-          </q-btn>
-          <!-- Email Stamp Price / Multiplier Pill -->
-          <q-btn
-            flat
-            rounded
-            no-caps
-            icon="local_post_office"
-            class="chat-stamp-btn q-mr-xs"
-            :aria-label="$t('a11y.stampPayment')"
-            aria-haspopup="menu"
-            :disable="sending"
-            data-testid="email-stamp-btn"
-          >
-            <span class="chat-stamp-pill-text q-ml-xs">{{
-              stampPillText
-            }}</span>
-            <span
-              v-if="stampMultiplier && stampMultiplier !== '1'"
-              class="chat-stamp-pill-multiple q-ml-xs"
-              data-testid="stamp-pill-multiple"
-              >{{ stampMultiplier }}×</span
-            >
-            <q-tooltip max-width="280px">
-              <div data-testid="stamp-tooltip-amount">{{ stampLabel }}</div>
-              <div>
-                {{
-                  $t(
-                    'chatInput.stampWhat',
-                    'A stamp fee is burned to prioritize and deliver email via the gateway.',
-                  )
-                }}
-              </div>
-              <div
-                v-if="defaultStampMode && stampBasisNote"
-                data-testid="stamp-basis-note"
-              >
-                {{ stampBasisNote }}
-              </div>
-            </q-tooltip>
-            <q-menu anchor="top middle" self="bottom middle">
-              <div class="q-pa-md" style="min-width: 320px">
-                <div class="row items-center justify-between q-mb-xs">
-                  <div class="text-subtitle2 text-weight-medium">
-                    {{
-                      $t('chatInput.stampPayment', 'Email Stamp / Delivery Fee')
-                    }}
-                  </div>
-                </div>
-
-                <div
-                  class="text-caption chat-stamp-explanation q-mb-sm"
-                  data-testid="stamp-explanation"
-                >
-                  <div>
-                    {{
-                      $t(
-                        'emailThread.stampExplanation',
-                        'The email gateway requires a stamp (default 0.01 MONT) to bridge and dispatch email.',
-                      )
-                    }}
-                  </div>
-                  <div
-                    v-if="defaultStampMode && stampBasisNote"
-                    data-testid="stamp-basis-note"
-                  >
-                    {{ stampBasisNote }}
-                  </div>
-                </div>
-
-                <q-input
-                  v-model="innerStampAmount"
-                  dense
-                  autofocus
-                  type="number"
-                  min="0"
-                  step="any"
-                  data-testid="email-input-stamp-amount"
-                  :suffix="chainUnit"
-                  :label="$t('chatInput.stampPayment', 'Stamp Amount')"
-                />
-                <q-btn
-                  flat
-                  dense
-                  color="primary"
-                  data-testid="email-input-stamp-free"
-                  :label="$t('chatInput.stampFree', 'Free')"
-                  :disable="sending"
-                  @click="chooseFreeStamp"
-                />
-
-                <div class="q-mt-sm q-px-md">
-                  <q-slider
-                    v-model="decadeIndex"
-                    class="q-mt-md"
-                    :min="0"
-                    :max="(multiplierSteps?.length || 1) - 1"
-                    :disable="sending"
-                    :step="1"
-                    label
-                    label-always
-                    :label-value="stampMultiplier ? `${stampMultiplier}×` : ''"
-                    markers
-                    :marker-labels="decadeMarkerLabels"
-                    data-testid="email-input-stamp-slider"
-                  />
-                </div>
-
-                <div
-                  class="text-caption q-mt-sm"
-                  style="overflow-wrap: anywhere"
-                  data-testid="email-input-stamp-selection"
-                >
-                  {{ sliderLabelValue }}
-                </div>
-                <div class="text-caption text-grey-7 q-mt-sm">
-                  {{
-                    $t(
-                      'chatInput.stampQuickSelection',
-                      'Quick multiplier selection',
-                    )
-                  }}
-                </div>
-
-                <div
-                  v-if="!isDefaultStamp"
-                  class="row items-center justify-between q-mt-sm"
-                >
-                  <div class="text-caption text-grey-7">
-                    {{
-                      $t('chatInput.defaultStamp', {
-                        amount: defaultStampText,
-                      })
-                    }}
-                  </div>
-                  <q-btn
-                    flat
-                    dense
-                    size="sm"
-                    color="primary"
-                    :label="$t('chatInput.stampReset', 'Default')"
-                    @click="resetToDefaultStamp"
-                    data-testid="email-input-stamp-reset"
-                  />
-                </div>
-              </div>
-            </q-menu>
-          </q-btn>
-          <q-btn
-            unelevated
-            no-caps
-            :color="
-              isVerifiedGateway
-                ? 'primary'
-                : replyRouting === 'gateway'
-                ? 'secondary'
-                : 'warning'
-            "
-            icon="send"
-            :label="sendButtonLabel"
-            :loading="sending"
-            :disable="sending || !canSend"
-            @click="handleSend"
-            class="send-btn q-px-md"
-            data-testid="send-email-btn"
-          >
-            <q-tooltip>{{ sendButtonTooltip }}</q-tooltip>
-          </q-btn>
-        </div>
+      <!-- Message Textarea -->
+      <div class="composer-body-container">
+        <div
+          v-if="isPreviewMode"
+          class="email-body-preview q-pa-sm rounded-borders"
+          :class="{
+            'bg-grey-2': !$q.dark.isActive,
+            'bg-grey-9': $q.dark.isActive,
+          }"
+          v-html="renderedPreviewText"
+        />
+        <q-input
+          v-else
+          ref="bodyInputRef"
+          v-model="replyText"
+          type="textarea"
+          :rows="isDraft ? 6 : 4"
+          outlined
+          dense
+          :placeholder="composerPlaceholder"
+          class="email-textarea"
+          data-testid="email-body-textarea"
+          :disable="sending"
+          @keydown.ctrl.enter="handleSend"
+          @keydown.meta.enter="handleSend"
+        />
       </div>
     </div>
   </q-page>
@@ -2939,8 +2940,24 @@ export default defineComponent({
   border-bottom-color: rgba(255, 255, 255, 0.06);
 }
 
+.composer-body-container {
+  width: 100%;
+}
+
+.email-textarea {
+  width: 100%;
+}
+
 .email-textarea :deep(.q-field__control) {
   border-radius: 8px;
+}
+
+.email-textarea :deep(textarea) {
+  min-height: 96px;
+  max-height: 240px;
+  resize: vertical;
+  line-height: 1.5;
+  padding: 6px 0;
 }
 
 .staged-attachment-chip {

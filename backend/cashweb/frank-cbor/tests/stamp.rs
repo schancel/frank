@@ -30,7 +30,7 @@ fn type5_with(key: u64, value: Option<CborValue>) -> Vec<u8> {
         fields.push((key, value));
         fields.sort_by_key(|(k, _)| *k);
     }
-    fr(5, &cbor_map(fields))
+    fr(11, &cbor_map(fields))
 }
 
 fn outcome(frame: &[u8]) -> String {
@@ -55,13 +55,13 @@ fn production_type5(suite: u32) -> Vec<u8> {
     ]);
     encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: 11,
             schema_version: 2,
             min_reader_version: 2,
         },
         FramePayload::Value(&payload),
     )
-    .expect("schema-2 type 5")
+    .expect("schema-2 type 11")
 }
 
 fn point(prefix: u8, x_hex: &str) -> CborValue {
@@ -180,7 +180,7 @@ fn production_suite_one_is_typed_only_in_schema_two() {
     ]);
     let wrong_min_reader = encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: 11,
             schema_version: 2,
             min_reader_version: 1,
         },
@@ -190,7 +190,7 @@ fn production_suite_one_is_typed_only_in_schema_two() {
     assert_eq!(outcome(&wrong_min_reader), "Unsupported@S7");
     let future = encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: 11,
             schema_version: 3,
             min_reader_version: 2,
         },
@@ -224,7 +224,7 @@ fn statement(schema: u32, subject: CborValue, revision: u64, key: Option<CborVal
     }
     encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: 1,
             schema_version: schema,
             min_reader_version: schema,
         },

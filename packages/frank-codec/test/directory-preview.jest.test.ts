@@ -54,7 +54,7 @@ const statement = (
   payload: Map<bigint, Encodable>,
   schemaVersion = 4,
   minReaderVersion = 4,
-) => encodeFrame({ typeId: 4, schemaVersion, minReaderVersion }, payload)
+) => encodeFrame({ typeId: 1, schemaVersion, minReaderVersion }, payload)
 const expectError = (f: () => unknown, category: string, stage: string) => {
   try {
     f()
@@ -133,7 +133,7 @@ describe('provisional directory codec, not directory admission', () => {
   test('default reader and explicitly old readers reject the required v4 child', () => {
     expect(defaultContext().readerVersion).toBe(2)
     expect(
-      defaultContext().supportedSchemas.find(s => s.typeId === 4)
+      defaultContext().supportedSchemas.find(s => s.typeId === 1)
         ?.schemaVersion,
     ).toBe(3)
     for (const readerVersion of [1, 2, 3])
@@ -236,7 +236,7 @@ describe('provisional directory codec, not directory admission', () => {
       oldPriorBytes,
       defaultContext(),
     ) as ParsedFrame
-    if (oldPrior.typed?.type !== 4) throw new Error('legacy prior')
+    if (oldPrior.typed?.type !== 1) throw new Error('legacy prior')
     const p = bootstrap()
     // Use public fixture roles distinct from the legacy authority (scalar 2).
     p.set(10n, p.get(1n) as Encodable)
@@ -255,7 +255,7 @@ describe('provisional directory codec, not directory admission', () => {
       ) as ParsedFrame
       if (
         control.typed?.type !== 2 ||
-        control.typed.statementFrame.typed?.type !== 4
+        control.typed.statementFrame.typed?.type !== 1
       )
         throw new Error('transition')
       expect(control.typed.statementFrame.typed.subject.keyBytes).not.toEqual(
@@ -328,7 +328,7 @@ describe('provisional directory codec, not directory admission', () => {
       fromHex('a100'),
     ]) {
       const f = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        { typeId: 1, schemaVersion: 4, minReaderVersion: 4 },
         { bytes: payload },
       )
       expect(() => validateFrame(f, previewDirectoryContext())).toThrow(
@@ -413,7 +413,7 @@ describe('provisional directory codec, not directory admission', () => {
       statement(p),
       previewDirectoryContext(),
     ) as ParsedFrame
-    if (result.typed?.type !== 4) throw new Error('statement')
+    if (result.typed?.type !== 1) throw new Error('statement')
     expect(result.typed.preview?.mailboxKeyGeneration).toBe(
       18446744073709551615n,
     )

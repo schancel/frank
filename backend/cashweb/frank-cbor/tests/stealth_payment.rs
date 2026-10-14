@@ -37,7 +37,7 @@ fn payload(entries: Vec<CborValue>) -> CborValue {
 fn frame(payload: &CborValue, schema: u32, min: u32) -> Vec<u8> {
     encode_frame(
         EnvelopeFields {
-            type_id: 19,
+            type_id: 24,
             schema_version: schema,
             min_reader_version: min,
         },
@@ -65,7 +65,7 @@ fn exact_token_quantity_and_native_uint64_round_trip() {
     let parsed = projected(&payload(vec![entry(), native]));
     assert_eq!(parsed.projection, Projection::Exact);
     let TypedPayload::StealthPaymentItem(p) = parsed.typed.as_deref().unwrap() else {
-        panic!("type19")
+        panic!("type24")
     };
     assert_eq!(
         p.entries[0].transfer.value,
@@ -86,7 +86,7 @@ fn schema1_recovery_remains_exact() {
         (2, CborValue::Array(vec![CborValue::Bytes(vec![1; 100])])),
         (3, int(u64::MAX as i128)),
     ]);
-    let ValidationResult::Parsed(p) = validate_frame(&fr(19, &p), &default_context()).unwrap()
+    let ValidationResult::Parsed(p) = validate_frame(&fr(24, &p), &default_context()).unwrap()
     else {
         panic!("parsed")
     };
@@ -101,7 +101,7 @@ fn old_schema_context_cannot_project_new_shape() {
     let mut old = default_context();
     old.supported_schemas
         .iter_mut()
-        .find(|s| s.type_id == 19)
+        .find(|s| s.type_id == 24)
         .unwrap()
         .schema_version = 1;
     assert!(validate_frame(&bytes, &old).is_err());
@@ -128,7 +128,7 @@ fn unknown_schemes_preserve_data_without_allocating_solana() {
         set(&mut e, 4, Some(CborValue::Bytes(vec![14; 1024])));
         let parsed = projected(&payload(vec![e]));
         let TypedPayload::StealthPaymentItem(p) = parsed.typed.as_deref().unwrap() else {
-            panic!("type19")
+            panic!("type24")
         };
         assert_eq!(p.entries[0].scheme, scheme);
         assert_eq!(p.entries[0].scheme_context, Some(vec![14; 1024]));
@@ -208,7 +208,7 @@ fn bounded_arrays_text_and_context() {
 fn nested_known_stealth_malformed_payload_is_rejected_not_retained() {
     let child = frame(&payload(vec![entry()]), 2, 2);
     let container = fr(
-        16,
+        21,
         &cbor_map(vec![(0, CborValue::Array(vec![CborValue::Bytes(child)]))]),
     );
     let ValidationResult::Parsed(p) = validate_frame(&container, &default_context()).unwrap()
@@ -223,7 +223,7 @@ fn nested_known_stealth_malformed_payload_is_rejected_not_retained() {
     );
     let malformed = frame(&payload(vec![]), 2, 2);
     let container = fr(
-        16,
+        21,
         &cbor_map(vec![(
             0,
             CborValue::Array(vec![CborValue::Bytes(malformed)]),
@@ -243,7 +243,7 @@ fn compatible_future_outer_fields_remain_data() {
     };
     assert_eq!(p.projection, Projection::NewerSchema);
     let TypedPayload::StealthPaymentItem(p) = p.typed.as_deref().unwrap() else {
-        panic!("type19")
+        panic!("type24")
     };
     assert_eq!(p.unknown, vec![(9, CborValue::Bytes(vec![42; 3]))]);
 }
@@ -307,7 +307,7 @@ fn shared_typescript_stealth_assets_vectors_agree() {
                     let mut old = default_context();
                     old.supported_schemas
                         .iter_mut()
-                        .find(|s| s.type_id == 19)
+                        .find(|s| s.type_id == 24)
                         .unwrap()
                         .schema_version = 1;
                     assert!(
@@ -361,7 +361,7 @@ fn old_stealth_schema_context() -> frank_cbor::ValidationContext {
     ctx.reader_version = 4;
     ctx.supported_schemas
         .iter_mut()
-        .find(|s| s.type_id == 19)
+        .find(|s| s.type_id == 24)
         .unwrap()
         .schema_version = 1;
     ctx
@@ -380,7 +380,7 @@ fn old_stealth_schema_retains_root_when_opaque_retention_is_allowed() {
         frank_cbor::RetentionReason::UnsupportedMinReader
     );
     assert_eq!(retained.frame, bytes);
-    assert_eq!(retained.type_id, Some(19));
+    assert_eq!(retained.type_id, Some(24));
     assert_eq!(retained.schema_version, Some(2));
     assert_eq!(retained.min_reader_version, Some(2));
     ctx.opaque_retention_allowed = false;
@@ -397,7 +397,7 @@ fn old_stealth_schema_retains_root_when_opaque_retention_is_allowed() {
 fn old_stealth_schema_retains_open_child_without_rejecting_parent() {
     let bytes = shared_native_uint64_frame();
     let container = fr(
-        16,
+        21,
         &cbor_map(vec![(
             0,
             CborValue::Array(vec![CborValue::Bytes(bytes.clone())]),
@@ -408,7 +408,7 @@ fn old_stealth_schema_retains_open_child_without_rejecting_parent() {
     let ValidationResult::Parsed(parsed) = validate_frame(&container, &ctx).unwrap() else {
         panic!("expected parsed container")
     };
-    assert_eq!(parsed.type_id, 16);
+    assert_eq!(parsed.type_id, 21);
     let TypedPayload::ContainerItem { items, .. } = parsed.typed.as_deref().unwrap() else {
         panic!("expected container projection")
     };
@@ -421,7 +421,7 @@ fn old_stealth_schema_retains_open_child_without_rejecting_parent() {
         frank_cbor::RetentionReason::UnsupportedMinReader
     );
     assert_eq!(retained.frame, bytes);
-    assert_eq!(retained.type_id, Some(19));
+    assert_eq!(retained.type_id, Some(24));
     assert_eq!(retained.schema_version, Some(2));
     assert_eq!(retained.min_reader_version, Some(2));
 }

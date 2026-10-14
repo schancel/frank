@@ -34,7 +34,7 @@ describe('stealth message items (Type 19, schema 1)', () => {
       expect(parsed.typeId).toBe(TYPE_STEALTH_MESSAGE_ITEM)
       expect(parsed.schemaVersion).toBe(1)
       expect(parsed.minReaderVersion).toBe(1)
-      expect(parsed.typed?.type).toBe(19)
+      expect(parsed.typed?.type).toBe(24)
       if (isStealthMessageItemFrame(parsed)) {
         expect(parsed.typed.networkTag).toBe('MONT')
         expect(parsed.typed.ephemeralPubKey.keyType).toBe(1)

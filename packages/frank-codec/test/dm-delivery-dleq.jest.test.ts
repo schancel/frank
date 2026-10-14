@@ -28,19 +28,19 @@ const be = (v: bigint): Uint8Array => {
   return out
 }
 
-describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946)', () => {
+describe('Type 10 delivery: recipient identity P and DLEQ proof co-location (#946)', () => {
   const recipientAcct = acct1(7)
   const dleqProof = T3C.proof
 
-  it('validates a Type 1 delivery with co-located recipient P and DLEQ proof', () => {
+  it('validates a Type 10 delivery with co-located recipient P and DLEQ proof', () => {
     const frame = deliveryFrame({
       recipient: recipientAcct,
       dleqProof,
     })
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
-    if (res.kind !== 'parsed' || res.typed?.type !== 1) {
-      throw new Error('expected parsed Type 1 delivery')
+    if (res.kind !== 'parsed' || res.typed?.type !== 10) {
+      throw new Error('expected parsed Type 10 delivery')
     }
 
     expect(res.typed.recipient).toBeDefined()
@@ -55,8 +55,8 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const frame = deliveryFrame()
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
-    if (res.kind !== 'parsed' || res.typed?.type !== 1) {
-      throw new Error('expected parsed Type 1 delivery')
+    if (res.kind !== 'parsed' || res.typed?.type !== 10) {
+      throw new Error('expected parsed Type 10 delivery')
     }
 
     expect(res.typed.recipient).toBeUndefined()
@@ -200,7 +200,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const payload = deliveryPayload({
       recipient: recipientAcct,
     })
-    const frame = fr(1, payload)
+    const frame = fr(10, payload)
     expect(() => validateFrame(frame, ctx)).toThrow(FrankCodecError)
     try {
       validateFrame(frame, ctx)
@@ -218,7 +218,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     const payload = deliveryPayload({
       dleqProof,
     })
-    const frame = fr(1, payload)
+    const frame = fr(10, payload)
     expect(() => validateFrame(frame, ctx)).toThrow(FrankCodecError)
     try {
       validateFrame(frame, ctx)
@@ -250,7 +250,7 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
     })
     const goodRes = validateFrame(goodFrame, ctx)
     expect(goodRes.kind).toBe('parsed')
-    if (goodRes.kind === 'parsed' && goodRes.typed?.type === 1) {
+    if (goodRes.kind === 'parsed' && goodRes.typed?.type === 10) {
       expect(goodRes.typed.payments.length).toBe(3)
       expect(goodRes.typed.payments[0].childIndex).toBe(0)
       expect(goodRes.typed.payments[1].childIndex).toBe(1)
@@ -286,17 +286,17 @@ describe('Type 1 delivery: recipient identity P and DLEQ proof co-location (#946
       recipient: recipientAcct,
       dleqProof,
     })
-    const frame = fr(1, payload)
+    const frame = fr(10, payload)
     const res = validateFrame(frame, ctx)
     expect(res.kind).toBe('parsed')
-    if (res.kind === 'parsed' && res.typed?.type === 1) {
+    if (res.kind === 'parsed' && res.typed?.type === 10) {
       expect(res.typed.unknownFields.size).toBe(0)
     }
 
     // Adding key 7 (undeclared) fails C12 in strict mode
     const payloadWith7 = new Map(payload)
     payloadWith7.set(7, new Uint8Array([1, 2, 3]))
-    const frameWith7 = fr(1, payloadWith7)
+    const frameWith7 = fr(10, payloadWith7)
     expect(() => validateFrame(frameWith7, ctx)).toThrow(FrankCodecError)
     try {
       validateFrame(frameWith7, ctx)

@@ -107,7 +107,7 @@ pub fn encode_signed_forum_post(
     }
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 9,
+            type_id: 40,
             schema_version: 2,
             min_reader_version: 2,
         },
@@ -150,7 +150,7 @@ pub fn verify_topic_post_author(
 }
 /// Constructs and validates a complete read frame without asserting its observations are true.
 pub fn encode_forum_read_frame(type_id: u32, payload: &CborValue) -> Result<Vec<u8>, Error> {
-    if !(12..=15).contains(&type_id) {
+    if !(43..=46).contains(&type_id) {
         return Err(failure("expected Forum read type").into());
     }
     let frame = encode_frame(
@@ -194,7 +194,7 @@ pub fn encode_forum_cursor(cursor: &ForumCursor) -> Result<Vec<u8>, Error> {
             timestamp,
             hash,
         } => fields.extend([
-            (1, CborValue::Int(13)),
+            (1, CborValue::Int(44)),
             (
                 4,
                 cbor_map(vec![
@@ -206,7 +206,7 @@ pub fn encode_forum_cursor(cursor: &ForumCursor) -> Result<Vec<u8>, Error> {
             (6, time(since)),
         ]),
         ForumCursorPosition::Discovery { topic } => {
-            fields.extend([(1, CborValue::Int(14)), (4, CborValue::Text(topic.clone()))])
+            fields.extend([(1, CborValue::Int(45)), (4, CborValue::Text(topic.clone()))])
         }
     }
     let bytes = encode_canonical(&cbor_map(fields)).map_err(usage)?;

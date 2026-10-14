@@ -46,8 +46,8 @@ const raw = (id: string) => fromHex(forumFixture(id).hex)
 const frame = (
   type: number,
   payload: Encodable,
-  schema = type === 9 ? 2 : 1,
-  min = type === 9 ? 2 : 1,
+  schema = type === 40 ? 2 : 1,
+  min = type === 40 ? 2 : 1,
 ) =>
   encodeFrame(
     { typeId: type, schemaVersion: schema, minReaderVersion: min },
@@ -81,7 +81,7 @@ describe('active Forum public facade', () => {
     const topicSchema = f.context?.topicSchema
     if (topicSchema)
       context.supportedSchemas = context.supportedSchemas.map(s =>
-        s.typeId === 9 ? { ...s, schemaVersion: topicSchema } : s,
+        s.typeId === 40 ? { ...s, schemaVersion: topicSchema } : s,
       )
     if (!f.valid) {
       try {
@@ -106,11 +106,11 @@ describe('active Forum public facade', () => {
     }
     expect(result.kind).toBe('parsed')
     if (result.kind !== 'parsed') throw Error('not parsed')
-    if (f.type >= 12 && f.type <= 15 && f.schema === 1)
+    if (f.type >= 43 && f.type <= 46 && f.schema === 1)
       expect(
         toHex(
           encodeForumReadFrame(
-            f.type as 12 | 13 | 14 | 15,
+            f.type as 43 | 44 | 45 | 46,
             recipeValue(f.payload),
           ),
         ),
@@ -120,9 +120,9 @@ describe('active Forum public facade', () => {
       expect(
         toHex(topicVoteCommitment('monad-testnet', contentHash(result))),
       ).toBe(f.t7)
-    if (f.type === 9) {
-      expect(result.typed?.type).toBe(9)
-      if (result.typed?.type === 9)
+    if (f.type === 40) {
+      expect(result.typed?.type).toBe(40)
+      if (result.typed?.type === 40)
         expect(result.typed.schemaVersion).toBe(f.schema === 1 ? 1 : 2)
     }
   })
@@ -155,7 +155,7 @@ describe('active Forum public facade', () => {
     ).toBe(forumFixture('rust-origin').hex)
     for (const id of ['typescript-origin', 'rust-origin']) {
       const post = parsed(raw(id)).typed
-      if (post?.type !== 9 || post.schemaVersion !== 2)
+      if (post?.type !== 40 || post.schemaVersion !== 2)
         throw Error('not structured')
       expect(post.content.entries.every(e => e.kind === 'post')).toBe(true)
       const entries = post.content.entries.map(e => {
@@ -178,10 +178,10 @@ describe('active Forum public facade', () => {
       expect(
         parsed(encodeTopicPostSubmission(raw(id), Uint8Array.of(1))).typed
           ?.type,
-      ).toBe(10)
+      ).toBe(41)
     }
-    const opaque = parsed(frame(9, payloadOf('typescript-origin'), 1, 1)).typed
-    expect(opaque).toMatchObject({ type: 9, schemaVersion: 1 })
+    const opaque = parsed(frame(40, payloadOf('typescript-origin'), 1, 1)).typed
+    expect(opaque).toMatchObject({ type: 40, schemaVersion: 1 })
     expect(opaque && 'content' in opaque).toBe(false)
     expect(contentHash(parsed(raw('typescript-origin')))).not.toEqual(
       contentHash(parsed(raw('different-authored-time'))),
@@ -190,7 +190,7 @@ describe('active Forum public facade', () => {
   it('retains unknown future bytes and uses only a fixed bounded placeholder', () => {
     const bytes = raw('future-retention'),
       post = parsed(bytes).typed
-    if (post?.type !== 9 || post.schemaVersion !== 2)
+    if (post?.type !== 40 || post.schemaVersion !== 2)
       throw Error('not structured')
     expect(
       post.content.entries.find(e => e.kind === 'unsupported'),
@@ -253,7 +253,7 @@ describe('cursor and exact request boundaries', () => {
       'rejected-b',
     ]) {
       const p = parsed(raw(id)).typed
-      if (p?.type !== 15) throw Error('status')
+      if (p?.type !== 46) throw Error('status')
       const expected: ForumOperationExpectation = {
         network: p.network,
         submittedFrame: p.submittedFrame.frame,
@@ -297,7 +297,7 @@ describe('cursor and exact request boundaries', () => {
   it('matches explicit view facts without inventing chain evidence or a read-frame T1', () => {
     const bytes = raw('view-large-aggregate'),
       v = parsed(bytes).typed
-    if (v?.type !== 12 || v.postFrame.typed?.type !== 9) throw Error('view')
+    if (v?.type !== 43 || v.postFrame.typed?.type !== 40) throw Error('view')
     const hash = contentHash(v.postFrame),
       expected = {
         network: v.network,
@@ -315,11 +315,11 @@ describe('cursor and exact request boundaries', () => {
       matchForumView(bytes, { ...expected, topic: 'different' }),
     ).toThrow()
     const p = parsed(raw('equal-time-page')).typed
-    if (p?.type !== 13) throw Error('page')
+    if (p?.type !== 44) throw Error('page')
     expect(
       matchForumPage(raw('equal-time-page'), {
         network: p.network,
-        family: 13,
+        family: 44,
         topic: p.topic,
         since: p.since,
       }).frame,
@@ -327,7 +327,7 @@ describe('cursor and exact request boundaries', () => {
     expect(() =>
       matchForumPage(raw('equal-time-page'), {
         network: p.network,
-        family: 13,
+        family: 44,
         topic: p.topic,
         since: p.since,
         requestCursor: fromHex(corpus.cursors[0].hex),
@@ -338,7 +338,7 @@ describe('cursor and exact request boundaries', () => {
 
 describe('cumulative opened resource budgets', () => {
   const postWith = (content: FrankValue, schema = 2) =>
-    frame(9, contentPayload(content), schema, 2)
+    frame(40, contentPayload(content), schema, 2)
   it('enforces 64 entries and the inclusive text/content byte ceilings', () => {
     const c = baseContent(),
       entry = new Map<bigint, FrankValue>([
@@ -382,8 +382,8 @@ describe('cumulative opened resource budgets', () => {
       const view = payloadOf('view-large-aggregate')
       view.set(1, post)
       const page = payloadOf('equal-time-page')
-      page.set(4, [frame(12, view)])
-      return frame(13, page)
+      page.set(4, [frame(43, view)])
+      return frame(44, page)
     }
     let found = false
     for (let depth = 20; depth < 34; depth++) {
@@ -419,24 +419,24 @@ describe('cumulative opened resource budgets', () => {
       const posts = [0, 1, 2].map(i => {
         const p = contentPayload(content)
         p.set(2, new Uint8Array(32).fill(i))
-        return frame(9, p, 3, 2)
+        return frame(40, p, 3, 2)
       })
       for (const p of posts) expect(outcome(p)).toBe('parsed')
       const views = posts.map(p => {
         const v = payloadOf('view-large-aggregate')
         v.set(1, p)
-        return frame(12, v)
+        return frame(43, v)
       })
       for (const v of views) expect(outcome(v)).toBe('parsed')
       const page = payloadOf('equal-time-page')
       page.set(4, views)
-      expect(outcome(frame(13, page))).toBe('resource@8.4')
+      expect(outcome(frame(44, page))).toBe('resource@8.4')
     }
   })
   it('enforces encoded view/page bytes and rejects excess rows before opening them', () => {
     for (const [type, id, limit] of [
-      [12, 'view-large-aggregate', 2097152],
-      [13, 'equal-time-page', 4194304],
+      [43, 'view-large-aggregate', 2097152],
+      [44, 'equal-time-page', 4194304],
     ] as const) {
       const payload = payloadOf(id)
       payload.set(99, new Uint8Array(0))
@@ -453,22 +453,22 @@ describe('cumulative opened resource budgets', () => {
       const post = payloadOf('typescript-origin')
       post.set(2, new Uint8Array(32).fill(i))
       const view = payloadOf('view-large-aggregate')
-      view.set(1, frame(9, post))
-      return frame(12, view)
+      view.set(1, frame(40, post))
+      return frame(43, view)
     }).sort((a, b) => {
       const av = parsed(a).typed,
         bv = parsed(b).typed
-      if (av?.type !== 12 || bv?.type !== 12) throw Error('view')
+      if (av?.type !== 43 || bv?.type !== 43) throw Error('view')
       return toHex(contentHash(av.postFrame)).localeCompare(
         toHex(contentHash(bv.postFrame)),
       )
     })
     page.set(4, rows)
-    expect(outcome(frame(13, page))).toBe('parsed')
+    expect(outcome(frame(44, page))).toBe('parsed')
     page.set(
       4,
       Array.from({ length: 129 }, () => raw('view-rust')),
     )
-    expect(outcome(frame(13, page))).toBe('resource@8.1')
+    expect(outcome(frame(44, page))).toBe('resource@8.1')
   })
 })

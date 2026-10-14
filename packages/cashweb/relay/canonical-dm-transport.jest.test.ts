@@ -61,7 +61,7 @@ export function canonicalTransportFixture(): CanonicalExactParts {
   ])
   return {
     delivery: encodeFrame(
-      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
       payload,
     ),
     context: fromHex(wire.context),
@@ -544,7 +544,7 @@ describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
     payloadMap.set(6n, dleqBytes)
 
     const delivery = encodeFrame(
-      { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 10, schemaVersion: 1, minReaderVersion: 1 },
       payloadMap,
     )
 

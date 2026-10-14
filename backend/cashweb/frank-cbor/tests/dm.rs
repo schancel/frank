@@ -93,13 +93,13 @@ fn dm_context_matches_typescript_vector() {
     ]);
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 5,
+            type_id: 11,
             schema_version: 2,
             min_reader_version: 2,
         },
         FramePayload::Value(&payload),
     )
-    .expect("type-5 frame");
+    .expect("type-11 frame");
     assert_eq!(
         hex::encode(frame),
         corpus["type5FrameHex"].as_str().expect("type5FrameHex")

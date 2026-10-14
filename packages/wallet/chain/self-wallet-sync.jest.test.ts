@@ -530,7 +530,7 @@ describe("a wallet's sync note to itself", () => {
         one.alice.identity.address.raw.toLowerCase(),
       )
       const delivery = parseFrame(request.parts.delivery)
-      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+      if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10)
         throw new Error('not a delivery')
       expect(delivery.schemaVersion).toBe(2)
       expect(delivery.typed.payments).toEqual([])
@@ -620,7 +620,7 @@ describe("a wallet's sync note to itself", () => {
       expect(bobMailbox).toHaveLength(0)
       expect(mockFunded).toHaveLength(funded)
       const noted = parseFrame(mailbox[0].delivery)
-      expect(noted.kind === 'parsed' && noted.typed?.type === 1 && noted.typed.payments).toEqual([])
+      expect(noted.kind === 'parsed' && noted.typed?.type === 10 && noted.typed.payments).toEqual([])
 
       // The unresolved chat message is delivered as it was, and the next one goes out.
       one.setMailbox(bobMailbox)

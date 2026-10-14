@@ -1,7 +1,7 @@
-; PROPOSAL ONLY: type18 / schema1 / min-reader1, not an active allocation.
+; PROPOSAL ONLY: type26 / schema1 / min-reader1, not an active allocation.
 ; Exact structural schema from accepted #771 artifact
 ; f58473a93079048315d85f3250fb45b0418614568de6edd40e4b17bbbb02b139.
-; Frame envelope remains {0:18, 1:1, 2:1, 3:bstr(payload_cbor)}.
+; Frame envelope remains {0:26, 1:1, 2:1, 3:bstr(payload_cbor)}.
 ; No wildcard: these nine maps are closed, including compatible-future projection.
 ; All text is well-formed UTF-8; .size on text counts UTF-8 bytes.
 ;
@@ -14,7 +14,7 @@
 ; - cards are unique within each hand; deal up-card is not a player card;
 ; - welcome 1<=min<=max<=10^40-1, optional fee 0<=fee<=10^40-1,
 ;   read from fixed-width unsigned big-endian 32-byte quantities.
-; Type18 complete-frame cap4096 is stage8.1 resource; existing cumulative
+; Type26 complete-frame cap4096 is stage8.1 resource; existing cumulative
 ; item/container/depth budgets apply, not independent per-child budgets.
 ; Request/response direction and cross-message fairness/ownership require the
 ; existing authenticated runtime context: syntax proves no payment or authority.

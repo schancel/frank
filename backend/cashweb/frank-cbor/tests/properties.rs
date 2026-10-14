@@ -60,7 +60,7 @@ fn corrupting_the_frame_length_is_a_frame_error() {
     let payload = cbor_map(vec![(0, CborValue::Text("hi".to_string()))]);
     let frame = encode_frame(
         EnvelopeFields {
-            type_id: 17,
+            type_id: 22,
             schema_version: 1,
             min_reader_version: 1,
         },

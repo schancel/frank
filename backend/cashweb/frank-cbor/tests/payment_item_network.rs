@@ -29,17 +29,17 @@ fn ephemeral() -> AccountRef {
     }
 }
 
-/// A type-1 frame whose only payload field is its network tag. Enough for the digest.
+/// A type-10 frame whose only payload field is its network tag. Enough for the digest.
 fn type1(network: &str) -> Vec<u8> {
     encode_frame(
         EnvelopeFields {
-            type_id: 1,
+            type_id: 10,
             schema_version: 1,
             min_reader_version: 1,
         },
         FramePayload::Value(&CborValue::Map(vec![(0, CborValue::Text(network.into()))])),
     )
-    .expect("type-1 frame")
+    .expect("type-10 frame")
 }
 
 fn stamp(network: &str, tx_seed: u32, addr_seed: u32) -> PaymentMember {
@@ -85,7 +85,7 @@ fn encode_type25(inner: &[u8], payments: Vec<PaymentMember>) -> Vec<u8> {
         expires_at: None,
         unknown: vec![],
     })
-    .expect("type 25")
+    .expect("type 13")
 }
 
 fn insert_key0(frame: &[u8]) -> Vec<u8> {
@@ -103,7 +103,7 @@ fn insert_key0(frame: &[u8]) -> Vec<u8> {
     fields.sort_by_key(|(key, _)| *key);
     encode_frame(
         EnvelopeFields {
-            type_id: 25,
+            type_id: 13,
             schema_version: 1,
             min_reader_version: 1,
         },

@@ -43,7 +43,7 @@ describe('UTXO payment-member extensions', () => {
     const frame = deliveryFrame({ payloadFrame: pf, payments: [p0, p1] })
     const validated = validateFrame(frame, ctx)
     expect(validated.typed).toBeDefined()
-    if (validated.typed?.type === 1) {
+    if (validated.typed?.type === 10) {
       expect(validated.typed.payments[0].vout).toBe(0)
       expect(validated.typed.payments[1].vout).toBe(4294967295)
     }
@@ -75,7 +75,7 @@ describe('UTXO payment-member extensions', () => {
     ])
     const frame = deliveryFrame({ payloadFrame: pf, payments: [pSatoshi] })
     const validated = validateFrame(frame, ctx)
-    if (validated.typed?.type === 1) {
+    if (validated.typed?.type === 10) {
       expect(validated.typed.payments[0].value).toBe(50_000n)
       expect(validated.typed.payments[0].vout).toBe(1)
     }
@@ -118,7 +118,7 @@ describe('UTXO payment-member extensions', () => {
     const frame = deliveryFrame({ payloadFrame: pf, payments: [p0, p1] })
     const validated = validateFrame(frame, ctx)
     expect(validated.typed).toBeDefined()
-    if (validated.typed?.type === 1) {
+    if (validated.typed?.type === 10) {
       expect(validated.typed.payments.length).toBe(2)
       expect(validated.typed.payments[0].vout).toBe(0)
       expect(validated.typed.payments[1].vout).toBe(1)

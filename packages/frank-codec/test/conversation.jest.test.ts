@@ -17,7 +17,7 @@ import {
 } from '../fixtures/builders'
 
 describe('ticket #818: conversation identifiers and names in encrypted message content', () => {
-  it('parses conversation_id and optional conversation_name on type 6', () => {
+  it('parses conversation_id and optional conversation_name on type 12', () => {
     const convId = bytesOf(16, 42)
     const frame = type6Frame(
       rev8Frame([textItem('hello')]),
@@ -27,24 +27,24 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
     const parsed = parseFrame(frame, defaultContext())
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('expected parsed')
-    expect(parsed.typed?.type).toBe(6)
-    if (parsed.typed?.type !== 6) throw new Error('expected type 6')
+    expect(parsed.typed?.type).toBe(12)
+    if (parsed.typed?.type !== 12) throw new Error('expected type 12')
     expect(parsed.typed.conversationId).toEqual(convId)
     expect(parsed.typed.conversationName).toBe('Project Discussion')
   })
 
-  it('parses type 6 with conversation_id and omitted conversation_name', () => {
+  it('parses type 12 with conversation_id and omitted conversation_name', () => {
     const convId = bytesOf(16, 43)
     const frame = type6Frame(rev8Frame([textItem('hello')]), convId)
     const parsed = parseFrame(frame, defaultContext())
     expect(parsed.kind).toBe('parsed')
     if (parsed.kind !== 'parsed') throw new Error('expected parsed')
-    if (parsed.typed?.type !== 6) throw new Error('expected type 6')
+    if (parsed.typed?.type !== 12) throw new Error('expected type 12')
     expect(parsed.typed.conversationId).toEqual(convId)
     expect(parsed.typed.conversationName).toBeUndefined()
   })
 
-  it('parses type 6 without conversation_id (field 4), which a reader must accept', () => {
+  it('parses type 12 without conversation_id (field 4), which a reader must accept', () => {
     const rawMap = new Map<number, unknown>([
       [0, 'frank'],
       [1, bytesOf(16, 1)],
@@ -52,12 +52,12 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       [3, messageContentDigest(rev8Frame([textItem('test')]))],
     ])
     const frame = encodeFrame(
-      { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 12, schemaVersion: 1, minReaderVersion: 1 },
       rawMap,
     )
     const parsed = parseFrame(frame, defaultContext())
-    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 6)
-      throw new Error('expected parsed type 6')
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 12)
+      throw new Error('expected parsed type 12')
     expect(parsed.typed.conversationId).toBeUndefined()
 
     // With the field, the same content parses with its ID: both shapes round-trip.
@@ -68,8 +68,8 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
       revisionFrame: rev8Frame([textItem('test')]),
     })
     const reopened = parseFrame(named, defaultContext())
-    if (reopened.kind !== 'parsed' || reopened.typed?.type !== 6)
-      throw new Error('expected parsed type 6')
+    if (reopened.kind !== 'parsed' || reopened.typed?.type !== 12)
+      throw new Error('expected parsed type 12')
     expect(reopened.typed.conversationId).toEqual(bytesOf(16, 9))
     // The two differ by exactly field 4.
     expect(toHex(named)).not.toBe(toHex(frame))
@@ -86,7 +86,7 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
         [4, bytesOf(len, 4)],
       ])
       const frame = encodeFrame(
-        { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
+        { typeId: 12, schemaVersion: 1, minReaderVersion: 1 },
         rawMap,
       )
       expect(() => parseFrame(frame, defaultContext())).toThrow(FrankCodecError)

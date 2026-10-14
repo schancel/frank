@@ -25,7 +25,7 @@ fn bytes(b: Vec<u8>) -> CborValue {
 
 fn post_with(body: Vec<u8>) -> Vec<u8> {
     fr(
-        9,
+        40,
         &cbor_map(vec![
             (0, text(NET)),
             (1, text("frank.demo")),
@@ -90,7 +90,7 @@ fn projects_a_post_a_submission_and_a_vote() {
 fn a_reply_carries_its_parent_and_a_null_parent_is_a_schema_error() {
     let parent = topic_post_hash();
     let reply = fr(
-        9,
+        40,
         &cbor_map(vec![
             (0, text(NET)),
             (1, text("frank.demo")),
@@ -105,7 +105,7 @@ fn a_reply_carries_its_parent_and_a_null_parent_is_a_schema_error() {
         other => panic!("{other:?}"),
     }
     let null_parent = fr(
-        9,
+        40,
         &cbor_map(vec![
             (0, text(NET)),
             (1, text("frank.demo")),
@@ -132,20 +132,20 @@ fn submission_with(post: Vec<u8>, pad: usize) -> Vec<u8> {
     if pad > 0 {
         entries.push((9, bytes(vec![0; pad])));
     }
-    fr(10, &cbor_map(entries))
+    fr(41, &cbor_map(entries))
 }
 
 #[test]
 fn r6_frame_limits_bound_complete_roots() {
     let big = post_with(vec![7; 524_288]);
     assert_eq!(outcome(&submission_with(big.clone(), 0)), "parsed");
-    // A type-10 frame over 1 MiB is a resource error before any field is read.
+    // A type-41 frame over 1 MiB is a resource error before any field is read.
     let padded = submission_with(big.clone(), 1_048_576 - big.len());
     assert!(padded.len() > 1_048_576);
     assert_eq!(outcome(&padded), "resource@8.1");
-    // A type-11 frame is bounded at 64 KiB.
+    // A type-42 frame is bounded at 64 KiB.
     let vote = fr(
-        11,
+        42,
         &cbor_map(vec![
             (0, text(NET)),
             (1, bytes(bytes_of(32, 1))),
@@ -161,7 +161,7 @@ fn r6_frame_limits_bound_complete_roots() {
 #[test]
 fn a_submission_must_share_its_posts_network() {
     let other = fr(
-        10,
+        41,
         &cbor_map(vec![
             (0, text("other-net")),
             (1, bytes(topic_post_frame())),
@@ -175,7 +175,7 @@ fn a_submission_must_share_its_posts_network() {
 fn assigned_topic_types_are_not_message_items_but_an_unassigned_sentinel_is_open() {
     let item = |frame: Vec<u8>| {
         fr(
-            8,
+            20,
             &cbor_map(vec![
                 (0, text("frank")),
                 (1, CborValue::Array(vec![bytes(frame)])),
@@ -189,16 +189,18 @@ fn assigned_topic_types_are_not_message_items_but_an_unassigned_sentinel_is_open
     ] {
         assert_eq!(outcome(&item(frame)), "semantic@8.4");
     }
-    let unassigned = encode_frame(
-        EnvelopeFields {
-            type_id: 65535,
-            schema_version: 1,
-            min_reader_version: 1,
-        },
-        FramePayload::Value(&cbor_map(vec![(0, int(1))])),
-    )
-    .unwrap();
-    assert_eq!(outcome(&item(unassigned)), "parsed");
+    for type_id in [4, 9, 15, 19, 28, 39, 47, 65535] {
+        let unassigned = encode_frame(
+            EnvelopeFields {
+                type_id,
+                schema_version: 1,
+                min_reader_version: 1,
+            },
+            FramePayload::Value(&cbor_map(vec![(0, int(1))])),
+        )
+        .unwrap();
+        assert_eq!(outcome(&item(unassigned)), "parsed");
+    }
 }
 
 #[test]
@@ -294,15 +296,15 @@ fn the_pre_topic_corpus_behaves_identically_when_topic_types_are_listed() {
     pre_topic_context
         .supported_schemas
         .iter_mut()
-        .find(|schema| schema.type_id == 5)
-        .expect("type 5")
+        .find(|schema| schema.type_id == 11)
+        .expect("type 11")
         .schema_version = 1; // The frozen corpus predates the production DM schema.
     let mut topic_only_context = topic_context();
     topic_only_context
         .supported_schemas
         .iter_mut()
-        .find(|schema| schema.type_id == 5)
-        .expect("type 5")
+        .find(|schema| schema.type_id == 11)
+        .expect("type 11")
         .schema_version = 1;
     let mut checked = 0;
     for case in manifest["cases"].as_array().unwrap() {

@@ -272,7 +272,7 @@ export function encodeDirectoryStatement(
   minReaderVersion = 2,
 ): Uint8Array {
   return encodeFrame(
-    { typeId: 4, schemaVersion, minReaderVersion },
+    { typeId: 1, schemaVersion, minReaderVersion },
     buildDirectoryStatementMap(params),
   )
 }

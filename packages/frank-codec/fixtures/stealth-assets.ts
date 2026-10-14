@@ -46,7 +46,7 @@ function malformed(
   const entry = (payload.get(0n) as Map<bigint, Encodable>[])[0]
   change(entry)
   return encodeFrame(
-    { typeId: 19, schemaVersion: 2, minReaderVersion: 2 },
+    { typeId: 24, schemaVersion: 2, minReaderVersion: 2 },
     payload,
   )
 }

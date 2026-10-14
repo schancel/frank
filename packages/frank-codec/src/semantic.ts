@@ -53,7 +53,7 @@ function compareTimestamps(a: Timestamp, b: Timestamp): number {
 function checkForumPage(
   page: ForumTopicPage<ParsedFrame> | ForumDiscoveryPage,
 ): void {
-  const rows = page.type === 13 ? page.rows : page.entries
+  const rows = page.type === 44 ? page.rows : page.entries
   if (!rows.length && page.nextCursor)
     throw semantic('empty page has continuation')
   const bind = (cursor: ForumCursor) => {
@@ -65,8 +65,8 @@ function checkForumPage(
     )
       throw semantic('cursor page binding')
     if (
-      cursor.family === 13 &&
-      page.type === 13 &&
+      cursor.family === 44 &&
+      page.type === 44 &&
       (cursor.topic !== page.topic ||
         compareTimestamps(cursor.since, page.since))
     )
@@ -80,13 +80,13 @@ function checkForumPage(
     page.requestCursor.incarnation !== page.nextCursor.incarnation
   )
     throw semantic('cursor incarnation changed')
-  if (page.type === 13) {
+  if (page.type === 44) {
     let previous =
-      page.requestCursor?.family === 13 ? page.requestCursor.last : undefined
+      page.requestCursor?.family === 44 ? page.requestCursor.last : undefined
     const hashes: Uint8Array[] = []
     for (const row of page.rows) {
       const view = row.typed
-      if (view?.type !== 12 || view.postFrame.typed?.type !== 9)
+      if (view?.type !== 43 || view.postFrame.typed?.type !== 40)
         throw semantic('required Forum view')
       if (
         view.network !== page.network ||
@@ -113,7 +113,7 @@ function checkForumPage(
       previous = current
     }
     if (
-      page.nextCursor?.family === 13 &&
+      page.nextCursor?.family === 44 &&
       (!previous ||
         compareTimestamps(page.nextCursor.last.timestamp, previous.timestamp) ||
         compareBytes(page.nextCursor.last.hash, previous.hash))
@@ -121,7 +121,7 @@ function checkForumPage(
       throw semantic('continuation is not last Forum row')
   } else {
     let previous =
-      page.requestCursor?.family === 14 ? page.requestCursor.last : undefined
+      page.requestCursor?.family === 45 ? page.requestCursor.last : undefined
     for (const row of page.entries) {
       if (
         previous !== undefined &&
@@ -130,7 +130,7 @@ function checkForumPage(
         throw semantic('discovery rows not strictly ordered')
       previous = row.topic
     }
-    if (page.nextCursor?.family === 14 && page.nextCursor.last !== previous)
+    if (page.nextCursor?.family === 45 && page.nextCursor.last !== previous)
       throw semantic('continuation is not last discovery row')
   }
 }
@@ -280,13 +280,13 @@ export function checkSemantics(
 ): void {
   const P = 'root/payload'
   switch (typed.type) {
-    case 6: {
+    case 12: {
       if (typed.tokenTransfer) {
         checkTokenTransferSemantics(typed.tokenTransfer, `${P}.6`)
       }
       return
     }
-    case 18: {
+    case 26: {
       if (typed.schema === 3) {
         if (typed.action === 'challenge' || typed.action === 'accept') {
           const max = typed.maxBetWei.reduce(
@@ -354,25 +354,25 @@ export function checkSemantics(
       }
       break
     }
-    case 25: {
-      typedOf(typed.payloadFrame, 1)
+    case 13: {
+      typedOf(typed.payloadFrame, 10)
       checkPaymentList(typed.payments, `${P}.4`)
       if (typed.destination.keyType !== 1) {
         throw semantic('destination account must be key type 1', `${P}.1`)
       }
       return
     }
-    case 1: {
-      const child = typedOf(typed.payloadFrame, 5)
+    case 10: {
+      const child = typedOf(typed.payloadFrame, 11)
       const pays = typed.payments
       checkPaymentList(pays, `${P}.4`)
       if (typed.network !== child.network) {
         throw semantic(
-          'delivery network differs from the type-5 network (S8)',
+          'delivery network differs from the type-11 network (S8)',
           `${P}.0`,
         )
       }
-      // The destination is the stamp key P' and is deliberately not compared with the type-5
+      // The destination is the stamp key P' and is deliberately not compared with the type-11
       // recipient (S8): the routing identity and the payment key are independent.
       if (typed.destination.keyType !== 1) {
         throw semantic('destination account must be key type 1 (S9)', `${P}.1`)
@@ -392,7 +392,7 @@ export function checkSemantics(
       return
     }
     case 2: {
-      const st = typedOf(typed.statementFrame, 4)
+      const st = typedOf(typed.statementFrame, 1)
       requireOrdered(
         typed.signatures,
         (a, b) =>
@@ -424,7 +424,7 @@ export function checkSemantics(
       checkDirectoryUpdate(st, prior)
       return
     }
-    case 3: {
+    case 14: {
       requireOrdered(
         typed.facts,
         (a, b) =>
@@ -458,43 +458,43 @@ export function checkSemantics(
       }
       return
     }
-    case 12: {
+    case 43: {
       if (
-        typed.postFrame.typed?.type !== 9 ||
+        typed.postFrame.typed?.type !== 40 ||
         typed.network !== typed.postFrame.typed.network
       )
         throw semantic('Forum view network differs from post')
       return
     }
-    case 13:
-    case 14:
+    case 44:
+    case 45:
       checkForumPage(typed)
       return
-    case 15: {
+    case 46: {
       const sub = typed.submittedFrame.typed
       if (
         !sub ||
-        (sub.type !== 10 && sub.type !== 11) ||
+        (sub.type !== 41 && sub.type !== 42) ||
         sub.network !== typed.network
       )
         throw semantic('status submission network')
       const target =
-        sub.type === 10 ? contentHash(sub.postFrame) : sub.targetHash
+        sub.type === 41 ? contentHash(sub.postFrame) : sub.targetHash
       if (compareBytes(target, typed.targetHash))
         throw semantic('status target differs from submitted operation')
       return
     }
-    case 10: {
-      const child = typedOf(typed.postFrame, 9)
+    case 41: {
+      const child = typedOf(typed.postFrame, 40)
       if (typed.network !== child.network) {
         throw semantic(
-          'submission network differs from the type-9 network (S11)',
+          'submission network differs from the type-40 network (S11)',
           `${P}.0`,
         )
       }
       return
     }
-    case 4: {
+    case 1: {
       if (typed.preview) checkPreviewStatement(typed)
       requireOrdered(
         typed.relays,
@@ -518,7 +518,7 @@ export function checkSemantics(
       }
       if (typed.keyTransitions) {
         const stmts = typed.keyTransitions.map(t =>
-          typedOf(t.statementFrame, 7),
+          typedOf(t.statementFrame, 3),
         )
         requireOrdered(
           stmts,
@@ -701,7 +701,7 @@ function checkDirectoryUpdate(
     )
   }
   const t = transitions[0]
-  const ts: KeyTransitionStatement = typedOf(t.statementFrame, 7)
+  const ts: KeyTransitionStatement = typedOf(t.statementFrame, 3)
   if (ts.network !== st.network || ts.network !== prior.network) {
     throw semantic(
       'transition network differs from the statement networks (S10)',

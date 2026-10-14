@@ -120,7 +120,7 @@ describe('recipient asset payment type 19 schema 2', () => {
     const bytes = encodeStealthAssetMessageItem({ transfers: [entry()] })
     const ctx = defaultContext({ readerVersion: 4 })
     ctx.supportedSchemas = ctx.supportedSchemas.map(schema =>
-      schema.typeId === 19 ? { typeId: 19, schemaVersion: 1 } : schema,
+      schema.typeId === 24 ? { typeId: 24, schemaVersion: 1 } : schema,
     )
     expect(() => parseFrame(bytes, ctx)).toThrow()
     const payload = payloadOf(bytes)
@@ -142,7 +142,7 @@ describe('recipient asset payment type 19 schema 2', () => {
     expect(() =>
       parseFrame(
         encodeFrame(
-          { typeId: 19, schemaVersion: 1, minReaderVersion: 1 },
+          { typeId: 24, schemaVersion: 1, minReaderVersion: 1 },
           oldShape,
         ),
       ),
@@ -209,7 +209,7 @@ describe('recipient asset payment type 19 schema 2', () => {
     expect(() =>
       parseFrame(
         encodeFrame(
-          { typeId: 19, schemaVersion: 2, minReaderVersion: 1 },
+          { typeId: 24, schemaVersion: 2, minReaderVersion: 1 },
           {
             bytes: (
               decodeCanonical(good.subarray(9)) as Map<bigint, Uint8Array>

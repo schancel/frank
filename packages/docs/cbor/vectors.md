@@ -19,10 +19,10 @@ Every test vector in `docs/protocol/cbor/vectors/*.json` adheres to `vectors.sch
 | Vector File                 | Focus Area                       | Description                                                                                              |
 | :-------------------------- | :------------------------------- | :------------------------------------------------------------------------------------------------------- |
 | `manifest.json`             | Core Framing & CBOR Engine       | Byte-level integer encoding boundaries, canonical map key sorting, and frame length enforcement.         |
-| `directory-preview.json`    | Directory Statements (Type 4 v4) | 56 synthetic test frame pairs testing anchor validation, predecessor linkages, and key point uniqueness. |
+| `directory-preview.json`    | Directory Statements (Type 1 v4) | 56 synthetic test frame pairs testing anchor validation, predecessor linkages, and key point uniqueness. |
 | `directory-admission.json`  | Admission & Revocation           | Testing expiration, replay protection, and signature verification over directory statements.             |
-| `dm-suite-1.json`           | Direct Messaging (Type 1 & 5)    | DKSAP stealth derivations, DLEQ zero-knowledge proofs, and authenticated XChaCha20-Poly1305 payloads.    |
-| `dm-runtime.json`           | Decryption & Content Revision    | Inner Type 6/8 container nesting, message ID integrity, and multi-item arrays.                           |
+| `dm-suite-1.json`           | Direct Messaging (Type 10 & 11)  | DKSAP stealth derivations, DLEQ zero-knowledge proofs, and authenticated XChaCha20-Poly1305 payloads.    |
+| `dm-runtime.json`           | Decryption & Content Revision    | Inner Type 12/20 container nesting, message ID integrity, and multi-item arrays.                         |
 | `account-registration.json` | Handle Registration              | Canonical username handle validation and account registration statement hashing.                         |
 | `topic-commitments.json`    | Public Forum Topics              | Monad-native topic posts, burn transactions, and vote commitments.                                       |
 

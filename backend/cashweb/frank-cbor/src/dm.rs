@@ -9,7 +9,7 @@ pub const DM_CRYPTO_CONTEXT_DOMAIN: &str = "frank/dm-crypto-context/v1";
 /// Production Frank-CBOR DM suite.
 pub const DM_CRYPTO_SUITE: u32 = 1;
 /// Recipient-encrypted-payload type.
-pub const DM_CRYPTO_TYPE: u32 = 5;
+pub const DM_CRYPTO_TYPE: u32 = 11;
 /// Production payload schema and minimum reader version.
 pub const DM_CRYPTO_SCHEMA_VERSION: u32 = 2;
 /// Production payload minimum reader version.

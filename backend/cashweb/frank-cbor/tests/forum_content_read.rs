@@ -115,7 +115,7 @@ fn shared_active_bytes_hashes_rejections_and_retention() {
         if let Some(version) = f["context"]["topicSchema"].as_u64() {
             ctx.supported_schemas
                 .iter_mut()
-                .find(|s| s.type_id == 9)
+                .find(|s| s.type_id == 40)
                 .unwrap()
                 .schema_version = version as u32;
         }
@@ -157,7 +157,7 @@ fn shared_active_bytes_hashes_rejections_and_retention() {
                 "T7 {id}"
             );
         }
-        if f["type"] == 9 {
+        if f["type"] == 40 {
             match p.typed.as_deref().unwrap() {
                 TypedPayload::TopicPost { content, .. } => assert_eq!(
                     matches!(content, ForumPostContent::Opaque),
@@ -303,12 +303,12 @@ fn structured(extra: CborValue, index: u8) -> Vec<u8> {
         CborValue::Bytes(encode_canonical(&content).unwrap()),
     );
     set(&mut p, 2, CborValue::Bytes(vec![index; 32]));
-    frame(9, &p, 3, 2)
+    frame(40, &p, 3, 2)
 }
 fn view(post: Vec<u8>) -> Vec<u8> {
     let mut v = payload("view-large-aggregate");
     set(&mut v, 1, CborValue::Bytes(post));
-    frame(12, &v, 1, 1)
+    frame(43, &v, 1, 1)
 }
 fn page(rows: Vec<Vec<u8>>) -> Vec<u8> {
     let mut p = payload("equal-time-page");
@@ -317,7 +317,7 @@ fn page(rows: Vec<Vec<u8>>) -> Vec<u8> {
         4,
         CborValue::Array(rows.into_iter().map(CborValue::Bytes).collect()),
     );
-    frame(13, &p, 1, 1)
+    frame(44, &p, 1, 1)
 }
 
 #[test]
@@ -357,8 +357,8 @@ fn required_frames_and_content_share_depth_container_and_item_budgets() {
 #[test]
 fn complete_encoded_response_limits_are_inclusive_and_rows_are_not_skipped() {
     for (type_id, id, limit) in [
-        (12, "view-large-aggregate", 2097152usize),
-        (13, "equal-time-page", 4194304),
+        (43, "view-large-aggregate", 2097152usize),
+        (44, "equal-time-page", 4194304),
     ] {
         let mut p = payload(id);
         set(&mut p, 99, CborValue::Bytes(vec![]));
@@ -382,7 +382,7 @@ fn content_and_cursor_boundaries_are_inclusive() {
             3,
             CborValue::Bytes(encode_canonical(content).unwrap()),
         );
-        frame(9, &p, 3, 2)
+        frame(40, &p, 3, 2)
     };
     let entry = cbor_map(vec![
         (0, CborValue::Int(1)),

@@ -9,7 +9,7 @@
     "materializationBase": "dc443d68d97b1c20135257b898c22a9db9206c7c"
   },
   "allocation": {
-    "typeId": 18,
+    "typeId": 26,
     "schemaVersion": 1,
     "minReaderVersion": 1,
     "maximumFrameBytes": 4096,
@@ -35,7 +35,7 @@
       "readerVersion": 1,
       "supportedSchemas": [
         {
-          "typeId": 18,
+          "typeId": 26,
           "schemaVersion": 1
         }
       ],
@@ -46,11 +46,11 @@
       "readerVersion": 99,
       "supportedSchemas": [
         {
-          "typeId": 16,
+          "typeId": 21,
           "schemaVersion": 1
         },
         {
-          "typeId": 17,
+          "typeId": 22,
           "schemaVersion": 1
         }
       ],
@@ -61,11 +61,11 @@
       "readerVersion": 99,
       "supportedSchemas": [
         {
-          "typeId": 16,
+          "typeId": 21,
           "schemaVersion": 1
         },
         {
-          "typeId": 17,
+          "typeId": 22,
           "schemaVersion": 1
         }
       ],
@@ -81,9 +81,58 @@
     "commitmentHex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b",
     "wrongBinarySeedCommitmentHex": "630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd",
     "deck": [
-      5, 3, 35, 25, 6, 7, 8, 28, 4, 19, 10, 29, 48, 31, 51, 16, 9, 22, 13, 23,
-      49, 12, 47, 50, 30, 1, 44, 42, 46, 33, 2, 26, 43, 14, 45, 20, 32, 34, 21,
-      41, 39, 15, 11, 37, 18, 24, 27, 38, 40, 0, 17, 36
+      5,
+      3,
+      35,
+      25,
+      6,
+      7,
+      8,
+      28,
+      4,
+      19,
+      10,
+      29,
+      48,
+      31,
+      51,
+      16,
+      9,
+      22,
+      13,
+      23,
+      49,
+      12,
+      47,
+      50,
+      30,
+      1,
+      44,
+      42,
+      46,
+      33,
+      2,
+      26,
+      43,
+      14,
+      45,
+      20,
+      32,
+      34,
+      21,
+      41,
+      39,
+      15,
+      11,
+      37,
+      18,
+      24,
+      27,
+      38,
+      40,
+      0,
+      17,
+      36
     ]
   },
   "frames": [
@@ -92,14 +141,20 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000036a400120101020103582ca30064626a2d310100025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "frameHex": "46524e4b0100000037a400181a0101020103582ca30064626a2d310100025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 0],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            0
+          ],
           [
             2,
             {
@@ -122,22 +177,37 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230603",
+      "frameHex": "46524e4b010000003ea400181a01010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230603",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 1],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            1
+          ],
           [
             4,
             {
               "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
             }
           ],
-          [5, [5, 35]],
-          [6, 3]
+          [
+            5,
+            [
+              5,
+              35
+            ]
+          ],
+          [
+            6,
+            3
+          ]
         ]
       },
       "application": {
@@ -145,7 +215,10 @@
         "gameId": "bj-1",
         "action": "deal",
         "serverSeedHash": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b",
-        "playerCards": [5, 35],
+        "playerCards": [
+          5,
+          35
+        ],
         "dealerUpCard": 3
       },
       "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
@@ -156,14 +229,20 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310102",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310102",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 2]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            2
+          ]
         ]
       },
       "application": {
@@ -179,22 +258,39 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000018a4001201010201034fa30064626a2d310102058305182306",
+      "frameHex": "46524e4b0100000019a400181a01010201034fa30064626a2d310102058305182306",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 2],
-          [5, [5, 35, 6]]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            2
+          ],
+          [
+            5,
+            [
+              5,
+              35,
+              6
+            ]
+          ]
         ]
       },
       "application": {
         "type": "blackjack-move",
         "gameId": "bj-1",
         "action": "hit",
-        "playerCards": [5, 35, 6]
+        "playerCards": [
+          5,
+          35,
+          6
+        ]
       },
       "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
       "frozen": true
@@ -204,14 +300,20 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310103",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310103",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       },
       "application": {
@@ -227,14 +329,20 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000036a400120101020103582ca30064626a2d3101040358204040404040404040404040404040404040404040404040404040404040404040",
+      "frameHex": "46524e4b0100000037a400181a0101020103582ca30064626a2d3101040358204040404040404040404040404040404040404040404040404040404040404040",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 4],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            4
+          ],
           [
             3,
             {
@@ -257,22 +365,39 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000018a4001201010201034fa30064626a2d310104058305182306",
+      "frameHex": "46524e4b0100000019a400181a01010201034fa30064626a2d310104058305182306",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 4],
-          [5, [5, 35, 6]]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            4
+          ],
+          [
+            5,
+            [
+              5,
+              35,
+              6
+            ]
+          ]
         ]
       },
       "application": {
         "type": "blackjack-move",
         "gameId": "bj-1",
         "action": "double",
-        "playerCards": [5, 35, 6]
+        "playerCards": [
+          5,
+          35,
+          6
+        ]
       },
       "note": "Frozen accepted example; re-encoded with the existing generic TypeScript encoder without changing bytes.",
       "frozen": true
@@ -282,27 +407,45 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "frameHex": "46524e4b010000005ea400181a01010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 1]
+          [
+            9,
+            1
+          ]
         ]
       },
       "application": {
         "type": "blackjack-move",
         "gameId": "bj-1",
         "action": "reveal",
-        "dealerCards": [3, 25],
+        "dealerCards": [
+          3,
+          25
+        ],
         "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         "outcome": "dealer_win"
       },
@@ -314,14 +457,20 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "frameHex": "46524e4b0100000087a400181a0101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
       "expected": {
         "result": "accept"
       },
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -340,7 +489,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       },
       "application": {
@@ -360,15 +512,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005ca4001201010201035852a4006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a",
+      "frameHex": "46524e4b010000005da400181a01010201035852a4006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -396,15 +554,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000007fa4001201010201035875a5006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c58200000000000000000000000000000000000000000000000000000000000000000",
+      "frameHex": "46524e4b0100000080a400181a01010201035875a5006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c58200000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -439,15 +603,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005ea4001201010201035854a5006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0d60",
+      "frameHex": "46524e4b010000005fa400181a01010201035854a5006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0d60",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -460,7 +630,10 @@
               "hex": "000000000000000000000000000000000000000000000000000000000000000a"
             }
           ],
-          [13, ""]
+          [
+            13,
+            ""
+          ]
         ]
       },
       "application": {
@@ -477,15 +650,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000081a4001201010201035877a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d60",
+      "frameHex": "46524e4b0100000082a400181a01010201035877a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d60",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -504,7 +683,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, ""]
+          [
+            13,
+            ""
+          ]
         ]
       },
       "application": {
@@ -522,28 +704,46 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660900",
+      "frameHex": "46524e4b010000005ea400181a01010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660900",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 0]
+          [
+            9,
+            0
+          ]
         ]
       },
       "application": {
         "type": "blackjack-move",
         "gameId": "bj-1",
         "action": "reveal",
-        "dealerCards": [3, 25],
+        "dealerCards": [
+          3,
+          25
+        ],
         "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         "outcome": "player_win"
       },
@@ -554,28 +754,46 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660902",
+      "frameHex": "46524e4b010000005ea400181a01010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660902",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 2]
+          [
+            9,
+            2
+          ]
         ]
       },
       "application": {
         "type": "blackjack-move",
         "gameId": "bj-1",
         "action": "reveal",
-        "dealerCards": [3, 25],
+        "dealerCards": [
+          3,
+          25
+        ],
         "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         "outcome": "push"
       },
@@ -586,28 +804,46 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660903",
+      "frameHex": "46524e4b010000005ea400181a01010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660903",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 3]
+          [
+            9,
+            3
+          ]
         ]
       },
       "application": {
         "type": "blackjack-move",
         "gameId": "bj-1",
         "action": "reveal",
-        "dealerCards": [3, 25],
+        "dealerCards": [
+          3,
+          25
+        ],
         "serverSeed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
         "outcome": "player_blackjack"
       },
@@ -618,7 +854,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000090a4001201010201035886a200788067676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767670103",
+      "frameHex": "46524e4b0100000091a400181a01010201035886a200788067676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767670103",
       "expected": {
         "result": "accept"
       },
@@ -629,7 +865,10 @@
             0,
             "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
           ],
-          [1, 3]
+          [
+            1,
+            3
+          ]
         ]
       },
       "application": {
@@ -643,7 +882,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000090a4001201010201035886a2007880c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a90103",
+      "frameHex": "46524e4b0100000091a400181a01010201035886a2007880c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a90103",
       "expected": {
         "result": "accept"
       },
@@ -654,7 +893,10 @@
             0,
             "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
           ],
-          [1, 3]
+          [
+            1,
+            3
+          ]
         ]
       },
       "application": {
@@ -668,15 +910,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000000fa40012010102010346a20061200103",
+      "frameHex": "46524e4b0100000010a400181a010102010346a20061200103",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, " "],
-          [1, 3]
+          [
+            0,
+            " "
+          ],
+          [
+            1,
+            3
+          ]
         ]
       },
       "application": {
@@ -690,15 +938,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000010a40012010102010347a20062c3a90103",
+      "frameHex": "46524e4b0100000011a400181a010102010347a20062c3a90103",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "é"],
-          [1, 3]
+          [
+            0,
+            "é"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       },
       "application": {
@@ -712,15 +966,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000011a40012010102010348a2006365cc810103",
+      "frameHex": "46524e4b0100000012a400181a010102010348a2006365cc810103",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "é"],
-          [1, 3]
+          [
+            0,
+            "é"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       },
       "application": {
@@ -734,15 +994,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000534a400120101020103590529a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d7904b0e4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ad",
+      "frameHex": "46524e4b0100000535a400181a0101020103590529a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d7904b0e4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ade4b8ad",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -782,15 +1048,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b01000003a4a400120101020103590399a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d790320f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880",
+      "frameHex": "46524e4b01000003a5a400181a0101020103590399a6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d790320f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -830,15 +1102,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b58200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff0c58200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff0d6552756c6573",
+      "frameHex": "46524e4b0100000087a400181a0101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b58200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff0c58200000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff0d6552756c6573",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -857,7 +1135,10 @@
               "hex": "0000000000000000000000000000001d6329f1c35ca4bfabb9f560ffffffffff"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       },
       "application": {
@@ -875,15 +1156,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000200000000000010b582000000000000000000000000000000000000000000000000080000000000000000c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "frameHex": "46524e4b0100000087a400181a0101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000200000000000010b582000000000000000000000000000000000000000000000000080000000000000000c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -902,7 +1189,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       },
       "application": {
@@ -920,21 +1210,76 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000066a400120101020103585ca30064626a2d310102059834000102030405060708090a0b0c0d0e0f101112131415161718181819181a181b181c181d181e181f1820182118221823182418251826182718281829182a182b182c182d182e182f1830183118321833",
+      "frameHex": "46524e4b0100000067a400181a0101020103585ca30064626a2d310102059834000102030405060708090a0b0c0d0e0f101112131415161718181819181a181b181c181d181e181f1820182118221823182418251826182718281829182a182b182c182d182e182f1830183118321833",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 2],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            2
+          ],
           [
             5,
             [
-              0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-              19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
-              35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51
             ]
           ]
         ]
@@ -944,9 +1289,58 @@
         "gameId": "bj-1",
         "action": "hit",
         "playerCards": [
-          0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
-          20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
-          37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51
         ]
       },
       "note": "Codec shape boundary, not a reachable blackjack hand claim."
@@ -956,7 +1350,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000034a400120101020103582aa20064626a2d31025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "frameHex": "46524e4b0100000035a400181a0101020103582aa20064626a2d31025820202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -965,7 +1359,10 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
+          [
+            0,
+            "bj-1"
+          ],
           [
             2,
             {
@@ -980,7 +1377,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003ba4001201010201035831a40064626a2d310458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230603",
+      "frameHex": "46524e4b010000003ca400181a01010201035831a40064626a2d310458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230603",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -989,15 +1386,27 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
+          [
+            0,
+            "bj-1"
+          ],
           [
             4,
             {
               "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
             }
           ],
-          [5, [5, 35]],
-          [6, 3]
+          [
+            5,
+            [
+              5,
+              35
+            ]
+          ],
+          [
+            6,
+            3
+          ]
         ]
       }
     },
@@ -1006,23 +1415,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000010a40012010102010347a10064626a2d31",
-      "expected": {
-        "result": "reject",
-        "stage": "8.2",
-        "category": "schema"
-      },
-      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
-      "payload": {
-        "map": [[0, "bj-1"]]
-      }
-    },
-    {
-      "id": "hit-response-missing-action",
-      "origin": "typescript",
-      "operation": "typed",
-      "context": "type18-reader1",
-      "frameHex": "46524e4b0100000016a4001201010201034da20064626a2d31058305182306",
+      "frameHex": "46524e4b0100000011a400181a010102010347a10064626a2d31",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1031,8 +1424,39 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [5, [5, 35, 6]]
+          [
+            0,
+            "bj-1"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "hit-response-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000017a400181a01010201034da20064626a2d31058305182306",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            5,
+            [
+              5,
+              35,
+              6
+            ]
+          ]
         ]
       }
     },
@@ -1041,23 +1465,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000010a40012010102010347a10064626a2d31",
-      "expected": {
-        "result": "reject",
-        "stage": "8.2",
-        "category": "schema"
-      },
-      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
-      "payload": {
-        "map": [[0, "bj-1"]]
-      }
-    },
-    {
-      "id": "double-request-missing-action",
-      "origin": "typescript",
-      "operation": "typed",
-      "context": "type18-reader1",
-      "frameHex": "46524e4b0100000034a400120101020103582aa20064626a2d310358204040404040404040404040404040404040404040404040404040404040404040",
+      "frameHex": "46524e4b0100000011a400181a010102010347a10064626a2d31",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1066,7 +1474,31 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
+          [
+            0,
+            "bj-1"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "double-request-missing-action",
+      "origin": "typescript",
+      "operation": "typed",
+      "context": "type18-reader1",
+      "frameHex": "46524e4b0100000035a400181a0101020103582aa20064626a2d310358204040404040404040404040404040404040404040404040404040404040404040",
+      "expected": {
+        "result": "reject",
+        "stage": "8.2",
+        "category": "schema"
+      },
+      "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
+      "payload": {
+        "map": [
+          [
+            0,
+            "bj-1"
+          ],
           [
             3,
             {
@@ -1081,7 +1513,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000016a4001201010201034da20064626a2d31058305182306",
+      "frameHex": "46524e4b0100000017a400181a01010201034da20064626a2d31058305182306",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1090,8 +1522,18 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [5, [5, 35, 6]]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            5,
+            [
+              5,
+              35,
+              6
+            ]
+          ]
         ]
       }
     },
@@ -1100,7 +1542,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005ba4001201010201035851a40064626a2d310782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "frameHex": "46524e4b010000005ca400181a01010201035851a40064626a2d310782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1109,13 +1551,25 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 1]
+          [
+            9,
+            1
+          ]
         ]
       }
     },
@@ -1124,7 +1578,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000084a400120101020103587aa5006777656c636f6d650a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "frameHex": "46524e4b0100000085a400181a0101020103587aa5006777656c636f6d650a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1133,7 +1587,10 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
+          [
+            0,
+            "welcome"
+          ],
           [
             10,
             {
@@ -1152,7 +1609,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       }
     },
@@ -1161,7 +1621,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310100",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310100",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1170,8 +1630,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 0]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            0
+          ]
         ]
       }
     },
@@ -1180,7 +1646,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000019a40012010102010350a40064626a2d31010105820518230603",
+      "frameHex": "46524e4b010000001aa400181a010102010350a40064626a2d31010105820518230603",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1189,10 +1655,25 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 1],
-          [5, [5, 35]],
-          [6, 3]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            5,
+            [
+              5,
+              35
+            ]
+          ],
+          [
+            6,
+            3
+          ]
         ]
       }
     },
@@ -1201,7 +1682,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310104",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310104",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1210,8 +1691,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 4]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            4
+          ]
         ]
       }
     },
@@ -1220,7 +1707,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000019a40012010102010350a40064626a2d31010507820318190901",
+      "frameHex": "46524e4b010000001aa400181a010102010350a40064626a2d31010507820318190901",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1229,10 +1716,25 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
-          [9, 1]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
+          [
+            9,
+            1
+          ]
         ]
       }
     },
@@ -1241,7 +1743,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000063a4001201010201035859a5006777656c636f6d6501060b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "frameHex": "46524e4b0100000064a400181a01010201035859a5006777656c636f6d6501060b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1250,8 +1752,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             11,
             {
@@ -1264,7 +1772,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       }
     },
@@ -1273,7 +1784,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000014a4001201010201034ba30064626a2d3101030e00",
+      "frameHex": "46524e4b0100000015a400181a01010201034ba30064626a2d3101030e00",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1282,9 +1793,18 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3],
-          [14, 0]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ],
+          [
+            14,
+            0
+          ]
         ]
       }
     },
@@ -1293,7 +1813,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000014a4001201020201034ba30064626a2d3101030e00",
+      "frameHex": "46524e4b0100000015a400181a01020201034ba30064626a2d3101030e00",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1302,9 +1822,18 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3],
-          [14, 0]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ],
+          [
+            14,
+            0
+          ]
         ]
       }
     },
@@ -1313,7 +1842,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003ca4001201010201035832a40064626a2d3101040358204040404040404040404040404040404040404040404040404040404040404040058305182306",
+      "frameHex": "46524e4b010000003da400181a01010201035832a40064626a2d3101040358204040404040404040404040404040404040404040404040404040404040404040058305182306",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1322,15 +1851,28 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 4],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            4
+          ],
           [
             3,
             {
               "hex": "4040404040404040404040404040404040404040404040404040404040404040"
             }
           ],
-          [5, [5, 35, 6]]
+          [
+            5,
+            [
+              5,
+              35,
+              6
+            ]
+          ]
         ]
       }
     },
@@ -1339,7 +1881,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310104",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310104",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1348,8 +1890,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 4]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            4
+          ]
         ]
       }
     },
@@ -1358,7 +1906,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000017a4001201010201034ea30064626a2d3101030782031819",
+      "frameHex": "46524e4b0100000018a400181a01010201034ea30064626a2d3101030782031819",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1367,9 +1915,21 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3],
-          [7, [3, 25]]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ]
         ]
       }
     },
@@ -1378,7 +1938,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000065a400120101020103585ba6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0cf60d6552756c6573",
+      "frameHex": "46524e4b0100000066a400181a0101020103585ba6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0cf60d6552756c6573",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1387,8 +1947,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -1401,8 +1967,14 @@
               "hex": "000000000000000000000000000000000000000000000000000000000000000a"
             }
           ],
-          [12, null],
-          [13, "Rules"]
+          [
+            12,
+            null
+          ],
+          [
+            13,
+            "Rules"
+          ]
         ]
       }
     },
@@ -1411,7 +1983,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310107",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310107",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1420,8 +1992,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 7]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            7
+          ]
         ]
       }
     },
@@ -1430,7 +2008,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000017a4001201010201034ea20064626a2d3101657374616e64",
+      "frameHex": "46524e4b0100000018a400181a01010201034ea20064626a2d3101657374616e64",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1439,8 +2017,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, "stand"]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            "stand"
+          ]
         ]
       }
     },
@@ -1449,7 +2033,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310120",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310120",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1458,8 +2042,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, -1]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            -1
+          ]
         ]
       }
     },
@@ -1468,7 +2058,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660904",
+      "frameHex": "46524e4b010000005ea400181a01010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660904",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1477,14 +2067,29 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 4]
+          [
+            9,
+            4
+          ]
         ]
       }
     },
@@ -1493,7 +2098,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000000ea40012010102010345a200600103",
+      "frameHex": "46524e4b010000000fa400181a010102010345a200600103",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1502,8 +2107,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, ""],
-          [1, 3]
+          [
+            0,
+            ""
+          ],
+          [
+            1,
+            3
+          ]
         ]
       }
     },
@@ -1512,7 +2123,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000091a4001201010201035887a20078816767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767670103",
+      "frameHex": "46524e4b0100000092a400181a01010201035887a20078816767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767676767670103",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1525,7 +2136,10 @@
             0,
             "ggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
           ],
-          [1, 3]
+          [
+            1,
+            3
+          ]
         ]
       }
     },
@@ -1534,7 +2148,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000035a400120101020103582ba30064626a2d31010002581f00000000000000000000000000000000000000000000000000000000000000",
+      "frameHex": "46524e4b0100000036a400181a0101020103582ba30064626a2d31010002581f00000000000000000000000000000000000000000000000000000000000000",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1543,8 +2157,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 0],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            0
+          ],
           [
             2,
             {
@@ -1559,7 +2179,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000037a400120101020103582da30064626a2d310100025821000000000000000000000000000000000000000000000000000000000000000000",
+      "frameHex": "46524e4b0100000038a400181a0101020103582da30064626a2d310100025821000000000000000000000000000000000000000000000000000000000000000000",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1568,8 +2188,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 0],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            0
+          ],
           [
             2,
             {
@@ -1584,7 +2210,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000058a400120101020103584ea30064626a2d310100027842307832303231323232333234323532363237323832393261326232633264326532663330333133323333333433353336333733383339336133623363336433653366",
+      "frameHex": "46524e4b0100000059a400181a0101020103584ea30064626a2d310100027842307832303231323232333234323532363237323832393261326232633264326532663330333133323333333433353336333733383339336133623363336433653366",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1593,8 +2219,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 0],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            0
+          ],
           [
             2,
             "0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
@@ -1607,7 +2239,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003ba4001201010201035831a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b0581050603",
+      "frameHex": "46524e4b010000003ca400181a01010201035831a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b0581050603",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1616,16 +2248,30 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 1],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            1
+          ],
           [
             4,
             {
               "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
             }
           ],
-          [5, [5]],
-          [6, 3]
+          [
+            5,
+            [
+              5
+            ]
+          ],
+          [
+            6,
+            3
+          ]
         ]
       }
     },
@@ -1634,7 +2280,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000017a4001201010201034ea30064626a2d3101020582051823",
+      "frameHex": "46524e4b0100000018a400181a01010201034ea30064626a2d3101020582051823",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1643,9 +2289,21 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 2],
-          [5, [5, 35]]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            2
+          ],
+          [
+            5,
+            [
+              5,
+              35
+            ]
+          ]
         ]
       }
     },
@@ -1654,7 +2312,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000067a400120101020103585da30064626a2d310102059835000102030405060708090a0b0c0d0e0f101112131415161718181819181a181b181c181d181e181f1820182118221823182418251826182718281829182a182b182c182d182e182f183018311832183300",
+      "frameHex": "46524e4b0100000068a400181a0101020103585da30064626a2d310102059835000102030405060708090a0b0c0d0e0f101112131415161718181819181a181b181c181d181e181f1820182118221823182418251826182718281829182a182b182c182d182e182f183018311832183300",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1663,15 +2321,70 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 2],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            2
+          ],
           [
             5,
             [
-              0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-              19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
-              35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
-              51, 0
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11,
+              12,
+              13,
+              14,
+              15,
+              16,
+              17,
+              18,
+              19,
+              20,
+              21,
+              22,
+              23,
+              24,
+              25,
+              26,
+              27,
+              28,
+              29,
+              30,
+              31,
+              32,
+              33,
+              34,
+              35,
+              36,
+              37,
+              38,
+              39,
+              40,
+              41,
+              42,
+              43,
+              44,
+              45,
+              46,
+              47,
+              48,
+              49,
+              50,
+              51,
+              0
             ]
           ]
         ]
@@ -1682,7 +2395,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000019a40012010102010350a30064626a2d31010405840518230607",
+      "frameHex": "46524e4b010000001aa400181a010102010350a30064626a2d31010405840518230607",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1691,9 +2404,23 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 4],
-          [5, [5, 35, 6, 7]]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            4
+          ],
+          [
+            5,
+            [
+              5,
+              35,
+              6,
+              7
+            ]
+          ]
         ]
       }
     },
@@ -1702,7 +2429,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003ea4001201010201035834a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b0582051823061834",
+      "frameHex": "46524e4b010000003fa400181a01010201035834a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b0582051823061834",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1711,16 +2438,31 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 1],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            1
+          ],
           [
             4,
             {
               "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
             }
           ],
-          [5, [5, 35]],
-          [6, 52]
+          [
+            5,
+            [
+              5,
+              35
+            ]
+          ],
+          [
+            6,
+            52
+          ]
         ]
       }
     },
@@ -1729,7 +2471,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230620",
+      "frameHex": "46524e4b010000003ea400181a01010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230620",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1738,16 +2480,31 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 1],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            1
+          ],
           [
             4,
             {
               "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
             }
           ],
-          [5, [5, 35]],
-          [6, -1]
+          [
+            5,
+            [
+              5,
+              35
+            ]
+          ],
+          [
+            6,
+            -1
+          ]
         ]
       }
     },
@@ -1756,7 +2513,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000215a40012010102010359020aa6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d7901916161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+      "frameHex": "46524e4b0100000216a400181a010102010359020aa6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d7901916161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1765,8 +2522,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -1797,7 +2560,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b01000003a5a40012010102010359039aa6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d790321f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f988061",
+      "frameHex": "46524e4b01000003a6a400181a010102010359039aa6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d790321f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f9880f09f988061",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1806,8 +2569,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -1838,7 +2607,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101050782031819085820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0901",
+      "frameHex": "46524e4b010000003ea400181a01010201035833a50064626a2d3101050782031819085820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0901",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1847,16 +2616,31 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             {
               "hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
             }
           ],
-          [9, 1]
+          [
+            9,
+            1
+          ]
         ]
       }
     },
@@ -1865,7 +2649,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930413042304330443045304631303131313231333134313531363137313831393141314231433144314531460901",
+      "frameHex": "46524e4b010000005ea400181a01010201035853a50064626a2d3101050782031819087840303030313032303330343035303630373038303930413042304330443045304631303131313231333134313531363137313831393141314231433144314531460901",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1874,14 +2658,29 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F"
           ],
-          [9, 1]
+          [
+            9,
+            1
+          ]
         ]
       }
     },
@@ -1890,7 +2689,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005ca4001201010201035852a50064626a2d310105078203181908783f3030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "frameHex": "46524e4b010000005da400181a01010201035852a50064626a2d310105078203181908783f3030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1899,14 +2698,29 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "00102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 1]
+          [
+            9,
+            1
+          ]
         ]
       }
     },
@@ -1915,7 +2729,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005da4001201010201035853a50064626a2d31010507820318190878407a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a0901",
+      "frameHex": "46524e4b010000005ea400181a01010201035853a50064626a2d31010507820318190878407a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a0901",
       "expected": {
         "result": "reject",
         "stage": "8.2",
@@ -1924,14 +2738,29 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 25]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              25
+            ]
+          ],
           [
             8,
             "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
           ],
-          [9, 1]
+          [
+            9,
+            1
+          ]
         ]
       }
     },
@@ -1940,7 +2769,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000015a4001201010201034ca2006777656c636f6d650103",
+      "frameHex": "46524e4b0100000016a400181a01010201034ca2006777656c636f6d650103",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -1949,8 +2778,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 3]
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       }
     },
@@ -1959,7 +2794,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000083a4001201010201035879a60064626a2d3101060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "frameHex": "46524e4b0100000084a400181a01010201035879a60064626a2d3101060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -1968,8 +2803,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 6],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -1988,7 +2829,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       }
     },
@@ -1997,7 +2841,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003ca4001201010201035832a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b058205050603",
+      "frameHex": "46524e4b010000003da400181a01010201035832a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b058205050603",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -2006,16 +2850,31 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 1],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            1
+          ],
           [
             4,
             {
               "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
             }
           ],
-          [5, [5, 5]],
-          [6, 3]
+          [
+            5,
+            [
+              5,
+              5
+            ]
+          ],
+          [
+            6,
+            3
+          ]
         ]
       }
     },
@@ -2024,7 +2883,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000003da4001201010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230605",
+      "frameHex": "46524e4b010000003ea400181a01010201035833a50064626a2d3101010458206c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b05820518230605",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -2033,16 +2892,31 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 1],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            1
+          ],
           [
             4,
             {
               "hex": "6c86c6aac5fb24bcf5d9939cb7d7d5645ce39418f449e03b262dd4fa14b4b92b"
             }
           ],
-          [5, [5, 35]],
-          [6, 5]
+          [
+            5,
+            [
+              5,
+              35
+            ]
+          ],
+          [
+            6,
+            5
+          ]
         ]
       }
     },
@@ -2051,7 +2925,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000005ca4001201010201035852a50064626a2d31010507820303087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
+      "frameHex": "46524e4b010000005da400181a01010201035852a50064626a2d31010507820303087840303030313032303330343035303630373038303930613062306330643065306631303131313231333134313531363137313831393161316231633164316531660901",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -2060,14 +2934,29 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 5],
-          [7, [3, 3]],
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            5
+          ],
+          [
+            7,
+            [
+              3,
+              3
+            ]
+          ],
           [
             8,
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
           ],
-          [9, 1]
+          [
+            9,
+            1
+          ]
         ]
       }
     },
@@ -2076,7 +2965,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000000b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "frameHex": "46524e4b0100000087a400181a0101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000000b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -2085,8 +2974,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -2105,7 +3000,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       }
     },
@@ -2114,7 +3012,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a5820000000000000000000000000000000000000000000000000000000000000000b0b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
+      "frameHex": "46524e4b0100000087a400181a0101020103587ca6006777656c636f6d6501060a5820000000000000000000000000000000000000000000000000000000000000000b0b5820000000000000000000000000000000000000000000000000000000000000000a0c582000000000000000000000000000000000000000000000000000000000000000000d6552756c6573",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -2123,8 +3021,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -2143,7 +3047,10 @@
               "hex": "0000000000000000000000000000000000000000000000000000000000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       }
     },
@@ -2152,7 +3059,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000086a400120101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c58200000000000000000000000000000001d6329f1c35ca4bfabb9f56100000000000d6552756c6573",
+      "frameHex": "46524e4b0100000087a400181a0101020103587ca6006777656c636f6d6501060a582000000000000000000000000000000000000000000000000000000000000000010b5820000000000000000000000000000000000000000000000000000000000000000a0c58200000000000000000000000000000001d6329f1c35ca4bfabb9f56100000000000d6552756c6573",
       "expected": {
         "result": "reject",
         "stage": "9",
@@ -2161,8 +3068,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "welcome"],
-          [1, 6],
+          [
+            0,
+            "welcome"
+          ],
+          [
+            1,
+            6
+          ],
           [
             10,
             {
@@ -2181,7 +3094,10 @@
               "hex": "0000000000000000000000000000001d6329f1c35ca4bfabb9f5610000000000"
             }
           ],
-          [13, "Rules"]
+          [
+            13,
+            "Rules"
+          ]
         ]
       }
     },
@@ -2190,7 +3106,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "without-type18-reject",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310103",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310103",
       "expected": {
         "result": "reject",
         "stage": "7",
@@ -2199,8 +3115,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       }
     },
@@ -2209,7 +3131,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "without-type18-retain",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d310103",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d310103",
       "expected": {
         "result": "retain",
         "reason": "unknown-type"
@@ -2217,8 +3139,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       }
     },
@@ -2227,7 +3155,7 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010202020349a20064626a2d310103",
+      "frameHex": "46524e4b0100000013a400181a010202020349a20064626a2d310103",
       "expected": {
         "result": "reject",
         "stage": "7",
@@ -2236,8 +3164,14 @@
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       }
     },
@@ -2246,15 +3180,21 @@
       "origin": "typescript",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010202010349a20064626a2d310103",
+      "frameHex": "46524e4b0100000013a400181a010202010349a20064626a2d310103",
       "expected": {
         "result": "accept"
       },
       "encoder": "packages/frank-codec/src/frame.ts:encodeFrame (generic, not a typed blackjack writer)",
       "payload": {
         "map": [
-          [0, "bj-1"],
-          [1, 3]
+          [
+            0,
+            "bj-1"
+          ],
+          [
+            1,
+            3
+          ]
         ]
       },
       "application": {
@@ -2268,7 +3208,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000014a4001201010201034ba30064626a2d3101030103",
+      "frameHex": "46524e4b0100000015a400181a01010201034ba30064626a2d3101030103",
       "mutationOf": "stand",
       "payloadHex": "a30064626a2d3101030103",
       "expected": {
@@ -2282,7 +3222,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a201030064626a2d31",
+      "frameHex": "46524e4b0100000013a400181a010102010349a201030064626a2d31",
       "mutationOf": "stand",
       "payloadHex": "a201030064626a2d31",
       "expected": {
@@ -2296,7 +3236,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000013a4001201010201034aa20064626a2d31011803",
+      "frameHex": "46524e4b0100000014a400181a01010201034aa20064626a2d31011803",
       "mutationOf": "stand",
       "payloadHex": "a20064626a2d31011803",
       "expected": {
@@ -2310,7 +3250,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000013a4001201010201034abf0064626a2d310103ff",
+      "frameHex": "46524e4b0100000014a400181a01010201034abf0064626a2d310103ff",
       "mutationOf": "stand",
       "payloadHex": "bf0064626a2d310103ff",
       "expected": {
@@ -2324,7 +3264,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b010000000fa40012010102010346a20061ff0103",
+      "frameHex": "46524e4b0100000010a400181a010102010346a20061ff0103",
       "mutationOf": "stand",
       "payloadHex": "a20061ff0103",
       "expected": {
@@ -2338,7 +3278,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000014a4001201010201034ba20064626a2d3101f93c00",
+      "frameHex": "46524e4b0100000015a400181a01010201034ba20064626a2d3101f93c00",
       "mutationOf": "stand",
       "payloadHex": "a20064626a2d3101f93c00",
       "expected": {
@@ -2352,7 +3292,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000013a4001201010201034aa20064626a2d3101c003",
+      "frameHex": "46524e4b0100000014a400181a01010201034aa20064626a2d3101c003",
       "mutationOf": "stand",
       "payloadHex": "a20064626a2d3101c003",
       "expected": {
@@ -2366,7 +3306,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000013a4001201010201034aa20064626a2d31010300",
+      "frameHex": "46524e4b0100000014a400181a01010201034aa20064626a2d31010300",
       "mutationOf": "stand",
       "payloadHex": "a20064626a2d31010300",
       "expected": {
@@ -2380,7 +3320,7 @@
       "origin": "review-authored",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000011a40012010102010348a20064626a2d3101",
+      "frameHex": "46524e4b0100000012a400181a010102010348a20064626a2d3101",
       "mutationOf": "stand",
       "payloadHex": "a20064626a2d3101",
       "expected": {
@@ -2395,7 +3335,7 @@
       "encoder": "generic wrapFrame/encodeCanonical; deliberately invalid envelope",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102020349a20064626a2d310103",
+      "frameHex": "46524e4b0100000013a400181a010102020349a20064626a2d310103",
       "expected": {
         "result": "reject",
         "stage": "6",
@@ -2408,7 +3348,7 @@
       "mutationOf": "stand",
       "operation": "typed",
       "context": "type18-reader1",
-      "frameHex": "46524e4b0100000012a40012010102010349a20064626a2d31010300",
+      "frameHex": "46524e4b0100000013a400181a010102010349a20064626a2d31010300",
       "expected": {
         "result": "reject",
         "stage": "4",

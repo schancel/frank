@@ -285,7 +285,7 @@ pub fn encode_directory_statement(
     let payload = encode_directory_statement_payload(params)?;
     encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: 1,
             schema_version,
             min_reader_version,
         },

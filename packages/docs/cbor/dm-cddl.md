@@ -9,17 +9,17 @@
 
 `direct-message.cddl` defines the wire structures for:
 
-- Type 1: **Direct Message Delivery** (`direct-message-delivery`)
-- Type 5: **Recipient Encrypted Payload** (`recipient-encrypted-payload-v2`)
-- Type 6: **Encrypted Message Content** (`encrypted-message-content`)
-- Type 8: **Message Content Revision** (`message-content-revision`)
-- Type 16: **Container Message Item** (`container-message-item`)
-- Type 17: **Text Message Item** (`text-message-item`)
-- Type 18: **Blackjack Message Item** (closed shapes; `docs/protocol/proposals/blackjack-items/blackjack.cddl`)
-- Type 19: **Stealth Payment Item** (`stealth-message-item`)
-- Type 24: **Universal State Channel Update** (`channel-update-item`)
-- Type 25: **Forwarding Delivery Envelope** (`forwarding-delivery-envelope`)
-- Type 26: **Email Bridge Message Item** (`email-message-item`)
+- Type 10: **Direct Message Delivery** (`direct-message-delivery`)
+- Type 11: **Recipient Encrypted Payload** (`recipient-encrypted-payload-v2`)
+- Type 12: **Encrypted Message Content** (`encrypted-message-content`)
+- Type 13: **Forwarding Delivery Envelope** (`forwarding-delivery-envelope`)
+- Type 20: **Message Content Revision** (`message-content-revision`)
+- Type 21: **Container Message Item** (`container-message-item`)
+- Type 22: **Text Message Item** (`text-message-item`)
+- Type 23: **Email Bridge Message Item** (`email-message-item`)
+- Type 24: **Stealth Payment Item** (`stealth-message-item`)
+- Type 25: **Universal State Channel Update** (`channel-update-item`)
+- Type 26: **Blackjack Message Item** (closed shapes; `docs/protocol/proposals/blackjack-items/blackjack.cddl`)
 - Type 27: **Generic Plugin Message Item** (`plugin-message-item`)
 
 ---
@@ -27,7 +27,7 @@
 ## 2. CDDL Source Definition
 
 ```cddl
-; Payload schemas for Type 1, Type 5, Type 6, Type 8, and Type 25 frames.
+; Payload schemas for Type 10, Type 11, Type 12, Type 13, and Type 20 frames.
 
 direct-message-delivery = {
   0: network-tag,
@@ -57,7 +57,7 @@ payment-member = {
 stamp-point = bstr .size 33 ; 33-byte compressed SEC1 secp256k1 point
 dleq-proof = bstr .size 64  ; 64-byte Chaum-Pedersen DLEQ proof (c || s)
 
-; Type 5 schema 2, min_reader_version 2: production DM payload
+; Type 11 schema 2, min_reader_version 2: production DM payload
 recipient-encrypted-payload-v2 = {
   0: network-tag,
   1: account-ref,          ; routing sender identity
@@ -73,7 +73,7 @@ recipient-encrypted-payload-v2 = {
 encrypted-message-content = {
   0: network-tag,
   1: uuid-16,              ; stable logical message_id
-  2: framed-object,        ; type-8 message-content-revision frame
+  2: framed-object,        ; type-20 message-content-revision frame
   3: digest-32,            ; T1a digest of field 2
   4: uuid-16,              ; stable logical conversation_id
   ? 5: tstr .size (1..512),; optional conversation name
@@ -107,7 +107,7 @@ text-message-item = {
   * uint => frank-value,
 }
 
-; Type 19 schema 1: Stealth payment item
+; Type 24 schema 1: Stealth payment item
 stealth-message-item = {
   0: network-tag,
   1: account-ref,            ; ephemeral pubkey (key type 1 or 2)
@@ -117,7 +117,7 @@ stealth-message-item = {
   * uint => frank-value,
 }
 
-; Type 24 schema 1: Universal state channel update item
+; Type 25 schema 1: Universal state channel update item
 channel-update-item = {
   0: digest-32,              ; unique channel-id
   1: tstr .size (1..64),     ; app-id ("swap", "dice", "poker", "raffle")
@@ -129,11 +129,11 @@ channel-update-item = {
   * uint => frank-value,
 }
 
-; Type 25 schema 1: Store-and-forward relay forwarding delivery envelope.
-; Key 0 is not a field. The forwarding digest uses the inner type-1 frame's own network tag.
+; Type 13 schema 1: Store-and-forward relay forwarding delivery envelope.
+; Key 0 is not a field. The forwarding digest uses the inner type-10 frame's own network tag.
 forwarding-delivery-envelope = {
   1: account-ref,                       ; destination relay routing identity (key type 1)
-  2: framed-object,                     ; inner direct-message-delivery (Type 1) frame
+  2: framed-object,                     ; inner direct-message-delivery (Type 10) frame
   3: digest-32,                         ; forwarding payload digest of field 2
   4: [1*64 payment-member],             ; storage payment stamps compensating destination relay
   ? 5: tstr .size (1..256),             ; optional destination relay endpoint URI

@@ -97,7 +97,7 @@ export function testAccount(seed: number) {
         ? fromHex(input.claimSubject)
         : secp256k1.getPublicKey(auth, true)
       const statement = encodeFrame(
-        { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+        { typeId: 1, schemaVersion: 4, minReaderVersion: 4 },
         cborMap([
           [0, input.network],
           [1, account(claimed)],

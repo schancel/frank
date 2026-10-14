@@ -60,7 +60,7 @@ function fixture(
       [1, 0],
     ])
   const statement = encodeFrame(
-    { typeId: 4, schemaVersion: 4, minReaderVersion: 4 },
+    { typeId: 1, schemaVersion: 4, minReaderVersion: 4 },
     cborMap([
       [0, 'monad'],
       [1, account(leaves.auth.public.compressedPoint)],

@@ -76,7 +76,7 @@ describe('DM crypto context v1', () => {
     expect(toHex(encodeDirectMessageCryptoContext(VECTOR))).toBe(C.encodedHex)
   })
 
-  it('matches the shared type-5 schema-2 frame', () => {
+  it('matches the shared type-11 schema-2 frame', () => {
     const payload = cborMap([
       [0, C.network],
       [1, accountMap(C.sender)],
@@ -90,7 +90,7 @@ describe('DM crypto context v1', () => {
     expect(
       toHex(
         encodeFrame(
-          { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+          { typeId: 11, schemaVersion: 2, minReaderVersion: 2 },
           payload,
         ),
       ),

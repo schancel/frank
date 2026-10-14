@@ -134,12 +134,12 @@ export function isForwardingEnvelopeFrame(
 ): frame is ParsedFrame & { typed: ForwardingDeliveryEnvelope<ParsedFrame> } {
   return (
     frame.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE &&
-    frame.typed?.type === 25
+    frame.typed?.type === 13
   )
 }
 
 /**
- * Projects a validated parsed Type 25 frame into a canonical representation.
+ * Projects a validated parsed Type 13 frame into a canonical representation.
  */
 export function projectForwardingEnvelope(
   frame: ParsedFrame,
@@ -160,7 +160,7 @@ export function projectForwardingEnvelope(
 }
 
 /**
- * Validates raw frame bytes as a Type 25 forwarding envelope through stages 1-9.
+ * Validates raw frame bytes as a Type 13 forwarding envelope through stages 1-9.
  */
 export function validateForwardingEnvelope(
   frameBytes: Uint8Array,
@@ -172,7 +172,7 @@ export function validateForwardingEnvelope(
     throw bad(`expected parsed frame, got ${result.kind}`)
   }
   if (!isForwardingEnvelopeFrame(result)) {
-    throw bad(`expected Type 25 frame, got type ${result.typeId}`)
+    throw bad(`expected Type 13 frame, got type ${result.typeId}`)
   }
   return result
 }

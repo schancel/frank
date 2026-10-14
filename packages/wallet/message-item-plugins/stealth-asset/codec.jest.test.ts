@@ -45,14 +45,14 @@ const sample: RecipientAssetPaymentItem = {
 function children(frames: Uint8Array[]) {
   const revision = validateFrame(
     encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+      { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
       new Map<number, Encodable>([
         [0, 'frank'],
         [1, frames],
       ])
     )
   )
-  if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+  if (revision.kind !== 'parsed' || revision.typed?.type !== 20)
     throw new Error('Expected revision')
   return revision.typed.items
 }

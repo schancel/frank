@@ -119,7 +119,7 @@ function discovery(topics: string[], next?: Uint8Array, echo?: Uint8Array) {
   ])
   if (next) map.set(3, next)
   if (echo) map.set(5, echo)
-  return encodeFrame({ typeId: 14, schemaVersion: 1, minReaderVersion: 1 }, map)
+  return encodeFrame({ typeId: 45, schemaVersion: 1, minReaderVersion: 1 }, map)
 }
 function response(data: Uint8Array) {
   return { data, headers: { 'content-type': 'application/cbor' } }

@@ -41,7 +41,7 @@ import {
   type SwapOfferPayload,
 } from '../src'
 
-describe('universal state channel update item (Type 24, schema 1)', () => {
+describe('universal state channel update item (Type 25, schema 1)', () => {
   // Keypairs for participants Alice and Bob
   const alicePriv = fromHex('01'.repeat(32))
   const alicePub = secp256k1.getPublicKey(alicePriv, true) // 33 bytes compressed
@@ -114,9 +114,9 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
         expect(parsed.typeId).toBe(TYPE_CHANNEL_UPDATE)
         expect(parsed.schemaVersion).toBe(1)
         expect(parsed.minReaderVersion).toBe(1)
-        expect(parsed.typed?.type).toBe(24)
+        expect(parsed.typed?.type).toBe(25)
 
-        if (parsed.typed?.type === 24) {
+        if (parsed.typed?.type === 25) {
           expect(toHex(parsed.typed.channelId)).toBe(sampleChannelId)
           expect(parsed.typed.appId).toBe('dice')
           expect(parsed.typed.sequenceNumber).toBe(0)
@@ -227,7 +227,7 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
       const parsed = parseFrame(frameBytes)
 
       expect(parsed.kind).toBe('parsed')
-      if (parsed.kind === 'parsed' && parsed.typed?.type === 24) {
+      if (parsed.kind === 'parsed' && parsed.typed?.type === 25) {
         expect(parsed.typed.allocations).toHaveLength(2)
         expect(parsed.typed.allocations[0].networkTag).toBe('mont')
         expect(toHex(parsed.typed.allocations[0].token)).toBe(sampleTokenId)
@@ -847,13 +847,13 @@ describe('universal state channel update item (Type 24, schema 1)', () => {
 
       const parsed = validateFrame(type8Frame)
       expect(parsed.kind).toBe('parsed')
-      if (parsed.kind === 'parsed' && parsed.typed?.type === 8) {
+      if (parsed.kind === 'parsed' && parsed.typed?.type === 20) {
         expect(parsed.typed.items).toHaveLength(1)
         const child = parsed.typed.items[0]
         expect(child.kind).toBe('parsed')
         if (child.kind === 'parsed') {
           expect(child.typeId).toBe(TYPE_CHANNEL_UPDATE)
-          expect(child.typed?.type).toBe(24)
+          expect(child.typed?.type).toBe(25)
           expect((child.typed as ChannelUpdateItem).appId).toBe('raffle')
         }
       }

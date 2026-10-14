@@ -725,7 +725,7 @@ export function buildSignedDirectoryStatement(
   }
 
   const type4Frame = encodeFrame(
-    { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+    { typeId: 1, schemaVersion: 3, minReaderVersion: 2 },
     cborMap(type4MapEntries),
   )
 
@@ -858,7 +858,7 @@ export function decodeProfileBytes(
       throw new Error('invalid CBOR directory attestation frame')
     }
     const stmtFrame = validated.typed.statementFrame
-    if (stmtFrame.kind !== 'parsed' || stmtFrame.typed?.type !== 4) {
+    if (stmtFrame.kind !== 'parsed' || stmtFrame.typed?.type !== 1) {
       throw new Error('invalid CBOR directory statement frame')
     }
     const stmt = stmtFrame.typed

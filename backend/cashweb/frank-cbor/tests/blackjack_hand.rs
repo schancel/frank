@@ -289,7 +289,7 @@ fn reader_without_schema2_rejects_hand_action_codes_as_out_of_range() {
 #[test]
 fn schema1_shaped_frame_requiring_reader2_stays_schema1() {
     // Frozen: schema 2, min reader 2, action 3.
-    let raw = hex::decode("46524e4b0100000012a40012010202020349a20064626a2d310103").unwrap();
+    let raw = hex::decode("46524e4b0100000013a400181a010202020349a20064626a2d310103").unwrap();
     let p = parsed(&raw);
     assert_eq!((p.schema_version, p.min_reader_version), (2, 2));
     assert!(!is_blackjack_hand_frame(&p));
@@ -306,7 +306,7 @@ fn schema1_shaped_frame_requiring_reader2_stays_schema1() {
             action: BlackjackAction::Stand,
         }
     );
-    // The same holds for a reader without type-18 schema-2 support.
+    // The same holds for a reader without type-26 schema-2 support.
     let ValidationResult::Parsed(old) = parse_frame(&raw, &context(&corpus(), "schema1")).unwrap()
     else {
         panic!("typed")
@@ -333,7 +333,7 @@ fn schema1_items_are_not_hand_items_and_nested_hand_items_are_typed() {
     };
     let frame = encode_blackjack_hand_item(&hit).unwrap();
     let nested = common::fr(
-        16,
+        21,
         &cbor_map(vec![(
             0,
             CborValue::Array(vec![CborValue::Bytes(frame.clone())]),

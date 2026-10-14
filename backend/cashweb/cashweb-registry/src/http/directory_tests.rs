@@ -112,7 +112,7 @@ fn signed(secret: u32, signer: u32, edit: impl Fn(&mut Vec<(u64, CborValue)>)) -
     edit(&mut fields);
     let statement = encode_frame(
         EnvelopeFields {
-            type_id: 4,
+            type_id: 1,
             schema_version: 4,
             min_reader_version: 4,
         },

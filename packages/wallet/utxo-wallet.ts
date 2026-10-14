@@ -8,7 +8,7 @@
  *
  * Who owns which fact:
  * - The chain (through the indexer) owns which outputs are unspent. The coin list is rebuilt from
- *   it on every sync and is never stored.
+ *   it on every sync. A stored public observation is display-only and is never used for selection.
  * - The wallet store owns only what the chain cannot say: the next unused receive and change
  *   indices, native submission attempts, and prepared payments' exact bytes, input claims,
  *   message exposure and submission intent. Released ids and settled inputs remain recorded to
@@ -386,7 +386,19 @@ interface StoredStealthScript {
   }>;
 }
 
+interface StoredBalanceObservation {
+  readonly chainIdentifier: string;
+  readonly observedAt: number;
+  readonly coins: ReadonlyArray<{
+    readonly txid: string;
+    readonly vout: number;
+    readonly amount: string;
+  }>;
+}
+
 interface StoredState {
+  /** Derived public display cache. Never restored into spendable coinList. */
+  readonly balanceObservation?: StoredBalanceObservation;
   readonly version: 1;
   readonly stealthScripts?: readonly StoredStealthScript[];
   readonly receiveIndex: number;
@@ -686,6 +698,7 @@ export class UtxoWallet implements NativeWalletHandle {
   private readonly inFlight = new Set<string>();
   /** Bumped whenever a recorded send is dropped, so a coin read from before it is not used. */
   private settledGeneration = 0;
+  private balanceRefresh: Promise<bigint> | undefined;
 
   private constructor(
     readonly network: UtxoNetwork,
@@ -1178,13 +1191,59 @@ export class UtxoWallet implements NativeWalletHandle {
     return { raw: this.addressAt(0, this.state.receiveIndex) };
   }
 
-  /** What the wallet can spend now: its unspent coins, including unconfirmed change. */
-  async getBalance(): Promise<bigint> {
-    await this.sync();
-    return this.coinList.reduce(
-      (sum, coin) => (coin.state === "unspent" ? sum + coin.amount : sum),
-      0n
-    );
+  /** Last complete indexer observation, filtered through current durable input claims.
+   * Display-only: signing and fee estimation always rebuild the live coin list independently.
+   * Required custody restoration and authorized recovery still gate publishing this handle. */
+  getBalanceObservation(): { balance: bigint; observedAt: number } | undefined {
+    this.reload();
+    const observation = this.state.balanceObservation;
+    if (
+      !observation ||
+      observation.chainIdentifier !== this.chainIdentifier ||
+      !Number.isSafeInteger(observation.observedAt) ||
+      observation.observedAt < 0 ||
+      !Array.isArray(observation.coins) ||
+      !observation.coins.every(
+        (coin) =>
+          validOutpoint(coin) &&
+          typeof coin.amount === "string" &&
+          /^(0|[1-9][0-9]*)$/.test(coin.amount) &&
+          BigInt(coin.amount) <= 2n ** 64n - 1n
+      ) ||
+      new Set(observation.coins.map((coin) => `${coin.txid}:${coin.vout}`))
+        .size !== observation.coins.length
+    )
+      return undefined;
+    const claimed = this.claimedInputs();
+    return {
+      observedAt: observation.observedAt,
+      balance: observation.coins.reduce(
+        (sum, coin) =>
+          claimed.has(`${coin.txid}:${coin.vout}`)
+            ? sum
+            : sum + BigInt(coin.amount),
+        0n
+      ),
+    };
+  }
+
+  /** Refresh the live inventory; concurrent display readers share one network read. */
+  getBalance(): Promise<bigint> {
+    if (this.balanceRefresh) return this.balanceRefresh;
+    const refresh = (async () => {
+      await this.sync(undefined, true);
+      return this.coinList.reduce(
+        (sum, coin) => (coin.state === "unspent" ? sum + coin.amount : sum),
+        0n
+      );
+    })();
+    this.balanceRefresh = refresh;
+    const clear = () => {
+      if (this.balanceRefresh === refresh) this.balanceRefresh = undefined;
+    };
+    // Both branches clear the shared attempt; rejection remains visible to every caller.
+    void refresh.then(clear, clear);
+    return refresh;
   }
 
   /** The fee and the number of coins a send of `value` would use right now. */
@@ -1862,8 +1921,8 @@ export class UtxoWallet implements NativeWalletHandle {
     this.coinList = this.withPendingClaims(this.coinList);
   }
 
-  private withPendingClaims(coins: readonly UtxoCoin[]): UtxoCoin[] {
-    const claimed = new Set(
+  private claimedInputs(): Set<string> {
+    return new Set(
       [
         ...this.state.pending,
         ...(this.state.operations ?? []).filter(
@@ -1874,6 +1933,10 @@ export class UtxoWallet implements NativeWalletHandle {
         .concat(this.state.consumedNativeInputs ?? [])
         .map((input) => `${input.txid}:${input.vout}`)
     );
+  }
+
+  private withPendingClaims(coins: readonly UtxoCoin[]): UtxoCoin[] {
+    const claimed = this.claimedInputs();
     return coins.map((coin) => ({
       ...coin,
       state: claimed.has(`${coin.txid}:${coin.vout}`) ? "pending" : "unspent",
@@ -1970,10 +2033,19 @@ export class UtxoWallet implements NativeWalletHandle {
   private async discover(): Promise<void> {
     const next = async (chain: 0 | 1, from: number) => {
       let used = from - 1;
-      for (let index = from; index <= used + ADDRESS_GAP; index++) {
-        if (await this.indexer.hasHistory(this.scriptAt(chain, index))) {
-          used = index;
+      // Probe one gap in bounded batches, then consume results in address order.
+      // Speculative answers beyond the final gap never advance the derivation index.
+      for (let start = from; start <= used + ADDRESS_GAP; ) {
+        const end = Math.min(start + 5, used + ADDRESS_GAP + 1);
+        const answers = await Promise.all(
+          Array.from({ length: end - start }, (_, offset) =>
+            this.indexer.hasHistory(this.scriptAt(chain, start + offset))
+          )
+        );
+        for (let offset = 0; offset < answers.length; offset++) {
+          if (answers[offset]) used = start + offset;
         }
+        start = end;
       }
       return used + 1;
     };
@@ -1997,7 +2069,10 @@ export class UtxoWallet implements NativeWalletHandle {
    * short locked step, and thrown away if a recorded send was dropped while reading (its inputs
    * would look unspent in the older answer).
    */
-  private async sync(assertActive?: () => void): Promise<void> {
+  private async sync(
+    assertActive?: () => void,
+    recordBalanceObservation = false
+  ): Promise<void> {
     assertActive?.();
     for (let attempt = 0; attempt < 3; attempt++) {
       const snapshot = await this.exclusive(async () => this.store.load());
@@ -2012,8 +2087,27 @@ export class UtxoWallet implements NativeWalletHandle {
           snapshot !== this.store.load()
         )
           return false;
-        if (read.receiveIndex > this.state.receiveIndex) {
-          this.persist({ ...this.state, receiveIndex: read.receiveIndex });
+        if (
+          recordBalanceObservation ||
+          read.receiveIndex > this.state.receiveIndex
+        ) {
+          this.persist({
+            ...this.state,
+            receiveIndex: Math.max(read.receiveIndex, this.state.receiveIndex),
+            ...(recordBalanceObservation
+              ? {
+                  balanceObservation: {
+                    chainIdentifier: this.chainIdentifier,
+                    observedAt: Date.now(),
+                    coins: read.coins.map(({ txid, vout, amount }) => ({
+                      txid,
+                      vout,
+                      amount: amount.toString(),
+                    })),
+                  },
+                }
+              : {}),
+          });
         }
         this.coinList = read.coins;
         this.markPending();

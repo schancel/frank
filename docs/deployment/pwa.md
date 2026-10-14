@@ -84,3 +84,18 @@ The service worker is event-driven. The browser can stop it between events; it
 is not a persistent wallet daemon and does not guarantee transaction or message
 reconciliation while every application window is closed. Financial recovery
 continues through the existing wallet services when the application resumes.
+
+## Blind WebPush Wakeup & VAPID Key Persistence
+
+To wake an installed PWA or backgrounded browser tab when a new message arrives without exposing message plaintext or social graphs to push providers (Apple APNs, Google FCM, Mozilla Autopush), the relay and PWA implement **RFC 8030 WebPush** with **RFC 8292 VAPID** (`ES256` P-256 JWT authentication) and **RFC 8291 (`aes128gcm`)** payload encryption:
+
+- **VAPID Public Key Endpoint**: The relay serves its P-256 public key (65-byte uncompressed SEC1 base64url) at `GET /push/vapid-public-key`, which the PWA passes as `applicationServerKey` to `pushManager.subscribe()`.
+- **Persisting `FRANK_VAPID_PRIVATE_KEY` Across Restarts**:
+  - Browser push subscriptions are cryptographically bound to the relay's `applicationServerKey` (VAPID public key). If a relay generates a fresh ephemeral key on restart, all existing browser push subscriptions break silently (`401`/`403` from push endpoints).
+  - In **standalone mode**, if `FRANK_VAPID_PRIVATE_KEY` (or `registry.vapid_private_key`) is not set in the environment/config, `cashwebd` generates a 32-byte P-256 scalar on first boot and persists it in RocksDB metadata under `M_vapid_privkey` so single-node restarts preserve the same VAPID identity automatically.
+  - In **containerized, ephemeral-disk, or multi-node clustered deployments**, operators **MUST** provision a persistent `FRANK_VAPID_PRIVATE_KEY` (64-character hex or base64url 32-byte P-256 secret scalar) via a shared secret store (e.g., Kubernetes Secret or Vault) alongside `FRANK_VAPID_SUBJECT` (e.g., `mailto:admin@example.com`) so every relay instance signs WebPush notifications with the identical VAPID keypair.
+- **Content-Free Wakeup Payload**: The encrypted WebPush payload is fixed to `{"type":"sync","v":1}`. Neither sender identity, recipient address, nor message ciphertext ever traverses third-party push servers. Upon receiving the push event, the service worker wakes up, fetches and decrypts pending envelopes directly from the relay (`GET /messages`), and displays a local notification.
+- **AVU Notification Threshold & Blinded Contact Wakeup Tokens**:
+  - Push registrations (`PUT /push/register`, authenticated via `x-cashweb-auth`) include `min_notification_avu_micros` so the relay only dispatches a WebPush ping when the verified stamp value meets the recipient's minimum AVU threshold.
+  - Approved contacts can bypass the AVU floor without revealing the user's contact list to the relay: the recipient shares a random preimage `token_secret` with an approved contact, registers only `wakeup_token = SHA256("frank-wakeup-v1" || token_secret)` with the relay, and the sender attaches `x-frank-wakeup-preimage` on delivery. The relay verifies the SHA-256 hash in constant time before firing the wakeup ping.
+

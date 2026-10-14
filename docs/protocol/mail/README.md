@@ -56,3 +56,28 @@ from the restored gateway root and remain stable across hosts and restarts.
 Archive the journal together with its gateway wallet stores before starting a new
 prelaunch format 8 instance; do not discard a funded gateway wallet or replay
 an ambiguous payment as a new one.
+
+## RFC 5322 Header-Based Threading & Sender Formatting
+
+Inbound and outbound email messages use standard RFC 5322 header-based threading (`Message-ID`, `In-Reply-To`, and `References` chains) persisted in `MailJournal` (`packages/email-gateway`) alongside legacy `m<30-hex>` reply-alias compatibility:
+
+- **Outbound Threading**: When bridging a Frank conversation to SMTP, the gateway generates a deterministic RFC 5322 `Message-ID` bound to the Frank message digest and populates `In-Reply-To` and `References` from prior bridged messages in the same conversation thread.
+- **Canonical Sender Formatting**: Outbound `From` headers format the sender's verified relay username when available (`"<displayName>" <username@domain>`) or fall back to the issued conversation local part, while `Reply-To` always binds to the issued conversation reply alias so standard email client replies route back to the exact Frank thread.
+- **Inbound Threading Resolution**: When an external email arrives, the gateway resolves the target Frank conversation by matching `In-Reply-To` / `References` header IDs against recorded outbound/inbound message IDs in `MailJournal`, falling back to the recipient `m<30-hex>` conversation alias when headers are absent.
+
+## OpenPGP Web Key Directory (WKD) & Autocrypt Interoperability
+
+The relay and email gateway expose a standards-compliant OpenPGP Web Key Directory (`/.well-known/openpgpkey`) supporting both Advanced (`/.well-known/openpgpkey/<domain>/hu/<zbase32-sha1>`) and Direct (`/.well-known/openpgpkey/hu/<zbase32-sha1>`) lookup methods plus the required `policy` endpoint:
+
+- Every user with a registered relay username and published identity/encryption key material is automatically discoverable by external OpenPGP-capable mail clients (Thunderbird, Proton Mail, K-9 Mail, Delta Chat) via the 32-character z-base-32 SHA-1 hash of their lowercase local part.
+- Outbound bridged emails also attach `Autocrypt` headers so external mail clients can opportunistically encrypt replies without manual key server lookups.
+
+## Single-Record Domain Discovery (`/.well-known/cashweb.json`)
+
+Operators can onboard an entire domain with a single HTTPS static file or proxy route at `GET /.well-known/cashweb.json` (with `_cashweb.<domain>` DNS TXT and SRV records as optional fallback). The JSON document declares the authoritative relay endpoint, mail gateway domain, cluster authority public key, and supported payment networks so Frank clients and external relays resolve domain handles (`alice@example.com`) in one round-trip.
+
+## Secure Portal Claim Links & Outbound Reply Allowance
+
+- **Self-Custodial Claim Links (`/onboard`)**: When a Frank user sends an email or stamped message to an external recipient who does not yet have a Frank wallet, the email gateway can include a secure claim link (`/onboard#...`) where the claim secret remains in the URL fragment (never sent to the HTTP server in request headers or logs). Opening the link guides the recipient through passkey/seed onboarding and sweeps the escrowed stamp or reply credit into their new self-custodial wallet.
+- **Automatic Outbound `replyAllowance`**: When a Frank user sends an outbound bridged email whose attached stamp covers the gateway's `inboundStampValue` threshold, `JournaledFrankOutbound` automatically credits a `replyAllowance` for that `(account, conversation, externalRecipient)` tuple in `MailJournal`, allowing the external email recipient's reply to be stamped and delivered back into the sender's Frank inbox without requiring the external email user to hold crypto first.
+

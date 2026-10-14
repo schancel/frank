@@ -248,3 +248,7 @@ pub struct NodeClusterAttestation {
    - Dropped NATS notifications do NOT result in data loss because all messages are durably committed to the blob store and indexed before notification dispatch. The client protocol includes reconnect sync intervals.
 4. **Graceful Single-Binary Degradation**:
    - If `[registry.cluster]` is absent or `enabled = false`, `cashwebd` compiles and runs as a completely self-contained binary without initializing any network sockets or client libraries for NATS or Kvrocks.
+5. **Shared VAPID Identity for Blind WebPush (`FRANK_VAPID_PRIVATE_KEY`)**:
+   - Standalone relays automatically persist a generated P-256 VAPID scalar in RocksDB (`M_vapid_privkey`) so push subscriptions survive restarts.
+   - In Clustered Mode, all relay nodes behind a load balancer **MUST** be configured with the same `FRANK_VAPID_PRIVATE_KEY` (via Kubernetes Secret or `registry.vapid_private_key`) and `FRANK_VAPID_SUBJECT`. This ensures `GET /push/vapid-public-key` returns an identical `applicationServerKey` regardless of which node serves the PWA, and any node ingesting a message that satisfies the recipient's `min_notification_avu_micros` threshold (or carries a valid `x-frank-wakeup-preimage` matching a registered `SHA256("frank-wakeup-v1" || preimage)` wakeup token) can sign RFC 8292 VAPID JWTs and dispatch content-free `{"type":"sync","v":1}` RFC 8030 WebPush pings.
+

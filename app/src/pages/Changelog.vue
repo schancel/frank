@@ -29,48 +29,73 @@
           <div class="text-body1">
             <ul>
               <li>
-                Bring direct messages, topic posts, and voting to Monad testnet,
-                with recipient-controlled stealth stamp payments and relay
-                verification.
+                <strong>Multi-Chain Unified Wallet &amp; Nakamoto SPV</strong>:
+                Support Monad (`MON`), Ethereum (`ETH`), Solana (`SOL`), eCash
+                (`XEC`), Bitcoin (`BTC`), Bitcoin Cash (`BCH`), Lotus (`XPI`),
+                Dogecoin (`DOGE`), Litecoin (`LTC`), and Tempo (`TEMPO`) under a
+                unified `ChainAdapter` architecture with capability-driven
+                Nakamoto SPV descriptors.
               </li>
               <li>
-                Add Mera passkey sign-in, recovery shares, and restoration of
-                historical BIP39 identities. Show the recovered account and its
-                published profile before activation.
+                <strong>Direct Messages, Forum &amp; Stealth Stamps</strong>:
+                Send encrypted direct messages, topic posts, and votes with
+                recipient-controlled stealth stamp payments and relay
+                verification across accepted payment networks.
               </li>
               <li>
-                Improve profile and username discovery, curated contacts, and
-                independent conversations with the same contact.
-              </li>
-              <li>Add Qwen replies, welcome messages, and game bots.</li>
-              <li>
-                Bring message payments into wallet history alongside transfers
-                and swaps, with clearer payment and delivery states.
-              </li>
-              <li>
-                Improve wallet balances, asset lists, and send and receive
-                controls across the supported test networks.
+                <strong
+                  >Email Bridge, OpenPGP WKD &amp; RFC 5322 Threading</strong
+                >: Bridge conversations to and from standard email with
+                deterministic `Message-ID` / `In-Reply-To` / `References`
+                threading, OpenPGP Web Key Directory
+                (`/.well-known/openpgpkey`), single-record domain discovery
+                (`/.well-known/cashweb.json`), automatic outbound reply
+                allowances, and self-custodial `/onboard` claim links.
               </li>
               <li>
-                Add AVU values and price history with timeframe and range
-                selection. Message stamps support AVU defaults, explicit
-                amounts, and free messages.
+                <strong
+                  >Attention Screener, Reply-Once &amp; Full-Text Search</strong
+                >: Screen first-time senders with AVU stamp floors, grant
+                single-reply allowances, and search across messages and contacts
+                instantly.
               </li>
               <li>
-                Improve swap quotes, fee details, confirmation, progress, and
-                history.
+                <strong>Actionable Calendar Invites &amp; vCard Contacts</strong
+                >: Send, preview, and respond to structured calendar invitations
+                and contact cards directly in chat.
               </li>
               <li>
-                Add an app update prompt for installed PWAs and remember
-                dismissed notification offers.
+                <strong
+                  >Join-Semilattice Journal &amp; Self-Encrypted Outbox</strong
+                >: Synchronize sent messages, read watermarks, conversation
+                subjects, and message tombstones across devices using a
+                commutative, associative, idempotent join-semilattice state
+                engine.
+              </li>
+              <li>
+                <strong>Cold-Vault Auto-Sweeper</strong>: Automatically sweep
+                accumulated stamp balances above a configurable threshold to a
+                designated cold-storage address.
+              </li>
+              <li>
+                <strong>Blind WebPush Notifications</strong>: Receive
+                content-free RFC 8030 / RFC 8292 VAPID wakeup notifications
+                filtered by AVU stamp thresholds and blinded contact wakeup
+                tokens.
+              </li>
+              <li>
+                <strong>Mera Passkey Sign-In &amp; Identity Recovery</strong>:
+                Sign in with WebAuthn passkeys, split recovery shares, and
+                restore historical BIP39 identities with profile preview before
+                activation.
+              </li>
+              <li>
+                <strong>AVU Energy Oracle (`1 AVU = 1 kWh`)</strong>: Value
+                balances and default message stamps against global electrical
+                energy (`GET /oracle/v1/feed`) with multi-timeframe price and
+                parity charts.
               </li>
             </ul>
-            <p>
-              Still in progress: complete recovery of wallet funds and history
-              from a seed or backup, older mailbox history, additional network
-              support, email gateway delivery, and background push
-              notifications.
-            </p>
           </div>
 
           <div class="text-h6">v0.0.23 Changelog</div>

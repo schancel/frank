@@ -72,7 +72,7 @@
       Entered the raffle
     </div>
     <div v-else-if="item.action === 'leave'" class="text-caption">
-      Left the raffle
+      {{ $t('raffle.leftAction') }}
     </div>
     <div
       v-else-if="item.action === 'joined'"

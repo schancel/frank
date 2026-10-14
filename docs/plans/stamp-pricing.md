@@ -1,6 +1,6 @@
 # Dynamic default stamp pricing
 
-The recipient receives a fixed target of 0.1 AVU, bounded below by the selected adapter's live minimum paid stamp. Network fees are separate. This is a fixed energy-value policy, calibrated near one US cent once; it is not a dollar peg recomputed on refresh.
+The recipient receives a fixed target of 0.1 AVU (0.1 kWh of global electrical energy, where **1 AVU = 1 kWh** ≈ $0.11 / ~11¢ USD, so 0.1 AVU is ~1.1¢ USD), bounded below by the selected adapter's live minimum paid stamp. Network fees are separate. This is a fixed energy-value policy (0.1 kWh per default stamp); it is not a dollar peg.
 
 Current ownership: chain configuration supplies a fixed raw default; the app stores optional explicit raw amounts per conversation; the wallet enforces its live paid-stamp floor; bots cap replies by confirmed incoming value. Target ownership: one pure shared AVU policy owns the default decision, host composition supplies public configuration and observed rates, family adapters own fees, and custody receives raw amounts. The public override is `FRANK_DM_DEFAULT_STAMP_AVU` (`QCLI_` prefix in the browser), default 0.1.
 

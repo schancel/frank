@@ -4,9 +4,11 @@ The relay is the price and energy oracle. A client makes one request to its rela
 normalised feed; it knows nothing about any price provider, chain statistics API or electricity
 market. The relay owns the provider adapters, sampling, smoothing, history and any provider keys.
 
-The feed supports valuation and host-composed AVU defaults for message stamps. A stamp default
-is a recipient-value suggestion, captured as a native amount before signing; it is not a
-settlement quote for swaps or contracts. Missing or stale observations cannot price a default.
+The feed supports valuation and host-composed AVU defaults for message stamps (**1 AVU = 1 kWh**
+of global electrical energy, ~$0.11 / ~11¢ USD; the default 0.1 AVU message stamp represents
+0.1 kWh, or ~1.1¢ USD). A stamp default is a recipient-value suggestion, captured as a native
+amount before signing; it is not a settlement quote for swaps or contracts. Missing or stale
+observations cannot price a default.
 
 Files: this document, `feed.schema.json` (JSON Schema of the response), `feed.example.json` (a
 small valid response; `packages/price-feeds/test/feed.jest.test.ts` parses it with the client's
@@ -84,9 +86,10 @@ Values are JSON numbers. Times are whole seconds.
 `assetId` and `chainId` are the canonical chain identifiers of the chain registry
 (`docs/protocol/chains/v1.json`), always the main network's: `btc-mainnet`, `bch-mainnet`,
 `xec-mainnet`, `doge-mainnet`, `monad-mainnet`, `ethereum-mainnet`, `solana-mainnet`,
-`hyperliquid-mainnet`. A chain's native coin is priced under its chain identifier. Two basket
-coins are not Frank networks and have no registry row; in this feed, and only here, they are
-`ltc-mainnet` and `xmr-mainnet`. They are oracle inputs, not supported networks.
+`hyperliquid-mainnet`. A chain's native coin is priced under its chain identifier. In this feed
+schema v1, the Scrypt merge-mined Litecoin basket leg uses the historical feed key `ltc-mainnet`
+(corresponding to `litecoin-mainnet` in `docs/protocol/chains/v1.json`), and Monero uses
+`xmr-mainnet` (an oracle input only, not a supported wallet network).
 
 A token that lives on several chains is not a chain's native coin and is priced once, under
 its own asset id: `price/usdc` and `price/usdt` (US dollars per whole token). These two are the

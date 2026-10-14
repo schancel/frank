@@ -100,8 +100,8 @@ Frank is a port of a deeper protocol, not a finished security product. This tabl
 | Multiple sender funding accounts and nonce tracking              | Implemented; account reuse is allowed and automatic diversification remains unfinished                     |
 | Recipient one-time stamp-child destinations                      | Working; restored on Monad in [#60](https://github.com/schancel/frank/issues/60)                           |
 | Split multi-transaction stamp construction                       | Working; restored on Monad in [#60](https://github.com/schancel/frank/issues/60); one payment is permitted |
-| Per-profile relay discovery and mailbox migration                | Original Stamp behavior; not yet restored on Monad                                                         |
-| Cross-device checkpoints and safe state compaction               | Design work ([#58](https://github.com/schancel/frank/issues/58))                                           |
+| Single-record domain discovery (`/.well-known/cashweb.json`)     | Working ([#1578](https://github.com/schancel/frank/pull/1578))                                             |
+| Cross-device join-semilattice journal, outbox, and checkpoints   | Working ([#1570](https://github.com/schancel/frank/pull/1570))                                             |
 | Cross-chain atomic settlement                                    | Not available in the demo                                                                                  |
 
 ## The original Stamp privacy construction
@@ -132,10 +132,13 @@ keccak256(uncompressed_public_key[1:])[12:]
 frank/
 ├── app/                  Quasar/Vue browser and desktop client
 ├── packages/
-│   ├── wallet/           Custody adapters, chain wallets, spend state and sync
-│   ├── cashweb/          Relay/protocol clients and transport records
+│   ├── wallet/           Custody adapters, unified ChainAdapter, journal and sync
+│   ├── cashweb/          Relay/protocol clients, directory discovery and transport records
+│   ├── nakamoto/         Typed UTXO chain library (BTC, BCH, XEC, XPI, DOGE, LTC)
 │   ├── frank-codec/      Canonical encoding and validation
 │   ├── crypto-box/       Deniable authenticated encryption
+│   ├── mail-gateway/     Bridged SMTP/Resend gateway, WKD and onboarding portal
+│   ├── price-feeds/      Thermodynamic AVU energy oracle and price feed client
 │   ├── account-recovery/ Recovery-share ceremonies
 │   └── bot/              Headless bots and live-demo scripts
 └── backend/
@@ -143,7 +146,7 @@ frank/
     └── bitcoinsuite/     Vendored chain/protocol dependencies
 ```
 
-Application composition selects chain adapters through an `ActiveChain` boundary. Canonical network identities and protocol capabilities come from the [shared chain registry](docs/protocol/chains/README.md); UI selection and relay configuration determine which supported networks are available. Wallet inventory, reservations, and signing remain separate from message delivery.
+Application composition selects chain adapters through an `ActiveChain` and unified `ChainAdapter` boundary (`MON`, `ETH`, `SOL`, `XEC`, `BTC`, `BCH`, `XPI`, `DOGE`, `LTC`, `TEMPO`). Canonical network identities and protocol capabilities come from the [shared chain registry](docs/protocol/chains/README.md); UI selection and relay `GET /chains` discovery (including `accepted_payment_networks`) determine which supported networks are available. Wallet inventory, reservations, and signing remain separate from message delivery.
 
 [`docs/CASHWEB-PROTOCOL-SPEC.md`](docs/CASHWEB-PROTOCOL-SPEC.md) is the normative human protocol and
 status index. [`docs/backend-topology.md`](docs/backend-topology.md) and

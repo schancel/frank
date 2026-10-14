@@ -126,7 +126,7 @@ export default {
     selectMessagesTitle: 'Supprimer des messages',
   },
   chatInput: {
-    giveLotusSecretly: 'Donner des lotus secrêtement',
+    giveLotusSecretly: 'Donner des Lotus secrètement',
     sendStealth: 'Envoi furtif',
     offerSwap: 'Proposer un échange atomique',
     attachImage: 'Attacher une image',
@@ -135,7 +135,7 @@ export default {
     messageTooLarge:
       'Ce message est trop volumineux pour être envoyé. Retirez une image ou raccourcissez le texte.',
     blackjackChallenge: 'Défi de blackjack',
-    placeHolder: 'Ecrire un message...',
+    placeHolder: 'Écrire un message...',
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
     stampPayment: 'Paiement du timbre',
@@ -203,6 +203,7 @@ export default {
     balanceUnknown: 'Votre solde n’est pas encore connu.',
     leave: 'Quitter',
     leaveAriaLabel: 'Quitter la manche de tombola {raffleId}',
+    leftAction: 'A quitté la tombola',
     leftStatus:
       'Tombola quittée : {count}/{max} inscrits. Votre participation a été remboursée.',
   },
@@ -1042,28 +1043,28 @@ export default {
       'Frank est un logiciel expérimental. Il peut contenir des erreurs susceptibles de retarder des messages ou d’entraîner une perte de fonds. N’utilisez que des montants que vous pouvez vous permettre de perdre.',
     eulaYouUnderstand:
       'En cliquant sur « Accepter », vous reconnaissez que Frank est fourni « tel quel », sans garantie d’aucune sorte, expresse ou implicite.',
-    setupWallet: 'Setup de votre compte', //---- 'Character Setup'
+    setupWallet: 'Configuration de votre compte',
     eula: 'Contrat de licence',
-    deposit: 'Deposer des Lotus',
+    deposit: 'Déposer des Lotus',
     settings: 'Paramètres',
     back: 'Retour',
     seedWarning:
       'Notez votre phrase de récupération et gardez-la en lieu sûr. Si vous la perdez, personne ne pourra récupérer votre compte.',
     searchingRelay: 'Recherche des relais...',
-    networkErrorRelayDied: 'Erreur réseau: Le serveur relais ne réponds plus.',
+    networkErrorRelayDied: 'Erreur réseau : le serveur relais ne répond plus.',
     networkErrorRelayUnexpected:
-      'Erreur réseau: Le serveur a généré une erreur inattendue.',
-    requestingPayment: 'En attente de paiement...', //?
+      'Erreur réseau : le serveur a généré une erreur inattendue.',
+    requestingPayment: 'En attente de paiement...',
     sendingPayment: 'Envoi du paiement...',
-    uploadingMetaData: 'Téléchargement des metadonnées...',
-    openingInbox: 'Ouverture de la boite de réception...',
+    uploadingMetaData: 'Téléversement des métadonnées...',
+    openingInbox: 'Ouverture de la boîte de réception...',
     profileImageLargeError:
-      "L'image de votre avatar est trop volumineuse, choisissez en une plus petite.",
+      "L'image de votre avatar est trop volumineuse, choisissez-en une plus petite.",
     continue: 'Continuer',
     finish: 'Finir',
-    generatingWallet: 'Generation de votre wallet...',
+    generatingWallet: 'Génération de votre portefeuille...',
     gatheringBalances: 'Récupération du solde...',
-    watchingWallet: 'Surveillance du wallet...', //?
+    watchingWallet: 'Surveillance du portefeuille...',
     searchingExistingMetaData: 'Recherche des métadonnées dans le registre...',
     errorContactRegistry: 'Impossible de se connecter au registre',
     storedSeedMismatch:
@@ -1251,11 +1252,11 @@ export default {
   },
   receiveBitcoinDialog: {
     close: 'Fermer',
-    walletStatus: 'Etat du wallet',
+    walletStatus: 'État du portefeuille',
     balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
     noFundsHint:
       "Votre solde est de 0. Cette application utilise des MON de testnet, sans valeur réelle. Le faucet de démonstration alimente automatiquement les nouveaux profils ; si rien n'arrive après une minute, demandez à l'opérateur de la démo d'envoyer des MON de testnet à l'adresse ci-dessous.",
-    addressCopied: 'Adresse copiée dans le presse papier',
+    addressCopied: 'Adresse copiée dans le presse-papiers',
     failedLoadBalance: 'Impossible de charger le solde du portefeuille',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
@@ -1564,7 +1565,7 @@ export default {
   deleteMessageDialog: {
     cancel: 'Annuler',
     delete: 'Effacer',
-    message: 'Etes vous sûr de vouloir effacer ce message ?',
+    message: 'Êtes-vous sûr de vouloir effacer ce message ?',
   },
 
   imageDialog: {
@@ -1577,9 +1578,9 @@ export default {
     update: 'Mettre à jour',
     republish: 'Republier',
     avatarTooLarge:
-      "L'image de votre avatar est trop volumineuse, choisissez en une plus petite.",
-    unableContactRelay: 'Impossible de contacter le serveur-relai.',
-    pushingProfile: 'Envoi du nouveau profil..',
+      "L'image de votre avatar est trop volumineuse, choisissez-en une plus petite.",
+    unableContactRelay: 'Impossible de contacter le serveur relais.',
+    pushingProfile: 'Envoi du nouveau profil...',
     profile: 'Profil',
     savedNotification: 'Profil mis à jour',
     identityQr: 'Identité et QR',

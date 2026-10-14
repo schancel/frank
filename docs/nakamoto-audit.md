@@ -448,7 +448,7 @@ Native `blocked-by` edges are on the issues. A sentence here is not that edge. D
 | [Replace the hand-written bitcore types with branded constructors](https://github.com/schancel/frank/issues/237) | Compile-time misuse tests | scaffold |
 | [Add a crypto backend interface and differential tests](https://github.com/schancel/frank/issues/238) | Node, WASM, and pure-JS backends | scaffold |
 | [Port encoding, buffer, and error leaves](https://github.com/schancel/frank/issues/239) | base58, varint, reader/writer, typed errors; SHA-256d from `@noble/hashes` 1.8.0 | scaffold, runtime |
-| [Add explicit chain descriptors](https://github.com/schancel/frank/issues/240) | BTC, BCH, XEC, XPI, no default chain | scaffold |
+| [Add explicit chain descriptors](https://github.com/schancel/frank/issues/240) | BTC, BCH, XEC, XPI, DOGE, LTC, no default chain | scaffold |
 | [Runtime constraints and a justified dependency list](https://github.com/schancel/frank/issues/264) | bigint, Uint8Array, per-chain entries, empty install list | scaffold, chains |
 | [Destination and per-chain address codecs](https://github.com/schancel/frank/issues/243) | Destination vs encoding | chains, leaves |
 | [Keys, WIF, and HD derivation](https://github.com/schancel/frank/issues/244) | Keys and BIP32 | backend, chains |
@@ -463,6 +463,8 @@ Native `blocked-by` edges are on the issues. A sentence here is not that edge. D
 | [Migrate relay encryption onto @frank/crypto-box](https://github.com/schancel/frank/issues/258) | Future. Not this port | suites |
 | [Delete packages/bitcore-lib-xpi after consumers have moved](https://github.com/schancel/frank/issues/259) | Last. Do not perform it with the port | migrations, plus the audit, types, blocks, and benchmark tickets |
 | [Handoff for the chain library and encryption suites](https://github.com/schancel/frank/issues/260) | Living status. Risk stays at the top | nothing |
+| [Add Dogecoin and Litecoin descriptors](https://github.com/schancel/frank/pull/1460) | `DOGE_MAINNET`, `DOGE_TESTNET`, `LTC_MAINNET`, `LTC_TESTNET` as first-class descriptors | chains, address, block, transaction |
+| [Replace family switches with ChainDescriptor capabilities](https://github.com/schancel/frank/pull/1588) | `lotusNetChar`, `merkleOddRule`, `sighash.commitUtxos` on `ChainDescriptor` | chains, address, block, transaction, script |
 
 Decisions, not blockers:
 
@@ -485,7 +487,7 @@ The handoff issue tracks Done, Open PRs, Decisions, Blocked, and New tickets. Ri
 
 Integer math in the new packages is native `bigint`. Script-number encode and decode, and fixed-width unsigned big-endian conversion, live in `@frank/nakamoto` (`src/script-num.ts`, `src/integer.ts`). They are checked against the little-endian script-number vectors and against `bitcore-lib-xpi` from a test only. Encoding leaves import `src/integer.ts`. They do not carry a second script-number codec.
 
-Shared source uses `Uint8Array`. It does not import Node built-ins. A Node accelerator, when one exists, lives under `src/backend/node/` and is not imported by shared code. That directory does not exist yet. `sideEffects` is false. The exports map is ESM, with types. CJS is not emitted. Chain entries are `btc`, `bch`, `xec`, and `xpi`. Feature entries are `integer`, `script-num`, `base58`, `base58check`, `varint`, `reader`, `convert-bits`, `base32`, and `encoding-error`. Bundling the BCH entry does not include the BTC mainnet magic or the XPI port. Checks across a package boundary use a `code` field.
+Shared source uses `Uint8Array`. It does not import Node built-ins. A Node accelerator, when one exists, lives under `src/backend/node/` and is not imported by shared code. That directory does not exist yet. `sideEffects` is false. The exports map is ESM, with types. CJS is not emitted. Chain entries are `btc`, `bch`, `xec`, and `xpi`, while `DOGE_MAINNET`, `DOGE_TESTNET`, `LTC_MAINNET`, and `LTC_TESTNET` are exported as first-class descriptors from the package root and `CHAINS` / `getChain` (#1460). Feature entries are `integer`, `script-num`, `base58`, `base58check`, `varint`, `reader`, `convert-bits`, `base32`, and `encoding-error`. Bundling the BCH entry does not include the BTC mainnet magic or the XPI port. Checks across a package boundary use a `code` field.
 
 `@frank/nakamoto` allowed:
 
@@ -522,3 +524,14 @@ Not runtime dependencies:
 - `bitcore-lib-xpi` is a devDependency of `@frank/nakamoto` so tests can compare script-number, base58, base58check, and varint bytes. Shared source does not import it.
 
 The workflow `.github/workflows/nakamoto.yml` runs the package tests, the shared-import check, the dependency-list check, and a browser esbuild with no polyfills, then loads the emitted ESM in Node. The size of each entry is printed.
+
+## 12. Descriptor expansion and capability-driven dispatch (#1460, #1588)
+
+`@frank/nakamoto` now ships first-class `ChainDescriptor` definitions for Dogecoin and Litecoin (`DOGE_MAINNET`, `DOGE_TESTNET`, `LTC_MAINNET`, and `LTC_TESTNET`, added in #1460) alongside `BTC_MAINNET`/`BTC_TESTNET`/`BTC_REGTEST`, `BCH_MAINNET`/`BCH_TESTNET`/`BCH_REGTEST`, `XEC_MAINNET`/`XEC_TESTNET`/`XEC_REGTEST`, and `XPI_MAINNET`/`XPI_TESTNET`/`XPI_REGTEST`.
+
+All `chain.family` special-casing in `src/address.ts`, `src/block.ts`, `src/transaction.ts`, and `src/script.ts` has been replaced by explicit capability fields on `ChainDescriptor` (#1588):
+
+- `lotusNetChar` (`'_' | 'T' | 'R' | null`): controls Lotus XAddress encoding/decoding in `address.ts` and `addressVersionBytes` in `chain/shared.ts` without switching on `chain.family === 'xpi'`.
+- `merkleOddRule` (`'duplicate-last' | 'pad-zero'`): controls odd-level merkle tree partner hashing in `block.ts` (`duplicate-last` for Bitcoin-family chains, `pad-zero` for Lotus).
+- `sighash.commitUtxos` (`boolean` on `forkid` sighash descriptors): controls whether BIP143/FORKID sighash preimages commit `hashUtxos` (`true` on eCash, `false` on Bitcoin Cash) in `transaction.ts` and `script.ts`.
+

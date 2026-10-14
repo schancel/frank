@@ -188,9 +188,8 @@ export class CanonicalRelayCannotForwardError extends Error {
   }
 }
 
-/** The relay accepted the submission for checking and then ended it because it cannot deliver to
- * the recipient's relay. The relay decides that before it broadcasts anything. This attempt is over
- * and later sends proceed; the wallet still keeps its signed set and its reserved accounts. */
+/** Terminal relay refusal surfaced by an unpaid canonical send. Paid relay refusals retain
+ * their original request and unresolved payment claims instead. */
 export class CanonicalRecipientUndeliverableError extends MonadStampTerminalError {
   constructor() {
     super(
@@ -234,9 +233,9 @@ export interface StoredPayment {
    * - `spent` / `reverted`: the chain shows it in a block (a revert consumes the nonce too).
    * - `failed`: the chain shows the account's nonce consumed by another transaction, so this
    *   payment can never land. It is never paid again.
-   * - `unsent`: the relay refused the message for good before it stored or broadcast anything,
-   *   so these bytes never reached anything that could broadcast them. They are dropped
-   *   (`rawTx` is empty) and the coin was freed at once.
+   * - `unsent`: a retained disposition whose signed bytes were dropped (`rawTx` is empty).
+   *   Current paid submissions do not create it on relay refusal. The recorded disposition
+   *   alone does not prove that previously exposed bytes cannot land.
    */
   state: 'pending' | 'spent' | 'reverted' | 'failed' | 'unsent'
   /**
@@ -270,11 +269,14 @@ export interface StoredMessage {
   digest: string
   /** The compressed signing key (hex) the message was sealed to. */
   recipientSubject: string
-  /** The exact relay request. Kept until the relay has answered for it. */
+  /** The exact relay request. Retained while delivery is unresolved, including after refusal;
+   * removed after delivery is durably recorded. */
   request?: { body: string; contentType: string }
   payments: StoredPayment[]
-  /** `delivered`: the relay stored this exact message. `dead`: the relay refused it for good
-   * (`reason`) and stored nothing. Absent: not known yet; it is re-sent until it is. */
+  /** `delivered`: the relay confirmed storing this exact message. Absent: delivery remains
+   * unresolved; current paid refusals update `reason` without setting an outcome. Retained
+   * historical `dead` outcomes remain readable and do not prove payment settlement or that
+   * signed payments cannot land. */
   outcome?: 'delivered' | 'dead'
   /** Latest relay refusal; with no outcome the original request remains unresolved. */
   reason?: string

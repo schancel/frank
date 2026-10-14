@@ -415,7 +415,7 @@ async fn test_typescript_rust_byte_identity_for_actual_production_record() {
     let frame_bytes = hex::decode(frame_hex).unwrap();
 
     let pubkey_bytes =
-        hex::decode("03a15a52deb82549bc2326d42219400f41190ace7bf040fa8721017f2c10512b65").unwrap();
+        hex::decode("03ce323b774504ed7ae7cd2168ccde085718be4efa80a09f18a4cdac73eb0aea21").unwrap();
     let addr_bytes = address_from_compressed_pubkey(&pubkey_bytes).unwrap();
     let address = Address(addr_bytes);
 

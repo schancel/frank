@@ -36,10 +36,7 @@
           </q-badge>
         </div>
 
-        <div
-          class="text-caption q-mt-xs"
-          data-test="calendar-invite-time"
-        >
+        <div class="text-caption q-mt-xs" data-test="calendar-invite-time">
           <q-icon name="schedule" size="14px" class="q-mr-xs" />
           <span>{{ formattedTimeRange }}</span>
         </div>
@@ -69,12 +66,11 @@
           </a>
         </div>
 
-        <div
-          class="text-caption q-mt-xs"
-          data-test="calendar-invite-organizer"
-        >
+        <div class="text-caption q-mt-xs" data-test="calendar-invite-organizer">
           <q-icon name="person" size="14px" class="q-mr-xs" />
-          <span>{{ $t('calendarInvite.organizer') }}: {{ organizerDisplay }}</span>
+          <span
+            >{{ $t('calendarInvite.organizer') }}: {{ organizerDisplay }}</span
+          >
         </div>
 
         <div

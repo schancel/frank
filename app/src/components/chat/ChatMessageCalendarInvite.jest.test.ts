@@ -132,9 +132,9 @@ describe('ChatMessageCalendarInvite', () => {
     expect(wrapper.text()).toContain('Mainnet Launch Sync')
     expect(wrapper.text()).toContain('Room 42')
     expect(wrapper.text()).toContain('Review checklist and deployment metrics')
-    expect(wrapper.find('[data-testid="calendar-rsvp-tally"]').text()).toContain(
-      '1 Accepted · 0 Tentative · 0 Declined',
-    )
+    expect(
+      wrapper.find('[data-testid="calendar-rsvp-tally"]').text(),
+    ).toContain('1 Accepted · 0 Tentative · 0 Declined')
   })
 
   it('emits sendFollowUp with a calendar-rsvp message item when clicking Accept, Tentative, or Decline', async () => {
@@ -158,16 +158,14 @@ describe('ChatMessageCalendarInvite', () => {
         },
       ],
     ])
-    expect(wrapper.find('[data-testid="calendar-rsvp-tally"]').text()).toContain(
-      '2 Accepted · 0 Tentative · 0 Declined',
-    )
+    expect(
+      wrapper.find('[data-testid="calendar-rsvp-tally"]').text(),
+    ).toContain('2 Accepted · 0 Tentative · 0 Declined')
   })
 
   it('downloads an RFC 5545 .ics file and provides a Google Calendar URL', async () => {
     const wrapper = mountCalendarInvite()
-    await wrapper
-      .find('[data-testid="calendar-download-ics"]')
-      .trigger('click')
+    await wrapper.find('[data-testid="calendar-download-ics"]').trigger('click')
     expect(mockDownloadCalendarInviteIcs).toHaveBeenCalledTimes(1)
     expect(mockDownloadCalendarInviteIcs).toHaveBeenCalledWith(
       sampleInvite,

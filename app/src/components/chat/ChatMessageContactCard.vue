@@ -45,7 +45,9 @@
         data-test="contact-card-address"
       >
         <q-icon name="account_balance_wallet" size="14px" class="q-mr-xs" />
-        <span>{{ $t('contactCard.frankAddress') }}: {{ item.frankAddress }}</span>
+        <span
+          >{{ $t('contactCard.frankAddress') }}: {{ item.frankAddress }}</span
+        >
       </div>
 
       <div
@@ -68,11 +70,7 @@
         <span>{{ $t('contactCard.phone') }}: {{ phone }}</span>
       </div>
 
-      <div
-        v-if="safeUrl"
-        class="text-caption"
-        data-test="contact-card-url"
-      >
+      <div v-if="safeUrl" class="text-caption" data-test="contact-card-url">
         <q-icon name="language" size="14px" class="q-mr-xs" />
         <a
           :href="safeUrl"

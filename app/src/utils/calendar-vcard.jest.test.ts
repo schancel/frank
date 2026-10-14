@@ -69,7 +69,11 @@ describe('calendar-vcard utilities (Issue #1573)', () => {
           sequence: 2,
           status: 'accepted',
           respondedAtMs: 1760400500000,
-          attendee: { address: BOB, name: 'Bob Attendee', email: 'bob@frank.local' },
+          attendee: {
+            address: BOB,
+            name: 'Bob Attendee',
+            email: 'bob@frank.local',
+          },
         },
       }
       const ics = serializeCalendarInviteToIcs(sampleInvite, rsvps)
@@ -200,9 +204,9 @@ describe('calendar-vcard utilities (Issue #1573)', () => {
       expect(tally.accepted.map(r => r.attendee.address)).toEqual([BOB])
       expect(tally.declined.map(r => r.attendee.address)).toEqual([CAROL])
       expect(tally.tentative).toHaveLength(0)
-      expect(aggregateCalendarRsvps('evt-1', rsvps)[BOB.toLowerCase()].status).toBe(
-        'accepted',
-      )
+      expect(
+        aggregateCalendarRsvps('evt-1', rsvps)[BOB.toLowerCase()].status,
+      ).toBe('accepted')
     })
   })
 
@@ -229,7 +233,10 @@ describe('calendar-vcard utilities (Issue #1573)', () => {
         title: 'Cancelled Sync',
         status: 'cancelled',
       }
-      const feed = buildWebcalFeedIcs([sampleInvite, secondInvite], 'My Frank Events')
+      const feed = buildWebcalFeedIcs(
+        [sampleInvite, secondInvite],
+        'My Frank Events',
+      )
       const unfolded = unfoldContentLines(feed).join('\n')
       expect(unfolded).toContain('METHOD:PUBLISH')
       expect(unfolded).toContain('X-WR-CALNAME:My Frank Events')

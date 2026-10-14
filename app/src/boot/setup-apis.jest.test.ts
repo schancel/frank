@@ -21,9 +21,6 @@ jest.mock('../accounts/session', () => ({
 const mockLegacyWallet = { setXPrivKey: jest.fn() }
 const mockLegacyWalletConstructor = jest.fn(() => mockLegacyWallet)
 
-jest.mock('quasar/wrappers', () => ({
-  boot: (callback: unknown) => callback,
-}))
 jest.mock('../utils/constants', () => ({
   defaultRelayUrl: 'http://legacy.invalid',
   chronikServers: [],

@@ -1,4 +1,4 @@
-import { boot } from 'quasar/wrappers'
+import { defineBoot as boot } from '@quasar/app-vite'
 import {
   getActiveChain,
   getChainRegistryEntry,

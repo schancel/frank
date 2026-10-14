@@ -1,4 +1,4 @@
-import { boot } from 'quasar/wrappers'
+import { defineBoot as boot } from '@quasar/app-vite'
 import { Plugins } from '@capacitor/core'
 import { APP_STATE_EVENT } from 'src/composables/useBalance'
 const { Browser, App } = Plugins

@@ -1,4 +1,4 @@
-import { boot } from 'quasar/wrappers'
+import { defineBoot as boot } from '@quasar/app-vite'
 import { startupRestoration } from './startup-state'
 import { initializeMonadIdentity } from '../utils/monad-identity-session'
 

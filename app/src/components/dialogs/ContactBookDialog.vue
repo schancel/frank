@@ -11,8 +11,8 @@
         v-model="search"
         filled
         dense
+        autofocus
         :placeholder="$t('contactBookDialog.search')"
-        ref="contactSearch"
       />
     </q-card-section>
     <q-card-section class="contact-book-list q-pb-none">
@@ -29,7 +29,6 @@
 
 <script lang="ts">
 import { defineComponent } from 'vue'
-import { QInput } from 'quasar'
 import { storeToRefs } from 'pinia'
 
 import ContactList from '../contacts/ContactList.vue'
@@ -84,10 +83,6 @@ export default defineComponent({
       search: '',
     }
   },
-  mounted() {
-    const contactSearch = this.$refs.contactSearch as QInput
-    contactSearch.$el.focus()
-  },
 })
 </script>
 
@@ -96,6 +91,7 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   max-height: calc(100dvh - 48px);
+  width: min(560px, calc(100vw - 32px));
   overflow: hidden;
 }
 .contact-book-list {
@@ -105,5 +101,22 @@ export default defineComponent({
 }
 .contact-book-actions {
   flex: 0 0 auto;
+}
+/* Keep this density local to the picker; full contact panels keep their layout. */
+.contact-book-list :deep(.q-list) {
+  padding-block: 0;
+}
+.contact-book-list :deep(.q-item) {
+  padding: 10px 4px;
+}
+.contact-book-list :deep(.q-item__section--avatar) {
+  min-width: 48px;
+  padding-right: 12px;
+}
+.contact-book-list :deep(.q-avatar) {
+  font-size: 36px !important;
+}
+.contact-book-list :deep(.q-item__section--side:last-child) {
+  padding-left: 8px;
 }
 </style>

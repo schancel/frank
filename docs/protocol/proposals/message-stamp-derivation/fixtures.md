@@ -86,3 +86,12 @@ repository target rule.
 Requested lane: strong, tier 3. Actual execution: inherited session model
 (no strong-lane TOML present); no claim of a named model override. Protocol and
 security review and owner choice disposition remain outstanding at handoff.
+
+### Sealed-sender source-hash refresh
+
+The sealed-sender change refreshes only the frozen SHA-256 metadata for
+`packages/wallet/evm-wallet-material.ts`, for optional sealed-envelope plumbing.
+Its regeneration preserves every non-metadata corpus value exactly, including
+all derivation inputs, keys, addresses, paths and frames. This remains
+historical proposal evidence, with no new derivation or runtime activation
+claim.

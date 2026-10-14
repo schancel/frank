@@ -134,7 +134,8 @@
       <q-scroll-area
         ref="emailScroll"
         class="q-px-none absolute full-width full-height column"
-        :content-style="{ padding: '16px 24px 24px 24px' }"
+        :content-style="{ width: '100%', minWidth: '100%' }"
+        :content-active-style="{ width: '100%', minWidth: '100%' }"
       >
         <div class="email-cards-container">
           <!-- Draft placeholder when there are 0 messages -->
@@ -2715,6 +2716,12 @@ export default defineComponent({
 
 .body--dark .email-count-pill {
   background: rgba(255, 255, 255, 0.05);
+}
+
+.email-cards-container {
+  padding: 16px 24px 24px 24px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .email-card {

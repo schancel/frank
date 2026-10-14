@@ -32,6 +32,7 @@ let precache = []
 const routes = []
 const importedScripts = []
 let forcedActivation = false
+const workerListeners = new Map()
 class NavigationRoute {
   constructor(handler, { denylist = [] } = {}) {
     this.handler = handler
@@ -60,7 +61,9 @@ vm.runInNewContext(readFileSync(new URL('sw.js', output), 'utf8'), {
   importScripts: recordImportScripts,
   self: {
     define() {},
-    addEventListener() {},
+    addEventListener(type, listener) {
+      workerListeners.set(type, listener)
+    },
     importScripts: recordImportScripts,
     skipWaiting() {
       forcedActivation = true
@@ -71,9 +74,11 @@ vm.runInNewContext(readFileSync(new URL('sw.js', output), 'utf8'), {
   },
 })
 assert(
-  forcedActivation,
-  'The service worker must activate immediately on reload via skipWaiting',
+  !forcedActivation,
+  'Background updates must retain the running app precache until accepted',
 )
+workerListeners.get('message')?.({ data: { type: 'SKIP_WAITING' } })
+assert(forcedActivation, 'Explicit Update now must activate the waiting worker')
 assert(
   importedScripts.includes('push-sw.js'),
   'The generated service worker must import push-sw.js for blind WebPush wakeups',

@@ -558,8 +558,9 @@ export default configure(ctx => {
       injectPWAMetaTags: false,
       extendPWAGenerateSWOptions(options) {
         return {
-          // Activate the new bundle immediately so a reload gets the updated application.
-          skipWaiting: true,
+          // Keep the current precache while its pages can still lazy-load old chunks.
+          // The update notice explicitly sends SKIP_WAITING when the user accepts.
+          skipWaiting: false,
           // Cache only shipped application assets, never source maps or live API responses.
           globIgnores: [...options.globIgnores, '**/*.map'],
           // Gateway portals must reach ingress rather than the cached app shell.

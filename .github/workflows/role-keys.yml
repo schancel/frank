@@ -22,7 +22,6 @@ on:
       - "yarn.lock"
       - ".github/workflows/role-keys.yml"
   pull_request:
-    branches: [main]
     paths:
       - "packages/role-keys/**"
       - "packages/nakamoto/**"

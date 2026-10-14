@@ -17,7 +17,6 @@ on:
       - ".github/workflows/nakamoto.yml"
       - "yarn.lock"
   pull_request:
-    branches: [main]
     paths:
       - "packages/nakamoto/**"
       - "packages/crypto-box/**"

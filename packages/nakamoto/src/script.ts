@@ -20,8 +20,9 @@ import {
   type AffinePoint,
 } from './secp256k1.js'
 import {
+  resolveScriptSighashAlgorithm,
   sighash,
-  type SighashAlgorithm,
+  validateChainSigHashType,
   type SpentOutput,
   type Transaction,
 } from './transaction.js'
@@ -1485,25 +1486,7 @@ function looksSchnorr(sig: Uint8Array): boolean {
 }
 
 function hashTypeAccepted(hashType: number, chain: ChainDescriptor): boolean {
-  if (!Number.isInteger(hashType) || hashType < 0 || hashType > 0xff) {
-    return false
-  }
-  if (chain.sighash.kind === 'lotus') {
-    const mask = hashType & 0x60
-    if (mask !== 0x40 && mask !== 0x60) return false
-    if ((hashType & 0x03) === 0 || (hashType & 0x1c) !== 0) return false
-    return true
-  }
-  const base = hashType & 0x1f
-  if (base < 1 || base > 3) return false
-  const extra = hashType & ~0x1f
-  if (
-    chain.sighash.kind === 'btc-legacy-and-segwit' ||
-    chain.sighash.kind === 'legacy-only'
-  )
-    return extra === 0 || extra === 0x80
-  const withoutFork = extra & ~0x40
-  return (extra & 0x40) === 0x40 && (withoutFork === 0 || withoutFork === 0x80)
+  return validateChainSigHashType(chain, hashType)
 }
 
 function removeCodeSeparators(script: Uint8Array): Uint8Array {
@@ -1613,16 +1596,8 @@ function digestFor(
   const tx = machine.context.transaction
   const inputIndex = machine.context.inputIndex
   if (tx === undefined || inputIndex === undefined) return null
-  const xpiMask = hashType & 0x60
-  const algorithm: SighashAlgorithm =
-    chain.sighash.kind === 'btc-legacy-and-segwit' ||
-    chain.sighash.kind === 'legacy-only'
-      ? 'legacy'
-      : chain.sighash.kind === 'lotus'
-      ? xpiMask === 0x40
-        ? 'forkid'
-        : 'lotus'
-      : 'forkid'
+  const algorithm = resolveScriptSighashAlgorithm(chain, hashType)
+  if (algorithm === null) return failure('script-signature', opcode)
   const spentOutput = machine.context.spent?.[inputIndex]
   if (algorithm !== 'legacy' && spentOutput === undefined) return null
   if (

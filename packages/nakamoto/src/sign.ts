@@ -13,6 +13,7 @@ import {
 } from './constructors.js'
 import {
   SIGHASH_DEFAULT,
+  chainSupportsSighashAlgorithm,
   isTxError,
   sighash,
   type SighashAlgorithm,
@@ -254,7 +255,9 @@ function keyMatches(template: Template, publicKey: Uint8Array): boolean {
 function algorithmFits(
   template: Template,
   algorithm: SighashAlgorithm,
+  chain: ChainDescriptor,
 ): boolean {
+  if (!chainSupportsSighashAlgorithm(chain, algorithm)) return false
   if (template.kind === 'p2wpkh') return algorithm === 'bip143'
   if (template.kind === 'p2tr') return algorithm === 'bip341'
   return (
@@ -340,7 +343,9 @@ function prepare(
   if (!isPlainBytes(signer.publicKey)) return fail('sign-bytes')
   const template = classify(coin.scriptPubKey)
   if (template === undefined) return fail('sign-script-unsupported')
-  if (!algorithmFits(template, options.algorithm)) return fail('sign-algorithm')
+  if (!algorithmFits(template, options.algorithm, options.chain)) {
+    return fail('sign-algorithm')
+  }
   const publicKey = copyBytes(signer.publicKey)
   if (!keyMatches(template, publicKey)) return fail('sign-pubkey-mismatch')
   return {

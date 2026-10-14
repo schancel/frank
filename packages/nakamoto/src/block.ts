@@ -69,6 +69,7 @@ export interface BlockFailure {
     | 'merkle-root'
   readonly expected?: number
   readonly actual?: number
+  readonly reason?: string
 }
 
 export type BlockResult<T> =
@@ -91,7 +92,7 @@ export function isBlockError(value: unknown): value is BlockFailure {
 
 function fail(
   code: BlockFailure['code'],
-  extra: { expected?: number; actual?: number } = {},
+  extra: { expected?: number; actual?: number; reason?: string } = {},
 ): BlockResult<never> {
   return { ok: false, error: { code, ...extra } }
 }
@@ -423,26 +424,36 @@ export function parseHeader(
   bytes: Uint8Array,
   chain: ChainDescriptor,
 ): BlockResult<BlockHeader> {
-  const expected = headerLength(chain)
-  // A Dogecoin AuxPoW header carries variable bytes after the 80-byte hash preimage.
-  // Until parsed explicitly, never accept a truncated prefix as a complete header.
-  if (expected === null) return fail('block-header-shape')
   const body = copyBytes(bytes)
-  if (
-    chain.header.kind === 'not-bitcoin-80' &&
-    body.length === BITCOIN_HEADER_BYTES
-  ) {
-    return fail('block-header-shape', {
-      expected: LOTUS_HEADER_BYTES,
-      actual: body.length,
-    })
+  switch (chain.header.kind) {
+    case 'bitcoin-80':
+      if (body.length !== BITCOIN_HEADER_BYTES) {
+        return fail('block-header-length', {
+          expected: BITCOIN_HEADER_BYTES,
+          actual: body.length,
+        })
+      }
+      return parseBitcoin(body)
+    case 'not-bitcoin-80':
+      if (body.length === BITCOIN_HEADER_BYTES) {
+        return fail('block-header-shape', {
+          expected: LOTUS_HEADER_BYTES,
+          actual: body.length,
+          reason: chain.header.source,
+        })
+      }
+      if (body.length !== LOTUS_HEADER_BYTES) {
+        return fail('block-header-length', {
+          expected: LOTUS_HEADER_BYTES,
+          actual: body.length,
+        })
+      }
+      return parseLotus(body)
+    case 'auxpow-variable':
+      // A Dogecoin AuxPoW header carries variable bytes after the 80-byte hash preimage.
+      // Until parsed explicitly, never accept a truncated prefix as a complete header.
+      return fail('block-header-shape', { reason: chain.header.source })
   }
-  if (body.length !== expected) {
-    return fail('block-header-length', { expected, actual: body.length })
-  }
-  return chain.header.kind === 'bitcoin-80'
-    ? parseBitcoin(body)
-    : parseLotus(body)
 }
 
 function writeBitcoin(header: BitcoinHeader): BlockResult<Uint8Array> {
@@ -569,6 +580,9 @@ export function parseMerkleBlock(
   bytes: Uint8Array,
   chain: ChainDescriptor,
 ): BlockResult<MerkleBlock> {
+  if (chain.header.kind === 'auxpow-variable') {
+    return fail('block-header-shape', { reason: chain.header.source })
+  }
   const expected = headerLength(chain)
   if (expected === null) return fail('block-header-shape')
   const body = copyBytes(bytes)
@@ -579,6 +593,7 @@ export function parseMerkleBlock(
     return fail('block-header-shape', {
       expected: LOTUS_HEADER_BYTES,
       actual: body.length,
+      reason: chain.header.source,
     })
   }
   if (body.length < expected) {

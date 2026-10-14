@@ -362,10 +362,7 @@ impl RelayChainRegistry {
     /// Construct a registry from [`RegistryConf`] and an environment lookup function, populating
     /// configured upstreams from `evm_rpc`, `bitcoin_proxy`, `solana_proxy`, and `monad_mailbox`,
     /// and recording `conf.effective_accepted_payment_networks()` for stamp and burn admission.
-    pub fn from_conf_with_env(
-        conf: &RegistryConf,
-        env: impl Fn(&str) -> Option<String>,
-    ) -> Self {
+    pub fn from_conf_with_env(conf: &RegistryConf, env: impl Fn(&str) -> Option<String>) -> Self {
         let mut registry = Self::from_protocol_registry();
         registry.accepted_payment_networks = conf.effective_accepted_payment_networks();
 
@@ -525,9 +522,10 @@ impl RelayChainRegistry {
             }
         }
 
-        let raw = env(default_rpc_env).ok_or_else(|| RelayChainRegistryError::MissingRpcUrlEnv {
-            env_name: default_rpc_env.to_string(),
-        })?;
+        let raw =
+            env(default_rpc_env).ok_or_else(|| RelayChainRegistryError::MissingRpcUrlEnv {
+                env_name: default_rpc_env.to_string(),
+            })?;
         let urls = parse_comma_separated_http_urls(default_rpc_env, &raw)?;
         Ok(urls.into_iter().next())
     }

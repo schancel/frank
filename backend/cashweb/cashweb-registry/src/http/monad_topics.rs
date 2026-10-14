@@ -310,11 +310,10 @@ async fn forum_submission<T: JsonRpcTransport + Clone>(
     match &event {
         TopicEvent::Post(value) if post && value.schema_version >= 2 => (),
         TopicEvent::Vote(value) if !post => {
-            match registry.forum().contains(
-                expected_network,
-                policy,
-                &value.target_hash,
-            ) {
+            match registry
+                .forum()
+                .contains(expected_network, policy, &value.target_hash)
+            {
                 Ok(true) => (),
                 Ok(false) => return forum_error(ForumError::NotFound),
                 Err(error) => return forum_error(error),

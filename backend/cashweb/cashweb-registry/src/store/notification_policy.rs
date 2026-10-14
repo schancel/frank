@@ -569,12 +569,19 @@ pub fn verify_p256_ecdsa(
     u256_mod(&rx, &P256_N) == r
 }
 
+/// Storage key for the cluster-wide 32-byte P-256 VAPID private scalar in [`crate::store::kv_store::RelayKvStore`].
+pub const VAPID_PRIVATE_KEY_STORAGE_KEY: &[u8] = b"M_vapid_privkey";
+
+/// Alias for [`VapidKeyPair`] when used as the cluster-wide WebPush VAPID signer/dispatcher.
+pub type VapidDispatcher = VapidKeyPair;
+
 /// Relay P-256 VAPID keypair for signing RFC 8292 WebPush JWT headers.
 ///
 /// Cluster-safe and persistent:
 /// - In multi-node relay deployments, set `FRANK_VAPID_PRIVATE_KEY` (32-byte hex or base64url)
-///   from a shared secret so every relay pod advertises the same `vapid_public_key` and can push
-///   to subscriptions registered on any pod.
+///   from a shared secret or use [`VapidKeyPair::from_kv_store_or_env`] against a shared
+///   [`crate::store::kv_store::RelayKvStore`] so every relay pod advertises the same
+///   `vapid_public_key` and can push to subscriptions registered on any pod.
 /// - In single-node deployments without `FRANK_VAPID_PRIVATE_KEY`, the 32-byte private key is
 ///   generated once and persisted in RocksDB under `M_vapid_privkey` so subscriptions survive
 ///   process restarts.
@@ -626,6 +633,56 @@ impl VapidKeyPair {
             }
         }
         Err("VAPID private key must be 32 bytes in hex or base64url".to_string())
+    }
+
+    /// Load or atomically bootstrap the cluster's shared VAPID keypair from:
+    /// 1. `FRANK_VAPID_PRIVATE_KEY` environment variable (if set and non-empty), or
+    /// 2. [`crate::store::kv_store::RelayKvStore`] under `b"M_vapid_privkey"` using atomic
+    ///    `compare_and_swap(b"M_vapid_privkey", None, candidate)` so multiple stateless
+    ///    relay replicas booting simultaneously converge on the single winning keypair.
+    pub fn from_kv_store_or_env(
+        kv: &dyn crate::store::kv_store::RelayKvStore,
+    ) -> Result<Self, crate::store::kv_store::KvError> {
+        if let Ok(raw_env) = std::env::var("FRANK_VAPID_PRIVATE_KEY") {
+            let trimmed = raw_env.trim();
+            if !trimmed.is_empty() {
+                if let Ok(kp) = Self::from_private_key_str(trimmed) {
+                    return Ok(kp);
+                }
+            }
+        }
+        Self::from_kv_store(kv)
+    }
+
+    /// Load or atomically bootstrap the cluster's shared VAPID keypair from `kv` under
+    /// `b"M_vapid_privkey"` using serializable `compare_and_swap`.
+    pub fn from_kv_store(
+        kv: &dyn crate::store::kv_store::RelayKvStore,
+    ) -> Result<Self, crate::store::kv_store::KvError> {
+        if let Some(existing) = kv.get(VAPID_PRIVATE_KEY_STORAGE_KEY)? {
+            if let Ok(bytes) = <[u8; 32]>::try_from(existing.as_slice()) {
+                return Ok(Self::from_private_key_bytes(&bytes));
+            }
+        }
+        let candidate = Self::generate();
+        match kv.compare_and_swap(
+            VAPID_PRIVATE_KEY_STORAGE_KEY,
+            None,
+            candidate.private_key_bytes(),
+        ) {
+            Ok(()) => Ok(candidate),
+            Err(crate::store::kv_store::KvError::CasConflict {
+                current: Some(existing),
+            }) => {
+                let bytes = <[u8; 32]>::try_from(existing.as_slice()).map_err(|_| {
+                    crate::store::kv_store::KvError::Backend(
+                        "corrupted M_vapid_privkey length in KV store".into(),
+                    )
+                })?;
+                Ok(Self::from_private_key_bytes(&bytes))
+            }
+            Err(other) => Err(other),
+        }
     }
 
     /// Generate a fresh random P-256 VAPID keypair.
@@ -843,5 +900,36 @@ mod tests {
             &digest,
             &sig_bytes
         ));
+    }
+
+    #[test]
+    fn multi_replica_vapid_bootstrap_converges_via_shared_kv_cas() {
+        use crate::store::kv_store::{FoundationDbKvStore, SimulatedFdbCluster};
+        use std::thread;
+
+        let cluster = SimulatedFdbCluster::new();
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let replica_kv = FoundationDbKvStore::connect_simulated(
+                "/etc/foundationdb/fdb.cluster",
+                b"frank_cluster:",
+                cluster.clone(),
+            );
+            handles.push(thread::spawn(move || {
+                VapidKeyPair::from_kv_store(&replica_kv).unwrap()
+            }));
+        }
+
+        let results: Vec<VapidKeyPair> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.len(), 10);
+        let first = &results[0];
+        for kp in &results[1..] {
+            assert_eq!(
+                kp.public_key_base64url(),
+                first.public_key_base64url(),
+                "all 10 concurrent relay replicas must converge on the single CAS-winning VAPID keypair"
+            );
+            assert_eq!(kp.private_key_bytes(), first.private_key_bytes());
+        }
     }
 }

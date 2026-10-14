@@ -294,7 +294,10 @@ impl ProtocolChainDescriptor {
 
     /// Return the protocol-pinned block hash checkpoint `(height, expected_hash)` for a proxy
     /// capability, if any.
-    pub fn pinned_block_checkpoint(&self, capability: ProtocolProxyCapability) -> Option<(u64, &str)> {
+    pub fn pinned_block_checkpoint(
+        &self,
+        capability: ProtocolProxyCapability,
+    ) -> Option<(u64, &str)> {
         self.identity_probes.iter().find_map(|probe| match probe {
             ProtocolIdentityProbe::BlockHash {
                 capability: probe_capability,

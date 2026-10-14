@@ -1344,10 +1344,7 @@ fn authenticate_notification_policy(
 pub(crate) async fn handle_get_vapid_public_key(
     Extension(server): Extension<super::server::RegistryServer>,
 ) -> Result<Response> {
-    let vapid = server
-        .registry
-        .canonical_dm()
-        .get_or_init_vapid_keypair()?;
+    let vapid = server.registry.canonical_dm().get_or_init_vapid_keypair()?;
     let pubkey = vapid.public_key_base64url();
     let mut response = (
         StatusCode::OK,

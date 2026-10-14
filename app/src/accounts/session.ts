@@ -80,6 +80,21 @@ export class AccountAddressUnavailableError extends Error {
 
 export type RuntimeWallet = NativeWalletHandle &
   WalletHandle & { close(): Promise<void> }
+/** Optional app authentication capability; chain-neutral identity does not promise it. */
+function readIdentityPublicKey(
+  identity: NativeWalletHandle['identity'],
+): Uint8Array | undefined {
+  if (!('compressedPubKey' in identity)) return undefined
+  const key = identity.compressedPubKey
+  if (
+    !(key instanceof Uint8Array) ||
+    key.length !== 33 ||
+    (key[0] !== 2 && key[0] !== 3)
+  )
+    return undefined
+  return Uint8Array.from(key)
+}
+
 export type SessionStatus =
   | 'loading'
   | 'fresh'
@@ -789,12 +804,10 @@ export function createAccountSession(deps: {
         let ecashCustody: EcashStealthCustody | undefined
         if (identity) {
           const identityPublicKey = new Uint8Array(identity.compressedPubKey)
+          const runtimePublicKey = readIdentityPublicKey(currentWallet.identity)
           if (
-            !identityPublicKey.every(
-              (byte, i) => byte === currentWallet.identity.compressedPubKey[i],
-            ) ||
-            identityPublicKey.length !==
-              currentWallet.identity.compressedPubKey.length
+            !runtimePublicKey ||
+            !identityPublicKey.every((byte, i) => byte === runtimePublicKey[i])
           )
             throw new CustodyError('conflict')
           identitySecret = identity.toNakamotoPrivateKey().bytes
@@ -886,7 +899,7 @@ export function createAccountSession(deps: {
           }
         }
         const guardConstruction =
-          <P, R>(create: (params: P) => Promise<R>) =>
+          <P, R>(create: (params: P) => R | Promise<R>) =>
           async (params: P): Promise<R> => {
             requireLive()
             const result = await create(params)
@@ -1118,11 +1131,7 @@ export function createAccountSession(deps: {
         if (entry?.family === 'solana')
           return (await session.getSolanaSigner()).publicKey.toBase58()
         const purpose =
-          entry?.family === 'bitcoin'
-            ? 'ecash-bch-wallet'
-            : entry?.family === 'solana'
-            ? 'solana-wallet'
-            : 'evm-wallet'
+          entry?.family === 'bitcoin' ? 'ecash-bch-wallet' : 'evm-wallet'
         const material = await session.getActiveFamilyMaterial(purpose)
         const root = 'seed' in material ? material.seed : material.bytes
         try {
@@ -1164,13 +1173,11 @@ export function createAccountSession(deps: {
     getCachedCurvePublicKey(curve: SupportedCurve): Uint8Array | undefined {
       if (curve === 'secp256k1') {
         const cached = curveKeyCache.get('secp256k1')
-        if (cached) return cached
-        if (wallet?.identity?.compressedPubKey) {
-          const key = new Uint8Array(wallet.identity.compressedPubKey)
-          curveKeyCache.set('secp256k1', key)
-          return key
-        }
-        return undefined
+        if (cached) return Uint8Array.from(cached)
+        const key = wallet && readIdentityPublicKey(wallet.identity)
+        if (!key) return undefined
+        curveKeyCache.set('secp256k1', key)
+        return Uint8Array.from(key)
       }
       return curveKeyCache.get(curve)
     },
@@ -1182,14 +1189,14 @@ export function createAccountSession(deps: {
         if (cached) return cached
         const currentWallet = await session.getWallet()
         checkCurrent()
-        if (!currentWallet.identity?.compressedPubKey) {
+        const key = readIdentityPublicKey(currentWallet.identity)
+        if (!key) {
           throw new Error(
             'No identity compressedPubKey available for secp256k1',
           )
         }
-        const key = new Uint8Array(currentWallet.identity.compressedPubKey)
         curveKeyCache.set('secp256k1', key)
-        return key
+        return Uint8Array.from(key)
       }
       const cached = curveKeyCache.get(curve)
       if (cached) return cached

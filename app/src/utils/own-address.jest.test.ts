@@ -195,3 +195,14 @@ describe('utils/own-address.ts', () => {
     scope.stop()
   })
 })
+
+test('does not pass an absent parsed address to the formatter', () => {
+  const format = jest.spyOn(activeChain, 'formatAddress')
+  try {
+    expect(sameCanonicalAddress(OWN, 'not-an-address')).toBe(false)
+    expect(sameCanonicalAddress('not-an-address', OWN)).toBe(false)
+    expect(format).not.toHaveBeenCalled()
+  } finally {
+    format.mockRestore()
+  }
+})

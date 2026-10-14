@@ -88,8 +88,8 @@ export function sameCanonicalAddress(
     const firstParsed = activeChain.parseAddress(first)
     const secondParsed = activeChain.parseAddress(second)
     return (
-      firstParsed !== null &&
-      secondParsed !== null &&
+      firstParsed !== undefined &&
+      secondParsed !== undefined &&
       activeChain.formatAddress(firstParsed) ===
         activeChain.formatAddress(secondParsed)
     )

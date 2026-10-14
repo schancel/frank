@@ -159,7 +159,7 @@ it.each([
 )
 
 it.each([
-  ['missing facts', () => undefined],
+  ['missing facts', (): unknown => undefined],
   ['missing sender', () => ({ ...facts(), sender: undefined })],
   [
     'wrong sender type',

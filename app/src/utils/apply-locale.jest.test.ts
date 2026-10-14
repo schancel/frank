@@ -1,5 +1,6 @@
 import { applyLocale } from './apply-locale'
 import { i18n } from '../boot/i18n'
+import { messages, defaultLocale } from '../i18n'
 
 let previousLocale: string
 beforeEach(() => {
@@ -36,6 +37,9 @@ describe('applyLocale', () => {
       expect(i18n.mode).toBe('legacy')
       expect(effects).toEqual(['caller', 'quasar'])
       expect(i18n.global.locale).toBe(locale)
+      expect(i18n.global.t('startupFailure.title')).toBe(
+        messages[locale].startupFailure.title,
+      )
       expect(setLocaleCalledWith).toBe(locale)
       expect(result).toBeUndefined()
       expect(setLang).toHaveBeenCalledTimes(1)
@@ -56,6 +60,9 @@ describe('applyLocale', () => {
 
     expect(result).toBeUndefined()
     expect(i18n.global.locale).toBe('xx-xx')
+    expect(i18n.global.t('startupFailure.title')).toBe(
+      messages[defaultLocale].startupFailure.title,
+    )
     expect(setLang).toHaveBeenCalledTimes(1)
     expect(setLang.mock.calls[0][0]).toMatchObject({ isoName: 'en-US' })
   })

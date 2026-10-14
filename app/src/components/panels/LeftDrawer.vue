@@ -112,6 +112,7 @@
       </div>
 
       <chat-list
+        ref="chatListRef"
         v-show="tab == 'chats' && $status.setup"
         v-bind="{ ...$attrs, ...panelAttrs('chats') }"
         :compact="false"
@@ -305,10 +306,23 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, inject, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  inject,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 
+import {
+  CHAT_SEARCH_SHORTCUT,
+  REVEAL_CHAT_DRAWER,
+} from '../../composables/useChatSearchShortcut'
 import ChatList from '../chat/ChatList.vue'
 import ChatListLink from '../chat/ChatListLink.vue'
 import ContactsPanel from '../panels/ContactsPanel.vue'
@@ -479,6 +493,29 @@ export default defineComponent({
     const tab = ref<'chats' | 'contacts' | 'wallet' | 'settings' | 'forum'>(
       'chats',
     )
+    const chatListRef = ref<{ focusSearchInput(): void } | null>(null)
+    const shortcut = inject(CHAT_SEARCH_SHORTCUT, null)
+    const revealDrawer = inject(REVEAL_CHAT_DRAWER, null)
+    let unregisterSearch: (() => void) | undefined
+    let disposed = false
+    onMounted(() => {
+      unregisterSearch = shortcut?.register(async () => {
+        if (!revealDrawer || !(await revealDrawer()) || disposed) return
+        tab.value = 'chats'
+        await nextTick()
+        if (
+          !disposed &&
+          !document.querySelector('.q-dialog, .q-menu') &&
+          (route.path === '/chat' || route.path.startsWith('/chat/'))
+        ) {
+          chatListRef.value?.focusSearchInput()
+        }
+      })
+    })
+    onUnmounted(() => {
+      disposed = true
+      unregisterSearch?.()
+    })
     watch(
       () => tab.value,
       newTab => {
@@ -577,6 +614,7 @@ export default defineComponent({
     }
 
     return {
+      chatListRef,
       tab,
       isWelcomeActive,
       openWelcome,

@@ -168,7 +168,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, onMounted, onUnmounted, ref } from 'vue'
+import { computed, defineComponent, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import ChatListItem from './ChatListItem.vue'
@@ -306,26 +306,6 @@ export default defineComponent({
       return list
     })
 
-    const handleGlobalKeydown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault()
-        searchInputRef.value?.focus()
-        searchInputRef.value?.select()
-      }
-    }
-
-    onMounted(() => {
-      if (typeof window !== 'undefined') {
-        window.addEventListener('keydown', handleGlobalKeydown)
-      }
-    })
-
-    onUnmounted(() => {
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('keydown', handleGlobalKeydown)
-      }
-    })
-
     const router = useRouter()
     const $q = useQuasar()
     return {
@@ -346,6 +326,7 @@ export default defineComponent({
       },
       focusSearchInput() {
         searchInputRef.value?.focus()
+        searchInputRef.value?.select()
       },
       openPage,
       openNewConversation() {

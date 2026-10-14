@@ -32,6 +32,7 @@
 import { computed, defineComponent } from 'vue'
 import type { NavigationFailure, RouteLocationNormalized } from 'vue-router'
 
+import { REVEAL_CHAT_DRAWER } from '../composables/useChatSearchShortcut'
 import { MY_DRAWER_OPEN_KEY } from '../composables/useMyDrawerOpen'
 import { DRAWER_BREAKPOINT, isNarrowWidth } from '../utils/layout'
 
@@ -99,6 +100,13 @@ export default defineComponent({
   },
   provide() {
     return {
+      [REVEAL_CHAT_DRAWER]: async () => {
+        if (this.setupNavigationLocked || this.disposed) return false
+        this.myDrawerOpen = true
+        await this.$nextTick()
+        await this.moveFocusIntoDrawer()
+        return !this.disposed && this.myDrawerOpen
+      },
       [MY_DRAWER_OPEN_KEY]: computed(() => this.myDrawerOpen),
       markRailNavigation: () => {
         this.railNavigation = true

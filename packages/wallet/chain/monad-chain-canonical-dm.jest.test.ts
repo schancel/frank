@@ -39,6 +39,7 @@ import {
   directMessageText,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
+import { formatConversationId } from '@frank/cashweb/relay/conversation-id'
 import {
   restoreCanonicalRequest,
   type CanonicalFetch,
@@ -84,12 +85,15 @@ import {
   CanonicalSenderUnpublishedError,
   LevelOutgoingMessageStore,
   UnpaidDirectMessageNotDeliveredError,
+  installedMessageItemRegistry,
+  projectOutboxMessageRecord,
   type UnpaidEnvelope,
   type StoredMessage,
 } from './monad-canonical-dm'
 import {
   isDirectMessageNotAttempted,
   type DirectMessageClient,
+  type DirectMessageReceived,
 } from './active-chain'
 
 // Offline chain state: only these single-use sender accounts hold funds.
@@ -2589,6 +2593,184 @@ describe('two typed wallets on the open directory', () => {
     expect(atAlice[0].senderAddress.raw.toLowerCase()).toBe(
       f.bob.identity.address.raw.toLowerCase(),
     )
+  })
+
+  it.each(['in', 'out'] as const)(
+    'projects the real opened content digest through %s polling and streaming',
+    async direction => {
+      await online('alice', f.alice)
+      await online('bob', f.bob)
+      // A spy observes the real authenticated opener; it does not manufacture its result.
+      const opened = jest.spyOn(
+        canonicalOpen,
+        direction === 'in' ? 'openDirectMessage' : 'openOwnDirectMessage',
+      )
+      const conversationId = '01010101-0101-0101-0101-010101010101'
+      const submissions: number[] = []
+      const sent = []
+      let close: (() => void) | undefined
+      try {
+        for (const body of [
+          'same content',
+          'same content',
+          'different content',
+        ]) {
+          submissions.push(f.requests.length)
+          sent.push(
+            await f.chain.directMessages.send({
+              wallet: f.alice,
+              recipient: f.bob.identity.address,
+              conversationId,
+              items: text(body),
+              stampValue: 0n,
+            }),
+          )
+        }
+        const records = submissions.map((index, n) =>
+          direction === 'in'
+            ? { ...inboxRecord(index, 100 + n), direction }
+            : outboundRecord(index, 100 + n),
+        )
+        const wallet = direction === 'in' ? f.bob : f.alice
+        mailboxPage.mockResolvedValueOnce({ records })
+        const fetched = await f.chain.directMessages.fetchSince({
+          wallet,
+          sinceMs: 0,
+        })
+        expect(fetched).toHaveLength(3)
+        const expected = opened.mock.results.map(result => {
+          if (result.type !== 'return')
+            throw new Error('real opener did not return')
+          return result.value
+        })
+        expect(expected).toHaveLength(3)
+        for (const [n, message] of fetched.entries()) {
+          expect(message.contentDigest).toBe(toHex(expected[n].contentDigest))
+          expect(message.messageId).toBe(
+            formatConversationId(expected[n].messageId),
+          )
+          expect(message.conversationId).toBe(conversationId)
+          expect(message.payloadDigest).toBe(sent[n].payloadDigest)
+          expect(message.stampValueWei).toBe(0n)
+        }
+        expect(fetched[0].payloadDigest).not.toBe(fetched[1].payloadDigest)
+        expect(fetched[0].contentDigest).toBe(fetched[1].contentDigest)
+        expect(fetched[0].contentDigest).not.toBe(fetched[2].contentDigest)
+
+        const streamed: typeof fetched = []
+        mockStreamRecordHandler = undefined
+        close = f.chain.directMessages.subscribeMailboxStream!({
+          wallet,
+          onRecord: record => {
+            streamed.push(record)
+          },
+        })
+        for (
+          const deadline = Date.now() + 2_000;
+          !mockStreamRecordHandler && Date.now() < deadline;
+
+        )
+          await new Promise(resolve => setImmediate(resolve))
+        expect(mockStreamRecordHandler).toBeDefined()
+        for (const record of records) await mockStreamRecordHandler!(record)
+        expect(streamed.map(message => message.contentDigest)).toEqual(
+          expected.map(message => toHex(message.contentDigest)),
+        )
+        expect(streamed.map(message => message.payloadDigest)).toEqual(
+          sent.map(message => message.payloadDigest),
+        )
+      } finally {
+        close?.()
+        opened.mockRestore()
+      }
+    },
+  )
+
+  it.each([false, true])(
+    'projects a self note (outbox=%s) without misattributing its content digest',
+    async outbox => {
+      await online('alice', f.alice)
+      const opened = jest.spyOn(canonicalOpen, 'openDirectMessage')
+      try {
+        const originalDigest = 'ab'.repeat(32)
+        const originalMessageId = '02020202-0202-0202-0202-020202020202'
+        await f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.alice.identity.address,
+          items: outbox
+            ? [
+                {
+                  type: 'outbox-message',
+                  payloadDigest: originalDigest,
+                  messageId: originalMessageId,
+                  recipientAddress: f.bob.identity.address.raw.toLowerCase(),
+                  sentAt: 50,
+                  text: 'original outbound text',
+                },
+              ]
+            : text('a direct note to self'),
+          stampValue: 0n,
+        })
+        mailboxPage.mockResolvedValueOnce({ records: [inboxRecord(0, 100)] })
+        const [projected] = await f.chain.directMessages.fetchSince({
+          wallet: f.alice,
+          sinceMs: 0,
+        })
+        expect(opened.mock.results[0].value.contentDigest).toHaveLength(32)
+        if (!outbox) {
+          expect(projected.contentDigest).toBe(
+            toHex(opened.mock.results[0].value.contentDigest),
+          )
+          return
+        }
+        expect(projected.items).toEqual(text('original outbound text'))
+        expect(projected.payloadDigest).toBe(originalDigest)
+        expect(projected.messageId).toBe(originalMessageId)
+        expect(projected).not.toHaveProperty('contentDigest')
+      } finally {
+        opened.mockRestore()
+      }
+    },
+  )
+
+  it('omits a consumed mixed-note digest at the existing outbox projection seam', () => {
+    // Synthetic consumer-seam fixture only: wallet-sync is NOT_CARRIED on the current wire.
+    // This pins the existing projection guard before and after wallet notes are consumed.
+    const note: DirectMessageReceived = {
+      senderAddress: f.alice.identity.address,
+      recipientAddress: f.alice.identity.address,
+      payloadDigest: '11'.repeat(32),
+      contentDigest: '22'.repeat(32),
+      stampValueWei: 0n,
+      stampPayments: [],
+      receivedTime: 100,
+      items: [
+        {
+          type: 'wallet-sync',
+          direction: 'out',
+          chainIdentifier: 'monad-testnet',
+          txHash: '33'.repeat(32),
+        },
+        {
+          type: 'outbox-message',
+          payloadDigest: '44'.repeat(32),
+          recipientAddress: f.bob.identity.address.raw.toLowerCase(),
+          sentAt: 50,
+          text: 'original',
+        },
+      ],
+    }
+    const registry = installedMessageItemRegistry(f.alice)!
+    expect(projectOutboxMessageRecord(note, registry)).toBe(note)
+    const rest = {
+      ...note,
+      items: note.items.filter(item => item.type !== 'wallet-sync'),
+    }
+    const projected = projectOutboxMessageRecord(rest, registry)
+    expect(projected.payloadDigest).toBe('44'.repeat(32))
+    expect(projected.items).toEqual(text('original'))
+    expect(projected).not.toHaveProperty('contentDigest')
+    expect(note.contentDigest).toBe('22'.repeat(32))
   })
 
   it('bounces sent messages back to sender mailbox and decrypts own message via salt', async () => {

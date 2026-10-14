@@ -139,6 +139,24 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
   })
 
   describe('toReceivedMessageWrapper', () => {
+    it.each([undefined, 'ab'.repeat(32)])(
+      'preserves authenticated content digest %s independently of receipt and message IDs',
+      async contentDigest => {
+        const record = makeRecord({
+          senderPublicKey: PUB_KEY_BYTES,
+          messageId: '01010101-0101-0101-0101-010101010101',
+          ...(contentDigest === undefined ? {} : { contentDigest }),
+        })
+        const wrapper = await toReceivedMessageWrapper(record)
+        expect(wrapper?.message.contentDigest).toBe(contentDigest)
+        if (contentDigest === undefined)
+          expect(wrapper?.message).not.toHaveProperty('contentDigest')
+        expect(wrapper?.index).toBe(record.payloadDigest)
+        expect(wrapper?.message.logicalMessageId).toBe(record.messageId)
+        expect(wrapper?.message.stampValueWei).toBe(record.stampValueWei)
+      },
+    )
+
     it('adapts a DirectMessageReceived record into a ReceivedMessageWrapper', async () => {
       jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
         address: { raw: SENDER_ADDRESS },

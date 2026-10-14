@@ -146,6 +146,9 @@ export async function toReceivedMessageWrapper(
         ? {}
         : { conversationName: record.conversationName }),
       logicalMessageId: record.messageId,
+      ...(record.contentDigest === undefined
+        ? {}
+        : { contentDigest: record.contentDigest }),
     },
   }
 }

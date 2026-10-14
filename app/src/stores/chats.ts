@@ -121,6 +121,8 @@ export type ChatMessage = {
   /** Ticket #69: Conversation and logical message identifiers */
   conversationId?: string
   logicalMessageId?: string
+  /** Authenticated original canonical content frame, when the producer supplied its digest. */
+  contentDigest?: string
   revisionDigest?: string
   deliveryDigest?: string
   /** `serverTime` is this device's clock: the message was written here and its row has not
@@ -898,6 +900,10 @@ function normalizeOutboxWrapper(
     : outbox.text !== undefined
     ? [{ type: 'text', text: outbox.text }]
     : []
+  // This projection changes the message identity: the self-note's authenticated digest is
+  // about the note, not the outbound content it describes. The original digest is unavailable.
+  const noteMessage = { ...wrapper.message }
+  delete noteMessage.contentDigest
   return {
     ...wrapper,
     ...(conversationId === undefined ? {} : { conversationId }),
@@ -905,7 +911,7 @@ function normalizeOutboxWrapper(
     copartyAddress: recipient,
     index,
     message: {
-      ...wrapper.message,
+      ...noteMessage,
       ...(conversationId === undefined ? {} : { conversationId }),
       ...(conversationName === undefined ? {} : { conversationName }),
       ...(outbox.messageId === undefined
@@ -4964,6 +4970,8 @@ export const useChatStore = defineStore('chats', {
                   toDeliveryStatus(existing.status),
                   incomingStatus,
                 )
+          const contentDigest =
+            wrapper.message.contentDigest ?? existing.contentDigest
           // The local outbox owns content/direction. The relay owns only delivery time and the
           // observed stamp metadata; never spread an inbox wrapper over the outbound record.
           outboundMatches.set(wrapper.index, {
@@ -4989,6 +4997,7 @@ export const useChatStore = defineStore('chats', {
               financialOperations: existing.financialOperations,
               conversationId,
               logicalMessageId: existing.logicalMessageId,
+              ...(contentDigest === undefined ? {} : { contentDigest }),
             },
           })
         } else {

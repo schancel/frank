@@ -66,6 +66,7 @@ import { sameCanonicalAddress } from '../utils/own-address'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageWrapper, EmailItem } from '@frank/cashweb/types/messages'
+import { serializeMessageWrapper } from '@frank/cashweb/relay/storage/level-storage'
 import { desktopNotify } from '../utils/notifications'
 import { useSettingsStore } from './settings'
 const defaultEmailGatewayAddress = '0x3333333333333333333333333333333333333333'
@@ -462,6 +463,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           message: {
             outbound: false,
             status: 'confirmed',
+            contentDigest: 'ab'.repeat(32),
             items: [{ type: 'text', text: 'racing note' }],
             serverTime: loopbackTime,
             receivedTime: loopbackTime,
@@ -509,6 +511,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           payloadDigest: 'race-digest',
           outbound: true,
           status: 'confirmed',
+          contentDigest: 'ab'.repeat(32),
           stampValueWei: 9000n,
         }),
       )
@@ -531,6 +534,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           wrapper.index === 'race-digest' &&
           wrapper.message.serverTime === loopbackTime,
       )?.[0] as MessageWrapper
+      expect(persisted.message.contentDigest).toBe('ab'.repeat(32))
       expect(
         mockMessageStore.saveMessage.mock.calls.filter(
           ([wrapper]) => wrapper.index === 'race-digest',
@@ -553,6 +557,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect.objectContaining({
           payloadDigest: 'race-digest',
           outbound: true,
+          contentDigest: 'ab'.repeat(32),
           stampValueWei: 9000n,
         }),
       ])
@@ -1510,6 +1515,123 @@ describe('stores/chats.ts (ticket #42)', () => {
 
     expect(restored.lastReceived).toBe(789)
   })
+
+  it('restores present and unavailable content identities without a salt or rewriting rows', async () => {
+    const chats = useChatStore()
+    const conversationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    chats.createConversation({
+      conversationId,
+      address: RECIPIENT_ADDRESS,
+      participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+    })
+    const rows: MessageWrapper[] = [undefined, 'ab'.repeat(32)].map(
+      (contentDigest, n) => ({
+        index: `restored-content-${n}`,
+        outbound: false,
+        senderAddress: RECIPIENT_ADDRESS,
+        copartyAddress: RECIPIENT_ADDRESS,
+        message: {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 100 + n,
+          serverTime: 100 + n,
+          items: [{ type: 'text', text: 'retained' }],
+          outpoints: [],
+          senderAddress: RECIPIENT_ADDRESS,
+          conversationId,
+          ...(contentDigest === undefined ? {} : { contentDigest }),
+        },
+      }),
+    )
+    const before = rows.map(serializeMessageWrapper)
+    mockMessageStore.getIterator.mockResolvedValueOnce(rows)
+    setConversationIdSalt(null)
+    const restored = await rehydrateState(chats.$state)
+    expect(restored.messages['restored-content-0']).not.toHaveProperty(
+      'contentDigest',
+    )
+    expect(restored.messages['restored-content-1']?.contentDigest).toBe(
+      'ab'.repeat(32),
+    )
+    expect(rows.map(serializeMessageWrapper)).toEqual(before)
+    expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+    expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+  })
+
+  it.each([undefined, '12'.repeat(32)])(
+    'does not attach a self-note digest to reconstructed outbound content (original digest %s)',
+    async originalContentDigest => {
+      const chats = useChatStore()
+      const originalDigest = 'cd'.repeat(32)
+      const originalMessageId = '02020202-0202-0202-0202-020202020202'
+      const note: ReceivedMessageWrapper = {
+        index: 'ef'.repeat(32),
+        outbound: false,
+        senderAddress: SENDER_ADDRESS,
+        copartyAddress: SENDER_ADDRESS,
+        copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+        stampValue: 0,
+        message: {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 100,
+          serverTime: 100,
+          outpoints: [],
+          senderAddress: SENDER_ADDRESS,
+          destinationAddress: SENDER_ADDRESS,
+          contentDigest: 'ab'.repeat(32),
+          items: [
+            {
+              type: 'outbox-message',
+              payloadDigest: originalDigest,
+              messageId: originalMessageId,
+              recipientAddress: RECIPIENT_ADDRESS,
+              conversationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              sentAt: 50,
+              text: 'original outbound text',
+            },
+          ],
+        },
+      }
+      if (originalContentDigest !== undefined) {
+        await chats.receiveMessages(
+          [
+            {
+              ...note,
+              index: originalDigest,
+              outbound: true,
+              copartyAddress: RECIPIENT_ADDRESS,
+              message: {
+                ...note.message,
+                outbound: true,
+                contentDigest: originalContentDigest,
+                destinationAddress: RECIPIENT_ADDRESS,
+                conversationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+                logicalMessageId: originalMessageId,
+                items: [{ type: 'text', text: 'original outbound text' }],
+              },
+            },
+          ],
+          SENDER_ADDRESS,
+        )
+        mockMessageStore.saveMessage.mockClear()
+      }
+      await chats.receiveMessages([note], SENDER_ADDRESS)
+      const message = chats.messages[originalDigest]
+      expect(message?.items).toEqual([
+        { type: 'text', text: 'original outbound text' },
+      ])
+      expect(message?.logicalMessageId).toBe(originalMessageId)
+      expect(message?.contentDigest).toBe(originalContentDigest)
+      const persisted = mockMessageStore.saveMessage.mock.calls[0][0].message
+      expect(persisted.contentDigest).toBe(originalContentDigest)
+      if (originalContentDigest === undefined) {
+        expect(message).not.toHaveProperty('contentDigest')
+        expect(persisted).not.toHaveProperty('contentDigest')
+      }
+      expect(note.message.contentDigest).toBe('ab'.repeat(32))
+    },
+  )
 
   it('rehydrates exact inbox and outbox values from the durable message store', async () => {
     const persisted = (async function* (): AsyncGenerator<MessageWrapper> {

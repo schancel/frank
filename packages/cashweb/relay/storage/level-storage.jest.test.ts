@@ -143,6 +143,37 @@ async function snapshot(location: string): Promise<StoredRows> {
 }
 
 describe('LevelMessageStore', () => {
+  it('preserves optional authenticated content digests across reopen without rewriting existing rows', async () => {
+    const location = await mkdtemp(join(tmpdir(), 'frank-content-digest-'))
+    let store = new LevelMessageStore(location)
+    const plain = wrapper('without-content-digest')
+    const canonical = wrapper('with-content-digest')
+    canonical.message.contentDigest = 'ab'.repeat(32)
+    try {
+      await store.Open()
+      await store.saveMessage(plain)
+      await store.saveMessage(canonical)
+      await store.Close()
+      const before = await snapshot(location)
+      expect(before.messages?.[plain.index]).toBe(serializeMessageWrapper(plain))
+      expect(before.messages?.[canonical.index]).toBe(
+        serializeMessageWrapper(canonical),
+      )
+      store = new LevelMessageStore(location)
+      await store.Open()
+      expect(await store.getMessage(plain.index)).toEqual(plain)
+      expect(await store.getMessage(canonical.index)).toEqual(canonical)
+      expect((await store.getMessage(plain.index))?.message).not.toHaveProperty(
+        'contentDigest',
+      )
+      await store.Close()
+      expect(await snapshot(location)).toEqual(before)
+    } finally {
+      await store.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  })
+
   it('opens pristine storage without writing an application schema marker', async () => {
     const location = await mkdtemp(join(tmpdir(), 'frank-pristine-read-'))
     const store = new LevelMessageStore(location)

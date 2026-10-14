@@ -210,6 +210,11 @@ export interface DirectMessageReceived {
    * and on a rename, absent otherwise. Authenticated content of the message's sender. */
   conversationName?: string;
   messageId?: string;
+  /** Authenticated digest of the original canonical type-8 content frame, as bare lowercase
+   * 64-hex. Independent of the stamped payload/attempt identity and not an edit marker.
+   * Absent when this producer cannot provide it, including reconstructed outbox notes;
+   * callers must treat content identity as unavailable rather than substitute another hash. */
+  contentDigest?: string;
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
   payloadDigest: string;
   /** Wei actually paid across the message's stamp transactions (read back from the signed raw

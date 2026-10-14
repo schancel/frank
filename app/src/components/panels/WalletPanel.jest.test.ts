@@ -253,3 +253,15 @@ test('marks configured test networks and removes badges when the selected networ
     setActiveChain(original)
   }
 })
+
+test('identifies a relay without the selected network instead of implying a balance read failed', () => {
+  mockPresentations.value.bnb = {
+    status: 'unavailable',
+    reason: 'relay-unavailable',
+  }
+  const view = render()
+  expect(view.get('[data-test="bnb-wallet-balance"]').text()).toBe(
+    'Not available through this relay.',
+  )
+  expect(view.get('[data-test="bnb-wallet-row"]').exists()).toBe(true)
+})

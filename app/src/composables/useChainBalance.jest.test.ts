@@ -101,6 +101,13 @@ jest.mock('../accounts/evm-wallets', () => ({
   openEvmWallet: (chainIdentifier: string) =>
     mockOpenEvmWallet(chainIdentifier),
 }))
+const mockRequireRelayWalletRoute = jest.fn().mockResolvedValue(undefined)
+jest.mock('../accounts/relay-wallet-route', () => ({
+  ...jest.requireActual('../accounts/relay-wallet-route'),
+  requireRelayWalletRoute: (...args: unknown[]) =>
+    mockRequireRelayWalletRoute(...args),
+}))
+
 const mockReadTempoPathUsdBalance = jest.fn(async () => 1_234_567n)
 jest.mock('../accounts/tempo-wallets', () => ({
   readTempoPathUsdBalance: (...args: unknown[]) =>
@@ -187,9 +194,46 @@ import Wallet from '../pages/Wallet.vue'
 import WalletPanel from '../components/panels/WalletPanel.vue'
 
 describe('useChainBalance', () => {
+  it('reports missing relay routes without opening custody and recovers when configured', async () => {
+    const { RelayWalletRouteUnavailableError } = await import(
+      '../accounts/relay-wallet-route'
+    )
+    mockRequireRelayWalletRoute.mockRejectedValueOnce(
+      new RelayWalletRouteUnavailableError('bnb-testnet'),
+    )
+    mockOpenEvmWallet.mockClear()
+    await fetchChainBalance('bnb', true)
+    expect(useChainBalance('bnb').presentation.value).toMatchObject({
+      status: 'unavailable',
+      reason: 'relay-unavailable',
+    })
+    expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+    await fetchChainBalance('bnb', true)
+    expect(useChainBalance('bnb').presentation.value.status).toBe('available')
+  })
+
   beforeEach(() => {
+    mockRequireRelayWalletRoute.mockReset().mockResolvedValue(undefined)
     jest.clearAllMocks()
     mockAccountStatus.status = 'ready'
+  })
+
+  it('clears an absent Solana route reason when discovery recovers but balance read fails', async () => {
+    const { RelayWalletRouteUnavailableError } = await import(
+      '../accounts/relay-wallet-route'
+    )
+    mockRequireRelayWalletRoute.mockRejectedValueOnce(
+      new RelayWalletRouteUnavailableError('solana-devnet'),
+    )
+    await fetchChainBalance('solana', true)
+    expect(useChainBalance('solana').presentation.value).toMatchObject({
+      reason: 'relay-unavailable',
+    })
+    mockFetchSolanaBalance.mockRejectedValueOnce(new Error('RPC unavailable'))
+    await fetchChainBalance('solana', true)
+    expect(useChainBalance('solana').presentation.value).toMatchObject({
+      reason: 'fetch-error',
+    })
   })
 
   it('reads Tempo PathUSD through its verified token reader, not an EVM native wallet', async () => {
@@ -582,6 +626,7 @@ describe('independent Solana observations', () => {
     mockFetchSolanaTokenAccounts.mockReturnValueOnce(tokenRead.promise)
     const refresh = fetchChainBalance('solana', true)
     await flushPromises()
+    await flushPromises()
     try {
       expect(useChainBalance('solana').balance.value).toBe(2_500_000_000n)
     } finally {
@@ -595,6 +640,7 @@ describe('independent Solana observations', () => {
     mockFetchSolanaBalance.mockReturnValueOnce(native.promise)
     mockFetchSolanaTokenAccounts.mockResolvedValueOnce([token])
     const refresh = fetchChainBalance('solana', true)
+    await flushPromises()
     await flushPromises()
     try {
       expect(useChainBalance('solana').balance.value).toBeNull()
@@ -611,6 +657,7 @@ describe('independent Solana observations', () => {
     mockFetchSolanaBalance.mockReturnValueOnce(native.promise)
     mockFetchSolanaTokenAccounts.mockReturnValueOnce(tokens.promise)
     const oldRefresh = fetchChainBalance('solana', true)
+    await flushPromises()
     mockFetchSolanaTokenAccounts.mockResolvedValueOnce([token])
     await fetchChainBalance('solana', true)
     native.reject(new Error('obsolete native failure'))
@@ -661,6 +708,7 @@ describe('independent Solana observations', () => {
       .mockReturnValueOnce(oldTokens.promise)
       .mockReturnValueOnce(newTokens.promise)
     const older = fetchChainBalance('solana', true)
+    await flushPromises()
     const newer = fetchChainBalance('solana', true)
     oldNative.resolve({ lamports: 1n, formatted: 'old SOL' })
     oldTokens.resolve([])
@@ -681,6 +729,7 @@ describe('independent Solana observations', () => {
     mockGetCachedChainAddress.mockReturnValueOnce(undefined)
     mockGetChainAddress.mockReturnValueOnce(address.promise)
     const oldRefresh = fetchChainBalance('solana', true)
+    await flushPromises()
     mockAccountStatus.revision++
     await fetchChainBalance('solana', true)
     address.resolve('old-account-address')
@@ -698,6 +747,7 @@ describe('independent Solana observations', () => {
       mockFetchSolanaBalance.mockReturnValueOnce(native.promise)
       mockFetchSolanaTokenAccounts.mockReturnValueOnce(tokens.promise)
       const refresh = fetchChainBalance('solana', true)
+      await flushPromises()
       if (change === 'account') mockAccountStatus.revision++
       if (change === 'network')
         jest.requireMock('@frank/wallet/chain').activeChain.isTestnet = false
@@ -718,6 +768,7 @@ describe('independent Solana observations', () => {
       mockFetchSolanaBalance.mockReturnValueOnce(oldNative.promise)
       mockFetchSolanaTokenAccounts.mockReturnValueOnce(oldTokens.promise)
       const oldRefresh = fetchChainBalance('solana', true)
+      await flushPromises()
       if (change === 'account') mockAccountStatus.revision++
       if (change === 'network')
         jest.requireMock('@frank/wallet/chain').activeChain.isTestnet = false

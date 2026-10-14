@@ -495,6 +495,7 @@ export default {
     showSeed: 'Afficher la phrase de récupération',
     confirmSeed: 'Confirmer la phrase de récupération',
     balanceLoading: 'Chargement du solde…',
+    relayUnavailable: 'Indisponible via ce relais.',
     balanceUnavailable: 'Solde indisponible.',
     balanceUnsupported: 'Le solde de ce réseau n’est pas encore affiché.',
     walletUnsupported:

@@ -113,6 +113,9 @@ describe('the dispatch rule', () => {
       'swap-record': 'no',
       'received-coin': 'no',
       'conversation-state': 'no',
+      'outbox-message': 'no',
+      'message-tombstone': 'no',
+      'journal-checkpoint': 'no',
       'device-claim': 'no',
       'p2pkh': 'no',
       'swap-offer': 'no',
@@ -131,6 +134,9 @@ describe('the dispatch rule', () => {
       'swap-record',
       'received-coin',
       'conversation-state',
+      'outbox-message',
+      'message-tombstone',
+      'journal-checkpoint',
     ])
     for (const type of SELF_ONLY_ITEM_TYPES) {
       expect(NOT_CARRIED_ITEM_TYPES.has(type)).toBe(false)

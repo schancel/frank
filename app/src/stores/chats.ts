@@ -57,7 +57,15 @@ import type {
   SwapRecordItem,
   EmailItem,
   ConversationStateItem,
+  OutboxMessageItem,
+  MessageTombstoneItem,
+  JournalCheckpointItem,
 } from '@frank/cashweb/types/messages'
+import {
+  joinDeliveryStatus,
+  joinMessageTimestamp,
+  toDeliveryStatus,
+} from '@frank/wallet/journal/semilattice-state'
 import {
   isSafeRelayTimestamp,
   type RelayDeliverySuppression,
@@ -347,6 +355,13 @@ function byRelayTime(
   a: { serverTime?: number; receivedTime?: number; payloadDigest: string },
   b: { serverTime?: number; receivedTime?: number; payloadDigest: string },
 ): number {
+  const aPending =
+    typeof a.payloadDigest === 'string' &&
+    a.payloadDigest.startsWith('pending:')
+  const bPending =
+    typeof b.payloadDigest === 'string' &&
+    b.payloadDigest.startsWith('pending:')
+  if (aPending !== bPending) return aPending ? 1 : -1
   return (
     (a.serverTime ?? a.receivedTime ?? 0) -
       (b.serverTime ?? b.receivedTime ?? 0) ||
@@ -394,6 +409,8 @@ export function recordLogicalMessage(
   const logicalId = message.logicalMessageId || message.payloadDigest
   const revisionDigest = message.revisionDigest || message.payloadDigest
   const deliveryDigest = message.deliveryDigest || message.payloadDigest
+  const msgTime = message.serverTime ?? message.receivedTime ?? 0
+  const deliveryTime = message.receivedTime ?? message.serverTime ?? 0
 
   let record = logicalMessages[logicalId]
   if (record && record.conversationId !== conversationId) {
@@ -406,11 +423,16 @@ export function recordLogicalMessage(
       messageId: logicalId,
       conversationId,
       senderAddress: message.senderAddress,
-      createdAt: message.serverTime || Date.now(),
+      createdAt: msgTime,
       activeRevisionDigest: revisionDigest,
       revisions: [],
     }
     logicalMessages[logicalId] = record
+  } else {
+    record.createdAt =
+      record.createdAt > 0 && msgTime > 0
+        ? Math.min(record.createdAt, msgTime)
+        : Math.max(record.createdAt, msgTime)
   }
 
   let rev = record.revisions.find(r => r.revisionDigest === revisionDigest)
@@ -418,10 +440,28 @@ export function recordLogicalMessage(
     rev = {
       revisionDigest,
       items: message.items,
-      timestamp: message.serverTime || Date.now(),
+      timestamp: msgTime,
       deliveries: [],
     }
     record.revisions.push(rev)
+  } else {
+    rev.timestamp =
+      rev.timestamp > 0 && msgTime > 0
+        ? Math.min(rev.timestamp, msgTime)
+        : Math.max(rev.timestamp, msgTime)
+  }
+  record.revisions.sort(
+    (a, b) =>
+      a.timestamp - b.timestamp ||
+      (a.revisionDigest < b.revisionDigest
+        ? -1
+        : a.revisionDigest > b.revisionDigest
+        ? 1
+        : 0),
+  )
+  if (record.revisions.length > 0) {
+    record.activeRevisionDigest =
+      record.revisions[record.revisions.length - 1].revisionDigest
   }
 
   const existingDelivery = rev.deliveries.find(
@@ -433,14 +473,33 @@ export function recordLogicalMessage(
       recipientAddress: message.destinationAddress,
       status: message.status,
       attemptDigest: message.delivery?.attemptDigest,
-      timestamp: message.receivedTime || Date.now(),
+      timestamp: deliveryTime,
     })
   } else {
-    existingDelivery.status = message.status
+    existingDelivery.status = joinDeliveryStatus(
+      toDeliveryStatus(existingDelivery.status),
+      toDeliveryStatus(message.status),
+    )
     if (message.delivery?.attemptDigest) {
       existingDelivery.attemptDigest = message.delivery.attemptDigest
     }
+    if (message.destinationAddress && !existingDelivery.recipientAddress) {
+      existingDelivery.recipientAddress = message.destinationAddress
+    }
+    existingDelivery.timestamp =
+      existingDelivery.timestamp > 0 && deliveryTime > 0
+        ? Math.min(existingDelivery.timestamp, deliveryTime)
+        : Math.max(existingDelivery.timestamp, deliveryTime)
   }
+  rev.deliveries.sort(
+    (a, b) =>
+      a.timestamp - b.timestamp ||
+      (a.deliveryDigest < b.deliveryDigest
+        ? -1
+        : a.deliveryDigest > b.deliveryDigest
+        ? 1
+        : 0),
+  )
 }
 
 /**
@@ -764,6 +823,103 @@ function ownConversationStates(
   )
 }
 
+function ownMessageTombstones(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): MessageTombstoneItem[] {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items)
+  )
+    return []
+  return wrapper.message.items.filter(
+    (item): item is MessageTombstoneItem =>
+      !!item && item.type === 'message-tombstone',
+  )
+}
+
+function ownJournalCheckpoints(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): JournalCheckpointItem[] {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items)
+  )
+    return []
+  return wrapper.message.items.filter(
+    (item): item is JournalCheckpointItem =>
+      !!item && item.type === 'journal-checkpoint',
+  )
+}
+
+function normalizeOutboxWrapper(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): ReceivedMessageWrapper {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items) ||
+    wrapper.message.items.length !== 1 ||
+    wrapper.message.items[0]?.type !== 'outbox-message'
+  ) {
+    return wrapper
+  }
+  const outbox = wrapper.message.items[0] as OutboxMessageItem & {
+    recipient?: string
+    payloadHash?: string
+    subject?: string
+    items?: MessageItem[]
+  }
+  const rawRecipient = outbox.recipientAddress || outbox.recipient || ''
+  const recipient = safeChainDisplayAddress(rawRecipient) || rawRecipient
+  const index = outbox.payloadDigest || outbox.payloadHash || wrapper.index
+  const conversationId =
+    outbox.conversationId ??
+    wrapper.message.conversationId ??
+    wrapper.conversationId
+  const conversationName = outbox.conversationName ?? outbox.subject
+  const stampValueWei =
+    outbox.stampValueWei !== undefined
+      ? BigInt(outbox.stampValueWei)
+      : wrapper.message.stampValueWei
+  const items: MessageItem[] = Array.isArray(outbox.items)
+    ? outbox.items
+    : outbox.text !== undefined
+    ? [{ type: 'text', text: outbox.text }]
+    : []
+  return {
+    ...wrapper,
+    ...(conversationId === undefined ? {} : { conversationId }),
+    outbound: true,
+    copartyAddress: recipient,
+    index,
+    message: {
+      ...wrapper.message,
+      ...(conversationId === undefined ? {} : { conversationId }),
+      ...(conversationName === undefined ? {} : { conversationName }),
+      ...(outbox.messageId === undefined
+        ? {}
+        : { logicalMessageId: outbox.messageId }),
+      ...(stampValueWei === undefined ? {} : { stampValueWei }),
+      ...(outbox.sentAt > 0 && !(wrapper.message.serverTime > 0)
+        ? { serverTime: outbox.sentAt }
+        : {}),
+      outbound: true,
+      status: 'confirmed',
+      senderAddress: wrapper.senderAddress,
+      destinationAddress: recipient,
+      items,
+    } as Message,
+  }
+}
+
 /** A message of ours the relay has not timed yet: its time is this device's clock, which no
  * other device sees. No deletion time is taken from it, and a deletion noted from elsewhere
  * never covers it. */
@@ -1034,7 +1190,23 @@ type OutboundDeliveryMatch = {
   oldIndex: string
   chatAddress: string
   conversationId: string
-  message: Message & { destinationAddress?: string }
+  message: Message & { destinationAddress?: string; localTime?: boolean }
+}
+
+const tombstonedTargetsByConversations = new WeakMap<
+  Record<string, Conversation>,
+  Set<string>
+>()
+
+function tombstonedTargetsFor(
+  conversations: Record<string, Conversation>,
+): Set<string> {
+  let set = tombstonedTargetsByConversations.get(conversations)
+  if (!set) {
+    set = new Set<string>()
+    tombstonedTargetsByConversations.set(conversations, set)
+  }
+  return set
 }
 
 type OutboundDeliveryOwner = {
@@ -1528,6 +1700,9 @@ function isInternalMessage(items: unknown): boolean {
           item.type === 'wallet-sync' ||
           item.type === 'received-coin' ||
           item.type === 'conversation-state' ||
+          item.type === 'message-tombstone' ||
+          item.type === 'journal-checkpoint' ||
+          item.type === 'outbox-message' ||
           item.type === 'payment-transfer'),
     )
   )
@@ -2453,11 +2628,61 @@ export const useChatStore = defineStore('chats', {
       if (payloadDigest in this.messages) {
         const existingMessage = this.messages[payloadDigest]
         assert(existingMessage, 'For great typescript')
-        // we have the message already, just need to update some fields and return
-        this.messages[payloadDigest] = Object.assign(existingMessage, message)
+        const joinedTime = joinMessageTimestamp(
+          {
+            serverTime: existingMessage.serverTime,
+            receivedTime: existingMessage.receivedTime,
+            localTime: existingMessage.localTime,
+          },
+          {
+            serverTime: message.serverTime,
+            receivedTime: message.receivedTime,
+            localTime: message.localTime,
+          },
+        )
+        const joinedStatus = joinDeliveryStatus(
+          toDeliveryStatus(existingMessage.status),
+          toDeliveryStatus(message.status),
+        )
+        this.messages[payloadDigest] = Object.assign(existingMessage, message, {
+          status: joinedStatus,
+          serverTime: joinedTime.serverTime,
+          receivedTime: joinedTime.receivedTime,
+          localTime: joinedTime.localTime,
+          stampValueWei: existingMessage.stampValueWei ?? message.stampValueWei,
+          stampPayments: existingMessage.stampPayments?.length
+            ? existingMessage.stampPayments
+            : message.stampPayments,
+          outpoints: existingMessage.outpoints?.length
+            ? existingMessage.outpoints
+            : message.outpoints,
+        })
+        if (
+          previousHash &&
+          previousHash !== payloadDigest &&
+          previousHash in this.messages
+        ) {
+          if (conv) {
+            const msgIndex = conv.messages.findIndex(
+              msg => msg.payloadDigest === previousHash,
+            )
+            if (msgIndex >= 0) {
+              conv.messages.splice(msgIndex, 1)
+            }
+          }
+          delete this.messages[previousHash]
+        }
         if (conv) {
+          if (!conv.messages.some(m => m.payloadDigest === payloadDigest)) {
+            conv.messages.push(this.messages[payloadDigest]!)
+          }
+          conv.messages.sort(byRelayTime)
           recomputeChatAccounting(conv, this.activeConversationId)
-          recordLogicalMessage(this.logicalMessages, message, conv.id)
+          recordLogicalMessage(
+            this.logicalMessages,
+            this.messages[payloadDigest]!,
+            conv.id,
+          )
         }
         return
       }
@@ -4158,6 +4383,154 @@ export const useChatStore = defineStore('chats', {
       if (this.activeConversationId === conv.id)
         this.activeConversationId = null
     },
+    async applyMessageTombstoneExclusive(
+      tombstone: MessageTombstoneItem & {
+        targetMessageId?: string
+        targetPayloadHash?: string
+      },
+      ownAddress: string | null,
+    ): Promise<void> {
+      const targetPayloadHash =
+        tombstone.payloadDigest || tombstone.targetPayloadHash
+      const targetMessageId =
+        tombstone.targetMessageId || tombstone.payloadDigest
+      const targets = tombstonedTargetsFor(this.conversations)
+      if (targetMessageId) targets.add(targetMessageId)
+      if (targetPayloadHash) targets.add(targetPayloadHash)
+
+      const matchingDigests = new Set<string>()
+      if (targetPayloadHash && targetPayloadHash in this.messages) {
+        matchingDigests.add(targetPayloadHash)
+      }
+      if (targetMessageId && targetMessageId in this.messages) {
+        matchingDigests.add(targetMessageId)
+      }
+      for (const [digest, msg] of Object.entries(this.messages)) {
+        if (!msg) continue
+        if (
+          (targetMessageId &&
+            (msg.logicalMessageId === targetMessageId ||
+              msg.payloadDigest === targetMessageId)) ||
+          (targetPayloadHash &&
+            (msg.payloadDigest === targetPayloadHash ||
+              msg.delivery?.attemptDigest === targetPayloadHash))
+        ) {
+          matchingDigests.add(digest)
+        }
+      }
+
+      for (const digest of matchingDigests) {
+        const msg = this.messages[digest]
+        const conv = msg?.conversationId
+          ? this.conversations[msg.conversationId]
+          : undefined
+        const address =
+          conv?.address ||
+          tombstone.peer ||
+          msg?.destinationAddress ||
+          msg?.senderAddress ||
+          ''
+        const recipientAddress = msg
+          ? tombstoneMailbox(msg) ?? ownAddress
+          : ownAddress
+        await this.deleteMessageExclusive({
+          address,
+          payloadDigest: digest,
+          recipientAddress,
+          attemptDigest: msg?.delivery?.attemptDigest,
+        })
+      }
+
+      if (matchingDigests.size === 0 && ownAddress) {
+        const messageStore = await store
+        const suppressDigests = Array.from(
+          new Set(
+            [targetPayloadHash, targetMessageId].filter((d): d is string =>
+              Boolean(d),
+            ),
+          ),
+        )
+        if (
+          suppressDigests.length > 0 &&
+          typeof messageStore?.suppressAndDelete === 'function'
+        ) {
+          await messageStore.suppressAndDelete(
+            ownAddress,
+            suppressDigests,
+            suppressDigests.map(payloadDigest => ({
+              payloadDigest,
+              ...(tombstone.deletedAt === undefined
+                ? {}
+                : { receivedTime: tombstone.deletedAt }),
+            })),
+          )
+        }
+      }
+    },
+    async applyJournalCheckpointExclusive(
+      checkpoint: JournalCheckpointItem & {
+        upToTimestamp?: number
+        suppressedIds?: string[]
+      },
+      ownAddress: string | null,
+    ): Promise<void> {
+      for (const entry of checkpoint.conversations ?? []) {
+        await this.applyConversationStateExclusive(
+          {
+            type: 'conversation-state',
+            conversationId: entry.conversationId,
+            peer: entry.peer,
+            ...(entry.clearedBefore === undefined
+              ? {}
+              : { clearedBefore: entry.clearedBefore }),
+            ...(entry.readUpTo === undefined
+              ? {}
+              : { readUpTo: entry.readUpTo }),
+            ...(entry.subject === undefined ? {} : { subject: entry.subject }),
+            ...(entry.subjectSetAt === undefined
+              ? {}
+              : { subjectSetAt: entry.subjectSetAt }),
+          },
+          ownAddress,
+        )
+        if (entry.tombstones) {
+          for (const [digest, deletedAt] of Object.entries(entry.tombstones)) {
+            await this.applyMessageTombstoneExclusive(
+              {
+                type: 'message-tombstone',
+                conversationId: entry.conversationId,
+                peer: entry.peer,
+                payloadDigest: digest,
+                deletedAt,
+              },
+              ownAddress,
+            )
+          }
+        }
+      }
+      for (const id of checkpoint.suppressedIds ?? []) {
+        await this.applyMessageTombstoneExclusive(
+          {
+            type: 'message-tombstone',
+            conversationId: '0'.repeat(64),
+            peer: ownAddress ?? '',
+            payloadDigest: id,
+            deletedAt:
+              checkpoint.checkpointTimestamp ?? checkpoint.upToTimestamp ?? 1,
+            targetMessageId: id,
+            ...(id && /^[0-9a-f]{64}$/i.test(id)
+              ? { targetPayloadHash: id.toLowerCase() }
+              : {}),
+          },
+          ownAddress,
+        )
+      }
+      const checkpointTs =
+        checkpoint.checkpointTimestamp ?? checkpoint.upToTimestamp ?? 0
+      if (checkpointTs > 0) {
+        this.lastReceived = Math.max(this.lastReceived ?? 0, checkpointTs)
+      }
+    },
     /**
      * Notes to the account's own mailbox what this device knows about its conversations and
      * the mailbox does not say yet (deleted up to when, read up to when, its subject): a free
@@ -4353,7 +4726,7 @@ export const useChatStore = defineStore('chats', {
       return { suppressedReceipts, cancelled }
     },
     async storeReceivedMessagesExclusive(
-      messageWrappers: ReceivedMessageWrapper[],
+      rawMessageWrappers: ReceivedMessageWrapper[],
       toNotify: Set<string>,
       ownAddress: string | null,
       lease?: DeliveryLease,
@@ -4365,6 +4738,21 @@ export const useChatStore = defineStore('chats', {
         return { suppressedReceipts: [], cancelled: true }
       }
       console.log('receiving messages')
+      const messageWrappers = rawMessageWrappers.map(wrapper => {
+        const normalized = normalizeOutboxWrapper(wrapper, ownAddress)
+        if (normalized.index !== wrapper.index && toNotify.has(wrapper.index)) {
+          toNotify.delete(wrapper.index)
+          notifyingIncoming.delete(wrapper.index)
+          if (
+            !(normalized.index in this.messages) &&
+            !notifyingIncoming.has(normalized.index)
+          ) {
+            toNotify.add(normalized.index)
+            notifyingIncoming.add(normalized.index)
+          }
+        }
+        return normalized
+      })
       const messageStore = await store
       if (
         messageWrappers.some(
@@ -4408,16 +4796,65 @@ export const useChatStore = defineStore('chats', {
           for (const item of swaps) useSwapStore().handleSwapItem(item)
         }
       }
-      // What the account's other devices noted about its conversations.
+      // What the account's other devices noted about its conversations, tombstones, and checkpoints.
+      const checkpointNotes = recordRows.flatMap(wrapper =>
+        ownJournalCheckpoints(wrapper, ownAddress),
+      )
       const conversationNotes = recordRows.flatMap(wrapper =>
         ownConversationStates(wrapper, ownAddress),
+      )
+      const tombstoneNotes = recordRows.flatMap(wrapper =>
+        ownMessageTombstones(wrapper, ownAddress),
       )
       // A later durable receipt is a restart frontier even before the poll advances its
       // cursor. Commit authenticated note effects first, through the existing metadata
       // owner, so a crash cannot skip a note whose raw row is intentionally not stored.
+      for (const checkpoint of checkpointNotes)
+        await this.applyJournalCheckpointExclusive(checkpoint, ownAddress)
       for (const note of conversationNotes)
         await this.applyConversationStateExclusive(note, ownAddress)
-      if (conversationNotes.length > 0) await this.flushPersistence?.()
+      for (const tombstone of tombstoneNotes)
+        await this.applyMessageTombstoneExclusive(tombstone, ownAddress)
+      if (
+        checkpointNotes.length > 0 ||
+        conversationNotes.length > 0 ||
+        tombstoneNotes.length > 0
+      ) {
+        await this.flushPersistence?.()
+      }
+
+      const tombstonedTargets = tombstonedTargetsFor(this.conversations)
+      if (tombstonedTargets.size > 0) {
+        const newlySuppressed: ReceivedMessageWrapper[] = []
+        deliverableWrappers = deliverableWrappers.filter(wrapper => {
+          const logicalId = wrapper.message.logicalMessageId
+          if (
+            tombstonedTargets.has(wrapper.index) ||
+            (logicalId !== undefined && tombstonedTargets.has(logicalId))
+          ) {
+            suppressedDigests.add(wrapper.index)
+            toNotify.delete(wrapper.index)
+            newlySuppressed.push(wrapper)
+            return false
+          }
+          return true
+        })
+        if (
+          newlySuppressed.length > 0 &&
+          ownAddress &&
+          typeof messageStore?.suppressAndDelete === 'function'
+        ) {
+          await messageStore.suppressAndDelete(
+            ownAddress,
+            newlySuppressed.map(w => w.index),
+            newlySuppressed.map(w => ({
+              payloadDigest: w.index,
+              receivedTime: w.message.receivedTime,
+            })),
+          )
+        }
+      }
+
       const outboundMatches = new Map<string, OutboundDeliveryMatch>()
       const replacedAccountCollisions = new Map<
         string,
@@ -4458,6 +4895,28 @@ export const useChatStore = defineStore('chats', {
             existing,
             chatAddress,
           )
+          const joinedTime = joinMessageTimestamp(
+            {
+              serverTime: existing.serverTime,
+              receivedTime: existing.receivedTime,
+              localTime: (existing as ChatMessage).localTime ?? true,
+            },
+            {
+              serverTime: wrapper.message.serverTime,
+              receivedTime: wrapper.message.receivedTime,
+              localTime: false,
+            },
+          )
+          const incomingStatus = toDeliveryStatus(
+            wrapper.message.status || 'confirmed',
+          )
+          const joinedStatus =
+            incomingStatus === 'confirmed'
+              ? 'confirmed'
+              : joinDeliveryStatus(
+                  toDeliveryStatus(existing.status),
+                  incomingStatus,
+                )
           // The local outbox owns content/direction. The relay owns only delivery time and the
           // observed stamp metadata; never spread an inbox wrapper over the outbound record.
           outboundMatches.set(wrapper.index, {
@@ -4466,10 +4925,11 @@ export const useChatStore = defineStore('chats', {
             conversationId,
             message: {
               outbound: true,
-              status: 'confirmed',
+              status: joinedStatus,
               items: existing.items,
-              serverTime: wrapper.message.serverTime,
-              receivedTime: wrapper.message.receivedTime,
+              serverTime: joinedTime.serverTime,
+              receivedTime: joinedTime.receivedTime,
+              localTime: joinedTime.localTime,
               outpoints: wrapper.message.outpoints,
               stampValueWei:
                 wrapper.message.stampValueWei ?? existing.stampValueWei,
@@ -4774,6 +5234,7 @@ export const useChatStore = defineStore('chats', {
           }
           return mutation.removals.has(message.payloadDigest) ? [] : [message]
         })
+        chat.messages.sort(byRelayTime)
         if (installedReplacements.size > 0) {
           chat.lastReceived = Math.max(
             chat.lastReceived,
@@ -4875,17 +5336,37 @@ export const useChatStore = defineStore('chats', {
           assert(existingMessage, 'For great typescript')
           const wasOutbound = existingMessage.outbound
           const senderAddress = existingMessage.senderAddress
+          const joinedTime = joinMessageTimestamp(
+            {
+              serverTime: existingMessage.serverTime,
+              receivedTime: existingMessage.receivedTime,
+              localTime: existingMessage.localTime,
+            },
+            {
+              serverTime: message.serverTime,
+              receivedTime: message.receivedTime,
+              localTime: message.localTime ?? false,
+            },
+          )
+          const joinedStatus = joinDeliveryStatus(
+            toDeliveryStatus(existingMessage.status),
+            toDeliveryStatus(message.status),
+          )
           // Mutate the object so that it triggers reactivity. A loopback is still the outbox
           // message the user sent; only its relay-authored time/stamp metadata is refreshed.
           this.messages[index] = Object.assign(existingMessage, message, {
             outbound: wasOutbound,
             senderAddress,
             conversationId: conv.id,
+            status: joinedStatus,
+            serverTime: joinedTime.serverTime,
+            receivedTime: joinedTime.receivedTime,
+            localTime: joinedTime.localTime,
           })
           if (!conv.messages.some(m => m.payloadDigest === index)) {
-            conv.messages.push(this.messages[index])
-            conv.messages.sort(byRelayTime)
+            conv.messages.push(this.messages[index]!)
           }
+          conv.messages.sort(byRelayTime)
           if (emailItem && speaks) {
             conv.kind = 'email'
             if (!conv.name && emailItem.subject) {
@@ -4893,14 +5374,22 @@ export const useChatStore = defineStore('chats', {
             }
             conv.verifiedGateway = isVerifiedGateway
           }
-          if (wasOutbound) {
-            conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
-            this.lastReceived = Math.max(
-              this.lastReceived ?? 0,
-              message.serverTime,
-            )
+          conv.lastReceived = Math.max(
+            conv.lastReceived ?? 0,
+            existingMessage.serverTime,
+          )
+          this.lastReceived = Math.max(
+            this.lastReceived ?? 0,
+            existingMessage.serverTime,
+          )
+          if (
+            conv.id === this.activeConversationId &&
+            !isOwnMessage(existingMessage)
+          ) {
+            conv.lastRead = Math.max(conv.lastRead, existingMessage.serverTime)
           }
-          recordLogicalMessage(this.logicalMessages, message, conv.id)
+          recomputeChatAccounting(conv, this.activeConversationId)
+          recordLogicalMessage(this.logicalMessages, existingMessage, conv.id)
           // We should already have created the chat if we have the message. Continue so one
           // replayed item cannot hide later, genuinely new messages from this same poll batch.
           continue
@@ -4931,24 +5420,16 @@ export const useChatStore = defineStore('chats', {
           }
           conv.verifiedGateway = isVerifiedGateway
         }
-        conv.lastReceived = message.serverTime
+        conv.lastReceived = Math.max(conv.lastReceived ?? 0, message.serverTime)
         recordLogicalMessage(this.logicalMessages, message, conv.id)
 
-        const messageValue = accountedMessageValue(message)
-        if (
-          !isOwnMessage(message) &&
-          conv.id !== this.activeConversationId &&
-          conv.lastRead < message.serverTime
-        ) {
-          conv.totalUnreadValue += messageValue
-          conv.totalUnreadMessages += 1
-        } else if (conv.id === this.activeConversationId) {
+        if (conv.id === this.activeConversationId) {
           // The receipt was visible while this chat was active. Persist that read decision so
           // navigating elsewhere and reloading cannot reconstruct it as unread.
           conv.lastRead = Math.max(conv.lastRead, message.serverTime)
         }
-        this.lastReceived = message.serverTime
-        conv.totalValue += messageValue
+        recomputeChatAccounting(conv, this.activeConversationId)
+        this.lastReceived = Math.max(this.lastReceived ?? 0, message.serverTime)
       }
       // A thread opened here and never used yields to the peer's own conversation once that
       // is the peer's thread: it is dropped rather than left as a second, empty thread, and

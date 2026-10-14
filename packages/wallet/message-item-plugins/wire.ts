@@ -131,6 +131,9 @@ export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set([
   'swap-record',
   'received-coin',
   'conversation-state',
+  'outbox-message',
+  'message-tombstone',
+  'journal-checkpoint',
 ])
 
 /** Who one message is between, as far as the item rule needs to know. */

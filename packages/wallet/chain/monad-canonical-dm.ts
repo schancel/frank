@@ -14,7 +14,15 @@ import { DefaultStampUnavailableError, type DefaultStampQuote } from "../oracle/
  * entry is published every operation rejects with {@link CanonicalMessagingPendingError} before
  * funding, signing or any relay request.
  */
-import { Transaction, computeAddress, getAddress, getBytes, hexlify } from 'ethers'
+import {
+  Transaction,
+  computeAddress,
+  getAddress,
+  getBytes,
+  hexlify,
+  keccak256,
+  toUtf8Bytes,
+} from 'ethers'
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import {
@@ -30,7 +38,9 @@ import {
   paymentTransferToStealthItem,
   projectStealthMessageItem,
   recipientPayloadDigest,
+  standaloneItemBudget,
   toHex,
+  validateFrame,
   type CanonicalStealthItem,
   type ChildFrame,
   type Encodable,
@@ -65,7 +75,11 @@ import {
   type CanonicalMailboxAuthParams,
   type CanonicalMailboxRecord,
 } from '@frank/cashweb/relay/monad-mailbox-client'
-import type { MessageItem, StealthItem } from '@frank/cashweb/types/messages'
+import type {
+  MessageItem,
+  OutboxMessageItem,
+  StealthItem,
+} from '@frank/cashweb/types/messages'
 import type { MessageItemRegistry } from '../message-item-plugins/registry'
 import {
   MessageItemBudgetExceededError,
@@ -2162,6 +2176,165 @@ function receivedItems(
   })
 }
 
+/**
+ * Deterministic 16-byte message ID for the self-addressed `outbox-message` note recording the
+ * outbound message with `payloadDigest`.
+ */
+export function outboxNoteMessageId(payloadDigest: string): Uint8Array {
+  return getBytes(
+    keccak256(
+      toUtf8Bytes(`frank-outbox-message:${payloadDigest.toLowerCase()}`),
+    ),
+  ).slice(0, 16)
+}
+
+/**
+ * Constructs a canonical {@link OutboxMessageItem} from an outbound message's delivery metadata
+ * and encoded item frames.
+ */
+export function buildOutboxMessageItem(params: {
+  payloadDigest: string
+  recipientAddress: string
+  recipientPublicKey?: Uint8Array | string
+  sentAt: number
+  conversationId?: Uint8Array | string
+  conversationName?: string
+  messageId?: Uint8Array | string
+  stampValueWei?: bigint
+  itemFrames?: readonly Uint8Array[]
+  text?: string
+}): OutboxMessageItem {
+  const convIdStr =
+    params.conversationId === undefined
+      ? undefined
+      : typeof params.conversationId === 'string'
+      ? params.conversationId.toLowerCase()
+      : formatUuid(params.conversationId)
+  const msgIdStr =
+    params.messageId === undefined
+      ? undefined
+      : typeof params.messageId === 'string'
+      ? params.messageId.toLowerCase()
+      : formatUuid(params.messageId)
+  const recipientPubHex =
+    params.recipientPublicKey === undefined
+      ? undefined
+      : typeof params.recipientPublicKey === 'string'
+      ? params.recipientPublicKey.replace(/^0x/i, '').toLowerCase()
+      : toHex(params.recipientPublicKey)
+
+  return {
+    type: 'outbox-message',
+    payloadDigest: params.payloadDigest.replace(/^0x/i, '').toLowerCase(),
+    recipientAddress: params.recipientAddress.toLowerCase(),
+    sentAt: Math.max(0, Math.floor(params.sentAt)),
+    ...(convIdStr !== undefined ? { conversationId: convIdStr } : {}),
+    ...(params.conversationName !== undefined &&
+    params.conversationName.trim().length > 0
+      ? { conversationName: params.conversationName.trim() }
+      : {}),
+    ...(msgIdStr !== undefined ? { messageId: msgIdStr } : {}),
+    ...(params.stampValueWei !== undefined
+      ? { stampValueWei: params.stampValueWei.toString(10) }
+      : {}),
+    ...(recipientPubHex !== undefined
+      ? { recipientPublicKey: recipientPubHex }
+      : {}),
+    ...(params.itemFrames !== undefined && params.itemFrames.length > 0
+      ? { itemFrames: params.itemFrames.map(toHex) }
+      : {}),
+    ...(params.text !== undefined && params.text.length > 0
+      ? { text: params.text }
+      : {}),
+  }
+}
+
+/**
+ * Unwraps a self-addressed {@link DirectMessageReceived} carrying an `outbox-message` item into
+ * the reconstructed outbound {@link DirectMessageReceived} as if read from an outbox index.
+ *
+ * If the message also carries wallet-internal sync notes (`wallet-sync` or `received-coin`), this
+ * returns `record` unchanged until those notes have been consumed by `consumeSelfNotes`.
+ */
+export function projectOutboxMessageRecord(
+  record: DirectMessageReceived,
+  registry: MessageItemRegistry,
+): DirectMessageReceived {
+  const isSelf =
+    record.senderAddress.raw.toLowerCase() ===
+    record.recipientAddress.raw.toLowerCase()
+  if (!isSelf) return record
+  if (
+    record.items.some(
+      item => item.type === 'wallet-sync' || item.type === 'received-coin',
+    )
+  ) {
+    return record
+  }
+  const outboxItem = record.items.find(
+    (item): item is OutboxMessageItem => item.type === 'outbox-message',
+  )
+  if (!outboxItem) return record
+
+  let decodedItems: MessageItem[] = []
+  if (outboxItem.itemFrames && outboxItem.itemFrames.length > 0) {
+    try {
+      const rawFrames = outboxItem.itemFrames.map(fromHex)
+      const revisionFrame = validateFrame(
+        encodeFrame(
+          { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+          new Map<number, Encodable>([
+            [0, 'frank'],
+            [1, rawFrames],
+          ]),
+        ),
+      )
+      if (
+        revisionFrame.kind === 'parsed' &&
+        revisionFrame.typed?.type === 8
+      ) {
+        decodedItems = decodeItemFrames(
+          registry,
+          revisionFrame.typed.items,
+          standaloneItemBudget(),
+          { selfAddressed: false },
+        )
+      }
+    } catch {
+      decodedItems = []
+    }
+  }
+  if (decodedItems.length === 0 && outboxItem.text !== undefined) {
+    decodedItems = [{ type: 'text', text: outboxItem.text }]
+  }
+
+  return {
+    ...record,
+    outbound: true,
+    senderAddress: record.senderAddress,
+    senderPublicKey: record.senderPublicKey,
+    recipientAddress: { raw: getAddress(outboxItem.recipientAddress) },
+    ...(outboxItem.recipientPublicKey !== undefined
+      ? { recipientPublicKey: fromHex(outboxItem.recipientPublicKey) }
+      : {}),
+    items: decodedItems,
+    conversationId: outboxItem.conversationId ?? record.conversationId,
+    ...(outboxItem.conversationName !== undefined
+      ? { conversationName: outboxItem.conversationName }
+      : record.conversationName !== undefined
+      ? { conversationName: record.conversationName }
+      : {}),
+    messageId: outboxItem.messageId ?? record.messageId,
+    payloadDigest: outboxItem.payloadDigest,
+    stampValueWei:
+      outboxItem.stampValueWei !== undefined
+        ? BigInt(outboxItem.stampValueWei)
+        : record.stampValueWei,
+    receivedTime:
+      outboxItem.sentAt > 0 ? outboxItem.sentAt : record.receivedTime,
+  }
+}
+
 /** The payment members of a received delivery that pay THIS wallet: a member's address must be
  * the stamp child of one of the wallet's own stamp keys (current or previous) for the message's
  * shared point. The delivery frame is written by the sender, so a member paying any other address
@@ -2406,29 +2579,37 @@ async function fetchSince(
       const peerAddress: ChainAddress = {
         raw: getAddress(computeAddress('0x' + peer.subject)),
       }
-      received.push({
-        outbound: isOutbound,
-        senderAddress: isOutbound ? own : peerAddress,
-        senderPublicKey: isOutbound
-          ? fromHex(owner.subject)
-          : fromHex(peer.subject),
-        recipientAddress: isOutbound ? peerAddress : own,
-        recipientPublicKey: isOutbound
-          ? fromHex(peer.subject)
-          : fromHex(owner.subject),
-        items,
-        conversationId: conversationIdStr,
-        ...(conversationNameStr === undefined
-          ? {}
-          : { conversationName: conversationNameStr }),
-        messageId: messageIdStr,
-        payloadDigest: digest,
-        stampValueWei: stampPayments.reduce((sum, p) => sum + p.valueWei, 0n),
-        stampPayments,
-        stampSharedPoint: toHex(payload.sharedPoint),
-        paymentTransfers,
-        receivedTime: record.timestampMs,
-      })
+      received.push(
+        projectOutboxMessageRecord(
+          {
+            outbound: isOutbound,
+            senderAddress: isOutbound ? own : peerAddress,
+            senderPublicKey: isOutbound
+              ? fromHex(owner.subject)
+              : fromHex(peer.subject),
+            recipientAddress: isOutbound ? peerAddress : own,
+            recipientPublicKey: isOutbound
+              ? fromHex(peer.subject)
+              : fromHex(owner.subject),
+            items,
+            conversationId: conversationIdStr,
+            ...(conversationNameStr === undefined
+              ? {}
+              : { conversationName: conversationNameStr }),
+            messageId: messageIdStr,
+            payloadDigest: digest,
+            stampValueWei: stampPayments.reduce(
+              (sum, p) => sum + p.valueWei,
+              0n,
+            ),
+            stampPayments,
+            stampSharedPoint: toHex(payload.sharedPoint),
+            paymentTransfers,
+            receivedTime: record.timestampMs,
+          },
+          registry,
+        ),
+      )
     }
     cursor = page.nextCursor
     if (cursor === undefined) break
@@ -2773,31 +2954,36 @@ export function canonicalDirectMessages(
                 const peerAddress: ChainAddress = {
                   raw: getAddress(computeAddress('0x' + peer.subject)),
                 }
-                params.onRecord({
-                  outbound: isOutbound,
-                  senderAddress: isOutbound ? own : peerAddress,
-                  senderPublicKey: isOutbound
-                    ? fromHex(owner.subject)
-                    : fromHex(peer.subject),
-                  recipientAddress: isOutbound ? peerAddress : own,
-                  recipientPublicKey: isOutbound
-                    ? fromHex(peer.subject)
-                    : fromHex(owner.subject),
-                  items,
-                  conversationId: conversationIdStr,
-                  ...(conversationNameStr === undefined
-                    ? {}
-                    : { conversationName: conversationNameStr }),
-                  messageId: messageIdStr,
-                  payloadDigest: digest,
-                  stampValueWei: stampPayments.reduce(
-                    (sum, p) => sum + p.valueWei,
-                    0n,
+                params.onRecord(
+                  projectOutboxMessageRecord(
+                    {
+                      outbound: isOutbound,
+                      senderAddress: isOutbound ? own : peerAddress,
+                      senderPublicKey: isOutbound
+                        ? fromHex(owner.subject)
+                        : fromHex(peer.subject),
+                      recipientAddress: isOutbound ? peerAddress : own,
+                      recipientPublicKey: isOutbound
+                        ? fromHex(peer.subject)
+                        : fromHex(owner.subject),
+                      items,
+                      conversationId: conversationIdStr,
+                      ...(conversationNameStr === undefined
+                        ? {}
+                        : { conversationName: conversationNameStr }),
+                      messageId: messageIdStr,
+                      payloadDigest: digest,
+                      stampValueWei: stampPayments.reduce(
+                        (sum, p) => sum + p.valueWei,
+                        0n,
+                      ),
+                      stampPayments,
+                      paymentTransfers,
+                      receivedTime: record.timestampMs,
+                    },
+                    registry,
                   ),
-                  stampPayments,
-                  paymentTransfers,
-                  receivedTime: record.timestampMs,
-                })
+                )
               } catch (err) {
                 params.onError?.(
                   err instanceof Error ? err : new Error(String(err)),

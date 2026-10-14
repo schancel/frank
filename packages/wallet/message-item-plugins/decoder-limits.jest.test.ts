@@ -728,6 +728,81 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ['note: 4,097 bytes', [9], 'x'.repeat(4097)],
     ],
   },
+  {
+    item: {
+      type: 'outbox-message',
+      payloadDigest: H,
+      recipientAddress: B,
+      sentAt: 1760000000000,
+      conversationId: '123e4567-e89b-52d3-a456-426614174000',
+      conversationName: 'Project sync',
+      messageId: '123e4567-e89b-42d3-a456-426614174000',
+      stampValueWei: '1000',
+      recipientPublicKey: '02' + H,
+      itemFrames: ['a1006568656c6c6f'],
+      text: 'hello',
+    },
+    cases: [
+      ...each('payloadDigest', [0], BAD_HASHES),
+      ...each('recipientAddress', [1], BAD_ADDRESSES),
+      ...each('sentAt', [2], BAD_TIMESTAMPS),
+      ...each('conversationId', [3], [
+        '',
+        'not-a-uuid',
+        '123E4567-E89B-52D3-A456-426614174000',
+      ]),
+      ...each('conversationName', [4], [' lead', 'x'.repeat(161)]),
+      ...each('messageId', [5], ['', 'not-a-uuid']),
+      ...each('stampValueWei', [6], BAD_AMOUNTS),
+      ...each('recipientPublicKey', [7], ['', '04' + H, '02' + 'zz'.repeat(32)]),
+      ['itemFrames: 33 entries', [8], many(33, new Uint8Array([1]))],
+      ...each('text', [9], ['', 'x'.repeat(16_385)]),
+    ],
+  },
+  {
+    item: {
+      type: 'message-tombstone',
+      conversationId: '123e4567-e89b-52d3-a456-426614174000',
+      peer: B,
+      payloadDigest: H,
+      deletedAt: 1760000000000,
+    },
+    cases: [
+      ...each('conversationId', [0], ['', 'not-a-uuid']),
+      ...each('peer', [1], BAD_ADDRESSES),
+      ...each('payloadDigest', [2], BAD_HASHES),
+      ...each('deletedAt', [3], BAD_TIMESTAMPS),
+    ],
+  },
+  {
+    item: {
+      type: 'journal-checkpoint',
+      checkpointTimestamp: 1760000000000,
+      conversations: [
+        {
+          conversationId: '123e4567-e89b-52d3-a456-426614174000',
+          peer: B,
+          clearedBefore: 1760000000000,
+          readUpTo: 1760000000000,
+          subject: 'Topic',
+          subjectSetAt: 1760000000000,
+          tombstones: { [H]: 1760000000000 },
+        },
+      ],
+    },
+    cases: [
+      ...each('checkpointTimestamp', [0], BAD_TIMESTAMPS),
+      ...each('conversations[0].conversationId', [1, 0, 0], ['', 'not-a-uuid']),
+      ...each('conversations[0].peer', [1, 0, 1], BAD_ADDRESSES),
+      ...each('conversations[0].clearedBefore', [1, 0, 2], BAD_TIMESTAMPS),
+      ...each('conversations[0].readUpTo', [1, 0, 3], BAD_TIMESTAMPS),
+      ...each('conversations[0].subject', [1, 0, 4], [
+        ' lead',
+        'x'.repeat(161),
+      ]),
+      ...each('conversations[0].subjectSetAt', [1, 0, 5], BAD_TIMESTAMPS),
+    ],
+  },
 ]
 
 describe('the CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
@@ -742,7 +817,10 @@ describe('the CBOR item decoders refuse out-of-range, misformatted and oversize 
         'dice',
         'digital-goods',
         'image',
+        'journal-checkpoint',
         'liars-dice',
+        'message-tombstone',
+        'outbox-message',
         'p2pkh',
         'payment-transfer',
         'poker',

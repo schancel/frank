@@ -350,6 +350,85 @@ export interface ConversationStateItem {
   subjectSetAt?: number
 }
 
+/**
+ * Self-addressed journal entry recording an outbound direct message sent by this account to a
+ * peer, so every device of the account (and any seed restore) reconstructs sent messages from its
+ * own encrypted inbox without relying on a relay-indexed cleartext-sender outbox table.
+ */
+export interface OutboxMessageItem {
+  type: 'outbox-message'
+  /** Bare lowercase 64-hex payload digest of the outbound message delivered to the recipient. */
+  payloadDigest: string
+  /** Canonical EVM address of the recipient (`0x` + 40 lowercase hex). */
+  recipientAddress: string
+  /** Authoritative relay timestamp (ms) of the outbound message. */
+  sentAt: number
+  /** Conversation UUID (`8-4-4-4-12` lowercase hex) if present on the outbound message. */
+  conversationId?: string
+  /** Conversation subject carried by the outbound message if present. */
+  conversationName?: string
+  /** Logical message UUID (`8-4-4-4-12` lowercase hex) if present on the outbound message. */
+  messageId?: string
+  /** Decimal wei paid across the outbound message's stamp transactions. */
+  stampValueWei?: string
+  /** Recipient's compressed secp256k1 public key (66 lowercase hex chars) if known. */
+  recipientPublicKey?: string
+  /** Hex-encoded canonical CBOR item frames of the outbound message's revision payload. */
+  itemFrames?: string[]
+  /** Optional plain text summary/body when constructed without raw item frames. */
+  text?: string
+}
+
+/**
+ * Self-addressed journal entry recording an individual message deletion (tombstone) as a monotone
+ * G-Set element in the conversation's join-semilattice state.
+ */
+export interface MessageTombstoneItem {
+  type: 'message-tombstone'
+  /** Conversation UUID (`8-4-4-4-12` lowercase hex). */
+  conversationId: string
+  /** Canonical EVM address of the conversation peer (`0x` + 40 lowercase hex). */
+  peer: string
+  /** Bare lowercase 64-hex payload digest of the tombstoned message. */
+  payloadDigest: string
+  /** Timestamp (ms) when the tombstone was recorded. */
+  deletedAt: number
+}
+
+/**
+ * Per-conversation watermark summary inside a {@link JournalCheckpointItem}.
+ */
+export interface JournalCheckpointConversationEntry {
+  /** Conversation UUID (`8-4-4-4-12` lowercase hex). */
+  conversationId: string
+  /** Canonical EVM address of the conversation peer (`0x` + 40 lowercase hex). */
+  peer: string
+  /** Monotone cleared-before watermark (ms). */
+  clearedBefore?: number
+  /** Monotone read-up-to watermark (ms). */
+  readUpTo?: number
+  /** LWW subject text (empty string = removed). */
+  subject?: string
+  /** Timestamp (ms) when `subject` was set. */
+  subjectSetAt?: number
+  /** Tombstoned message digests (`payloadDigest` -> `deletedAt` ms) in this conversation. */
+  tombstones?: Record<string, number>
+}
+
+/**
+ * Self-addressed journal checkpoint summarizing monotone watermarks, LWW subject registers, and
+ * message tombstones across conversations up to `checkpointTimestamp`. Joining a checkpoint with
+ * all journal events after `checkpointTimestamp` yields the exact same state as joining the full
+ * uncompacted history.
+ */
+export interface JournalCheckpointItem {
+  type: 'journal-checkpoint'
+  /** Monotone timestamp (ms) through which this checkpoint summarizes journal state. */
+  checkpointTimestamp: number
+  /** Per-conversation state summaries. */
+  conversations: JournalCheckpointConversationEntry[]
+}
+
 export interface DeviceClaimItem {
   type: 'device-claim'
   instanceId: string
@@ -750,6 +829,9 @@ export type MessageItem =
   | SwapRecordItem
   | ReceivedCoinItem
   | ConversationStateItem
+  | OutboxMessageItem
+  | MessageTombstoneItem
+  | JournalCheckpointItem
   | DeviceClaimItem
   | RpsItem
   | SatoshiDiceItem

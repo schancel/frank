@@ -314,6 +314,32 @@ export const NEVER_FROM_A_PEER_SAMPLES: MessageItem[] = [
     clearedBefore: 1760000000000,
   },
   {
+    type: 'outbox-message',
+    payloadDigest: '34'.repeat(32),
+    recipientAddress: '0x' + 'b2'.repeat(20),
+    sentAt: 1760000000000,
+    conversationId: '123e4567-e89b-52d3-a456-426614174000',
+    text: 'outbound text',
+  },
+  {
+    type: 'message-tombstone',
+    conversationId: '123e4567-e89b-52d3-a456-426614174000',
+    peer: '0x' + 'b2'.repeat(20),
+    payloadDigest: '56'.repeat(32),
+    deletedAt: 1760000000000,
+  },
+  {
+    type: 'journal-checkpoint',
+    checkpointTimestamp: 1760000000000,
+    conversations: [
+      {
+        conversationId: '123e4567-e89b-52d3-a456-426614174000',
+        peer: '0x' + 'b2'.repeat(20),
+        clearedBefore: 1760000000000,
+      },
+    ],
+  },
+  {
     type: 'device-claim',
     instanceId: '123e4567-e89b-42d3-a456-426614174000',
     claimedAt: 1760000000000,

@@ -219,6 +219,7 @@ import {
   restoreOutgoingClaims,
   canonicalDirectMessages,
   installedMessageItemRegistry,
+  projectOutboxMessageRecord,
   type CanonicalDirectory,
   type CanonicalMessagingOwner,
   type OutgoingMessageStore,
@@ -1688,7 +1689,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     if (!message.items.some(isWalletNote)) return { kind: "none" };
     const notes = message.items.filter((item) => item.type === "wallet-sync");
     const others = message.items.filter((item) => !isWalletNote(item));
-    const rest = others.length > 0 ? { ...message, items: others } : undefined;
+    const itemRegistry = installedMessageItemRegistry(wallet);
+    const rawRest =
+      others.length > 0 ? { ...message, items: others } : undefined;
+    const rest =
+      rawRest !== undefined && itemRegistry !== undefined
+        ? projectOutboxMessageRecord(rawRest, itemRegistry)
+        : rawRest;
     const digest = message.payloadDigest;
     let settled = settledSelfNotes.get(wallet);
     if (settled === undefined)

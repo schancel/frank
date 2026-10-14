@@ -218,7 +218,8 @@ async function fetchBalance(force: boolean) {
           ? ' ' + JSON.stringify((err as any).info)
           : '')
       const isTransientRpc =
-        isChainUnreachableError(err) ||
+        (typeof isChainUnreachableError === 'function' &&
+          isChainUnreachableError(err)) ||
         errStr.includes('ChainUnreachableError') ||
         errStr.includes('502') ||
         errStr.includes('503') ||

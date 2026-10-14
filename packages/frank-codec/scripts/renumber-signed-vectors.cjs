@@ -651,6 +651,7 @@ for (const [name, originalBody] of Object.entries(inputs.native_http_bodies)) {
   const body = Buffer.from(originalBody, 'hex'),
     boundary = body.subarray(0, body.indexOf('\r\n')),
     parts = []
+  const identityParts = {}
   let offset = 0
   while (offset < body.length) {
     const headerEnd = body.indexOf('\r\n\r\n', offset)
@@ -677,8 +678,35 @@ for (const [name, originalBody] of Object.entries(inputs.native_http_bodies)) {
         converted = Buffer.from(c.encodeCanonical(context))
       }
     }
+    for (const partName of ['delivery', 'context', 'transactions']) {
+      if (headers.includes(`name="${partName}"`))
+        identityParts[partName] = converted
+    }
     parts.push(headers, converted)
     offset = end
+  }
+  const assertionFunction = {
+    T_BODY_HEX:
+      'independent_transport_original_body_and_ordinary_identity_are_exact',
+    GENUINE_T_BODY_HEX: 'genuine_fixture',
+    PREFIX_T_BODY_HEX: 'prefix_fixture',
+  }[name]
+  if (assertionFunction) {
+    const identity = c.toHex(
+      sha(
+        c.encodeCanonical([
+          identityParts.delivery,
+          identityParts.context,
+          c.decodeCanonical(identityParts.transactions),
+        ]),
+      ),
+    )
+    const assertion = new RegExp(
+      `(fn ${assertionFunction}\\([\\s\\S]*?hex::encode\\(request\\.submission_identity\\(\\)\\),\\s*)"[0-9a-f]{64}"`,
+    )
+    if (!assertion.test(native))
+      throw Error(`${name}: submission identity assertion missing`)
+    native = native.replace(assertion, (_, prefix) => `${prefix}"${identity}"`)
   }
   const hex = Buffer.concat(parts).toString('hex')
   native = native.replace(

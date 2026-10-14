@@ -152,7 +152,11 @@
                     >
                       {{
                         balanceObservation
-                          ? balanceObservation.formattedBalance
+                          ? balanceObservation.stale
+                            ? $t('walletPanel.balanceStale', {
+                                balance: balanceObservation.formattedBalance,
+                              })
+                            : balanceObservation.formattedBalance
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
@@ -420,7 +424,8 @@
                             >
                               {{
                                 balanceObservation
-                                  ? currentWalletHasError
+                                  ? currentWalletHasError ||
+                                    balanceObservation.stale
                                     ? $t('walletPanel.balanceStale', {
                                         balance:
                                           balanceObservation.formattedBalance,

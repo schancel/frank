@@ -52,6 +52,10 @@ const mockUtxoBalances: Record<string, jest.Mock> = {
   'btc-testnet': jest.fn().mockResolvedValue(150_000n),
   'bch-testnet': jest.fn().mockResolvedValue(0n),
 }
+const mockUtxoObservations: Record<
+  string,
+  { balance: bigint; observedAt: number } | undefined
+> = {}
 const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => {
   const getBalance = mockUtxoBalances[chainIdentifier]
   if (!getBalance)
@@ -65,7 +69,10 @@ const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => {
       toDisplayAmount: (value: bigint) =>
         (Number(value) / 10 ** decimals).toString(),
     },
-    wallet: { getBalance },
+    wallet: {
+      getBalance,
+      getBalanceObservation: () => mockUtxoObservations[chainIdentifier],
+    },
   }
 })
 jest.mock('../accounts/utxo-wallets', () => ({
@@ -194,6 +201,53 @@ import Wallet from '../pages/Wallet.vue'
 import WalletPanel from '../components/panels/WalletPanel.vue'
 
 describe('useChainBalance', () => {
+  it('shows the owner local observation before refresh resolves, then replaces it', async () => {
+    mockAccountStatus.revision += 1
+    mockUtxoObservations['btc-testnet'] = {
+      balance: 200_000n,
+      observedAt: 1234,
+    }
+    let resolve!: (balance: bigint) => void
+    mockUtxoBalances['btc-testnet'].mockImplementationOnce(
+      () =>
+        new Promise<bigint>(done => {
+          resolve = done
+        }),
+    )
+    const pending = fetchChainBalance('bitcoin', true)
+    await flushPromises()
+    expect(useChainBalance('bitcoin').presentation.value).toMatchObject({
+      status: 'available',
+      observation: { balance: 200_000n, observedAt: 1234, stale: true },
+    })
+    resolve(300_000n)
+    await pending
+    expect(useChainBalance('bitcoin').presentation.value).toMatchObject({
+      status: 'available',
+      observation: { balance: 300_000n },
+    })
+    expect(useChainBalance('bitcoin').presentation.value).not.toMatchObject({
+      observation: { stale: true },
+    })
+    delete mockUtxoObservations['btc-testnet']
+  })
+
+  it('retains the owner observation with visible failure when background refresh rejects', async () => {
+    mockAccountStatus.revision += 1
+    mockUtxoObservations['btc-testnet'] = {
+      balance: 400_000n,
+      observedAt: 5678,
+    }
+    mockUtxoBalances['btc-testnet'].mockRejectedValueOnce(new Error('offline'))
+    await fetchChainBalance('bitcoin', true)
+    expect(useChainBalance('bitcoin').presentation.value).toMatchObject({
+      status: 'unavailable',
+      reason: 'fetch-error',
+      lastKnown: { balance: 400_000n, observedAt: 5678, stale: true },
+    })
+    delete mockUtxoObservations['btc-testnet']
+  })
+
   it('reports missing relay routes without opening custody and recovers when configured', async () => {
     const { RelayWalletRouteUnavailableError } = await import(
       '../accounts/relay-wallet-route'

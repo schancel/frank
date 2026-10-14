@@ -412,6 +412,27 @@ describe("display-only local balance observations", () => {
     expect(wallet.getBalanceObservation()?.balance).toBe(0n);
     expect(await other.releaseUnexposedPayment(payment.operationId)).toBe(true);
     expect(wallet.getBalanceObservation()?.balance).toBe(50_000n);
+    const exposed = await other.prepareNativePayment({
+      operationId: "display-exposed",
+      recipient: { raw: BTC_RECIPIENT },
+      value: 10_000n,
+    });
+    await other.recordPaymentExposure({
+      operationId: exposed.operationId,
+      payloadDigest: "1".repeat(64),
+    });
+    backend.setOutcome("lost");
+    await expect(
+      other.submitPreparedPayment(exposed.operationId)
+    ).rejects.toThrow();
+    const restarted = (await open(BTC, backend, store)).wallet;
+    expect(restarted.getBalanceObservation()?.balance).toBe(0n);
+    expect(restarted.coins()).toEqual([]);
+    expect(
+      (await restarted.getNativePayments()).find(
+        (p) => p.operationId === exposed.operationId
+      )?.phase
+    ).toBe("submitted");
   });
 
   it("ignores wrong-chain or malformed observations without modifying journal records", async () => {

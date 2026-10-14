@@ -147,7 +147,9 @@ function nativeBalance(wallet: string): string {
 
 function isBalanceStale(wallet: string): boolean {
   const presentation = getPresentation(wallet)
-  return presentation.status === 'unavailable' && !!presentation.lastKnown
+  return presentation.status === 'available'
+    ? presentation.observation.stale === true
+    : presentation.status === 'unavailable' && !!presentation.lastKnown
 }
 function nativeBalanceTitle(wallet: string): string {
   const amount = nativeBalance(wallet)

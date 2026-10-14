@@ -62,10 +62,15 @@ export interface ChainBalanceState {
   formattedBalance: string
   loaded: boolean
   hasError: boolean
+  /** Display observation metadata; never a spend authorization. */
+  observedAt?: number
+  stale?: boolean
   unavailableReason?: 'relay-unavailable'
 }
 
 export interface BalanceObservation {
+  observedAt?: number
+  stale?: boolean
   /** The balance shown for the chain, in base units. For Monad it is `useBalance().total`. */
   balance: bigint
   formattedBalance: string
@@ -129,6 +134,10 @@ function getBalancePresentation(
           balance: state.balance,
           formattedBalance: state.formattedBalance,
           ...(exactBalance ? { exactBalance } : {}),
+          ...(state.observedAt !== undefined
+            ? { observedAt: state.observedAt }
+            : {}),
+          ...(state.stale ? { stale: true } : {}),
         }
       : undefined
   if (state.hasError) {
@@ -317,11 +326,26 @@ export async function fetchChainBalance(
         ? openEvmWallet(chainIdentifier)
         : openUtxoWallet(chainIdentifier))
       if (!isCurrent()) return
+      const formatter = adapter ?? network
+      const observed = wallet.getBalanceObservation?.()
+      if (observed) {
+        secondaryStates[chainIdentifier] = {
+          revision,
+          balance: observed.balance,
+          formattedBalance: `${formatter.toDisplayAmount(observed.balance)} ${
+            formatter.unit
+          }`,
+          loaded: true,
+          hasError: false,
+          observedAt: observed.observedAt,
+          stale: true,
+        }
+      }
+      // Publish the local observation first; the network read refreshes it in the background.
       // Every address the wallet owns, not one address.
       const balance = await wallet.getBalance()
       if (!isCurrent()) return
       adapter?.getWallet().setCachedBalance(balance)
-      const formatter = adapter ?? network
       secondaryStates[chainIdentifier] = {
         revision,
         balance,
@@ -330,6 +354,9 @@ export async function fetchChainBalance(
         }`,
         loaded: true,
         hasError: false,
+        ...(wallet.getBalanceObservation
+          ? { observedAt: wallet.getBalanceObservation()?.observedAt }
+          : {}),
       }
     } catch (err) {
       if (!isCurrent()) return

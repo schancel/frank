@@ -14,6 +14,7 @@ import {
   encryptGroupRoster,
   formatGroupIdentifier,
   groupConversationUuid,
+  isGroupConversationId,
   isGroupIdentifier,
   openGroupMessage,
   parseGroupIdentifier,
@@ -44,8 +45,12 @@ describe('packages/cashweb/groups/group-crypto', () => {
     expect(parseGroupIdentifier(id1.groupIdentifier)).toBe(id1.groupIdHex)
     expect(isGroupIdentifier('group:not-a-hex')).toBe(false)
     expect(id1.conversationId).toBe(groupConversationUuid(id1.groupIdHex))
+    expect(isGroupConversationId(id1.conversationId)).toBe(true)
+    expect(isGroupConversationId('11111111-1111-4111-8111-111111111111')).toBe(
+      false,
+    )
     expect(id1.conversationId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     )
   })
 

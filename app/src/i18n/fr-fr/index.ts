@@ -2063,6 +2063,10 @@ export default {
     continueWithPasskey: 'Continuer avec une clé d’accès (Mera)',
   },
   groupChat: {
+    participantRequest:
+      '{address} a référencé cette conversation directe. Son message reste dans une conversation individuelle distincte.',
+    viewDirect: 'Voir la conversation',
+    dismissRequest: 'Ignorer',
     syncFailed:
       'Impossible de synchroniser les mises à jour du groupe. Réessayez pour reprendre.',
     epochPending:

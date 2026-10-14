@@ -140,7 +140,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref, watch } from 'vue'
+import { computed, defineComponent, ref, watch, type PropType } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChatStore } from '../../stores/chats'
 import { useContactStore, type ContactState } from '../../stores/contacts'
@@ -156,6 +156,7 @@ import { shortAddress } from '../../utils/short-address'
 export default defineComponent({
   name: 'NewGroupDialog',
   props: {
+    initialMembers: { type: Array as PropType<string[]>, default: () => [] },
     modelValue: {
       type: Boolean,
       default: false,
@@ -189,7 +190,7 @@ export default defineComponent({
         if (open) {
           groupName.value = ''
           memberFilter.value = ''
-          selectedAddresses.value = []
+          selectedAddresses.value = [...new Set(props.initialMembers)]
           relayBaseUrl.value = chatStore.getGroupHomeRelay()
           creating.value = false
         }

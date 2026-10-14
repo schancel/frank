@@ -582,3 +582,23 @@ it('discloses the basis of the AVU default stamp without attaching it to an expl
   expect(wrapper.find('[data-testid="stamp-basis-note"]').exists()).toBe(false)
   wrapper.unmount()
 })
+
+describe('the group composer exposes conversation content capabilities', () => {
+  it('keeps attachments and send while hiding direct payment and game controls', () => {
+    const wrapper = mount(ChatInput, {
+      props: { groupMode: true },
+      global: globalOptions,
+    })
+    expect(
+      wrapper.find('[data-testid="attach-image-menu-item"]').exists(),
+    ).toBe(true)
+    expect(wrapper.find('[data-icon="send"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="blackjack-menu-item"]').exists()).toBe(
+      false,
+    )
+    expect(
+      wrapper.find('[data-testid="send-stealth-menu-item"]').exists(),
+    ).toBe(false)
+    expect(wrapper.find('.chat-stamp-btn').exists()).toBe(false)
+  })
+})

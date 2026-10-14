@@ -128,9 +128,16 @@ export function parseGroupIdentifier(value: string): string | null {
 }
 
 /**
- * Deterministic UUIDv5-shaped conversation ID derived from `groupIdHex` so all group members
+ * Deterministic UUIDv8 conversation ID derived from `groupIdHex` so all group members
  * address the group conversation by the exact same UUID without leaking `group_id` directly.
  */
+/** Shared-group namespace: ordinary direct claims never acquire ownership here. */
+export function isGroupConversationId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  )
+}
+
 export function groupConversationUuid(groupIdHex: string): string {
   const clean = groupIdHex
     .trim()
@@ -146,7 +153,7 @@ export function groupConversationUuid(groupIdHex: string): string {
     ),
   )
   const b = new Uint8Array(digest.slice(0, 16))
-  b[6] = ((b[6] ?? 0) & 0x0f) | 0x50 // version 5
+  b[6] = ((b[6] ?? 0) & 0x0f) | 0x80 // version 8: reserved shared-group namespace
   b[8] = ((b[8] ?? 0) & 0x3f) | 0x80 // RFC 4122 variant
   const hex = bytesToHex(b)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
@@ -530,9 +537,7 @@ export interface GroupEpochFrameWire {
   readonly write_pubkey: string
   readonly read_token_hash: string
   readonly encrypted_roster: string
-  readonly encrypted_epoch_descriptor?: string
   readonly authority_sig: string
-  readonly admin_sig?: string
   readonly epoch_hash?: string
 }
 
@@ -616,9 +621,7 @@ export function signEpochFrame(params: {
     write_pubkey: params.epochKeys.writeKeyPair.publicKeyHex,
     read_token_hash: params.epochKeys.readTokenHashHex,
     encrypted_roster: encryptedRosterHex,
-    encrypted_epoch_descriptor: encryptedRosterHex,
     authority_sig: authoritySigHex,
-    admin_sig: authoritySigHex,
     epoch_hash: epochHashHex,
   }
 }
@@ -633,9 +636,8 @@ export function verifyEpochFrame(
       .trim()
       .replace(/^group:/i, '')
       .toLowerCase()
-    const encryptedRoster =
-      frame.encrypted_roster || frame.encrypted_epoch_descriptor || ''
-    const authoritySig = frame.authority_sig || frame.admin_sig || ''
+    const encryptedRoster = frame.encrypted_roster
+    const authoritySig = frame.authority_sig
     const pubKeyHex = authorityPubKeyHex || frame.group_pubkey
     if (!encryptedRoster || !authoritySig || !pubKeyHex) return false
     if (computeGroupIdFromPubKey(pubKeyHex) !== cleanGroupId) return false
@@ -926,7 +928,7 @@ export function openGroupMessage(params: {
     : undefined
   let rosterAddress: string | undefined
   if (members) {
-    const member = members.find((m) => m.index === innerFrame.senderIndex)
+    const member = members.find(m => m.index === innerFrame.senderIndex)
     if (!member) {
       throw new Error(
         `Sender index ${innerFrame.senderIndex} is not in the epoch roster`,

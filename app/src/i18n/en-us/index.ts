@@ -2000,6 +2000,10 @@ export default {
     continueWithPasskey: 'Continue with Passkey (Mera)',
   },
   groupChat: {
+    participantRequest:
+      '{address} referenced this direct conversation. Their message is in a separate 1:1 conversation.',
+    viewDirect: 'View 1:1',
+    dismissRequest: 'Dismiss',
     syncFailed: 'Group updates could not be synchronized. Retry to resume.',
     epochPending: 'Group setup is pending. Retry to finish publishing.',
     retryUpdates: 'Retry group updates',

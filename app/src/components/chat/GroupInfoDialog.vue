@@ -33,8 +33,19 @@
       </q-card-section>
 
       <q-separator />
-      <q-banner v-if="conversation.groupState?.pendingEpoch || conversation.groupState?.syncFailed" class="q-pa-sm" role="status">
-        {{ conversation.groupState?.pendingEpoch ? $t('groupChat.epochPending') : $t('groupChat.syncFailed') }}
+      <q-banner
+        v-if="
+          conversation.groupState?.pendingEpoch ||
+          conversation.groupState?.syncFailed
+        "
+        class="q-pa-sm"
+        role="status"
+      >
+        {{
+          conversation.groupState?.pendingEpoch
+            ? $t('groupChat.epochPending')
+            : $t('groupChat.syncFailed')
+        }}
       </q-banner>
       <q-card-section class="q-gutter-xs">
         <div class="text-caption text-grey-6">
@@ -219,12 +230,8 @@ export default defineComponent({
     const busy = ref(false)
 
     const conversation = computed<Conversation | null>(() => {
-      if (
-        props.conversationId &&
-        chatStore.conversations[props.conversationId]
-      ) {
-        return chatStore.conversations[props.conversationId]
-      }
+      if (props.conversationId)
+        return chatStore.conversations[props.conversationId] ?? null
       return chatStore.activeConversation ?? null
     })
 

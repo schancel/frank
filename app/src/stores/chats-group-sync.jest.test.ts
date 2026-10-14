@@ -47,7 +47,11 @@ jest.mock('../utils/own-address', () => ({
 import { TextDecoder, TextEncoder } from 'util'
 Object.assign(globalThis, { TextEncoder, TextDecoder })
 /* eslint-disable @typescript-eslint/no-var-requires */
-const { useChatStore, rehydrateChat } = require('./chats')
+const {
+  useChatStore,
+  rehydrateChat,
+  setConversationIdSalt,
+} = require('./chats')
 const messageStorePromise = require('../adapters/level-message-store').store
 const { useContactStore } = require('./contacts')
 
@@ -152,6 +156,7 @@ function createSharedMockGroupRelay() {
 
 describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70, #1365)', () => {
   beforeEach(() => {
+    setConversationIdSalt(new Uint8Array(16).fill(0x71))
     currentOwnAddress = ALICE
     setActivePinia(createPinia())
     jest
@@ -221,6 +226,35 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     bobChats.setGroupRelayClient('https://relay.frank.test', relayClient)
     jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
 
+    const unsolicited = (index: string) => ({
+      index,
+      conversationId: aliceGroup.id,
+      outbound: false,
+      senderAddress: DAVE,
+      copartyAddress: DAVE,
+      copartyPubKey: { toBuffer: () => GROUP_TEST_ACCOUNTS[3].publicKey },
+      stampValue: 0,
+      message: {
+        conversationId: aliceGroup.id,
+        outbound: false,
+        status: 'confirmed',
+        senderAddress: DAVE,
+        destinationAddress: BOB,
+        items: [{ type: 'text', text: index }],
+        stampValueWei: 123n,
+        serverTime: 900,
+        receivedTime: 900,
+        outpoints: [],
+      },
+    })
+    await bobChats.receiveMessages([unsolicited('preemptive-dm')], BOB)
+    expect(bobChats.conversations[aliceGroup.id]).toBeUndefined()
+    const daveDirect = Object.values(bobChats.conversations).find(
+      (conv: any) => conv.address.toLowerCase() === DAVE.toLowerCase(),
+    ) as any
+    expect(daveDirect.kind).toBe('direct')
+    expect(daveDirect.messages[0].stampValueWei).toBe(123n)
+
     const welcomeItem: GroupWelcomeItem = {
       type: 'group-welcome',
       epochFrame: aliceGroup.groupState!.epochFrame,
@@ -265,6 +299,17 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(bobGroup.kind).toBe('group')
     expect(bobGroup.membershipStatus).toBe('invited')
     expect(bobGroup.invitedBy.toLowerCase()).toBe(ALICE.toLowerCase())
+    await bobChats.receiveMessages([unsolicited('pending-invite-dm')], BOB)
+    expect(bobGroup.messages).toHaveLength(0)
+    expect(bobGroup.pendingParticipantRequests).toBeUndefined()
+    expect(daveDirect.messages).toHaveLength(2)
+    bobChats.declineGroupInvite(bobGroup.id)
+    await bobChats.receiveMessages([unsolicited('declined-invite-dm')], BOB)
+    expect(bobGroup.messages).toHaveLength(0)
+    expect(daveDirect.messages).toHaveLength(3)
+    // A local decline never turns direct messages into authenticated group messages.
+    bobGroup.membershipStatus = 'invited'
+
     // While quarantined in 'invited' status, Bob MUST NOT poll the group mailbox
     expect(bobChats.shouldPollGroupMailbox(bobGroup.id)).toBe(false)
     expect(
@@ -595,7 +640,7 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(outcome.state).toBe('failed')
     const digest = Object.keys(group.groupState.pendingMessages)[0]
     const originalEnvelope = JSON.stringify(
-      group.groupState.pendingMessages[digest],
+      chats.messages[digest].groupEnvelope,
     )
     const retried = await chats.retryGroupMessage(group.id, digest, client)
     expect(retried.state).toBe('sent')

@@ -57,6 +57,47 @@
           @click="retryGroupUpdates"
       /></template>
     </q-banner>
+    <q-banner
+      v-for="request in participantRequests"
+      :key="request.senderAddress"
+      data-testid="participant-request-banner"
+      class="q-pa-sm"
+    >
+      {{
+        $t('groupChat.participantRequest', {
+          address: shortAddress(request.senderAddress),
+        })
+      }}
+      <template #action>
+        <q-btn
+          flat
+          :label="$t('groupChat.viewDirect')"
+          data-testid="participant-request-view"
+          @click="viewParticipantRequest(request.senderConversationId)"
+        />
+        <q-btn
+          flat
+          :label="$t('groupChat.createGroupBtn')"
+          data-testid="participant-request-group"
+          @click="createGroupFromRequest(request.senderAddress)"
+        />
+        <q-btn
+          flat
+          :label="$t('groupChat.dismissRequest')"
+          data-testid="participant-request-dismiss"
+          @click="
+            chatStore.dismissPendingParticipantRequest(
+              conversation.id,
+              request.senderAddress,
+            )
+          "
+        />
+      </template>
+    </q-banner>
+    <new-group-dialog
+      v-model="participantGroupOpen"
+      :initial-members="participantGroupMembers"
+    />
     <!-- Tollbooth Screener Triage Banner for Inbound Paid-Stranger Requests -->
     <div
       v-if="isScreenerThread"
@@ -352,6 +393,7 @@ import {
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
+import NewGroupDialog from '../components/dialogs/NewGroupDialog.vue'
 import { openChat, openContactProfile } from '../utils/routes'
 import {
   attributeMessages,
@@ -420,6 +462,7 @@ const scrollDuration = 0
 
 export default defineComponent({
   components: {
+    NewGroupDialog,
     ChatMessageComponent,
     EmailThreadView,
     ChatMessageReply,
@@ -448,6 +491,8 @@ export default defineComponent({
   },
   data() {
     return {
+      participantGroupOpen: false,
+      participantGroupMembers: [] as string[],
       address: this.$route.params.address as string,
       lastHandledFocusNonce: 0,
       composeFocusTimers: [] as ReturnType<typeof setTimeout>[],
@@ -575,6 +620,15 @@ export default defineComponent({
     })
   },
   methods: {
+    shortAddress,
+    viewParticipantRequest(conversationId: string) {
+      const target = this.chatStore.conversations[conversationId]
+      if (target) openChat(this.$router, target.id)
+    },
+    createGroupFromRequest(senderAddress: string) {
+      this.participantGroupMembers = [this.conversation!.address, senderAddress]
+      this.participantGroupOpen = true
+    },
     // Opening a chat (mount or a reused route) places the caret (#411). On this
     // turn, before MainLayout's narrow-overlay restore (one tick later) treats a
     // still-unfocused page as focus lost and moves focus to the opener (#277).
@@ -1667,6 +1721,11 @@ export default defineComponent({
       } catch {
         return ''
       }
+    },
+    participantRequests() {
+      return this.conversation?.kind === 'direct'
+        ? Object.values(this.conversation.pendingParticipantRequests ?? {})
+        : []
     },
     isScreenerThread(): boolean {
       if (!this.conversation) return false

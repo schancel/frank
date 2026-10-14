@@ -116,9 +116,6 @@ export class GroupRelayClient {
     expectedPrevEpochHash?: string,
   ): Promise<PublishEpochResponse> {
     const cleanGroupId = normalizeGroupId(groupIdHex)
-    const encryptedDescriptor =
-      frame.encrypted_epoch_descriptor ?? frame.encrypted_roster
-    const adminSig = frame.admin_sig ?? frame.authority_sig
     const wireBody = {
       group_id: cleanGroupId,
       epoch: frame.epoch,
@@ -126,8 +123,8 @@ export class GroupRelayClient {
       prev_epoch_hash: frame.prev_epoch_hash,
       write_pubkey: frame.write_pubkey,
       read_token_hash: frame.read_token_hash,
-      encrypted_epoch_descriptor: encryptedDescriptor,
-      admin_sig: adminSig,
+      encrypted_epoch_descriptor: frame.encrypted_roster,
+      admin_sig: frame.authority_sig,
       ...(frame.epoch_hash ? { epoch_hash: frame.epoch_hash } : {}),
     }
     const headers: Record<string, string> = this.routingHeaders()
@@ -183,9 +180,7 @@ export class GroupRelayClient {
       write_pubkey: String(raw.write_pubkey ?? ''),
       read_token_hash: String(raw.read_token_hash ?? ''),
       encrypted_roster: encryptedRoster,
-      encrypted_epoch_descriptor: encryptedRoster,
       authority_sig: authoritySig,
-      admin_sig: authoritySig,
       ...(typeof raw.epoch_hash === 'string'
         ? { epoch_hash: raw.epoch_hash }
         : {}),

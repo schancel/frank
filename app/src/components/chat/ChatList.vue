@@ -23,7 +23,7 @@
         </q-item>
         <q-separator />
         <q-item
-          v-if="$status.setup"
+          v-if="$status.setup && groupsAvailable"
           clickable
           data-testid="new-group-btn"
           @click="newGroupOpen = true"
@@ -190,6 +190,7 @@ import { openChat, openPage } from '../../utils/routes'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { isNarrowWidth } from '../../utils/layout'
+import { messagingState } from '../../utils/messaging-state'
 import { activeChain } from '@frank/wallet/chain'
 import { formatDisplayAmount } from 'src/utils/chain-amount'
 import {
@@ -292,6 +293,11 @@ export default defineComponent({
     const router = useRouter()
     const $q = useQuasar()
     return {
+      groupsAvailable: computed(
+        () =>
+          messagingState.status === 'ready' &&
+          activeChain.capabilities.directMessages,
+      ),
       newGroupOpen: ref(false),
       getSortedChatOrder,
       displayedConversations,

@@ -82,6 +82,7 @@ import {
   deriveEpochKeys,
   formatGroupIdentifier,
   groupConversationUuid,
+  isGroupConversationId,
   hexToBytes,
   isGroupIdentifier,
   openGroupMessage,
@@ -131,6 +132,8 @@ import { captureOutgoingApplicationAuthorization } from '../utils/outgoing-appli
 import { captureOutgoingFinancialOperations } from '../stealth-payments/outgoing'
 
 export type ChatMessage = {
+  requestedConversationId?: string
+  groupEnvelope?: SealedGroupMessageEnvelope
   sealedMessageId?: string
   applicationAuthorization?: Message['applicationAuthorization']
   financialOperations?: OutgoingFinancialOperation[]
@@ -180,7 +183,6 @@ export interface PendingParticipantRequest {
   referencedConversationId: string
   payloadDigest: string
   receivedAt: number
-  pubKeyHex?: string
 }
 
 export interface ConversationMember {
@@ -240,7 +242,7 @@ export interface GroupConversationState {
     certificate: GroupEpochCertificate
     expectedPreviousHash?: string
   }
-  pendingMessages?: Record<string, SealedGroupMessageEnvelope>
+  pendingMessages?: Record<string, true>
   pendingMemberDeliveries?: Record<
     string,
     { items: MessageItem[]; operationId: string }[]
@@ -275,6 +277,8 @@ export interface Conversation {
   participants: string[]
   members?: Record<string, ConversationMember>
   epoch?: ConversationEpoch
+  pendingParticipantRequests?: Record<string, PendingParticipantRequest>
+  dismissedParticipantRequests?: Record<string, number>
   /** Issue #70 / #1365: Shared group mailbox metadata and invitation gate state. */
   membershipStatus?: GroupMembershipStatus
   invitedBy?: string
@@ -285,7 +289,6 @@ export interface Conversation {
   groupMemberIndex?: number
   groupState?: GroupConversationState
   /** Issue #1365: Third-party senders who referenced this 1:1 direct conversation ID. */
-  pendingParticipantRequests?: Record<string, PendingParticipantRequest>
   messages: ChatMessage[]
   totalUnreadMessages: number
   totalUnreadValue: number
@@ -988,10 +991,7 @@ function assertConversationPeer(
     conversation.address === conversation.id &&
     conversation.participants.some(p => sameCanonicalAddress(p, address))
   const groupMember =
-    conversation.kind === 'group' &&
-    (isGroupIdentifier(address) ||
-      conversation.address === address ||
-      conversation.participants.some(p => sameCanonicalAddress(p, address)))
+    conversation.kind === 'group' && conversation.address === address
   if (
     !explicitMember &&
     !groupMember &&
@@ -1012,23 +1012,16 @@ function addParticipant(
   address: string,
   pubKeyHex?: string,
 ): void {
+  if (conversation.kind === 'group') return
   const member = safeChainDisplayAddress(address) || address
-  if (conversation.participants.some(p => sameCanonicalAddress(p, member))) {
-    if (
-      pubKeyHex &&
-      conversation.members?.[member] &&
-      !conversation.members[member].pubKeyHex
-    ) {
-      conversation.members = {
-        ...conversation.members,
-        [member]: {
-          ...conversation.members[member],
-          pubKeyHex,
-        },
-      }
-    }
+  if (
+    conversation.kind === 'direct' &&
+    isChainAddress(conversation.address) &&
+    !sameCanonicalAddress(member, conversation.address)
+  )
     return
-  }
+  if (conversation.participants.some(p => sameCanonicalAddress(p, member)))
+    return
   conversation.participants = [...conversation.participants, member].sort()
   conversation.members = {
     ...conversation.members,
@@ -1041,56 +1034,75 @@ function addParticipant(
   }
 }
 
-/** Issue #1365: Whether an inbound message from `message.senderAddress` is an unapproved third
- * party posting into a `kind: 'direct'` conversation. */
-function isUnapprovedThirdPartyForDirect(
-  conversation: Conversation,
-  message: {
-    outbound: boolean
-    senderAddress: string
-    destinationAddress?: string
-  },
-): boolean {
+function verifyStoredGroupMessage(
+  conv: Conversation,
+  message: Message,
+  index: string,
+): void {
+  const state = conv.groupState
+  const envelope = message.groupEnvelope
   if (
-    message.outbound ||
-    isOwnMessage(message) ||
-    conversation.kind !== 'direct' ||
-    !isChainAddress(conversation.address)
-  ) {
-    return false
-  }
-  return (
-    !sameCanonicalAddress(message.senderAddress, conversation.address) &&
-    !conversation.participants.some(p =>
-      sameCanonicalAddress(p, message.senderAddress),
-    )
+    !state ||
+    !envelope ||
+    bytesToHex(sha256(new TextEncoder().encode(envelope.ciphertext))) !== index
   )
+    throw new Error(
+      'Stored group message requires its original signed envelope',
+    )
+  const epoch =
+    envelope.epoch === state.epoch ? state : state.epochHistory[envelope.epoch]
+  if (!epoch) throw new Error('Stored group message epoch is not authorized')
+  const keys = deriveEpochKeys(
+    hexToBytes(epoch.epochSecretHex),
+    state.groupIdHex,
+    envelope.epoch,
+  )
+  const opened = openGroupMessage({
+    envelope,
+    epochKeys: keys,
+    roster: epoch.roster,
+  })
+  if (
+    !sameCanonicalAddress(opened.senderAddress, message.senderAddress) ||
+    JSON.stringify(decodeGroupItems(opened.payload)) !==
+      JSON.stringify(message.items)
+  )
+    throw new Error(
+      'Stored group message content or sender differs from its signature',
+    )
 }
 
-/** Issue #1365: Records a non-spoofable `PendingParticipantRequest` on a 1:1 conversation when a
- * third party references its conversation ID, while keeping the message attributed in-place (#1380). */
-function redirectThirdPartyDirectMessage(
-  _conversations: Record<string, Conversation>,
-  referencedConv: Conversation,
-  senderAddress: string,
-  payloadDigest: string,
-  receivedAt: number,
-  _ownAddress: string | null,
-  pubKeyHex?: string,
-): Conversation {
-  const senderPeer = safeChainDisplayAddress(senderAddress) || senderAddress
-  referencedConv.pendingParticipantRequests = {
-    ...referencedConv.pendingParticipantRequests,
-    [senderPeer]: {
-      senderAddress: senderPeer,
-      senderConversationId: referencedConv.id,
-      referencedConversationId: referencedConv.id,
-      payloadDigest,
-      receivedAt,
-      ...(pubKeyHex ? { pubKeyHex } : {}),
-    },
+function isThirdPartyDirectClaim(
+  conv: Conversation,
+  message: Pick<Message, 'outbound' | 'senderAddress'>,
+  ownAddress: string | null,
+): boolean {
+  return (
+    conv.kind === 'direct' &&
+    isChainAddress(conv.address) &&
+    !message.outbound &&
+    !sameCanonicalAddress(message.senderAddress, ownAddress) &&
+    !sameCanonicalAddress(message.senderAddress, conv.address)
+  )
+}
+function recordParticipantRequest(
+  conv: Conversation | undefined,
+  request: PendingParticipantRequest,
+): void {
+  if (
+    !conv ||
+    conv.kind !== 'direct' ||
+    conv.deletedAt ||
+    request.receivedAt <=
+      (conv.dismissedParticipantRequests?.[request.senderAddress] ?? -1)
+  )
+    return
+  const existing = conv.pendingParticipantRequests?.[request.senderAddress]
+  if (existing && existing.receivedAt >= request.receivedAt) return
+  conv.pendingParticipantRequests = {
+    ...conv.pendingParticipantRequests,
+    [request.senderAddress]: request,
   }
-  return referencedConv
 }
 
 /** Read-only validation of the new group baseline; never reset or rewrite saved key material. */
@@ -1672,26 +1684,18 @@ export async function rehydrateChat(
     // under the ID it carries, whoever sent it.
     if (existing && message.outbound) assertConversationPeer(existing, peer)
     const id = conversationId!
-    const welcomeItem = message.items?.find(
-      (it): it is GroupWelcomeItem => !!it && it.type === 'group-welcome',
-    )
-    if (welcomeItem && groupConversationUuid(welcomeItem.groupId) === id) {
-      applyGroupWelcomeItem(
-        conversations,
-        welcomeItem,
-        message,
-        messageDestinationAddress(message) ?? null,
-      )
-      continue
-    }
+    if (isGroupConversationId(id) && existing?.kind !== 'group')
+      throw new Error('Unsupported stored group admission format')
     conversations[id] ??= newConversation({
       id,
       address: peer,
       // Restore only persisted peer evidence; hydration must not open custody for self.
       participants: [peer],
-      kind: message.items?.some(item => item.type === 'email')
-        ? 'email'
-        : 'direct',
+      kind:
+        !message.requestedConversationId &&
+        message.items?.some(item => item.type === 'email')
+          ? 'email'
+          : 'direct',
     })
     if (
       message.outbound ||
@@ -1751,29 +1755,39 @@ export async function rehydrateChat(
     }
   }
 
-  // Issue #1365: Redirect unapproved third-party messages targeting established `kind: 'direct'`
-  // conversations before assigning logical message owners, while leaving rows targeting deleted
-  // conversations in place so deleted-conversation suppression handles them identically.
   for (const row of orderedRows) {
-    if (row.internal || !row.conversationId) continue
-    const targetConv = conversations[row.conversationId]
+    const conv = row.conversationId
+      ? conversations[row.conversationId]
+      : undefined
     if (
-      targetConv &&
-      establishedDirectConversations.has(targetConv.id) &&
-      inDeletedConversation(targetConv, row.wrapper.message) !== 'gone' &&
-      isUnapprovedThirdPartyForDirect(targetConv, row.wrapper.message)
-    ) {
-      const ownAddr = messageDestinationAddress(row.wrapper.message) ?? null
-      const redirected = redirectThirdPartyDirectMessage(
-        conversations,
-        targetConv,
-        row.wrapper.message.senderAddress,
-        row.wrapper.index,
-        row.wrapper.message.serverTime ?? row.wrapper.message.receivedTime ?? 0,
-        ownAddr,
+      conv &&
+      !row.internal &&
+      isThirdPartyDirectClaim(
+        conv,
+        row.wrapper.message,
+        messageDestinationAddress(row.wrapper.message) ?? null,
       )
-      row.conversationId = redirected.id
+    )
+      throw new Error(
+        'Unsupported stored direct admission format: original third-party claim requires a persisted local owner',
+      )
+    const requested = row.wrapper.message.requestedConversationId
+    if (requested && conv) {
+      if (
+        conv.kind !== 'direct' ||
+        !sameCanonicalAddress(conv.address, row.wrapper.message.senderAddress)
+      )
+        throw new Error('Invalid persisted participant-request owner')
+      recordParticipantRequest(conversations[requested], {
+        senderAddress: conv.address,
+        senderConversationId: conv.id,
+        referencedConversationId: requested,
+        payloadDigest: row.wrapper.index,
+        receivedAt: row.wrapper.message.serverTime,
+      })
     }
+    if (conv?.kind === 'group' && !row.internal)
+      verifyStoredGroupMessage(conv, row.wrapper.message, row.wrapper.index)
   }
 
   // Two different stored messages that name one message ID never stop the store from loading.
@@ -1871,7 +1885,11 @@ export async function rehydrateChat(
     for (const item of message.items ?? []) {
       applyGroupFeatureItem(conversations, item, message, ownAddr)
     }
-    if (emailItem && speaksForConversation(conv, message)) {
+    if (
+      emailItem &&
+      !message.requestedConversationId &&
+      speaksForConversation(conv, message)
+    ) {
       conv.kind = 'email'
       if (!conv.name && emailItem.subject) {
         conv.name = emailItem.subject
@@ -5123,6 +5141,7 @@ export const useChatStore = defineStore('chats', {
       // Deleted conversations a row of this batch brings back.
       const reopened = new Set<string>()
       const preparedConversations = { ...this.conversations }
+      const participantRequests = new Map<string, PendingParticipantRequest>()
       // One row that cannot be filed must never stop the rest: a refused row is skipped,
       // quarantined so the mailbox cursor moves past it, and reported once.
       const refused: RelayReceiptIdentity[] = []
@@ -5157,32 +5176,51 @@ export const useChatStore = defineStore('chats', {
         if (conv && (loopback || wrapper.outbound))
           assertConversationPeer(conv, peer)
         const existing = this.messages[wrapper.index]
+        if (
+          existing?.conversationId &&
+          id &&
+          existing.conversationId !== id &&
+          existing.requestedConversationId !== id &&
+          !replacedAccountCollisions.has(wrapper.index)
+        ) {
+          throw new Error(
+            'Conversation identity differs from the existing message owner',
+          )
+        }
+        if (
+          !loopback &&
+          !wrapper.outbound &&
+          ((id && isGroupConversationId(id)) ||
+            (conv &&
+              isThirdPartyDirectClaim(conv, wrapper.message, ownAddress)))
+        ) {
+          const sender =
+            safeChainDisplayAddress(wrapper.message.senderAddress) ||
+            wrapper.message.senderAddress
+          conv = openAllocatedConversation(
+            preparedConversations,
+            sender,
+            ownAddress ? [ownAddress, sender] : [sender],
+          )
+          if (id)
+            participantRequests.set(wrapper.index, {
+              senderAddress: sender,
+              senderConversationId: conv.id,
+              referencedConversationId: id,
+              payloadDigest: wrapper.index,
+              receivedAt: wrapper.message.serverTime,
+            })
+        }
         const created = !conv
         if (!conv) {
-          const welcomeItem = wrapper.message.items?.find(
-            (it): it is GroupWelcomeItem => !!it && it.type === 'group-welcome',
-          )
-          if (
-            welcomeItem &&
-            id &&
-            groupConversationUuid(welcomeItem.groupId) === id
-          ) {
-            conv = applyGroupWelcomeItem(
-              preparedConversations,
-              welcomeItem,
-              wrapper.message,
-              ownAddress,
-            )
-          } else {
-            const participants = ownAddress ? [ownAddress, peer] : [peer]
-            conv = id
-              ? newConversation({ id, address: peer, participants })
-              : openAllocatedConversation(
-                  preparedConversations,
-                  peer,
-                  participants,
-                )
-          }
+          const participants = ownAddress ? [ownAddress, peer] : [peer]
+          conv = id
+            ? newConversation({ id, address: peer, participants })
+            : openAllocatedConversation(
+                preparedConversations,
+                peer,
+                participants,
+              )
         }
         // What deleting a conversation means is decided here, before anything is saved: a row
         // that would not be shown is not kept at all.
@@ -5201,43 +5239,6 @@ export const useChatStore = defineStore('chats', {
           if (deleted === 'reopens') reopened.add(conv.id)
         }
         const sender = loopback?.message.senderAddress ?? wrapper.senderAddress
-        // Issue #1365: A `kind: 'direct'` conversation with a chain-address peer has a closed
-        // 2-participant set ({self, peer}). An unapproved third party referencing its ID is
-        // routed to their own 1:1 direct conversation and recorded as a pending request.
-        if (
-          !loopback &&
-          !created &&
-          isUnapprovedThirdPartyForDirect(conv, wrapper.message)
-        ) {
-          const key = wrapper.copartyPubKey?.toBuffer?.()
-          const pubKeyHex = key
-            ? Array.from(key, byte => byte.toString(16).padStart(2, '0')).join(
-                '',
-              )
-            : undefined
-          conv = redirectThirdPartyDirectMessage(
-            preparedConversations,
-            conv,
-            sender,
-            wrapper.index,
-            wrapper.message.serverTime ??
-              wrapper.message.receivedTime ??
-              Date.now(),
-            ownAddress,
-            pubKeyHex,
-          )
-        }
-        if (
-          existing?.conversationId &&
-          id &&
-          existing.conversationId !== conv.id &&
-          existing.conversationId !== id &&
-          !replacedAccountCollisions.has(wrapper.index)
-        ) {
-          throw new Error(
-            'Conversation identity differs from the existing message owner',
-          )
-        }
         const named =
           loopback?.message.logicalMessageId ||
           wrapper.message.logicalMessageId ||
@@ -5344,6 +5345,13 @@ export const useChatStore = defineStore('chats', {
           message: loopback?.message ?? {
             ...wrapper.message,
             conversationId: receivedConversations.get(wrapper.index)!.id,
+            ...(participantRequests.has(wrapper.index)
+              ? {
+                  requestedConversationId: participantRequests.get(
+                    wrapper.index,
+                  )!.referencedConversationId,
+                }
+              : {}),
             logicalMessageId: receivedLogicalIds.get(wrapper.index),
           },
           index: wrapper.index,
@@ -5355,6 +5363,12 @@ export const useChatStore = defineStore('chats', {
         // Mailbox progress is advanced separately, after this durable relay receipt. Never let
         // local/outbound timestamps participate in the recipient-scoped cursor.
         await messageStore.saveMessage(persisted, { advanceCursor: false })
+        const request = participantRequests.get(wrapper.index)
+        if (request)
+          recordParticipantRequest(
+            this.conversations[request.referencedConversationId],
+            request,
+          )
         const collision = replacedAccountCollisions.get(wrapper.index)
         if (loopback && loopback.oldIndex !== wrapper.index) {
           try {
@@ -5519,6 +5533,12 @@ export const useChatStore = defineStore('chats', {
         const message: ChatMessage = {
           ...newMsg,
           payloadDigest: index,
+          ...(participantRequests.has(index)
+            ? {
+                requestedConversationId:
+                  participantRequests.get(index)!.referencedConversationId,
+              }
+            : {}),
           conversationId: conv.id,
           logicalMessageId: receivedLogicalIds.get(index) ?? index,
           revisionDigest: (newMsg as any).revisionDigest || index,
@@ -5560,6 +5580,12 @@ export const useChatStore = defineStore('chats', {
           // Mutate the object so that it triggers reactivity. A loopback is still the outbox
           // message the user sent; only its relay-authored time/stamp metadata is refreshed.
           this.messages[index] = Object.assign(existingMessage, message, {
+            ...(participantRequests.has(index)
+              ? {
+                  requestedConversationId:
+                    participantRequests.get(index)!.referencedConversationId,
+                }
+              : {}),
             outbound: wasOutbound,
             senderAddress,
             conversationId: conv.id,
@@ -5572,7 +5598,7 @@ export const useChatStore = defineStore('chats', {
             conv.messages.push(this.messages[index]!)
           }
           conv.messages.sort(byRelayTime)
-          if (emailItem && speaks) {
+          if (emailItem && speaks && !message.requestedConversationId) {
             conv.kind = 'email'
             if (!conv.name && emailItem.subject) {
               conv.name = emailItem.subject
@@ -5657,7 +5683,7 @@ export const useChatStore = defineStore('chats', {
           )
         }
 
-        if (emailItem && speaks) {
+        if (emailItem && speaks && !message.requestedConversationId) {
           conv.kind = 'email'
           if (!conv.name && emailItem.subject) {
             conv.name = emailItem.subject
@@ -5758,21 +5784,28 @@ export const useChatStore = defineStore('chats', {
       }
       return conv
     },
-    /** Issue #1365: Dismisses a pending third-party participant request banner on a 1:1 conversation. */
     dismissPendingParticipantRequest(
       conversationId: string,
       senderAddress: string,
     ): void {
       const conv = this.conversations[conversationId]
-      if (!conv?.pendingParticipantRequests) return
-      const next = { ...conv.pendingParticipantRequests }
-      for (const key of Object.keys(next)) {
-        if (sameCanonicalAddress(key, senderAddress)) {
-          delete next[key]
-        }
+      const key = Object.keys(conv?.pendingParticipantRequests ?? {}).find(
+        address => sameCanonicalAddress(address, senderAddress),
+      )
+      if (!conv || !key) return
+      const request = conv.pendingParticipantRequests![key]
+      conv.dismissedParticipantRequests = {
+        ...conv.dismissedParticipantRequests,
+        [key]: Math.max(
+          conv.dismissedParticipantRequests?.[key] ?? 0,
+          request.receivedAt,
+        ),
       }
-      conv.pendingParticipantRequests =
-        Object.keys(next).length > 0 ? next : undefined
+      const remaining = { ...conv.pendingParticipantRequests }
+      delete remaining[key]
+      conv.pendingParticipantRequests = Object.keys(remaining).length
+        ? remaining
+        : undefined
     },
     /** Issue #70 & #1365: Whether this device should poll the shared group mailbox for `conversationId`.
      * Never polls while `membershipStatus === 'invited'`, `'declined'`, or `'left'`. */
@@ -5819,16 +5852,28 @@ export const useChatStore = defineStore('chats', {
       const key = `${homeRelayUrl}|${resolvedUrl}|${accountSession.state.revision}`
       const existing = groupRelayClients(this).get(key)
       if (existing) return existing
+      const revision = accountSession.state.revision
+      const account = accountSession.state.account
+      const requireAccount = () => {
+        if (
+          accountSession.state.revision !== revision ||
+          accountSession.state.account !== account
+        )
+          throw new Error('Group relay client account changed')
+      }
       const created = new GroupRelayClient(resolvedUrl, {
         homeRelayUrl,
         subscriberTag: async groupIdHex => {
+          requireAccount()
           const signer = await accountSession.getGroupSigner(groupIdHex, 0)
           const digest = sha256(
             new TextEncoder().encode(
               `frank-group-subscriber-v1:${homeRelayUrl}:${groupIdHex}`,
             ),
           )
-          return bytesToHex(sha256(await signer.signDigest(digest)))
+          const signature = await signer.signDigest(digest)
+          requireAccount()
+          return bytesToHex(sha256(signature))
         },
       })
       groupRelayClients(this).set(key, created)
@@ -6055,6 +6100,8 @@ export const useChatStore = defineStore('chats', {
       if (!conv || conv.kind !== 'group') {
         throw new Error('Group conversation not found')
       }
+      if (address && address !== conv.address)
+        throw new Error('Group conversation address mismatch')
       const checkGroup = captureGroupContext(this, conv)
       if (conv.membershipStatus !== 'joined') {
         throw new Error(
@@ -6135,7 +6182,8 @@ export const useChatStore = defineStore('chats', {
       })
 
       conv.groupState!.pendingMessages ??= {}
-      conv.groupState!.pendingMessages[payloadDigest] = sealed
+      conv.groupState!.pendingMessages[payloadDigest] = true
+      this.messages[payloadDigest]!.groupEnvelope = sealed
       await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
       checkGroup()
       await this.flushPersistence?.()
@@ -6157,10 +6205,12 @@ export const useChatStore = defineStore('chats', {
       relayClient?: GroupRelayClient,
     ): Promise<OutgoingOutcome> {
       const conv = this.conversations[conversationId]
-      const envelope = conv?.groupState?.pendingMessages?.[payloadDigest]
+      const pending = conv?.groupState?.pendingMessages?.[payloadDigest]
       const message = this.messages[payloadDigest]
+      const envelope = message?.groupEnvelope
       if (
         !conv?.groupState ||
+        !pending ||
         !envelope ||
         !message ||
         conv.membershipStatus !== 'joined'
@@ -6191,6 +6241,7 @@ export const useChatStore = defineStore('chats', {
         message.receivedTime = res.server_time_ms
         message.localTime = false
         await this.saveOutgoing(conv.address, payloadDigest, { strict: true })
+        checkGroup()
         delete state.pendingMessages![payloadDigest]
         conv.lastReceived = Math.max(conv.lastReceived ?? 0, res.server_time_ms)
         recomputeChatAccounting(conv, this.activeConversationId)
@@ -6198,6 +6249,9 @@ export const useChatStore = defineStore('chats', {
         await this.flushPersistence?.()
         return { state: 'sent', payloadDigest }
       } catch (error) {
+        checkGroup()
+        state.pendingMessages ??= {}
+        state.pendingMessages[payloadDigest] = true
         message.status = 'error'
         message.delivery = {
           failureReason: 'unreachable',
@@ -6494,6 +6548,12 @@ export const useChatStore = defineStore('chats', {
         }
 
         const chatMsg: ChatMessage = {
+          groupEnvelope: {
+            epoch: row.epoch,
+            nonce: row.nonce,
+            ciphertext: row.ciphertext,
+            write_sig: row.write_sig,
+          },
           outbound: isOutbound,
           status: 'confirmed',
           receivedTime: serverTime,
@@ -6527,9 +6587,6 @@ export const useChatStore = defineStore('chats', {
         if (!conv.messages.some(m => m.payloadDigest === payloadDigest)) {
           conv.messages.push(chatMsg)
           conv.messages.sort(byRelayTime)
-        }
-        if (senderAddress) {
-          addParticipant(conv, senderAddress, opened.senderEpochPubKeyHex)
         }
         conv.lastReceived = Math.max(conv.lastReceived ?? 0, serverTime)
         if (conv.id === this.activeConversationId && !isOutbound) {

@@ -18,9 +18,12 @@ export interface ResendWebhookHttpOptions {
   readonly wkd?: WkdHttpHandlerOptions;
   readonly securePortal?: SecureMessagePortal;
   readonly checkoutServer?: CheckoutServer;
+  readonly relayUrl?: string;
+  readonly mailGatewayDomain?: string;
+  readonly network?: string;
 }
 
-/** Public HTTP ingress for Resend signed webhooks, OpenPGP WKD routes, Secure Message Portal links, and Stripe payment webhooks. */
+/** Public HTTP ingress for Resend signed webhooks, OpenPGP WKD routes, Secure Message Portal links, Stripe payment webhooks, and domain discovery. */
 export class ResendWebhookHttp {
   private server?: Server;
   private ready = false;
@@ -82,6 +85,42 @@ export class ResendWebhookHttp {
     if (incoming.url === '/healthz' && incoming.method === 'GET') {
       incoming.resume();
       outgoing.writeHead(this.ready ? 200 : 503).end();
+      return;
+    }
+    if (incoming.url === '/.well-known/cashweb.json') {
+      incoming.resume();
+      if (incoming.method === 'OPTIONS') {
+        outgoing.writeHead(204, {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, OPTIONS',
+          'cache-control': 'public, max-age=3600',
+        }).end();
+        return;
+      }
+      if (incoming.method !== 'GET') {
+        outgoing.writeHead(405, {
+          'access-control-allow-origin': '*',
+        }).end();
+        return;
+      }
+      const mailGateway =
+        this.options.mailGatewayDomain ??
+        (this.options.importer as { readonly gatewayDomain?: string } | undefined)?.gatewayDomain;
+      const relay =
+        this.options.relayUrl ??
+        (mailGateway ? `https://relay.${mailGateway}` : this.address());
+      const network = this.options.network ?? 'monad-testnet';
+      const body = JSON.stringify({
+        version: 1,
+        relay,
+        ...(mailGateway ? { mail_gateway: mailGateway } : {}),
+        network,
+      });
+      outgoing.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'access-control-allow-origin': '*',
+        'cache-control': 'public, max-age=3600',
+      }).end(body);
       return;
     }
     if (this.wkdHandler && incoming.url && incoming.url.startsWith('/.well-known/openpgpkey/')) {

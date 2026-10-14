@@ -122,6 +122,40 @@ async fn handle_get_peers(Extension(server): Extension<RegistryServer>) -> Json<
     })
 }
 
+/// Domain-level single-record discovery document served at `GET /.well-known/cashweb.json`
+/// (Issue #973). Allows any domain (`signet.mx`, `example.com`) to advertise its authoritative
+/// Cashweb relay and optional mail gateway with O(1) static configuration and zero per-user DNS records.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CashwebWellKnown {
+    /// Schema version (always `1`).
+    pub version: u32,
+    /// Public relay origin URL (e.g. `https://relay.signet.mx`).
+    pub relay: String,
+    /// Optional mail gateway domain (e.g. `signet.mx`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mail_gateway: Option<String>,
+    /// Canonical protocol network identifier (e.g. `monad-testnet`).
+    pub network: String,
+}
+
+async fn handle_get_well_known_cashweb(
+    Extension(well_known): Extension<Arc<CashwebWellKnown>>,
+    headers: HeaderMap,
+) -> Response {
+    let mut response = (
+        [(header::CACHE_CONTROL, "public, max-age=3600")],
+        Json((*well_known).clone()),
+    )
+        .into_response();
+    if !headers.contains_key(header::ORIGIN) {
+        response.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+    }
+    response
+}
+
 #[derive(Deserialize)]
 struct MessagesQuery {
     from: Option<i64>,
@@ -272,6 +306,10 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
             Cow::Borrowed("/directory/v1/:network/:subject/statements/:t1")
         }
         ["relay", "v1", "info"] => Cow::Borrowed("/relay/v1/info"),
+        [".well-known", "cashweb.json"] => Cow::Borrowed("/.well-known/cashweb.json"),
+        ["usernames", _] => Cow::Borrowed("/usernames/:username"),
+        ["directory", "user", _] => Cow::Borrowed("/directory/user/:username"),
+        ["directory", "users"] => Cow::Borrowed("/directory/users"),
         ["oracle", "v1", "feed"] => Cow::Borrowed("/oracle/v1/feed"),
         ["directory", "v1", _, "address", _] => {
             Cow::Borrowed("/directory/v1/:network/address/:address")
@@ -443,7 +481,29 @@ impl RegistryServer {
         let rpc_enabled =
             self.evm_rpc.is_some() || self.bitcoin_proxy.is_some() || self.solana_proxy.is_some();
         let bitcoin_proxy_enabled = self.bitcoin_proxy.is_some();
+        let well_known = Arc::new(match &directory {
+            Some(dir) => CashwebWellKnown {
+                version: 1,
+                relay: dir.info().binding.endpoint.clone(),
+                mail_gateway: dir
+                    .info()
+                    .email_gateway
+                    .as_ref()
+                    .map(|gw| gw.domain.clone()),
+                network: dir.info().network.clone(),
+            },
+            None => CashwebWellKnown {
+                version: 1,
+                relay: self.peers.own_origin().trim_end_matches('/').to_string(),
+                mail_gateway: None,
+                network: "monad-testnet".to_string(),
+            },
+        });
         let router = Router::new()
+            .route(
+                "/.well-known/cashweb.json",
+                routing::get(handle_get_well_known_cashweb),
+            )
             .route("/chains", routing::get(handle_get_chains))
             .route("/peers", routing::get(handle_get_peers))
             .route("/metadata", routing::get(handle_get_metadata_range))
@@ -639,6 +699,7 @@ impl RegistryServer {
             ));
         }
         router
+            .layer(Extension(well_known))
             .layer(Extension(self))
             .layer(
                 CorsLayer::new()
@@ -1257,5 +1318,113 @@ mod spa_tests {
             let body = response_bytes(response).await;
             assert_eq!(std::str::from_utf8(&body).unwrap(), index_html);
         }
+    }
+
+    #[tokio::test]
+    async fn well_known_cashweb_json_serves_cors_and_cache_headers_and_directory_metadata() {
+        let (_db_dir, server) = test_server(None);
+        let router = server.into_router();
+
+        let response = router
+            .oneshot(
+                Request::get("/.well-known/cashweb.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=3600")
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&response_bytes(response).await).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "version": 1,
+                "relay": "http://127.0.0.1:1",
+                "network": "monad-testnet"
+            })
+        );
+
+        let dir_root = TempDir::new("cashweb-registry--well-known-dir").unwrap();
+        let (registry, mut dir_config, clock) =
+            crate::http::directory::tests::setup(dir_root.path());
+        dir_config.endpoint = "https://relay.signet.mx".to_string();
+        dir_config.email_gateway = Some(cashweb_config::EmailGatewayConf {
+            address: "0x1111111111111111111111111111111111111111".to_string(),
+            domain: "signet.mx".to_string(),
+        });
+        let (runtime, ready) = crate::directory_runtime::DirectoryRuntime::start_with_clock(
+            Arc::clone(&registry),
+            dir_config,
+            clock.clock(),
+        )
+        .unwrap();
+        ready.await.unwrap().unwrap();
+
+        let event_bus = registry.event_bus().clone();
+        let server_with_dir = RegistryServer {
+            registry,
+            peers: Arc::new(Peers::new("https://relay.signet.mx".to_string(), vec![])),
+            pop_gate: Arc::new(None),
+            curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: None,
+            solana_proxy: None,
+            spa_dir: None,
+            event_bus,
+        };
+        let router_with_dir =
+            server_with_dir.into_router_with_directory(Some(Arc::new(runtime.clone())));
+
+        let response = router_with_dir
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/.well-known/cashweb.json")
+                    .header("Origin", "https://app.signet.mx")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=3600")
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&response_bytes(response).await).unwrap();
+        assert_eq!(body["version"], 1);
+        assert_eq!(body["relay"], "https://relay.signet.mx");
+        assert_eq!(body["mail_gateway"], "signet.mx");
+        assert_eq!(body["network"], "monad-testnet");
+
+        runtime.begin_shutdown();
+        runtime.wait_stopped().await;
     }
 }

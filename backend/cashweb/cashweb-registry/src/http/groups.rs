@@ -304,6 +304,38 @@ async fn handle_get_group_epoch_store(
     get_group_epoch_impl(store, group_id, query, headers).await
 }
 
+async fn fetch_verified_epoch(
+    client: &reqwest::Client,
+    upstream: &str,
+    group_id: &str,
+    epoch: Option<u64>,
+) -> Result<GroupEpochFrame, GroupError> {
+    let mut url = format!("{upstream}/groups/{group_id}/epochs");
+    if let Some(epoch) = epoch {
+        url.push_str(&format!("?epoch={epoch}"));
+    }
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| GroupError::Storage(format!("upstream epoch fetch failed: {error}")))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| GroupError::Storage(format!("upstream epoch body failed: {error}")))?;
+    let frame: GroupEpochFrame = serde_json::from_slice(&bytes)
+        .map_err(|error| GroupError::Storage(format!("invalid upstream epoch JSON: {error}")))?;
+    let frame = frame.normalized()?;
+    frame.verify_authority(group_id)?;
+    if epoch.is_some_and(|requested| frame.epoch != requested) {
+        return Err(GroupError::Forbidden(
+            "upstream epoch does not match requested epoch".into(),
+        ));
+    }
+    Ok(frame)
+}
+
 async fn get_group_epoch_impl(
     store: GroupStore,
     group_id: String,
@@ -579,13 +611,16 @@ async fn get_group_messages_impl(
 
         // `>= mirror_threshold` local subscribers: Auto-Mirror Promotion!
         // Sync latest epoch & incremental messages from upstream into local `GroupStore`.
-        let epoch_url = format!("{}/groups/{}/epochs", mirror_state.upstream_relay, group_id);
-        let upstream_epoch = match client.get(&epoch_url).send().await {
-            Ok(r) if r.status().is_success() => {
-                let bytes = r.bytes().await.unwrap_or_default();
-                serde_json::from_slice::<GroupEpochFrame>(&bytes).ok()
-            }
-            _ => None,
+        let upstream_epoch = match fetch_verified_epoch(
+            &client,
+            &mirror_state.upstream_relay,
+            &group_id,
+            None,
+        )
+        .await
+        {
+            Ok(frame) => frame,
+            Err(error) => return group_error_response(error),
         };
         let sync_url = format!(
             "{}/groups/{}/messages?after_seq={}&limit=500",
@@ -627,8 +662,36 @@ async fn get_group_messages_impl(
                 )))
             }
         };
+        // Backlogs can span rotations: authenticate each historical write key with its root certificate.
+        let historical_epochs: std::collections::BTreeSet<u64> = synced_batch
+            .messages
+            .iter()
+            .map(|message| message.epoch)
+            .filter(|epoch| *epoch != upstream_epoch.epoch)
+            .collect();
+        for epoch in historical_epochs {
+            match store.get_epoch(&group_id, epoch) {
+                Ok(Some(_)) => continue,
+                Err(error) => return group_error_response(error),
+                Ok(None) => {}
+            }
+            let frame = match fetch_verified_epoch(
+                &client,
+                &mirror_state.upstream_relay,
+                &group_id,
+                Some(epoch),
+            )
+            .await
+            {
+                Ok(frame) => frame,
+                Err(error) => return group_error_response(error),
+            };
+            if let Err(error) = store.ingest_mirrored_upstream(&group_id, Some(frame), &[]) {
+                return group_error_response(error);
+            }
+        }
         if let Err(e) =
-            store.ingest_mirrored_upstream(&group_id, upstream_epoch, &synced_batch.messages)
+            store.ingest_mirrored_upstream(&group_id, Some(upstream_epoch), &synced_batch.messages)
         {
             return group_error_response(e);
         }
@@ -714,20 +777,26 @@ mod tests {
         hex::encode(sig.serialize_compact())
     }
 
+    fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
+        frame.admin_sig = sign_digest(sk, &frame.compute_epoch_hash().unwrap());
+        frame
+    }
+
     #[tokio::test]
     async fn http_epochs_cas_and_sealed_sender_messages_enforce_w_g_e() {
         let store = GroupStore::new_in_memory();
         let app = router_with_store(store);
 
-        let (_, group_pk) = keypair(5);
+        let (group_sk, group_pk) = keypair(5);
         let group_id = hex::encode(derive_group_id(&group_pk));
 
         let (write_sk_0, write_pk_0) = keypair(50);
         let read_token_0 = hex::encode([0x42u8; 32]);
         let read_token_hash_0 = hex::encode(Sha256::digest([0x42u8; 32]));
 
-        let epoch0 = GroupEpochFrame {
+        let mut epoch0 = GroupEpochFrame {
             group_id: group_id.clone(),
+            group_pubkey: hex::encode(group_pk),
             epoch: 0,
             prev_epoch_hash: "00".repeat(32),
             write_pubkey: hex::encode(write_pk_0),
@@ -736,6 +805,26 @@ mod tests {
             admin_sig: "ab".repeat(64),
             epoch_hash: String::new(),
         };
+
+        epoch0.admin_sig = sign_digest(&group_sk, &epoch0.compute_epoch_hash().unwrap());
+
+        // A member's shared write key cannot claim root epoch authority over HTTP.
+        let mut forged_epoch = epoch0.clone();
+        forged_epoch.admin_sig =
+            sign_digest(&write_sk_0, &forged_epoch.compute_epoch_hash().unwrap());
+        let forbidden = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/groups/{group_id}/epochs"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&forged_epoch).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
 
         // 1. PUT /groups/:group_id/epochs (epoch 0) -> 200 OK
         let res = app
@@ -863,7 +952,7 @@ mod tests {
         });
 
         // Create group and 1 message on `Relay_G`
-        let (_, group_pk) = keypair(7);
+        let (group_sk, group_pk) = keypair(7);
         let group_id = hex::encode(derive_group_id(&group_pk));
         let (write_sk, write_pk) = keypair(70);
         let read_token_bytes = [0x77u8; 32];
@@ -873,16 +962,20 @@ mod tests {
         upstream_store
             .put_epoch(
                 &group_id,
-                GroupEpochFrame {
-                    group_id: group_id.clone(),
-                    epoch: 0,
-                    prev_epoch_hash: "00".repeat(32),
-                    write_pubkey: hex::encode(write_pk),
-                    read_token_hash,
-                    encrypted_epoch_descriptor: hex::encode(b"foreign-desc"),
-                    admin_sig: "11".repeat(64),
-                    epoch_hash: String::new(),
-                },
+                signed_epoch(
+                    &group_sk,
+                    GroupEpochFrame {
+                        group_id: group_id.clone(),
+                        group_pubkey: hex::encode(group_pk),
+                        epoch: 0,
+                        prev_epoch_hash: "00".repeat(32),
+                        write_pubkey: hex::encode(write_pk),
+                        read_token_hash,
+                        encrypted_epoch_descriptor: hex::encode(b"foreign-desc"),
+                        admin_sig: "11".repeat(64),
+                        epoch_hash: String::new(),
+                    },
+                ),
             )
             .unwrap();
 
@@ -895,6 +988,40 @@ mod tests {
         };
         env1.write_sig = sign_digest(&write_sk, &env1.signing_digest().unwrap());
         upstream_store.put_message(&group_id, env1).unwrap();
+
+        // Rotate before the home relay first synchronizes, preserving messages in both epochs.
+        let current = upstream_store
+            .get_current_epoch(&group_id)
+            .unwrap()
+            .unwrap();
+        upstream_store
+            .put_epoch(
+                &group_id,
+                signed_epoch(
+                    &group_sk,
+                    GroupEpochFrame {
+                        group_id: group_id.clone(),
+                        group_pubkey: hex::encode(group_pk),
+                        epoch: 1,
+                        prev_epoch_hash: current.epoch_hash,
+                        write_pubkey: hex::encode(write_pk),
+                        read_token_hash: hex::encode(Sha256::digest(read_token_bytes)),
+                        encrypted_epoch_descriptor: hex::encode(b"rotated descriptor"),
+                        admin_sig: String::new(),
+                        epoch_hash: String::new(),
+                    },
+                ),
+            )
+            .unwrap();
+        let mut env2 = GroupMessageEnvelope {
+            group_id: group_id.clone(),
+            epoch: 1,
+            nonce: hex::encode([10u8; 24]),
+            ciphertext: hex::encode(b"after rotation"),
+            write_sig: String::new(),
+        };
+        env2.write_sig = sign_digest(&write_sk, &env2.signing_digest().unwrap());
+        upstream_store.put_message(&group_id, env2).unwrap();
 
         // Create a Home Relay (`Relay_Home`) with `mirror_threshold = 2`
         let home_store = GroupStore::with_mirror_threshold(Arc::new(MemoryKvStore::new()), 2);
@@ -930,7 +1057,7 @@ mod tests {
                 .unwrap();
         assert_eq!(sub1_body.mode, "proxy");
         assert_eq!(sub1_body.subscriber_count, 1);
-        assert_eq!(sub1_body.messages.len(), 1);
+        assert_eq!(sub1_body.messages.len(), 2);
         // Verify `Relay_Home` has NOT mirrored the group into local storage yet
         assert!(home_store.get_current_epoch(&group_id).unwrap().is_none());
 
@@ -963,12 +1090,21 @@ mod tests {
                 .unwrap();
         assert_eq!(sub2_body.mode, "mirrored");
         assert_eq!(sub2_body.subscriber_count, 2);
-        assert_eq!(sub2_body.messages.len(), 1);
+        assert_eq!(sub2_body.messages.len(), 2);
 
         // Verify `Relay_Home` now holds a local mirror of both the epoch metadata and messages!
         assert!(home_store.get_current_epoch(&group_id).unwrap().is_some());
         let mirrored_msgs = home_store.list_messages(&group_id, 0, 10).unwrap();
-        assert_eq!(mirrored_msgs.len(), 1);
+        assert_eq!(mirrored_msgs.len(), 2);
         assert_eq!(mirrored_msgs[0].server_seq, 1);
+        assert!(home_store.get_epoch(&group_id, 0).unwrap().is_some());
+        assert_eq!(
+            home_store
+                .get_current_epoch(&group_id)
+                .unwrap()
+                .unwrap()
+                .epoch,
+            1
+        );
     }
 }

@@ -38,8 +38,6 @@ pub const GROUP_ID_DOMAIN: &[u8] = b"frank-group-v1";
 pub const GROUP_EPOCH_HASH_DOMAIN: &[u8] = b"frank-group-epoch-v1";
 /// Domain separator for outer `write_sig` over `(group_id, epoch, nonce, SHA256(ciphertext))`.
 pub const GROUP_MSG_SIG_DOMAIN: &[u8] = b"frank-group-msg-v1";
-/// Domain separator for `admin_sig` over an epoch transition frame.
-pub const GROUP_EPOCH_ADMIN_SIG_DOMAIN: &[u8] = b"frank-group-epoch-admin-v1";
 
 /// Derive the 32-byte `group_id` from a 33-byte compressed group public key $P_G$:
 /// `SHA256("frank-group-v1" || P_G)`.
@@ -127,6 +125,8 @@ pub fn verify_secp256k1_sig(
 pub struct GroupEpochFrame {
     /// 64-character lowercase hex group identifier (`SHA256("frank-group-v1" || P_G)`).
     pub group_id: String,
+    /// Compressed root public key pinned by `group_id`; only its holder may change epochs.
+    pub group_pubkey: String,
     /// Monotonically increasing epoch counter (`0` for group creation).
     pub epoch: u64,
     /// 64-character lowercase hex hash of epoch `epoch - 1` (`"00"..` for epoch `0`).
@@ -155,6 +155,11 @@ impl GroupEpochFrame {
         } else {
             parse_fixed_hex::<32>(&self.prev_epoch_hash, "prev_epoch_hash")?
         };
+        if self.epoch == 0 && prev_hash_bytes != [0; 32] {
+            return Err(GroupError::InvalidInput(
+                "initial epoch prev_epoch_hash must be zero".into(),
+            ));
+        }
         let write_pk_bytes = parse_fixed_hex::<33>(&self.write_pubkey, "write_pubkey")?;
         // Ensure write_pubkey is a valid compressed secp256k1 point
         PublicKey::from_slice(&write_pk_bytes).map_err(|_| {
@@ -181,12 +186,38 @@ impl GroupEpochFrame {
         Ok(hasher.finalize().into())
     }
 
+    /// Verify the root authority independently of any shared epoch write/read secret.
+    pub fn verify_authority(&self, path_group_id: &str) -> Result<(), GroupError> {
+        let group_id = parse_group_id_hex(path_group_id)?;
+        let root = parse_fixed_hex::<33>(&self.group_pubkey, "group_pubkey")?;
+        if self.group_id != path_group_id || derive_group_id(&root) != group_id {
+            return Err(GroupError::Forbidden(
+                "group root key does not match group_id".into(),
+            ));
+        }
+        let signature_bytes = parse_fixed_hex::<64>(&self.admin_sig, "admin_sig")?;
+        let mut normalized_signature = Signature::from_compact(&signature_bytes)
+            .map_err(|_| GroupError::Forbidden("malformed admin_sig".into()))?;
+        normalized_signature.normalize_s();
+        if normalized_signature.serialize_compact() != signature_bytes
+            || !verify_secp256k1_sig(&root, &self.compute_epoch_hash()?, &signature_bytes)
+        {
+            return Err(GroupError::Forbidden("invalid root admin_sig".into()));
+        }
+        Ok(())
+    }
+
     /// Normalize the frame and populate `epoch_hash`.
     pub fn normalized(mut self) -> Result<Self, GroupError> {
         if self.epoch == 0 && self.prev_epoch_hash.is_empty() {
             self.prev_epoch_hash = "00".repeat(32);
         }
         self.group_id = self.group_id.to_lowercase();
+        self.group_pubkey = self
+            .group_pubkey
+            .strip_prefix("0x")
+            .unwrap_or(&self.group_pubkey)
+            .to_lowercase();
         self.prev_epoch_hash = self
             .prev_epoch_hash
             .strip_prefix("0x")
@@ -228,6 +259,7 @@ impl GroupEpochFrame {
             (5, CborValue::Text(self.encrypted_epoch_descriptor.clone())),
             (6, CborValue::Text(self.admin_sig.clone())),
             (7, CborValue::Text(self.epoch_hash.clone())),
+            (8, CborValue::Text(self.group_pubkey.clone())),
         ]);
         encode_canonical(&val).map_err(|e| GroupError::Storage(e.to_string()))
     }
@@ -239,6 +271,7 @@ impl GroupEpochFrame {
             return Err(GroupError::InvalidInput("expected CBOR map".into()));
         };
         let mut group_id = None;
+        let mut group_pubkey = None;
         let mut epoch = None;
         let mut prev_epoch_hash = String::new();
         let mut write_pubkey = None;
@@ -249,6 +282,8 @@ impl GroupEpochFrame {
 
         for (k, v) in entries {
             match (k, v) {
+                (8, CborValue::Text(s)) => group_pubkey = Some(s),
+                (8, CborValue::Bytes(b)) => group_pubkey = Some(hex::encode(b)),
                 (0, CborValue::Text(s)) => group_id = Some(s),
                 (0, CborValue::Bytes(b)) => group_id = Some(hex::encode(b)),
                 (1, CborValue::Int(n)) if n >= 0 => epoch = u64::try_from(n).ok(),
@@ -268,6 +303,8 @@ impl GroupEpochFrame {
             }
         }
         let frame = Self {
+            group_pubkey: group_pubkey
+                .ok_or_else(|| GroupError::InvalidInput("missing group_pubkey".into()))?,
             group_id: group_id
                 .ok_or_else(|| GroupError::InvalidInput("missing group_id".into()))?,
             epoch: epoch.ok_or_else(|| GroupError::InvalidInput("missing epoch".into()))?,
@@ -568,55 +605,41 @@ impl GroupStore {
             ));
         }
 
+        frame.verify_authority(path_group_id)?;
         let m_key = meta_key(&group_id);
         let current_raw = self.kv.get(&m_key)?;
         let encoded_new = frame.to_cbor_bytes()?;
 
-        match (frame.epoch, current_raw) {
-            (0, None) => {
-                if let Err(KvError::CasConflict {
-                    current: Some(winner_bytes),
-                }) = self.kv.compare_and_swap(&m_key, None, &encoded_new)
+        let expected = match (frame.epoch, current_raw.as_deref()) {
+            (0, None) => None,
+            (_, Some(existing)) => {
+                let current = GroupEpochFrame::from_cbor_bytes(existing)?;
+                if frame.epoch == 0
+                    || current.epoch.checked_add(1) != Some(frame.epoch)
+                    || frame.prev_epoch_hash != current.epoch_hash
                 {
-                    let current = GroupEpochFrame::from_cbor_bytes(&winner_bytes)?;
                     return Err(GroupError::EpochConflict {
                         current: Box::new(current),
                     });
                 }
-            }
-            (0, Some(existing_bytes)) => {
-                let current = GroupEpochFrame::from_cbor_bytes(&existing_bytes)?;
-                return Err(GroupError::EpochConflict {
-                    current: Box::new(current),
-                });
+                Some(existing)
             }
             (_, None) => {
                 return Err(GroupError::InvalidInput(
                     "initial group epoch must be 0".into(),
-                ));
+                ))
             }
-            (e, Some(existing_bytes)) => {
-                let current = GroupEpochFrame::from_cbor_bytes(&existing_bytes)?;
-                if current.epoch + 1 != e || frame.prev_epoch_hash != current.epoch_hash {
-                    return Err(GroupError::EpochConflict {
-                        current: Box::new(current),
-                    });
-                }
-                if let Err(KvError::CasConflict {
-                    current: winner_opt,
-                }) = self
-                    .kv
-                    .compare_and_swap(&m_key, Some(&existing_bytes), &encoded_new)
-                {
-                    let winner = match winner_opt {
-                        Some(bytes) => GroupEpochFrame::from_cbor_bytes(&bytes)?,
-                        None => current,
-                    };
-                    return Err(GroupError::EpochConflict {
-                        current: Box::new(winner),
-                    });
-                }
+        };
+        match self.kv.compare_and_swap(&m_key, expected, &encoded_new) {
+            Ok(()) => {}
+            Err(KvError::CasConflict {
+                current: Some(winner),
+            }) => {
+                return Err(GroupError::EpochConflict {
+                    current: Box::new(GroupEpochFrame::from_cbor_bytes(&winner)?),
+                });
             }
+            Err(error) => return Err(error.into()),
         }
 
         self.kv
@@ -822,19 +845,82 @@ impl GroupStore {
         messages: &[StoredGroupMessage],
     ) -> Result<u64, GroupError> {
         let group_id = parse_group_id_hex(group_id_hex)?;
+        // Validate the complete batch before allowing an upstream response to alter local state.
+        let epoch_frame = epoch_frame.map(GroupEpochFrame::normalized).transpose()?;
+        if let Some(frame) = &epoch_frame {
+            frame.verify_authority(group_id_hex)?;
+        }
+        for message in messages {
+            if message.group_id != group_id_hex || message.server_seq == 0 {
+                return Err(GroupError::Forbidden(
+                    "invalid mirrored message affinity or sequence".into(),
+                ));
+            }
+            let cert = match &epoch_frame {
+                Some(frame) if frame.epoch == message.epoch => frame.clone(),
+                _ => self
+                    .get_epoch(group_id_hex, message.epoch)?
+                    .ok_or_else(|| {
+                        GroupError::Forbidden("missing mirrored message epoch certificate".into())
+                    })?,
+            };
+            cert.verify_authority(group_id_hex)?;
+            let envelope = GroupMessageEnvelope {
+                group_id: message.group_id.clone(),
+                epoch: message.epoch,
+                nonce: message.nonce.clone(),
+                ciphertext: message.ciphertext.clone(),
+                write_sig: message.write_sig.clone(),
+            };
+            let signature = parse_var_hex(&message.write_sig, "write_sig", 73)?;
+            let key = parse_fixed_hex::<33>(&cert.write_pubkey, "write_pubkey")?;
+            if !verify_secp256k1_sig(&key, &envelope.signing_digest()?, &signature) {
+                return Err(GroupError::Forbidden(
+                    "invalid mirrored message write_sig".into(),
+                ));
+            }
+        }
         if let Some(frame) = epoch_frame {
-            let normalized = frame.normalized()?;
-            let encoded = normalized.to_cbor_bytes()?;
-            self.kv.put(&meta_key(&group_id), &encoded)?;
-            self.kv
-                .put(&epoch_history_key(&group_id, normalized.epoch), &encoded)?;
+            let encoded = frame.to_cbor_bytes()?;
+            // A delayed upstream response must never roll the active authority/read token backwards.
+            loop {
+                let current_raw = self.kv.get(&meta_key(&group_id))?;
+                if let Some(raw) = &current_raw {
+                    let current = GroupEpochFrame::from_cbor_bytes(raw)?;
+                    if current.epoch >= frame.epoch {
+                        if current.epoch == frame.epoch && current.epoch_hash != frame.epoch_hash {
+                            return Err(GroupError::EpochConflict {
+                                current: Box::new(current),
+                            });
+                        }
+                        break;
+                    }
+                }
+                match self.kv.compare_and_swap(
+                    &meta_key(&group_id),
+                    current_raw.as_deref(),
+                    &encoded,
+                ) {
+                    Ok(()) => break,
+                    Err(KvError::CasConflict { .. }) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            match self.kv.compare_and_swap(
+                &epoch_history_key(&group_id, frame.epoch),
+                None,
+                &encoded,
+            ) {
+                Ok(()) => {}
+                Err(KvError::CasConflict {
+                    current: Some(existing),
+                }) if existing == encoded => {}
+                Err(error) => return Err(error.into()),
+            }
         }
 
         let mut max_seq = 0u64;
         for msg in messages {
-            if msg.group_id != group_id_hex {
-                continue;
-            }
             let serialized =
                 serde_json::to_vec(msg).map_err(|e| GroupError::Storage(e.to_string()))?;
             self.kv
@@ -938,18 +1024,218 @@ mod tests {
         hex::encode(sig.serialize_compact())
     }
 
+    fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
+        frame.admin_sig = sign_digest(sk, &frame.compute_epoch_hash().unwrap());
+        frame
+    }
+
+    fn root_frame(seed: u8, epoch: u64, previous: &str) -> GroupEpochFrame {
+        let (root_sk, root_pk) = keypair(seed);
+        let (_, write_pk) = keypair(42);
+        signed_epoch(
+            &root_sk,
+            GroupEpochFrame {
+                group_id: hex::encode(derive_group_id(&root_pk)),
+                group_pubkey: hex::encode(root_pk),
+                epoch,
+                prev_epoch_hash: previous.to_string(),
+                write_pubkey: hex::encode(write_pk),
+                read_token_hash: hex::encode(Sha256::digest([epoch as u8; 32])),
+                encrypted_epoch_descriptor: hex::encode(b"encrypted roster"),
+                admin_sig: String::new(),
+                epoch_hash: String::new(),
+            },
+        )
+    }
+
+    #[derive(Debug)]
+    struct FailingCasKv(Arc<MemoryKvStore>);
+
+    impl RelayKvStore for FailingCasKv {
+        fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
+            self.0.get(key)
+        }
+        fn put(&self, key: &[u8], value: &[u8]) -> Result<(), KvError> {
+            self.0.put(key, value)
+        }
+        fn delete(&self, key: &[u8]) -> Result<(), KvError> {
+            self.0.delete(key)
+        }
+        fn compare_and_swap(&self, _: &[u8], _: Option<&[u8]>, _: &[u8]) -> Result<(), KvError> {
+            Err(KvError::Backend("injected CAS outage".into()))
+        }
+        fn put_versionstamped(
+            &self,
+            prefix: &[u8],
+            suffix: &[u8],
+            value: &[u8],
+        ) -> Result<(Vec<u8>, crate::store::kv_store::Versionstamp), KvError> {
+            self.0.put_versionstamped(prefix, suffix, value)
+        }
+        fn scan_prefix_range(
+            &self,
+            prefix: &[u8],
+            cursor: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+            self.0.scan_prefix_range(prefix, cursor, limit)
+        }
+    }
+
+    #[test]
+    fn epoch_cas_backend_failures_are_not_reported_as_successful_creation_or_rotation() {
+        let kv = Arc::new(MemoryKvStore::new());
+        let healthy = GroupStore::new(kv.clone());
+        let failing = GroupStore::new(Arc::new(FailingCasKv(kv)));
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        assert!(matches!(
+            failing.put_epoch(&id, initial.clone()),
+            Err(GroupError::Storage(_))
+        ));
+        assert!(healthy.get_current_epoch(&id).unwrap().is_none());
+        assert!(healthy.get_epoch(&id, 0).unwrap().is_none());
+        let committed = healthy.put_epoch(&id, initial).unwrap();
+        let next = root_frame(3, 1, &committed.epoch_hash);
+        assert!(matches!(
+            failing.put_epoch(&id, next),
+            Err(GroupError::Storage(_))
+        ));
+        assert_eq!(healthy.get_current_epoch(&id).unwrap().unwrap(), committed);
+        assert!(healthy.get_epoch(&id, 1).unwrap().is_none());
+    }
+
+    #[test]
+    fn epoch_authority_rejects_forgery_and_binds_all_mutable_fields() {
+        let store = GroupStore::new_in_memory();
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        let (write_sk, _) = keypair(42);
+        let mut forged_creation = initial.clone();
+        forged_creation.admin_sig = sign_digest(&write_sk, &initial.compute_epoch_hash().unwrap());
+        assert!(matches!(
+            store.put_epoch(&id, forged_creation),
+            Err(GroupError::Forbidden(_))
+        ));
+        assert!(store.get_current_epoch(&id).unwrap().is_none());
+        let committed = store.put_epoch(&id, initial.clone()).unwrap();
+        assert_eq!(
+            GroupEpochFrame::from_cbor_bytes(&committed.to_cbor_bytes().unwrap()).unwrap(),
+            committed
+        );
+        let next = root_frame(3, 1, &committed.epoch_hash);
+        let (attacker_sk, attacker_pk) = keypair(99);
+        for signer in [&write_sk, &attacker_sk] {
+            let mut forged = next.clone();
+            forged.admin_sig = sign_digest(signer, &forged.compute_epoch_hash().unwrap());
+            assert!(matches!(
+                store.put_epoch(&id, forged),
+                Err(GroupError::Forbidden(_))
+            ));
+        }
+        let mut replaced_root = next.clone();
+        replaced_root.group_pubkey = hex::encode(attacker_pk);
+        replaced_root.admin_sig = sign_digest(&attacker_sk, &next.compute_epoch_hash().unwrap());
+        assert!(matches!(
+            store.put_epoch(&id, replaced_root),
+            Err(GroupError::Forbidden(_))
+        ));
+        let mut mutations = vec![next.clone(); 5];
+        mutations[0].write_pubkey = hex::encode(attacker_pk);
+        mutations[1].read_token_hash = "01".repeat(32);
+        mutations[2].encrypted_epoch_descriptor = hex::encode(b"attacker roster");
+        mutations[3].prev_epoch_hash = "01".repeat(32);
+        mutations[4].epoch = 2;
+        for mutated in mutations {
+            assert!(matches!(
+                store.put_epoch(&id, mutated),
+                Err(GroupError::Forbidden(_))
+            ));
+            assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), committed);
+        }
+        // Signature malleability is rejected, rather than normalized into an accepted certificate.
+        let mut high_s = next.clone();
+        let mut signature = hex::decode(&high_s.admin_sig).unwrap();
+        let order = hex::decode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141")
+            .unwrap();
+        let mut borrow = 0i16;
+        for index in (0..32).rev() {
+            let difference = order[index] as i16 - signature[32 + index] as i16 - borrow;
+            signature[32 + index] = difference.rem_euclid(256) as u8;
+            borrow = if difference < 0 { 1 } else { 0 };
+        }
+        high_s.admin_sig = hex::encode(signature);
+        assert!(matches!(
+            store.put_epoch(&id, high_s),
+            Err(GroupError::Forbidden(_))
+        ));
+        assert_eq!(store.put_epoch(&id, next).unwrap().epoch, 1);
+        let mut malformed_initial = initial;
+        malformed_initial.prev_epoch_hash = "01".repeat(32);
+        assert!(malformed_initial.compute_epoch_hash().is_err());
+    }
+
+    #[test]
+    fn mirror_rejects_poisoned_certificates_messages_and_epoch_rollback() {
+        let store = GroupStore::new_in_memory();
+        let epoch0 = root_frame(4, 0, &"00".repeat(32)).normalized().unwrap();
+        let id = epoch0.group_id.clone();
+        let mut poisoned = epoch0.clone();
+        poisoned.encrypted_epoch_descriptor = hex::encode(b"forged roster");
+        assert!(store
+            .ingest_mirrored_upstream(&id, Some(poisoned), &[])
+            .is_err());
+        assert!(store.get_current_epoch(&id).unwrap().is_none());
+        let epoch1 = root_frame(4, 1, &epoch0.epoch_hash).normalized().unwrap();
+        store
+            .ingest_mirrored_upstream(&id, Some(epoch1.clone()), &[])
+            .unwrap();
+        store
+            .ingest_mirrored_upstream(&id, Some(epoch0), &[])
+            .unwrap();
+        assert_eq!(store.get_current_epoch(&id).unwrap().unwrap(), epoch1);
+        let source = GroupStore::new_in_memory();
+        let source_epoch = root_frame(4, 0, &"00".repeat(32));
+        source.put_epoch(&id, source_epoch).unwrap();
+        let (write_sk, _) = keypair(42);
+        let mut envelope = GroupMessageEnvelope {
+            group_id: id.clone(),
+            epoch: 0,
+            nonce: "01".repeat(24),
+            ciphertext: hex::encode(b"valid ciphertext"),
+            write_sig: String::new(),
+        };
+        envelope.write_sig = sign_digest(&write_sk, &envelope.signing_digest().unwrap());
+        let message = source.put_message(&id, envelope).unwrap();
+        let mut forged = message.clone();
+        forged.ciphertext = hex::encode(b"forged ciphertext");
+        assert!(store
+            .ingest_mirrored_upstream(&id, None, &[message.clone(), forged])
+            .is_err());
+        assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
+        let wrong_id = root_frame(5, 0, &"00".repeat(32)).group_id;
+        assert!(store
+            .ingest_mirrored_upstream(&wrong_id, Some(epoch1), &[])
+            .is_err());
+        store
+            .ingest_mirrored_upstream(&id, None, &[message])
+            .unwrap();
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 1);
+    }
+
     #[test]
     fn epoch_cas_enforces_monotonicity_and_rejects_concurrent_collision_with_current_frame() {
         let store = GroupStore::new_in_memory();
-        let (_, group_pk) = keypair(1);
+        let (group_sk, group_pk) = keypair(1);
         let group_id = hex::encode(derive_group_id(&group_pk));
 
         let (_, write_pk_0) = keypair(10);
         let read_token_0 = [0xaa; 32];
         let read_token_hash_0 = hex::encode(Sha256::digest(read_token_0));
 
-        let epoch0 = GroupEpochFrame {
+        let mut epoch0 = GroupEpochFrame {
             group_id: group_id.clone(),
+            group_pubkey: hex::encode(group_pk),
             epoch: 0,
             prev_epoch_hash: "00".repeat(32),
             write_pubkey: hex::encode(write_pk_0),
@@ -959,6 +1245,7 @@ mod tests {
             epoch_hash: String::new(),
         };
 
+        epoch0.admin_sig = sign_digest(&group_sk, &epoch0.compute_epoch_hash().unwrap());
         let committed_0 = store.put_epoch(&group_id, epoch0.clone()).unwrap();
         assert_eq!(committed_0.epoch, 0);
         assert_eq!(committed_0.epoch_hash.len(), 64);
@@ -974,8 +1261,9 @@ mod tests {
 
         // Advance to epoch 1 with valid prev_epoch_hash
         let (_, write_pk_1) = keypair(11);
-        let epoch1 = GroupEpochFrame {
+        let mut epoch1 = GroupEpochFrame {
             group_id: group_id.clone(),
+            group_pubkey: hex::encode(group_pk),
             epoch: 1,
             prev_epoch_hash: committed_0.epoch_hash.clone(),
             write_pubkey: hex::encode(write_pk_1),
@@ -984,6 +1272,7 @@ mod tests {
             admin_sig: "22".repeat(64),
             epoch_hash: String::new(),
         };
+        epoch1.admin_sig = sign_digest(&group_sk, &epoch1.compute_epoch_hash().unwrap());
         let committed_1 = store.put_epoch(&group_id, epoch1.clone()).unwrap();
         assert_eq!(committed_1.epoch, 1);
 
@@ -1000,7 +1289,7 @@ mod tests {
     #[test]
     fn group_messages_enforce_epoch_write_key_and_reject_kicked_or_outsider_keys() {
         let store = GroupStore::new_in_memory();
-        let (_, group_pk) = keypair(2);
+        let (group_sk, group_pk) = keypair(2);
         let group_id = hex::encode(derive_group_id(&group_pk));
 
         let (write_sk_0, write_pk_0) = keypair(20);
@@ -1008,16 +1297,20 @@ mod tests {
         let epoch0 = store
             .put_epoch(
                 &group_id,
-                GroupEpochFrame {
-                    group_id: group_id.clone(),
-                    epoch: 0,
-                    prev_epoch_hash: "00".repeat(32),
-                    write_pubkey: hex::encode(write_pk_0),
-                    read_token_hash: hex::encode(Sha256::digest(read_token_0)),
-                    encrypted_epoch_descriptor: hex::encode(b"desc0"),
-                    admin_sig: "11".repeat(64),
-                    epoch_hash: String::new(),
-                },
+                signed_epoch(
+                    &group_sk,
+                    GroupEpochFrame {
+                        group_id: group_id.clone(),
+                        group_pubkey: hex::encode(group_pk),
+                        epoch: 0,
+                        prev_epoch_hash: "00".repeat(32),
+                        write_pubkey: hex::encode(write_pk_0),
+                        read_token_hash: hex::encode(Sha256::digest(read_token_0)),
+                        encrypted_epoch_descriptor: hex::encode(b"desc0"),
+                        admin_sig: "11".repeat(64),
+                        epoch_hash: String::new(),
+                    },
+                ),
             )
             .unwrap();
 
@@ -1053,16 +1346,20 @@ mod tests {
         store
             .put_epoch(
                 &group_id,
-                GroupEpochFrame {
-                    group_id: group_id.clone(),
-                    epoch: 1,
-                    prev_epoch_hash: epoch0.epoch_hash,
-                    write_pubkey: hex::encode(write_pk_1),
-                    read_token_hash: hex::encode(Sha256::digest([0xdd; 32])),
-                    encrypted_epoch_descriptor: hex::encode(b"desc1"),
-                    admin_sig: "22".repeat(64),
-                    epoch_hash: String::new(),
-                },
+                signed_epoch(
+                    &group_sk,
+                    GroupEpochFrame {
+                        group_id: group_id.clone(),
+                        group_pubkey: hex::encode(group_pk),
+                        epoch: 1,
+                        prev_epoch_hash: epoch0.epoch_hash,
+                        write_pubkey: hex::encode(write_pk_1),
+                        read_token_hash: hex::encode(Sha256::digest([0xdd; 32])),
+                        encrypted_epoch_descriptor: hex::encode(b"desc1"),
+                        admin_sig: "22".repeat(64),
+                        epoch_hash: String::new(),
+                    },
+                ),
             )
             .unwrap();
 

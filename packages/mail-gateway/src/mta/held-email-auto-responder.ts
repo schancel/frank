@@ -721,8 +721,10 @@ export class HeldEmailAutoResponder {
     }
     try {
       await this.port.submit({
-        // RFC 3834: automatic responses use a null SMTP reverse path.
-        fromAddress: '',
+        // RFC 3834 section 3.3 permits a dedicated nonresponding sender.
+        // Resend rejects a null MAIL FROM; operational postmaster ingress never
+        // enters the unpaid held-mail challenge path.
+        fromAddress: rendered.fromAddress,
         recipientEmail: rendered.recipientEmail,
         signedRfc822: rendered.rawRfc822,
       });

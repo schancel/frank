@@ -24,6 +24,7 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
   let directory: Awaited<ReturnType<typeof openGatewayDirectory>> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let activePass: Promise<void> | undefined;
+  let activeAutoReplyPass: Promise<void> | undefined;
   let closed = false;
   try {
     const mailboxSalt = opened.replyAliasSalt();
@@ -64,7 +65,16 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
     await host.webhook.start();
     if (config.nativeSmtp) await host.smtp!.start(config.nativeSmtp.port, config.nativeSmtp.host);
     timer = setInterval(() => {
-      if (activePass || closed) return;
+      if (closed) return;
+      // Challenge delivery is optional notification work, independent of wallet
+      // recovery/readiness. An unknown SMTP acceptance remains fenced in its
+      // own journal and must neither crash ingress nor stop financial recovery.
+      if (!activeAutoReplyPass) {
+        activeAutoReplyPass = host!.inbound.sendPendingHeldAutoReplies().catch(() => {
+          process.stderr.write('Held auto-reply dispatch has unresolved failures; reconcile challenge attempts\n');
+        }).finally(() => { activeAutoReplyPass = undefined; });
+      }
+      if (activePass) return;
       activePass = host!.runtime.runOnce().then(() => {
         if (!closed) {
           host!.webhook.setReady(true);
@@ -83,7 +93,7 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
         if (timer) clearInterval(timer);
         host!.webhook.setReady(false);
         host!.smtp?.setReady(false);
-        await activePass;
+        await Promise.all([activePass, activeAutoReplyPass]);
         try { await host!.close(); }
         finally {
           try { await directory!.close(); }

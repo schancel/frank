@@ -21,6 +21,9 @@
  * for this file's own tests.
  */
 import DOMPurify from 'dompurify'
+import * as markedModule from 'marked'
+import { marked } from 'marked'
+import { addressMentionTokens } from './address-mentions'
 import { renderMarkdown, purify, clearMarkdownCache } from './markdown'
 import {
   markdownPlainText,
@@ -490,5 +493,42 @@ describe('markdownPlainText (the chat list preview and notifications)', () => {
     expect(formatSnippet(pluginText)).toBe(
       'Looking forward to our meeting tomorrow.',
     )
+  })
+})
+
+describe('installed Marked public API', () => {
+  it('uses the same runtime lexer, parser, renderer and defaults', () => {
+    expect(marked.lexer).toBe(markedModule.lexer)
+    expect(marked.parser).toBe(markedModule.parser)
+    expect(marked.Renderer).toBe(markedModule.Renderer)
+    expect(marked.defaults).toBe(markedModule.defaults)
+  })
+
+  it('projects actual sanitized text tags without assuming nested tokens', () => {
+    const savedOptions = { ...marked.defaults }
+    const address = '0x' + 'a'.repeat(40)
+    const input = `<span>hello</span> @${address}`
+    try {
+      marked.setOptions({ sanitize: true })
+      let tag: marked.Token | undefined
+      marked.walkTokens(marked.lexer(input), token => {
+        if (token.type === 'text' && 'inRawBlock' in token) tag = token
+      })
+      expect(tag).toMatchObject({
+        type: 'text',
+        raw: input,
+        inLink: false,
+        inRawBlock: false,
+      })
+      expect(tag).not.toHaveProperty('tokens')
+      expect(addressMentionTokens(input, {}).addresses).toEqual([address])
+      const html = renderMarkdown(input, false, false, [], {})
+      expect(html).toContain('&lt;span&gt;hello&lt;/span&gt;')
+      expect(html).toContain(`href="/chat/${address}?info=true"`)
+      expect(markdownPlainText(input)).toContain('hello')
+    } finally {
+      marked.setOptions(savedOptions)
+      clearMarkdownCache()
+    }
   })
 })

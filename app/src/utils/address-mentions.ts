@@ -1,4 +1,4 @@
-import * as marked from 'marked'
+import { marked } from 'marked'
 
 const escapeHtml = (text: string) =>
   text
@@ -101,7 +101,7 @@ export function addressMentionTokens(
           break
         }
         case 'text':
-          if (Array.isArray(token.tokens))
+          if ('tokens' in token && Array.isArray(token.tokens))
             output.push({ ...token, tokens: visit(token.tokens) })
           else output.push(...textTokens(token.text))
           break

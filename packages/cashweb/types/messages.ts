@@ -827,6 +827,8 @@ export interface BlobManifest {
   mimeType?: string
   fileName?: string
   targetItemIndex?: number
+  /** Exact attachment slot within the targeted email item; filenames are presentation. */
+  targetAttachmentIndex?: number
   originRelayHint?: string
 }
 

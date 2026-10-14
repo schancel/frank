@@ -1,3 +1,4 @@
+import { MAX_EMAIL_ATTACHMENTS } from '@frank/codec'
 import type { BlobManifestItem } from '@frank/cashweb/types/messages'
 
 import {
@@ -30,5 +31,6 @@ export const blobManifestCodec = cborItemCodec<BlobManifestItem>(
     fileName: opt(8, str(256, 1)),
     targetItemIndex: opt(9, int(0, 255)),
     originRelayHint: opt(10, str(512, 1)),
+    targetAttachmentIndex: opt(11, int(0, MAX_EMAIL_ATTACHMENTS - 1)),
   },
 )

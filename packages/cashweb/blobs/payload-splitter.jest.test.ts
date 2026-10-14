@@ -1,3 +1,4 @@
+import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { sha256 } from '@noble/hashes/sha256'
 import { toHex } from '@frank/codec'
 
@@ -40,6 +41,28 @@ function deterministicBytes(length: number, seed = 1): Uint8Array {
   return out
 }
 
+function wireRoundtrip(items: MessageItem[]): MessageItem[] {
+  const registry = createDefaultMessageItemRegistry(
+    pluginCapabilitiesNotYetAvailable,
+  )
+  const revision = validateFrame(
+    encodeFrame(
+      { typeId: 20, schemaVersion: 1, minReaderVersion: 1 },
+      new Map<number, Encodable>([
+        [0, 'frank'],
+        [1, encodeItemFrames(registry, items)],
+      ]),
+    ),
+  )
+  if (revision.kind !== 'parsed' || revision.typed?.type !== 20)
+    throw new Error('expected revision')
+  return decodeItemFrames(
+    registry,
+    revision.typed.items,
+    standaloneItemBudget(),
+  )
+}
+
 describe('payload-splitter: transparent payload splitting & encrypted Merkle chunks', () => {
   it('keeps payloads <= 32 KB inline without generating chunks or a manifest', () => {
     const exactThreshold = deterministicBytes(INLINE_PAYLOAD_THRESHOLD_BYTES, 7)
@@ -78,9 +101,7 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
         CHUNK_PLAINTEXT_SIZE_BYTES + 16,
       )
     }
-    expect(split.encryptedChunks[4].ciphertext.byteLength).toBe(
-      100 * 1024 + 16,
-    )
+    expect(split.encryptedChunks[4].ciphertext.byteLength).toBe(100 * 1024 + 16)
     for (let i = 0; i < 5; i += 1) {
       expect(toHex(sha256(split.encryptedChunks[i].ciphertext))).toBe(
         manifest.chunkHashes[i],
@@ -104,6 +125,49 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
     expect(reassembled).toEqual(original)
     expect(seenHints).toEqual(Array(5).fill('https://relay-a.example.org'))
   })
+
+  it.each([
+    {
+      declaredTotal: 4,
+      chunkSize: 1,
+      lengths: [524288, 524288, 524288, 524288],
+      fetches: 1,
+    },
+    { declaredTotal: 3, chunkSize: 2, lengths: [2, 2], fetches: 2 },
+    { declaredTotal: 4, chunkSize: 2, lengths: [1, 3], fetches: 1 },
+  ])(
+    'rejects authenticated chunks outside declared bounds before fetching further: $lengths',
+    async ({ declaredTotal, chunkSize, lengths, fetches }) => {
+      const key = new Uint8Array(32)
+      const nonce = new Uint8Array(24)
+      const root = '00'.repeat(32)
+      const ciphertexts = lengths.map((length, index) =>
+        xchacha20poly1305(
+          key,
+          deriveChunkNonce(nonce, index),
+          buildChunkAad(root, index),
+        ).encrypt(new Uint8Array(length)),
+      )
+      const manifest: BlobManifest = {
+        version: 1,
+        rootPlaintextSha256: root,
+        totalPlaintextBytes: declaredTotal,
+        chunkSize,
+        symmetricKeyHex: toHex(key),
+        baseNonceHex: toHex(nonce),
+        chunkHashes: ciphertexts.map(bytes => toHex(sha256(bytes))),
+      }
+      const [decoded] = wireRoundtrip([{ type: 'blob-manifest', ...manifest }])
+      if (decoded.type !== 'blob-manifest') throw new Error('expected manifest')
+      const fetchChunk = jest.fn(
+        async (hash: string) => ciphertexts[manifest.chunkHashes.indexOf(hash)],
+      )
+      await expect(reassembleSplitPayload(decoded, fetchChunk)).rejects.toThrow(
+        /Chunk ciphertext byte length mismatch/,
+      )
+      expect(fetchChunk).toHaveBeenCalledTimes(fetches)
+    },
+  )
 
   it('derives distinct per-chunk nonces and AAD bindings for each chunk index', () => {
     const baseNonce = new Uint8Array(24).fill(0xaa)
@@ -153,7 +217,9 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
     }
     await expect(
       reassembleSplitPayload(swappedManifest, async hash => store.get(hash)!),
-    ).rejects.toThrow(/Chunk XChaCha20-Poly1305 authentication failed at index 0/)
+    ).rejects.toThrow(
+      /Chunk XChaCha20-Poly1305 authentication failed at index 0/,
+    )
 
     // Tamper with rootPlaintextSha256 in the manifest: AAD binds rootPlaintextSha256, so AEAD
     // authentication rejects the chunk immediately!
@@ -162,8 +228,13 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
       rootPlaintextSha256: 'ff'.repeat(32),
     }
     await expect(
-      reassembleSplitPayload(forgedRootManifest, async hash => store.get(hash)!),
-    ).rejects.toThrow(/Chunk XChaCha20-Poly1305 authentication failed at index 0/)
+      reassembleSplitPayload(
+        forgedRootManifest,
+        async hash => store.get(hash)!,
+      ),
+    ).rejects.toThrow(
+      /Chunk XChaCha20-Poly1305 authentication failed at index 0/,
+    )
   })
 
   it('automatically splits large image, email attachment, and attachment items for send and rehydrates via Home Relay', async () => {
@@ -228,8 +299,7 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
       { fetch: mockFetch },
     )
 
-    const largeImageUri =
-      'data:image/png;base64,' + 'A'.repeat(40 * 1024)
+    const largeImageUri = 'data:image/png;base64,' + 'A'.repeat(40 * 1024)
     const smallImageUri = 'data:image/png;base64,AAAA'
     const largePdfBytes = deterministicBytes(300 * 1024, 55)
 
@@ -331,6 +401,120 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
     ).toEqual(largePdfBytes)
   })
 
+  it('preserves duplicate-filename attachment slots, including empty attachments, through canonical wire rehydration', async () => {
+    const contents = [
+      new Uint8Array(0),
+      deterministicBytes(40000, 7),
+      new Uint8Array(0),
+      deterministicBytes(50000, 8),
+    ]
+    const email: EmailItem = {
+      type: 'email',
+      messageId: '<slots@example.com>',
+      from: { address: 'alice@example.com' },
+      to: [{ address: 'bob@example.com' }],
+      subject: 'Slots',
+      textBody: 'Attachments',
+      attachments: contents.map(content => ({
+        filename: 'same.pdf',
+        contentType: 'application/pdf',
+        content,
+      })),
+    }
+    const store = new Map<string, Uint8Array>()
+    const split = await splitMessageItemsForSend(
+      [email],
+      async (hash, bytes) => {
+        store.set(hash, bytes)
+      },
+    )
+    const decoded = wireRoundtrip(split)
+    const hydrated = await rehydrateSplitMessageItems(
+      decoded,
+      async hash => store.get(hash)!,
+    )
+    expect(hydrated).toHaveLength(1)
+    expect(
+      (hydrated[0] as EmailItem).attachments!.map(att => att.content),
+    ).toEqual(contents)
+    // Rehydration leaves the received wire representation reusable.
+    expect(
+      (decoded[0] as EmailItem).attachments!.map(
+        att => att.content!.byteLength,
+      ),
+    ).toEqual([0, 0, 0, 0])
+  })
+
+  it.each([
+    { targetItemIndex: 0 },
+    { targetAttachmentIndex: 0 },
+    { targetItemIndex: 1, targetAttachmentIndex: 0 },
+    { targetItemIndex: 0, targetAttachmentIndex: 1 },
+    { targetItemIndex: 0, targetAttachmentIndex: 0, fileName: 'missing.pdf' },
+  ])(
+    'rejects unresolved attachment target before fetching: %j',
+    async target => {
+      const email: EmailItem = {
+        type: 'email',
+        messageId: '<target@example.com>',
+        from: { address: 'alice@example.com' },
+        to: [{ address: 'bob@example.com' }],
+        subject: 'Target',
+        textBody: '',
+        attachments: [
+          {
+            filename: 'same.pdf',
+            contentType: 'application/pdf',
+            content: new Uint8Array(0),
+          },
+        ],
+      }
+      const { manifest } = splitLargePayload(deterministicBytes(40000), {
+        fileName: 'same.pdf',
+      })
+      const fetchChunk = jest.fn()
+      const decoded = wireRoundtrip([
+        email,
+        { type: 'blob-manifest', ...manifest!, ...target },
+      ])
+      await expect(
+        rehydrateSplitMessageItems(decoded, fetchChunk),
+      ).rejects.toThrow('Unresolved blob attachment target')
+      expect(fetchChunk).not.toHaveBeenCalled()
+    },
+  )
+
+  it('rejects two companion manifests targeting the same attachment slot', async () => {
+    const email: EmailItem = {
+      type: 'email',
+      messageId: '<duplicate@example.com>',
+      from: { address: 'alice@example.com' },
+      to: [{ address: 'bob@example.com' }],
+      subject: 'Duplicate',
+      textBody: '',
+      attachments: [
+        {
+          filename: 'same.pdf',
+          contentType: 'application/pdf',
+          content: deterministicBytes(40000),
+        },
+      ],
+    }
+    const store = new Map<string, Uint8Array>()
+    const split = await splitMessageItemsForSend(
+      [email],
+      async (hash, bytes) => {
+        store.set(hash, bytes)
+      },
+    )
+    const decoded = wireRoundtrip([...split, split[1]])
+    const fetchChunk = jest.fn(async (hash: string) => store.get(hash)!)
+    await expect(
+      rehydrateSplitMessageItems(decoded, fetchChunk),
+    ).rejects.toThrow('Unresolved blob attachment target')
+    expect(fetchChunk).toHaveBeenCalledTimes(1)
+  })
+
   it('builds Home-Relay blob URLs without leaking direct foreign origin connections', () => {
     const hash = 'ab'.repeat(32)
     expect(
@@ -340,7 +524,9 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
         'https://relay-a.org/',
       ),
     ).toBe(
-      `https://relay-b.org/blobs/${hash}?origin=${encodeURIComponent('https://relay-a.org')}`,
+      `https://relay-b.org/blobs/${hash}?origin=${encodeURIComponent(
+        'https://relay-a.org',
+      )}`,
     )
     // Same-origin hint omits redundant ?origin= param
     expect(

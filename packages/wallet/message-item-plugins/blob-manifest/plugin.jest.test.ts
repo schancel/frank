@@ -18,6 +18,7 @@ describePluginContract({
         mimeType: 'image/png',
         fileName: 'diagram.png',
         targetItemIndex: 0,
+        targetAttachmentIndex: 0,
         originRelayHint: 'https://relay.example.org',
       },
       preview: 'Attachment: diagram.png',

@@ -37,6 +37,7 @@ export interface SplitLargePayloadOptions {
   mimeType?: string
   fileName?: string
   targetItemIndex?: number
+  targetAttachmentIndex?: number
   originRelayHint?: string
   symmetricKey?: Uint8Array
   baseNonce?: Uint8Array
@@ -202,6 +203,9 @@ export function splitLargePayload(
     ...(options?.targetItemIndex !== undefined
       ? { targetItemIndex: options.targetItemIndex }
       : {}),
+    ...(options?.targetAttachmentIndex !== undefined
+      ? { targetAttachmentIndex: options.targetAttachmentIndex }
+      : {}),
     ...(options?.originRelayHint !== undefined
       ? { originRelayHint: options.originRelayHint }
       : {}),
@@ -271,12 +275,26 @@ export async function reassembleSplitPayload(
     if (!HEX64_RE.test(expectedChunkHash)) {
       throw new Error(`Invalid chunkHash at index ${i}`)
     }
+    const expectedPlaintextBytes = Math.min(
+      manifest.chunkSize,
+      manifest.totalPlaintextBytes - totalDecryptedBytes,
+    )
     const ciphertext = await fetchChunk(
       expectedChunkHash,
       manifest.originRelayHint,
     )
     if (!(ciphertext instanceof Uint8Array)) {
       throw new Error(`Fetched chunk at index ${i} is not a Uint8Array`)
+    }
+
+    // AEAD adds exactly one 16-byte tag. Reject oversized or short chunks before
+    // hashing/decrypting them, retaining plaintext, or fetching another chunk.
+    if (ciphertext.byteLength !== expectedPlaintextBytes + 16) {
+      throw new Error(
+        `Chunk ciphertext byte length mismatch at index ${i}: expected ${
+          expectedPlaintextBytes + 16
+        }, got ${ciphertext.byteLength}`,
+      )
     }
 
     const actualChunkHash = toHex(sha256(ciphertext))
@@ -299,6 +317,13 @@ export async function reassembleSplitPayload(
       )
     }
 
+    if (
+      plaintextChunk.byteLength !== expectedPlaintextBytes ||
+      totalDecryptedBytes + plaintextChunk.byteLength >
+        manifest.totalPlaintextBytes
+    ) {
+      throw new Error(`Chunk plaintext byte length mismatch at index ${i}`)
+    }
     decryptedChunks.push(plaintextChunk)
     totalDecryptedBytes += plaintextChunk.byteLength
   }
@@ -421,7 +446,7 @@ export async function splitMessageItemsForSend(
       const clonedAttachments: EmailAttachment[] = []
       const companionManifests: BlobManifestItem[] = []
 
-      for (const att of item.attachments) {
+      for (const [attachmentIndex, att] of item.attachments.entries()) {
         const attBytes =
           att.content ??
           (att.dataBase64 ? decodeBase64Attachment(att.dataBase64) : undefined)
@@ -432,6 +457,7 @@ export async function splitMessageItemsForSend(
             mimeType: att.contentType,
             fileName: att.filename,
             targetItemIndex: emailIndex,
+            targetAttachmentIndex: attachmentIndex,
             originRelayHint,
           })
           for (const chunk of split.encryptedChunks) {
@@ -536,32 +562,44 @@ export async function rehydrateSplitMessageItems(
   for (let i = 0; i < working.length; i += 1) {
     const item = working[i]
     if (item.type !== 'blob-manifest') continue
+    const { targetItemIndex, targetAttachmentIndex } = item
+    if (targetItemIndex === undefined && targetAttachmentIndex === undefined)
+      continue
     if (
-      item.targetItemIndex !== undefined &&
-      item.targetItemIndex >= 0 &&
-      item.targetItemIndex < working.length &&
-      working[item.targetItemIndex]?.type === 'email'
+      typeof targetItemIndex !== 'number' ||
+      !Number.isInteger(targetItemIndex) ||
+      targetItemIndex < 0 ||
+      targetItemIndex >= working.length ||
+      typeof targetAttachmentIndex !== 'number' ||
+      !Number.isInteger(targetAttachmentIndex) ||
+      targetAttachmentIndex < 0
     ) {
-      const emailItem = working[item.targetItemIndex] as EmailItem
-      const plaintext = await reassembleSplitPayload(item, fetchChunk)
-      if (Array.isArray(emailItem.attachments)) {
-        const targetAtt =
-          emailItem.attachments.find(
-            att =>
-              att.filename === item.fileName &&
-              (!att.content || att.content.byteLength === 0),
-          ) ??
-          emailItem.attachments.find(
-            att => !att.content || att.content.byteLength === 0,
-          )
-        if (targetAtt) {
-          targetAtt.content = plaintext
-          targetAtt.size = plaintext.byteLength
-          targetAtt.sizeBytes = plaintext.byteLength
-        }
-      }
-      consumedIndices.add(i)
+      throw new Error(
+        `Unresolved blob attachment target at manifest index ${i}`,
+      )
     }
+    const emailItem = working[targetItemIndex]
+    if (emailItem.type !== 'email') {
+      throw new Error(
+        `Unresolved blob attachment target at manifest index ${i}`,
+      )
+    }
+    const targetAtt = emailItem.attachments?.[targetAttachmentIndex]
+    if (
+      !targetAtt ||
+      targetAtt.filename !== item.fileName ||
+      (targetAtt.content && targetAtt.content.byteLength !== 0) ||
+      targetAtt.dataBase64
+    ) {
+      throw new Error(
+        `Unresolved blob attachment target at manifest index ${i}`,
+      )
+    }
+    const plaintext = await reassembleSplitPayload(item, fetchChunk)
+    targetAtt.content = plaintext
+    targetAtt.size = plaintext.byteLength
+    targetAtt.sizeBytes = plaintext.byteLength
+    consumedIndices.add(i)
   }
 
   // Second pass: rehydrate standalone BlobManifestItems (`image` or `attachment`).
@@ -644,7 +682,10 @@ export function createHomeRelayBlobClient(
 
   return {
     originRelayHint,
-    async uploadChunk(chunkHash: string, ciphertext: Uint8Array): Promise<void> {
+    async uploadChunk(
+      chunkHash: string,
+      ciphertext: Uint8Array,
+    ): Promise<void> {
       const normalizedHash = chunkHash.toLowerCase()
       if (!HEX64_RE.test(normalizedHash)) {
         throw new Error(`Invalid chunkHash: ${chunkHash}`)
@@ -663,10 +704,7 @@ export function createHomeRelayBlobClient(
         )
       }
     },
-    async fetchChunk(
-      chunkHash: string,
-      hint?: string,
-    ): Promise<Uint8Array> {
+    async fetchChunk(chunkHash: string, hint?: string): Promise<Uint8Array> {
       const url = buildHomeRelayBlobUrl(base, chunkHash, hint)
       const response = await fetchImpl(url, {
         method: 'GET',

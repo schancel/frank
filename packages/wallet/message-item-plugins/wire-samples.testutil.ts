@@ -187,6 +187,7 @@ export const GENERIC_SAMPLES: MessageItem[] = [
     mimeType: 'image/png',
     fileName: 'sample.png',
     targetItemIndex: 0,
+    targetAttachmentIndex: 0,
     originRelayHint: 'https://relay.example.org',
   },
   { type: 'reply', payloadDigest: HASH },

@@ -816,6 +816,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       mimeType: 'image/png',
       fileName: 'attachment.png',
       targetItemIndex: 0,
+      targetAttachmentIndex: 0,
       originRelayHint: 'https://relay.example.org',
     },
     cases: [
@@ -836,6 +837,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('fileName', [8], ['', 'x'.repeat(257)]),
       ...each('targetItemIndex', [9], [-1, 256, '0']),
       ...each('originRelayHint', [10], ['', 'x'.repeat(513)]),
+      ...each('targetAttachmentIndex', [11], [-1, 16, '0']),
     ],
   },
 ]

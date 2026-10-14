@@ -1,6 +1,7 @@
 import type { GatewayHostConfig } from './gateway-config';
 import { openGatewayWallet } from './gateway-wallet';
 import { openGatewayDirectory } from './gateway-directory';
+import { startGatewayProfilePublication } from './gateway-profile';
 import { createJournaledMailHost } from './journaled-mail-host';
 
 /** Opens only an explicitly admitted testnet wallet and its matching mail journal. */
@@ -22,6 +23,7 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
   }
   let host: ReturnType<typeof createJournaledMailHost> | undefined;
   let directory: Awaited<ReturnType<typeof openGatewayDirectory>> | undefined;
+  let profilePublication: ReturnType<typeof startGatewayProfilePublication> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let activePass: Promise<void> | undefined;
   let activeAutoReplyPass: Promise<void> | undefined;
@@ -61,6 +63,12 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
       relayBaseUrl: config.relayBaseUrl,
       storageDirectory: config.directoryStorage,
     });
+    profilePublication = startGatewayProfilePublication({
+      identity: opened.wallet.identity,
+      relayBaseUrl: config.relayBaseUrl,
+      chainIdentifier: opened.wallet.chainIdentifier,
+      gatewayDomain: config.gatewayDomain,
+    });
     await host.runtime.runOnce();
     await host.webhook.start();
     if (config.nativeSmtp) await host.smtp!.start(config.nativeSmtp.port, config.nativeSmtp.host);
@@ -93,7 +101,7 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
         if (timer) clearInterval(timer);
         host!.webhook.setReady(false);
         host!.smtp?.setReady(false);
-        await Promise.all([activePass, activeAutoReplyPass]);
+        await Promise.all([profilePublication!.close(), activePass, activeAutoReplyPass]);
         try { await host!.close(); }
         finally {
           try { await directory!.close(); }
@@ -106,6 +114,7 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
     };
   } catch (error) {
     if (timer) clearInterval(timer);
+    await profilePublication?.close();
     try { await host?.close(); }
     finally {
       try { await directory?.close(); }

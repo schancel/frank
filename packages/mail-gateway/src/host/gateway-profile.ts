@@ -1,0 +1,54 @@
+import { ACCOUNT_TYPE_SERVICE, BOT_ROLE_BRIDGE } from '@frank/codec';
+import { registerMonadIdentityCbor, type MonadIdentity } from '@frank/wallet/monad-identity';
+
+// Frank's existing 32px app icon, embedded so standalone gateway builds do not depend on app files.
+const AVATAR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAARGVYSWZNTQAqAAAACAABh2kABAAAAAEAAAAaAAAAAAADoAEAAwAAAAEAAQAAoAIABAAAAAEAAAAgoAMABAAAAAEAAAAgAAAAAKyGYvMAAAHLaVRYdFhNTDpjb20uYWRvYmUueG1wAAAAAAA8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJYTVAgQ29yZSA2LjAuMCI+CiAgIDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+CiAgICAgIDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiCiAgICAgICAgICAgIHhtbG5zOmV4aWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20vZXhpZi8xLjAvIj4KICAgICAgICAgPGV4aWY6Q29sb3JTcGFjZT4xPC9leGlmOkNvbG9yU3BhY2U+CiAgICAgICAgIDxleGlmOlBpeGVsWERpbWVuc2lvbj45MDA8L2V4aWY6UGl4ZWxYRGltZW5zaW9uPgogICAgICAgICA8ZXhpZjpQaXhlbFlEaW1lbnNpb24+OTAwPC9leGlmOlBpeGVsWURpbWVuc2lvbj4KICAgICAgPC9yZGY6RGVzY3JpcHRpb24+CiAgIDwvcmRmOlJERj4KPC94OnhtcG1ldGE+CkYt8Y0AAAW7SURBVEgNrVZLTFxVGL73zuUOj3kyQxlIUWmARpKmtjIIKcNjUQPRxEUTK9W0alhgTFXiol1qWMjKBcYUwWUlKYZGm24a3bTFUpDaaSA28po2UCABOshr7mvu9Tv3PQPixjMn9/znP9//OP/5z3+G5lObFE1TVlNVQuocnSZTitLYIDHaaMAsDBGzG4ERHM0SHkAOFQaHDGYztWNua8fkX7QbMCKlMviQ5lChM/6vr7aD/1RGUy4X62JMbyhKURQ5nT5gB4ZKWg/RgQbcbrcsy4nE07W1NVUhwcQvXBQqf+lFlmUFQThIWlWxg6zwG3jELIdlXSx7+/bd3t6+8d8f7O7uWrry8/Oi0Vc//eSjpqZYWpYlWc44GwsHX0gW7WkMw+Tk5Pw1PdPT8/Xw9Z9kOZ2bm8swlhIaIeJ5Hjs4c+aty5c+P3q0UhJFMPdoovY5A87NJZMbS0sra+vrxZFD9XWvzczOrq6uY6tuzg0VoiggfSKR4qrKikhx8crKiiRJpaWRYCAgiKLlhWEMO3B2VREmJsYaYs3hopLTr7f29fUlk6sLC4mhH6+1tb3p8RZ6vMG2tjeGhq4tLDzBUl/fFcDCRaWxWDMEIe7URsKTchiQ5dTUZLyyqrrAEywMRby+EOf2nH2nPZXaUlWZ57e+0BoITCH49tl2AHz+EMAQgeDkZBxKnDYoe8JvSlLq3Ln38vL9oXCJ1SF58+YNRUG+bMvSLjoITMHEEmBhEwzB9vZ3JWkXHlhq7dR2Ma7FxcV7o2O5uSTQVsPRzc0laNqlIve1BgLTubl5/VTJHdUCj0QYvT++uPjMeWMY6wojczY2/kYu0rRtVTeTTCYpymZqIszz50m7iOksmoY4lECV4R90ZR+67ozlP0W53dzw8M+JxCybw0IPOjJ4fn5m+PoNN8eZQGJBs4LBGMmSatUiE2iONgiXbW4+8VnXJUGQGOIRjdPo6ro8P5/ARTTxjtFZm50bd0BMUtsdTHEcVxIpVpS0voDQl5REsDOnr9YGTGFjNIOVxdYCRWvbUFWF43I6OzsKCvJVTFQVRGfnhwgUpqYcfEHXpxaTLGYbcB4JgJgqiloYDIbDIRQMCIADIhQKBYNBmCMcFBynGFFrt2wDGdYpKq3lv8frCQR8yE5dDgSqgtfr5XlBz1TzfHU7Gdb21iLbBJLe5/NWVVU0xk7hPbAWQOB1aGmO4Yl4trS8ubmFqmf7DMphgrVCh+AG/L68vDwI0DSNGlxd/fL3A9+i7uM8YcyOOJKPYXq++lIQxMSTpx0dH//5+DHLkiOBuN/vQ1QtewylGubS6fThsrL6ulrUYbAkSY7WnKyuPoZcRLGEeUuGEKoKJpYAqKk5ATBEBIGvq6stKzsMVSaYplKoG7xRUNMyH48/KD9ShapZGCoGMTh4dWdnA9pEYdsqLyBEcRv1bmd744fBq+XlVQCjygIffzgBJQYSanlUU0dhwoKqiCMjd6LRelQufyDs84cbG1sGBvrXVpeVtCEJYnV1ub//u1hjCwCAARytrR/57Q7KtbM8Q6GzmuolcAsgyHd3d5e9cKTAE/D5QvkF/ppo3fj4KLxDHxu7h2l+QQCFGl/AAIYHGY+B5r5mwIwP2RcJFzEjiTuIwNTUo/MXPggWHvL6CuHjqYamzc11dBCYghkIFp2/8D5gAIviDgm1U5v20tDQqB8a+eoXBuepEbir4N269WvvN1ce/vFIpdSRu7+A0xA7DejJE8cvXuxsbQVN4UHG10pIQptNM5CVIQDqmaVZwt8Wgeenp2eRvsdfOQbBeHzS7/dWVlbgAbD/tmQrIRaQedq/CqjLTEKy6NgN1nGVcDlEScIKp1WhjJtBBPZvNLJIdzejjutgyzCMWQ7qtG4efu3jmSZs8h0PjmHH4YgJsrUbhk2oBXAIZZikM6qpVhXhmu6dqQSymXow07qxJ4LTARaMEJo4IP8AA/aAZhoT22kAAAAASUVORK5CYII=';
+
+/** Presentation publication is independent of required mail recovery and ingress.
+ * Retry only failed attempts; shutdown cancels the request before custody closes.
+ */
+export function startGatewayProfilePublication(options: {
+  identity: MonadIdentity;
+  relayBaseUrl: string;
+  chainIdentifier: string;
+  gatewayDomain: string;
+}): { close(): Promise<void> } {
+  const cancellation = new AbortController();
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let active: Promise<void> | undefined;
+  let closed = false;
+  const attempt = () => {
+    if (closed || active) return;
+    active = registerMonadIdentityCbor({
+      identity: options.identity,
+      relayBaseUrl: options.relayBaseUrl,
+      network: options.chainIdentifier,
+      signal: AbortSignal.any([cancellation.signal, AbortSignal.timeout(30_000)]),
+      profile: {
+        name: 'Frank Email Gateway',
+        bio: `Email bridge between Frank and Internet email at ${options.gatewayDomain}.`,
+        avatar: AVATAR,
+        bot: true,
+        accountType: ACCOUNT_TYPE_SERVICE,
+        botRole: BOT_ROLE_BRIDGE,
+      },
+    }).then(() => {
+      if (!closed) process.stdout.write('Mail gateway profile published.\n');
+    }, error => {
+      if (closed) return;
+      process.stderr.write(`Mail gateway profile publication failed; retrying in 60s: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }\n`);
+      retry = setTimeout(attempt, 60_000);
+    }).finally(() => { active = undefined; });
+  };
+  attempt();
+  return {
+    async close() {
+      closed = true;
+      if (retry) clearTimeout(retry);
+      cancellation.abort();
+      await active;
+    },
+  };
+}

@@ -6,6 +6,11 @@ module.exports = {
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {
+    '^@frank/adaptor-signatures/src/(.*)\\.js$':
+      '<rootDir>/../adaptor-signatures/src/$1',
+    '^@frank/threshold-ecdsa$': '<rootDir>/../threshold-ecdsa/src/index.ts',
+    '^@frank/adaptor-signatures$':
+      '<rootDir>/../adaptor-signatures/src/index.ts',
     '^@frank/bot-framework/(.*)$': '<rootDir>/../bot-framework/src/$1',
     '^@frank/bot-framework$': '<rootDir>/../bot-framework/src/index.ts',
     '^@frank/directory-admission$':
@@ -36,5 +41,6 @@ module.exports = {
       },
     ],
   },
+  transformIgnorePatterns: ['/node_modules/(?!@noble/)'],
   testPathIgnorePatterns: ['/node_modules/'],
 }

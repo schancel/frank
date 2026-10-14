@@ -60,7 +60,8 @@ describe('Type 26: Email Message Item', () => {
       cc: [charlieParty],
       subject: 'Quarterly Review & Budget',
       textBody: 'Hi Bob, please review the attached PDF.\n\nBest,\nAlice',
-      htmlBody: '<p>Hi Bob, please review the attached PDF.</p><p>Best,<br>Alice</p>',
+      htmlBody:
+        '<p>Hi Bob, please review the attached PDF.</p><p>Best,<br>Alice</p>',
       inReplyTo: '<msg-00000@example.com>',
       references: ['<msg-00000@example.com>', '<msg-00001@example.com>'],
       attachments: [sampleAttachment],
@@ -69,7 +70,9 @@ describe('Type 26: Email Message Item', () => {
 
     const frameBytes = encodeEmailMessageItem(email)
     expect(frameBytes.length).toBeGreaterThan(0)
-    expect(frameBytes.length).toBeLessThanOrEqual(MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES)
+    expect(frameBytes.length).toBeLessThanOrEqual(
+      MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES,
+    )
 
     const validated = validateEmailMessageItem(frameBytes, ctx)
     expect(validated.typeId).toBe(TYPE_EMAIL_MESSAGE_ITEM)
@@ -81,12 +84,16 @@ describe('Type 26: Email Message Item', () => {
     expect(typed.from.address).toBe('alice@example.com')
     expect(typed.from.name).toBe('Alice Smith')
     expect(typed.from.frankAccount?.keyType).toBe(1)
-    expect(typed.from.frankAccount?.keyBytes).toEqual(aliceParty.frankAccount!.keyBytes)
+    expect(typed.from.frankAccount?.keyBytes).toEqual(
+      aliceParty.frankAccount!.keyBytes,
+    )
 
     expect(typed.to).toHaveLength(1)
     expect(typed.to[0].address).toBe('bob@frank.org')
     expect(typed.to[0].name).toBe('Bob Jones')
-    expect(typed.to[0].frankAccount?.keyBytes).toEqual(bobParty.frankAccount!.keyBytes)
+    expect(typed.to[0].frankAccount?.keyBytes).toEqual(
+      bobParty.frankAccount!.keyBytes,
+    )
 
     expect(typed.cc).toHaveLength(1)
     expect(typed.cc![0].address).toBe('charlie@external.com')
@@ -97,7 +104,10 @@ describe('Type 26: Email Message Item', () => {
     expect(typed.textBody).toContain('Hi Bob')
     expect(typed.htmlBody).toContain('<p>Hi Bob')
     expect(typed.inReplyTo).toBe('<msg-00000@example.com>')
-    expect(typed.references).toEqual(['<msg-00000@example.com>', '<msg-00001@example.com>'])
+    expect(typed.references).toEqual([
+      '<msg-00000@example.com>',
+      '<msg-00001@example.com>',
+    ])
 
     expect(typed.attachments).toHaveLength(1)
     expect(typed.attachments![0].filename).toBe('document.pdf')
@@ -135,6 +145,191 @@ describe('Type 26: Email Message Item', () => {
     expect(validated.typed?.replyTo).toBeUndefined()
   })
 
+  it('rejects a 400-character CJK subject before producing a frame', () => {
+    expect(() =>
+      encodeEmailMessageItem({
+        messageId: '<test@example.com>',
+        from: aliceParty,
+        to: [bobParty],
+        subject: '界'.repeat(400),
+        textBody: '',
+      }),
+    ).toThrow('subject must be 0..1024 UTF-8 bytes')
+  })
+
+  describe('UTF-8 text bounds match the decoder', () => {
+    const fields: Array<{
+      field: string
+      min: number
+      max: number
+      set: (email: CanonicalEmailMessageItem, value: string) => void
+    }> = [
+      {
+        field: 'messageId',
+        min: 1,
+        max: 256,
+        set: (e, v) => {
+          e.messageId = v
+        },
+      },
+      {
+        field: 'subject',
+        min: 0,
+        max: 1024,
+        set: (e, v) => {
+          e.subject = v
+        },
+      },
+      {
+        field: 'textBody',
+        min: 0,
+        max: 262144,
+        set: (e, v) => {
+          e.textBody = v
+        },
+      },
+      {
+        field: 'htmlBody',
+        min: 0,
+        max: 524288,
+        set: (e, v) => {
+          e.htmlBody = v
+        },
+      },
+      {
+        field: 'inReplyTo',
+        min: 1,
+        max: 256,
+        set: (e, v) => {
+          e.inReplyTo = v
+        },
+      },
+      {
+        field: 'reference',
+        min: 1,
+        max: 256,
+        set: (e, v) => {
+          e.references = ['first', v]
+        },
+      },
+      {
+        field: 'party address',
+        min: 3,
+        max: 320,
+        set: (e, v) => {
+          e.from.address = v
+        },
+      },
+      {
+        field: 'party name',
+        min: 1,
+        max: 256,
+        set: (e, v) => {
+          e.to[0].name = v
+        },
+      },
+      {
+        field: 'attachment filename',
+        min: 1,
+        max: 256,
+        set: (e, v) => {
+          e.attachments![1].filename = v
+        },
+      },
+      {
+        field: 'attachment contentType',
+        min: 1,
+        max: 128,
+        set: (e, v) => {
+          e.attachments![1].contentType = v
+        },
+      },
+      {
+        field: 'attachment contentId',
+        min: 1,
+        max: 128,
+        set: (e, v) => {
+          e.attachments![1].contentId = v
+        },
+      },
+    ]
+
+    function email(): CanonicalEmailMessageItem {
+      return {
+        messageId: 'message',
+        from: { address: 'a@b' },
+        to: [{ address: 'c@d' }],
+        cc: [{ address: 'e@f', name: '界' }],
+        replyTo: { address: 'g@h', name: '😀' },
+        subject: '',
+        textBody: '',
+        attachments: [
+          {
+            filename: 'first',
+            contentType: 'text/plain',
+            content: new Uint8Array([1]),
+          },
+          {
+            filename: 'second',
+            contentType: 'text/plain',
+            content: new Uint8Array([2, 3]),
+          },
+        ],
+      }
+    }
+
+    describe.each(fields)('$field', ({ field, min, max, set }) => {
+      it.each(['a', '界', '😀'])(
+        'round-trips at the byte limit and rejects one byte over (%s)',
+        character => {
+          const width = new TextEncoder().encode(character).length
+          const boundary =
+            character.repeat(Math.floor(max / width)) + 'a'.repeat(max % width)
+          const item = email()
+          set(item, boundary)
+          const frame = encodeEmailMessageItem(item)
+          if (field === 'htmlBody') {
+            // The enclosing CBOR text budget remains stricter than the HTML field bound.
+            expect(() => validateEmailMessageItem(frame)).toThrow(
+              'text string longer than 262144',
+            )
+            set(item, character.repeat(Math.floor(262144 / width)))
+          }
+          expect(
+            validateEmailMessageItem(encodeEmailMessageItem(item)).typed,
+          ).toMatchObject(item)
+          set(item, boundary + 'a')
+          expect(() => encodeEmailMessageItem(item)).toThrow(
+            `${field} must be ${min}..${max} UTF-8 bytes`,
+          )
+        },
+      )
+
+      it('preserves the empty-string bound', () => {
+        const item = email()
+        set(item, '')
+        if (min === 0) {
+          expect(() =>
+            validateEmailMessageItem(encodeEmailMessageItem(item)),
+          ).not.toThrow()
+        } else {
+          expect(() => encodeEmailMessageItem(item)).toThrow(
+            `${field} must be ${min}..${max} UTF-8 bytes`,
+          )
+        }
+      })
+    })
+
+    it('counts a CJK address by bytes at the lower bound', () => {
+      const item = email()
+      item.from.address = '界'
+      expect(
+        validateEmailMessageItem(encodeEmailMessageItem(item)).typed.from
+          .address,
+      ).toBe('界')
+    })
+  })
+
   it('rejects invalid recipient arrays or addresses', () => {
     expect(() =>
       encodeEmailMessageItem({
@@ -154,7 +349,7 @@ describe('Type 26: Email Message Item', () => {
         subject: 'Sub',
         textBody: 'Body',
       }),
-    ).toThrow('party address must be 3..320 characters')
+    ).toThrow('party address must be 3..320 UTF-8 bytes')
   })
 
   it('rejects frames with unallocated key types in frankAccount', () => {
@@ -172,6 +367,8 @@ describe('Type 26: Email Message Item', () => {
     }
 
     const frameBytes = encodeEmailMessageItem(email)
-    expect(() => validateEmailMessageItem(frameBytes, ctx)).toThrow(FrankCodecError)
+    expect(() => validateEmailMessageItem(frameBytes, ctx)).toThrow(
+      FrankCodecError,
+    )
   })
 })

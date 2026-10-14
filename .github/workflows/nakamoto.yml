@@ -166,7 +166,20 @@ jobs:
           const fs = require('fs')
           const path = require('path')
           const ts = require('typescript')
-          const configPath = path.resolve('packages/wallet/tsconfig.json')
+          // Keep the workspace's development source alias; this gate explicitly tests dist.
+          const sourcePath = path.resolve('packages/wallet/tsconfig.json')
+          const source = ts.readConfigFile(sourcePath, ts.sys.readFile)
+          if (source.error) throw new Error('wallet source tsconfig unreadable')
+          const configPath = path.resolve('packages/wallet/tsconfig.nakamoto-built.json')
+          fs.writeFileSync(configPath, JSON.stringify({
+            extends: './tsconfig.json',
+            compilerOptions: {
+              paths: {
+                ...source.config.compilerOptions.paths,
+                '@frank/nakamoto': ['../nakamoto/dist/index.d.ts'],
+              },
+            },
+          }))
           const read = ts.readConfigFile(configPath, ts.sys.readFile)
           if (read.error) throw new Error('wallet tsconfig unreadable')
           const parsed = ts.parseJsonConfigFileContent(
@@ -214,7 +227,7 @@ jobs:
           NODE
           tsc_log=/tmp/wallet-tsc.txt
           set +e
-          yarn --cwd packages/wallet tsc -p tsconfig.json --pretty false --noEmit >"$tsc_log" 2>&1
+          yarn --cwd packages/wallet tsc -p tsconfig.nakamoto-built.json --pretty false --noEmit >"$tsc_log" 2>&1
           tsc_status=$?
           set -e
           cat "$tsc_log"

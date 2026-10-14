@@ -5585,9 +5585,7 @@ export const useChatStore = defineStore('chats', {
     ): Promise<void> {
       const notifiableInboundCount = messageWrappers.filter(wrapper => {
         const stored = this.messages[wrapper.index]
-        return (
-          toNotify.has(wrapper.index) && Boolean(stored) && !stored.outbound
-        )
+        return toNotify.has(wrapper.index) && !!stored && !stored.outbound
       }).length
       for (const messageWrapper of messageWrappers) {
         const {

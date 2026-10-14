@@ -1923,6 +1923,44 @@ describe('stores/chats.ts (ticket #42)', () => {
       jest.spyOn(document, 'hasFocus').mockReturnValue(false)
     }
 
+    it.each([undefined, null, false, 0, ''])(
+      'counts only filed inbound rows alongside a falsy ghost (%p)',
+      async ghostValue => {
+        const chats = useChatStore()
+        notifyingContact()
+        const stored = makeWrapper({ index: 'presence-stored' })
+        const ghost = makeWrapper({
+          index: 'presence-ghost',
+          copartyAddress: THIRD_ADDRESS,
+        })
+        await chats.receiveMessages([stored])
+        // Fault-inject a non-record sentinel to preserve the existing falsy guard contract.
+        if (ghostValue !== undefined) {
+          Object.defineProperty(chats.messages, ghost.index, {
+            configurable: true,
+            value: ghostValue,
+          })
+        }
+        jest.mocked(desktopNotify).mockClear()
+        const refresh = jest.mocked(useContactStore().refresh)
+        refresh.mockClear()
+        const toNotify = new Set([stored.index, ghost.index])
+        await chats.notifyReceivedMessages([stored, ghost], toNotify)
+        expect(desktopNotify).toHaveBeenCalledTimes(1)
+        expect(desktopNotify).toHaveBeenCalledWith(
+          'Bob',
+          'hi there',
+          '',
+          expect.any(Function),
+          stored.index,
+        )
+        jest.mocked(desktopNotify).mockClear()
+        await chats.notifyReceivedMessages([ghost], toNotify)
+        expect(desktopNotify).not.toHaveBeenCalled()
+        expect(refresh).not.toHaveBeenCalled()
+      },
+    )
+
     it('notifies once when two overlapping polls deliver the same message from an unknown contact (#412)', async () => {
       const chats = useChatStore()
       jest.spyOn(document, 'hasFocus').mockReturnValue(false)

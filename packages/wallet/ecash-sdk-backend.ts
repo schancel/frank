@@ -57,6 +57,14 @@ export interface EcashInputReference {
   readonly vout: number;
 }
 
+/** Complete public balance observation; never a construction or signing inventory. */
+export interface EcashBalanceObservation {
+  readonly observedAt: number;
+  readonly coins: ReadonlyArray<
+    EcashInputReference & { readonly satoshis: bigint }
+  >;
+}
+
 export interface EcashNativeConstruction {
   readonly transactions: ReadonlyArray<{
     readonly txid: string;
@@ -84,6 +92,10 @@ function outpointKey(input: EcashInputReference): string {
 
 /** Never exported through a wallet handle; secret material stays at this custody boundary. */
 export class EcashSdkBackend implements EcashWalletBackend {
+  private balanceObservation: EcashBalanceObservation | undefined;
+  private refreshing:
+    | { discovery: boolean; promise: Promise<void> }
+    | undefined;
   private readonly imported = new Map<string, Keypair>();
 
   constructor(
@@ -192,6 +204,11 @@ export class EcashSdkBackend implements EcashWalletBackend {
     this.sdk.changeIndex = Math.max(this.sdk.changeIndex, floor);
   }
 
+  /** The last fully completed SDK and imported-script refresh, never a partial mutable view. */
+  getCompleteBalanceObservation(): EcashBalanceObservation | undefined {
+    return this.balanceObservation;
+  }
+
   getAvailableBalance(
     excludedInputs: ReadonlyArray<EcashInputReference>
   ): bigint {
@@ -275,16 +292,48 @@ export class EcashSdkBackend implements EcashWalletBackend {
       );
   }
 
-  async sync(): Promise<void> {
-    this.assertCustodyActive();
-    await this.sdk.sync();
-    await this.refreshImportedCoins();
+  sync(): Promise<void> {
+    return this.refresh(false);
   }
 
-  async syncAndDiscoverAddresses(): Promise<void> {
-    this.assertCustodyActive();
-    await this.sdk.syncAndDiscoverAddresses();
-    await this.refreshImportedCoins();
+  syncAndDiscoverAddresses(): Promise<void> {
+    return this.refresh(true);
+  }
+
+  private refresh(discovery: boolean): Promise<void> {
+    if (this.refreshing) {
+      // An ordinary sync may join discovery, but discovery must not be skipped by joining sync.
+      if (discovery && !this.refreshing.discovery)
+        return this.refreshing.promise.then(() => this.refresh(true));
+      return this.refreshing.promise;
+    }
+    const promise = (async () => {
+      this.assertCustodyActive();
+      if (discovery) await this.sdk.syncAndDiscoverAddresses();
+      else await this.sdk.sync();
+      await this.refreshImportedCoins();
+      this.assertCustodyActive();
+      // SDK HD sync mutates its inventory before its final tip read; imported scripts refresh
+      // separately. Publish only after both complete, with no await between copying and publish.
+      this.balanceObservation = Object.freeze({
+        observedAt: Date.now(),
+        coins: Object.freeze(
+          this.sdk.spendableSatsOnlyUtxos().map((coin) =>
+            Object.freeze({
+              txid: coin.outpoint.txid,
+              vout: coin.outpoint.outIdx,
+              satoshis: coin.sats,
+            })
+          )
+        ),
+      });
+    })();
+    this.refreshing = { discovery, promise };
+    const clear = () => {
+      if (this.refreshing?.promise === promise) this.refreshing = undefined;
+    };
+    void promise.then(clear, clear);
+    return promise;
   }
 
   /** Copies the key and returns only its address. Custody owns re-import after reopening. */

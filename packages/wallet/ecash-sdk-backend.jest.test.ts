@@ -46,6 +46,9 @@ const chronik = {
   secret.fill(0);
   await backend.syncAndDiscoverAddresses();
   assert.equal(backend.balanceSats, 20000n);
+  assert.deepEqual(backend.getCompleteBalanceObservation().coins, [1, 2].map(n => ({
+    txid: n.toString().repeat(64), vout: n, satoshis: 10000n,
+  })));
   assert.equal(sdk.utxos.length, 2);
   const original = { coins: structuredClone(sdk.utxos), change: sdk.changeIndex, receive: sdk.receiveIndex, keys: [...sdk.keypairs.keys()] };
   const recipient = Address.p2pkh(new Uint8Array(20).fill(31), 'ectest').toString();

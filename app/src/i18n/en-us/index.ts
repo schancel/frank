@@ -198,6 +198,7 @@ export default {
     balanceUnknown: 'Your balance is not known yet.',
     leave: 'Leave',
     leaveAriaLabel: 'Leave raffle round {raffleId}',
+    leftAction: 'Left the raffle',
     leftStatus:
       'Left the raffle: {count}/{max} entered. Your entry was refunded.',
   },
@@ -1436,7 +1437,7 @@ export default {
     nameInvalidUnicode:
       'The name contains an invalid character. Delete it or paste plain text.',
     bio: 'Bio',
-    bioHint: 'Short biolography displayed to others',
+    bioHint: 'Short biography displayed to others',
     uploadAvatar: 'Upload Avatar',
     username: 'Username',
     usernameHint:

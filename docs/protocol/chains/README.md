@@ -5,11 +5,16 @@ is the stable value used in `/chain-rpc/:chain/...` paths and signed request sco
 chain IDs and CAIP-2 names are aliases and identity evidence; they are not Frank identifiers.
 
 `family` controls dispatch. `evm` chains may expose JSON-RPC. `bitcoin` chains may expose node
-JSON-RPC and one of two indexers: Chronik (eCash) or Electrum (Bitcoin, Bitcoin Cash, Dogecoin). Chronik is not an EVM indexer; a future contract-specific EVM indexer needs
-a separate capability and protocol contract.
+JSON-RPC and one of two indexers: Chronik (eCash) or Electrum (Bitcoin, Bitcoin Cash, Dogecoin, Litecoin).
+`solana` chains expose Solana JSON-RPC verified against a pinned `genesis-hash` identity probe.
+Chronik is not an EVM indexer; a future contract-specific EVM indexer needs a separate capability
+and protocol contract.
 
 `allowed_proxy_capabilities` states what the protocol permits for a chain. `GET /chains` reports
-the subset an individual relay actually configured. A relay must additionally probe each upstream:
+the subset an individual relay actually configured, together with `accepted_payment_networks`
+(the canonical protocol chain IDs the relay accepts for message and topic stamp payments,
+validated against `v1.json` via `registry.accepted_payment_networks` in `cashweb-config`).
+A relay must additionally probe each upstream:
 
 - EVM: `eth_chainId`, plus the registry-pinned block checkpoint. A regtest row
   (`monad-regtest`) has an operator checkpoint instead: the relay's config row must name a block
@@ -32,13 +37,21 @@ alias never substitutes for the required checkpoint probe. Public-network checkp
 data; only regtest checkpoints are operator data because those chains are created locally. CAIP-2 is omitted when the registry
 cannot name a network without creating a false uniqueness claim.
 
-## Configuration ownership
+## Unified `ChainAdapter` and Configuration Ownership
 
 `v1.json` owns protocol identifiers, identity requirements and permitted capabilities. The Rust
-configuration crate (`backend/cashweb/cashweb-config/src/lib.rs`) includes that file directly.
+configuration crate (`backend/cashweb/cashweb-config/src/lib.rs`) and relay chain registry adapter
+(`backend/cashweb/cashweb-registry/src/chain_registry_adapter.rs`) include and validate that file
+directly.
 
 `packages/wallet/chain/chains-registry.ts` imports `v1.json` directly through the pure
-`chain/protocol-chain-registry.ts` projection. The JSON owns canonical IDs, family, network,
+`chain/protocol-chain-registry.ts` projection, and `packages/wallet/chain/chain-adapter.ts`
+exposes the unified `ChainAdapter` interface across all supported chain families (`MON`, `ETH`
+including Ethereum, Base, Arbitrum, Polygon, BNB Chain, and Hyperliquid, `SOL`, `XEC`, `BTC`,
+`BCH`, `XPI`, `DOGE`, `LTC`, and `TEMPO`). Each `ChainAdapter` encapsulates address validation
+and derivation, balance and UTXO/nonce queries, fee estimation, stealth/stamp destination
+derivation, and transaction construction behind a uniform boundary so application stores and UI
+components never hardcode per-chain branches. The JSON owns canonical IDs, family, network,
 CAIP-2, native chain identity, permitted proxy capabilities and required identity probes.
 The projection validates consumed fields, duplicate IDs and client references, preserves the
 probes and capability limits, and returns deeply immutable derived entries. Native EVM IDs
@@ -75,7 +88,8 @@ The Solana rows still carry placeholder program IDs; no Solana program is deploy
 `wallet` in a client extension says the app has its own wallet on a network (balance, receive and
 send) and which proxy capability it reads through (`json-rpc`, `chronik` or `electrum`; the
 projection rejects one the protocol does not permit for that chain). The app's balance reader,
-Send routing, wallet list and Settings all read this one setting. A network without it is shown
+Send routing, wallet list and Settings all read this one setting, intersected with the relay's
+live `GET /chains` capabilities and `accepted_payment_networks`. A network without it is shown
 as not supported, with no deposit address.
 
 The funded send check, one command per UTXO testnet, against a running relay

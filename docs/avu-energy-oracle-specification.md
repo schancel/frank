@@ -197,35 +197,40 @@ and the weights are taken over the rest; the app shows how many entries were use
 each other one was not. With none, there is no AVU_hash and no AVU value: nothing falls back
 to a fixed rate.
 
-Where each input comes from:
+Where each input comes from (served to clients via the relay's normalised `GET /oracle/v1/feed` endpoint, see `docs/protocol/oracle/README.md`, with `temporary-direct-feed.ts` as a 404 fallback):
 
 | Input | Source | Kind |
 | :--- | :--- | :--- |
 | Coin price | `PriceFeedsClient` in `packages/price-feeds`: the median of the providers that answered (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance). The number of providers is kept in `priceSources`. | fetched, every 5 minutes |
-| Coins per block | Blockchair `/stats`: `inflation_24h ÷ blocks_24h`, the subsidy the chain actually minted, so halvings need no schedule. For eCash the miner's 58% is used (consensus sends 32% to the miner fund and 10% to staking rewards). Monero publishes no issuance there; its consensus tail emission of 0.6 XMR is configured in `MINED_CHAINS`. | fetched, every 30 minutes, one source |
-| Hashes per block | Blockchair `/stats` `difficulty` × 2³² (Monero: the difficulty itself). | fetched, every 30 minutes, one source |
-| Market capitalisation | Blockchair `/stats` `circulation` × the oracle's price. | fetched |
-| Hashing efficiency (hashes per kWh) | SHA-256: Cambridge Bitcoin Electricity Consumption Index, best-guess network power demand ÷ network hashrate, by month, bundled in `packages/price-feeds/src/historical/btc-mining-monthly.json`. The latest bundled month is used for the present. | **curated estimate, bundled** |
-| Electricity price (AVU_spot) | US EIA Table 9.8, industrial, bundled in `us-electricity-gold.json`; the latest published month. | bundled |
+| Miner revenue / subsidy | Blockchair `/stats` (`minerRevenue/<chainId>` when actual fee totals are verified, or `minerSubsidy/<chainId>` observed issuance when fees are unavailable). For eCash the miner's 58% consensus share is applied; Monero uses its consensus tail emission of 0.6 XMR when live stats lack issuance. | fetched, every 30 minutes, one source |
+| Hashrate | Blockchair `/stats` 24-hour observed chainwork/time estimate (`hashrate/<chainId>`, hashes per second) over the same window as miner revenue. | fetched, every 30 minutes, one source |
+| Market capitalisation | Blockchair `/stats` `circulation` × the oracle's price (`marketCap/<assetId>`). | fetched |
+| Hashing efficiency (hashes per kWh) | Curated dated hardware efficiency step series (`efficiency/sha256` from Cambridge CBECI, `efficiency/scrypt` from curated Scrypt ASIC listings, and `efficiency/randomx` from curated CPU/ASIC ratings) bundled in `packages/price-feeds/src/historical/basket.json` and `btc-mining-monthly.json`. | **curated estimate, bundled** |
+| Electricity price (AVU_spot) | Multi-region daily wholesale day-ahead aggregate (`electricity/aggregate`, 30-day rolling mean across qualifying grids) and US EIA Table 9.8 industrial historical series (`us-electricity-gold.json`). | fetched / bundled |
 
 The efficiency series is the one input that is neither a chain reading nor a market price.
-It is Cambridge's model of which machines are running, and its best guess assumes miners pay
-0.05 USD/kWh when deciding which machines are still profitable; the bundle also carries the
-lower and upper bounds. No efficiency series is bundled for scrypt (LTC+DOGE) or RandomX
-(XMR), so those two entries are left out today and AVU_hash is computed over BTC, BCH and XEC.
+For SHA-256 it is Cambridge's model of which machines are running (assuming miners pay
+0.05 USD/kWh when deciding which machines are still profitable, with lower and upper bounds
+also bundled); curated hardware step series are likewise bundled for `scrypt` (LTC+DOGE) and
+`randomx` (XMR). Any basket entry missing a live matching revenue/hashrate observation at time
+`t` is left out of the basket at `t` and the weights are taken over the remaining entries with
+complete data.
 
 History. `scripts/build-btc-mining-history.py` builds the monthly Bitcoin inputs (price,
 difficulty, subsidy, efficiency) from blockchain.com's charts API and the Cambridge download,
 from October 2010; `BTC_MONTHLY_AVU_HASH` applies the same formula to them. It is Bitcoin's
-term alone, not the basket. Short-range price lines (24h to 1y) are each price times today's
-AVU_hash, and the chart says so. `scripts/build-historical.py` builds the EIA and World Bank
-figures. Both files carry their source URLs and retrieval date.
+term alone, not the basket. Short-range price lines (24h to 1y) are evaluated against the
+oracle timeseries (`at(t)` step-hold lookup). `scripts/build-historical.py` and
+`scripts/build-wholesale-electricity.py` build the EIA, World Bank, and regional wholesale
+electricity figures. Both files carry their source URLs and retrieval date.
 
 Staleness. A coin's price that has missed several refreshes (15 minutes) or chain statistics
 older than two hours make AVU_hash stale; every value computed with it then shows the age of
 the oldest input. There are no stand-in prices: a coin whose price was not fetched has no AVU
 value, and a coin no provider prices (the Tempo test dollar) never has one. MON is priced as
-mainnet MON; a testnet MON balance is not valued.
+mainnet MON; a testnet MON balance is not valued. Baseline unit: **1 AVU = 1 kWh** of global
+electrical energy (~$0.11 / ~11¢ USD; consequently, the default 0.1 AVU message stamp is
+0.1 kWh, or ~1.1¢ USD).
 
 The tables in the sections above (per-network rates, the $0.084 "composite", the grid
 comparison, the purchasing-power eras) are illustrations written with the original text. No

@@ -811,6 +811,21 @@ mailbox instance generation's authority history. Ordinary body bytes and redunda
 tombstones MAY be compacted only after an authenticated frontier/snapshot preserves
 non-resurrection and all retry, payment, receipt, checkpoint and dispute dependencies are terminal.
 
+### 10.2 Client-Side Join-Semilattice Journal & Self-Encrypted Outbox (Shipped)
+
+While provider-side snapshot compaction remains proposed above, the client-side mailbox journal and cross-device state projection are **SHIPPED** in `packages/wallet/journal/` (`semilattice-state.ts`, `outbox-sync.ts`, `checkpoint-manager.ts`, `tombstone-manager.ts`, `conversation-subject.ts`):
+
+- **Formal Join-Semilattice (`SemilatticeJournalState`)**: Client journal state forms a mathematical join-semilattice $(S, \sqcup)$ whose `mergeState` and `applyEvent` operations are strictly **commutative**, **associative**, and **idempotent** regardless of network replay or arrival order:
+  - **Delivery Status Lattice**: `sending (0) < error (1) < confirmed (2)`. Once a message reaches `confirmed`, late `sending` or transient `error` events never regress it.
+  - **Timestamp Lattice**: Relay-acknowledged server timestamps strictly dominate local optimistic send timestamps (`serverTimestamp > localTimestamp`), with deterministic `min(timestamp)` tie-breaking within the same authority tier.
+  - **Tombstone Dominance (G-Set)**: `deletedMessageDigests` is a grow-only set (`Set<string>`); once a `message-tombstone` is observed for a payload digest, the message entry is permanently removed from `messages` and any subsequent late-arriving `outbox-message` with that digest is a no-op.
+  - **Conversation Subject LWW Register**: Per-conversation subjects merge by `(updatedAtMs, updatedBy, subject)` with deterministic lexicographical tie-breaking on equal timestamps.
+  - **Checkpoint Watermark (`max`)**: `checkpointWatermark` advances monotonically via `Math.max(a.checkpointWatermark, b.checkpointWatermark)` across valid self-signed checkpoints.
+- **Self-Encrypted Journal Entry Item Types**: Cross-device synchronization stores self-addressed, ECDH-encrypted (`crypto-box`) journal entries in the user's own relay mailbox so the relay remains oblivious to outbox contents, read state, and deletions:
+  - `outbox-message`: Self-encrypted record of a sent message (recipient list, payload digest, send status, and message body) enabling multi-device sent-mail history.
+  - `message-tombstone`: Self-encrypted deletion marker containing `deletedPayloadDigests` and `deletedAtMs`.
+  - `journal-checkpoint`: Self-encrypted high-water mark (`upToTimestampMs`, `lastMessageDigest`, `stateHash`) allowing newly paired or recovering devices to bound incremental journal replay.
+
 ## 11. Reset, deletion, and reachability
 
 **PROPOSED.** Reset is boundary-scoped and generation-changing. There is no generic “reset CashWeb”

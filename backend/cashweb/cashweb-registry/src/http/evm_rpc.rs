@@ -4021,47 +4021,64 @@ mod tests {
             .load(Ordering::Relaxed));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn production_boundary_caps_response_bytes_and_total_time() {
+        // Keep paused time under this test's control while the real localhost socket waits.
+        // Without a runnable task, Tokio can auto-advance to the request deadline before I/O.
+        let clock_driver = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        let frozen_at = tokio::time::Instant::now();
+        let slow_entered = Arc::new(tokio::sync::Notify::new());
+        let slow_release = Arc::new(tokio::sync::Notify::new());
+        let upstream_entered = Arc::clone(&slow_entered);
+        let upstream_release = Arc::clone(&slow_release);
         let upstream = Router::new().route(
             "/",
-            routing::post(|body: Bytes| async move {
-                let request: Value = serde_json::from_slice(&body).unwrap();
-                match request["method"].as_str().unwrap() {
-                    "eth_chainId" => Json(json!({
-                        "jsonrpc":"2.0","id":request["id"],"result":"0x279f"
-                    }))
-                    .into_response(),
-                    "eth_getBlockByNumber" => {
-                        Json(checkpoint_response(&request).unwrap()).into_response()
-                    }
-                    "eth_getBalance" => Json(json!({
-                        "jsonrpc":"2.0",
-                        "id":request["id"],
-                        "result":"x".repeat(512)
-                    }))
-                    .into_response(),
-                    "eth_gasPrice" => {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1"}))
-                            .into_response()
-                    }
-                    "eth_blockNumber" => (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
+            routing::post(move |body: Bytes| {
+                let slow_entered = Arc::clone(&upstream_entered);
+                let slow_release = Arc::clone(&upstream_release);
+                async move {
+                    let request: Value = serde_json::from_slice(&body).unwrap();
+                    match request["method"].as_str().unwrap() {
+                        "eth_chainId" => Json(json!({
+                            "jsonrpc":"2.0","id":request["id"],"result":"0x279f"
+                        }))
+                        .into_response(),
+                        "eth_getBlockByNumber" => {
+                            Json(checkpoint_response(&request).unwrap()).into_response()
+                        }
+                        "eth_getBalance" => Json(json!({
                             "jsonrpc":"2.0",
                             "id":request["id"],
-                            "error":{"code":-32000,"message":"provider secret"}
-                        })),
-                    )
+                            "result":"x".repeat(512)
+                        }))
                         .into_response(),
-                    "eth_sendRawTransaction" => Json(json!({
-                        "jsonrpc":"2.0",
-                        "id":"wrong-id",
-                        "result":"0xdeadbeef"
-                    }))
-                    .into_response(),
-                    other => panic!("unexpected method {other}"),
+                        "eth_gasPrice" => {
+                            slow_entered.notify_one();
+                            slow_release.notified().await;
+                            Json(json!({"jsonrpc":"2.0","id":request["id"],"result":"0x1"}))
+                                .into_response()
+                        }
+                        "eth_blockNumber" => (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({
+                                "jsonrpc":"2.0",
+                                "id":request["id"],
+                                "error":{"code":-32000,"message":"provider secret"}
+                            })),
+                        )
+                            .into_response(),
+                        "eth_sendRawTransaction" => Json(json!({
+                            "jsonrpc":"2.0",
+                            "id":"wrong-id",
+                            "result":"0xdeadbeef"
+                        }))
+                        .into_response(),
+                        other => panic!("unexpected method {other}"),
+                    }
                 }
             }),
         );
@@ -4120,13 +4137,18 @@ mod tests {
         );
 
         let slow_body = br#"{"jsonrpc":"2.0","id":2,"method":"eth_gasPrice","params":[]}"#;
-        let slow = router
-            .clone()
-            .oneshot(request_with_proof(&router, slow_body, customer_address()).await)
-            .await
-            .unwrap();
+        assert_eq!(tokio::time::Instant::now(), frozen_at);
+        let slow_request = request_with_proof(&router, slow_body, customer_address()).await;
+        let slow_router = router.clone();
+        let slow_response = tokio::spawn(async move { slow_router.oneshot(slow_request).await });
+        // The upstream has read the request, so the production deadline is already active.
+        // Hold its response until the unchanged 25 ms total deadline has expired.
+        slow_entered.notified().await;
+        tokio::time::advance(Duration::from_millis(26)).await;
+        let slow = slow_response.await.unwrap().unwrap();
         assert_eq!(slow.status(), StatusCode::GATEWAY_TIMEOUT);
         assert_eq!(response_json(slow).await["error"], "rpc_upstream_timeout");
+        slow_release.notify_one();
 
         let error_body = br#"{"jsonrpc":"2.0","id":4,"method":"eth_blockNumber","params":[]}"#;
         let upstream_error = router
@@ -4159,6 +4181,11 @@ mod tests {
                 "broadcast_state":"unknown"
             })
         );
+        assert_eq!(
+            tokio::time::Instant::now(),
+            frozen_at + Duration::from_millis(26)
+        );
+        clock_driver.abort();
     }
 
     #[tokio::test]

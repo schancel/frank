@@ -61,7 +61,6 @@ import {
   installedCanonicalOrigin,
   restoreCanonicalRequest,
   submitCanonicalRequest,
-  CanonicalTransportError,
   type CanonicalAcceptedBody,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
@@ -277,6 +276,7 @@ export interface StoredMessage {
   /** `delivered`: the relay stored this exact message. `dead`: the relay refused it for good
    * (`reason`) and stored nothing. Absent: not known yet; it is re-sent until it is. */
   outcome?: 'delivered' | 'dead'
+  /** Latest relay refusal; with no outcome the original request remains unresolved. */
   reason?: string
   /** A host message points at this attempt, or the user answered for it. */
   accounted?: boolean
@@ -919,78 +919,29 @@ async function submitStored(
       fetch: directory.fetch,
     })
   } catch (error) {
-    // The relay's own "this request is not acceptable": nothing was stored and nothing was
-    // broadcast, and sending the same bytes again can never succeed.
-    if (
-      error instanceof CanonicalTransportError &&
-      error.status !== undefined &&
-      REFUSED_FOR_GOOD.has(error.status)
-    )
-      return {
-        row: await refuseUnexposed(owner, row, `refused_${error.status}`),
-        error,
-      }
-    // The relay does not have the directory statement this message was sealed against. It
-    // decides that before it stores or broadcasts anything, and the same bytes can be refused
-    // for ever: the message is failed and its coin freed, not pinned.
-    if (
-      error instanceof CanonicalTransportError &&
-      error.status === 409 &&
-      error.relayError === 'canonical_directory_predecessor_missing'
-    )
-      return {
-        row: await refuseUnexposed(owner, row, error.relayError),
-        error,
-      }
+    // Signed bytes have crossed the transport boundary. No HTTP refusal proves that this
+    // request (or an earlier copy whose response was lost) cannot still be broadcast.
     return { row, error }
   }
-  // An older relay's "kept, not delivered yet" is not an answer: submit again later.
-  if (accepted.phase === 'retained') return { row }
-  if (accepted.phase === 'dead' && DEAD_BEFORE_EXPOSURE.has(accepted.reason))
-    return { row: await refuseUnexposed(owner, row, accepted.reason) }
-  // The relay has answered for these exact bytes: the request body has done its work.
-  const { request: _request, ...kept } = owner.messages.get(row.consumerId)!
-  const answered: StoredMessage =
-    accepted.phase === 'delivered'
-      ? { ...kept, outcome: 'delivered' }
-      : { ...kept, outcome: 'dead', reason: accepted.reason }
+  // A relay's answer cannot prove an exposed signed payment unexecutable. Keep the complete
+  // original request and its claims until delivery and chain reconciliation resolve them.
+  if (accepted.phase !== 'delivered') {
+    if (accepted.phase === 'dead' && row.reason !== accepted.reason) {
+      const refused = {
+        ...owner.messages.get(row.consumerId)!,
+        reason: accepted.reason,
+      }
+      await owner.messages.put(refused)
+      return { row: refused }
+    }
+    return { row }
+  }
+  // Delivery resolves the relay obligation, independently of the payments' chain state.
+  const { request: _request, reason: _reason, ...kept } =
+    owner.messages.get(row.consumerId)!
+  const answered: StoredMessage = { ...kept, outcome: 'delivered' }
   await owner.messages.put(answered)
   return { row: answered }
-}
-
-/** HTTP answers that refuse the request itself: malformed, too large, unprocessable. */
-const REFUSED_FOR_GOOD = new Set([400, 413, 422])
-/** `dead` reasons the relay decides before it stores or broadcasts anything. Every other dead
- * reason may follow a broadcast, so its payments stay claimed until the chain decides. */
-const DEAD_BEFORE_EXPOSURE = new Set<string>(['undeliverable', 'sender_unpublished'])
-
-/**
- * The relay refused this message for good, before anything could broadcast its payments. The
- * message is failed, its signed bytes are dropped, and every coin it claimed is free again:
- * nothing was exposed, so nothing waits for the chain. The record is written first, the claims
- * released after.
- */
-async function refuseUnexposed(
-  owner: CanonicalMessagingOwner,
-  row: StoredMessage,
-  reason: string,
-): Promise<StoredMessage> {
-  const { request: _request, ...kept } = owner.messages.get(row.consumerId)!
-  const refused: StoredMessage = {
-    ...kept,
-    outcome: 'dead',
-    reason,
-    payments: kept.payments.map(payment =>
-      payment.state === 'pending'
-        ? { ...payment, rawTx: '', state: 'unsent' }
-        : payment,
-    ),
-  }
-  await owner.messages.put(refused)
-  const holder = holderOf(owner, row.consumerId)
-  for (const payment of row.payments)
-    if (payment.state === 'pending') owner.payer().releasePayment(holder, payment)
-  return refused
 }
 
 /** Signed payments last seen in the mempool or awaiting canonical failure depth. Process memory. */

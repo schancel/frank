@@ -759,16 +759,21 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       messageId: ID_A,
       onAttemptCreated: value => void (digest = value),
     })
-    // The send reports the relay's final answer, and the row holds the final status (#1323).
-    expect(first.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
+    // A relay refusal cannot prove signed payments were not exposed. Keep the original live.
+    expect(first.error).toBeInstanceOf(MonadStampPendingAttemptError)
     expect(first.labelled).toBe(false)
     expect(first.signed).toBe(1)
     expect(await rows()).toEqual([
       expect.objectContaining({
         consumerId: consumerOf(ID_A),
         digest,
-        outcome: 'dead',
         reason: 'undeliverable',
+        payments: [
+          expect.objectContaining({
+            state: 'pending',
+            rawTx: expect.stringMatching(/^0x/),
+          }),
+        ],
       }),
     ])
 

@@ -1,0 +1,30 @@
+# Synthetic, local-only relay. No funded identity, upstream RPC, or production state.
+host = "0.0.0.0:8080"
+url = "http://127.0.0.1:18084"
+
+[registry]
+db_path = "/data/registry.rocksdb"
+net = "mainnet"
+peers = []
+public_relay_urls = []
+
+[registry.cluster]
+# Single embedded writer; the independent bus table below enables NATS.
+enabled = false
+driver = "rocksdb"
+cluster_name = "disposable-local-lab"
+
+[registry.cluster.nats]
+enabled = true
+url = "nats://nats:4222"
+
+# Keep financial routes off: this baseline tests storage/bus wiring without a chain node.
+[registry.monad_mailbox]
+enabled = false
+
+[registry.pop]
+enabled = false
+monad_rpc_url = "http://unused.invalid"
+hmac_secret = "unused-because-pop-is-disabled"
+payment_recipient = "0x0000000000000000000000000000000000000000"
+min_value_wei = "0"

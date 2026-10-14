@@ -1,0 +1,48 @@
+# Infrastructure + optional live transaction-driver tests; NOT a FoundationDB relay.
+name: frank-lab-foundationdb-nats
+services:
+  nats:
+    image: nats:2.10-alpine
+    command: ["-m", "8222"]
+    ports:
+      - "127.0.0.1:24222:4222"
+      - "127.0.0.1:28222:8222"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  fdb:
+    image: foundationdb/foundationdb:7.3.63
+    environment:
+      FDB_NETWORKING_MODE: container
+      FDB_CLUSTER_FILE: /cluster/fdb.cluster
+      FDB_PORT: "4500"
+    volumes:
+      - fdb-data:/var/fdb/data
+      - fdb-cluster:/cluster
+    # Clients run on the Compose network: FDB advertises its container address.
+    # Publishing 4500 to the host alone would not make that address host-reachable.
+    healthcheck:
+      test: ["CMD-SHELL", "fdbcli -C /cluster/fdb.cluster --timeout 5 --exec 'status minimal' | grep -F 'The database is available.'"]
+      interval: 3s
+      timeout: 6s
+      retries: 20
+  driver-contract:
+    profiles: ["test"]
+    build:
+      context: ../..
+      dockerfile: backend/labs/Dockerfile.foundationdb
+    environment:
+      FRANK_FDB_CLUSTER_FILE: /cluster/fdb.cluster
+      FRANK_LAB_NATS_URL: nats://nats:4222
+    volumes:
+      - fdb-cluster:/cluster:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+      fdb:
+        condition: service_healthy
+volumes:
+  fdb-data:
+  fdb-cluster:

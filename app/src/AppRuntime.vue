@@ -37,7 +37,7 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref, watch } from 'vue'
+import { computed, defineComponent, provide, ref, watch } from 'vue'
 import { useNotificationPermissionOffer } from 'src/composables/useNotificationPermissionOffer'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -64,6 +64,10 @@ import {
   messagingWallet,
 } from 'src/utils/monad-identity-session'
 import { activeChain } from '@frank/wallet/chain'
+import {
+  CHAT_SEARCH_SHORTCUT,
+  createChatSearchShortcut,
+} from './composables/useChatSearchShortcut'
 import { useAppOracleFeed } from 'src/composables/useOracleFeed'
 
 export default defineComponent({
@@ -101,6 +105,8 @@ export default defineComponent({
     } = storeToRefs(chatStore)
 
     const router = useRouter()
+    const chatSearchShortcut = createChatSearchShortcut()
+    provide(CHAT_SEARCH_SHORTCUT, chatSearchShortcut)
 
     watch(activeConversationId, conversationId => {
       // Selection, including notification clicks, routes to its exact thread owner.
@@ -204,8 +210,27 @@ export default defineComponent({
       tabCoordinator,
       takeoverHere,
       shortcutKeyListener(e: KeyboardEvent) {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-          contactBookOpen.value = !contactBookOpen.value
+        if (
+          !(e.metaKey || e.ctrlKey) ||
+          e.key.toLowerCase() !== 'k' ||
+          e.altKey
+        )
+          return
+        if (e.defaultPrevented || e.isComposing) return
+        if (
+          accountStatus.status !== 'ready' ||
+          contactBookOpen.value ||
+          tabCoordinator.isYielded ||
+          document.querySelector('.q-dialog, .q-menu')
+        )
+          return
+        e.preventDefault()
+        if (e.repeat) return
+        const path = router.currentRoute.value.path
+        if (path === '/chat' || path.startsWith('/chat/')) {
+          chatSearchShortcut.search()
+        } else {
+          contactBookOpen.value = true
         }
       },
       contactBookOpen,

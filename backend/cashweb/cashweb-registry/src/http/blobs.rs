@@ -2,12 +2,11 @@
 //! `GET /blobs/:sha256`) and SSRF-safe server-to-server Home-Relay proxy (`?origin=<relay_url>`).
 
 use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, OnceLock, RwLock,
+        Mutex, OnceLock,
     },
     time::Duration,
 };
@@ -39,32 +38,24 @@ pub const BLOB_ORIGIN_HEADER: &str = "x-blob-origin-relay";
 const STORE_EXTENSION: &str = "blobs-v1";
 const UPSTREAM_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Content-addressed blob store backed by a lazy RocksDB sidecar (`*.blobs-v1`) and in-memory cache.
+/// Content-addressed blob store. The lazy RocksDB sidecar (`*.blobs-v1`) is the sole
+/// owner of blob bytes; requests retain no permanent in-memory copy.
 #[derive(Debug)]
 pub struct BlobStore {
     db_path: PathBuf,
     rocks: OnceLock<rocksdb::DB>,
     rocks_lock: Mutex<()>,
-    memory: RwLock<HashMap<[u8; 32], Vec<u8>>>,
     allow_loopback_origins: AtomicBool,
-    http_client: reqwest::Client,
 }
 
 impl BlobStore {
     /// Creates a new [`BlobStore`] whose RocksDB directory sits beside `registry_db_path`.
     pub fn new(registry_db_path: PathBuf) -> Self {
-        let http_client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(UPSTREAM_FETCH_TIMEOUT)
-            .build()
-            .expect("valid reqwest client for blob proxy");
         Self {
             db_path: registry_db_path.with_extension(STORE_EXTENSION),
             rocks: OnceLock::new(),
             rocks_lock: Mutex::new(()),
-            memory: RwLock::new(HashMap::new()),
             allow_loopback_origins: AtomicBool::new(false),
-            http_client,
         }
     }
 
@@ -79,59 +70,38 @@ impl BlobStore {
         self.allow_loopback_origins.load(Ordering::SeqCst)
     }
 
-    fn open_rocks(&self) -> Option<&rocksdb::DB> {
+    fn open_rocks(&self) -> Result<&rocksdb::DB, rocksdb::Error> {
         if let Some(db) = self.rocks.get() {
-            return Some(db);
+            return Ok(db);
         }
         let _guard = self
             .rocks_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(db) = self.rocks.get() {
-            return Some(db);
+            return Ok(db);
         }
         let mut opts = rocksdb::Options::default();
         opts.create_if_missing(true);
-        if let Ok(db) = rocksdb::DB::open(&opts, &self.db_path) {
-            let _ = self.rocks.set(db);
-        }
-        self.rocks.get()
+        let db = rocksdb::DB::open(&opts, &self.db_path)?;
+        let _ = self.rocks.set(db);
+        Ok(self.rocks.get().expect("database initialized under lock"))
     }
 
-    /// Looks up a verified blob by its 32-byte SHA-256 digest.
-    pub fn get(&self, hash: &[u8; 32]) -> Option<Vec<u8>> {
-        if let Some(bytes) = self
-            .memory
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(hash)
-            .cloned()
-        {
-            return Some(bytes);
+    /// Looks up a verified blob without hiding storage failures as cache misses.
+    pub fn get(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, rocksdb::Error> {
+        if self.rocks.get().is_none() && !self.db_path.exists() {
+            return Ok(None);
         }
-        if self.rocks.get().is_some() || self.db_path.exists() {
-            if let Some(db) = self.open_rocks() {
-                if let Ok(Some(bytes)) = db.get(hash) {
-                    self.memory
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(*hash, bytes.clone());
-                    return Some(bytes);
-                }
-            }
-        }
-        None
+        self.open_rocks()?.get(hash)
     }
 
-    /// Idempotently persists a verified blob keyed by its 32-byte SHA-256 digest.
-    pub fn put(&self, hash: &[u8; 32], bytes: Vec<u8>) {
-        if let Some(db) = self.open_rocks() {
-            let _ = db.put(hash, &bytes);
-        }
-        self.memory
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(*hash, bytes);
+    /// Idempotently persists a verified blob before acknowledgment. Synchronous WAL
+    /// writes preserve successful uploads across process restart and host interruption.
+    pub fn put(&self, hash: &[u8; 32], bytes: Vec<u8>) -> Result<(), rocksdb::Error> {
+        let mut options = rocksdb::WriteOptions::default();
+        options.set_sync(true);
+        self.open_rocks()?.put_opt(hash, bytes, &options)
     }
 }
 
@@ -168,6 +138,66 @@ fn error_response(
         }),
     )
         .into_response()
+}
+
+fn storage_error_response() -> Response {
+    error_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "blob_storage_failed",
+        None,
+    )
+}
+
+/// Resolve once, fail closed, and bind the actual connector to an approved address.
+/// A fresh client avoids pooled connections from any other origin or DNS decision.
+async fn origin_client<F, Fut>(
+    origin: &Url,
+    allow_loopback: bool,
+    resolve: F,
+) -> Result<reqwest::Client, (StatusCode, &'static str)>
+where
+    F: FnOnce(String, u16) -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<Vec<SocketAddr>>>,
+{
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .https_only(!allow_loopback)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(UPSTREAM_FETCH_TIMEOUT);
+    if let Some(url::Host::Domain(domain)) = origin.host() {
+        let addresses = tokio::time::timeout(
+            UPSTREAM_FETCH_TIMEOUT,
+            resolve(
+                domain.to_string(),
+                origin.port_or_known_default().unwrap_or(443),
+            ),
+        )
+        .await
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "origin DNS lookup timed out"))?
+        .map_err(|_| (StatusCode::BAD_GATEWAY, "origin DNS lookup failed"))?;
+        let first = *addresses.first().ok_or((
+            StatusCode::BAD_GATEWAY,
+            "origin domain did not resolve to any IP address",
+        ))?;
+        if addresses
+            .iter()
+            .any(|address| is_forbidden_ip(address.ip(), allow_loopback))
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "origin domain resolved to a forbidden IP address",
+            ));
+        }
+        // reqwest 0.11.11 supports one override per hostname. Pin the first
+        // approved address, preserving the URL hostname for TLS SNI and Host.
+        builder = builder.resolve(domain, first);
+    }
+    builder.build().map_err(|_| {
+        (
+            StatusCode::BAD_GATEWAY,
+            "origin HTTP client initialization failed",
+        )
+    })
 }
 
 fn blob_ok_response(bytes: Vec<u8>, head_only: bool) -> Response {
@@ -216,7 +246,9 @@ fn is_forbidden_ipv4(ip: Ipv4Addr, allow_loopback: bool) -> bool {
         return !allow_loopback;
     }
     let octets = ip.octets();
-    ip.is_private()
+    octets[0] == 0
+        || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+        || ip.is_private()
         || ip.is_link_local()
         || ip.is_unspecified()
         || ip.is_broadcast()
@@ -238,7 +270,13 @@ fn is_forbidden_ipv6(ip: Ipv6Addr, allow_loopback: bool) -> bool {
         return !allow_loopback;
     }
     let segments = ip.segments();
-    ip.is_unspecified()
+    // Permit native global unicast only; reject deprecated transition and
+    // special-purpose ranges that can carry private IPv4 destinations.
+    (segments[0] & 0xe000) != 0x2000
+        || (segments[0] == 0x2001 && segments[1] < 0x0200)
+        || segments[0] == 0x2002
+        || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0)
+        || ip.is_unspecified()
         || ip.is_multicast()
         // Unique local (fc00::/7)
         || (segments[0] & 0xfe00) == 0xfc00
@@ -365,7 +403,9 @@ pub async fn handle_put_blob(
     }
 
     let size = bytes.len();
-    server.registry.blobs().put(&expected_hash, bytes);
+    if server.registry.blobs().put(&expected_hash, bytes).is_err() {
+        return storage_error_response();
+    }
 
     (
         StatusCode::OK,
@@ -386,8 +426,9 @@ pub async fn handle_head_blob(
         return error_response(StatusCode::BAD_REQUEST, "invalid_blob_hash", None);
     };
     match server.registry.blobs().get(&expected_hash) {
-        Some(bytes) => blob_ok_response(bytes, true),
-        None => error_response(StatusCode::NOT_FOUND, "blob_not_found", None),
+        Ok(Some(bytes)) => blob_ok_response(bytes, true),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "blob_not_found", None),
+        Err(_) => storage_error_response(),
     }
 }
 
@@ -411,8 +452,10 @@ pub async fn handle_get_blob(
     let blob_store = server.registry.blobs();
 
     // 1. Local cache hit: serve immediately with immutable Cache-Control.
-    if let Some(bytes) = blob_store.get(&expected_hash) {
-        return blob_ok_response(bytes, false);
+    match blob_store.get(&expected_hash) {
+        Ok(Some(bytes)) => return blob_ok_response(bytes, false),
+        Ok(None) => {}
+        Err(_) => return storage_error_response(),
     }
 
     // 2. Local cache miss: check `?origin=` query param or `X-Blob-Origin-Relay` header.
@@ -445,30 +488,18 @@ pub async fn handle_get_blob(
         }
     };
 
-    // Resolve DNS if domain-based and verify resolved IPs against SSRF before connecting.
-    if let Some(url::Host::Domain(domain)) = origin_url.host() {
-        let port = origin_url.port_or_known_default().unwrap_or(443);
-        if let Ok(resolved) = tokio::net::lookup_host((domain, port)).await {
-            let mut any_addr = false;
-            for sock_addr in resolved {
-                any_addr = true;
-                if is_forbidden_ip(sock_addr.ip(), allow_loopback) {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_origin_url",
-                        Some("origin domain resolved to a forbidden IP address".to_string()),
-                    );
-                }
-            }
-            if !any_addr {
-                return error_response(
-                    StatusCode::BAD_GATEWAY,
-                    "upstream_fetch_failed",
-                    Some("origin domain did not resolve to any IP address".to_string()),
-                );
-            }
+    let http_client = match origin_client(&origin_url, allow_loopback, |domain, port| async move {
+        tokio::net::lookup_host((domain.as_str(), port))
+            .await
+            .map(|addresses| addresses.collect())
+    })
+    .await
+    {
+        Ok(client) => client,
+        Err((status, reason)) => {
+            return error_response(status, "invalid_origin_url", Some(reason.to_string()));
         }
-    }
+    };
 
     let upstream_url = format!(
         "{}/blobs/{}",
@@ -476,7 +507,7 @@ pub async fn handle_get_blob(
         sha256_hex
     );
 
-    let upstream_res = match blob_store.http_client.get(&upstream_url).send().await {
+    let upstream_res = match http_client.get(&upstream_url).send().await {
         Ok(res) => res,
         Err(err) => {
             return error_response(
@@ -541,7 +572,12 @@ pub async fn handle_get_blob(
     }
 
     // Cache verified ciphertext chunk locally so subsequent reads require zero upstream calls.
-    blob_store.put(&expected_hash, upstream_bytes.clone());
+    if blob_store
+        .put(&expected_hash, upstream_bytes.clone())
+        .is_err()
+    {
+        return storage_error_response();
+    }
 
     blob_ok_response(upstream_bytes, false)
 }
@@ -706,6 +742,240 @@ mod tests {
         );
         let get_bytes = hyper::body::to_bytes(get_res.into_body()).await.unwrap();
         assert_eq!(get_bytes.as_ref(), payload.as_slice());
+    }
+
+    #[tokio::test]
+    async fn storage_open_failure_never_acknowledges_or_serves_unpersisted_bytes() {
+        let (_dir, server) = make_test_server();
+        std::fs::write(
+            &server.registry.blobs().db_path,
+            b"not a database directory",
+        )
+        .unwrap();
+        assert_storage_failure(server, StatusCode::INTERNAL_SERVER_ERROR).await;
+    }
+
+    #[tokio::test]
+    async fn storage_write_failure_never_acknowledges_or_caches_bytes() {
+        let (_dir, server) = make_test_server();
+        let store = server.registry.blobs();
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        drop(rocksdb::DB::open(&options, &store.db_path).unwrap());
+        let read_only = rocksdb::DB::open_for_read_only(&options, &store.db_path, false).unwrap();
+        store.rocks.set(read_only).unwrap();
+        assert_storage_failure(server, StatusCode::NOT_FOUND).await;
+    }
+
+    #[tokio::test]
+    async fn proxy_storage_write_failure_does_not_claim_a_cached_success() {
+        let (_dir_a, origin) = make_test_server();
+        let bytes = b"verified upstream bytes still need durable storage".to_vec();
+        let hash: [u8; 32] = Sha256::digest(&bytes).into();
+        origin.registry.blobs().put(&hash, bytes).unwrap();
+        let (url, handle) = spawn_test_relay(origin).await;
+        let (_dir_b, home) = make_test_server();
+        let store = home.registry.blobs();
+        store.set_allow_loopback_origins(true);
+        let mut options = rocksdb::Options::default();
+        options.create_if_missing(true);
+        drop(rocksdb::DB::open(&options, &store.db_path).unwrap());
+        store
+            .rocks
+            .set(rocksdb::DB::open_for_read_only(&options, &store.db_path, false).unwrap())
+            .unwrap();
+        let encoded = url::form_urlencoded::byte_serialize(url.as_bytes()).collect::<String>();
+        let router = home.into_router();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/blobs/{}?origin={}", hex::encode(hash), encoded))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/blobs/{}", hex::encode(hash)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        handle.abort();
+    }
+
+    async fn assert_storage_failure(server: RegistryServer, read_status: StatusCode) {
+        let payload = b"must not acknowledge a volatile upload".to_vec();
+        let hash = hex::encode(Sha256::digest(&payload));
+        let router = server.into_router();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/blobs/{}", hash))
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"],
+            "blob_storage_failed"
+        );
+        for method in ["GET", "HEAD"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!("/blobs/{}", hash))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), read_status);
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_uploads_have_one_durable_owner_and_survive_reopen() {
+        let (dir, server) = make_test_server();
+        let path = server.registry.blobs().db_path.clone();
+        let router = server.clone().into_router();
+        let mut blobs = Vec::new();
+        for index in 0..16u8 {
+            let bytes = vec![index; MAX_BLOB_CHUNK_BYTES];
+            let hash: [u8; 32] = Sha256::digest(&bytes).into();
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/blobs/{}", hex::encode(hash)))
+                        .body(Body::from(bytes.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            blobs.push((hash, bytes));
+        }
+        // No redundant process cache can keep deleted durable bytes alive.
+        server
+            .registry
+            .blobs()
+            .open_rocks()
+            .unwrap()
+            .delete(blobs[0].0)
+            .unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/blobs/{}", hex::encode(blobs[0].0)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        drop(router);
+        drop(server);
+        let reopened = BlobStore::new(dir.path().join("db.rocksdb"));
+        assert_eq!(reopened.db_path, path);
+        assert_eq!(reopened.get(&blobs[0].0).unwrap(), None);
+        for (hash, bytes) in &blobs[1..] {
+            assert_eq!(reopened.get(hash).unwrap().as_ref(), Some(bytes));
+        }
+    }
+
+    #[tokio::test]
+    async fn origin_dns_errors_empty_and_mixed_private_answers_fail_closed() {
+        let url = validate_origin_relay_url("https://unresolvable.invalid", false).unwrap();
+        let failed = origin_client(&url, false, |_, _| async {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "synthetic DNS failure",
+            ))
+        })
+        .await;
+        assert_eq!(failed.unwrap_err().0, StatusCode::BAD_GATEWAY);
+        let empty = origin_client(&url, false, |_, _| async { Ok(vec![]) }).await;
+        assert_eq!(empty.unwrap_err().0, StatusCode::BAD_GATEWAY);
+        for private in [
+            "127.0.0.1:443",
+            "10.0.0.1:443",
+            "169.254.169.254:443",
+            "[::ffff:127.0.0.1]:443",
+            "[2002:7f00:1::]:443",
+        ] {
+            let result = origin_client(&url, false, |_, _| async move {
+                Ok(vec![
+                    "8.8.8.8:443".parse().unwrap(),
+                    private.parse().unwrap(),
+                ])
+            })
+            .await;
+            assert_eq!(result.unwrap_err().0, StatusCode::BAD_REQUEST);
+        }
+    }
+
+    #[tokio::test]
+    async fn approved_dns_is_used_by_actual_connection_without_second_lookup_or_redirect() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let router = axum::Router::new().route(
+            "/",
+            axum::routing::get(|headers: HeaderMap| async move {
+                assert!(headers
+                    .get(header::HOST)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("never-resolves.invalid:"));
+                (
+                    StatusCode::FOUND,
+                    [(header::LOCATION, "http://169.254.169.254/")],
+                    "pinned connection",
+                )
+            }),
+        );
+        let handle = tokio::spawn(async move {
+            axum::Server::from_tcp(listener)
+                .unwrap()
+                .serve(router.into_make_service())
+                .await
+                .unwrap();
+        });
+        let url = validate_origin_relay_url(
+            &format!("http://never-resolves.invalid:{}", address.port()),
+            true,
+        )
+        .unwrap();
+        let client = origin_client(&url, true, |domain, port| async move {
+            assert_eq!(domain, "never-resolves.invalid");
+            assert_eq!(port, address.port());
+            Ok(vec![address])
+        })
+        .await
+        .unwrap();
+        // This test also runs with ambient proxy variables pointing at a dead
+        // local port, proving they cannot override the validated connection.
+        let response = client.get(url).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(response.text().await.unwrap(), "pinned connection");
+        handle.abort();
     }
 
     #[test]

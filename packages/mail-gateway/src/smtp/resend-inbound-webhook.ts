@@ -173,7 +173,7 @@ export class ResendInboundWebhook {
     if (validRecipients.length === 0) return { kind: 'ignored', admissions: [] };
     const recipients = [...new Set(validRecipients)];
     const scopes = await Promise.all(recipients.map(async localPart => {
-      if (isOperationalLocalPart(localPart) || localPart.startsWith('bounce+')) return undefined;
+      if (localPart.startsWith('bounce+')) return undefined;
       return this.issuedMailboxLookup(localPart);
     }));
     if (scopes.some(scope => !scope)) return { kind: 'rejected_unknown', admissions: [] };

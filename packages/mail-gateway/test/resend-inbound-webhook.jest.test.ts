@@ -136,4 +136,31 @@ describe('signed Resend inbound admission', () => {
       method: 'POST', headers, body: 'x'.repeat(65 * 1024),
     }), make())).status).toBe(413);
   });
+
+  it('admits operational mailboxes like support@ and admin@ when issuedMailboxLookup resolves an operator account', async () => {
+    const operatorAddress = `0x${'f'.repeat(40)}`;
+    retrieve.mockResolvedValueOnce({ ...RECEIVED, received_for: ['support@signet.mx', 'admin@signet.mx'] });
+    issuedMailbox.mockImplementation(async (localPart) =>
+      localPart === 'support' || localPart === 'admin'
+        ? { accountAddress: operatorAddress, conversationId: CONVERSATION }
+        : undefined
+    );
+    const result = await make().handle('signed', HEADERS);
+    expect(result.kind).toBe('admitted');
+    expect(result.admissions).toHaveLength(2);
+    expect(admit).toHaveBeenNthCalledWith(1, expect.anything(), operatorAddress, 1000n, CONVERSATION, 'support');
+    expect(admit).toHaveBeenNthCalledWith(2, expect.anything(), operatorAddress, 1000n, CONVERSATION, 'admin');
+  });
+
+  it('admits direct user ID fallback local-parts like u.0x...@signet.mx', async () => {
+    const userAddress = `0x${'b'.repeat(40)}`;
+    const fallbackLocal = `u.${userAddress}`;
+    retrieve.mockResolvedValueOnce({ ...RECEIVED, received_for: [`${fallbackLocal}@signet.mx`] });
+    issuedMailbox.mockImplementation(async (localPart) =>
+      localPart === fallbackLocal ? { accountAddress: userAddress } as never : undefined
+    );
+    const result = await make().handle('signed', HEADERS);
+    expect(result.kind).toBe('admitted');
+    expect(admit).toHaveBeenCalledWith(expect.anything(), userAddress, 1000n, undefined, fallbackLocal);
+  });
 });

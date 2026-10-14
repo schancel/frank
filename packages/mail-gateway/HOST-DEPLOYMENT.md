@@ -22,6 +22,8 @@ The host reads the following nonsecret environment variables:
 | `FRANK_MAIL_WEBHOOK_PORT` | Local HTTP port. |
 | `FRANK_MAIL_POLL_MS` | Positive recovery interval in milliseconds. |
 | `FRANK_MAIL_JOURNAL_MODE` | `existing` by default; `provision` is an explicit one-time journal operation only. |
+| `FRANK_MAIL_OPERATOR_ACCOUNT` | Optional canonical `0x` Frank account to receive operational/admin mail (`support@`, `admin@`, `postmaster@`, `abuse@`, `security@`, `help@`, `info@`, `contact@`). |
+| `FRANK_MAIL_OPERATOR_EMAIL` | Optional operator forwarding email address for operational mailboxes. |
 | `FRANK_MAIL_SMTP_HOST`, `FRANK_MAIL_SMTP_PORT` | Optional native SMTP bind address and port; all SMTP variables must be present together. |
 | `FRANK_MAIL_SMTP_HOSTNAME` | Native SMTP greeting/TLS hostname, such as `mail.signet.mx`. |
 | `FRANK_MAIL_SMTP_TLS_KEY_FILE`, `FRANK_MAIL_SMTP_TLS_CERT_FILE` | Absolute 0400/0600 regular PEM files for STARTTLS. |

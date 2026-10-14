@@ -1,5 +1,6 @@
 import { Resend } from 'resend';
 import { MailJournal } from '../ledger/mail-journal';
+import { readHeaderSection } from '../rfc/message-headers';
 import type { OutboundJobRecord } from '../types';
 
 export interface SentMailEvidence {
@@ -46,14 +47,29 @@ function exactFrom(providerFrom: string, expected: string): boolean {
   return from === expected || from.endsWith(`<${expected}>`);
 }
 
+function headerFromAddress(job: OutboundJobRecord, gatewayDomain: string): string | undefined {
+  if (job.signedRfc822.kind !== 'inline') return undefined;
+  const fromValues = readHeaderSection(job.signedRfc822.bytes)
+    .fields.filter(([name]) => name === 'from')
+    .map(([, value]) => value.trim());
+  if (fromValues.length !== 1) return undefined;
+  const raw = fromValues[0];
+  const angle = raw.match(/<([^<>\s]+@[^<>\s]+)>$/);
+  const candidate = (angle ? angle[1] : raw).toLowerCase();
+  return candidate.endsWith(`@${gatewayDomain}`) ? candidate : undefined;
+}
+
 function matches(job: OutboundJobRecord, evidence: SentMailEvidence, gatewayDomain: string): boolean {
   const createdAtMs = Date.parse(evidence.createdAt);
+  const inlineFrom = headerFromAddress(job, gatewayDomain);
+  const expectedAliasFrom = `${job.senderLocalPart}@${gatewayDomain}`;
   return (
     Number.isFinite(createdAtMs) &&
     job.submissionStartedAtMs !== undefined &&
     createdAtMs >= job.submissionStartedAtMs - 5 * 60_000 &&
     evidence.messageId === job.rfcMessageId &&
-    exactFrom(evidence.from, `${job.senderLocalPart}@${gatewayDomain}`) &&
+    (exactFrom(evidence.from, expectedAliasFrom) ||
+      (inlineFrom !== undefined && exactFrom(evidence.from, inlineFrom))) &&
     evidence.to.some((address) => address.toLowerCase() === job.recipientEmail)
   );
 }

@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import type { ActiveChain, DirectMessageReceived, WalletHandle } from '@frank/wallet/chain/active-chain';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import { MailJournal } from '../src/ledger/mail-journal';
-import { JournaledFrankOutbound, replyAlias } from '../src/relay/journaled-frank-outbound';
+import { JournaledFrankOutbound, replyAlias, userIdFallbackLocalPart } from '../src/relay/journaled-frank-outbound';
 import { JournaledFrankMailbox } from '../src/relay/journaled-frank-mailbox';
 import { LocalFsBlobStore } from '../src/storage/local-fs-blob-store';
 
@@ -72,6 +72,7 @@ describe('journaled Frank outbound bridge', () => {
     const raw = Buffer.from(job.signedRfc822.bytes).toString('utf8');
     expect(raw).toContain(`From: ${alias}@gw.example\r\nReply-To: ${alias}@gw.example`);
     expect(raw).toContain(`Message-ID: ${RFC_ID}`);
+    expect(raw).toContain('Content-Transfer-Encoding: 7bit\r\n\r\nHello\r\n');
     ledger.sqlite?.close();
     open();
     await handler.handle(message);
@@ -153,5 +154,52 @@ describe('journaled Frank outbound bridge', () => {
     expect(raw).toMatch(/Subject: =\?UTF-8\?B\?/);
     expect(raw).toContain(Buffer.from('Salut 🌍').toString('base64'));
     expect(raw).toContain(`Reply-To: ${replyAlias(SALT, SCOPE, CONVERSATION)}@gw.example`);
+  });
+
+  it('uses resolved relay username and display name in From while keeping thread Reply-To alias', async () => {
+    const handlerWithUsername = new JournaledFrankOutbound({
+      journal,
+      ledger,
+      gatewayDomain: 'gw.example',
+      mailboxSalt: SALT,
+      now: () => 1000,
+      resolveSenderUsername: async (scope) => (scope === SCOPE ? 'shammah' : undefined),
+    });
+    const message = received();
+    const email = message.items[0];
+    if (email.type !== 'email') throw new Error('Expected email');
+    email.from = { address: `${SCOPE}@gw.example`, name: 'Shammah Chancellor' };
+    await handlerWithUsername.handle(message);
+
+    const alias = replyAlias(SALT, SCOPE, CONVERSATION);
+    expect(journal.issuedMailbox('shammah')).toEqual({ scopeAccount: SCOPE });
+    expect(journal.issuedMailbox(alias)).toEqual({ scopeAccount: SCOPE, conversationId: CONVERSATION });
+    const [job] = journal.listDueOutboundJobs(1000, 10);
+    if (job.signedRfc822.kind !== 'inline') throw new Error('Expected inline mail');
+    const raw = Buffer.from(job.signedRfc822.bytes).toString('utf8');
+    expect(raw).toContain(`From: "Shammah Chancellor" <shammah@gw.example>\r\nReply-To: ${alias}@gw.example`);
+  });
+
+  it('falls back to deterministic user ID local-part u.0x... when sender has no username', async () => {
+    const handlerWithFallback = new JournaledFrankOutbound({
+      journal,
+      ledger,
+      gatewayDomain: 'gw.example',
+      mailboxSalt: SALT,
+      now: () => 1000,
+      resolveSenderUsername: async () => undefined,
+    });
+    const message = received();
+    const email = message.items[0];
+    if (email.type !== 'email') throw new Error('Expected email');
+    email.from = { address: `${SCOPE}@gw.example`, name: 'Shammah' };
+    await handlerWithFallback.handle(message);
+
+    const alias = replyAlias(SALT, SCOPE, CONVERSATION);
+    const fallbackLocal = userIdFallbackLocalPart(SCOPE);
+    const [job] = journal.listDueOutboundJobs(1000, 10);
+    if (job.signedRfc822.kind !== 'inline') throw new Error('Expected inline mail');
+    const raw = Buffer.from(job.signedRfc822.bytes).toString('utf8');
+    expect(raw).toContain(`From: "Shammah" <${fallbackLocal}@gw.example>\r\nReply-To: ${alias}@gw.example`);
   });
 });

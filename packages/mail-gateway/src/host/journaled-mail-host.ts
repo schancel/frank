@@ -32,6 +32,10 @@ export interface JournaledMailHostOptions {
   readonly inboundStampValue: bigint;
   readonly webhookHost: string;
   readonly webhookPort: number;
+  readonly relayBaseUrl?: string;
+  readonly operatorAccountAddress?: string;
+  readonly operatorForwardEmail?: string;
+  readonly resolveSenderUsername?: (scopeAccount: string) => Promise<string | undefined>;
   readonly nativeSmtp?: {
     readonly hostname: string;
     readonly tlsKey: Buffer;
@@ -45,6 +49,36 @@ export interface JournaledMailHost {
   readonly webhook: ResendWebhookHttp;
   readonly smtp?: JournaledSmtpServer;
   close(): Promise<void>;
+}
+
+function createRelaySenderUsernameLookup(
+  relayBaseUrl: string,
+  fetcher: typeof fetch = fetch,
+): (scopeAccount: string) => Promise<string | undefined> {
+  const base = relayBaseUrl.replace(/\/+$/, '');
+  return async (scopeAccount: string) => {
+    const normalized = scopeAccount.trim().toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(normalized)) return undefined;
+    try {
+      const response = await fetcher(
+        `${base}/directory/users?addresses=${encodeURIComponent(normalized)}`,
+        {
+          method: 'GET',
+          headers: { 'ngrok-skip-browser-warning': '1' },
+        },
+      );
+      if (!response.ok) return undefined;
+      const body = (await response.json().catch(() => undefined)) as
+        | { users?: Array<{ username?: unknown; address?: unknown }> }
+        | undefined;
+      const entry = body?.users?.find(
+        (u) => typeof u?.address === 'string' && u.address.toLowerCase() === normalized,
+      ) ?? body?.users?.[0];
+      return typeof entry?.username === 'string' ? entry.username.trim().toLowerCase() : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 }
 
 /** Read-only preflight avoids silently replacing the mail admission history on restart. */
@@ -93,8 +127,15 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
     const inbound = new JournaledInboundSend({
       chain: input.chain, wallet: input.wallet, ledger, journal, blobStore,
     });
+    const resolveSenderUsername =
+      input.resolveSenderUsername ??
+      (input.relayBaseUrl ? createRelaySenderUsernameLookup(input.relayBaseUrl) : undefined);
     const outboundHandler = new JournaledFrankOutbound({
-      journal, ledger, gatewayDomain: input.gatewayDomain, mailboxSalt: input.mailboxSalt,
+      journal,
+      ledger,
+      gatewayDomain: input.gatewayDomain,
+      mailboxSalt: input.mailboxSalt,
+      ...(resolveSenderUsername ? { resolveSenderUsername } : {}),
     });
     const mailbox = new JournaledFrankMailbox({
       chain: input.chain, wallet: input.wallet, journal,
@@ -107,12 +148,16 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
     const outboundReconciler = new ResendOutboundReconciler(
       journal, createResendSentMailEvidencePort(input.resendApiKey)
     );
+    const lookupOptions = {
+      ...(input.relayBaseUrl ? { relayUrl: input.relayBaseUrl } : {}),
+      ...(input.operatorAccountAddress ? { operatorAccountAddress: input.operatorAccountAddress } : {}),
+    };
     const importer = new ResendInboundWebhook({
       port: createResendInboundPort(input.resendApiKey),
       webhookSecret: input.resendWebhookSecret,
       gatewayDomain: input.gatewayDomain,
       rawOrigins: input.resendRawOrigins,
-      issuedMailboxLookup: createIssuedMailboxLookup(journal),
+      issuedMailboxLookup: createIssuedMailboxLookup(journal, lookupOptions),
       sender: inbound,
       stampValue: input.inboundStampValue,
     });
@@ -122,7 +167,7 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
     const smtp = input.nativeSmtp && new JournaledSmtpServer({
       ingress: new JournaledSmtpIngress({
         gatewayDomain: input.gatewayDomain,
-        issuedMailboxLookup: createIssuedMailboxLookup(journal),
+        issuedMailboxLookup: createIssuedMailboxLookup(journal, lookupOptions),
         sender: inbound,
         stampValue: input.inboundStampValue,
       }),

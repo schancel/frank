@@ -41,17 +41,50 @@ export class JournaledOutboundWorker {
     this.blobStore = options.blobStore;
   }
 
+  private extractSingleHeaderAddress(value: string): string | undefined {
+    const trimmed = value.trim();
+    const angleMatch = trimmed.match(/^(?:"(?:[^"\\]|\\.)*"|[^<>,"]+)?\s*<([^<>\s]+@[^<>\s]+)>$/);
+    if (angleMatch) return angleMatch[1].toLowerCase();
+    if (/^[^<>\s,]+@[^<>\s,]+$/.test(trimmed)) return trimmed.toLowerCase();
+    return undefined;
+  }
+
+  private isAuthorizedFromLocalPart(localPart: string, scopeAccount: string, senderLocalPart: string): boolean {
+    if (localPart === senderLocalPart) return true;
+    const scope = scopeAccount.toLowerCase();
+    if (localPart === scope || localPart === `u.${scope}`) return true;
+    if (/^[a-z0-9][a-z0-9_-]{2,31}$/.test(localPart)) {
+      try {
+        const issued = this.journal.issuedMailbox(localPart);
+        if (issued?.scopeAccount === scope) return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
   async dispatch(jobId: number): Promise<'sent' | 'uncertain'> {
     const job = this.journal.findOutboundJob(jobId);
     if (!job) throw new Error('Unknown outbound job');
     const bytes = await this.resolveBytes(job.signedRfc822);
-    const fromAddress = `${job.senderLocalPart}@${this.gatewayDomain}`;
+    const replyToAddress = `${job.senderLocalPart}@${this.gatewayDomain}`;
     const fields = readHeaderSection(bytes).fields;
-    for (const name of ['from', 'reply-to']) {
-      const values = fields.filter(([field]) => field === name).map(([, value]) => value.trim().toLowerCase());
-      if (values.length !== 1 || values[0] !== fromAddress) {
-        throw new Error(`Signed outbound mail ${name} differs from its issued mailbox`);
-      }
+    const replyToValues = fields.filter(([field]) => field === 'reply-to').map(([, value]) => value.trim().toLowerCase());
+    if (replyToValues.length !== 1 || replyToValues[0] !== replyToAddress) {
+      throw new Error('Signed outbound mail reply-to differs from its issued mailbox');
+    }
+    const fromValues = fields.filter(([field]) => field === 'from').map(([, value]) => value);
+    const fromAddress = fromValues.length === 1 ? this.extractSingleHeaderAddress(fromValues[0]) : undefined;
+    const fromParts = fromAddress?.split('@');
+    if (
+      !fromAddress ||
+      !fromParts ||
+      fromParts.length !== 2 ||
+      fromParts[1] !== this.gatewayDomain ||
+      !this.isAuthorizedFromLocalPart(fromParts[0], job.scopeAccount, job.senderLocalPart)
+    ) {
+      throw new Error('Signed outbound mail from differs from its issued mailbox');
     }
     this.journal.claimOutboundJob(jobId);
     try {

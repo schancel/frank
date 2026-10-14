@@ -4,6 +4,7 @@ import {
   SmtpAdmissionRefusal,
   strictSmtpAuthentication,
 } from '../src/smtp/journaled-smtp-ingress';
+import { createIssuedMailboxLookup } from '../src/smtp/issued-mailbox-lookup';
 
 jest.mock('mailauth', () => ({ authenticate: jest.fn() }));
 
@@ -144,4 +145,38 @@ describe('direct SMTP durable ingress', () => {
     }
     expect(admit).toHaveBeenCalledTimes(1);
   });
+
+  it('resolves operator aliases, u.0x userId fallback, and relay usernames in createIssuedMailboxLookup', async () => {
+    const operatorAccount = `0x${'f'.repeat(40)}`;
+    const userAccount = `0x${'a'.repeat(40)}`;
+    const relayAccount = `0x${'b'.repeat(40)}`;
+    const issuedMailbox = jest.fn(() => undefined);
+    const fetchImpl = jest.fn(async (url: string | URL) => {
+      if (String(url).endsWith('/usernames/alice_frank')) {
+        return {
+          ok: true,
+          json: async () => ({ username: 'alice_frank', address: relayAccount }),
+        } as unknown as Response;
+      }
+      return { ok: false, json: async () => ({}) } as unknown as Response;
+    });
+    const lookup = createIssuedMailboxLookup(
+      { issuedMailbox },
+      {
+        operatorAccountAddress: operatorAccount,
+        relayBaseUrl: 'https://relay.frank.test',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      },
+    );
+
+    await expect(lookup('support')).resolves.toEqual({ accountAddress: operatorAccount });
+    await expect(lookup('admin')).resolves.toEqual({ accountAddress: operatorAccount });
+    await expect(lookup('postmaster')).resolves.toEqual({ accountAddress: operatorAccount });
+    await expect(lookup(`u.${userAccount}`)).resolves.toEqual({ accountAddress: userAccount });
+    await expect(lookup('alice_frank')).resolves.toEqual({ accountAddress: relayAccount });
+    await expect(lookup('unknown_user')).resolves.toBeUndefined();
+    expect(issuedMailbox).not.toHaveBeenCalledWith('support');
+    expect(issuedMailbox).not.toHaveBeenCalledWith(`u.${userAccount}`);
+  });
 });
+

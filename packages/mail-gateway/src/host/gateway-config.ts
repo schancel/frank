@@ -29,6 +29,8 @@ export interface GatewayHostConfig extends GatewayIdentityConfig {
   readonly webhookHost: string;
   readonly webhookPort: number;
   readonly pollIntervalMs: number;
+  readonly operatorAccountAddress?: string;
+  readonly operatorForwardEmail?: string;
   readonly nativeSmtp?: {
     readonly host: string;
     readonly port: number;
@@ -136,6 +138,22 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
   const webhookHost = required(env, 'FRANK_MAIL_WEBHOOK_HOST');
   const webhookPort = positiveInteger(required(env, 'FRANK_MAIL_WEBHOOK_PORT'), 'Webhook port', 65535);
   const pollIntervalMs = positiveInteger(required(env, 'FRANK_MAIL_POLL_MS'), 'Poll interval', 3_600_000);
+  const operatorAccountRaw = env.FRANK_MAIL_OPERATOR_ACCOUNT?.trim();
+  const operatorForwardRaw = env.FRANK_MAIL_OPERATOR_EMAIL?.trim();
+  const operatorForwardEmail = operatorForwardRaw
+    ? (() => {
+        const lower = operatorForwardRaw.toLowerCase();
+        if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(lower)) {
+          throw new Error('Invalid operator forwarding email address');
+        }
+        return lower;
+      })()
+    : undefined;
+  const operatorAccountAddress = operatorAccountRaw
+    ? getAddress(operatorAccountRaw).toLowerCase()
+    : operatorForwardEmail
+      ? identity.expectedIdentityAddress.toLowerCase()
+      : undefined;
   const smtpNames = [
     'FRANK_MAIL_SMTP_HOST', 'FRANK_MAIL_SMTP_PORT', 'FRANK_MAIL_SMTP_HOSTNAME',
     'FRANK_MAIL_SMTP_TLS_KEY_FILE', 'FRANK_MAIL_SMTP_TLS_CERT_FILE',
@@ -159,6 +177,9 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
   return {
     ...identity, directoryStorage,
     journalMode, resendApiKey, resendWebhookSecret,
-    resendRawOrigins, inboundStampValue, webhookHost, webhookPort, pollIntervalMs, nativeSmtp,
+    resendRawOrigins, inboundStampValue, webhookHost, webhookPort, pollIntervalMs,
+    ...(operatorAccountAddress ? { operatorAccountAddress } : {}),
+    ...(operatorForwardEmail ? { operatorForwardEmail } : {}),
+    nativeSmtp,
   };
 }

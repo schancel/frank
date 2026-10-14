@@ -1080,7 +1080,7 @@ export class MailJournal {
     const mailKey = requireMatch('mailKey', input.mailKey, HEX_64);
     const stampValue = requireMatch('stampValue', input.stampValue, DECIMAL);
     const mailboxLocalPart = input.mailboxLocalPart === undefined ? null
-      : requireMatch('mailboxLocalPart', input.mailboxLocalPart, /^[a-z0-9][a-z0-9_-]{2,31}$/);
+      : requireMatch('mailboxLocalPart', input.mailboxLocalPart, /^(?:[a-z0-9][a-z0-9_-]{2,31}|(?:u\.)?0x[0-9a-f]{40})$/);
     const conversationId = input.conversationId === undefined ? null
       : requireMatch('conversationId', input.conversationId, FRANK_ID);
     const echoMailKey = input.echoMailKey === undefined ? mailKey

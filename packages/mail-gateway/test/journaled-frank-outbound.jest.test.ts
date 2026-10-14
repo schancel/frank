@@ -158,7 +158,7 @@ describe('journaled Frank outbound bridge', () => {
     expect(raw).toContain(`Reply-To: ${replyAlias(SALT, SCOPE, CONVERSATION)}@gw.example`);
   });
 
-  it('uses resolved relay username and display name in From while keeping thread Reply-To alias', async () => {
+  it('uses resolved relay username and display name in both From and Reply-To', async () => {
     const handlerWithUsername = new JournaledFrankOutbound({
       journal,
       ledger,
@@ -179,10 +179,10 @@ describe('journaled Frank outbound bridge', () => {
     const [job] = journal.listDueOutboundJobs(1000, 10);
     if (job.signedRfc822.kind !== 'inline') throw new Error('Expected inline mail');
     const raw = Buffer.from(job.signedRfc822.bytes).toString('utf8');
-    expect(raw).toContain(`From: "Shammah Chancellor" <shammah@gw.example>\r\nReply-To: ${alias}@gw.example`);
+    expect(raw).toContain('From: "Shammah Chancellor" <shammah@gw.example>\r\nReply-To: shammah@gw.example');
   });
 
-  it('falls back to deterministic user ID local-part u.0x... when sender has no username', async () => {
+  it('falls back to canonical 0x account address in From and Reply-To when sender has no username', async () => {
     const handlerWithFallback = new JournaledFrankOutbound({
       journal,
       ledger,
@@ -197,12 +197,113 @@ describe('journaled Frank outbound bridge', () => {
     email.from = { address: `${SCOPE}@gw.example`, name: 'Shammah' };
     await handlerWithFallback.handle(message);
 
-    const alias = replyAlias(SALT, SCOPE, CONVERSATION);
     const fallbackLocal = userIdFallbackLocalPart(SCOPE);
+    expect(fallbackLocal).toBe(SCOPE);
     const [job] = journal.listDueOutboundJobs(1000, 10);
     if (job.signedRfc822.kind !== 'inline') throw new Error('Expected inline mail');
     const raw = Buffer.from(job.signedRfc822.bytes).toString('utf8');
-    expect(raw).toContain(`From: "Shammah" <${fallbackLocal}@gw.example>\r\nReply-To: ${alias}@gw.example`);
+    expect(raw).toContain(`From: "Shammah" <${fallbackLocal}@gw.example>\r\nReply-To: ${fallbackLocal}@gw.example`);
+  });
+
+  it('routes inbound replies sent to canonical username or 0x address into existing conversation via In-Reply-To / References headers', async () => {
+    const inboundStampValue = 300n;
+    const handlerWithUsername = new JournaledFrankOutbound({
+      journal,
+      ledger,
+      gatewayDomain: 'gw.example',
+      mailboxSalt: SALT,
+      inboundStampValue,
+      now: () => 1000,
+      resolveSenderUsername: async (scope) => (scope === SCOPE ? 'shammah' : undefined),
+    });
+    const message = received();
+    message.stampValueWei = 900n;
+    const email = message.items[0];
+    if (email.type !== 'email') throw new Error('Expected email');
+    email.from = { address: 'shammah@gw.example', name: 'Shammah Chancellor' };
+    await handlerWithUsername.handle(message);
+
+    expect(ledger.getThreadAllowance('recipient@example.test', SCOPE)).toBe(3);
+
+    const wallet = { identity: { address: { raw: GATEWAY } } } as WalletHandle;
+    const chain = {
+      chainIdentifier: 'monad-testnet',
+      parseAddress: (addr: string) => (/^0x[0-9a-f]{40}$/i.test(addr) ? { raw: addr.toLowerCase() } : undefined),
+    } as unknown as ActiveChain;
+    const inboundSend = new JournaledInboundSend({
+      chain,
+      wallet,
+      ledger,
+      journal,
+    });
+
+    // 1. Reply to shammah@gw.example referencing RFC Message-ID (no conversationId on issued_mailbox('shammah'))
+    const replyToUsernameRfc822 = Buffer.from(
+      [
+        'From: recipient@example.test',
+        'To: shammah@gw.example',
+        'Subject: Re: Test',
+        'Message-ID: <reply-username-1@example.test>',
+        `In-Reply-To: ${RFC_ID}`,
+        `References: ${RFC_ID}`,
+        '',
+        'Reply to canonical username address',
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const admission1 = inboundSend.admit(
+      {
+        email: parseRawRfc822(replyToUsernameRfc822, 'recipient@example.test', 'shammah@gw.example'),
+        verifiedTransportId: 'resend-username-1',
+        authenticatedSenderEmail: 'recipient@example.test',
+      },
+      SCOPE,
+      inboundStampValue,
+      undefined,
+      'shammah',
+    );
+    expect(admission1.kind).toBe('queued');
+    expect(ledger.getThreadAllowance('recipient@example.test', SCOPE)).toBe(2);
+
+    // 2. Reply to 0x...@gw.example referencing rendered <frankMessageId@gw.example> Message-ID
+    const replyToAddressRfc822 = Buffer.from(
+      [
+        'From: recipient@example.test',
+        `To: ${SCOPE}@gw.example`,
+        'Subject: Re: Test',
+        'Message-ID: <reply-address-2@example.test>',
+        `In-Reply-To: <${MESSAGE}@gw.example>`,
+        `References: ${RFC_ID} <${MESSAGE}@gw.example>`,
+        '',
+        'Reply to fallback 0x address',
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const admission2 = inboundSend.admit(
+      {
+        email: parseRawRfc822(replyToAddressRfc822, 'recipient@example.test', `${SCOPE}@gw.example`),
+        verifiedTransportId: 'resend-address-2',
+        authenticatedSenderEmail: 'recipient@example.test',
+      },
+      SCOPE,
+      inboundStampValue,
+      undefined,
+      SCOPE,
+    );
+    expect(admission2.kind).toBe('queued');
+    expect(ledger.getThreadAllowance('recipient@example.test', SCOPE)).toBe(1);
+
+    // Verify both inbound replies were recorded in the original Frank conversation
+    expect(journal.findConversationByThreadHeaders({
+      scopeAccount: SCOPE,
+      inReplyTo: '<reply-username-1@example.test>',
+    })).toBe(CONVERSATION);
+    expect(journal.findConversationByThreadHeaders({
+      scopeAccount: SCOPE,
+      inReplyTo: '<reply-address-2@example.test>',
+    })).toBe(CONVERSATION);
   });
 
   it('grants reply allowances in CreditLedger when outbound stamp covers inboundStampValue so external reply is queued immediately', async () => {

@@ -68,10 +68,17 @@ export class JournaledOutboundWorker {
     const job = this.journal.findOutboundJob(jobId);
     if (!job) throw new Error('Unknown outbound job');
     const bytes = await this.resolveBytes(job.signedRfc822);
-    const replyToAddress = `${job.senderLocalPart}@${this.gatewayDomain}`;
     const fields = readHeaderSection(bytes).fields;
-    const replyToValues = fields.filter(([field]) => field === 'reply-to').map(([, value]) => value.trim().toLowerCase());
-    if (replyToValues.length !== 1 || replyToValues[0] !== replyToAddress) {
+    const replyToValues = fields.filter(([field]) => field === 'reply-to').map(([, value]) => value);
+    const replyToAddress = replyToValues.length === 1 ? this.extractSingleHeaderAddress(replyToValues[0]) : undefined;
+    const replyToParts = replyToAddress?.split('@');
+    if (
+      !replyToAddress ||
+      !replyToParts ||
+      replyToParts.length !== 2 ||
+      replyToParts[1] !== this.gatewayDomain ||
+      !this.isAuthorizedFromLocalPart(replyToParts[0], job.scopeAccount, job.senderLocalPart)
+    ) {
       throw new Error('Signed outbound mail reply-to differs from its issued mailbox');
     }
     const fromValues = fields.filter(([field]) => field === 'from').map(([, value]) => value);

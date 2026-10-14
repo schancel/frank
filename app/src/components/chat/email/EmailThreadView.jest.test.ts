@@ -1370,6 +1370,71 @@ describe('EmailThreadView', () => {
           'On Tue, Oct 13, 2026 at 10:00\u202FAM Shammah <0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx> wrote:',
         )
       })
+
+      it('prefers <username>@signet.mx over <0x-address>@signet.mx when username is published on the gateway relay', async () => {
+        mockOwnAddress.value = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        const profile = useProfileStore()
+        profile.owner = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        profile.unpublished = false
+        profile.profile = { name: 'Shammah Chancellor', username: 'shammah' }
+
+        const settings = useSettingsStore()
+        settings.emailGatewayRelayOrigin = 'https://relay.signet.mx'
+        settings.advertisedEmailGateway = {
+          address: '0x3333333333333333333333333333333333333333',
+          domain: 'signet.mx',
+        }
+        settings.acceptedEmailGateway = {
+          address: '0x3333333333333333333333333333333333333333',
+          domain: 'signet.mx',
+          relayOrigin: 'https://relay.signet.mx',
+        }
+        settings.emailGatewayStatus = 'ready'
+
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+        vm.replyText = 'Sending from canonical username address'
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const payload = wrapper.emitted('sendReply')![0][0] as { items: any[] }
+        const emailItem = payload.items.find(i => i.type === 'email')
+        expect(emailItem.from).toEqual({
+          address: 'shammah@signet.mx',
+          name: 'Shammah Chancellor',
+        })
+      })
+
+      it('falls back to <0x-address>@signet.mx when user is not on the signet.mx relay or username is unpublished', async () => {
+        mockOwnAddress.value = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        const profile = useProfileStore()
+        profile.owner = '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3'
+        profile.unpublished = false
+        profile.profile = { name: 'Shammah Chancellor', username: 'shammah' }
+
+        // Connected to a relay that is NOT the signet.mx gateway relay
+        const settings = useSettingsStore()
+        settings.emailGatewayRelayOrigin = 'https://other-relay.example.org'
+        settings.advertisedEmailGateway = null
+        settings.acceptedEmailGateway = {
+          address: '0x3333333333333333333333333333333333333333',
+          domain: 'signet.mx',
+          relayOrigin: 'https://relay.signet.mx',
+        }
+
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+        vm.replyText = 'Sending while on a different relay'
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const payload = wrapper.emitted('sendReply')![0][0] as { items: any[] }
+        const emailItem = payload.items.find(i => i.type === 'email')
+        expect(emailItem.from).toEqual({
+          address: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
+          name: 'Shammah Chancellor',
+        })
+      })
     })
   })
 })

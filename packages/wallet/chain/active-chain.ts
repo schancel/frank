@@ -609,6 +609,7 @@ export interface DirectMessageClient {
    * `onIncompleteTimestamp` reports a relay row that could not yet be translated because its
    * directory evidence or opening keys are unavailable. Callers must keep that inclusive
    * timestamp in their replay window even though the incomplete row is absent from the array.
+   * Without an incomplete observer the fetch rejects rather than returning a partial result.
    * A relay HTTP 404 and elapsed retry time do not establish terminal absence.
    * `onQuarantinedTimestamp` reports a relay row that is terminally invalid or unsupported.
    * Callers durably quarantine the reported receipt and let their cursor pass it.

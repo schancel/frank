@@ -1068,7 +1068,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     }
     inboxPage.mockResolvedValue({ records: [record] })
     expect(
-      await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 }),
+      await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0, onIncompleteTimestamp: () => {} }),
     ).toEqual([])
     // Same exact bytes, but the relay currently serves no sender entry.
     installCanonicalDirectory(f.bob, {
@@ -2756,6 +2756,8 @@ describe('two typed wallets on the open directory', () => {
         return undefined
       },
     })
+    await expect(f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 20 }))
+      .rejects.toThrow('Canonical mailbox read is incomplete at timestamp 20')
     for (let retry = 0; retry < 2; retry++) {
       const incomplete: number[] = [], quarantined: number[] = []
       expect(await f.chain.directMessages.fetchSince({
@@ -3002,6 +3004,8 @@ describe('two typed wallets on the open directory', () => {
     const original = inboxRecord(0, 5)
     inboxPage.mockResolvedValue({ records: [original] })
     installCanonicalDirectory(f.bob, { ...bobDirectory, fetch: f.fetch, peerCurrent: async () => undefined })
+    await expect(f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 5 }))
+      .rejects.toThrow('Canonical mailbox read is incomplete at timestamp 5')
     const incomplete: number[] = [], quarantined: number[] = []
     expect(await f.chain.directMessages.fetchSince({
       wallet: f.bob, sinceMs: 5,

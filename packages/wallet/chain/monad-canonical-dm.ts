@@ -2372,6 +2372,11 @@ async function fetchSince(
   const directory = requireDirectory(owner)
   // Before any request: with no registry nothing is read, so nothing is consumed or dropped.
   const registry = requireMessageItems(owner)
+  const incomplete = (timestampMs: number) => {
+    if (!params.onIncompleteTimestamp)
+      throw new Error(`Canonical mailbox read is incomplete at timestamp ${timestampMs}`)
+    params.onIncompleteTimestamp(timestampMs)
+  }
   const auth = mailboxAuth(owner, directory)
   const self = await directory.selfCurrent()
   const received: DirectMessageReceived[] = []
@@ -2457,12 +2462,12 @@ async function fetchSince(
         }
         // A lookup failure is not proof that the original message can never be opened.
         // Keep its timestamp in the host's replay window, while delivering other peers' mail.
-        params.onIncompleteTimestamp?.(record.timestampMs)
+        incomplete(record.timestampMs)
         continue
       }
       if (!peer) {
         // A relay 404 cannot establish that the sender or its signed history never existed.
-        params.onIncompleteTimestamp?.(record.timestampMs)
+        incomplete(record.timestampMs)
         continue
       }
       const { senderEvidence, recipientEvidence } =
@@ -2535,7 +2540,7 @@ async function fetchSince(
               error.code === 'digest'))
         )
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
-        else params.onIncompleteTimestamp?.(record.timestampMs)
+        else incomplete(record.timestampMs)
         continue
       } finally {
         roles.dispose()

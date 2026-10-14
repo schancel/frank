@@ -8,6 +8,49 @@ Custody derives and signs an account-bound additive member key through `accountS
 
 The signed epoch certificate owns membership and presentation. Frontend roster indexes are derived views. The durable message receipt owns each exact signed group envelope; pending indexes only reference it. Persist certificates, recipient queues and original authorized content before publishing. Persist authenticated incoming receipts before advancing a mailbox cursor. Retries reconcile the original certificate/envelope and recipient queue rather than preparing fresh operations.
 
+## Idempotent authoritative append and development storage baseline
+
+The hosting `GroupStore` owns each original accepted signed-content receipt. Its `G_accept`
+index maps `(group_id, existing envelope signing digest)` to the original sequence, and is
+committed in the same transaction as the row, sequence and epoch/local-ownership guards.
+The immutable row owns content, signature, sequence and time; the lookup owns no competing
+financial fact. Matching authenticated retries return that exact row, including after an
+epoch rotation, using its root-signed historical certificate. Equivalent hex/JSON/CBOR and
+valid signature encodings do not append again. New content still requires the active epoch.
+Mirrors never accept local authoritative appends. No credit ledger, charge or grant is added. The high-level
+TypeScript client deliberately retains strict acknowledgement signature equality and retries
+its original compact signature. Low-level authorized clients can submit equivalent signature
+encodings and receive the original receipt; teaching the high-level client to validate such a
+different signature needs a separately scoped epoch-verification capability, not weaker echo
+checks.
+
+Only a newly committed append publishes an ephemeral wake. The HTTP
+`X-Group-Append-Disposition` response (`appended` or `existing`) carries this notification
+hint through the home proxy; it never advances a durable cursor or establishes financial
+acceptance. Ordered reads and persisted authenticated receipts remain authoritative.
+
+The dedicated relay store at `registry_db.with_extension("groups-v1")` requires `G_format = group-append-idempotency-v1`.
+Read-only opening inspects only GroupStore-owned prefixes and never writes a marker.
+Unrelated KV namespaces are ignored. An empty group namespace is valid; the first authorized
+epoch/foreign-admission/import mutation initializes the marker by CAS. A crash leaving only
+the marker safely reopens. Old nonempty unmarked group state and unknown markers fail
+explicitly. There is no migration, duplicate-row cleanup, index backfill, dual reader or
+automatic deletion. An operator may manually replace only disposable dedicated development
+group-relay state after preserving/exporting any required original certificates/envelopes;
+this never authorizes deleting registry data, private keys, funded wallets, financial journals
+or unrelated local data. A corrupt acceptance locator or referenced receipt fails visibly rather
+than synthesizing a successful retry. Reversal requires restoring the complete matching
+old development store/code baseline, never mixing old writers with this marker/index.
+
+The Rust append/HTTP regression gate is:
+
+```sh
+CARGO_TARGET_DIR=/tmp/frank-group-live-cargo-target cargo test --manifest-path backend/cashweb/Cargo.toml -p cashweb-registry groups --lib
+```
+
+The explicit two-router TypeScript gate below also checks repeated direct/proxied writes,
+unchanged receipt sequences and historical retries after rotation.
+
 ## Home-relay boundary
 
 Relay addresses are canonical root origins; client configuration, creation and signed-roster admission reject path prefixes, credentials, queries and fragments before creating durable group state. Browser clients require HTTPS except local HTTP development endpoints. Production upstream transport validates public IP/DNS destinations, pins the validated resolution, disables redirects and environment proxies, and applies DNS/connect/total deadlines plus streamed response budgets. Loopback upstream allowance is compiled only into Rust tests.

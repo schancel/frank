@@ -6,6 +6,9 @@
 //! - `'G_seq' || group_id`: monotonic `u64` per-group sequence counter.
 //! - `'G' || group_id || server_seq_be`: ordered [`StoredGroupMessage`] rows.
 //! - `'G_mirror' || group_id`: home-relay subscriber tracking and mirror state for foreign groups.
+//! - `'G_accept' || group_id || signed_content_digest`: derived original-receipt locator, atomically
+//!   committed with message/sequence/epoch/ownership guards.
+//! - `'G_format'`: explicit development baseline; old owned records fail without migration.
 
 use std::{
     collections::BTreeSet,
@@ -532,6 +535,31 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// The authoritative acceptance receipt and whether this operation created it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupAppendOutcome {
+    /// Original immutable receipt, including its original sequence and timestamp.
+    pub message: StoredGroupMessage,
+    /// True only for the transaction that created the receipt.
+    pub appended: bool,
+}
+
+const GROUP_FORMAT_KEY: &[u8] = b"G_format";
+const GROUP_FORMAT: &[u8] = b"group-append-idempotency-v1";
+const GROUP_OWNED_PREFIXES: &[&[u8]] = &[
+    b"G:",
+    b"G_meta:",
+    b"G_epoch:",
+    b"G_seq:",
+    b"G_mirror:",
+    b"G_vs:",
+    b"G_accept:",
+];
+
+fn acceptance_key(group_id: &[u8; 32], digest: &[u8; 32]) -> Vec<u8> {
+    [b"G_accept:".as_slice(), group_id, digest].concat()
+}
+
 /// Shared Group Mailbox state machine backed by any [`RelayKvStore`].
 #[derive(Debug, Clone)]
 pub struct GroupStore {
@@ -571,11 +599,45 @@ impl GroupStore {
         self.mirror_threshold
     }
 
+    /// Inspect only this owner's namespace. Opening/reading never initializes or resets it.
+    fn check_baseline(&self) -> Result<(), GroupError> {
+        match self.kv.get(GROUP_FORMAT_KEY)? {
+            Some(version) if version == GROUP_FORMAT => Ok(()),
+            Some(_) => Err(GroupError::Storage("unsupported group store format; preserve/export group receipts and explicitly reset only disposable dedicated group relay state".into())),
+            None => {
+                for prefix in GROUP_OWNED_PREFIXES {
+                    if !self.kv.scan_prefix_range(prefix, None, 1)?.is_empty() {
+                        // Another new-format writer may have initialized and committed since the first read.
+                        if self.kv.get(GROUP_FORMAT_KEY)?.as_deref() == Some(GROUP_FORMAT) { return Ok(()); }
+                        return Err(GroupError::Storage("group store lacks append-idempotency format marker; old nonempty group state is unsupported; no automatic migration or deletion".into()));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Called only after an authorized mutation; marker-only interruption is a valid empty store.
+    fn initialize_baseline(&self) -> Result<(), GroupError> {
+        self.check_baseline()?;
+        match self
+            .kv
+            .compare_and_swap(GROUP_FORMAT_KEY, None, GROUP_FORMAT)
+        {
+            Ok(()) => Ok(()),
+            Err(KvError::CasConflict {
+                current: Some(version),
+            }) if version == GROUP_FORMAT => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Fetch the current [`GroupEpochFrame`] for `group_id_hex`, if the group exists locally.
     pub fn get_current_epoch(
         &self,
         group_id_hex: &str,
     ) -> Result<Option<GroupEpochFrame>, GroupError> {
+        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
         let Some(raw) = self.kv.get(&meta_key(&group_id))? else {
             return Ok(None);
@@ -590,6 +652,7 @@ impl GroupStore {
         group_id_hex: &str,
         epoch: u64,
     ) -> Result<Option<GroupEpochFrame>, GroupError> {
+        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
         let Some(raw) = self.kv.get(&epoch_history_key(&group_id, epoch))? else {
             return Ok(None);
@@ -618,6 +681,7 @@ impl GroupStore {
         }
 
         frame.verify_authority(path_group_id)?;
+        self.initialize_baseline()?;
         if self.get_mirror_state(path_group_id)?.is_some() {
             return Err(GroupError::Forbidden(
                 "foreign groups cannot accept local epoch writes".into(),
@@ -701,14 +765,14 @@ impl GroupStore {
         Ok(current)
     }
 
-    /// Authenticate an inbound [`GroupMessageEnvelope`] against the group's current epoch
-    /// write public key $W_{G,e}$ and append it with a strictly monotonic `server_seq` and
-    /// 80-bit [`Versionstamp`].
+    /// Authenticate new content against the active epoch and append exactly once. Accepted
+    /// signed content (including equivalent signature encodings) is authenticated against its
+    /// historical certificate and returns the original receipt, without a new sequence or wake.
     pub fn put_message(
         &self,
         path_group_id: &str,
-        envelope: GroupMessageEnvelope,
-    ) -> Result<StoredGroupMessage, GroupError> {
+        mut envelope: GroupMessageEnvelope,
+    ) -> Result<GroupAppendOutcome, GroupError> {
         let group_id = parse_group_id_hex(path_group_id)?;
         if envelope.group_id.to_lowercase() != path_group_id {
             return Err(GroupError::InvalidInput(
@@ -720,6 +784,21 @@ impl GroupStore {
             return Err(GroupError::Forbidden(
                 "foreign groups cannot accept local message writes".into(),
             ));
+        }
+        envelope.group_id = path_group_id.to_string();
+        envelope.nonce = hex::encode(parse_var_hex(&envelope.nonce, "nonce", 64)?);
+        envelope.ciphertext = hex::encode(parse_var_hex(
+            &envelope.ciphertext,
+            "ciphertext",
+            1024 * 1024,
+        )?);
+        let digest = envelope.signing_digest()?;
+        let accept_key = acceptance_key(&group_id, &digest);
+        if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+            return Ok(GroupAppendOutcome {
+                message,
+                appended: false,
+            });
         }
         let ownership_key = mirror_key(&group_id);
         let authority_key = meta_key(&group_id);
@@ -740,7 +819,6 @@ impl GroupStore {
         let write_pubkey = parse_fixed_hex::<33>(&current_epoch.write_pubkey, "write_pubkey")?;
         let sig_bytes = parse_var_hex(&envelope.write_sig, "write_sig", 73)
             .map_err(|_| GroupError::Forbidden("malformed write_sig".into()))?;
-        let digest = envelope.signing_digest()?;
 
         if !verify_secp256k1_sig(&write_pubkey, &digest, &sig_bytes) {
             return Err(GroupError::Forbidden(
@@ -798,6 +876,11 @@ impl GroupStore {
             // the same storage transaction boundary, including across relay instances.
             let operations = vec![
                 KvTransactionOp::CheckAndSet {
+                    key: accept_key.clone(),
+                    expected: None,
+                    new_value: server_seq.to_be_bytes().to_vec(),
+                },
+                KvTransactionOp::CheckAndSet {
                     key: ownership_key.clone(),
                     expected: None,
                     new_value: Vec::new(),
@@ -821,8 +904,21 @@ impl GroupStore {
                 },
             ];
             match self.kv.execute_transaction(operations) {
-                Ok(_) => return Ok(stored),
+                Ok(_) => {
+                    return Ok(GroupAppendOutcome {
+                        message: stored,
+                        appended: true,
+                    })
+                }
                 Err(KvError::CasConflict { .. }) => {
+                    if let Some(message) =
+                        self.accepted_message(path_group_id, &envelope, &accept_key)?
+                    {
+                        return Ok(GroupAppendOutcome {
+                            message,
+                            appended: false,
+                        });
+                    }
                     if self.get_mirror_state(path_group_id)?.is_some() {
                         return Err(GroupError::Forbidden(
                             "group ownership changed before message commit".into(),
@@ -840,6 +936,74 @@ impl GroupStore {
         }
     }
 
+    fn accepted_message(
+        &self,
+        group_id_hex: &str,
+        envelope: &GroupMessageEnvelope,
+        accept_key: &[u8],
+    ) -> Result<Option<StoredGroupMessage>, GroupError> {
+        if self.get_mirror_state(group_id_hex)?.is_some() {
+            return Err(GroupError::Forbidden(
+                "foreign groups cannot acknowledge local authoritative writes".into(),
+            ));
+        }
+        let Some(locator) = self.kv.get(accept_key)? else {
+            return Ok(None);
+        };
+        let sequence = u64::from_be_bytes(
+            locator
+                .as_slice()
+                .try_into()
+                .map_err(|_| GroupError::Storage("corrupt group acceptance locator".into()))?,
+        );
+        let group_id = parse_group_id_hex(group_id_hex)?;
+        let raw = self.kv.get(&msg_key(&group_id, sequence))?.ok_or_else(|| {
+            GroupError::Storage("group acceptance index references missing receipt".into())
+        })?;
+        let stored: StoredGroupMessage = serde_json::from_slice(&raw).map_err(|error| {
+            GroupError::Storage(format!("corrupt group acceptance receipt: {error}"))
+        })?;
+        if stored.group_id != group_id_hex
+            || stored.server_seq != sequence
+            || stored.epoch != envelope.epoch
+            || stored.nonce != envelope.nonce
+            || stored.ciphertext != envelope.ciphertext
+        {
+            return Err(GroupError::Storage(
+                "group acceptance index does not match signed content".into(),
+            ));
+        }
+        let cert = self.get_epoch(group_id_hex, stored.epoch)?.ok_or_else(|| {
+            GroupError::Storage("accepted message missing historical certificate".into())
+        })?;
+        cert.verify_authority(group_id_hex)?;
+        if cert.epoch != stored.epoch {
+            return Err(GroupError::Storage(
+                "acceptance history certificate has wrong epoch".into(),
+            ));
+        }
+        let public_key = parse_fixed_hex::<33>(&cert.write_pubkey, "write_pubkey")?;
+        let original_signature = parse_var_hex(&stored.write_sig, "stored write_sig", 73)
+            .map_err(|_| GroupError::Storage("corrupt original acceptance signature".into()))?;
+        if !verify_secp256k1_sig(
+            &public_key,
+            &envelope.signing_digest()?,
+            &original_signature,
+        ) {
+            return Err(GroupError::Storage(
+                "original acceptance signature no longer authenticates receipt".into(),
+            ));
+        }
+        let signature = parse_var_hex(&envelope.write_sig, "write_sig", 73)
+            .map_err(|_| GroupError::Forbidden("malformed retry write_sig".into()))?;
+        if !verify_secp256k1_sig(&public_key, &envelope.signing_digest()?, &signature) {
+            return Err(GroupError::Forbidden(
+                "invalid historical retry write_sig".into(),
+            ));
+        }
+        Ok(Some(stored))
+    }
+
     /// Scan ordered messages for `group_id_hex` strictly after `after_seq`, up to `limit`.
     pub fn list_messages(
         &self,
@@ -847,6 +1011,7 @@ impl GroupStore {
         after_seq: u64,
         limit: u16,
     ) -> Result<Vec<StoredGroupMessage>, GroupError> {
+        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
         let prefix = msg_prefix(&group_id);
         let after_key = if after_seq > 0 {
@@ -882,6 +1047,7 @@ impl GroupStore {
     ) -> Result<GroupMirrorState, GroupError> {
         authenticated_epoch.verify_authority(group_id_hex)?;
         authenticated_epoch.verify_read_token(read_token)?;
+        self.initialize_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
         let m_key = mirror_key(&group_id);
         loop {
@@ -1004,6 +1170,7 @@ impl GroupStore {
                 ));
             }
         }
+        self.initialize_baseline()?;
         if let Some(frame) = epoch_frame {
             let encoded = frame.to_cbor_bytes()?;
             // A delayed upstream response must never roll the active authority/read token backwards.
@@ -1086,6 +1253,7 @@ impl GroupStore {
         &self,
         group_id_hex: &str,
     ) -> Result<Option<GroupMirrorState>, GroupError> {
+        self.check_baseline()?;
         let group_id = parse_group_id_hex(group_id_hex)?;
         let Some(raw) = self.kv.get(&mirror_key(&group_id))? else {
             return Ok(None);
@@ -1116,13 +1284,13 @@ impl Owner {
     /// Access or initialize the [`GroupStore`].
     pub fn get(&self) -> Result<&GroupStore, GroupError> {
         if let Some(store) = self.store.get() {
+            store.check_baseline()?;
             return Ok(store);
         }
         let kv = RocksDbKvStore::open(&self.path)?;
-        let _ = self.store.set(GroupStore::with_mirror_threshold(
-            Arc::new(kv),
-            self.mirror_threshold,
-        ));
+        let store = GroupStore::with_mirror_threshold(Arc::new(kv), self.mirror_threshold);
+        store.check_baseline()?;
+        let _ = self.store.set(store);
         self.store
             .get()
             .ok_or_else(|| GroupError::Storage("failed to initialize GroupStore".into()))
@@ -1353,7 +1521,11 @@ mod tests {
             let writer_start = start.clone();
             writers.push(std::thread::spawn(move || {
                 writer_start.wait();
-                replica.put_message(&writer_id, message).unwrap().server_seq
+                replica
+                    .put_message(&writer_id, message)
+                    .unwrap()
+                    .message
+                    .server_seq
             }));
         }
         start.wait();
@@ -1408,6 +1580,7 @@ mod tests {
             healthy
                 .put_message(&id, message_for(&id, 0, 2, &write_sk))
                 .unwrap()
+                .message
                 .server_seq,
             1
         );
@@ -1664,7 +1837,7 @@ mod tests {
             write_sig: String::new(),
         };
         envelope.write_sig = sign_digest(&write_sk, &envelope.signing_digest().unwrap());
-        let message = source.put_message(&id, envelope).unwrap();
+        let message = source.put_message(&id, envelope).unwrap().message;
         let mut forged = message.clone();
         forged.ciphertext = hex::encode(b"forged ciphertext");
         assert!(store
@@ -1781,7 +1954,7 @@ mod tests {
             write_sig: String::new(),
         };
         msg1.write_sig = sign_digest(&write_sk_0, &msg1.signing_digest().unwrap());
-        let stored1 = store.put_message(&group_id, msg1).unwrap();
+        let stored1 = store.put_message(&group_id, msg1).unwrap().message;
         assert_eq!(stored1.server_seq, 1);
 
         // Outsider signature is rejected with Forbidden
@@ -1859,12 +2032,238 @@ mod tests {
             write_sig: String::new(),
         };
         msg2.write_sig = sign_digest(&write_sk_1, &msg2.signing_digest().unwrap());
-        let stored2 = store.put_message(&group_id, msg2).unwrap();
+        let stored2 = store.put_message(&group_id, msg2).unwrap().message;
         assert_eq!(stored2.server_seq, 2);
 
         let all = store.list_messages(&group_id, 0, 50).unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].server_seq, 1);
         assert_eq!(all[1].server_seq, 2);
+    }
+    #[test]
+    fn baseline_is_read_only_namespace_scoped_and_initializes_concurrently() {
+        let kv = Arc::new(MemoryKvStore::new());
+        kv.put(b"unrelated:registry", b"preserved").unwrap();
+        let store = GroupStore::new(kv.clone());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        assert!(store
+            .get_current_epoch(&initial.group_id)
+            .unwrap()
+            .is_none());
+        assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
+        let mut forged = initial.clone();
+        forged.admin_sig = "00".repeat(64);
+        assert!(store.put_epoch(&initial.group_id, forged).is_err());
+        assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = [3, 4]
+            .into_iter()
+            .map(|seed| {
+                let replica = GroupStore::new(kv.clone());
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let epoch = root_frame(seed, 0, &"00".repeat(32));
+                    barrier.wait();
+                    replica.put_epoch(&epoch.group_id.clone(), epoch).unwrap();
+                })
+            })
+            .collect();
+        barrier.wait();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(kv.get(GROUP_FORMAT_KEY).unwrap().unwrap(), GROUP_FORMAT);
+        assert_eq!(
+            kv.get(b"unrelated:registry").unwrap().unwrap(),
+            b"preserved"
+        );
+        let old = Arc::new(MemoryKvStore::new());
+        old.put(
+            &meta_key(&parse_group_id_hex(&initial.group_id).unwrap()),
+            &initial.to_cbor_bytes().unwrap(),
+        )
+        .unwrap();
+        let unsupported = GroupStore::new(old.clone());
+        assert!(matches!(
+            unsupported.get_current_epoch(&initial.group_id),
+            Err(GroupError::Storage(_))
+        ));
+        assert!(unsupported
+            .put_epoch(&initial.group_id, initial.clone())
+            .is_err());
+        assert!(old.get(GROUP_FORMAT_KEY).unwrap().is_none());
+        assert!(old
+            .get(&meta_key(&parse_group_id_hex(&initial.group_id).unwrap()))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn same_signed_content_race_appends_once_and_signature_encodings_share_receipt() {
+        let kv = Arc::new(MemoryKvStore::new());
+        let store = GroupStore::new(kv.clone());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (key, _) = keypair(42);
+        let envelope = message_for(&id, 0, 1, &key);
+        let start = Arc::new(std::sync::Barrier::new(3));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let replica = GroupStore::new(kv.clone());
+                let id = id.clone();
+                let envelope = envelope.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    start.wait();
+                    replica.put_message(&id, envelope).unwrap()
+                })
+            })
+            .collect();
+        start.wait();
+        let results: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.appended).count(), 1);
+        assert_eq!(results[0].message, results[1].message);
+        let mut variant = envelope.clone();
+        let compact = Signature::from_compact(&hex::decode(&variant.write_sig).unwrap()).unwrap();
+        variant.write_sig = hex::encode(compact.serialize_der());
+        variant.nonce = format!("0x{}", variant.nonce.to_uppercase());
+        variant.ciphertext = format!("0x{}", variant.ciphertext.to_uppercase());
+        variant.group_id = variant.group_id.to_uppercase();
+        let retry = store.put_message(&id, variant).unwrap();
+        assert!(!retry.appended);
+        assert_eq!(retry.message, results[0].message);
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 1);
+        let mut invalid = envelope;
+        invalid.write_sig = "00".repeat(64);
+        assert!(matches!(
+            store.put_message(&id, invalid),
+            Err(GroupError::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn lost_ack_reopen_rotation_and_failed_commit_preserve_exact_acceptance() {
+        let directory = tempdir::TempDir::new("group-idempotent-reopen").unwrap();
+        let path = directory.path().join("groups.rocksdb");
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        let (key, _) = keypair(42);
+        let envelope = message_for(&id, 0, 1, &key);
+        let receipt = {
+            let kv = Arc::new(RocksDbKvStore::open(&path).unwrap());
+            let store = GroupStore::new(kv.clone());
+            let initial = store.put_epoch(&id, initial).unwrap();
+            let failing = GroupStore::new(Arc::new(FailingCommitKv(kv.clone())));
+            assert!(failing.put_message(&id, envelope.clone()).is_err());
+            assert!(kv
+                .get(&acceptance_key(
+                    &parse_group_id_hex(&id).unwrap(),
+                    &envelope.signing_digest().unwrap()
+                ))
+                .unwrap()
+                .is_none());
+            assert!(store.list_messages(&id, 0, 10).unwrap().is_empty());
+            let accepted = store.put_message(&id, envelope.clone()).unwrap();
+            assert!(accepted.appended);
+            let (root, _) = keypair(3);
+            let (_, next_public) = keypair(43);
+            let mut next = root_frame(3, 1, &initial.epoch_hash);
+            next.write_pubkey = hex::encode(next_public);
+            store.put_epoch(&id, signed_epoch(&root, next)).unwrap();
+            accepted.message
+        };
+        let store = GroupStore::new(Arc::new(RocksDbKvStore::open(&path).unwrap()));
+        let retry = store.put_message(&id, envelope).unwrap();
+        assert!(!retry.appended);
+        assert_eq!(retry.message, receipt);
+        assert!(matches!(
+            store.put_message(&id, message_for(&id, 0, 2, &key)),
+            Err(GroupError::Forbidden(_))
+        ));
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![receipt]);
+    }
+
+    #[test]
+    fn same_content_cas_loser_acknowledges_winner_even_when_epoch_rotates() {
+        let backend = Arc::new(MemoryKvStore::new());
+        let store = GroupStore::new(backend.clone());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        let initial = store.put_epoch(&id, initial).unwrap();
+        let paused = Arc::new(PausingCommitKv {
+            backend,
+            ready: std::sync::Barrier::new(2),
+            resume: std::sync::Barrier::new(2),
+            pause: std::sync::atomic::AtomicBool::new(true),
+        });
+        let (key, _) = keypair(42);
+        let envelope = message_for(&id, 0, 1, &key);
+        let replica = GroupStore::new(paused.clone());
+        let replica_id = id.clone();
+        let pending = envelope.clone();
+        let thread = std::thread::spawn(move || replica.put_message(&replica_id, pending));
+        paused.ready.wait();
+        let accepted = store.put_message(&id, envelope).unwrap();
+        store
+            .put_epoch(&id, root_frame(3, 1, &initial.epoch_hash))
+            .unwrap();
+        paused.resume.wait();
+        let loser = thread.join().unwrap().unwrap();
+        assert!(!loser.appended);
+        assert_eq!(loser.message, accepted.message);
+        assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 1);
+    }
+    #[test]
+    fn corrupt_acceptance_locator_and_original_signature_fail_without_appending() {
+        let kv = Arc::new(MemoryKvStore::new());
+        let store = GroupStore::new(kv.clone());
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let id = initial.group_id.clone();
+        store.put_epoch(&id, initial).unwrap();
+        let (key, _) = keypair(42);
+        let envelope = message_for(&id, 0, 1, &key);
+        let receipt = store.put_message(&id, envelope.clone()).unwrap().message;
+        let group_id = parse_group_id_hex(&id).unwrap();
+        let index = acceptance_key(&group_id, &envelope.signing_digest().unwrap());
+        kv.put(&index, &999u64.to_be_bytes()).unwrap();
+        assert!(matches!(
+            store.put_message(&id, envelope.clone()),
+            Err(GroupError::Storage(_))
+        ));
+        kv.put(&index, &receipt.server_seq.to_be_bytes()).unwrap();
+        let mut corrupt = receipt.clone();
+        corrupt.write_sig = "00".repeat(64);
+        kv.put(
+            &msg_key(&group_id, receipt.server_seq),
+            &serde_json::to_vec(&corrupt).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.put_message(&id, envelope),
+            Err(GroupError::Storage(_))
+        ));
+        assert_eq!(
+            kv.get(&seq_key(&group_id)).unwrap().unwrap(),
+            1u64.to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn lazy_owner_rejects_old_nonempty_group_store_without_initialization_or_deletion() {
+        let directory = tempdir::TempDir::new("group-old-readonly").unwrap();
+        let registry = directory.path().join("registry");
+        let path = registry.with_extension(GROUP_STORE_EXTENSION);
+        let initial = root_frame(3, 0, &"00".repeat(32));
+        let key = meta_key(&parse_group_id_hex(&initial.group_id).unwrap());
+        let raw = initial.to_cbor_bytes().unwrap();
+        {
+            let kv = RocksDbKvStore::open(&path).unwrap();
+            kv.put(&key, &raw).unwrap();
+        }
+        assert!(Owner::new(registry).get().is_err());
+        let kv = RocksDbKvStore::open(&path).unwrap();
+        assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
+        assert_eq!(kv.get(&key).unwrap().unwrap(), raw);
     }
 }

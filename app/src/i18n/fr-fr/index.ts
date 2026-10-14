@@ -1936,5 +1936,28 @@ export default {
     addedToContacts: 'Ajouté aux contacts Frank',
     saveVcf: 'Enregistrer la vCard (.vcf)',
   },
+  onboard: {
+    toolbarTitle: 'Inscription Frank',
+    headerBadge: 'Inscription auto-hébergée chiffrée de bout en bout',
+    heading: 'Poursuivez votre conversation sur Frank',
+    keysGeneratedPrefix: 'Vos clés privées sont générées',
+    keysGeneratedHighlight: '100 % localement dans votre navigateur',
+    keysGeneratedSuffix:
+      'et ne sont jamais partagées avec la passerelle e-mail.',
+    threadImportPrefix: 'Votre fil de discussion e-mail avec',
+    threadImportSuffix: 'sera importé automatiquement.',
+    subjectLabel: 'Objet :',
+    bridgedEmailLabel: 'Courriel relié :',
+    signedInAs: 'Connecté en tant que',
+    localFrankAccount: 'Compte Frank local',
+    importThreadAndOpenChat:
+      'Importer la discussion et ouvrir le chat avec le pair',
+    displayNameLabel: 'Nom affiché',
+    displayNameHint:
+      'Affiché à vos contacts lorsque vous leur écrivez sur Frank',
+    createAccountAndOpenChat:
+      'Créer un compte auto-hébergé et ouvrir la discussion',
+    continueWithPasskey: 'Continuer avec une clé d’accès (Mera)',
+  },
   close: 'Fermer',
 }

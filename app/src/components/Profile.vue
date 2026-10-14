@@ -204,7 +204,7 @@
                     dense
                     icon="add_a_photo"
                     :aria-label="$t('a11y.choosePhoto')"
-                    @click="$refs.filePicker.$el.click()"
+                    @click="chooseAvatar"
                   />
                 </q-toolbar>
                 <div>
@@ -345,9 +345,9 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, type PropType } from 'vue'
+import { defineComponent, ref, type PropType } from 'vue'
 import QrcodeVue from 'qrcode.vue'
-import { copyToClipboard } from 'quasar'
+import { copyToClipboard, type QFile } from 'quasar'
 
 import { normalizedProfileName, profileNameRule } from '../utils/profile-name'
 import { defaultAvatars } from '../utils/constants'
@@ -367,7 +367,9 @@ export default defineComponent({
     QrcodeVue,
   },
   setup() {
-    return {}
+    const filePicker = ref<QFile | null>(null)
+    const chooseAvatar = (event: Event) => filePicker.value?.pickFiles(event)
+    return { filePicker, chooseAvatar }
   },
   props: {
     name: {
@@ -435,7 +437,7 @@ export default defineComponent({
   data() {
     return {
       splitterSize: 110,
-      internalAvatar: this.avatar as string | ArrayBuffer,
+      internalAvatar: this.avatar,
       internalBio: this.bio,
       internalName: this.name,
       internalUsername: this.username,

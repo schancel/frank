@@ -91,3 +91,25 @@ describe('ContactItem inbox price', () => {
     expect(render({ acceptancePrice: 0 }).text()).toContain('Inbox Price: 0')
   })
 })
+
+test.each(['loading', null, 'invalid-sentinel'])(
+  'contact alternative %s never renders object-only actions',
+  async contact => {
+    const wrapper = render(undefined)
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await wrapper.setProps({ contact })
+      expect(wrapper.find('[data-test="contact-item-actions"]').exists()).toBe(
+        false,
+      )
+      if (contact === 'loading') {
+        expect(wrapper.findAll('span[type]').length).toBe(3)
+        expect(warn.mock.calls.flat().join(' ')).not.toContain('Invalid prop')
+      } else if (contact === null) expect(wrapper.text()).toContain('Not Found')
+      else expect(warn.mock.calls.flat().join(' ')).toContain('Invalid prop')
+    } finally {
+      warn.mockRestore()
+      wrapper.unmount()
+    }
+  },
+)

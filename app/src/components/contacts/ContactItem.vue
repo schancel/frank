@@ -25,7 +25,7 @@
         </q-item-label>
       </q-item-section>
     </q-item>
-    <q-item v-ripple v-else-if="contact">
+    <q-item v-ripple v-else-if="contact && typeof contact === 'object'">
       <q-item-section
         avatar
         v-close-popup
@@ -96,7 +96,11 @@
       <delete-contact-dialog
         v-if="confirmDeleteOpen"
         :address="address"
-        :name="contact?.profile?.name || address"
+        :name="
+          typeof contact === 'object'
+            ? contact?.profile?.name || address
+            : address
+        "
         @cancel="confirmDeleteOpen = false"
         @deleted="confirmDeleteOpen = false"
       />
@@ -123,7 +127,9 @@ export default defineComponent({
       default: () => '',
     },
     contact: {
-      type: Object,
+      type: [Object, String],
+      validator: (value: unknown) =>
+        value === 'loading' || (value !== null && typeof value === 'object'),
       default: () => ({}),
     },
     contactClick: {

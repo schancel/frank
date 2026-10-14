@@ -76,6 +76,22 @@
 </template>
 
 <script lang="ts">
+import {
+  type AccountType,
+  type BotRole,
+  ACCOUNT_TYPE_PERSON,
+  ACCOUNT_TYPE_BOT,
+  ACCOUNT_TYPE_SERVICE,
+  ACCOUNT_TYPE_ORGANIZATION,
+  BOT_ROLE_GENERIC,
+  BOT_ROLE_ASSISTANT,
+  BOT_ROLE_FAUCET,
+  BOT_ROLE_GAME,
+  BOT_ROLE_BRIDGE,
+  BOT_ROLE_MERCHANT,
+  BOT_ROLE_MODERATOR,
+  BOT_ROLE_ANNOUNCER,
+} from '@frank/codec'
 import { defineComponent } from 'vue'
 import { accountStatus } from '../accounts/session'
 import { viewportPageStyle } from 'src/utils/layout'
@@ -85,6 +101,7 @@ import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
 import {
   MonadIdentity,
+  type MonadProfileFields,
   registerMonadIdentityCbor,
   validateProfileUsername,
 } from '@frank/wallet/monad-identity'
@@ -99,6 +116,27 @@ import { navigateBack } from '../utils/navigate-back'
 import { claimOwnUsername, usernameErrorKey } from '../utils/username-claim'
 import { ownUsername, setOwnUsername } from '../utils/own-username'
 
+function isAccountType(value: unknown): value is AccountType {
+  return (
+    value === ACCOUNT_TYPE_PERSON ||
+    value === ACCOUNT_TYPE_BOT ||
+    value === ACCOUNT_TYPE_SERVICE ||
+    value === ACCOUNT_TYPE_ORGANIZATION
+  )
+}
+function isBotRole(value: unknown): value is BotRole {
+  return (
+    value === BOT_ROLE_GENERIC ||
+    value === BOT_ROLE_ASSISTANT ||
+    value === BOT_ROLE_FAUCET ||
+    value === BOT_ROLE_GAME ||
+    value === BOT_ROLE_BRIDGE ||
+    value === BOT_ROLE_MERCHANT ||
+    value === BOT_ROLE_MODERATOR ||
+    value === BOT_ROLE_ANNOUNCER
+  )
+}
+
 type ProfileData = {
   name?: string
   username?: string
@@ -111,7 +149,7 @@ type ProfileData = {
 }
 
 type RelayData = {
-  profile: ProfileData
+  profile: MonadProfileFields
   inbox: {
     acceptancePrice?: number
   }
@@ -152,7 +190,10 @@ export default defineComponent({
           ) as ProfileLinkItem[])
         : [],
       acceptancePrice: myProfile.inbox.acceptancePrice,
-      accountType: myProfile.profile.accountType ?? 0,
+      accountType:
+        myProfile.profile.accountType === undefined
+          ? ACCOUNT_TYPE_PERSON
+          : myProfile.profile.accountType,
       botRole: myProfile.profile.botRole,
     }
   },
@@ -173,7 +214,18 @@ export default defineComponent({
         botRole: this.botRole,
       }
     },
-    relayData(): RelayData {
+    relayData(): RelayData | undefined {
+      const accountType =
+        this.accountType === undefined ? ACCOUNT_TYPE_PERSON : this.accountType
+      const botRole = this.botRole
+      if (
+        !isAccountType(accountType) ||
+        (botRole !== undefined &&
+          (!isBotRole(botRole) ||
+            (accountType !== ACCOUNT_TYPE_BOT &&
+              accountType !== ACCOUNT_TYPE_SERVICE)))
+      )
+        return undefined
       const validLinks = (this.links ?? [])
         .filter(l => l.url && l.url.trim().length > 0)
         .map(l => ({
@@ -189,10 +241,8 @@ export default defineComponent({
           location: this.location || undefined,
           bio: this.bio,
           avatar: this.avatar,
-          accountType:
-            this.accountType !== undefined ? Number(this.accountType) : 0,
-          botRole:
-            this.botRole !== undefined ? Number(this.botRole) : undefined,
+          accountType,
+          botRole,
           ...(validLinks.length > 0 ? { links: validLinks } : {}),
         },
         inbox: {
@@ -234,6 +284,10 @@ export default defineComponent({
     },
     async updateRelayData() {
       if (!this.profileFormIsCurrent()) return
+      if (!this.relayData) {
+        errorNotify(new Error('invalid profile account type or bot role'))
+        return
+      }
       // Validate before any network work so a bad name is reported as such, not as a relay failure.
       const name = validateProfileDisplayName(this.name ?? '')
       const nameError = profileNameError(this.name ?? '', (key, params) =>
@@ -281,6 +335,11 @@ export default defineComponent({
         return
       }
 
+      const relayData = this.relayData
+      if (!relayData) {
+        errorNotify(new Error('invalid profile account type or bot role'))
+        return
+      }
       // Claim the username last of the checks, once nothing local can still stop the save: the
       // relay gives a name to one account only, and a claim that succeeded must not be
       // followed by a local failure that leaves the profile showing the old name. A name that
@@ -301,7 +360,7 @@ export default defineComponent({
 
       // Save locally to store first
       if (!this.profileFormIsCurrent()) return
-      this.setRelayData(this.relayData)
+      this.setRelayData(relayData)
 
       // Set profile on relay if wallet is available
       this.$q.loading.show({
@@ -330,7 +389,7 @@ export default defineComponent({
               (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
               cfg.relayBaseUrl,
             identity: wallet.identity as MonadIdentity,
-            profile: this.relayData.profile,
+            profile: relayData.profile,
             network: cfg.rpcChain,
           })
           // The relay has the edit. Until it does, the edit stays marked as this device's to

@@ -692,6 +692,28 @@ describe('stores/contacts.ts (ticket #42)', () => {
       },
     )
 
+    it.each([null, '', '\u200b', 'Loading...', 'Old (Unregistered)', 'Chosen'])(
+      'preserves the registered-name fallback for prior name %s',
+      async name => {
+        const contacts = useContactStore()
+        contacts.addContact({
+          address: ADDRESS,
+          contact: {
+            lastUpdateTime: 0,
+            profile: { name, bio: '', avatar: 'x', pubKey: null },
+          },
+        })
+        jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+          address: { raw: ADDRESS },
+          pubKey: PUB_KEY_BYTES,
+        })
+        await contacts.refresh(ADDRESS)
+        expect(contacts.getContactProfile(ADDRESS).name).toBe(
+          name === 'Chosen' ? 'Chosen' : '0x3e3e…3E3e',
+        )
+        expect(contacts.getContactProfile(ADDRESS).signedName).toBeNull()
+      },
+    )
     it('keeps a name the user already has when the profile name is blank, and never rewrites a visible name', async () => {
       const contacts = useContactStore()
       contacts.setUpdateInterval(0)

@@ -33,6 +33,7 @@ fn nats_startup_diagnostics_do_not_expose_endpoint_credentials() {
 host = "127.0.0.1:0"
 url = "http://127.0.0.1:8098"
 [registry]
+groups = {{ per_message_price_credits = 0 }}
 db_path = "{}"
 network = "monad-testnet"
 net = "mainnet"

@@ -14,6 +14,10 @@ net = "mainnet"
 peers = []
 public_relay_urls = []
 
+# Explicit abstract credit units per new group message; positive prices fail unfunded.
+[registry.groups]
+per_message_price_credits = 0
+
 # The account directory. The message, directory and relay-info routes (`/message*`,
 # `/directory/v1/*`, `/relay/v1/info`) exist only when this section is present: without it nobody
 # can register on or message through this relay. `endpoint` is the origin clients reach this

@@ -1247,7 +1247,14 @@ mod spa_tests {
     fn test_server(spa_dir: Option<std::path::PathBuf>) -> (TempDir, RegistryServer) {
         let tempdir = TempDir::new("cashweb-registry--spa-test").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(db, Arc::new(DisabledChainAdapter), Net::Regtest);
+        let registry = Registry::new(
+            db,
+            Arc::new(DisabledChainAdapter),
+            Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let event_bus = registry.event_bus().clone();
         let server = RegistryServer {
             registry: Arc::new(registry),

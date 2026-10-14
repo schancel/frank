@@ -15,7 +15,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("http://{}", listener.local_addr()?);
     io::stdout().flush()?;
     axum::Server::from_tcp(listener)?
-        .serve(router_with_store(GroupStore::new_in_memory()).into_make_service())
+        .serve(
+            router_with_store(GroupStore::new_in_memory(
+                cashweb_config::GroupAppendPolicy {
+                    per_message_price_credits: 0,
+                },
+            ))
+            .into_make_service(),
+        )
         .await?;
     Ok(())
 }

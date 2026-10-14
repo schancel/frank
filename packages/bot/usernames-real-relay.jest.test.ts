@@ -80,6 +80,7 @@ suite('usernames on the real relay', () => {
 url = "${relayBaseUrl}"
 
 [registry]
+groups = { per_message_price_credits = 0 }
 db_path = "${join(root, 'registry.rocksdb')}"
 network = "${NETWORK}"
 net = "mainnet"

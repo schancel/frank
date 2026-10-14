@@ -1,4 +1,5 @@
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
+import type { SupportedChainKind } from '@frank/wallet/chain/chains-registry'
 import { walletNetworkMetadata } from './wallet-support'
 
 export interface WalletItemConfig {
@@ -114,7 +115,7 @@ const WALLET_UI_OVERRIDES: Record<string, Partial<WalletItemConfig>> = {
   },
 }
 
-const PREFERRED_KIND_ORDER = [
+const PREFERRED_KIND_ORDER: readonly SupportedChainKind[] = [
   'monad',
   'bitcoin',
   'bitcoincash',

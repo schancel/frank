@@ -23,14 +23,22 @@ describe("handler progress wait", () => {
       await store.durableBatch([{ type: "put", key: "started", value: "yes" }]);
       committed = true;
     })();
+    // Keep a failed native write handled while the waiter is running; propagate it below.
+    void write.catch(() => undefined);
     try {
       await until(() => committed);
       expect(await store.get("started")).toBe("yes");
     } finally {
       immediate.mockRestore();
-      await write;
-      await store.close();
-      rmSync(dir, { recursive: true, force: true });
+      try {
+        await write;
+      } finally {
+        try {
+          await store.close();
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
     }
   });
 

@@ -118,6 +118,7 @@ describe('EmailThreadView', () => {
         stubs: {
           'q-page': { template: '<div class="q-page"><slot /></div>' },
           'q-scroll-area': {
+            props: ['contentStyle', 'contentActiveStyle'],
             template: '<div class="q-scroll-area"><slot /></div>',
           },
           'q-banner': {
@@ -1469,6 +1470,17 @@ describe('EmailThreadView', () => {
           address: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3@signet.mx',
           name: 'Shammah Chancellor',
         })
+      })
+
+      it('passes matching contentStyle and contentActiveStyle to q-scroll-area so thumbHidden toggles never shift padding', () => {
+        const wrapper = mountView()
+        const scrollArea = wrapper.findComponent({ ref: 'emailScroll' })
+        expect(scrollArea.exists()).toBe(true)
+        const contentStyle = scrollArea.props('contentStyle')
+        const contentActiveStyle = scrollArea.props('contentActiveStyle')
+        expect(contentStyle).toBeDefined()
+        expect(contentActiveStyle).toEqual(contentStyle)
+        expect(contentStyle).not.toHaveProperty('padding')
       })
     })
   })

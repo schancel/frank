@@ -1,4 +1,7 @@
 {
+  // Quasar generates .quasar/tsconfig.json and framework aliases/types via `yarn quasar prepare`
+  // from app/quasar.config.js. This checked-in browser config retains its strict settings
+  // independently; do not copy generated output or inherit its skipLibCheck default.
   // Ticket #51 (Vite migration): `@quasar/app-webpack/tsconfig-preset` no longer exists once
   // app-webpack is uninstalled, and `@quasar/app-vite` ships no equivalent general-purpose preset
   // (only a narrow `.d.ts`-only one). Inlined verbatim from that preset's own content (checked
@@ -8,7 +11,8 @@
     "allowJs": true,
     "esModuleInterop": true,
     "module": "esnext",
-    "moduleResolution": "node",
+    // Vite and the shared packages resolve package export maps (including typed subpaths).
+    "moduleResolution": "bundler",
     "noEmit": true,
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
@@ -28,8 +32,8 @@
     // internal chain -- does not automatically derive its module resolution from tsconfig
     // `paths`; these are two independent mechanisms that both need to agree).
     "paths": {
-      // Mera exposes declarations through exports.types. This project's legacy Node
-      // resolver needs the same explicit declaration entry; Vite uses package exports.
+      // Mera's compiler alias names the same declaration as its package exports.
+      // Vite resolves the runtime entry through those exports.
       "@category-labs/mera": [
         "../node_modules/@category-labs/mera/dist/index.d.ts"
       ],
@@ -70,7 +74,11 @@
     "../packages/bitcore-lib-xpi/types.d.ts",
     // The repository's single declaration of the bare `level` module (level 7 ships no types).
     // Every project that type-checks code importing `level` includes this same file.
-    "../packages/wallet/level.d.ts"
+    "../packages/wallet/level.d.ts",
+    // These ambient contracts remain owned by their package, including when app imports
+    // a source module rather than that package's tsconfig root.
+    "../packages/cashweb/relay/storage/message-store-level-types.d.ts",
+    "../packages/wallet/ecash-wallet-sdk.d.ts"
   ],
   // Also found broken alongside the target bump above: with no `exclude`, the production
   // webpack build's type-checker swept in `*.jest.test.ts` files (matched by `src/**/*`) and

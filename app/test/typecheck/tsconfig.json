@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": [
+    "frontend-composition.ts",
+    "frontend-composition.vue",
+    "../../src/types/vue.d.ts"
+  ]
+}

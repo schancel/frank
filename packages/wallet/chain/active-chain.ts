@@ -255,13 +255,6 @@ export type RecoveredStampPaymentSweepResult =
       txHash?: string;
     };
 
-/** What the sender's client knows about one earlier outgoing attempt (ticket #269/#270); see
- * `MonadStampAttemptStatus` in `../monad-stamp-client.ts` for the legacy path's meaning. On the
- * canonical path `dead` is final: the relay answered that it ended delivery of that exact payment
- * set, so the message was not delivered and never will be by that attempt. It does not say the
- * signed payments cannot land: the wallet keeps them and their reserved accounts, and other
- * messages send from other accounts. Never pay again for the same message on any status without
- * the user's explicit say-so. */
 export type DirectMessagePaymentState =
   | "pending"
   | "spent"
@@ -277,7 +270,8 @@ export type DirectMessagePaymentState =
  * - `repaid`: a payment was mined and reverted, and its repeat was paid;
  * - `failed`: a payment can never land (its nonce went to another transaction), or was
  *   reverted and so was its repeat; it is not paid again;
- * - `unsent`: the relay refused the message before anything was broadcast; nothing was paid.
+ * - `unsent`: a retained disposition whose signed bytes were dropped. Current canonical paid
+ *   sends do not create it on relay refusal; it does not independently prove zero financial effect.
  */
 export type DirectMessagePaymentSummary =
   | "pending"
@@ -287,6 +281,12 @@ export type DirectMessagePaymentSummary =
   | "repaid"
   | "failed"
   | "unsent";
+/** What the sender knows about an earlier outgoing attempt; see `MonadStampAttemptStatus` in
+ * `../monad-stamp-client.ts` for the legacy path's meaning. Canonical paid attempts remain `live`
+ * while delivery is unresolved, including after HTTP rejection or a `dead` relay answer. The
+ * wallet retains and retries the original exact request; delivery and payment settlement are
+ * separate facts. A stored `dead` status may describe a host-bound free receipt or a retained
+ * historical outcome. No status authorizes a fresh replacement payment. */
 export type DirectMessageAttemptStatus =
   | "live"
   | "delivered"
@@ -520,8 +520,10 @@ export interface DirectMessageClient {
     onEnvelopeDurable?: (payloadDigest: string, messageId?: string) => void | Promise<void>;
   }): Promise<Record<string, DirectMessageAttemptStatus>>;
   /** Read-only durable delivery truth for paid attempts and host-bound free envelopes.
-   * Held or unresolved bytes return live; only a stored relay receipt returns delivered/dead.
-   * Absent returns undefined. Never resends, signs, observes the chain or writes defaults. */
+   * Held or unresolved bytes, including paid relay refusals, return live. Delivered confirms
+   * relay storage, independently of payment settlement. Host-bound free terminal receipts and
+   * retained historical outcomes may return dead. Absent returns undefined.
+   * Never resends, signs, observes the chain or writes defaults. */
   deliveryOf?(params: {
     wallet: WalletHandle;
     payloadDigest: string;
@@ -557,8 +559,6 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     payloadDigests: string[];
   }): Promise<void>;
-  /** Durably marks an attempt as discarded/dead so it stops blocking subsequent sends.
-   * Call when the user explicitly discards or deletes a failed/pending message. */
   /**
    * What the chain has shown, so far, of each stamp payment of a message this wallet sent, in
    * payment order; `undefined` for a digest this wallet has no record of. Reads the wallet's own
@@ -567,8 +567,8 @@ export interface DirectMessageClient {
    * - `spent` / `reverted`: in a block. A reverted payment consumed its account all the same.
    * - `failed`: the account's nonce was consumed by another transaction; this payment can never
    *   land. It is never paid again.
-   * - `unsent`: the relay refused the message for good before storing or broadcasting anything;
-   *   the payment was dropped and its coin freed.
+   * - `unsent`: a retained disposition whose signed bytes were dropped. Current canonical paid
+   *   sends do not create it on relay refusal; it does not independently prove zero financial effect.
    * Delivery (`DirectMessageAttemptStatus`) and payment are separate facts.
    */
   paymentsOf?(params: {
@@ -598,6 +598,8 @@ export interface DirectMessageClient {
   chainHealth?(params: { wallet: WalletHandle }):
     | { reachable: true }
     | { reachable: false; sinceMs: number; errorKind: string };
+  /** Presentation accounting for delivered attempts. Undelivered originals remain in the
+   * resend queue and pending payments stay claimed; discard does not cancel or release them. */
   discardAttempt?(params: {
     wallet: WalletHandle;
     payloadDigest: string;

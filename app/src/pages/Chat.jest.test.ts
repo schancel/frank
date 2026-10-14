@@ -4,6 +4,7 @@ import fs from 'fs'
 import path from 'path'
 import { mount, flushPromises } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
+import { createPinia } from 'pinia'
 
 import { openContactProfile } from '../utils/routes'
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
@@ -233,6 +234,7 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
     const mockReplace = jest.fn()
     const wrapper = mount(ChatLayout, {
       global: {
+        plugins: [createPinia()],
         mocks: {
           $route: {
             params: { address: '0x1111111111111111111111111111111111111111' },

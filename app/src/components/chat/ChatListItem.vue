@@ -188,13 +188,14 @@
       <delete-chat-dialog
         :address="effectiveId"
         :name="rowLabel"
-        @deleted="onChatDeleted"
+        :after-delete="onChatDeleted"
       />
     </q-dialog>
   </q-item>
 </template>
 
 <script lang="ts">
+import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
 import { type Conversation, useChatStore } from 'src/stores/chats'
 import { picturePreviewText } from '../../utils/chat-attachments'
 import {
@@ -227,13 +228,18 @@ export default defineComponent({
     AccountBadge,
     DeleteChatDialog,
   },
-  setup() {
+  setup(props) {
     const contacts = useContactStore()
     const chats = useChatStore()
     const myProfile = useProfileStore()
+    const navigateAfterDeletion = useChatDeletionNavigation(
+      chats,
+      () => props.conversation?.id || props.conversationId || props.chatAddress,
+    )
     const deleteDialogOpen = ref(false)
 
     return {
+      navigateAfterDeletion,
       getContactProfile: contacts.getContactProfile,
       getLatestMessage: chats.getLatestMessage,
       chatStore: chats,
@@ -277,10 +283,14 @@ export default defineComponent({
         value: !current,
       })
     },
-    onChatDeleted() {
+    onChatDeleted(conversationId: string) {
       this.deleteDialogOpen = false
-      if (this.isActive && this.$router) {
-        this.$router.push('/chat')
+      if (this.$router) {
+        void this.navigateAfterDeletion(
+          this.$router,
+          String(this.$route.params.address ?? ''),
+          conversationId,
+        )
       }
     },
   },
@@ -433,7 +443,15 @@ export default defineComponent({
         ? this.getContactProfile(this.effectiveAddress)
         : { name: '', avatar: undefined }
     },
-    targetProfile() {
+    targetProfile():
+      | {
+          name?: string | null
+          avatar?: string | null
+          accountType?: number
+          botRole?: number
+          isBot?: boolean
+        }
+      | undefined {
       if (
         this.effectiveAddress &&
         sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
@@ -470,9 +488,11 @@ export default defineComponent({
         this.effectiveAddress &&
         sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
       ) {
-        return this.myProfile.profile.avatar || this.contact?.avatar
+        return (
+          this.myProfile.profile.avatar || this.contact?.avatar || undefined
+        )
       }
-      return this.contact?.avatar
+      return this.contact?.avatar || undefined
     },
     isActive(): boolean {
       const activeId = this.chatStore.activeConversationId

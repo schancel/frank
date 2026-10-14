@@ -31,7 +31,10 @@ jest.mock('../adapters/level-message-store', () => ({
 }))
 jest.mock('../accounts/session', () => ({
   accountStatus: { status: 'ready' },
-  accountSession: { initialize: jest.fn(async () => undefined) },
+  accountSession: {
+    state: { revision: 1, account: null },
+    initialize: jest.fn(async () => undefined),
+  },
 }))
 jest.mock('../router/routes', () => ({
   createRoutes: () => [

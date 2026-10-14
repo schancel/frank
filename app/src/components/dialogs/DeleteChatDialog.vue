@@ -26,17 +26,24 @@
 </template>
 
 <script lang="ts">
-import { useChatStore } from 'src/stores/chats'
-import { defineComponent } from 'vue'
+import { type Conversation, useChatStore } from 'src/stores/chats'
+import { defineComponent, type PropType } from 'vue'
+import { accountSession } from 'src/accounts/session'
+import { toChainDisplayAddress } from 'src/utils/chain-address'
 
 export default defineComponent({
   setup() {
     const chatStore = useChatStore()
     return {
+      chatStore,
       deleteChat: chatStore.deleteChat,
     }
   },
   props: {
+    afterDelete: {
+      type: Function as PropType<(conversationId: string) => void>,
+      required: true,
+    },
     address: {
       type: String,
       default: () => '',
@@ -46,13 +53,33 @@ export default defineComponent({
       default: () => '',
     },
   },
-  // ChatInfoView.vue listens for this to navigate away -- once this chat is deleted, staying on
-  // its now-dangling Info view (or its now-gone chat route) isn't a valid state to sit in.
-  emits: ['deleted'],
+  // Consumers navigate only after this confirmed deletion, retaining its canonical identity.
   methods: {
     async onDelete() {
-      await this.deleteChat(this.address)
-      this.$emit('deleted')
+      // Capture completion before awaiting: the filtered list can unmount this dialog.
+      const afterDelete = this.afterDelete
+      const target = this.address
+      let conversation: Conversation | undefined =
+        this.chatStore.conversations[target]
+      if (!conversation) {
+        try {
+          conversation = this.chatStore.chats[toChainDisplayAddress(target)]
+        } catch {
+          return
+        }
+      }
+      if (!conversation) return
+      const id = conversation.id
+      const { revision, account } = accountSession.state
+      const conversations = this.chatStore.conversations
+      await this.deleteChat(id)
+      if (
+        accountSession.state.revision !== revision ||
+        accountSession.state.account !== account ||
+        this.chatStore.conversations !== conversations
+      )
+        return
+      afterDelete(id)
     },
   },
 })

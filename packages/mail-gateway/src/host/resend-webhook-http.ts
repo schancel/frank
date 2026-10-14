@@ -1,4 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { CheckoutServer } from '../http/checkout-server';
+import type { SecureMessagePortal } from '../secure-link/secure-message-portal';
 import { handleResendWebhookRequest, type ResendInboundWebhook } from '../smtp/resend-inbound-webhook';
 import {
   createWkdHttpHandler,
@@ -14,13 +16,17 @@ export interface ResendWebhookHttpOptions {
   readonly host: string;
   readonly wkdHandler?: WkdHttpHandler;
   readonly wkd?: WkdHttpHandlerOptions;
+  readonly securePortal?: SecureMessagePortal;
+  readonly checkoutServer?: CheckoutServer;
 }
 
-/** Public HTTP ingress for Resend signed webhooks and OpenPGP Web Key Directory (WKD) routes. */
+/** Public HTTP ingress for Resend signed webhooks, OpenPGP WKD routes, Secure Message Portal links, and Stripe payment webhooks. */
 export class ResendWebhookHttp {
   private server?: Server;
   private ready = false;
   private readonly wkdHandler?: WkdHttpHandler;
+  private readonly securePortal?: SecureMessagePortal;
+  private readonly checkoutServer?: CheckoutServer;
 
   constructor(private readonly options: ResendWebhookHttpOptions) {
     if (!Number.isSafeInteger(options.port) || options.port < 0 || options.port > 65535)
@@ -28,6 +34,8 @@ export class ResendWebhookHttp {
     if (!options.host) throw new Error('Resend webhook bind host is required');
     this.wkdHandler =
       options.wkdHandler ?? (options.wkd ? createWkdHttpHandler(options.wkd) : undefined);
+    this.securePortal = options.securePortal;
+    this.checkoutServer = options.checkoutServer;
   }
 
   async start(): Promise<void> {
@@ -87,6 +95,85 @@ export class ResendWebhookHttp {
       if (wkdResult) {
         outgoing.writeHead(wkdResult.status, wkdResult.headers);
         outgoing.end(wkdResult.body);
+        return;
+      }
+    }
+    if (
+      this.securePortal &&
+      incoming.url &&
+      (incoming.url.startsWith('/secure/') || incoming.url.startsWith('/onboard/claim/'))
+    ) {
+      const parsedUrl = new URL(incoming.url, 'https://mail-gateway.invalid');
+      let bodyText = '';
+      if (incoming.method === 'POST') {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of incoming) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += bytes.length;
+          if (size > MAX_BODY_BYTES) {
+            incoming.resume();
+            outgoing.writeHead(413).end();
+            return;
+          }
+          chunks.push(bytes);
+        }
+        bodyText = Buffer.concat(chunks, size).toString('utf8');
+      } else {
+        incoming.resume();
+      }
+      const portalResult = await this.securePortal.handleHttpRequest({
+        pathname: parsedUrl.pathname,
+        method: incoming.method ?? 'GET',
+        body: bodyText,
+      });
+      if (portalResult) {
+        outgoing.writeHead(portalResult.status, portalResult.headers);
+        outgoing.end(portalResult.body);
+        return;
+      }
+    }
+    if (this.checkoutServer && incoming.url) {
+      const parsedUrl = new URL(incoming.url, 'https://mail-gateway.invalid');
+      if (incoming.method === 'GET' && parsedUrl.pathname.startsWith('/pay/')) {
+        incoming.resume();
+        const tokenOrId = parsedUrl.pathname.slice('/pay/'.length);
+        const page = this.checkoutServer.renderPaymentPageResponse(
+          tokenOrId,
+          parsedUrl.searchParams,
+        );
+        outgoing.writeHead(page.status, page.headers);
+        outgoing.end(page.body);
+        return;
+      }
+      if (
+        incoming.method === 'POST' &&
+        (parsedUrl.pathname === '/webhooks/stripe' ||
+          parsedUrl.pathname === '/api/webhooks/stripe')
+      ) {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of incoming) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += bytes.length;
+          if (size > MAX_BODY_BYTES) {
+            incoming.resume();
+            outgoing.writeHead(413).end();
+            return;
+          }
+          chunks.push(bytes);
+        }
+        const rawBody = Buffer.concat(chunks, size).toString('utf8');
+        const sigHeader =
+          typeof incoming.headers['stripe-signature'] === 'string'
+            ? incoming.headers['stripe-signature']
+            : undefined;
+        const stripeResult = await this.checkoutServer.handleStripeWebhookPayload(
+          rawBody,
+          sigHeader,
+        );
+        outgoing.writeHead(stripeResult.status, stripeResult.headers);
+        outgoing.end(stripeResult.body);
         return;
       }
     }

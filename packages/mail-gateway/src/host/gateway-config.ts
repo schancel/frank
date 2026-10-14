@@ -29,6 +29,11 @@ export interface GatewayHostConfig extends GatewayIdentityConfig {
   readonly webhookHost: string;
   readonly webhookPort: number;
   readonly pollIntervalMs: number;
+  readonly frankAppUrl?: string;
+  readonly stripeWebhookSecret?: string;
+  readonly stripePaymentLinkTier1?: string;
+  readonly stripePaymentLinkTier2?: string;
+  readonly stripePaymentLinkTier3?: string;
   readonly operatorAccountAddress?: string;
   readonly operatorForwardEmail?: string;
   readonly nativeSmtp?: {
@@ -138,6 +143,23 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
   const webhookHost = required(env, 'FRANK_MAIL_WEBHOOK_HOST');
   const webhookPort = positiveInteger(required(env, 'FRANK_MAIL_WEBHOOK_PORT'), 'Webhook port', 65535);
   const pollIntervalMs = positiveInteger(required(env, 'FRANK_MAIL_POLL_MS'), 'Poll interval', 3_600_000);
+  const frankAppUrlRaw = env.FRANK_MAIL_APP_URL?.trim();
+  const frankAppUrl = frankAppUrlRaw
+    ? (() => {
+        const parsed = new URL(frankAppUrlRaw);
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+          throw new Error('FRANK_MAIL_APP_URL must use HTTP or HTTPS');
+        }
+        return frankAppUrlRaw.replace(/\/+$/, '');
+      })()
+    : undefined;
+  const stripeWebhookSecretFile = env.FRANK_MAIL_STRIPE_WEBHOOK_SECRET_FILE?.trim();
+  const stripeWebhookSecret = stripeWebhookSecretFile
+    ? ownerSecret(absolute(env, 'FRANK_MAIL_STRIPE_WEBHOOK_SECRET_FILE'))
+    : env.FRANK_MAIL_STRIPE_WEBHOOK_SECRET?.trim() || undefined;
+  const stripePaymentLinkTier1 = env.FRANK_MAIL_STRIPE_LINK_TIER1?.trim() || undefined;
+  const stripePaymentLinkTier2 = env.FRANK_MAIL_STRIPE_LINK_TIER2?.trim() || undefined;
+  const stripePaymentLinkTier3 = env.FRANK_MAIL_STRIPE_LINK_TIER3?.trim() || undefined;
   const operatorAccountRaw = env.FRANK_MAIL_OPERATOR_ACCOUNT?.trim();
   const operatorForwardRaw = env.FRANK_MAIL_OPERATOR_EMAIL?.trim();
   const operatorForwardEmail = operatorForwardRaw
@@ -178,6 +200,11 @@ export function loadGatewayHostConfig(env: NodeJS.ProcessEnv = process.env): Gat
     ...identity, directoryStorage,
     journalMode, resendApiKey, resendWebhookSecret,
     resendRawOrigins, inboundStampValue, webhookHost, webhookPort, pollIntervalMs,
+    ...(frankAppUrl ? { frankAppUrl } : {}),
+    ...(stripeWebhookSecret ? { stripeWebhookSecret } : {}),
+    ...(stripePaymentLinkTier1 ? { stripePaymentLinkTier1 } : {}),
+    ...(stripePaymentLinkTier2 ? { stripePaymentLinkTier2 } : {}),
+    ...(stripePaymentLinkTier3 ? { stripePaymentLinkTier3 } : {}),
     ...(operatorAccountAddress ? { operatorAccountAddress } : {}),
     ...(operatorForwardEmail ? { operatorForwardEmail } : {}),
     nativeSmtp,

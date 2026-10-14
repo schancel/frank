@@ -27,6 +27,7 @@ export * from './relay/journaled-frank-mailbox';
 export * from './relay/journaled-frank-outbound';
 export * from './dns/domain-resolver';
 export * from './wkd/wkd';
+export * from './secure-link/secure-message-portal';
 
 import { BlobStore, createBlobStore } from './storage/blob-store';
 import { CreditLedger } from './ledger/credit-ledger';
@@ -84,6 +85,7 @@ export class EmailGatewayDaemon {
       stripePaymentLinkTier1: config.stripePaymentLinkTier1,
       stripePaymentLinkTier2: config.stripePaymentLinkTier2,
       stripePaymentLinkTier3: config.stripePaymentLinkTier3,
+      frankAppUrl: config.frankAppUrl,
     });
     this.inboundHandler = new InboundEmailHandler({
       gatewayDomain: config.gatewayDomain,

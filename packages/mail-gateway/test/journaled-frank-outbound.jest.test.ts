@@ -6,6 +6,8 @@ import { CreditLedger } from '../src/ledger/credit-ledger';
 import { MailJournal } from '../src/ledger/mail-journal';
 import { JournaledFrankOutbound, replyAlias, userIdFallbackLocalPart } from '../src/relay/journaled-frank-outbound';
 import { JournaledFrankMailbox } from '../src/relay/journaled-frank-mailbox';
+import { JournaledInboundSend } from '../src/relay/journaled-inbound-send';
+import { parseRawRfc822 } from '../src/smtp/smtp-listener';
 import { LocalFsBlobStore } from '../src/storage/local-fs-blob-store';
 
 const SCOPE = `0x${'a'.repeat(40)}`;
@@ -201,5 +203,63 @@ describe('journaled Frank outbound bridge', () => {
     if (job.signedRfc822.kind !== 'inline') throw new Error('Expected inline mail');
     const raw = Buffer.from(job.signedRfc822.bytes).toString('utf8');
     expect(raw).toContain(`From: "Shammah" <${fallbackLocal}@gw.example>\r\nReply-To: ${alias}@gw.example`);
+  });
+
+  it('grants reply allowances in CreditLedger when outbound stamp covers inboundStampValue so external reply is queued immediately', async () => {
+    const inboundStampValue = 300n;
+    const handlerWithAllowance = new JournaledFrankOutbound({
+      journal,
+      ledger,
+      gatewayDomain: 'gw.example',
+      mailboxSalt: SALT,
+      inboundStampValue,
+      now: () => 1000,
+    });
+    const message = received();
+    message.stampValueWei = 900n; // Covers 3x inboundStampValue
+    await handlerWithAllowance.handle(message);
+
+    expect(ledger.getThreadAllowance('recipient@example.test', SCOPE)).toBe(3);
+    expect(journal.findFrankInbound(DIGEST)?.spent).toBe('900');
+
+    const alias = replyAlias(SALT, SCOPE, CONVERSATION);
+    const replyRfc822 = Buffer.from(
+      [
+        'From: recipient@example.test',
+        `To: ${alias}@gw.example`,
+        'Subject: Re: Test',
+        'Message-ID: <reply-1@example.test>',
+        `In-Reply-To: ${RFC_ID}`,
+        `References: ${RFC_ID}`,
+        '',
+        'Sup?',
+        '',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const wallet = { identity: { address: { raw: GATEWAY } } } as WalletHandle;
+    const chain = {
+      chainIdentifier: 'monad-testnet',
+      parseAddress: (addr: string) => (/^0x[0-9a-f]{40}$/i.test(addr) ? { raw: addr.toLowerCase() } : undefined),
+    } as unknown as ActiveChain;
+    const inboundSend = new JournaledInboundSend({
+      chain,
+      wallet,
+      ledger,
+      journal,
+    });
+    const admission = inboundSend.admit(
+      {
+        email: parseRawRfc822(replyRfc822, 'recipient@example.test', `${alias}@gw.example`),
+        verifiedTransportId: 'resend-1',
+        authenticatedSenderEmail: 'recipient@example.test',
+      },
+      SCOPE,
+      inboundStampValue,
+      CONVERSATION,
+      alias,
+    );
+    expect(admission.kind).toBe('queued');
+    expect(ledger.getThreadAllowance('recipient@example.test', SCOPE)).toBe(2);
   });
 });

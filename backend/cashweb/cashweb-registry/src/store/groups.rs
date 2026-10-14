@@ -1135,6 +1135,11 @@ impl GroupStore {
         messages: &[StoredGroupMessage],
     ) -> Result<u64, GroupError> {
         let group_id = parse_group_id_hex(group_id_hex)?;
+        self.check_baseline()?;
+        // An empty import has no authenticated material and must remain a read-only no-op.
+        if epoch_frame.is_none() && messages.is_empty() {
+            return Ok(0);
+        }
         // Validate the complete batch before allowing an upstream response to alter local state.
         let epoch_frame = epoch_frame.map(GroupEpochFrame::normalized).transpose()?;
         if let Some(frame) = &epoch_frame {
@@ -2042,6 +2047,11 @@ mod tests {
     }
     #[test]
     fn baseline_is_read_only_namespace_scoped_and_initializes_concurrently() {
+        let empty = Arc::new(MemoryKvStore::new());
+        GroupStore::new(empty.clone())
+            .ingest_mirrored_upstream(&"00".repeat(32), None, &[])
+            .unwrap();
+        assert!(empty.scan_prefix_range(&[], None, 1).unwrap().is_empty());
         let kv = Arc::new(MemoryKvStore::new());
         kv.put(b"unrelated:registry", b"preserved").unwrap();
         let store = GroupStore::new(kv.clone());
@@ -2051,8 +2061,19 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
+        assert_eq!(
+            store
+                .ingest_mirrored_upstream(&initial.group_id, None, &[])
+                .unwrap(),
+            0
+        );
+        assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
         let mut forged = initial.clone();
         forged.admin_sig = "00".repeat(64);
+        assert!(store
+            .ingest_mirrored_upstream(&initial.group_id, Some(forged.clone()), &[])
+            .is_err());
+        assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
         assert!(store.put_epoch(&initial.group_id, forged).is_err());
         assert!(kv.get(GROUP_FORMAT_KEY).unwrap().is_none());
         let barrier = Arc::new(std::sync::Barrier::new(3));

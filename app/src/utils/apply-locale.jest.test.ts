@@ -1,4 +1,13 @@
 import { applyLocale } from './apply-locale'
+import { i18n } from '../boot/i18n'
+
+let previousLocale: string
+beforeEach(() => {
+  previousLocale = i18n.global.locale
+})
+afterEach(() => {
+  i18n.global.locale = previousLocale
+})
 
 describe('applyLocale', () => {
   it('synchronously sets both locales with a real static Quasar pack for every known locale', () => {
@@ -9,16 +18,24 @@ describe('applyLocale', () => {
       ['fr-fr', 'fr'],
     ] as const) {
       let setLocaleCalledWith: string | undefined
-      const setLang = jest.fn()
+      const effects: string[] = []
+      const setLang = jest.fn(() => {
+        expect(i18n.global.locale).toBe(locale)
+        effects.push('quasar')
+      })
 
       const result = applyLocale({
         $q: { lang: { set: setLang } },
         setI18nLocale: value => {
           setLocaleCalledWith = value
+          effects.push('caller')
         },
         locale,
       })
 
+      expect(i18n.mode).toBe('legacy')
+      expect(effects).toEqual(['caller', 'quasar'])
+      expect(i18n.global.locale).toBe(locale)
       expect(setLocaleCalledWith).toBe(locale)
       expect(result).toBeUndefined()
       expect(setLang).toHaveBeenCalledTimes(1)
@@ -38,6 +55,7 @@ describe('applyLocale', () => {
     })
 
     expect(result).toBeUndefined()
+    expect(i18n.global.locale).toBe('xx-xx')
     expect(setLang).toHaveBeenCalledTimes(1)
     expect(setLang.mock.calls[0][0]).toMatchObject({ isoName: 'en-US' })
   })
@@ -61,6 +79,7 @@ describe('applyLocale', () => {
     }).not.toThrow()
 
     expect(setLang).toHaveBeenCalledTimes(1)
+    expect(i18n.global.locale).toBe('fr-fr')
     expect(setLang.mock.calls[0][0]).toMatchObject({ isoName: 'fr' })
     warnSpy.mockRestore()
   })

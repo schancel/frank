@@ -8,11 +8,12 @@
  * directly) so it works the same from a Composition-API ref (`v => (i18nLocale.value = v)`) and
  * from Options-API's `this.$i18n.locale` property (`v => (this.$i18n.locale = v)`).
  */
+import type { QVueGlobals } from 'quasar'
 import { quasarLangPackForLocale } from 'src/i18n'
 import { i18n } from 'src/boot/i18n'
 
 export interface QuasarLangTarget {
-  lang: { set: (pack: unknown) => void }
+  lang: Pick<QVueGlobals['lang'], 'set'>
 }
 
 export function applyLocale(params: {

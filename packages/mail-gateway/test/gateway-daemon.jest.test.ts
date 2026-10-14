@@ -29,6 +29,7 @@ describe('mail gateway executable lifecycle', () => {
     relayBaseUrl: 'https://relay.signet.mx', directoryStorage: '/private/directory',
     pollIntervalMs: 5_000,
   } as unknown as GatewayHostConfig;
+  const sendPendingHeldAutoReplies = jest.fn(async () => undefined);
   const poll = jest.fn(async () => { order.push('poll'); });
   const webhookStart = jest.fn(async () => { order.push('webhook start'); });
   const webhookStop = jest.fn(async () => { order.push('webhook stop'); });
@@ -48,6 +49,7 @@ describe('mail gateway executable lifecycle', () => {
       replyAliasSalt: () => salt, close: walletClose,
     } as unknown as Awaited<ReturnType<typeof openGatewayWallet>>);
     hostCreate.mockReturnValue({
+      inbound: { sendPendingHeldAutoReplies },
       runtime: { runOnce: poll }, webhook: { start: webhookStart, setReady: webhookSetReady }, close: hostClose,
     } as unknown as ReturnType<typeof createJournaledMailHost>);
     directoryOpen.mockImplementation(async () => {
@@ -70,9 +72,10 @@ describe('mail gateway executable lifecycle', () => {
     ]);
   });
 
-  it('reports optional challenge failure without gating ingress or later financial recovery', async () => {
+  it('reports profile and challenge failures independently without gating ingress or financial recovery', async () => {
     jest.useFakeTimers();
     const diagnostic = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    profileRegister.mockRejectedValueOnce(new Error('profile unavailable'));
     const sendPendingHeldAutoReplies = jest.fn(async () => { throw new Error('Held auto-reply failures: 1'); });
     hostCreate.mockReturnValue({
       inbound: { sendPendingHeldAutoReplies },
@@ -83,6 +86,7 @@ describe('mail gateway executable lifecycle', () => {
       service = await startMailGateway(config);
       expect(webhookStart).toHaveBeenCalledTimes(1);
       expect(sendPendingHeldAutoReplies).not.toHaveBeenCalled();
+      expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining('profile publication failed; retrying in 60s'));
       await jest.advanceTimersByTimeAsync(config.pollIntervalMs);
       expect(sendPendingHeldAutoReplies).toHaveBeenCalledTimes(1);
       expect(poll).toHaveBeenCalledTimes(2);
@@ -117,17 +121,87 @@ describe('mail gateway executable lifecycle', () => {
     await restarted.close();
   });
 
-  it('surfaces publication failure, closes owners, and retries the same identity on restart', async () => {
+  it('keeps recovery and ingress running after profile failure, then retries the same identity', async () => {
+    jest.useFakeTimers();
+    const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
     profileRegister.mockRejectedValueOnce(new Error('profile rejected'));
-    await expect(startMailGateway(config)).rejects.toThrow('profile rejected');
-    expect(poll).not.toHaveBeenCalled();
-    expect(webhookStart).not.toHaveBeenCalled();
-    expect(directoryClose).toHaveBeenCalledTimes(1);
-    expect(walletClose).toHaveBeenCalledTimes(1);
     const service = await startMailGateway(config);
+    expect(poll).toHaveBeenCalled();
+    expect(webhookStart).toHaveBeenCalledTimes(1);
+    expect(walletClose).not.toHaveBeenCalled();
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('publication failed; retrying in 60s: profile rejected'));
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(profileRegister).toHaveBeenCalledTimes(2);
+    expect(profileRegister.mock.calls[0][0].identity).toBe(profileRegister.mock.calls[1][0].identity);
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(profileRegister).toHaveBeenCalledTimes(2);
+    await service.close();
+    warning.mockRestore();
+    jest.useRealTimers();
+  });
+
+  it('does not hold financial recovery for slow profile requests, and aborts them before custody closes', async () => {
+    let signal: AbortSignal | undefined;
+    profileRegister.mockImplementationOnce(options => {
+      signal = options.signal;
+      return new Promise((_, reject) => {
+        signal!.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+      });
+    });
+    const service = await startMailGateway(config);
+    expect(signal!.aborted).toBe(false);
+    expect(poll).toHaveBeenCalled();
+    expect(webhookStart).toHaveBeenCalled();
+    expect(profileRegister).toHaveBeenCalledTimes(1);
+    await service.close();
+    expect(signal!.aborted).toBe(true);
+    expect(walletClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels profile requests and waits for active challenge delivery before closing custody', async () => {
+    jest.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    let finishChallenge!: () => void;
+    sendPendingHeldAutoReplies.mockImplementationOnce(() => new Promise(resolve => { finishChallenge = () => resolve(undefined); }));
+    profileRegister.mockImplementationOnce(options => {
+      signal = options.signal;
+      return new Promise((_, reject) => {
+        signal!.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+      });
+    });
+    const service = await startMailGateway(config);
+    await jest.advanceTimersByTimeAsync(config.pollIntervalMs);
+    const closing = service.close();
+    expect(signal!.aborted).toBe(true);
+    await Promise.resolve();
+    expect(walletClose).not.toHaveBeenCalled();
+    expect(hostClose).not.toHaveBeenCalled();
+    finishChallenge();
+    await closing;
+    expect(walletClose).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(profileRegister).toHaveBeenCalledTimes(1);
+    expect(sendPendingHeldAutoReplies).toHaveBeenCalledTimes(1);
+    jest.useRealTimers();
+  });
+
+  it('cancels pending retries when startup recovery fails', async () => {
+    jest.useFakeTimers();
+    const warning = jest.spyOn(process.stderr, 'write').mockReturnValue(true);
+    profileRegister.mockRejectedValueOnce(new Error('profile unavailable'));
+    poll.mockRejectedValueOnce(new Error('recovery failed'));
+    await expect(startMailGateway(config)).rejects.toThrow('recovery failed');
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(profileRegister).toHaveBeenCalledTimes(1);
+    expect(walletClose).toHaveBeenCalledTimes(1);
+    poll.mockImplementation(async () => { order.push('poll'); });
+    const restarted = await startMailGateway(config);
+    expect(profileRegister).toHaveBeenCalledTimes(2);
     expect(profileRegister.mock.calls[0][0].identity.address.raw).toBe(config.expectedIdentityAddress);
     expect(profileRegister.mock.calls[1][0].identity.address.raw).toBe(config.expectedIdentityAddress);
-    await service.close();
+    await restarted.close();
+    warning.mockRestore();
+    jest.useRealTimers();
   });
 
   it('refuses a failed recovery pass and closes every opened owner without listening', async () => {
@@ -151,6 +225,7 @@ describe('mail gateway executable lifecycle', () => {
     const smtpStart = jest.fn(async () => { order.push('smtp start'); });
     const smtpReady = jest.fn();
     hostCreate.mockReturnValue({
+      inbound: { sendPendingHeldAutoReplies },
       runtime: { runOnce: poll }, webhook: { start: webhookStart, setReady: webhookSetReady },
       smtp: { start: smtpStart, setReady: smtpReady }, close: hostClose,
     } as unknown as ReturnType<typeof createJournaledMailHost>);
@@ -171,6 +246,7 @@ describe('mail gateway executable lifecycle', () => {
     const tlsCert = Buffer.from('synthetic-cert');
     const smtpStart = jest.fn(async () => { throw new Error('smtp bind failed'); });
     hostCreate.mockReturnValue({
+      inbound: { sendPendingHeldAutoReplies },
       runtime: { runOnce: poll }, webhook: { start: webhookStart, setReady: webhookSetReady },
       smtp: { start: smtpStart, setReady: jest.fn() }, close: hostClose,
     } as unknown as ReturnType<typeof createJournaledMailHost>);

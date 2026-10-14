@@ -195,11 +195,13 @@
               :address="address"
               @sendFollowUp="handleSendFollowUp"
             />
-            <chat-message-contact-card
-              v-else-if="item.type == 'contact-card'"
-              :item="item"
-              :address="address"
-            />
+            <template v-else-if="item.type == 'contact-card'">
+              <chat-message-contact-card
+                v-if="item.uid !== 'frank-wakeup-capability'"
+                :item="item"
+                :address="address"
+              />
+            </template>
             <!-- Previously silently unrendered (no branch existed at all for this or any other
             unhandled type) -- a real preview string instead, via the same registry `chats.ts` now
             uses for the sidebar/notifications, so this can never silently go blank again as new

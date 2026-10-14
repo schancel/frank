@@ -5,10 +5,12 @@
  */
 
 const BLIND_WAKEUP_MESSAGE_TYPE = 'FRANK_BLIND_WAKEUP_SYNC'
+const BLIND_WAKEUP_HANDLED_TYPE = 'FRANK_BLIND_WAKEUP_HANDLED'
 const BLIND_WAKEUP_NOTIFICATION_TITLE = 'Frank'
 const BLIND_WAKEUP_NOTIFICATION_BODY =
   'New encrypted activity — open Frank to sync your inbox.'
 const BLIND_WAKEUP_NOTIFICATION_TAG = 'frank-blind-wakeup-sync'
+const DEFAULT_BACKGROUND_DEDUP_GRACE_MS = 650
 
 function parseBlindPushPayload(rawText) {
   if (!rawText || !String(rawText).trim()) {
@@ -25,7 +27,12 @@ function parseBlindPushPayload(rawText) {
   }
 }
 
-async function handleBlindPushWakeup(sw, rawPayloadText, nowMs = Date.now()) {
+async function handleBlindPushWakeup(
+  sw,
+  rawPayloadText,
+  nowMs = Date.now(),
+  options,
+) {
   const payload = parseBlindPushPayload(rawPayloadText)
   if (!payload) {
     return { syncedClients: 0, showedNotification: false }
@@ -52,8 +59,21 @@ async function handleBlindPushWakeup(sw, rawPayloadText, nowMs = Date.now()) {
     })
   }
 
+  if (anyVisibleOrFocused) {
+    return { syncedClients: clients.length, showedNotification: false }
+  }
+
+  if (clients.length > 0 && options) {
+    const graceMs = Math.max(0, options.dedupGraceMs ?? 0)
+    if (graceMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, graceMs))
+    }
+    if (options.wasHandledByClient && (await options.wasHandledByClient())) {
+      return { syncedClients: clients.length, showedNotification: false }
+    }
+  }
+
   if (
-    !anyVisibleOrFocused &&
     sw &&
     sw.registration &&
     typeof sw.registration.showNotification === 'function'
@@ -77,6 +97,15 @@ function registerBlindWakeupServiceWorkerListeners(
     return
   }
 
+  let lastClientHandledAtMs = 0
+
+  sw.addEventListener('message', event => {
+    const data = event && event.data
+    if (data && data.type === BLIND_WAKEUP_HANDLED_TYPE) {
+      lastClientHandledAtMs = Date.now()
+    }
+  })
+
   sw.addEventListener('push', event => {
     let rawText = null
     try {
@@ -84,7 +113,11 @@ function registerBlindWakeupServiceWorkerListeners(
     } catch {
       rawText = null
     }
-    const task = handleBlindPushWakeup(sw, rawText)
+    const pushStartedAtMs = Date.now()
+    const task = handleBlindPushWakeup(sw, rawText, pushStartedAtMs, {
+      dedupGraceMs: DEFAULT_BACKGROUND_DEDUP_GRACE_MS,
+      wasHandledByClient: () => lastClientHandledAtMs >= pushStartedAtMs,
+    })
     if (event && typeof event.waitUntil === 'function') {
       event.waitUntil(task)
     }
@@ -133,9 +166,11 @@ registerBlindWakeupServiceWorkerListeners()
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     BLIND_WAKEUP_MESSAGE_TYPE,
+    BLIND_WAKEUP_HANDLED_TYPE,
     BLIND_WAKEUP_NOTIFICATION_TITLE,
     BLIND_WAKEUP_NOTIFICATION_BODY,
     BLIND_WAKEUP_NOTIFICATION_TAG,
+    DEFAULT_BACKGROUND_DEDUP_GRACE_MS,
     parseBlindPushPayload,
     handleBlindPushWakeup,
     registerBlindWakeupServiceWorkerListeners,

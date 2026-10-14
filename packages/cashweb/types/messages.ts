@@ -793,6 +793,8 @@ export interface ContactCardItem {
   note?: string
   avatarDataUrl?: string
   rawVcard?: string
+  /** Optional pre-shared 32-byte contact wakeup token preimage (64-char lowercase hex) granted by the sender to the recipient (#384, #1574). */
+  wakeupTokenHex?: string
 }
 
 /**

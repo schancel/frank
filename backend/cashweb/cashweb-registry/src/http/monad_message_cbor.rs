@@ -143,7 +143,23 @@ pub(crate) async fn handle_put(
             stamp_value_avu_micros,
             wakeup_token_preimage,
         ) {
-            let _ = owner.record_wakeup(recipient, &policy, claim.delivered_at);
+            if let Some(wakeup_event) = owner.record_wakeup(recipient, &policy, claim.delivered_at)
+            {
+                if !wakeup_event.subscriptions.is_empty() {
+                    if let Ok(vapid) = owner.get_or_init_vapid_keypair() {
+                        for subscription in wakeup_event.subscriptions {
+                            let vapid_clone = vapid.clone();
+                            tokio::spawn(async move {
+                                let _ = crate::store::notification_policy::dispatch_blind_webpush_wakeup(
+                                    &subscription,
+                                    &vapid_clone,
+                                )
+                                .await;
+                            });
+                        }
+                    }
+                }
+            }
             // The notification is a courtesy to connected readers. A slow event bus must not
             // hold up the payments or the answer.
             let _ = tokio::time::timeout(
@@ -1325,6 +1341,29 @@ fn authenticate_notification_policy(
     Ok(())
 }
 
+pub(crate) async fn handle_get_vapid_public_key(
+    Extension(server): Extension<super::server::RegistryServer>,
+) -> Result<Response> {
+    let vapid = server
+        .registry
+        .canonical_dm()
+        .get_or_init_vapid_keypair()?;
+    let pubkey = vapid.public_key_base64url();
+    let mut response = (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "vapid_public_key": pubkey,
+        })),
+    )
+        .into_response();
+    if let Ok(header_val) = pubkey.parse() {
+        response
+            .headers_mut()
+            .insert("x-cashweb-vapid-public-key", header_val);
+    }
+    Ok(response)
+}
+
 pub(crate) async fn handle_get_notification_policy(
     axum::extract::Path(address): axum::extract::Path<String>,
     Extension(server): Extension<super::server::RegistryServer>,
@@ -1332,11 +1371,17 @@ pub(crate) async fn handle_get_notification_policy(
 ) -> Result<Response> {
     let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
     authenticate_notification_policy(&headers, address, "GET")?;
-    let policy = server
-        .registry
-        .canonical_dm()
-        .get_notification_policy(address)?;
-    Ok((StatusCode::OK, Json(policy)).into_response())
+    let owner = server.registry.canonical_dm();
+    let policy = owner.get_notification_policy(address)?;
+    let mut response = (StatusCode::OK, Json(policy)).into_response();
+    if let Ok(vapid) = owner.get_or_init_vapid_keypair() {
+        if let Ok(header_val) = vapid.public_key_base64url().parse() {
+            response
+                .headers_mut()
+                .insert("x-cashweb-vapid-public-key", header_val);
+        }
+    }
+    Ok(response)
 }
 
 pub(crate) async fn handle_put_notification_policy(
@@ -1369,11 +1414,17 @@ pub(crate) async fn handle_put_notification_policy(
     if policy.updated_at_ms == 0 {
         policy.updated_at_ms = now_ms().max(0) as u64;
     }
-    server
-        .registry
-        .canonical_dm()
-        .put_notification_policy(address, &policy)?;
-    Ok((StatusCode::OK, Json(policy)).into_response())
+    let owner = server.registry.canonical_dm();
+    owner.put_notification_policy(address, &policy)?;
+    let mut response = (StatusCode::OK, Json(policy)).into_response();
+    if let Ok(vapid) = owner.get_or_init_vapid_keypair() {
+        if let Ok(header_val) = vapid.public_key_base64url().parse() {
+            response
+                .headers_mut()
+                .insert("x-cashweb-vapid-public-key", header_val);
+        }
+    }
+    Ok(response)
 }
 
 #[derive(Debug, serde::Deserialize)]

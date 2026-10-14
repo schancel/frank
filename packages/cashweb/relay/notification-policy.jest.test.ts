@@ -5,6 +5,11 @@ import {
   blindWakeupToken,
   blindWakeupTokenDomainSeparated,
   createWakeupCapability,
+  derivePeerWakeupTokenPreimage,
+  derivePeerWakeupCapability,
+  computeActiveContactWakeupTokenHashes,
+  urlBase64ToUint8Array,
+  fetchRelayVapidPublicKey,
   verifyWakeupCapability,
   shouldTriggerBlindWakeup,
   buildMailboxNotificationPolicy,
@@ -154,4 +159,70 @@ describe('notification-policy (#384, #1574)', () => {
     expect(fetched).toEqual(storedPolicy)
     expect(calls[1].init?.method).toBe('GET')
   })
+
+  test('derives deterministic per-peer wakeup tokens and revokes muted/deleted contacts', () => {
+    const walletSecret = '11'.repeat(32)
+    const aliceAddr = '0x1111111111111111111111111111111111111111'
+    const bobAddr = '0x2222222222222222222222222222222222222222'
+
+    const alicePreimage = derivePeerWakeupTokenPreimage(walletSecret, aliceAddr)
+    const bobPreimage = derivePeerWakeupTokenPreimage(walletSecret, bobAddr)
+    expect(alicePreimage).toMatch(/^[0-9a-f]{64}$/)
+    expect(bobPreimage).toMatch(/^[0-9a-f]{64}$/)
+    expect(alicePreimage).not.toBe(bobPreimage)
+
+    const aliceCap = derivePeerWakeupCapability(walletSecret, aliceAddr)
+    expect(aliceCap.preimageHex).toBe(alicePreimage)
+    expect(aliceCap.tokenHashHex).toBe(blindWakeupToken(alicePreimage))
+
+    // Both Alice and Bob unmuted -> both hashes included
+    const bothActive = computeActiveContactWakeupTokenHashes(
+      [
+        { address: aliceAddr, notify: true },
+        { address: bobAddr, notify: true },
+      ],
+      walletSecret,
+    )
+    expect(bothActive).toHaveLength(2)
+    expect(verifyWakeupCapability(alicePreimage, bothActive)).toBe(true)
+    expect(verifyWakeupCapability(bobPreimage, bothActive)).toBe(true)
+
+    // Muting Alice (`notify: false`) immediately revokes Alice's token hash while keeping Bob's
+    const aliceMuted = computeActiveContactWakeupTokenHashes(
+      [
+        { address: aliceAddr, notify: false },
+        { address: bobAddr, notify: true },
+      ],
+      walletSecret,
+    )
+    expect(aliceMuted).toHaveLength(1)
+    expect(verifyWakeupCapability(alicePreimage, aliceMuted)).toBe(false)
+    expect(verifyWakeupCapability(bobPreimage, aliceMuted)).toBe(true)
+  })
+
+  test('decodes VAPID base64url public keys and fetches from /push/vapid-public-key', async () => {
+    const samplePub =
+      'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM'
+    const bytes = urlBase64ToUint8Array(samplePub)
+    expect(bytes).toBeInstanceOf(Uint8Array)
+    expect(bytes.length).toBe(65)
+    expect(bytes[0]).toBe(0x04)
+
+    const mockFetch = (async (url: string) => {
+      expect(url).toBe('https://relay.frank.test/push/vapid-public-key')
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => ({ vapid_public_key: samplePub }),
+      } as unknown as Response
+    }) as unknown as typeof fetch
+
+    const key = await fetchRelayVapidPublicKey(
+      'https://relay.frank.test/',
+      mockFetch,
+    )
+    expect(key).toBe(samplePub)
+  })
 })
+

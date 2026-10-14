@@ -26,6 +26,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useNotificationPermission } from 'src/composables/useNotificationPermission'
+import { syncRelayNotificationPolicy } from 'src/utils/webpush-sync'
 
 const { permission, requesting, enable } = useNotificationPermission()
 const failed = ref(false)
@@ -33,6 +34,9 @@ async function enableNotifications() {
   failed.value = false
   try {
     await enable()
+    if (permission.value === 'granted') {
+      void syncRelayNotificationPolicy({ subscribeIfGranted: true })
+    }
   } catch {
     failed.value = true
   }

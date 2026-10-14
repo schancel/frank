@@ -81,4 +81,38 @@ describe('custom-service-worker blind WebPush wakeup (#384, #1574)', () => {
       },
     )
   })
+
+  it('suppresses the fallback generic notification when a backgrounded client handles and decrypts the wakeup within the grace window', async () => {
+    const showNotification = jest.fn(async () => undefined)
+    let clientAcked = false
+    const sw: SwScopeLike = {
+      clients: {
+        matchAll: async () => [
+          {
+            focused: false,
+            visibilityState: 'hidden',
+            postMessage: () => {
+              clientAcked = true
+            },
+          },
+        ],
+      },
+      registration: {
+        showNotification,
+      },
+    }
+
+    const result = await handleBlindPushWakeup(
+      sw,
+      '{"type":"sync"}',
+      1700000000000,
+      {
+        dedupGraceMs: 10,
+        wasHandledByClient: () => clientAcked,
+      },
+    )
+    expect(result).toEqual({ syncedClients: 1, showedNotification: false })
+    expect(showNotification).not.toHaveBeenCalled()
+  })
 })
+

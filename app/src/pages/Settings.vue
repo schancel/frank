@@ -311,7 +311,7 @@
                     :hint="
                       $t(
                         'settings.notificationFeeThresholdAvuHint',
-                        'Minimum stamp value in AVU required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',
+                        'Minimum stamp value in AVU (1 AVU = 1 kWh, e.g. 0.01 AVU) required to trigger a push notification (messages below this threshold are still delivered silently to your inbox)',
                       )
                     "
                     data-test="notification-fee-threshold-input"
@@ -717,6 +717,14 @@ export default defineComponent({
           this.allowContactNotificationBypass,
         )
       }
+      void import('src/utils/webpush-sync')
+        .then(({ syncRelayNotificationPolicy }) =>
+          syncRelayNotificationPolicy({
+            avuThreshold: this.notificationFeeThresholdAvu,
+            allowContactBypass: this.allowContactNotificationBypass,
+          }),
+        )
+        .catch(() => undefined)
       this.isSaved = true
       if (typeof this.appearanceStore?.setDarkMode === 'function') {
         this.appearanceStore.setDarkMode(this.darkMode)

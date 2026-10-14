@@ -1252,7 +1252,38 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
             .unwrap();
         assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
 
-        // 2. Authenticated GET returns default policy
+        // 1b. GET /push/vapid-public-key returns a persistent 65-byte P-256 public key
+        let vapid_res = reqwest::Client::new()
+            .get(format!("{url}/push/vapid-public-key"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(vapid_res.status(), StatusCode::OK);
+        let vapid_header = vapid_res
+            .headers()
+            .get("x-cashweb-vapid-public-key")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let vapid_body: serde_json::Value =
+            serde_json::from_slice(&vapid_res.bytes().await.unwrap()).unwrap();
+        let vapid_pubkey = vapid_body["vapid_public_key"].as_str().unwrap().to_string();
+        assert_eq!(vapid_pubkey, vapid_header);
+        let decoded_vapid =
+            base64::decode_config(&vapid_pubkey, base64::URL_SAFE_NO_PAD).unwrap();
+        assert_eq!(decoded_vapid.len(), 65);
+        assert_eq!(decoded_vapid[0], 0x04);
+
+        // Verify a second Owner instance opened on the same RocksDB path reads the identical VAPID key
+        let reopened_vapid = fixture
+            .registry
+            .canonical_dm()
+            .get_or_init_vapid_keypair()
+            .unwrap();
+        assert_eq!(reopened_vapid.public_key_base64url(), vapid_pubkey);
+
+        // 2. Authenticated GET returns default policy + x-cashweb-vapid-public-key header
         let get_default = reqwest::Client::new()
             .get(format!(
                 "{url}/message/monad/mailbox/{owner_hex}/notification-policy"
@@ -1264,11 +1295,63 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
             .await
             .unwrap();
         assert_eq!(get_default.status(), StatusCode::OK);
+        assert_eq!(
+            get_default
+                .headers()
+                .get("x-cashweb-vapid-public-key")
+                .and_then(|v| v.to_str().ok()),
+            Some(vapid_pubkey.as_str())
+        );
         let default_policy: crate::store::notification_policy::MailboxNotificationPolicy =
             serde_json::from_slice(&get_default.bytes().await.unwrap()).unwrap();
         assert_eq!(default_policy.min_notification_value_wei, "0");
         assert_eq!(default_policy.min_notification_avu_micros, 0);
         assert!(default_policy.allow_contact_bypass);
+
+        // Start a local mock WebPush server to verify real outbound RFC 8292 WebPush dispatch
+        let (push_tx, push_rx) = tokio::sync::oneshot::channel::<(String, String, String)>();
+        let push_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(push_tx)));
+        let push_tx_handler = std::sync::Arc::clone(&push_tx);
+        let push_app = axum::Router::new().route(
+            "/sub/owner",
+            axum::routing::post(move |headers: axum::http::HeaderMap| {
+                let push_tx_handler = std::sync::Arc::clone(&push_tx_handler);
+                async move {
+                    let auth = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let ttl = headers
+                        .get("ttl")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let urgency = headers
+                        .get("urgency")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    if let Some(tx) = push_tx_handler.lock().unwrap().take() {
+                        let _ = tx.send((auth, ttl, urgency));
+                    }
+                    StatusCode::CREATED
+                }
+            }),
+        );
+        let push_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let push_addr = push_listener.local_addr().unwrap();
+        let (push_stop, push_stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let push_task = tokio::spawn(async move {
+            axum::Server::from_tcp(push_listener)
+                .unwrap()
+                .serve(push_app.into_make_service())
+                .with_graceful_shutdown(async {
+                    let _ = push_stop_rx.await;
+                })
+                .await
+                .unwrap();
+        });
 
         // 3. Authenticated PUT updates policy and GET reads it back
         let preimage = b"alice-contact-wakeup-secret-32b!";
@@ -1279,7 +1362,7 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
             allow_contact_bypass: true,
             contact_wakeup_tokens: vec![token_hash],
             push_subscriptions: vec![crate::store::notification_policy::BlindPushSubscription {
-                endpoint: "https://push.example.test/sub/owner".to_string(),
+                endpoint: format!("http://{push_addr}/sub/owner"),
                 p256dh: "BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM".to_string(),
                 auth: "tBHItJI5svbpez7KI4CCXg".to_string(),
             }],
@@ -1338,11 +1421,12 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         assert_eq!(owner.inbox(recipient, 0, None, 8).unwrap().len(), 1);
         assert!(owner.drain_wakeups(recipient).is_empty());
 
-        // Deliver with valid contact wakeup token preimage: bypasses threshold and emits blind wakeup {"type":"sync"}
+        // Deliver with valid contact wakeup token preimage: bypasses threshold, emits blind wakeup {"type":"sync"},
+        // and dispatches real RFC 8292 WebPush HTTP POST to the push subscription endpoint.
         let bypass_res = reqwest::Client::new()
             .put(format!("{url}/message"))
             .header("content-type", genuine.content_type())
-            .header("x-wakeup-token", std::str::from_utf8(preimage).unwrap())
+            .header("x-cashweb-wakeup-token", std::str::from_utf8(preimage).unwrap())
             .body(genuine.body().to_vec())
             .send()
             .await
@@ -1352,6 +1436,19 @@ async fn notification_policy_endpoints_and_blind_wakeup_evaluation_preserve_zero
         assert_eq!(wakeups.len(), 1);
         assert_eq!(wakeups[0].payload.kind, "sync");
         assert_eq!(wakeups[0].subscriptions.len(), 1);
+
+        let (received_auth, received_ttl, received_urgency) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), push_rx)
+                .await
+                .expect("WebPush HTTP POST arrived in time")
+                .unwrap();
+        assert!(received_auth.starts_with("vapid t="));
+        assert!(received_auth.ends_with(&format!(", k={vapid_pubkey}")));
+        assert_eq!(received_ttl, "86400");
+        assert_eq!(received_urgency, "high");
+
+        let _ = push_stop.send(());
+        let _ = push_task.await;
     })
     .catch_unwind()
     .await;

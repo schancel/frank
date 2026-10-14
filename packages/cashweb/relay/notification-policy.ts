@@ -381,3 +381,149 @@ export async function putMailboxNotificationPolicy(
   }
   return (await response.json()) as MailboxNotificationPolicy
 }
+
+/**
+ * Deterministically derive a per-contact wakeup token preimage (64-char lowercase hex)
+ * issued by the local wallet to `peerAddress`.
+ *
+ * Because the token is uniquely bound to `peerAddress`, muting or deleting that contact
+ * and re-publishing `contact_wakeup_tokens` immediately revokes that peer's ability to
+ * trigger blind WebPush wakeups without affecting any other contact.
+ */
+export function derivePeerWakeupTokenPreimage(
+  secretSeedOrPrivateKey: Uint8Array | string,
+  peerAddress: string,
+): string {
+  const secretBytes = normalizePreimageBytes(secretSeedOrPrivateKey)
+  const peerNorm = peerAddress.trim().toLowerCase()
+  const prefix = utf8ToBytes('frank-contact-wakeup-v1:')
+  const suffix = utf8ToBytes(`:${peerNorm}`)
+  const combined = new Uint8Array(
+    prefix.length + secretBytes.length + suffix.length,
+  )
+  combined.set(prefix, 0)
+  combined.set(secretBytes, prefix.length)
+  combined.set(suffix, prefix.length + secretBytes.length)
+  return bytesToHex(cryptoBackend.sha256(combined))
+}
+
+/**
+ * Deterministically derive a `WakeupCapability` (`preimageHex` + `tokenHashHex`)
+ * granted by the local wallet to `peerAddress`.
+ */
+export function derivePeerWakeupCapability(
+  secretSeedOrPrivateKey: Uint8Array | string,
+  peerAddress: string,
+  nowMs: number = Date.now(),
+): WakeupCapability {
+  const preimageHex = derivePeerWakeupTokenPreimage(
+    secretSeedOrPrivateKey,
+    peerAddress,
+  )
+  return createWakeupCapability(preimageHex, peerAddress, nowMs)
+}
+
+/** Minimal contact shape used to compute active `contact_wakeup_tokens` for the relay policy. */
+export interface WakeupPolicyContactEntry {
+  address: string
+  /** When `false`, contact is muted and its wakeup token hash is excluded from the relay policy. */
+  notify?: boolean
+  /** Preimage issued by us to this contact (or deterministically derived if omitted). */
+  inboundWakeupToken?: string
+  /** Preimage issued by this contact to us (used when we send messages to them). */
+  outboundWakeupToken?: string
+}
+
+/**
+ * Compute the deduplicated list of blinded `SHA256(preimage)` token hashes for all
+ * unmuted contacts (`notify !== false`). Muted or deleted contacts are excluded so
+ * syncing the resulting list to the relay immediately revokes their wakeup capability.
+ */
+export function computeActiveContactWakeupTokenHashes(
+  contacts: ReadonlyArray<WakeupPolicyContactEntry>,
+  secretSeedOrPrivateKey?: Uint8Array | string,
+): string[] {
+  const seen = new Set<string>()
+  for (const contact of contacts) {
+    if (!contact || !contact.address || contact.notify === false) {
+      continue
+    }
+    const explicitInbound = contact.inboundWakeupToken?.trim()
+    if (explicitInbound) {
+      seen.add(blindWakeupToken(explicitInbound))
+    }
+    if (secretSeedOrPrivateKey !== undefined) {
+      const derived = derivePeerWakeupCapability(
+        secretSeedOrPrivateKey,
+        contact.address,
+      )
+      seen.add(derived.tokenHashHex)
+    }
+  }
+  return Array.from(seen)
+}
+
+/**
+ * Convert a base64url-encoded VAPID public key into a `Uint8Array` suitable for
+ * `PushManager.subscribe({ userVisibleOnly: true, applicationServerKey })`.
+ */
+export function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const clean = base64String.trim().replace(/=+$/, '')
+  const padding = '='.repeat((4 - (clean.length % 4)) % 4)
+  const base64 = (clean + padding).replace(/-/g, '+').replace(/_/g, '/')
+  if (typeof globalThis.atob === 'function') {
+    const rawData = globalThis.atob(base64)
+    const outputArray = new Uint8Array(rawData.length)
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i)
+    }
+    return outputArray
+  }
+  const buf = Buffer.from(base64, 'base64')
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+}
+
+/**
+ * Fetch the relay's P-256 VAPID public key (base64url uncompressed 65-byte key)
+ * from `GET /push/vapid-public-key`.
+ */
+export async function fetchRelayVapidPublicKey(
+  relayBaseUrl: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<string | null> {
+  if (typeof fetchImpl !== 'function') {
+    return null
+  }
+  const base = normalizeRelayUrl(relayBaseUrl)
+  for (const path of [
+    '/push/vapid-public-key',
+    '/message/push/vapid-public-key',
+  ]) {
+    try {
+      const response = await fetchImpl(`${base}${path}`, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+      })
+      if (!response.ok) {
+        continue
+      }
+      const headerKey = response.headers
+        ?.get?.('x-cashweb-vapid-public-key')
+        ?.trim()
+      if (headerKey) {
+        return headerKey
+      }
+      const data = (await response.json()) as {
+        vapid_public_key?: string
+      } | null
+      const bodyKey = data?.vapid_public_key?.trim()
+      if (bodyKey) {
+        return bodyKey
+      }
+    } catch {
+      // Try next fallback path
+    }
+  }
+  return null
+}
+

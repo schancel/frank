@@ -26,6 +26,8 @@ const RELAY_ROUTES = [
   { path: '/profiles' },
   // Prices and energy: GET /oracle/v1/feed (docs/protocol/oracle/README.md).
   { path: '/oracle' },
+  // WebPush VAPID public key discovery: GET /push/vapid-public-key (#384).
+  { path: '/push' },
 ]
 
 function httpUrl(value) {

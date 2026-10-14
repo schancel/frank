@@ -16,6 +16,7 @@ for (const size of ['192x192', '512x512']) {
 }
 let precache = []
 const routes = []
+const importedScripts = []
 let forcedActivation = false
 class NavigationRoute {
   constructor(handler) {
@@ -37,10 +38,15 @@ const workbox = {
     routes.push(route)
   },
 }
+function recordImportScripts(...scripts) {
+  importedScripts.push(...scripts)
+}
 vm.runInNewContext(readFileSync(new URL('sw.js', output), 'utf8'), {
+  importScripts: recordImportScripts,
   self: {
     define() {},
     addEventListener() {},
+    importScripts: recordImportScripts,
     skipWaiting() {
       forcedActivation = true
     },
@@ -52,6 +58,14 @@ vm.runInNewContext(readFileSync(new URL('sw.js', output), 'utf8'), {
 assert(
   forcedActivation,
   'The service worker must activate immediately on reload via skipWaiting',
+)
+assert(
+  importedScripts.includes('push-sw.js'),
+  'The generated service worker must import push-sw.js for blind WebPush wakeups',
+)
+assert(
+  existsSync(new URL('push-sw.js', output)),
+  'Missing push-sw.js in dist/pwa/',
 )
 assert.equal(routes.length, 1)
 assert(

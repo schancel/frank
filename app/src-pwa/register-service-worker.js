@@ -132,6 +132,19 @@ if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
     }
     hadPriorController = true
   })
+
+  navigator.serviceWorker.addEventListener('message', event => {
+    if (event?.data?.type === 'FRANK_BLIND_WAKEUP_SYNC') {
+      if (
+        typeof window !== 'undefined' &&
+        typeof window.dispatchEvent === 'function'
+      ) {
+        window.dispatchEvent(
+          new CustomEvent('frank:blind-wakeup-sync', { detail: event.data }),
+        )
+      }
+    }
+  })
 }
 
 if (typeof window !== 'undefined') {
@@ -145,6 +158,18 @@ register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
   ready(registration) {
     activeRegistration = registration
     checkForUpdate(registration)
+    import('src/utils/webpush-sync')
+      .then(({ ensureBrowserPushSubscription, syncRelayNotificationPolicy }) =>
+        ensureBrowserPushSubscription({
+          serviceWorkerRegistration: registration,
+        }).then(sub => {
+          if (sub) {
+            return syncRelayNotificationPolicy({ pushSubscription: sub })
+          }
+          return null
+        }),
+      )
+      .catch(() => undefined)
   },
 
   registered(registration) {

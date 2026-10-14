@@ -1443,7 +1443,7 @@ export default {
     chainUnsupported: 'Non pris en charge',
     notificationFeeThresholdAvu: 'Seuil de frais de notification (AVU)',
     notificationFeeThresholdAvuHint:
-      'Valeur minimale de timbre en AVU requise pour déclencher une notification push (les messages inférieurs à ce seuil sont quand même livrés silencieusement dans votre boîte de réception)',
+      'Valeur minimale de timbre en AVU (1 AVU = 1 kWh, ex. 0,01 AVU) requise pour déclencher une notification push (les messages inférieurs à ce seuil sont quand même livrés silencieusement dans votre boîte de réception)',
     allowContactNotificationBypass:
       'Autoriser les contacts disposant de jetons de réveil à notifier sans timbre',
     coldVaultTitle: 'Coffre de balayage automatique (Cold-Wallet)',

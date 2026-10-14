@@ -1066,6 +1066,34 @@ export async function readCanonicalResponse(
     reader.releaseLock()
   }
 }
+export type OutboundWakeupTokenProvider = (
+  recipientAddress: string,
+) => string | undefined | null
+
+let outboundWakeupTokenProvider: OutboundWakeupTokenProvider | null = null
+
+/**
+ * Register a callback that resolves the pre-shared contact wakeup token preimage
+ * (`X-Cashweb-Wakeup-Token`) for a recipient address when submitting canonical DMs.
+ */
+export function setOutboundWakeupTokenProvider(
+  provider: OutboundWakeupTokenProvider | null,
+): void {
+  outboundWakeupTokenProvider = provider
+}
+
+export function getOutboundWakeupTokenForRecipient(
+  recipientAddress: string,
+): string | undefined {
+  if (!outboundWakeupTokenProvider || !recipientAddress) return undefined
+  try {
+    const token = outboundWakeupTokenProvider(recipientAddress)?.trim()
+    return token || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** One explicit same-byte PUT. Retries/terminal persistence belong to the owning wallet. */
 export async function submitCanonicalRequest(input: {
   installedRelayOrigin: string
@@ -1077,6 +1105,8 @@ export async function submitCanonicalRequest(input: {
     | 'monad-mainnet'
     | string
   request: CanonicalExactRequest
+  /** Optional contact wakeup token preimage (`X-Cashweb-Wakeup-Token`) to bypass recipient fee threshold. */
+  wakeupToken?: string
   fetch?: CanonicalFetch
   signal?: AbortSignal
 }): Promise<CanonicalAcceptedBody> {
@@ -1089,6 +1119,16 @@ export async function submitCanonicalRequest(input: {
   )
     invalid('Frozen request differs from installed Monad network')
   const url = installedCanonicalOrigin(input.installedRelayOrigin) + '/message'
+  const resolvedWakeupToken =
+    input.wakeupToken?.trim() ||
+    getOutboundWakeupTokenForRecipient(request.identity.recipient)
+  const headers: Record<string, string> = {
+    'Content-Type': request.contentType,
+    'Accept': 'application/json',
+  }
+  if (resolvedWakeupToken) {
+    headers['X-Cashweb-Wakeup-Token'] = resolvedWakeupToken
+  }
   const controller = new AbortController(),
     abort = () => controller.abort()
   input.signal?.addEventListener('abort', abort, { once: true })
@@ -1103,10 +1143,7 @@ export async function submitCanonicalRequest(input: {
     const response = await awaitCanonicalAbort(
       (input.fetch ?? defaultCanonicalFetch)(url, {
         method: 'PUT',
-        headers: {
-          'Content-Type': request.contentType,
-          'Accept': 'application/json',
-        },
+        headers,
         body: request.body,
         signal: controller.signal,
         redirect: 'error',
@@ -1155,3 +1192,4 @@ export async function submitCanonicalRequest(input: {
     controller.abort()
   }
 }
+

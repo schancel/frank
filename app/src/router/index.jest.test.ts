@@ -83,3 +83,31 @@ test('root redirects to /welcome when not logged in, and /forum when ready', asy
     '/forum',
   )
 })
+
+test.each([
+  '/',
+  '/welcome',
+  '/forum',
+  '/topic/example',
+  '/onboard',
+  '/chat/peer',
+  '/wallet',
+])(
+  'standby account opens the existing-account takeover screen from %s',
+  async path => {
+    mockStatus.status = 'standby'
+    expect(await mockGuard({ path, fullPath: path, params: {} }, {})).toBe(
+      '/setup',
+    )
+  },
+)
+
+test.each(['/setup', '/docs', '/docs/guide', '/about', '/changelog'])(
+  'standby account can read %s without taking custody',
+  async path => {
+    mockStatus.status = 'standby'
+    expect(
+      await mockGuard({ path, fullPath: path, params: {} }, {}),
+    ).toBeUndefined()
+  },
+)

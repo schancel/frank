@@ -134,6 +134,28 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
     view.unmount()
   })
 
+  it('shows the saved-account notice and safe controls for an initial standby session', async () => {
+    mockAccount.status = 'standby'
+    const view = render()
+    await flushPromises()
+
+    expect(
+      view.get('[data-test="multi-tab-locked-container"]').text(),
+    ).toContain('Your account is still saved on this device.')
+    expect(view.get('[data-test="use-frank-here-btn"]').exists()).toBe(true)
+    expect(view.get('[data-test="switch-tab-btn"]').exists()).toBe(true)
+    for (const action of [
+      'new-account',
+      'restore-account',
+      'reset-account-storage',
+    ]) {
+      expect(view.find(`[data-test="${action}"]`).exists()).toBe(false)
+    }
+    expect(mockSession.retry).not.toHaveBeenCalled()
+    expect(mockSession.reset).not.toHaveBeenCalled()
+    view.unmount()
+  })
+
   it('clicking "Use Frank here" triggers takeover request and navigates to /wallet on success', async () => {
     const tabStore = useTabCoordinatorStore()
     tabStore.otherTabActive = true

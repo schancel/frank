@@ -26,8 +26,9 @@ import { getBytes, Wallet, Transaction, type Provider } from 'ethers'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
-import { toHex } from '@frank/codec'
-import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { toHex, verifyPreviewDirectoryEvidence } from '@frank/codec'
+import { openNodeDirectoryStore } from '../../directory-admission/src/node'
+import { restoreCanonicalRequest, freezeCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 import {
   allocateOpeningConversationId,
   formatConversationId,
@@ -53,7 +54,7 @@ import {
   LevelOutgoingMessageStore,
   type CanonicalDirectory,
 } from './monad-canonical-dm'
-import { installCanonicalDirectory } from './monad-chain'
+import { installCanonicalDirectory, prepareMonadNextRevisionExport } from './monad-chain'
 
 jest.mock('../monad-provider', () =>
   require('./canonical-two-wallets.testutil').offlineProviderModule(),
@@ -1411,6 +1412,141 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect(callback).not.toHaveBeenCalled()
     expect(relayBodies).toHaveLength(0)
   })
+
+  it.each([
+    [1000n, 'reconcile'],
+    [0n, 'reconcile'],
+    [0n, 'resend'],
+  ] as const)(
+    'recovers original sealed stamp=%s via %s after same-key directory renewal and restart',
+    async (stampValue, recovery) => {
+      const originalCurrent = await directory.selfCurrent()
+      const original = verifyPreviewDirectoryEvidence(
+        originalCurrent.evidence.attestation,
+        directory.network,
+      )
+      const context = {
+        now: { seconds: 101n, nanoseconds: 0 },
+        relay: original.statement.relays[0],
+      }
+      const history = await openNodeDirectoryStore({
+        location: f.root + '/sealed-renewal',
+        anchor: {
+          network: directory.network,
+          subject: original.statement.subject,
+          revisionZero: original.statementHash,
+        },
+        mode: { kind: 'new' },
+      })
+      try {
+        await history.enroll([originalCurrent.evidence], context)
+        f.setPhase('retained')
+        let digest: string | undefined
+        await attempt({
+          messageId: ID_A,
+          stampValue,
+          sealedSender: true,
+          onEnvelopeDurable: async value => {
+            digest = value
+            if (recovery === 'resend') throw new Error('host interrupted')
+          },
+          onAttemptCreated: value => {
+            digest = value
+          },
+        })
+        expect(digest).toMatch(/^[0-9a-f]{64}$/)
+        const beforeRequests = recovery === 'resend' ? 0 : 1
+        expect(relayBodies).toHaveLength(beforeRequests)
+        let exact: { body: Uint8Array; contentType: string }
+        if (recovery === 'resend') {
+          const address = (await alice.getReceiveAddress()).raw.toLowerCase()
+          const index = openMessages.mock.calls
+            .map(call => String(call[0]).endsWith(`-evm-${address}`))
+            .lastIndexOf(true)
+          const messages: LevelOutgoingMessageStore = await openMessages.mock
+            .results[index].value
+          const retained = messages.unpaid(ID_A.replace(/-/g, ''))!
+          exact = freezeCanonicalRequest(
+            {
+              delivery: getBytes('0x' + retained.delivery),
+              context: getBytes('0x' + retained.context),
+              transactions: [],
+            },
+            retained.boundary,
+          )
+        } else exact = relayBodies[0]
+        const exactBody = new Uint8Array(exact.body)
+        const exactType = exact.contentType
+        const next = prepareMonadNextRevisionExport(alice, {
+          networkTag: 'MONT',
+          network: directory.network,
+          chainId: 10143n,
+          issuedAt: context.now,
+          expiresAt: { seconds: 3700n, nanoseconds: 0 },
+          now: context.now,
+          relay: context.relay,
+          revision: originalCurrent.revision + 1n,
+          predecessor: original.statementHash,
+        })
+        const renewed = await history.advance(
+          [{ statement: next.statement, attestation: next.attestation }],
+          context,
+        )
+        expect(renewed.messageKey).toEqual(originalCurrent.messageKey)
+        expect(toHex(renewed.evidence.hash)).not.toBe(
+          toHex(originalCurrent.evidence.hash),
+        )
+        const historical = jest.fn(
+          async ({
+            statementHash,
+          }: {
+            subject: string
+            statementHash: string
+          }) => history.historicalEvidence(getBytes('0x' + statementHash)),
+        )
+        directory = {
+          ...directory,
+          selfCurrent: async () => renewed,
+          peerHistorical: historical,
+        }
+        await reopen()
+        f.setPhase('delivered')
+        if (recovery === 'resend') {
+          const result = await attempt({
+            messageId: ID_A,
+            stampValue,
+            sealedSender: true,
+            onEnvelopeDurable: async () => undefined,
+          })
+          expect(result.error).toBeUndefined()
+          expect(result.result?.payloadDigest).toBe(digest)
+        } else {
+          expect(
+            await f.chain.directMessages.reconcileAttempts({
+              wallet: alice,
+              payloadDigests: [digest!],
+              messageIds: [ID_A],
+              onEnvelopeDurable: async () => undefined,
+            }),
+          ).toEqual({ [digest!]: 'delivered' })
+        }
+        if (recovery === 'reconcile')
+          expect(historical).toHaveBeenCalledWith({
+            subject: toHex(original.statement.subject.keyBytes),
+            statementHash: toHex(original.statementHash),
+          })
+        expect(relayBodies).toHaveLength(beforeRequests + 1)
+        expect(relayBodies[beforeRequests]).toEqual({
+          body: exactBody,
+          contentType: exactType,
+        })
+        expect(sign).toHaveBeenCalledTimes(stampValue === 0n ? 0 : 1)
+        expect(paymentSets()).toBe(1)
+      } finally {
+        await history.close()
+      }
+    },
+  )
 
   it('authenticates the sealed stable ID before authorizing a corrupted free store lookup', async () => {
     await attempt({

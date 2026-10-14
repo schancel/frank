@@ -1352,6 +1352,21 @@ async function validateOriginalEnvelope(
   })
   if (!peer) throw new Error('Original recipient unavailable')
   const context = fromHex(envelope.context)
+  let sealedSenderT1: Uint8Array | undefined
+  if (payload.sender === undefined) {
+    const roles = owner.roles.create(directory.network, self)
+    try {
+      sealedSenderT1 = peekSealedDirectMessageSender({
+        mode: 'sender',
+        network: directory.network,
+        payload: delivery.typed.payloadFrame.frame,
+        context,
+        roles,
+      }).senderT1
+    } finally {
+      roles.dispose()
+    }
+  }
   const evidence = await resolveHistoricalEvidence(
     directory,
     context,
@@ -1359,6 +1374,7 @@ async function validateOriginalEnvelope(
     self,
     owner.subject,
     peer,
+    sealedSenderT1,
   )
   const opened = openOwnDirectMessage({
     mode: 'send',
@@ -1744,7 +1760,7 @@ async function send(
         )
       } else {
         const sealedSender =
-          (params as { sealedSender?: boolean }).sealedSender === true
+          params.sealedSender === true
         const unpaid = sealUnpaid(owner, directory, {
           senderCurrent: await directory.selfCurrent(),
           recipientCurrent: peer.current,
@@ -1875,7 +1891,7 @@ async function send(
       throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
     const roles = owner.roles.create(directory.network, senderCurrent)
     const sealedSender =
-      (params as { sealedSender?: boolean }).sealedSender === true
+      params.sealedSender === true
     let sealed
     try {
       sealed = prepareDirectMessage({

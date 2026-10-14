@@ -50,6 +50,8 @@ export type SighashAlgorithm =
   | 'forkid'
   | 'lotus'
 
+export type SighashInputMode = 'legacy' | 'segwit-v0' | 'forkid'
+
 export interface OutPoint {
   readonly txid: InternalHash
   readonly vout: number
@@ -624,6 +626,7 @@ function requireAmount(amount: bigint | undefined): TxResult<bigint> {
 function sighashLegacy(
   tx: Transaction,
   inputIndex: number,
+  chain: ChainDescriptor,
   hashType: number,
   scriptCode: Uint8Array,
 ): TxResult<InternalHash> {
@@ -672,9 +675,9 @@ function sighashLegacy(
     writer.write(encoded)
   }
   if (!writeU32(writer, tx.locktime)) return fail('tx-range')
-  const bits = i32Bits(hashType)
-  if (bits === null) return fail('sighash-type')
-  writer.writeUInt32LE(bits)
+  const encodedType = encodeChainSigHashType(chain, hashType)
+  if (encodedType === null) return fail('sighash-type')
+  writer.writeUInt32LE(encodedType)
   const branded = internalHashFromBytes(hash256(writer.finish()))
   if (!branded.ok) return fail('tx-range')
   return branded
@@ -683,6 +686,7 @@ function sighashLegacy(
 function sighashBip143(
   tx: Transaction,
   inputIndex: number,
+  chain: ChainDescriptor,
   hashType: number,
   scriptCode: Uint8Array,
   amount: bigint,
@@ -755,9 +759,11 @@ function sighashBip143(
   if (!writeU32(writer, input.sequence)) return fail('tx-range')
   writer.write(hashOutputs)
   if (!writeU32(writer, tx.locktime)) return fail('tx-range')
-  const bits = i32Bits(hashType)
-  if (bits === null) return fail('sighash-type')
-  writer.writeUInt32LE(replayProtection ? ruthReplayType(bits) : bits)
+  const encodedType = encodeChainSigHashType(chain, hashType, {
+    replayProtection,
+  })
+  if (encodedType === null) return fail('sighash-type')
+  writer.writeUInt32LE(encodedType)
   const branded = internalHashFromBytes(hash256(writer.finish()))
   if (!branded.ok) return fail('tx-range')
   return branded
@@ -1017,23 +1023,118 @@ function sighashLotus(
   return branded
 }
 
-function allowed(chain: ChainDescriptor, algorithm: SighashAlgorithm): boolean {
-  if (algorithm === 'legacy') {
-    return (
-      chain.sighash.kind === 'btc-legacy-and-segwit' ||
-      chain.sighash.kind === 'legacy-only' ||
-      chain.sighash.kind === 'lotus'
-    )
+export function validateChainSigHashType(
+  chain: ChainDescriptor,
+  sigHashType: number,
+  options?: { readonly allowCommitUtxos?: boolean },
+): boolean {
+  if (!Number.isInteger(sigHashType) || sigHashType < 0 || sigHashType > 0xff) {
+    return false
   }
-  if (algorithm === 'bip143' || algorithm === 'bip341') {
-    return chain.sighash.kind === 'btc-legacy-and-segwit'
+  switch (chain.sighash.kind) {
+    case 'btc-legacy-and-segwit':
+    case 'legacy-only': {
+      const base = sigHashType & 0x1f
+      if (base < 1 || base > 3) return false
+      const extra = sigHashType & ~0x1f
+      return extra === 0 || extra === SIGHASH_ANYONECANPAY
+    }
+    case 'forkid': {
+      const base = sigHashType & 0x1f
+      if (base < 1 || base > 3) return false
+      if ((sigHashType & SIGHASH_FORKID) !== SIGHASH_FORKID) return false
+      const withoutFork = sigHashType & ~(0x1f | SIGHASH_FORKID)
+      const allowedExtra =
+        options?.allowCommitUtxos === true && chain.sighash.commitUtxos
+          ? SIGHASH_ANYONECANPAY | SIGHASH_UTXOS
+          : SIGHASH_ANYONECANPAY
+      return (withoutFork & ~allowedExtra) === 0
+    }
+    case 'lotus': {
+      const mask = sigHashType & 0x60
+      if (mask !== SIGHASH_FORKID && mask !== SIGHASH_LOTUS) return false
+      return (sigHashType & 0x03) !== 0 && (sigHashType & 0x1c) === 0
+    }
+    case 'unpinned':
+      return false
   }
-  if (algorithm === 'forkid') {
-    // XPI kind stays lotus for the pre-Numbers algorithm. Post-Numbers
-    // spends use BIP143 fork id; Ruth replay is opt-in via replayProtection.
-    return chain.sighash.kind === 'forkid' || chain.sighash.kind === 'lotus'
+}
+
+export function encodeChainSigHashType(
+  chain: ChainDescriptor,
+  sigHashType: number,
+  options?: { readonly replayProtection?: boolean },
+): number | null {
+  const bits = i32Bits(sigHashType)
+  if (bits === null) return null
+  if (options?.replayProtection === true) return ruthReplayType(bits)
+  if (chain.sighash.kind === 'forkid') {
+    const forkPrefix = ((chain.sighash.forkId & 0xffffff) << 8) >>> 0
+    return (forkPrefix | bits) >>> 0
   }
-  return chain.sighash.kind === 'lotus'
+  return bits
+}
+
+export function usesBip143Digest(
+  chain: ChainDescriptor,
+  inputMode: SighashInputMode,
+): boolean {
+  switch (chain.sighash.kind) {
+    case 'btc-legacy-and-segwit':
+      return inputMode === 'segwit-v0'
+    case 'forkid':
+      return inputMode === 'forkid' || inputMode === 'legacy'
+    case 'lotus':
+      return inputMode === 'forkid'
+    case 'legacy-only':
+    case 'unpinned':
+      return false
+  }
+}
+
+export function chainSupportsSighashAlgorithm(
+  chain: ChainDescriptor,
+  algorithm: SighashAlgorithm,
+): boolean {
+  switch (chain.sighash.kind) {
+    case 'btc-legacy-and-segwit':
+      return (
+        algorithm === 'legacy' ||
+        algorithm === 'bip143' ||
+        algorithm === 'bip341'
+      )
+    case 'legacy-only':
+      return algorithm === 'legacy'
+    case 'forkid':
+      return algorithm === 'forkid'
+    case 'lotus':
+      // XPI kind stays lotus for the pre-Numbers algorithm. Post-Numbers
+      // spends use BIP143 fork id; Ruth replay is opt-in via replayProtection.
+      return (
+        algorithm === 'legacy' ||
+        algorithm === 'forkid' ||
+        algorithm === 'lotus'
+      )
+    case 'unpinned':
+      return false
+  }
+}
+
+export function resolveScriptSighashAlgorithm(
+  chain: ChainDescriptor,
+  hashType: number,
+): SighashAlgorithm | null {
+  switch (chain.sighash.kind) {
+    case 'btc-legacy-and-segwit':
+    case 'legacy-only':
+      return 'legacy'
+    case 'forkid':
+      return 'forkid'
+    case 'lotus':
+      return (hashType & 0x60) === SIGHASH_FORKID ? 'forkid' : 'lotus'
+    case 'unpinned':
+      return null
+  }
 }
 
 /**
@@ -1048,7 +1149,9 @@ export function sighash(
   options: SighashOptions,
 ): TxResult<InternalHash> {
   if (!Number.isInteger(hashType)) return fail('sighash-type')
-  if (!allowed(chain, options.algorithm)) return fail('sighash-algorithm')
+  if (!chainSupportsSighashAlgorithm(chain, options.algorithm)) {
+    return fail('sighash-algorithm')
+  }
   if (
     !Number.isInteger(inputIndex) ||
     inputIndex < 0 ||
@@ -1059,7 +1162,7 @@ export function sighash(
   if (options.algorithm === 'legacy') {
     const script = requireScript(options.scriptCode)
     if (!script.ok) return script
-    return sighashLegacy(tx, inputIndex, hashType, script.value)
+    return sighashLegacy(tx, inputIndex, chain, hashType, script.value)
   }
   if (options.algorithm === 'bip143' || options.algorithm === 'forkid') {
     if (
@@ -1075,6 +1178,7 @@ export function sighash(
     return sighashBip143(
       tx,
       inputIndex,
+      chain,
       hashType,
       script.value,
       amount.value,
@@ -1087,3 +1191,4 @@ export function sighash(
     return sighashTaproot(tx, inputIndex, hashType, options)
   return sighashLotus(tx, inputIndex, hashType, options)
 }
+

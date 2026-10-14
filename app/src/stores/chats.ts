@@ -716,7 +716,7 @@ async function serializeDeliveryMutation<T>(
   work: () => Promise<T>,
 ): Promise<T> {
   const predecessor = deliveryMutationTail
-  let release = () => undefined
+  let release: () => void = () => undefined
   deliveryMutationTail = new Promise<void>(resolve => {
     release = resolve
   })

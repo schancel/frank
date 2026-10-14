@@ -172,6 +172,25 @@ describe('stores/chats.ts (ticket #42)', () => {
     jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
   })
 
+  it('releases queued delivery mutations after a strict missing-record rejection', async () => {
+    const chats = useChatStore()
+    const failed = chats.saveOutgoing(RECIPIENT_ADDRESS, 'missing-strict', {
+      strict: true,
+    })
+    const queued = chats.saveOutgoing(RECIPIENT_ADDRESS, 'missing-queued')
+    await Promise.all([
+      expect(failed).rejects.toThrow(
+        'outgoing message missing-strict no longer exists',
+      ),
+      expect(queued).resolves.toBeUndefined(),
+    ])
+    await expect(
+      chats.saveOutgoing(RECIPIENT_ADDRESS, 'missing-subsequent'),
+    ).resolves.toBeUndefined()
+    expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+    expect(chats.messages).toEqual({})
+  })
+
   it('indexes outbound payload and attempt ownership in one history pass', () => {
     let attemptReads = 0
     const messages = Array.from({ length: 300 }, (_, index) => {

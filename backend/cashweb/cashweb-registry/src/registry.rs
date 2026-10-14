@@ -61,6 +61,9 @@ pub struct Registry {
     net: Net,
     /// Notification event bus for real-time relay message fan-out (ticket #982 / track C).
     event_bus: Arc<dyn crate::events::RelayEventBus>,
+    /// Canonical protocol chain IDs accepted for stamp admission and topic burns on this relay.
+    /// Does not restrict wallet RPC/indexer proxy routes (`/chain-rpc/:chain/*`).
+    accepted_payment_networks: std::sync::RwLock<Vec<String>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -214,6 +217,7 @@ impl Registry {
             chain_adapter,
             net,
             event_bus,
+            accepted_payment_networks: std::sync::RwLock::new(Vec::new()),
         }
     }
 
@@ -579,6 +583,37 @@ impl Registry {
             Net::Mainnet => 143,
             _ => 10_143,
         }
+    }
+
+    /// Configure the canonical protocol chain IDs accepted by this relay for stamp admission and
+    /// topic burns.
+    ///
+    /// Does not restrict wallet RPC/indexer proxy routes (`/chain-rpc/:chain/*`).
+    pub fn set_accepted_payment_networks(&self, networks: Vec<String>) {
+        if let Ok(mut guard) = self.accepted_payment_networks.write() {
+            *guard = networks;
+        }
+    }
+
+    /// Return the canonical protocol chain IDs accepted by this relay for stamp admission and
+    /// topic burns.
+    ///
+    /// Defaults to `[self.expected_cbor_network()]` when not explicitly overridden.
+    pub fn accepted_payment_networks(&self) -> Vec<String> {
+        if let Ok(guard) = self.accepted_payment_networks.read() {
+            if !guard.is_empty() {
+                return guard.clone();
+            }
+        }
+        vec![self.expected_cbor_network().to_string()]
+    }
+
+    /// Whether `chain_id` is an accepted payment network for stamp admission and topic burns on
+    /// this relay.
+    pub fn is_payment_network_accepted(&self, chain_id: &str) -> bool {
+        self.accepted_payment_networks()
+            .iter()
+            .any(|accepted| accepted == chain_id)
     }
 
     /// Fully verify and write a Monad-native profile registration (ticket #45) -- the Monad

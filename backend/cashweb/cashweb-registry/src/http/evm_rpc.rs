@@ -3031,7 +3031,8 @@ mod tests {
                     "caip2": "eip155:10143",
                     "native_chain_id": "10143",
                     "capabilities": ["json-rpc"]
-                }]
+                }],
+                "accepted_payment_networks": ["monad-testnet"]
             })
         );
 

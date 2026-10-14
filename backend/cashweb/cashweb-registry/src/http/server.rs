@@ -50,6 +50,7 @@ use tracing::Level;
 struct ChainDiscovery {
     schema_version: u32,
     chains: Vec<AdvertisedChain>,
+    accepted_payment_networks: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -108,6 +109,7 @@ async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json
     Json(ChainDiscovery {
         schema_version: 1,
         chains,
+        accepted_payment_networks: server.registry.accepted_payment_networks(),
     })
 }
 
@@ -357,6 +359,11 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["mailbox", _, "notification-policy"] => {
             Cow::Borrowed("/mailbox/:address/notification-policy")
         }
+        ["topics"] => Cow::Borrowed("/topics"),
+        ["topics", "vote"] => Cow::Borrowed("/topics/vote"),
+        ["topics", "discover"] => Cow::Borrowed("/topics/discover"),
+        ["topics", "status"] => Cow::Borrowed("/topics/status"),
+        ["topics", _] => Cow::Borrowed("/topics/:payload_hash"),
         ["message", "monad", "topics"] => Cow::Borrowed("/message/monad/topics"),
         ["message", "monad", "topics", "vote"] => Cow::Borrowed("/message/monad/topics/vote"),
         ["message", "monad", "topics", "discover"] => {
@@ -566,7 +573,7 @@ impl RegistryServer {
             )
             .route("/profiles", routing::get(handle_list_monad_profiles))
             // Protobuf topic endpoints are deprecated and dead; canonical CBOR topic
-            // endpoints (/message/monad/topics) are the only active routes.
+            // endpoints (/topics and /message/monad/topics) are the only active routes.
             .route(
                 "/messages/:topic",
                 routing::any(|| async { StatusCode::GONE }),
@@ -624,15 +631,19 @@ impl RegistryServer {
             router
         };
         let mut router = router
-            // Monad topic post + burn-weighted vote path (ticket #30), additive alongside
-            // the plain Monad-message route above -- see `crate::http::monad_topics`'s module docs.
-            // Static segments ("topics", "topics/vote") take priority over the `:payload_hash`
-            // wildcard segment at the same position, so these don't conflict with the route
-            // above.
-            // `GET /message/monad/topics?topic=<topic>&since=<timestamp>` (ticket #40):
-            // topic-filtered post listing, added at the same path as the `PUT` above -- the same
-            // same-path-different-method precedent as `/message/monad`'s `PUT`/`GET(since=)` pair
-            // just above.
+            // Canonical chain-agnostic topic post + burn-weighted vote routes (`/topics*`) alongside
+            // backwards-compatible `/message/monad/topics*` aliases.
+            .route(
+                "/topics",
+                routing::put(handle_put_monad_topic_post).get(handle_list_monad_topic_posts),
+            )
+            .route("/topics/vote", routing::put(handle_put_monad_topic_vote))
+            .route("/topics/discover", routing::get(handle_list_topics))
+            .route("/topics/status", routing::post(handle_forum_status))
+            .route(
+                "/topics/:payload_hash",
+                routing::get(handle_get_monad_topic_post),
+            )
             .route(
                 "/message/monad/topics",
                 routing::put(handle_put_monad_topic_post).get(handle_list_monad_topic_posts),

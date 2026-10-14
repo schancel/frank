@@ -58,13 +58,14 @@ function normalizeGroupId(groupIdHex: string): string {
   return id
 }
 
-function normalizeRelayBaseUrl(relayUrl: string): string {
+export function normalizeGroupRelayOrigin(relayUrl: string): string {
   const parsed = new URL(relayUrl)
   if (
     parsed.username ||
     parsed.password ||
     parsed.search ||
     parsed.hash ||
+    parsed.pathname !== '/' ||
     (parsed.protocol !== 'https:' &&
       !(
         parsed.protocol === 'http:' &&
@@ -78,7 +79,7 @@ function normalizeRelayBaseUrl(relayUrl: string): string {
 /**
  * HTTP client for the shared group mailbox endpoints on `cashweb-registry` (Issues #70 & #1365):
  * - `PUT /groups/:group_id/epochs` (with optional `If-Match` CAS header)
- * - `GET /groups/:group_id/epochs` (authenticated via `X-Group-Read-Token`)
+ * - `GET /groups/:group_id/epochs` (public root-signed certificate)
  * - `PUT /groups/:group_id/messages` (authenticated via outer shared write signature `write_sig`)
  * - `GET /groups/:group_id/messages?after_seq=&limit=` (authenticated via `X-Group-Read-Token`)
  */
@@ -89,8 +90,10 @@ export class GroupRelayClient {
   private readonly subscriberTag?: (groupIdHex: string) => Promise<string>
 
   constructor(relayUrl: string, options: GroupRelayClientOptions = {}) {
-    this.relayUrl = normalizeRelayBaseUrl(relayUrl)
-    this.transportUrl = normalizeRelayBaseUrl(options.homeRelayUrl ?? relayUrl)
+    this.relayUrl = normalizeGroupRelayOrigin(relayUrl)
+    this.transportUrl = normalizeGroupRelayOrigin(
+      options.homeRelayUrl ?? relayUrl,
+    )
     this.subscriberTag = options.subscriberTag
     this.http =
       options.axiosInstance ??
@@ -146,8 +149,7 @@ export class GroupRelayClient {
   }
 
   /**
-   * Fetches the latest `GroupEpochFrame` (`G_meta`) for `groupIdHex`, authenticating with
-   * the current epoch's `readTokenHex` in `X-Group-Read-Token`.
+   * Fetches the public root-signed latest epoch certificate for `groupIdHex`.
    */
   async getLatestEpoch(groupIdHex: string): Promise<GroupEpochFrameWire> {
     return this.getEpoch(groupIdHex)
@@ -557,6 +559,17 @@ export function openGroupEpochCertificate(params: {
   )
     throw new Error('Group epoch secret does not match certificate')
   const roster = decryptGroupRoster(cert.encrypted_roster, epochKeys)
+  if (
+    typeof roster.groupName !== 'string' ||
+    !roster.groupName.trim() ||
+    new TextEncoder().encode(roster.groupName).length > 128
+  )
+    throw new Error('Invalid group roster name')
+  if (
+    typeof roster.homeRelay !== 'string' ||
+    normalizeGroupRelayOrigin(roster.homeRelay) !== roster.homeRelay
+  )
+    throw new Error('Invalid group relay URL')
   if (!roster.members.length || roster.members.length > 256)
     throw new Error('Invalid group roster size')
   const addresses = new Set<string>(),

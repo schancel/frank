@@ -2,6 +2,8 @@ import { GROUP_TEST_ACCOUNTS, groupTestSigningKey } from './group-test.testutil'
 import type { AxiosInstance } from 'axios'
 import {
   decryptGroupRoster,
+  encryptGroupRoster,
+  signEpochFrame,
   deriveNextEpochSecret,
   bytesToHex,
   openGroupMessage,
@@ -12,6 +14,7 @@ import {
   GroupRelayClient,
   createGroupOnRelay,
   rotateGroupEpochOnRelay,
+  openGroupEpochCertificate,
   type StoredGroupMessageWire,
 } from './group-relay-client'
 
@@ -170,6 +173,48 @@ describe('GroupRelayClient', () => {
     bob.address,
     charlie.address,
   ]
+
+  it('rejects unsupported relay paths at client/config and signed-roster admission', async () => {
+    expect(() => new GroupRelayClient('https://relay.example/api')).toThrow(
+      /relay URL/,
+    )
+    expect(
+      () =>
+        new GroupRelayClient('https://relay.example', {
+          homeRelayUrl: 'https://home.example/api',
+        }),
+    ).toThrow(/relay URL/)
+    const mock = createMockGroupRelayAxios()
+    const client = new GroupRelayClient('https://relay.example', {
+      axiosInstance: mock.axiosInstance,
+    })
+    const created = await createGroupOnRelay({
+      client,
+      groupName: 'Valid',
+      creatorAddress: alice.address,
+      creatorIdentityPubKeyHex: alice.publicKeyHex,
+      members: [bob],
+    })
+    const certificate = signEpochFrame({
+      groupIdHex: created.identity.groupIdHex,
+      groupPubKeyHex: created.identity.groupPubKeyHex,
+      epoch: 0,
+      epochKeys: created.epochKeys,
+      encryptedRoster: encryptGroupRoster(
+        { ...created.roster, homeRelay: 'https://relay.example/api' },
+        created.epochKeys,
+      ),
+      authorityPrivateKey: created.identity.groupSecretKey,
+    })
+    expect(() =>
+      openGroupEpochCertificate({
+        groupIdHex: created.identity.groupIdHex,
+        groupPubKeyHex: created.identity.groupPubKeyHex,
+        epochSecretHex: created.epochKeys.epochSecretHex,
+        certificate: certificate as never,
+      }),
+    ).toThrow(/relay URL/)
+  })
 
   it('creates epoch 0 on the relay, fetches and decrypts the roster, and verifies signatures', async () => {
     const mock = createMockGroupRelayAxios()

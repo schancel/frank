@@ -95,6 +95,7 @@ import {
 } from '@frank/cashweb/groups/group-crypto'
 import {
   GroupRelayClient,
+  normalizeGroupRelayOrigin,
   prepareGroupCreation,
   prepareGroupEpochRotation,
   groupEpochCertificate,
@@ -2851,6 +2852,11 @@ export const useChatStore = defineStore('chats', {
         })
       }
       if (
+        conversationId &&
+        isGroupConversationId(canonicalConversationId(conversationId))
+      )
+        throw new Error('Reserved group conversation identifier')
+      if (
         financialOperations?.length &&
         (stampValue === undefined || stampValue < 0n)
       )
@@ -4334,6 +4340,8 @@ export const useChatStore = defineStore('chats', {
       const id = conversationId
         ? canonicalConversationId(conversationId)
         : freshConversationId()
+      if (kind !== 'group' && isGroupConversationId(id))
+        throw new Error('Reserved group conversation identifier')
       const peer = address || (participants.length === 1 ? participants[0] : id)
       const existing = this.conversations[id]
       if (existing) {
@@ -5845,10 +5853,7 @@ export const useChatStore = defineStore('chats', {
       groupRelayClients(this).set(key, client)
     },
     configureGroupHomeRelay(homeRelayUrl: string): () => void {
-      const parsed = new URL(homeRelayUrl)
-      if (!['http:', 'https:'].includes(parsed.protocol))
-        throw new Error('Invalid group home relay URL')
-      const url = homeRelayUrl.trim().replace(/\/+$/, '')
+      const url = normalizeGroupRelayOrigin(homeRelayUrl)
       groupHomeRelays.set(this, url)
       return () => {
         if (groupHomeRelays.get(this) === url) {
@@ -6415,7 +6420,7 @@ export const useChatStore = defineStore('chats', {
     },
 
     /**
-     * Issue #70: Polls the shared group mailbox (`GET /groups/:group_id/epoch` and
+     * Issue #70: Polls the shared group mailbox (`GET /groups/:group_id/epochs` and
      * `GET /groups/:group_id/messages?after_seq=`) for a joined group conversation,
      * decrypts and verifies inner member signatures, and appends new messages.
      */

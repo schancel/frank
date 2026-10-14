@@ -553,6 +553,25 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     expect(client.publishEpoch.mock.calls[1][1].epoch_hash).toBe(originalHash)
   })
 
+  it('rejects unsupported relay origins before signing or persisting a group', async () => {
+    const chats = useChatStore()
+    expect(() =>
+      chats.configureGroupHomeRelay('https://home.example/api'),
+    ).toThrow(/relay URL/)
+    chats.configureGroupHomeRelay('https://home.example')
+    chats.flushPersistence = jest.fn(async () => undefined)
+    await expect(
+      chats.createGroupConversation({
+        groupName: 'Invalid origin',
+        memberAddresses: [BOB],
+        relayUrl: 'https://relay.example/api',
+        creatorAddress: ALICE,
+      }),
+    ).rejects.toThrow(/relay URL/)
+    expect(Object.keys(chats.conversations)).toEqual([])
+    expect(chats.flushPersistence).not.toHaveBeenCalled()
+  })
+
   it('never publishes an epoch while its durable persistence barrier is rejected', async () => {
     const client = createSharedMockGroupRelay()
     const chats = useChatStore()

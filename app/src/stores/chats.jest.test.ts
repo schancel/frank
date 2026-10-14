@@ -3041,6 +3041,33 @@ describe('stores/chats.ts (ticket #42)', () => {
         ).toBe(300)
       })
 
+      it('rejects reserved group IDs in direct writers before persistence or transport', async () => {
+        const { chats } = withPeer()
+        const reserved = groupConversationUuid('ab'.repeat(32))
+        expect(() =>
+          chats.createConversation({
+            conversationId: reserved,
+            participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+            address: RECIPIENT_ADDRESS,
+          }),
+        ).toThrow(/reserved/i)
+        const send = jest.spyOn(activeChain.directMessages, 'send')
+        await expect(
+          chats.sendMessage({
+            wallet: makeWallet(SENDER_ADDRESS),
+            address: RECIPIENT_ADDRESS,
+            conversationId: reserved,
+            items: [
+              { type: 'text', text: 'Must not persist an invalid owner' },
+            ],
+            stampValue: 0n,
+          }),
+        ).rejects.toThrow(/reserved/i)
+        expect(chats.conversations[reserved]).toBeUndefined()
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+        expect(send).not.toHaveBeenCalled()
+      })
+
       it('projects a reserved group ID before any invitation without creating a group or direct reference', async () => {
         const { chats, conversation } = withPeer()
         const reserved = groupConversationUuid('ab'.repeat(32))

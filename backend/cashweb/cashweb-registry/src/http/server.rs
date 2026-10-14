@@ -1360,7 +1360,8 @@ mod spa_tests {
         );
 
         let dir_root = TempDir::new("cashweb-registry--well-known-dir").unwrap();
-        let (registry, mut dir_config, clock) = crate::http::directory::tests::setup(dir_root.path());
+        let (registry, mut dir_config, clock) =
+            crate::http::directory::tests::setup(dir_root.path());
         dir_config.endpoint = "https://relay.signet.mx".to_string();
         dir_config.email_gateway = Some(cashweb_config::EmailGatewayConf {
             address: "0x1111111111111111111111111111111111111111".to_string(),

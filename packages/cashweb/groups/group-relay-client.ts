@@ -414,7 +414,7 @@ export function prepareGroupEpochRotation(
       params.prevEpochSecret,
       cleanGroupId,
       nextEpoch,
-      params.freshEntropy,
+      params.freshEntropy ?? randomBytes(32),
     )
   const epochKeys = deriveEpochKeys(nextEpochSecret, cleanGroupId, nextEpoch)
 

@@ -2,6 +2,8 @@ import { GROUP_TEST_ACCOUNTS, groupTestSigningKey } from './group-test.testutil'
 import type { AxiosInstance } from 'axios'
 import {
   decryptGroupRoster,
+  deriveNextEpochSecret,
+  bytesToHex,
   openGroupMessage,
   sealGroupMessage,
   verifyEpochFrame,
@@ -288,6 +290,15 @@ describe('GroupRelayClient', () => {
     })
 
     expect(rotated.epoch).toBe(1)
+    expect(rotated.epochSecretHex).not.toBe(
+      bytesToHex(
+        deriveNextEpochSecret(
+          created.epochKeys.epochSecret,
+          created.identity.groupIdHex,
+          1,
+        ),
+      ),
+    )
     expect(rotated.roster.members).toHaveLength(2)
     expect(rotated.roster.members.map(m => m.address)).toEqual([
       aliceAddress,

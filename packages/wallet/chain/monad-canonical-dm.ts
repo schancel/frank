@@ -1558,11 +1558,15 @@ async function send(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
     )
       return fromHex(value.replace(/-/g, ''))
-    if (
-      Object.prototype.toString.call(value) === '[object Uint8Array]' &&
-      (value as Uint8Array).length === 16
-    )
-      return Uint8Array.from(value as Uint8Array)
+    if (Object.prototype.toString.call(value) === '[object Uint8Array]') {
+      let copied: Uint8Array
+      try {
+        copied = Uint8Array.from(value as Uint8Array)
+      } catch {
+        throw new DirectMessageArgumentError(argument)
+      }
+      if (copied.length === 16) return copied
+    }
     throw new DirectMessageArgumentError(argument)
   }
   const conversationIdBytes = suppliedId('conversationId')

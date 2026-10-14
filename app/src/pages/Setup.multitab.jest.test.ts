@@ -196,6 +196,19 @@ describe('Setup.vue Multi-Tab Awareness & Takeover', () => {
     expect(view.get('[data-test="switch-tab-help"]').text()).toContain(
       'Select the Frank tab in your browser',
     )
+    expect(view.get('[data-test="switch-tab-help"]').text()).toContain(
+      'Contacting your open Frank tab',
+    )
+    tabStore.focusRequestStatus = 'notified'
+    await flushPromises()
+    expect(view.get('[data-test="switch-tab-help"]').text()).toContain(
+      'Click it to return there',
+    )
+    tabStore.focusRequestStatus = 'unavailable'
+    await flushPromises()
+    expect(view.get('[data-test="switch-tab-help"]').text()).toContain(
+      'Your open Frank tab did not respond',
+    )
     expect(tabStore.otherTabActive).toBe(true)
     expect(mockSession.retry).not.toHaveBeenCalled()
     expect(mockPush).not.toHaveBeenCalled()

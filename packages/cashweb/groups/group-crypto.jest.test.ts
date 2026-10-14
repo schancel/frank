@@ -1,8 +1,14 @@
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { privateKeyFromBytes } from '@frank/nakamoto'
+import { tweakAddPrivateKey } from '@frank/nakamoto/curve'
 import {
   bytesToHex,
   computeGroupIdFromPubKey,
+  computeInnerMessageSigningHash,
   decryptGroupRoster,
   deriveEpochKeys,
+  deriveIdentityMemberEpochPublicKey,
+  deriveIdentityMemberEpochTweak,
   deriveGroupIdentity,
   deriveMemberEpochSigningKey,
   encryptGroupRoster,
@@ -94,12 +100,14 @@ describe('packages/cashweb/groups/group-crypto', () => {
         {
           index: 0,
           address: 'eip155:10143:0x1111111111111111111111111111111111111111',
+          identityPubKeyHex: deriveGroupIdentity(seedOf(0x45)).groupPubKeyHex,
           epochSigningPubKeyHex: aliceSig0.publicKeyHex,
           role: 'admin',
         },
         {
           index: 1,
           address: 'eip155:10143:0x2222222222222222222222222222222222222222',
+          identityPubKeyHex: deriveGroupIdentity(seedOf(0x45)).groupPubKeyHex,
           epochSigningPubKeyHex: bobSig0.publicKeyHex,
           role: 'member',
         },
@@ -126,6 +134,38 @@ describe('packages/cashweb/groups/group-crypto', () => {
     expect(
       verifyEpochFrame(frame0, group.groupIdHex, group.groupPubKeyHex),
     ).toBe(true)
+    expect(
+      verifyEpochFrame(
+        { ...frame0, group_id: 'ff'.repeat(32) },
+        group.groupIdHex,
+        group.groupPubKeyHex,
+      ),
+    ).toBe(false)
+    expect(
+      verifyEpochFrame(
+        { ...frame0, epoch_hash: 'ff'.repeat(32) },
+        group.groupIdHex,
+        group.groupPubKeyHex,
+      ),
+    ).toBe(false)
+    expect(
+      verifyEpochFrame(
+        { ...frame0, group_pubkey: wrongEpochKeys.writeKeyPair.publicKeyHex },
+        group.groupIdHex,
+        group.groupPubKeyHex,
+      ),
+    ).toBe(false)
+    expect(
+      verifyEpochFrame(frame0, 'ff'.repeat(32), group.groupPubKeyHex),
+    ).toBe(false)
+    const writeKeyForgery = signEpochFrame({
+      groupIdHex: group.groupIdHex,
+      epoch: 0,
+      epochKeys: epochKeys0,
+      encryptedRoster,
+      authorityPrivateKey: epochKeys0.writeKeyPair.privateKey,
+    })
+    expect(verifyEpochFrame(writeKeyForgery, group.groupIdHex)).toBe(false)
     expect(
       verifyEpochFrame(
         frame0,
@@ -162,12 +202,14 @@ describe('packages/cashweb/groups/group-crypto', () => {
         {
           index: 0,
           address: 'eip155:10143:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          identityPubKeyHex: deriveGroupIdentity(seedOf(0x45)).groupPubKeyHex,
           epochSigningPubKeyHex: aliceSig.publicKeyHex,
           role: 'admin',
         },
         {
           index: 1,
           address: 'eip155:10143:0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          identityPubKeyHex: deriveGroupIdentity(seedOf(0x45)).groupPubKeyHex,
           epochSigningPubKeyHex: bobSig.publicKeyHex,
           role: 'member',
         },
@@ -231,6 +273,102 @@ describe('packages/cashweb/groups/group-crypto', () => {
         envelope: badOuterEnvelope,
         epochKeys,
         roster,
+      }),
+    ).toThrow()
+  })
+})
+
+describe('identity-bound group signing', () => {
+  const groupId = 'ab'.repeat(32)
+  function member(byte: number, epoch = 0) {
+    const key = privateKeyFromBytes(seedOf(byte), true)
+    if (!key.ok) throw new Error('Invalid fixture key')
+    const accountPublicKey = secp256k1.getPublicKey(key.value.bytes, true)
+    const derived = tweakAddPrivateKey(
+      key.value,
+      deriveIdentityMemberEpochTweak(accountPublicKey, groupId, epoch),
+    )
+    if (!derived.ok) throw new Error(JSON.stringify(derived))
+    return {
+      key: derived.value.bytes,
+      accountPublicKey,
+      publicKey: deriveIdentityMemberEpochPublicKey(
+        accountPublicKey,
+        groupId,
+        epoch,
+      ),
+    }
+  }
+  test('public/private derivations agree and bind identity, group and epoch', () => {
+    const alice = member(1)
+    const bob = member(2)
+    expect(alice.publicKey).toEqual(secp256k1.getPublicKey(alice.key, true))
+    expect(alice.publicKey).toEqual(member(1).publicKey)
+    expect(alice.publicKey).not.toEqual(bob.publicKey)
+    expect(alice.publicKey).not.toEqual(member(1, 1).publicKey)
+    expect(alice.publicKey).not.toEqual(
+      deriveIdentityMemberEpochPublicKey(
+        alice.accountPublicKey,
+        'cd'.repeat(32),
+        0,
+      ),
+    )
+    const digest = seedOf(9)
+    const signature = secp256k1.sign(digest, bob.key).toCompactRawBytes()
+    expect(secp256k1.verify(signature, digest, alice.publicKey)).toBe(false)
+  })
+  test('rejects invalid public points, group IDs and epochs', () => {
+    const pub = member(1).accountPublicKey
+    expect(() =>
+      deriveIdentityMemberEpochPublicKey(new Uint8Array(33), groupId, 0),
+    ).toThrow()
+    expect(() => deriveIdentityMemberEpochPublicKey(pub, '00', 0)).toThrow()
+    for (const epoch of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() =>
+        deriveIdentityMemberEpochPublicKey(pub, groupId, epoch),
+      ).toThrow()
+    }
+  })
+  test('seals with a scoped external signature and rejects impersonation', () => {
+    const epochKeys = deriveEpochKeys(seedOf(3), groupId, 0)
+    const alice = member(1)
+    const payload = new TextEncoder().encode('signed by custody')
+    const timestampMs = 42
+    const digest = computeInnerMessageSigningHash({
+      groupIdHex: groupId,
+      epoch: 0,
+      senderIndex: 0,
+      senderEpochPubKey: alice.publicKey,
+      payload,
+      timestampMs,
+    })
+    const senderSignature = secp256k1
+      .sign(digest, alice.key)
+      .toCompactRawBytes()
+    const params = {
+      epochKeys,
+      senderIndex: 0,
+      senderEpochPublicKey: alice.publicKey,
+      senderSignature,
+      payload,
+      timestampMs,
+    }
+    expect(
+      openGroupMessage({ envelope: sealGroupMessage(params), epochKeys })
+        .payloadText,
+    ).toBe('signed by custody')
+    expect(() =>
+      sealGroupMessage({
+        ...params,
+        senderSignature: secp256k1
+          .sign(digest, member(2).key)
+          .toCompactRawBytes(),
+      }),
+    ).toThrow()
+    expect(() =>
+      sealGroupMessage({
+        ...params,
+        payload: new TextEncoder().encode('tampered'),
       }),
     ).toThrow()
   })

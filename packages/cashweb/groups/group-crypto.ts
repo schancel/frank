@@ -2,6 +2,7 @@ import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha256.js'
+import { tweakAddPublicKey } from '@frank/nakamoto/curve'
 import { randomBytes } from '@frank/crypto-box'
 
 const SECP256K1_N =
@@ -103,7 +104,10 @@ export function normalizeSecp256k1Scalar(material32: Uint8Array): Uint8Array {
 }
 
 export function formatGroupIdentifier(groupIdHex: string): string {
-  const clean = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const clean = groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(clean)) {
     throw new Error(`groupIdHex must be 64 hex chars, got: ${groupIdHex}`)
   }
@@ -128,7 +132,10 @@ export function parseGroupIdentifier(value: string): string | null {
  * address the group conversation by the exact same UUID without leaking `group_id` directly.
  */
 export function groupConversationUuid(groupIdHex: string): string {
-  const clean = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const clean = groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
   if (!/^[0-9a-f]{64}$/.test(clean)) {
     throw new Error(`Invalid groupIdHex: ${groupIdHex}`)
   }
@@ -142,7 +149,10 @@ export function groupConversationUuid(groupIdHex: string): string {
   b[6] = ((b[6] ?? 0) & 0x0f) | 0x50 // version 5
   b[8] = ((b[8] ?? 0) & 0x3f) | 0x80 // RFC 4122 variant
   const hex = bytesToHex(b)
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
+    12,
+    16,
+  )}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
 }
 
 export interface GroupIdentity {
@@ -241,7 +251,10 @@ export function deriveEpochKeys(
   if (!Number.isSafeInteger(epoch) || epoch < 0) {
     throw new Error(`epoch must be a non-negative integer, got ${epoch}`)
   }
-  const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const cleanGroupId = groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
   const groupIdBytes = hexToBytes(cleanGroupId)
   if (groupIdBytes.length !== 32) {
     throw new Error(`groupIdHex must decode to 32 bytes`)
@@ -311,7 +324,10 @@ export function deriveNextEpochSecret(
   if (!Number.isSafeInteger(nextEpoch) || nextEpoch <= 0) {
     throw new Error(`nextEpoch must be a positive integer, got ${nextEpoch}`)
   }
-  const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const cleanGroupId = groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
   const groupIdBytes = hexToBytes(cleanGroupId)
   if (groupIdBytes.length !== 32) {
     throw new Error('groupIdHex must decode to 32 bytes')
@@ -334,7 +350,11 @@ export function deriveNextEpochSecretHex(
   nextEpoch: number,
 ): string {
   return bytesToHex(
-    deriveNextEpochSecret(hexToBytes(prevEpochSecretHex), groupIdHex, nextEpoch),
+    deriveNextEpochSecret(
+      hexToBytes(prevEpochSecretHex),
+      groupIdHex,
+      nextEpoch,
+    ),
   )
 }
 
@@ -355,7 +375,10 @@ export function deriveMemberEpochSigningKey(
       `memberSecretSeed must be 32 bytes, got ${memberSecretSeed.length}`,
     )
   }
-  const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const cleanGroupId = groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
   const groupIdBytes = hexToBytes(cleanGroupId)
   if (groupIdBytes.length !== 32) {
     throw new Error(`groupIdHex must decode to 32 bytes`)
@@ -377,35 +400,51 @@ export function deriveMemberEpochSigningKey(
   }
 }
 
-/**
- * Deterministically derives a member's per-epoch signing keypair $(s_{i,e}, S_{i,e})$ from
- * the epoch secret, group ID, epoch, member index, and canonical member address when no
- * out-of-band member secret seed is supplied.
+/** Public, account-bound tweak. This is not secret signing material.
+ * The resulting keys are linkable by anyone who knows the account public key.
  */
-export function deriveIndexedMemberEpochSigningKey(
-  epochSecret: Uint8Array,
+export function deriveIdentityMemberEpochTweak(
+  accountPublicKey: Uint8Array,
   groupIdHex: string,
   epoch: number,
-  memberIndex: number,
-  address: string,
-): GroupKeyPair {
-  const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
-  const groupIdBytes = hexToBytes(cleanGroupId)
-  const memberSeed = hkdf(
-    sha256,
-    epochSecret,
-    groupIdBytes,
-    utf8Encoder.encode(
-      `frank-group-member-seed:${epoch}:${memberIndex}:${address.trim().toLowerCase()}`,
+): Uint8Array {
+  if (accountPublicKey.length !== 33)
+    throw new Error('Expected compressed account public key')
+  secp256k1.ProjectivePoint.fromHex(accountPublicKey).assertValidity()
+  const groupId = hexToBytes(groupIdHex)
+  if (groupId.length !== 32) throw new Error('Expected 32-byte group ID')
+  return normalizeSecp256k1Scalar(
+    sha256(
+      concatBytes(
+        utf8Encoder.encode('frank-group-identity-member-tweak-v1'),
+        accountPublicKey,
+        groupId,
+        u64Be(epoch),
+      ),
     ),
-    32,
   )
-  return deriveMemberEpochSigningKey(memberSeed, cleanGroupId, epoch)
+}
+
+/** P_member = P_account + tweak(P_account, group, epoch) * G. */
+export function deriveIdentityMemberEpochPublicKey(
+  accountPublicKey: Uint8Array,
+  groupIdHex: string,
+  epoch: number,
+): Uint8Array {
+  const tweak = deriveIdentityMemberEpochTweak(
+    accountPublicKey,
+    groupIdHex,
+    epoch,
+  )
+  const result = tweakAddPublicKey(accountPublicKey, tweak)
+  if (!result.ok) throw new Error('Invalid group member public key')
+  return result.value
 }
 
 export interface GroupRosterMember {
   readonly index: number
   readonly address: string
+  readonly identityPubKeyHex: string
   readonly epochSigningPubKeyHex: string
   readonly role?: 'admin' | 'member'
 }
@@ -505,7 +544,10 @@ export function computeEpochSigningHash(params: {
   readTokenHashHex: string
   encryptedRoster: Uint8Array | string
 }): Uint8Array {
-  const cleanGroupId = params.groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const cleanGroupId = params.groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
   const groupIdBytes = hexToBytes(cleanGroupId)
   const prevHashBytes = hexToBytes(params.prevEpochHashHex)
   const writePubKeyBytes = hexToBytes(params.writePubKeyHex)
@@ -538,7 +580,10 @@ export function signEpochFrame(params: {
   encryptedRoster: Uint8Array | string
   authorityPrivateKey: Uint8Array
 }): GroupEpochFrameWire {
-  const cleanGroupId = params.groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+  const cleanGroupId = params.groupIdHex
+    .trim()
+    .replace(/^group:/i, '')
+    .toLowerCase()
   const prevEpochHashHex = (
     params.prevEpochHashHex ?? '00'.repeat(32)
   ).toLowerCase()
@@ -584,13 +629,22 @@ export function verifyEpochFrame(
   authorityPubKeyHex?: string,
 ): boolean {
   try {
-    const cleanGroupId = groupIdHex.trim().replace(/^group:/i, '').toLowerCase()
+    const cleanGroupId = groupIdHex
+      .trim()
+      .replace(/^group:/i, '')
+      .toLowerCase()
     const encryptedRoster =
       frame.encrypted_roster || frame.encrypted_epoch_descriptor || ''
     const authoritySig = frame.authority_sig || frame.admin_sig || ''
-    const pubKeyHex =
-      authorityPubKeyHex || frame.group_pubkey || frame.write_pubkey
+    const pubKeyHex = authorityPubKeyHex || frame.group_pubkey
     if (!encryptedRoster || !authoritySig || !pubKeyHex) return false
+    if (computeGroupIdFromPubKey(pubKeyHex) !== cleanGroupId) return false
+    if (
+      frame.group_pubkey &&
+      frame.group_pubkey.toLowerCase() !== pubKeyHex.toLowerCase()
+    )
+      return false
+    if (frame.group_id && frame.group_id !== cleanGroupId) return false
     const digest = computeEpochSigningHash({
       groupIdHex: cleanGroupId,
       epoch: frame.epoch,
@@ -599,6 +653,8 @@ export function verifyEpochFrame(
       readTokenHashHex: frame.read_token_hash,
       encryptedRoster,
     })
+    if (frame.epoch_hash && frame.epoch_hash !== bytesToHex(digest))
+      return false
     const sig = secp256k1.Signature.fromCompact(hexToBytes(authoritySig))
     if (sig.hasHighS()) return false
     return secp256k1.verify(sig, digest, hexToBytes(pubKeyHex), {
@@ -685,16 +741,33 @@ function buildMessageAad(groupIdBytes: Uint8Array, epoch: number): Uint8Array {
  *    and signs the outer `(group_id, epoch, nonce, ciphertext)` tuple with the shared epoch write
  *    key $w_e$ ($W_{G,e}$) so the relay can reject spam without learning which member sent it.
  */
-export function sealGroupMessage(params: {
-  epochKeys: GroupEpochKeys
-  senderIndex: number
-  senderEpochKeyPair: GroupKeyPair
-  payload: Uint8Array | string
-  senderAddress?: string
-  timestampMs?: number
-  nonce?: Uint8Array
-}): SealedGroupMessageEnvelope {
-  const { epochKeys, senderIndex, senderEpochKeyPair } = params
+export function sealGroupMessage(
+  params: {
+    epochKeys: GroupEpochKeys
+    senderIndex: number
+    payload: Uint8Array | string
+    senderAddress?: string
+    timestampMs?: number
+    nonce?: Uint8Array
+  } & (
+    | {
+        senderEpochKeyPair: GroupKeyPair
+        senderEpochPublicKey?: never
+        senderSignature?: never
+      }
+    | {
+        senderEpochKeyPair?: never
+        senderEpochPublicKey: Uint8Array
+        senderSignature: Uint8Array
+      }
+  ),
+): SealedGroupMessageEnvelope {
+  const { epochKeys, senderIndex } = params
+  const senderPublicKey =
+    params.senderEpochKeyPair?.publicKey ?? params.senderEpochPublicKey
+  if (!senderPublicKey || senderPublicKey.length !== 33) {
+    throw new Error('Expected compressed sender public key')
+  }
   const payloadBytes =
     typeof params.payload === 'string'
       ? utf8Encoder.encode(params.payload)
@@ -709,19 +782,27 @@ export function sealGroupMessage(params: {
     groupIdHex: epochKeys.groupIdHex,
     epoch: epochKeys.epoch,
     senderIndex,
-    senderEpochPubKey: senderEpochKeyPair.publicKey,
+    senderEpochPubKey: senderPublicKey,
     timestampMs,
     payload: payloadBytes,
   })
-  const innerSig = secp256k1
-    .sign(innerDigest, senderEpochKeyPair.privateKey, { lowS: true })
-    .toCompactRawBytes()
+  const innerSig = params.senderEpochKeyPair
+    ? secp256k1
+        .sign(innerDigest, params.senderEpochKeyPair.privateKey, { lowS: true })
+        .toCompactRawBytes()
+    : params.senderSignature
+  if (!innerSig) throw new Error('Expected supplied member signature')
+  if (
+    !secp256k1.verify(innerSig, innerDigest, senderPublicKey, { lowS: true })
+  ) {
+    throw new Error('Invalid supplied member signature')
+  }
 
   const innerFrame: GroupInnerMessageFrame = {
     groupId: epochKeys.groupIdHex,
     epoch: epochKeys.epoch,
     senderIndex,
-    senderEpochPubKeyHex: senderEpochKeyPair.publicKeyHex,
+    senderEpochPubKeyHex: bytesToHex(senderPublicKey),
     ...(params.senderAddress ? { senderAddress: params.senderAddress } : {}),
     timestampMs,
     payloadHex: bytesToHex(payloadBytes),
@@ -841,11 +922,11 @@ export function openGroupMessage(params: {
   )
     ? roster
     : roster
-      ? (roster as GroupRoster).members
-      : undefined
+    ? (roster as GroupRoster).members
+    : undefined
   let rosterAddress: string | undefined
   if (members) {
-    const member = members.find(m => m.index === innerFrame.senderIndex)
+    const member = members.find((m) => m.index === innerFrame.senderIndex)
     if (!member) {
       throw new Error(
         `Sender index ${innerFrame.senderIndex} is not in the epoch roster`,

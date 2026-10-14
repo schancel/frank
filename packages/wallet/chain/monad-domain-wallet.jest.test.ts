@@ -35,6 +35,7 @@ import { join } from 'path'
 import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
 import { createChain } from './chain-factory'
+import { getChainRegistryEntry } from './chains-registry'
 import {
   canonicalMonadStampClient,
   createEvmChain,
@@ -309,6 +310,80 @@ test.each([0, 1])(
     }
   },
 )
+
+test.each([
+  { networkId: "monad-testnet", chainId: 10143 },
+  { networkId: "ethereum-sepolia", chainId: 11155111 },
+  { networkId: "hyperliquid-testnet", chainId: 998 },
+])(
+  "coalesces balance refreshes and starts primary address reads together on $networkId",
+  async (network) => {
+    const entry = getChainRegistryEntry(network.networkId)!;
+    const wallet = (await createEvmChain({
+      ...config,
+      ...network,
+      networkTag: entry.networkTag,
+      rpcChain: entry.id,
+    }).createWallet(roots())) as EvmChainWalletHandle;
+    const releases: Array<(value: bigint) => void> = [];
+    const read = jest.spyOn(wallet.provider, "getBalance").mockImplementation(
+      () =>
+        new Promise<bigint>((resolve) => {
+          releases.push(resolve);
+        })
+    );
+    try {
+      const first = wallet.getBalance();
+      const second = wallet.getBalance();
+      // Both independent primary addresses begin before either response arrives.
+      expect(read).toHaveBeenCalledTimes(2);
+      releases.splice(0).forEach((resolve) => resolve(123n));
+      expect(await first).toBe(246n);
+      expect(await second).toBe(246n);
+      // Previously concurrent complete reads each requested both addresses (four requests).
+      expect(read).toHaveBeenCalledTimes(2);
+      wallet.invalidateBalanceCache();
+      read
+        .mockRejectedValueOnce(new Error("offline"))
+        .mockResolvedValueOnce(0n);
+      await expect(wallet.getBalance()).rejects.toThrow("offline");
+      read.mockResolvedValue(234n);
+      expect(await wallet.getBalance()).toBe(468n);
+    } finally {
+      releases.forEach((resolve) => resolve(0n));
+      await wallet.close();
+    }
+  }
+);
+
+test("authority invalidation starts a fresh balance read while the previous one is pending", async () => {
+  const wallet = (await createEvmChain(config).createWallet(
+    roots()
+  )) as EvmChainWalletHandle;
+  const releases: Array<(value: bigint) => void> = [];
+  const read = jest.spyOn(wallet.provider, "getBalance").mockImplementation(
+    () =>
+      new Promise<bigint>((resolve) => {
+        releases.push(resolve);
+      })
+  );
+  try {
+    const previous = wallet.getBalance();
+    wallet.invalidateBalanceCache();
+    const current = wallet.getBalance();
+    expect(read).toHaveBeenCalledTimes(4);
+    releases.splice(0, 2).forEach((resolve) => resolve(123n));
+    expect(await previous).toBe(246n);
+    const joining = wallet.getBalance();
+    expect(read).toHaveBeenCalledTimes(4);
+    releases.splice(0).forEach((resolve) => resolve(234n));
+    expect(await current).toBe(468n);
+    expect(await joining).toBe(468n);
+  } finally {
+    releases.forEach((resolve) => resolve(0n));
+    await wallet.close();
+  }
+});
 
 test.each(['evm', 'authentication', 'messaging'] as const)(
   'changing only %s changes only its role',

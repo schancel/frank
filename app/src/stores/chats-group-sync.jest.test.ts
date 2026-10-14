@@ -57,6 +57,7 @@ const { useContactStore } = require('./contacts')
 
 function createSharedMockGroupRelay() {
   const epochs = new Map<string, Record<string, unknown>>()
+  const history = new Map<string, Record<string, unknown>>()
   const messages = new Map<string, StoredGroupMessageWire[]>()
 
   const axiosMock = {
@@ -81,6 +82,7 @@ function createSharedMockGroupRelay() {
             }
           }
           epochs.set(groupId, { ...body, group_id: groupId })
+          history.set(`${groupId}:${epochNum}`, { ...body, group_id: groupId })
           return {
             data: {
               ...body,
@@ -125,7 +127,11 @@ function createSharedMockGroupRelay() {
       ) => {
         const epochMatch = url.match(/\/groups\/([0-9a-f]{64})\/epochs$/)
         if (epochMatch) {
-          const stored = epochs.get(epochMatch[1])
+          const requested = config?.params?.epoch
+          const stored =
+            requested === undefined
+              ? epochs.get(epochMatch[1])
+              : history.get(`${epochMatch[1]}:${requested}`)
           if (!stored) throw new Error('Group not found')
           return { data: stored }
         }
@@ -438,10 +444,12 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
   async function inviteBob(
     group: ReturnType<typeof useChatStore>['conversations'][string],
     client: GroupRelayClient,
+    recipient = BOB,
+    existingChats?: ReturnType<typeof useChatStore>,
   ) {
-    currentOwnAddress = BOB
+    currentOwnAddress = recipient
     setActivePinia(createPinia())
-    const chats = useChatStore()
+    const chats = existingChats ?? useChatStore()
     chats.setGroupRelayClient('https://relay.frank.test', client)
     jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
     const item: GroupWelcomeItem = {
@@ -454,14 +462,14 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
       epochSecretHex: group.groupState!.epochSecretHex,
       epochFrame: group.groupState!.epochFrame,
       memberIndex: group.groupState!.roster.find(
-        member => member.address === BOB,
+        member => member.address === recipient,
       )!.index,
       inviterAddress: ALICE,
     }
     await chats.receiveMessages(
       [
         {
-          index: 'signed-invite',
+          index: `signed-invite-${group.groupState!.epoch}`,
           conversationId: '11111111-1111-4111-8111-111111111111',
           outbound: false,
           senderAddress: ALICE,
@@ -472,16 +480,16 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
             outbound: false,
             status: 'confirmed',
             senderAddress: ALICE,
-            destinationAddress: BOB,
+            destinationAddress: recipient,
             items: [item],
             conversationId: '11111111-1111-4111-8111-111111111111',
-            serverTime: 1000,
-            receivedTime: 1000,
+            serverTime: 1000 + group.groupState!.epoch,
+            receivedTime: 1000 + group.groupState!.epoch,
             outpoints: [],
           },
         },
       ],
-      BOB,
+      recipient,
     )
     return { chats, group: chats.conversations[group.id] }
   }
@@ -767,6 +775,93 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
     })
     expect(send).toHaveBeenCalledTimes(1)
     store.saveMessage.mockImplementation(async () => undefined)
+  })
+
+  it('validates opaque pre-join history before reaching new messages and preserves the join boundary on restart', async () => {
+    const { chats: alice, group, client } = await makeGroup()
+    const { chats: bob, group: bobGroup } = await inviteBob(group, client)
+    bob.approveGroupInvite(group.id)
+    currentOwnAddress = ALICE
+    await alice.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'Before join' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    await alice.inviteMemberToGroup({
+      conversationId: group.id,
+      memberAddress: CHARLIE,
+      relayClient: client,
+    })
+    await alice.sendGroupMessage({
+      conversationId: group.id,
+      items: [{ type: 'text', text: 'After join' }],
+      relayClient: client,
+      senderAddress: ALICE,
+    })
+    await inviteBob(group, client, BOB, bob)
+    expect(
+      await bob.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: BOB,
+      }),
+    ).toBe(2)
+    expect(
+      bobGroup.messages.map((message: any) => message.items[0].text),
+    ).toEqual(['Before join', 'After join'])
+    expect(bobGroup.groupState.epochHistory[0]).toBeDefined()
+    const { chats: charlie, group: joined } = await inviteBob(
+      group,
+      client,
+      CHARLIE,
+    )
+    charlie.approveGroupInvite(group.id)
+    const fetch = client.fetchGroupMessages.bind(client)
+    jest
+      .spyOn(client, 'fetchGroupMessages')
+      .mockImplementationOnce(async (...args) => {
+        const batch = await fetch(...args)
+        return {
+          ...batch,
+          messages: batch.messages.map((row, index) =>
+            index ? row : { ...row, write_sig: '00'.repeat(64) },
+          ),
+        }
+      })
+    await expect(
+      charlie.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: CHARLIE,
+      }),
+    ).rejects.toThrow()
+    expect(joined.groupState.lastSyncedSeq).toBe(0)
+    expect(
+      await charlie.syncGroupConversation(group.id, {
+        relayClient: client,
+        ownAddress: CHARLIE,
+      }),
+    ).toBe(1)
+    expect(
+      joined.messages.map((message: any) => message.items[0].text),
+    ).toEqual(['After join'])
+    expect(joined.groupState.epochHistory[0]).toBeUndefined()
+    expect(joined.groupState.lastSyncedSeq).toBe(2)
+    const store = await messageStorePromise
+    store.getIterator.mockResolvedValueOnce([
+      {
+        message: joined.messages[0],
+        index: joined.messages[0].payloadDigest,
+        outbound: false,
+        senderAddress: ALICE,
+        copartyAddress: joined.address,
+      },
+    ])
+    const restored = await rehydrateChat(charlie.$state)
+    expect(restored.conversations[group.id].groupState.lastSyncedSeq).toBe(2)
+    expect(restored.conversations[group.id].messages).toHaveLength(1)
+    expect(
+      restored.conversations[group.id].groupState.epochHistory[0],
+    ).toBeUndefined()
   })
 
   it('rejects payment intent at the headless group boundary before submission', async () => {

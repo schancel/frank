@@ -849,6 +849,37 @@ export interface OpenedGroupMessage {
   readonly payloadText: string
 }
 
+/** Validate opaque pre-join history without granting its decryption secret. */
+export function verifyGroupMessageWriteSignature(
+  envelope: SealedGroupMessageEnvelope,
+  groupIdHex: string,
+  writePubKeyHex: string,
+): void {
+  if (!Number.isSafeInteger(envelope.epoch) || envelope.epoch < 0)
+    throw new Error('Invalid group message epoch')
+  const nonce = hexToBytes(envelope.nonce)
+  if (nonce.length !== 24) throw new Error('Invalid group message nonce')
+  const ciphertext = hexToBytes(envelope.ciphertext)
+  if (ciphertext.length < 16 || ciphertext.length > 1024 * 1024)
+    throw new Error('Invalid group ciphertext size')
+  const signature = secp256k1.Signature.fromCompact(
+    hexToBytes(envelope.write_sig),
+  )
+  const digest = computeOuterWriteSigningHash({
+    groupIdHex,
+    epoch: envelope.epoch,
+    nonce,
+    ciphertext,
+  })
+  if (
+    signature.hasHighS() ||
+    !secp256k1.verify(signature, digest, hexToBytes(writePubKeyHex), {
+      lowS: true,
+    })
+  )
+    throw new Error('Invalid outer group write signature')
+}
+
 /**
  * Verifies the outer shared write signature ($W_{G,e}$), decrypts the `XChaCha20-Poly1305`
  * ciphertext under $K_e$, verifies the sender's per-epoch public key $S_{i,e}$ against the
@@ -870,24 +901,11 @@ export function openGroupMessage(params: {
     throw new Error(`Invalid nonce length: ${nonce.length}`)
   }
   const ciphertext = hexToBytes(envelope.ciphertext)
-  const writeSigBytes = hexToBytes(envelope.write_sig)
-
-  // 1. Verify outer shared write signature W_{G,e}
-  const outerDigest = computeOuterWriteSigningHash({
-    groupIdHex: epochKeys.groupIdHex,
-    epoch: epochKeys.epoch,
-    nonce,
-    ciphertext,
-  })
-  const outerSig = secp256k1.Signature.fromCompact(writeSigBytes)
-  if (
-    outerSig.hasHighS() ||
-    !secp256k1.verify(outerSig, outerDigest, epochKeys.writeKeyPair.publicKey, {
-      lowS: true,
-    })
-  ) {
-    throw new Error('Invalid outer group write signature')
-  }
+  verifyGroupMessageWriteSignature(
+    envelope,
+    epochKeys.groupIdHex,
+    epochKeys.writeKeyPair.publicKeyHex,
+  )
 
   // 2. Decrypt XChaCha20-Poly1305 ciphertext under K_e
   const groupIdBytes = hexToBytes(epochKeys.groupIdHex)

@@ -150,15 +150,30 @@ export class GroupRelayClient {
    * the current epoch's `readTokenHex` in `X-Group-Read-Token`.
    */
   async getLatestEpoch(groupIdHex: string): Promise<GroupEpochFrameWire> {
+    return this.getEpoch(groupIdHex)
+  }
+
+  /** Public signed certificate only; does not provide historical epoch secrets. */
+  async getEpoch(
+    groupIdHex: string,
+    epoch?: number,
+  ): Promise<GroupEpochFrameWire> {
+    if (epoch !== undefined && (!Number.isSafeInteger(epoch) || epoch < 0))
+      throw new Error('Invalid requested group epoch')
     const cleanGroupId = normalizeGroupId(groupIdHex)
     const response = await this.http.get<Record<string, unknown>>(
       `${this.transportUrl}/groups/${cleanGroupId}/epochs`,
-      { headers: this.routingHeaders() },
+      {
+        headers: this.routingHeaders(),
+        ...(epoch === undefined ? {} : { params: { epoch } }),
+      },
     )
     const raw = response.data
     if (
+      raw.group_id !== cleanGroupId ||
       !Number.isSafeInteger(raw.epoch) ||
       Number(raw.epoch) < 0 ||
+      (epoch !== undefined && raw.epoch !== epoch) ||
       typeof raw.group_pubkey !== 'string' ||
       typeof raw.prev_epoch_hash !== 'string' ||
       typeof raw.write_pubkey !== 'string' ||
@@ -253,7 +268,15 @@ export class GroupRelayClient {
         },
       },
     )
-    return response.data
+    const data = response.data
+    if (
+      data.group_id !== cleanGroupId ||
+      !Number.isSafeInteger(data.epoch) ||
+      data.epoch < 0 ||
+      !Array.isArray(data.messages)
+    )
+      throw new Error('Invalid group mailbox response')
+    return data
   }
 }
 

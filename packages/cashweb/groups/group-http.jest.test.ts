@@ -122,6 +122,13 @@ async function main() {
     )
     await assert.rejects(rotateGroupEpochOnRelay(params))
     assert.equal((await client.getLatestEpoch(id)).epoch, 1)
+    assert(
+      verifyEpochFrame(
+        await client.getEpoch(id, 0),
+        id,
+        created.identity.groupPubKeyHex,
+      ),
+    )
     assert.equal(
       (await client.fetchGroupMessages(id, rotated.epochKeys.readTokenHex))
         .messages.length,

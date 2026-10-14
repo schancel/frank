@@ -86,6 +86,8 @@ import {
   hexToBytes,
   isGroupIdentifier,
   openGroupMessage,
+  verifyEpochFrame,
+  verifyGroupMessageWriteSignature,
   parseGroupIdentifier,
   sealGroupMessage,
   type GroupRosterMember,
@@ -6506,12 +6508,18 @@ export const useChatStore = defineStore('chats', {
         epochKeys.readTokenHex,
         afterSeq,
       )
+      if (fetched.epoch !== epoch)
+        throw new Error(
+          'Group mailbox epoch differs from authenticated certificate',
+        )
       let addedCount = 0
 
       checkGroup()
       for (const row of fetched.messages) {
         if (
           row.group_id !== groupIdHex ||
+          !Number.isSafeInteger(row.epoch) ||
+          row.epoch < 0 ||
           !Number.isSafeInteger(row.server_seq) ||
           row.server_seq <= conv.groupState.lastSyncedSeq
         )
@@ -6527,6 +6535,15 @@ export const useChatStore = defineStore('chats', {
             ...Object.keys(conv.groupState.epochHistory).map(Number),
           )
           if (row.epoch < earliestKnown) {
+            const certificate = await client.getEpoch(groupIdHex, row.epoch)
+            checkGroup()
+            if (!verifyEpochFrame(certificate, groupIdHex, conv.groupPubKey!))
+              throw new Error('Invalid pre-join epoch certificate')
+            verifyGroupMessageWriteSignature(
+              row,
+              groupIdHex,
+              certificate.write_pubkey,
+            )
             conv.groupState.lastSyncedSeq = row.server_seq
             continue
           }

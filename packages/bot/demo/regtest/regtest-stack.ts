@@ -90,6 +90,7 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     `url = "http://127.0.0.1:${port}"`,
     '',
     '[registry]',
+    'groups = { per_message_price_credits = 0 }',
     `db_path = ${JSON.stringify(dbPath)}`,
     'net = "regtest"',
     'peers = []',

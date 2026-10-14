@@ -642,7 +642,14 @@ mod tests {
     fn test_registry() -> (TempDir, Registry) {
         let tempdir = TempDir::new("cashweb-registry--topic-http-route").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
+        let registry = Registry::new(
+            db,
+            Arc::new(UnusedChainAdapter),
+            Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         (tempdir, registry)
     }
 
@@ -1093,6 +1100,9 @@ mod tests {
             Db::open(directory.path().join("db.rocksdb")).unwrap(),
             Arc::new(UnusedChainAdapter),
             Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         );
         router = test_server(registry).into_router();
         call(
@@ -1204,7 +1214,14 @@ mod tests {
         let legacy_value = b"opaque-retired-protobuf-row";
         db.put(db.cf("monad_topic_posts").unwrap(), hash, legacy_value)
             .unwrap();
-        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
+        let registry = Registry::new(
+            db,
+            Arc::new(UnusedChainAdapter),
+            Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let router = test_server(registry).into_router();
         for accept in ["application/cbor", "application/x-protobuf"] {
             let response = router
@@ -1375,6 +1392,9 @@ mod tests {
             Db::open(&legacy).unwrap(),
             Arc::new(UnusedChainAdapter),
             Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
         );
         let router = test_server(registry).into_router();
         for continuation in &continuations {
@@ -1444,7 +1464,14 @@ mod tests {
 
         let tempdir = tempdir::TempDir::new("cashweb-test--topics-canonical").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
+        let registry = Registry::new(
+            db,
+            Arc::new(UnusedChainAdapter),
+            Net::Regtest,
+            cashweb_config::GroupAppendPolicy {
+                per_message_price_credits: 0,
+            },
+        );
         let router = test_server(registry).into_router();
 
         for uri in ["/topics?topic=general", "/topics/discover"] {

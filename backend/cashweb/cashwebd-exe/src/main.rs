@@ -284,6 +284,7 @@ async fn main() -> Result<()> {
         chain_adapter,
         conf.registry.net,
         Arc::clone(&event_bus),
+        conf.registry.groups,
     ));
     registry.set_accepted_payment_networks(conf.registry.effective_accepted_payment_networks());
     let evm_rpc_conf = conf.registry.evm_rpc.clone();

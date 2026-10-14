@@ -55,6 +55,27 @@ cancels the reader and verifies length/hash/authentication through the existing
 reassembly helper. The Rust proxy's DNS/SSRF, hash and bounded upstream rules remain
 unchanged.
 
+Before any upload or fetch, the shared helper admits the whole message against
+`MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES` (100 MiB) and
+`MAX_MESSAGE_PAYLOAD_CHUNKS` (4,096). It counts manifest declarations and materialized
+inline/split image and attachment payloads together; empty companion placeholders
+count zero. Repeated descriptors count separately because each would retain another
+output or perform another decryption. Safe integer checks and subtraction bounds
+reject invalid/oversized totals before adding them. This preserves a single valid
+100 MiB attachment without allowing many such manifests to amplify one message.
+
+`PayloadBudgetExceededError` is permanent. The local writer rejects it before blob
+uploads, sealing, payment claims or journal writes. Receive hydration propagates it
+without wrapping it as a transient failure; polling quarantines the authenticated
+message timestamp/digest using the existing host quarantine path and continues later
+records. The stream reports the typed rejection and can deliver later records.
+Existing durable sender envelopes/payments remain owned by their original journals
+and continue exact replay; rejection never deletes or replaces them.
+A headless caller that omits the quarantine callback may structurally rescan a
+poison-only mailbox, as with existing malformed frames; it performs no blob I/O or
+chunk decryption for the rejected declarations and still processes later valid messages.
+No rejection cache or new persistence owner is introduced.
+
 A missing or tampered chunk fails the entire `fetchSince` pass with
 `CanonicalPayloadUnavailableError`; it does not acknowledge the message or return a
 partial successful batch. A later poll retries the same sealed message. Unsupported

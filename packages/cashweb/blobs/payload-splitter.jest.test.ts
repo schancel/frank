@@ -5,6 +5,10 @@ import { toHex } from '@frank/codec'
 import {
   CHUNK_PLAINTEXT_SIZE_BYTES,
   INLINE_PAYLOAD_THRESHOLD_BYTES,
+  MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES,
+  MAX_MESSAGE_PAYLOAD_CHUNKS,
+  PayloadBudgetExceededError,
+  assertMessagePayloadBudget,
   buildChunkAad,
   buildHomeRelayBlobUrl,
   createHomeRelayBlobClient,
@@ -513,6 +517,62 @@ describe('payload-splitter: transparent payload splitting & encrypted Merkle chu
       rehydrateSplitMessageItems(decoded, fetchChunk),
     ).rejects.toThrow('Unresolved blob attachment target')
     expect(fetchChunk).toHaveBeenCalledTimes(1)
+  })
+
+  it('preflights all recognized manifests before fetching, including aggregate bytes, chunks and inline payloads', async () => {
+    const manifest = (bytes: number, chunks: number): MessageItem => ({
+      type: 'blob-manifest',
+      version: 1,
+      rootPlaintextSha256: '11'.repeat(32),
+      totalPlaintextBytes: bytes,
+      chunkSize: Math.ceil(bytes / chunks),
+      symmetricKeyHex: '22'.repeat(32),
+      baseNonceHex: '33'.repeat(24),
+      chunkHashes: Array(chunks).fill('44'.repeat(32)),
+      fileName: 'payload.bin',
+    })
+    const maxBlob = manifest(MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES, 400)
+    const fixtures: MessageItem[][] = [
+      // The verifier's small wire fixture declares 1.6 GiB across 16 individually valid blobs.
+      Array(16).fill(maxBlob),
+      // Duplicate descriptors still describe duplicate retained output/work.
+      Array(2).fill(
+        manifest(MAX_MESSAGE_PAYLOAD_CHUNKS, MAX_MESSAGE_PAYLOAD_CHUNKS),
+      ),
+      [{ type: 'image', image: 'x' }, maxBlob],
+    ]
+    for (const items of fixtures) {
+      const fetch = jest.fn()
+      await expect(
+        rehydrateSplitMessageItems(wireRoundtrip(items), fetch),
+      ).rejects.toBeInstanceOf(PayloadBudgetExceededError)
+      expect(fetch).not.toHaveBeenCalled()
+    }
+    // A single maximal attachment is still admitted without allocating or fetching it.
+    expect(() => assertMessagePayloadBudget([maxBlob])).not.toThrow()
+    expect(() =>
+      assertMessagePayloadBudget([
+        manifest(Number.MAX_SAFE_INTEGER, 1),
+        manifest(Number.MAX_SAFE_INTEGER, 1),
+      ]),
+    ).toThrow(PayloadBudgetExceededError)
+    for (const invalid of [NaN, Infinity, -1, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => assertMessagePayloadBudget([manifest(invalid, 1)])).toThrow(
+        PayloadBudgetExceededError,
+      )
+    }
+  })
+
+  it('admits all planned split inputs before uploading any earlier payload', async () => {
+    const upload = jest.fn()
+    const items: MessageItem[] = [
+      { type: 'image', image: 'x'.repeat(32769) },
+      { type: 'image', image: 'y'.repeat(32769) },
+    ]
+    await expect(
+      splitMessageItemsForSend(items, upload, { chunkSizeBytes: 16 }),
+    ).rejects.toBeInstanceOf(PayloadBudgetExceededError)
+    expect(upload).not.toHaveBeenCalled()
   })
 
   it('bounds streamed chunks and rejects redirects while cancelling every response', async () => {

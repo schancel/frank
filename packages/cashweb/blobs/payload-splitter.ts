@@ -24,6 +24,19 @@ export const INLINE_PAYLOAD_THRESHOLD_BYTES = 32 * 1024
 /** Default plaintext size per chunk before XChaCha20-Poly1305 encryption (256 KB). */
 export const CHUNK_PLAINTEXT_SIZE_BYTES = 256 * 1024
 
+/** Aggregate retained attachment/image plaintext for one message, including inline payloads. */
+export const MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES = 100 * 1024 * 1024
+/** Aggregate declared or planned encrypted chunks for one message. */
+export const MAX_MESSAGE_PAYLOAD_CHUNKS = 4096
+
+/** Permanent message admission failure; retrying its same declarations cannot succeed. */
+export class PayloadBudgetExceededError extends Error {
+  constructor(readonly resource: 'plaintext-bytes' | 'chunks') {
+    super(`Message payload exceeds ${resource} budget`)
+    this.name = 'PayloadBudgetExceededError'
+  }
+}
+
 /** Domain separation prefix for chunk AAD binding. */
 export const BLOB_CHUNK_AAD_DOMAIN = 'frank-blob-chunk-v1\0'
 
@@ -396,6 +409,74 @@ function resolveFetchFn(fetcher: BlobFetcher): BlobChunkFetchFn {
   return fetcher.fetchChunk.bind(fetcher)
 }
 
+/** Admit the entire message before any upload, fetch, decryption or retained allocation.
+ * Subtraction bounds avoid overflowing sums of untrusted manifest declarations. */
+export function assertMessagePayloadBudget(
+  items: readonly MessageItem[],
+  options?: SplitMessageItemsOptions,
+): void {
+  let totalBytes = 0
+  let totalChunks = 0
+  const threshold = options?.thresholdBytes ?? INLINE_PAYLOAD_THRESHOLD_BYTES
+  const chunkSize = options?.chunkSizeBytes ?? CHUNK_PLAINTEXT_SIZE_BYTES
+  const add = (bytes: number, chunks: number) => {
+    if (
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0 ||
+      bytes > MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES - totalBytes
+    )
+      throw new PayloadBudgetExceededError('plaintext-bytes')
+    if (
+      !Number.isSafeInteger(chunks) ||
+      chunks < 0 ||
+      chunks > MAX_MESSAGE_PAYLOAD_CHUNKS - totalChunks
+    )
+      throw new PayloadBudgetExceededError('chunks')
+    totalBytes += bytes
+    totalChunks += chunks
+  }
+  const addPayload = (bytes: number) =>
+    add(bytes, bytes > threshold ? Math.ceil(bytes / chunkSize) : 0)
+  const textBytes = (value: string) => {
+    // Count UTF-8 without allocating another copy of an arbitrarily large input.
+    let bytes = 0
+    for (const char of value) {
+      const code = char.codePointAt(0)!
+      bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4
+      if (bytes > MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES - totalBytes)
+        throw new PayloadBudgetExceededError('plaintext-bytes')
+    }
+    return bytes
+  }
+  for (const item of items) {
+    if (item.type === 'blob-manifest') {
+      add(item.totalPlaintextBytes, item.chunkHashes.length)
+    } else if (item.type === 'image') {
+      addPayload(textBytes(item.image))
+    } else if (item.type === 'email') {
+      for (const attachment of item.attachments ?? []) {
+        if (attachment.content) addPayload(attachment.content.byteLength)
+        else if (attachment.dataBase64) {
+          const clean = attachment.dataBase64
+            .replace(/^data:[^;]+;base64,/, '')
+            .replace(/\s+/g, '')
+          const padding = clean.endsWith('==') ? 2 : clean.endsWith('=') ? 1 : 0
+          addPayload(Math.floor((clean.length * 3) / 4) - padding)
+        }
+      }
+    } else if ((item as { type: string }).type === 'attachment') {
+      const attachment = item as unknown as {
+        data?: Uint8Array | string
+        content?: Uint8Array | string
+        bytes?: Uint8Array
+      }
+      const payload = attachment.data ?? attachment.content ?? attachment.bytes
+      if (typeof payload === 'string') addPayload(textBytes(payload))
+      else if (payload instanceof Uint8Array) addPayload(payload.byteLength)
+    }
+  }
+}
+
 /**
  * Automatically splits large `image`, `email` attachments, or duck-typed `attachment` items
  * exceeding `thresholdBytes` (default 32 KB) into encrypted chunks, uploads them via `blobUploader`,
@@ -406,6 +487,7 @@ export async function splitMessageItemsForSend(
   blobUploader: BlobUploader,
   options?: SplitMessageItemsOptions,
 ): Promise<MessageItem[]> {
+  assertMessagePayloadBudget(items, options)
   const { uploadChunk, originRelayHint: uploaderOriginHint } =
     resolveUploadFn(blobUploader)
   const thresholdBytes =
@@ -550,6 +632,7 @@ export async function rehydrateSplitMessageItems(
   items: readonly MessageItem[],
   blobFetcher: BlobFetcher,
 ): Promise<MessageItem[]> {
+  assertMessagePayloadBudget(items)
   const fetchChunk = resolveFetchFn(blobFetcher)
   const working: MessageItem[] = items.map(item => {
     if (item.type === 'email' && Array.isArray(item.attachments)) {

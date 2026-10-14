@@ -63,6 +63,7 @@ import {
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import {
   createHomeRelayBlobClient,
+  PayloadBudgetExceededError,
   rehydrateSplitMessageItems,
   splitMessageItemsForSend,
 } from '@frank/cashweb/blobs/payload-splitter'
@@ -557,6 +558,7 @@ async function hydratePayloadItems(
       createHomeRelayBlobClient(owner.relayBaseUrl, { fetch: directory.fetch }),
     )
   } catch (error) {
+    if (error instanceof PayloadBudgetExceededError) throw error
     throw new CanonicalPayloadUnavailableError(error)
   }
 }
@@ -2636,6 +2638,7 @@ async function fetchSince(
         // (an entry or key this wallet could not look up yet) are left for a later read.
         if (
           error instanceof MessageItemBudgetExceededError ||
+          error instanceof PayloadBudgetExceededError ||
           (error instanceof DirectMessageError &&
             (error.code === 'crypto' ||
               error.code === 'network' ||

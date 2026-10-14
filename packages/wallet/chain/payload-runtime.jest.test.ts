@@ -21,6 +21,13 @@ import {
   parseFrame,
 } from '@frank/codec'
 import * as canonicalDm from '@frank/cashweb/relay/canonical-dm'
+import {
+  MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES,
+  PayloadBudgetExceededError,
+} from '@frank/cashweb/blobs/payload-splitter'
+import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
+import { pluginCapabilitiesNotYetAvailable } from '../message-item-plugins/registry'
+import { encodeItemFrames } from '../message-item-plugins/wire'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import type { CanonicalFetch } from '@frank/cashweb/relay/canonical-dm-transport'
 import { EvmStampPayer } from '../evm-stamp-payer'
@@ -96,6 +103,22 @@ const original: MessageItem[] = [
     ],
   },
 ]
+
+// Small declarations reproduce the independent verifier without large plaintext allocations.
+const oversizedManifests: MessageItem[] = Array.from(
+  { length: 16 },
+  (_, index) => ({
+    type: 'blob-manifest',
+    version: 1,
+    rootPlaintextSha256: '11'.repeat(32),
+    totalPlaintextBytes: MAX_MESSAGE_PAYLOAD_PLAINTEXT_BYTES,
+    chunkSize: 262144,
+    symmetricKeyHex: '22'.repeat(32),
+    baseNonceHex: '33'.repeat(24),
+    chunkHashes: Array(400).fill('44'.repeat(32)),
+    fileName: `payload${index}.bin`,
+  }),
+)
 
 function response(url: string, bytes: Uint8Array, status = 200) {
   return {
@@ -346,6 +369,149 @@ describe('installed transparent payload runtime', () => {
     const messages = await receive()
     expect(messages).toHaveLength(1)
     expect(messages[0].items.some((item) => item.type === 'email')).toBe(true)
+  })
+
+  it('refuses aggregate oversized local inputs before any upload, sealing, payment or journal effect', async () => {
+    const seal = jest.spyOn(canonicalDm, 'prepareDirectMessage')
+    await expect(
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        messageId: ID,
+        items: [...original, ...oversizedManifests],
+        stampValue: 1000n,
+      }),
+    ).rejects.toBeInstanceOf(PayloadBudgetExceededError)
+    expect(writes).toHaveLength(0)
+    expect(seal).not.toHaveBeenCalled()
+    expect(sign).not.toHaveBeenCalled()
+    expect(f.requests).toHaveLength(0)
+    expect(
+      await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID }),
+    ).toBeUndefined()
+    expect(
+      alice.pool.accountClaimedBy(
+        (await alice.getReceiveAddress()).raw.toLowerCase(),
+      ),
+    ).toBeUndefined()
+  })
+
+  it('quarantines an authenticated permanent payload budget failure while stream and poll can deliver later records', async () => {
+    // Model a foreign sender. Its authenticated envelope is structurally valid;
+    // the honest installed local writer now refuses these declarations.
+    const prepare = canonicalDm.prepareDirectMessage
+    const malicious = jest
+      .spyOn(canonicalDm, 'prepareDirectMessage')
+      .mockImplementation((input) =>
+        prepare({
+          ...input,
+          items: encodeItemFrames(
+            createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+            oversizedManifests,
+          ),
+        }),
+      )
+    const rejected = await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: f.bob.identity.address,
+      messageId: ID,
+      items: [{ type: 'text', text: 'foreign sender fixture' }],
+      stampValue: 1000n,
+    })
+    malicious.mockRestore()
+    const originalPaid = await row()
+    await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: f.bob.identity.address,
+      messageId: '22222222-2222-4222-8222-222222222222',
+      items: [{ type: 'text', text: 'later valid message' }],
+      stampValue: 0n,
+    })
+    const delivered: unknown[] = [],
+      errors: Error[] = []
+    const close = f.chain.directMessages.subscribeMailboxStream!({
+      wallet: f.bob,
+      onRecord: (record) => delivered.push(record),
+      onError: (error) => errors.push(error),
+    })
+    for (let i = 0; i < 100 && !mockStreamHandler; i++)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    await mockStreamHandler!(inbox[0])
+    expect(errors[0]).toBeInstanceOf(PayloadBudgetExceededError)
+    expect(errors[0]).not.toBeInstanceOf(CanonicalPayloadUnavailableError)
+    await mockStreamHandler!(inbox[1])
+    expect(delivered).toHaveLength(1)
+    close()
+    // A headless host without a quarantine callback also skips the rejected
+    // declarations and processes later valid rows without any blob I/O.
+    expect(await receive()).toHaveLength(1)
+    const quarantined = jest.fn()
+    const messages = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+      onQuarantinedTimestamp: quarantined,
+    })
+    expect(messages).toHaveLength(1)
+    expect(quarantined).toHaveBeenCalledTimes(1)
+    expect(quarantined).toHaveBeenCalledWith(
+      inbox[0].timestampMs,
+      rejected.payloadDigest,
+    )
+    expect(reads).toHaveLength(0)
+    // The host's durable quarantine/cursor can pass the poison record; the next
+    // poll no longer encounters it. Financial sender journals were not touched.
+    expect(
+      await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: inbox[0].timestampMs,
+      }),
+    ).toHaveLength(1)
+    expect(
+      await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID }),
+    ).toEqual({ payloadDigest: rejected.payloadDigest, paid: true })
+    expect((await row()).request).toEqual(originalPaid.request)
+    expect((await row()).payments.map((payment) => payment.rawTx)).toEqual(
+      originalPaid.payments.map((payment) => payment.rawTx),
+    )
+    expect(sign).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps transient missing blobs retryable and blocks later stream cursor advancement', async () => {
+    await send()
+    await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: f.bob.identity.address,
+      messageId: '22222222-2222-4222-8222-222222222222',
+      items: [{ type: 'text', text: 'later' }],
+      stampValue: 0n,
+    })
+    missing = true
+    const delivered: unknown[] = [],
+      errors: Error[] = []
+    const close = f.chain.directMessages.subscribeMailboxStream!({
+      wallet: f.bob,
+      onRecord: (record) => delivered.push(record),
+      onError: (error) => errors.push(error),
+    })
+    for (let i = 0; i < 100 && !mockStreamHandler; i++)
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    await mockStreamHandler!(inbox[0])
+    await mockStreamHandler!(inbox[1])
+    expect(errors[0]).toBeInstanceOf(CanonicalPayloadUnavailableError)
+    expect(delivered).toHaveLength(0)
+    close()
+    const quarantined = jest.fn()
+    await expect(
+      f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: 0,
+        onQuarantinedTimestamp: quarantined,
+      }),
+    ).rejects.toBeInstanceOf(CanonicalPayloadUnavailableError)
+    expect(quarantined).not.toHaveBeenCalled()
+    missing = false
+    expect(await receive()).toHaveLength(2)
+    expect(sign).toHaveBeenCalledTimes(1)
   })
 
   it('an interrupted pre-seal upload reserves and pays nothing and can retry after reopen', async () => {

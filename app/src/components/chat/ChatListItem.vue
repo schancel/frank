@@ -188,7 +188,7 @@
       <delete-chat-dialog
         :address="effectiveId"
         :name="rowLabel"
-        @deleted="onChatDeleted"
+        :after-delete="onChatDeleted"
       />
     </q-dialog>
   </q-item>

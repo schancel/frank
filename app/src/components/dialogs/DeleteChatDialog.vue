@@ -27,7 +27,7 @@
 
 <script lang="ts">
 import { type Conversation, useChatStore } from 'src/stores/chats'
-import { defineComponent } from 'vue'
+import { defineComponent, type PropType } from 'vue'
 import { accountSession } from 'src/accounts/session'
 import { toChainDisplayAddress } from 'src/utils/chain-address'
 
@@ -40,6 +40,10 @@ export default defineComponent({
     }
   },
   props: {
+    afterDelete: {
+      type: Function as PropType<(conversationId: string) => void>,
+      required: true,
+    },
     address: {
       type: String,
       default: () => '',
@@ -50,9 +54,10 @@ export default defineComponent({
     },
   },
   // Consumers navigate only after this confirmed deletion, retaining its canonical identity.
-  emits: { deleted: (conversationId: string) => Boolean(conversationId) },
   methods: {
     async onDelete() {
+      // Capture completion before awaiting: the filtered list can unmount this dialog.
+      const afterDelete = this.afterDelete
       const target = this.address
       let conversation: Conversation | undefined =
         this.chatStore.conversations[target]
@@ -74,7 +79,7 @@ export default defineComponent({
         this.chatStore.conversations !== conversations
       )
         return
-      this.$emit('deleted', id)
+      afterDelete(id)
     },
   },
 })

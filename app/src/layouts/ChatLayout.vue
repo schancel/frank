@@ -238,7 +238,7 @@
       <delete-chat-dialog
         :address="address"
         :name="conversationLabel"
-        @deleted="onChatDeleted"
+        :after-delete="onChatDeleted"
       />
     </q-dialog>
 

@@ -1,9 +1,22 @@
 /** @jest-environment jsdom */
-import { enableAutoUnmount, shallowMount } from '@vue/test-utils'
-import { reactive, ref } from 'vue'
+import {
+  enableAutoUnmount,
+  shallowMount,
+  mount,
+  flushPromises,
+} from '@vue/test-utils'
+import { reactive, ref, defineComponent, nextTick } from 'vue'
+import { Quasar, QDialog } from 'quasar'
 import ChatLayout from './ChatLayout.vue'
 import ChatListItem from '../components/chat/ChatListItem.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
+// Use Quasar's browser bundle so this lifecycle test exercises Teleport, not SSR.
+jest.mock('quasar', () => {
+  const browser = window as unknown as { Vue: unknown; Quasar: unknown }
+  browser.Vue = jest.requireActual('vue')
+  jest.requireActual('quasar/dist/quasar.umd.js')
+  return { ...(browser.Quasar as object), Quasar: browser.Quasar }
+})
 enableAutoUnmount(afterEach)
 const mockSession = reactive({ revision: 1, account: null })
 jest.mock('src/accounts/session', () => ({
@@ -164,4 +177,72 @@ it('deleting a nonactive row keeps the active chat', async () => {
   await f.deleteChat()
   expect(f.router.replace).not.toHaveBeenCalled()
   expect(mockStore.activeConversationId).toBe('group')
+})
+
+const FilteredChatList = defineComponent({
+  components: { ChatListItem },
+  setup: () => ({ mockStore }),
+  template:
+    '<div><ChatListItem v-for="c in mockStore.getSortedChatOrder" :key="c.id" :conversation-id="c.id" :compact="false" /></div>',
+})
+
+it('reactively removes the real row before deletion notification', async () => {
+  mockStore.activeConversationId = 'direct'
+  const router = { replace: jest.fn(), push: jest.fn() }
+  const route = reactive({ params: { address: 'direct' }, query: {} })
+  const wrapper = shallowMount(FilteredChatList, {
+    global: {
+      renderStubDefaultSlot: true,
+      mocks: {
+        $route: route,
+        $router: router,
+        $t: (k: string) => k,
+        $status: { setup: true },
+      },
+      stubs: { ChatListItem: false, DeleteChatDialog: false },
+    },
+  })
+  const row = wrapper.findAllComponents(ChatListItem)[0]
+  const dialog = row.findComponent(DeleteChatDialog)
+  await (dialog.vm as unknown as { onDelete(): Promise<void> }).onDelete()
+  await nextTick()
+  expect(mockStore.conversations.direct.deletedAt).toBe(1)
+  expect(wrapper.findAllComponents(ChatListItem)).toHaveLength(2)
+  expect(
+    (dialog.vm as unknown as { $: { isUnmounted: boolean } }).$.isUnmounted,
+  ).toBe(true)
+  expect(router.replace).toHaveBeenCalledWith('/chat/group')
+})
+
+it('real Quasar dialog is unmounted with its deleted row', async () => {
+  mockStore.activeConversationId = 'direct'
+  const router = { replace: jest.fn(), push: jest.fn() }
+  const route = reactive({ params: { address: 'direct' }, query: {} })
+  const wrapper = mount(FilteredChatList, {
+    attachTo: document.body,
+    global: {
+      plugins: [[Quasar, { components: { QDialog } }]],
+      renderStubDefaultSlot: true,
+      mocks: {
+        $route: route,
+        $router: router,
+        $t: (k: string) => k,
+        $status: { setup: true },
+      },
+      stubs: { ChatListItem: false, DeleteChatDialog: false, QDialog: false },
+    },
+  })
+  const row = wrapper.findAllComponents(ChatListItem)[0]
+  ;(row.vm as unknown as { deleteDialogOpen: boolean }).deleteDialogOpen = true
+  await nextTick()
+  await flushPromises()
+  const dialog = row.findComponent(DeleteChatDialog)
+  await (dialog.vm as unknown as { onDelete(): Promise<void> }).onDelete()
+  await nextTick()
+  expect(mockStore.conversations.direct.deletedAt).toBe(1)
+  expect(wrapper.findAllComponents(ChatListItem)).toHaveLength(2)
+  expect(
+    (dialog.vm as unknown as { $: { isUnmounted: boolean } }).$.isUnmounted,
+  ).toBe(true)
+  expect(router.replace).toHaveBeenCalledWith('/chat/group')
 })

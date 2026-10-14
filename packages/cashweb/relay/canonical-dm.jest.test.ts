@@ -1224,13 +1224,19 @@ test('sealed-sender omits sender from outer payload and context, folds sender in
 
   // The type 11 payload omits its sender field.
   const outer = parseFrame(prepared.payload)
-  if (outer.kind !== 'parsed' || outer.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
+  if (
+    outer.kind !== 'parsed' ||
+    outer.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD
+  )
     throw new Error('expected type 11 payload')
   expect(outer.typed.sender).toBeUndefined()
 
   // The type 12 content carries sender, senderDirectoryHash, and senderMessageKey
   const inner = parseFrame(prepared.content)
-  if (inner.kind !== 'parsed' || inner.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT)
+  if (
+    inner.kind !== 'parsed' ||
+    inner.typed?.type !== TYPE_ENCRYPTED_MESSAGE_CONTENT
+  )
     throw new Error('expected type 12 content')
   expect(toHex(inner.typed.sender?.keyBytes ?? new Uint8Array())).toBe(
     toHex(
@@ -1313,4 +1319,3 @@ test('sealed-sender omits sender from outer payload and context, folds sender in
     toHex(directMessageText('sealed sender hello')),
   )
 })
-

@@ -191,9 +191,7 @@ export function decodeDirectMessageCryptoContext(
   if (value.size !== expectedSize) {
     throw new RangeError('unexpected context map size')
   }
-  const sender = hasSender
-    ? parseAccount(get(K.sender), 'sender')
-    : undefined
+  const sender = hasSender ? parseAccount(get(K.sender), 'sender') : undefined
   const recipient = parseAccount(get(K.recipient), 'recipient')
   const senderDirectoryHash = hasSenderDirHash
     ? exact(get(K.senderStatementHash) as Uint8Array, 32, 'senderDirectoryHash')

@@ -639,4 +639,3 @@ export function open(args: OpenArgs): SuiteResult<Uint8Array> {
   if (!res.ok) return res
   return { ok: true, value: res.value.plaintext }
 }
-

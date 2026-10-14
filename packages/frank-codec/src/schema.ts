@@ -1543,9 +1543,16 @@ export function parseDraft(
           : undefined,
         conversationName: convName,
         tokenTransfer: transfer,
-        sender: m.has(K.sender) ? account(m.get(K.sender), at(P, K.sender)) : undefined,
+        sender: m.has(K.sender)
+          ? account(m.get(K.sender), at(P, K.sender))
+          : undefined,
         senderDirectoryHash: m.has(K.senderDirectoryHash)
-          ? bstr(m.get(K.senderDirectoryHash), at(P, K.senderDirectoryHash), 32, 32)
+          ? bstr(
+              m.get(K.senderDirectoryHash),
+              at(P, K.senderDirectoryHash),
+              32,
+              32,
+            )
           : undefined,
         senderMessageKey: m.has(K.senderMessageKey)
           ? account(m.get(K.senderMessageKey), at(P, K.senderMessageKey))

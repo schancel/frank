@@ -69,13 +69,16 @@ async function main() {
     })
     const raw = built.transaction.serialized
     const submitted = await provider.broadcastTransaction(raw)
+    let duplicate: unknown
+    let duplicateRpcFailed = false
     try {
-      const duplicate = await provider.send('eth_sendRawTransaction', [raw])
-      if (duplicate !== submitted.hash)
-        throw new Error('duplicate transaction identity changed')
+      duplicate = await provider.send('eth_sendRawTransaction', [raw])
     } catch (error) {
+      duplicateRpcFailed = true
       if (!(await provider.getTransaction(submitted.hash))) throw error
     }
+    if (!duplicateRpcFailed && duplicate !== submitted.hash)
+      throw new Error('duplicate transaction identity changed')
     const receipt = await submitted.wait(2)
     if (
       !receipt ||

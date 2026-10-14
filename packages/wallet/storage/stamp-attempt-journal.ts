@@ -19,7 +19,12 @@ import {
   type CanonicalExactRequest,
   type CanonicalAcceptedBody,
 } from '@frank/cashweb/relay/canonical-dm-transport'
-import { durableBatch, durablePut, openDurableLevel } from './level-durability'
+import {
+  durableBatch,
+  durableDelete,
+  durablePut,
+  openDurableLevel,
+} from './level-durability'
 
 export interface OutgoingStampAttempt {
   payloadHashHex: string
@@ -48,36 +53,69 @@ export class InMemoryStampAttemptJournal implements StampAttemptJournal {
 }
 
 export class LevelStampAttemptJournal implements StampAttemptJournal {
-  private readonly dbLocation: string
   private openedDb?: LevelDB
+  private faulted = false
   private readonly attempts = new Map<string, OutgoingStampAttempt>()
 
-  constructor(location: string) {
-    this.dbLocation = join(location, 'outgoing-stamp-attempts')
+  constructor(private readonly location: string) {}
+
+  private assertHealthy(): void {
+    if (this.faulted)
+      throw new Error(
+        'Journal storage is uncertain; close and reopen before use',
+      )
   }
   private get db(): LevelDB {
+    this.assertHealthy()
     if (this.openedDb === undefined) throw new Error('No db opened')
     return this.openedDb
   }
   async Open(): Promise<void> {
-    this.openedDb = level(this.dbLocation)
-    for await (const [, value] of this.db.iterator({}) as any) {
-      const attempt = JSON.parse(value) as OutgoingStampAttempt
-      this.attempts.set(attempt.payloadHashHex, attempt)
+    if (this.openedDb !== undefined) throw new Error('Journal already opened')
+    const database = level(join(this.location, 'outgoing-stamp-attempts'))
+    try {
+      await openDurableLevel(database, this.location, 'outgoing-stamp-attempts')
+      const attempts = new Map<string, OutgoingStampAttempt>()
+      for await (const [, value] of database.iterator({}) as any) {
+        const attempt = JSON.parse(value) as OutgoingStampAttempt
+        attempts.set(attempt.payloadHashHex, attempt)
+      }
+      this.attempts.clear()
+      for (const [key, attempt] of attempts) this.attempts.set(key, attempt)
+      this.openedDb = database
+      this.faulted = false
+    } catch (error) {
+      this.faulted = true
+      await database.close()
+      throw error
     }
   }
   async Close(): Promise<void> {
-    await this.db.close()
+    await this.openedDb?.close()
+    this.openedDb = undefined
+  }
+  private async persist(write: () => Promise<unknown>): Promise<void> {
+    this.assertHealthy()
+    try {
+      await write()
+    } catch (error) {
+      // A rejected callback may have committed. Only reopening can rebuild the cache safely.
+      this.faulted = true
+      throw error
+    }
   }
   async put(attempt: OutgoingStampAttempt): Promise<void> {
-    await this.db.put(attempt.payloadHashHex, JSON.stringify(attempt))
+    await this.persist(() =>
+      durablePut(this.db, attempt.payloadHashHex, JSON.stringify(attempt)),
+    )
     this.attempts.set(attempt.payloadHashHex, { ...attempt })
   }
   async delete(payloadHashHex: string): Promise<void> {
-    await this.db.del(payloadHashHex)
+    await this.persist(() => durableDelete(this.db, payloadHashHex))
     this.attempts.delete(payloadHashHex)
   }
   getAll(): OutgoingStampAttempt[] {
+    this.assertHealthy()
     return Array.from(this.attempts.values())
   }
 }
@@ -846,9 +884,7 @@ export function isJournalPrepared(
   const keys = Object.keys(value)
   if (
     keys.length !== PREPARED_KEYS.length ||
-    PREPARED_KEYS.some(
-      key => !Object.prototype.hasOwnProperty.call(value, key),
-    )
+    PREPARED_KEYS.some(key => !Object.prototype.hasOwnProperty.call(value, key))
   )
     return false
   for (const key of PREPARED_TEXT_KEYS)

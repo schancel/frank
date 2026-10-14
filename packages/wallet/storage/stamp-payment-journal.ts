@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
+import { durablePut, openDurableLevel } from './level-durability'
 
 export type StampPaymentRecoveryStatus =
   | 'discovered'
@@ -65,45 +66,73 @@ export class InMemoryStampPaymentJournal implements StampPaymentJournal {
 
 export class LevelStampPaymentJournal implements StampPaymentJournal {
   readonly durable = true
-  private readonly dbLocation: string
   private openedDb?: LevelDB
+  private faulted = false
   private readonly records = new Map<string, StampPaymentRecoveryRecord>()
 
-  constructor(location: string) {
-    this.dbLocation = join(location, 'stamp-payment-journal')
-  }
+  constructor(private readonly location: string) {}
 
+  private assertHealthy(): void {
+    if (this.faulted)
+      throw new Error(
+        'Journal storage is uncertain; close and reopen before use',
+      )
+  }
   private get db(): LevelDB {
+    this.assertHealthy()
     if (this.openedDb === undefined) throw new Error('No db opened')
     return this.openedDb
   }
 
   async Open(): Promise<void> {
-    this.openedDb = level(this.dbLocation)
-    for await (const [, value] of this.db.iterator({}) as any) {
-      const record = JSON.parse(value) as StampPaymentRecoveryRecord
-      this.records.set(key(record.payloadHashHex, record.childIndex), record)
+    if (this.openedDb !== undefined) throw new Error('Journal already opened')
+    const database = level(join(this.location, 'stamp-payment-journal'))
+    try {
+      await openDurableLevel(database, this.location, 'stamp-payment-journal')
+      const records = new Map<string, StampPaymentRecoveryRecord>()
+      for await (const [, value] of database.iterator({}) as any) {
+        const record = JSON.parse(value) as StampPaymentRecoveryRecord
+        records.set(key(record.payloadHashHex, record.childIndex), record)
+      }
+      this.records.clear()
+      for (const [key, record] of records) this.records.set(key, record)
+      this.openedDb = database
+      this.faulted = false
+    } catch (error) {
+      this.faulted = true
+      await database.close()
+      throw error
     }
   }
 
   async Close(): Promise<void> {
-    await this.db.close()
+    await this.openedDb?.close()
+    this.openedDb = undefined
   }
 
   get(
     payloadHashHex: string,
     childIndex: number,
   ): StampPaymentRecoveryRecord | undefined {
+    this.assertHealthy()
     return this.records.get(key(payloadHashHex, childIndex))
   }
 
   async put(record: StampPaymentRecoveryRecord): Promise<void> {
     const recordKey = key(record.payloadHashHex, record.childIndex)
-    await this.db.put(recordKey, JSON.stringify(record))
+    this.assertHealthy()
+    try {
+      await durablePut(this.db, recordKey, JSON.stringify(record))
+    } catch (error) {
+      // A rejected callback may have committed. Only reopening can rebuild the cache safely.
+      this.faulted = true
+      throw error
+    }
     this.records.set(recordKey, { ...record })
   }
 
   getAll(): StampPaymentRecoveryRecord[] {
+    this.assertHealthy()
     return Array.from(this.records.values())
   }
 }

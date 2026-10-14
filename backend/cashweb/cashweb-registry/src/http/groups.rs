@@ -11,6 +11,8 @@
 //!   `X-Group-Upstream-Relay` is specified.
 
 mod live;
+#[cfg(test)]
+mod nats_tests;
 
 use axum::{
     body::Bytes,
@@ -1018,14 +1020,14 @@ mod tests {
         (sk, pk)
     }
 
-    fn sign_digest(sk: &SecretKey, digest: &[u8; 32]) -> String {
+    pub(super) fn sign_digest(sk: &SecretKey, digest: &[u8; 32]) -> String {
         let secp = Secp256k1::new();
         let msg = SecpMessage::from_slice(digest).unwrap();
         let sig = secp.sign(&msg, sk);
         hex::encode(sig.serialize_compact())
     }
 
-    fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
+    pub(super) fn signed_epoch(sk: &SecretKey, mut frame: GroupEpochFrame) -> GroupEpochFrame {
         frame.admin_sig = sign_digest(sk, &frame.compute_epoch_hash().unwrap());
         frame
     }

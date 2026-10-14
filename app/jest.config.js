@@ -2,6 +2,9 @@ const esModules = [
   'quasar/lang',
   'lodash-es',
   '@quasar/app-vite/exports/wrappers\\.js$',
+  'vue-router',
+  'nostics',
+  'perfect-debounce',
 ].join('|')
 
 /* eslint-env node */
@@ -118,6 +121,9 @@ module.exports = {
     '^\\./vite-env$': '<rootDir>/../packages/wallet/chain/vite-env.node.ts',
   },
   transform: {
+    // vue-router's CommonJS entry loads ESM-only diagnostics and devtools debounce code.
+    // Transform those real dependencies; vue-router is allowlisted for nested node_modules.
+    '(nostics|perfect-debounce)/.+\\.mjs$': 'babel-jest',
     // See https://jestjs.io/docs/en/configuration.html#transformignorepatterns-array-string
     [`^(${esModules}).+\\.js$`]: 'babel-jest',
     '^.+\\.(ts|js|html)$': [

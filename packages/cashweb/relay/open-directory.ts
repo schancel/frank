@@ -762,7 +762,8 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     )
     if (!bytes) {
       // A relay that no longer serves an account we already admitted is withholding, not proof
-      // that the account is gone; either way there is nothing current to use.
+      // that the account is gone. Do not cache it as an absent account.
+      if (known?.head) throw new OpenDirectoryError('unreachable', address, 404)
       // Bounded: the oldest remembered absences are forgotten first.
       if (missing.size >= MAX_MISSING)
         for (const key of [...missing.keys()].slice(0, MAX_MISSING / 2))

@@ -227,9 +227,8 @@ export function startDirectMessagePolling({
       await cursorReady
       if (stopped) return
       const incompleteTimestamps: number[] = []
-      // Rows the registry authoritatively has no sender account for. They are terminally
-      // undeliverable; they are durably quarantined below so neither the in-session replay nor
-      // the durable frontier can stay pinned behind them.
+      // Terminally invalid or unsupported rows are durably quarantined below so neither
+      // the in-session replay nor the durable frontier stays pinned behind them.
       const quarantined: RelayReceiptIdentity[] = []
       const received = await activeChain.directMessages.fetchSince({
         wallet,

@@ -195,6 +195,22 @@ describe('own entry', () => {
     )
   })
 
+  it('does not cache a withheld admitted peer head as absence', async () => {
+    const alice = testAccount(1), bob = testAccount(2)
+    await device(alice, 'alice').directory.publish()
+    const reader = device(bob, 'bob').directory
+    const admitted = await reader.peerCurrent({ subject: alice.subject })
+    expect(admitted).toBeDefined()
+    wall += 60_000
+    relay.tamper = path => path.endsWith(`/${alice.subject}/head`) ? 404 : undefined
+    expect(await code(reader.peerCurrent({ subject: alice.subject }))).toBe('unreachable')
+    expect(await code(reader.peerCurrent({ subject: alice.subject }))).toBe('unreachable')
+    relay.tamper = () => undefined
+    expect((await reader.peerCurrent({ subject: alice.subject }))?.current.evidence.hash).toEqual(
+      admitted?.current.evidence.hash,
+    )
+  })
+
   it('reports an unreachable relay and publishes on a later attempt', async () => {
     const alice = testAccount(1)
     const { directory, signed } = device(alice, 'alice')

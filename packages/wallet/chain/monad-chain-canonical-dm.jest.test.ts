@@ -1068,14 +1068,14 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     }
     inboxPage.mockResolvedValue({ records: [record] })
     expect(
-      await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 }),
+      await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0, onIncompleteTimestamp: () => {} }),
     ).toEqual([])
-    // Same exact bytes, but the sender has no published entry.
+    // Same exact bytes, but the relay currently serves no sender entry.
     installCanonicalDirectory(f.bob, {
       ...bobDirectory,
       peerCurrent: async () => undefined,
     })
-    const quarantined: number[] = []
+    const quarantined: number[] = [], incomplete: number[] = []
     inboxPage.mockResolvedValue({
       records: [{ ...record, context: request.parts.context }],
     })
@@ -1083,10 +1083,12 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       await f.chain.directMessages.fetchSince({
         wallet: f.bob,
         sinceMs: 0,
+        onIncompleteTimestamp: time => void incomplete.push(time),
         onQuarantinedTimestamp: time => void quarantined.push(time),
       }),
     ).toEqual([])
-    expect(quarantined).toEqual([5])
+    expect(quarantined).toEqual([])
+    expect(incomplete).toEqual([5])
   })
 
   it('refuses unsupported items and unpublished recipients before any payment intent', async () => {
@@ -2733,6 +2735,51 @@ describe('two typed wallets on the open directory', () => {
     expect(atAliceBothRotated[0].items).toEqual(text('pre-rotation message'))
   })
 
+  it.each(['missing', 'unreachable'] as const)('retains the original message while historical evidence is %s and recovers it', async failure => {
+    await online('alice', f.alice)
+    const bobDir = await online('bob', f.bob)
+    await fund(f.alice)
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('recover original'),
+    })
+    clock += 345n * 24n * 3600n * SECOND
+    await bobDir.publish()
+    const original = inboxRecord(0, 20)
+    inboxPage.mockResolvedValue({ records: [original] })
+    installCanonicalDirectory(f.bob, {
+      ...bobDir,
+      fetch: f.fetch,
+      peerHistorical: async () => {
+        if (failure === 'unreachable') throw new OpenDirectoryError('unreachable')
+        return undefined
+      },
+    })
+    await expect(f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 20 }))
+      .rejects.toThrow('Canonical mailbox read is incomplete at timestamp 20')
+    for (let retry = 0; retry < 2; retry++) {
+      const incomplete: number[] = [], quarantined: number[] = []
+      expect(await f.chain.directMessages.fetchSince({
+        wallet: f.bob, sinceMs: 0,
+        onIncompleteTimestamp: time => void incomplete.push(time),
+        onQuarantinedTimestamp: time => void quarantined.push(time),
+      })).toEqual([])
+      expect(incomplete).toEqual([20])
+      expect(quarantined).toEqual([])
+    }
+    installCanonicalDirectory(f.bob, { ...bobDir, fetch: f.fetch })
+    const recovered = await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 20 })
+    expect(recovered).toHaveLength(1)
+    expect(recovered[0].items).toEqual(text('recover original'))
+    const parsed = parseFrame(original.delivery)
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 1) throw new Error('fixture')
+    expect(recovered[0].payloadDigest).toBe(toHex(parsed.typed.payloadDigest))
+    expect(recovered[0].stampPayments?.map(payment => payment.txHash)).toEqual(
+      parsed.typed.payments.map(payment => '0x' + toHex(payment.transactionId)),
+    )
+  })
+
   it('gives a typed "not published" error for an unknown address and pays nothing', async () => {
     await online('alice', f.alice)
     const stranger = testAccount(40)
@@ -2878,6 +2925,7 @@ describe('two typed wallets on the open directory', () => {
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('first'),
+      conversationId: '00000000-0000-4000-8000-000000000001',
     })
     mockBalances.set(
       (await f.alice.getReceiveAddress()).raw.toLowerCase(),
@@ -2887,6 +2935,7 @@ describe('two typed wallets on the open directory', () => {
       wallet: f.alice,
       recipient: f.bob.identity.address,
       items: text('second'),
+      conversationId: '00000000-0000-4000-8000-000000000002',
     })
     // The first message stands in for a sender whose entry cannot be read right now: only the
     // first directory lookup of each read fails.
@@ -2918,13 +2967,14 @@ describe('two typed wallets on the open directory', () => {
       })
       // The read did not fail; the good sender's message arrived; the other is kept for later.
       expect(received.map(m => m.receivedTime)).toEqual([9])
+      expect(received[0].conversationId).toBe('00000000-0000-4000-8000-000000000002')
       expect(incomplete).toEqual([5])
       expect(quarantined).toEqual([])
       // The wallet's own note about the stamp it received looks itself up in the directory:
       // finished here, so it does not use up the next read's failing lookup.
       await f.bob.noteReceivedCoins!()
     }
-    // After a day of failing, it is given up on so it cannot hold the inbox scan forever.
+    // Elapsed time cannot establish terminal invalidity or absence.
     const later = jest
       .spyOn(Date, 'now')
       .mockReturnValue(Date.now() + 25 * 60 * 60_000)
@@ -2938,11 +2988,36 @@ describe('two typed wallets on the open directory', () => {
         onIncompleteTimestamp: time => void incomplete.push(time),
         onQuarantinedTimestamp: time => void quarantined.push(time),
       })
-      expect(incomplete).toEqual([])
-      expect(quarantined).toEqual([5])
+      expect(incomplete).toEqual([5])
+      expect(quarantined).toEqual([])
     } finally {
       later.mockRestore()
     }
+  })
+
+  it('keeps a missing current sender replayable and recovers the same receipt', async () => {
+    await online('alice', f.alice)
+    const bobDirectory = await online('bob', f.bob)
+    await f.chain.directMessages.send({
+      wallet: f.alice, recipient: f.bob.identity.address, items: text('withheld head'),
+    })
+    const original = inboxRecord(0, 5)
+    inboxPage.mockResolvedValue({ records: [original] })
+    installCanonicalDirectory(f.bob, { ...bobDirectory, fetch: f.fetch, peerCurrent: async () => undefined })
+    await expect(f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 5 }))
+      .rejects.toThrow('Canonical mailbox read is incomplete at timestamp 5')
+    const incomplete: number[] = [], quarantined: number[] = []
+    expect(await f.chain.directMessages.fetchSince({
+      wallet: f.bob, sinceMs: 0,
+      onIncompleteTimestamp: time => void incomplete.push(time),
+      onQuarantinedTimestamp: time => void quarantined.push(time),
+    })).toEqual([])
+    expect(incomplete).toEqual([5])
+    expect(quarantined).toEqual([])
+    installCanonicalDirectory(f.bob, { ...bobDirectory, fetch: f.fetch })
+    const recovered = await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 5 })
+    expect(recovered.map(message => message.items)).toEqual([text('withheld head')])
+    expect(recovered[0].receivedTime).toBe(5)
   })
 
   it('delivers a message that carries no payment as a normal message with no stamp', async () => {
@@ -3042,16 +3117,18 @@ describe('two typed wallets on the open directory', () => {
     inboxPage.mockResolvedValue({
       records: [forged, { ...mismatched, context }, inboxRecord(1, 9)],
     })
-    const quarantined: [number, string][] = []
+    const quarantined: [number, string][] = [], incomplete: number[] = []
     const received = await f.chain.directMessages.fetchSince({
       wallet: f.bob,
       sinceMs: 0,
+      onIncompleteTimestamp: time => void incomplete.push(time),
       onQuarantinedTimestamp: (time, id) => void quarantined.push([time, id]),
     })
     expect(received.map(m => [m.receivedTime, m.items])).toEqual([
       [9, text('genuine')],
     ])
     expect(quarantined).toEqual([[5, toHex(forgedDigest)]])
+    expect(incomplete).toEqual([6])
   })
 
   describe('a mailbox record the client cannot decode', () => {

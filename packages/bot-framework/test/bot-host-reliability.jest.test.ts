@@ -266,6 +266,42 @@ describe("FrankBotHost Reliability Features", () => {
   });
 
   describe("Cursor persistence in LevelDB state", () => {
+    it("retains the cursor after an incomplete fetch rejection and handles the original on recovery", async () => {
+      const handled: string[] = [];
+      const definition: FrankBotDefinition = {
+        id: "incomplete-fetch-bot",
+        getProfile: () => ({ name: "IncompleteFetchBot", bot: true }),
+        onMessage: async context => { handled.push(context.payloadDigest); return []; },
+      };
+      const host = new FrankBotHost({ relayBaseUrl: "http://127.0.0.1:8098", stateDir: `${stateDir}/incomplete-fetch` });
+      await host.register(definition);
+      const instance = host["instances"].get(definition.id)!;
+      const initial = instance.lastPollTimestamp;
+      const persisted = await instance.state.get("cursor:lastPollTimestamp");
+      mockDirectMessagesFetchSince.mockRejectedValueOnce(new Error("Canonical mailbox read is incomplete at timestamp 100"));
+      await host["pollAllBots"]();
+      expect(instance.lastPollTimestamp).toBe(initial);
+      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(persisted);
+      expect(handled).toEqual([]);
+      const messageId = "02020202-0202-0202-0202-020202020202";
+      const receivedTime = Math.max(initial + 100, Date.now());
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([{
+        senderAddress: { raw: mockPeer.address.toLowerCase() },
+        senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+        recipientPublicKey: getBytes("0x" + mockLocalSubject),
+        recipientAddress: { raw: mockLocalAddress },
+        messageId, receivedTime,
+        conversationId: "01010101-0101-0101-0101-010101010101",
+        payloadDigest: "22".repeat(32), items: [{ type: "text", text: "Original" }],
+      }]);
+      await host["pollAllBots"]();
+      expect(mockDirectMessagesFetchSince.mock.calls.at(-1)?.[0].sinceMs).toBe(initial);
+      await instance.peerQueue.enqueue(mockPeer.address.toLowerCase(), async () => {});
+      expect(handled).toEqual(["22".repeat(32)]);
+      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(String(receivedTime + 1));
+      await host.stop();
+    });
+
     it("persists cursor:lastPollTimestamp and restores it on host restart", async () => {
       const dummyBot: FrankBotDefinition = {
         id: "cursor-bot",

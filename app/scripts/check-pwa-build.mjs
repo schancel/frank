@@ -28,8 +28,9 @@ const routes = []
 const importedScripts = []
 let forcedActivation = false
 class NavigationRoute {
-  constructor(handler) {
+  constructor(handler, { denylist = [] } = {}) {
     this.handler = handler
+    this.denylist = denylist
   }
 }
 const workbox = {
@@ -82,6 +83,41 @@ assert(
   'No runtime API caching is allowed',
 )
 assert.equal(routes[0].handler, 'index.html')
+// Workbox matches navigation exclusions against pathname + search. Inspect the
+// generated patterns so gateway portals still reach the server after PWA install.
+const bypassesAppShell = path =>
+  routes[0].denylist.some(pattern => pattern.test(path))
+for (const path of [
+  '/pay/held-message',
+  '/pay/held-message?network=bitcoin-signet',
+  '/secure/message-token',
+  '/secure/message-token/request-otp',
+  '/secure/message-token/verify?code=123456',
+  '/onboard/claim/claim-token',
+  '/onboard/claim/claim-token?source=email',
+  '/sw.js',
+  '/workbox-12345678.js',
+]) {
+  assert(
+    bypassesAppShell(path),
+    `Server/worker path intercepted by app shell: ${path}`,
+  )
+}
+for (const path of [
+  '/',
+  '/chat/conversation',
+  '/settings',
+  '/payment',
+  '/securely',
+  '/onboard/claims/token',
+  '/chat/pay/token',
+  '/chat?next=/secure/token',
+]) {
+  assert(
+    !bypassesAppShell(path),
+    `App navigation excluded from app shell: ${path}`,
+  )
+}
 const urls = new Set(precache.map(entry => entry.url))
 assert(urls.has('index.html'))
 for (const url of urls) {

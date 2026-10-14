@@ -562,6 +562,12 @@ export default configure(ctx => {
           skipWaiting: true,
           // Cache only shipped application assets, never source maps or live API responses.
           globIgnores: [...options.globIgnores, '**/*.map'],
+          // Gateway portals must reach ingress rather than the cached app shell.
+          navigateFallbackDenylist: [
+            ...(options.navigateFallbackDenylist ?? []),
+            /^\/(?:pay|secure)\//,
+            /^\/onboard\/claim\//,
+          ],
           clientsClaim: true,
           cleanupOutdatedCaches: true,
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,

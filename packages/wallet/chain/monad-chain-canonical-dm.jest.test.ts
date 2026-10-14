@@ -2761,7 +2761,7 @@ describe('two typed wallets on the open directory', () => {
     for (let retry = 0; retry < 2; retry++) {
       const incomplete: number[] = [], quarantined: number[] = []
       expect(await f.chain.directMessages.fetchSince({
-        wallet: f.bob, sinceMs: 20,
+        wallet: f.bob, sinceMs: 0,
         onIncompleteTimestamp: time => void incomplete.push(time),
         onQuarantinedTimestamp: time => void quarantined.push(time),
       })).toEqual([])
@@ -3008,7 +3008,7 @@ describe('two typed wallets on the open directory', () => {
       .rejects.toThrow('Canonical mailbox read is incomplete at timestamp 5')
     const incomplete: number[] = [], quarantined: number[] = []
     expect(await f.chain.directMessages.fetchSince({
-      wallet: f.bob, sinceMs: 5,
+      wallet: f.bob, sinceMs: 0,
       onIncompleteTimestamp: time => void incomplete.push(time),
       onQuarantinedTimestamp: time => void quarantined.push(time),
     })).toEqual([])

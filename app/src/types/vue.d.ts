@@ -1,19 +1,15 @@
-import { Wallet } from '@frank/cashweb/legacy-wallet'
+// Augment the public Vue module, alongside the installed router, Quasar and i18n
+// plugins. Augmenting runtime-core separately splits their component-property symbols.
+import 'vue'
 
-declare module '@vue/runtime-core' {
+declare module 'vue' {
   interface ComponentCustomProperties {
-    $wallet: Wallet
-    $relay: {
-      connected: boolean
-    }
-    $indexer: {
-      connected: boolean
-    }
     $status: {
       loaded: boolean
       setup: boolean
     }
 
-    openURL: (url: string) => void
+    // Installed only by Electron/Capacitor boot, not by the browser/PWA host.
+    openURL?: (url: string) => void
   }
 }

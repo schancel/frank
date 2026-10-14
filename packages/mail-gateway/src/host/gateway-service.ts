@@ -1,6 +1,7 @@
 import type { GatewayHostConfig } from './gateway-config';
 import { openGatewayWallet } from './gateway-wallet';
 import { openGatewayDirectory } from './gateway-directory';
+import { publishGatewayProfile } from './gateway-profile';
 import { createJournaledMailHost } from './journaled-mail-host';
 
 /** Opens only an explicitly admitted testnet wallet and its matching mail journal. */
@@ -60,6 +61,12 @@ export async function startMailGateway(config: GatewayHostConfig): Promise<{ clo
       wallet: opened.wallet,
       relayBaseUrl: config.relayBaseUrl,
       storageDirectory: config.directoryStorage,
+    });
+    await publishGatewayProfile({
+      identity: opened.wallet.identity,
+      relayBaseUrl: config.relayBaseUrl,
+      chainIdentifier: opened.wallet.chainIdentifier,
+      gatewayDomain: config.gatewayDomain,
     });
     await host.runtime.runOnce();
     await host.webhook.start();

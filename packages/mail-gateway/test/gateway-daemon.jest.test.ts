@@ -2,12 +2,15 @@ import type { GatewayHostConfig } from '../src/host/gateway-config';
 import { startMailGateway } from '../src/host/gateway-service';
 import { openGatewayWallet } from '../src/host/gateway-wallet';
 import { openGatewayDirectory } from '../src/host/gateway-directory';
+import { registerMonadIdentityCbor } from '@frank/wallet/monad-identity';
 import { createJournaledMailHost } from '../src/host/journaled-mail-host';
 
+jest.mock('@frank/wallet/monad-identity', () => ({ registerMonadIdentityCbor: jest.fn() }));
 jest.mock('../src/host/gateway-wallet');
 jest.mock('../src/host/gateway-directory');
 jest.mock('../src/host/journaled-mail-host');
 
+const profileRegister = jest.mocked(registerMonadIdentityCbor);
 const walletOpen = jest.mocked(openGatewayWallet);
 const directoryOpen = jest.mocked(openGatewayDirectory);
 const hostCreate = jest.mocked(createJournaledMailHost);
@@ -38,8 +41,9 @@ describe('mail gateway executable lifecycle', () => {
     order.length = 0;
     salt.fill(7);
     jest.clearAllMocks();
+    profileRegister.mockImplementation(async () => { order.push('profile publish'); });
     walletOpen.mockResolvedValue({
-      chain: config.chain, wallet: { identity: { address: { raw: config.expectedIdentityAddress } } },
+      chain: config.chain, wallet: { chainIdentifier: 'monad-testnet', identity: { address: { raw: config.expectedIdentityAddress } } },
       identityAddress: config.expectedIdentityAddress,
       replyAliasSalt: () => salt, close: walletClose,
     } as unknown as Awaited<ReturnType<typeof openGatewayWallet>>);
@@ -54,14 +58,14 @@ describe('mail gateway executable lifecycle', () => {
 
   it('opens the bound wallet and journal before publishing, recovers before ingress, and closes in reverse order', async () => {
     const service = await startMailGateway(config);
-    expect(order).toEqual(['directory publish', 'poll', 'webhook start']);
+    expect(order).toEqual(['directory publish', 'profile publish', 'poll', 'webhook start']);
     expect(hostCreate).toHaveBeenCalledWith(expect.objectContaining({
       chain: config.chain, journalMode: 'existing', gatewayDomain: 'signet.mx',
     }));
     expect(salt.every(byte => byte === 0)).toBe(true);
     await service.close();
     expect(order).toEqual([
-      'directory publish', 'poll', 'webhook start',
+      'directory publish', 'profile publish', 'poll', 'webhook start',
       'webhook stop', 'directory close', 'wallet close',
     ]);
   });
@@ -93,11 +97,44 @@ describe('mail gateway executable lifecycle', () => {
     }
   });
 
+  it('publishes a signed service profile for the existing wallet before ingress, including on restart', async () => {
+    const service = await startMailGateway(config);
+    expect(profileRegister).toHaveBeenCalledWith({
+      relayBaseUrl: config.relayBaseUrl,
+      identity: (await walletOpen.mock.results[0].value).wallet.identity,
+      network: 'monad-testnet',
+      signal: expect.any(AbortSignal),
+      profile: {
+        name: 'Frank Email Gateway',
+        bio: 'Email bridge between Frank and Internet email at signet.mx.',
+        avatar: expect.stringMatching(/^data:image\/png;base64,/),
+        bot: true, accountType: 2, botRole: 4,
+      },
+    });
+    await service.close();
+    const restarted = await startMailGateway(config);
+    expect(profileRegister).toHaveBeenCalledTimes(2);
+    await restarted.close();
+  });
+
+  it('surfaces publication failure, closes owners, and retries the same identity on restart', async () => {
+    profileRegister.mockRejectedValueOnce(new Error('profile rejected'));
+    await expect(startMailGateway(config)).rejects.toThrow('profile rejected');
+    expect(poll).not.toHaveBeenCalled();
+    expect(webhookStart).not.toHaveBeenCalled();
+    expect(directoryClose).toHaveBeenCalledTimes(1);
+    expect(walletClose).toHaveBeenCalledTimes(1);
+    const service = await startMailGateway(config);
+    expect(profileRegister.mock.calls[0][0].identity.address.raw).toBe(config.expectedIdentityAddress);
+    expect(profileRegister.mock.calls[1][0].identity.address.raw).toBe(config.expectedIdentityAddress);
+    await service.close();
+  });
+
   it('refuses a failed recovery pass and closes every opened owner without listening', async () => {
     poll.mockRejectedValueOnce(new Error('recovery failed'));
     await expect(startMailGateway(config)).rejects.toThrow('recovery failed');
     expect(webhookStart).not.toHaveBeenCalled();
-    expect(order).toEqual(['directory publish', 'webhook stop', 'directory close', 'wallet close']);
+    expect(order).toEqual(['directory publish', 'profile publish', 'webhook stop', 'directory close', 'wallet close']);
   });
 
   it('does not construct transport when persistent wallet admission fails', async () => {
@@ -121,7 +158,7 @@ describe('mail gateway executable lifecycle', () => {
       host: '127.0.0.1', port: 2525, hostname: 'mail.signet.mx', tlsKey, tlsCert,
     } };
     const service = await startMailGateway(withSmtp);
-    expect(order).toEqual(['directory publish', 'poll', 'webhook start', 'smtp start']);
+    expect(order).toEqual(['directory publish', 'profile publish', 'poll', 'webhook start', 'smtp start']);
     expect(smtpStart).toHaveBeenCalledWith(2525, '127.0.0.1');
     await service.close();
     expect(smtpReady).toHaveBeenCalledWith(false);
@@ -140,7 +177,7 @@ describe('mail gateway executable lifecycle', () => {
     await expect(startMailGateway({ ...config, nativeSmtp: {
       host: '127.0.0.1', port: 2525, hostname: 'mail.signet.mx', tlsKey, tlsCert,
     } })).rejects.toThrow('smtp bind failed');
-    expect(order).toEqual(['directory publish', 'poll', 'webhook start',
+    expect(order).toEqual(['directory publish', 'profile publish', 'poll', 'webhook start',
       'webhook stop', 'directory close', 'wallet close']);
     expect(tlsKey.every(byte => byte === 0)).toBe(true);
     expect(tlsCert.every(byte => byte === 0)).toBe(true);

@@ -51,6 +51,8 @@ jobs:
     env:
       CC: gcc-12
       CXX: g++-12
+      # foundationdb-sys forwards this directory to Cargo's native linker search.
+      FDB_CLIENT_LIB_PATH: /usr/local/lib
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
       CARGO_BUILD_JOBS: 2
@@ -147,6 +149,24 @@ jobs:
       with:
         toolchain: stable
         components: rustfmt, clippy
+
+    - name: Verify FoundationDB native linking with Rust
+      run: |
+        set -euo pipefail
+        fdb_probe_dir=$(mktemp -d)
+        trap 'rm -rf "$fdb_probe_dir"' EXIT
+        rustc --edition=2021 -L "native=$FDB_CLIENT_LIB_PATH" \
+          -o "$fdb_probe_dir/fdb-link-probe" - <<'RS'
+        #[link(name = "fdb_c")]
+        extern "C" {
+            fn fdb_get_max_api_version() -> i32;
+        }
+        fn main() {
+            assert!(unsafe { fdb_get_max_api_version() } >= 730);
+        }
+        RS
+        "$fdb_probe_dir/fdb-link-probe"
+      shell: bash
 
     - name: Restore compatible Cargo dependencies and build artifacts
       uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6

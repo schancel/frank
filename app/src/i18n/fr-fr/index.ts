@@ -4,6 +4,16 @@
 import { fr as accountRecovery } from '../account-recovery'
 
 export default {
+  negotiationRecovery: {
+    'restoring': 'Restauration des échanges',
+    'scanning': 'Vérification des échanges',
+    'ready': 'Historique des échanges restauré',
+    'unsupported': 'Récupération des échanges indisponible sur ce réseau',
+    'incomplete': 'Vérification des échanges incomplète',
+    'capacity': 'Stockage des échanges plein',
+    'storage-error': 'Impossible de restaurer les échanges',
+  },
+
   qrScanner: {
     paymentHint:
       'Pour un paiement, scannez le code QR Recevoir du portefeuille. Un code QR de profil identifie un contact de messagerie et ne désigne pas une adresse de dépôt du portefeuille.',

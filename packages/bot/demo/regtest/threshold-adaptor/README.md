@@ -66,3 +66,41 @@ TSX_TSCONFIG_PATH=packages/bot/tsconfig.json ADAPTOR_ABC_ARCHIVE=/tmp/frank-adap
 S2b still owns EVM fallback-already-final and XEC refund/EVM fallback reorg cases.
 S1 assurance, production observation/storage ownership, financial recovery runtime,
 UI and release authorization remain unfinished. This proof installs none of them.
+
+## Ordinary refund/fallback reorg proof (S2b)
+
+`refund-reorg.test.cjs` selects an explicit scenario on the existing pair-clock
+fixture. Its default proof, ordinary-key setup, identity checks, fee budgets and
+clock envelope remain unchanged. This is ordinary-key consensus and observation
+evidence; it makes no threshold/adaptor or malicious-signing claim.
+
+The scenario disconnects the actual mature XEC refund while keeping funding
+canonical, restarts a public-only observer, and reincludes the original signed
+refund bytes on a different depth-two branch. It snapshots after the EVM opening
+and challenge, reverts actual fallback, then reuses the identical signed fallback
+transaction with its restored nonce. Fresh observers verify exact chain,
+checkpoint, contract, opening/challenge anchors and current receipt ancestry.
+Current principal and fees exclude orphaned effects. After the separate existing
+fallback-first case, a fresh observer recognizes terminal refund, verifies the
+retained cooperative signatures and rejects their executability; the actual
+cooperative transaction also reverts without moving principal.
+
+The ABC observer uses a temporary fixture-owned `127.0.0.1` read-only proxy because
+the existing node fixture exposes an authenticated RPC capability. Only bounded
+read requests from an explicit allowlist are forwarded; mutation and oversized
+requests reject without forwarding. The proxy closes in `finally`. No cookie,
+private key or signing state reaches the child. This is fixture observation
+transport, not a production relay or authentication design.
+
+```sh
+TSX_TSCONFIG_PATH=packages/bot/tsconfig.json ADAPTOR_ABC_ARCHIVE=/tmp/frank-adaptor-abc.tar.gz FRANK_BITCOIN_ABC_BIN_DIR=/tmp/frank-adaptor-abc-verified/bitcoin-abc-0.34.0/bin node --import tsx --test packages/bot/demo/regtest/threshold-adaptor/refund-reorg.test.cjs
+```
+
+Use only existing pinned verified binaries and coordinate the single native lane;
+there is no download/shared-endpoint fallback. `REFUND_REORG_EVIDENCE_DIR` optionally
+retains a bounded public JSON trace in an existing owned directory, with exclusive
+creation. Anvil proves generic EVM execution, not Monad consensus. Local fsync and
+observer restart do not prove browser durability, arbitrary rollback resistance or
+recovery after an unbounded outage. S1, financial runtime/browser recovery,
+watcher-outage policy, an ordinary-looking settlement alternative and external
+cryptographic assurance remain outstanding.

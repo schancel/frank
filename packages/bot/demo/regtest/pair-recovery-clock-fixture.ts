@@ -201,8 +201,13 @@ export async function startOwnedEvm(timestamp: number): Promise<OwnedEvm> {
   }
 }
 export async function runPairRecoveryClockFixture(
-  options: Parameters<typeof startOwnedTemplateFixture>[0],
+  options: Parameters<typeof startOwnedTemplateFixture>[0] & {
+    scenario?: 'refund-reorg'
+  },
 ): Promise<PairClockEvidence> {
+  assert.ok(
+    options.scenario === undefined || options.scenario === 'refund-reorg',
+  )
   const abc = await startOwnedTemplateFixture(options)
   let evm: OwnedEvm | undefined
   try {
@@ -210,7 +215,7 @@ export async function runPairRecoveryClockFixture(
       await abc.rpc<string>('getbestblockhash'),
     ])
     evm = await startOwnedEvm(header.time + 1990)
-    return await exercise(abc, evm, header)
+    return await exercise(abc, evm, header, options.scenario)
   } finally {
     const results = await Promise.allSettled([
       abc.stop(),
@@ -224,6 +229,7 @@ async function exercise(
   abc: ReadyTemplateFixture,
   evm: OwnedEvm,
   initial: Header,
+  scenario?: 'refund-reorg',
 ): Promise<PairClockEvidence> {
   const rpc = abc.rpc,
     provider = evm.provider
@@ -465,6 +471,21 @@ async function exercise(
     gasPrice: deploymentReceipt.gasPrice.toString(),
   }
   let totalFees = deploymentReceipt.fee
+  const publicEvmAnchor = (label: string) => {
+    const observation = evidence.observations.find(
+      value => value.label === label,
+    )!
+    const receipt = observation.receipt as {
+      blockhash: string
+      blockNumber: number
+      hash: string
+    }
+    return {
+      hash: receipt.blockhash,
+      height: receipt.blockNumber,
+      transactionHash: receipt.hash,
+    }
+  }
   const observeTx = async (
     label: string,
     signer: HDNodeWallet,
@@ -484,6 +505,11 @@ async function exercise(
     const before = await Promise.all(addresses.map(balance))
     const data = contract.interface.encodeFunctionData(method, args)
     await provider.send('evm_setNextBlockTimestamp', [at])
+    const snapshot =
+      scenario &&
+      label === 'safe independent refunds: independent relayer fallback'
+        ? ((await provider.send('evm_snapshot', [])) as string)
+        : undefined
     const sent = await signer.sendTransaction({
       to: contractAddress,
       data,
@@ -499,6 +525,33 @@ async function exercise(
       receipt = await provider.getTransactionReceipt(sent.hash)
     }
     assert.ok(receipt)
+    if (snapshot !== undefined) {
+      const { reorgFallback } = await import('./threshold-adaptor/refund-reorg')
+      const result = await reorgFallback({
+        provider,
+        snapshot,
+        receipt,
+        signedRaw: await provider.send('eth_getRawTransactionByHash', [
+          receipt.hash,
+        ]),
+        contract: contractAddress,
+        channelId: cases[0]!.channelId,
+        checkpoint: { height: 0, hash: genesis.hash! },
+        runtimeHash,
+        principalWei: M.toString(),
+        recipient: b.address,
+        relayer: relayer.address,
+        balanceRecipient: before[addresses.indexOf(b.address)]!.toString(),
+        balanceRelayer: before[addresses.indexOf(relayer.address)]!.toString(),
+        opening: publicEvmAnchor('safe independent refunds: actual deposit'),
+        challenge: publicEvmAnchor(
+          'safe independent refunds: B alone starts challenge',
+        ),
+      })
+      receipt = result.receipt
+      at = result.timestamp
+      evidence.observations.push(result.observation)
+    }
     const block = await provider.getBlock(receipt.blockNumber)
     assert.ok(block)
     assert.equal(block.timestamp, at)
@@ -811,7 +864,7 @@ async function exercise(
       return undefined
     }
     assert.ok(result, failure?.message)
-    const block = await rpc<Block>('getblock', [result.hash, 2]),
+    let block = await rpc<Block>('getblock', [result.hash, 2]),
       observed = block.tx.find(tx => tx.txid === spend.txid)!
     assert.ok(observed)
     assert.equal(observed.hex, spend.raw)
@@ -823,8 +876,48 @@ async function exercise(
     assert.equal(await rpc('gettxout', [fundingId, item.index, false]), null)
     await recordTip()
     await mine(1)
-    const confirmed = await rpc<Header>('getblockheader', [result.hash])
+    let confirmed = await rpc<Header>('getblockheader', [result.hash])
     assert.ok(confirmed.confirmations >= ENVELOPE.xecConfirmationDepth)
+    if (scenario && item.index === 0 && branch === 'refund') {
+      const { reorgRefund } = await import('./threshold-adaptor/refund-reorg')
+      const originalHeight = block.height
+      const reorg = await reorgRefund(rpc, {
+        version: 1,
+        chainIdentifier: 'xec-regtest',
+        checkpoint: { hash: initial.hash, height: initial.height },
+        funding: {
+          hash: fundingBlock.hash,
+          height: (
+            await rpc<Header>('getblockheader', [fundingBlock.hash])
+          ).height,
+        },
+        inclusion: { hash: result.hash, height: block.height },
+        fundingTxid: fundingId,
+        vout: item.index,
+        inputSats: lockValue.toString(),
+        principalSats: X.toString(),
+        feeSats: X_FEE.toString(),
+        recipientScript: c.hex(aXec),
+        redeemScript: c.hex(item.redeem),
+        refundTimestamp: item.refundAt,
+        claimPublicKey: c.hex(item.publicKey),
+        refundPublicKey: c.hex(aRefundPub),
+        raw: spend.raw,
+        signatureDer: spend.signatureDer,
+      })
+      result = { hash: reorg.block.hash }
+      block = reorg.block
+      confirmed = await rpc<Header>('getblockheader', [result.hash])
+      const index = evidence.xecHeaders.findIndex(
+        header => header.height === originalHeight,
+      )
+      assert.ok(index >= 0)
+      evidence.xecHeaders.splice(index)
+      evidence.xecHeaders.push(
+        ...reorg.headers.filter(header => header.height >= originalHeight),
+      )
+      evidence.observations.push(reorg.observation)
+    }
     evidence.observations.push({
       label: `${item.name}: native ${branch} canonical`,
       previousTip: before,
@@ -928,7 +1021,7 @@ async function exercise(
     relayer,
     'closeAfterChallenge',
     [safe.channelId],
-    safeExpiry + 1,
+    safeExpiry + (scenario ? 2 : 1),
     'ChannelAlreadySettled',
   )
   const delayed = cases[1]!
@@ -1006,6 +1099,46 @@ async function exercise(
     secondExpiry + 1,
     'ChannelAlreadySettled',
   )
+  if (scenario) {
+    const { observeTerminalFallback } = await import(
+      './threshold-adaptor/refund-reorg'
+    )
+    const fallbackRecord = evidence.observations.find(
+      value => value.label === 'fallback first: independent relayer fallback',
+    )!
+    const rejection = evidence.observations.find(
+      value => value.label === 'cooperative close after fallback rejects',
+    )!
+    evidence.observations.push(
+      await observeTerminalFallback(provider, {
+        version: 1,
+        chainIdentifier: 'monad-regtest',
+        nativeChainId: '20143',
+        checkpoint: { height: 0, hash: genesis.hash! },
+        runtimeHash,
+        contract: contractAddress,
+        channelId: refundFirst.channelId,
+        recipient: b.address,
+        relayer: relayer.address,
+        principalWei: M.toString(),
+        signedRaw: await provider.send('eth_getRawTransactionByHash', [
+          (fallbackRecord.receipt as { hash: string }).hash,
+        ]),
+        inclusion: {
+          hash: (fallbackRecord.receipt as { blockhash: string }).blockhash,
+          height: (fallbackRecord.receipt as { blockNumber: number })
+            .blockNumber,
+        },
+        opening: publicEvmAnchor('fallback first: actual deposit'),
+        challenge: publicEvmAnchor('fallback first: B alone starts challenge'),
+        cooperativeData: contract.interface.encodeFunctionData(
+          closeMethod,
+          secondArgs,
+        ),
+        rejectedReceipt: rejection.receipt,
+      }),
+    )
+  }
   const late = cases[4]!
   await open(late)
   assert.deepEqual(validateStateChannelPairTerms(terms(late), identity), [])

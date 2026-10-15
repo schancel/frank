@@ -193,6 +193,32 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     expect(wrapper.find('[data-test="send-review-card"]').exists()).toBe(false)
   })
 
+  it('keeps mounted send/cancel aliases on the existing guarded and navigation paths', async () => {
+    const wrapper = mountSend()
+    await flushPromises()
+    const result = wrapper.vm.send()
+    expect(result).toBeInstanceOf(Promise)
+    await expect(result).resolves.toBeUndefined()
+    expect(mockCaptureWallet).not.toHaveBeenCalled()
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(wrapper.vm.cancel()).toBeUndefined()
+    expect(navigateBack).toHaveBeenCalledTimes(1)
+  })
+
+  it('retains explicit receiver dispatch and Promise rejection through mounted aliases', async () => {
+    const wrapper = mountSend()
+    await flushPromises()
+    const failure = new Error('receiver failure')
+    const confirmSend = jest.fn().mockRejectedValue(failure)
+    await expect(wrapper.vm.send.call({ confirmSend })).rejects.toBe(failure)
+    expect(confirmSend).toHaveBeenCalledTimes(1)
+    const cancelEdit = jest.fn()
+    expect(wrapper.vm.cancel.call({ cancelEdit })).toBeUndefined()
+    expect(cancelEdit).toHaveBeenCalledTimes(1)
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(navigateBack).not.toHaveBeenCalled()
+  })
+
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.clearAllMocks()

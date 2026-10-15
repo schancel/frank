@@ -79,6 +79,38 @@ describe('ChatList closeDrawer', () => {
     ]
   })
 
+  it.each([390, 1024])(
+    'preserves mounted alias dispatch at %ipx',
+    async width => {
+      const wrapper = await selectChatAt(width)
+      mockPush.mockClear()
+      mockChatStore.setActiveConversation.mockClear()
+      const previousEvents = wrapper.emitted('closeDrawer')?.length ?? 0
+      expect(wrapper.vm.setActiveChat('other-thread')).toBeUndefined()
+      expect(
+        wrapper.vm.setActiveChat(mockChatStore.getSortedChatOrder[0]),
+      ).toBeUndefined()
+      expect(mockChatStore.setActiveConversation.mock.calls).toEqual([
+        ['other-thread'],
+        ['thread1'],
+      ])
+      expect(mockPush.mock.calls).toEqual([
+        ['/chat/other-thread'],
+        ['/chat/thread1'],
+      ])
+      expect(
+        (wrapper.emitted('closeDrawer')?.length ?? 0) - previousEvents,
+      ).toBe(width === 390 ? 2 : 0)
+      const selectConversation = jest.fn()
+      expect(
+        wrapper.vm.setActiveChat.call({ selectConversation }, 'rebound-thread'),
+      ).toBeUndefined()
+      expect(selectConversation).toHaveBeenCalledWith('rebound-thread')
+      expect(mockPush).toHaveBeenCalledTimes(2)
+      wrapper.unmount()
+    },
+  )
+
   it('passes a zero unread value with the configured messaging unit to the row', async () => {
     const chain = jest.requireMock('@frank/wallet/chain').activeChain
     const previousUnit = chain.unit

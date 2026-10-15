@@ -7,6 +7,15 @@ There are no wallet, UI, ceremony, network or DOM dependencies.
 Read [the preview policy](../../docs/preview-vault-policy.md) before integration.
 This package does not complete account setup or authorize account identity reuse.
 
+Opening and authenticated reads inspect existing namespaces without creating stores,
+rewriting records, or running the writable capability probe. Existing-only opens
+abort unexpected creation or upgrades; missing storage remains distinct from failure.
+The first authorized mutation qualifies persisted nonextractable-key round trips
+before initializing its namespace. Opening alone therefore does not prove writable
+persistence. Later reads observe namespaces created by another facade, and closing
+revokes pending work and closes connections obtained after revocation. Old capability
+probe databases are retained; this change has no record-format or cleanup migration.
+
 ```ts
 import { createVaultWriteIntent, openPreviewVault } from '@frank/account-vault'
 

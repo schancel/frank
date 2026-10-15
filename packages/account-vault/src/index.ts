@@ -1,6 +1,6 @@
 import type { DomainRoot } from '@frank/domain-roots'
 import { aad, createIntent, decode, decodeAccountRoot, decodeBip39Seed, intent, plaintext, receipt, same, validate } from './encoding.js'
-import { commit, database, discardIntent, read, remove, transaction, validKey, type RecordRow } from './storage.js'
+import { commit, database, discardIntent, read, remove, transaction, validKey, type RecordRow, type Inventory } from './storage.js'
 import { VaultError, type PreviewVault, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export { VaultError } from './types.js'
@@ -13,19 +13,23 @@ export function createVaultWriteIntent(input: {
   return validate(() => createIntent(input))
 }
 
-async function capability(name: string): Promise<void> {
+async function capability(name: string, active: () => void): Promise<void> {
   let db: IDBDatabase | undefined
   let plain: Uint8Array | undefined
   try {
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
     const iv = crypto.getRandomValues(new Uint8Array(12))
     const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, Uint8Array.of(70, 86, 1))
-    db = await database(name, true)
+    active()
+    db = await database(name, true, true)
+    active()
     await transaction<void>(db, ['probe'], 'readwrite', (tx, result) => {
       tx.objectStore('probe').put({ key, iv, ciphertext }, 'capability'); result(undefined)
     })
     db.close()
-    db = await database(name, true)
+    active()
+    db = await database(name, true, true)
+    active()
     const stored = await transaction<{ key: CryptoKey; iv: Uint8Array<ArrayBuffer>; ciphertext: ArrayBuffer }>(db, ['probe'], 'readonly', (tx, result) => {
       const request = tx.objectStore('probe').get('capability')
       request.onsuccess = () => result(request.result)
@@ -34,10 +38,13 @@ async function capability(name: string): Promise<void> {
         !(stored.ciphertext instanceof ArrayBuffer) || stored.ciphertext.byteLength !== 19) throw 0
     plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: stored.iv, tagLength: 128 }, stored.key, stored.ciphertext))
     if (plain.length !== 3 || plain[0] !== 70 || plain[1] !== 86 || plain[2] !== 1) throw 0
-  } catch { throw new VaultError('unavailable') } finally { plain?.fill(0); db?.close() }
+  } catch (error) {
+    if (error instanceof VaultError && error.code === 'closed') throw error
+    throw new VaultError('unavailable')
+  } finally { plain?.fill(0); db?.close() }
 }
 
-/** Preview only; success proves this runtime's database-close/reopen capability, not hardware custody. */
+/** Preview only. Opening inspects storage; the first mutation qualifies writable persistence. */
 export async function openPreviewVault(options: { namespace: string }): Promise<PreviewVault> {
   const namespace = validate(() => {
     const value = options?.namespace
@@ -46,13 +53,35 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
   })
   const name = `frank-preview-vault-${namespace}`
   if (!globalThis.crypto?.subtle || !globalThis.indexedDB || !globalThis.CryptoKey) throw new VaultError('unavailable')
-  await capability(`${name}.capability`)
-  const db = await database(name)
+  // Validate an existing namespace without initializing one or writing a capability probe.
+  const existing = await database(name)
+  existing?.close()
   let closed = false
+  const connections = new Set<IDBDatabase>()
+  let qualification: Promise<void> | undefined
   const active = () => { if (closed) throw new VaultError('closed') }
+  const connect = async <T>(create: boolean, work: (db: IDBDatabase | undefined) => Promise<T>): Promise<T> => {
+    active()
+    if (create) {
+      qualification ??= capability(`${name}.capability`, active).catch(error => {
+        qualification = undefined
+        throw error
+      })
+      await qualification
+      active()
+    }
+    const db = create ? await database(name, true) : await database(name)
+    try {
+      active()
+      if (db) connections.add(db)
+      const result = await work(db)
+      active()
+      return result
+    } finally { db?.close(); if (db) connections.delete(db) }
+  }
   const current = async (target: VaultReceipt) => {
     active()
-    const stored = await read(db, target.context.creationId)
+    const stored = await connect(false, db => db ? read(db, target.context.creationId) : Promise.resolve({} as Inventory))
     active()
     return stored
   }
@@ -86,7 +115,7 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
         const iv = crypto.getRandomValues(new Uint8Array(12))
         const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad(snapshot.receipt), tagLength: 128 }, key, bytes))
         active()
-        await commit(db, snapshot, { receipt: snapshot.receipt, iv, ciphertext }, key)
+        await connect(true, db => commit(db!, snapshot, { receipt: snapshot.receipt, iv, ciphertext }, key))
         return snapshot.receipt
       } catch (error) {
         if (error instanceof VaultError) throw error
@@ -103,8 +132,14 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
       if (!stored.fence.receipt) return 'removed'
       return same(stored.fence.receipt, target) ? 'committed' : 'superseded'
     },
-    async remove(input) { active(); await remove(db, validate(() => receipt(input))) },
-    async discardIntent(input) { active(); await discardIntent(db, validate(() => intent(input))) },
-    close() { closed = true; db.close() },
+    async remove(input) {
+      active(); const target = validate(() => receipt(input))
+      await connect(true, db => remove(db!, target))
+    },
+    async discardIntent(input) {
+      active(); const target = validate(() => intent(input))
+      await connect(true, db => discardIntent(db!, target))
+    },
+    close() { closed = true; for (const db of connections) db.close() },
   } satisfies PreviewVault)
 }

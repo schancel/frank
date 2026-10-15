@@ -7,16 +7,27 @@ interface Fence { revision: number; receipt: VaultReceipt | null; discardedInten
 export interface Inventory { record?: RecordRow; key?: KeyRow; fence?: Fence }
 const STORES = ['records', 'keys', 'fences']
 
-export function database(name: string, probe = false): Promise<IDBDatabase> {
+/** Existing-only opens abort first creation; absence is resolved only after the abort. */
+export function database(name: string, create: true, probe?: boolean): Promise<IDBDatabase>
+export function database(name: string, create?: false): Promise<IDBDatabase | undefined>
+export function database(name: string, create = false, probe = false): Promise<IDBDatabase | undefined> {
   return new Promise((resolve, reject) => {
     let request: IDBOpenDBRequest
     try { request = indexedDB.open(name, 1) }
     catch { reject(new VaultError('unavailable')); return }
-    let settled = false
-    request.onupgradeneeded = () => {
+    let settled = false, absent = false
+    request.onupgradeneeded = event => {
+      if (!create || event.oldVersion !== 0) {
+        absent = !create && event.oldVersion === 0
+        request.transaction!.abort()
+        return
+      }
       for (const store of probe ? ['probe'] : STORES) request.result.createObjectStore(store)
     }
-    request.onerror = () => reject(new VaultError('unavailable'))
+    request.onerror = () => {
+      if (absent && !settled) resolve(undefined)
+      else reject(new VaultError('unavailable'))
+    }
     request.onblocked = () => { settled = true; reject(new VaultError('unavailable')) }
     request.onsuccess = () => {
       if (settled) { request.result.close(); return }

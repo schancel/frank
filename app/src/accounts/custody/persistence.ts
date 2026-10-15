@@ -1,7 +1,16 @@
 import { parse } from './records'
 import { CustodyError, type CustodySnapshot } from './types'
 
-export async function database(namespace: string): Promise<IDBDatabase> {
+/** An absent read aborts creation and leaves no database behind. */
+export function database(namespace: string, create: true): Promise<IDBDatabase>
+export function database(
+  namespace: string,
+  create?: false,
+): Promise<IDBDatabase | undefined>
+export function database(
+  namespace: string,
+  create = false,
+): Promise<IDBDatabase | undefined> {
   return new Promise((resolve, reject) => {
     let request: IDBOpenDBRequest
     try {
@@ -10,9 +19,11 @@ export async function database(namespace: string): Promise<IDBDatabase> {
       reject(new CustodyError('unavailable'))
       return
     }
-    let abandoned = false
+    let abandoned = false,
+      absent = false
     request.onupgradeneeded = event => {
-      if (event.oldVersion !== 0) {
+      if (!create || event.oldVersion !== 0) {
+        absent = !create && event.oldVersion === 0
         request.transaction!.abort()
         return
       }
@@ -22,7 +33,10 @@ export async function database(namespace: string): Promise<IDBDatabase> {
       abandoned = true
       reject(new CustodyError('unavailable'))
     }
-    request.onerror = () => reject(new CustodyError('unavailable'))
+    request.onerror = () => {
+      if (absent && !abandoned) resolve(undefined)
+      else reject(new CustodyError('unavailable'))
+    }
     request.onsuccess = () => {
       const db = request.result
       if (abandoned) {

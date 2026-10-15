@@ -6,6 +6,15 @@ signup ceremony, derive keys, publish a profile, fund a wallet, or start a sessi
 The immediate consumer is [#699](https://github.com/schancel/frank/issues/699).
 Legacy stores, mnemonics, and existing startup behavior are untouched by this stage.
 
+Opening validates existing public state without creating a custody namespace or opening
+the secret vault. Snapshots inspect public state only. Secret access opens the vault
+lazily; authorized mutations initialize storage and qualify writable vault persistence.
+Existing-only IndexedDB opens abort first creation/upgrades, so absence is never inferred
+from a failed or malformed store. Reads through an initially empty facade observe later
+creation by another instance. Closing revokes pending capabilities and releases late
+connections. No record, receipt, derivation, activation or cleanup format changes.
+Retention holds and destructive-reset fencing remain separate work.
+
 ```ts
 import { openAccountCustody } from './accounts/custody'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'

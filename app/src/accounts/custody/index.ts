@@ -16,6 +16,7 @@ import {
   id,
   matches,
   nextRevision,
+  parse,
   same,
   wipe,
 } from './records'
@@ -78,22 +79,24 @@ export async function openAccountCustody(options: {
   } catch {
     throw new CustodyError('invalid-input')
   }
-  let db: IDBDatabase | undefined, vault: PreviewVault | undefined
+  let db: IDBDatabase | undefined
   try {
     // Inspect existing public state before any vault capability writes.
     db = await database(namespace)
-    await stateTransaction(db)
-    vault = await openPreviewVault({ namespace })
-    return facade(db, vault)
+    if (db) await stateTransaction(db)
+    return facade(namespace)
   } catch (error) {
-    db?.close()
-    vault?.close()
     throw normalized(error)
+  } finally {
+    db?.close()
   }
 }
 
-function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
+function facade(namespace: string): AccountCustody {
   let closed = false
+  const connections = new Set<IDBDatabase>()
+  let vaultOpening: Promise<PreviewVault> | undefined
+  let openedVault: PreviewVault | undefined
   const capabilities = new Set<ActiveCustody>()
   const check = () => {
     if (closed) throw new CustodyError('closed')
@@ -108,17 +111,55 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       throw normalized(error)
     }
   }
-  const read = () => {
+  const vault = async (): Promise<PreviewVault> => {
     check()
-    return stateTransaction(db)
+    vaultOpening ??= openPreviewVault({ namespace })
+      .then(value => {
+        if (closed) {
+          value.close()
+          throw new CustodyError('closed')
+        }
+        openedVault = value
+        return value
+      })
+      .catch(error => {
+        vaultOpening = undefined
+        throw error
+      })
+    const value = await vaultOpening
+    check()
+    return value
   }
-  const update = (change: (state: CustodySnapshot) => CustodySnapshot) => {
+  const access = async (
+    change?: (state: CustodySnapshot) => CustodySnapshot,
+  ) => {
     check()
-    return stateTransaction(db, state => {
+    const db = change
+      ? await database(namespace, true)
+      : await database(namespace)
+    try {
       check()
-      return change(state)
-    })
+      if (db) connections.add(db)
+      const result = db
+        ? await stateTransaction(
+            db,
+            change &&
+              (state => {
+                check()
+                return change(state)
+              }),
+          )
+        : parse(undefined)
+      check()
+      return result
+    } finally {
+      db?.close()
+      if (db) connections.delete(db)
+    }
   }
+  const read = () => access()
+  const update = (change: (state: CustodySnapshot) => CustodySnapshot) =>
+    access(change)
   const pendingFor = (
     state: CustodySnapshot,
     attemptId: string,
@@ -135,7 +176,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
    * no account root at all was staged before roots were kept and cannot be activated.
    */
   const requireAccountRoot = async (account: PublicAccount): Promise<void> => {
-    const stored = await vault.openAccountRoot(account.receipt)
+    const stored = await (await vault()).openAccountRoot(account.receipt)
     try {
       if (stored === null) throw new CustodyError('outdated-attempt')
       if (
@@ -149,7 +190,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
   const historical = (account: PublicAccount) =>
     account.receipt.context.recoveryFormat === BIP39_RECOVERY_FORMAT
   const openBip39Seed = async (account: PublicAccount): Promise<Uint8Array> => {
-    const seed = await vault.openBip39Seed(account.receipt)
+    const seed = await (await vault()).openBip39Seed(account.receipt)
     try {
       if (!seed || bip39Descriptor(seed).descriptor !== account.descriptor)
         throw new CustodyError('conflict')
@@ -164,7 +205,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       const seed = await openBip39Seed(account)
       seed.fill(0)
     } else {
-      wipe(await vault.open(account.receipt))
+      wipe(await (await vault()).open(account.receipt))
       await requireAccountRoot(account)
     }
     check()
@@ -173,7 +214,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
     await authenticateAccount(pending.account)
   }
   const discard = async (pending: PendingChange): Promise<CustodySnapshot> => {
-    await vault.discardIntent(writeIntent(pending.account))
+    await (await vault()).discardIntent(writeIntent(pending.account))
     return update(state => {
       // A delayed duplicate cleanup must not clear a newer pending attempt.
       if (!state.pending || !same(state.pending, pending)) return state
@@ -227,13 +268,16 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
             }
           })
           const pending = pendingFor(state, account.receipt.operationId)
-          const status = await vault.reconcile(account.receipt)
+          const status = await (await vault()).reconcile(account.receipt)
           if (status === 'absent') {
             try {
-              await vault.stage(writeIntent(account), secret)
+              await (await vault()).stage(writeIntent(account), secret)
             } catch (error) {
               // Concurrent same-intent writes and lost acknowledgements resolve by exact receipt.
-              if ((await vault.reconcile(account.receipt)) !== 'committed')
+              if (
+                (await (await vault()).reconcile(account.receipt)) !==
+                'committed'
+              )
                 throw error
             }
           } else if (status !== 'committed') throw new CustodyError('locked')
@@ -263,7 +307,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           await discard(pending)
           return 'discarded'
         }
-        const status = await vault.reconcile(pending.account.receipt)
+        const status = await (await vault()).reconcile(pending.account.receipt)
         if (status !== 'absent' && status !== 'committed')
           throw new CustodyError('locked')
         if (status === 'committed') await authenticated(pending)
@@ -337,7 +381,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           : undefined
         let roots: readonly DomainRoot[] | undefined = seed
           ? undefined
-          : await vault.open(state.active.receipt)
+          : await (await vault()).open(state.active.receipt)
         try {
           const latest = await read()
           if (
@@ -386,7 +430,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
         check()
         const pending = pendingFor(await read(), id(attemptId))
         if (pending.status !== 'staging') throw new CustodyError('conflict')
-        roots = await vault.open(pending.account.receipt)
+        roots = await (await vault()).open(pending.account.receipt)
         if (!same((await read()).pending, pending))
           throw new CustodyError('conflict')
         check()
@@ -419,7 +463,9 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
         check()
         const state = await read()
         if (!state.active) throw new CustodyError('locked')
-        accountRoot = await vault.openAccountRoot(state.active.receipt)
+        accountRoot = await (
+          await vault()
+        ).openAccountRoot(state.active.receipt)
         const latest = await read()
         if (
           latest.revision !== state.revision ||
@@ -437,8 +483,8 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
     close() {
       closed = true
       for (const capability of capabilities) capability.close()
-      vault.close()
-      db.close()
+      openedVault?.close()
+      for (const db of connections) db.close()
     },
   } satisfies AccountCustody)
 }

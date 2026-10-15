@@ -276,6 +276,78 @@ async function restart(phase: string) {
 }
 
 async function regressions() {
+  await test('absent inspection creates no namespaces and observes later authorized creation', async () => {
+    const inventory = async () =>
+      (await indexedDB.databases()).map(db => db.name).sort()
+    const before = await inventory()
+    const reader = await open('read-only-absent')
+    equal(
+      await reader.snapshot(),
+      { schema: 1, revision: 0, active: null, pending: null },
+      'empty public snapshot',
+    )
+    await rejects(() => reader.openActive(), 'locked')
+    equal(
+      await inventory(),
+      before,
+      'read-only custody does not create databases',
+    )
+    const writer = await open('read-only-absent'),
+      input = fixture('read-only-later')
+    await writer.stage(input)
+    await writer.activate(input.attemptId, input.expectedActive)
+    await assertActive(reader, input)
+    erase(input)
+  })
+  await test('close during lazy vault open refuses material and releases late connections', async () => {
+    const ns = 'closed-lazy-vault',
+      writer = await open(ns),
+      input = fixture('closed-lazy-vault')
+    await writer.stage(input)
+    await writer.activate(input.attemptId, input.expectedActive)
+    writer.close()
+    const reader = await open(ns),
+      arrived = deferred(),
+      release = deferred()
+    const original = IDBFactory.prototype.open
+    IDBFactory.prototype.open = function (...args) {
+      const request = original.apply(this, args)
+      if (args[0] === `frank-preview-vault-${ns}`) {
+        let handler:
+          | ((this: IDBOpenDBRequest, event: Event) => unknown)
+          | null = null
+        Object.defineProperty(request, 'onsuccess', {
+          set(value) {
+            handler = value
+          },
+        })
+        request.addEventListener('success', event => {
+          arrived.resolve()
+          void release.promise.then(() => handler?.call(request, event))
+        })
+      }
+      return request
+    }
+    try {
+      const opening = reader.openActive()
+      await arrived.promise
+      reader.close()
+      release.resolve()
+      await rejects(() => opening, 'closed')
+    } finally {
+      release.resolve()
+      IDBFactory.prototype.open = original
+      erase(input)
+    }
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(`frank-preview-vault-${ns}`)
+      request.onsuccess = () => resolve()
+      request.onerror = () => reject(request.error)
+      request.onblocked = () =>
+        reject(new Error('late vault connection leaked'))
+    })
+  })
+
   await test('every rollback boundary retains sufficient evidence and the prior account', async () => {
     for (const boundary of ['mark', 'discard', 'clear'] as const) {
       const api = await open(`rollback-${boundary}`),
@@ -1018,17 +1090,26 @@ async function regressions() {
       return clone.call(this, value, key)
     }
     try {
-      await rejects(
-        () => openAccountCustody({ namespace: 'unsupported-existing' }),
-        'unavailable',
+      const inspecting = await open('unsupported-existing')
+      equal(
+        await inspecting.snapshot(),
+        supportedBefore,
+        'public read requires no key clone',
       )
+      await assertActive(inspecting, supportedInput)
+      const newInput = fixture('unsupported-new', current(supportedBefore), 13)
+      try {
+        await rejects(() => inspecting.stage(newInput), 'unavailable')
+      } finally {
+        erase(newInput)
+      }
     } finally {
       IDBObjectStore.prototype.put = clone
     }
     equal(
-      await supported.snapshot(),
-      supportedBefore,
-      'failed capability probe never changes existing active state',
+      (await supported.snapshot()).active,
+      supportedBefore.active,
+      'failed mutation capability probe never changes existing active account',
     )
     await assertActive(supported, supportedInput)
     erase(supportedInput)

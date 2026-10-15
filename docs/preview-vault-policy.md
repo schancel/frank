@@ -176,8 +176,10 @@ fail authentication. This encoding is private local storage, not a wire format.
 
 ## Capability and process restart
 
-Every facade open generates a non-extractable test key and encrypts the public
-three-byte marker `46 56 01`. It structured-clones the key/IV/ciphertext into the
+Opening and authenticated reads inspect existing storage without creating namespaces
+or running a writable probe. Before its first authorized mutation, each facade
+generates a non-extractable test key and encrypts the public three-byte marker
+`46 56 01`. It structured-clones the key/IV/ciphertext into the
 single `capability` row of the separate IDB v1 database
 `frank-preview-vault-<namespace>.capability`, store `probe`. It closes that database,
 opens it afresh, validates the key/record bounds, and decrypts the marker. This

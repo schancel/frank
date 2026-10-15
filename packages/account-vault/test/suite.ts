@@ -106,11 +106,68 @@ export async function run(phase: string) {
         expected: null, operationId: 'foreign-operation' })), 'conflict')
     }
     equalRoots(await vault.open(intent.receipt), roots())
+    equalBytes(await vault.openAccountRoot(intent.receipt), accountRoot(), 'exact account root survives process restart')
     await nonExtractable('restart', intent.receipt)
     vault.close(); vault.close()
     await fails(() => vault.open(intent.receipt), 'closed')
     return { assertions }
   }
+
+  const inventory = async () => (await indexedDB.databases()).map(db => db.name).sort()
+  const beforeAbsent = JSON.stringify(await inventory())
+  const absentReader = await openPreviewVault({ namespace: 'read-only-absent' })
+  const later = initial('read-only-later')
+  ok(await absentReader.reconcile(later.receipt) === 'absent', 'missing receipt reconciles absent')
+  await fails(() => absentReader.open(later.receipt), 'locked')
+  ok(JSON.stringify(await inventory()) === beforeAbsent, 'absent vault inspection creates no namespace or probe')
+  const laterWriter = await openPreviewVault({ namespace: 'read-only-absent' })
+  await laterWriter.stage(later, accountRoot())
+  equalRoots(await absentReader.open(later.receipt), roots())
+  const storedBefore = JSON.stringify(await row('read-only-absent', 'records', later.receipt.context.creationId))
+  const fencesBefore = JSON.stringify(await row('read-only-absent', 'fences', later.receipt.context.creationId))
+  const probeBefore = await row('read-only-absent.capability', 'probe', 'capability')
+  const probeCiphertext = Array.from(new Uint8Array(probeBefore.ciphertext))
+  const readAgain = await openPreviewVault({ namespace: 'read-only-absent' })
+  equalRoots(await readAgain.open(later.receipt), roots())
+  equalBytes(await readAgain.openAccountRoot(later.receipt), accountRoot(), 'read-only exact account root')
+  ok(await readAgain.reconcile(later.receipt) === 'committed', 'existing receipt remains committed')
+  ok(JSON.stringify(await row('read-only-absent', 'records', later.receipt.context.creationId)) === storedBefore, 'authentication leaves ciphertext byte-identical')
+  ok(JSON.stringify(await row('read-only-absent', 'fences', later.receipt.context.creationId)) === fencesBefore, 'authentication leaves receipt fence unchanged')
+  const probeAfter = await row('read-only-absent.capability', 'probe', 'capability')
+  ok(JSON.stringify(Array.from(new Uint8Array(probeAfter.ciphertext))) === JSON.stringify(probeCiphertext), 'read-only open does not rewrite capability probe')
+  readAgain.close(); absentReader.close(); laterWriter.close()
+
+  // Pause the real writable probe open, then revoke the facade before setup completes.
+  const closedSetup = await openPreviewVault({ namespace: 'closed-setup' })
+  const factoryOpen = IDBFactory.prototype.open
+  let resumeSetup!: () => void, setupArrived!: () => void
+  const setupGate = new Promise<void>(resolve => { resumeSetup = resolve })
+  const setupStarted = new Promise<void>(resolve => { setupArrived = resolve })
+  IDBFactory.prototype.open = function (...args) {
+    const request = factoryOpen.apply(this, args)
+    if (args[0] === 'frank-preview-vault-closed-setup.capability') {
+      let handler: ((this: IDBOpenDBRequest, event: Event) => unknown) | null = null
+      Object.defineProperty(request, 'onsuccess', { set(value) { handler = value } })
+      request.addEventListener('success', event => {
+        setupArrived()
+        void setupGate.then(() => handler?.call(request, event))
+      })
+    }
+    return request
+  }
+  try {
+    const staging = closedSetup.stage(initial('closed-setup'), accountRoot())
+    await setupStarted
+    closedSetup.close(); resumeSetup()
+    await fails(() => staging, 'closed')
+  } finally { resumeSetup(); IDBFactory.prototype.open = factoryOpen }
+  ok(!(await inventory()).includes('frank-preview-vault-closed-setup'), 'closed setup creates no custody namespace')
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase('frank-preview-vault-closed-setup.capability')
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+    request.onblocked = () => reject(new Error('late setup connection leaked'))
+  })
 
   const ns = 'regressions'
   const vault = await openPreviewVault({ namespace: ns })
@@ -122,7 +179,8 @@ export async function run(phase: string) {
   const cancelGate = new Promise<void>(resolve => { resumeCancel = resolve })
   const cancelStarted = new Promise<void>(resolve => { beginCancel = resolve })
   SubtleCrypto.prototype.encrypt = async function (...args: Parameters<SubtleCrypto['encrypt']>) {
-    beginCancel(); await cancelGate; return encryptBeforeCancel.apply(this, args)
+    if (args[2].byteLength > 3) { beginCancel(); await cancelGate }
+    return encryptBeforeCancel.apply(this, args)
   }
   const cancelledStage = vault.stage(cancelled, accountRoot())
   try {
@@ -560,8 +618,11 @@ export async function run(phase: string) {
     if (this.name === 'probe') throw new DOMException('fixture clone failure', 'DataCloneError')
     return originalPut.apply(this, args)
   }
-  try { await fails(() => openPreviewVault({ namespace: 'unsupported' }), 'unavailable') }
-  finally { IDBObjectStore.prototype.put = originalPut }
+  const unsupportedWriter = await openPreviewVault({ namespace: 'unsupported' })
+  try {
+    ok(await unsupportedWriter.reconcile(initial('unsupported').receipt) === 'absent', 'read does not require clone capability')
+    await fails(() => unsupportedWriter.stage(initial('unsupported'), accountRoot()), 'unavailable')
+  } finally { unsupportedWriter.close(); IDBObjectStore.prototype.put = originalPut }
 
   const originalOpen = IDBFactory.prototype.open
   let probeOpens = 0
@@ -569,8 +630,9 @@ export async function run(phase: string) {
     if (args[0].endsWith('-reopen-failure.capability') && ++probeOpens === 2) throw new DOMException('fixture reopen failure')
     return originalOpen.apply(this, args)
   }
-  try { await fails(() => openPreviewVault({ namespace: 'reopen-failure' }), 'unavailable') }
-  finally { IDBFactory.prototype.open = originalOpen }
+  const reopenFailure = await openPreviewVault({ namespace: 'reopen-failure' })
+  try { await fails(() => reopenFailure.stage(initial('reopen-failure'), accountRoot()), 'unavailable') }
+  finally { reopenFailure.close(); IDBFactory.prototype.open = originalOpen }
   ok(probeOpens === 2, 'capability uses actual second IDB open')
   IDBFactory.prototype.open = function (...args: Parameters<IDBFactory['open']>) {
     if (args[0] === 'frank-preview-vault-main-open-failure') throw new DOMException('fixture permission denial')
@@ -612,6 +674,7 @@ export async function run(phase: string) {
   ok(await capped.reconcile(cappedReplacement.receipt) === 'removed', 'live discard and exact retry need no new capacity')
   capped.close()
   const malformed = await openPreviewVault({ namespace: 'malformed' })
+  await malformed.discardIntent(initial('initialize-malformed-fixture'))
   for (const value of [null, false, 0, {}, { revision: 0, receipt: null }]) {
     const item = initial('malformed-fence')
     await change('malformed', 'fences', item.receipt.context.creationId, () => value)

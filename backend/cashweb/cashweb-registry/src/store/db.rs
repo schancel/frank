@@ -292,6 +292,13 @@ impl Db {
         &self.db
     }
 
+    /// Estimated live key/value bytes reported by RocksDB (not filesystem or PVC usage).
+    pub(crate) fn estimated_live_data_size_bytes(&self) -> Result<u64> {
+        self.db
+            .property_int_value("rocksdb.estimate-live-data-size")?
+            .ok_or_else(|| DbError::RocksDb.into())
+    }
+
     /// Location owned by this database; private siblings must not add legacy CFs.
     pub(crate) fn owned_path(&self) -> &Path {
         self.db.path()

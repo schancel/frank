@@ -18,6 +18,11 @@ export const UNIT_RATE_ASSET_METRICS: Record<
   bitcoin: { symbol: '1 BTC', multiplier: 1 },
   bitcoincash: { symbol: '1 BCH', multiplier: 1 },
   dogecoin: { symbol: '1 DOGE', multiplier: 1 },
+  litecoin: { symbol: '1 LTC', multiplier: 1 },
+  bnb: { symbol: '1 BNB', multiplier: 1 },
+  polygon: { symbol: '1 POL', multiplier: 1 },
+  base: { symbol: '1 ETH', multiplier: 1 },
+  arbitrum: { symbol: '1 ETH', multiplier: 1 },
 }
 
 /**

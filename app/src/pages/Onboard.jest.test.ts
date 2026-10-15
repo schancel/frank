@@ -7,7 +7,7 @@ import {
   accountStatus,
 } from '../accounts/session'
 import { useChatStore, setConversationIdSalt } from '../stores/chats'
-import { useContactStore } from '../stores/contacts'
+import { pendingRelayData, useContactStore } from '../stores/contacts'
 import { createRoutes } from '../router/routes'
 import createAppRouter from '../router/index'
 import { setStartupRestoration } from '../boot/startup-state'
@@ -133,6 +133,17 @@ function renderOnboard() {
 }
 
 const PEER_ADDRESS = '0x1111111111111111111111111111111111111111'
+
+function pendingContactNamed(name: string) {
+  return {
+    ...pendingRelayData,
+    profile: {
+      ...pendingRelayData.profile,
+      name,
+      pubKey: null,
+    },
+  }
+}
 
 beforeEach(() => {
   setActivePinia(createPinia())
@@ -305,7 +316,7 @@ describe('Onboard.vue & /onboard route', () => {
       )
       expect(fetchContactSpy).toHaveBeenCalledWith({
         address: PEER_ADDRESS,
-        contact: { name: 'Bob (@bob)' },
+        contact: pendingContactNamed('Bob (@bob)'),
       })
 
       const chatStore = useChatStore()
@@ -322,6 +333,39 @@ describe('Onboard.vue & /onboard route', () => {
       ])
 
       expect(mockPush).toHaveBeenCalledWith(`/chat/${PEER_ADDRESS}`)
+    } finally {
+      view.unmount()
+    }
+  })
+
+  test('activation uses the vault account id when the staged attempt names none', async () => {
+    mockAccount.account = {
+      displayName: 'Alice',
+      descriptor: 'DESC-1',
+      fingerprint: 'fp',
+      receipt: {
+        operationId: 'op-1',
+        context: { accountId: 'vault-account' },
+      },
+    }
+    mockCreateDirect.mockImplementation(async () => {
+      mockAccount.pendingIdentityAddress =
+        '0x9999999999999999999999999999999999999999'
+      return { attemptId: 'attempt-vault' }
+    })
+    mockRoute.query = {
+      peer: PEER_ADDRESS,
+      email: 'alice@gmail.com',
+    }
+
+    const view = renderOnboard()
+    try {
+      await view.get('[data-test="onboard-create-direct"]').trigger('click')
+      await flushPromises()
+      expect(mockSession.activatePending).toHaveBeenCalledWith(
+        'attempt-vault',
+        { revision: 0, accountId: 'vault-account' },
+      )
     } finally {
       view.unmount()
     }
@@ -377,7 +421,7 @@ describe('Onboard.vue & /onboard route', () => {
       expect(mockCreateDirect).not.toHaveBeenCalled()
       expect(fetchContactSpy).toHaveBeenCalledWith({
         address: PEER_ADDRESS,
-        contact: { name: 'Charlie' },
+        contact: pendingContactNamed('Charlie'),
       })
 
       const chatStore = useChatStore()

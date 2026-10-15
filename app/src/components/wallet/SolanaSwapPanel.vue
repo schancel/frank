@@ -445,7 +445,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from 'vue'
 import { formatBaseUnit, parseBaseUnit } from '@frank/wallet/chain/base-unit'
 import {
   openSolanaSwapSession,
@@ -525,7 +532,9 @@ const payMint = ref('')
 const receiveMint = ref('')
 const amountText = ref('')
 const slippageBps = ref(50)
-const quote = ref<SolanaSwapQuote | null>(null)
+// The quote holds a VersionedTransaction. A deep ref would strip that class
+// down to its public fields, so replacement of the whole quote is what updates.
+const quote = shallowRef<SolanaSwapQuote | null>(null)
 const quoting = ref(false)
 const quoteError = ref<{ code: string; detail?: string } | null>(null)
 const reviewing = ref(false)

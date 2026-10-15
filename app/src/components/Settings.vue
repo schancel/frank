@@ -1,6 +1,6 @@
 <template>
   <div>
-    <q-splitter :value="110" unit="px" disable>
+    <q-splitter :model-value="110" unit="px" disable>
       <template #before>
         <q-tabs v-model="tab" vertical class="text-primary">
           <q-tab

@@ -165,7 +165,7 @@ import {
   supportsMeraPasskeys,
 } from '../accounts/mera-passkey'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
-import { useContactStore } from '../stores/contacts'
+import { pendingRelayData, useContactStore } from '../stores/contacts'
 import {
   hasConversationIdSalt,
   setConversationIdSalt,
@@ -338,7 +338,16 @@ async function completeOnboardingMigration() {
     await contactsStore
       .fetchAndAddContact({
         address: canonicalPeer,
-        contact: resolvedPeerName ? { name: resolvedPeerName } : {},
+        contact: resolvedPeerName
+          ? {
+              ...pendingRelayData,
+              profile: {
+                ...pendingRelayData.profile,
+                name: resolvedPeerName,
+                pubKey: null,
+              },
+            }
+          : {},
       })
       .catch(() => undefined)
 
@@ -437,7 +446,7 @@ async function activateStagedAndMigrate(outcome?: {
     'onboard-attempt'
   const expectedActive = pending?.expectedActive ?? {
     revision: account.revision,
-    accountId: account.account?.accountId ?? null,
+    accountId: account.account?.receipt.context.accountId ?? null,
   }
   const identityAddress = account.pendingIdentityAddress
 

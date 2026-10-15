@@ -133,15 +133,15 @@ export default defineComponent({
           return support.status === 'available' && support.entry.id === chain.id
         })
         .map(chain => ({
-          label: `${chain.name} (${chain.symbol})`,
+          label: `${chain.name} (${chain.unit})`,
           value: chain.id,
         }))
     },
     offeredUnit(): string {
-      return PROTOCOL_CHAINS[this.offeredChain]?.symbol || 'MON'
+      return PROTOCOL_CHAINS[this.offeredChain]?.unit || 'MON'
     },
     requestedUnit(): string {
-      return PROTOCOL_CHAINS[this.requestedChain]?.symbol || 'SOL'
+      return PROTOCOL_CHAINS[this.requestedChain]?.unit || 'SOL'
     },
     canOffer(): boolean {
       const offeredNum = parseFloat(this.offeredAmount)

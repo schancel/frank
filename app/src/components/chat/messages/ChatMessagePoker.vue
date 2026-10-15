@@ -133,7 +133,7 @@
     <div class="q-mt-sm">
       <!-- Join Table Button -->
       <q-btn
-        v-if="item.action === 'create' || item.street === 'waiting'"
+        v-if="item.action === 'create' || streetIs(item.street, 'waiting')"
         dense
         no-caps
         color="positive"
@@ -148,7 +148,7 @@
         v-if="
           (item.action === 'create' ||
             item.action === 'join' ||
-            item.street === 'waiting' ||
+            streetIs(item.street, 'waiting') ||
             item.street === 'settled') &&
           canStart
         "
@@ -310,9 +310,14 @@ export default defineComponent({
       return isTurn(props.address)
     })
 
+    // 'waiting' is not a street the hand type names. A table that has not dealt
+    // still arrives with that value, so the comparison stays on the string.
+    const streetIs = (street: string | undefined, value: string): boolean =>
+      street === value
+
     const isActiveHand = computed(() => {
       return (
-        props.item.street !== 'waiting' &&
+        !streetIs(props.item.street, 'waiting') &&
         props.item.street !== 'showdown' &&
         props.item.street !== 'settled'
       )
@@ -400,6 +405,7 @@ export default defineComponent({
       isTurn,
       isMyTurn,
       isActiveHand,
+      streetIs,
       canStart,
       callNeeded,
       sendJoin,

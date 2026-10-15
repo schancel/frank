@@ -926,7 +926,7 @@ function normalizeOutboxWrapper(
       senderAddress: wrapper.senderAddress,
       destinationAddress: recipient,
       items,
-    } as Message,
+    },
   }
 }
 

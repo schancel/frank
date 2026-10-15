@@ -14,13 +14,13 @@
 </template>
 
 <script lang="ts">
-import { defineComponent } from 'vue'
+import { defineComponent, type PropType } from 'vue'
 
 /** Transient stamp-preparation progress while sending. */
 export default defineComponent({
   name: 'ChatBannerStack',
   props: {
-    stampStatus: { type: String, default: null },
+    stampStatus: { type: String as PropType<string | null>, default: null },
   },
 })
 </script>

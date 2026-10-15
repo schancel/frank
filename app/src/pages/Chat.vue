@@ -1614,7 +1614,7 @@ export default defineComponent({
         : 0n
       return formatScreenerStampValue(
         totalWei,
-        this.oracle?.current?.avuPerNative,
+        this.oracle?.current?.rates.monad,
       )
     },
     isDefaultStampMode(): boolean {

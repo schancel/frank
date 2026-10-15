@@ -130,6 +130,7 @@ export default defineComponent({
       displayAddress,
       balanceText,
       exactBalance,
+      loaded,
       isEmpty,
       hasError,
       close() {

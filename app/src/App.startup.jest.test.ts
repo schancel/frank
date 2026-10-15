@@ -302,6 +302,55 @@ describe('visible read-only startup failure', () => {
   })
   afterEach(() => jest.restoreAllMocks())
 
+  it.each(['corrupt', 'read-error'])(
+    'gates actual startup on required chats %s without reconstructing or writing',
+    async kind => {
+      const failure = new Error('required chats IO unavailable')
+      const { app, pinia, storage } = await fixture('en-us')
+      if (kind === 'corrupt')
+        storage.data.set('chats', '{PRIVATE corrupt chats')
+      const originalGet = storage.get.getMockImplementation()!
+      if (kind === 'read-error')
+        storage.get.mockImplementation(async key => {
+          if (key === 'chats') throw failure
+          return originalGet(key)
+        })
+      const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      await setupApis({ app })
+      const chats = useChatStore()
+      if (kind === 'read-error')
+        await expect(chats.restored).rejects.toBe(failure)
+      else await expect(chats.restored).rejects.toBeInstanceOf(SyntaxError)
+      await expect(chats.rehydrate()).rejects.toThrow()
+      storage.get.mockImplementation(originalGet)
+      expect(chats.conversations).toEqual({})
+      expect(startupRestoration.value.phase).toBe('failed')
+      await messagingBoot({ app })
+      const router = createRouter()
+      await router.push('/wallet')
+      await router.isReady()
+      const wrapper = mountedRoot(
+        pinia,
+        router,
+        app.config.globalProperties.$status,
+      )
+      await flushPromises()
+      expect(wrapper.get('main h1').text()).toBe(
+        'Saved data could not be loaded',
+      )
+      expect(wrapper.get('[role="alert"]').text()).not.toContain(
+        'startupFailure.',
+      )
+      expect(wrapper.text()).not.toContain('PRIVATE')
+      expect(wrapper.find('[data-test="route-content"]').exists()).toBe(false)
+      expect(mockInitialize).not.toHaveBeenCalled()
+      expect(mockIdentity).not.toHaveBeenCalled()
+      expect(mockPersistent).not.toHaveBeenCalled()
+      expect(mockRouteSetup).not.toHaveBeenCalled()
+      assertNoWrites(snapshot)
+      wrapper.unmount()
+    },
+  )
   it.each(['corrupt', 'read-error', 'version', 'network'])(
     'gates actual startup on metadata %s without resetting or writing',
     async kind => {

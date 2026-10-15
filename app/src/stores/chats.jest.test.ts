@@ -25,6 +25,16 @@
  */
 import { createPinia, setActivePinia } from 'pinia'
 import { createApp, watch } from 'vue'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import {
+  createStoragePlugin,
+  STORE_SCHEMA_VERSION,
+  type StorageOptions,
+} from '../boot/pinia'
+import { displayNetwork } from '../utils/constants'
+import type { LevelDB } from 'level'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ;(global as any).document = { hasFocus: () => true }
@@ -43,6 +53,7 @@ import {
   NULL_CONVERSATION_NAMESPACE,
   getTrustedEmailGatewayAddress,
   type RestorableState,
+  type State,
   type ChatMessage,
 } from './chats'
 import {
@@ -170,6 +181,183 @@ describe('stores/chats.ts (ticket #42)', () => {
     mockOwnAddress.mockReset()
     mockOwnAddress.mockResolvedValue(SENDER_ADDRESS)
     jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+  })
+
+  describe('required chat metadata IO', () => {
+    function persistence() {
+      let captured: StorageOptions<State> | undefined
+      const pinia = createPinia()
+      pinia.use(({ store, options }) => {
+        if (store.$id === 'chats')
+          captured = options.storage as StorageOptions<State>
+      })
+      createApp({}).use(pinia)
+      const chats = useChatStore(pinia)
+      if (!captured) throw new Error('Chat persistence missing')
+      return { owner: captured, chats }
+    }
+    it.each(['io', 'json'])(
+      'rejects %s before reconstruction or writes',
+      async kind => {
+        const { owner, chats } = persistence()
+        const failure = new Error('chat storage unavailable')
+        const storage = {
+          get:
+            kind === 'io'
+              ? jest.fn().mockRejectedValue(failure)
+              : jest.fn().mockResolvedValue('{corrupt'),
+          put: jest.fn(),
+        } as unknown as LevelDB
+        const restored = owner.restore(
+          storage,
+          { networkName: displayNetwork, version: STORE_SCHEMA_VERSION },
+          chats.$state,
+        )
+        if (kind === 'io') await expect(restored).rejects.toBe(failure)
+        else await expect(restored).rejects.toBeInstanceOf(SyntaxError)
+        expect(mockMessageStore.getIterator).not.toHaveBeenCalled()
+        expect(storage.put).not.toHaveBeenCalled()
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+        expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+      },
+    )
+    it('preserves a genuine closed-Level error without reconstructing', async () => {
+      const level = jest.requireActual(
+        'level/level.js',
+      ) as typeof import('level').default
+      const dir = mkdtempSync(join(tmpdir(), 'frank-chats-closed-'))
+      const db = level(dir)
+      try {
+        await db.put('chats', '{}')
+        await db.close()
+        let original: unknown
+        const get = db.get.bind(db)
+        jest.spyOn(db, 'get').mockImplementation(async key => {
+          try {
+            return await get(key)
+          } catch (error) {
+            original = error
+            throw error
+          }
+        })
+        const { owner, chats } = persistence()
+        const result = owner.restore(
+          db,
+          { networkName: displayNetwork, version: STORE_SCHEMA_VERSION },
+          chats.$state,
+        )
+        await expect(result).rejects.toThrow()
+        await expect(result).rejects.toBe(original)
+        expect(mockMessageStore.getIterator).not.toHaveBeenCalled()
+      } finally {
+        await db.close()
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+    it('round trips actual current chat writer through real Level without hydration writes', async () => {
+      const level = jest.requireActual(
+        'level/level.js',
+      ) as typeof import('level').default
+      const dir = mkdtempSync(join(tmpdir(), 'frank-chats-reopen-'))
+      let db = level(dir)
+      try {
+        const pinia = createPinia()
+        pinia.use(
+          createStoragePlugin(
+            db,
+            Promise.resolve({
+              networkName: displayNetwork,
+              version: STORE_SCHEMA_VERSION,
+            }),
+          ),
+        )
+        createApp({}).use(pinia)
+        const chats = useChatStore(pinia)
+        await chats.restored
+        const conv = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        Object.assign(conv, {
+          name: 'Preserved subject',
+          screenerStatus: 'approved',
+        })
+        const deleted = chats.openDirectConversation(THIRD_ADDRESS)
+        Object.assign(deleted, { name: 'Deleted subject', deletedAt: 50 })
+        chats.activeConversationId = conv.id
+        chats.lastReceived = 123
+        await chats.flushPersistence()
+        const bytes = await db.get('chats')
+        await expect(db.get('storeMetadata')).rejects.toMatchObject({
+          notFound: true,
+        })
+        const wrapper: MessageWrapper = {
+          index: 'pending-proof',
+          copartyAddress: RECIPIENT_ADDRESS,
+          senderAddress: SENDER_ADDRESS,
+          message: {
+            outbound: true,
+            status: 'error',
+            conversationId: conv.id,
+            senderAddress: SENDER_ADDRESS,
+            items: [{ type: 'text', text: 'Original pending payment' }],
+            outpoints: [],
+            serverTime: 100,
+            receivedTime: 100,
+            delivery: {
+              attemptDigest: 'original-attempt',
+              failureReason: 'interrupted',
+            },
+          },
+        }
+        const snapshot = JSON.stringify(wrapper)
+        const { owner: repairOwner, chats: repairStore } = persistence()
+        await db.put('chats', '{corrupt')
+        const hydrationPut = jest.spyOn(db, 'put')
+        await expect(
+          repairOwner.restore(
+            db,
+            { networkName: displayNetwork, version: STORE_SCHEMA_VERSION },
+            repairStore.$state,
+          ),
+        ).rejects.toBeInstanceOf(SyntaxError)
+        expect(hydrationPut).not.toHaveBeenCalled()
+        expect(await db.get('chats')).toBe('{corrupt')
+        await db.put('chats', bytes) // Explicit backing repair, followed by reopen.
+        await db.close()
+        db = level(dir)
+        mockMessageStore.getIterator.mockResolvedValueOnce(
+          (async function* () {
+            yield wrapper
+          })(),
+        )
+        const put = jest.spyOn(db, 'put')
+        const { owner, chats: reopened } = persistence()
+        const restored = await owner.restore(
+          db,
+          { networkName: displayNetwork, version: STORE_SCHEMA_VERSION },
+          reopened.$state,
+        )
+        expect(restored.activeConversationId).toBe(conv.id)
+        expect(restored.lastReceived).toBe(123)
+        expect(restored.conversations?.[conv.id]).toMatchObject({
+          name: 'Preserved subject',
+          screenerStatus: 'approved',
+        })
+        expect(restored.conversations?.[deleted.id]).toMatchObject({
+          name: 'Deleted subject',
+          deletedAt: 50,
+        })
+        expect(
+          restored.messages?.['pending-proof']?.delivery?.attemptDigest,
+        ).toBe('original-attempt')
+        expect(JSON.stringify(wrapper)).toBe(snapshot)
+        expect(await db.get('chats')).toBe(bytes)
+        expect(put).not.toHaveBeenCalled()
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+        expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+      } finally {
+        await db.close()
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
   })
 
   it('releases queued delivery mutations after a strict missing-record rejection', async () => {

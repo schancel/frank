@@ -1,3 +1,5 @@
+import { canonicalPollingFixture } from "@frank/wallet/chain/canonical-polling.testutil";
+import * as canonicalMailbox from "@frank/cashweb/relay/monad-mailbox-client";
 import { fixedStampDefault } from '../../wallet/oracle/stamp-policy.testutil'
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
@@ -266,6 +268,68 @@ describe("FrankBotHost Reliability Features", () => {
   });
 
   describe("Cursor persistence in LevelDB state", () => {
+    it("retains its replay position on an oversized canonical timestamp group", async () => {
+      const fixture = await canonicalPollingFixture();
+      const handled = jest.fn(async () => []);
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/canonical-prefix`,
+      });
+      await host.register({
+        id: "canonical-prefix",
+        getProfile: () => ({ name: "CanonicalPrefix", bot: true }),
+        onMessage: handled,
+      });
+      const instance = host["instances"].get("canonical-prefix")!;
+      const initial = instance.lastPollTimestamp;
+      const persisted = await instance.state.get("cursor:lastPollTimestamp");
+      const page = jest
+        .spyOn(canonicalMailbox, "fetchCanonicalMailboxPage")
+        .mockImplementation(async params => ({
+          records: [fixture.record(initial + 100)],
+          unreadable: [
+            { timestampMs: initial + 100, submissionIdentity: "ab".repeat(32) },
+          ],
+          nextCursor: String(Number(params.cursor ?? 0) + 1),
+        }));
+      mockDirectMessagesFetchSince.mockImplementation(params =>
+        fixture.client.fetchSince(params),
+      );
+      const error = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        await host["pollAllBots"]();
+        await host["pollAllBots"]();
+        expect(
+          mockDirectMessagesFetchSince.mock.calls
+            .slice(-2)
+            .map(([params]) => params.sinceMs),
+        ).toEqual([initial, initial]);
+        expect(instance.lastPollTimestamp).toBe(initial);
+        expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
+          persisted,
+        );
+        expect(handled).not.toHaveBeenCalled();
+        expect(error.mock.calls.flat().join(" ")).toContain(
+          "complete timestamp prefix",
+        );
+        page.mockResolvedValue({ records: [fixture.record(initial + 100)] });
+        const recovered = await fixture.client.fetchSince({
+          wallet: instance.wallet,
+          sinceMs: initial,
+        });
+        expect(recovered).toHaveLength(1);
+        expect(recovered[0].receivedTime).toBe(initial + 100);
+      } finally {
+        page.mockRestore();
+        error.mockRestore();
+        mockDirectMessagesFetchSince.mockResolvedValue([]);
+        await host.stop();
+        await fixture.close();
+      }
+    });
+
     it("retains the cursor after an incomplete fetch rejection and handles the original on recovery", async () => {
       const handled: string[] = [];
       const definition: FrankBotDefinition = {

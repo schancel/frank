@@ -1,3 +1,5 @@
+import { canonicalPollingFixture } from '@frank/wallet/chain/canonical-polling.testutil'
+import * as canonicalMailbox from '@frank/cashweb/relay/monad-mailbox-client'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
 /**
  * Unit tests for `pinia-chain-adapter.ts` (ticket #42): the `DirectMessageReceived` ->
@@ -682,6 +684,46 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
 
       polling.stop()
+    })
+
+    it('retains replay position when the canonical scan has no complete timestamp prefix', async () => {
+      const fixture = await canonicalPollingFixture()
+      const receive = jest
+        .spyOn(useChatStore(), 'receiveMessages')
+        .mockResolvedValue({ suppressedReceipts: [], cancelled: false })
+      const page = jest.spyOn(canonicalMailbox, 'fetchCanonicalMailboxPage')
+      page.mockImplementation(async params => ({
+        records: [fixture.record(100)],
+        unreadable: [{ timestampMs: 100, submissionIdentity: 'ab'.repeat(32) }],
+        nextCursor: String(Number(params.cursor ?? 0) + 1),
+      }))
+      const fetch = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(params => fixture.client.fetchSince(params))
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetch.mock.calls.length >= 2)
+        expect(fetch.mock.calls.every(([params]) => params.sinceMs === 0)).toBe(
+          true,
+        )
+        expect(receive).not.toHaveBeenCalled()
+        expect(mockMessageStore.quarantineRelayReceipts).not.toHaveBeenCalled()
+        expect(useMailboxStatusStore().state).toBe('unreachable')
+        page.mockResolvedValue({
+          records: [],
+          unreadable: [
+            { timestampMs: 100, submissionIdentity: 'ab'.repeat(32) },
+          ],
+        })
+        await advanceUntil(
+          () => mockMessageStore.quarantineRelayReceipts.mock.calls.length > 0,
+        )
+        await advanceUntil(() => fetch.mock.calls.at(-1)![0].sinceMs === 101)
+      } finally {
+        polling.stop()
+        await fixture.close()
+      }
     })
 
     it('retains the replay position and reports repeated unsupported incoming sync fetch failures', async () => {

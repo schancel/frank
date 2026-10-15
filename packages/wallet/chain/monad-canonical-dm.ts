@@ -2263,8 +2263,8 @@ export function projectOutboxMessageRecord(
       outboxItem.stampValueWei !== undefined
         ? BigInt(outboxItem.stampValueWei)
         : record.stampValueWei,
-    receivedTime:
-      outboxItem.sentAt > 0 ? outboxItem.sentAt : record.receivedTime,
+    // The note's sentAt describes the original message, not this mailbox receipt.
+    receivedTime: record.receivedTime,
   }
 }
 
@@ -2321,22 +2321,27 @@ async function fetchSince(
   const self = await directory.selfCurrent()
   const received: DirectMessageReceived[] = []
   const own: ChainAddress = { raw: getAddress(owner.identityAddress) }
+  type RawPage = {
+    records: readonly (
+      | CanonicalMailboxRecord
+      | {
+          delivery: Uint8Array
+          context: Uint8Array
+          submissionIdentity: string
+          timestampMs: number
+          direction?: 'in' | 'out'
+        }
+    )[]
+    unreadable?: readonly { submissionIdentity: string; timestampMs: number }[]
+    nextCursor?: string
+  }
+  const pages: RawPage[] = []
+  const seenCursors = new Set<string>()
   let cursor: string | undefined
+  let greatestTimestamp: number | undefined
+  let truncated: Error | undefined
   for (let pageIndex = 0; pageIndex < MAX_INBOX_PAGES; pageIndex++) {
-    let page: {
-      records: readonly (
-        | CanonicalMailboxRecord
-        | {
-            delivery: Uint8Array
-            context: Uint8Array
-            submissionIdentity: string
-            timestampMs: number
-            direction?: 'in' | 'out'
-          }
-      )[]
-      unreadable?: readonly { submissionIdentity: string; timestampMs: number }[]
-      nextCursor?: string
-    }
+    let page: RawPage
     try {
       page = await fetchCanonicalMailboxPage({
         ...auth,
@@ -2350,7 +2355,7 @@ async function fetchSince(
         (error as { code?: string })?.code === 'mailbox_challenge_capacity'
       ) {
         if (pageIndex === 0) throw error
-        params.onTruncated?.(error as Error)
+        truncated = error as Error
         break
       }
       try {
@@ -2361,19 +2366,69 @@ async function fetchSince(
         })
       } catch {
         if (pageIndex === 0) throw error
-        params.onTruncated?.(error as Error)
+        truncated = error as Error
         break
       }
     }
+    // The transport partitions unreadable rows from records, so validate each ordered list
+    // and the boundary between pages using all raw timestamps, before publishing anything.
+    let pageGreatest = greatestTimestamp
+    for (const rows of [page.records, page.unreadable ?? []]) {
+      let previous = greatestTimestamp
+      for (const row of rows) {
+        if (!Number.isSafeInteger(row.timestampMs) || row.timestampMs < 0)
+          throw new Error('Canonical mailbox read has an invalid timestamp')
+        if (previous !== undefined && row.timestampMs < previous)
+          throw new Error('Canonical mailbox timestamps are out of order')
+        previous = row.timestampMs
+        pageGreatest = Math.max(
+          pageGreatest ?? row.timestampMs,
+          row.timestampMs,
+        )
+      }
+    }
+    greatestTimestamp = pageGreatest
+    pages.push(page)
+    cursor = page.nextCursor
+    if (cursor === undefined) break
+    if (seenCursors.has(cursor))
+      throw new Error('Canonical mailbox read returned a repeated cursor')
+    seenCursors.add(cursor)
+  }
+  if (cursor !== undefined && !truncated)
+    truncated = new Error(
+      `The mailbox read stopped after ${MAX_INBOX_PAGES} pages`,
+    )
+  const eligible = (timestampMs: number) =>
+    !truncated ||
+    (greatestTimestamp !== undefined && timestampMs < greatestTimestamp)
+  if (truncated) {
+    params.onTruncated?.(truncated)
+    if (
+      !pages.some(page =>
+        [...page.records, ...(page.unreadable ?? [])].some(row =>
+          eligible(row.timestampMs),
+        ),
+      )
+    )
+      throw new Error(
+        'Canonical mailbox read has no complete timestamp prefix',
+        { cause: truncated },
+      )
+  }
+  for (const page of pages) {
     // A record this client cannot decode is never a message, never paid and never a received
     // stamp. It is reported as terminal, under the relay's own identity for it, so the host's
     // read position passes it instead of meeting it again on every read.
-    for (const skipped of page.unreadable ?? [])
+    for (const skipped of page.unreadable ?? []) {
+      if (!eligible(skipped.timestampMs)) continue
       params.onQuarantinedTimestamp?.(
         skipped.timestampMs,
         skipped.submissionIdentity,
       )
+    }
     for (const record of page.records) {
+      if (!eligible(record.timestampMs)) continue
       const delivery = parseFrame(record.delivery)
       if (delivery.kind !== 'parsed' || delivery.typed?.type !== 10) continue
       const deliveryTyped = delivery.typed
@@ -2548,25 +2603,6 @@ async function fetchSince(
         ),
       )
     }
-    cursor = page.nextCursor
-    if (cursor === undefined) break
-  }
-  // Stopped at the page limit with more to read: said so, like any other cut-off read, so no
-  // caller takes this for the whole mailbox. The last timestamp may continue on the next page,
-  // so its records are left for the next read (which starts after the last complete one),
-  // unless that would leave nothing to advance on.
-  if (cursor !== undefined) {
-    const last = received.reduce(
-      (latest, message) => Math.max(latest, message.receivedTime ?? 0),
-      0,
-    )
-    const complete = received.filter(
-      message => (message.receivedTime ?? 0) < last,
-    )
-    params.onTruncated?.(
-      new Error(`The mailbox read stopped after ${MAX_INBOX_PAGES} pages`),
-    )
-    if (complete.length > 0) return complete
   }
   return received
 }

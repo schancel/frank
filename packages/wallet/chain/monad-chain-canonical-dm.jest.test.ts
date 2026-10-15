@@ -2686,6 +2686,190 @@ describe('two typed wallets on the open directory', () => {
     },
   )
 
+  describe('bounded canonical polling coverage', () => {
+    async function sentRecord() {
+      await online('alice', f.alice)
+      const bobDirectory = await online('bob', f.bob)
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('complete prefix'),
+        stampValue: 0n,
+      })
+      return { record: inboxRecord(0, 10), bobDirectory }
+    }
+    function read() {
+      const quarantined: number[] = []
+      const incomplete: number[] = []
+      const truncated: Error[] = []
+      const result = f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: 0,
+        onQuarantinedTimestamp: time => void quarantined.push(time),
+        onIncompleteTimestamp: time => void incomplete.push(time),
+        onTruncated: reason => void truncated.push(reason),
+      })
+      return { result, quarantined, incomplete, truncated }
+    }
+    it.each(['page limit', 'later failure'])(
+      'rejects an incomplete timestamp tie on %s without publishing its unreadable tail',
+      async stop => {
+        await sentRecord()
+        for (let index = 1; index < 9; index++)
+          await f.chain.directMessages.send({
+            wallet: f.alice,
+            recipient: f.bob.identity.address,
+            items: text(`tied message ${index}`),
+            stampValue: 0n,
+          })
+        const pages = Array.from({ length: 9 }, (_, page) => ({
+          records: [inboxRecord(page, 10)],
+          unreadable: [
+            { timestampMs: 10, submissionIdentity: 'ab'.repeat(32) },
+          ],
+          ...(page === 8 ? {} : { nextCursor: String(page + 1) }),
+        }))
+        mailboxPage.mockImplementationOnce(async () => pages[0])
+        if (stop === 'page limit') {
+          for (const page of pages.slice(1, 8))
+            mailboxPage.mockResolvedValueOnce(page)
+        } else {
+          mailboxPage.mockRejectedValueOnce(
+            new MonadMailboxChallengeCapacityError('capacity', 100),
+          )
+        }
+        const scan = read()
+        await expect(scan.result).rejects.toThrow(/complete timestamp prefix/)
+        expect(scan.quarantined).toEqual([])
+        expect(scan.incomplete).toEqual([])
+        expect(scan.truncated).toHaveLength(1)
+        expect(mailboxPage).toHaveBeenCalledTimes(stop === 'page limit' ? 8 : 2)
+      },
+    )
+    it.each(['page limit', 'later failure'])(
+      'delivers only the earlier complete group on %s',
+      async stop => {
+        const { record } = await sentRecord()
+        mailboxPage.mockResolvedValueOnce({
+          records: [record],
+          nextCursor: '1',
+        })
+        const count = stop === 'page limit' ? 7 : 1
+        for (let page = 0; page < count; page++)
+          mailboxPage.mockResolvedValueOnce({
+            records: [{ ...record, timestampMs: 20 }],
+            unreadable: [
+              { timestampMs: 20, submissionIdentity: 'ab'.repeat(32) },
+            ],
+            nextCursor: String(page + 2),
+          })
+        if (stop === 'later failure')
+          mailboxPage.mockRejectedValueOnce(
+            new MonadMailboxChallengeCapacityError('capacity', 100),
+          )
+        const scan = read()
+        const messages = await scan.result
+        expect(messages.map(message => message.receivedTime)).toEqual([10])
+        expect(messages[0].items).toEqual(text('complete prefix'))
+        expect(scan.quarantined).toEqual([])
+        expect(scan.truncated).toHaveLength(1)
+      },
+    )
+    it('uses all-unreadable raw groups to establish a complete prefix', async () => {
+      await sentRecord()
+      mailboxPage.mockResolvedValueOnce({
+        records: [],
+        unreadable: [{ timestampMs: 10, submissionIdentity: 'aa'.repeat(32) }],
+        nextCursor: '1',
+      })
+      for (let page = 1; page < 8; page++)
+        mailboxPage.mockResolvedValueOnce({
+          records: [],
+          unreadable: [
+            { timestampMs: 20, submissionIdentity: 'ab'.repeat(32) },
+          ],
+          nextCursor: String(page + 1),
+        })
+      const scan = read()
+      expect(await scan.result).toEqual([])
+      expect(scan.quarantined).toEqual([10])
+      expect(scan.truncated).toHaveLength(1)
+    })
+    it('keeps a missing directory entry incomplete only inside the proven prefix', async () => {
+      const { record, bobDirectory } = await sentRecord()
+      installCanonicalDirectory(f.bob, {
+        ...bobDirectory,
+        fetch: f.fetch,
+        peerCurrent: jest.fn().mockResolvedValue(undefined),
+      })
+      mailboxPage.mockResolvedValueOnce({ records: [record], nextCursor: '1' })
+      for (let page = 1; page < 8; page++)
+        mailboxPage.mockResolvedValueOnce({
+          records: [{ ...record, timestampMs: 20 }],
+          nextCursor: String(page + 1),
+        })
+      const scan = read()
+      expect(await scan.result).toEqual([])
+      expect(scan.incomplete).toEqual([10])
+      expect(scan.quarantined).toEqual([])
+    })
+    it('rejects a repeated cursor without publishing completion', async () => {
+      const { record } = await sentRecord()
+      mailboxPage.mockResolvedValueOnce({
+        records: [record],
+        nextCursor: 'same',
+      })
+      mailboxPage.mockResolvedValueOnce({
+        records: [],
+        unreadable: [{ timestampMs: 20, submissionIdentity: 'ab'.repeat(32) }],
+        nextCursor: 'same',
+      })
+      const scan = read()
+      await expect(scan.result).rejects.toThrow(/repeated cursor/)
+      expect(scan.quarantined).toEqual([])
+      expect(mailboxPage).toHaveBeenCalledTimes(2)
+    })
+    it.each([NaN, -1, 1.5])(
+      'rejects malformed raw timestamp %s before completion',
+      async timestampMs => {
+        await sentRecord()
+        mailboxPage.mockResolvedValueOnce({
+          records: [],
+          unreadable: [{ timestampMs, submissionIdentity: 'ab'.repeat(32) }],
+        })
+        const scan = read()
+        await expect(scan.result).rejects.toThrow(/timestamp/)
+        expect(scan.quarantined).toEqual([])
+      },
+    )
+    it('rejects regressing page timestamps before completion', async () => {
+      const { record } = await sentRecord()
+      mailboxPage.mockResolvedValueOnce({ records: [record], nextCursor: '1' })
+      mailboxPage.mockResolvedValueOnce({
+        records: [{ ...record, timestampMs: 9 }],
+      })
+      const scan = read()
+      await expect(scan.result).rejects.toThrow(/order/)
+      expect(scan.quarantined).toEqual([])
+    })
+    it('propagates quarantine callback failure in a complete prefix', async () => {
+      await sentRecord()
+      mailboxPage.mockResolvedValueOnce({
+        records: [],
+        unreadable: [{ timestampMs: 10, submissionIdentity: 'ab'.repeat(32) }],
+      })
+      await expect(
+        f.chain.directMessages.fetchSince({
+          wallet: f.bob,
+          sinceMs: 0,
+          onQuarantinedTimestamp: () => {
+            throw new Error('receipt persistence failed')
+          },
+        }),
+      ).rejects.toThrow('receipt persistence failed')
+    })
+  })
+
   it.each([false, true])(
     'projects a self note (outbox=%s) without misattributing its content digest',
     async outbox => {
@@ -2716,6 +2900,7 @@ describe('two typed wallets on the open directory', () => {
           wallet: f.alice,
           sinceMs: 0,
         })
+        expect(projected.receivedTime).toBe(100)
         expect(opened.mock.results[0].value.contentDigest).toHaveLength(32)
         if (!outbox) {
           expect(projected.contentDigest).toBe(

@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { spawnSync, fork } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import level, { type LevelDB } from "level";
@@ -15,6 +16,66 @@ function deferred() {
     resolve = done;
   });
   return { promise, resolve };
+}
+function childOwner(root: string) {
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", join(__dirname, "native-owner-child.cjs"), root],
+    {
+      encoding: "utf8",
+      timeout: 10000,
+      env: {
+        ...process.env,
+        TSX_TSCONFIG_PATH: join(__dirname, "../../tsconfig.json"),
+        TSX_DISABLE_CACHE: "1",
+      },
+    }
+  );
+  expect(result.error).toBeUndefined();
+  expect(result.signal).toBeNull();
+  expect(result.stderr).toBe("");
+  const body = JSON.parse(result.stdout);
+  expect(result.status).toBe(body.status === "locked" ? 2 : 0);
+  return body;
+}
+async function withChildOwner(root: string, work: () => Promise<void>) {
+  const child = fork(
+    join(__dirname, "native-owner-child.cjs"),
+    [root, "--hold"],
+    {
+      execArgv: ["--import", "tsx"],
+      silent: true,
+      env: {
+        ...process.env,
+        TSX_TSCONFIG_PATH: join(__dirname, "../../tsconfig.json"),
+        TSX_DISABLE_CACHE: "1",
+      },
+    }
+  );
+  let stderr = "";
+  child.stderr!.on("data", (value) => {
+    stderr += value;
+  });
+  const exited = new Promise<number | null>((resolve) =>
+    child.once("exit", resolve)
+  );
+  const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+  try {
+    const ready = await new Promise((resolve) => {
+      child.once("message", resolve);
+      child.once("exit", () => resolve({ status: "unexpected exit", stderr }));
+      child.once("error", (error) =>
+        resolve({ status: "spawn error", error: error.message })
+      );
+    });
+    expect(ready).toEqual({ status: "opened", ledger: fixture() });
+    await work();
+  } finally {
+    if (child.connected) child.send("release");
+    expect(await exited).toBe(0);
+    clearTimeout(timer);
+    expect(stderr).toBe("");
+  }
 }
 function raw(location: string): Promise<LevelDB> {
   return new Promise((resolve, reject) => {
@@ -72,6 +133,129 @@ describe("actual native Level eCash operation authority", () => {
     expect((await reopened.get(reopened.walletKey))!.nextChangeIndex).toBe(2);
   });
 
+  it("does not claim an absent read and rejected cleanup cannot release a later owner", async () => {
+    const absent = await owner();
+    expect(await absent.get(absent.walletKey)).toBeUndefined();
+    expect(await fs.readdir(root)).toEqual([]);
+    const first = await owner();
+    await first.put(first.walletKey, fixture());
+    await expect(absent.get(absent.walletKey)).rejects.toThrow("already owned");
+    await absent.close();
+    expect(childOwner(root)).toEqual({ status: "locked" });
+    await first.close();
+    const reopened = await owner();
+    expect(await reopened.get(reopened.walletKey)).toEqual(fixture());
+  });
+
+  it("excludes competing initialization before creating the namespace without releasing the first claim", async () => {
+    const first = await owner();
+    const gate = deferred(),
+      started = deferred(),
+      mkdir = io.mkdir;
+    jest
+      .spyOn(io, "mkdir")
+      .mockImplementation(async (...args: Parameters<typeof fs.mkdir>) => {
+        started.resolve();
+        await gate.promise;
+        return mkdir(...args);
+      });
+    const writing = first.put(first.walletKey, fixture());
+    await started.promise;
+    const second = await owner();
+    await expect(second.put(second.walletKey, fixture())).rejects.toThrow(
+      "already owned"
+    );
+    await second.close();
+    expect(await fs.readdir(root)).toEqual([]);
+    gate.resolve();
+    await writing;
+    expect(childOwner(root)).toEqual({ status: "locked" });
+    await first.close();
+    jest.restoreAllMocks();
+    const other = await owner();
+    expect(await other.get(other.walletKey)).toEqual(fixture());
+  });
+
+  it("releases its own claim after constructor failure cleanup without changing ledger bytes", async () => {
+    const first = await owner();
+    await first.put(first.walletKey, fixture());
+    await first.close();
+    jest.doMock("level", () => ({
+      __esModule: true,
+      default: jest
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error("constructor failed");
+        })
+        .mockImplementation(jest.requireActual("level")),
+    }));
+    let isolated!: typeof createNativeEcashOperationStore;
+    try {
+      jest.isolateModules(() => {
+        isolated = require("./native").createNativeEcashOperationStore;
+      });
+      const failed = await isolated({ ...binding, rootLocation: root });
+      stores.push(failed);
+      await expect(failed.get(failed.walletKey)).rejects.toThrow(
+        "constructor failed"
+      );
+      await failed.close();
+      const reopened = await isolated({ ...binding, rootLocation: root });
+      stores.push(reopened);
+      expect(await reopened.get(reopened.walletKey)).toEqual(fixture());
+      await reopened.close();
+    } finally {
+      jest.dontMock("level");
+    }
+  });
+
+  it("cleans an actual OS-lock open failure and releases only its own claim", async () => {
+    const first = await owner();
+    await first.put(first.walletKey, fixture());
+    await first.close();
+    await withChildOwner(root, async () => {
+      const failed = await owner();
+      await expect(failed.get(failed.walletKey)).rejects.toThrow(
+        /lock .*LOCK:/i
+      );
+      await failed.close();
+      const retry = await owner();
+      // A real Level lock error, rather than a stale module claim, proves failed-open cleanup released its token.
+      await expect(retry.get(retry.walletKey)).rejects.toThrow(/lock .*LOCK:/i);
+      await retry.close();
+    });
+    const reopened = await owner();
+    expect(await reopened.get(reopened.walletKey)).toEqual(fixture());
+  });
+
+  it("retains a failed cleanup fence and exposes the error without unlocking the live database", async () => {
+    const first = await owner();
+    await first.put(first.walletKey, fixture());
+    let handle!: LevelDB;
+    const prototype = (require("levelup") as { prototype: LevelDB }).prototype;
+    const closing = jest
+      .spyOn(prototype, "close")
+      .mockImplementationOnce(function (this: LevelDB) {
+        handle = this;
+        return Promise.reject(new Error("cleanup uncertain"));
+      });
+    try {
+      const rejected = first.close();
+      expect(first.close()).toBe(rejected);
+      await expect(rejected).rejects.toThrow("cleanup uncertain");
+      const second = await owner();
+      await expect(second.get(second.walletKey)).rejects.toThrow(
+        "already owned"
+      );
+      await second.close();
+      expect(childOwner(root)).toEqual({ status: "locked" });
+    } finally {
+      closing.mockRestore();
+      // Only this test's captured real handle: clean the synthetic DB without claiming facade recovery.
+      await handle.close();
+    }
+  });
+
   it("fsyncs the namespace after every actual open/recovery, and its parent on creation", async () => {
     const calls: string[] = [];
     const open = io.open;
@@ -99,13 +283,21 @@ describe("actual native Level eCash operation authority", () => {
   it("rejects competing native owners even through a physical-root alias", async () => {
     const first = await owner();
     await first.put(first.walletKey, fixture());
+    expect(childOwner(root)).toEqual({ status: "locked" });
     const alias = join(root, "root-alias");
     await fs.symlink(root, alias);
     const second = await owner(alias);
     await expect(second.get(second.walletKey)).rejects.toThrow();
     await expect(second.get(second.walletKey)).rejects.toThrow("poisoned");
     await second.close();
+    // The original owner is deliberately still live: failed duplicate cleanup must not unlock it.
+    expect(childOwner(root)).toEqual({ status: "locked" });
+    expect(await first.get(first.walletKey)).toEqual(fixture());
     await first.close();
+    expect(childOwner(root)).toEqual({ status: "opened", ledger: fixture() });
+    const bytes = await raw(join(await fs.realpath(root), first.namespace));
+    expect(await bytes.get(LEDGER_KEY)).toBe(JSON.stringify(fixture()));
+    await bytes.close();
     const qualified = await owner();
     expect(await qualified.get(qualified.walletKey)).toEqual(fixture());
   });
@@ -191,6 +383,12 @@ describe("actual native Level eCash operation authority", () => {
     const closing = store.close();
     expect(store.close()).toBe(closing);
     await expect(store.get(store.walletKey)).rejects.toThrow("closed");
+    const competing = await owner();
+    await expect(competing.get(competing.walletKey)).rejects.toThrow(
+      "already owned"
+    );
+    await competing.close();
+    expect(childOwner(root)).toEqual({ status: "locked" });
     gate.resolve();
     await writing;
     expect(await reading).toEqual(fixture());
@@ -226,5 +424,10 @@ describe("actual native Level eCash operation authority", () => {
       ).rejects.toThrow("poisoned");
       await malformed.close();
     }
+    const restored = await raw(location);
+    await restored.put(LEDGER_KEY, JSON.stringify(fixture()), { sync: true });
+    await restored.close();
+    const qualified = await owner();
+    expect(await qualified.get(qualified.walletKey)).toEqual(fixture());
   });
 });

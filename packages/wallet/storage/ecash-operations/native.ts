@@ -14,6 +14,10 @@ import {
   type OwnedEcashOperationStore,
 } from "./common";
 
+// Loaded-module guard only; Level's OS lock still excludes independent processes.
+// Avoid constructing a duplicate handle: its failed-open cleanup can drop a live owner's POSIX lock.
+const owners = new Map<string, symbol>();
+
 async function syncDirectory(path: string): Promise<void> {
   const handle = await fs.open(path, "r");
   try {
@@ -49,6 +53,7 @@ export async function createNativeEcashOperationStore(
   const location = join(root, namespace);
   const queue = new StoreQueue();
   let database: LevelDB | undefined;
+  const owner = Symbol("eCash Level owner");
 
   async function inspect(): Promise<boolean> {
     let stat;
@@ -94,8 +99,14 @@ export async function createNativeEcashOperationStore(
 
   async function open(create: boolean): Promise<LevelDB | undefined> {
     if (database) return database;
+    if (owners.has(location))
+      throw new Error("eCash Level namespace already owned");
     let exists = await inspect();
     if (!exists && !create) return undefined;
+    // inspect yields; the check-and-claim itself must not yield before first initialization.
+    if (owners.has(location))
+      throw new Error("eCash Level namespace already owned");
+    owners.set(location, owner);
     let created = false;
     if (!exists) {
       try {
@@ -155,6 +166,8 @@ export async function createNativeEcashOperationStore(
     close: () =>
       queue.close(async () => {
         if (database) await database.close();
+        // Failed cleanup leaves ownership fenced and the close rejection observable.
+        if (owners.get(location) === owner) owners.delete(location);
       }),
   };
 }

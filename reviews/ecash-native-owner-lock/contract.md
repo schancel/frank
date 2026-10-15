@@ -1,0 +1,19 @@
+# Preserve native eCash exclusive ownership after duplicate-open rejection
+
+Root-authored repair contract. Base `7da57168a500fe2f1da3fc72cd0d18ad653d9797`; worktree `.worktrees/ecash-native-owner-lock`, branch `fix/ecash-native-owner-lock`. Parent owns contract, independent review and local integration; implementation assigned to GPT-6.1 Sol medium per owner instruction. No release authority.
+
+## Confirmed regression and outcome
+
+Independent verification using the actual eCash adapter and installed Level 7.0.1 establishes: first owner writes; a child cannot acquire its DB; a second same-process adapter rejects opening; closing the rejected adapter then lets a child acquire the DB while the first owner remains live. The existing native test closes the first owner too early to detect this. Evidence and probe are retained at `/var/folders/j3/nh8wltcx7l58w2gw1ycc_ryr0000gn/T/ecash-lock-review-s5VXCD/` as investigation artifacts, not implementation authority.
+
+Preserve the actual first owner's OS lock by preventing a duplicate same-process Level construction. Add a private module-level canonical-location ownership guard in the native adapter. Acquire before any Level construction/open, with an owner-specific token; reject a competing adapter without constructing or closing a Level handle. Existing canonical root resolution makes physical-root aliases contend on the same location. Keep Level's actual OS lock for separate processes; a JavaScript map is not its replacement.
+
+Release only the acquiring owner's token after its actual handle cleanup succeeds. A rejected duplicate must never release another owner's claim. Keep uncertain failed cleanup fenced, with an observable error; do not release optimistically. Cover construction/open failure, post-open validation/fsync failure and close while work is queued. Preserve the existing StoreQueue's poison/drain semantics, lazy absent reads with no DB/default creation, immutable binding checks and durable ledger writes. An absent read must not reserve an unopened namespace indefinitely. Scope the guard honestly to users of this loaded module; independently duplicated module copies or unrelated raw Level callers are not thereby coordinated.
+
+## Boundary and scope
+
+Current and target owner remain `createNativeEcashOperationStore`; custody, ledger schema, operation reservations and spend state do not change. Allowed production file: `packages/wallet/storage/ecash-operations/native.ts`. Allowed tests: its existing `native.jest.test.ts` and a narrowly needed child-process fixture alongside it. Evidence under `reviews/ecash-native-owner-lock/`. No browser/common-queue changes, dependency updates, migrations, new package, generic lock framework, other storage adapters, financial actions or source changes in sibling worktrees. Escalate any required expansion to parent.
+
+Required fail-before/pass-after test uses actual Level and actual adapter: first owner remains open, rejected same-process owner is closed, child still cannot open; after first owner closes, fresh ownership succeeds and original ledger remains exact. Include canonical-root aliases, competing first initialization, absent-read behavior, failed-open cleanup and queued close/reopen. Existing native durability and restart tests must remain green. Do not use a mocked LOCK result as exclusivity evidence.
+
+Run affected wallet native/storage gates, all configured `yarn typecheck:fast`, scoped format and diff checks. Temporary synthetic databases and owned child processes only, installed dependencies only; no public/funded operations, broad cleanup, push, main merge or deploy. Capture exact source, commands, failed regression and passed gates. Reversal changes source only and must preserve all ledger bytes. The proof does not cover other adapters; those require their own evidence and scope. Freeze a clean candidate for independent review, with parent retaining integration authority.

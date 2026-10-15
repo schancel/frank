@@ -48,7 +48,7 @@ const terms: StateChannelPairTerms = {
 const identity: Parameters<typeof validateStateChannelPairTerms>[1] = (
   chain,
   checkpoint,
-  custody
+  custody,
 ) =>
   (chain === 'xec-regtest' &&
     checkpoint.hash === h(3) &&
@@ -84,7 +84,7 @@ const event = (e: WithoutHash<PairEvent>): PairEvent =>
 const apply = (
   s: ReturnType<typeof initialPairState>,
   e: PairEvent,
-  t = terms
+  t = terms,
 ) => reduceStateChannelPair(t, s, e, identity)
 const funded = () => ({
   ...initialPairState(terms.termsHash),
@@ -98,7 +98,7 @@ it('admits safe independent-refund topology and anchors horizon to opening, not 
   expect(validateStateChannelPairTerms(terms, identity)).toEqual([])
   expect(earliestEvmRefund(terms)).toBe(500001000n)
   expect(canReleaseXecClaim(terms, funded(), prepared, now, identity)).toBe(
-    true
+    true,
   )
   const challenged = apply(
     funded(),
@@ -106,22 +106,22 @@ it('admits safe independent-refund topology and anchors horizon to opening, not 
       source: 'local-observer',
       kind: 'challenge',
       expiry: earliestEvmRefund(terms) + 500n,
-    })
+    }),
   )
   expect(
-    canReleaseXecClaim(terms, challenged, prepared, 500000900n, identity)
+    canReleaseXecClaim(terms, challenged, prepared, 500000900n, identity),
   ).toBe(false)
   expect(
     validateStateChannelPairTerms(
       { ...terms, challengeDuration: 850n },
-      identity
-    )
+      identity,
+    ),
   ).toContain('unsafe-horizon')
   expect(
     validateStateChannelPairTerms(
       { ...terms, challengeDuration: 851n },
-      identity
-    )
+      identity,
+    ),
   ).toEqual([])
   for (const patch of [
     { participants: [a(7), a(9)] as const },
@@ -131,22 +131,22 @@ it('admits safe independent-refund topology and anchors horizon to opening, not 
     { lockOwner: 'A' as 'B' },
   ])
     expect(
-      validateStateChannelPairTerms({ ...terms, ...patch }, identity)
+      validateStateChannelPairTerms({ ...terms, ...patch }, identity),
     ).toContain('custody-topology')
   expect(
     validateStateChannelPairTerms(
       { ...terms, evmNativeChainId: 143n },
-      identity
-    )
+      identity,
+    ),
   ).toContain('chain-identity')
   expect(
-    validateStateChannelPairTerms({ ...terms, runtimeHash: h(99) }, identity)
+    validateStateChannelPairTerms({ ...terms, runtimeHash: h(99) }, identity),
   ).toContain('chain-identity')
   expect(
     validateStateChannelPairTerms(
       { ...terms, xecCheckpoint: { height: 1n, hash: h(99) } },
-      identity
-    )
+      identity,
+    ),
   ).toContain('chain-identity')
 })
 it('rejects incomplete, mismatched, interrupted or unsafe release before effects', () => {
@@ -171,8 +171,8 @@ it('rejects incomplete, mismatched, interrupted or unsafe release before effects
         funded(),
         { ...prepared, ...patch },
         now,
-        identity
-      )
+        identity,
+      ),
     ).toBe(false)
   expect(
     canReleaseXecClaim(
@@ -180,11 +180,11 @@ it('rejects incomplete, mismatched, interrupted or unsafe release before effects
       { ...funded(), evmFundingFinal: false },
       prepared,
       now,
-      identity
-    )
+      identity,
+    ),
   ).toBe(false)
   expect(
-    canReleaseXecClaim(terms, funded(), prepared, now + 11n, identity)
+    canReleaseXecClaim(terms, funded(), prepared, now + 11n, identity),
   ).toBe(false)
   expect(() =>
     apply(
@@ -194,8 +194,8 @@ it('rejects incomplete, mismatched, interrupted or unsafe release before effects
         kind: 'completion-released',
         prepared: { ...prepared, xecPresignatureStored: false },
         now,
-      })
-    )
+      }),
+    ),
   ).toThrow('disclosure')
   const released = apply(
     funded(),
@@ -204,24 +204,24 @@ it('rejects incomplete, mismatched, interrupted or unsafe release before effects
       kind: 'completion-released',
       prepared,
       now,
-    })
+    }),
   )
   expect(released.completionReleased).toBe(true)
   expect(canReleaseXecClaim(terms, released, prepared, now, identity)).toBe(
-    false
+    false,
   )
   expect(() =>
     apply(funded(), {
       source: 'peer',
       termsHash: terms.termsHash,
       kind: 'secret-observed',
-    } as unknown as PairEvent)
+    } as unknown as PairEvent),
   ).toThrow('peer assertion')
 })
 it('keeps secret knowledge through replaced/mempool/reorged claims and rolls back finality', () => {
   let state = apply(
     funded(),
-    event({ source: 'local-observer', kind: 'secret-observed' })
+    event({ source: 'local-observer', kind: 'secret-observed' }),
   )
   expect(state.secretKnown).toBe(true)
   expect(classifyObservedSettlement(state)).toBe('pending')
@@ -235,7 +235,7 @@ it('keeps secret knowledge through replaced/mempool/reorged claims and rolls bac
         effect: 'claim',
         final: true,
         revertedDepth: 0n,
-      })
+      }),
     )
   expect(classifyObservedSettlement(state)).toBe('complete')
   state = apply(
@@ -247,7 +247,7 @@ it('keeps secret knowledge through replaced/mempool/reorged claims and rolls bac
       effect: 'none',
       final: false,
       revertedDepth: 2n,
-    })
+    }),
   )
   expect(state.secretKnown).toBe(true)
   expect(classifyObservedSettlement(state)).toBe('partial')
@@ -260,7 +260,7 @@ it('keeps secret knowledge through replaced/mempool/reorged claims and rolls bac
       effect: 'none',
       final: false,
       revertedDepth: 3n,
-    })
+    }),
   )
   expect(state.secretKnown).toBe(true)
   expect(classifyObservedSettlement(state)).toBe('loss-or-envelope-violation')
@@ -268,10 +268,10 @@ it('keeps secret knowledge through replaced/mempool/reorged claims and rolls bac
 it('retains the known theft counterexample when unsafe horizon admission is bypassed', () => {
   const unsafe = { ...terms, challengeDuration: 100n }
   expect(validateStateChannelPairTerms(unsafe, identity)).toContain(
-    'unsafe-horizon'
+    'unsafe-horizon',
   )
   expect(canReleaseXecClaim(unsafe, funded(), prepared, now, identity)).toBe(
-    false
+    false,
   )
   // Negative control: success signature never expires. B refunds MON at open+D,
   // then discloses XEC success before an offline A has finalized its refund.
@@ -285,12 +285,12 @@ it('retains the known theft counterexample when unsafe horizon admission is bypa
       final: true,
       revertedDepth: 0n,
     }),
-    unsafe
+    unsafe,
   )
   exploited = apply(
     exploited,
     event({ source: 'local-observer', kind: 'secret-observed' }),
-    unsafe
+    unsafe,
   )
   exploited = apply(
     exploited,
@@ -302,10 +302,10 @@ it('retains the known theft counterexample when unsafe horizon admission is bypa
       final: true,
       revertedDepth: 0n,
     }),
-    unsafe
+    unsafe,
   )
   expect(classifyObservedSettlement(exploited)).toBe(
-    'loss-or-envelope-violation'
+    'loss-or-envelope-violation',
   )
   expect(exploited.secretKnown).toBe(true)
 })
@@ -318,7 +318,7 @@ it('rejects the joint key as XEC refund authority even when the preparation flag
     aRefundPublicKey: `0x${joint.slice(2).toUpperCase()}`,
   }
   expect(validateStateChannelPairTerms(forbidden, identity)).toContain(
-    'custody-topology'
+    'custody-topology',
   )
   expect(
     canReleaseXecClaim(
@@ -326,13 +326,13 @@ it('rejects the joint key as XEC refund authority even when the preparation flag
       funded(),
       { ...prepared, jointPublicKey: joint, independentRefundKeys: true },
       now,
-      identity
-    )
+      identity,
+    ),
   ).toBe(false)
 })
 it.each(['digest', 'session'] as const)(
   'compares %s identity by hex bytes, independent of letter case',
-  (kind) => {
+  kind => {
     const lower = h(0xabcdef)
     const upper = `0x${lower.slice(2).toUpperCase()}`
     const patch =
@@ -345,8 +345,8 @@ it.each(['digest', 'session'] as const)(
         funded(),
         { ...prepared, ...patch },
         now,
-        identity
-      )
+        identity,
+      ),
     ).toBe(false)
-  }
+  },
 )

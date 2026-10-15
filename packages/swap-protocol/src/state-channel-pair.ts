@@ -56,8 +56,8 @@ export function validateStateChannelPairTerms(
       readonly address: string
       readonly runtimeHash: string
       readonly nativeChainId: bigint
-    }
-  ) => boolean
+    },
+  ) => boolean,
 ): readonly string[] {
   const errors: string[] = []
   if (
@@ -81,7 +81,7 @@ export function validateStateChannelPairTerms(
       terms.aPayout,
     ].every(address) ||
     ![terms.jointPublicKey, terms.adaptorPoint, terms.aRefundPublicKey].every(
-      pubkey
+      pubkey,
     ) ||
     !terms.bXecDestination
   )
@@ -216,7 +216,7 @@ export function canReleaseXecClaim(
   state: PairState,
   prepared: PairPreparedPackage,
   now: bigint,
-  identity: Parameters<typeof validateStateChannelPairTerms>[1]
+  identity: Parameters<typeof validateStateChannelPairTerms>[1],
 ): boolean {
   if (
     validateStateChannelPairTerms(terms, identity).length ||
@@ -278,7 +278,7 @@ export function reduceStateChannelPair(
   terms: StateChannelPairTerms,
   state: PairState,
   event: PairEvent,
-  identity: Parameters<typeof validateStateChannelPairTerms>[1]
+  identity: Parameters<typeof validateStateChannelPairTerms>[1],
 ): PairState {
   if (
     event.termsHash !== terms.termsHash ||
@@ -345,7 +345,7 @@ export function reduceStateChannelPair(
   }
 }
 export function classifyObservedSettlement(
-  state: PairState
+  state: PairState,
 ):
   | 'pending'
   | 'complete'

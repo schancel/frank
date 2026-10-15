@@ -327,7 +327,8 @@ export async function fetchChainBalance(
         : openUtxoWallet(chainIdentifier))
       if (!isCurrent()) return
       const formatter = adapter ?? network
-      const observed = wallet.getBalanceObservation?.()
+      const observed = await wallet.getBalanceObservation?.()
+      if (!isCurrent()) return
       if (observed) {
         secondaryStates[chainIdentifier] = {
           revision,
@@ -345,6 +346,8 @@ export async function fetchChainBalance(
       // Every address the wallet owns, not one address.
       const balance = await wallet.getBalance()
       if (!isCurrent()) return
+      const refreshedObservation = await wallet.getBalanceObservation?.()
+      if (!isCurrent()) return
       adapter?.getWallet().setCachedBalance(balance)
       secondaryStates[chainIdentifier] = {
         revision,
@@ -355,7 +358,7 @@ export async function fetchChainBalance(
         loaded: true,
         hasError: false,
         ...(wallet.getBalanceObservation
-          ? { observedAt: wallet.getBalanceObservation()?.observedAt }
+          ? { observedAt: refreshedObservation?.observedAt }
           : {}),
       }
     } catch (err) {

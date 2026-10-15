@@ -476,7 +476,7 @@ describe("createChain", () => {
         displayAddress: "foreign",
       },
       getReceiveAddress: jest.fn(async () => ({ raw: "foreign" })),
-      getUnresolvedNativeTransaction: jest.fn(),
+      getUnresolvedNativeTransaction: jest.fn().mockResolvedValue(undefined),
       retryUnresolvedNativeTransaction: jest.fn(),
       resolveUnresolvedNativeTransaction: jest.fn(),
       getBalance: jest.fn().mockResolvedValue(123n),

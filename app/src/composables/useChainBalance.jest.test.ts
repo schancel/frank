@@ -56,6 +56,9 @@ const mockUtxoObservations: Record<
   string,
   { balance: bigint; observedAt: number } | undefined
 > = {}
+const mockGetUtxoObservation = jest.fn(
+  async (chainIdentifier: string) => mockUtxoObservations[chainIdentifier],
+)
 const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => {
   const getBalance = mockUtxoBalances[chainIdentifier]
   if (!getBalance)
@@ -71,7 +74,7 @@ const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => {
     },
     wallet: {
       getBalance,
-      getBalanceObservation: () => mockUtxoObservations[chainIdentifier],
+      getBalanceObservation: () => mockGetUtxoObservation(chainIdentifier),
     },
   }
 })
@@ -220,11 +223,15 @@ describe('useChainBalance', () => {
       status: 'available',
       observation: { balance: 200_000n, observedAt: 1234, stale: true },
     })
+    mockUtxoObservations['btc-testnet'] = {
+      balance: 300_000n,
+      observedAt: 2345,
+    }
     resolve(300_000n)
     await pending
     expect(useChainBalance('bitcoin').presentation.value).toMatchObject({
       status: 'available',
-      observation: { balance: 300_000n },
+      observation: { balance: 300_000n, observedAt: 2345 },
     })
     expect(useChainBalance('bitcoin').presentation.value).not.toMatchObject({
       observation: { stale: true },
@@ -248,6 +255,79 @@ describe('useChainBalance', () => {
     delete mockUtxoObservations['btc-testnet']
   })
 
+  it.each([
+    ['initial', 'request'],
+    ['initial', 'account'],
+    ['initial', 'session'],
+    ['refreshed', 'request'],
+    ['refreshed', 'account'],
+    ['refreshed', 'session'],
+  ])(
+    'discards a delayed %s observation after a newer %s',
+    async (stage, change) => {
+      mockAccountStatus.revision += 1
+      let resolve!: (value: { balance: bigint; observedAt: number }) => void
+      const delayed = new Promise<{ balance: bigint; observedAt: number }>(
+        done => {
+          resolve = done
+        },
+      )
+      if (stage === 'refreshed') {
+        mockGetUtxoObservation.mockResolvedValueOnce(undefined)
+        mockUtxoBalances['btc-testnet'].mockResolvedValueOnce(999_000n)
+      }
+      mockGetUtxoObservation.mockReturnValueOnce(delayed)
+      const oldRead = fetchChainBalance('bitcoin', true)
+      await flushPromises()
+      expect(mockGetUtxoObservation).toHaveBeenCalledTimes(
+        stage === 'initial' ? 1 : 2,
+      )
+      if (change === 'account') mockAccountStatus.revision += 1
+      if (change === 'session') mockAccountStatus.status = 'unavailable'
+      else {
+        mockUtxoBalances['btc-testnet'].mockResolvedValueOnce(700_000n)
+        await fetchChainBalance('bitcoin', true)
+        expect(useChainBalance('bitcoin').balance.value).toBe(700_000n)
+      }
+      const current = useChainBalance('bitcoin').presentation.value
+      resolve({ balance: 999_000n, observedAt: 999 })
+      await oldRead
+      expect(useChainBalance('bitcoin').presentation.value).toEqual(current)
+    },
+  )
+
+  it.each(['initial', 'refreshed'])(
+    'retains a valid display when the asynchronous %s observation rejects',
+    async stage => {
+      mockAccountStatus.revision += 1
+      mockUtxoBalances['btc-testnet'].mockResolvedValueOnce(600_000n)
+      await fetchChainBalance('bitcoin', true)
+      const previous = useChainBalance('bitcoin').presentation.value
+      expect(previous.status).toBe('available')
+      if (stage === 'refreshed') {
+        mockGetUtxoObservation.mockResolvedValueOnce(undefined)
+        mockUtxoBalances['btc-testnet'].mockResolvedValueOnce(900_000n)
+      }
+      mockGetUtxoObservation.mockRejectedValueOnce(
+        new Error('observation unavailable'),
+      )
+      const error = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      try {
+        await fetchChainBalance('bitcoin', true)
+        expect(useChainBalance('bitcoin').presentation.value).toEqual({
+          status: 'unavailable',
+          reason: 'fetch-error',
+          lastKnown:
+            previous.status === 'available' ? previous.observation : undefined,
+        })
+      } finally {
+        error.mockRestore()
+      }
+    },
+  )
+
   it('reports missing relay routes without opening custody and recovers when configured', async () => {
     const { RelayWalletRouteUnavailableError } = await import(
       '../accounts/relay-wallet-route'
@@ -269,6 +349,11 @@ describe('useChainBalance', () => {
   beforeEach(() => {
     mockRequireRelayWalletRoute.mockReset().mockResolvedValue(undefined)
     jest.clearAllMocks()
+    mockGetUtxoObservation
+      .mockReset()
+      .mockImplementation(
+        async chainIdentifier => mockUtxoObservations[chainIdentifier],
+      )
     mockAccountStatus.status = 'ready'
   })
 

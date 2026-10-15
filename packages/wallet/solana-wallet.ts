@@ -677,7 +677,7 @@ export class SolanaWallet
     }).sendLegacyTransaction(prepared, intent, onSubmitted)
   }
 
-  getUnresolvedNativeTransaction(): ChainTransaction | undefined {
+  async getUnresolvedNativeTransaction(): Promise<ChainTransaction | undefined> {
     return this.unresolvedNative?.error.transaction
   }
 

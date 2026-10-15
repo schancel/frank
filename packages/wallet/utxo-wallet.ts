@@ -1181,7 +1181,9 @@ export class UtxoWallet implements NativeWalletHandle {
     return this.coinList;
   }
 
-  getUnresolvedNativeTransaction(): ChainTransaction | undefined {
+  async getUnresolvedNativeTransaction(): Promise<
+    ChainTransaction | undefined
+  > {
     return this.unresolved?.transaction;
   }
 
@@ -1194,7 +1196,9 @@ export class UtxoWallet implements NativeWalletHandle {
   /** Last complete indexer observation, filtered through current durable input claims.
    * Display-only: signing and fee estimation always rebuild the live coin list independently.
    * Required custody restoration and authorized recovery still gate publishing this handle. */
-  getBalanceObservation(): { balance: bigint; observedAt: number } | undefined {
+  async getBalanceObservation(): Promise<
+    { balance: bigint; observedAt: number } | undefined
+  > {
     this.reload();
     const observation = this.state.balanceObservation;
     if (

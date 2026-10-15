@@ -403,7 +403,7 @@ describe('a payment to a contact', () => {
     await expect(alice.resumeNativeOperation!(operation.operationId)).rejects.toThrow(
       'is broadcast once its message is delivered',
     )
-    expect(alice.getUnresolvedNativeTransaction!()?.txHash).not.toBe(saved.txHash)
+    expect((await alice.getUnresolvedNativeTransaction!())?.txHash).not.toBe(saved.txHash)
     // Background stamp funding does not spend from it either:
     const fundedBefore = mockFunded.length
     expect(await f.chain.directMessages.fundAhead!({ wallet: alice })).toMatchObject({

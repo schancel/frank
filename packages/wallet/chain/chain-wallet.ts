@@ -247,7 +247,9 @@ export interface NativeWalletHandle {
   getBalance(): Promise<bigint>;
   /** Display-only last complete observation, with current reservations excluded. Undefined
    * until observed; age and refresh failures must remain visible. Never authorizes spending. */
-  getBalanceObservation?(): { balance: bigint; observedAt: number } | undefined;
+  getBalanceObservation?(): Promise<
+    { balance: bigint; observedAt: number } | undefined
+  >;
   /** Optional financial adapter. Message construction and transport remain with the host. */
   readonly stealthPayments?: import("../stealth-payment").StealthPaymentCapability;
   /** Recipient derivation/chain verification, distinct from outgoing wallet synchronization. */
@@ -271,7 +273,7 @@ export interface NativeWalletHandle {
     sending: bigint;
   }>;
   /** The exact signed attempt whose submission outcome must be resolved before a fresh send. */
-  getUnresolvedNativeTransaction?(): ChainTransaction | undefined;
+  getUnresolvedNativeTransaction?(): Promise<ChainTransaction | undefined>;
   /** Resubmits the exact unresolved signed bytes; never builds a replacement payment. */
   retryUnresolvedNativeTransaction?(): Promise<ChainTransaction>;
   /** Clears a blocked attempt only after the caller has reconciled its exact id with the chain. */

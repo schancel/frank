@@ -65,7 +65,7 @@ it(
   () =>
     run(`
   const first = await make();
-  const initial = first.wallet.getBalanceObservation();
+  const initial = (await first.wallet.getBalanceObservation());
   assert.equal(initial.balance, 80000n);
   assert.equal(first.store.get(first.key), undefined);
   let reads = 0;
@@ -82,18 +82,18 @@ it(
   const left = first.wallet.getBalance(), right = first.wallet.getBalance();
   assert.equal(left, right);
   await began;
-  const observed = first.wallet.getBalanceObservation();
+  const observed = (await first.wallet.getBalanceObservation());
   first.chronik.coins[0].sats = 20000n;
-  assert.deepEqual(first.wallet.getBalanceObservation(), observed);
+  assert.deepEqual((await first.wallet.getBalanceObservation()), observed);
   release();
   assert.equal(await left, 90000n);
   assert.equal(reads - before, singleRefreshReads);
-  const complete = first.wallet.getBalanceObservation();
+  const complete = (await first.wallet.getBalanceObservation());
   first.chronik.coins[0].sats = 30000n;
   first.chronik.batchUtxos = async () => { throw new Error('offline'); };
   first.chronik.script = () => ({ utxos: async () => { throw new Error('offline'); } });
   await assert.rejects(first.wallet.getBalance(), /offline/);
-  assert.deepEqual(first.wallet.getBalanceObservation(), complete);
+  assert.deepEqual((await first.wallet.getBalanceObservation()), complete);
   assert.equal(first.store.get(first.key), undefined);
 `),
   35000
@@ -107,18 +107,18 @@ it(
   const first = await make({ store });
   const other = await make({ store });
   const test = await make({ store, chain: 'xec-testnet' });
-  assert.equal(first.wallet.getBalanceObservation().balance, 80000n);
+  assert.equal((await first.wallet.getBalanceObservation()).balance, 80000n);
   const prepared = await other.wallet.prepareNativeOperation(params('observe-held'));
-  assert.equal(first.wallet.getBalanceObservation().balance, 70000n);
-  assert.equal(test.wallet.getBalanceObservation().balance, 80000n);
+  assert.equal((await first.wallet.getBalanceObservation()).balance, 70000n);
+  assert.equal((await test.wallet.getBalanceObservation()).balance, 80000n);
   await other.wallet.releaseNativeOperation(prepared.operationId);
-  assert.equal(first.wallet.getBalanceObservation().balance, 80000n);
+  assert.equal((await first.wallet.getBalanceObservation()).balance, 80000n);
   const exposed = await other.wallet.prepareNativeOperation(params('observe-exposed'));
   await other.wallet.recordNativeOperationExposure({ operationId: exposed.operationId, binding: binding(other.wallet, exposed) });
-  assert.equal(first.wallet.getBalanceObservation().balance, 70000n);
+  assert.equal((await first.wallet.getBalanceObservation()).balance, 70000n);
   const reopened = await make({ store, transport: async () => { throw new Error('ambiguous'); } });
-  assert.equal(reopened.wallet.getBalanceObservation().balance, 70000n);
-  assert.equal(test.wallet.getBalanceObservation().balance, 80000n);
+  assert.equal((await reopened.wallet.getBalanceObservation()).balance, 70000n);
+  assert.equal((await test.wallet.getBalanceObservation()).balance, 80000n);
 `),
   35000
 );
@@ -151,9 +151,9 @@ it(
   assert.equal(backend.balanceSats, 240000n);
   unlock(); await holding;
   assert.equal(await balance, 160000n);
-  assert.equal(first.wallet.getBalanceObservation().balance, 160000n);
+  assert.equal((await first.wallet.getBalanceObservation()).balance, 160000n);
   rejectTip(new Error('tip offline')); await failedEstimate;
-  assert.equal(first.wallet.getBalanceObservation().balance, 160000n);
+  assert.equal((await first.wallet.getBalanceObservation()).balance, 160000n);
 `),
   35000
 );

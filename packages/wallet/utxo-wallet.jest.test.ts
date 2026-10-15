@@ -349,22 +349,22 @@ describe("display-only local balance observations", () => {
     "retains the last observation across failed refresh and reopen for $chainIdentifier",
     async (network) => {
       const { wallet, backend, store } = await open(network);
-      expect(wallet.getBalanceObservation()).toBeUndefined();
+      expect((await wallet.getBalanceObservation())).toBeUndefined();
       fund(backend, network, wallet.identity.address.raw, 100_000_000n, "a");
       expect(await wallet.getBalance()).toBe(100_000_000n);
-      const observed = wallet.getBalanceObservation();
+      const observed = (await wallet.getBalanceObservation());
       expect(observed).toEqual({
         balance: 100_000_000n,
         observedAt: expect.any(Number),
       });
       const restarted = (await open(network, backend, store)).wallet;
       expect(restarted.coins()).toEqual([]);
-      expect(restarted.getBalanceObservation()).toEqual(observed);
+      expect((await restarted.getBalanceObservation())).toEqual(observed);
       backend.indexer.listUnspent = async () => {
         throw new Error("offline");
       };
       await expect(restarted.getBalance()).rejects.toThrow("offline");
-      expect(restarted.getBalanceObservation()).toEqual(observed);
+      expect((await restarted.getBalanceObservation())).toEqual(observed);
       // A display observation can never supply inputs when a live read is unavailable.
       await expect(
         restarted.estimateFee({
@@ -379,7 +379,7 @@ describe("display-only local balance observations", () => {
     const { wallet, backend } = await open(BTC);
     fund(backend, BTC, wallet.identity.address.raw, 50_000n, "a");
     await wallet.getBalance();
-    const observed = wallet.getBalanceObservation();
+    const observed = (await wallet.getBalanceObservation());
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -393,7 +393,7 @@ describe("display-only local balance observations", () => {
     const first = wallet.getBalance();
     const second = wallet.getBalance();
     expect(first).toBe(second);
-    expect(wallet.getBalanceObservation()).toEqual(observed);
+    expect((await wallet.getBalanceObservation())).toEqual(observed);
     release();
     expect(await first).toBe(50_000n);
     expect(read).toHaveBeenCalledTimes(2); // Paid receive 0 and the next receive address.
@@ -409,9 +409,9 @@ describe("display-only local balance observations", () => {
       recipient: { raw: BTC_RECIPIENT },
       value: 10_000n,
     });
-    expect(wallet.getBalanceObservation()?.balance).toBe(0n);
+    expect((await wallet.getBalanceObservation())?.balance).toBe(0n);
     expect(await other.releaseUnexposedPayment(payment.operationId)).toBe(true);
-    expect(wallet.getBalanceObservation()?.balance).toBe(50_000n);
+    expect((await wallet.getBalanceObservation())?.balance).toBe(50_000n);
     const exposed = await other.prepareNativePayment({
       operationId: "display-exposed",
       recipient: { raw: BTC_RECIPIENT },
@@ -426,7 +426,7 @@ describe("display-only local balance observations", () => {
       other.submitPreparedPayment(exposed.operationId)
     ).rejects.toThrow();
     const restarted = (await open(BTC, backend, store)).wallet;
-    expect(restarted.getBalanceObservation()?.balance).toBe(0n);
+    expect((await restarted.getBalanceObservation())?.balance).toBe(0n);
     expect(restarted.coins()).toEqual([]);
     expect(
       (await restarted.getNativePayments()).find(
@@ -448,7 +448,7 @@ describe("display-only local balance observations", () => {
     ]) {
       const record = JSON.stringify({ ...saved, balanceObservation });
       store.save(record);
-      expect(wallet.getBalanceObservation()).toBeUndefined();
+      expect((await wallet.getBalanceObservation())).toBeUndefined();
       expect(store.load()).toBe(record);
     }
     expect(backend.broadcasts).toEqual([]);
@@ -515,7 +515,7 @@ describe("Dogecoin testnet (P2PKH, legacy SIGHASH_ALL)", () => {
     backend.setOutcome("accept");
     const restarted = await open(DOGE, backend, store);
     expect(backend.broadcasts).toEqual([raw, raw]);
-    expect(restarted.wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    expect((await restarted.wallet.getUnresolvedNativeTransaction())).toBeUndefined();
     expect(await receiver.wallet.getBalance()).toBe(200_000_000n);
     expect(await restarted.wallet.getBalance()).toBe(800_000_000n - fee);
   });
@@ -808,7 +808,7 @@ describe.each([
     expect(refused.message).toBe(
       "The network refused the transaction: min relay fee not met"
     );
-    expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    expect((await wallet.getUnresolvedNativeTransaction())).toBeUndefined();
     expect(await wallet.getBalance()).toBe(70_000n);
     expect(JSON.parse(store.load()!).consumedNativeInputs ?? []).toEqual([]);
   });
@@ -838,7 +838,7 @@ describe.each([
       NativeTransactionSubmissionError
     );
     const raw = backend.broadcasts[0];
-    expect(wallet.getUnresolvedNativeTransaction()).toEqual({
+    expect((await wallet.getUnresolvedNativeTransaction())).toEqual({
       txHash: txidOf(raw, network),
       rawTransactions: [raw],
     });
@@ -856,7 +856,7 @@ describe.each([
     backend.setOutcome("accept");
     const restarted = await open(network, backend, store);
     expect(backend.broadcasts[backend.broadcasts.length - 1]).toBe(raw);
-    expect(restarted.wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    expect((await restarted.wallet.getUnresolvedNativeTransaction())).toBeUndefined();
     expect(await restarted.wallet.getBalance()).toBe(
       130_000n - 10_000n - feeOf(raw, network, 70_000n)
     );
@@ -878,7 +878,7 @@ describe.each([
     backend.setOutcome("accept");
     const restarted = await open(network, backend, store);
     expect(backend.broadcasts).toHaveLength(1);
-    expect(restarted.wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    expect((await restarted.wallet.getUnresolvedNativeTransaction())).toBeUndefined();
     await restarted.wallet.sendNative({
       recipient: { raw: recipient },
       value: 5_000n,

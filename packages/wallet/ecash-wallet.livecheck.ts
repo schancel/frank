@@ -66,7 +66,7 @@ async function main() {
     } catch (error) {
       result.emptySend = error instanceof Error ? error.message : String(error);
     }
-    result.unresolved = wallet.getUnresolvedNativeTransaction() ?? null;
+    result.unresolved = (await wallet.getUnresolvedNativeTransaction()) ?? null;
   } else if (process.env.FRANK_LIVE_SEND === "1") {
     const sent = await chain.nativeTransfers.send({
       wallet,

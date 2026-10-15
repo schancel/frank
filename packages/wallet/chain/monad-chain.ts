@@ -3234,7 +3234,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // What the look showed frees the main account for whoever waits for it.
               await releaseSettledMainAccounts(wallet, false);
             },
-            getUnresolvedNativeTransaction() {
+            async getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
               const unsupported = nativeAttemptStore.get(nativeAttemptKey);
               if (unsupported) return unsupported;

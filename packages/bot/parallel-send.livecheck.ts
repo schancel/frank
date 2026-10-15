@@ -1589,7 +1589,7 @@ async function main() {
           );
       const before = {
         notIncluded: rows(),
-        unresolved: alice.handle.getUnresolvedNativeTransaction?.() ?? null,
+        unresolved: (await alice.handle.getUnresolvedNativeTransaction?.()) ?? null,
       };
       const funds = await alice.handle.getContractCallFunds!();
       results.unfreeze = {
@@ -1598,7 +1598,7 @@ async function main() {
         afterOneLook: {
           mainBusy: funds.mainBusy,
           notIncluded: rows(),
-          unresolved: alice.handle.getUnresolvedNativeTransaction?.() ?? null,
+          unresolved: (await alice.handle.getUnresolvedNativeTransaction?.()) ?? null,
         },
       };
       say("unfreeze", JSON.stringify(results.unfreeze, null, 1));

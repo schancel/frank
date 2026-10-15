@@ -779,7 +779,7 @@ describe('SolanaWallet', () => {
       TransactionBundleSubmissionError,
     )
     const attempted = (error as NativeTransactionSubmissionError).transaction
-    expect(wallet.getUnresolvedNativeTransaction()).toEqual(attempted)
+    expect((await wallet.getUnresolvedNativeTransaction())).toEqual(attempted)
 
     expect(concurrentResult).toEqual({ status: 'rejected', reason: error })
     expect(connection.blockhashRequests).toBe(1)
@@ -788,7 +788,7 @@ describe('SolanaWallet', () => {
     await expect(wallet.retryUnresolvedNativeTransaction()).resolves.toEqual(
       attempted,
     )
-    expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined()
+    expect((await wallet.getUnresolvedNativeTransaction())).toBeUndefined()
   })
 
   it('restores the unresolved guard before allowing another transfer', async () => {
@@ -818,7 +818,7 @@ describe('SolanaWallet', () => {
       signer,
       nativeAttemptStore,
     })
-    const unresolved = restoredWallet.getUnresolvedNativeTransaction()!
+    const unresolved = (await restoredWallet.getUnresolvedNativeTransaction())!
     await expect(
       restoredWallet.sendNative({
         recipient: { raw: (await makeKeypair(3)).publicKey.toBase58() },
@@ -869,8 +869,8 @@ describe('SolanaWallet', () => {
       genesisHash: 'solana-genesis',
       nativeAttemptStore,
     })
-    expect(walletB.getUnresolvedNativeTransaction()).toEqual(
-      walletA.getUnresolvedNativeTransaction(),
+    expect((await walletB.getUnresolvedNativeTransaction())).toEqual(
+      (await walletA.getUnresolvedNativeTransaction()),
     )
     await expect(
       walletB.sendNative({
@@ -886,8 +886,8 @@ describe('SolanaWallet', () => {
       genesisHash: 'solana-genesis',
       nativeAttemptStore,
     })
-    expect(restoredA.getUnresolvedNativeTransaction()).toEqual(
-      walletA.getUnresolvedNativeTransaction(),
+    expect((await restoredA.getUnresolvedNativeTransaction())).toEqual(
+      (await walletA.getUnresolvedNativeTransaction()),
     )
   })
 
@@ -925,8 +925,8 @@ describe('SolanaWallet', () => {
       nativeAttemptStore,
       getTransactionStatus: async () => 'confirmed',
     })
-    expect(reconstructed.getUnresolvedNativeTransaction()).toEqual(
-      wallet.getUnresolvedNativeTransaction(),
+    expect((await reconstructed.getUnresolvedNativeTransaction())).toEqual(
+      (await wallet.getUnresolvedNativeTransaction()),
     )
 
     releaseSend!()

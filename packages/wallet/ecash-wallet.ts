@@ -1018,7 +1018,9 @@ export class EcashWallet implements NativeWalletHandle {
   }
 
   /** Last complete SDK observation, excluding the authoritative journal's current claims. */
-  getBalanceObservation(): { balance: bigint; observedAt: number } | undefined {
+  async getBalanceObservation(): Promise<
+    { balance: bigint; observedAt: number } | undefined
+  > {
     const observation = this.balanceObservation;
     if (!observation) return undefined;
     const excluded = new Set(
@@ -1065,11 +1067,11 @@ export class EcashWallet implements NativeWalletHandle {
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
     await this.restoreStealthReceipts();
     await this.backend.sync();
-    return this.exclusive(() => {
+    return this.exclusive(async () => {
       const ledger = this.loadLedger();
       const excluded = this.exclusions(ledger);
       this.captureBalanceObservation();
-      const observation = this.getBalanceObservation();
+      const observation = await this.getBalanceObservation();
       if (observation) return observation.balance;
       return excluded.length === 0 &&
         this.backend.getAvailableBalance === undefined
@@ -1099,7 +1101,9 @@ export class EcashWallet implements NativeWalletHandle {
     });
   }
 
-  getUnresolvedNativeTransaction(): ChainTransaction | undefined {
+  async getUnresolvedNativeTransaction(): Promise<
+    ChainTransaction | undefined
+  > {
     const old = this.nativeAttemptStore.get(this.nativeAttemptKey);
     if (old !== undefined) return old;
     const operation = this.loadLedger().operations.find(

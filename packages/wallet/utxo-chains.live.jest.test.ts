@@ -191,7 +191,7 @@ live.each([
           value: 10_000n,
         })
       ).rejects.toThrow("Insufficient funds");
-      expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+      expect((await wallet.getUnresolvedNativeTransaction())).toBeUndefined();
     } else if (sendLive) {
       const next = (await wallet.getReceiveAddress()).raw;
       const sent = await chain.nativeTransfers.send({

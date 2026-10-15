@@ -323,7 +323,7 @@ test('the wallet handle sends a contract call from its main account and reports 
     expect(tx.gasLimit).toBe(250_000n)
     expect(tx.chainId).toBe(10143n)
     // A contract call is not a native transfer awaiting resolution in the Send page's sense.
-    expect(wallet.getUnresolvedNativeTransaction!()).toBeUndefined()
+    expect((await wallet.getUnresolvedNativeTransaction!())).toBeUndefined()
     expect(wallet.evmReader).toBe(wallet.provider)
   } finally {
     await wallet.close()
@@ -455,7 +455,7 @@ test('a native send whose nonce was consumed by another transaction has failed f
     await expect(
       wallet.sendNative({ recipient: { raw: ROUTER }, value: 1n }),
     ).rejects.toThrow(/outcome is unknown/)
-    expect(wallet.getUnresolvedNativeTransaction!()).toBeDefined()
+    expect((await wallet.getUnresolvedNativeTransaction!())).toBeDefined()
     expect((await wallet.getContractCallFunds!()).mainBusy).toBe(true)
     // Another transaction of this account (signed elsewhere with the same key) takes nonce 0.
     jest.spyOn(wallet.provider, 'getTransactionCount').mockResolvedValue(1)
@@ -464,7 +464,7 @@ test('a native send whose nonce was consumed by another transaction has failed f
     // One look shows it: the node knows neither the transfer nor a receipt, and the nonce is
     // gone. Nothing is left to resolve, and the account is free.
     expect((await wallet.getContractCallFunds!()).mainBusy).toBe(false)
-    expect(wallet.getUnresolvedNativeTransaction!()).toBeUndefined()
+    expect((await wallet.getUnresolvedNativeTransaction!())).toBeUndefined()
     const sent = await wallet.sendNative({
       recipient: { raw: ROUTER },
       value: 1n,

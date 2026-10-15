@@ -47,26 +47,27 @@ export default defineComponent({
     const payloadDigest = this.$route.params.payloadDigest as string
     return {
       payloadDigest,
-      message: {} as Partial<MessageWithReplies>,
     }
+  },
+  computed: {
+    message(): MessageWithReplies | null {
+      const payloadDigest = this.$route.params.payloadDigest
+      return typeof payloadDigest === 'string'
+        ? this.getMessage(payloadDigest)
+        : null
+    },
   },
   async mounted() {
     this.payloadDigest = this.$route.params.payloadDigest as string
-    const message = await this.fetchMessage({
+    await this.fetchMessage({
       payloadDigest: this.payloadDigest,
     })
-    if (message) {
-      this.message = message
-    }
   },
   async beforeRouteUpdate(to: RouteLocationNormalized) {
     this.payloadDigest = (to?.params?.payloadDigest as string) || ''
-    const message = await this.fetchMessage({
+    await this.fetchMessage({
       payloadDigest: this.payloadDigest,
     })
-    if (message) {
-      this.message = message
-    }
   },
 })
 </script>

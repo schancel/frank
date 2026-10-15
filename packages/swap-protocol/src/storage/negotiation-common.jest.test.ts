@@ -1,4 +1,8 @@
-import { bind, negotiationStorageLimits } from './negotiation-common'
+import {
+  parseCoverage,
+  bind,
+  negotiationStorageLimits,
+} from './negotiation-common'
 import { a, b, binding } from './storage-cases.testutil'
 it('requires bounded scalar UTF8 host/account strings and an actual compressed secp256k1 key', () => {
   for (const hostDiscriminator of [
@@ -57,4 +61,12 @@ it('length-frames account/host/key affinity and persists a complete normalized b
     }).namespace,
   )
   expect(Object.isFrozen(first)).toBe(true)
+})
+
+it('accepts the exact metadata byte boundary and rejects the next byte independently of row limits', () => {
+  const raw = JSON.stringify({ version: 1, positions: [] })
+  expect(parseCoverage(raw + ' '.repeat(16384 - raw.length)).size).toBe(0)
+  expect(() => parseCoverage(raw + ' '.repeat(16385 - raw.length))).toThrow(
+    'size',
+  )
 })

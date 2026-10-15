@@ -1,3 +1,4 @@
+import chains from '../../../../docs/protocol/chains/v1.json'
 import { secp256k1 } from '@noble/curves/secp256k1'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import {
@@ -188,6 +189,7 @@ export async function signedCases(store: OwnedNegotiationJournalStore) {
   return journal.rowKey
 }
 export async function rowCapacity(store: OwnedNegotiationJournalStore) {
+  assert(await store.compareAndSwapCoverage('monad-testnet', undefined, 7))
   assert(
     negotiationStorageLimits.rows === 128 &&
       negotiationStorageLimits.rawBytes === 8388608,
@@ -232,12 +234,15 @@ export async function rowCapacity(store: OwnedNegotiationJournalStore) {
     (await store.read(first.key)) === first.raw + ' ',
     'Capacity refusal poisoned owner',
   )
+  assert((await store.readCoverage('monad-testnet')) === 7)
+  assert((await store.listRecords()).length === 128)
   // Real signed engine insertion updates an existing empty row at the actual row boundary.
   const events = await signed()
   await engine(store).admit(events.offer)
   assert((await engine(store).admit(events.offer)).admission === 'duplicate')
 }
 export async function byteCapacity(store: OwnedNegotiationJournalStore) {
+  assert(await store.compareAndSwapCoverage('xec-testnet', undefined, 8))
   for (let i = 0; i < 32; i++) {
     const row = emptyRow(i, i % 2 ? 'xec-testnet' : 'monad-testnet')
     const raw = row.raw + ' '.repeat(262144 - utf8ToBytes(row.raw).length)
@@ -249,6 +254,7 @@ export async function byteCapacity(store: OwnedNegotiationJournalStore) {
     () => store.compareAndSwap(row.key, undefined, row.raw),
     'capacity',
   )
+  assert((await store.readCoverage('xec-testnet')) === 8)
   const first = emptyRow(0),
     stored = (await store.read(first.key))!
   assert(
@@ -258,5 +264,148 @@ export async function byteCapacity(store: OwnedNegotiationJournalStore) {
   assert(
     await store.compareAndSwap(row.key, undefined, row.raw),
     'Capacity refusal must leave handle usable',
+  )
+}
+
+/** Consumer-shaped replay: durable evidence may precede the scan consumption fact. */
+export async function coverageCases(
+  create: () =>
+    | Promise<OwnedNegotiationJournalStore>
+    | OwnedNegotiationJournalStore,
+) {
+  let store = await create()
+  const chain = 'monad-testnet'
+  assert((await store.listRecords()).length === 0)
+  assert((await store.readCoverage(chain)) === undefined)
+  assert(!(await store.compareAndSwapCoverage(chain, 0, 1)))
+  for (const alias of ['monad', 'evm', 'MONAD-TESTNET', 'unknown'])
+    await rejects(() => store.readCoverage(alias), 'Canonical')
+  for (const value of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity])
+    await rejects(() => store.compareAndSwapCoverage(chain, undefined, value))
+  await rejects(() => store.compareAndSwapCoverage(chain, 2, 1), 'regress')
+  assert(await store.compareAndSwapCoverage(chain, undefined, 0))
+  assert((await store.listRecords()).length === 0)
+  await store.close()
+  store = await create()
+  assert((await store.readCoverage(chain)) === 0)
+  const events = await signed()
+  const journal = engine(store)
+  await journal.admit(events.offer)
+  // A failed scan consumption attempt must leave evidence replayable.
+  assert(!(await store.compareAndSwapCoverage(chain, undefined, 3)))
+  await store.close()
+  store = await create()
+  assert((await store.readCoverage(chain)) === 0)
+  assert((await engine(store).admit(events.offer)).admission === 'duplicate')
+  assert(await store.compareAndSwapCoverage(chain, 0, 3))
+  const snapshot = await store.listRecords()
+  assert(Object.isFrozen(snapshot) && Object.isFrozen(snapshot[0]))
+  assert(snapshot.length === 1 && snapshot[0].key === engine(store).rowKey)
+  assert(snapshot[0].raw === (await store.read(snapshot[0].key)))
+  const results = await Promise.all([
+    store.compareAndSwapCoverage(chain, 3, 4),
+    store.compareAndSwapCoverage(chain, 3, 5),
+    store.compareAndSwapCoverage('xec-testnet', undefined, 9),
+    store.compareAndSwapCoverage('solana-devnet', undefined, 11),
+  ])
+  assert(results.slice(0, 2).filter(Boolean).length === 1)
+  assert(results[2] && results[3])
+  const committed = (await store.readCoverage(chain))!
+  assert(await store.compareAndSwapCoverage(chain, committed, committed))
+  assert(
+    await store.compareAndSwapCoverage(
+      chain,
+      committed,
+      Number.MAX_SAFE_INTEGER,
+    ),
+  )
+  await engine(store).admit(events.accept)
+  assert((await store.readCoverage('xec-testnet')) === 9)
+  assert(
+    snapshot[0].raw !== (await store.read(snapshot[0].key)),
+    'Inventory snapshot changed',
+  )
+  await store.close()
+  store = await create()
+  assert((await store.readCoverage(chain)) === Number.MAX_SAFE_INTEGER)
+  assert((await store.listRecords()).length === 1)
+  await store.close()
+}
+
+export const corruptCoverage = [
+  '{}',
+  '{"version":2,"positions":[]}',
+  '{"version":1,"positions":[],"extra":0}',
+  '{"version":1}',
+  JSON.stringify({
+    version: 1,
+    positions: [{ chainIdentifier: 'monad', resumeFromInclusive: 0 }],
+  }),
+  ...[-1, 0.5, Number.MAX_SAFE_INTEGER + 1, null, '1'].map(
+    resumeFromInclusive =>
+      JSON.stringify({
+        version: 1,
+        positions: [{ chainIdentifier: 'monad-testnet', resumeFromInclusive }],
+      }),
+  ),
+  JSON.stringify({
+    version: 1,
+    positions: [
+      { chainIdentifier: 'monad-testnet', resumeFromInclusive: 0, extra: 0 },
+    ],
+  }),
+  JSON.stringify({
+    version: 1,
+    positions: [{ chainIdentifier: 'monad-testnet' }],
+  }),
+  JSON.stringify({
+    version: 1,
+    positions: [
+      { chainIdentifier: 'monad-testnet', resumeFromInclusive: 0 },
+      { chainIdentifier: 'monad-testnet', resumeFromInclusive: 1 },
+    ],
+  }),
+  JSON.stringify({
+    version: 1,
+    positions: [
+      { chainIdentifier: 'xec-testnet', resumeFromInclusive: 0 },
+      { chainIdentifier: 'monad-testnet', resumeFromInclusive: 1 },
+    ],
+  }),
+  JSON.stringify({
+    version: 1,
+    positions: Array.from({ length: 33 }, () => ({
+      chainIdentifier: 'monad-testnet',
+      resumeFromInclusive: 0,
+    })),
+  }),
+  JSON.stringify({ version: 1, positions: [] }) + ' '.repeat(16384),
+]
+
+export async function coverageCapacity(store: OwnedNegotiationJournalStore) {
+  for (const chain of chains.chains.slice(0, 32))
+    assert(await store.compareAndSwapCoverage(chain.id, undefined, 0))
+  await rejects(
+    () => store.compareAndSwapCoverage(chains.chains[32].id, undefined, 0),
+    'capacity',
+  )
+  assert(await store.compareAndSwapCoverage(chains.chains[0].id, 0, 1))
+  const row = emptyRow(0)
+  assert(await store.compareAndSwap(row.key, undefined, row.raw))
+  assert((await store.readCoverage(chains.chains[32].id)) === undefined)
+  assert((await store.readCoverage(chains.chains[0].id)) === 1)
+}
+
+export async function journalFirstCoverage(
+  store: OwnedNegotiationJournalStore,
+) {
+  const rows = [emptyRow(0), emptyRow(1), emptyRow(2)]
+  for (const row of rows)
+    assert(await store.compareAndSwap(row.key, undefined, row.raw))
+  assert((await store.readCoverage('monad-testnet')) === undefined)
+  assert(await store.compareAndSwapCoverage('monad-testnet', undefined, 0))
+  assert(
+    JSON.stringify(await store.listRecords()) ===
+      JSON.stringify(rows.sort((a, b) => (a.key < b.key ? -1 : 1))),
   )
 }

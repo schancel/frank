@@ -170,7 +170,8 @@ yarn typecheck:fast
 `createBrowserNegotiationJournalStore` / `createNativeNegotiationJournalStore` factories.
 Both require `hostDiscriminator`, `accountIncarnation` and a valid compressed `localPublicKey`.
 Native additionally requires an approved existing `rootLocation`; it creates no ancestors.
-The returned capability has only `read`, `compareAndSwap`, `namespace` and `close`.
+The returned capability exposes `read`, `compareAndSwap`, `listRecords`, `readCoverage`,
+`compareAndSwapCoverage`, `namespace` and `close`.
 No app or bot installs these adapters yet.
 
 One deterministic versioned namespace belongs to that host/account incarnation/public key,
@@ -183,10 +184,37 @@ journal's 262,144-byte bound. Limits are derived from current records on each op
 no eviction or competing persisted counters. Comparison failure returns false; capacity failure
 throws the existing journal capacity error, leaving the handle usable.
 
+`listRecords()` returns a frozen snapshot of validated `{ key, raw }` entries sorted by key.
+`readCoverage(chainIdentifier)` returns the committed inclusive replay position, or absence.
+`compareAndSwapCoverage(chainIdentifier, expected, next)` commits only if the expected position
+matches. Positions are nonnegative safe integers and cannot decrease; equal positions are
+allowed. Chain identifiers must be exact members of `docs/protocol/chains/v1.json`; this does
+not assert that a host scanner is installed for that chain. Input validation precedes storage
+effects. Absent listing/reads and failed expected-value comparisons never initialize storage.
+All operations validate the complete inventory and its account/local-key affinity first.
+
+Optional `coverage-v1` contains exactly `{version: 1, positions: [{chainIdentifier,
+resumeFromInclusive}]}`. Entries are unique and lexically sorted; at most 32 positions and
+16,384 UTF-8 metadata bytes are permitted independently of signed-row capacity. Every present
+namespace requires the unchanged `binding-v1`. Coverage and journal writes preserve each
+other and share the same atomic initialization/ownership barriers. Corrupt/unknown metadata
+fails observably without repair. Coverage is a host consumption fact; negotiation state still
+comes exclusively from signed journal reduction. After an ambiguous write acknowledgment,
+close/reopen/read to reconcile the committed position before retrying; never infer a greater
+position or absence from an exception.
+
+This is an additive local storage format with a reversal limitation: older adapter code rejects
+`coverage-v1`. Reverting code must preserve the namespace rather than delete or repair it.
+There is no migration, fallback, separate index, wire change, or derivation change. An explicitly
+authorized development reset may remove only this host/account negotiation namespace; it must
+never delete keys, funded wallets or unrelated application data. Host installation and scan
+scheduling remain successor work. The composed regression exercises signed admission, failed
+coverage consumption, reopen, duplicate replay and discovery; it proves this storage seam.
+
 Browser storage uses direct IndexedDB schema version 1, one out-of-line `records` store and
 explicit Web Locks. Absent reads abort unexpected creation. A namespace lock covers every new
 connection's opening/inspection and the first strict transaction that atomically writes binding
-and first row. Reopening performs no readwrite durability probe. An interrupted schema-only
+and the first row or coverage record. Reopening performs no readwrite durability probe. An interrupted schema-only
 namespace remains an observable error, never an empty replacement or repaired database.
 Normal read/CAS operations use IndexedDB transactions; CAS compares, validates capacity and
 writes in one verified strict transaction, acknowledging its completion rather than request

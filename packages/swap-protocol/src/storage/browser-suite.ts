@@ -1,11 +1,16 @@
 import { inspectNegotiationJournalRecord } from '../negotiation-journal'
 import { createBrowserNegotiationJournalStore } from './negotiation-browser'
 import {
+  COVERAGE_KEY,
   BINDING_KEY,
   RECORDS_STORE,
   type OwnedNegotiationJournalStore,
 } from './negotiation-common'
 import {
+  journalFirstCoverage,
+  coverageCases,
+  coverageCapacity,
+  corruptCoverage,
   a,
   b,
   assert,
@@ -128,9 +133,122 @@ function waitFor(check: () => boolean): Promise<void> {
   })
 }
 export async function run(phase: string): Promise<Record<string, unknown>> {
+  if (phase === 'coverage') {
+    const before = JSON.stringify(await indexedDB.databases()),
+      absent = owned('coverage-absent')
+    assert((await absent.listRecords()).length === 0)
+    assert((await absent.readCoverage('monad-testnet')) === undefined)
+    assert(!(await absent.compareAndSwapCoverage('monad-testnet', 0, 1)))
+    assert(JSON.stringify(await indexedDB.databases()) === before)
+    await journalFirstCoverage(owned('journal-first-coverage'))
+    await coverageCases(() => owned('coverage-replay'))
+    await coverageCapacity(owned('coverage-capacity'))
+    for (const [i, value] of corruptCoverage.entries()) {
+      const name = 'coverage-corrupt-' + i,
+        store = owned(name),
+        row = emptyRow(0)
+      await store.compareAndSwap(row.key, undefined, row.raw)
+      await store.close()
+      await raw(store.namespace, records => records.put(value, COVERAGE_KEY))
+      for (const operation of [
+        'list',
+        'coverage',
+        'row',
+        'coverage-cas',
+        'row-cas',
+      ]) {
+        const reopened = owned(name)
+        await rejects(() =>
+          operation === 'list'
+            ? reopened.listRecords()
+            : operation === 'coverage'
+            ? reopened.readCoverage('monad-testnet')
+            : operation === 'row'
+            ? reopened.read(row.key)
+            : operation === 'coverage-cas'
+            ? reopened.compareAndSwapCoverage('monad-testnet', undefined, 0)
+            : reopened.compareAndSwap(row.key, row.raw, row.raw),
+        )
+        await reopened.close()
+      }
+      const entries = await raw(store.namespace)
+      assert(
+        JSON.stringify(entries).includes(JSON.stringify(value)),
+        'Corrupt metadata changed',
+      )
+    }
+    await closeAll()
+    return {
+      replay: 'duplicate before coverage advance',
+      corruptions: corruptCoverage.length,
+      coverageCapacity: 32,
+    }
+  }
+  if (phase === 'coverage-race-row' || phase === 'coverage-race-position') {
+    const store = owned('coverage-race'),
+      row = emptyRow(0)
+    const won =
+      phase === 'coverage-race-row'
+        ? await store.compareAndSwap(row.key, undefined, row.raw)
+        : await store.compareAndSwapCoverage('monad-testnet', undefined, 7)
+    await closeAll()
+    return { won }
+  }
+  if (phase === 'coverage-race-check') {
+    const store = owned('coverage-race')
+    assert((await store.listRecords()).length === 1)
+    assert((await store.readCoverage('monad-testnet')) === 7)
+    await closeAll()
+    return { bothFacts: true }
+  }
+  if (phase === 'coverage-cas-left' || phase === 'coverage-cas-right') {
+    const store = owned('coverage-race')
+    const won = await store.compareAndSwapCoverage(
+      'monad-testnet',
+      7,
+      phase === 'coverage-cas-left' ? 8 : 9,
+    )
+    await closeAll()
+    return { won }
+  }
+  if (phase === 'coverage-lost-ack') {
+    const store = owned('coverage-lost-ack')
+    flags.ackReady = false
+    IDBDatabase.prototype.transaction = function (
+      ...args: Parameters<IDBDatabase['transaction']>
+    ) {
+      const tx = nativeTransaction.apply(this, args)
+      if (args[1] === 'readwrite')
+        Object.defineProperty(tx, 'oncomplete', {
+          set() {
+            complete.set!.call(tx, () => {
+              flags.ackReady = true
+              flags.releaseAck = () => tx.onabort?.call(tx, new Event('abort'))
+            })
+          },
+        })
+      return tx
+    }
+    const write = store.compareAndSwapCoverage('monad-testnet', undefined, 7)
+    await waitFor(() => flags.ackReady === true)
+    const queued = store.listRecords()
+    ;(flags.releaseAck as () => void)()
+    const outcomes = await Promise.allSettled([write, queued])
+    assert(outcomes.every(value => value.status === 'rejected'))
+    IDBDatabase.prototype.transaction = nativeTransaction
+    await store.close()
+    const reopened = owned('coverage-lost-ack')
+    assert((await reopened.readCoverage('monad-testnet')) === 7)
+    assert(
+      !(await reopened.compareAndSwapCoverage('monad-testnet', undefined, 7)),
+    )
+    await closeAll()
+    return { ambiguous: 'reconciled committed coverage' }
+  }
   if (phase === 'stage') {
     const store = owned('committed'),
       key = await signedCases(store)
+    assert(await store.compareAndSwapCoverage('monad-testnet', undefined, 13))
     flags.namespace = store.namespace
     // Keep the qualified connection open until the harness kills this Chrome process.
     return { key, namespace: store.namespace }
@@ -144,8 +262,9 @@ export async function run(phase: string): Promise<Record<string, unknown>> {
         snapshot.reduction.usableAcceptance !== null,
       'Killed process lost committed signed evidence',
     )
+    assert((await store.readCoverage('monad-testnet')) === 13)
     await closeAll()
-    return { entries: snapshot.entries.length }
+    return { entries: snapshot.entries.length, coverage: 13 }
   }
   if (phase === 'regressions') {
     const inventory = JSON.stringify(await indexedDB.databases()),
@@ -265,6 +384,12 @@ export async function run(phase: string): Promise<Record<string, unknown>> {
       const reopened = owned('corrupt-' + kind)
       await rejects(() => reopened.read(row.key))
       await reopened.close()
+      const listing = owned('corrupt-' + kind)
+      await rejects(() => listing.listRecords())
+      await listing.close()
+      const coverage = owned('corrupt-' + kind)
+      await rejects(() => coverage.readCoverage('monad-testnet'))
+      await coverage.close()
     }
     for (const config of ['keyPath', 'autoIncrement', 'index']) {
       const store = owned('store-config-' + config)
@@ -385,6 +510,7 @@ export async function run(phase: string): Promise<Record<string, unknown>> {
     return { incomplete: 'preserved and rejected' }
   }
   if (phase === 'lost-ack') {
+    flags.ackReady = false
     const store = owned('lost-ack'),
       journal = engine(store),
       events = await signed()
@@ -444,7 +570,7 @@ export async function run(phase: string): Promise<Record<string, unknown>> {
       await gate
     })
     await held
-    const reading = store.read(row.key)
+    const reading = store.compareAndSwapCoverage('monad-testnet', undefined, 0)
     await waitForAsync(
       async () =>
         (
@@ -453,6 +579,8 @@ export async function run(phase: string): Promise<Record<string, unknown>> {
     )
     const closing = store.close()
     await rejects(() => store.read(row.key), 'closed')
+    await rejects(() => store.listRecords(), 'closed')
+    await rejects(() => store.readCoverage('monad-testnet'), 'closed')
     await rejects(() => reading)
     release()
     await lock

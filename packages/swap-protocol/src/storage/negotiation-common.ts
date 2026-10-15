@@ -1,3 +1,4 @@
+import chains from '../../../../docs/protocol/chains/v1.json'
 import { sha256 } from '@noble/hashes/sha256.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import { uncompressedPubkey } from '@frank/codec'
@@ -20,7 +21,125 @@ export interface NegotiationStorageBinding {
 }
 export interface OwnedNegotiationJournalStore extends NegotiationJournalStore {
   readonly namespace: string
+  listRecords(): Promise<
+    readonly { readonly key: string; readonly raw: string }[]
+  >
+  readCoverage(chainIdentifier: string): Promise<number | undefined>
+  compareAndSwapCoverage(
+    chainIdentifier: string,
+    expected: number | undefined,
+    next: number,
+  ): Promise<boolean>
   close(): Promise<void>
+}
+export const COVERAGE_KEY = 'coverage-v1'
+export const coverageLimits = Object.freeze({ positions: 32, rawBytes: 16384 })
+const chainIdentifiers = new Set(chains.chains.map(chain => chain.id))
+export function requireChain(
+  chainIdentifier: unknown,
+): asserts chainIdentifier is string {
+  if (
+    typeof chainIdentifier !== 'string' ||
+    !chainIdentifiers.has(chainIdentifier)
+  )
+    throw new TypeError('Canonical chain identifier required')
+}
+function requirePosition(position: unknown): asserts position is number {
+  if (
+    typeof position !== 'number' ||
+    !Number.isSafeInteger(position) ||
+    position < 0
+  )
+    throw new TypeError('Nonnegative safe inclusive position required')
+}
+export function requireCoverageChange(
+  chainIdentifier: unknown,
+  expected: unknown,
+  next: unknown,
+): void {
+  requireChain(chainIdentifier)
+  requirePosition(next)
+  if (expected !== undefined) {
+    requirePosition(expected)
+    if (next < expected) throw new TypeError('Coverage cannot regress')
+  }
+}
+function exact(
+  value: unknown,
+  keys: readonly string[],
+): value is Record<string, unknown> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every(key => Object.hasOwnProperty.call(value, key))
+  )
+}
+export function parseCoverage(raw: unknown): Map<string, number> {
+  if (
+    typeof raw !== 'string' ||
+    utf8ToBytes(raw).length > coverageLimits.rawBytes
+  )
+    throw new Error('Invalid coverage metadata size')
+  const value: unknown = JSON.parse(raw)
+  if (
+    !exact(value, ['version', 'positions']) ||
+    value.version !== 1 ||
+    !Array.isArray(value.positions) ||
+    value.positions.length > coverageLimits.positions
+  )
+    throw new Error('Invalid coverage metadata schema')
+  const positions = new Map<string, number>()
+  let prior: string | undefined
+  for (const position of value.positions) {
+    if (!exact(position, ['chainIdentifier', 'resumeFromInclusive']))
+      throw new Error('Invalid coverage position schema')
+    requireChain(position.chainIdentifier)
+    requirePosition(position.resumeFromInclusive)
+    if (prior !== undefined && prior >= position.chainIdentifier)
+      throw new Error('Unsorted or duplicate coverage chain')
+    prior = position.chainIdentifier
+    positions.set(position.chainIdentifier, position.resumeFromInclusive)
+  }
+  return positions
+}
+export function nextCoverage(
+  positions: ReadonlyMap<string, number>,
+  chainIdentifier: string,
+  next: number,
+): string {
+  const updated = new Map(positions)
+  if (next < (updated.get(chainIdentifier) ?? 0))
+    throw new TypeError('Coverage cannot regress')
+  updated.set(chainIdentifier, next)
+  const raw = JSON.stringify({
+    version: 1,
+    positions: [...updated]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([chainIdentifier, resumeFromInclusive]) => ({
+        chainIdentifier,
+        resumeFromInclusive,
+      })),
+  })
+  if (
+    updated.size > coverageLimits.positions ||
+    utf8ToBytes(raw).length > coverageLimits.rawBytes
+  )
+    throw new NegotiationJournalError(
+      'capacity',
+      'Negotiation coverage capacity reached; no eviction',
+    )
+  return raw
+}
+export function inventory(
+  rows: ReadonlyMap<string, string>,
+): readonly { readonly key: string; readonly raw: string }[] {
+  return Object.freeze(
+    [...rows]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, raw]) => Object.freeze({ key, raw })),
+  )
 }
 export const BINDING_KEY = 'binding-v1'
 export const RECORDS_STORE = 'records'
@@ -119,7 +238,7 @@ export function appendRecord(
   key: unknown,
   value: unknown,
 ): number {
-  if (key !== BINDING_KEY) requireKey(key)
+  if (key !== BINDING_KEY && key !== COVERAGE_KEY) requireKey(key)
   if (
     typeof value !== 'string' ||
     value.length > negotiationJournalLimits.rawBytes
@@ -130,16 +249,20 @@ export function appendRecord(
     throw new Error('Invalid serialized storage record')
   entries.push([key, value])
   if (
-    entries.filter(([rowKey]) => rowKey !== BINDING_KEY).length >
-    negotiationStorageLimits.rows
+    entries.filter(
+      ([rowKey]) => rowKey !== BINDING_KEY && rowKey !== COVERAGE_KEY,
+    ).length > negotiationStorageLimits.rows
   )
     throw new Error('Existing negotiation storage exceeds capacity')
-  return key === BINDING_KEY ? 0 : bytes
+  if (key === COVERAGE_KEY && bytes > coverageLimits.rawBytes)
+    throw new Error('Invalid coverage metadata size')
+  return key === BINDING_KEY || key === COVERAGE_KEY ? 0 : bytes
 }
 export function validateRecords(
   binding: Binding,
   entries: readonly (readonly [unknown, unknown])[],
-): Map<string, string> {
+): { rows: Map<string, string>; coverage: Map<string, number> } {
+  let coverage: Map<string, number> | undefined
   const rows = new Map<string, string>()
   let metadata = false,
     bytes = 0
@@ -148,6 +271,9 @@ export function validateRecords(
       if (metadata || value !== binding.metadata)
         throw new Error('Invalid negotiation storage binding metadata')
       metadata = true
+    } else if (key === COVERAGE_KEY) {
+      if (coverage) throw new Error('Duplicate coverage metadata')
+      coverage = parseCoverage(value)
     } else {
       requireKey(key)
       if (typeof value !== 'string' || rows.has(key))
@@ -166,7 +292,7 @@ export function validateRecords(
       'Incomplete negotiation namespace: missing binding metadata',
     )
   for (const [key, value] of rows) validateRow(binding, key, value)
-  return rows
+  return { rows, coverage: coverage ?? new Map() }
 }
 export function checkCapacity(
   rows: ReadonlyMap<string, string>,

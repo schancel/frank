@@ -6,11 +6,16 @@ import level from 'level/level.js'
 import { inspectNegotiationJournalRecord } from '../negotiation-journal'
 import { createNativeNegotiationJournalStore } from './negotiation-native'
 import {
+  COVERAGE_KEY,
   bind,
   BINDING_KEY,
   type OwnedNegotiationJournalStore,
 } from './negotiation-common'
 import {
+  coverageCapacity,
+  journalFirstCoverage,
+  coverageCases,
+  corruptCoverage,
   a,
   b,
   binding,
@@ -61,6 +66,9 @@ it('leaves absent reads/CAS refusals absent; rejects malformed/foreign proposals
   const store = await creating
   stores.push(store)
   const row = emptyRow(0)
+  expect(await store.listRecords()).toEqual([])
+  expect(await store.readCoverage('monad-testnet')).toBeUndefined()
+  expect(await store.compareAndSwapCoverage('monad-testnet', 0, 1)).toBe(false)
   expect(await store.read(row.key)).toBeUndefined()
   expect(await store.compareAndSwap(row.key, 'missing', row.raw)).toBe(false)
   await expect(store.compareAndSwap('BAD', undefined, row.raw)).rejects.toThrow(
@@ -201,6 +209,12 @@ it.each([
   }
   const reopened = await owned()
   await expect(reopened.read(row.key)).rejects.toThrow()
+  await reopened.close()
+  const listing = await owned()
+  await expect(listing.listRecords()).rejects.toThrow()
+  await listing.close()
+  const coverage = await owned()
+  await expect(coverage.readCoverage('monad-testnet')).rejects.toThrow()
 })
 it('poisons a failed directory barrier, closes acquired Level handle and permits explicit reconciliation', async () => {
   const store = await owned(),
@@ -369,4 +383,109 @@ it('preserves directory-sync and file-close failures while releasing acquired Le
   await store.close()
   jest.restoreAllMocks()
   expect(await (await owned()).read(row.key)).toBe(row.raw)
+})
+
+it('persists discoverable signed evidence and per-chain coverage through failed consumption and replay', async () => {
+  await coverageCases(() => owned())
+})
+it.each(corruptCoverage)(
+  'rejects corrupt coverage metadata across all operations without rewriting: %s',
+  async value => {
+    const store = await owned(),
+      row = emptyRow(0)
+    await store.compareAndSwap(row.key, undefined, row.raw)
+    await store.close()
+    let db = await raw(store.namespace)
+    await db.batch([{ type: 'put', key: COVERAGE_KEY, value }], { sync: true })
+    await db.close()
+    for (const operation of [
+      'list',
+      'coverage',
+      'row',
+      'coverage-cas',
+      'row-cas',
+    ]) {
+      const reopened = await owned()
+      await expect(
+        operation === 'list'
+          ? reopened.listRecords()
+          : operation === 'coverage'
+          ? reopened.readCoverage('monad-testnet')
+          : operation === 'row'
+          ? reopened.read(row.key)
+          : operation === 'coverage-cas'
+          ? reopened.compareAndSwapCoverage('monad-testnet', undefined, 0)
+          : reopened.compareAndSwap(row.key, row.raw, row.raw),
+      ).rejects.toThrow()
+      await reopened.close()
+    }
+    db = await raw(store.namespace)
+    expect(await db.get(COVERAGE_KEY)).toBe(value)
+    expect(await db.get(row.key)).toBe(row.raw)
+    await db.close()
+  },
+)
+it('reconciles ambiguous coverage acknowledgment after a synchronous real Level batch', async () => {
+  const store = await owned(),
+    prototype = require('levelup').prototype,
+    original = prototype.batch
+  jest
+    .spyOn(prototype, 'batch')
+    .mockImplementationOnce(async function (this: unknown, ...args: unknown[]) {
+      await original.apply(this, args)
+      throw new Error('lost coverage acknowledgment')
+    })
+  await expect(
+    store.compareAndSwapCoverage('monad-testnet', undefined, 7),
+  ).rejects.toThrow('acknowledgment')
+  await expect(store.listRecords()).rejects.toThrow('acknowledgment')
+  await store.close()
+  jest.restoreAllMocks()
+  const reopened = await owned()
+  expect(await reopened.readCoverage('monad-testnet')).toBe(7)
+  expect(
+    await reopened.compareAndSwapCoverage('monad-testnet', undefined, 7),
+  ).toBe(false)
+  expect(await reopened.listRecords()).toEqual([])
+})
+it('serializes first journal and coverage writes and drains coverage on close', async () => {
+  const store = await owned(),
+    row = emptyRow(0)
+  const results = await Promise.all([
+    store.compareAndSwap(row.key, undefined, row.raw),
+    store.compareAndSwapCoverage('xec-testnet', undefined, 0),
+  ])
+  expect(results).toEqual([true, true])
+  const write = store.compareAndSwapCoverage('xec-testnet', 0, 1),
+    closing = store.close()
+  await expect(store.readCoverage('xec-testnet')).rejects.toThrow('closed')
+  expect(await write).toBe(true)
+  await closing
+  const reopened = await owned()
+  expect(await reopened.readCoverage('xec-testnet')).toBe(1)
+  expect(await reopened.listRecords()).toEqual([{ key: row.key, raw: row.raw }])
+})
+
+it('refuses the33rd coverage chain without poisoning or consuming row capacity', async () => {
+  await coverageCapacity(await owned())
+})
+
+it('adds coverage to journal-first namespaces and sorts exact inventory', async () => {
+  await journalFirstCoverage(await owned())
+})
+
+it('holds native child-process exclusion for coverage-only namespaces', async () => {
+  const store = await owned()
+  expect(
+    await store.compareAndSwapCoverage('monad-testnet', undefined, 0),
+  ).toBe(true)
+  const child = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', join(__dirname, 'native-child.mjs'), root],
+    { cwd: join(__dirname, '../../../..'), encoding: 'utf8', timeout: 15000 },
+  )
+  expect(child.status).toBe(2)
+  expect(child.stdout).toMatch(/lock|LOCK/)
+  await store.close()
+  expect(await (await owned()).readCoverage('monad-testnet')).toBe(0)
 })

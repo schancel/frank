@@ -98,9 +98,7 @@ const statusChipColor = computed(() => {
 })
 
 const statusChipTextColor = computed(() => {
-  return status.value === 'warning' || status.value === 'not-granted'
-    ? 'dark'
-    : 'white'
+  return status.value === 'not-granted' ? 'dark' : 'white'
 })
 
 const statusChipIcon = computed(() => {

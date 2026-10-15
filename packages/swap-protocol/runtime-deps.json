@@ -1,7 +1,7 @@
 {
-  "allowed": ["@noble/hashes", "@frank/codec"],
+  "allowed": ["@noble/hashes", "@frank/codec", "level"],
   "optional": [],
   "planned": ["@frank/adaptor-signatures", "@frank/nakamoto"],
   "plannedOptional": [],
-  "note": "Transcript and negotiation use pure codec primitives and identity verification; chain execution and custody remain outside this package."
+  "note": "Pure transcript, negotiation and journal use codec primitives; explicit native-only storage additionally uses Level7. Browser storage uses direct IndexedDB and Web Locks. No adapter is installed by pure entries."
 }

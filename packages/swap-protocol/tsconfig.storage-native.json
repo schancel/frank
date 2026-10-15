@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2020"],
+    "types": ["node"]
+  },
+  "include": [
+    "src/storage/negotiation-native.ts",
+    "src/storage/negotiation-native-level.d.ts"
+  ],
+  "exclude": ["node_modules"]
+}

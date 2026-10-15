@@ -183,7 +183,11 @@ const App = require('./App.vue').default
 const setupApis = require('./boot/setup-apis').default
 const messagingBoot = require('./boot/monad-direct-messages').default
 const createRouter = require('./router').default
-const { createStoragePlugin, STORE_SCHEMA_VERSION } = require('./boot/pinia')
+const {
+  createStoragePlugin,
+  resolveStoreMetadata,
+  STORE_SCHEMA_VERSION,
+} = require('./boot/pinia')
 const {
   startupRestoration,
   setStartupRestoration,
@@ -235,6 +239,7 @@ function assertNoWrites(snapshot: Map<string, string>[]) {
 async function fixture(
   locale = 'en-us',
   metadata = { networkName: 'livenet', version: STORE_SCHEMA_VERSION },
+  admit?: (storage: ReturnType<typeof memoryDatabase>) => Promise<unknown>,
 ) {
   await messageStorePromise
   for (const db of mockDatabases.values()) db.data.clear()
@@ -251,7 +256,7 @@ async function fixture(
   pinia.use(
     createStoragePlugin(
       storage as unknown as LevelDB,
-      NativePromise.resolve(metadata),
+      admit ? admit(storage) : NativePromise.resolve(metadata),
     ),
   )
   const app = createApp({}).use(pinia).use(i18n)
@@ -297,6 +302,64 @@ describe('visible read-only startup failure', () => {
   })
   afterEach(() => jest.restoreAllMocks())
 
+  it.each(['corrupt', 'read-error', 'version', 'network'])(
+    'gates actual startup on metadata %s without resetting or writing',
+    async kind => {
+      const failure = new Error('metadata IO unavailable')
+      const { app, pinia } = await fixture('en-us', undefined, storage => {
+        if (kind === 'read-error') storage.get.mockRejectedValueOnce(failure)
+        else
+          storage.data.set(
+            'storeMetadata',
+            kind === 'corrupt'
+              ? '{PRIVATE corrupt'
+              : JSON.stringify({
+                  networkName:
+                    kind === 'network' ? 'another-network' : 'livenet',
+                  version:
+                    kind === 'version'
+                      ? STORE_SCHEMA_VERSION - 1
+                      : STORE_SCHEMA_VERSION,
+                }),
+          )
+        const admission = resolveStoreMetadata(storage)
+        void admission.catch(() => undefined)
+        return admission
+      })
+      const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      await setupApis({ app })
+      await expect(useChatStore().restored).rejects.toThrow()
+      if (kind === 'read-error')
+        await expect(useChatStore().restored).rejects.toBe(failure)
+      expect(startupRestoration.value.phase).toBe('failed')
+      await messagingBoot({ app })
+      const router = createRouter()
+      await router.push('/wallet')
+      await router.isReady()
+      const wrapper = mountedRoot(
+        pinia,
+        router,
+        app.config.globalProperties.$status,
+      )
+      await flushPromises()
+      expect(wrapper.get('main h1').text()).toBe(
+        'Saved data could not be loaded',
+      )
+      expect(wrapper.get('[role="alert"]').text()).not.toContain(
+        'startupFailure.',
+      )
+      expect(wrapper.text()).not.toContain('PRIVATE')
+      expect(wrapper.find('[data-test="route-content"]').exists()).toBe(false)
+      expect(app.config.globalProperties.$status.setup).toBe(false)
+      expect(mockInitialize).not.toHaveBeenCalled()
+      expect(mockTabInit).not.toHaveBeenCalled()
+      expect(mockIdentity).not.toHaveBeenCalled()
+      expect(mockPersistent).not.toHaveBeenCalled()
+      expect(mockRouteSetup).not.toHaveBeenCalled()
+      assertNoWrites(snapshot)
+      wrapper.unmount()
+    },
+  )
   it.each([
     ['en-us', false, 'Saved data could not be loaded', 'status'],
     [

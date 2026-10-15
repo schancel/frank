@@ -140,31 +140,32 @@ export function createStoragePlugin(
 export async function resolveStoreMetadata(
   storage: LevelDB,
 ): Promise<StoreMetadata> {
+  let data: string
   try {
-    const data = await storage.get('storeMetadata')
-    const state = JSON.parse(data)
-    const metadata: StoreMetadata = {
-      networkName: pathOr(displayNetwork, ['networkName'], state),
-      version: pathOr(STORE_SCHEMA_VERSION, ['version'], state),
-    }
-    if (metadata.version !== STORE_SCHEMA_VERSION) {
-      await storage
-        .put(
-          'storeMetadata',
-          JSON.stringify({
-            networkName: displayNetwork,
-            version: STORE_SCHEMA_VERSION,
-          }),
-        )
-        .catch(() => undefined)
-    }
-    return metadata
-  } catch {
-    return {
-      networkName: displayNetwork,
-      version: STORE_SCHEMA_VERSION,
-    }
+    data = await storage.get('storeMetadata')
+  } catch (error) {
+    if (
+      !error ||
+      typeof error !== 'object' ||
+      !('notFound' in error) ||
+      error.notFound !== true
+    )
+      throw error
+    // Current writers legitimately leave this key absent, even in populated stores.
+    return { networkName: displayNetwork, version: STORE_SCHEMA_VERSION }
   }
+  const state = JSON.parse(data)
+  const metadata: StoreMetadata = {
+    networkName: pathOr(displayNetwork, ['networkName'], state),
+    version: pathOr(STORE_SCHEMA_VERSION, ['version'], state),
+  }
+  // Never let a known mismatch reach a consumer's fresh-state/reset branch.
+  if (
+    metadata.version !== STORE_SCHEMA_VERSION ||
+    metadata.networkName !== displayNetwork
+  )
+    throw new Error('Unsupported application store metadata')
+  return metadata
 }
 
 export default boot(({ app }) => {

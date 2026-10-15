@@ -13,10 +13,9 @@
 //! silently wrong if an operator points `MONAD_TESTNET_HTTP_RPC_URL` at a different network
 //! without also updating this).
 //!
-//! This lands on the *stored/served* envelopes only (`proto::StoredMonadMessage`,
-//! `proto::StoredMonadTopicPost`) -- never the client-submitted `proto::MonadStampedMessage`/
-//! `proto::MonadTopicPost` -- since the relay is the one asserting which network it actually
-//! verified against; the client can't meaningfully assert this itself.
+//! This lands on the active stored/served message envelope (`proto::StoredMonadMessage`) -- never
+//! the client-submitted `proto::MonadStampedMessage` -- since the relay is the one asserting which
+//! network it actually verified against; the client can't meaningfully assert this itself.
 //!
 //! Client-side mismatch detection (warning/rejecting when a fetched tag doesn't match what a
 //! client expects) is deliberately out of scope here -- this ticket only needs the field to

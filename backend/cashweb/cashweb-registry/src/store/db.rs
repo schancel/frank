@@ -9,7 +9,6 @@ use thiserror::Error;
 use crate::store::directory_usernames::DbDirectoryUsernames;
 use crate::store::metadata::DbMetadata;
 use crate::store::monad_profiles::DbMonadProfiles;
-use crate::store::monad_topics::{DbMonadTopicPosts, DbMonadTopicVotes};
 use crate::store::topics::DbTopics;
 
 // We collect the column family constants here so we have a nice overview.
@@ -19,31 +18,14 @@ pub(crate) const CF_PKH_BY_TIME: &str = "pkh_by_time";
 pub(crate) const CF_MESSAGES: &str = "topic_messages";
 pub(crate) const CF_PAYLOADS: &str = "message_payloads";
 pub(crate) const CF_TOPIC_BURNS: &str = "topic_burn_txs";
-/// Ticket #30: stores [`crate::proto::StoredMonadTopicPost`], keyed by `payload_hash`. Parallel
-/// See `crate::store::monad_topics`'s module docs.
-pub(crate) const CF_MONAD_TOPIC_POSTS: &str = "monad_topic_posts";
-/// Ticket #30: stores [`crate::proto::StoredMonadTopicVoteEntry`], keyed by
-/// `target_payload_hash ++ tx_hash` so multiple votes can tally against the same post -- see
-/// `crate::store::monad_topics`'s module docs.
-pub(crate) const CF_MONAD_TOPIC_VOTES: &str = "monad_topic_votes";
-/// Ticket #40: secondary index over `CF_MONAD_TOPIC_POSTS`, keyed by `SHA256(topic) ++
-/// timestamp.to_be_bytes() ++ payload_hash` (value: the `payload_hash`) -- mirrors
-/// `CF_MONAD_MESSAGES_BY_TIME`'s "value is just the payload_hash" layout, but hashes the topic
-/// first (exactly like `DbTopics::get_messages_to`'s own `topic_digest`) rather than using the raw
-/// topic bytes as a variable-length key prefix, which would let one topic's key range bleed into
-/// another's (e.g. topic `"a"` is a byte-prefix of topic `"ab"`, so a raw-bytes prefix scan for
-/// `"a"` would incorrectly also return `"ab"`'s posts). Lets `DbMonadTopicPosts::list_by_topic`
-/// range-scan a single topic's posts in timestamp order -- see `crate::store::monad_topics`'s module docs.
-pub(crate) const CF_MONAD_TOPIC_POSTS_BY_TOPIC: &str = "monad_topic_posts_by_topic";
-/// Ticket #72: secondary index over `CF_MONAD_TOPIC_POSTS`, keyed directly by the raw topic name
-/// string (value: an encoded `proto::TopicDiscoveryStats`) -- unlike
-/// `CF_MONAD_TOPIC_POSTS_BY_TOPIC`, this index is looked up by exact topic match, never
-/// prefix-scanned, so there's no byte-prefix ambiguity to hash away (see
-/// `crate::store::monad_topics`'s module docs). Lets `DbMonadTopicPosts::list_topics` discover
-/// every distinct topic name this relay has seen a post for, without a client already knowing
-/// topic names out of band -- topics stay emergent/tag-based, so this is the closest thing to a
-/// "topic list" this crate has.
-pub(crate) const CF_MONAD_TOPIC_DISCOVERY: &str = "monad_topic_discovery";
+/// Retired protobuf topic column families. Keep them open so RocksDB preserves existing rows and
+/// can reopen databases created by earlier releases; no live route or store API reads or writes them.
+const RETIRED_TOPIC_COLUMN_FAMILIES: [&str; 4] = [
+    "monad_topic_posts",
+    "monad_topic_votes",
+    "monad_topic_posts_by_topic",
+    "monad_topic_discovery",
+];
 /// Ticket #45: stores the `cashweb_payload::proto::SignedPayload` envelope of a Monad-native
 /// profile registration (`PUT`/`GET /metadata/monad/:addr`), keyed directly by the registrant's
 /// raw 20-byte Monad address -- see `crate::store::monad_profiles`'s module docs for why this is
@@ -57,7 +39,7 @@ pub(crate) const CF_MONAD_PROFILES: &str = "monad_profiles";
 pub(crate) const CF_MONAD_PROFILES_BY_TIME: &str = "monad_profiles_by_time";
 /// Ticket #48: secondary index over `CF_MONAD_PROFILES`, keyed by `normalized_name.as_bytes() ++
 /// address` (value: the raw address) -- normalized_name is the profile's `display_name`
-/// `AddressEntry` body, lowercased. Unlike `CF_MONAD_TOPIC_POSTS_BY_TOPIC`'s hashed-topic index,
+/// `AddressEntry` body, lowercased. Unlike the retired topic store's hashed-topic index,
 /// this one keeps the raw (unhashed) UTF-8 bytes of the normalized name as the key prefix, because
 /// its whole purpose is prefix scanning (`DbMonadProfiles::search_by_name`) -- hashing would
 /// destroy the sort order a prefix scan depends on. Multiple profiles may share the same
@@ -76,8 +58,6 @@ pub struct Db {
     /// atomic, but the active-claim bound also needs its preceding count to be serialized.
     /// Serializes profile writes and secondary index cleanups across formats.
     monad_profile_lock: Mutex<()>,
-    /// Serializes compare-and-batch topic-author admission inside this process.
-    monad_topic_lock: Mutex<()>,
     /// Serializes the check-then-write of a username claim inside this process.
     username_lock: Mutex<()>,
     /// Lazy separate store; ordinary legacy startup never opens or modifies preview storage.
@@ -127,8 +107,12 @@ impl Db {
         let mut cfs = Vec::new();
         DbMetadata::add_cfs(&mut cfs);
         DbTopics::add_cfs(&mut cfs);
-        DbMonadTopicPosts::add_cfs(&mut cfs);
-        DbMonadTopicVotes::add_cfs(&mut cfs);
+        for name in RETIRED_TOPIC_COLUMN_FAMILIES {
+            cfs.push(ColumnFamilyDescriptor::new(
+                name,
+                rocksdb::Options::default(),
+            ));
+        }
         DbMonadProfiles::add_cfs(&mut cfs);
         DbDirectoryUsernames::add_cfs(&mut cfs);
         let path = path.as_ref();
@@ -228,17 +212,6 @@ impl Db {
         DbMonadProfiles::new(self)
     }
 
-    /// Returns `DbMonadTopicPosts`, allowing access to stored Monad topic posts (ticket #30).
-    pub fn monad_topic_posts(&self) -> DbMonadTopicPosts<'_> {
-        DbMonadTopicPosts::new(self)
-    }
-
-    /// Returns `DbMonadTopicVotes`, allowing access to stored Monad topic vote and their per-post
-    /// tally (ticket #30).
-    pub fn monad_topic_votes(&self) -> DbMonadTopicVotes<'_> {
-        DbMonadTopicVotes::new(self)
-    }
-
     /// Returns `DbDirectoryUsernames`, the store of unique usernames.
     pub fn directory_usernames(&self) -> DbDirectoryUsernames<'_> {
         DbDirectoryUsernames::new(self)
@@ -256,7 +229,6 @@ impl Db {
         Ok(Db {
             db,
             monad_profile_lock: Mutex::new(()),
-            monad_topic_lock: Mutex::new(()),
             username_lock: Mutex::new(()),
             directory_preview_owner: super::directory_preview_owner::Owner::new(registry_path),
             directory_subjects: super::directory_subjects::Owner::new(),
@@ -311,12 +283,6 @@ impl Db {
 
     pub(crate) fn lock_monad_profiles(&self) -> std::sync::MutexGuard<'_, ()> {
         self.monad_profile_lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    pub(crate) fn lock_monad_topics(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.monad_topic_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }

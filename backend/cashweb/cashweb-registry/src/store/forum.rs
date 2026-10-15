@@ -830,6 +830,16 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Sum the confirmed post counts in the canonical Forum discovery index.
+    pub(crate) fn stored_post_count(&self) -> Result<u64> {
+        let mut total = 0u64;
+        self.visit_topics(|_, count, _| {
+            total = total.checked_add(count).ok_or(ForumError::Capacity)?;
+            Ok(())
+        })?;
+        Ok(total)
+    }
 }
 
 #[cfg(test)]

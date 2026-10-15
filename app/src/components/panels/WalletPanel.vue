@@ -171,7 +171,7 @@ const selectedChain = computed(() => {
 })
 
 function getRouter() {
-  return (router && router.push ? router : null) || instance?.proxy?.$router
+  return router || instance?.proxy?.$router
 }
 function selectWallet(wallet: string) {
   getRouter()?.push(wallet === MAIN_WALLET_ID ? '/wallet' : `/wallet/${wallet}`)

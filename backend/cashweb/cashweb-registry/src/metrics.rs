@@ -21,7 +21,15 @@ struct Snapshot {
 
 impl Snapshot {
     fn refresh(&self, registry: &Registry) {
-        match registry.stored_public_profile_record_count() {
+        self.update_profile_count(
+            registry
+                .stored_public_profile_record_count()
+                .map_err(|error| format!("{error}")),
+        );
+    }
+
+    fn update_profile_count(&self, result: std::result::Result<u64, String>) {
+        match result {
             Ok(count) => {
                 self.profile_count.store(count, Ordering::Relaxed);
                 self.profile_count_available.store(true, Ordering::Relaxed);
@@ -89,6 +97,7 @@ mod tests {
     #[test]
     fn unavailable_count_is_not_reported_as_zero() {
         let snapshot = Snapshot::default();
+        snapshot.update_profile_count(Err("profile store read failed".to_string()));
         let output = snapshot.render();
         assert!(output.contains("# TYPE frank_registry_stored_public_profile_records gauge"));
         assert!(!output.contains("frank_registry_stored_public_profile_records 0"));

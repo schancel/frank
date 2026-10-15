@@ -364,8 +364,15 @@ export class PublicStorageRejected extends Error {
 export async function runNativeConditionalSuccess(
   options: Parameters<typeof startOwnedTemplateFixture>[0] & {
     rejectPublicStorage?: boolean
+    scenario?: 'settlement-reorg' | 'delayed-observer'
   },
 ): Promise<ConditionalEvidence> {
+  assert.ok(
+    options.scenario === undefined ||
+      options.scenario === 'settlement-reorg' ||
+      options.scenario === 'delayed-observer',
+    'unknown fixture scenario',
+  )
   const abc = await startOwnedTemplateFixture(options)
   let evm: OwnedEvm | undefined
   let directory: string | undefined
@@ -380,6 +387,7 @@ export async function runNativeConditionalSuccess(
       evm,
       directory,
       options.rejectPublicStorage === true,
+      options.scenario,
     )
   } finally {
     const results = await Promise.allSettled([
@@ -396,6 +404,7 @@ async function exercise(
   evm: OwnedEvm,
   directory: string,
   rejectStorage: boolean,
+  scenario?: 'settlement-reorg' | 'delayed-observer',
 ): Promise<ConditionalEvidence> {
   const rpc = abc.rpc,
     provider = evm.provider
@@ -664,7 +673,11 @@ async function exercise(
       tx: Array<{
         txid: string
         hex: string
-        vout: Array<{ n: number; value: number; scriptPubKey: { hex: string } }>
+        vout: Array<{
+          n: number
+          value: number
+          scriptPubKey: { hex: string }
+        }>
       }>
     }
     const sourceBlock = await rpc<NativeBlock>('getblock', [sourceHash, 2])
@@ -935,10 +948,10 @@ async function exercise(
     assert.equal(policy[0]!.allowed, true)
     const claimTxid = await rpc<string>('sendrawtransaction', [claimRaw])
     assert.equal(claimTxid, claimId)
-    const claimBlockHash = (
+    let claimBlockHash = (
       await rpc<{ hash: string }>('generateblock', ['raw(6a)', [claimRaw]])
     ).hash
-    const native = await rpc<NativeBlock>('getblock', [claimBlockHash, 2]),
+    let native = await rpc<NativeBlock>('getblock', [claimBlockHash, 2]),
       observed = native.tx.find(tx => tx.txid === claimId)!
     assert.ok(observed)
     assert.equal(observed.hex, claimRaw)
@@ -947,11 +960,48 @@ async function exercise(
     assert.equal(await rpc('gettxout', [fundingId, 0, false]), null)
     await record()
     await mine(1)
-    const confirmed = await rpc<{ confirmations: number }>('getblockheader', [
+    let confirmed = await rpc<{ confirmations: number }>('getblockheader', [
       claimBlockHash,
     ])
     assert.ok(confirmed.confirmations >= 2)
     order.push('actual ABC claim observed and verified')
+    if (scenario === 'settlement-reorg') {
+      const oldHeight = native.height
+      const { exerciseXecSettlementReorg } = await import('./settlement-reorg')
+      const reorg = await exerciseXecSettlementReorg(
+        rpc,
+        {
+          version: 1,
+          recovery: reloaded,
+          expected,
+          fundingAnchor: {
+            hash: fundingResult.hash,
+            height: fundingBlock.height,
+          },
+          claimAnchor: { hash: claimBlockHash, height: native.height },
+          claimRaw: observed.hex,
+        },
+        directory,
+      )
+      claimBlockHash = reorg.anchor.hash
+      native = reorg.block
+      observed = reorg.claim
+      confirmed = await rpc('getblockheader', [claimBlockHash])
+      const oldIndex = headers.findIndex(
+        header => Number(header.height) === oldHeight,
+      )
+      assert.ok(oldIndex >= 0)
+      headers.splice(oldIndex)
+      headers.push(
+        ...reorg.observation.canonicalHeaders
+          .filter(header => header.height >= oldHeight)
+          .map(header => ({ ...header })),
+      )
+      observations.push(reorg.observation)
+      order.push(
+        'orphan claim retained as knowledge; same original bytes reincluded',
+      )
+    }
     const wrongIntent = {
       ...signedClaim,
       outputs: [{ ...signedClaim.outputs[0]!, value: X - 1n }],
@@ -979,17 +1029,43 @@ async function exercise(
     assert.throws(() =>
       completeEvmFromObserved(reloaded, expected, c.raw(wrongSignature)),
     )
-    const completion = completeEvmFromObserved(reloaded, expected, observed.hex)
+    let completion: ReturnType<typeof completeEvmFromObserved>
+    if (scenario === 'delayed-observer') {
+      const { discoverDelayedClaim } = await import('./settlement-reorg')
+      const delayed = await discoverDelayedClaim(
+        rpc,
+        provider,
+        reloaded,
+        expected,
+        { hash: fundingResult.hash, height: fundingBlock.height },
+        directory,
+      )
+      completion = delayed.completion
+      observations.push(delayed.observation)
+      headers.push(
+        ...delayed.observation.canonicalHeaders
+          .filter(header => header.height > Number(headers.at(-1)!.height))
+          .map(header => ({ ...header })),
+      )
+      order.push(
+        'fresh delayed observer discovered claim from native block history',
+      )
+    } else
+      completion = completeEvmFromObserved(reloaded, expected, observed.hex)
     order.push(
       'A extracted from native observed signature and completed EVM authorization',
     )
-    const finalXec = await tip(),
-      closeAt = finalXec.time + binding.crossClockMargin
+    const finalXec = await tip()
+    let closeAt = finalXec.time + binding.crossClockMargin
     assert.ok(closeAt < base + duration)
     assert.ok(
       closeAt - finalXec.time <=
         binding.responseMargin + binding.crossClockMargin,
     )
+    const settlementSnapshot =
+      scenario === 'settlement-reorg'
+        ? ((await provider.send('evm_snapshot', [])) as string)
+        : undefined
     await provider.send('evm_setNextBlockTimestamp', [closeAt])
     const closeData = contract.interface.encodeFunctionData(
       'closeCooperative(bytes32,uint256,uint256[2],address,address,bytes,bytes)',
@@ -1010,8 +1086,38 @@ async function exercise(
       maxFeePerGas: PRICE,
       maxPriorityFeePerGas: 1n,
     })
-    const receipt = await sent.wait()
+    let receipt = await sent.wait()
     assert.ok(receipt && receipt.status === 1)
+    if (settlementSnapshot !== undefined) {
+      const signedRaw = (await provider.send('eth_getRawTransactionByHash', [
+        sent.hash,
+      ])) as string
+      assert.equal(typeof signedRaw, 'string')
+      const { exerciseEvmSettlementReorg } = await import('./settlement-reorg')
+      const reorg = await exerciseEvmSettlementReorg({
+        provider,
+        recovery: reloaded,
+        expected,
+        claimRaw: observed.hex,
+        snapshot: settlementSnapshot,
+        originalReceipt: receipt,
+        signedRaw,
+        directory,
+        opening: {
+          hash: openReceipt.blockHash,
+          height: openReceipt.blockNumber,
+        },
+        relayer: relayer.address,
+        balanceA,
+        balanceRelay,
+      })
+      receipt = reorg.receipt
+      closeAt = reorg.timestamp
+      observations.push(reorg.observation)
+      order.push(
+        'orphan EVM settlement replaced only by original signed transaction',
+      )
+    }
     const block = await provider.getBlock(receipt.blockNumber)
     assert.equal(block!.timestamp, closeAt)
     const settled = receipt.logs
@@ -1152,8 +1258,10 @@ async function exercise(
       },
     })
     return {
-      scope:
-        'one experimental dealerless J / owned T native conditional-success witness; no malicious security, restart, rollback, power-loss or production assurance',
+      ...(scenario ? { scenario } : {}),
+      scope: scenario
+        ? `ordinary local ${scenario} witness; no malicious security, general reorg theorem, power-loss or production assurance`
+        : 'one experimental dealerless J / owned T native conditional-success witness; no malicious security, restart, rollback, power-loss or production assurance',
       hypotheses: [
         'static at-most-one-party corruption theorem remains unproved',
         'custom joint DLEQ plus Paillier and two sequential same-J/T composition require external assurance',

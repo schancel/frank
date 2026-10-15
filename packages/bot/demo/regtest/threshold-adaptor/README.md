@@ -28,3 +28,41 @@ Evidence includes client version, canonical chain, pinned checkpoint, native dig
 The pure tests independently construct the ForkID preimage and pin literal EIP-1559 unsigned bytes. They reject wrong canonical/native chain identity, changed input/value, public endpoints, wrong observation digest/signature, wrong adaptor point and public key, and high-s observations while proving extraction's sign ambiguity. Existing threshold suites own adversarial session/round/proof coverage; these checks do not replace them. Native acceptance is passed only when the corresponding livecheck actually prints PASS.
 
 Validation on the initial candidate: the focused suite passed (4 tests), and the existing threshold suite passed (6 suites, 94 tests). Real Bitcoin ABC 0.34.0 accepted the XEC proof, including its negative mempool checks and observed signature extraction. Real Monad solonet 0.16.4 accepted the MON proof on an explicitly owner-authorized existing disposable fixture, with both worker coordinator subtrees confirming no concurrent faucet use. The observed transfer delivered exactly one wei and extraction succeeded; funding was 0.004242000000000001 MON, including the fee-cap budget. No VM/container lifecycle or chain configuration changed. The required repository typecheck passed all 22 projects with the corrected isolated dependency overlay (wallet-local Chronik 4.3.1 and Frank workspace links pointing to this candidate). The initial root-only dependency symlink selected Chronik 0.8.5 and produced spurious wallet API errors; it was replaced without source changes. The focused tests and real XEC proof also passed again under the corrected overlay. Both native acceptance gates passed. Exact-candidate independent review remains required; these results establish the Packet A precursor only, not an atomic exchange or recovery protocol.
+
+## Ordinary settlement reorg proof (S2a)
+
+`settlement-reorg.test.cjs` reuses the existing honest conditional-success setup.
+The baseline entry point has two explicit fixture-only scenarios; its normal
+output, two sequential signing sessions, fsynced recovery barrier and immediate
+joint-handle destruction are preserved. No cryptographic implementation changes.
+
+The reorg scenario disconnects the actual XEC claim and descendants while keeping
+funding canonical. The canonical-only UTXO read is separate from mempool state.
+A fresh process recreates the public completion while the old inclusion is absent;
+then the original claim bytes reappear on a different depth-two canonical branch.
+It also snapshots EVM state after opening, disconnects actual cooperative settlement,
+restarts public observation in fresh processes, and reuses the original signed
+transaction with its original nonce. Orphaned fee effects remain separate from
+current-chain recipient principal and fees.
+
+The delayed observer receives recovery artifacts and an exact funding outpoint,
+not a claim notification. After actual refund MTP maturity it scans at most 32
+canonical blocks from the protected funding anchor, finds the earlier spend and
+uses a fresh public-only completion process. The existing refund/finality/response
+constants remain unchanged; observation and settlement must fit their declared
+window. These local cases are not a general censorship, reorg or consensus theorem.
+Anvil supplies generic EVM execution evidence, not Monad consensus qualification.
+
+Use only the existing verified pinned ABC archive/binaries and installed Anvil.
+Coordinate the single native lane before running; there is no download or endpoint
+fallback. Optional `SETTLEMENT_REORG_EVIDENCE_DIR` retains compact public JSON in an
+existing fixture-owned directory, using exclusive file creation.
+
+```sh
+TSX_TSCONFIG_PATH=packages/bot/tsconfig.json ADAPTOR_ABC_ARCHIVE=/tmp/frank-adaptor-abc.tar.gz FRANK_BITCOIN_ABC_BIN_DIR=/tmp/frank-adaptor-abc-verified/bitcoin-abc-0.34.0/bin node --import tsx --test packages/bot/demo/regtest/threshold-adaptor/settlement-reorg.test.cjs
+TSX_TSCONFIG_PATH=packages/bot/tsconfig.json ADAPTOR_ABC_ARCHIVE=/tmp/frank-adaptor-abc.tar.gz FRANK_BITCOIN_ABC_BIN_DIR=/tmp/frank-adaptor-abc-verified/bitcoin-abc-0.34.0/bin node --import tsx --test packages/bot/demo/regtest/threshold-adaptor/native-conditional-success.test.cjs
+```
+
+S2b still owns EVM fallback-already-final and XEC refund/EVM fallback reorg cases.
+S1 assurance, production observation/storage ownership, financial recovery runtime,
+UI and release authorization remain unfinished. This proof installs none of them.

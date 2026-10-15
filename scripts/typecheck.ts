@@ -20,6 +20,14 @@ if (existsSync(packagesDir)) {
   }
 }
 
+// Explicit negotiation storage entries keep platform globals out of the pure core gate.
+for (const name of [
+  'tsconfig.storage-browser.json',
+  'tsconfig.storage-native.json',
+]) {
+  targetConfigs.push(join(rootDir, 'packages/swap-protocol', name))
+}
+
 // Strict test-only gate: signer source uses bundler resolution; production stays NodeNext.
 const adaptorCompositionConfig = join(rootDir, 'packages/contracts/tsconfig.adaptor-tests.json')
 if (existsSync(adaptorCompositionConfig)) targetConfigs.push(adaptorCompositionConfig)

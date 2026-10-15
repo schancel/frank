@@ -163,3 +163,67 @@ node packages/nakamoto/scripts/check-deps.mjs --root packages/swap-protocol
 node_modules/.bin/prettier --single-quote --no-semi --trailing-comma all --check packages/swap-protocol/src/negotiation-journal.ts packages/swap-protocol/src/negotiation-journal.jest.test.ts
 yarn typecheck:fast
 ```
+
+### Account-scoped negotiation storage
+
+`src/storage/negotiation-browser.ts` and `src/storage/negotiation-native.ts` expose explicit
+`createBrowserNegotiationJournalStore` / `createNativeNegotiationJournalStore` factories.
+Both require `hostDiscriminator`, `accountIncarnation` and a valid compressed `localPublicKey`.
+Native additionally requires an approved existing `rootLocation`; it creates no ancestors.
+The returned capability has only `read`, `compareAndSwap`, `namespace` and `close`.
+No app or bot installs these adapters yet.
+
+One deterministic versioned namespace belongs to that host/account incarnation/public key,
+across messaging chains. Complete binding metadata is validated separately from journal rows.
+The pure journal inspector owns row semantics, signatures and canonical identity validation;
+storage additionally enforces account/key affinity and the derived row key. Accepted raw JSON
+is preserved exactly, including equivalent whitespace/property order. Account capacity is
+128 rows and 8,388,608 UTF-8 serialized row bytes; metadata is separate. Rows retain the pure
+journal's 262,144-byte bound. Limits are derived from current records on each operation, with
+no eviction or competing persisted counters. Comparison failure returns false; capacity failure
+throws the existing journal capacity error, leaving the handle usable.
+
+Browser storage uses direct IndexedDB schema version 1, one out-of-line `records` store and
+explicit Web Locks. Absent reads abort unexpected creation. A namespace lock covers every new
+connection's opening/inspection and the first strict transaction that atomically writes binding
+and first row. Reopening performs no readwrite durability probe. An interrupted schema-only
+namespace remains an observable error, never an empty replacement or repaired database.
+Normal read/CAS operations use IndexedDB transactions; CAS compares, validates capacity and
+writes in one verified strict transaction, acknowledging its completion rather than request
+success. Closing revokes admission and aborts pending initialization; abandoned requests cannot
+publish late connections or initialize a replacement. A pending native IndexedDB open cannot
+be canceled directly, so close observes its terminal cleanup after any external blocker releases.
+
+Native storage owns one private Level7 handle, serializes the whole operation, uses `sync:true`
+for writes, synchronizes the namespace directory on every actual open/recovery, and synchronizes
+its parent after creation. A module-private canonical-location token prevents duplicate
+same-process Level construction: on the tested POSIX backend, closing a failed duplicate could
+drop the first owner's OS exclusion. The token releases only after its own handle cleanup.
+Actual Level OS locking remains required across processes. This guard covers one loaded module
+in a process; it does not qualify independently duplicated module copies or unrelated raw Level
+consumers. Tested native qualification is macOS 26.6 arm64, Node 26.10.0, Level 7.0.1 / leveldown
+6.1.1; Linux and other storage/media environments were not qualified by this run.
+
+Success means acknowledged durable commit under the qualified backend. An exception may follow
+a committed write; the handle poisons before queued later work and requires close/reopen to
+reconcile original evidence. There is no automatic retry, rollback, deletion or absence claim.
+Close drains admitted work; an already admitted CAS may commit. Cleanup failures stay visible.
+Browser eviction/profile loss, malicious rollback, physical media corruption, reset, account
+incarnation restoration, host lifecycle and saturation policy remain separate work. No financial
+execution, signing capability, acceptance automation or custody secret is added.
+
+From the repository root, qualification commands are:
+
+```sh
+yarn --cwd packages/swap-protocol test --runInBand
+yarn --cwd packages/swap-protocol test:storage-browser
+node packages/nakamoto/scripts/check-deps.mjs --root packages/swap-protocol
+yarn typecheck:fast
+```
+
+The browser command bundles with existing installed tooling, checks pure/browser import
+boundaries, and uses an owned temporary Chrome profile with loopback transport. Set
+`NEGOTIATION_STORE_CHROME` for an explicitly selected installed executable. It runs actual
+production limits, independent pages, strict-capability refusal, fault-injected lost
+acknowledgment, and process-kill/reopen tests; it does not download a browser or access chains.
+The separate browser/native tsconfigs are both required gates in `scripts/typecheck.ts`.

@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2020", "dom"]
+  },
+  "include": [
+    "src/storage/negotiation-browser.ts",
+    "src/storage/browser-suite.ts"
+  ],
+  "exclude": ["node_modules"]
+}

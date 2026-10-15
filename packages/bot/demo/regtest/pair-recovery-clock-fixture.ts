@@ -80,7 +80,7 @@ interface Block {
   height: number
   tx: Array<{ txid: string; hex: string; vout: Output[] }>
 }
-interface OwnedEvm {
+export interface OwnedEvm {
   provider: JsonRpcProvider
   accounts: HDNodeWallet[]
   version: string
@@ -107,7 +107,7 @@ export interface PairClockEvidence {
   xecHeaders: Header[]
   observations: Array<Record<string, unknown>>
 }
-async function startOwnedEvm(timestamp: number): Promise<OwnedEvm> {
+export async function startOwnedEvm(timestamp: number): Promise<OwnedEvm> {
   const binary = resolve(
     __dirname,
     '../../../contracts/node_modules/.bin/anvil',

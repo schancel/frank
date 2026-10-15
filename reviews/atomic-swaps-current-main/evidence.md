@@ -79,6 +79,19 @@ Exact tested candidate: `a4183bf770af4e491309875ee46e451b57bedff5`, before this 
 
 Every gate exited naturally with code 0. Logs use `/tmp/frank-current-main-h0-q3a-{typecheck,native,browser,custody,vault,node}.log`. Retained candidate-local dependency overlays were reused and preserved. No source changes or unrelated crypto/native-chain reruns occurred. Adapter qualification does not install a production host/default or solve lifecycle/retention/reset policy; those successor boundaries remain separate. No push, merge, deployment or funded activity occurred.
 
+## S5a repaired negotiation integration
+
+Exact tested candidate: `10c55621bed385a1967c82d92009c1fb30257266`, before this evidence-only addition. All eight S5a changed files, including production code, tests, package/configuration metadata and review evidence, match reviewed repair tip `33b2f4ac75ff0ffb132b49763a31dc219d643406` byte for byte. This integrates original `9274824fba23d78f1e3aaf0f2ac83659f421d2ca` with its reviewed Buffer-ownership correction. The original snapshot defect was independently confirmed; the repair owns accepted Buffer-backed context, offer/decoder/batch bytes and signer input/output as plain Uint8Arrays. The repair's five Buffer regressions are included in the passing suite. No initial-candidate 43-test result is substituted for repaired-candidate acceptance.
+
+| Command from repository root unless noted | Exact-tip result |
+| --- | --- |
+| `yarn typecheck:fast` | 23/23 configured projects pass |
+| From `packages/swap-protocol`: `../../node_modules/.bin/jest --runInBand` | 4 suites, 48 tests pass |
+| From `packages/frank-codec`: `../../node_modules/.bin/jest --runInBand test/registration.jest.test.ts test/cbor.jest.test.ts test/stages.jest.test.ts` | 3 suites, 97 tests pass |
+| `git diff --check` | Pass |
+
+All gates exited naturally with code 0. Logs: `/tmp/frank-current-main-s5a-typecheck.log`, `/tmp/frank-current-main-s5a-swap.log`, `/tmp/frank-current-main-s5a-codec.log`. Accepted H1/Q3a/H0 source was not modified; unrelated qualification gates were not repeated. Owned integration overlays remain preserved. This validation adds no source change or independent review claim of its own. S5b transport/host installation and later runtime/UI/financial execution remain separate; no push, merge, deployment or funded action occurred.
+
 Independent review: `c0_review` reviewed exact Q3a `836f96d8400401c00085d103a2735a7babc4840d`, and `private_dice_design_review` reviewed exact H0 `6958f1931059392f9d811aba32557f8388a226f6`, both against `3951bbf2557a31d7380a3ae6b07431f966e031b5`. Each returned SAFE TO INTEGRATE with no concrete findings after source and evidence inspection. Perspectives included correctness, security, efficiency, simplicity/shape, test quality, persistence, concurrency, authority and resource lifetime. Neither duplicated passing gates. Root also inspected the production changes and combined evidence. Reviewers used inherited strong model context; implementations used the owner-requested GPT-6.1 Sol medium lane. Already-started authorized custody transactions can commit after facade closure; callers receive a failure requiring original-intent reconciliation. Neither review qualifies reset safety, production store activation, browser eviction, physical WAL corruption or whole-store rollback. Release hold remains.
 
 ## H1 local integration

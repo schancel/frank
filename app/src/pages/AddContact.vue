@@ -37,6 +37,14 @@
             </template>
           </q-input>
 
+          <q-btn
+            flat
+            icon="qr_code_scanner"
+            :label="$t('qrScanner.open')"
+            data-test="add-contact-scan"
+            @click="showScanner = true"
+          />
+
           <!-- Existing contact suggestions dropdown / list -->
           <div
             v-if="showSuggestions"
@@ -293,13 +301,20 @@
           </div>
         </q-card-actions>
       </q-card>
+      <qr-scanner-dialog
+        v-model="showScanner"
+        :network-name="scannerNetwork"
+        :context="scannerContext"
+        :validate-address="validateScannedAddress"
+        @scan="address = $event"
+      />
       <identity-qr-dialog v-model="showMyQrDialog" />
     </q-page>
   </q-page-container>
 </template>
 
 <script lang="ts">
-import { defineComponent, markRaw, ref } from 'vue'
+import { defineComponent, markRaw, onBeforeUnmount, ref } from 'vue'
 import { QInput } from 'quasar'
 
 import {
@@ -309,7 +324,7 @@ import {
   useContactStore,
 } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
 import { errorNotify } from 'src/utils/notifications'
@@ -326,6 +341,8 @@ import {
   fetchContactProfile,
   type ContactLookupFailure,
 } from 'src/utils/directory-peer'
+import { accountSession } from 'src/accounts/session'
+import QrScannerDialog from 'src/components/dialogs/QrScannerDialog.vue'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
 import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
 import {
@@ -346,6 +363,7 @@ type AcceptedLookup = {
 export default defineComponent({
   components: {
     IdentityQrDialog,
+    QrScannerDialog,
     UsernameHandle,
   },
   data() {
@@ -366,9 +384,16 @@ export default defineComponent({
   },
   setup() {
     const contactStore = useContactStore()
+    const showScanner = ref(false)
+    onBeforeUnmount(
+      onActiveChainChange(() => {
+        showScanner.value = false
+      }),
+    )
 
     return {
       contactStore,
+      showScanner,
       addressRef: ref<QInput | null>(null),
       // Plain (non-reactive) bookkeeping: setup state is not deeply reactive.
       lookupSchedule: {
@@ -379,6 +404,9 @@ export default defineComponent({
     }
   },
   computed: {
+    scannerNetwork(): string {
+      return activeChain.name
+    },
     isConversationMode(): boolean {
       return this.$route?.path === '/new-conversation'
     },
@@ -637,6 +665,14 @@ export default defineComponent({
         return shortAddressLabel(addr)
       }
       return addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
+    },
+    scannerContext(): string | undefined {
+      const state = accountSession.state
+      if (state.status !== 'ready') return undefined
+      return `${state.revision}:${activeChain.chainIdentifier}:${this.$route.fullPath}`
+    },
+    validateScannedAddress(value: string): boolean {
+      return this.canonicalizeAddress(value) !== null
     },
     canonicalizeAddress(address: string) {
       try {

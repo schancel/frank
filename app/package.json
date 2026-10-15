@@ -70,7 +70,9 @@
     "vue-router": "^5.3.1",
     "webpack": ">=5.76.0",
     "workbox-webpack-plugin": "^6.5.4",
-    "worker-loader": "^3.0.8"
+    "worker-loader": "^3.0.8",
+    "@zxing/browser": "0.2.1",
+    "@zxing/library": "0.23.0"
   },
   "devDependencies": {
     "bitcore-lib-xpi": "*",

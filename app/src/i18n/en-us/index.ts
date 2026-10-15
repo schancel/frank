@@ -4,6 +4,24 @@
 import { en as accountRecovery } from '../account-recovery'
 
 export default {
+  qrScanner: {
+    paymentHint:
+      'For payments, scan the wallet Receive QR code. A profile QR code identifies a messaging contact and is not a wallet deposit address.',
+    open: 'Scan QR code',
+    title: 'Scan an address',
+    network: 'Network: {network}',
+    addressOnly:
+      'Scan a raw address for this network. Review it before confirming. Payment links are not supported.',
+    starting: 'Starting camera…',
+    scanning: 'Point the camera at the QR code.',
+    invalid: 'This QR code is not a supported address for this network.',
+    denied:
+      'Camera access was denied. Allow access or enter the address manually.',
+    unavailable:
+      'Camera unavailable. Use HTTPS and a supported browser, or enter the address manually.',
+    retry: 'Try again',
+    manual: 'Enter manually',
+  },
   notificationPermission: {
     title: 'Notifications',
     default: 'Browser notifications are not enabled.',

@@ -22,6 +22,15 @@
             :placeholder="$t('sendAddressDialog.recipient')"
           />
         </q-card-section>
+        <q-btn
+          flat
+          icon="qr_code_scanner"
+          :label="$t('qrScanner.open')"
+          :disable="!chainReady"
+          data-test="send-scan"
+          @click="showScanner = true"
+        />
+        <p class="q-px-md text-caption">{{ $t('qrScanner.paymentHint') }}</p>
         <q-card-section>
           <q-input
             class="text-bold text-h6"
@@ -273,11 +282,20 @@
           />
         </q-card-actions>
       </q-card>
+      <qr-scanner-dialog
+        v-model="showScanner"
+        :network-name="networkName"
+        :context="scannerContext"
+        :validate-address="validateScannedAddress"
+        @scan="address = $event"
+      />
     </q-page>
   </q-page-container>
 </template>
 
 <script lang="ts">
+import QrScannerDialog from 'src/components/dialogs/QrScannerDialog.vue'
+import { accountSession } from 'src/accounts/session'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { navigateBack } from 'src/utils/navigate-back'
 import {
@@ -294,6 +312,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { sentTransactionNotify, errorNotify } from '../utils/notifications'
 import {
   activeChain,
+  onActiveChainChange,
   NativeFeeExceededError,
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
@@ -313,8 +332,15 @@ import {
 import { useTranslate } from 'src/composables/useTranslate'
 
 export default defineComponent({
+  components: { QrScannerDialog },
   setup() {
     const $t = useTranslate()
+    const showScanner = ref(false)
+    onBeforeUnmount(
+      onActiveChainChange(() => {
+        showScanner.value = false
+      }),
+    )
     const address = ref('')
     const amount = ref('')
     const isReviewing = ref(false)
@@ -413,6 +439,21 @@ export default defineComponent({
 
     return {
       address,
+      showScanner,
+      chainReady: computed(() => !!context.value),
+      scannerContext: () => {
+        const state = accountSession.state
+        if (
+          disposed ||
+          isReviewing.value ||
+          !context.value ||
+          state.status !== 'ready'
+        )
+          return undefined
+        return `${state.revision}:${context.value.chain.chainIdentifier}:${activeChain.chainIdentifier}:${route.fullPath}`
+      },
+      validateScannedAddress: (value: string) =>
+        !!context.value?.chain.parseAddress(value),
       amount,
       reviewedAmount,
       isReviewing,

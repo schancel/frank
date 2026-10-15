@@ -4,6 +4,25 @@
 import { fr as accountRecovery } from '../account-recovery'
 
 export default {
+  qrScanner: {
+    paymentHint:
+      'Pour un paiement, scannez le code QR Recevoir du portefeuille. Un code QR de profil identifie un contact de messagerie et ne désigne pas une adresse de dépôt du portefeuille.',
+    open: 'Scanner un code QR',
+    title: 'Scanner une adresse',
+    network: 'Réseau : {network}',
+    addressOnly:
+      'Scannez une adresse brute de ce réseau. Vérifiez-la avant de confirmer. Les liens de paiement ne sont pas pris en charge.',
+    starting: 'Démarrage de la caméra…',
+    scanning: 'Pointez la caméra vers le code QR.',
+    invalid:
+      'Ce code QR ne contient pas une adresse prise en charge sur ce réseau.',
+    denied:
+      'Accès à la caméra refusé. Autorisez-le ou saisissez l’adresse manuellement.',
+    unavailable:
+      'Caméra indisponible. Utilisez HTTPS et un navigateur compatible ou saisissez l’adresse manuellement.',
+    retry: 'Réessayer',
+    manual: 'Saisir manuellement',
+  },
   notificationPermission: {
     title: 'Notifications',
     default: 'Les notifications du navigateur ne sont pas activées.',

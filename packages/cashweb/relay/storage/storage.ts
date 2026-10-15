@@ -1,3 +1,13 @@
+import type {
+  OutgoingApplicationMessageClaim,
+  OutgoingApplicationMessageCompletion,
+  OutgoingApplicationMessageRecord,
+} from "./outgoing-application-intent";
+export type {
+  OutgoingApplicationMessageClaim,
+  OutgoingApplicationMessageCompletion,
+  OutgoingApplicationMessageRecord,
+} from "./outgoing-application-intent";
 import type { OutgoingFinancialOperation } from "../../types/messages";
 import protocol from "../../../../docs/protocol/chains/v1.json";
 import { MAX_PAYMENT_MEMBERS } from "@frank/codec";
@@ -158,6 +168,22 @@ export function financialEnvelopeBinding(
 }
 
 export interface MessageStore {
+  /** Retained pre-sign decision; exact repeats recover the current immutable record. */
+  claimOutgoingApplicationMessage(
+    claim: OutgoingApplicationMessageClaim
+  ): Promise<OutgoingApplicationMessageRecord>;
+  /** The only transition is claimed to signed; a different payload or identity conflicts. */
+  completeOutgoingApplicationMessage(
+    completion: OutgoingApplicationMessageCompletion
+  ): Promise<OutgoingApplicationMessageRecord>;
+  /** Read-only recovery independent of deletable presentation history. */
+  outgoingApplicationMessage(scope: {
+    intentKey: string;
+    accountId: string;
+  }): Promise<OutgoingApplicationMessageRecord | undefined>;
+  outgoingApplicationMessages(scope: {
+    accountId: string;
+  }): Promise<readonly OutgoingApplicationMessageRecord[]>;
   /** Immutable intent with one pending-to-bound transition; conflicts reject before exposure. */
   bindFinancialEnvelope(binding: FinancialEnvelopeBinding): Promise<void>;
   /** Read-only host recovery facts; never opens custody or initializes defaults. */

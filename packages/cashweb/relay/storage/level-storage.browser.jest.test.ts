@@ -74,16 +74,16 @@ describe('actual browser message-store application records', () => {
       label: 'marker only',
       accepted: true,
       messages: {},
-      metadata: { schemaVersion: '2' },
+      metadata: { schemaVersion: '3' },
     },
     {
       label: 'current message and zero timestamp',
       accepted: true,
       messages: {
         'browser-message': serializeMessageWrapper(message),
-        lastServerTime: '0',
+        'lastServerTime': '0',
       },
-      metadata: { schemaVersion: '2' },
+      metadata: { schemaVersion: '3' },
     },
     {
       label: 'later message survived without schema',
@@ -175,9 +175,9 @@ describe('actual browser message-store application records', () => {
     expect(await raw(location)).toEqual({
       messages: {
         'browser-message': serializeMessageWrapper(message),
-        lastServerTime: '12',
+        'lastServerTime': '12',
       },
-      metadata: { schemaVersion: '2' },
+      metadata: { schemaVersion: '3' },
     })
   })
 

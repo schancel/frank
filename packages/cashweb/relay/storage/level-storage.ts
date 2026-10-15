@@ -1,3 +1,16 @@
+import {
+  outgoingApplicationAccount,
+  outgoingApplicationKey,
+  outgoingApplicationClaim,
+  outgoingApplicationCompletion,
+  outgoingApplicationRecord,
+  outgoingApplicationStoredRow,
+  outgoingApplicationIntentPrefix,
+  OutgoingApplicationIntentRefusal,
+  type OutgoingApplicationMessageClaim,
+  type OutgoingApplicationMessageCompletion,
+  type OutgoingApplicationMessageRecord,
+} from './outgoing-application-intent'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   isSafeRelayTimestamp,
@@ -217,7 +230,7 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
   }
 }
 
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 /**
  * Message persistence with a crash-safe relay mailbox frontier.
@@ -340,6 +353,7 @@ export class LevelMessageStore implements MessageStore {
       }
       // Validate new host recovery facts during required restoration, without writing defaults.
       await this.readFinancialBindings(this.openedMetadataDb!)
+      await this.readOutgoingApplicationMessages(this.openedMetadataDb!)
       this.state = 'open'
     } catch (error) {
       this.state = 'failed'
@@ -766,6 +780,95 @@ export class LevelMessageStore implements MessageStore {
     return iterator
   }
 
+  private async readOutgoingApplicationMessages(
+    db: LevelDB,
+  ): Promise<OutgoingApplicationMessageRecord[]> {
+    const rows: OutgoingApplicationMessageRecord[] = []
+    for await (const [key, value] of db.iterator({
+      gte: outgoingApplicationIntentPrefix,
+      lt: outgoingApplicationIntentPrefix + '\uffff',
+    }))
+      rows.push(outgoingApplicationStoredRow(String(key), String(value)))
+    return rows.sort((a, b) =>
+      a.intentKey < b.intentKey ? -1 : a.intentKey > b.intentKey ? 1 : 0,
+    )
+  }
+
+  async outgoingApplicationMessage(scope: {
+    intentKey: string
+    accountId: string
+  }): Promise<OutgoingApplicationMessageRecord | undefined> {
+    const intentKey = outgoingApplicationKey(scope.intentKey)
+    const accountId = outgoingApplicationAccount(scope.accountId)
+    this.assertAvailable()
+    let value: string
+    try {
+      value = await this.metadataDb.get(
+        outgoingApplicationIntentPrefix + intentKey,
+      )
+    } catch (error) {
+      if (isNotFound(error)) return undefined
+      throw error
+    }
+    const row = outgoingApplicationStoredRow(
+      outgoingApplicationIntentPrefix + intentKey,
+      value,
+    )
+    if (row.accountId !== accountId)
+      throw new OutgoingApplicationIntentRefusal(
+        'Outgoing application account conflict',
+      )
+    return row
+  }
+
+  async outgoingApplicationMessages(scope: {
+    accountId: string
+  }): Promise<readonly OutgoingApplicationMessageRecord[]> {
+    const accountId = outgoingApplicationAccount(scope.accountId)
+    this.assertAvailable()
+    return Object.freeze(
+      (await this.readOutgoingApplicationMessages(this.metadataDb)).filter(
+        row => row.accountId === accountId,
+      ),
+    )
+  }
+
+  async claimOutgoingApplicationMessage(
+    input: OutgoingApplicationMessageClaim,
+  ): Promise<OutgoingApplicationMessageRecord> {
+    const claim = outgoingApplicationClaim(input)
+    return this.persistOutgoingApplicationIntent(
+      outgoingApplicationRecord({ ...claim, phase: 'claimed' }),
+    )
+  }
+
+  async completeOutgoingApplicationMessage(
+    input: OutgoingApplicationMessageCompletion,
+  ): Promise<OutgoingApplicationMessageRecord> {
+    return this.persistOutgoingApplicationIntent(
+      outgoingApplicationCompletion(input),
+    )
+  }
+
+  private persistOutgoingApplicationIntent(
+    requested: OutgoingApplicationMessageRecord,
+  ): Promise<OutgoingApplicationMessageRecord> {
+    return this.mutate(async () => {
+      try {
+        const result = await this.metadataBackend!.outgoingApplicationIntent(
+          requested,
+          [metadataKeys.schemaVersion, JSON.stringify(currentSchemaVersion)],
+        )
+        this.schemaVersion = currentSchemaVersion
+        return result
+      } catch (cause) {
+        if (cause instanceof OutgoingApplicationIntentRefusal) throw cause
+        this.state = 'failed'
+        throw new MessageStoreError('write-uncertain', cause)
+      }
+    })
+  }
+
   private async readFinancialBindings(
     db: LevelDB,
   ): Promise<FinancialEnvelopeBinding[]> {
@@ -837,22 +940,17 @@ export class LevelMessageStore implements MessageStore {
       if (this.schemaVersion === undefined) return
       try {
         await this.db.clear()
-        const bindings = await this.readFinancialBindings(this.metadataDb)
-        if (bindings.length === 0) {
-          await this.metadataDb.clear()
-          this.schemaVersion = undefined
-        } else {
-          // History deletion cannot remove authorization needed to finish an original.
-          const removals: { type: 'del'; key: string }[] = []
-          for await (const [key] of this.metadataDb.iterator())
-            if (
-              String(key) !== metadataKeys.schemaVersion &&
-              !String(key).startsWith(financialBindingPrefix)
-            )
-              removals.push({ type: 'del', key: String(key) })
-          if (removals.length)
-            await this.metadataDb.batch(removals, { sync: true })
-        }
+        // Presentation deletion retains schema and both kinds of recovery authority.
+        const removals: { type: 'del'; key: string }[] = []
+        for await (const [key] of this.metadataDb.iterator())
+          if (
+            String(key) !== metadataKeys.schemaVersion &&
+            !String(key).startsWith(financialBindingPrefix) &&
+            !String(key).startsWith(outgoingApplicationIntentPrefix)
+          )
+            removals.push({ type: 'del', key: String(key) })
+        if (removals.length)
+          await this.metadataDb.batch(removals, { sync: true })
       } catch (cause) {
         this.state = 'failed'
         throw new MessageStoreError('write-uncertain', cause)

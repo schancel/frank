@@ -2,6 +2,9 @@
 
 import { mount } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
+import { readFileSync } from 'fs'
+import { parse } from '@vue/compiler-sfc'
+import { transpileModule, ModuleKind } from 'typescript'
 
 import ChatList from './ChatList.vue'
 
@@ -27,6 +30,14 @@ const mockChatStore = jest.requireActual('vue').reactive({
 jest.mock('../../stores/chats', () => ({
   useChatStore: () => mockChatStore,
 }))
+const mockContactStore = {
+  isContact: (address: string) => address === 'known-contact',
+  getContact: () => undefined,
+}
+jest.mock('../../stores/contacts', () => ({
+  useContactStore: () => mockContactStore,
+}))
+
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: { toDisplayAmount: (n: bigint) => n.toString(), unit: 'MON' },
 }))
@@ -210,5 +221,109 @@ describe('ChatList mailbox status', () => {
       },
     })
     expect(wrapper.find('[data-testid="mailbox-status"]').exists()).toBe(false)
+  })
+})
+
+// Jest supplies CommonJS require even though Vite's browser modules do not.
+// Resolve static imports while loading the component, then prohibit require in
+// setup, where the browser has only the already-loaded ESM imports available.
+function loadBrowserChatList() {
+  const source = readFileSync(`${__dirname}/ChatList.vue`, 'utf8')
+  const script = parse(source).descriptor.script?.content
+  if (!script) throw new Error('ChatList script is missing')
+  const compiled = transpileModule(script, {
+    compilerOptions: { module: ModuleKind.CommonJS, esModuleInterop: true },
+  }).outputText
+  let loadingImports = true
+  const exports: { default?: typeof ChatList } = {}
+  const browserRequire = (id: string) => {
+    if (!loadingImports) throw new ReferenceError('require is not defined')
+    return require(id)
+  }
+  new Function('require', 'exports', compiled)(browserRequire, exports)
+  loadingImports = false
+  if (!exports.default) throw new Error('ChatList export is missing')
+  return { ...exports.default, render: ChatList.render }
+}
+
+describe('ChatList browser screener contact classification', () => {
+  it('excludes paid inbound contacts from the queue and in:screener search', async () => {
+    mockChatStore.getSortedChatOrder = [
+      {
+        id: 'known-thread',
+        address: 'known-contact',
+        totalUnreadMessages: 1,
+        messages: [
+          {
+            outbound: false,
+            senderAddress: 'known-contact',
+            stampValueWei: 100n,
+          },
+        ],
+      },
+      {
+        id: 'stranger-thread',
+        address: 'unknown-stranger',
+        totalUnreadMessages: 1,
+        messages: [
+          {
+            outbound: false,
+            senderAddress: 'unknown-stranger',
+            stampValueWei: 7n,
+          },
+        ],
+      },
+      {
+        id: 'another-stranger-thread',
+        address: 'another-stranger',
+        totalUnreadMessages: 1,
+        messages: [
+          {
+            outbound: false,
+            senderAddress: 'another-stranger',
+            stampValueWei: 3n,
+          },
+        ],
+      },
+    ]
+    const wrapper = mount(loadBrowserChatList(), {
+      props: { compact: false },
+      global: {
+        components: {
+          QScrollArea: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QItemLabel: passthrough,
+          QSeparator: passthrough,
+          QSpace: passthrough,
+          QBtn: passthrough,
+        },
+        mocks: { $status: { setup: true }, $t: (key: string) => key },
+      },
+    })
+    const vm = wrapper.vm as unknown as {
+      activeFilter: string
+      searchQuery: string
+      displayedConversations: Array<{ id: string }>
+      screenerSummary: { count: number; totalValueWei: bigint }
+    }
+    expect(vm.screenerSummary.count).toBe(2)
+    // The chip amount is the aggregate value of the pending queue.
+    expect(vm.screenerSummary.totalValueWei).toBe(10n)
+    vm.activeFilter = 'screener'
+    await wrapper.vm.$nextTick()
+    expect(vm.displayedConversations.map(c => c.id)).toEqual([
+      'stranger-thread',
+      'another-stranger-thread',
+    ])
+    vm.activeFilter = 'all'
+    vm.searchQuery = 'in:screener'
+    await wrapper.vm.$nextTick()
+    expect(vm.displayedConversations.map(c => c.id).sort()).toEqual([
+      'another-stranger-thread',
+      'stranger-thread',
+    ])
+    wrapper.unmount()
   })
 })

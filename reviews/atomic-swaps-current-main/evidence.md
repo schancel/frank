@@ -39,3 +39,26 @@ git diff --name-status 7c31ee8c 49b09a04 -- packages/bot/demo/regtest packages/t
 Thus the native executable fixtures, native transaction construction dependencies, cryptographic implementation, and contracts are unchanged from the prior S0 code candidate and rebased S0. This is source equivalence, not fresh native execution evidence. Q1's separate `packages/bot/parallel-send.livecheck.ts` change awaits observations and compiles in the configured bot gate.
 
 No ABC/Anvil experiment, live funded check, deployment, push, or merge ran. Existing native public evidence remains historical evidence from its recorded candidate. These gates establish the tested integration and Q1 observation behavior; they do not complete atomic-swap runtime, encrypted threshold custody, malicious cryptographic assurance, or authorization to lift the protected release hold. Independent review remains separate.
+
+## Combined Q2 and P1 boundary validation
+
+Exact tested candidate: `cce216306a2d0dc1a0150abbd2be21dc27a9aa0c`, before the evidence-only commit appending this section. Q2 is integrated as `cc478dcb1aec1cc49faf028d25c727bea503ab7d`; P1 is integrated as `cce216306a2d0dc1a0150abbd2be21dc27a9aa0c`.
+
+Source equivalence was checked before testing:
+
+- `git diff --binary 07f3cfbb 6a23` equals `git diff --binary cc478dcb^ cc478dcb` byte for byte. All seven Q2 changed files also match their reviewed source contents exactly. Stable patch ID: `18efe43933528a297f7b1ee18df57fe50c4f3909`.
+- P1 original `2ce17775436ce7d7ffc1fb4206370deb62dd8a13` and integrated `cce21630` have identical patch hunks and stable patch ID `43e03bea45bdafa2d6df9d4d757a5783d4fde128`. Raw patch bytes differ only in the `packages/cashweb/types/messages.ts` index blob IDs. Eight of nine changed files are content-identical. The remaining file preserves the current-main `Message.contentDigest` field, absent on P1's source base; the same difference exists between both parents, so this is inherited integration context, not a changed P1 hunk.
+
+All following gates completed naturally with exit code 0:
+
+| Directory | Exact command | Result |
+| --- | --- | --- |
+| Root | `yarn typecheck:fast` | 23/23 projects pass |
+| `packages/wallet` | `../../node_modules/.bin/jest --runInBand --runTestsByPath ecash-operation-store.jest.test.ts ecash-preparation.jest.test.ts ecash-stealth.jest.test.ts ecash-wallet.jest.test.ts` | 4 suites, 56 tests pass |
+| `app` | `../node_modules/.bin/jest --config test/jest/accounts.config.cjs --runInBand --runTestsByPath src/accounts/session.jest.test.ts` | 101 tests pass |
+| `packages/wallet` | `../../node_modules/.bin/jest --runInBand --runTestsByPath message-item-plugins/application-item.jest.test.ts message-item-plugins/registry.jest.test.ts message-item-plugins/wire.jest.test.ts message-item-plugins/decoder-limits.jest.test.ts message-item-plugins/default-registry.jest.test.ts chain/canonical-item-roundtrip.jest.test.ts` | 6 suites, 1080 tests pass; canonical two-wallet transport, decoder budgets, default registry and application carrier included |
+| Root | `git diff --check` | Pass |
+
+Logs: `/tmp/frank-current-main-combined-typecheck.log`, `/tmp/frank-current-main-combined-ecash.log`, `/tmp/frank-current-main-combined-session.log`, `/tmp/frank-current-main-combined-p1.log`.
+
+The retained candidate-local dependency overlays were reused. No source changed during validation. The native/threshold/contract/Nakamoto paths listed above have no differences from the previously tested `49b09a04`; unchanged base/native/cryptographic gates were not repeated. Q2 awaits I/O but does not qualify the localStorage adapter as strictly durable; Q3 adapter/lifecycle work remains separate. P1 supplies a generic carrier and transport evidence, not atomic-swap runtime activation. No push, merge, deployment or funded execution occurred.

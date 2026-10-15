@@ -370,8 +370,9 @@ export default defineComponent({
       if (!conversation.value || busy.value) return
       busy.value = true
       try {
-        chatStore.leaveGroupConversation(conversation.value.id)
-        emit('left', conversation.value.id)
+        const conversationId = conversation.value.id
+        await chatStore.leaveGroupConversation(conversationId)
+        emit('left', conversationId)
         emit('update:modelValue', false)
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))

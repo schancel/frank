@@ -4,9 +4,9 @@ import { watch } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { activeChain } from '@frank/wallet/chain'
 import { useSettingsStore, saveSettings, restoreSettings } from './settings'
-import { discoverEmailGateway } from 'src/utils/email-gateway-discovery'
+import { discoverEmailGateway } from '@frank/cashweb/relay/email-gateway-discovery'
 
-jest.mock('src/utils/email-gateway-discovery', () => ({
+jest.mock('@frank/cashweb/relay/email-gateway-discovery', () => ({
   discoverEmailGateway: jest.fn(),
 }))
 

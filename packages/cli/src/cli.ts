@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import { balanceCommand, sweepCommand } from './commands/balance'
 import { createIdentityCommand, showIdentityCommand } from './commands/identity'
 import { inboxCommand, listenCommand } from './commands/inbox'
+import { mailDiscoverCommand } from './commands/mail-discover'
 import { mailSendCommand } from './commands/mail'
 import { sendCommand } from './commands/send'
 import {
@@ -119,6 +120,15 @@ export function createProgram(): Command {
     .description(
       'Email Gateway interaction: send and reply to external emails via Frank gateway',
     )
+
+  mailCmd
+    .command('discover')
+    .description('Read the selected relay email gateway advertisement')
+    .requiredOption('--chain <chainIdentifier>', 'Canonical chain identifier')
+    .option('-r, --relay <url>', 'Override relay base URL')
+    .action(async (opts, cmd) => {
+      await mailDiscoverCommand(mergeOptions(opts, cmd))
+    })
 
   mailCmd
     .command('send <recipientEmail> <message>')

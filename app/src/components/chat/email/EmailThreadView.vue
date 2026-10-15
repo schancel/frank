@@ -1040,12 +1040,8 @@
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
 import type { Conversation, ChatMessage } from 'src/stores/chats'
-import type {
-  EmailItem,
-  EmailParty,
-  EmailAttachment,
-  MessageItem,
-} from '@frank/cashweb/types/messages'
+import type { EmailItem, MessageItem } from '@frank/cashweb/types/messages'
+import type { EmailParty, EmailAttachment } from '@frank/codec'
 import { formatConversationTimestamp } from 'src/utils/formatting'
 import {
   formatCompactAmount,
@@ -2162,7 +2158,7 @@ export default defineComponent({
         .map(p => (p.name ? `${p.name} <${p.address}>` : p.address))
         .join(', ')
     },
-    formatBytes(bytes: number): string {
+    formatBytes(bytes: number | undefined): string {
       if (!bytes || bytes === 0) return '0 B'
       const k = 1024
       const sizes = ['B', 'KB', 'MB', 'GB']

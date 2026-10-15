@@ -1,4 +1,5 @@
 import { parse } from './records'
+import { parseRetention, type RetentionRecord } from './retention'
 import { CustodyError, type CustodySnapshot } from './types'
 
 /** An absent read aborts creation and leaves no database behind. */
@@ -57,11 +58,16 @@ export function database(
   })
 }
 
-/** CAS callbacks are synchronous within a single cross-tab IDB transaction. */
-export function stateTransaction(
+export interface CustodyRecords {
+  readonly account: CustodySnapshot
+  readonly retention: RetentionRecord
+}
+
+/** Account and retention authority linearize in this one cross-tab transaction. */
+export function custodyTransaction(
   db: IDBDatabase,
-  change?: (current: CustodySnapshot) => CustodySnapshot,
-): Promise<CustodySnapshot> {
+  change?: (current: CustodyRecords) => CustodyRecords,
+): Promise<CustodyRecords> {
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction
     try {
@@ -70,22 +76,39 @@ export function stateTransaction(
         change ? 'readwrite' : 'readonly',
         change ? { durability: 'strict' } : undefined,
       )
+      if (change && tx.durability !== 'strict') {
+        tx.abort()
+        throw new CustodyError('storage-failed')
+      }
     } catch {
       reject(new CustodyError('storage-failed'))
       return
     }
-    let result: CustodySnapshot, failure: CustodyError | undefined
+    let result: CustodyRecords, failure: CustodyError | undefined
     tx.oncomplete = () => resolve(result)
     tx.onabort = () => reject(failure ?? new CustodyError('storage-failed'))
     tx.onerror = () => {
       /* onabort is authoritative. */
     }
-    const request = tx.objectStore('state').get('account')
-    request.onsuccess = () => {
+    const store = tx.objectStore('state')
+    const accountRequest = store.get('account'),
+      retentionRequest = store.get('retention-v1')
+    let remaining = 2
+    const loaded = () => {
+      if (--remaining !== 0) return
       try {
-        const current = parse(request.result)
-        result = change ? parse(change(current)) : current
-        if (change) tx.objectStore('state').put(result, 'account')
+        const account = parse(accountRequest.result)
+        const retention = parseRetention(retentionRequest.result, account)
+        const current = { account, retention }
+        const changed = change ? change(current) : current
+        const nextAccount = parse(changed.account)
+        result = {
+          account: nextAccount,
+          retention: parseRetention(changed.retention, nextAccount),
+        }
+        if (changed.account !== account) store.put(result.account, 'account')
+        if (changed.retention !== retention)
+          store.put(result.retention, 'retention-v1')
       } catch (error) {
         failure =
           error instanceof CustodyError
@@ -94,5 +117,13 @@ export function stateTransaction(
         tx.abort()
       }
     }
+    accountRequest.onsuccess = loaded
+    retentionRequest.onsuccess = loaded
   })
+}
+
+export async function stateTransaction(
+  db: IDBDatabase,
+): Promise<CustodySnapshot> {
+  return (await custodyTransaction(db)).account
 }

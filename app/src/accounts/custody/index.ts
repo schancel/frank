@@ -20,7 +20,21 @@ import {
   same,
   wipe,
 } from './records'
-import { database, stateTransaction } from './persistence'
+import {
+  database,
+  stateTransaction,
+  custodyTransaction,
+  type CustodyRecords,
+} from './persistence'
+import {
+  parseRetention,
+  retentionSnapshot,
+  captureRetentionIntent,
+  captureRetentionReceipt,
+  acquireRetention,
+  releaseRetention,
+  type RetentionRecord,
+} from './retention'
 import {
   CustodyError,
   writeIntent,
@@ -43,6 +57,10 @@ export type {
   PublicAccount,
   StageAccount,
   StageBip39Account,
+  RetentionIncarnation,
+  RetentionIntent,
+  RetentionReceipt,
+  RetentionSnapshot,
 } from './types'
 
 function normalized(error: unknown): CustodyError {
@@ -131,7 +149,7 @@ function facade(namespace: string): AccountCustody {
     return value
   }
   const access = async (
-    change?: (state: CustodySnapshot) => CustodySnapshot,
+    change?: (current: CustodyRecords) => CustodyRecords,
   ) => {
     check()
     const db = change
@@ -140,16 +158,17 @@ function facade(namespace: string): AccountCustody {
     try {
       check()
       if (db) connections.add(db)
+      const account = parse(undefined)
       const result = db
-        ? await stateTransaction(
+        ? await custodyTransaction(
             db,
             change &&
-              (state => {
+              (current => {
                 check()
-                return change(state)
+                return change(current)
               }),
           )
-        : parse(undefined)
+        : { account, retention: parseRetention(undefined, account) }
       check()
       return result
     } finally {
@@ -157,9 +176,19 @@ function facade(namespace: string): AccountCustody {
       if (db) connections.delete(db)
     }
   }
-  const read = () => access()
-  const update = (change: (state: CustodySnapshot) => CustodySnapshot) =>
-    access(change)
+  const read = async () => (await access()).account
+  const update = async (
+    change: (
+      state: CustodySnapshot,
+      retention: RetentionRecord,
+    ) => CustodySnapshot,
+  ) =>
+    (
+      await access(current => ({
+        ...current,
+        account: change(current.account, current.retention),
+      }))
+    ).account
   const pendingFor = (
     state: CustodySnapshot,
     attemptId: string,
@@ -214,6 +243,18 @@ function facade(namespace: string): AccountCustody {
     await authenticateAccount(pending.account)
   }
   const discard = async (pending: PendingChange): Promise<CustodySnapshot> => {
+    await update((state, retention) => {
+      if (
+        !same(state.pending, pending) ||
+        pending.status !== 'discarding' ||
+        same(state.active?.receipt, pending.account.receipt) ||
+        retention.holds.some(hold =>
+          same(hold.accountReceipt, pending.account.receipt),
+        )
+      )
+        throw new CustodyError('conflict')
+      return state
+    })
     await (await vault()).discardIntent(writeIntent(pending.account))
     return update(state => {
       // A delayed duplicate cleanup must not clear a newer pending attempt.
@@ -229,6 +270,39 @@ function facade(namespace: string): AccountCustody {
 
   return Object.freeze({
     snapshot: () => run(read),
+    retentionSnapshot: () =>
+      run(async () => {
+        const current = await access()
+        return retentionSnapshot(current.account, current.retention)
+      }),
+    acquireRetention(input) {
+      const intent = captureRetentionIntent(input)
+      return run(async () => {
+        const result = await access(current => ({
+          ...current,
+          retention: acquireRetention(
+            current.account,
+            current.retention,
+            intent,
+          ),
+        }))
+        return result.retention.holds.find(
+          hold => hold.operationId === intent.operationId,
+        )!
+      })
+    },
+    releaseRetention(input) {
+      const receipt = captureRetentionReceipt(input)
+      return run(async () => {
+        let released = false
+        await access(current => {
+          const retention = releaseRetention(current.retention, receipt)
+          released = retention !== current.retention
+          return { ...current, retention }
+        })
+        return released ? 'released' : 'absent'
+      })
+    },
     async stage(input) {
       // capture is synchronous even if the caller mutates inputs as soon as stage returns.
       check()
@@ -336,7 +410,8 @@ function facade(namespace: string): AccountCustody {
         )
           throw new CustodyError('conflict')
         await authenticated(pending)
-        return update(current => {
+        return update((current, retention) => {
+          if (retention.holds.length > 0) throw new CustodyError('conflict')
           if (!matches(current, wanted) || !same(current.pending, pending))
             throw new CustodyError('conflict')
           return {

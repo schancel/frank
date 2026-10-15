@@ -15,6 +15,39 @@ creation by another instance. Closing revokes pending capabilities and releases 
 connections. No record, receipt, derivation, activation or cleanup format changes.
 Retention holds and destructive-reset fencing remain separate work.
 
+## Operation retention
+
+`retentionSnapshot()` reads the active incarnation (account revision and exact vault
+receipt), monotonic `nextGeneration`, and active hold receipts without writing defaults.
+`acquireRetention({ accountRevision, accountReceipt, operationId, expectedGeneration })`
+admits an operation only for that active incarnation and expected generation. The return
+acknowledges a strict durable commit. Keep the original intent when acknowledgment is
+uncertain; an exact retry returns the original hold even after unrelated admissions.
+
+Custody stores one `retention-v1` row in the existing `state` store:
+`{ schema: 1, nextGeneration, holds }`. No account snapshot/schema or vault format changes.
+Account and complete retention records are read together in each authority transaction.
+At most 64 holds are admitted; counter exhaustion refuses further admission. Mutations
+verify actual strict transaction durability and await completion. Holds do not increment
+account revision or invalidate staged replacement preconditions. Final activation refuses
+replacement while holds exist. Cancelling another pending account is still permitted;
+cleanup transactionally reauthorizes its exact non-active, unretained discarding target
+before invoking the vault's existing fence.
+
+`releaseRetention(receipt)` accepts only the exact incarnation, operation and generation.
+It returns `released` or `absent`, never decrements the counter, and cannot remove a newer
+hold with the same operation ID. Release is a trusted instruction from the financial
+operation owner, not custody evidence that funds settled. The journal owns terminal
+operation-ID reuse policy; custody deliberately keeps no unbounded terminal-ID tombstones.
+Old acquisition intents reject after release, while fresh-generation reuse is permitted.
+
+H1 is not installed in production operation admission. H2 must protect destructive reset
+paths before any production operation acquires a hold. Arbitrary deletion or rollback of
+the retention row is indistinguishable from pre-H1 absence; this is outside the local
+transaction guarantee. Preserve retention records during reversal, and never restore a
+pre-H1 activation writer while holds exist. Retention data contains public immutable
+references only, never operation secrets or financial settlement state.
+
 ```ts
 import { openAccountCustody } from './accounts/custody'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'

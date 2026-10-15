@@ -16,6 +16,7 @@ import {
   type CustodySnapshot,
   type ExpectedActive,
   type StageAccount,
+  type RetentionIntent,
 } from '../index'
 
 /** What staging takes, plus the roots that account root derives, for expectations only. */
@@ -255,13 +256,28 @@ async function restart(phase: string) {
       (await api.snapshot()).active !== null,
       'active pointer and metadata committed together',
     )
+    const active = await api.retentionSnapshot()
+    await api.acquireRetention({
+      ...active.active!,
+      operationId: 'restart-retention',
+      expectedGeneration: active.nextGeneration,
+    })
   } else {
     equal(
       await api.reconcile(input.attemptId),
       'active',
       'lost activation ack resolved from durable active pointer',
     )
+    const retained = await api.retentionSnapshot()
+    equal(retained.holds.length, 1, 'hold survived process crash')
+    equal(retained.nextGeneration, 1, 'counter survived process crash')
     const state = await api.activate(input.attemptId, input.expectedActive)
+    equal(
+      (await api.retentionSnapshot()).holds,
+      retained.holds,
+      'already committed activation remains idempotent with hold',
+    )
+    await api.releaseRetention(retained.holds[0])
     equal(state.revision, 1, 'retry is not another activation')
     assert(
       state.pending === null,
@@ -275,7 +291,424 @@ async function restart(phase: string) {
   erase(input)
 }
 
+async function retentionRegressions() {
+  const admit = async (
+    api: AccountCustody,
+    operationId: string,
+  ): Promise<RetentionIntent> => {
+    const snapshot = await api.retentionSnapshot()
+    assert(snapshot.active !== null, 'retention requires an active incarnation')
+    return {
+      ...snapshot.active,
+      operationId,
+      expectedGeneration: snapshot.nextGeneration,
+    }
+  }
+  const active = async (namespace: string) => {
+    const api = await open(namespace),
+      input = fixture(namespace)
+    await api.stage(input)
+    const state = await api.activate(input.attemptId, input.expectedActive)
+    return { api, input, state }
+  }
+  await test('retention inspection is absent without creating namespaces or default rows', async () => {
+    const before = (await indexedDB.databases()).map(db => db.name).sort()
+    const api = await open('retention-absent')
+    equal(
+      await api.retentionSnapshot(),
+      { active: null, nextGeneration: 0, holds: [] },
+      'empty retention view',
+    )
+    equal(
+      (await indexedDB.databases()).map(db => db.name).sort(),
+      before,
+      'no default retention database',
+    )
+  })
+  await test('retention generations serialize independent admissions and survive release and reacquisition', async () => {
+    const { api, input, state } = await active('retention-generations'),
+      other = await open('retention-generations')
+    const first = await admit(api, 'payment-a'),
+      second = { ...first, operationId: 'payment-b' }
+    const outcomes = await Promise.allSettled([
+      api.acquireRetention(first),
+      other.acquireRetention(second),
+    ])
+    equal(
+      outcomes.filter(result => result.status === 'fulfilled').length,
+      1,
+      'one expected generation admits once',
+    )
+    const winner = outcomes.find(result => result.status === 'fulfilled')!
+    assert(winner.status === 'fulfilled', 'hold admitted')
+    const original = winner.value,
+      intent = original.operationId === first.operationId ? first : second
+    const unrelated = await other.acquireRetention(
+      await admit(other, 'payment-c'),
+    )
+    equal(
+      await api.acquireRetention(intent),
+      original,
+      'exact retry survives unrelated generation advance',
+    )
+    equal(
+      await api.snapshot(),
+      state,
+      'hold changes preserve account and replacement revision',
+    )
+    const copied = await api.retentionSnapshot()
+    ;(copied.holds as any[])[0].operationId = 'caller-mutated'
+    equal(
+      (await api.retentionSnapshot()).holds[0].operationId,
+      original.operationId,
+      'returned holds are copy-isolated',
+    )
+    equal(
+      await api.releaseRetention(original),
+      'released',
+      'exact release succeeds',
+    )
+    equal(
+      await api.releaseRetention(original),
+      'absent',
+      'duplicate release is absence, not settlement',
+    )
+    await rejects(() => api.acquireRetention(intent), 'conflict')
+    const renewed = await other.acquireRetention(
+      await admit(other, original.operationId),
+    )
+    await rejects(() => api.releaseRetention(original), 'conflict')
+    equal(
+      (await api.retentionSnapshot()).holds.length,
+      2,
+      'delayed release leaves fresh hold intact',
+    )
+    await api.releaseRetention(renewed)
+    await api.releaseRetention(unrelated)
+    equal(
+      (await api.retentionSnapshot()).nextGeneration,
+      3,
+      'release never resets counter',
+    )
+    erase(input)
+  })
+  await test('retention is durable before acknowledgment and closed owners reconcile the original intent', async () => {
+    const { api, input } = await active('retention-ack'),
+      other = await open('retention-ack')
+    const intent = await admit(api, 'lost-ack')
+    const held = holdAcknowledgement(
+      (store, value) =>
+        store.name === 'state' &&
+        Array.isArray(value.holds) &&
+        value.holds.some((hold: any) => hold.operationId === 'lost-ack'),
+    )
+    let acknowledged = false
+    const acquiring = api.acquireRetention(intent).then(value => {
+      acknowledged = true
+      return value
+    })
+    try {
+      await held.reached
+      assert(
+        !acknowledged,
+        'durable write completion must precede acknowledgment',
+      )
+      const extra = await other.acquireRetention(
+        await admit(other, 'unrelated-ack'),
+      )
+      api.close()
+      held.release()
+      await rejects(() => acquiring, 'closed')
+      const receipt = await other.acquireRetention(intent)
+      equal(
+        receipt.generation,
+        0,
+        'ambiguous caller retries exact original generation',
+      )
+      equal(
+        (await other.retentionSnapshot()).nextGeneration,
+        2,
+        'retry consumes no new generation',
+      )
+      await other.releaseRetention(receipt)
+      await other.releaseRetention(extra)
+    } finally {
+      held.release()
+      erase(input)
+    }
+  })
+  await test('retention snapshots input before await and rejects wrong incarnation or receipt', async () => {
+    const { api, input } = await active('retention-input')
+    const intent = structuredClone(await admit(api, 'input-owned'))
+    const promised = api.acquireRetention(intent)
+    ;(intent as any).expectedGeneration = 100
+    ;(intent.accountReceipt.context as any).accountId = 'changed-after-call'
+    const receipt = await promised
+    equal(receipt.generation, 0, 'synchronous intent snapshot retained')
+    const next = await admit(api, 'wrong')
+    await rejects(
+      () =>
+        api.acquireRetention({
+          ...next,
+          accountRevision: next.accountRevision + 1,
+        }),
+      'conflict',
+    )
+    const foreign = fixture('foreign-incarnation', undefined, 19),
+      temporary = await open('retention-foreign')
+    const staged = await temporary.stage(foreign)
+    await rejects(
+      () =>
+        api.acquireRetention({
+          ...next,
+          accountReceipt: staged.pending!.account.receipt,
+        }),
+      'conflict',
+    )
+    await rejects(
+      () => api.acquireRetention({ ...next, expectedGeneration: -1 }),
+      'invalid-input',
+    )
+    await api.releaseRetention(receipt)
+    erase(input)
+    erase(foreign)
+  })
+  await test('holds exclude replacement atomically while pending cancellation preserves active roots', async () => {
+    const { api, input, state } = await active('retention-replacement'),
+      other = await open('retention-replacement')
+    const replacement = fixture('retention-replace-next', current(state), 21)
+    await other.stage(replacement)
+    const intent = await admit(api, 'in-flight-payment')
+    const race = await Promise.allSettled([
+      api.acquireRetention(intent),
+      other.activate(replacement.attemptId, replacement.expectedActive),
+    ])
+    equal(
+      race.filter(result => result.status === 'fulfilled').length,
+      1,
+      'hold and replacement cannot both win',
+    )
+    if (race[0].status === 'fulfilled') {
+      await rejects(
+        () => other.activate(replacement.attemptId, replacement.expectedActive),
+        'conflict',
+      )
+      await assertActive(api, input)
+      const retainedRoot = await api.exportAccountRoot()
+      equal(
+        Array.from(retainedRoot.accountRoot!),
+        Array.from(input.accountRoot),
+        'refused replacement retains exact account root',
+      )
+      retainedRoot.accountRoot?.fill(0)
+      await other.cancel(replacement.attemptId)
+      await assertActive(api, input)
+      equal(
+        (await api.retentionSnapshot()).holds.length,
+        1,
+        'cancelling pending account preserves active hold',
+      )
+      await api.releaseRetention(race[0].value)
+      const next = fixture(
+        'retention-after-release',
+        current(await api.snapshot()),
+        25,
+      )
+      await other.stage(next)
+      const stagedBefore = await other.snapshot()
+      const temporary = await api.acquireRetention(
+        await admit(api, 'staged-precondition'),
+      )
+      await api.releaseRetention(temporary)
+      equal(
+        await other.snapshot(),
+        stagedBefore,
+        'hold changes preserve staged replacement preconditions',
+      )
+      await other.activate(next.attemptId, next.expectedActive)
+      await assertActive(other, next)
+      erase(next)
+    } else {
+      await rejects(() => api.acquireRetention(intent), 'conflict')
+      await assertActive(other, replacement)
+    }
+    erase(input)
+    erase(replacement)
+  })
+  await test('replacement winning first refuses stale retention and committed activation retry preserves a hold', async () => {
+    const { api, input, state } = await active('retention-new-active')
+    const oldIntent = await admit(api, 'old-incarnation')
+    const replacement = fixture('retention-new-activation', current(state), 22)
+    await api.stage(replacement)
+    await api.activate(replacement.attemptId, replacement.expectedActive)
+    await rejects(() => api.acquireRetention(oldIntent), 'conflict')
+    const receipt = await api.acquireRetention(
+      await admit(api, 'new-incarnation'),
+    )
+    await api.activate(replacement.attemptId, replacement.expectedActive)
+    equal(
+      (await api.retentionSnapshot()).holds,
+      [receipt],
+      'activation retry does not perform replacement',
+    )
+    await api.reconcile(input.attemptId)
+    await assertActive(api, replacement)
+    await api.releaseRetention(receipt)
+    erase(input)
+    erase(replacement)
+  })
+  await test('cleanup reauthorizes exact pending ownership before touching a retained active vault', async () => {
+    const ns = 'retention-cleanup',
+      { api, input, state } = await active(ns)
+    const replacement = fixture('cleanup-pending', current(state), 23)
+    await api.stage(replacement)
+    const target = (await api.snapshot()).pending!.account.receipt
+    const held = holdAcknowledgement(
+      (store, value) =>
+        store.name === 'state' && value.pending?.status === 'discarding',
+    )
+    const cancelling = api.cancel(replacement.attemptId)
+    try {
+      await held.reached
+      const retained = await api.acquireRetention(
+        await admit(api, 'cleanup-active'),
+      )
+      await storage(ns, false, ['state'], tx => {
+        const store = tx.objectStore('state'),
+          request = store.get('account')
+        request.onsuccess = () =>
+          store.put({ ...request.result, pending: null }, 'account')
+      })
+      held.release()
+      await rejects(() => cancelling, 'conflict')
+      await assertActive(api, input)
+      const vault = await openPreviewVault({ namespace: ns })
+      const pendingRoot = await vault.openAccountRoot(target)
+      equal(
+        Array.from(pendingRoot!),
+        Array.from(replacement.accountRoot),
+        'unowned pending target was not discarded',
+      )
+      pendingRoot?.fill(0)
+      vault.close()
+      await api.releaseRetention(retained)
+    } finally {
+      held.release()
+      erase(input)
+      erase(replacement)
+    }
+  })
+  await test('retention capacity exhaustion and strict durability refusal never evict or acknowledge holds', async () => {
+    const ns = 'retention-bounds',
+      { api, input } = await active(ns)
+    for (let i = 0; i < 64; i++)
+      await api.acquireRetention(await admit(api, `capacity-${i}`))
+    const full = await api.retentionSnapshot()
+    await rejects(
+      () =>
+        api.acquireRetention({
+          ...full.active!,
+          operationId: 'capacity-extra',
+          expectedGeneration: full.nextGeneration,
+        }),
+      'capacity',
+    )
+    equal(
+      await api.retentionSnapshot(),
+      full,
+      'capacity leaves all holds unchanged',
+    )
+    for (const hold of full.holds) await api.releaseRetention(hold)
+    await storage(ns, false, ['state'], tx =>
+      tx
+        .objectStore('state')
+        .put(
+          { schema: 1, nextGeneration: Number.MAX_SAFE_INTEGER, holds: [] },
+          'retention-v1',
+        ),
+    )
+    const exhausted = await admit(api, 'counter-exhausted')
+    await rejects(() => api.acquireRetention(exhausted), 'capacity')
+    const before = await api.retentionSnapshot()
+    const original = IDBDatabase.prototype.transaction
+    IDBDatabase.prototype.transaction = function (...args) {
+      const tx = original.apply(this, args)
+      if (
+        this.name === `frank-account-custody-${ns}` &&
+        args[1] === 'readwrite'
+      )
+        Object.defineProperty(tx, 'durability', { value: 'relaxed' })
+      return tx
+    }
+    try {
+      await rejects(
+        () =>
+          api.releaseRetention({
+            ...before.active!,
+            operationId: 'absent',
+            generation: 0,
+          }),
+        'storage-failed',
+      )
+    } finally {
+      IDBDatabase.prototype.transaction = original
+    }
+    equal(
+      await api.retentionSnapshot(),
+      before,
+      'strict refusal leaves durable authority unchanged',
+    )
+    erase(input)
+  })
+  await test('complete retention corruption and stale affinity block inspection and activation', async () => {
+    const ns = 'retention-corrupt',
+      { api, input, state } = await active(ns)
+    const intent = await admit(api, 'corrupt-fixture')
+    const receipt = await api.acquireRetention(intent)
+    const replacement = fixture('corrupt-replacement', current(state), 24)
+    await api.stage(replacement)
+    const valid = { schema: 1, nextGeneration: 1, holds: [receipt] }
+    for (const bad of [
+      null,
+      { ...valid, schema: 2 },
+      { ...valid, extra: true },
+      { ...valid, nextGeneration: 0 },
+      { ...valid, holds: [receipt, receipt] },
+      { ...valid, holds: [{ ...receipt, accountRevision: 99 }] },
+      {
+        ...valid,
+        holds: [
+          {
+            ...receipt,
+            accountReceipt: { ...receipt.accountReceipt, revision: 9 },
+          },
+        ],
+      },
+      { ...valid, holds: new Array(1) },
+      { ...valid, nextGeneration: Number.MAX_SAFE_INTEGER + 1 },
+    ]) {
+      await storage(ns, false, ['state'], tx =>
+        tx.objectStore('state').put(bad, 'retention-v1'),
+      )
+      await rejects(() => api.retentionSnapshot(), 'locked')
+      await rejects(
+        () => api.activate(replacement.attemptId, replacement.expectedActive),
+        'locked',
+      )
+      await rejects(() => openAccountCustody({ namespace: ns }), 'locked')
+    }
+    await storage(ns, false, ['state'], tx =>
+      tx.objectStore('state').put(valid, 'retention-v1'),
+    )
+    await assertActive(api, input)
+    await api.releaseRetention(receipt)
+    erase(input)
+    erase(replacement)
+  })
+}
+
 async function regressions() {
+  await retentionRegressions()
   await test('absent inspection creates no namespaces and observes later authorized creation', async () => {
     const inventory = async () =>
       (await indexedDB.databases()).map(db => db.name).sort()

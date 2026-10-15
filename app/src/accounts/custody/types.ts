@@ -52,6 +52,28 @@ export interface CustodySnapshot {
   readonly pending: PendingChange | null
 }
 
+export interface RetentionIncarnation {
+  readonly accountRevision: number
+  readonly accountReceipt: VaultReceipt
+}
+
+/** Public reference only. The financial owner decides when it may be released. */
+export interface RetentionReceipt extends RetentionIncarnation {
+  readonly operationId: string
+  readonly generation: number
+}
+
+export interface RetentionIntent extends RetentionIncarnation {
+  readonly operationId: string
+  readonly expectedGeneration: number
+}
+
+export interface RetentionSnapshot {
+  readonly active: RetentionIncarnation | null
+  readonly nextGeneration: number
+  readonly holds: readonly RetentionReceipt[]
+}
+
 export interface StageAccount {
   readonly attemptId: string
   readonly accountId: string
@@ -87,6 +109,9 @@ export interface ActiveCustody {
 
 export interface AccountCustody {
   snapshot(): Promise<CustodySnapshot>
+  retentionSnapshot(): Promise<RetentionSnapshot>
+  acquireRetention(intent: RetentionIntent): Promise<RetentionReceipt>
+  releaseRetention(receipt: RetentionReceipt): Promise<'released' | 'absent'>
   stage(input: StageAccount | StageBip39Account): Promise<CustodySnapshot>
   reconcile(
     attemptId: string,

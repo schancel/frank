@@ -75,3 +75,91 @@ signing, funding or settlement authority. App and the concrete all-bots target e
 the testnet policy. Wallet defaults and other bot targets do not install this feature. There is no
 proposal UI or automatic negotiation writer yet. A wire change requires coordinated feature
 writer/reader changes; no compatibility reader or migration is provided.
+
+## Authenticated single-negotiation journal
+
+`@frank/swap-protocol/src/negotiation-journal` is a separate headless entry.
+`new NegotiationJournal({ owner, context, store })` binds one immutable existing
+`NegotiationContext` to an explicit account incarnation, local party identity and
+canonical messaging chain. Inputs, including Buffers, are copied before storage
+awaits. Incarnation is an opaque nonempty scalar UTF-8 string of at most256 bytes;
+it is not derived from a key or automatically rebound after account restoration.
+No app/bot installs this engine yet.
+
+The host supplies `read(key): Promise<string | undefined>` and
+`compareAndSwap(key, expectedRaw, nextRaw): Promise<boolean>`. This capability must
+provide linearizable comparison+commit across handles, durable success before
+`true`, committed reads or observable failure, and absent inspection without
+initialization. `false` means another committed writer won. Exceptions can mean
+ambiguous writes and propagate without an automatic retry. An adapter cannot
+implement CAS as independently queued get and put operations. The test memory
+capability proves the algorithm only; it is not a production storage fallback or
+physical durability qualification.
+
+`journal.read()` returns explicit `presence`, copied evidence entries and the S5a
+reduction. It fetches and validates the actual row each time, without writes or a
+competing authoritative cache. `journal.admit({ eventBytes, authenticated,
+messageId, stampedPayloadDigest })` requires actual signed bytes plus trusted
+canonical host delivery assertions. `authenticated` includes S5a's explicit
+incoming/outbound-replay direction, local/sender/recipient keys and actual wire
+conversation, plus `messagingChainIdentifier`, which must match the owner.
+Message ID is exactly16 bytes and stamped payload digest exactly32 bytes; the
+latter is distinct from contentDigest. This engine checks supplied assertions;
+it cannot establish outer-envelope provenance or authenticate arbitrary restored
+presentation messages.
+
+Admission validates the fresh row and new delivery, retains original signed bytes,
+and uses CAS to append. CAS-false retries from a fresh row at most eight times;
+exhaustion raises `NegotiationJournalError` with `code: 'contention'`. Invalid
+inputs, corrupt rows and capacity have distinct codes; storage exceptions retain
+their original identity. Exact event-byte duplicates authenticate again and write
+nothing, including at capacity or under a different valid delivery ID/digest. The
+first valid metadata remains sufficient. Distinct valid signatures count as
+distinct evidence bytes, while S5a decides semantic duplication. Signed conflicts
+remain present and produce an unusable acceptance; response-before-offer remains
+buffered. No accepted/status flags are persisted.
+
+The exact version1 JSON shape is `{ version, owner, context, entries }`. Owner is
+`{ accountIncarnation, localPublicKey, messagingChainIdentifier }`; context is
+`{ swapId, conversationId, parties, policy }`, with existing explicit ordered pair
+policy fields. Every entry is `{ eventBytes, senderPublicKey, recipientPublicKey,
+direction, messageId, stampedPayloadDigest }`. Byte fields use lowercase hex.
+The messaging chain is stored once in the owner binding. Unknown fields, versions,
+invalid signatures and changed immutable/authenticated bindings fail visibly.
+Duplicate entries in a stored row are malformed. Limits are262144 UTF-8 JSON bytes,
+64 entries,1024 original bytes per event and65536 aggregate original bytes, checked
+before expensive validation. No eviction, reset, migration or compatibility parser
+is provided.
+
+`rowKey` is lowercase SHA256 hex over twelve concatenated length-framed components.
+Each component uses its unsigned four-byte big-endian byte length followed by its
+bytes, in this order: UTF-8 domain `frank/swap-negotiation-journal-key/v1`, UTF-8
+version `1`, UTF-8 incarnation, raw local compressed key, UTF-8 messaging chain,
+raw swap ID, raw conversation ID, raw party A key, raw party B key, UTF-8 policy
+name, UTF-8 XEC chain, UTF-8 EVM chain. This is a public local storage identifier,
+not a confidentiality boundary or cross-user identifier. Golden key and serialized
+record vectors are fixed in the co-located tests.
+
+`inspectNegotiationJournalRecord(raw)` performs the same strict pure validation
+and reconstruction, returning rowKey plus owned copies of owner/context/evidence
+and reduction. It assumes no host account affinity: concrete adapters must compare
+account incarnation, local key and requested row key explicitly before CAS.
+Local admission metadata remains trusted application state; changing valid-looking
+local metadata or rolling back storage is not cryptographically prevented, and
+stored outer envelopes are not reauthenticated.
+
+Required successors qualify actual native/browser CAS storage, atomically bound
+the number of negotiations per account, and install authenticated host polling,
+streaming and outbound replay with lifecycle revocation and retention. Account
+restoration versus incarnation rebinding and pre-activation history need explicit
+host policy. Negotiation remains historical evidence; it provides no signing,
+funding, reservation, secret, acceptance automation or financial recovery authority.
+
+Verification from the repository root:
+
+```sh
+node_modules/.bin/jest --config packages/swap-protocol/jest.config.cjs --runInBand
+node packages/nakamoto/scripts/check-deps.mjs --root packages/swap-protocol
+node_modules/.bin/prettier --single-quote --no-semi --trailing-comma all --check packages/swap-protocol/src/negotiation-journal.ts packages/swap-protocol/src/negotiation-journal.jest.test.ts
+yarn typecheck:fast
+```
